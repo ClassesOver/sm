@@ -1805,6 +1805,22 @@ def _compile_single_table_queries(
                     previous = scope_values.setdefault(column, value)
                     if previous != value:
                         return None
+            # 固定口径字段必须随冻结 CSV 一起物化，才能独立复核 WHERE 条件；
+            # 常量字段加入 GROUP BY 不改变聚合结果。
+            query_grain_columns = tuple(
+                dict.fromkeys((*requirement.grain_columns, *sorted(scope_values)))
+            )
+            if row_preserving:
+                projections = [exp.column(column) for column in query_grain_columns]
+                projections.extend(exp.column(column) for column in table.measure_columns)
+            else:
+                projections = [exp.column(column) for column in query_grain_columns]
+                for measure, semantic in semantic_by_measure.items():
+                    aggregate = _measure_aggregate_expression(
+                        measure,
+                        semantic.aggregation,
+                    )
+                    projections.append(aggregate.as_(measure))
             predicates.extend(
                 exp.EQ(this=exp.column(column), expression=exp.Literal.string(value))
                 for column, value in sorted(scope_values.items())
@@ -1814,9 +1830,9 @@ def _compile_single_table_queries(
                 .from_(exp.to_table(qualified_table))
                 .where(exp.and_(*predicates))
             )
-            if not row_preserving and requirement.grain_columns:
+            if not row_preserving and query_grain_columns:
                 statement = statement.group_by(
-                    *(exp.column(column) for column in requirement.grain_columns)
+                    *(exp.column(column) for column in query_grain_columns)
                 )
             queries.append(
                 {

@@ -80,7 +80,7 @@ def build_claim_subject_bindings(
                         analysisId=analysis_id,
                         fileResourceId=resource_id,
                         jsonPointer=pointer,
-                        factKind=pointer_kind,
+                        factKind={"comparisons": "comparison", "derivedMetrics": "derived", "reconciliations": "reconciliation"}.get(pointer.split("/")[1], pointer_kind),
                         factKey=fact_id,
                     )
                 )
@@ -146,6 +146,76 @@ def value_matches(cell_text: str, fact_value: Any) -> bool:
     return False
 
 
+
+def formatted_value_matches(text: str, value: Any, unit: str | None) -> bool:
+    """用冻结值的相同舍入规则核对带单位显示文本。"""
+    from .numeric_text import format_fact_value
+
+    if value is None or unit not in {"元", "万元", "亿元", "%", "‰"}:
+        return False
+    units = ("元", "万元", "亿元") if unit in {"元", "万元", "亿元"} else (unit,)
+    return any(re.search(
+        r"(?<![\d.,+\-])" + re.escape(format_fact_value(value, unit, target)) + r"(?![\d.])",
+        text.replace("**", ""),
+    ) for target in units)
+
+
+def bind_local_claim_values(artifacts: Sequence[Any], fact_values: Mapping[str, tuple[Any, str | None]]) -> tuple[Any, ...]:
+    """数值 subject 只绑定本 block 真正陈述的冻结显示值，趋势仍通过 citation 追溯。"""
+    from loguru import logger
+
+    normalized = []
+    for artifact in artifacts:
+        claims = []
+        for claim in artifact.claims:
+            local = "\n\n".join(block.markdown for block in artifact.blocks if claim.claim_id in block.claim_ids)
+            paragraphs = [part for part in local.split("\n\n") if not part.startswith(("#", "|", "```"))]
+            supported = tuple(fact_id for fact_id in claim.fact_ids if fact_id in fact_values
+                and any(formatted_value_matches(part, *fact_values[fact_id]) or value_matches(part, fact_values[fact_id][0])
+                        for part in paragraphs))
+            if claim.fact_ids and not supported:
+                logger.warning("report_claim_numeric_binding_omitted section={} claim={} reason=local_value_absent",
+                               artifact.section_code, claim.claim_id)
+            claims.append(claim.model_copy(update={"fact_ids": supported}))
+        normalized.append(artifact.model_copy(update={"claims": tuple(claims)}))
+    return tuple(normalized)
+
+
+def anchor_claims(markdown: str, values: Mapping[str, tuple[Any, str | None] | None]) -> str:
+    """只在冻结金额匹配的正文段落注入锚点，未命中仍保留待复核标记。"""
+    paragraphs = markdown.split("\n\n")
+    for claim_id, frozen in values.items():
+        marker = claim_marker(claim_id)
+        placed = False
+        if frozen is not None:
+            value, unit = frozen
+            for index, paragraph in enumerate(paragraphs):
+                if paragraph.startswith(("#", "|", "```")):
+                    continue
+                for statement in re.split(r"(?<=[。！？；])", paragraph):
+                    if formatted_value_matches(statement, value, unit) or value_matches(statement, value):
+                        # 锚点紧跟数值，避免长句把金额推到校验窗口之外。
+                        from .numeric_text import format_fact_value
+
+                        targets = ("元", "万元", "亿元") if unit in {"元", "万元", "亿元"} else (unit,)
+                        variants = [format_fact_value(value, unit, target) for target in targets] if unit in {"元", "万元", "亿元", "%", "‰"} else []
+                        variants.extend(value_text_variants(value))
+                        matches = [match for variant in variants if (match := re.search(
+                            r"(?<![\d.,+\-a-zA-Z_])" + re.escape(variant) + r"(?![\d.,])", statement,
+                        ))]
+                        if not matches:
+                            continue
+                        match = matches[0]
+                        anchored = statement[:match.end()] + marker + statement[match.end():]
+                        paragraphs[index] = paragraph.replace(statement, anchored, 1)
+                        placed = True
+                        break
+                if placed:
+                    break
+        if not placed:
+            paragraphs[-1] += marker
+    return "\n\n".join(paragraphs)
+
 def evaluate_subject_status(
     markdown: str,
     claim_id: str,
@@ -164,16 +234,32 @@ _PERIOD_TOKEN = re.compile(
     r"\d{4}\s*[-/年.]\s*\d{1,2}(?:\s*[-/月.]\s*\d{1,2}\s*日?)?"
     r"|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
 )
-_UNIT_TOKENS = ("亿元", "万元", "千元", "%", "‰", "万人次", "人次", "万人", "床", "张", "次", "人", "元")
+_UNIT_TOKENS = ("亿元", "万元", "千元", "%", "‰", "万人次", "人次", "万人", "床日", "床", "张", "次", "人", "元")
 _NUMBER_UNIT_RE = re.compile(
     r"(?<![\d.,+\-])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?))\s*"
-    r"(?P<unit>亿元|万元|千元|%|‰|万人次|人次|万人|床|张|次|人|元)(?![\w])"
+    r"(?P<unit>亿元|万元|千元|%|‰|万人次|人次|万人|床日|床|张|次|人|元)(?![\w])"
 )
 
 
 def _period_key(token: str) -> tuple[int, ...] | None:
     digits = re.findall(r"\d+", token)
     return tuple(int(part) for part in digits) if digits else None
+
+
+def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    """按已声明粒度解释日期桶；月初标签不是日粒度统计窗口。"""
+    periods = []
+    for item in entry.get("periodValues") or ():
+        if not isinstance(item, dict) or not item.get("period"):
+            continue
+        period = str(item["period"])
+        key = _period_key(period)
+        if key and entry.get("periodGranularity") == "month" and len(key) >= 2:
+            period = f"{key[0]:04d}-{key[1]:02d}"
+        elif key and entry.get("periodGranularity") == "year":
+            period = str(key[0])
+        periods.append(period)
+    return tuple(dict.fromkeys(periods))
 
 
 def unit_period_warnings(
@@ -291,7 +377,7 @@ def claim_status(
     end = min(len(markdown), position + window_chars, block_end if block_end >= 0 else len(markdown))
     window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", markdown[start:end])
     statements = re.split(r"[。！？;；\n]", window)
-    matched_statements = [statement for statement in statements if value_matches(statement, fact_value)]
+    matched_statements = [statement for statement in statements if value_matches(statement, fact_value) or formatted_value_matches(statement, fact_value, expected_unit)]
     if matched_statements:
         warning_window = "\n".join(matched_statements)
         return {
@@ -318,6 +404,9 @@ def claim_status(
         result["draftUnit"] = comparable["unit"]
         result["draftPeriods"] = comparable["periods"]
         result["comparable"] = True
+        result["warnings"] = ["正文数值与登记事实不一致，请核对数值、单位和期间。"]
+    else:
+        result["warnings"] = ["当前引用附近无法提取可核对的数值，尚未完成数值校验。"]
     return result
 
 

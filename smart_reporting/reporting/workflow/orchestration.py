@@ -57,6 +57,13 @@ _TOKEN_METRIC_FIELDS = (
 )
 
 
+def _safe_reset_context_var(variable: ContextVar[Any], token: Any) -> None:
+    try:
+        variable.reset(token)
+    except ValueError:
+        logger.debug("report_contextvar_reset_skipped_cross_context")
+
+
 class PlannerRequestRecorder:
     """记录 planner 到 provider 的逐请求生命周期，不保存 prompt 或源码。"""
 
@@ -241,7 +248,7 @@ def bind_planner_request_recorder(recorder: PlannerRequestRecorder):
 
 
 def reset_planner_request_recorder(token: Any) -> None:
-    _PLANNER_REQUEST_RECORDER.reset(token)
+    _safe_reset_context_var(_PLANNER_REQUEST_RECORDER, token)
 
 
 def current_planner_request_recorder() -> PlannerRequestRecorder | None:
@@ -358,7 +365,7 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 result = await result
         except BaseException as error:
             if not isinstance(error, Exception):
-                _STEP_MODEL_METRICS.reset(metrics_token)
+                _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
                 raise
             failed_metrics = accumulator.snapshot()
             failed_additional = failed_metrics.additional_metrics or {}
@@ -383,12 +390,12 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 failed_metrics.cache_write_tokens,
                 failed_additional.get("time_to_first_token_seconds"),
             )
-            _STEP_MODEL_METRICS.reset(metrics_token)
+            _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
             await finish_activity("failed", "步骤执行失败")
             raise
         duration = perf_counter() - started_at
         collected_metrics = accumulator.snapshot()
-        _STEP_MODEL_METRICS.reset(metrics_token)
+        _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
         metrics = collected_metrics
         if isinstance(result, StepOutput):
             if result.metrics is not None:

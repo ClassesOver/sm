@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable
 from copy import copy
 
+from agno.exceptions import ModelProviderError
 from loguru import logger as loguru_logger
 
 from ....task_execution import (
@@ -29,14 +30,23 @@ from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
 from ...trace.computation_service import detect_computation_cycles
+from ...trace.content_review import review_content
 from ...trace.contracts_v1 import (
     ChartTraceV1,
     ComputationRecordV1,
     TableTraceV1,
     derive_resource_id,
 )
+from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
-from ...trace.subject_builder import build_claim_subject_bindings
+from ...trace.numeric_text import (
+    correct_period_extrema,
+    frozen_number_catalog,
+    frozen_number_guide,
+    render_frozen_numbers,
+    replace_unregistered_numbers,
+)
+from ...trace.subject_builder import bind_local_claim_values, build_claim_subject_bindings
 from ...trace.table_builder import build_analysis_table
 from ..checkpoint import (
     ChartVisualInspectionReceipt,
@@ -734,6 +744,7 @@ def _section_stage_agent(
         instructions.extend(
             [
                 "render 只规划必要的正文 block 和结构化 claims，不在 objective 中撰写正文。",
+                "numberGuide 给出服务端确认的数值期间与粒度。按它选择结论，原始行统计不能规划成月度统计，完整分组组合不能规划成单一科室累计。",
                 "每个 claim 必须由至少一个 block 引用；只使用输入中的 metric、管理问题、citation 和 chart ID。",
                 (
                     "每张图表只绑定到最直接阐述它的那个 block 的 claim；多张图表应分散到各自"
@@ -752,7 +763,14 @@ def _section_stage_agent(
                 if stage == "content"
                 else "只在 JSON 的 markdown 字段中撰写当前 block 的完整简体中文 Markdown 正文，不得生成其他 block。"
             ),
-            "不得输出 H1/H2、图片语法、内部 ID、协议标记或无证据数字。",
+            "每个 block 必须完成 objective 对应的事实陈述，不得以‘整体呈’‘分别为’等半句结尾；没有证据的结论应明确写明待核实。",
+            "不得输出 H1/H2、图片语法、协议标记或无证据数字；内部 ID 仅可用于 frozenNumbers 提供的数值占位符。",
+            "月度日期是月度桶标签，不是数据截止时点；其他模型摘要或图表标题中的推测不构成直接证据。不得补写目录中不存在的月均值或派生金额。",
+            "异常或偏低只描述事实与待核实事项；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
+            "frozenNumbers 中的数值必须使用对应 {{value:...}} 占位符，不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。需要元值和亿元同时展示时分别选择两个占位符。",
+            "先按 numberGuide 确认指标、期间、粒度和完整分组再选数值引用。rowStatistics 是原始行统计；monthlyStatistics 才是月度统计。已登记零值月份保留；局部最高/最低必须明确子期间。目录未提供的比率不能根据图注或模型摘要推算；只写已登记分子分母，或说明该比率待核实。",
+            "budgetComparisons 是服务端按同口径事实计算的差额与百分数。表格有对应引用时必须填写，包括零分子的0%；只有百分数引用为空时才写不可计算。负差额写‘差额为负’或‘实际减预算为……’，不得写‘少-……’；零值月份仅称‘记录为零’，不称‘尚无数据’或‘未执行月份’。",
+            "total 是该事实完整期间的总额；正文写1—10月时必须使用相应 periodTotals 累计引用，不能套用12个月 total。零分子且分母非零时完成率为0%，只有分母为零或缺失时才不能计算。",
             (
                 "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"
                 "H3/H4 必须是不超过 40 个中文字符的短标题，并独占一个物理行。"
@@ -773,9 +791,9 @@ def _section_stage_agent(
                 "禁止无标记切换口径或把不同口径的数值直接相加比较。"
             ),
             (
-                "数据质量优先：facts 或 warnings 出现未入账、数据不完整、字段为零、预算为零、"
-                "期间不一致或不可比声明时，只能将其作为软告警写明影响；不得把缺失或不可比数据"
-                "写成确定的经营归因。证据不足时使用‘可能’或‘待核实’，并列出需要补核的对象。"
+                "数据质量优先：facts 或 warnings 出现字段为零、预算为零、期间不一致或不可比声明时，"
+                "只能将其作为软告警写明影响；其他模型写的未入账或数据不完整不能证明数据状态。不得把缺失或不可比数据"
+                "写成确定的经营归因。证据不足时只写原因待核实，并列出需要补核的对象，不得自行添加可能原因。"
             ),
             (
                 "强结论门槛：‘全院性’‘主要原因’‘核心驱动’等判断必须同时给出覆盖范围、贡献额、"
@@ -783,7 +801,7 @@ def _section_stage_agent(
                 "管理动作’组织，避免重复复述图表和管理结论。"
             ),
             (
-                "提交前逐行检查所有 ###/#### 标题。存在 correction 时只修正 issues 指向的当前 block；"
+                "提交前逐行检查所有 ###/#### 标题。存在 correction 时只修正 issues 指向的内容，保留本次规划的全部 block；"
                 "对 report_draft_heading_title_too_long，必须把该行重写为不超过 40 个字符的短标题，"
                 "并将原标题行中的全部正文移到空行后的段落，最后返回完整 JSON 对象。"
             ),
@@ -829,14 +847,21 @@ async def _run_section_stage(
         thinking_request.failure_kind or "-",
     )
     stage_agent = _section_stage_agent(agent, output_schema, stage, response_validator)
-    result = await ReportingStructuredOutputExecutor(stage_agent).execute(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-        routing_context=run_context,
-        agent_run_context=run_context,
-        session_id=f"task-execution:{scope.external_run_id}:{stage}",
-        user_id=scope.owner_user_id,
-        thinking_request=thinking_request,
-    )
+    try:
+        result = await ReportingStructuredOutputExecutor(stage_agent).execute(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            routing_context=run_context,
+            agent_run_context=run_context,
+            session_id=f"task-execution:{scope.external_run_id}:{stage}",
+            user_id=scope.owner_user_id,
+            thinking_request=thinking_request,
+        )
+    except ModelProviderError as error:
+        raise ReportingError(
+            "report_model_provider_unavailable",
+            "模型提供方暂时不可用，已停止重复请求。",
+            details={"retryable": False, "stage": stage},
+        ) from error
     return result.content
 
 
@@ -852,8 +877,14 @@ def _section_stage_thinking_request(
         attempt=request.attempt if is_plan else 0,
         failure_kind=request.failure_kind if is_plan else None,
         configured_budget_cap=request.configured_budget_cap,
-        thinking_enabled=request.thinking_enabled,
-        reasoning_effort=request.reasoning_effort,
+        # 正文不继承规划阶段的显式 effort；默认请求仍可使用基础预算，
+        # 规划失败恢复时则关闭正文思考，避免在同一失败上下文重复消耗调用。
+        thinking_enabled=(
+            request.thinking_enabled
+            if is_plan
+            else request.thinking_enabled and request.reasoning_effort is None and request.failure_kind is None
+        ),
+        reasoning_effort=request.reasoning_effort if is_plan else None,
         section_block_count=block_count if stage == "content" else 1,
     )
 
@@ -1216,6 +1247,7 @@ async def _generate_section_in_blocks(
                     }
                 )
     known_fact_ids = {item["factId"] for item in fact_catalog}
+    number_contents = tuple(item.content for item in evidence.files)
     plan_payload = {
         **instruction_payload,
         "generationStage": "plan",
@@ -1223,6 +1255,8 @@ async def _generate_section_in_blocks(
             item.identity.model_dump(mode="json", by_alias=True) for item in evidence.files
         ],
         "factCatalog": fact_catalog,
+        "numberGuide": frozen_number_guide(number_contents, frozen_number_catalog(number_contents),
+                                           field_definitions=instruction_payload.get("fieldDefinitions", {})),
         "requiredAction": (
             "证据充足时返回 1 到 12 个必要 block 的结构规划及完整 claims；"
             "block 只包含 blockId、objective、claimIds，不生成 Markdown 正文。"
@@ -1427,6 +1461,8 @@ async def _generate_section_in_blocks(
             "sectionGoal": instruction_payload.get("sectionGoal", {}),
             "blockPlan": block_plan.model_dump(mode="json", by_alias=True),
             "claims": [item.model_dump(mode="json", by_alias=True) for item in block_claims],
+            "frozenNumbers": frozen_number_catalog(item.content for item in selected_files),
+            "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
             "facts": block_facts,
             "metricDefinitions": block_metrics,
             "managementQuestions": block_questions,
@@ -1436,12 +1472,14 @@ async def _generate_section_in_blocks(
             "requiredAction": (
                 "只返回当前 block 的完整 Markdown；围绕 objective 解释 claims，"
                 "正文不展示任何内部 ID，每个数字必须来自给定事实。"
-                "归因优先级：当 facts 或其 warnings 含'疑似未入账/数据不完整/口径不可比'等"
-                "数据质量声明时，变化归因必须优先采用该数据质量解释；业务性归因（科室、院区、"
-                "季节性等）只能作为次要参考，并必须显式声明其不确定性。"
+                "只陈述可核对的数据质量事实；模型摘要中的未入账、月份不完整等猜测不能作为已验证原因。没有直接证据时只写原因待核实。"
             ),
         }
         # 完整证据只驻留在当前固定 Workflow 内存中；模型按 block 消费带身份的相关视图。
+        block_payload["numberGuide"] = frozen_number_guide(
+            (item.content for item in selected_files), block_payload["frozenNumbers"],
+            field_definitions=block_payload["fieldDefinitions"],
+        )
         # claims、冻结摘要和引用对象始终完整保留，切片只移除与当前 block 无关的文件正文。
         block_payload["evidence"] = _project_section_evidence_files(
             agent,
@@ -1462,26 +1500,50 @@ async def _generate_section_in_blocks(
             base_payload=block_payload,
             run_context=run_context,
         )
+        review_warnings: list[str] = []
         for block_attempt in range(2):
-            content = await _run_section_stage(
-                agent,
-                SectionBlockContent,
-                f"block-{index}",
-                block_payload,
-                scope=scope,
-                run_context=run_context,
-                thinking_request=_section_stage_thinking_request(
-                    thinking_request, f"block-{index}"
-                ),
-                section_code=work_item.section_code,
-            )
+            try:
+                content = await _run_section_stage(
+                    agent,
+                    SectionBlockContent,
+                    f"block-{index}",
+                    block_payload,
+                    scope=scope,
+                    run_context=run_context,
+                    thinking_request=_section_stage_thinking_request(
+                        thinking_request, f"block-{index}"
+                    ),
+                    section_code=work_item.section_code,
+                )
+            except (ReportingError, ModelProviderError) as error:
+                if block_attempt == 0 or not review_warnings:
+                    raise
+                loguru_logger.warning("report_content_review_correction_unavailable section={} code={}", work_item.section_code, getattr(error, "code", type(error).__name__))
             if not isinstance(content, SectionBlockContent):
                 raise ReportingError(
                     "report_phase_output_invalid", "章节正文 Agent 未返回声明的结果。"
                 )
+            review_warnings = review_content(content.markdown, (item.content for item in selected_files),
+                                             field_definitions=block_payload["fieldDefinitions"])
+            loguru_logger.info("report_content_review_completed section={} block={} attempt={} issue_count={}",
+                               work_item.section_code, block_plan.block_id, block_attempt, len(review_warnings))
+            if review_warnings and block_attempt == 0:
+                block_payload["correction"] = {
+                    "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
+                    "requiredAction": "修正有依据的数字和口径，删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。",
+                }
+                continue
+            for warning in review_warnings:
+                loguru_logger.warning("report_content_review_warning section={} message={}", work_item.section_code, warning)
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
-                markdown=content.markdown,
+                markdown=replace_unregistered_numbers(
+                    correct_period_extrema(
+                        render_frozen_numbers(content.markdown, block_payload["frozenNumbers"]),
+                        (item.content for item in selected_files),
+                    ),
+                    (item.content for item in selected_files),
+                ),
                 citationIds=citation_ids,
                 chartIds=chart_ids,
                 claimIds=block_plan.claim_ids,
@@ -1537,6 +1599,8 @@ async def _generate_whole_section_content(
     payload = {
         "phase": "section",
         "generationStage": "content",
+        "frozenNumbers": frozen_number_catalog(item.content for item in evidence.files),
+        "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
         "reportGoal": instruction_payload.get("reportGoal", ""),
         "sectionGoal": instruction_payload.get("sectionGoal", {}),
         "sectionPlan": plan.model_dump(mode="json", by_alias=True),
@@ -1554,9 +1618,13 @@ async def _generate_whole_section_content(
         "requiredAction": (
             "一次返回规划中所有 block 的 blockId 和完整 markdown，围绕各自 objective 与 claims"
             "组织整章正文。各 block 仅解读其 claim 绑定的图表；引用由服务端绑定，不要输出引用字段。"
-            "每个数字必须来自冻结事实；数据质量问题优先说明，业务归因必须有证据或声明不确定性。"
+            "每个数字必须来自冻结事实；数据质量问题优先说明，业务归因必须有直接证据；证据不足时只写原因待核实。"
         ),
     }
+    payload["numberGuide"] = frozen_number_guide(
+        (item.content for item in evidence.files), payload["frozenNumbers"],
+        field_definitions=payload["fieldDefinitions"],
+    )
     payload["evidence"] = _project_section_evidence_files(
         agent,
         tuple({item.identity.path: item for item in evidence.files}.values()),
@@ -1565,38 +1633,72 @@ async def _generate_whole_section_content(
         base_payload=payload,
         run_context=run_context,
     )
-    content = await _run_section_stage(
-        agent,
-        SectionContent,
-        "content",
-        payload,
-        scope=scope,
-        run_context=run_context,
-        thinking_request=_section_stage_thinking_request(
-            thinking_request, "content", block_count=len(plan.blocks)
-        ),
-        section_code=work_item.section_code,
-    )
-    if not isinstance(content, SectionContent):
-        raise ReportingError("report_phase_output_invalid", "整章正文 Agent 未返回声明的结果。")
-    content_by_id = {item.block_id: item for item in content.blocks}
-    expected_ids = {item.block_id for item in plan.blocks}
-    if len(content_by_id) != len(content.blocks) or set(content_by_id) != expected_ids:
-        raise ReportingError(
-            "report_section_content_blocks_invalid",
-            "整章正文 blockId 必须与规划一一对应，不得遗漏、重复或新增。",
-            details={
-                "expectedBlockIds": [item.block_id for item in plan.blocks],
-                "actualBlockIds": [item.block_id for item in content.blocks],
-            },
-        )
+    for review_attempt in range(2):
+        try:
+            content = await _run_section_stage(
+                agent,
+                SectionContent,
+                "content",
+                payload,
+                scope=scope,
+                run_context=run_context,
+                thinking_request=_section_stage_thinking_request(
+                    thinking_request, "content", block_count=len(plan.blocks)
+                ),
+                section_code=work_item.section_code,
+            )
+        except (ReportingError, ModelProviderError) as error:
+            if review_attempt == 0:
+                raise
+            loguru_logger.warning("report_content_review_correction_unavailable section={} code={}", work_item.section_code, getattr(error, "code", type(error).__name__))
+            break
+        if not isinstance(content, SectionContent):
+            raise ReportingError("report_phase_output_invalid", "整章正文 Agent 未返回声明的结果。")
+        content_by_id = {item.block_id: item for item in content.blocks}
+        expected_ids = {item.block_id for item in plan.blocks}
+        if len(content_by_id) != len(content.blocks) or set(content_by_id) != expected_ids:
+            raise ReportingError(
+                "report_section_content_blocks_invalid",
+                "整章正文 blockId 必须与规划一一对应，不得遗漏、重复或新增。",
+                details={
+                    "expectedBlockIds": [item.block_id for item in plan.blocks],
+                    "actualBlockIds": [item.block_id for item in content.blocks],
+                },
+            )
+        review_warnings = {
+            block.block_id: review_content(block.markdown, (item.content for item in evidence.files),
+                                          field_definitions=payload["fieldDefinitions"])
+            for block in content.blocks
+        }
+        review_warnings = {key: value for key, value in review_warnings.items() if value}
+        loguru_logger.info("report_content_review_completed section={} attempt={} issue_count={} block_count={}",
+                           work_item.section_code, review_attempt,
+                           len({warning for warnings in review_warnings.values() for warning in warnings}), len(content.blocks))
+        if not review_warnings:
+            break
+        if review_attempt == 0:
+            payload["correction"] = {
+                "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
+                "requiredAction": "仅修复指出的数字、字段口径和无证据解释；使用冻结数值引用。返回全部 block 完整正文，保留 blockId；问题仍不确定时删去推测或写待核实。",
+            }
+        else:
+            for block_id, warnings in review_warnings.items():
+                for warning in warnings:
+                    loguru_logger.warning("report_content_review_warning section={} block={} message={}",
+                                         work_item.section_code, block_id, warning)
     claims_by_id = {item.claim_id: item for item in plan.claims}
     blocks: list[ReportDraftBlock] = []
     for block_plan in plan.blocks:
         claims = tuple(claims_by_id[item] for item in block_plan.claim_ids)
         block = ReportDraftBlock(
             blockId=block_plan.block_id,
-            markdown=content_by_id[block_plan.block_id].markdown,
+            markdown=replace_unregistered_numbers(
+                correct_period_extrema(
+                    render_frozen_numbers(content_by_id[block_plan.block_id].markdown, payload["frozenNumbers"]),
+                    (item.content for item in evidence.files),
+                ),
+                (item.content for item in evidence.files),
+            ),
             claimIds=block_plan.claim_ids,
             citationIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.citation_ids)),
             chartIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.chart_ids)),
@@ -2029,6 +2131,13 @@ class RuntimeSectionsMixin:
                 "sectionWorkItem": model_work_item_payload,
                 "completionConditions": list(work_item.completion_conditions),
                 "claimAuthoringContract": _section_claim_authoring_contract(work_item),
+                "fieldDefinitions": {
+                    column["name"]: column["description"]
+                    for context in self._state(run_context).get("report_analysis_data_context", ())
+                    for table in context.get("schema", {}).get("tables", ())
+                    for column in table.get("columns", ())
+                    if column.get("name") and column.get("description")
+                },
                 "sectionOutputPath": section_output_path,
                 "reworkRequestPath": rework_request_path,
                 "analysisReworkAllowed": analysis_rework_allowed,
@@ -2397,7 +2506,7 @@ class RuntimeSectionsMixin:
         *,
         checkpoint: ReportingCheckpoint,
         outline: Any,
-    ) -> tuple[tuple[ReportServerTable, ...], tuple[TableTraceV1, ...], dict[str, tuple[str, str]]]:
+    ) -> tuple[tuple[ReportServerTable, ...], tuple[TableTraceV1, ...], dict[str, tuple[str, str]], dict[str, tuple[Any, str | None]]]:
         """从冻结确定性 facts 生成服务端结构化表格（B2，计划 4.2）。
 
         规则：每个 analysis 至多一张"分期间指标表"（build_analysis_table）；
@@ -2405,7 +2514,7 @@ class RuntimeSectionsMixin:
         生成失败按软告警跳过（语义缺失软告警，不阻断发布），但已生成的
         表格与其 trace 严格同源。
 
-        返回 (tables, traces, factId→(analysisId, jsonPointer) 目录)——
+        返回 (tables, traces, factId→(analysisId, jsonPointer) 目录, 冻结显示值)——
         目录供 B6 正文 subject 绑定构造复用（不重复读 bundle）。
         """
 
@@ -2420,6 +2529,7 @@ class RuntimeSectionsMixin:
         tables: list[ReportServerTable] = []
         traces: list[TableTraceV1] = []
         fact_directory: dict[str, tuple[str, str]] = {}
+        fact_values: dict[str, tuple[Any, str | None]] = {}
         for analysis_id, identity in checkpoint.deterministic_fact_files.items():
             try:
                 raw = await self._read_identity_bytes(
@@ -2437,12 +2547,17 @@ class RuntimeSectionsMixin:
                         pointer = fact_pointer(bundle, fact.fact_id)
                         if pointer:
                             fact_directory[fact.fact_id] = (analysis_id, pointer)
+                            fact_values[fact.fact_id] = (
+                                fact_display_value(fact.model_dump(mode="json", by_alias=True)),
+                                fact_display_unit(fact.model_dump(mode="json", by_alias=True)),
+                            )
                 section_code = section_by_analysis.get(analysis_id)
                 if section_code is None:
                     continue
                 fact_resource = derive_resource_id(identity.path)
                 built = build_analysis_table(
-                    bundle, fact_file_resource_id=fact_resource
+                    bundle, fact_file_resource_id=fact_resource,
+                    dataset_contexts=self._state(run_context).get("report_analysis_data_context", ()),
                 )
                 if built is None:
                     continue
@@ -2457,7 +2572,7 @@ class RuntimeSectionsMixin:
                     analysis_id,
                     error,
                 )
-        return tuple(tables), tuple(traces), fact_directory
+        return tuple(tables), tuple(traces), fact_directory, fact_values
 
     async def _finalize_reporting_sections(
         self,
@@ -2492,14 +2607,15 @@ class RuntimeSectionsMixin:
                 )
             section_artifacts.append(artifact)
 
+        server_tables, server_table_traces, fact_directory, fact_values = await self._build_server_tables(
+            run_context, checkpoint=checkpoint, outline=outline
+        )
+        section_artifacts = list(bind_local_claim_values(section_artifacts, fact_values))
         draft = ReportDraft(
             sections=tuple(
                 ReportDraftSection(sectionCode=item.section_code, blocks=item.blocks)
                 for item in section_artifacts
             )
-        )
-        server_tables, server_table_traces, fact_directory = await self._build_server_tables(
-            run_context, checkpoint=checkpoint, outline=outline
         )
         chart_inputs: list[ReportChartInput] = []
         destination_by_chart: dict[str, str] = {}
@@ -2539,6 +2655,11 @@ class RuntimeSectionsMixin:
             charts=tuple(chart_inputs),
             require_table=False,
             server_tables=server_tables,
+            claim_values={
+                (artifact.section_code, claim.claim_id): fact_values[claim.fact_ids[0]]
+                for artifact in section_artifacts for claim in artifact.claims
+                if claim.fact_ids and claim.fact_ids[0] in fact_values
+            },
         )
         await self.report_tools.complete_document_heading_numbers(
             str(self._workflow_result(self._state(run_context))["jobId"]),

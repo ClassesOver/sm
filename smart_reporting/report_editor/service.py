@@ -1076,6 +1076,20 @@ class ReportEditorService:
         analysis_context_file = next((item for item in files if isinstance(item, Mapping)
             and str(item.get("path", "")).endswith("/detailed-analysis-context.json")), None)
         result = await self.trace.sources(context, session.capabilities, analysis_context_file=analysis_context_file)
+        # 历史事实文件没有名称时，用同一工作流中登记的分析计划补充展示名称。
+        plans = state.payload.get("analysisPlans", {}) if state else {}
+        if not isinstance(plans, Mapping):
+            plans = {}
+        datasets_by_analysis: dict[str, set[str]] = {}
+        for fact in result.get("facts", ()):
+            datasets_by_analysis.setdefault(fact["analysisId"], set()).update(fact.get("datasetIds", ()))
+        for fact in result.get("facts", ()):
+            plan = plans.get(fact["analysisId"], {})
+            if not isinstance(plan, Mapping):
+                continue
+            dataset_ids = datasets_by_analysis[fact["analysisId"]]
+            if not fact.get("analysisName") and dataset_ids and dataset_ids.issubset(plan.get("datasetIds", ())):
+                fact["analysisName"] = plan.get("analysisName") or plan.get("step")
         if not self._lineage_features["drilldown"]:
             result["drilldown"] = {"enabled": False, "metrics": [], "subjects": []}
         try:

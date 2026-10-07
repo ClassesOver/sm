@@ -109,17 +109,17 @@ def build_table_trace(
                 match = next(
                     (pv for pv in fact.period_values if pv.period == period), None
                 )
-                if match is None:
+                if match is None and not spec.get("allowMissingPeriods", False):
                     raise ReportingError(
                         "request_invalid",
                         f"行 {row_key} 的期间 {period} 在指标 {code} 中不存在。",
                     )
-                value = float(match.value)
+                value = float(match.value) if match is not None else None
             else:
                 value = _metric_value(fact, "total")
             cell = TableCellBindingV1(
                 rowKey=row_key,
-                columnKey=code,
+                columnKey=spec.get("columnLabels", {}).get(code, code),
                 factRefs=(
                     FactRefV1(
                         analysisId=bundle.analysis_id,
@@ -128,7 +128,7 @@ def build_table_trace(
                         factKind="metric",
                         factKey=fact.fact_id,
                     ),
-                ),
+                ) if value is not None else (),
             )
             cells.append(cell)
             rendered_row.append(
@@ -139,11 +139,11 @@ def build_table_trace(
     trace = TableTraceV1(
         tableId=table_id,
         rowKeys=tuple(row_keys),
-        columnKeys=metric_codes,
+        columnKeys=tuple(spec.get("columnLabels", {}).get(code, code) for code in metric_codes),
         cells=tuple(cells),
     )
     markdown = render_table_markdown(
-        table_id, tuple(str(code) for code in metric_codes), markdown_rows,
+        table_id, trace.column_keys, markdown_rows,
         caption=str(spec["caption"]) if spec.get("caption") else None,
     )
     return trace, markdown
@@ -184,18 +184,76 @@ def render_table_markdown(
     return f"[[table:{table_id}]]\n{table}\n\n[[/table:{table_id}]]"
 
 
+def _fact_label(fact: Any, dataset_contexts: Sequence[Mapping[str, Any]]) -> str:
+    """仅使用与冻结事实快照身份一致的字段说明，避免把成本误称为收入。"""
+    dataset_id = getattr(fact, "dataset_id", None) or getattr(fact, "current_dataset_id", None)
+    sha256 = getattr(fact, "dataset_sha256", None) or getattr(fact, "current_dataset_sha256", None)
+    for context in dataset_contexts:
+        if context.get("datasetId") != dataset_id or context.get("sha256") != sha256:
+            continue
+        schema = context.get("schema", {})
+        for table in schema.get("tables", ()):
+            for column in table.get("columns", ()):
+                ref = ".".join(str(value) for value in (
+                    table.get("sourceId") or schema.get("sourceId"), table.get("database"),
+                    table.get("name"), column.get("name"),
+                ))
+                description = column.get("description")
+                if ref == fact.field_ref and isinstance(description, str) and description.strip():
+                    return description.strip()
+    return {"revenue": "收入", "indicator_value": "指标值"}.get(fact.field, fact.field)
+
+
 def build_analysis_table(
     bundle: DeterministicAnalysisBundle,
     *,
     fact_file_resource_id: str,
+    dataset_contexts: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[TableTraceV1, str] | None:
     """按 B0 冻结规则从一个分析 bundle 自动生成服务端指标期间表。
 
     规则（不发明内容，缺依据就不生成）：
     - 列 = 唯一指标事实，或同代码下唯一的本期事实；其他歧义 code 跳过；
     - 行 = 这些指标 periodValues 的期间并集（按首个 fact 的冻结顺序）；
-    - 无可用指标或无分期间值 → 返回 None，不生成空表。
+    - 无可用指标 → 返回 None；无分期间值 → 展示冻结指标合计。
     """
+
+    if bundle.comparisons:
+        table_id = f"table-{bundle.analysis_id}"
+        comparisons = [fact for fact in bundle.comparisons if fact.fact_id]
+        if not comparisons:
+            return None
+        types = {fact.comparison_type for fact in comparisons}
+        metric_labels = {_fact_label(fact, dataset_contexts) for fact in comparisons}
+        metric_label = next(iter(metric_labels)) if len(metric_labels) == 1 else "数值"
+        baseline_label = ("同期" if types == {"yoy"} else "上期" if types == {"mom"} else "基期") + metric_label
+        rate_label = "同比增幅" if types == {"yoy"} else "环比增幅" if types == {"mom"} else "变化率"
+        columns = ("数值",) if len(comparisons) == 1 else tuple(
+            f"对比 {index + 1}" for index in range(len(comparisons))
+        )
+        rows: list[list[str]] = []
+        cells: list[TableCellBindingV1] = []
+        row_keys: list[str] = []
+        for field, label in (("currentTotal", "本期" + metric_label), ("baselineTotal", baseline_label), ("change", metric_label + "变化额"), ("changeRate", rate_label)):
+            row_key = f"comparison:0:{field}"
+            row_keys.append(row_key)
+            row = [label]
+            for column, fact in zip(columns, comparisons):
+                value = fact.model_dump(mode="json", by_alias=True)[field]
+                unit = "%" if field == "changeRate" else fact.unit
+                row.append("—" if value is None else _format_number(value, unit) + (unit or ""))
+                cells.append(TableCellBindingV1(
+                    rowKey=row_key, columnKey=column,
+                    factRefs=(FactRefV1(
+                        analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
+                        jsonPointer=fact_pointer(bundle, fact.fact_id) or "",
+                        factKind="comparison", factKey=fact.fact_id,
+                    ),),
+                ))
+            rows.append(row)
+        return TableTraceV1(tableId=table_id, rowKeys=tuple(row_keys), columnKeys=columns, cells=tuple(cells)), render_table_markdown(
+            table_id, columns, rows, caption=bundle.analysis_name or "指标对比",
+        )
 
     candidates: dict[str, list[Any]] = {}
     for fact in bundle.metrics:
@@ -212,8 +270,6 @@ def build_analysis_table(
     if not codes:
         return None
     selected = [facts_by_code[code] for code in codes]
-    if not any(fact.period_values for fact in selected):
-        return None
     periods: list[str] = []
     for fact in selected:
         for period_value in fact.period_values:
@@ -222,13 +278,21 @@ def build_analysis_table(
     rows = [
         {"key": f"period:{period}", "label": period, "period": period}
         for period in periods
-    ]
+    ] or [{"key": "total", "label": "合计"}]
+    labels = {
+        code: f"{_fact_label(facts_by_code[code], dataset_contexts)}（{facts_by_code[code].unit or '数值'}）"
+        for code in codes
+    }
+    if len(set(labels.values())) != len(labels):
+        labels = {code: f"{labels[code]} · {code}" for code in codes}
     spec: dict[str, Any] = {
         "tableId": f"table-{bundle.analysis_id}",
         "metricCodes": codes,
+        "columnLabels": labels,
         "factIds": {code: fact.fact_id for code, fact in facts_by_code.items() if fact.fact_id},
         "rows": rows,
-        "caption": f"服务端冻结指标表（{bundle.analysis_id}）",
+        "allowMissingPeriods": True,
+        "caption": bundle.analysis_name or "分期间指标汇总",
     }
     return build_table_trace(bundle, spec, fact_file_resource_id=fact_file_resource_id)
 

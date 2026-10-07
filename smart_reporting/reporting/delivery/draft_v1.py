@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -739,6 +740,7 @@ def assemble_report_markdown(
     charts: tuple[ReportChartInput, ...] = (),
     require_table: bool = False,
     server_tables: tuple[ReportServerTable, ...] = (),
+    claim_values: Mapping[tuple[str, str], tuple[Any, str | None]] | None = None,
 ) -> RenderedReportDraft:
     section_registry = {item.code: item for item in sections}
     if len(section_registry) != len(sections):
@@ -914,7 +916,16 @@ def assemble_report_markdown(
             unknown_charts = set(block.chart_ids) - set(chart_registry)
             if unknown_charts:
                 raise ReportingError("report_draft_chart_unknown", "草稿引用了未注册图表。")
-            block_text = _marker_lines(block_markdown, block.citation_ids, (), block.claim_ids)
+            # 按冻结事实定位数值，图表重排也必须保留同一个声明锚点。
+            from ..trace.subject_builder import anchor_claims
+
+            anchored_markdown = anchor_claims(
+                block_markdown,
+                {claim_id: (claim_values or {}).get((definition.code, claim_id))
+                 for claim_id in block.claim_ids
+                 if claim_values is None or (definition.code, claim_id) in claim_values},
+            )
+            block_text = _marker_lines(anchored_markdown, block.citation_ids, ())
             for chart_id in block.chart_ids:
                 chart, _file_name = normalized_charts[chart_id]
                 if chart_plans[chart_id].reference != (section_index, block_index):
@@ -965,7 +976,7 @@ def assemble_report_markdown(
                 if chart_id not in rendered_chart_ids
             ]
             rendered_chart_ids.update(block_figures)
-            units = _block_units(block_markdown) if block_figures else []
+            units = _block_units(anchored_markdown) if block_figures else []
             placements = (
                 _place_charts_in_units(
                     units, [normalized_charts[chart_id][0] for chart_id in block_figures]

@@ -43,6 +43,7 @@ POLICIES = MappingProxyType(
         "report_workspace_unavailable": _INFRA,
         "report_task_cancelled": _INFRA,
         "report_task_timeout": _INFRA,
+        "report_model_provider_unavailable": _INFRA,
         "report_phase_artifact_changed": _FATAL,
         "report_capability_invalid": FailurePolicy(visualization="fatal", infrastructure=True),
         "report_task_lease_conflict": FailurePolicy(visualization="fatal", infrastructure=True),

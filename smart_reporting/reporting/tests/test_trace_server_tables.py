@@ -103,7 +103,7 @@ def test_build_analysis_table_generates_period_rows_from_bundle() -> None:
     assert trace.table_id == "table-analysis_001"
     # 行 = bundle 指标 periodValues 的期间（2025-09）。
     assert trace.row_keys == ("period:2025-09",)
-    assert trace.column_keys == ("income_total",)
+    assert trace.column_keys == ("收入（元）",)
     assert f"[[table:table-analysis_001]]" in markdown
     assert "2025-09" in markdown and "3,600" in markdown
 
@@ -129,7 +129,7 @@ def test_build_analysis_table_binds_unique_current_fact_with_same_code_yoy() -> 
     assert build_analysis_table(ambiguous, fact_file_resource_id=FACT_RESOURCE) is None
 
 
-def test_build_analysis_table_skips_bundle_without_periods() -> None:
+def test_build_analysis_table_uses_frozen_total_without_periods() -> None:
     bundle = _bundle()
     # 构造无分期间值的 bundle：清空 periodValues。
     stripped = bundle.model_copy(
@@ -140,9 +140,10 @@ def test_build_analysis_table_skips_bundle_without_periods() -> None:
             )
         }
     )
-    assert build_analysis_table(
-        stripped, fact_file_resource_id=FACT_RESOURCE
-    ) is None
+    trace, markdown = build_analysis_table(stripped, fact_file_resource_id=FACT_RESOURCE)
+    assert trace.row_keys == ("total",)
+    assert "| 合计 | 3,600 |" in markdown
+    assert trace.cells[0].fact_refs[0].json_pointer == "/metrics/0"
 
 
 def test_build_analysis_table_skips_bundle_without_metric_codes() -> None:
@@ -263,6 +264,9 @@ class _Harness:
     def _scope(self, _run_context):
         return self._scope_value
 
+    def _state(self, _run_context):
+        return {}
+
     async def _read_identity_bytes(self, thread_id, identity, *, max_bytes):
         return self._files[identity.path]
 
@@ -295,7 +299,7 @@ async def test_finalize_build_server_tables_assigns_to_first_section() -> None:
         sections=(SimpleNamespace(code="section_002", analysis_ids=("analysis_001",)),)
     )
     harness = _Harness({fact_path: bundle_bytes})
-    tables, traces, fact_directory = await RuntimeSectionsMixin._build_server_tables(
+    tables, traces, fact_directory, fact_values = await RuntimeSectionsMixin._build_server_tables(
         harness, SimpleNamespace(), checkpoint=checkpoint, outline=outline
     )
     assert len(tables) == len(traces) == 1
@@ -332,8 +336,91 @@ async def test_finalize_skips_table_when_analysis_unassigned() -> None:
     outline = SimpleNamespace(sections=())  # 无章节引用该 analysis
     # B6 起 factId 目录无条件构建（读 bundle），但表格仍只生成给被引用的分析。
     harness = _Harness({fact_path: bundle_bytes})
-    tables, traces, fact_directory = await RuntimeSectionsMixin._build_server_tables(
+    tables, traces, fact_directory, fact_values = await RuntimeSectionsMixin._build_server_tables(
         harness, SimpleNamespace(), checkpoint=checkpoint, outline=outline
     )
     assert tables == () and traces == ()
     assert fact_directory, "目录仍应产出（subject 绑定不依赖章节引用）"
+
+
+def test_comparison_table_uses_aligned_totals_and_readable_labels() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicComparison
+
+    bundle = _bundle()
+    comparison = DeterministicComparison(
+        factId='fact-' + 'c' * 16, comparisonType='yoy', field='revenue',
+        fieldRef=bundle.metrics[0].field_ref,
+        currentDatasetId='current', baselineDatasetId='baseline',
+        currentDatasetSha256=SHA, baselineDatasetSha256=SHA,
+        currentTotal=3600, baselineTotal=3000, change=600, changeRate=20,
+        formula='(currentTotal-baselineTotal)/abs(baselineTotal)*100%', unit='元',
+    )
+    bundle = bundle.model_copy(update={'analysis_name': '收入同比分析', 'comparisons': (comparison,)})
+    trace, markdown = build_analysis_table(bundle, fact_file_resource_id=FACT_RESOURCE)
+    assert trace.column_keys == ('数值',)
+    assert len(trace.cells) == 4
+    assert '本期收入 | 3,600元' in markdown
+    assert '同期收入 | 3,000元' in markdown
+    assert '收入变化额 | 600元' in markdown
+    assert '同比增幅 | 20%' in markdown
+    assert 'income_total' not in markdown and '服务端冻结' not in markdown
+    assert trace.cells[1].row_key == 'comparison:0:baselineTotal'
+    assert all(cell.fact_refs[0].fact_kind == 'comparison' for cell in trace.cells)
+
+
+def test_multiple_comparisons_keep_unique_rows_and_source_identity() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicComparison
+
+    bundle = _bundle()
+    fact = DeterministicComparison(
+        factId='fact-' + 'c' * 16, comparisonType='yoy', field='revenue', fieldRef=bundle.metrics[0].field_ref,
+        currentDatasetId='current', baselineDatasetId='baseline', currentDatasetSha256=SHA, baselineDatasetSha256=SHA,
+        currentTotal=3600, baselineTotal=3000, change=600, changeRate=20,
+        formula='(currentTotal-baselineTotal)/abs(baselineTotal)*100%', unit='元',
+    )
+    other = fact.model_copy(update={'fact_id': 'fact-' + 'd' * 16, 'current_dataset_id': 'other'})
+    trace, markdown = build_analysis_table(bundle.model_copy(update={'comparisons': (fact, other)}), fact_file_resource_id=FACT_RESOURCE)
+    assert len(trace.row_keys) == 4 and len(trace.cells) == 8
+    assert trace.column_keys == ('对比 1', '对比 2')
+    assert markdown.count('| 本期收入 |') == 1
+    assert trace.cells[0].fact_refs[0].json_pointer == '/comparisons/0'
+    assert trace.cells[1].fact_refs[0].json_pointer == '/comparisons/1'
+
+
+@pytest.mark.parametrize(("field", "label", "unit"), (
+    ("indicator_value", "成本金额", "元"),
+    ("mantime_outpatient", "门诊人次", "人次"),
+    ("budget_service_income", "预算医疗服务收入", "元"),
+))
+def test_analysis_table_uses_frozen_schema_business_label(field, label, unit) -> None:
+    bundle = _bundle()
+    original = bundle.metrics[0]
+    ref = "dynamic_source.dynamic_db.dynamic_table." + field
+    fact = original.model_copy(update={"field": field, "field_ref": ref, "unit": unit})
+    bundle = bundle.model_copy(update={"metrics": (fact,)})
+    contexts = ({"datasetId": fact.dataset_id, "sha256": fact.dataset_sha256,
+                 "schema": {"tables": [{"sourceId": "dynamic_source", "database": "dynamic_db",
+                 "name": "dynamic_table", "columns": [{"name": field, "description": label}]}]}},)
+    trace, markdown = build_analysis_table(bundle, fact_file_resource_id=FACT_RESOURCE, dataset_contexts=contexts)
+    assert trace.column_keys == (f"{label}（{unit}）",)
+    assert trace.cells[0].fact_refs[0].fact_key == fact.fact_id
+    assert "3,600" in markdown
+    stale = ({**contexts[0], "sha256": "a" * 64},)
+    stale_trace, _ = build_analysis_table(bundle, fact_file_resource_id=FACT_RESOURCE, dataset_contexts=stale)
+    assert stale_trace.column_keys != trace.column_keys
+
+
+def test_analysis_table_keeps_union_of_periods_without_filling_missing_values():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import PeriodValue
+
+    bundle = _bundle()
+    budget = bundle.metrics[0].model_copy(update={"metric_codes": ("budget",),
+        "field": "budget_person_time", "unit": "人次", "fact_id": "fact-" + "a" * 16,
+        "period_values": (PeriodValue(period="2025-09", value=1200), PeriodValue(period="2025-10", value=1200))})
+    actual = budget.model_copy(update={"metric_codes": ("actual",), "field": "actual_person_time",
+        "fact_id": "fact-" + "b" * 16, "period_values": (PeriodValue(period="2025-09", value=1100),)})
+    trace, markdown = build_analysis_table(bundle.model_copy(update={"metrics": (budget, actual)}), fact_file_resource_id=FACT_RESOURCE)
+    assert trace.row_keys == ("period:2025-09", "period:2025-10")
+    assert "| 2025-10 | 1,200 | — |" in markdown
+    assert trace.cells[-1].fact_refs == ()
+    assert trace.cells[-2].fact_refs[0].fact_key == budget.fact_id

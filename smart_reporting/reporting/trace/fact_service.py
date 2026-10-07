@@ -27,6 +27,15 @@ def fact_display_value(entry: Mapping[str, Any]) -> Any:
     return None
 
 
+def fact_display_unit(entry: Mapping[str, Any]) -> str | None:
+    """展示值与单位使用同一字段选择，预算完成率不能显示成元或人次。"""
+    if entry.get("total") is None and entry.get("percentage") is not None:
+        return "%"
+    if entry.get("total") is None and entry.get("value") is not None and "numeratorMetric" in entry:
+        return None
+    return entry.get("unit")
+
+
 def resolve_fact(
     bundle_bytes: bytes,
     fact_ref: FactRefV1,
@@ -73,6 +82,7 @@ def resolve_fact(
         "jsonPointer": fact_ref.json_pointer,
         "entry": entry,
         "displayValue": fact_display_value(entry),
+        "displayUnit": fact_display_unit(entry),
         "warnings": entry.get("warnings", ()) if isinstance(entry, Mapping) else (),
     }
     if with_inputs:
@@ -166,6 +176,7 @@ def expand_fact_tree(
             "jsonPointer": pointer,
             "factId": entry.get("factId"),
             "displayValue": fact_display_value(entry),
+        "displayUnit": fact_display_unit(entry),
         }
         if remaining <= 0:
             return node

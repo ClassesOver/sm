@@ -1966,6 +1966,15 @@ _TASK_EXECUTION_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 
 
+def _safe_reset_context_var(variable: ContextVar[Any], token: Any) -> None:
+    """取消跨任务清理时忽略已不属于当前 Context 的 token。"""
+
+    try:
+        variable.reset(token)
+    except ValueError:
+        logger.debug("task_execution_contextvar_reset_skipped_cross_context")
+
+
 class ProjectedOpenAIChat(OpenAIChat):
     _task_execution_input_token_budget: int | None = None
 
@@ -2023,7 +2032,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     duration_ms(provider_started_at),
                     str(failed).lower(),
                 )
-            _TASK_EXECUTION_REQUEST_METRICS.reset(token)
+            _safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         model_id, host = _model_log_fields(self)
@@ -2058,7 +2067,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     duration_ms(provider_started_at),
                     str(failed).lower(),
                 )
-            _TASK_EXECUTION_REQUEST_METRICS.reset(token)
+            _safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token)
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
         model_id, host = _model_log_fields(self)
@@ -2106,7 +2115,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     chunk_count,
                     str(failed).lower(),
                 )
-            _TASK_EXECUTION_REQUEST_METRICS.reset(token)
+            _safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token)
 
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
@@ -2156,7 +2165,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     chunk_count,
                     str(failed).lower(),
                 )
-            _TASK_EXECUTION_REQUEST_METRICS.reset(token)
+            _safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token)
 
     def run_function_calls(self, function_calls, function_call_results, *args, **kwargs):
         for batch in _tool_call_batches(function_calls):

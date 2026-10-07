@@ -5,7 +5,7 @@ from copy import copy
 from typing import Any, Literal
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from ...contract import FIELD_REF_PATTERN, MeasureSemantic, ReportPeriod
 from ...data_sources import MAX_REPORT_INPUTS
@@ -147,6 +147,10 @@ class MeasureSemanticProposal(_StrictModel):
 
 class AnalysisItem(_StrictModel):
     code: str = Field(min_length=1, max_length=128)
+    analysis_name: str | None = Field(
+        alias="analysisName", default=None, min_length=1, max_length=60,
+        description="简短业务名称，例如2025年收入汇总、2025年收入同比；不得使用分析编号。",
+    )
     domain: Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"] | None = (
         None
     )
@@ -174,6 +178,29 @@ class AnalysisItem(_StrictModel):
         max_length=100,
         description="引用 requirements 中已有的 ID，每个 ID 只出现一次；maxItems 只是上限。",
     )
+    period_roles: tuple[Literal["current", "yoy", "mom"], ...] = Field(
+        alias="periodRoles", default=(), max_length=3,
+        description=(
+            "明确本分析实际使用的期间角色：本期汇总使用 current；同比使用 current+yoy；"
+            "环比使用 current+mom。不要把其他分析的基期挂到本项。旧计划未提供时沿用原绑定。"
+        ),
+    )
+    series_granularity: Literal["day", "month", "year"] | None = Field(
+        alias="seriesGranularity", default=None,
+        description="本分析所比较的序列实际粒度。月度序列填 month，即使月份用月初日期表示；不得仅由日期字段的存储格式推断。",
+    )
+
+    @model_validator(mode="after")
+    def validate_new_planning_scope(self, info: ValidationInfo) -> "AnalysisItem":
+        # 旧状态仍可读取；新模型响应必须显式声明范围，不能默默复用全部窗口。
+        if info.context and info.context.get("new_analysis_plan"):
+            if not self.analysis_name or not self.analysis_name.strip() or not self.period_roles:
+                raise ValueError("新分析项必须提供非空 analysisName 和 periodRoles")
+            if "series_granularity" not in self.model_fields_set:
+                raise ValueError("新分析项必须提供 seriesGranularity；非时间序列填 null")
+        if len(set(self.period_roles)) != len(self.period_roles):
+            raise ValueError("periodRoles 不能重复")
+        return self
 
     @field_validator("requirement_ids")
     @classmethod

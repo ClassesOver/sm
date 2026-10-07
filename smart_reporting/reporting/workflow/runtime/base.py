@@ -469,6 +469,8 @@ _ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS = (
 
 _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
+    "管理问题要求差额、完成率或分组贡献时，逐项核对所需期间和粒度：只有分子分母总额不等于已登记月度差额/完成率，完整组合的topGroups也不等于单一科室累计。所需计算未登记时将其声明为缺口，按明确分子分母和期间生成最小补充证据；不得把图注或模型摘要中的数字当作已冻结计算。",
+    "比率补证必须记录分子、分母、差额和百分数；分母非零且分子为零时百分数为0%，只有分母为零或缺失时为null并软告警。",
     "只返回 requiresSupplementalEvidence、reason、missingFacts、codingRequirements，不得生成 script 或任何代码。",
     "需要补证时，codingRequirements 逐项声明当前授权 datasets 中的 datasetId、fields、calculation 和 outputName；不得编造数据集或字段。",
     "固定事实足够时 missingFacts 和 codingRequirements 必须都是空数组，不得为了探索数据而声明缺口。",
@@ -703,6 +705,7 @@ class _ReportWorkflowRuntimeBase:
             ),
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
+                "每项显式提供简短 analysisName、periodRoles 和 seriesGranularity。收入汇总仅使用 current；收入同比使用 current、yoy。月度序列填 month，即使月份存储为月初日期；非时间序列填 null。",
                 "根 JSON 必须是对象且只能包含 analyses 和 requirements；不得返回单个 analysis、单个 requirement、裸数组或占位值",
                 "每个 analyses 项只回答一个原子管理问题，并且只声明一个主要指标族；复杂问题必须拆成多个分析项",
                 "每个 analyses[].domain 必须根据该管理问题的完整业务语义，从请求 domains 中选择唯一值；不得按关键词匹配",
@@ -778,6 +781,8 @@ class _ReportWorkflowRuntimeBase:
             stage_instructions=(
                 "只回答 currentAnalysis 的原子管理问题，所有数字和结论必须来自 deterministicFacts 或 supplementalEvidence。",
                 "优先给出结论、关键数值、构成或变化驱动，再说明可比性和数据限制；不得输出分析过程或虚构因果。",
+                "periodGranularity=month 的日期是月度桶标签；末月标为月初不能证明数据只覆盖月初或月中。没有入账状态或数据截止时点的直接证据，不得断言末月不完整、截断或未入账。",
+                "不得补写事实中不存在的月均值或其他派生数字；月均分母必须是实际有数据的月份数，不能固定按12个月计算。",
                 "supplementalEvidence.findings[].view.truncated 为 true 时 rows 只是投影视图，不得当作完整明细；format=ranked_extremes 表示变化指标正负两端极值，format=head_tail 表示原始顺序首尾。",
                 "omittedNumericSums 只汇总未进入 rows 的有限数值，不是全量总值。",
                 "完整总量等于 rows 数值与 omittedNumericSums 之和；原始行数以 view.rowCount 为准，完整文件身份以 sourceFile 为准。",
@@ -837,7 +842,9 @@ class _ReportWorkflowRuntimeBase:
             elif output_schema is ReportOutlineProposal:
                 candidate = normalize_outline_proposal_candidate(candidate)
             try:
-                return output_schema.model_validate(candidate)
+                return output_schema.model_validate(
+                    candidate, context={"new_analysis_plan": True} if output_schema is AnalysisBundle else None
+                )
             except ValidationError as error:
                 # 把候选载荷附在异常上。Reporting 结构化执行器据此向同一模型回灌
                 # previousOutput 和逐项 issues；候选不进入日志或公开错误 details。

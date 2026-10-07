@@ -111,6 +111,7 @@ async def _write_revision_files(
     with_chart_trace: bool = False,
     with_computation: bool = False,
     with_drilldown: bool = False,
+    legacy_fact_name: bool = False,
 ) -> None:
     markdown = "# 报告\n"
     if with_chart_trace:
@@ -198,6 +199,7 @@ async def _write_revision_files(
             {
                 "version": "1",
                 "analysisId": "analysis_001",
+                "analysisName": None if legacy_fact_name else "2025年收入汇总",
                 "metrics": [
                     {
                         "factId": "fact-" + "a" * 16,
@@ -396,6 +398,7 @@ async def _make_editor(
     with_chart_trace: bool = False,
     with_computation: bool = False,
     with_drilldown: bool = False,
+    legacy_fact_name: bool = False,
     **editor_options: bool,
 ) -> tuple[
     ReportEditorService, ReportEditorGrantService, ReportingWorkspaceRouter
@@ -413,6 +416,7 @@ async def _make_editor(
         with_chart_trace=with_chart_trace,
         with_computation=with_computation,
         with_drilldown=with_drilldown,
+        legacy_fact_name=legacy_fact_name,
     )
     registry.release(scope.workspace_key)
     state = SimpleNamespace(
@@ -552,6 +556,24 @@ async def test_sources_reports_datasets_from_revision_index(tmp_path: Path) -> N
     assert dataset["filename"] == "收入明细.csv"
     assert dataset["rowCount"] == 4
     assert dataset["materializedAt"] == "2026-09-29T08:00:00Z"
+
+
+@pytest.mark.anyio
+async def test_old_fact_names_use_matching_registered_analysis_plan(tmp_path: Path) -> None:
+    editor, grants, _ = await _make_editor(tmp_path, with_fact_file=True, legacy_fact_name=True)
+    context = _context()
+    raw, _ = await grants.issue(context)
+    _, session = await grants.exchange(raw)
+    state = await editor.state_repository.get(context.workflow_run_id)
+    state.payload["analysisPlans"] = {"analysis_001": {
+        "step": "2025年收入汇总", "datasetIds": [DATASET_ID],
+    }}
+    sources = await editor.trace_sources(context, session)
+    assert sources["facts"]
+    assert all(fact["analysisName"] == "2025年收入汇总" for fact in sources["facts"] if fact["datasetIds"])
+    state.payload["analysisPlans"]["analysis_001"]["datasetIds"] = ["other-dataset"]
+    sources = await editor.trace_sources(context, session)
+    assert all(not fact.get("analysisName") for fact in sources["facts"])
 
 
 @pytest.mark.anyio
@@ -1216,6 +1238,7 @@ async def test_facts_listing_and_fact_detail_with_inputs(tmp_path: Path) -> None
     assert source_facts["fact-" + "b" * 16]["displayValue"] == 120.0
     assert source_facts["fact-" + "b" * 16]["datasetIds"]
     assert all(fact["analysisId"] == "analysis_001" for fact in source_facts.values())
+    assert all(fact["analysisName"] == "2025年收入汇总" for fact in source_facts.values())
 
     derived = await editor.trace_fact_detail(
         _context(), session, "analysis_001", "fact-" + "b" * 16
@@ -1230,6 +1253,7 @@ async def test_facts_listing_and_fact_detail_with_inputs(tmp_path: Path) -> None
         _context(), session, "analysis_001", "fact-" + "a" * 16
     )
     assert metric["factKind"] == "metric"
+    assert metric["analysisName"] == "2025年收入汇总"
     assert source_facts["fact-" + "a" * 16]["displayValue"] == metric["displayValue"]
     assert metric["displayValue"] == 3600.0
     assert metric["inputFactRefs"] == ()  # metric 是叶子

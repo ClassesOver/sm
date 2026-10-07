@@ -1016,3 +1016,33 @@ def test_promote_orphan_h4_headings_returns_none_for_invalid_heading_levels() ->
     from smart_reporting.reporting.delivery.draft_v1 import promote_orphan_h4_headings
 
     assert promote_orphan_h4_headings("## 其他标题\n\n#### 门诊收入\n") is None
+
+
+def test_chart_interleaving_preserves_claim_marker() -> None:
+    rendered = _assemble_charts(
+        (ReportDraftBlock(
+            blockId='block_1',
+            markdown='### 收入\n\n门诊收入趋势整体上升。\n\n### 成本\n\n药品成本结构占比最高。',
+            citationIds=('citation_001', 'citation_002'),
+            chartIds=('chart_001', 'chart_002'), claimIds=('claim_001',),
+        ),),
+        (_chart('chart_001', '门诊收入趋势', 'citation_001'), _chart('chart_002', '药品成本结构', 'citation_002')),
+    )
+    assert any(item['code'] == 'chart_placed_within_block' for item in rendered.auto_fixes)
+    assert rendered.markdown.count('[[claim:claim_001]]') == 1
+
+
+def test_assemble_explicit_numeric_map_omits_unsupported_claim_anchor():
+    draft = ReportDraft(sections=(ReportDraftSection(sectionCode="section_001", blocks=(
+        ReportDraftBlock(blockId="block_1", markdown="月度走势先降后升。", claimIds=("claim_1",)),
+        ReportDraftBlock(blockId="block_2", markdown="累计收入100元。", claimIds=("claim_2",)),
+    )),))
+    arguments = dict(expected_title="运营报告", markdown_path="reports/report.md",
+        sections=(ReportSectionDefinition(code="section_001", sectionNumber="1", title="收入分析", analysisIds=("analysis_001",)),),
+        citation_ids=())
+    rendered = assemble_report_markdown(draft, **arguments,
+        claim_values={("section_001", "claim_2"): (100, "元")})
+    assert "[[claim:claim_1]]" not in rendered.markdown
+    assert "100元[[claim:claim_2]]" in rendered.markdown
+    legacy = assemble_report_markdown(draft, **arguments)
+    assert "[[claim:claim_1]]" in legacy.markdown

@@ -125,6 +125,9 @@ class DatasetAnalysisContext(AnalysisModel):
     fields: tuple[str, ...] = Field(max_length=500)
     schema_snapshot: dict[str, Any] = Field(alias="schema", default_factory=dict)
     period_coverage: tuple[str, ...] = Field(alias="periodCoverage", default=(), max_length=1200)
+    period_granularities: dict[str, Literal["date", "month", "year"]] = Field(
+        alias="periodGranularities", default_factory=dict, max_length=100,
+    )
     organization_grain: tuple[str, ...] = Field(
         alias="organizationGrain", default=(), max_length=30
     )
@@ -144,10 +147,12 @@ class DatasetAnalysisContext(AnalysisModel):
 
 class DetailedAnalysisItem(AnalysisModel):
     analysis_id: str = Field(alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$")
+    analysis_name: str | None = Field(alias="analysisName", default=None, min_length=1, max_length=60)
     domain: str = Field(min_length=1, max_length=64)
     management_question: str = Field(alias="managementQuestion", min_length=1, max_length=2_000)
     primary_metric_family: str = Field(alias="primaryMetricFamily", min_length=1, max_length=256)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
+    series_granularity: Literal["day", "month", "year"] | None = Field(alias="seriesGranularity", default=None)
     fields: tuple[str, ...] = Field(max_length=100)
     metrics: tuple[str, ...] = Field(max_length=100)
     periods: tuple[str, ...] = Field(max_length=1200)

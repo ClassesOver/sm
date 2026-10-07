@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from functools import partial
 
+from loguru import logger
+
 from .base import (
     DOMAIN_CODES,
     MAX_REPORT_INPUTS,
@@ -261,6 +263,11 @@ class RuntimeDatasetsMixin:
                     schema={
                         "sourceId": handle.source_id,
                         "requirementId": handle.requirement_id,
+                        "queryWindowId": handle.query_window_id,
+                        "periodRoles": list(handle.period_roles),
+                        "sqlHash": handle.sql_hash,
+                        "querySql": handle.query_sql,
+                        "businessLabel": handle.business_label,
                         "tables": [
                             table.model_dump(mode="json", by_alias=True)
                             for snapshot in snapshots
@@ -304,7 +311,12 @@ class RuntimeDatasetsMixin:
                         "report_analysis_profile_changed",
                         "完整数据画像写入后发生变化。",
                     )
-                contexts[index] = profiled.context
+                contexts[index] = profiled.context.model_copy(update={
+                    "period_granularities": {
+                        table.period_column: table.period_granularity
+                        for table in (requirement.tables if requirement is not None else ())
+                    },
+                })
             except Exception as error:
                 errors[index] = error
 
@@ -417,7 +429,8 @@ class RuntimeDatasetsMixin:
             referenced_handles = tuple(
                 handle
                 for handle in handles
-                if handle.requirement_id in requirement_ids or handle.source_type == "url_csv"
+                if (handle.requirement_id in requirement_ids or handle.source_type == "url_csv")
+                and (not initial_item.period_roles or set(handle.period_roles) & set(initial_item.period_roles))
             )
             if not referenced_handles:
                 raise ReportingError(
@@ -547,6 +560,8 @@ class RuntimeDatasetsMixin:
             description = initial_item.description.rstrip("。？?")
             analyses.append(
                 DetailedAnalysisItem(
+                    analysisName=initial_item.analysis_name,
+                    seriesGranularity=initial_item.series_granularity,
                     analysisId=f"analysis_{len(analyses) + 1:03d}",
                     domain=domain,
                     managementQuestion=(initial_item.management_question),
@@ -585,11 +600,11 @@ class RuntimeDatasetsMixin:
                 )
             )
 
-        if covered_dataset_ids != set(context_by_id):
-            raise ReportingError(
-                "report_analysis_plan_invalid",
-                "已批准分析计划没有覆盖全部授权数据集。",
-            )
+        uncovered = sorted(set(context_by_id) - covered_dataset_ids)
+        if uncovered:
+            warning = f"部分授权数据集未被分析项引用：{', '.join(uncovered)}。"
+            plan_warnings.append(warning)
+            logger.warning("report_analysis_dataset_unreferenced dataset_ids={}", uncovered)
         unique_warnings = tuple(dict.fromkeys(plan_warnings))
         if len(unique_warnings) > 500:
             unique_warnings = unique_warnings[:499] + (
@@ -614,6 +629,7 @@ class RuntimeDatasetsMixin:
                     "analysisPlans": {
                         item.analysis_id: {
                             "analysisId": item.analysis_id,
+                            "analysisName": item.analysis_name,
                             "domain": item.domain,
                             "step": item.management_question,
                             "primaryMetricFamily": item.primary_metric_family,

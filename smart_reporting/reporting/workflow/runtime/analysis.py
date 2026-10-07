@@ -439,6 +439,24 @@ def visualization_coding_facts(
     return compact
 
 
+def _requested_chart_limit(report_goal: str, analysis_count: int) -> int | None:
+    """只解释用户明确限定的单图要求，未限定时保留框架图表预算。"""
+    if not re.search(r"(?:一|1|１)\s*张(?:关联登记事实的)?图表", report_goal):
+        return None
+    if re.search(r"每(?:项|个)分析|每项分析", report_goal):
+        return max(1, analysis_count)
+    return 1
+
+
+def _limit_requested_charts(plan: VisualizationPlanDraft, report_goal: str, analysis_count: int) -> VisualizationPlanDraft:
+    limit = _requested_chart_limit(report_goal, analysis_count)
+    if limit is None or len(plan.charts) <= limit:
+        return plan
+    loguru_logger.warning("report_requested_chart_count_applied requested={} generated={}", limit, len(plan.charts))
+    return plan.model_copy(update={"charts": plan.charts[:limit],
+        "warnings": (*plan.warnings, f"用户限定 {limit} 张图表，额外图表计划已省略。")})
+
+
 def visualization_coding_plan(
     plan: VisualizationPlanDraft,
     *,
@@ -978,6 +996,7 @@ class RuntimeAnalysisMixin:
                 "taskKind": "visualization_section",
                 "reportGoal": report_goal,
                 "visualizationMode": visualization_mode,
+                "requestedChartLimit": _requested_chart_limit(report_goal, len(section.analysis_ids)),
                 "sectionCode": section_code,
                 "section": section.model_dump(mode="json", by_alias=True),
                 "sectionGoal": {
@@ -1121,14 +1140,17 @@ class RuntimeAnalysisMixin:
                             )
                         if visualization_plan_adapter is not None:
                             return _section_scoped_chart_ids(
-                                visualization_plan_adapter(output, request), section_code
+                                _limit_requested_charts(visualization_plan_adapter(output, request),
+                                                        report_goal, len(section.analysis_ids)), section_code
                             )
                         if not isinstance(output, VisualizationPlanDraft):
                             raise ReportingError(
                                 "report_structured_output_invalid",
                                 "可视化 planner 返回了错误的结构化结果类型。",
                             )
-                        return _section_scoped_chart_ids(output, section_code)
+                        return _section_scoped_chart_ids(
+                            _limit_requested_charts(output, report_goal, len(section.analysis_ids)), section_code
+                        )
 
                     def code_runner() -> ReportingCodeGenerationRunner:
                         nonlocal code_runner_instance
@@ -1508,7 +1530,7 @@ class RuntimeAnalysisMixin:
         for index, metric in enumerate(payload.get("metrics", ())):
             if not isinstance(metric, Mapping):
                 continue
-            data_descriptors.append({"dataPath": f"metrics[{index}]", "fields": sorted(metric)})
+            data_descriptors.append({"dataPath": f"metrics[{index}]", "fields": sorted(key for key, value in metric.items() if value is None or isinstance(value, (str, int, float, bool)))})
             data_descriptors.extend(
                 {
                     "dataPath": f"metrics[{index}].{collection}",
@@ -1521,12 +1543,12 @@ class RuntimeAnalysisMixin:
                 )
             )
         data_descriptors.extend(
-            {"dataPath": f"derivedMetrics[{index}]", "fields": sorted(metric)}
+            {"dataPath": f"derivedMetrics[{index}]", "fields": sorted(key for key, value in metric.items() if value is None or isinstance(value, (str, int, float, bool)))}
             for index, metric in enumerate(payload.get("derivedMetrics", ()))
             if isinstance(metric, Mapping)
         )
         data_descriptors.extend(
-            {"dataPath": f"comparisons[{index}]", "fields": sorted(item)}
+            {"dataPath": f"comparisons[{index}]", "fields": sorted(key for key, value in item.items() if value is None or isinstance(value, (str, int, float, bool)))}
             for index, item in enumerate(payload.get("comparisons", ()))
             if isinstance(item, Mapping)
         )

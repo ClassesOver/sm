@@ -45,6 +45,7 @@ class DeterministicMetricFact(AnalysisModel):
     formula: str = Field(min_length=1, max_length=1000)
     scope: dict[str, str] = Field(default_factory=dict, max_length=100)
     period_field: str | None = Field(default=None, alias="periodField", max_length=128)
+    period_granularity: Literal["day", "month", "year"] | None = Field(default=None, alias="periodGranularity")
     period_start: str | None = Field(default=None, alias="periodStart", max_length=128)
     period_end: str | None = Field(default=None, alias="periodEnd", max_length=128)
     total: float
@@ -145,6 +146,7 @@ class CorrelationDetail(AnalysisModel):
 class DeterministicAnalysisBundle(AnalysisModel):
     version: str = "1"
     analysis_id: str = Field(alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$")
+    analysis_name: str | None = Field(default=None, alias="analysisName", min_length=1, max_length=2_000)
     metrics: tuple[DeterministicMetricFact, ...] = Field(default=(), max_length=500)
     derived_metrics: tuple[DeterministicDerivedMetricFact, ...] = Field(
         default=(), alias="derivedMetrics", max_length=500
@@ -224,6 +226,7 @@ def build_deterministic_analysis_bundle(
     correlations, correlation_details = _correlations(prepared, facts)
     bundle = DeterministicAnalysisBundle(
         analysisId=analysis.analysis_id,
+        analysisName=analysis.analysis_name or analysis.management_question,
         metrics=tuple(facts),
         derivedMetrics=derived_metrics,
         comparisons=comparisons,
@@ -298,7 +301,7 @@ def _dataset_facts(
         aggregation = _aggregation(semantic)
         scoped_frame, scope_warnings = _apply_scope(dataset, semantic)
         period_values = _period_values(scoped_frame, field, period_field, aggregation)
-        scoped_frame, period_values, period_warnings = _trim_trailing_zero_periods(
+        scoped_frame, period_values, period_warnings = _warn_trailing_zero_periods(
             scoped_frame,
             period_field,
             period_values,
@@ -339,6 +342,12 @@ def _dataset_facts(
                 formula=_formula(field, aggregation, scope),
                 scope=scope,
                 periodField=period_field,
+                periodGranularity=(
+                    analysis.series_granularity or (
+                        "day" if dataset.context.period_granularities.get(period_field or "") == "date"
+                        else dataset.context.period_granularities.get(period_field or "")
+                    )
+                ),
                 periodStart=period_labels[0] if period_labels else None,
                 periodEnd=period_labels[-1] if period_labels else None,
                 total=value,
@@ -392,6 +401,23 @@ def _apply_scope(
             continue
         frame = frame.filter(pl.col(column).cast(pl.String) == expected)
     return frame, tuple(warnings)
+
+
+def scope_columns_for_query(
+    semantics: Mapping[str, Mapping[str, Any]],
+) -> tuple[str, ...]:
+    """返回固定口径字段，供取数 SQL 保留在冻结 CSV 中。"""
+
+    columns: list[str] = []
+    for semantic in semantics.values():
+        raw_scope = semantic.get("exclusiveScope")
+        if not isinstance(raw_scope, Mapping):
+            continue
+        for column in raw_scope:
+            name = str(column)
+            if name and name not in columns:
+                columns.append(name)
+    return tuple(columns)
 
 
 def _aggregate(series: pl.Series, aggregation: Aggregation) -> float | None:
@@ -465,7 +491,7 @@ def _valid_count_expression(field: str, aggregation: Aggregation) -> pl.Expr:
     return source.cast(pl.Float64, strict=False).is_not_null().sum()
 
 
-def _trim_trailing_zero_periods(
+def _warn_trailing_zero_periods(
     frame: pl.DataFrame,
     period_field: str | None,
     periods: tuple[PeriodValue, ...],
@@ -481,15 +507,13 @@ def _trim_trailing_zero_periods(
         trailing_zero_count += 1
     if trailing_zero_count < 2 or trailing_zero_count == len(periods):
         return frame, periods, ()
-    retained = periods[:-trailing_zero_count]
-    excluded = periods[-trailing_zero_count:]
-    labels = {item.period for item in retained}
-    filtered = frame.filter(pl.col(period_field).cast(pl.String).is_in(labels))
+    zero_periods = periods[-trailing_zero_count:]
     warning = (
         f"当前期末发现连续 {trailing_zero_count} 个零值期间 "
-        f"{excluded[0].period} 至 {excluded[-1].period}，按疑似未入账期间排除。"
+        f"{zero_periods[0].period} 至 {zero_periods[-1].period}，保留原始零值；"
+        "零值不能证明数据缺失或未入账，数据完整性及原因待核实。"
     )
-    return filtered, retained, (warning,)
+    return frame, periods, (warning,)
 
 
 def _group_contributions(
@@ -589,6 +613,14 @@ def _parsed_period_values(
         period = _parse_period(item.period)
         if period is None:
             return None
+        if fact.period_granularity is not None:
+            grain = fact.period_granularity
+            if (grain == "month" and period.value.day != 1
+                    or grain == "year" and (period.value.month, period.value.day) != (1, 1)
+                    or grain == "day" and period.granularity != "day"):
+                return None
+            # 粒度来自批准的数据需求；日期格式的月初标签仍按月比较，不猜测相邻行间距。
+            period = _ParsedPeriod(period.label, period.value, grain)
         parsed.append((period, item))
     parsed.sort(key=lambda item: item[0].value)
     return parsed

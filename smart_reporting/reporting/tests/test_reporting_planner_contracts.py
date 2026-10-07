@@ -358,6 +358,21 @@ def test_analysis_item_schema_distinguishes_required_description_and_question() 
     assert "不得替代" in item_schema["properties"]["managementQuestion"]["description"]
 
 
+def test_new_analysis_response_requires_name_scope_and_granularity_but_reads_legacy() -> None:
+    from smart_reporting.reporting.workflow.runtime.models import AnalysisItem
+
+    legacy = {
+        "code": "income", "description": "收入汇总", "managementQuestion": "收入是多少？",
+        "primaryMetricFamily": "收入", "requirementIds": ["revenue"],
+    }
+    assert AnalysisItem.model_validate(legacy).period_roles == ()
+    complete = {**legacy, "analysisName": "2025年收入汇总", "periodRoles": ["current"], "seriesGranularity": "month"}
+    for field in ("analysisName", "periodRoles", "seriesGranularity"):
+        with pytest.raises(ValidationError):
+            AnalysisItem.model_validate({key: value for key, value in complete.items() if key != field}, context={"new_analysis_plan": True})
+    assert AnalysisItem.model_validate(complete, context={"new_analysis_plan": True}).analysis_name == "2025年收入汇总"
+
+
 def test_reporting_fresh_retry_budget_allows_three_attempts() -> None:
     assert MAX_REPORT_SECTION_PHASE_ATTEMPTS == 3
 
@@ -829,6 +844,52 @@ def test_single_table_query_compiler_keeps_unapproved_numeric_fields_in_grain() 
     assert len(approved) == 2
     assert all("SUM(budget_service_income)" not in query.sql for query in approved)
     assert all("SUM(actual_medical_income)" in query.sql for query in approved)
+
+
+def test_single_table_query_compiler_projects_exclusive_scope_for_audit() -> None:
+    requirement = reporting_runtime.QueryRequirement.model_validate(
+        {
+            "requirementId": "req_drug_cost",
+            "sourceId": "rj",
+            "tables": [{
+                "table": "rj.cost_view",
+                "periodColumn": "data_date",
+                "periodGranularity": "date",
+                "measureColumns": ["indicator_value"],
+            }],
+            "dimensionColumns": ["data_date"],
+            "grainColumns": ["data_date"],
+            "relations": [],
+        }
+    )
+    snapshot = reporting_contract.SourceSchemaSnapshot(
+        source="metadata_api", revision="revision-1", schemaHash="a" * 64,
+        tables=(reporting_contract.ModelTable(
+            sourceId="rj", database="rj", name="cost_view",
+            columns=tuple(reporting_contract.ModelColumn(
+                name=name,
+                dataType="DATE" if name == "data_date" else "VARCHAR(64)" if name == "indicator_name" else "DECIMAL(18, 2)",
+                nullable=True,
+            ) for name in ("data_date", "indicator_name", "indicator_value")),
+        ),),
+        measureSemantics=(reporting_contract.MeasureSemantic(
+            fieldRef="rj.rj.cost_view.indicator_value",
+            aggregation="sum", exclusiveScope={"indicator_name": "药品成本"},
+        ),),
+    )
+    envelope = reporting_contract.ReportRequestEnvelope.model_validate({
+        "reportGoal": "分析药品成本", "period": {"start": "2025-01-01", "end": "2025-12-31"},
+        "sourceIds": ["rj"],
+    })
+
+    generated = reporting_runtime._compile_single_table_queries(
+        (requirement,), snapshots=(snapshot,), envelope=envelope,
+    )
+
+    assert generated is not None
+    sql = generated.queries[0].sql.lower()
+    assert "indicator_name" in sql
+    assert "group by" in sql and "indicator_name" in sql
 
 
 def test_analysis_grain_excludes_exact_constant_numeric_columns() -> None:
@@ -1748,6 +1809,7 @@ def test_phase_instructions_do_not_expose_patch_hash_protocol() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("scoped", [False, True])
 @pytest.mark.parametrize(
     ("requested_domain", "expected_domain"),
     (("income", "income"), ("full_cost", "full_cost")),
@@ -1755,6 +1817,7 @@ def test_phase_instructions_do_not_expose_patch_hash_protocol() -> None:
 async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv_for_fact_gaps(
     requested_domain: str,
     expected_domain: str,
+    scoped: bool,
 ) -> None:
     context = DatasetAnalysisContext(
         profileFile=AnalysisFileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
@@ -1856,6 +1919,16 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
         },
     }
     runtime: Any = object.__new__(RuntimeDatasetsMixin)
+    if scoped:
+        from dataclasses import replace
+
+        attachment_handle = replace(attachment_handle, period_roles=("yoy",))
+        state[REPORT_WORKFLOW_RESULT_STATE_KEY]["datasets"] = [handle.public_dict(), attachment_handle.public_dict()]
+        item = state[REPORT_ANALYSIS_PLAN_STATE_KEY][0]
+        item.update(analysisName="本期收入汇总", periodRoles=["current"], seriesGranularity="month")
+        state[REPORT_ANALYSIS_PLAN_STATE_KEY].append({
+            **item, "code": "income_yoy", "analysisName": "收入同比", "periodRoles": ["current", "yoy"],
+        })
     runtime._state = lambda _run_context: state
     runtime._envelope = lambda _run_context: SimpleNamespace(
         domains=(requested_domain,), report_goal="分析医院经营主题"
@@ -1875,7 +1948,13 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
 
     analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
     assert analysis.domain == expected_domain
-    assert analysis.dataset_ids == ("dataset-1", "attachment-dataset")
+    assert analysis.dataset_ids == (("dataset-1",) if scoped else ("dataset-1", "attachment-dataset"))
+    if scoped:
+        comparison = DetailedAnalysisPlan.model_validate(output.content).analyses[1]
+        assert comparison.dataset_ids == ("dataset-1", "attachment-dataset")
+        assert comparison.analysis_name == "收入同比"
+        assert analysis.analysis_name == "本期收入汇总"
+        assert analysis.series_granularity == "month"
     assert (
         "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，从不可变 CSV 复算并保存补充 evidence"
         in analysis.actions
@@ -4882,3 +4961,26 @@ def test_analysis_coding_agent_uses_unified_recommended_top_p() -> None:
 
     # 分析与可视化 Coding 统一使用厂商智能体场景推荐的 top_p=0.95。
     assert runtime._analysis_script_agent_factory([]).model.top_p == 0.95
+
+
+def test_comparison_windows_follow_explicit_analysis_roles() -> None:
+    from smart_reporting.reporting.workflow.runtime.validation import _normalize_comparison_roles
+
+    bundle = analysis_bundle(table='rj.dwd_hdc_income_summary_view', period_granularity='month')
+    analysis = bundle.analyses[0].model_copy(update={'period_roles': ('current', 'yoy')})
+    requirement = bundle.requirements[0].model_copy(update={'comparison_roles': ()})
+    normalized, repairs = _normalize_comparison_roles(bundle.model_copy(update={'analyses': (analysis,), 'requirements': (requirement,)}), ('yoy',))
+    assert normalized.requirements[0].resolved_comparison_roles(('yoy',)) == ('yoy',)
+    assert repairs
+    current = analysis.model_copy(update={'period_roles': ('current',)})
+    normalized, _ = _normalize_comparison_roles(bundle.model_copy(update={'analyses': (current,)}), ('yoy',))
+    assert normalized.requirements[0].comparison_roles == ()
+
+
+def test_analysis_roles_do_not_authorize_new_query_windows() -> None:
+    from smart_reporting.reporting.workflow.runtime.validation import _normalize_comparison_roles
+
+    bundle = analysis_bundle(table='rj.dwd_hdc_income_summary_view', period_granularity='month')
+    analysis = bundle.analyses[0].model_copy(update={'period_roles': ('current', 'mom')})
+    normalized, _ = _normalize_comparison_roles(bundle.model_copy(update={'analyses': (analysis,)}), ('yoy',))
+    assert normalized.requirements[0].comparison_roles == ()

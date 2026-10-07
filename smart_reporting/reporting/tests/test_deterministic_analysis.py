@@ -104,6 +104,8 @@ def test_validate_metric_code_bindings_rejects_numeric_fact_without_authoritativ
     with pytest.raises(ValueError, match="metric code"):
         validate_metric_code_bindings(bundle)
 
+    assert bundle.model_dump(by_alias=True)["analysisName"] == analysis().management_question
+
 
 def test_validate_metric_code_bindings_accepts_profile_metric_code() -> None:
     bundle = build_deterministic_analysis_bundle(
@@ -233,7 +235,23 @@ def test_deterministic_bundle_aligns_yoy_to_common_months() -> None:
     assert any("共同连续窗口" in warning for warning in comparison.warnings)
 
 
-def test_deterministic_bundle_excludes_suspicious_trailing_zero_months() -> None:
+def test_declared_monthly_dates_align_all_months_and_keep_business_name() -> None:
+    current = b"month,department,amount\n2025-01-01,A,10\n2025-02-01,A,20\n"
+    baseline = b"month,department,amount\n2024-01-01,A,5\n2024-02-01,A,20\n2024-03-01,A,100\n"
+    item = analysis().model_copy(update={"series_granularity": "month", "analysis_name": "2025年收入同比"})
+    bundle = build_deterministic_analysis_bundle(item, (
+        ("current", current, context("current"), ("current",)),
+        ("yoy", baseline, context("yoy"), ("yoy",)),
+    ))
+    assert bundle.analysis_name == "2025年收入同比"
+    assert bundle.comparisons[0].current_total == 30
+    assert bundle.comparisons[0].baseline_total == 25
+    assert bundle.comparisons[0].change_rate == 20
+    summary = build_deterministic_analysis_bundle(item, (("current", current, context("current"), ("current",)),))
+    assert not summary.comparisons
+
+
+def test_deterministic_bundle_keeps_zero_months_and_warns_without_changing_comparison() -> None:
     current = b"month,department,amount\n2025-01,A,10\n2025-02,A,20\n2025-03,A,0\n2025-04,A,0\n"
     yoy = b"month,department,amount\n2024-01,A,5\n2024-02,A,10\n2024-03,A,30\n2024-04,A,40\n"
 
@@ -247,10 +265,11 @@ def test_deterministic_bundle_excludes_suspicious_trailing_zero_months() -> None
 
     comparison = bundle.comparisons[0]
     assert comparison.current_total == 30
-    assert comparison.baseline_total == 15
-    assert comparison.change_rate == 100
-    assert comparison.period_end == "2025-02"
-    assert any("连续 2 个零值期间" in warning for warning in comparison.warnings)
+    assert comparison.baseline_total == 85
+    assert comparison.change_rate == pytest.approx((30 - 85) / 85 * 100)
+    assert comparison.period_end == "2025-04"
+    assert [item.value for item in bundle.metrics[0].period_values] == [10, 20, 0, 0]
+    assert any("保留原始零值" in warning for warning in comparison.warnings)
 
 
 @pytest.mark.parametrize(

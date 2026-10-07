@@ -37,7 +37,7 @@ from ..reporting.trace.dataset_service import (
     verified_dataset_snapshot,
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
-from ..reporting.trace.fact_service import fact_display_value
+from ..reporting.trace.fact_service import fact_display_unit, fact_display_value
 from ..reporting.trace.index_builder import TRACE_INDEX_FILENAME
 from ..workspace import WorkspaceError
 from .trace_exports import TraceDerivedExportService
@@ -234,6 +234,7 @@ class ReportEditorTraceService:
                     roles = fact.get("periodRoles") or ([fact["periodRole"]] if fact.get("periodRole") else [])
                     facts.append({
                         "analysisId": entry.analysis_id,
+                        "analysisName": document.get("analysisName"),
                         "factId": fact["factId"],
                         "factKind": kind,
                         "label": " · ".join(str(value) for value in (
@@ -250,7 +251,7 @@ class ReportEditorTraceService:
                         "periodRoles": roles,
                         "comparisonType": fact.get("comparisonType"),
                         "displayValue": fact_display_value(fact),
-                        "unit": fact.get("unit"),
+                        "unit": fact_display_unit(fact),
                         "datasetIds": dataset_ids,
                     })
         drilldown_enabled = self._drilldown_enabled(session_capabilities)
@@ -632,7 +633,9 @@ class ReportEditorTraceService:
             factKind=self._pointer_kind(pointer),
             factKey=fact_id,
         )
-        return resolve_fact(bundle_bytes, fact_ref, with_inputs=True)
+        result = resolve_fact(bundle_bytes, fact_ref, with_inputs=True)
+        result["analysisName"] = json.loads(bundle_bytes).get("analysisName")
+        return result
 
     @staticmethod
     def _locate_fact_pointer(bundle_bytes: bytes, fact_id: str) -> str:
@@ -680,6 +683,7 @@ class ReportEditorTraceService:
         from ..reporting.delivery.artifacts_v1 import _TABLE_BLOCK
         from ..reporting.trace.subject_builder import (
             claim_status,
+            fact_periods,
             value_matches,
         )
 
@@ -773,6 +777,9 @@ class ReportEditorTraceService:
 
         async def _fact_value_of(ref: Any, row_key: str) -> Any:
             entry = await _fact_entry_of(ref)
+            if row_key.startswith("comparison:") and entry is not None:
+                field = row_key.rsplit(":", 1)[-1]
+                return entry.get(field) if field in {"currentTotal", "baselineTotal", "change", "changeRate"} else None
             if row_key.startswith("period:") and entry is not None:
                 period = row_key.removeprefix("period:")
                 values = [item.get("value") for item in entry.get("periodValues") or ()
@@ -791,15 +798,8 @@ class ReportEditorTraceService:
                 if _entry_value(entry) is not None:
                     break
             fact_value = _entry_value(entry)
-            expected_unit = (
-                str(entry["unit"])
-                if entry and isinstance(entry.get("unit"), str) and entry.get("unit")
-                else None
-            )
-            expected_periods = tuple(
-                str(item["period"])
-                for item in (entry.get("periodValues") or ()) if isinstance(item, dict) and item.get("period")
-            ) if entry else ()
+            expected_unit = fact_display_unit(entry) if entry else None
+            expected_periods = fact_periods(entry) if entry else ()
             detail = claim_status(
                 markdown,
                 binding.claim_id,
@@ -858,8 +858,18 @@ class ReportEditorTraceService:
             committed = await self._read_registered_file(context, file, max_bytes=16 * 1024 * 1024)
             index = freeze_chart_presentations(index, committed.decode("utf-8"))
         charts_payload = self._evaluate_charts(index, markdown)
+        from ..reporting.trace.content_review import review_content
+
+        # 未绑定数值的趋势段也需要复核，不能只加载已有数值锚点引用的事实。
+        for fact_file in index.fact_files:
+            identity = files[fact_file.file_resource_id]
+            if identity.path not in bundle_cache:
+                raw = await self._read_registered_file(context, identity, max_bytes=16 * 1024 * 1024)
+                bundle_cache[identity.path] = _json.loads(raw)
+
         return {
             "draftSha256": draft_sha256,
+            "warnings": review_content(markdown, (_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values())),
             "subjects": subjects,
             "summary": summary,
             "tables": tables_payload,

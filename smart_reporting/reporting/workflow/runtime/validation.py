@@ -694,10 +694,17 @@ def _normalize_comparison_roles(
     normalized_requirements: list[QueryRequirement] = []
     for requirement in bundle.requirements:
         selected = requirement.comparison_roles
-        if selected is None:
+        references = [analysis for analysis in bundle.analyses if requirement.requirement_id in analysis.requirement_ids]
+        # 分析项明确声明期间角色时，查询窗口必须覆盖该声明；未声明角色的旧计划
+        # 继续使用原来的默认窗口。只使用请求已授权的同比/环比期间。
+        if references and all(analysis.period_roles for analysis in references):
+            needed = {role for analysis in references for role in analysis.period_roles}
+            normalized = tuple(role for role in requested if role in needed)
+        elif selected is None:
             normalized_requirements.append(requirement)
             continue
-        normalized = tuple(role for role in requested if role in selected)
+        else:
+            normalized = tuple(role for role in requested if role in selected)
         stored = None if normalized == requested else normalized
         if stored == selected:
             normalized_requirements.append(requirement)
@@ -706,7 +713,7 @@ def _normalize_comparison_roles(
         repairs.append(
             {
                 "requirementId": requirement.requirement_id,
-                "removedRoles": [role for role in selected if role not in requested],
+                "removedRoles": [role for role in (selected or requested) if role not in normalized],
                 "comparisonRoles": list(normalized),
             }
         )

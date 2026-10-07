@@ -148,6 +148,7 @@ def test_claim_status_exposes_only_a_conservative_comparable_draft_value() -> No
     assert result["status"] == "stale"
     assert result["comparable"] is True
     assert result["draftValue"] == 3780
+    assert "不一致" in result["warnings"][0]
 
     ambiguous = claim_status(
         "2025-09收入3,780万元，2025-08收入3,500万元[[claim:claim-1]]",
@@ -158,6 +159,7 @@ def test_claim_status_exposes_only_a_conservative_comparable_draft_value() -> No
     )
     assert ambiguous["status"] == "stale"
     assert "draftValue" not in ambiguous
+    assert "尚未完成数值校验" in ambiguous["warnings"][0]
 
 
 def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
@@ -199,7 +201,7 @@ def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
 
 async def _make_editor_with_subject(
     tmp_path: Path,
-    *, report_id: str = "report-1", period_table: bool = False,
+    *, report_id: str = "report-1", period_table: bool = False, comparison_table: bool = False,
 ) -> tuple:
     from smart_reporting.report_editor import (
         InMemoryReportEditorRepository,
@@ -251,7 +253,8 @@ async def _make_editor_with_subject(
         else [["本期", "3,600"], ["上期", "3,600"]],
     )
     markdown = f"# 报告\n\n{table_block}\n"
-    await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
+    if not comparison_table:
+        await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
     csv_bytes = b"period,revenue\n2025-09,3600\n"
     csv_path = f"报表/数据集/{report_id}/dataset-url-abc0001.csv"
     await workspace.awrite_bytes(scope.workspace_key, csv_path, csv_bytes)
@@ -294,6 +297,17 @@ async def _make_editor_with_subject(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    if comparison_table:
+        document = json.loads(bundle_bytes)
+        document["comparisons"] = [{
+            "factId": "fact-" + "c" * 16, "currentTotal": 3600,
+            "baselineTotal": 3000, "change": 600, "changeRate": 20,
+            "unit": "元", "comparisonType": "yoy",
+        }]
+        bundle_bytes = json.dumps(document, ensure_ascii=False).encode()
+        table_block = render_table_markdown("tbl-1", ("数值",), [["本期", "3,600元"], ["同期", "3,000元"], ["变化", "600元"], ["同比", "20%"]])
+        markdown = f"# 报告\n\n{table_block}\n"
+        await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
     await workspace.awrite_bytes(scope.workspace_key, fact_path, bundle_bytes)
     csv_sha = hashlib.sha256(csv_bytes).hexdigest()
     handle = DatasetHandle(
@@ -350,6 +364,14 @@ async def _make_editor_with_subject(
             TableCellBindingV1(rowKey="period:2025-10" if period_table else "row:prev", columnKey="income_total", factRefs=(table_fact_ref,)),
         ),
     )
+    if comparison_table:
+        comparison_ref = table_fact_ref.model_copy(update={
+            "json_pointer": "/comparisons/0", "fact_kind": "comparison", "fact_key": "fact-" + "c" * 16,
+        })
+        row_keys = tuple(f"comparison:0:{field}" for field in ("currentTotal", "baselineTotal", "change", "changeRate"))
+        table_trace = TableTraceV1(tableId="tbl-1", rowKeys=row_keys, columnKeys=("数值",), cells=tuple(
+            TableCellBindingV1(rowKey=row, columnKey="数值", factRefs=(comparison_ref,)) for row in row_keys
+        ))
     index = build_csv_trace_index(
         handles=(handle,),
         lineage=(lineage,),
@@ -444,6 +466,21 @@ async def test_validate_reports_valid_stale_unbound(tmp_path: Path) -> None:
     with pytest.raises(ReportingError) as error:
         await editor.trace_validate(context, session, valid_markdown, "e" * 64)
     assert error.value.code == "request_invalid"
+
+
+@pytest.mark.anyio
+async def test_validate_content_warnings_survive_missing_claim_anchor(tmp_path: Path) -> None:
+    editor, grants, context = await _make_editor_with_subject(tmp_path)
+    raw, _ = await grants.issue(context)
+    _, session = await grants.exchange(raw)
+    markdown = "收入3800万元。字段未填充有效数值。"
+    result = await editor.trace_validate(
+        context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest()
+    )
+    assert result["summary"]["unbound"] == 1
+    assert any("3800万元" in warning for warning in result["warnings"])
+    assert any("直接证据" in warning for warning in result["warnings"])
+
 
 
 @pytest.mark.anyio
@@ -732,3 +769,75 @@ async def test_validate_tables_hint_copied_cells_with_frozen_binding_candidates(
     assert result["tableSummary"]["insertedRows"] == 1
     assert result["tableSummary"]["copiedCells"] == 1
     assert result["tables"][0]["copiedCells"][0]["rowLabel"] == "副本"
+
+
+def test_frozen_amount_anchor_survives_long_block_and_checks_unit_conversion() -> None:
+    from smart_reporting.reporting.trace.subject_builder import anchor_claims
+
+    body = '收入为111.24亿元。\n\n' + '数据说明。' * 100
+    anchored = anchor_claims(body, {'claim_001': (11123541503, '元')})
+    assert '111.24亿元[[claim:claim_001]]。' in anchored
+    assert claim_status(anchored, 'claim_001', 11123541503, expected_unit='元')['status'] == 'valid'
+    assert claim_status(anchored.replace('111.24亿元', '111.25亿元'), 'claim_001', 11123541503, expected_unit='元')['status'] == 'stale'
+    missing = anchor_claims('无数值。', {'claim_001': (11123541503, '元')})
+    assert claim_status(missing, 'claim_001', 11123541503, expected_unit='元')['status'] == 'stale'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_comparison_table_validates_each_frozen_field(tmp_path: Path) -> None:
+    editor, grants, context = await _make_editor_with_subject(tmp_path, comparison_table=True)
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    from smart_reporting.reporting.trace.table_builder import render_table_markdown
+
+    markdown = render_table_markdown("tbl-1", ("数值",), [["本期", "3,600元"], ["同期", "3,000元"], ["变化", "600元"], ["同比", "20%"]])
+    result = await editor.trace_validate(context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["tableSummary"]["valid"] == 4
+    changed = markdown.replace("3,000元", "3,001元")
+    result = await editor.trace_validate(context, session, changed, hashlib.sha256(changed.encode()).hexdigest())
+    assert result["tableSummary"]["valid"] == 3
+    assert result["tableSummary"]["stale"] == 1
+
+
+def test_month_bucket_dates_do_not_warn_on_same_month_prose():
+    from smart_reporting.reporting.trace.subject_builder import fact_periods, unit_period_warnings
+
+    entry = {"periodGranularity": "month", "periodValues": [
+        {"period": "2025-01-01", "value": 10}, {"period": "2025-09-01", "value": 20}]}
+    periods = fact_periods(entry)
+    assert periods == ("2025-01", "2025-09")
+    assert unit_period_warnings("2025年1–9月成本为30元", expected_periods=periods) == []
+    assert unit_period_warnings("2024年1月成本为30元", expected_periods=periods)
+    assert fact_periods({**entry, "periodGranularity": "day"}) == ("2025-01-01", "2025-09-01")
+    assert unit_period_warnings("2025年1月", expected_periods=fact_periods({**entry, "periodGranularity": "day"}))
+
+
+def test_numeric_claim_bindings_only_use_values_present_in_the_local_block():
+    from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+    from smart_reporting.reporting.workflow.checkpoint import SectionArtifact, SectionClaim
+    from smart_reporting.reporting.trace.subject_builder import bind_local_claim_values
+
+    fact_id = "fact-" + "a" * 16
+    claim = SectionClaim(claimId="claim_1", metricCode="income", value=3600, periodBasis="本期",
+        managementQuestion="收入趋势", currentPeriod="2025-09", citationIds=("citation_001",), factIds=(fact_id,))
+    artifact = SectionArtifact(sectionCode="section_001", claims=(claim,), blocks=(
+        ReportDraftBlock(blockId="block_1", markdown="各月收入先升后降，原因待核实。", claimIds=("claim_1",), citationIds=("citation_001",)),))
+    normalized = bind_local_claim_values((artifact,), {fact_id: (3600, "元")})[0]
+    assert normalized.claims[0].fact_ids == ()
+    assert normalized.blocks[0].citation_ids == ("citation_001",)
+    SectionArtifact.model_validate(normalized.model_dump())
+    total_block = artifact.blocks[0].model_copy(update={"markdown": "本期收入为3,600元。"})
+    local = bind_local_claim_values((artifact.model_copy(update={"blocks": (total_block,)}),), {fact_id: (3600, "元")})[0]
+    assert local.claims[0].fact_ids == (fact_id,)
+    assert artifact.claims[0].fact_ids == (fact_id,)
+
+
+def test_bed_day_claim_unit_is_not_truncated_to_beds():
+    from smart_reporting.reporting.trace.subject_builder import unit_period_warnings
+
+    assert unit_period_warnings("累计1,501,876床日。", expected_unit="床日", fact_value=1501876) == []
+    assert unit_period_warnings("累计1,501,876床。", expected_unit="床日", fact_value=1501876)
+    detail = claim_status("累计1,501,876[[claim:claim_1]]床日。", "claim_1", 1501876, expected_unit="床日")
+    assert detail['status'] == 'valid'
+    assert detail['warnings'] == []

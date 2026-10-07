@@ -687,6 +687,8 @@ async def test_visualization_fact_projection_declares_period_value_fields() -> N
                 {
                     "datasetId": "dataset_001",
                     "field": "outpatient_visits",
+                    "total": 100,
+                    "warnings": ["数据质量提示"],
                     "metricCodes": ["outpatient_visits"],
                     "periodValues": [{"period": "2025-01", "value": 100}],
                     "topGroups": [],
@@ -736,6 +738,10 @@ async def test_visualization_fact_projection_declares_period_value_fields() -> N
     )
 
     assert projection["dataPathBase"] == "fileRoot"
+    metric_descriptor = next(item for item in projection["dataDescriptors"] if item["dataPath"] == "metrics[0]")
+    assert "warnings" not in metric_descriptor["fields"]
+    assert "periodValues" not in metric_descriptor["fields"]
+    assert "total" in metric_descriptor["fields"]
     assert projection["metrics"][0]["periodValueFields"] == ["period", "value"]
     assert {
         "dataPath": "metrics[0].periodValues",
@@ -1321,10 +1327,14 @@ async def test_section_generation_switch_preserves_blocks_and_references(
 
     async def fake_stage(agent, schema, stage, payload, **kwargs):
         stages.append(stage)
+        assert payload["numberGuide"][0]["total"]["reference"] == "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
+        assert payload["numberGuide"][0]["datasetId"] == "current"
         decision = select_reporting_thinking(kwargs["thinking_request"])
         assert decision.thinking_budget == (4096 if stage == "content" else 2048)
         if stage == "plan":
             return SectionPlanOutput.model_validate({"kind": "render", **plan})
+        token = "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
+        assert payload["frozenNumbers"][token] == "100元"
         if whole_section:
             assert stage == "content"
             assert payload["sectionPlan"]["blocks"] == plan["blocks"]
@@ -1332,12 +1342,12 @@ async def test_section_generation_switch_preserves_blocks_and_references(
             return schema.model_validate(
                 {
                     "blocks": [
-                        {"blockId": f"block_{index}", "markdown": "收入为100元。"}
+                        {"blockId": f"block_{index}", "markdown": f"收入为{token}。"}
                         for index in (2, 1)
                     ]
                 }
             )
-        return SectionBlockContent(markdown="收入为100元。")
+        return SectionBlockContent(markdown=f"收入为{token}。")
 
     monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
     work_item = _revenue_work_item()
@@ -1345,7 +1355,14 @@ async def test_section_generation_switch_preserves_blocks_and_references(
         sectionCode="section_001",
         files=(
             SectionEvidenceFile(
-                identity=work_item.evidence[0].evidence_files[0], content='{"收入":100}'
+                identity=work_item.evidence[0].evidence_files[0], content=json.dumps({
+                    "analysisId": "analysis_001", "metrics": [{
+                        "factId": "fact-aaaaaaaaaaaaaaaa", "datasetId": "current", "datasetSha256": "a" * 64,
+                        "periodRoles": ["current"], "field": "amount", "fieldRef": "hospital.revenue.amount",
+                        "aggregation": "sum", "unit": "元", "formula": "sum(amount)", "total": 100,
+                        "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+                    }],
+                })
             ),
         ),
         factSummaries=("收入为100元",),
@@ -1365,6 +1382,7 @@ async def test_section_generation_switch_preserves_blocks_and_references(
     assert [block.block_id for block in result.blocks] == ["block_1", "block_2"]
     assert [block.claim_ids for block in result.blocks] == [("claim_1",), ("claim_2",)]
     assert all(block.citation_ids == ("citation_001",) for block in result.blocks)
+    assert all(block.markdown == "收入为100元。" for block in result.blocks)
 
 
 @pytest.mark.anyio
@@ -3070,3 +3088,109 @@ async def test_section_workflow_skips_model_recovery_for_infrastructure_failures
         with pytest.raises(ReportingError, match=code):
             await workflow.run(_section_work_item(), _context())
         recover.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("goal", "count", "expected"), [
+    ("一个分析项，包含一张图表", 1, 1),
+    ("每项分析包含一张图表", 2, 2),
+    ("使用1张图表展示趋势", 1, 1),
+    ("分析成本，生成图表", 1, None),
+    ("生成两张图表", 1, None),
+])
+def test_explicit_chart_count_follows_user_request(goal, count, expected):
+    from smart_reporting.reporting.workflow.runtime.analysis import _limit_requested_charts, _requested_chart_limit
+
+    assert _requested_chart_limit(goal, count) == expected
+    charts = tuple(_chart().model_copy(update={"chart_id": f"chart_{index:03d}", "source_path": f"charts/{index}.png"}) for index in range(3))
+    plan = _visualization_plan(charts=charts)
+    result = _limit_requested_charts(plan, goal, count)
+    assert len(result.charts) == (3 if expected is None else expected)
+    assert result.charts[0].data_bindings == charts[0].data_bindings
+    assert len(plan.charts) == 3
+
+
+@pytest.mark.anyio
+async def test_section_semantic_review_corrects_once_and_stays_soft(monkeypatch):
+    from .test_content_review import _metric
+
+    calls = []
+    async def fake_stage(*args, **kwargs):
+        payload = args[3]
+        calls.append(dict(payload))
+        text = "预算累计6,062,600人次。" if len(calls) == 1 else "预算累计{{value:fact-aaaaaaaaaaaaaaaa:periodTotals.0-9:人次}}。"
+        return SectionContent.model_validate({"blocks": [{"blockId": "block_1", "markdown": text}]})
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0],
+        content=json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(606259,) * 12)]})),), factSummaries=())
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "预算执行", "claimIds": ["claim_1"]}],
+        "claims": [_plan_claim("claim_1")]})
+    result = await reporting_sections._generate_whole_section_content(object(), {}, evidence, work_item, plan,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    assert len(calls) == 2
+    assert "6,062,600人次" in str(calls[1]["correction"]["issues"])
+    assert result.blocks[0].markdown == "预算累计6,062,590人次。"
+    assert result.blocks[0].citation_ids == ("citation_001",)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["timeout", "provider_unreachable"])
+async def test_section_semantic_correction_provider_failure_keeps_previous_content(monkeypatch, failure):
+    calls = []
+    async def fake_stage(*args, **kwargs):
+        calls.append(args[3])
+        if len(calls) > 1:
+            if failure == "provider_unreachable":
+                from agno.exceptions import ModelProviderError
+                raise ModelProviderError("model provider unreachable")
+            raise ReportingError("report_structured_output_timeout", "纠错服务暂不可用")
+        return SectionContent.model_validate({"blocks": [{"blockId": "block_1", "markdown": "字段未填充有效数值，原因待核实。"}]})
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "预算执行", "claimIds": ["claim_1"]}],
+        "claims": [_plan_claim("claim_1")]})
+    result = await reporting_sections._generate_whole_section_content(object(), {},
+        SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+            identity=work_item.evidence[0].evidence_files[0], content="{}"),), factSummaries=()), work_item, plan,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    assert len(calls) == 2
+    assert "待核实" in result.blocks[0].markdown
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["timeout", "provider_unreachable"])
+async def test_block_semantic_correction_provider_failure_keeps_previous_content(monkeypatch, failure):
+    stages = []
+    plan = {"sectionCode": "section_001",
+            "blocks": [{"blockId": "block_1", "objective": "收入", "claimIds": ["claim_1"]}],
+            "claims": [_plan_claim("claim_1")]}
+
+    async def fake_stage(agent, schema, stage, payload, **kwargs):
+        stages.append(stage)
+        if stage == "plan":
+            return SectionPlanOutput.model_validate({"kind": "render", **plan})
+        if "correction" in payload:
+            if failure == "provider_unreachable":
+                from agno.exceptions import ModelProviderError
+                raise ModelProviderError("model provider unreachable")
+            raise ReportingError("report_structured_output_timeout", "纠错服务暂不可用")
+        return SectionBlockContent(markdown="字段未填充有效数值，原因待核实。")
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0], content='{}'),), factSummaries=())
+    result = await reporting_sections._generate_section_in_blocks(object(),
+        {"reportGoal": "分析收入", "sectionGoal": {}}, evidence, work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(), thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    assert stages == ["plan", "block-1", "block-1"]
+    assert "待核实" in result.blocks[0].markdown
+    assert result.blocks[0].citation_ids == ("citation_001",)
