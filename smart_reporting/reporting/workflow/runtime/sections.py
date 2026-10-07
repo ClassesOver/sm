@@ -1171,15 +1171,63 @@ async def _generate_section_in_blocks(
 ) -> SectionDecision:
     """复用章节规划，按开关整章生成或沿用原有逐块生成。"""
 
+    # 规划阶段只收到文件身份，不能要求模型从摘要猜测内容寻址的事实 ID。
+    # 目录仅从本轮已验证 SHA 的证据正文提取，不接受模型提交的编号别名。
+    fact_catalog: list[dict[str, Any]] = []
+    for evidence_file in evidence.files:
+        try:
+            document = json.loads(evidence_file.content)
+        except ValueError:
+            continue
+        if (
+            not isinstance(document, dict)
+            or document.get("analysisId") not in work_item.analysis_ids
+        ):
+            continue
+        for kind in ("metrics", "derivedMetrics", "comparisons", "reconciliations"):
+            for entry in document.get(kind, ()):
+                if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
+                    continue
+                fact_catalog.append(
+                    {
+                        "analysisId": document["analysisId"],
+                        "kind": kind,
+                        **{
+                            key: entry[key]
+                            for key in (
+                                "factId",
+                                "metricCodes",
+                                "code",
+                                "field",
+                                "unit",
+                                "formula",
+                                "periodStart",
+                                "periodEnd",
+                                "periodRoles",
+                                "total",
+                                "value",
+                                "currentTotal",
+                                "baselineTotal",
+                                "change",
+                                "changeRate",
+                            )
+                            if key in entry
+                        },
+                    }
+                )
+    known_fact_ids = {item["factId"] for item in fact_catalog}
     plan_payload = {
         **instruction_payload,
         "generationStage": "plan",
         "evidenceFiles": [
             item.identity.model_dump(mode="json", by_alias=True) for item in evidence.files
         ],
+        "factCatalog": fact_catalog,
         "requiredAction": (
             "证据充足时返回 1 到 12 个必要 block 的结构规划及完整 claims；"
             "block 只包含 blockId、objective、claimIds，不生成 Markdown 正文。"
+            "claim.factIds 必须原样复制 factCatalog 中支持结论的 factId，"
+            "不得自行编造 fact_001 等编号；没有支持该结论的登记事实时不填 factIds。"
         ),
         "requiredOutputShape": {
             "kind": "render",
@@ -1250,9 +1298,25 @@ async def _generate_section_in_blocks(
             )
         decision = _repair_section_plan_references(decision, work_item)
         reference_issues = _section_plan_reference_issues(decision, work_item)
+        for index, claim in enumerate(decision.claims):
+            if set(claim.fact_ids) - known_fact_ids:
+                reference_issues.append(
+                    {
+                        "path": f"$.claims[{index}].factIds",
+                        "type": "unknown_fact_id",
+                        "message": "factIds 必须来自当前冻结事实目录，不得编造编号。",
+                        "allowedValues": sorted(known_fact_ids),
+                    }
+                )
         if not reference_issues:
             break
         if plan_call > _MAX_PLAN_REFERENCE_CORRECTIONS:
+            if any(item["type"] == "unknown_fact_id" for item in reference_issues):
+                raise ReportingError(
+                    "report_claim_fact_unknown",
+                    "章节规划仍包含不存在的登记事实引用。",
+                    details={"issues": reference_issues},
+                )
             # 纠错预算耗尽后交给渲染工具按软告警契约处理：未知指标/管理问题保留并告警，
             # 未知 citation/chart 解绑，失去全部 claim 的 block 并入相邻 block，告警写入
             # 章节产物。只有没有任何 claim 保留事实锚点时才提前失败，避免白跑正文生成。

@@ -1204,6 +1204,11 @@ async def test_facts_listing_and_fact_detail_with_inputs(tmp_path: Path) -> None
     assert listing["analyses"][0]["contentKind"] == "deterministic_bundle"
 
     sources = await editor.trace_sources(_context(), session)
+    manifest = await editor.trace.load_manifest(_context())
+    assert sources["citations"] == [
+        {"citationId": item.citation_id, "datasetId": item.dataset_id}
+        for item in manifest.citations
+    ]
     source_facts = {fact["factId"]: fact for fact in sources["facts"]}
     assert source_facts["fact-" + "a" * 16]["label"].startswith("指标 · ")
     assert source_facts["fact-" + "b" * 16]["label"].startswith("派生指标 · ")

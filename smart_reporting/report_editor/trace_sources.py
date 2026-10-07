@@ -153,6 +153,7 @@ class ReportEditorTraceService:
                 "reason": "source_index_missing",
                 "datasets": [],
             }
+        manifest = await self.load_manifest(context)
         files = {item.resource_id: item for item in index.files}
         field_labels: dict[tuple[str, str], str] = {}
         if analysis_context_file is not None:
@@ -288,6 +289,11 @@ class ReportEditorTraceService:
             "reportId": index.report_id,
             "revision": index.revision,
             "datasets": datasets,
+            "citations": [
+                {"citationId": citation.citation_id, "datasetId": citation.dataset_id}
+                for citation in (manifest.citations if manifest is not None else ())
+                if citation.dataset_id in registered_dataset_ids
+            ],
             "facts": facts,
             "subjects": [
                 {

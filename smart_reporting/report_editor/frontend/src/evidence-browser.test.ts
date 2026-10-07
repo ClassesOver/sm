@@ -7,6 +7,7 @@ import type { EvidenceObjectRef } from './evidence-state'
 const PAYLOADS: Record<string, unknown> = {
   '/api/sources': {
     available: true,
+    citations: [{ citationId: 'citation_001', datasetId: 'dataset-1' }],
     datasets: [
       {
         datasetId: 'dataset-1',
@@ -746,6 +747,15 @@ describe('evidence browser shell', () => {
     expect(shell.querySelector('.evidence-tab-stage')!.textContent).toBe('引用')
     expect(browser._state.currentPage()?.ref.kind).toBe('subject')
     expect(browser._state.currentPage()?.ref.key).toBe('sub-aaaa')
+  })
+
+  it('opens a native report citation through its frozen dataset binding', async () => {
+    const { shell, browser } = setup()
+    await browser.openSubject('citation_001')
+    await flush()
+    expect(browser._state.currentPage()?.ref.kind).toBe('dataset')
+    expect(browser._state.currentPage()?.ref.key).toBe('dataset-1')
+    expect(shell.querySelector<HTMLElement>('.evidence-notice')!.hidden).toBe(true)
   })
 
   it('shows a visible notice when a citation is not in the current revision, cleared on next render', async () => {

@@ -1038,11 +1038,15 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const sources = await loadSources()
       if (!isOpen || intent !== navigationIntent) return
       const subject = sources.subjects?.find((item) => item.subjectId === subjectId)
-      if (!subject) throw new ReportEditorApiError(404, 'source_missing')
-      const ref: EvidenceObjectRef = {
+      const citation = sources.citations?.find(item => item.citationId === subjectId)
+      const dataset = citation && sources.datasets?.find(item => item.datasetId === citation.datasetId)
+      if (!subject && !dataset) throw new ReportEditorApiError(404, 'source_missing')
+      const ref: EvidenceObjectRef = subject ? {
         kind: 'subject',
         key: subject.subjectId,
         label: subjectLabelsFor((sources.subjects ?? []).map((item) => item.subjectId))(subject.subjectId),
+      } : {
+        kind: 'dataset', key: dataset!.datasetId, label: datasetLabel(dataset!, sources.datasets),
       }
       const task = state.openTask(ref, { foreground: true })
       // 正文来源是对象深链，复用任务后仍定位到引用对象；浏览历史由原生导航保留。

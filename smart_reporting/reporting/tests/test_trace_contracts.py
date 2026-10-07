@@ -254,6 +254,17 @@ def test_computation_defaults_to_not_checked() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("chart_id", ["chart_001", "section_001__chart_001", "income__revenue_trend"])
+def test_chart_trace_keeps_registered_chapter_namespace(chart_id: str) -> None:
+    trace = ChartTraceV1(
+        chartId=chart_id, imageFileResourceId=derive_resource_id("chart.png"),
+        plotDataFileResourceIds=(derive_resource_id("chart-input.json"),), datasetIds=("dataset-url-abc",),
+    )
+    assert trace.chart_id == chart_id
+    with pytest.raises(ValidationError):
+        ChartTraceV1(**{**trace.model_dump(by_alias=True), "chartId": "../chart.png"})
+
+
 def test_chart_trace_predicted_series_requires_facts_or_computation() -> None:
     base = dict(
         chartId="chart_001",

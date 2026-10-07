@@ -67,6 +67,7 @@ export interface TraceDatasetInfo {
 }
 
 export interface TraceSources {
+  citations?: { citationId: string; datasetId: string }[]
   facts?: {
     analysisId: string; factId: string; factKind: string; label: string; datasetIds: string[]
     name?: string; periodStart?: string | null; periodEnd?: string | null; periodRoles?: string[]

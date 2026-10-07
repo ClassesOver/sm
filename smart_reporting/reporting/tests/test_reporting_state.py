@@ -716,6 +716,35 @@ def test_submit_visualization_charts_persists_section_submission() -> None:
     assert "section_001" in payload["completedVisualizationSections"]
 
 
+def test_submit_visualization_charts_keeps_plot_data_and_rejects_changed_replay() -> None:
+    from smart_reporting.reporting.workflow.checkpoint import ChartVisualInspectionReceipt
+
+    plot = {"chartId": "chart_a", "files": [make_file_identity("analysis/chart-inputs/chart_a.json")]}
+    receipt = ChartVisualInspectionReceipt(
+        sourcePath="analysis/charts/chart_a.png", sha256="a" * 64,
+        inspectionMode="deterministic", visualReviewStatus="not_run",
+        inspectorId="deterministic-raster-inspector-v1", reviewed=True, requiresRevision=False,
+    ).model_dump(mode="json", by_alias=True)
+    command = {
+        "name": "submit_visualization_charts", "commandId": "plot-data-first",
+        "payload": {
+            "sectionCode": "section_001", "charts": [make_chart_registration("chart_a")],
+            "files": [make_file_identity("analysis/charts/chart_a.png")], "plotDataFiles": [plot],
+            "visualReceipts": [receipt],
+        },
+    }
+    result = ReportingStateReducer.apply(make_visualization_state(), command)
+    assert result.state.payload["visualizationSections"]["section_001"]["plotDataFiles"] == [plot]
+    assert result.state.payload["visualizationSections"]["section_001"]["visualReceipts"] == [receipt]
+    command["commandId"] = "plot-data-identical"
+    repeated = ReportingStateReducer.apply(result.state, command)
+    assert repeated.state.payload["visualizationSections"] == result.state.payload["visualizationSections"]
+    command["commandId"] = "plot-data-changed"
+    command["payload"]["plotDataFiles"] = [{**plot, "files": [{**plot["files"][0], "sha256": "b" * 64}]}]
+    with pytest.raises(ReportingStateError, match="图表事实或文件身份"):
+        ReportingStateReducer.apply(result.state, command)
+
+
 def test_submit_visualization_charts_persists_plotly_companion_and_rejects_changed_replay() -> None:
     chart = make_chart_registration("chart_a") | {
         "renderer": "plotly",

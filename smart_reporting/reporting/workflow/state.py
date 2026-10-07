@@ -499,6 +499,8 @@ def apply(
         charts = arguments.get("charts")
         files = arguments.get("files")
         interactive_files = arguments.get("interactiveFiles", [])
+        plot_data_files = arguments.get("plotDataFiles", [])
+        visual_receipts = arguments.get("visualReceipts", [])
         if not isinstance(section_code, str) or not 1 <= len(section_code) <= 128:
             raise ReportingStateError(
                 "report_visualization_section_invalid", "章节图表提交缺少有效 sectionCode。"
@@ -507,6 +509,8 @@ def apply(
             not isinstance(charts, list)
             or not isinstance(files, list)
             or not isinstance(interactive_files, list)
+            or not isinstance(plot_data_files, list)
+            or not isinstance(visual_receipts, list)
         ):
             raise ReportingStateError(
                 "report_visualization_section_invalid",
@@ -525,13 +529,38 @@ def apply(
                 FileIdentity.model_validate(file).model_dump(mode="json", by_alias=True)
                 for file in interactive_files
             ]
-        except ValidationError as error:
+            parsed_plot_data = [
+                {
+                    "chartId": entry["chartId"],
+                    "files": [
+                        FileIdentity.model_validate(file).model_dump(mode="json", by_alias=True)
+                        for file in entry["files"]
+                    ],
+                }
+                for entry in plot_data_files
+            ]
+            parsed_receipts = [
+                ChartVisualInspectionReceipt.model_validate(receipt).model_dump(
+                    mode="json", by_alias=True
+                )
+                for receipt in visual_receipts
+            ]
+        except (ValidationError, KeyError, TypeError) as error:
             raise ReportingStateError(
                 "report_visualization_section_invalid", "章节图表提交包含无效图表或文件身份。"
             ) from error
 
         chart_ids = [chart["chartId"] for chart in parsed_charts]
         source_paths = [chart["sourcePath"] for chart in parsed_charts]
+        plot_chart_ids = [entry["chartId"] for entry in parsed_plot_data]
+        if (
+            len(plot_chart_ids) != len(set(plot_chart_ids))
+            or set(plot_chart_ids) - set(chart_ids)
+            or any(not entry["files"] for entry in parsed_plot_data)
+        ):
+            raise ReportingStateError(
+                "report_visualization_section_invalid", "作图数据必须绑定本次提交的唯一图表。"
+            )
         for chart in parsed_charts:
             if chart["renderer"] == "matplotlib":
                 chart.pop("renderer")
@@ -581,6 +610,8 @@ def apply(
                 existing_charts != parsed_charts
                 or existing_files != parsed_files
                 or existing_interactive_files != parsed_interactive_files
+                or existing_section.get("plotDataFiles", []) != parsed_plot_data
+                or existing_section.get("visualReceipts", []) != parsed_receipts
             ):
                 raise ReportingStateError(
                     "report_visualization_section_conflict",
@@ -624,6 +655,10 @@ def apply(
         sections[section_code] = {"charts": parsed_charts, "files": parsed_files}
         if parsed_interactive_files:
             sections[section_code]["interactiveFiles"] = parsed_interactive_files
+        if parsed_plot_data:
+            sections[section_code]["plotDataFiles"] = parsed_plot_data
+        if parsed_receipts:
+            sections[section_code]["visualReceipts"] = parsed_receipts
         completed = payload.setdefault("completedVisualizationSections", [])
         if not isinstance(completed, list):
             raise ReportingStateError(

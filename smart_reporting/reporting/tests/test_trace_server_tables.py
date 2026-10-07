@@ -108,6 +108,27 @@ def test_build_analysis_table_generates_period_rows_from_bundle() -> None:
     assert "2025-09" in markdown and "3,600" in markdown
 
 
+def test_build_analysis_table_binds_unique_current_fact_with_same_code_yoy() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import PeriodValue
+
+    bundle = _bundle()
+    current = bundle.metrics[0].model_copy(update={"fact_id": "fact-" + "a" * 16})
+    baseline = current.model_copy(update={
+        "fact_id": "fact-" + "b" * 16, "dataset_id": "previous", "period_roles": ("yoy",),
+        "period_values": (PeriodValue(period="2024-09", value=3000),),
+    })
+    bundle = bundle.model_copy(update={"metrics": (baseline, current)})
+    built = build_analysis_table(bundle, fact_file_resource_id=FACT_RESOURCE)
+    assert built is not None
+    trace, markdown = built
+    assert trace.row_keys == ("period:2025-09",)
+    assert trace.cells[0].fact_refs[0].json_pointer == "/metrics/1"
+    assert trace.cells[0].fact_refs[0].fact_key == current.fact_id
+    assert "3,600" in markdown and "2024-09" not in markdown
+    ambiguous = bundle.model_copy(update={"metrics": (current, current)})
+    assert build_analysis_table(ambiguous, fact_file_resource_id=FACT_RESOURCE) is None
+
+
 def test_build_analysis_table_skips_bundle_without_periods() -> None:
     bundle = _bundle()
     # 构造无分期间值的 bundle：清空 periodValues。

@@ -1609,6 +1609,95 @@ async def _generate_with_plan(
 
 
 @pytest.mark.anyio
+async def test_section_plan_rejects_invented_fact_ids_before_body_generation(monkeypatch):
+    stages: list[str] = []
+    plan = {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+        "claims": [_plan_claim("claim_001", factIds=["fact_001"])],
+    }
+    with pytest.raises(ReportingError) as raised:
+        await _generate_with_plan(monkeypatch, plan, stages)
+    assert raised.value.code == "report_claim_fact_unknown"
+    assert stages == ["plan", "plan", "plan"]
+
+
+@pytest.mark.anyio
+async def test_section_plan_supplies_frozen_fact_catalog_and_corrects_alias(monkeypatch):
+    work_item = _revenue_work_item()
+    fact_id = "fact-2762d4b6dbc7dd82"
+    document = {
+        "analysisId": "analysis_001",
+        "metrics": [
+            {
+                "factId": fact_id,
+                "total": 100,
+                "unit": "元",
+                "periodStart": "2025-01-01",
+            }
+        ],
+    }
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        factSummaries=("收入为100元",),
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0], content=json.dumps(document)
+            ),
+        ),
+    )
+    stages: list[str] = []
+
+    async def fake_run_stage(_agent, _schema, stage, payload, **_kwargs):
+        stages.append(stage)
+        if stage == "plan":
+            assert payload["factCatalog"] == [
+                {
+                    "analysisId": "analysis_001",
+                    "kind": "metrics",
+                    "factId": fact_id,
+                    "total": 100,
+                    "unit": "元",
+                    "periodStart": "2025-01-01",
+                }
+            ]
+            if stages.count("plan") == 2:
+                issue = payload["correction"]["issues"][0]
+                assert issue["type"] == "unknown_fact_id"
+                assert issue["allowedValues"] == [fact_id]
+            return SectionPlanOutput.model_validate(
+                {
+                    "kind": "render",
+                    "sectionCode": "section_001",
+                    "blocks": [
+                        {"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}
+                    ],
+                    "claims": [
+                        _plan_claim(
+                            "claim_001",
+                            factIds=["fact_001" if stages.count("plan") == 1 else fact_id],
+                        )
+                    ],
+                }
+            )
+        return SectionBlockContent(markdown="### 收入规模\n\n收入为100元。")
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+    result = await reporting_sections._generate_section_in_blocks(
+        object(),
+        {},
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+    )
+    assert result.claims[0].fact_ids == (fact_id,)
+    assert stages == ["plan", "plan", "block-1"]
+
+
+@pytest.mark.anyio
 async def test_section_plan_passes_unresolved_references_to_render_after_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

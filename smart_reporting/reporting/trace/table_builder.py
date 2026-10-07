@@ -72,8 +72,11 @@ def build_table_trace(
         raise ReportingError("request_invalid", "表格至少需要一行。")
 
     facts_by_code: dict[str, Any] = {}
+    selected_fact_ids = spec.get("factIds", {})
     for fact in bundle.metrics:
         for code in fact.metric_codes:
+            if code in selected_fact_ids and fact.fact_id != selected_fact_ids[code]:
+                continue
             # 同一 code 多个 fact（多数据集/多范围）时拒绝装配，避免猜。
             if code in facts_by_code:
                 raise ReportingError(
@@ -189,20 +192,23 @@ def build_analysis_table(
     """按 B0 冻结规则从一个分析 bundle 自动生成服务端指标期间表。
 
     规则（不发明内容，缺依据就不生成）：
-    - 列 = 权威 metric code 唯一对应一个 fact 的指标；歧义 code 跳过；
+    - 列 = 唯一指标事实，或同代码下唯一的本期事实；其他歧义 code 跳过；
     - 行 = 这些指标 periodValues 的期间并集（按首个 fact 的冻结顺序）；
     - 无可用指标或无分期间值 → 返回 None，不生成空表。
     """
 
-    facts_by_code: dict[str, Any] = {}
-    ambiguous: set[str] = set()
+    candidates: dict[str, list[Any]] = {}
     for fact in bundle.metrics:
         for code in fact.metric_codes:
-            if code in facts_by_code:
-                ambiguous.add(code)
-                continue
-            facts_by_code[code] = fact
-    codes = [code for code in facts_by_code if code not in ambiguous]
+            candidates.setdefault(code, []).append(fact)
+    facts_by_code: dict[str, Any] = {}
+    for code, facts in candidates.items():
+        current = [fact for fact in facts if "current" in fact.period_roles and fact.fact_id]
+        if len(facts) == 1:
+            facts_by_code[code] = facts[0]
+        elif len(current) == 1:
+            facts_by_code[code] = current[0]
+    codes = list(facts_by_code)
     if not codes:
         return None
     selected = [facts_by_code[code] for code in codes]
@@ -220,6 +226,7 @@ def build_analysis_table(
     spec: dict[str, Any] = {
         "tableId": f"table-{bundle.analysis_id}",
         "metricCodes": codes,
+        "factIds": {code: fact.fact_id for code, fact in facts_by_code.items() if fact.fact_id},
         "rows": rows,
         "caption": f"服务端冻结指标表（{bundle.analysis_id}）",
     }

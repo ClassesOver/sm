@@ -482,6 +482,10 @@ try {
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
   const evidenceView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+  // 未编辑时保留服务器原文；解析器的格式化和元数据事务不是用户编辑。
+  let savedEditorDoc = evidenceView.state.doc
+  getEditorMarkdown = () => evidenceView.state.doc.eq(savedEditorDoc)
+    ? lastSavedMarkdown : restoreProtocolMarkers(crepe.getMarkdown())
   const bodySources = client.sources().catch(() => null)
   let bodySourceIntent = 0
   refreshBodySourceLinks = (result) => {
@@ -528,10 +532,10 @@ try {
   const { installSlashMenuHeadingPreview } = await import('./slash-menu-preview')
   installSlashMenuHeadingPreview()
   crepe.on((listener) => {
-    listener.markdownUpdated((_ctx, serialized) => {
+    listener.markdownUpdated(() => {
       // Milkdown 序列化会把协议标记转义为 \[\[...]]；变更检测、本地草稿和保存必须
       // 统一使用还原后的 Markdown，否则服务端导出找不到章节标识。
-      const markdown = restoreProtocolMarkers(serialized)
+      const markdown = getEditorMarkdown()
       if (metricsLabel) metricsLabel.textContent = documentMetrics(markdown)
       if (outlineFrame !== undefined) window.cancelAnimationFrame(outlineFrame)
       outlineFrame = window.requestAnimationFrame(() => {
@@ -617,6 +621,7 @@ try {
         // 历史版本可能包含当前正文没有的协议标记；flush 重建 EditorState，避免
         // protocolMarkerPlugin 的 filterTransaction 把整笔替换拦截掉。
         crepe.editor.action(replaceAll(restored.markdown, true))
+        savedEditorDoc = evidenceView.state.doc
         window.clearTimeout(saveTimer)
         scheduleSourceValidation()
         status(`已恢复第 ${restored.sourceRevision ?? historyRevision} 版及来源`)
@@ -680,6 +685,7 @@ try {
     saveState?.beginSave()
     const saveStartedAt = performance.now()
     const savingMarkdown = markdown
+    const savingEditorDoc = evidenceView.state.doc
     savePromise = client
       .save(savingMarkdown, sha256)
       .then(async (saved) => {
@@ -689,6 +695,7 @@ try {
         }
         sha256 = saved.sha256
         lastSavedMarkdown = savingMarkdown
+        savedEditorDoc = savingEditorDoc
         saveState?.saved(savingMarkdown)
         if (currentMarkdown === savingMarkdown) draftController?.clear()
         historyController.record(savedLabel(), savingMarkdown)
@@ -753,6 +760,7 @@ try {
       crepe.editor.action(replaceAll(latest.markdown, true))
       sha256 = latest.sha256
       lastSavedMarkdown = latest.markdown
+      savedEditorDoc = evidenceView.state.doc
       currentMarkdown = latest.markdown
       saveState?.reset(latest.markdown)
       status(savedLabel())

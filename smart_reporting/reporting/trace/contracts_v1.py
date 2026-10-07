@@ -39,7 +39,7 @@ TRACE_COMPUTATION_ID_PATTERN = r"^comp-[0-9a-f]{16}$"
 # 与现有交付产物一致的标识空间。
 TRACE_DATASET_ID_PATTERN = r"^dataset-[A-Za-z0-9-]{6,64}$"
 TRACE_ANALYSIS_ID_PATTERN = r"^analysis_[0-9]{3,6}$"
-TRACE_CHART_ID_PATTERN = r"^chart_[A-Za-z0-9_.:-]{1,120}$"
+TRACE_CHART_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,128}$"
 TRACE_TABLE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 TRACE_STRUCTURE_KEY_PATTERN = r"^[^\r\n]{1,128}$"
 # ISO8601 UTC 时间戳；物化时间未知时为 null，禁止用 mtime 推断（计划 3.2）。
