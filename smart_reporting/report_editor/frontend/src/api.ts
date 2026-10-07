@@ -70,6 +70,7 @@ export interface TraceSources {
   citations?: { citationId: string; datasetId: string }[]
   facts?: {
     analysisId: string; factId: string; factKind: string; label: string; datasetIds: string[]
+    analysisName?: string | null
     name?: string; periodStart?: string | null; periodEnd?: string | null; periodRoles?: string[]
     comparisonType?: string | null; displayValue?: unknown; unit?: string | null
   }[]
@@ -172,6 +173,7 @@ export interface TraceFactRefLite {
 
 export interface TraceFactDetail {
   analysisId: string
+  analysisName?: string | null
   factId: string | null
   factKind: string
   displayValue: number | string | null
@@ -214,6 +216,7 @@ export interface TraceChartSource {
 
 export interface TraceValidation {
   draftSha256: string
+  warnings?: string[]
   subjects: {
     subjectId: string
     claimId: string

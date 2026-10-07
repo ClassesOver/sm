@@ -6,7 +6,7 @@ export function sourceValidationIssueCount(result: TraceValidation): number {
   ).length
   const table = result.tableSummary
   const chartIssues = result.charts?.filter((chart) => chart.status !== 'valid').length ?? 0
-  return result.summary.stale + result.summary.unbound + warningSubjects +
+  return (result.warnings?.length ?? 0) + result.summary.stale + result.summary.unbound + warningSubjects +
     (table ? table.stale + table.unbound + table.insertedRows + (table.copiedCells ?? 0) : 0) + chartIssues
 }
 

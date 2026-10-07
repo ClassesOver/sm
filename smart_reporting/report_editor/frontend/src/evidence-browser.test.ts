@@ -99,8 +99,13 @@ afterEach(() => {
 })
 
 describe('evidence browser shell', () => {
-  it('distinguishes equally named fact tasks by analysis in tabs and task actions', async () => {
+  it.each([false, true])('distinguishes equally named fact tasks by analysis in tabs and task actions (registered names: %s)', async (named) => {
     const client = makeClient()
+    const names = named ? ['2025年收入汇总', '2025年收入同比分析'] : ['分析 001', '分析 002']
+    if (named) vi.spyOn(client, 'sources').mockResolvedValue({ available: true, facts: names.map((analysisName, index) => ({
+      analysisId: `analysis_00${index + 1}`, analysisName, factId: 'same-fact',
+      factKind: 'metric', label: '收入 · 本期 · 2025-01', datasetIds: [],
+    })) })
     vi.spyOn(client, 'factDetail').mockImplementation(async (analysisId, factId) => ({
       analysisId, factId, factKind: 'metric', displayValue: 100,
       entry: { field: '收入', unit: '元' }, inputFactRefs: [], warnings: [],
@@ -111,19 +116,19 @@ describe('evidence browser shell', () => {
     browser.openObject({ ...fact('same-fact', label), analysisId: 'analysis_002' })
     await flush()
     expect(browser._state.store.tasks.map(task => task.root.label)).toEqual([label, label])
-    expect([...shell.querySelectorAll('.evidence-tab-analysis')].map(node => node.textContent)).toEqual(['分析 001', '分析 002'])
+    expect([...shell.querySelectorAll('.evidence-tab-analysis')].map(node => node.textContent)).toEqual(names)
     const tabs = shell.querySelectorAll<HTMLButtonElement>('.evidence-tab:has(.evidence-tab-name)')
     expect(tabs[0].title).not.toBe(tabs[1].title)
     const closes = shell.querySelectorAll<HTMLButtonElement>('.evidence-tab-close')
-    expect(closes[0].getAttribute('aria-label')).toContain('分析 001')
-    expect(closes[1].getAttribute('aria-label')).toContain('分析 002')
+    expect(closes[0].getAttribute('aria-label')).toContain(names[0])
+    expect(closes[1].getAttribute('aria-label')).toContain(names[1])
     const items = shell.querySelectorAll<HTMLButtonElement>('.evidence-task-items button')
-    expect(items[1].textContent).toContain('分析 001')
-    expect(items[2].textContent).toContain('分析 002')
+    expect(items[1].textContent).toContain(names[0])
+    expect(items[2].textContent).toContain(names[1])
     items[1].click()
     await flush()
     expect(browser._state.currentPage()?.ref.analysisId).toBe('analysis_001')
-    expect(shell.querySelector('.evidence-announcer')?.textContent).toContain('分析 001')
+    expect(shell.querySelector('.evidence-announcer')?.textContent).toContain(names[0])
     shell.querySelectorAll<HTMLButtonElement>('.evidence-tab-close')[1].click()
     expect(browser._state.currentPage()?.ref.analysisId).toBe('analysis_001')
     const restore = [...shell.querySelectorAll<HTMLButtonElement>('.evidence-task-items button')]
@@ -135,7 +140,7 @@ describe('evidence browser shell', () => {
     shell.querySelectorAll<HTMLButtonElement>('.evidence-tab-close')[1].click()
     await flush()
     expect(browser._state.currentPage()?.ref.analysisId).toBe('analysis_001')
-    expect(shell.querySelector('.evidence-announcer')?.textContent).toContain('分析 001')
+    expect(shell.querySelector('.evidence-announcer')?.textContent).toContain(names[0])
     browser.reset()
     root.remove()
   })

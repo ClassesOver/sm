@@ -32,6 +32,7 @@ import {
 } from './evidence-relations'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
+import { sourceSubjectStatus } from './source-status'
 import { ArrowRight, CircleAlert, createElement, Expand, ExternalLink, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut } from 'lucide'
 
 type GraphPoint3d = { x: number; y: number; z: number }
@@ -2182,6 +2183,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
         computation,
         citingSubjects,
       }
+      detail.analysisName ||= sources.facts?.find(item => item.analysisId === detail.analysisId && item.factId === detail.factId)?.analysisName
       ctx.setPageData(data)
     } catch (error) {
       if (ctx.isStale()) return
@@ -2195,8 +2197,10 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   container.innerHTML = ''
   const { detail } = data
   const entry = detail.entry as Record<string, unknown>
-  const unit = typeof entry.unit === 'string' ? entry.unit : ''
-  const skeleton = buildSkeleton(container, ctx, `${FACT_KIND_LABELS[detail.factKind] ?? detail.factKind} · 分析 ${detail.analysisId} · ${ctx.revisionLabel}`)
+  const unit = entry.total == null && entry.percentage != null ? '%'
+    : detail.factKind === 'derived' && entry.value != null ? ''
+    : typeof entry.unit === 'string' ? entry.unit : ''
+  const skeleton = buildSkeleton(container, ctx, `${FACT_KIND_LABELS[detail.factKind] ?? detail.factKind} · ${detail.analysisName || `分析 ${detail.analysisId.replace('analysis_', '')}`} · ${ctx.revisionLabel}`)
   const name = data.name || entry.field || entry.code || (detail.factKind === 'correlation' && entry.leftField && entry.rightField
     ? `${entry.leftField} / ${entry.rightField}` : null)
   if (typeof name === 'string' && name.trim()) skeleton.title.textContent = name
@@ -2276,7 +2280,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
     for (const subject of data.citingSubjects) {
       const chip = document.createElement('span')
       chip.className = 'evidence-status-chip'
-      const entryResult = data.validation.subjects.find((item) => item.subjectId === subject.subjectId)
+      const entryResult = sourceSubjectStatus(data.validation, subject)
       chip.dataset.status = entryResult?.status ?? 'unbound'
       const status = entryResult ? (CITATION_STATUS_LABELS[entryResult.status] ?? entryResult.status) : '未绑定'
       const ref = subjectRef(subject.subjectId)
@@ -3146,13 +3150,7 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   let citationWarning: HTMLElement | null = null
   if (data.validation) {
     const value = makeStatusRow(skeleton.statusArea, '引用状态', 'citation')
-    const cellLocation = detail.subjectKind === 'table_cell'
-      ? data.validation.tables?.find(item => item.tableId === detail.locator.tableId)?.locations
-          ?.find(item => item.rowKey === detail.locator.rowKey && item.columnKey === detail.locator.columnKey)
-      : undefined
-    const entryResult = cellLocation?.status
-      ? { status: cellLocation.status, warnings: [] }
-      : data.validation.subjects.find((item) => item.subjectId === detail.subjectId)
+    const entryResult = sourceSubjectStatus(data.validation, detail)
     const chip = document.createElement('span')
     chip.className = 'evidence-status-chip'
     chip.dataset.status = entryResult?.status ?? 'unbound'

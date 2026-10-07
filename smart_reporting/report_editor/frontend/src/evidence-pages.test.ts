@@ -243,6 +243,17 @@ describe('事实页', () => {
     expect(container.querySelector('.evidence-fact-inputs')?.textContent).not.toContain('fact-input')
   })
 
+  it('shows budget completion as a percentage rather than the numerator monetary unit', async () => {
+    const fetcher = factFetcher()
+    const { container, ctx } = setupPage(async (input, init) => String(input).includes('/api/facts/')
+      ? json({ ...FACT_DETAIL, factKind: 'derived', displayValue: 120,
+        entry: { code: 'budget_rate', numeratorMetric: 'actual', denominatorMetric: 'budget',
+          numerator: 12000, denominator: 10000, value: 1.2, percentage: 120, unit: '元' } })
+      : fetcher(input, init), FACT_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('.evidence-fact-value')?.textContent).toBe('登记值 120 %')
+  })
+
   it('explains a comparison using current value, baseline value and registered percentage points', async () => {
     const fetcher = factFetcher()
     const { container, ctx } = setupPage(async (input, init) => String(input).includes('/api/facts/')

@@ -3,6 +3,7 @@ import { ReportEditorApiError } from './api'
 // 导出改为后台任务后会出现更多具体错误码；按错误码给出可操作的提示，
 // 不能让 409/504 等状态码统一落成“保存冲突”“操作失败”。
 const CODE_LABELS: Record<string, string> = {
+  report_editor_ai_review_pending: '请先完成 AI 候选的接受或拒绝，再保存或导出',
   report_editor_revision_stale: '已有更新版本 · 请打开最新版本的编辑链接',
   report_editor_revision_conflict: '新版本已存在 · 请重新载入',
   report_editor_export_running: '当前版本正在导出 · 请等待完成',

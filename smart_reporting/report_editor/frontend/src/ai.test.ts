@@ -3,13 +3,35 @@ import { describe, expect, it, vi } from 'vitest'
 import { configureSelectionAISuggestions, resolveSelectionAIAction, selectionAIProvider } from './ai'
 
 describe('selectionAIProvider', () => {
+  it('keeps references locally and releases only a complete candidate', async () => {
+    const streamRewrite = vi.fn(async function* (selection: string) { yield selection.replace('原文', '润色后') })
+    const provider = selectionAIProvider({ streamRewrite })
+    const chunks = await Array.fromAsync(provider({ document: '', selection: '原文[[citation:revenue_001]]原文[[claim:claim_001]]', instruction: 'polish' }, new AbortController().signal))
+    expect(chunks).toEqual(['润色后[[citation:revenue_001]]润色后[[claim:claim_001]]'])
+    expect(streamRewrite.mock.calls.map(call => call[0])).toEqual(['原文', '原文'])
+  })
+
+  it('does not release partial content when a later segment fails', async () => {
+    const streamRewrite = vi.fn(async function* (selection: string) {
+      if (selection === '失败') throw new Error('network')
+      yield '已改写'
+    })
+    const chunks: string[] = []
+    await expect((async () => {
+      for await (const chunk of selectionAIProvider({ streamRewrite })({ document: '', selection: '原文[[citation:revenue_001]]失败', instruction: 'polish' }, new AbortController().signal)) chunks.push(chunk)
+    })()).rejects.toThrow('network')
+    expect(chunks).toEqual([])
+  })
+
+  it('rejects invented source markers returned by the model', async () => {
+    const provider = selectionAIProvider({ streamRewrite: async function* () { yield '改写[[citation:fake]]' } })
+    await expect(Array.fromAsync(provider({ document: '', selection: '原文', instruction: 'polish' }, new AbortController().signal))).rejects.toThrow('无效引用')
+  })
   it.each([
     ['', 'polish'],
     ['正文', 'unknown'],
-    ['正文 [[citation:x]]', 'polish'],
     ['[[section:summary]] 正文', 'shorten'],
     // Crepe 序列化后的选区形态：协议标记已被转义。
-    ['正文\\[\\[citation:revenue\\_001]]', 'polish'],
     ['\\[\\[section:summary]]\n\n正文', 'expand'],
   ])('rejects invalid selection or action before the API call', async (selection, instruction) => {
     const streamRewrite = vi.fn()
@@ -41,7 +63,7 @@ describe('selectionAIProvider', () => {
       ),
     )
 
-    expect(chunks).toEqual(['改写后的', '正文'])
+    expect(chunks).toEqual(['改写后的正文'])
     expect(streamRewrite).toHaveBeenCalledWith(
       '原始正文',
       'professional',

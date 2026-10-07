@@ -31,6 +31,25 @@ export function factLabel(fact: NonNullable<TraceSources['facts']>[number]): str
   return fact.name ? [fact.name, factPeriodLabel(fact)].filter(Boolean).join(' · ') : fact.label
 }
 
+/** 使用冻结分析的业务问题命名，旧报告保留编号作为回退。 */
+export function analysisLabel(analysisId: string, sources?: TraceSources): string {
+  return sources?.facts?.find(fact => fact.analysisId === analysisId && fact.analysisName?.trim())?.analysisName?.trim()
+    || `分析 ${analysisId.replace('analysis_', '')}`
+}
+
+/** 引用名称来自登记快照及其指标事实，不把内部 citationId 当业务名称。 */
+export function citationLabel(citationId: string, sources?: TraceSources): string {
+  const citation = sources?.citations?.find(item => item.citationId === citationId)
+  const dataset = sources?.datasets?.find(item => item.datasetId === citation?.datasetId)
+  if (!dataset) return '数据来源'
+  const facts = sources?.facts?.filter(fact => fact.factKind === 'metric' && fact.datasetIds.includes(dataset.datasetId)) ?? []
+  const names = [...new Set(facts.map(fact => fact.name?.trim()).filter(Boolean))]
+  const periods = [...new Set(facts.map(fact => [fact.periodStart, fact.periodEnd].filter(Boolean).join(' — ')).filter(Boolean))]
+  const roles: Record<string, string> = { current: '本期', yoy: '同比基期', mom: '环比基期' }
+  return [names.join('、') || datasetLabel(dataset, sources?.datasets),
+    dataset.periodRoles.map(role => roles[role] ?? role).join(' / '), periods.join('、')].filter(Boolean).join(' · ')
+}
+
 export function datasetLabel(dataset: TraceDatasetInfo, datasets: TraceDatasetInfo[] = []): string {
   const name = dataset.businessLabel?.trim() || dataset.filename?.trim()
   if (name) return name

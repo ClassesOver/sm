@@ -55,9 +55,31 @@ export function selectionAIProvider(client: SelectionAIClient): AIProvider {
     const action = resolveSelectionAIAction(context.instruction)
     if (!action) throw new Error('report_editor_ai_action_invalid')
     // Crepe 以 Markdown 序列化选区，协议标记会被转义为 \[\[...]]，需还原后再识别。
-    if (findProtocolMarkers(restoreProtocolMarkers(selection)).length > 0) {
-      throw new Error('report_editor_ai_protocol_marker')
+    const original = restoreProtocolMarkers(selection)
+    const markers = findProtocolMarkers(original)
+    if (markers.some(marker => ['section', 'table', 'table-close'].includes(marker.kind))) {
+      throw new Error('请缩小选区，选择同一段正文；章节边界和整张表格暂不支持 AI 改写。')
     }
-    yield* client.streamRewrite(selection, action, signal)
+    // 完整接收后再提交给原生差异审阅。引用由编辑器拼回，既不传给模型，也不让
+    // 流式片段暂时删掉引用；失败或取消时由原生 streaming 恢复原文。
+    let cursor = 0
+    let rewritten = ''
+    for (const marker of [...markers, { start: original.length, end: original.length, raw: '' }]) {
+      const text = original.slice(cursor, marker.start)
+      if (text.trim()) {
+        let output = ''
+        for await (const chunk of client.streamRewrite(text, action, signal)) {
+          if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+          output += chunk
+        }
+        if (!output.trim()) throw new Error('AI 未返回改写内容，已保留原文。')
+        if (findProtocolMarkers(restoreProtocolMarkers(output)).length) throw new Error('AI 返回了无效引用，已保留原文。')
+        rewritten += output
+      } else rewritten += text
+      rewritten += marker.raw
+      cursor = marker.end
+    }
+    if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+    yield rewritten
   }
 }

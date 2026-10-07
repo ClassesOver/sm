@@ -16,6 +16,11 @@ const deferred = <T>() => {
 }
 
 describe('source validation', () => {
+  it('counts amount conversion warnings even without a nearby claim binding', () => {
+    const result = validation('draft')
+    result.warnings = ['金额单位换算不一致']
+    expect(sourceValidationIssueCount(result)).toBe(1)
+  })
   it('counts deleted or stale charts alongside claim and table issues', () => {
     const result = validation('draft')
     result.charts = [

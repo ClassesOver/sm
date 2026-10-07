@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { TraceSources } from './api'
 import {
+  citationLabel,
   assembleChartRelations,
   assembleComputationRelations,
   assembleDatasetRelations,
@@ -14,6 +15,25 @@ import {
   subjectShortFromLabel,
   subjectShortTail,
 } from './evidence-relations'
+
+it('names citations by the registered metric, role and dataset period', () => {
+  const sources: TraceSources = {
+    available: true,
+    citations: [{ citationId: 'citation_001', datasetId: 'current' }, { citationId: 'citation_002', datasetId: 'baseline' }],
+    datasets: ['current', 'baseline'].map((datasetId, index) => ({
+      datasetId, sourceType: 'csv', requirementId: 'revenue', filename: null, businessLabel: '收入台账',
+      rowCount: 1, size: 1, materializedAt: null, queryWindowId: datasetId, periodRoles: [index ? 'yoy' : 'current'],
+    })),
+    facts: ['current', 'current', 'baseline'].map((datasetId, index) => ({
+      analysisId: `analysis_00${index + 1}`, factId: `fact-${index}`, factKind: 'metric', name: '医疗收入', label: '医疗收入',
+      datasetIds: [datasetId], periodStart: datasetId === 'current' ? '2025-01-01' : '2024-01-01',
+      periodEnd: datasetId === 'current' ? '2025-11-01' : '2024-12-01',
+    })),
+  }
+  expect(citationLabel('citation_001', sources)).toBe('医疗收入 · 本期 · 2025-01-01 — 2025-11-01')
+  expect(citationLabel('citation_002', sources)).toBe('医疗收入 · 同比基期 · 2024-01-01 — 2024-12-01')
+  expect(citationLabel('citation_unknown', sources)).toBe('数据来源')
+})
 import type { EvidenceObjectRef } from './evidence-state'
 
 const FACT_REF: EvidenceObjectRef = {

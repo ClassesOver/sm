@@ -10,7 +10,7 @@ import {
   type EvidenceTask,
 } from './evidence-state'
 import { appendHighlighted, groupDigits, renderEvidencePage } from './evidence-pages'
-import { datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabelsFor } from './evidence-relations'
+import { analysisLabel, citationLabel, datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabelsFor } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
@@ -18,7 +18,7 @@ function sourceSubjectLabel(subject: NonNullable<TraceSources['subjects']>[numbe
   if (subject.subjectKind === 'table_cell') {
     const ref = subject.factRefs[0]
     const fact = sources.facts?.find(item => item.analysisId === ref?.analysisId && item.factId === ref?.factId)
-    if (fact) return `${subject.locator.rowKey?.replace(/^period:/, '')} · ${fact.name || fact.label} · 分析 ${fact.analysisId.replace('analysis_', '')}`
+    if (fact) return `${subject.locator.rowKey?.replace(/^period:/, '')} · ${fact.name || fact.label} · ${analysisLabel(fact.analysisId, sources)}`
   }
   return subjectLabelsFor((sources.subjects ?? []).map(item => item.subjectId))(subject.subjectId)
 }
@@ -64,15 +64,12 @@ const SOURCE_UNAVAILABLE_LABELS: Record<string, string> = {
   snapshot_expired: '数据快照已超过保留期，登记信息仍可查看，明细不可用',
 }
 
-function taskAnalysisLabel(ref: EvidenceObjectRef): string {
-  return ref.kind === 'fact' && ref.analysisId ? `分析 ${ref.analysisId.replace('analysis_', '')}` : ''
-}
-
-function taskDisplayLabel(ref: EvidenceObjectRef): string {
-  return [ref.label, taskAnalysisLabel(ref)].filter(Boolean).join(' · ')
-}
-
 export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowserOptions) {
+  let registeredSources: TraceSources | undefined
+  const taskAnalysisLabel = (ref: EvidenceObjectRef): string =>
+    ref.kind === 'fact' && ref.analysisId ? analysisLabel(ref.analysisId, registeredSources) : ''
+  const taskDisplayLabel = (ref: EvidenceObjectRef): string =>
+    [ref.label, taskAnalysisLabel(ref)].filter(Boolean).join(' · ')
   const storageKey = options.storageKey ?? 'smart-reporting-evidence-session'
   const loadStore = (): EvidenceStore | undefined => {
     try {
@@ -565,7 +562,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   const loadSources = (): Promise<TraceSources> => {
     if (!sourcesPromise) {
       sourcesController = new AbortController()
-      const request = options.client.sources(sourcesController.signal).catch((error) => {
+      const request = options.client.sources(sourcesController.signal).then(sources => {
+        if (sourcesPromise === request) registeredSources = sources
+        return sources
+      }).catch((error) => {
         if (sourcesPromise === request) sourcesPromise = null
         throw error
       })
@@ -608,7 +608,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     const idOnlyHits = new Set<EvidenceObjectRef>()
     for (const ref of directoryRefs) {
       const analysis = ref.kind === 'fact' && ref.analysisId
-        ? `${ref.analysisId}\n分析 ${ref.analysisId.replace('analysis_', '')}`.toLowerCase() : ''
+        ? `${ref.analysisId}\n${analysisLabel(ref.analysisId, registeredSources)}`.toLowerCase() : ''
       if (filter && !ref.label.toLowerCase().includes(filter) && !analysis.includes(filter)) {
         if (!ref.key.toLowerCase().includes(filter)) continue
         idOnlyHits.add(ref)
@@ -659,7 +659,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
           }
           const analysis = document.createElement('span')
           analysis.className = 'evidence-directory-analysis'
-          appendHighlighted(analysis, `分析 ${fact.analysisId.replace('analysis_', '')}`, filter)
+          appendHighlighted(analysis, analysisLabel(fact.analysisId, registeredSources), filter)
           meta.append(analysis)
           item.append(meta)
         }
@@ -822,6 +822,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         const current = state.currentPage()
         const title = workspace.querySelector<HTMLElement>('.evidence-object-title')
         if (current && title && title.textContent !== current.ref.label) title.textContent = current.ref.label
+      } else if (sources.facts?.some(fact => fact.analysisName?.trim())) {
+        renderTabs()
       }
     } catch {
       if (stale()) return
@@ -1054,7 +1056,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         key: subject.subjectId,
         label: sourceSubjectLabel(subject, sources),
       } : {
-        kind: 'dataset', key: dataset!.datasetId, label: datasetLabel(dataset!, sources.datasets),
+        kind: 'dataset', key: dataset!.datasetId, label: citationLabel(subjectId, sources),
       }
       const task = state.openTask(ref, { foreground: true })
       // 正文来源是对象深链，复用任务后仍定位到引用对象；浏览历史由原生导航保留。
@@ -1075,6 +1077,12 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     open: showShell,
     close: hideShell,
     openSubject,
+    async analysisName(analysisId: string): Promise<string> {
+      return analysisLabel(analysisId, await loadSources())
+    },
+    async citationName(citationId: string): Promise<string> {
+      return citationLabel(citationId, await loadSources())
+    },
     async openAnalysis(analysisId: string) {
       showShell()
       const intent = ++navigationIntent
@@ -1094,13 +1102,13 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         workspace.append(overview)
         const crumb = document.createElement('span')
         crumb.className = 'evidence-crumb'
-        crumb.textContent = `分析 ${analysisId.replace('analysis_', '')} · 具体来源`
+        crumb.textContent = `${analysisLabel(analysisId, sources)} · 具体来源`
         crumb.setAttribute('aria-current', 'page')
         crumbs.replaceChildren(crumb)
         const heading = document.createElement('h1')
         heading.className = 'evidence-object-title'
         heading.tabIndex = -1
-        heading.textContent = `分析 ${analysisId.replace('analysis_', '')} · 具体来源（${facts.length}）`
+        heading.textContent = `${analysisLabel(analysisId, sources)} · 具体来源（${facts.length}）`
         overview.append(heading)
         const search = document.createElement('input')
         search.type = 'search'
@@ -1201,6 +1209,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       state.store.active = REPORT_TAB
       pageController = null
       sourcesPromise = null
+      registeredSources = undefined
       directoryRefs = []
       directoryFacts.clear()
       directoryNotes = []

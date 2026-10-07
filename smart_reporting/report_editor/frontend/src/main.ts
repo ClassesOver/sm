@@ -49,7 +49,9 @@ import {
   createEditorPreferenceController,
   installEditorShortcuts,
 } from './enhancements'
-import { protocolMarkerPlugin } from './protocol-plugin'
+import { protocolMarkerPlugin, updateProtocolSourceLabels } from './protocol-plugin'
+import { createBodySourcePreview } from './body-source-preview'
+import { editReviewMode, editReviewObserver, type EditReviewMode } from './edit-review'
 import { evidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
 import { restoreProtocolMarkers } from './protocol'
 import { findDocumentMatches, replaceDocumentMatches } from './search-document'
@@ -185,13 +187,24 @@ base.href = `${basePath}/asset/`
 document.head.prepend(base)
 
 const client = new ReportEditorClient(basePath)
+let currentBodyValidation: import('./api').TraceValidation | null = null
+let currentBodyValidationMarkdown = ''
+let reviewMode: EditReviewMode = 'idle'
+let rewriteError = ''
+let handleEditorChange = () => {}
+const reviewMessage = () => reviewMode === 'generating' ? 'AI 正在生成候选' : 'AI 候选待审阅'
+let bodyCatalog: Promise<import('./api').TraceSources> | undefined
+const loadBodyCatalog = () => bodyCatalog ??= client.sources().catch(error => { bodyCatalog = undefined; throw error })
 let lineagePanelEnabled = true
 let refreshBodySourceLinks = (_result: import('./api').TraceValidation | null) => {}
 const sourceValidation = createSourceValidationController(
   client,
   () => getEditorMarkdown(),
   (result) => {
+    currentBodyValidation = result
+    currentBodyValidationMarkdown = getEditorMarkdown()
     if (!lineagePanelEnabled) return
+    sourceStatusLabel.title = result?.warnings?.join('\n') || ''
     if (!result) {
       sourceStatusLabel.textContent = '来源暂无法校验'
       sourceStatusLabel.dataset.state = 'unknown'
@@ -200,7 +213,11 @@ const sourceValidation = createSourceValidationController(
       // 复制出的新格（与冻结值重复）同样提示复核，不自动赋予绑定。
       const issues = sourceValidationIssueCount(result)
       if (issues) {
-        sourceStatusLabel.textContent = `来源待复核 ${issues} 处`
+        const numericWarnings = result.warnings?.length ?? 0
+        sourceStatusLabel.textContent = [
+          numericWarnings ? `正文数值待复核 ${numericWarnings} 处` : '',
+          issues > numericWarnings ? `来源待复核 ${issues - numericWarnings} 处` : '',
+        ].filter(Boolean).join(' · ')
         sourceStatusLabel.dataset.state = 'stale'
       } else {
         const hasBindings = result.subjects.length > 0 || (result.tableSummary?.valid ?? 0) > 0 ||
@@ -213,6 +230,9 @@ const sourceValidation = createSourceValidationController(
     refreshBodySourceLinks(result)
   },
   () => {
+    currentBodyValidation = null
+    currentBodyValidationMarkdown = ''
+    sourceStatusLabel.title = ''
     if (!lineagePanelEnabled) return
     sourceStatusLabel.textContent = '来源校验中'
     sourceStatusLabel.dataset.state = 'checking'
@@ -303,54 +323,30 @@ const evidenceBrowser = createEvidenceBrowser(root, {
   getDraft: () => ({ markdown: getEditorMarkdown(), sha256 }),
 })
 evidenceCovering = () => evidenceBrowser.isOpen()
-shell.sources.addEventListener('click', () => evidenceBrowser.open())
+shell.sources.addEventListener('click', () => {
+  document.querySelector<HTMLDialogElement>('.report-source-preview')?.close('selected')
+  evidenceBrowser.open()
+})
+const previewBodySource = createBodySourcePreview({
+  client,
+  sources: loadBodyCatalog,
+  validation: () => currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null,
+  open: reference => {
+    if (reference.kind === 'analysis') void evidenceBrowser.openAnalysis(reference.value)
+    else if (reference.kind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: reference.value, label: '图表数据来源' })
+    else void evidenceBrowser.openSubject(reference.value)
+  },
+})
 const openBodySource = (event: MouseEvent | KeyboardEvent) => {
   if (event instanceof KeyboardEvent && event.key !== 'Enter' && event.key !== ' ') return
   const marker = (event.target as HTMLElement).closest<HTMLElement>('[data-marker-kind="analysis"], [data-marker-kind="citation"], [data-marker-kind="chart"]')
   if (!marker || !lineagePanelEnabled) return
   event.preventDefault()
+  if (reviewMode !== 'idle') { status(reviewMessage(), 'dirty'); return }
   if (event instanceof KeyboardEvent) event.stopPropagation()
   const references: Array<{ kind: 'analysis' | 'citation' | 'chart'; value: string }> = JSON.parse(marker.dataset.markerReferences ?? '[]')
-  if (references.length > 1) {
-    const dialog = document.createElement('dialog')
-    dialog.className = 'report-source-picker'
-    const heading = document.createElement('h2')
-    heading.id = 'report-source-picker-title'
-    heading.textContent = `这处正文引用了 ${references.length} 个来源`
-    dialog.setAttribute('aria-labelledby', heading.id)
-    dialog.append(heading)
-    references.forEach((reference, index) => {
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'ui-button'
-      button.textContent = reference.kind === 'analysis' ? `分析 ${reference.value.replace('analysis_', '')}` : `引用来源 ${index + 1}`
-      button.title = reference.value
-      button.addEventListener('click', () => {
-        dialog.close('selected')
-        if (reference.kind === 'analysis') void evidenceBrowser.openAnalysis(reference.value)
-        else if (reference.kind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: reference.value, label: reference.value })
-        else void evidenceBrowser.openSubject(reference.value)
-      })
-      dialog.append(button)
-    })
-    const close = document.createElement('button')
-    close.type = 'button'
-    close.className = 'ui-button'
-    close.textContent = '关闭'
-    close.addEventListener('click', () => dialog.close())
-    dialog.append(close)
-    dialog.addEventListener('close', () => {
-      dialog.remove()
-      if (dialog.returnValue !== 'selected') marker.focus({ preventScroll: true })
-    })
-    document.body.append(dialog)
-    dialog.showModal()
-    return
-  }
-  const value = marker.dataset.markerValue!
-  if (marker.dataset.markerKind === 'analysis') void evidenceBrowser.openAnalysis(value)
-  else if (marker.dataset.markerKind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: value, label: value })
-  else void evidenceBrowser.openSubject(value)
+  const selected = references.length ? references : [{ kind: marker.dataset.markerKind as 'analysis' | 'citation' | 'chart', value: marker.dataset.markerValue! }]
+  void previewBodySource(marker, selected)
 }
 shell.editor.addEventListener('click', openBodySource)
 shell.editor.addEventListener('keydown', openBodySource, { capture: true })
@@ -470,7 +466,10 @@ try {
       provider: selectionAIProvider(client),
       buildAISuggestions: configureSelectionAISuggestions,
       diffReviewOnEnd: true,
-      onError: () => status('AI 改写失败', 'error'),
+      onError: (error) => {
+        rewriteError = error.message || 'AI 改写失败，已保留原文'
+        status(rewriteError, 'error')
+      },
     },
   )
   crepe.editor.use(protocolMarkerPlugin)
@@ -479,14 +478,28 @@ try {
   crepe.editor.use(searchHighlightPlugin)
   crepe.editor.use(indent)
   crepe.editor.use(trailing)
+  crepe.editor.use(editReviewObserver((_state, mode) => {
+    reviewMode = mode
+    handleEditorChange()
+  }))
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
   const evidenceView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+  const reviewBanner = document.createElement('div')
+  reviewBanner.className = 'report-ai-review-status'
+  reviewBanner.setAttribute('role', 'status')
+  reviewBanner.hidden = true
+  shell.editor.before(reviewBanner)
+  const reviewControls = new Map<HTMLButtonElement, boolean>()
+  evidenceView.dom.setAttribute('spellcheck', 'false')
   // 未编辑时保留服务器原文；解析器的格式化和元数据事务不是用户编辑。
   let savedEditorDoc = evidenceView.state.doc
   getEditorMarkdown = () => evidenceView.state.doc.eq(savedEditorDoc)
     ? lastSavedMarkdown : restoreProtocolMarkers(crepe.getMarkdown())
-  const bodySources = client.sources().catch(() => null)
+  const bodySources = loadBodyCatalog().catch(() => null)
+  void bodySources.then(sources => {
+    if (sources) updateProtocolSourceLabels(evidenceView, sources)
+  })
   let bodySourceIntent = 0
   refreshBodySourceLinks = (result) => {
     const intent = ++bodySourceIntent
@@ -531,8 +544,38 @@ try {
   }
   const { installSlashMenuHeadingPreview } = await import('./slash-menu-preview')
   installSlashMenuHeadingPreview()
-  crepe.on((listener) => {
-    listener.markdownUpdated(() => {
+  handleEditorChange = () => {
+      document.querySelector<HTMLDialogElement>('.report-source-preview')?.close('edited')
+      currentBodyValidation = null
+      currentBodyValidationMarkdown = ''
+      reviewBanner.hidden = reviewMode === 'idle' && !rewriteError
+      if (reviewMode === 'idle' && rewriteError) {
+        reviewBanner.textContent = `AI 改写未应用，原稿已保留。${rewriteError}`
+        rewriteError = ''
+      }
+      if (reviewMode !== 'idle' && !reviewControls.size) {
+        for (const button of [shell.save, shell.exportPdf, shell.exportWord, shell.history, shell.sources, shell.share]) {
+          reviewControls.set(button, button.disabled)
+          button.disabled = true
+        }
+      } else if (reviewMode === 'idle') {
+        for (const [button, disabled] of reviewControls) button.disabled = disabled
+        reviewControls.clear()
+      }
+      if (reviewMode !== 'idle') {
+        if (reviewMode === 'generating') rewriteError = ''
+        reviewBanner.textContent = reviewMode === 'generating'
+          ? 'AI 正在生成候选，原稿与引用已保留。候选内容不会自动保存。'
+          : '请审阅文字差异后接受或拒绝。完成审阅后才保存，并重新核对数值、单位、期间与来源；结论仍需人工确认。'
+        window.clearTimeout(saveTimer)
+        sourceValidation.cancel()
+        refreshBodySourceLinks(null)
+        sourceStatusLabel.textContent = '候选内容尚未核验'
+        sourceStatusLabel.dataset.state = 'unknown'
+        sourceStatusLabel.title = ''
+        status(reviewMessage(), 'dirty')
+        return
+      }
       // Milkdown 序列化会把协议标记转义为 \[\[...]]；变更检测、本地草稿和保存必须
       // 统一使用还原后的 Markdown，否则服务端导出找不到章节标识。
       const markdown = getEditorMarkdown()
@@ -554,8 +597,7 @@ try {
       status(saveState?.dirtyLabel(!navigator.onLine) ?? '有未保存更改', 'dirty')
       window.clearTimeout(saveTimer)
       saveTimer = window.setTimeout(saveInBackground, 800)
-    })
-  })
+  }
   if (documentState.interactiveCharts && Object.keys(documentState.interactiveCharts).length) {
     const { createInteractiveCharts } = await import('./interactive-charts')
     void createInteractiveCharts(shell.editor, documentState.interactiveCharts, basePath, {
@@ -668,6 +710,10 @@ try {
 
   async function saveNow(): Promise<void> {
     window.clearTimeout(saveTimer)
+    if (editReviewMode(evidenceView.state) !== 'idle') {
+      status(reviewMessage(), 'dirty')
+      throw new ReportEditorApiError(409, 'report_editor_ai_review_pending')
+    }
     if (pendingConflict) {
       // 冲突未决时暂停所有保存（含自动保存与导出前保存），等待用户选择。
       showConflictStatus()
@@ -703,7 +749,8 @@ try {
           event: 'save_succeeded',
           durationMs: Math.round(performance.now() - saveStartedAt),
         })
-        status(
+        if (reviewMode !== 'idle') status(reviewMessage(), 'dirty')
+        else status(
           currentMarkdown === savingMarkdown ? savedLabel() : '有未保存更改',
           currentMarkdown === savingMarkdown ? 'idle' : 'dirty',
         )
@@ -820,7 +867,7 @@ try {
     isBlocked: () => shell.exportPdf.disabled,
   })
   window.addEventListener('beforeunload', (event) => {
-    if (saveState?.shouldWarnBeforeUnload) event.preventDefault()
+    if (saveState?.shouldWarnBeforeUnload || editReviewMode(evidenceView.state) !== 'idle') event.preventDefault()
   })
 } catch (error) {
   status(errorLabel(error), 'error', () => window.location.reload())
