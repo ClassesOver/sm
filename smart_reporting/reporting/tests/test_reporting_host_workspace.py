@@ -431,6 +431,37 @@ def test_runtime_prepare_run_binds_host_workspace(tmp_path: Path) -> None:
     assert runtime.workspace_registry.get(workspace_key) is not None
 
 
+def test_runtime_scope_rebinds_existing_workspace_after_restart(tmp_path: Path) -> None:
+    first = object.__new__(_ReportWorkflowRuntimeBase)
+    first.workspace_registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    dependencies = {
+        REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+            "externalRunId": "external-run-1", "threadId": "caller-thread-1",
+            "userId": "user-1", "database": "database-1", "companyId": "company-1",
+        }
+    }
+    state = first.prepare_run(
+        run_id="report-run-1", session_id="report-session-1",
+        user_id="user-1", dependencies=dependencies,
+    )
+    key = state[REPORT_WORKFLOW_SCOPE_STATE_KEY]["threadId"]
+    identity = first.workspace_registry.get(key)
+    assert identity is not None
+    existing_file = identity.root / "retained.txt"
+    existing_file.write_text("已有分析结果")
+    restarted = object.__new__(_ReportWorkflowRuntimeBase)
+    restarted.workspace_registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    restarted.workspace_service = ReportingWorkspaceRouter(restarted.workspace_registry)
+    context = RunContext(
+        run_id="report-run-1", session_id="report-session-1", user_id="user-1",
+        session_state=state, dependencies=dependencies,
+    )
+    scope = restarted._scope(context)
+    workspace = restarted.workspace_service.workspace(scope["threadId"])
+    assert workspace.identity.root == identity.root
+    assert existing_file.read_text() == "已有分析结果"
+
+
 def test_runtime_resolves_same_host_workspace_after_prepare_run(tmp_path: Path) -> None:
     runtime = object.__new__(_ReportWorkflowRuntimeBase)
     runtime.workspace_registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)

@@ -1256,11 +1256,10 @@ class _ReportWorkflowRuntimeBase:
         if state_contains_connection_data(state):
             raise ReportingError("state_contains_connection_data", "Workflow state 包含连接信息。")
 
-    @staticmethod
-    def _scope(run_context: RunContext) -> dict[str, str]:
+    def _scope(self, run_context: RunContext) -> dict[str, str]:
         state = _ReportWorkflowRuntimeBase._state(run_context)
         stored = state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
-        scope = resolve_reporting_workflow_scope(
+        resolved = resolve_reporting_workflow_scope(
             run_id=str(run_context.run_id or ""),
             session_id=str(run_context.session_id or ""),
             user_id=str(run_context.user_id or "") or None,
@@ -1270,7 +1269,11 @@ class _ReportWorkflowRuntimeBase:
                 else None
             ),
             stored_scope=stored if isinstance(stored, dict) and "sessionId" in stored else None,
-        ).as_state()
+        )
+        # 原生恢复可从末端步骤开始；服务重启后需按已校验的原作用域重新绑定工作区。
+        if getattr(self, "workspace_registry", None) is not None:
+            self._workspace_for_scope(resolved)
+        scope = resolved.as_state()
         state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = scope
         return scope
 
