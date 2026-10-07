@@ -17,11 +17,15 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
+import stat
+import tempfile
 import time
-from dataclasses import dataclass
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Sequence
 
 import polars as pl
 
@@ -44,7 +48,7 @@ _DUPLICATED_COLUMN_PATTERN = re.compile(r"(?P<base>.+)_duplicated_\d+", re.DOTAL
 
 @dataclass(frozen=True)
 class TraceDatasetFile:
-    """已由调用方校验身份的本地 CSV 快照（登记元数据 + 本地路径）。"""
+    """从授权索引解析的本地 CSV 快照（登记元数据 + 本地路径）。"""
 
     dataset_id: str
     local_path: Path
@@ -53,6 +57,34 @@ class TraceDatasetFile:
     row_count: int
     filename: str | None = None
     source_type: str = "url_csv"
+
+
+@contextmanager
+def verified_dataset_snapshot(file: TraceDatasetFile) -> Iterator[TraceDatasetFile]:
+    """流式复制并校验同一份字节；后续 CSV 读取只使用请求内的临时快照。"""
+
+    try:
+        flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(file.local_path, flags), "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size != file.size:
+                raise ReportingError("snapshot_integrity_failed", "数据集快照与登记身份不一致。")
+            with tempfile.NamedTemporaryFile(suffix=".csv") as snapshot:
+                digest = hashlib.sha256()
+                size = 0
+                # 多读至多一个字节即可识别增长，避免并发追加导致无界复制。
+                while chunk := source.read(min(1024 * 1024, file.size - size + 1)):
+                    size += len(chunk)
+                    if size > file.size:
+                        raise ReportingError("snapshot_integrity_failed", "数据集快照与登记身份不一致。")
+                    digest.update(chunk)
+                    snapshot.write(chunk)
+                if size != file.size or not hmac.compare_digest(digest.hexdigest(), file.sha256):
+                    raise ReportingError("snapshot_integrity_failed", "数据集快照与登记身份不一致。")
+                snapshot.flush()
+                yield replace(file, local_path=Path(snapshot.name))
+    except OSError as error:
+        raise ReportingError("snapshot_integrity_failed", "数据集快照读取失败。") from error
 
 
 @dataclass(frozen=True)

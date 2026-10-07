@@ -569,6 +569,37 @@ async def test_sources_without_index_reports_unavailable(tmp_path: Path) -> None
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["preview", "columns"])
+async def test_dataset_reads_verified_copy_when_source_changes_before_csv_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
+) -> None:
+    from smart_reporting.reporting.trace import dataset_service
+
+    editor, grants, workspace = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(_context())
+    _token, session = await grants.exchange(raw)
+    workspace.registry.resolve(_scope())
+    original_path = workspace.workspace(_scope().workspace_key).paths.to_host_path(CSV_PATH)
+    read_header = dataset_service.read_csv_header
+    snapshots: list[Path] = []
+
+    def change_original_before_scan(path: Path) -> list[str]:
+        snapshots.append(path)
+        original_path.write_bytes(CSV_BYTES.replace(b"revenue", b"secret!").replace(b"1000", b"9999"))
+        return read_header(path)
+
+    monkeypatch.setattr(dataset_service, "read_csv_header", change_original_before_scan)
+    if operation == "preview":
+        page = await editor.trace_dataset_preview(_context(), session, DATASET_ID)
+        assert page["columns"] == ["period", "branch", "revenue", "visits"]
+        assert page["rows"][0][2] == "1000"
+    else:
+        result = await editor.trace_dataset_columns(_context(), session, DATASET_ID)
+        assert result["columns"] == ["period", "branch", "revenue", "visits"]
+    assert snapshots and all(path != original_path and not path.exists() for path in snapshots)
+
+
+@pytest.mark.anyio
 async def test_owner_session_previews_paginated_rows(tmp_path: Path) -> None:
     editor, grants, _ = await _make_editor(tmp_path)
     raw, _ = await grants.issue(_context())
@@ -1133,6 +1164,35 @@ async def test_dataset_not_in_index_is_not_previewable(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("identity", ["valid", "other_snapshot", "changed_context"])
+async def test_fact_names_use_only_frozen_schema_for_the_registered_snapshot(tmp_path: Path, identity: str) -> None:
+    editor, grants, workspace = await _make_editor(tmp_path, with_fact_file=True)
+    scope = _scope()
+    document = {"datasetContexts": [{
+        "datasetId": DATASET_ID,
+        "sha256": hashlib.sha256(CSV_BYTES).hexdigest() if identity != "other_snapshot" else "0" * 64,
+        "schema": {"sourceId": "dynamic_source", "tables": [{
+            "database": "dynamic_db", "name": "dynamic_table",
+            "columns": [{"name": "revenue", "description": "医疗业务收入金额"}],
+        }]},
+    }]}
+    content = json.dumps(document, ensure_ascii=False).encode()
+    path = "reports/detailed-analysis-context.json"
+    workspace.registry.resolve(scope)
+    await workspace.awrite_bytes(scope.workspace_key, path, content if identity != "changed_context" else b"{}")
+    workspace.registry.release(scope.workspace_key)
+    state = await editor.state_repository.get(_context().workflow_run_id)
+    state.payload["workflowCheckpoint"] = {"files": [{
+        "path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+    }]}
+    raw, _ = await grants.issue(_context())
+    _, session = await grants.exchange(raw)
+    sources = await editor.trace_sources(_context(), session)
+    metric = next(item for item in sources["facts"] if item["factKind"] == "metric")
+    assert metric["name"] == ("医疗业务收入金额" if identity == "valid" else "收入")
+
+
+@pytest.mark.anyio
 async def test_facts_listing_and_fact_detail_with_inputs(tmp_path: Path) -> None:
     editor, grants, _ = await _make_editor(tmp_path, with_fact_file=True)
     raw, _ = await grants.issue(_context())
@@ -1142,6 +1202,15 @@ async def test_facts_listing_and_fact_detail_with_inputs(tmp_path: Path) -> None
     assert listing["available"] is True
     assert listing["analyses"][0]["analysisId"] == "analysis_001"
     assert listing["analyses"][0]["contentKind"] == "deterministic_bundle"
+
+    sources = await editor.trace_sources(_context(), session)
+    source_facts = {fact["factId"]: fact for fact in sources["facts"]}
+    assert source_facts["fact-" + "a" * 16]["label"].startswith("指标 · ")
+    assert source_facts["fact-" + "b" * 16]["label"].startswith("派生指标 · ")
+    assert source_facts["fact-" + "a" * 16]["name"]
+    assert source_facts["fact-" + "b" * 16]["displayValue"] == 120.0
+    assert source_facts["fact-" + "b" * 16]["datasetIds"]
+    assert all(fact["analysisId"] == "analysis_001" for fact in source_facts.values())
 
     derived = await editor.trace_fact_detail(
         _context(), session, "analysis_001", "fact-" + "b" * 16
@@ -1156,6 +1225,7 @@ async def test_facts_listing_and_fact_detail_with_inputs(tmp_path: Path) -> None
         _context(), session, "analysis_001", "fact-" + "a" * 16
     )
     assert metric["factKind"] == "metric"
+    assert source_facts["fact-" + "a" * 16]["displayValue"] == metric["displayValue"]
     assert metric["displayValue"] == 3600.0
     assert metric["inputFactRefs"] == ()  # metric 是叶子
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from smart_reporting.reporting.trace.dataset_service import (
     TraceDatasetFile,
     TracePreviewPermissions,
     safe_download_filename,
+    verified_dataset_snapshot,
 )
 
 SECRET = b"unit-test-secret"
@@ -43,6 +46,45 @@ def _file(
 
 def service() -> TraceCsvPreviewService:
     return TraceCsvPreviewService(secret=SECRET)
+
+
+def test_verified_snapshot_survives_source_changes_and_is_removed(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    original = b"code,value\n0012,1200.50\n"
+    path.write_bytes(original)
+    file = replace(_file(path), sha256=hashlib.sha256(original).hexdigest())
+    with verified_dataset_snapshot(file) as snapshot:
+        replacement = tmp_path / "replacement.csv"
+        replacement.write_bytes(b"changed,secret\n9999,9999.99\n")
+        replacement.replace(path)
+        page = service().preview(snapshot, PERMIT_ALL)
+        assert page.columns == ("code", "value")
+        assert page.rows == (("0012", "1200.50"),)
+        assert snapshot.local_path != path
+    assert not snapshot.local_path.exists()
+
+
+@pytest.mark.parametrize("changed", [b"code,value\n0012,9999.99\n", b"code,value\n", b"code,value\n0012,1200.50\nextra,1\n"])
+def test_verified_snapshot_rejects_modified_content(tmp_path: Path, changed: bytes) -> None:
+    path = tmp_path / "source.csv"
+    original = b"code,value\n0012,1200.50\n"
+    path.write_bytes(original)
+    file = replace(_file(path), sha256=hashlib.sha256(original).hexdigest())
+    path.write_bytes(changed)
+    with pytest.raises(ReportingError) as error:
+        with verified_dataset_snapshot(file):
+            pytest.fail("受损快照不得交给预览")
+    assert error.value.code == "snapshot_integrity_failed"
+
+
+def test_verified_snapshot_is_removed_when_preview_fails(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    path.write_bytes(b"code,value\n0012,1200.50\n")
+    file = replace(_file(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    with pytest.raises(ReportingError):
+        with verified_dataset_snapshot(file) as snapshot:
+            service().preview(snapshot, TracePreviewPermissions(blocked_columns=frozenset({"value"})))
+    assert not snapshot.local_path.exists()
 
 
 # ---------------------------------------------------------------------------

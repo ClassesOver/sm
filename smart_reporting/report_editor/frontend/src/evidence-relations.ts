@@ -4,16 +4,44 @@ import type {
   TraceFactDetail,
   TraceSources,
   TraceSubjectInfo,
+  TraceDatasetInfo,
 } from './api'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef } from './evidence-state'
-import { Calculator, ChartColumn, createElement, Database, FileText, Hash, type IconNode } from 'lucide'
+import { Calculator, ChartColumn, createElement, Database, FileDigit, FileText, type IconNode } from 'lucide'
 
 // 关系图节点、3D 贴图、来源目录与关系列表共用同一套类型图标与类型色。
 export const EVIDENCE_KIND_ICONS: Record<EvidenceObjectKind, IconNode> = {
-  fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText,
+  fact: FileDigit, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText,
 }
 export const EVIDENCE_KIND_COLORS: Record<EvidenceObjectKind, string> = {
-  fact: '#4b78b8', computation: '#8b62b5', dataset: '#268c7d', chart: '#b47a29', subject: '#687c90',
+  fact: '#2563eb', computation: '#7c3aed', dataset: '#0f766e', chart: '#b45309', subject: '#475569',
+}
+
+/** 仅展示登记的期间和角色，不从名称或数据值推断日期。 */
+export function factPeriodLabel(entry: { periodStart?: unknown; periodEnd?: unknown; periodRoles?: unknown; periodRole?: unknown; comparisonType?: unknown }): string {
+  const roles: Record<string, string> = { current: '本期', yoy: '同比基期', mom: '环比基期' }
+  const periods = [...new Set([entry.periodStart, entry.periodEnd].filter(value => typeof value === 'string' && value))]
+  const registeredRoles = Array.isArray(entry.periodRoles) ? entry.periodRoles : entry.periodRole ? [entry.periodRole] : []
+  const role = registeredRoles.map(value => roles[String(value)] ?? String(value)).join(' / ')
+  const comparison = entry.comparisonType === 'yoy' ? '同比' : entry.comparisonType === 'mom' ? '环比' : ''
+  return [comparison || role, periods.join(' — ')].filter(Boolean).join(' · ')
+}
+
+export function factLabel(fact: NonNullable<TraceSources['facts']>[number]): string {
+  return fact.name ? [fact.name, factPeriodLabel(fact)].filter(Boolean).join(' · ') : fact.label
+}
+
+export function datasetLabel(dataset: TraceDatasetInfo, datasets: TraceDatasetInfo[] = []): string {
+  const name = dataset.businessLabel?.trim() || dataset.filename?.trim()
+  if (name) return name
+  const roles: Record<string, string> = { current: '本期', yoy: '同比基期', mom: '环比基期' }
+  const prefix = dataset.periodRoles.map(role => roles[role] ?? role).join(' / ')
+  const label = prefix || dataset.requirementId
+  const peers = datasets.filter(item =>
+    !item.businessLabel?.trim() && !item.filename?.trim() &&
+    item.periodRoles.join('|') === dataset.periodRoles.join('|'),
+  )
+  return peers.length > 1 ? `${label} ${peers.findIndex(item => item.datasetId === dataset.datasetId) + 1}` : label
 }
 
 /**
@@ -135,6 +163,14 @@ export function assembleFactRelations(
   sources: TraceSources,
 ): EvidenceRelations {
   const { relations, add } = makeRelations(ref)
+  const registered = sources.facts?.find(item => item.factId === ref.key && item.analysisId === ref.analysisId)
+  for (const datasetId of registered?.datasetIds ?? []) {
+    const dataset = sources.datasets?.find(item => item.datasetId === datasetId)
+    if (!dataset) continue
+    const node: EvidenceObjectRef = { kind: 'dataset', key: datasetId, label: datasetLabel(dataset, sources.datasets) }
+    add(node)
+    relations.edges.push({ from: node, to: ref, label: '输入' })
+  }
   for (const input of detail.inputFactRefs) {
     // 没有事实标识的登记无法定位，也没有可显示的名称：缺失不造节点与边。
     if (!input.factId) continue
@@ -169,12 +205,12 @@ export function assembleComputationRelations(
   sources: TraceSources,
 ): EvidenceRelations {
   const { relations, add } = makeRelations(ref)
-  const datasetLabel = (datasetId: string): string => {
+  const labelForDataset = (datasetId: string): string => {
     const dataset = sources.datasets?.find((item) => item.datasetId === datasetId)
-    return dataset?.filename ?? dataset?.businessLabel ?? datasetId
+    return dataset ? datasetLabel(dataset, sources.datasets) : datasetId
   }
   for (const datasetId of detail.inputDatasetIds) {
-    const node: EvidenceObjectRef = { kind: 'dataset', key: datasetId, label: datasetLabel(datasetId) }
+    const node: EvidenceObjectRef = { kind: 'dataset', key: datasetId, label: labelForDataset(datasetId) }
     add(node)
     relations.edges.push({ from: node, to: ref, label: '输入' })
   }
@@ -202,6 +238,12 @@ export function assembleComputationRelations(
 /** 快照页：仅登记了下钻指标与引用的使用方，不声称完整下游。 */
 export function assembleDatasetRelations(ref: EvidenceObjectRef, sources: TraceSources): EvidenceRelations {
   const { relations, add } = makeRelations(ref)
+  for (const fact of sources.facts ?? []) {
+    if (!fact.datasetIds.includes(ref.key)) continue
+    const node = factRef(fact.analysisId, fact.factId, factLabel(fact))
+    add(node)
+    relations.edges.push({ from: ref, to: node, label: '产出' })
+  }
   const drilldown = sources.drilldown
   if (drilldown) {
     const metricCodes = new Set(

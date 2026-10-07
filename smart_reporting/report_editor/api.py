@@ -948,9 +948,15 @@ async def _write_context(
 ) -> Any:
     raw_session = request.cookies.get(EDITOR_SESSION_COOKIE, "")
     origin = request.headers.get("origin", "")
-    expected_origin = _origin(allowed_origin) if allowed_origin else _origin(str(request.base_url))
+    # 本地/反向代理访问时，页面 origin 可能与配置的公开地址不同（例如
+    # 通过 127.0.0.1 调试一个配置为外部域名的服务）。同源请求仍必须匹配
+    # 当前请求地址；生产公开地址也保留在允许集合中，避免代理重写导致写操作
+    # 全部落成 report_editor_csrf_invalid。
+    expected_origins = {_origin(str(request.base_url))}
+    if allowed_origin:
+        expected_origins.add(_origin(allowed_origin))
     supplied_csrf = request.headers.get("x-csrf-token", "")
-    if origin != expected_origin or not secrets.compare_digest(
+    if origin not in expected_origins or not secrets.compare_digest(
         supplied_csrf, grants.csrf_token(raw_session)
     ):
         raise HTTPException(status_code=403, detail={"code": "report_editor_csrf_invalid"})

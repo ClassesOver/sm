@@ -1070,7 +1070,12 @@ class ReportEditorService:
                 "drilldown": {"enabled": False, "metrics": [], "subjects": []},
             }
         context = await self._source_context(expected, allow_retired=True)
-        result = await self.trace.sources(context, session.capabilities)
+        state = await self.state_repository.get(context.workflow_run_id)
+        checkpoint = state.payload.get("workflowCheckpoint", {}) if state else {}
+        files = checkpoint.get("files", ()) if isinstance(checkpoint, Mapping) else ()
+        analysis_context_file = next((item for item in files if isinstance(item, Mapping)
+            and str(item.get("path", "")).endswith("/detailed-analysis-context.json")), None)
+        result = await self.trace.sources(context, session.capabilities, analysis_context_file=analysis_context_file)
         if not self._lineage_features["drilldown"]:
             result["drilldown"] = {"enabled": False, "metrics": [], "subjects": []}
         try:

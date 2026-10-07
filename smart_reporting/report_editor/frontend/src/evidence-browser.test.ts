@@ -98,6 +98,79 @@ afterEach(() => {
 })
 
 describe('evidence browser shell', () => {
+  it('distinguishes equally named fact tasks by analysis in tabs and task actions', async () => {
+    const client = makeClient()
+    vi.spyOn(client, 'factDetail').mockImplementation(async (analysisId, factId) => ({
+      analysisId, factId, factKind: 'metric', displayValue: 100,
+      entry: { field: '收入', unit: '元' }, inputFactRefs: [], warnings: [],
+    }))
+    const { browser, shell, root } = setup(client)
+    const label = '收入 · 本期 · 2025-01'
+    browser.openObject(fact('same-fact', label))
+    browser.openObject({ ...fact('same-fact', label), analysisId: 'analysis_002' })
+    await flush()
+    expect(browser._state.store.tasks.map(task => task.root.label)).toEqual([label, label])
+    expect([...shell.querySelectorAll('.evidence-tab-analysis')].map(node => node.textContent)).toEqual(['分析 001', '分析 002'])
+    const tabs = shell.querySelectorAll<HTMLButtonElement>('.evidence-tab:has(.evidence-tab-name)')
+    expect(tabs[0].title).not.toBe(tabs[1].title)
+    const closes = shell.querySelectorAll<HTMLButtonElement>('.evidence-tab-close')
+    expect(closes[0].getAttribute('aria-label')).toContain('分析 001')
+    expect(closes[1].getAttribute('aria-label')).toContain('分析 002')
+    const items = shell.querySelectorAll<HTMLButtonElement>('.evidence-task-items button')
+    expect(items[1].textContent).toContain('分析 001')
+    expect(items[2].textContent).toContain('分析 002')
+    items[1].click()
+    await flush()
+    expect(browser._state.currentPage()?.ref.analysisId).toBe('analysis_001')
+    expect(shell.querySelector('.evidence-announcer')?.textContent).toContain('分析 001')
+    shell.querySelectorAll<HTMLButtonElement>('.evidence-tab-close')[1].click()
+    expect(browser._state.currentPage()?.ref.analysisId).toBe('analysis_001')
+    const restore = [...shell.querySelectorAll<HTMLButtonElement>('.evidence-task-items button')]
+      .find(button => button.textContent === '恢复最近关闭的任务')!
+    restore.click()
+    await flush()
+    expect(browser._state.currentPage()?.ref.analysisId).toBe('analysis_002')
+    expect(browser._state.store.tasks).toHaveLength(2)
+    shell.querySelectorAll<HTMLButtonElement>('.evidence-tab-close')[1].click()
+    await flush()
+    expect(browser._state.currentPage()?.ref.analysisId).toBe('analysis_001')
+    expect(shell.querySelector('.evidence-announcer')?.textContent).toContain('分析 001')
+    browser.reset()
+    root.remove()
+  })
+
+  it('lists every fact in the selected analysis and opens only the chosen fact', async () => {
+    const client = makeClient()
+    vi.spyOn(client, 'sources').mockResolvedValue({
+      available: true,
+      facts: [
+        { analysisId: 'analysis_001', factId: 'current', factKind: 'metric', label: '收入 · 2025', name: '收入', periodRoles: ['current'], periodStart: '2025-01', periodEnd: '2025-09', displayValue: 12450, unit: '万元', datasetIds: [] },
+        { analysisId: 'analysis_001', factId: 'baseline', factKind: 'metric', label: '收入 · 2024', datasetIds: [] },
+        { analysisId: 'analysis_001', factId: 'yoy', factKind: 'comparison', label: '收入 · 同比', datasetIds: [] },
+        { analysisId: 'analysis_001', factId: 'finding', factKind: 'supplemental_finding', label: '补充结论', datasetIds: [] },
+        { analysisId: 'analysis_002', factId: 'other', factKind: 'metric', label: '其他分析', datasetIds: [] },
+      ],
+    })
+    const { browser, shell, root } = setup(client)
+    await browser.openAnalysis('analysis_001')
+    expect(browser._state.store.tasks).toHaveLength(0)
+    const buttons = [...shell.querySelectorAll<HTMLButtonElement>('.evidence-workspace [data-fact-id]')]
+    expect(buttons.map(button => button.querySelector('.evidence-fact-name')?.textContent)).toEqual(['收入', '收入 · 2024', '收入 · 同比', '补充结论'])
+    expect(buttons[0]!.textContent).toContain('本期 · 2025-01 — 2025-09')
+    expect(buttons[0]!.textContent).toContain('登记值 12,450 万元')
+    const search = shell.querySelector<HTMLInputElement>('.evidence-analysis-search')!
+    search.value = '同比'
+    search.dispatchEvent(new Event('input'))
+    expect(buttons.filter(button => !button.closest('li')!.hidden)).toEqual([buttons[2]])
+    expect(shell.querySelector('.evidence-analysis-result')?.textContent).toContain('匹配 1 / 4')
+    buttons[2]!.click()
+    expect(browser._state.currentPage()?.ref.key).toBe('yoy')
+    expect(browser._state.currentPage()?.ref.analysisId).toBe('analysis_001')
+    browser.reset()
+    await flush()
+    root.remove()
+  })
+
   it('restores the last closed task through the task picker and clears it on revision reset', async () => {
     const { shell, browser } = setup()
     browser.openObject(fact('fact-a', '华东营收'))
@@ -196,16 +269,28 @@ describe('evidence browser shell', () => {
     Object.defineProperty(tabList, 'scrollWidth', { get: () => 900 })
     Object.defineProperty(tabList, 'clientWidth', { get: () => 300 })
     const rect = (left: number, right: number) => ({ left, right, top: 0, bottom: 40, width: right - left, height: 40, x: left, y: 0, toJSON: () => ({}) }) as DOMRect
+    let activeRect = rect(400, 520)
     const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
       if (this === tabList) return rect(0, 300)
       const tab = this.querySelector('.evidence-tab')
-      return tab?.getAttribute('aria-selected') === 'true' ? rect(400, 520) : rect(0, 0)
+      return tab?.getAttribute('aria-selected') === 'true' ? activeRect : rect(0, 0)
     })
     try {
       browser.openObject(fact('fact-c', '华南营收'))
       await flush()
       // 当前页签右缘 520 超出可见区 300，应只在页签栏内水平滚动到可见并留 8px。
       expect(scrollLeft).toBe(228)
+      scrollLeft = 0
+      window.dispatchEvent(new Event('resize'))
+      expect(scrollLeft).toBe(228)
+      activeRect = rect(-20, 360)
+      scrollLeft = 0
+      window.dispatchEvent(new Event('resize'))
+      expect(scrollLeft).toBe(68)
+      shell.querySelector<HTMLButtonElement>('.evidence-tab-report')!.click()
+      scrollLeft = 0
+      window.dispatchEvent(new Event('resize'))
+      expect(scrollLeft).toBe(0)
     } finally {
       spy.mockRestore()
     }
@@ -610,7 +695,7 @@ describe('evidence browser shell', () => {
     expect(items).toHaveLength(14)
     // 顺序：报告正文 → 各任务 → 分隔后的“恢复”操作（无已关闭任务时不可用）。
     expect(items[0].textContent).toBe('报告正文')
-    expect(items[1].textContent).toBe('任务 0 · 事实')
+    expect(items[1].textContent).toBe('任务 0 · 分析 001 · 事实')
     expect(items[1].querySelector('svg.evidence-popup-icon')?.getAttribute('aria-hidden')).toBe('true')
     const restoreItem = items[items.length - 1]
     expect(restoreItem.textContent).toBe('恢复最近关闭的任务')

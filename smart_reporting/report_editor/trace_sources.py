@@ -5,19 +5,23 @@
 索引时如实返回不可用，不猜测（计划 6.3）。
 
 文件访问沿用 read_asset 的"登记-校验-哈希"模式：先在索引内解析
-resourceId → 工作区相对路径，再磁盘复核 size/sha256，最后才交给预览服务。
+resourceId → 工作区相对路径；预览与列清单流式复制并校验 size/sha256，
+再从请求内临时快照读取表头和数据，避免校验后原路径变更导致读取不一致。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 import anyio
+from loguru import logger
 
 from ..reporting.delivery.artifacts_v1 import ReportArtifactManifest
+from ..reporting.workflow.checkpoint import FileIdentity
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import (
     TRACE_BUDGETS_V1,
@@ -30,8 +34,10 @@ from ..reporting.trace.dataset_service import (
     TraceDatasetFile,
     TracePreviewPage,
     TracePreviewPermissions,
+    verified_dataset_snapshot,
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
+from ..reporting.trace.fact_service import fact_display_value
 from ..reporting.trace.index_builder import TRACE_INDEX_FILENAME
 from ..workspace import WorkspaceError
 from .trace_exports import TraceDerivedExportService
@@ -137,6 +143,8 @@ class ReportEditorTraceService:
         self,
         context: Any,
         session_capabilities: Mapping[str, Any] | None = None,
+        *,
+        analysis_context_file: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         index = await self.load_index(context)
         if index is None:
@@ -146,6 +154,31 @@ class ReportEditorTraceService:
                 "datasets": [],
             }
         files = {item.resource_id: item for item in index.files}
+        field_labels: dict[tuple[str, str], str] = {}
+        if analysis_context_file is not None:
+            try:
+                raw_context = await self._read_registered_file(
+                    context, FileIdentity.model_validate(analysis_context_file), max_bytes=_MAX_INDEX_BYTES
+                )
+                analysis_context = json.loads(raw_context)
+                for dataset_context in analysis_context.get("datasetContexts", ()):
+                    dataset_id = dataset_context.get("datasetId")
+                    dataset = next((item for item in index.datasets if item.dataset_id == dataset_id), None)
+                    # 字段说明只用于相同字节身份的已登记快照，不能拿新数据的口径给旧事实命名。
+                    if dataset is None or dataset_context.get("sha256") != files[dataset.file_resource_id].sha256:
+                        continue
+                    schema = dataset_context.get("schema", {})
+                    for table in schema.get("tables", ()):
+                        for column in table.get("columns", ()):
+                            description = column.get("description")
+                            if not isinstance(description, str) or not description.strip():
+                                continue
+                            ref = ".".join(str(value) for value in (
+                                table.get("sourceId") or schema.get("sourceId"), table.get("database"), table.get("name"), column.get("name")
+                            ))
+                            field_labels[(dataset_id, ref)] = description.strip()
+            except (ReportingError, ValueError, TypeError, AttributeError):
+                logger.warning("facts_display_context_unavailable report={} revision={}", context.report_id, context.revision)
         datasets = []
         for dataset in index.datasets:
             file_ref = files[dataset.file_resource_id]
@@ -156,6 +189,8 @@ class ReportEditorTraceService:
                     "requirementId": dataset.requirement_id,
                     "filename": dataset.filename,
                     "businessLabel": dataset.business_label,
+                    "sqlHash": dataset.sql_hash,
+                    "querySql": dataset.query_sql,
                     "rowCount": dataset.row_count,
                     "size": file_ref.size,
                     "materializedAt": dataset.materialized_at,
@@ -163,6 +198,58 @@ class ReportEditorTraceService:
                     "queryWindowId": dataset.query_window_id,
                 }
             )
+        facts = []
+        registered_dataset_ids = {item.dataset_id for item in index.datasets}
+        for entry in index.fact_files:
+            if entry.content_kind != "deterministic_bundle":
+                continue
+            raw = await self._read_registered_file(
+                context, files[entry.file_resource_id], max_bytes=16 * 1024 * 1024
+            )
+            document = json.loads(raw)
+            for kind, key in (
+                ("metric", "metrics"), ("comparison", "comparisons"),
+                ("derived", "derivedMetrics"), ("reconciliation", "reconciliations"),
+                ("correlation", "correlationDetails"),
+            ):
+                for fact in document.get(key, ()):
+                    if not fact.get("factId"):
+                        continue
+                    dataset_ids = list(dict.fromkeys(
+                        dataset_id for dataset_id in (
+                            *(fact.get(field) for field in ("datasetId", "currentDatasetId", "baselineDatasetId")),
+                            *fact.get("datasetIds", ()),
+                        ) if dataset_id in registered_dataset_ids
+                    ))
+                    name = fact.get("field") or fact.get("code") or (
+                        f'{fact["leftField"]} / {fact["rightField"]}' if kind == "correlation" else None
+                    ) or fact.get("fieldRef") or fact["factId"]
+                    descriptions = {field_labels[(dataset_id, fact.get("fieldRef"))] for dataset_id in dataset_ids
+                        if (dataset_id, fact.get("fieldRef")) in field_labels}
+                    if len(descriptions) == 1:
+                        name = descriptions.pop()
+                    roles = fact.get("periodRoles") or ([fact["periodRole"]] if fact.get("periodRole") else [])
+                    facts.append({
+                        "analysisId": entry.analysis_id,
+                        "factId": fact["factId"],
+                        "factKind": kind,
+                        "label": " · ".join(str(value) for value in (
+                            {"metric": "指标", "comparison": "对比", "derived": "派生指标",
+                             "reconciliation": "核对", "correlation": "相关性"}[kind],
+                            name,
+                            {"yoy": "同比", "mom": "环比"}.get(fact.get("comparisonType"), fact.get("comparisonType")),
+                            " / ".join({"current": "本期", "yoy": "同比基期", "mom": "环比基期"}.get(role, role) for role in roles),
+                            " — ".join(dict.fromkeys(value for value in (fact.get("periodStart"), fact.get("periodEnd")) if value)),
+                        ) if value),
+                        "name": name,
+                        "periodStart": fact.get("periodStart"),
+                        "periodEnd": fact.get("periodEnd"),
+                        "periodRoles": roles,
+                        "comparisonType": fact.get("comparisonType"),
+                        "displayValue": fact_display_value(fact),
+                        "unit": fact.get("unit"),
+                        "datasetIds": dataset_ids,
+                    })
         drilldown_enabled = self._drilldown_enabled(session_capabilities)
         allowed_declarations = (
             tuple(
@@ -201,6 +288,7 @@ class ReportEditorTraceService:
             "reportId": index.report_id,
             "revision": index.revision,
             "datasets": datasets,
+            "facts": facts,
             "subjects": [
                 {
                     "subjectId": subject.subject_id,
@@ -372,16 +460,21 @@ class ReportEditorTraceService:
         cursor: str | None = None,
     ) -> TracePreviewPage:
         index = await self.require_index(context)
-        file = await self._resolve_dataset_file(context, index, dataset_id)
-        return self._preview.preview(
-            file,
-            self._permissions(session_capabilities),
-            columns=columns,
-            limit=limit,
-            cursor=cursor,
-            report_id=str(context.report_id),
-            revision=int(context.revision),
-        )
+        file = await self._resolve_dataset_file(context, index, dataset_id, verify=False)
+
+        def read_preview() -> TracePreviewPage:
+            with verified_dataset_snapshot(file) as snapshot:
+                return self._preview.preview(
+                    snapshot,
+                    self._permissions(session_capabilities),
+                    columns=columns,
+                    limit=limit,
+                    cursor=cursor,
+                    report_id=str(context.report_id),
+                    revision=int(context.revision),
+                )
+
+        return await anyio.to_thread.run_sync(read_preview)
 
     async def columns(
         self,
@@ -390,10 +483,15 @@ class ReportEditorTraceService:
         dataset_id: str,
     ) -> dict[str, Any]:
         index = await self.require_index(context)
-        file = await self._resolve_dataset_file(context, index, dataset_id)
-        visible, restricted = self._preview.visible_columns(
-            file, self._permissions(session_capabilities)
-        )
+        file = await self._resolve_dataset_file(context, index, dataset_id, verify=False)
+
+        def read_columns() -> tuple[list[str], bool]:
+            with verified_dataset_snapshot(file) as snapshot:
+                return self._preview.visible_columns(
+                    snapshot, self._permissions(session_capabilities)
+                )
+
+        visible, restricted = await anyio.to_thread.run_sync(read_columns)
         return {
             "datasetId": file.dataset_id,
             "columns": visible,
@@ -914,6 +1012,14 @@ class ReportEditorTraceService:
                     if column is None or column >= len(row):
                         counts["stale"] += 1
                         continue
+                    fact_value: Any = None
+                    for frozen_cell, frozen_value in frozen_values:
+                        if frozen_cell is cell:
+                            fact_value = frozen_value
+                            break
+                    cell_status = (
+                        "valid" if fact_value is not None and value_matches(row[column], fact_value) else "stale"
+                    )
                     if (unique_block and origin_labels.count(row[0]) == 1
                             and draft_labels.count(row[0]) == 1
                             and draft_header.count(cell.column_key) == 1
@@ -921,17 +1027,9 @@ class ReportEditorTraceService:
                         locations.append({
                             "rowKey": cell.row_key, "columnKey": cell.column_key,
                             "rowIndex": draft_rows.index(row), "columnIndex": column,
-                            "rowLabel": row[0], "text": row[column],
+                            "rowLabel": row[0], "text": row[column], "status": cell_status,
                         })
-                    fact_value: Any = None
-                    for frozen_cell, frozen_value in frozen_values:
-                        if frozen_cell is cell:
-                            fact_value = frozen_value
-                            break
-                    if fact_value is not None and value_matches(row[column], fact_value):
-                        counts["valid"] += 1
-                    else:
-                        counts["stale"] += 1
+                    counts[cell_status] += 1
                 # 复制单元格细分：新格文本与某冻结单元格事实值一致时给出
                 # 候选绑定提示（软语义提示，不自动赋绑定身份）。
                 for row in copy_rows:
@@ -1272,6 +1370,8 @@ class ReportEditorTraceService:
         context: Any,
         index: RevisionTraceIndexV1,
         dataset_id: str,
+        *,
+        verify: bool = True,
     ) -> TraceDatasetFile:
         dataset = next(
             (item for item in index.datasets if item.dataset_id == dataset_id), None
@@ -1289,15 +1389,17 @@ class ReportEditorTraceService:
                 "snapshot_integrity_failed", "来源索引文件登记不完整。"
             )
         thread_id = context.scope["threadId"]
-        current = await self._workspace.ahash_file(thread_id, file_ref.path)
-        if (
-            current.get("missing")
-            or current.get("size") != file_ref.size
-            or current.get("sha256") != file_ref.sha256
-        ):
-            raise ReportingError(
-                "snapshot_integrity_failed", "数据集快照与登记身份不一致。"
-            )
+        # 预览与列清单在复制到请求内快照时校验，避免重复全文件哈希。
+        if verify:
+            current = await self._workspace.ahash_file(thread_id, file_ref.path)
+            if (
+                current.get("missing")
+                or current.get("size") != file_ref.size
+                or current.get("sha256") != file_ref.sha256
+            ):
+                raise ReportingError(
+                    "snapshot_integrity_failed", "数据集快照与登记身份不一致。"
+                )
         workspace = self._workspace.workspace(thread_id)
         relative = workspace.paths.normalize(file_ref.path, allow_root=False)
         host_path = workspace.paths.to_host_path(relative, allow_root=False)

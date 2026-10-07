@@ -2946,6 +2946,71 @@ button {
 .report-table-close-marker {
   display: none;
 }
+.report-analysis-marker,
+.report-citation-marker {
+  display: inline-block;
+  font-size: 0;
+  width: 24px;
+  height: 24px;
+  margin-left: 4px;
+  border-radius: 4px;
+  color: #007ea7;
+  cursor: pointer;
+  position: relative;
+  vertical-align: text-top;
+  transform: translateY(-6px);
+}
+.report-analysis-marker::after,
+.report-citation-marker::after {
+  content: '';
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 4px;
+  background: currentColor;
+  mask: url('./assets/source-link.svg') center / contain no-repeat;
+}
+.report-analysis-marker::before,
+.report-citation-marker::before {
+  content: attr(data-marker-count);
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 12px;
+  color: #007ea7;
+  background: #fff;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 12px;
+  text-align: center;
+}
+.report-source-picker { width: min(320px, calc(100vw - 32px)); padding: 20px; border: 1px solid #c7dce8; border-radius: 12px; box-shadow: 0 16px 48px #23445b33; }
+.report-source-picker::backdrop { background: #23445b33; }
+.report-source-picker h2 { margin: 0 0 16px; color: #23445b; font-size: 16px; }
+.report-source-picker > button { display: block; width: 100%; margin-top: 8px; min-height: 40px; }
+.report-analysis-marker:hover,
+.report-citation-marker:hover { background: #edf5fc; }
+.report-analysis-marker:focus-visible,
+.report-citation-marker:focus-visible { outline: 2px solid #007ea7; outline-offset: 3px; }
+
+.evidence-analysis-overview { max-width: 880px; }
+.evidence-analysis-overview h2 { margin: 24px 0 8px; font-size: 15px; }
+.evidence-analysis-overview ul { list-style: none; padding: 0; margin: 0; }
+.evidence-analysis-overview li { border-bottom: 1px solid #e2e8ee; }
+.evidence-analysis-overview .evidence-start-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; padding: 16px 12px; text-align: left; overflow-wrap: anywhere; }
+.evidence-analysis-search { margin-top: 20px; width: 100%; }
+.evidence-analysis-result { margin: 10px 0 0; color: #5b6b7a; font-size: 12px; }
+.evidence-fact-description { display: grid; gap: 5px; min-width: 0; }
+.evidence-fact-name { color: #1b2a41; font-size: 14px; line-height: 1.5; }
+.evidence-fact-period { color: #5b6b7a; font-size: 12px; line-height: 1.5; }
+.evidence-fact-period:empty { display: none; }
+.evidence-fact-list-value { flex: none; max-width: 45%; color: #0b4f8a; font-size: 13px; font-variant-numeric: tabular-nums; }
+@media (max-width: 650px) {
+  .evidence-analysis-overview .evidence-start-item { flex-wrap: wrap; gap: 6px; padding: 14px 8px; }
+  .evidence-fact-description { width: 100%; }
+  .evidence-fact-list-value { max-width: 100%; }
+}
 
 .report-located-subject {
   outline: 2px solid #007ea7;
@@ -3747,6 +3812,8 @@ button {
   line-height: 1.2;
 }
 
+.evidence-tab-analysis { flex-shrink: 0; color: #5b6b7a; font-size: 11px; line-height: 1.2; }
+
 .evidence-tab-close {
   display: inline-flex;
   align-items: center;
@@ -3955,7 +4022,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: 206px;
+  width: min(288px, calc(100vw - 48px));
   flex-shrink: 0;
   padding: 14px 12px;
   overflow-y: auto;
@@ -3995,11 +4062,13 @@ button {
   align-items: center;
   gap: 8px;
   width: 100%;
+  min-height: 40px;
   padding: 7px 10px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: #1b2a41;
+  font-size: 14px;
   text-align: left;
   cursor: pointer;
   box-shadow: inset 2px 0 0 transparent;
@@ -4023,6 +4092,10 @@ button {
 
 /* 目录名称允许换行而非末尾省略：长文件名与“#短号…尾号”的区分位都在末尾。 */
 .evidence-directory-label { min-width: 0; overflow-wrap: anywhere; line-height: 1.4; }
+.evidence-directory-item:has(.evidence-directory-meta) { flex-wrap: wrap; row-gap: 4px; }
+.evidence-directory-item:has(.evidence-directory-meta) .evidence-directory-label { flex: 1; font-weight: 600; }
+.evidence-directory-meta { flex: 1 0 100%; padding-left: 23px; color: #5b6b7a; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.evidence-directory-analysis { white-space: nowrap; }
 /* 仅按 ID 命中时 ID 单独成行、与名称左对齐（图标 15px + 间距 8px），名称不被挤成省略号。 */
 .evidence-directory-item:has(.evidence-directory-id) { flex-wrap: wrap; row-gap: 2px; }
 .evidence-directory-id { flex: 1 0 100%; min-width: 0; padding-left: 23px; overflow: hidden; color: #5b6b7a; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
@@ -4112,6 +4185,14 @@ button {
 .evidence-status-chip[data-status="stale"] { border-color: #ead2a6; background: #fff9ed; color: #95600c; }
 .evidence-status-chip[data-status="unbound"] { border-color: #d8e3ed; background: #f8fafc; color: #5b6b7a; }
 .evidence-fact-value { margin: 0 0 4px; font-size: 26px; font-weight: 600; color: #0b4f8a; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.evidence-fact-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; margin: 0 0 8px; padding: 16px; border: 1px solid #e1eaf1; border-radius: 10px; background: #f8fbfe; }
+.evidence-fact-metadata > div { display: grid; gap: 4px; min-width: 0; }
+.evidence-fact-metadata dt { color: #5b6b7a; font-size: 12px; }
+.evidence-fact-metadata dd { margin: 0; color: #1b2a41; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.evidence-fact-metadata summary { cursor: pointer; }
+.evidence-fact-metadata details p { margin: 4px 0 0; color: #5b6b7a; font-size: 12px; }
+.evidence-fact-warnings summary { cursor: pointer; }
+@media (max-width: 650px) { .evidence-fact-metadata { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 14px; } }
 .evidence-relation-slot { margin: 20px 0; }
 .evidence-detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
 .evidence-detail > p { margin: 0; }
@@ -4282,6 +4363,7 @@ button {
   background: #fff;
 }
 .evidence-table-wrap:focus-visible { outline: 2px solid #007ea7; outline-offset: 2px; }
+.evidence-snapshot-table-wrap { max-height: min(60vh, 640px); overflow: auto; }
 
 .evidence-table {
   width: 100%;
@@ -4304,6 +4386,8 @@ button {
 }
 
 .evidence-table th { position: sticky; top: 0; z-index: 1; background: #edf5fc; font-weight: 600; }
+.evidence-table .evidence-row-number { position: sticky; left: 0; z-index: 2; background: #f3f8fc; text-align: right; }
+.evidence-table th.evidence-row-number { z-index: 3; background: #edf5fc; }
 
 .evidence-table tbody tr:last-child td { border-bottom: 0; }
 .evidence-table tbody tr:hover { background: #f3f8fc; }
@@ -4370,6 +4454,9 @@ button {
 }
 
 .evidence-graph-3d canvas { display: block; width: 100%; height: 100%; }
+.evidence-label-layout-status { position: absolute; right: 12px; bottom: 12px; padding: 6px 10px; border-radius: 6px; background: #ffffffed; color: #34566d; font-size: 12px; pointer-events: none; }
+.evidence-label-layout-status[hidden] { display: none; }
+.evidence-camera-readout { position: absolute; left: 12px; bottom: 12px; padding: 6px 9px; border: 1px solid #d8e3ed; border-radius: 7px; background: #ffffffed; color: #34566d; font-size: 11px; line-height: 1.6; font-variant-numeric: tabular-nums; white-space: pre-line; pointer-events: none; }
 
 .evidence-graph-controls {
   display: flex;
@@ -4550,13 +4637,14 @@ button {
 .evidence-preview-actions > button { min-height: 34px; flex-shrink: 0; }
 .evidence-preview-actions .ui-button--primary { box-shadow: 0 2px 6px rgb(11 79 138 / 18%); }
 .evidence-branch-status { width: 100%; min-height: 18px; padding-top: 6px; border-top: 1px solid #edf1f4; color: #5b6b7a; font-size: 12px; }
-.evidence-branch-status:empty { visibility: hidden; }
+.evidence-branch-status:empty { display: none; }
 
 .evidence-graph-legend {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
-  height: 32px;
+  gap: 6px 14px;
+  min-height: 32px;
   padding: 0 14px;
   border-top: 1px solid #d8e3ed;
   font-size: 11.5px;
@@ -4565,6 +4653,10 @@ button {
 
 .evidence-graph-legend > span { display: inline-flex; align-items: center; gap: 5px; }
 .evidence-3d-kind-key { white-space: nowrap; }
+.evidence-3d-line-key { white-space: nowrap; }
+.evidence-3d-line-key::before { content: ''; flex: 0 0 18px; border-top: 1px solid #6387a3; }
+.evidence-3d-line-key.is-guide::before { border-top-style: dashed; }
+.evidence-graph-legend > span[hidden] { display: none; }
 .evidence-graph-legend .key {
   width: 10px;
   height: 10px;
@@ -4664,7 +4756,8 @@ button {
   .evidence-relations.is-graph-view .evidence-graph-legend,
   .evidence-relations.is-graph-view .evidence-preview { flex-shrink: 0; }
   .evidence-graph-legend { height: auto; min-height: 32px; flex-wrap: wrap; gap: 6px 12px; }
-  .evidence-preview { min-height: min(210px, 40vh); max-height: 40vh; padding: 10px 14px; gap: 6px; overflow: auto; }
+  .evidence-preview { min-height: 0; max-height: min(140px, 25vh); padding: 10px 14px; gap: 6px; overflow: auto; }
+  .evidence-preview:not(:has(.evidence-preview-summary)) { min-height: 0; }
   .evidence-preview-actions > button { min-height: 40px; }
   .evidence-icon-button { width: 40px; height: 40px; }
   .evidence-trace-picker { min-height: 40px; }
@@ -4743,4 +4836,34 @@ button {
 @media (max-width: 640px) {
   .evidence-status-area { gap: 6px; }
   .evidence-status-row { grid-template-columns: 76px minmax(0, 1fr); gap: 10px; padding: 6px 10px; }
+}
+
+/* 图表引用放在图片下方，避免交互图表覆盖入口。 */
+.report-object-source-marker[data-marker-kind="chart"] {
+  display: block;
+  margin: 8px 0 8px auto;
+  transform: none;
+}
+
+/* 待复核是软告警：保留已确认位置的来源入口，颜色与读屏说明同步。 */
+.report-object-source-marker[data-marker-state="stale"],
+.report-object-source-marker[data-marker-state="stale"]::before {
+  color: #b45309;
+}
+.report-object-source-marker[data-marker-state="stale"]:hover { background: #fff7ed; }
+
+.evidence-preview-summary .evidence-preview-period { color: #5b6b7a; }
+.evidence-preview-summary .evidence-preview-value {
+  padding: 3px 8px;
+  border: 1px solid #d8e8f3;
+  border-radius: 6px;
+  background: #f0f7fc;
+  color: #0b4f8a;
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 767px) {
+  .evidence-preview:has(.evidence-preview-value) { max-height: min(170px, 25vh); }
 }

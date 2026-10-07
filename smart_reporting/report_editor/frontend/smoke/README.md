@@ -1,4 +1,30 @@
+密集事实预览定向检查：`node smoke/evidence-dense-fact-preview-fixture.mjs`。仅39节点/55关系、登记期间与数值、超长业务名、390px手机三个旋转角度；检查全部名称、图标遮挡、边界、预览操作滚动可见和关闭预览释放空间。
+
+事实预览可读性定向检查：`node smoke/evidence-fact-preview-fixture.mjs`。检查登记数值、单位、期间、零值和负变化额，跨分析同名事实不串值，缺失登记值不补造，单击预览不请求事实明细；390px按钮和摘要完整可见，2D/3D切换保留摘要。
+
+3D重置刻度定向检查：`node smoke/evidence-3d-reset-fixture.mjs`。七节点图选择两个追踪端点，验证重置适应范围、100%刻度、再放大125%、2D/3D恢复及节点坐标保留。
+
+指标与图表正文入口定向检查：`node smoke/evidence-object-source-links-fixture.mjs`。固定已登记表格、事实和图表，验证数据格组合引用、图表到绘图数据/数据集、分析到业务事实、键盘、原文保留和零写请求；改值/图表内容待复核时以橙色保留入口并查看原登记数据，深链准确打开对象且保留后退历史，位置失效后不显示入口。
+
+复制正文定向检查：`node smoke/evidence-source-copy-fixture.mjs`。真实系统复制事件验证普通文本和HTML不携带隐藏协议，标题、粗体、链接格式保留，原文不变。
+
+3D响应式视角定向检查：`node smoke/evidence-3d-resize-fixture.mjs`。验证桌面切手机后节点边界、横竖屏往返的125%缩放/平移/方向/up/节点坐标、模式恢复和关闭预览后的像素恢复；固定前端数据，不替代真机或全部密集图验收。
+
+正文来源组合定向检查：`node smoke/evidence-source-marker-fixture.mjs`。固定只读正文验证引用图标及右上角数量、组合来源选择、单来源直接进入、Enter/Space/Esc、取消与选择后的焦点、从组合引用反向定位到标题、正文保留和零写请求；默认使用fixture服务器，不验证真实后端会话。
+
 # Report Editor 生产冒烟
+
+`node smoke/evidence-3d-spatial-fixture.mjs` 使用固定的两输入/一产出数据，定向检查原生深度分层、输入位于产出后方、斜视初始/重置相机、缩放百分比及旋转角度、模式往返的坐标和刻度恢复，以及地面网格的几何/材质释放。使用构建后的4173 fixture服务；不替代密集名称避障或真机手势验收。
+
+密集 3D 标签性能可用 `REPORT_EDITOR_PROFILE_LAYOUT=1 node smoke/evidence-complex-3d-fixture.mjs` 定向检查。计时包装读取真实 Worker 请求与回执；分别报告首次显示名称与持续旋转的后台任务数、等待耗时、主线程动画帧间隔。旋转检查保留39个节点及全部名称，并要求至少10个动画帧、期间不提交后台排布任务。截图等待相机停止后的标签排布完成；计时结果不代表真实设备帧率。`node smoke/evidence-label-worker-fixture.mjs` 则延迟加载后台脚本，检查排布期间切换模式、线程终止、忙碌状态与节点身份。
+
+后台故障回放：`REPORT_EDITOR_WORKER_FAILURE=1 node smoke/evidence-label-worker-fixture.mjs` 注入线程脚本运行错误，`REPORT_EDITOR_WORKER_FAILURE=constructor` 注入浏览器拒绝创建线程。两者都检查恢复名称显示、清除忙碌状态、相机仍可操作、故障画布不重复创建线程，以及节点身份和页面脚本错误。
+
+上述线程回放支持 `REPORT_EDITOR_BROWSER=firefox`；默认使用 Chromium。`node smoke/evidence-facts-readability-fixture.mjs` 额外检查来源目录按 `analysis_001` 或显示名称 `分析 001` 筛选、以及未登记的分析不匹配其他事实。
+
+`REPORT_EDITOR_FACT_LONG_NAME=1 node smoke/evidence-facts-readability-fixture.mjs` 使用较长业务名称和契约允许的六位分析编号，在1280/390/320px检查目录抽屉、完整名称、筛选、期间、比较元数据与输入事实跳转。默认短名称与两视口范围保持原样。
+
+小图 3D 可按问题定向回放：`REPORT_EDITOR_SMALL_COUNT=15 REPORT_EDITOR_SMALL_STATE=hub-preview REPORT_EDITOR_SCREENSHOT_SUFFIX=-check node smoke/evidence-small-3d-fixture.mjs`。节点数只接受5/9/15，未指定时覆盖全部三种；报告 `nodes` 使用实际选择。默认27场景仍保留全部名称身份、零名称/图标碰撞、画布边界和导航断言。390px 未预览增加空摘要高度检查，避免空面板挤占画布；关注标签检查状态与名称两行，关系数量仍由悬停提示/图例提供。
 
 以下生产检查必须使用真实 reporting 后端和有效编辑会话。Vite API fixture 只能验证前端渲染，不能替代权限、会话和 renderer 链路。
 
@@ -13,6 +39,8 @@ npm run smoke
 ```
 
 将 `REPORT_EDITOR_BROWSER` 改为 `firefox` 可执行 Firefox 检查；`HEADLESS=0` 可显示浏览器窗口。
+
+只读流程按来源目录中的快照、计算/事实类型选择对象，不依赖演示数据名称；未登记计算时检查事实图。当前修订需有快照及计算或事实来源。页面脚本错误也会导致检查失败。
 
 默认脚本严格只读。仅可废弃的测试报告允许执行完整链路：
 
@@ -250,3 +278,7 @@ node smoke/evidence-complex-graph-fixture.mjs
 ```
 
 可通过 `REPORT_EDITOR_BROWSER=firefox` 或 `webkit` 切换引擎。真实文件/索引/manifest 登记两个派生事实与 12 个共享叶子，分批展开为 15 节点/26 边；检查坐标、历史、节点去重/重叠、实际连线穿线、预览关系突出与390px 布局。2026-10-01 三个引擎各通过 1 项。该用例不伪造 HTTP 响应，不证明任意事实环、业务口径有效、规模性能或真机体验。
+
+快照固定行序号回放：构建并启动 fixture 服务后，执行 `node smoke/evidence-snapshot-row-number-fixture.mjs`（可用 `REPORT_EDITOR_URL` 指定地址）。覆盖 61 列受控列窗口、分页、筛选原序号与 1280/390px 横向滚动固定列；截图为 `output/report-editor-snapshot-row-number-{1280,390}.png`。此回放使用模拟快照接口，不替代真实后端完整性/权限验证。
+
+事实可读性回放：构建并启动 fixture 服务后，执行 `node smoke/evidence-facts-readability-fixture.mjs`。覆盖 1280/390px 的指标名称、本期/同比基期、登记数值、筛选、比较口径和具名输入事实；截图为 `output/report-editor-facts-{overview,comparison,metric}-{1280,390}.png`。接口使用 fixture。2026-10-06 另对用户指定 revision 2 的真实后端做只读验证：6 个事实均使用登记快照匹配的冻结字段说明，两个视口验证列表及比较值，无脚本错误；未保存或导出正式报告。

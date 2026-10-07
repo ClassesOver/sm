@@ -215,6 +215,10 @@ class ReportingWorkspaceAdapter:
     async def hash_file(self, thread_id: str, path: str) -> dict[str, Any]:
         return await self._service.ahash_file(thread_id, path)
 
+    async def ahash_file(self, thread_id: str, path: str) -> dict[str, Any]:
+        """提供 Reporting 可视化提交阶段使用的异步文件哈希能力。"""
+        return await self.hash_file(thread_id, path)
+
     async def batch_hash_files(self, thread_id: str, paths: Sequence[str]) -> list[dict[str, Any]]:
         return await self._service.abatch_hash_files(thread_id, list(paths))
 

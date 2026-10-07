@@ -52,6 +52,8 @@ class DatasetHandle:
     query_window_id: str = "current"
     # 登记时刻（ISO8601 UTC）；旧句柄无此字段时为 None，禁止用 mtime 推断。
     materialized_at: str | None = None
+    business_label: str | None = None
+    query_sql: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -77,6 +79,8 @@ class DatasetHandle:
             "size": self.size,
             "sha256": self.sha256,
             "provenance": {
+                **({"businessLabel": self.business_label} if self.business_label else {}),
+                **({"querySql": self.query_sql} if self.query_sql else {}),
                 "requirementId": self.requirement_id,
                 "sqlHash": self.sql_hash,
                 "periodRoles": list(self.period_roles),
@@ -125,6 +129,8 @@ class DatasetHandle:
                     if provenance.get("materializedAt")
                     else None
                 ),
+                business_label=provenance.get("businessLabel"),
+                query_sql=provenance.get("querySql"),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ReportingError("dataset_invalid", "数据集句柄无效，请重新准备。") from error
@@ -303,6 +309,8 @@ class ReportDatasetStore:
                         staging_path = f"{staging_root}/{dataset_id}.csv"
                         await self.service.awrite_bytes(thread_id, staging_path, content)
                         handles[index] = DatasetHandle(
+                            business_label=query.business_label,
+                            query_sql=sql,
                             dataset_id=dataset_id,
                             path=path,
                             source_id=query.source_id,

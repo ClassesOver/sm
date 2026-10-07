@@ -220,6 +220,7 @@ class DatasetSnapshotRefV1(StrictModel):
     business_label: str | None = Field(
         default=None, alias="businessLabel", max_length=255
     )
+    query_sql: str | None = Field(default=None, alias="querySql", max_length=262_144)
 
 
 class DrilldownDimensionV1(StrictModel):

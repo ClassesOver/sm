@@ -89,8 +89,8 @@ describe('evidence state', () => {
     const page = state.currentPage()
     expect(page?.ref.key).toBe('dataset-1')
     expect(page?.path.map((ref) => ref.key)).toEqual(['fact-a', 'comp-1', 'dataset-1'])
-    // 快照页默认收起关系区，事实页默认展开。
-    expect(page?.collapsed).toBe(true)
+    // 所有来源对象首次打开都展开关系区。
+    expect(page?.collapsed).toBe(false)
     expect(task.history[0].collapsed).toBe(false)
   })
 

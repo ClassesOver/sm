@@ -95,3 +95,19 @@ describe('Milkdown serialization of protocol markers', () => {
     root.remove()
   })
 })
+
+describe('正文来源组合', () => {
+  it('合并相邻分析与引用，保留原始标记及其范围', async () => {
+    const { groupProtocolMarkers } = await import('./protocol')
+    const text = '正文[[analysis:analysis_001]] [[citation:revenue_001]][[analysis:analysis_002]]'
+    const groups = groupProtocolMarkers(text)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].map(marker => marker.value)).toEqual(['analysis_001', 'revenue_001', 'analysis_002'])
+    expect(text.slice(groups[0][0].start, groups[0].at(-1)!.end)).toBe(text.slice(2))
+  })
+  it('正文和结构标记阻断组合', async () => {
+    const { groupProtocolMarkers } = await import('./protocol')
+    expect(groupProtocolMarkers('[[analysis:analysis_001]]正文[[analysis:analysis_002]]')).toHaveLength(2)
+    expect(groupProtocolMarkers('[[citation:a]][[section:s]][[citation:b]]')).toHaveLength(3)
+  })
+})

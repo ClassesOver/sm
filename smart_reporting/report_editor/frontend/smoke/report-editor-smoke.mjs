@@ -96,6 +96,8 @@ try {
     { width: 1280, height: 900 },
   ]) {
     const page = await browser.newPage({ viewport })
+    const errors = []
+    page.on('pageerror', error => errors.push(error.name))
     await page.goto(url, { waitUntil: 'networkidle' })
     await page.locator('.ProseMirror').waitFor({ state: 'visible', timeout: 20_000 })
 
@@ -120,12 +122,15 @@ try {
       await page.locator('[data-action="sources"]').click()
       await page.locator('.evidence-shell:not([hidden])').waitFor({ state: 'visible' })
       await page.locator('.evidence-directory-item').first().waitFor({ state: 'visible', timeout: 10_000 })
-      const datasetItem = page.locator('.evidence-directory-item', { hasText: '收入明细.csv' })
+      const datasetGroup = page.locator('.evidence-directory-group').filter({ hasText: /^快照/ })
+      const datasetItem = datasetGroup.locator('xpath=following-sibling::button[1]')
       await datasetItem.click()
       await page.locator('.evidence-tab-stage', { hasText: '快照' }).waitFor({ state: 'visible' })
-      const computationItem = page.locator('.evidence-directory-item', { hasText: '渠道收入汇总' })
-      await computationItem.click()
-      await page.locator('.evidence-tab-stage', { hasText: '计算' }).waitFor({ state: 'visible' })
+      const computationGroup = page.locator('.evidence-directory-group').filter({ hasText: /^计算/ })
+      const hasComputation = await computationGroup.count() > 0
+      const objectGroup = hasComputation ? computationGroup : page.locator('.evidence-directory-group').filter({ hasText: /^事实/ })
+      await objectGroup.locator('xpath=following-sibling::button[1]').click()
+      await page.locator('.evidence-tab-stage', { hasText: hasComputation ? '计算' : '事实' }).waitFor({ state: 'visible' })
       const graph = page.locator('.evidence-graph[data-graph-host]')
       await graph.waitFor({ state: 'visible' })
       if (await graph.getByRole('button', { name: '切换到 2D 关系图', exact: true }).count()) {
@@ -140,6 +145,7 @@ try {
       }
       console.log(JSON.stringify({ evidenceBrowser: 'passed', nodes: await nodes.count() }))
     }
+    if (errors.length) throw new Error(`页面脚本错误：${errors.join(', ')}`)
     await page.close()
   }
   if (allowMutation) {

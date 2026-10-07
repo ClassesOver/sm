@@ -57,6 +57,8 @@ export interface TraceDatasetInfo {
   requirementId: string
   filename: string | null
   businessLabel: string | null
+  sqlHash?: string | null
+  querySql?: string | null
   rowCount: number
   size: number
   materializedAt: string | null
@@ -65,6 +67,11 @@ export interface TraceDatasetInfo {
 }
 
 export interface TraceSources {
+  facts?: {
+    analysisId: string; factId: string; factKind: string; label: string; datasetIds: string[]
+    name?: string; periodStart?: string | null; periodEnd?: string | null; periodRoles?: string[]
+    comparisonType?: string | null; displayValue?: unknown; unit?: string | null
+  }[]
   available: boolean
   reason?: string | null
   datasets?: TraceDatasetInfo[]
@@ -236,6 +243,8 @@ export interface TraceValidation {
 }
 
 export interface TraceTableCellLocation {
+  /** 精确位置与业务值状态独立；待复核不阻止查看登记来源。 */
+  status?: 'valid' | 'stale'
   rowKey: string
   columnKey: string
   /** 当前草稿的数据行序号（不含表头），列序号包含首列行标签。 */

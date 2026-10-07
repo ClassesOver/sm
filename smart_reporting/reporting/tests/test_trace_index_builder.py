@@ -97,6 +97,21 @@ def test_build_csv_trace_index_datasets_layer() -> None:
     assert known[first.file_resource_id].sha256 == SHA
 
 
+def test_snapshot_preserves_business_name_and_query_through_state() -> None:
+    handle = _handle(
+        "dataset-abc0001", source_type="starrocks_materialized", filename=None,
+        business_label="医疗收入月度明细（2025，本期）",
+        query_sql="SELECT indicator_value FROM rj.income",
+    )
+    restored = DatasetHandle.from_state(handle.public_dict())
+    index = _build(
+        (restored,), (_lineage("dataset-abc0001", sourceType="starrocks_materialized"),),
+    )
+    assert index.datasets[0].business_label == handle.business_label
+    assert index.datasets[0].query_sql == handle.query_sql
+    assert index.datasets[0].sql_hash == handle.sql_hash
+
+
 def test_build_rejects_handle_lineage_mismatch() -> None:
     with pytest.raises(ReportingError, match="未精确对应"):
         _build(

@@ -34,8 +34,10 @@ await mkdir(output, { recursive: true })
 const browser = await ({ chromium, firefox })[engine].launch({ headless: true })
 const collisions = []
 const geometry = []
+const counts = process.env.REPORT_EDITOR_SMALL_COUNT ? [Number(process.env.REPORT_EDITOR_SMALL_COUNT)] : [5, 9, 15]
+assert.ok(counts.every(count => [5, 9, 15].includes(count)))
 try {
-  for (const count of [5, 9, 15]) {
+  for (const count of counts) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
@@ -132,6 +134,10 @@ try {
     for (const [width, height] of [[1280, 900], [390, 844], [844, 390]]) {
       await page.setViewportSize({ width, height })
       if (width === 390) await page.getByRole('button', { name: '查看关系图', exact: true }).click()
+      if (width === 390 && state === 'none') {
+        const preview = await page.locator('.evidence-preview').boundingBox()
+        assert.ok(preview.height <= 80, '未选择节点时提示不预留完整摘要高度，空间交给关系图')
+      }
       for (let angle = 0; angle < 3; angle++) {
         if (angle) {
           const bounds = await canvas.boundingBox()
@@ -142,6 +148,7 @@ try {
         }
         await page.getByRole('button', { name: state === 'pair' ? '适应追踪关系' : direct ? '适应预览' : '适应 3D', exact: true }).click()
         await page.waitForTimeout(650)
+        await page.waitForFunction(() => document.querySelector('.evidence-graph-3d')?.dataset.labelLayout !== 'settling')
         const bounds = await canvas.boundingBox()
         await page.evaluate(() => window.graphLabelBounds.clear())
         await page.mouse.move(bounds.x + 2, bounds.y + 2)
@@ -166,7 +173,7 @@ try {
         assert.deepEqual(overlap.links, expectedLinks, '实际可见登记边身份及方向与当前范围一致')
         const current = overlap.bounds.find(label => label.id === rootId)
         assert.ok(current.text.includes('当前页'), '实际名称保留当前页状态')
-        assert.match(current.text, new RegExp(`已加载\\s*${count - (indirectBranch ? 2 : 1)}\\s*条关系`), '缩小范围仍显示已加载关系数')
+        assert.equal(current.text.split('\n').length, 2, '关注名称保持状态与名称两行，关系数量由提示和图例提供')
         assert.equal(overlap.informationAboveLinks, true, '实际名称与类型图标绘制在组件登记关系线上方')
         if (state !== 'none') {
           if (!hub) assert.ok(overlap.bounds.find(label => label.id === previewId).text.includes('预览'), '实际名称保留预览状态')
@@ -224,6 +231,7 @@ try {
           await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
           await canvas.waitFor()
           await page.waitForTimeout(650)
+          await page.waitForFunction(() => document.querySelector('.evidence-graph-3d')?.dataset.labelLayout !== 'settling')
           const restored = await canvas.boundingBox()
           await page.mouse.move(restored.x + 2, restored.y + 2)
           await page.waitForTimeout(150)
@@ -262,7 +270,7 @@ try {
     assert.deepEqual(errors, [])
     await page.close()
   }
-  console.log(JSON.stringify({ state, nodes: [5, 9, 15], viewports: [1280, 390, 844], angles: 3, collisions, readability: 'manual review required' }))
+  console.log(JSON.stringify({ state, nodes: counts, viewports: [1280, 390, 844], angles: 3, collisions, readability: 'manual review required' }))
   await writeFile(new URL(`report-editor-v6-small-3d${suffix}-geometry.json`, output), `${JSON.stringify(geometry, null, 2)}\n`)
 } finally {
   await browser.close()

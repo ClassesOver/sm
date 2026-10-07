@@ -916,13 +916,15 @@ async def test_large_snapshot_pagination_and_expired_cursor_recovery(
                 await expect(scope).to_contain_text("预览序号 51–100")
                 await page.locator(".evidence-filter").fill("ROW000075")
                 await expect(page.locator(".evidence-filter-count")).to_have_text("本页匹配 1 / 50 行")
+                await expect(page.locator("td.evidence-row-number")).to_have_text("76")
                 await page.locator(".evidence-column-resize").first.press("ArrowRight")
-                column_width = await page.locator(".evidence-table col").first.get_attribute("style")
+                column_width = await page.locator(".evidence-table col:not(.evidence-row-number)").first.get_attribute("style")
                 await page.reload()
                 await page.locator('button[data-action="sources"]').click()
                 await expect(scope).to_contain_text("预览序号 51–100")
                 await expect(page.locator(".evidence-filter")).to_have_value("ROW000075")
-                assert await page.locator(".evidence-table col").first.get_attribute("style") == column_width
+                assert await page.locator(".evidence-table col:not(.evidence-row-number)").first.get_attribute("style") == column_width
+                await expect(page.locator("td.evidence-row-number")).to_have_text("76")
                 clock[0] += 7200
                 for _ in range(2):
                     async with page.expect_response(lambda response: "/preview?" in response.url and response.status == 400):

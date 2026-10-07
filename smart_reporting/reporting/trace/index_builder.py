@@ -111,6 +111,8 @@ def build_csv_trace_index(
                 rowCount=handle.row_count,
                 materializedAt=handle.materialized_at,
                 filename=handle.filename,
+                businessLabel=handle.business_label,
+                querySql=handle.query_sql,
             )
         )
     fact_entries: list[FactFileEntryV1] = []

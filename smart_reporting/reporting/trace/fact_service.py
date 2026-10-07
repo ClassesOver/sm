@@ -18,7 +18,7 @@ from .fact_index import fact_entry_from_pointer
 _JSON = json.JSONDecoder()
 
 
-def _fact_display_value(entry: Mapping[str, Any]) -> Any:
+def fact_display_value(entry: Mapping[str, Any]) -> Any:
     """从 fact 记录提取展示值（按 kind 取最自然的数值字段）。"""
 
     for key in ("total", "percentage", "value", "change", "difference"):
@@ -72,7 +72,7 @@ def resolve_fact(
         "factKind": kind,
         "jsonPointer": fact_ref.json_pointer,
         "entry": entry,
-        "displayValue": _fact_display_value(entry),
+        "displayValue": fact_display_value(entry),
         "warnings": entry.get("warnings", ()) if isinstance(entry, Mapping) else (),
     }
     if with_inputs:
@@ -165,7 +165,7 @@ def expand_fact_tree(
             "factKind": kind,
             "jsonPointer": pointer,
             "factId": entry.get("factId"),
-            "displayValue": _fact_display_value(entry),
+            "displayValue": fact_display_value(entry),
         }
         if remaining <= 0:
             return node

@@ -207,6 +207,35 @@ describe('事实页', () => {
     }) as unknown as typeof fetch
   }
 
+  it('shows the registered field, period, scope and named inputs instead of a technical fact ID', async () => {
+    const fetcher = factFetcher()
+    const { container, ctx } = setupPage(async (input, init) => String(input).includes('/api/facts/')
+      ? json({ ...FACT_DETAIL, entry: { ...FACT_DETAIL.entry, field: '医疗收入', aggregation: 'sum', periodRoles: ['current'], periodStart: '2025-01', periodEnd: '2025-09', scope: { 院区: '东院' }, average: 1383.3 } })
+      : fetcher(input, init), FACT_REF, { labelFor: ref => ref.key === 'fact-input' ? '门诊收入 · 本期' : undefined })
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('h1')?.textContent).toBe('医疗收入')
+    const metadata = container.querySelector('.evidence-fact-metadata')!.textContent
+    expect(metadata).toContain('统计期间本期 · 2025-01 — 2025-09')
+    expect(metadata).toContain('汇总方式合计')
+    expect(metadata).toContain('统计范围院区：东院')
+    expect(metadata).toContain('平均值1,383.3 万元')
+    expect(container.querySelector('.evidence-fact-inputs')?.textContent).toContain('门诊收入 · 本期')
+    expect(container.querySelector('.evidence-fact-inputs')?.textContent).not.toContain('fact-input')
+  })
+
+  it('explains a comparison using current value, baseline value and registered percentage points', async () => {
+    const fetcher = factFetcher()
+    const { container, ctx } = setupPage(async (input, init) => String(input).includes('/api/facts/')
+      ? json({ ...FACT_DETAIL, factKind: 'comparison', displayValue: 2450, entry: { field: '医疗收入', comparisonType: 'yoy', currentTotal: 12450, baselineTotal: 10000, changeRate: 24.5, unit: '万元', periodStart: '2025-01', periodEnd: '2025-09' } })
+      : fetcher(input, init), FACT_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('.evidence-fact-value')?.textContent).toBe('登记变化额 2,450 万元')
+    const metadata = container.querySelector('.evidence-fact-metadata')!.textContent
+    expect(metadata).toContain('本期12,450 万元')
+    expect(metadata).toContain('同比基期10,000 万元')
+    expect(metadata).toContain('变化率24.5%')
+  })
+
   it('renders three independent status rows and a soft comparability warning', async () => {
     const { container, ctx } = setupPage(factFetcher(), FACT_REF, {
       getDraft: () => ({ markdown: '报告正文', sha256: 'x' }),
@@ -428,7 +457,10 @@ describe('事实页', () => {
     await renderEvidencePage(container, ctx)
     const callout = container.querySelector('.evidence-fact-warnings')!
     expect(callout.classList.contains('evidence-limitations')).toBe(true)
-    expect(callout.querySelector('.evidence-limitations-title')?.textContent).toBe('登记告警')
+    expect(callout.querySelector('.evidence-limitations-title')?.textContent).toBe('登记告警（1）')
+    expect(callout.tagName).toBe('DETAILS')
+    expect(callout.hasAttribute('open')).toBe(false)
+    expect(container.querySelector('.evidence-fact-inputs')?.compareDocumentPosition(callout)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     expect(callout.textContent).toContain('口径与上期不一致')
     const missing = container.querySelector('.evidence-fact-input-missing')
     expect(missing?.textContent).toBe('分析 analysis_002 的输入未登记事实 ID，无法打开')
@@ -1041,9 +1073,11 @@ describe('快照页', () => {
 
     expect(container.querySelector('.evidence-page-error')).toBeNull()
     expect(ctx.page.datasetColumnWindow).toBe(0)
-    const headers = () => [...container.querySelectorAll('.evidence-table th')].map((cell) => cell.textContent)
+    const headers = () => [...container.querySelectorAll('.evidence-table th:not(.evidence-row-number)')].map((cell) => cell.textContent)
     expect(headers()).toHaveLength(50)
     expect(headers()[0]).toBe('row_id')
+    expect(container.querySelector('th.evidence-row-number')?.textContent).toBe('快照行序号')
+    expect(container.querySelector('td.evidence-row-number')?.textContent).toBe('1')
     const select = container.querySelector<HTMLSelectElement>('.evidence-column-window')!
     expect([...select.options].map((option) => option.textContent)).toEqual([
       '第 1–50 列（row_id … c049）',
@@ -1057,6 +1091,7 @@ describe('快照页', () => {
     // 先翻到第二页，再切换列窗口：游标绑定列选择，切换后从第一页重新开始。
     container.querySelector<HTMLButtonElement>('.evidence-more')!.click()
     await vi.waitFor(() => expect(ctx.page.datasetPageIndex).toBe(1))
+    expect(container.querySelector('td.evidence-row-number')?.textContent).toBe('2')
     select.value = '1'
     select.dispatchEvent(new Event('change'))
     await vi.waitFor(() => expect(headers()[0]).toBe('c050'))
@@ -1073,6 +1108,7 @@ describe('快照页', () => {
     const restoredUrls = (fetcher as unknown as ReturnType<typeof vi.fn>).mock.calls.slice(before).map((call) => String(call[0]))
     expect(restoredUrls.filter((url) => url.includes('/preview')).every((url) => url.includes('columns=c050'))).toBe(true)
     expect(restored.container.querySelector('.evidence-column-window')).not.toBeNull()
+    expect(restored.container.querySelector('td.evidence-row-number')?.textContent).toBe('1')
   })
 
   it('keeps reporting a denial when no column is visible to the session', async () => {
@@ -1168,7 +1204,7 @@ describe('快照页', () => {
     expect(region.getAttribute('role')).toBe('region')
     expect(region.getAttribute('aria-label')).toContain('数据快照预览表')
     // 数字列右对齐：revenue 全为数字，branch 为文本。
-    const header = [...container.querySelectorAll('.evidence-table th')]
+    const header = [...container.querySelectorAll('.evidence-table th:not(.evidence-row-number)')]
     expect(header.map((cell) => cell.classList.contains('is-numeric'))).toEqual([false, true])
     expect(container.querySelector('.evidence-table td.is-numeric')?.textContent).toBe('1000')
 
@@ -1182,6 +1218,7 @@ describe('快照页', () => {
     // 末页没有“下一页”，焦点留在分页区的“上一页”。
     expect(document.activeElement).toBe(container.querySelector('.evidence-previous'))
     expect(container.querySelector('.evidence-dataset-scope')?.textContent).toContain('预览序号 3–4')
+    expect([...container.querySelectorAll('td.evidence-row-number')].map(cell => cell.textContent)).toEqual(['3', '4'])
     expect(container.querySelector('.evidence-table')?.textContent).not.toContain('华东')
     expect(ctx.page.datasetPageIndex).toBe(1)
     expect(ctx.page.datasetCursors).toEqual([null, 'cursor-2'])
@@ -1224,6 +1261,10 @@ describe('快照页', () => {
     const numeric = [...container.querySelectorAll('.evidence-table td')].find((cell) => cell.textContent === '1000')!
     expect([...numeric.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['00'])
 
+    filter.value = '华北'
+    filter.dispatchEvent(new Event('input'))
+    expect(container.querySelector('td.evidence-row-number')?.textContent).toBe('2')
+
     filter.value = '不存在的院区'
     filter.dispatchEvent(new Event('input'))
     expect(container.querySelector('.evidence-filter-count')?.textContent).toContain('本页匹配 0 / 2 行')
@@ -1240,14 +1281,14 @@ describe('快照页', () => {
     }) as unknown as typeof fetch
     const { container, ctx } = setupPage(fetcher, DATASET_REF)
     await renderEvidencePage(container, ctx)
-    const revenueHeader = () => container.querySelectorAll('.evidence-table th')[1]!
+    const revenueHeader = () => container.querySelectorAll('.evidence-table th:not(.evidence-row-number)')[1]!
     expect(revenueHeader().classList.contains('is-numeric')).toBe(true)
     const filter = container.querySelector<HTMLInputElement>('.evidence-filter')!
     filter.value = '华东'
     filter.dispatchEvent(new Event('input'))
     expect(container.querySelector('.evidence-filter-count')?.textContent).toContain('本页匹配 1 / 2 行')
     expect(revenueHeader().classList.contains('is-numeric')).toBe(true)
-    expect(container.querySelectorAll('.evidence-table td')[1]!.classList.contains('is-numeric')).toBe(true)
+    expect(container.querySelectorAll('.evidence-table td:not(.evidence-row-number)')[1]!.classList.contains('is-numeric')).toBe(true)
   })
 
   it('keeps the filter limited to each page and restores column widths on a new render', async () => {
@@ -1265,7 +1306,7 @@ describe('快照页', () => {
     expect(container.querySelector('.evidence-filter-count')?.textContent).toContain('本页匹配 0 / 2 行')
     const restored = document.createElement('div')
     await renderEvidencePage(restored, ctx)
-    expect(restored.querySelector<HTMLElement>('col')!.style.width).toBe('154px')
+    expect(restored.querySelector<HTMLElement>('col:not(.evidence-row-number)')!.style.width).toBe('154px')
     expect(restored.querySelector<HTMLInputElement>('.evidence-filter')!.value).toBe('华东')
   })
 
@@ -1467,6 +1508,11 @@ describe('详情入口统一导航', () => {
 })
 
 describe('graphLabel', () => {
+  it('keeps the fact name and period role rather than date digits in compact labels', () => {
+    const fact: EvidenceObjectRef = { kind: 'fact', key: 'fact-current', analysisId: 'analysis_001', label: '医疗收入 · 同比基期 · 2024-01-01 — 2024-12-01' }
+    expect(graphLabel(fact, 14, 9, 4)).toBe('医疗收入 · 同比基期')
+    expect(fact.label).toContain('2024-12-01')
+  })
   it('keeps the citation short id instead of cutting it in the middle', () => {
     const subject: EvidenceObjectRef = { kind: 'subject', key: 'sub-fixture-001', label: '正文引用 #fixtur' }
     expect(graphLabel(subject, 14, 9, 4)).toBe('正文引用 #fixtur')

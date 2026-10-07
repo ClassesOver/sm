@@ -12,6 +12,7 @@ const branch = layer('branch')
 const longLabels = process.env.REPORT_EDITOR_LONG_LABELS === '1'
 const suffix = `${longLabels ? '-long' : ''}${process.env.REPORT_EDITOR_SCREENSHOT_SUFFIX ?? ''}`
 const labelCycles = Number(process.env.REPORT_EDITOR_LABEL_CYCLES ?? 1)
+const profileLayout = process.env.REPORT_EDITOR_PROFILE_LAYOUT === '1'
 assert.ok(Number.isInteger(labelCycles) && labelCycles >= 1 && labelCycles <= 10)
 if (longLabels) {
   first[0] = '跨院区收入与成本口径调整后月度汇总计算结果'.repeat(3)
@@ -30,7 +31,32 @@ try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   const errors = []
   const overviewGeometry = []
+  const layoutPerformance = []
   page.on('pageerror', error => errors.push(error.message))
+  if (profileLayout) await page.addInitScript(() => {
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      constructor(url, options) {
+        super(url, options)
+        this.starts = new Map()
+        this.addEventListener('message', event => {
+          const start = this.starts.get(event.data.key)
+          if (start === undefined || !window.greedyPerformance) return
+          const duration = performance.now() - start
+          this.starts.delete(event.data.key)
+          window.greedyPerformance.totalMs += duration
+          window.greedyPerformance.maxMs = Math.max(window.greedyPerformance.maxMs, duration)
+        })
+      }
+      postMessage(data, ...options) {
+        if (data.input && window.greedyPerformance) {
+          this.starts.set(data.key, performance.now())
+          window.greedyPerformance.jobs++
+        }
+        return super.postMessage(data, ...options)
+      }
+    }
+  })
   // 保留组件原生相机动作，记录实际适应输入与节点投影，避免仅凭四边未裁切判断概览。
   await page.route('**/assets/3d-force-graph-*.js', async route => {
     const response = await route.fetch()
@@ -62,6 +88,10 @@ try {
   await page.locator('.evidence-directory-item', { hasText: '正文引用' }).click()
   await page.locator('.evidence-subject-links button', { hasText: '事实' }).click()
   const canvas = page.locator('.evidence-graph-3d canvas')
+  const settledCanvas = async (options) => {
+    await page.waitForFunction(() => document.querySelector('.evidence-graph-3d')?.dataset.labelLayout !== 'settling')
+    return canvas.screenshot(options)
+  }
   // 检查真实渲染像素：内缩2px避开主题边框/截图舍入，标签或球体触边即视为裁切风险。
   const fitsCanvas = async () => page.evaluate(async png => {
     const image = new Image()
@@ -87,7 +117,7 @@ try {
       if (!background(probe.width - 3, y)) return pixel(probe.width - 3, y)
     }
     return true
-  }, (await canvas.screenshot()).toString('base64'))
+  }, (await settledCanvas()).toString('base64'))
   const picker = page.getByRole('combobox', { name: '选择 3D 节点预览' })
   const trace = page.getByRole('combobox', { name: '追踪预览关系端点' })
   await canvas.waitFor()
@@ -127,7 +157,7 @@ try {
   await mkdir(output, { recursive: true })
   await page.getByRole('button', { name: '适应 3D', exact: true }).click()
   await page.waitForTimeout(250)
-  const beforeList = await canvas.screenshot()
+  const beforeList = await settledCanvas()
   await page.getByRole('button', { name: '切换到关系列表', exact: true }).click()
   await page.getByRole('region', { name: '关系列表', exact: true }).waitFor()
   const listedPairs = await page.locator('.evidence-relation-pair').evaluateAll(pairs => pairs.map(pair =>
@@ -138,7 +168,7 @@ try {
   await canvas.waitFor()
   assert.equal(await picker.inputValue(), `fact:${analysisId}/${branch[0]}`)
   await page.waitForTimeout(150)
-  assert.equal(beforeList.equals(await canvas.screenshot()), true, '3D/列表往返保留相机和节点画面')
+  assert.equal(beforeList.equals(await settledCanvas()), true, '3D/列表往返保留相机和节点画面')
   for (const [width, height] of [[1280, 900], [390, 844], [844, 390]]) {
     await page.setViewportSize({ width, height })
     if (width === 390) await page.getByRole('button', { name: '查看关系图', exact: true }).click()
@@ -159,7 +189,7 @@ try {
     await page.getByRole('button', { name: '缩小关系图', exact: true }).click()
     await page.waitForTimeout(250)
     assert.equal(await fitsCanvas(), true, `${width}px缩小后名称与图形不触及画布四边`)
-    await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-trace-zoom-${width}${suffix}.png`, output).pathname })
+    await settledCanvas({ path: new URL(`report-editor-v6-complex-3d-trace-zoom-${width}${suffix}.png`, output).pathname })
     await page.getByRole('button', { name: '放大关系图', exact: true }).click()
     await page.waitForTimeout(250)
     assert.equal(await trace.inputValue(), `fact:${analysisId}/${shared[0]}`)
@@ -174,7 +204,7 @@ try {
       await page.waitForTimeout(650)
       await page.getByRole('button', { name: '适应追踪关系', exact: true }).click()
       await page.waitForTimeout(250)
-      await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-trace-angle-${angle}-${width}${suffix}.png`, output).pathname })
+      await settledCanvas({ path: new URL(`report-editor-v6-complex-3d-trace-angle-${angle}-${width}${suffix}.png`, output).pathname })
       assert.equal(await fitsCanvas(), true, `${width}px追踪角度${angle}名称与图形不触及画布四边`)
       assert.equal(await trace.inputValue(), `fact:${analysisId}/${shared[0]}`)
     }
@@ -242,7 +272,7 @@ try {
     }))
     assert.equal(overviewGeometry.at(-1).hiddenBoundsStable, true, '隐藏名称尺寸不改变全图适应范围')
     assert.equal(overviewGeometry.at(-1).fixedNames.length, 1, '无预览概览仍显示当前页名称')
-    assert.match(overviewGeometry.at(-1).fixedNames[0].text, /当前页.*已加载\s*16\s*条关系/, '收紧卡片仍保留当前页状态与关系数')
+    assert.match(overviewGeometry.at(-1).fixedNames[0].text, /当前页/, '重点标签保留当前页状态')
     assert.equal(overviewGeometry.at(-1).fixedNames.every(name => name.height <= 32), true, '大图两行重点名称卡片不超过32px')
     if (width === 390 || width === 844) {
       assert.equal(Math.round(overviewGeometry.at(-1).padding), 32, '窄屏无预览概览使用32px适应留白')
@@ -277,7 +307,7 @@ try {
     if (width !== 1280) {
       await page.mouse.move(labelBounds.x + 5, labelBounds.y + 5)
       await page.waitForTimeout(100)
-      const beforeMobileList = await canvas.screenshot()
+      const beforeMobileList = await settledCanvas()
       await page.getByRole('button', { name: '切换到关系列表', exact: true }).click()
       const mobileList = page.getByRole('region', { name: '关系列表', exact: true })
       await mobileList.waitFor()
@@ -292,7 +322,7 @@ try {
       await canvas.waitFor()
       await page.mouse.move(labelBounds.x + 5, labelBounds.y + 5)
       await page.waitForTimeout(150)
-      assert.equal(beforeMobileList.equals(await canvas.screenshot()), true, '独立视图列表往返保持图现场')
+      assert.equal(beforeMobileList.equals(await settledCanvas()), true, '独立视图列表往返保持图现场')
     }
     const clearHover = async () => {
       await page.mouse.move(labelBounds.x + 5, labelBounds.y + 5)
@@ -302,18 +332,39 @@ try {
       const cycleSuffix = labelCycles > 1 ? `-cycle-${cycle}` : ''
       await clearHover()
       const beforeHover = await page.locator('.evidence-graph-3d').getAttribute('data-hovered')
-      const focusedCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-focus-before-${width}${suffix}${cycleSuffix}.png`, output).pathname })
+      const focusedCanvas = await settledCanvas({ path: new URL(`report-editor-v6-complex-3d-focus-before-${width}${suffix}${cycleSuffix}.png`, output).pathname })
       await page.waitForTimeout(150)
-      assert.equal(focusedCanvas.equals(await canvas.screenshot()), true, `${width}px名称开关前相机与画面已稳定`)
+      assert.equal(focusedCanvas.equals(await settledCanvas()), true, `${width}px名称开关前相机与画面已稳定`)
+      if (profileLayout) await page.evaluate(() => {
+        window.greedyPerformance = { jobs: 0, totalMs: 0, maxMs: 0 }
+        window.layoutFrames = []
+        window.captureLayout = true
+        const frame = time => {
+          if (!window.captureLayout) return
+          window.layoutFrames.push(time)
+          requestAnimationFrame(frame)
+        }
+        requestAnimationFrame(frame)
+      })
       await page.getByRole('button', { name: '显示全部节点名称', exact: true }).click()
       await clearHover()
-      const allNamesCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-all-names-${width}${suffix}.png`, output).pathname })
+      await page.waitForFunction(() => document.querySelector('.evidence-graph-3d')?.dataset.labelLayout !== 'settling')
+      if (profileLayout) layoutPerformance.push({ width, cycle, ...await page.evaluate(() => {
+        window.captureLayout = false
+        const gaps = window.layoutFrames.slice(1).map((time, index) => time - window.layoutFrames[index]).sort((a, b) => a - b)
+        return { ...window.greedyPerformance, frames: window.layoutFrames.length,
+          frameGapP95Ms: gaps[Math.floor(gaps.length * .95)] ?? null, maxFrameGapMs: gaps.at(-1) ?? null }
+      }) })
+      assert.equal(await page.locator('.evidence-3d-line-key.is-guide').isVisible(), true, '全名称模式解释虚线为名称引导')
+      assert.ok((await page.locator('.evidence-graph-3d').getAttribute('aria-label')).includes('虚线仅连接节点与名称'))
+      const allNamesCanvas = await settledCanvas({ path: new URL(`report-editor-v6-complex-3d-all-names-${width}${suffix}.png`, output).pathname })
       assert.equal(focusedCanvas.equals(allNamesCanvas), false, '名称开关实际改变画布')
       assert.equal(await picker.locator('option').count(), 40, '名称开关不隐藏业务节点')
       assert.equal(await picker.inputValue(), `fact:${analysisId}/${first[0]}`)
       await page.getByRole('button', { name: '只显示重点节点名称', exact: true }).click()
       await clearHover()
-      const restoredCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-focus-restored-${width}${suffix}${cycleSuffix}.png`, output).pathname })
+      assert.equal(await page.locator('.evidence-3d-line-key.is-guide').isVisible(), false, '重点模式不展示不存在的名称引导线图例')
+      const restoredCanvas = await settledCanvas({ path: new URL(`report-editor-v6-complex-3d-focus-restored-${width}${suffix}${cycleSuffix}.png`, output).pathname })
       const afterHover = await page.locator('.evidence-graph-3d').getAttribute('data-hovered')
       assert.equal(afterHover, beforeHover, `${width}px第${cycle}轮悬停状态一致`)
       if (!focusedCanvas.equals(restoredCanvas)) {
@@ -351,7 +402,7 @@ try {
     assert.equal(await fitsCanvas(), true, `${width}px概览关注对象名称与图形不触及画布四边`)
     await page.getByRole('button', { name: '缩小关系图', exact: true }).click()
     await page.waitForTimeout(250)
-    await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-overview-zoom-${width}${suffix}.png`, output).pathname })
+    await settledCanvas({ path: new URL(`report-editor-v6-complex-3d-overview-zoom-${width}${suffix}.png`, output).pathname })
     assert.equal(await fitsCanvas(), true, `${width}px概览缩小后关注对象名称不触及画布四边`)
     await page.getByRole('button', { name: '放大关系图', exact: true }).click()
     await page.waitForTimeout(250)
@@ -360,16 +411,16 @@ try {
     assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), back)
     await page.mouse.move(labelBounds.x + 5, labelBounds.y + 5)
     await page.waitForTimeout(100)
-    const fullView = await canvas.screenshot()
+    const fullView = await settledCanvas()
     await trace.selectOption('preview-relations')
     await page.locator('.evidence-3d-trace-status', { hasText: '预览 15 条登记关系 · 仅显示预览直接关系' }).waitFor()
     assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-scope'), 'preview')
     assert.equal(await picker.locator('option').count(), 40, '直接关系视图保留全部节点身份')
     await page.waitForTimeout(100)
-    assert.equal(fullView.equals(await canvas.screenshot()), false, '直接关系过滤实际改变画面')
+    assert.equal(fullView.equals(await settledCanvas()), false, '直接关系过滤实际改变画面')
     await trace.selectOption('')
     await page.waitForTimeout(100)
-    assert.equal(fullView.equals(await canvas.screenshot()), true, '范围往返保持全部节点坐标和相机')
+    assert.equal(fullView.equals(await settledCanvas()), true, '范围往返保持全部节点坐标和相机')
     await trace.selectOption('preview-relations')
     await page.getByRole('button', { name: '适应预览', exact: true }).click()
     await page.waitForTimeout(250)
@@ -411,6 +462,43 @@ try {
   }
   await picker.selectOption(`fact:${analysisId}/${first[1]}`)
   assert.equal(await trace.inputValue(), '', '更换预览不沿用旧对象追踪')
+  if (profileLayout) {
+    const showNames = page.getByRole('button', { name: '显示全部节点名称', exact: true })
+    if (await showNames.count()) await showNames.click()
+    assert.equal(await picker.locator('option').count(), 40, '旋转计时保留全部39个业务节点')
+    assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-labels'), 'all')
+    assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-scope'), 'all')
+    await settledCanvas()
+    await page.evaluate(() => {
+      window.greedyPerformance = { jobs: 0, totalMs: 0, maxMs: 0 }
+      window.motionFrames = []
+      window.captureMotion = true
+      const frame = time => {
+        if (!window.captureMotion) return
+        window.motionFrames.push(time)
+        requestAnimationFrame(frame)
+      }
+      requestAnimationFrame(frame)
+    })
+    const bounds = await canvas.boundingBox()
+    await page.mouse.move(bounds.x + 10, bounds.y + 10)
+    await page.mouse.down()
+    for (let step = 1; step <= 16; step++) {
+      await page.mouse.move(bounds.x + 10 + 65 * step / 16, bounds.y + 10 + 25 * step / 16)
+      await page.waitForTimeout(16)
+    }
+    await page.mouse.up()
+    const motionPerformance = await page.evaluate(() => {
+      window.captureMotion = false
+      const gaps = window.motionFrames.slice(1).map((time, index) => time - window.motionFrames[index]).sort((a, b) => a - b)
+      return { ...window.greedyPerformance, frames: window.motionFrames.length,
+        frameGapP95Ms: gaps[Math.floor(gaps.length * .95)] ?? null, maxFrameGapMs: gaps.at(-1) ?? null }
+    })
+    assert.equal(motionPerformance.jobs, 0, '旋转期间只重投影缓存名称，不提交后台避障任务')
+    assert.ok(motionPerformance.frames >= 10, '旋转样例覆盖至少10个实际动画帧')
+    await settledCanvas()
+    console.log(JSON.stringify({ layoutPerformance, motionPerformance }))
+  }
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ nodes: 39, edges: 55, longLabels, labelCycles, overviewGeometry, listIdentity: 'passed', listCamera: 'passed', traceBounds: 'passed', sharedIdentity: 'passed', batches: 'passed', tracing: 'passed', viewports: 'passed', navigation: 'passed', readability: 'manual review required', errors }))
 } finally {

@@ -1,3 +1,4 @@
+import { bodySourceLinksPlugin, updateBodySourceLinks } from './body-source-links'
 import '@milkdown/crepe/theme/common/prosemirror.css'
 import '@milkdown/crepe/theme/common/reset.css'
 import '@milkdown/crepe/theme/common/block-edit.css'
@@ -185,6 +186,7 @@ document.head.prepend(base)
 
 const client = new ReportEditorClient(basePath)
 let lineagePanelEnabled = true
+let refreshBodySourceLinks = (_result: import('./api').TraceValidation | null) => {}
 const sourceValidation = createSourceValidationController(
   client,
   () => getEditorMarkdown(),
@@ -208,6 +210,7 @@ const sourceValidation = createSourceValidationController(
       }
     }
     sourceStatusLabel.hidden = false
+    refreshBodySourceLinks(result)
   },
   () => {
     if (!lineagePanelEnabled) return
@@ -301,6 +304,56 @@ const evidenceBrowser = createEvidenceBrowser(root, {
 })
 evidenceCovering = () => evidenceBrowser.isOpen()
 shell.sources.addEventListener('click', () => evidenceBrowser.open())
+const openBodySource = (event: MouseEvent | KeyboardEvent) => {
+  if (event instanceof KeyboardEvent && event.key !== 'Enter' && event.key !== ' ') return
+  const marker = (event.target as HTMLElement).closest<HTMLElement>('[data-marker-kind="analysis"], [data-marker-kind="citation"], [data-marker-kind="chart"]')
+  if (!marker || !lineagePanelEnabled) return
+  event.preventDefault()
+  if (event instanceof KeyboardEvent) event.stopPropagation()
+  const references: Array<{ kind: 'analysis' | 'citation' | 'chart'; value: string }> = JSON.parse(marker.dataset.markerReferences ?? '[]')
+  if (references.length > 1) {
+    const dialog = document.createElement('dialog')
+    dialog.className = 'report-source-picker'
+    const heading = document.createElement('h2')
+    heading.id = 'report-source-picker-title'
+    heading.textContent = `这处正文引用了 ${references.length} 个来源`
+    dialog.setAttribute('aria-labelledby', heading.id)
+    dialog.append(heading)
+    references.forEach((reference, index) => {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'ui-button'
+      button.textContent = reference.kind === 'analysis' ? `分析 ${reference.value.replace('analysis_', '')}` : `引用来源 ${index + 1}`
+      button.title = reference.value
+      button.addEventListener('click', () => {
+        dialog.close('selected')
+        if (reference.kind === 'analysis') void evidenceBrowser.openAnalysis(reference.value)
+        else if (reference.kind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: reference.value, label: reference.value })
+        else void evidenceBrowser.openSubject(reference.value)
+      })
+      dialog.append(button)
+    })
+    const close = document.createElement('button')
+    close.type = 'button'
+    close.className = 'ui-button'
+    close.textContent = '关闭'
+    close.addEventListener('click', () => dialog.close())
+    dialog.append(close)
+    dialog.addEventListener('close', () => {
+      dialog.remove()
+      if (dialog.returnValue !== 'selected') marker.focus({ preventScroll: true })
+    })
+    document.body.append(dialog)
+    dialog.showModal()
+    return
+  }
+  const value = marker.dataset.markerValue!
+  if (marker.dataset.markerKind === 'analysis') void evidenceBrowser.openAnalysis(value)
+  else if (marker.dataset.markerKind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: value, label: value })
+  else void evidenceBrowser.openSubject(value)
+}
+shell.editor.addEventListener('click', openBodySource)
+shell.editor.addEventListener('keydown', openBodySource, { capture: true })
 const telemetry = createTelemetryReporter((payload) => client.reportEvent(payload))
 const loadStartedAt = performance.now()
 let conflictPanel: ReturnType<typeof createConflictPanel> | null = null
@@ -422,12 +475,23 @@ try {
   )
   crepe.editor.use(protocolMarkerPlugin)
   crepe.editor.use(evidenceLocationPlugin)
+  crepe.editor.use(bodySourceLinksPlugin)
   crepe.editor.use(searchHighlightPlugin)
   crepe.editor.use(indent)
   crepe.editor.use(trailing)
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
   const evidenceView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+  const bodySources = client.sources().catch(() => null)
+  let bodySourceIntent = 0
+  refreshBodySourceLinks = (result) => {
+    const intent = ++bodySourceIntent
+    const markdown = getEditorMarkdown()
+    void bodySources.then(sources => {
+      if (!sources || intent !== bodySourceIntent || getEditorMarkdown() !== markdown) return
+      updateBodySourceLinks(evidenceView, shell.editor, sources, result)
+    })
+  }
   let evidenceLocationTimer: number | undefined
   focusEvidenceTarget = (target) => {
     window.clearTimeout(evidenceLocationTimer)

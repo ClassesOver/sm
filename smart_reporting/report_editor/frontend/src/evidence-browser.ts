@@ -9,8 +9,8 @@ import {
   type EvidenceStore,
   type EvidenceTask,
 } from './evidence-state'
-import { appendHighlighted, renderEvidencePage } from './evidence-pages'
-import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabelsFor } from './evidence-relations'
+import { appendHighlighted, groupDigits, renderEvidencePage } from './evidence-pages'
+import { datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabelsFor } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
@@ -53,6 +53,14 @@ const SOURCE_UNAVAILABLE_LABELS: Record<string, string> = {
   source_index_missing: '当前修订没有来源索引（旧报告或来源未登记）',
   feature_disabled: '来源追溯功能未启用',
   snapshot_expired: '数据快照已超过保留期，登记信息仍可查看，明细不可用',
+}
+
+function taskAnalysisLabel(ref: EvidenceObjectRef): string {
+  return ref.kind === 'fact' && ref.analysisId ? `分析 ${ref.analysisId.replace('analysis_', '')}` : ''
+}
+
+function taskDisplayLabel(ref: EvidenceObjectRef): string {
+  return [ref.label, taskAnalysisLabel(ref)].filter(Boolean).join(' · ')
 }
 
 export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowserOptions) {
@@ -126,6 +134,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   let directoryReady: Promise<void> = Promise.resolve()
   let navigationIntent = 0
   let directoryRefs: EvidenceObjectRef[] = []
+  const directoryFacts = new Map<string, NonNullable<TraceSources['facts']>[number]>()
   /** 目录说明：来源不可用的原因，或部分目录加载失败（可重试）。 */
   let directoryNotes: { text: string; retry?: boolean }[] = []
   let directoryFilter = ''
@@ -261,7 +270,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     }
     state.switchTask(key)
     renderAll()
-    announce(`已切换到核对任务 ${state.currentTask()?.root.label ?? ''}`)
+    const task = state.currentTask()
+    if (task) announce(`已切换到核对任务 ${taskDisplayLabel(task.root)}`)
   }
 
   const closeTab = (key: string) => {
@@ -277,7 +287,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     if (focusInTabs && !tabList.contains(document.activeElement)) {
       tabList.querySelector<HTMLButtonElement>('.evidence-tab[aria-selected="true"]')?.focus()
     }
-    if (wasActive) announce(`已切换到核对任务 ${state.currentTask()?.root.label ?? ''}`)
+    const task = state.currentTask()
+    if (wasActive && task) announce(`已切换到核对任务 ${taskDisplayLabel(task.root)}`)
   }
 
   // 页签多于可见宽度时，当前页签可能停在滚动区域之外；只在页签栏内水平滚动，
@@ -289,7 +300,6 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     tabList.classList.toggle('can-scroll-right', max > 1 && tabList.scrollLeft < max - 1)
   }
   tabList.addEventListener('scroll', updateTabOverflow, { passive: true })
-  window.addEventListener('resize', updateTabOverflow)
 
   const revealActiveTab = () => {
     const tab = tabList.querySelector<HTMLElement>('.evidence-tab[aria-selected="true"]')
@@ -297,9 +307,16 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     if (!target || tabList.scrollWidth <= tabList.clientWidth) return
     const listRect = tabList.getBoundingClientRect()
     const rect = target.getBoundingClientRect()
-    if (rect.left < listRect.left) tabList.scrollLeft -= listRect.left - rect.left + 8
+    // 页签宽于可见区时，优先露出右侧分析标识和关闭按钮，避免左右边界来回争抢。
+    if (rect.width > listRect.width) tabList.scrollLeft += rect.right - listRect.right + 8
+    else if (rect.left < listRect.left) tabList.scrollLeft -= listRect.left - rect.left + 8
     else if (rect.right > listRect.right) tabList.scrollLeft += rect.right - listRect.right + 8
   }
+
+  window.addEventListener('resize', () => {
+    if (isOpen) revealActiveTab()
+    updateTabOverflow()
+  })
 
   const renderTabs = () => {
     // 重新渲染会销毁焦点元素；记录并按身份恢复，避免键盘操作后失位。
@@ -340,9 +357,11 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const task = state.restoreTask()
       if (!task) return
       renderAll()
-      announce(`已恢复核对任务 ${task.root.label}`)
+      announce(`已恢复核对任务 ${taskDisplayLabel(task.root)}`)
     })
     for (const task of state.store.tasks) {
+      const analysisLabel = taskAnalysisLabel(task.root)
+      const displayLabel = taskDisplayLabel(task.root)
       const wrap = document.createElement('span')
       wrap.className = 'evidence-tab-wrap'
       const tab = document.createElement('button')
@@ -379,12 +398,18 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       stage.className = 'evidence-tab-stage'
       stage.textContent = EVIDENCE_KIND_LABELS[taskPageKind(task)]
       tab.append(name, stage)
+      if (analysisLabel) {
+        const analysis = document.createElement('span')
+        analysis.className = 'evidence-tab-analysis'
+        analysis.textContent = analysisLabel
+        tab.append(analysis)
+      }
       const currentPath = task.history[task.index].path.map((ref) => ref.label).join(' / ')
-      tab.title = currentPath
+      tab.title = [currentPath, analysisLabel].filter(Boolean).join(' · ')
       const close = document.createElement('button')
       close.type = 'button'
       close.className = 'evidence-tab-close'
-      close.setAttribute('aria-label', `关闭核对任务 ${task.root.label}`)
+      close.setAttribute('aria-label', `关闭核对任务 ${displayLabel}`)
       close.append(createElement(X, { width: 14, height: 14, 'aria-hidden': 'true' }))
       close.addEventListener('click', (event) => {
         event.stopPropagation()
@@ -395,11 +420,11 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       tabList.append(wrap)
       const item = document.createElement('button')
       item.type = 'button'
-      item.textContent = `${task.root.label} · ${EVIDENCE_KIND_LABELS[taskPageKind(task)]}`
+      item.textContent = `${displayLabel} · ${EVIDENCE_KIND_LABELS[taskPageKind(task)]}`
       item.prepend(popupIcon(createElement(EVIDENCE_KIND_ICONS[task.root.kind], {
         width: 15, height: 15, 'aria-hidden': 'true', color: EVIDENCE_KIND_COLORS[task.root.kind],
       })))
-      item.title = currentPath
+      item.title = tab.title
       if (isOpen && state.store.active === task.key) item.setAttribute('aria-current', 'true')
       item.addEventListener('click', () => activateTab(task.key))
       taskItems.append(item)
@@ -570,10 +595,12 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     const current = state.currentPage()
     const filter = directoryFilter.trim().toLowerCase()
     const groups: { label: string; items: EvidenceObjectRef[] }[] = []
-    // 显示名已换成登记名（如方法名、文件名），页面副标题仍显示对象 ID；搜索同时匹配二者。
+    // 搜索登记名、对象 ID，以及事实目录中展示的分析归属。
     const idOnlyHits = new Set<EvidenceObjectRef>()
     for (const ref of directoryRefs) {
-      if (filter && !ref.label.toLowerCase().includes(filter)) {
+      const analysis = ref.kind === 'fact' && ref.analysisId
+        ? `${ref.analysisId}\n分析 ${ref.analysisId.replace('analysis_', '')}`.toLowerCase() : ''
+      if (filter && !ref.label.toLowerCase().includes(filter) && !analysis.includes(filter)) {
         if (!ref.key.toLowerCase().includes(filter)) continue
         idOnlyHits.add(ref)
       }
@@ -610,8 +637,23 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         icon.classList.add('evidence-directory-icon')
         const name = document.createElement('span')
         name.className = 'evidence-directory-label'
-        appendHighlighted(name, ref.label, filter)
+        const fact = directoryFacts.get(evidenceRefId(ref))
+        appendHighlighted(name, fact?.name || ref.label, filter)
         item.append(icon, name)
+        if (fact?.name) {
+          const meta = document.createElement('span')
+          meta.className = 'evidence-directory-meta'
+          const period = factPeriodLabel(fact)
+          if (period) {
+            appendHighlighted(meta, period, filter)
+            meta.append(document.createTextNode(' · '))
+          }
+          const analysis = document.createElement('span')
+          analysis.className = 'evidence-directory-analysis'
+          appendHighlighted(analysis, `分析 ${fact.analysisId.replace('analysis_', '')}`, filter)
+          meta.append(analysis)
+          item.append(meta)
+        }
         if (idOnlyHits.has(ref)) {
           // 仅按 ID 命中时显示命中的 ID，说明该条目为何出现在结果中。
           const id = document.createElement('span')
@@ -619,7 +661,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
           appendHighlighted(id, ref.key, filter)
           item.append(id)
         }
-        item.title = `${group.label} · ${ref.label}`
+        item.title = `${group.label} · ${ref.label} · ${ref.key}`
         item.addEventListener('click', () => openTaskFromDirectory(ref))
         directoryItems.append(item)
       }
@@ -681,7 +723,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   const openTaskFromDirectory = (ref: EvidenceObjectRef) => {
     const task = state.openTask(ref, { foreground: true })
     renderAll()
-    announce(`已开启核对任务 ${task.root.label}`)
+    announce(`已开启核对任务 ${taskDisplayLabel(task.root)}`)
     if (window.innerWidth <= 1100) setDirectoryOpen(false)
   }
 
@@ -726,11 +768,17 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       if (failedKinds.length) notes.push({ text: `${failedKinds.join('、')}目录加载失败，未列出的不代表没有登记。`, retry: true })
       directoryNotes = notes
       const refs: EvidenceObjectRef[] = []
+      directoryFacts.clear()
+      for (const fact of sources.facts ?? []) {
+        const ref: EvidenceObjectRef = { kind: 'fact', key: fact.factId, analysisId: fact.analysisId, label: factLabel(fact) }
+        refs.push(ref)
+        directoryFacts.set(evidenceRefId(ref), fact)
+      }
       for (const dataset of sources.datasets ?? []) {
         refs.push({
           kind: 'dataset',
           key: dataset.datasetId,
-          label: dataset.filename ?? dataset.businessLabel ?? dataset.datasetId,
+          label: datasetLabel(dataset, sources.datasets),
         })
       }
       if (computations.available) {
@@ -865,6 +913,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         const id = evidenceRefId(ref)
         return directoryRefs.find((item) => evidenceRefId(item) === id)?.label
       },
+      factFor: (ref: EvidenceObjectRef) => directoryFacts.get(evidenceRefId(ref)),
       downloadEnabled,
       drilldownEnabled,
       loadSources,
@@ -881,7 +930,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         if (foreground) renderAll()
         else renderTabs()
         persist()
-        announce(`${foreground ? '已打开' : '已在后台开启'}核对任务 ${task.root.label}`)
+        announce(`${foreground ? '已打开' : '已在后台开启'}核对任务 ${taskDisplayLabel(task.root)}`)
       },
       setPreview: (ref: EvidenceObjectRef | null) => {
         const focus = ref ?? state.currentPage()?.selected ?? undefined
@@ -996,8 +1045,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         label: subjectLabelsFor((sources.subjects ?? []).map((item) => item.subjectId))(subject.subjectId),
       }
       const task = state.openTask(ref, { foreground: true })
+      // 正文来源是对象深链，复用任务后仍定位到引用对象；浏览历史由原生导航保留。
+      state.navigate(ref)
       renderAll()
-      announce(`已开启核对任务 ${task.root.label}`)
+      announce(`已开启核对任务 ${taskDisplayLabel(task.root)}`)
     } catch (error) {
       if (!isOpen || intent !== navigationIntent) return
       const message = error instanceof ReportEditorApiError && error.code === 'source_missing'
@@ -1012,10 +1063,115 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     open: showShell,
     close: hideShell,
     openSubject,
+    async openAnalysis(analysisId: string) {
+      showShell()
+      const intent = ++navigationIntent
+      try {
+        const sources = await loadSources()
+        await directoryReady
+        if (!isOpen || intent !== navigationIntent) return
+        const facts = sources.facts?.filter(item => item.analysisId === analysisId) ?? []
+        if (!facts.length) {
+          showNotice('当前修订未登记该分析的具体事实来源')
+          return
+        }
+        pageController?.abort()
+        workspace.replaceChildren()
+        const overview = document.createElement('div')
+        overview.className = 'evidence-analysis-overview'
+        workspace.append(overview)
+        const crumb = document.createElement('span')
+        crumb.className = 'evidence-crumb'
+        crumb.textContent = `分析 ${analysisId.replace('analysis_', '')} · 具体来源`
+        crumb.setAttribute('aria-current', 'page')
+        crumbs.replaceChildren(crumb)
+        const heading = document.createElement('h1')
+        heading.className = 'evidence-object-title'
+        heading.tabIndex = -1
+        heading.textContent = `分析 ${analysisId.replace('analysis_', '')} · 具体来源（${facts.length}）`
+        overview.append(heading)
+        const search = document.createElement('input')
+        search.type = 'search'
+        search.className = 'evidence-analysis-search evidence-filter'
+        search.placeholder = '筛选指标、期间或事实编号'
+        search.setAttribute('aria-label', '筛选分析事实')
+        const result = document.createElement('p')
+        result.className = 'evidence-analysis-result'
+        result.setAttribute('role', 'status')
+        result.textContent = `共 ${facts.length} 个已登记事实，选择一项查看数值和来源。`
+        overview.append(search, result)
+        const kinds: Record<string, string> = {
+          metric: '指标', comparison: '对比', derived: '派生指标',
+          reconciliation: '核对', correlation: '相关性',
+        }
+        for (const [kind, label] of [...Object.entries(kinds), ['other', '其他事实']]) {
+          const items = facts.filter(fact => kind === 'other'
+            ? !Object.hasOwn(kinds, fact.factKind) : fact.factKind === kind)
+          if (!items.length) continue
+          const section = document.createElement('section')
+          const title = document.createElement('h2')
+          title.textContent = `${label}（${items.length}）`
+          const list = document.createElement('ul')
+          for (const fact of items) {
+            const item = document.createElement('li')
+            item.dataset.searchText = `${fact.label} ${fact.factId} ${factPeriodLabel(fact)}`.toLocaleLowerCase()
+            const button = document.createElement('button')
+            button.type = 'button'
+            button.className = 'evidence-start-item'
+            const name = document.createElement('strong')
+            name.className = 'evidence-fact-name'
+            name.textContent = fact.name || fact.label
+            const meta = document.createElement('span')
+            meta.className = 'evidence-fact-period'
+            meta.textContent = factPeriodLabel(fact)
+            const description = document.createElement('span')
+            description.className = 'evidence-fact-description'
+            description.append(name, meta)
+            button.append(description)
+            if (fact.displayValue !== undefined) {
+              const value = document.createElement('span')
+              value.className = 'evidence-fact-list-value'
+              const valueLabel = fact.factKind === 'comparison' ? '变化额' : fact.factKind === 'reconciliation' ? '核对差额' : '登记值'
+              value.textContent = `${valueLabel} ${groupDigits(fact.displayValue)}${fact.unit ? ` ${fact.unit}` : ''}`
+              button.append(value)
+            }
+            button.title = `${fact.label} · ${fact.factId}`
+            button.dataset.factId = fact.factId
+            button.addEventListener('click', () => openTaskFromDirectory({
+              kind: 'fact', key: fact.factId, analysisId, label: factLabel(fact),
+            }))
+            item.append(button)
+            list.append(item)
+          }
+          section.append(title, list)
+          overview.append(section)
+        }
+        search.addEventListener('input', () => {
+          const keyword = search.value.trim().toLocaleLowerCase()
+          let count = 0
+          for (const section of overview.querySelectorAll('section')) {
+            let visible = 0
+            for (const item of section.querySelectorAll('li')) {
+              item.hidden = !item.dataset.searchText!.includes(keyword)
+              if (!item.hidden) visible++
+            }
+            section.hidden = visible === 0
+            count += visible
+          }
+          result.textContent = keyword ? `匹配 ${count} / ${facts.length} 个事实${count ? '' : '，请调整筛选条件'}。`
+            : `共 ${facts.length} 个已登记事实，选择一项查看数值和来源。`
+        })
+        renderingWorkspace = false
+        heading.focus()
+      } catch {
+        if (isOpen && intent === navigationIntent) showNotice('分析来源加载失败，请重试')
+      }
+    },
     /** 开启或激活指定对象的核对任务（供外部深链）。 */
     openObject(ref: EvidenceObjectRef) {
       showShell()
       state.openTask(ref, { foreground: true })
+      state.navigate(ref)
       renderAll()
     },
     setDownloadEnabled(enabled: boolean) {
@@ -1034,6 +1190,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       pageController = null
       sourcesPromise = null
       directoryRefs = []
+      directoryFacts.clear()
       directoryNotes = []
       try { sessionStorage.removeItem(storageKey) } catch { /* ignore storage failures */ }
       hideShell()

@@ -76,17 +76,12 @@ function samePath(a: EvidenceObjectRef[], b: EvidenceObjectRef[]): boolean {
   return a.length === b.length && a.every((ref, index) => sameEvidenceRef(ref, b[index]))
 }
 
-/** 首次进入事实/计算页默认展开关系区，快照/图表/引用页默认收起。 */
-function defaultCollapsed(kind: EvidenceObjectKind): boolean {
-  return kind !== 'fact' && kind !== 'computation'
-}
-
 function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[], graphMode: '2d' | '3d' = '3d'): EvidencePage {
   return {
     ref,
     path,
     selected: null,
-    collapsed: defaultCollapsed(ref.kind),
+    collapsed: false,
     showList: false,
     graphView: false,
     graphMode,

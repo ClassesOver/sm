@@ -49,6 +49,7 @@ __all__ = [
 
 
 class ApprovedQuery(StrictModel):
+    business_label: str | None = Field(default=None, alias="businessLabel", max_length=255)
     requirement_id: str = Field(alias="requirementId", min_length=1, max_length=128)
     source_id: str = Field(alias="sourceId", min_length=1, max_length=64)
     sql: str = Field(min_length=1, max_length=262_144)
@@ -553,6 +554,15 @@ def approve_query_batch(
         )
         result.append(
             ApprovedQuery(
+                businessLabel=(
+                    " / ".join(
+                        (scoped_tables[_qualified_requirement_table(table.table, source.database)].description.strip() or table.table)[:80]
+                        for table in requirement.tables
+                    )[:160]
+                    + f"（{window.period.start.isoformat()} 至 {window.period.end.isoformat()}，"
+                    + " / ".join({"current": "本期", "yoy": "同比基期", "mom": "环比基期"}[role] for role in expected_roles)
+                    + "）"
+                ),
                 requirementId=requirement_id,
                 sourceId=source.id,
                 sql=sql,

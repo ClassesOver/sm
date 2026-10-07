@@ -539,9 +539,9 @@ async def test_validate_tables_keep_binding_when_rows_are_sorted(tmp_path: Path)
         "methods": ["sum(revenue)"],
         "locations": [
             {"rowKey": "row:cur", "columnKey": "income_total", "rowIndex": 1,
-             "columnIndex": 1, "rowLabel": "本期", "text": "3,600"},
+             "columnIndex": 1, "rowLabel": "本期", "text": "3,600", "status": "valid"},
             {"rowKey": "row:prev", "columnKey": "income_total", "rowIndex": 0,
-             "columnIndex": 1, "rowLabel": "上期", "text": "3,600"},
+             "columnIndex": 1, "rowLabel": "上期", "text": "3,600", "status": "valid"},
         ],
     }
 
@@ -604,9 +604,9 @@ async def test_table_locations_follow_current_rows_without_guessing_duplicates(t
     result = await _validate_tables(tmp_path / "sorted", f"# 报告\n\n{sorted_table}\n")
     assert result["tables"][0]["locations"] == [
         {"rowKey": "row:cur", "columnKey": "income_total", "rowIndex": 1,
-         "columnIndex": 1, "rowLabel": "本期", "text": "3,600"},
+         "columnIndex": 1, "rowLabel": "本期", "text": "3,600", "status": "valid"},
         {"rowKey": "row:prev", "columnKey": "income_total", "rowIndex": 0,
-         "columnIndex": 1, "rowLabel": "上期", "text": "9,999"},
+         "columnIndex": 1, "rowLabel": "上期", "text": "9,999", "status": "stale"},
     ]
     duplicated = _table_markdown([["本期", "3,600"], ["本期", "3,600"], ["上期", "3,600"]])
     result = await _validate_tables(tmp_path / "duplicate", f"# 报告\n\n{duplicated}\n")

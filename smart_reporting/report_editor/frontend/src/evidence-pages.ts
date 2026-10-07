@@ -1,4 +1,5 @@
 import { createEvidenceGraph, mergeEvidenceGraph, graphRelations, type EvidenceGraph } from './evidence-graph'
+import { graphlib } from '@dagrejs/dagre'
 import {
   ReportEditorApiError,
   type ReportEditorClient,
@@ -21,6 +22,7 @@ import {
   bindEvidenceNavigation,
   EVIDENCE_KIND_COLORS,
   EVIDENCE_KIND_ICONS,
+  factPeriodLabel,
   relabelRelations,
   renderRelationList,
   subjectRef,
@@ -34,7 +36,7 @@ import { ArrowRight, CircleAlert, createElement, Expand, ExternalLink, LocateFix
 
 type GraphPoint3d = { x: number; y: number; z: number }
 // 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
-const graph3dViews = new WeakMap<EvidencePage, { position: GraphPoint3d; target: GraphPoint3d; up: GraphPoint3d; focusPicker: boolean }>()
+const graph3dViews = new WeakMap<EvidencePage, { position: GraphPoint3d; target: GraphPoint3d; up: GraphPoint3d; baseDistance: number; width: number; height: number; focusPicker: boolean }>()
 const graph3dPositions = new WeakMap<EvidenceGraph, Map<string, GraphPoint3d>>()
 
 /**
@@ -71,6 +73,8 @@ export interface EvidencePageContext {
   getDraft: () => { markdown: string; sha256: string } | null
   /** 按对象身份查询来源目录中已登记的显示名；未加载或未登记时返回 undefined。 */
   labelFor?: (ref: EvidenceObjectRef) => string | undefined
+  /** 复用目录已登记事实用于预览；不额外请求或推断数值。 */
+  factFor?: (ref: EvidenceObjectRef) => NonNullable<TraceSources['facts']>[number] | undefined
   /** 登记名可用（来源目录已加载或放弃等待）时兑现；首次渲染前等待，避免显示原始 ID。 */
   labelsReady?: () => Promise<void>
   /** 页面级数据缓存：历史返回时不重复请求。 */
@@ -245,7 +249,9 @@ export function formatDifference(draft: unknown, registered: unknown): string | 
  * 从中间切断会丢掉“#”与短号开头（如“正文引用 …xtur”），因此截断时保留完整短号。
  */
 export function graphLabel(ref: EvidenceObjectRef, max: number, head: number, tail: number): string {
-  const label = ref.label
+  // 事实的期间已在提示和摘要中完整展示；缩写保留指标与本期/基期，避免末尾只剩日期数字。
+  const label = ref.kind === 'fact'
+    ? ref.label.replace(/ · \d{4}-\d{2}(?:-\d{2})?(?: — \d{4}-\d{2}(?:-\d{2})?)?$/, '') : ref.label
   if (label.length <= max) return label
   // 短号长度按修订内唯一性确定，以显示名中的短号为准。
   const short = ref.kind === 'subject' ? subjectShortFromLabel(label) ?? subjectShortId(ref.key) : undefined
@@ -461,6 +467,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (event.button === 1) event.preventDefault()
     })
     host.append(viewport)
+    const cameraReadout = document.createElement('div')
+    cameraReadout.className = 'evidence-camera-readout'
+    cameraReadout.setAttribute('role', 'group')
+    cameraReadout.setAttribute('aria-label', '3D 视角刻度')
+    cameraReadout.title = '缩放以初始适应视图为100%；旋转单位为度'
+    cameraReadout.textContent = '缩放 —\n旋转 —'
     const nodeData = allNodes.map(node => ({ id: evidenceRefId(node), ref: node, label: node.label }))
     const linkData = [...graph.edges].map(([id, edge]) => ({
       id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
@@ -477,7 +489,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     for (const ids of linkGroups.values()) ids.sort()
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
     let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
-    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutGreedy, totalCollisionArea }]) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { AmbientLight, DirectionalLight, GridHelper, Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutEvidenceLabels }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
     const icons = EVIDENCE_KIND_ICONS
     const textures = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
@@ -503,9 +515,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       return branch?.status === 'loading' ? '关系加载中…' : branch?.status === 'error' ? '关系加载失败' : `已加载 ${relationCounts.get(id) ?? 0} 条关系`
     }
     const rememberedView = graph3dViews.get(ctx.page)
+    let baseDistance = rememberedView?.baseDistance ?? 0
     let initialFitPending = !rememberedView
     let layoutReady = false
     let fitInitialView = () => {}
+    let fitResizedView = () => {}
+    let viewWidth = rememberedView?.width ?? 0
+    let viewHeight = rememberedView?.height ?? 0
+    let resizeFitFrame: number | undefined
     const rememberedPositions = graph3dPositions.get(graph)
     const restoredNodes = nodeData.map(node => {
       const position = rememberedPositions?.get(node.id)
@@ -540,8 +557,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const linkWidth = (link: { id: string }) => highlightedLink(link) ? 1.5 : selectedId || tracedId() ? 0.3 : 0.6
     const nodeColor = (node: { ref: EvidenceObjectRef }) => {
       const id = evidenceRefId(node.ref)
-      if (id === selectedId) return '#007ea7'
-      if (sameEvidenceRef(node.ref, ctx.page.ref)) return '#1f6f8b'
+      if (id === selectedId || sameEvidenceRef(node.ref, ctx.page.ref)) return KIND_COLORS[node.ref.kind]
       const traced = tracedId()
       const connected = !selectedId && [...graph.edges.values()].some(edge => {
         const from = evidenceRefId(edge.from)
@@ -557,7 +573,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const sizeLabel = (id: string, label: Label3d) => {
       const { sprite, scale } = label
       const current = id === evidenceRefId(ctx.page.ref)
-      const focused = Boolean(pinnedId) || current || id === selectedId || allNodes.length > 15 && id === viewport.dataset.hovered
+      const focused = Boolean(pinnedId) || current || id === selectedId || !(allLabels && allNodes.length > 15) && id === viewport.dataset.hovered
       const fixedSize = allLabels || focused || allNodes.length <= 15
       sprite.visible = allLabels || focused
       // Three拾取默认仍会检查不可见对象；原生图层同时排除隐藏文字的命中范围。
@@ -604,8 +620,18 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (pendingPreview !== null) window.clearTimeout(pendingPreview)
       pendingPreview = null
     }
+    // 重名事实仍保留期间信息，独有业务名不在每个图内标签重复日期。
+    const factNameCounts = new Map<string, number>()
+    for (const node of nodeData) {
+      const name = node.ref.kind === 'fact' ? ctx.factFor?.(node.ref)?.name : undefined
+      if (name) factNameCounts.set(name, (factNameCounts.get(name) ?? 0) + 1)
+    }
+    // 使用组件已有球体与原生光照形成明暗侧面，保持节点和名称的占用范围。
+    const keyLight = new DirectionalLight(0xffffff, Math.PI * 0.85)
+    keyLight.position.set(-100, 200, 150)
     const instance: any = new (ForceGraph3D as any)(viewport)
       .backgroundColor('#f7fbfd')
+      .lights([new AmbientLight(0xffffff, Math.PI * 0.35), keyLight])
       .showNavInfo(false)
       // 关系浏览只改变视角，节点位置由布局/缓存维护，避免节点起点捏合误拖动。
       .enableNodeDrag(false)
@@ -617,8 +643,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       .nodeThreeObject((node: { ref: EvidenceObjectRef }) => {
         const current = sameEvidenceRef(node.ref, ctx.page.ref)
         const selected = evidenceRefId(node.ref) === selectedId
-        // 小图普通标签保持紧凑；悬停提示与关注态标签仍提供完整名称。
-        const name = graphLabel(node.ref, 4, 1, 2)
+        // 图内名称复用登记业务名；期间保留在悬停和预览，避免每个标签重复日期。
+        const businessName = node.ref.kind === 'fact' ? ctx.factFor?.(node.ref)?.name : undefined
+        const labelRef = businessName && factNameCounts.get(businessName) === 1
+          ? { ...node.ref, label: businessName } : node.ref
+        const name = graphLabel(labelRef, 4, 1, 2)
         const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
         const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
         label.fontWeight = '600'
@@ -640,14 +669,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         icon.raycast = () => {}
         const group = new Group()
         group.add(label, icon)
-        const traceName = graphLabel(node.ref, 14, 9, 4)
+        const traceName = graphLabel(labelRef, 14, 9, 4)
         const sized = {
           sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
-          name: graphLabel(node.ref, 10, 5, 4),
+          name: graphLabel(labelRef, 10, 5, 4),
           text: `${KIND_LABELS[node.ref.kind]} · ${name}${status}\n${nodeInfo(node.ref)}`,
-          traceText: allNodes.length <= 15
-            ? `${KIND_LABELS[node.ref.kind]}${status}\n${traceName}\n${nodeInfo(node.ref)}`
-            : `${KIND_LABELS[node.ref.kind]}${status} · ${nodeInfo(node.ref)}\n${traceName}`,
+          traceText: `${KIND_LABELS[node.ref.kind]}${status}\n${traceName}`,
         }
         labels.set(id, sized)
         sizeLabel(id, sized)
@@ -655,6 +682,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       })
       .nodeThreeObjectExtend(true)
       .nodeResolution(24)
+      .nodeOpacity(1)
       .nodeColor(nodeColor)
       .linkColor(linkColor)
       .linkWidth(linkWidth)
@@ -708,13 +736,42 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         hoveredId = !selectedId || id === selectedId || (id !== null && neighbours.has(id)) ? id : null
         refreshTrace()
       })
+    // 首次无环登记关系沿深度方向分层；已有坐标和反馈关系保留原生三维力布局。
+    const topology = new graphlib.Graph()
+    for (const node of nodeData) topology.setNode(node.id)
+    for (const link of linkData) topology.setEdge(link.source, link.target)
+    const layeredTopology = !rememberedPositions && graphlib.alg.isAcyclic(topology)
+    instance.dagMode(layeredTopology ? 'zin' : null).dagLevelDistance(80)
     // 使用组件现有力布局为名称留出空间；预热新增节点，避免立即预览时缓存拥挤的初始坐标。
-    instance.d3Force('link').distance(70)
+    instance.d3Force('link').distance(layeredTopology ? 120 : 70)
     instance.d3Force('charge').strength(-100)
     // 组件默认 d3AlphaMin=0：预热后按动画帧继续推进直到 15 秒挂钟冷却，最终坐标随帧率变化，
     // 同一关系图每次布局不同（名称避障结果随之漂移）。改为预热阶段同步推进到收敛
     // （300 步时 alpha≈0.001，即 d3 默认收敛阈值），不再按帧冷却，同一输入得到同一布局。
     instance.warmupTicks(300).cooldownTicks(0).graphData({ nodes: restoredNodes, links: linkData })
+    viewport.append(cameraReadout)
+    const cameraControls = instance.controls()
+    cameraControls.rotateSpeed = 0.45
+    cameraControls.zoomSpeed = 0.65
+    cameraControls.panSpeed = 0.18
+    cameraControls.dynamicDampingFactor = 0.35
+    const cameraDistance = () => instance.camera().position.distanceTo(cameraControls.target)
+    const updateCameraReadout = () => {
+      const distance = cameraDistance()
+      if (!baseDistance && rememberedView) baseDistance = distance
+      const rotation = instance.camera().rotation.clone().reorder('YXZ')
+      const degrees = (radians: number) => Math.round(radians * 180 / Math.PI)
+      const zoom = baseDistance && distance ? `${Math.round(baseDistance / distance * 100)}%` : '—'
+      cameraReadout.textContent = `缩放 ${zoom}\n水平 ${degrees(rotation.y)}° · 俯仰 ${degrees(-rotation.x)}° · 倾斜 ${degrees(rotation.z)}°`
+    }
+    // 原生地面网格只提供空间参照，不参与节点、关系计数或拾取。
+    const spatialGrid = new GridHelper(1, 8, '#9dbacb', '#cadce6')
+    spatialGrid.material.transparent = true
+    spatialGrid.material.opacity = 0.4
+    spatialGrid.material.depthWrite = false
+    spatialGrid.material.toneMapped = false
+    spatialGrid.raycast = () => {}
+    instance.scene().add(spatialGrid)
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
     const cameraDuration = () => reducedMotion.matches ? 0 : 180
     const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
@@ -734,12 +791,37 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       guides.set(node.id, line)
     }
     viewport.append(labelGuides)
+    const layoutStatus = document.createElement('span')
+    layoutStatus.className = 'evidence-label-layout-status'
+    layoutStatus.setAttribute('role', 'status')
+    layoutStatus.textContent = '正在排布名称…'
+    layoutStatus.hidden = true
+    viewport.append(layoutStatus)
     let cachedLabelLayoutKey = ''
     let cachedLabelRectangles: Array<{ x: number; y: number; width: number; height: number }> = []
+    let cachedLabelPositions = new Map<string, typeof cachedLabelRectangles[number]>()
+    let cachedLabelViewport = ''
+    let cameraSettling = false
+    let labelLayoutTimer: number | undefined
+    let labelWorker: Worker | undefined
+    let labelWorkerUnavailable = false
+    let pendingLabelLayoutKey = ''
+    const recoverLabelWorker = (event?: Event) => {
+      event?.preventDefault()
+      labelWorkerUnavailable = true
+      labelWorker?.terminate()
+      labelWorker = undefined
+      pendingLabelLayoutKey = ''
+      layoutStatus.hidden = true
+      viewport.removeAttribute('aria-busy')
+      if (ctx.isStale() || !viewport.isConnected) return
+      placeLabels()
+      if (!cameraSettling) viewport.dataset.labelLayout = 'ready'
+    }
     const placeLabels = () => {
       for (const [id, label] of labels) sizeLabel(id, label)
       for (const guide of guides.values()) guide.style.display = 'none'
-      // 仅小图做屏幕标签排布；复用Sprite锚点，不改组件节点坐标或相机。
+      // 小图及全名称模式做屏幕标签排布；复用Sprite锚点，不改节点坐标或相机。
       if ((!allLabels && allNodes.length > 15) || !viewport.clientHeight) return
       instance.camera().updateMatrixWorld()
       const pixels = viewport.clientHeight / (2 * Math.tan(instance.camera().fov * Math.PI / 360))
@@ -763,80 +845,56 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const point = instance.graph2ScreenCoords(node.x, node.y, node.z)
         return { x: Math.round(point.x) - 14, y: Math.round(point.y) - 14, width: 28, height: 28, fixed: true }
       })
+      obstacles.push({ x: cameraReadout.offsetLeft - 4, y: cameraReadout.offsetTop - 4,
+        width: cameraReadout.offsetWidth + 8, height: cameraReadout.offsetHeight + 8, fixed: true })
       const layoutKey = JSON.stringify([viewport.clientWidth, viewport.clientHeight, previewOnly, items.map(item => item.node.id), rectangles, obstacles])
-      if (layoutKey === cachedLabelLayoutKey) rectangles = cachedLabelRectangles
+      const viewportKey = `${viewport.clientWidth}/${viewport.clientHeight}`
+      const reusePositions = cameraSettling && cachedLabelViewport === viewportKey
+        && items.every(item => cachedLabelPositions.has(item.node.id))
+      // 旋转期间名称保持已有屏幕位置，引导线跟随真实节点；停止后再做完整避障，避免阻塞相机操作。
+      if (reusePositions) rectangles = items.map(item => cachedLabelPositions.get(item.node.id)!)
+      else if (layoutKey === cachedLabelLayoutKey) rectangles = cachedLabelRectangles
       else {
-        const strategy = layoutGreedy().bounds({ x: 4, y: 4,
-          width: viewport.clientWidth - 8, height: viewport.clientHeight - 8 })
-        const outward = rectangles.map(rectangle => ({ ...rectangle,
-          x: rectangle.x < viewport.clientWidth / 2 ? rectangle.x - rectangle.width - 18 : rectangle.x + 18,
-          y: rectangle.y - rectangle.height / 2 }))
-        const perimeter = rectangles.map(rectangle => ({ ...rectangle,
-          x: rectangle.x < viewport.clientWidth / 2 ? 4 : viewport.clientWidth - rectangle.width - 4,
-          y: rectangle.y - rectangle.height / 2 }))
-        const seeds = [rectangles, outward, perimeter]
-        // 上下边缘起点为密集小图提供额外的成熟 Greedy 候选，保留全部名称。
-        seeds.push(rectangles.map(rectangle => ({ ...rectangle,
-          x: rectangle.x - rectangle.width / 2,
-          y: rectangle.y < viewport.clientHeight / 2 ? 4 : viewport.clientHeight - rectangle.height - 4 })))
-        // 小屏边界候选可能把优先标签吸到同一侧；补充有限的四向偏移，仍由 Greedy 负责最终避障。
-        for (const offset of [24, 48]) {
-          for (const [dx, dy] of [[offset, 0], [-offset, 0], [0, offset], [0, -offset]]) {
-            seeds.push(rectangles.map(rectangle => ({ ...rectangle, x: rectangle.x + dx, y: rectangle.y + dy })))
-          }
-        }
-        // 28px固定图标区域与布局障碍保持一致；名称与自身图标的正常锚点相交不计遮挡。
-        const iconBounds = items.map(item => ({ x: Math.round(item.point.x) - 14,
-          y: Math.round(item.point.y) - 14, width: 28, height: 28 }))
-        // 实际绘制的图标为14px；28px 留白区无零碰撞解时，先保证名称不压住可见图标，再比较留白。
-        // 可见图标每边再留 2px：相机阻尼末尾的亚像素差异会让“恰好贴边”的方案在绘制时压住 1px。
-        const visibleIconBounds = items.map(item => ({ x: Math.round(item.point.x) - 9,
-          y: Math.round(item.point.y) - 9, width: 18, height: 18 }))
-        const iconOverlap = (drawn: Array<{ x: number; y: number; width: number; height: number }>,
-          icons: Array<{ x: number; y: number; width: number; height: number }>) =>
-          totalCollisionArea([...drawn, ...icons]) - totalCollisionArea(drawn) - totalCollisionArea(icons)
-            - drawn.reduce((sum, rectangle, index) => sum + totalCollisionArea([rectangle, icons[index]]), 0)
-        let bestNameCollision = Infinity
-        let bestVisibleIconCollision = Infinity
-        let bestIconCollision = Infinity
-        let bestPadding = Infinity
-        // 节点、外侧和画布两侧起点均由原生策略避让；复用组件总碰撞计分。
-        for (const seed of seeds) {
-          let candidate = seed
-          for (let round = 0; round < 16; round++) {
-            const mirrorX = round < 12 ? round % 2 === 1 : round % 2 === 0
-            const mirrorY = round % 2 === 1
-            const mirror = (rectangle: { x: number; y: number; width: number; height: number }) => ({ ...rectangle,
-              x: mirrorX ? viewport.clientWidth - rectangle.x - rectangle.width : rectangle.x,
-              y: mirrorY ? viewport.clientHeight - rectangle.y - rectangle.height : rectangle.y })
-            // 28px固定图标区域参与原生评分但不参与移动；只应用名称的位置。
-            // 末四轮反向处理同优先级名称，避免单一顺序困在局部重叠中。
-            const order = items.map((_, index) => index).sort((a, b) =>
-              priority(items[a].node.id) - priority(items[b].node.id) || (round >= 12 ? b - a : a - b))
-            const input = [...order.map(index => candidate[index]), ...obstacles]
-            const placed = strategy(input.map(mirror)).slice(0, items.length).map(mirror)
-            candidate = items.map((_, index) => placed[order.indexOf(index)])
-            const padding = totalCollisionArea([...candidate, ...obstacles])
-            const drawn = candidate.map(rectangle => ({ ...rectangle,
-              x: rectangle.x + 3, y: rectangle.y + 3, width: rectangle.width - 6, height: rectangle.height - 6 }))
-            const nameCollision = totalCollisionArea(drawn)
-            const visibleIconCollision = iconOverlap(drawn, visibleIconBounds)
-            const iconCollision = iconOverlap(drawn, iconBounds)
-            const better = nameCollision !== bestNameCollision ? nameCollision < bestNameCollision
-              : visibleIconCollision !== bestVisibleIconCollision ? visibleIconCollision < bestVisibleIconCollision
-                : iconCollision !== bestIconCollision ? iconCollision < bestIconCollision
-                  : padding < bestPadding
-            if (better) {
-              rectangles = candidate
-              bestNameCollision = nameCollision
-              bestVisibleIconCollision = visibleIconCollision
-              bestIconCollision = iconCollision
-              bestPadding = padding
+        const input = { rectangles, obstacles,
+          icons: items.map(item => ({ x: Math.round(item.point.x) - 14, y: Math.round(item.point.y) - 14, width: 28, height: 28 })),
+          priorities: items.map(item => priority(item.node.id)),
+          width: viewport.clientWidth, height: viewport.clientHeight }
+        if (allLabels && allNodes.length > 15 && !labelWorkerUnavailable) {
+          if (!pendingLabelLayoutKey) {
+            pendingLabelLayoutKey = layoutKey
+            viewport.dataset.labelLayout = 'settling'
+            layoutStatus.hidden = false
+            viewport.setAttribute('aria-busy', 'true')
+            try {
+              labelWorker ??= new Worker(new URL('./evidence-label-layout.worker.ts', import.meta.url), { type: 'module' })
+            } catch {
+              recoverLabelWorker()
+              return
             }
+            labelWorker.onerror = recoverLabelWorker
+            labelWorker.onmessage = (event: MessageEvent<{ key: string; rectangles: typeof rectangles }>) => {
+              if (event.data.key !== pendingLabelLayoutKey || ctx.isStale() || !viewport.isConnected) return
+              pendingLabelLayoutKey = ''
+              layoutStatus.hidden = true
+              viewport.removeAttribute('aria-busy')
+              cachedLabelLayoutKey = event.data.key
+              cachedLabelRectangles = event.data.rectangles
+              cachedLabelPositions = new Map(items.map((item, index) => [item.node.id, event.data.rectangles[index]]))
+              cachedLabelViewport = viewportKey
+              placeLabels()
+              if (!cameraSettling && !pendingLabelLayoutKey) viewport.dataset.labelLayout = 'ready'
+            }
+            labelWorker.postMessage({ key: layoutKey, input })
           }
+          return
         }
+        rectangles = layoutEvidenceLabels(input)
         cachedLabelLayoutKey = layoutKey
         cachedLabelRectangles = rectangles
+      }
+      if (!reusePositions) {
+        cachedLabelPositions = new Map(items.map((item, index) => [item.node.id, rectangles[index]]))
+        cachedLabelViewport = viewportKey
       }
       items.forEach(({ node, sprite, point, width, height }, index: number) => {
         const rectangle = rectangles[index]
@@ -844,8 +902,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 3))
         const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 3))
         const bounds = { left, top, right: left + width, bottom: top + height }
-        // 与布局输入保持同一 CSS 像素量化，避免相机恢复的微小浮点差异造成标签闪动。
-        const anchor = { x: Math.round(point.x), y: Math.round(point.y) }
+        // 布局起点取整；锚点须使用实际投影，补偿亚像素偏移，确保绘制边界与避障结果一致。
+        const anchor = point
         sprite.center.set((anchor.x - bounds.left) / width, 1 - (anchor.y - bounds.top) / height)
         // 虚线仅连接标签和球体，区别于组件中的真实登记关系线，不参与拾取。
         const guide = guides.get(node.id)
@@ -856,7 +914,25 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           y2: Math.max(bounds.top, Math.min(bounds.bottom, anchor.y)) })) guide.setAttribute(key, String(value))
       })
     }
-    instance.controls().addEventListener('change', placeLabels)
+    const onCameraChange = () => {
+      updateCameraReadout()
+      if (!allLabels || allNodes.length <= 15) {
+        placeLabels()
+        return
+      }
+      cameraSettling = true
+      viewport.dataset.labelLayout = 'settling'
+      window.clearTimeout(labelLayoutTimer)
+      placeLabels()
+      labelLayoutTimer = window.setTimeout(() => {
+        cameraSettling = false
+        labelLayoutTimer = undefined
+        if (ctx.isStale() || !viewport.isConnected) return
+        placeLabels()
+        if (!pendingLabelLayoutKey) viewport.dataset.labelLayout = 'ready'
+      }, 120)
+    }
+    instance.controls().addEventListener('change', onCameraChange)
     if (rememberedView) {
       instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
       instance.camera().up.set(rememberedView.up.x, rememberedView.up.y, rememberedView.up.z)
@@ -865,6 +941,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const resize = new ResizeObserver(() => {
       if (viewport.clientWidth && viewport.clientHeight) {
         instance.width(viewport.clientWidth).height(viewport.clientHeight)
+        fitResizedView()
         placeLabels()
         instance.resumeAnimation()
         fitInitialView()
@@ -877,10 +954,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       disposed = true
       cancelPreview()
       reducedMotion.removeEventListener('change', applyMotionPreference)
-      instance.controls().removeEventListener('change', placeLabels)
+      instance.controls().removeEventListener('change', onCameraChange)
+      window.clearTimeout(labelLayoutTimer)
+      if (resizeFitFrame !== undefined) cancelAnimationFrame(resizeFitFrame)
+      labelWorker?.terminate()
       const point = (value: GraphPoint3d): GraphPoint3d => ({ x: value.x, y: value.y, z: value.z })
       graph3dViews.set(ctx.page, {
         position: point(instance.camera().position), target: point(instance.controls().target), up: point(instance.camera().up),
+        baseDistance, width: viewWidth, height: viewHeight,
         focusPicker: host.contains(document.activeElement) && Boolean(document.activeElement?.closest('.evidence-3d-node-picker, .evidence-preview')),
       })
       graph3dPositions.set(graph, new Map(instance.graphData().nodes
@@ -890,6 +971,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       removal.disconnect()
       ctx.signal.removeEventListener('abort', dispose)
       const renderer = instance.renderer()
+      instance.scene().remove(spatialGrid)
+      spatialGrid.geometry.dispose()
+      spatialGrid.material.dispose()
       instance._destructor()
       // 组件已dispose GPU对象；Three原生接口同步释放移除画布的上下文。
       renderer.forceContextLoss()
@@ -920,6 +1004,35 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const compactOverview = compactPortraitOverview || compactLandscapeOverview
       return Math.min(padding, compactOverview ? 32 : Math.max(0, height / 2 - 8))
     }
+    fitResizedView = () => {
+      if (resizeFitFrame !== undefined) cancelAnimationFrame(resizeFitFrame)
+      resizeFitFrame = requestAnimationFrame(() => {
+        resizeFitFrame = undefined
+        if (ctx.isStale() || !viewport.isConnected || !layoutReady) return
+        const width = viewport.clientWidth
+        const height = viewport.clientHeight
+        if (!width || !height || width === viewWidth && height === viewHeight) return
+        // 组件尺寸更新在异步digest中生效，等原生相机投影更新后再适应。
+        if (instance.camera().aspect !== width / height) { fitResizedView(); return }
+        if (viewWidth && viewHeight && baseDistance && instance.getGraphBbox()) {
+          const target = instance.controls().target.clone()
+          const offset = instance.camera().position.clone().sub(target)
+          const up = instance.camera().up.clone()
+          const zoom = baseDistance / offset.length()
+          instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
+          baseDistance = cameraDistance()
+          // 沿原视线调整距离，保留用户缩放比例、旋转及平移目标。
+          const position = offset.normalize().multiplyScalar(baseDistance / zoom).add(target)
+          instance.camera().up.copy(up)
+          instance.cameraPosition(position, target, 0)
+          instance.controls().update()
+          updateCameraReadout()
+        }
+        viewWidth = width
+        viewHeight = height
+        placeLabels()
+      })
+    }
     fitInitialView = () => {
       if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
       initialFitPending = false
@@ -930,7 +1043,13 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           return
         }
         // 仅初始化无历史视角的新页面，用户操作与后退恢复不自动改相机。
+        instance.cameraPosition({ x: 120, y: 80, z: 180 }, { x: 0, y: 0, z: 0 }, 0)
+        instance.controls().update()
         instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
+        baseDistance = cameraDistance()
+        viewWidth = viewport.clientWidth
+        viewHeight = viewport.clientHeight
+        updateCameraReadout()
       })
     }
     fit3d.addEventListener('click', () => requestAnimationFrame(() => {
@@ -938,6 +1057,15 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       instance.zoomToFit(cameraDuration(), fitPadding(),
         (node: { id: string }) => nodeVisible(node.id))
     }))
+    const guideKey = document.createElement('span')
+    guideKey.className = 'evidence-3d-line-key is-guide'
+    guideKey.textContent = '虚线：名称引导'
+    const updateGuideKey = () => {
+      const hasGuides = allLabels || allNodes.length <= 15
+      guideKey.hidden = !hasGuides
+      viewport.setAttribute('aria-label', `3D 关系图；实线箭头表示登记关系${hasGuides ? '，虚线仅连接节点与名称' : ''}；请使用关系列表中的文字入口`)
+    }
+    updateGuideKey()
     if (allNodes.length > 15) {
       const labelsToggle = makeButton('', 'evidence-icon-button evidence-3d-labels-toggle')
       labelsToggle.append(createElement(Tags, { width: 16, height: 16, 'aria-hidden': 'true' }))
@@ -953,6 +1081,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         ctx.updatePage({ graphLabels: allLabels ? 'all' : 'focus' })
         placeLabels()
         updateLabelsToggle()
+        updateGuideKey()
       })
       controls.append(labelsToggle)
     }
@@ -969,9 +1098,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     zoomIn.addEventListener('click', () => zoom3d(0.8))
     reset.addEventListener('click', () => {
       instance.camera().up.set(0, 1, 0)
-      instance.cameraPosition({ x: 0, y: 0, z: 150 }, { x: 0, y: 0, z: 0 }, 0)
+      instance.cameraPosition({ x: 120, y: 80, z: 180 }, { x: 0, y: 0, z: 0 }, 0)
       instance.controls().update()
-      instance.zoomToFit(cameraDuration(), fitPadding())
+      // 重置以当前可见关系的原生适应距离为100%，不沿用概览的旧基准。
+      instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
+      baseDistance = cameraDistance()
+      updateCameraReadout()
     })
     locate.addEventListener('click', () => {
       const node = instance.graphData().nodes.find((item: { id: string }) => item.id === evidenceRefId(ctx.page.ref))
@@ -988,6 +1120,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     // canvas 出现早于图对象就绪；过早适应会取得空包围盒而无声失效。
     const ready = () => {
       layoutReady = true
+      fitResizedView()
+      updateCameraReadout()
+      const bounds = instance.getGraphBbox()
+      if (bounds) {
+        const size = Math.max(bounds.x[1] - bounds.x[0], bounds.z[1] - bounds.z[0], 80)
+        spatialGrid.scale.set(size, 1, size)
+        spatialGrid.position.set((bounds.x[0] + bounds.x[1]) / 2, bounds.y[0] - 12, (bounds.z[0] + bounds.z[1]) / 2)
+      }
       placeLabels()
       for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
       fitInitialView()
@@ -996,7 +1136,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     instance.onEngineTick(ready).onEngineStop(ready)
     const legend = document.createElement('div')
     legend.className = 'evidence-graph-legend'
-    legend.title = `${relations.loadedNote}；当前页深蓝，预览青色；名称可切换，悬停可查看全名；实线箭头表示登记关系${allNodes.length <= 15 ? '，虚线仅连接节点与名称' : ''}`
+    legend.title = `${relations.loadedNote}；节点颜色表示类型，浅蓝名称底色表示当前页，青色名称框表示预览；名称可切换，悬停可查看全名；实线箭头表示登记关系${allNodes.length <= 15 ? '，虚线仅连接节点与名称' : ''}`
     const scope = document.createElement('span')
     scope.textContent = `已加载 ${allNodes.length} 个节点 · 局部关系`
     legend.append(scope)
@@ -1013,8 +1153,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       legend.append(item)
     }
     const states = document.createElement('span')
-    states.textContent = selectedId ? '当前页深蓝 · 预览青色' : '当前页深蓝'
+    states.textContent = selectedId ? '浅蓝名称底：当前页 · 青色名称框：预览' : '浅蓝名称底：当前页'
     legend.append(states)
+    const relationKey = document.createElement('span')
+    relationKey.className = 'evidence-3d-line-key'
+    relationKey.textContent = '实线箭头：登记关系'
+    legend.append(relationKey, guideKey)
     host.append(legend)
     const nodePicker = document.createElement('select')
     nodePicker.className = 'evidence-trace-picker evidence-3d-node-picker'
@@ -1294,7 +1438,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const heading = document.createElement('span')
     heading.className = 'evidence-node-heading'
     const icon = EVIDENCE_KIND_ICONS[node.kind]
-    heading.append(createElement(icon, { width: 14, height: 14, 'aria-hidden': 'true' }), title)
+    heading.append(createElement(icon, { width: 14, height: 14, 'aria-hidden': 'true', color: KIND_COLORS[node.kind] }), title)
     const tag = document.createElement('span')
     tag.className = 'evidence-node-tag'
     tag.textContent = sameEvidenceRef(node, ctx.page.ref) ? '当前页' : (ctx.page.selected && sameEvidenceRef(ctx.page.selected, node) ? '预览' : '')
@@ -1516,10 +1660,27 @@ function renderGraphPreview(host: HTMLElement, ctx: EvidencePageContext, expand:
     actions.setAttribute('role', 'group')
     actions.setAttribute('aria-label', '预览操作')
     const label = document.createElement('strong')
-    label.textContent = `预览：${ctx.page.selected.label}`
+    const fact = ctx.page.selected.kind === 'fact' ? ctx.factFor?.(ctx.page.selected) : undefined
+    label.textContent = `预览：${fact?.name || ctx.page.selected.label}`
     const note = document.createElement('span')
     note.textContent = `${KIND_LABELS[ctx.page.selected.kind]} · 仅查看摘要`
     summary.append(label, note)
+    if (fact) {
+      const period = factPeriodLabel(fact)
+      if (period) {
+        const meta = document.createElement('span')
+        meta.className = 'evidence-preview-period'
+        meta.textContent = period
+        summary.append(meta)
+      }
+      if (fact.displayValue !== undefined && fact.displayValue !== null) {
+        const value = document.createElement('span')
+        value.className = 'evidence-preview-value'
+        const valueLabel = fact.factKind === 'comparison' ? '登记变化额' : fact.factKind === 'reconciliation' ? '登记核对差额' : '登记值'
+        value.textContent = `${valueLabel} ${groupDigits(fact.displayValue)}${fact.unit ? ` ${fact.unit}` : ''}`
+        summary.append(value)
+      }
+    }
     // 先定文字再追加图标：之前先加图标后写 textContent，会把图标覆盖掉。
     const current = sameEvidenceRef(ctx.page.selected, ctx.page.ref)
     const enter = makeButton(current ? '已在当前页' : '进入', 'ui-button ui-button--primary evidence-preview-enter')
@@ -1544,7 +1705,7 @@ function renderGraphPreview(host: HTMLElement, ctx: EvidencePageContext, expand:
     status.className = 'evidence-branch-status'
     status.setAttribute('role', 'status')
     status.textContent = branch?.status === 'error' ? branch.message ?? '加载失败'
-      : branch?.status === 'loaded' ? '仅含接口已登记关系' : ''
+      : branch?.status === 'loaded' ? '仅含已登记关系' : ''
     actions.append(enter, open, load, close)
     preview.append(summary, actions, status)
   } else {
@@ -1800,28 +1961,53 @@ function renderTable(
   highlight = '',
   // 对齐按整页数据判断：筛选只显示部分行时，列的数值对齐不应随输入来回跳变。
   alignRows: (string | null)[][] = rows,
+  snapshotOffset?: number,
 ): void {
   wrap.innerHTML = ''
   const table = document.createElement('table')
   table.className = 'evidence-table'
+  const measure = snapshotOffset === undefined ? null : document.createElement('canvas').getContext('2d')
+  if (measure) measure.font = '12.5px sans-serif'
   const widths = columns.map(column => {
     const stored = ctx?.page.columnWidths[column]
-    return typeof stored === 'number' && Number.isFinite(stored) ? Math.max(80, Math.min(640, stored)) : 144
+    if (typeof stored === 'number' && Number.isFinite(stored)) return Math.max(80, Math.min(640, stored))
+    if (!measure) return 144
+    const index = columns.indexOf(column)
+    return Math.max(80, Math.min(640, Math.ceil(Math.max(
+      measure.measureText(column).width * 1.1 + 40,
+      ...alignRows.map(row => measure.measureText(text(row[index])).width + 28),
+    ))))
   })
   const group = document.createElement('colgroup')
   const cols = columns.map(() => document.createElement('col'))
+  const rowNumberWidth = snapshotOffset === undefined ? 0 : 112
+  if (snapshotOffset !== undefined) wrap.classList.add('evidence-snapshot-table-wrap')
   if (ctx) {
+    if (rowNumberWidth) {
+      const col = document.createElement('col')
+      col.className = 'evidence-row-number'
+      col.style.width = `${rowNumberWidth}px`
+      group.append(col)
+    }
     group.append(...cols)
     table.append(group)
     table.style.tableLayout = 'fixed'
   }
   const applyWidths = () => {
     cols.forEach((col, index) => { col.style.width = `${widths[index]}px` })
-    table.style.width = `${widths.reduce((sum, width) => sum + width, 0)}px`
+    table.style.width = `${rowNumberWidth + widths.reduce((sum, width) => sum + width, 0)}px`
   }
   if (ctx) applyWidths()
   const numeric = numericColumns(columns.length, alignRows)
   const header = table.insertRow()
+  if (snapshotOffset !== undefined) {
+    const cell = document.createElement('th')
+    cell.scope = 'col'
+    cell.className = 'evidence-row-number'
+    cell.textContent = '快照行序号'
+    cell.title = 'CSV 快照内的数据行位置，不代表业务主键'
+    header.append(cell)
+  }
   for (const [index, column] of columns.entries()) {
     const cell = document.createElement('th')
     cell.scope = 'col'
@@ -1862,6 +2048,12 @@ function renderTable(
   }
   for (const row of rows) {
     const tr = table.insertRow()
+    if (snapshotOffset !== undefined) {
+      const cell = tr.insertCell()
+      cell.className = 'evidence-row-number'
+      // 筛选保留原页的行对象，序号按快照位置计算，不随筛选重编号。
+      cell.textContent = String(snapshotOffset + alignRows.indexOf(row) + 1)
+    }
     for (const [index, value] of row.entries()) {
       const cell = tr.insertCell()
       if (highlight && value !== null && value !== undefined) appendHighlighted(cell, String(value), highlight)
@@ -1936,6 +2128,7 @@ export async function renderEvidencePage(
 
 interface FactPageData extends DraftValidation {
   detail: TraceFactDetail
+  name?: string
   relations: EvidenceRelations
   computation: TraceComputationDetail | null
   citingSubjects: TraceSubjectInfo[]
@@ -1977,6 +2170,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
       }
       data = {
         detail,
+        name: sources.facts?.find(item => item.analysisId === detail.analysisId && item.factId === detail.factId)?.name,
         relations: assembleFactRelations(ctx.page.ref, detail, sources),
         validation: null,
         computation,
@@ -1997,12 +2191,58 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   const entry = detail.entry as Record<string, unknown>
   const unit = typeof entry.unit === 'string' ? entry.unit : ''
   const skeleton = buildSkeleton(container, ctx, `${FACT_KIND_LABELS[detail.factKind] ?? detail.factKind} · 分析 ${detail.analysisId} · ${ctx.revisionLabel}`)
+  const name = data.name || entry.field || entry.code || (detail.factKind === 'correlation' && entry.leftField && entry.rightField
+    ? `${entry.leftField} / ${entry.rightField}` : null)
+  if (typeof name === 'string' && name.trim()) skeleton.title.textContent = name
 
   // 登记值摘要：只展示登记值与登记公式，缺失时不拼造「计算过程」。
   const valueLine = document.createElement('p')
   valueLine.className = 'evidence-fact-value'
-  valueLine.textContent = `登记值 ${groupDigits(detail.displayValue)}${unit ? ` ${unit}` : ''}`
+  const valueLabel = detail.factKind === 'comparison' ? '登记变化额' : detail.factKind === 'reconciliation' ? '登记核对差额' : '登记值'
+  valueLine.textContent = `${valueLabel} ${groupDigits(detail.displayValue)}${unit ? ` ${unit}` : ''}`
   skeleton.statusArea.append(valueLine)
+  const metadata = document.createElement('dl')
+  metadata.className = 'evidence-fact-metadata'
+  const addMetadata = (label: string, value: unknown, suffix = '') => {
+    if (value === null || value === undefined || value === '') return
+    const row = document.createElement('div')
+    const term = document.createElement('dt')
+    term.textContent = label
+    const description = document.createElement('dd')
+    const formatted = typeof value === 'number' && Number.isFinite(value)
+      ? value.toLocaleString('en-US', { maximumFractionDigits: 2 }) : String(value)
+    const raw = typeof value === 'number' ? groupDigits(value) : String(value)
+    if (formatted !== raw) {
+      const exact = document.createElement('details')
+      const summary = document.createElement('summary')
+      summary.textContent = `${formatted}${suffix}`
+      summary.title = '显示至两位小数，展开查看原始登记值'
+      const original = document.createElement('p')
+      original.textContent = `原始登记值：${raw}${suffix}`
+      exact.append(summary, original)
+      description.append(exact)
+    } else description.textContent = `${formatted}${suffix}`
+    row.append(term, description)
+    metadata.append(row)
+  }
+  addMetadata('统计期间', factPeriodLabel(entry))
+  if (data.name && data.name !== entry.field && typeof entry.field === 'string') addMetadata('数据字段', entry.field)
+  const aggregationLabels: Record<string, string> = { sum: '合计', mean: '平均值', average: '平均值', count: '计数', min: '最小值', max: '最大值', latest: '末期值' }
+  if (typeof entry.aggregation === 'string') addMetadata('汇总方式', aggregationLabels[entry.aggregation] ?? entry.aggregation)
+  if (entry.scope && typeof entry.scope === 'object' && !Array.isArray(entry.scope)) {
+    addMetadata('统计范围', Object.entries(entry.scope).map(([field, value]) => `${field}：${String(value)}`).join('；'))
+  }
+  if (detail.factKind === 'comparison') {
+    addMetadata('本期', entry.currentTotal, unit ? ` ${unit}` : '')
+    addMetadata(entry.comparisonType === 'yoy' ? '同比基期' : entry.comparisonType === 'mom' ? '环比基期' : '基期', entry.baselineTotal, unit ? ` ${unit}` : '')
+    addMetadata('变化率', entry.changeRate, '%')
+  }
+  if (detail.factKind === 'metric') {
+    addMetadata('平均值', entry.average, unit ? ` ${unit}` : '')
+    addMetadata('最小值', entry.minimum, unit ? ` ${unit}` : '')
+    addMetadata('最大值', entry.maximum, unit ? ` ${unit}` : '')
+  }
+  if (metadata.childElementCount) skeleton.statusArea.append(metadata)
   // 登记公式紧跟登记值展示，让“值从哪里来”与值本身在同一视线内。
   const formula = typeof entry.formula === 'string' && entry.formula ? entry.formula : ''
   if (formula) {
@@ -2078,13 +2318,14 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
 
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
+  let warningDetails: HTMLDetailsElement | undefined
   if (detail.warnings.length) {
     // 登记告警与计算页“适用局限”同为软提示：使用同一种提示框，不改变核对结论。
-    const warnings = document.createElement('div')
+    const warnings = document.createElement('details')
     warnings.className = 'evidence-limitations evidence-fact-warnings'
-    const title = document.createElement('p')
+    const title = document.createElement('summary')
     title.className = 'evidence-limitations-title'
-    title.textContent = '登记告警'
+    title.textContent = `登记告警（${detail.warnings.length}）`
     warnings.append(title)
     for (const warning of detail.warnings) {
       const p = document.createElement('p')
@@ -2092,7 +2333,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
       p.textContent = warning
       warnings.append(p)
     }
-    skeleton.detailBox.append(warnings)
+    warningDetails = warnings
   }
   if (detail.inputFactRefs.length) {
     const heading = document.createElement('h2')
@@ -2103,9 +2344,10 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
       const li = document.createElement('li')
       if (input.factId) {
         // 与引用页“关联事实”一致：整项为带类型图标的链接按钮。
-        li.append(makeEvidenceLink({
+        const ref: EvidenceObjectRef = {
           kind: 'fact', key: input.factId, analysisId: input.analysisId, label: input.factId,
-        }, `事实 ${input.factId}`, ctx))
+        }
+        li.append(makeEvidenceLink(ref, ctx.labelFor?.(ref) ?? `事实 ${input.factId}`, ctx))
       } else {
         li.className = 'evidence-fact-input-missing'
         li.textContent = `分析 ${input.analysisId} 的输入未登记事实 ID，无法打开`
@@ -2114,6 +2356,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
     }
     skeleton.detailBox.append(heading, list)
   }
+  if (warningDetails) skeleton.detailBox.append(warningDetails)
   finishRender(container, ctx, skeleton.title)
 }
 
@@ -2334,6 +2577,18 @@ function renderDatasetInfo(area: HTMLElement, info: TraceDatasetInfo | null): vo
   if (!info) return
   area.classList.add('evidence-status-area--grid')
   if (info.businessLabel) makeStatusRow(area, '业务名称', 'business-label').textContent = info.businessLabel
+  if (info.sqlHash) makeStatusRow(area, 'SQL 哈希', 'sql-hash').textContent = info.sqlHash
+  if (info.querySql) {
+    const details = document.createElement('details')
+    const summary = document.createElement('summary')
+    summary.textContent = '取数 SQL'
+    const sql = document.createElement('pre')
+    sql.textContent = info.querySql
+    sql.style.whiteSpace = 'pre-wrap'
+    sql.style.overflowWrap = 'anywhere'
+    details.append(summary, sql)
+    area.append(details)
+  }
   makeStatusRow(area, '来源类型', 'source-type').textContent =
     DATASET_SOURCE_LABELS[info.sourceType] ?? info.sourceType
   makeStatusRow(area, '期间角色', 'period-roles').textContent =
@@ -2358,7 +2613,7 @@ async function renderExpiredDataset(container: HTMLElement, ctx: EvidencePageCon
   if (ctx.isStale()) return
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
-  const skeleton = buildSkeleton(container, ctx, `数据快照 ${ctx.page.ref.key} · ${ctx.revisionLabel}`)
+  const skeleton = buildSkeleton(container, ctx, `${ctx.page.ref.key} · ${ctx.revisionLabel}`)
   skeleton.statusBox.hidden = false
   skeleton.statusBox.classList.add('evidence-expired-note')
   skeleton.statusBox.textContent = '数据快照已超过保留期：以下为登记信息，明细不可预览或下载。'
@@ -2427,7 +2682,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   }
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
-  const skeleton = buildSkeleton(container, ctx, `数据快照 ${ctx.page.ref.key} · ${ctx.revisionLabel}`)
+  const skeleton = buildSkeleton(container, ctx, `${ctx.page.ref.key} · ${ctx.revisionLabel}`)
   renderDatasetInfo(skeleton.statusArea, data.info)
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
@@ -2547,7 +2802,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     if (keyword && !rows.length) {
       matchLine.textContent += ' · 未对完整数据集执行搜索'
     }
-    renderTable(wrap, detail.columns, rows, ctx, keyword, detail.rows)
+    renderTable(wrap, detail.columns, rows, ctx, keyword, detail.rows, detail.offset)
     moreSlot.innerHTML = ''
     if (ctx.page.datasetPageIndex > 0) {
       const previous = makeButton('上一页', 'ui-button evidence-previous')
@@ -2935,9 +3190,11 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   for (const factRef of detail.factRefs) {
     if (!factRef.factId) continue
     const li = document.createElement('li')
-    li.append(makeEvidenceLink({
+    const ref: EvidenceObjectRef = {
       kind: 'fact', key: factRef.factId, analysisId: factRef.analysisId, label: factRef.factId,
-    }, `事实 ${factRef.factId}`, ctx))
+    }
+    const label = ctx.labelFor?.(ref) ?? factRef.factId
+    li.append(makeEvidenceLink({ ...ref, label }, `事实 ${label}`, ctx))
     list.append(li)
   }
   if (detail.computationId) {

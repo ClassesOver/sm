@@ -38,6 +38,19 @@ export function findProtocolMarkers(markdown: string): ProtocolMarker[] {
   })
 }
 
+// 只合并同一段文字中相邻的来源标记，不跨越正文或结构标记。
+export function groupProtocolMarkers(markdown: string): ProtocolMarker[][] {
+  const groups: ProtocolMarker[][] = []
+  const isSource = (kind: ProtocolMarkerKind) => kind === 'analysis' || kind === 'citation'
+  for (const marker of findProtocolMarkers(markdown)) {
+    const previous = groups.at(-1)
+    if (previous && isSource(marker.kind) && isSource(previous[0].kind)
+      && /^\s*$/.test(markdown.slice(previous.at(-1)!.end, marker.start))) previous.push(marker)
+    else groups.push([marker])
+  }
+  return groups
+}
+
 export function protocolMarkersUnchanged(before: string, after: string): boolean {
   const previous = findProtocolMarkers(before).map((marker) => marker.raw)
   const next = findProtocolMarkers(after).map((marker) => marker.raw)
