@@ -199,7 +199,7 @@ def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
 
 async def _make_editor_with_subject(
     tmp_path: Path,
-    *, report_id: str = "report-1",
+    *, report_id: str = "report-1", period_table: bool = False,
 ) -> tuple:
     from smart_reporting.report_editor import (
         InMemoryReportEditorRepository,
@@ -246,7 +246,9 @@ async def _make_editor_with_subject(
     from smart_reporting.reporting.trace.table_builder import render_table_markdown
 
     table_block = render_table_markdown(
-        "tbl-1", ("income_total",), [["本期", "3,600"], ["上期", "3,600"]]
+        "tbl-1", ("income_total",),
+        [["2025-09", "1,200"], ["2025-10", "2,400"]] if period_table
+        else [["本期", "3,600"], ["上期", "3,600"]],
     )
     markdown = f"# 报告\n\n{table_block}\n"
     await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
@@ -272,7 +274,9 @@ async def _make_editor_with_subject(
                     "scope": {},
                     "total": 3600.0,
                     "unit": "万元",
-                    "periodValues": [{"period": "2025-09", "value": 3600.0}],
+                    "periodValues": ([{"period": "2025-09", "value": 1200.0},
+                                      {"period": "2025-10", "value": 2400.0}] if period_table
+                                     else [{"period": "2025-09", "value": 3600.0}]),
                     "missingCount": 0,
                     "zeroCount": 0,
                     "negativeCount": 0,
@@ -339,11 +343,11 @@ async def _make_editor_with_subject(
     )
     table_trace = TableTraceV1(
         tableId="tbl-1",
-        rowKeys=("row:cur", "row:prev"),
+        rowKeys=("period:2025-09", "period:2025-10") if period_table else ("row:cur", "row:prev"),
         columnKeys=("income_total",),
         cells=(
-            TableCellBindingV1(rowKey="row:cur", columnKey="income_total", factRefs=(table_fact_ref,)),
-            TableCellBindingV1(rowKey="row:prev", columnKey="income_total", factRefs=(table_fact_ref,)),
+            TableCellBindingV1(rowKey="period:2025-09" if period_table else "row:cur", columnKey="income_total", factRefs=(table_fact_ref,)),
+            TableCellBindingV1(rowKey="period:2025-10" if period_table else "row:prev", columnKey="income_total", factRefs=(table_fact_ref,)),
         ),
     )
     index = build_csv_trace_index(
@@ -520,6 +524,32 @@ async def _validate_tables(tmp_path: Path, draft: str) -> dict:
     return await editor.trace_validate(
         context, session, draft, hashlib.sha256(draft.encode()).hexdigest()
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_period_table_sources_and_values_use_frozen_months(tmp_path: Path) -> None:
+    editor, grants, context = await _make_editor_with_subject(tmp_path, period_table=True)
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    index = await editor.trace.load_index(context)
+    assert index is not None
+    cells = [item for item in index.subject_bindings if item.subject_kind == "table_cell"]
+    assert len(cells) == 2
+    assert {item.locator.row_key for item in cells} == {"period:2025-09", "period:2025-10"}
+    from smart_reporting.reporting.trace.subject_builder import bind_table_subjects
+
+    assert bind_table_subjects(index).subject_bindings == index.subject_bindings
+    markdown = _table_markdown([["2025-09", "1,200"], ["2025-10", "2,400"]])
+    result = await editor.trace_validate(
+        context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest()
+    )
+    assert result["tableSummary"]["valid"] == 2
+    modified = markdown.replace("1,200", "3,600")
+    result = await editor.trace_validate(
+        context, session, modified, hashlib.sha256(modified.encode()).hexdigest()
+    )
+    assert result["tableSummary"]["stale"] == 1
 
 
 @pytest.mark.anyio

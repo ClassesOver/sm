@@ -170,6 +170,26 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+it.each(['valid', 'stale'] as const)('shows table-cell citation status from exact cell validation: %s', async (status) => {
+  const subject = {
+    ...SOURCES_PAYLOAD.subjects[0], subjectKind: 'table_cell',
+    locator: { tableId: 'tbl-1', rowKey: 'period:2025-09', columnKey: 'income_total' },
+  }
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+    if (String(input).includes('/validate')) return json({
+      draftSha256: JSON.parse(String(init!.body)).draftSha256, subjects: [],
+      summary: { valid: 0, stale: 0, unbound: 0 },
+      tables: [{ tableId: 'tbl-1', locations: [{ ...subject.locator, status }] }],
+    })
+    return json({ ...SOURCES_PAYLOAD, subjects: [subject] })
+  })
+  const { container, ctx } = setupPage(fetcher, {
+    kind: 'subject', key: subject.subjectId, label: '收入单元格',
+  }, { getDraft: () => ({ markdown: '月度收入', sha256: 'x' }) })
+  await renderEvidencePage(container, ctx)
+  expect(container.querySelector('.evidence-status-chip')?.getAttribute('data-status')).toBe(status)
+})
+
 describe('事实页', () => {
   const FACT_REF: EvidenceObjectRef = {
     kind: 'fact',
@@ -1508,6 +1528,12 @@ describe('详情入口统一导航', () => {
 })
 
 describe('graphLabel', () => {
+  it('keeps registered month labels instead of replacing them with citation hashes', () => {
+    const subject: EvidenceObjectRef = { kind: 'subject', key: 'sub-month', label: '2025-01-01 · 收入金额 · 分析 001' }
+    expect(graphLabel(subject, 14, 9, 4)).toBe('2025-01-01')
+    expect(graphLabel(subject, 10, 5, 4)).toBe('2025-01-01')
+    expect(graphLabel(subject, 9, 4, 4)).toBe('01-01')
+  })
   it('keeps the fact name and period role rather than date digits in compact labels', () => {
     const fact: EvidenceObjectRef = { kind: 'fact', key: 'fact-current', analysisId: 'analysis_001', label: '医疗收入 · 同比基期 · 2024-01-01 — 2024-12-01' }
     expect(graphLabel(fact, 14, 9, 4)).toBe('医疗收入 · 同比基期')

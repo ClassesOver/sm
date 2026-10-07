@@ -758,6 +758,21 @@ describe('evidence browser shell', () => {
     expect(shell.querySelector<HTMLElement>('.evidence-notice')!.hidden).toBe(true)
   })
 
+  it('names a table-cell source by its registered fact and exact month', async () => {
+    const client = makeClient()
+    const source = PAYLOADS['/api/sources'] as TraceSources
+    vi.spyOn(client, 'sources').mockResolvedValue({
+      ...source,
+      facts: [{ factId: 'fact-a', analysisId: 'analysis_001', factKind: 'metric', label: '收入金额', name: '收入金额', datasetIds: [] }],
+      subjects: [{ ...source.subjects![0], subjectKind: 'table_cell',
+        locator: { tableId: 'table-analysis_001', rowKey: 'period:2025-01-01', columnKey: 'income_total' } }],
+    })
+    const { browser } = setup(client)
+    await browser.openSubject('sub-aaaa')
+    await flush()
+    expect(browser._state.currentPage()?.ref.label).toBe('2025-01-01 · 收入金额 · 分析 001')
+  })
+
   it('shows a visible notice when a citation is not in the current revision, cleared on next render', async () => {
     const { shell, browser } = setup()
     await browser.openSubject('sub-missing')

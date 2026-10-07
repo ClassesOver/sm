@@ -15,8 +15,36 @@ from .contracts_v1 import (
     FactRefV1,
     SubjectBindingV1,
     SubjectLocatorV1,
+    canonical_sha256,
     subject_fingerprint,
 )
+
+
+def bind_table_subjects(index: Any) -> Any:
+    """从已登记的单元格定位与事实绑定补齐来源入口，兼容既有发布索引。"""
+    bindings = list(index.subject_bindings)
+    locators = {
+        (item.locator.table_id, item.locator.row_key, item.locator.column_key)
+        for item in bindings if item.subject_kind == "table_cell"
+    }
+    for table in index.tables:
+        for cell in table.cells:
+            locator = (table.table_id, cell.row_key, cell.column_key)
+            if locator in locators or not cell.fact_refs:
+                continue
+            fingerprint = canonical_sha256({
+                "tableId": table.table_id, **cell.model_dump(mode="json", by_alias=True),
+            })
+            bindings.append(SubjectBindingV1(
+                subjectId=f"sub-{fingerprint[:16]}", subjectKind="table_cell",
+                locator=SubjectLocatorV1(
+                    tableId=table.table_id, rowKey=cell.row_key, columnKey=cell.column_key,
+                ),
+                subjectSha256=fingerprint, factRefs=cell.fact_refs,
+                computationId=cell.computation_id,
+            ))
+            locators.add(locator)
+    return index.model_copy(update={"subject_bindings": tuple(bindings)})
 
 
 def build_claim_subject_bindings(

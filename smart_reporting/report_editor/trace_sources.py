@@ -133,7 +133,9 @@ class ReportEditorTraceService:
             raise ReportingError(
                 "snapshot_integrity_failed", "修订追溯索引与当前报告不匹配。"
             )
-        return index
+        from ..reporting.trace.subject_builder import bind_table_subjects
+
+        return bind_table_subjects(index)
 
     # ------------------------------------------------------------------
     # 来源概览
@@ -769,8 +771,14 @@ class ReportEditorTraceService:
                         dataset_ids.append(value)
             return dataset_ids
 
-        async def _fact_value_of(ref: Any) -> Any:
-            return _entry_value(await _fact_entry_of(ref))
+        async def _fact_value_of(ref: Any, row_key: str) -> Any:
+            entry = await _fact_entry_of(ref)
+            if row_key.startswith("period:") and entry is not None:
+                period = row_key.removeprefix("period:")
+                values = [item.get("value") for item in entry.get("periodValues") or ()
+                          if isinstance(item, dict) and item.get("period") == period]
+                return values[0] if len(values) == 1 else None
+            return _entry_value(entry)
 
         subjects: list[dict[str, Any]] = []
         summary = {"valid": 0, "stale": 0, "unbound": 0}
@@ -1005,7 +1013,7 @@ class ReportEditorTraceService:
                 for cell in trace.cells:
                     value: Any = None
                     for ref in cell.fact_refs:
-                        value = await fact_value_of(ref)
+                        value = await fact_value_of(ref, cell.row_key)
                         if value is not None:
                             break
                     frozen_values.append((cell, value))

@@ -14,6 +14,15 @@ import { datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENC
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
+function sourceSubjectLabel(subject: NonNullable<TraceSources['subjects']>[number], sources: TraceSources): string {
+  if (subject.subjectKind === 'table_cell') {
+    const ref = subject.factRefs[0]
+    const fact = sources.facts?.find(item => item.analysisId === ref?.analysisId && item.factId === ref?.factId)
+    if (fact) return `${subject.locator.rowKey?.replace(/^period:/, '')} · ${fact.name || fact.label} · 分析 ${fact.analysisId.replace('analysis_', '')}`
+  }
+  return subjectLabelsFor((sources.subjects ?? []).map(item => item.subjectId))(subject.subjectId)
+}
+
 /**
  * 证据浏览器外壳（证据浏览器 v6）：任务页签 + 探索面包屑 + 来源目录 + 对象页。
  *
@@ -795,12 +804,11 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
           refs.push({ kind: 'chart', key: chart.chartId, label: chart.chartId })
         }
       }
-      const labelSubject = subjectLabelsFor((sources.subjects ?? []).map((subject) => subject.subjectId))
       for (const subject of sources.subjects ?? []) {
         refs.push({
           kind: 'subject',
           key: subject.subjectId,
-          label: labelSubject(subject.subjectId),
+          label: sourceSubjectLabel(subject, sources),
         })
       }
       directoryRefs = refs
@@ -1044,7 +1052,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const ref: EvidenceObjectRef = subject ? {
         kind: 'subject',
         key: subject.subjectId,
-        label: subjectLabelsFor((sources.subjects ?? []).map((item) => item.subjectId))(subject.subjectId),
+        label: sourceSubjectLabel(subject, sources),
       } : {
         kind: 'dataset', key: dataset!.datasetId, label: datasetLabel(dataset!, sources.datasets),
       }

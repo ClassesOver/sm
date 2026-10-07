@@ -192,7 +192,9 @@ def build_csv_trace_index(
                     contentKind="supplemental_evidence",
                 )
             )
-    return RevisionTraceIndexV1(
+    from .subject_builder import bind_table_subjects
+
+    index = RevisionTraceIndexV1(
         reportId=report_id,
         revision=revision,
         workflowRunId=workflow_run_id,
@@ -207,6 +209,7 @@ def build_csv_trace_index(
         subjectBindings=tuple(subject_bindings),
         drilldownMetrics=tuple(drilldown_metrics),
     )
+    return bind_table_subjects(index)
 
 
 def encode_trace_index(index: RevisionTraceIndexV1) -> bytes:

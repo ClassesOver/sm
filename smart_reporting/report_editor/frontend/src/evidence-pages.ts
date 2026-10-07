@@ -253,8 +253,14 @@ export function graphLabel(ref: EvidenceObjectRef, max: number, head: number, ta
   const label = ref.kind === 'fact'
     ? ref.label.replace(/ · \d{4}-\d{2}(?:-\d{2})?(?: — \d{4}-\d{2}(?:-\d{2})?)?$/, '') : ref.label
   if (label.length <= max) return label
+  const date = ref.kind === 'subject' ? label.match(/^(\d{4}-\d{2}-\d{2}) · /)?.[1] : undefined
+  if (date) {
+    const compact = [date, date.slice(5)].find(value => value.length <= max)
+    if (compact) return compact
+  }
   // 短号长度按修订内唯一性确定，以显示名中的短号为准。
-  const short = ref.kind === 'subject' ? subjectShortFromLabel(label) ?? subjectShortId(ref.key) : undefined
+  const short = ref.kind === 'subject' && /^正文引用(?:\s|$)/.test(label)
+    ? subjectShortFromLabel(label) ?? subjectShortId(ref.key) : undefined
   // 缩写不得超过该位置的长度上限（紧凑图标签只有 4 个字符宽，超长会遮挡相邻节点）。
   const fitting = short && [`引用 ${short}`, short].find((text) => text.length <= max)
   return fitting || `${label.slice(0, head)}…${label.slice(-tail)}`
@@ -3140,7 +3146,13 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   let citationWarning: HTMLElement | null = null
   if (data.validation) {
     const value = makeStatusRow(skeleton.statusArea, '引用状态', 'citation')
-    const entryResult = data.validation.subjects.find((item) => item.subjectId === detail.subjectId)
+    const cellLocation = detail.subjectKind === 'table_cell'
+      ? data.validation.tables?.find(item => item.tableId === detail.locator.tableId)?.locations
+          ?.find(item => item.rowKey === detail.locator.rowKey && item.columnKey === detail.locator.columnKey)
+      : undefined
+    const entryResult = cellLocation?.status
+      ? { status: cellLocation.status, warnings: [] }
+      : data.validation.subjects.find((item) => item.subjectId === detail.subjectId)
     const chip = document.createElement('span')
     chip.className = 'evidence-status-chip'
     chip.dataset.status = entryResult?.status ?? 'unbound'
