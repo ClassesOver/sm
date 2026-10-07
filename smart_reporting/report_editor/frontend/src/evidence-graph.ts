@@ -86,7 +86,7 @@ function routeObstructedEdges(graph: EvidenceGraph): void {
   for (const [id, edge] of obstructed) {
     const from = graph.positions.get(evidenceRefId(edge.from))!
     const to = graph.positions.get(evidenceRefId(edge.to))!
-    const port = (node: NodePosition, other: NodePosition, nodeId: string) => {
+    const port = (node: NodePosition, other: NodePosition, nodeId: string, avoid?: Point) => {
       const directions = [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]
       const score = (direction: Point) => direction.x * (other.x - node.x) / node.width + direction.y * (other.y - node.y) / node.height
       directions.sort((a, b) => score(b) - score(a))
@@ -100,6 +100,8 @@ function routeObstructedEdges(graph: EvidenceGraph): void {
           x: node.x + direction.x * node.width / 2 + (direction.y ? offset : 0),
           y: node.y + direction.y * node.height / 2 + (direction.x ? offset : 0),
         }
+        // 自引用的两端须使用不同边界端口，避免避障后变成同路往返。
+        if (avoid && anchor.x === avoid.x && anchor.y === avoid.y) continue
         // 高扇出端口沿外侧错开起始通道；仍由节点/引线避障检查决定是否可用。
         const clearance = 8 + (ids.length > 1 ? slot % 3 : 0) * step
         const x = direction.x ? (direction.x > 0 ? Math.ceil : Math.floor)((anchor.x + direction.x * clearance) / step) : Math.round(anchor.x / step)
@@ -111,7 +113,7 @@ function routeObstructedEdges(graph: EvidenceGraph): void {
       }
     }
     const start = port(from, to, evidenceRefId(edge.from))
-    const end = port(to, from, evidenceRefId(edge.to))
+    const end = port(to, from, evidenceRefId(edge.to), from === to ? start?.lead[0] : undefined)
     if (!start || !end) continue
     const { x: startX, y: startY } = start
     const { x: endX, y: endY } = end

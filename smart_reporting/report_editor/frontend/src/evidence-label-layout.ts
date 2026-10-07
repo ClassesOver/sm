@@ -106,5 +106,42 @@ export function layoutEvidenceLabels({ rectangles, obstacles, icons, priorities,
       passes.push([...obstacles, ...obstacles])
     }
   }
+  // 全局布局存在残余遮挡时，只让一个名称参与原生Greedy，其他名称作为固定障碍。
+  // 复查使用真实名称和图标边界，避免反复移动已经清晰的名称。
+  const drawnBounds = (rectangle: LabelRectangle) => ({ x: rectangle.x + 3, y: rectangle.y + 3,
+    width: rectangle.width - 6, height: rectangle.height - 6 })
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false
+    for (let index = 0; index < rectangles.length; index++) {
+      const original = rectangles[index]
+      const blockers = [...rectangles.filter((_, other) => other !== index).map(drawnBounds),
+        ...visibleIconBounds.filter((_, other) => other !== index), ...obstacles.slice(icons.length)]
+        .map(rectangle => ({ ...rectangle, fixed: true }))
+      const baseline = totalCollisionArea(blockers)
+      const collision = (rectangle: LabelRectangle) => Math.max(0,
+        totalCollisionArea([drawnBounds(rectangle), ...blockers]) - baseline)
+      let best = original, score = collision(original)
+      if (score === 0) continue
+      const positions = [[0, 0], ...[2, 4, 8].flatMap(offset =>
+        [[offset, 0], [-offset, 0], [0, offset], [0, -offset]])]
+      // 小幅移动找不到空位时，让原生策略检查画布中的均匀起点。
+      for (let row = 0; row <= 12; row++) for (let column = 0; column <= 12; column++) {
+        positions.push([4 + (width - original.width - 8) * column / 12 - original.x,
+          4 + (height - original.height - 8) * row / 12 - original.y])
+      }
+      for (const [dx, dy] of positions) {
+        // 名称周围保留1px；尺寸转换后恢复调用方的3px边距约定。
+        const movable = { x: original.x + dx + 2, y: original.y + dy + 2,
+          width: original.width - 4, height: original.height - 4 }
+        const [placed] = strategy([movable, ...blockers])
+        const candidate = { ...original, x: placed.x - 2, y: placed.y - 2 }
+        const next = collision(candidate)
+        if (next < score) { best = candidate; score = next }
+        if (score === 0) break
+      }
+      if (best !== original) { rectangles[index] = best; changed = true }
+    }
+    if (!changed) break
+  }
   return rectangles
 }

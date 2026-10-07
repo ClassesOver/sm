@@ -12,6 +12,29 @@ const initial: EvidenceRelations = {
 }
 
 describe('task graph context', () => {
+  it('keeps an obstructed self-reference as a loop with separate boundary ports', () => {
+    const graph = createEvidenceGraph()
+    graph.nodes.set(evidenceRefId(fact), fact)
+    graph.nodes.set(evidenceRefId(computation), computation)
+    graph.positions.set(evidenceRefId(fact), { x: 120, y: 120, width: 170, height: 76 })
+    graph.positions.set(evidenceRefId(computation), { x: 120, y: 210, width: 170, height: 76 })
+    graph.width = 400
+    graph.height = 320
+    mergeEvidenceGraph(graph, { center: fact, nodes: [],
+      edges: [{ from: fact, to: fact, label: '输入' }], loadedNote: '局部关系' })
+    const path = [...graph.paths.values()][0]
+    expect(graph.edges.size).toBe(1)
+    expect(path[0]).not.toEqual(path.at(-1))
+    // 连线绕回同一节点，而非同一个端口上的往返线；邻居的矩形不可被穿过。
+    for (let index = 1; index < path.length; index++) {
+      const start = path[index - 1], end = path[index]
+      for (let step = 0; step <= 20; step++) {
+        const x = start.x + (end.x - start.x) * step / 20
+        const y = start.y + (end.y - start.y) * step / 20
+        expect(x > 35 && x < 205 && y > 172 && y < 248).toBe(false)
+      }
+    }
+  })
   it('keeps an existing safe route while separating a later parallel relation', () => {
     const graph = createEvidenceGraph()
     for (const [node, x] of [[dataset, 120], [computation, 360], [fact, 600]] as const) {

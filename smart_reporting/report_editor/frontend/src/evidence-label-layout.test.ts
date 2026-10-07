@@ -74,7 +74,7 @@ describe('小图名称避障', () => {
 })
 
 describe('密集长名称避障', () => {
-  it.each(['labels', 'rotation-1', 'rotation-2', 'registered-preview'])('39节点窄屏%s投影保留全部名称且不遮挡名称和图标', async fixture => {
+  it.each(['labels', 'rotation-1', 'rotation-2', 'registered-preview', 'registered-rotation-1'])('39节点窄屏%s投影保留全部名称且不遮挡名称和图标', async fixture => {
     const { readFileSync } = await import('node:fs')
     const input = JSON.parse(readFileSync(`src/fixtures/evidence-dense-${fixture}.json`, 'utf8'))
     const previous = structuredClone(input)
