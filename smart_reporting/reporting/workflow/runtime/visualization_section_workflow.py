@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from agno.exceptions import ModelProviderError
 from agno.run import RunContext
 from loguru import logger
+from pydantic import ValidationError
 
+from ....context_management import TaskExecutionContextHardLimitError
 from ....model_routing import TaskComplexity
 from ...code_agent.failure_policy import final_attempt_degradable, recovery_for
 from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_reporting_thinking
@@ -54,6 +58,30 @@ _MAX_GENERATE_ATTEMPTS = 3
 # 章节墙钟截止：超时后不再开启新的生成/修复，交由零图降级收口。
 VISUALIZATION_SECTION_DEADLINE_EXCEEDED = "report_visualization_section_deadline_exceeded"
 MAX_VISUALIZATION_EXECUTION_REPAIRS = 3
+
+
+def _ranked_detail_scope_issues(plan: VisualizationPlanDraft) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    subset_label = r"(?:前|后|最高|最低)\s*\d+\s*(?:条|组)|排序子集|(?:top|bottom)\s*\d+.*(?:明细|记录)"
+    for chart in plan.charts:
+        for binding in chart.data_bindings:
+            if not re.fullmatch(r"metrics\[\d+\]\.(?:topGroups|bottomGroups)", binding.data_path):
+                continue
+            if (
+                re.search(subset_label, chart.title, re.IGNORECASE)
+                and re.search(subset_label, chart.alt_text, re.IGNORECASE)
+                and re.search(r"明细|组合|记录|record", chart.aggregation_grain, re.IGNORECASE)
+            ):
+                continue
+            issues.append({
+                "chartId": chart.chart_id,
+                "dataPath": binding.data_path,
+                "message": "图表数据范围：topGroups/bottomGroups 是完整维度组合的排序明细子集，"
+                "不能按院区、科室或收入类别求和后声称完整构成、累计、贡献或排名。"
+                "请改用已冻结的完整分组汇总补证；没有对应证据则删去该图。"
+                "仅展示原明细时，标题及图注明确前/后N条明细，aggregationGrain写组合明细。",
+            })
+    return issues
 
 
 def _visualization_thinking_complexity(payload: Mapping[str, Any]) -> TaskComplexity:
@@ -501,7 +529,7 @@ class VisualizationWorkflowResult:
 
 
 class VisualizationSectionWorkflow:
-    """计划只生成一次；固定 Workflow 独立限制执行修复。"""
+    """计划数据范围最多纠正一次；固定 Workflow 独立限制执行修复。"""
 
     def __init__(
         self,
@@ -605,6 +633,43 @@ class VisualizationSectionWorkflow:
     ) -> VisualizationWorkflowResult:
         plan = await self.generate_plan(payload, run_context)
         plan = _validate_visualization_plan_bindings(plan, payload)
+        scope_issues = _ranked_detail_scope_issues(plan)
+        if scope_issues:
+            if not self._deadline_exceeded():
+                try:
+                    repaired = await self.generate_plan({
+                        **payload,
+                        "previousPlan": plan.model_dump(mode="json", by_alias=True),
+                        "scopeCorrections": scope_issues,
+                        "repairInstruction": "仅纠正scopeCorrections指出的图表范围，保留其余图；"
+                        "完整汇总只绑定对应补证，不用明细子集替代。缺少汇总证据则省略该图并说明。",
+                    }, run_context)
+                    repaired = _validate_visualization_plan_bindings(repaired, payload)
+                    affected = {item["chartId"] for item in scope_issues}
+                    replacements = {chart.chart_id: chart for chart in repaired.charts}
+                    plan = plan.model_copy(update={
+                        "charts": tuple(
+                            replacements.get(chart.chart_id, chart) if chart.chart_id in affected else chart
+                            for chart in plan.charts
+                        ),
+                        "warnings": tuple(dict.fromkeys((*plan.warnings, *repaired.warnings)))[-100:],
+                    })
+                except (ReportingError, ModelProviderError, ValidationError, TaskExecutionContextHardLimitError) as error:
+                    logger.warning("report_visualization_scope_repair_failed error_type={} reason={}",
+                                   type(error).__name__, str(error)[:500])
+            remaining = _ranked_detail_scope_issues(plan)
+            unsafe = {item["chartId"] for item in remaining}
+            if unsafe:
+                warnings = tuple(dict.fromkeys((*plan.warnings, *(
+                    f"{item['chartId']}：{item['message']} 缺少完整汇总证据，已省略该图，报告继续交付。"
+                    for item in remaining
+                ))))[-100:]
+                plan = plan.model_copy(update={
+                    "charts": tuple(chart for chart in plan.charts if chart.chart_id not in unsafe),
+                    "warnings": warnings,
+                })
+            logger.info("report_visualization_scope_review corrected={} omitted={}",
+                        len(scope_issues) - len(remaining), len(unsafe))
         benchmark_kwargs = (
             {"benchmark_projection": self.benchmark_projection}
             if self.benchmark_projection is not None

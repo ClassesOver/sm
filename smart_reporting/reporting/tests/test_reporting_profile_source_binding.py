@@ -77,7 +77,7 @@ def test_ruijin_profile包含收入汇总权威指标定义() -> None:
     assert metric.aggregation == "sum"
 
 
-def test_ruijin_profile包含工作量非住院口径权威指标定义() -> None:
+def test_ruijin_profile工作量排除口径与真实字段说明一致() -> None:
     registry = load_configured_reporting_profiles(Path("deploy/agentos/reporting"))
     profile = bind_reporting_profile_sources(
         resolve_reporting_profile(registry, "ruijin"), {"rj": "rj"}
@@ -92,6 +92,8 @@ def test_ruijin_profile包含工作量非住院口径权威指标定义() -> Non
     )
     assert metrics["outpatient_visits_non"].aggregation == "sum"
     assert metrics["discharges_non"].aggregation == "sum"
+    assert metrics["outpatient_visits_non"].description == "不含体检和急诊门诊人次"
+    assert metrics["discharges_non"].description == "不含体检和急诊出院人次"
 
 
 def test_ruijin_profile覆盖收入预算取数指标() -> None:

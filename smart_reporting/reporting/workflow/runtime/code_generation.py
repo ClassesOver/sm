@@ -205,7 +205,9 @@ class ReportingCodeGenerationRunner:
                 if not isinstance(item, Mapping):
                     continue
                 projected_item = {
-                    key: item[key] for key in ("datasetId", "path", "columns") if key in item
+                    key: item[key]
+                    for key in ("datasetId", "path", "columns", "columnDescriptions")
+                    if key in item
                 }
                 provenance = item.get("provenance")
                 if isinstance(provenance, Mapping):
@@ -316,6 +318,9 @@ class ReportingCodeGenerationRunner:
                 vision_reviewer=self.vision_reviewer,
                 output_preflight=output_preflight,
                 failure_artifact_recorder=self.failure_artifact_recorder,
+                visualization_plan=(task_facts.get("visualizationPlan")
+                                    if isinstance(task_facts.get("visualizationPlan"), Mapping)
+                                    else None),
             )
             await toolkit.refresh_delivery_state()
             task_payload = self._model_task_payload(task_context)

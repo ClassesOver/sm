@@ -47,6 +47,21 @@ def test_completed_report_content_omits_invalid_delivery_urls() -> None:
     )
 
 
+@pytest.mark.parametrize("template", [None, "# {report_title}\n\n{actions}", "{unknown}"])
+def test_completed_report_content_discloses_failed_checks_with_download_links(template):
+    content = _completed_report_content(_completed_payload(publicationGate={
+        "formalReleaseAllowed": False,
+        "issues": [
+            {"code": "artifact_not_validated", "message": "PDF/Word 验收未通过。"},
+            {"code": "artifact_not_validated", "message": "PDF/Word 验收未通过。"},
+        ],
+    }), template=template)
+    assert "[下载 PDF](https://reports.example/report.pdf)" in content
+    assert "[下载 Word](https://reports.example/report.docx)" in content
+    assert "验收或发布检查未通过，下载链接已签发。" in content
+    assert content.count("PDF/Word 验收未通过。") == 1
+
+
 def test_completed_report_content_uses_custom_template() -> None:
     content = _completed_report_content(
         _completed_payload(),

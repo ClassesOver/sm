@@ -555,11 +555,14 @@ class ReportEditorTraceService:
         session_capabilities: Mapping[str, Any] | None,
         export_id: str,
     ) -> tuple[Path, str, int]:
-        if not self._permissions(session_capabilities).can_download_derived:
+        permissions = self._permissions(session_capabilities)
+        if not permissions.can_download_derived:
             raise ReportingError(
                 "dataset_access_denied", "当前会话无权下载派生导出。"
             )
-        path, filename, size, _sha256 = await self.exports.download(context, export_id)
+        path, filename, size, _sha256 = await self.exports.download(
+            context, export_id, blocked_columns=permissions.blocked_columns
+        )
         return path, filename, size
 
     async def require_index(self, context: Any) -> RevisionTraceIndexV1:
@@ -718,33 +721,22 @@ class ReportEditorTraceService:
             document = bundle_cache[file_ref.path]
             if not isinstance(document, dict):
                 return None
-            try:
-                prefix, index_token = ref.json_pointer.rsplit("/", 1)
-                array_name = {
-                    "/metrics": "metrics",
-                    "/comparisons": "comparisons",
-                    "/derivedMetrics": "derivedMetrics",
-                    "/reconciliations": "reconciliations",
-                    "/correlationDetails": "correlationDetails",
-                }.get(prefix)
-                if array_name is None or not index_token.isdigit():
-                    return None
-                array = document.get(array_name)
-                position = int(index_token)
-                if not isinstance(array, list) or position >= len(array):
-                    return None
-                entry = array[position]
-                return entry if isinstance(entry, dict) else None
-            except (ValueError, TypeError):
+            from ..reporting.trace.fact_index import fact_entry_from_pointer
+
+            if document.get("analysisId") != ref.analysis_id:
                 return None
+            try:
+                kind, entry = fact_entry_from_pointer(document, ref.json_pointer)
+            except KeyError:
+                return None
+            if kind != ref.fact_kind or (ref.fact_key and entry.get("factId") != ref.fact_key):
+                return None
+            return entry
 
         def _entry_value(entry: dict[str, Any] | None) -> Any:
             if not entry:
                 return None
-            for key in ("total", "percentage", "value", "change", "difference"):
-                if entry.get(key) is not None:
-                    return entry[key]
-            return None
+            return fact_display_value(entry)
 
         def _entry_formula(entry: dict[str, Any] | None) -> str | None:
             value = entry.get("formula") if entry else None
@@ -779,7 +771,10 @@ class ReportEditorTraceService:
             entry = await _fact_entry_of(ref)
             if row_key.startswith("comparison:") and entry is not None:
                 field = row_key.rsplit(":", 1)[-1]
-                return entry.get(field) if field in {"currentTotal", "baselineTotal", "change", "changeRate"} else None
+                if field not in {"currentTotal", "baselineTotal", "change", "changeRate"} or field not in entry:
+                    return None
+                # 成功读取的空计算结果展示为“—”；解析失败仍返回 None。
+                return "—" if entry[field] is None else entry[field]
             if row_key.startswith("period:") and entry is not None:
                 period = row_key.removeprefix("period:")
                 values = [item.get("value") for item in entry.get("periodValues") or ()
@@ -807,6 +802,7 @@ class ReportEditorTraceService:
                 expected_unit=expected_unit,
                 expected_periods=expected_periods,
                 expected_scope=_entry_scope(entry),
+                section_id=binding.locator.section_id,
             )
             status = detail["status"]
             summary[status] += 1
@@ -920,8 +916,8 @@ class ReportEditorTraceService:
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """表格身份重判（计划 6.1）：排序不失效，改值 stale，插删行/删块 unbound。
 
-        行标签→rowKey 的映射来自当前 revision 已提交正文（与 TableTraceV1
-        同源生成的表格块）；列按草稿表头文本 == columnKey 定位，表头被改
+        行标签→rowKey 的映射来自冻结的原始表格块，旧索引回退到已提交正文；
+        列按草稿表头文本 == columnKey 定位，表头被改
         即无法定位 → stale。全部为软语义，不阻断保存。
         """
 
@@ -982,12 +978,24 @@ class ReportEditorTraceService:
             locations: list[dict[str, Any]] = []
             inserted_rows = 0
             copied_cells: list[dict[str, Any]] = []
-            origin_body = committed_blocks.get(trace.table_id)
+            origin_source = trace.origin_markdown if trace.origin_markdown is not None else committed
+            origin_body = (
+                _blocks(origin_source).get(trace.table_id)
+                if trace.origin_markdown is not None else committed_blocks.get(trace.table_id)
+            )
             draft_body = draft_blocks.get(trace.table_id)
             if draft_body is None:
                 counts["unbound"] = len(trace.cells)
             else:
-                _header, origin_rows = _rows(origin_body or "")
+                origin_header, origin_rows = _rows(origin_body or "")
+                # 期间并集表的缺失月份由服务端登记为空引用并展示“—”。
+                # 只豁免原样保留的占位符；事实读取失败或填入数字仍须告警。
+                missing_cells = {
+                    (key, name)
+                    for row, key in zip(origin_rows, trace.row_keys)
+                    for column, name in enumerate(origin_header, 1)
+                    if column < len(row) and row[column] == "—"
+                } if len(origin_rows) == len(trace.row_keys) else set()
                 if len(origin_rows) == len(trace.row_keys):
                     label_to_key = {
                         row[0]: key for row, key in zip(origin_rows, trace.row_keys)
@@ -996,10 +1004,10 @@ class ReportEditorTraceService:
                     label_to_key = {}
                 draft_header, draft_rows = _rows(draft_body)
                 # 定位比软校验更保守：重复标签/列名不能选择首个匹配冒充唯一身份。
-                # 已提交正文读取失败（committed 为 None）时视为非唯一，只做软校验、不给定位。
+                # 无冻结表格且已提交正文不可读时，无法确认原始位置，不给定位。
                 unique_block = all(
                     sum(match.group(1) == trace.table_id for match in table_block_pattern.finditer(markdown)) == 1
-                    for markdown in (committed or "", draft_markdown)
+                    for markdown in (origin_source or "", draft_markdown)
                 )
                 origin_labels = [row[0] for row in origin_rows if row]
                 draft_labels = [row[0] for row in draft_rows if row]
@@ -1041,8 +1049,17 @@ class ReportEditorTraceService:
                         if frozen_cell is cell:
                             fact_value = frozen_value
                             break
+                    missing_unchanged = (
+                        not cell.fact_refs and (cell.row_key, cell.column_key) in missing_cells
+                        and row[column] == "—"
+                    )
                     cell_status = (
-                        "valid" if fact_value is not None and value_matches(row[column], fact_value) else "stale"
+                        "valid" if missing_unchanged or (
+                            fact_value is not None and (
+                                row[column] == "—" if fact_value == "—"
+                                else value_matches(row[column], fact_value)
+                            )
+                        ) else "stale"
                     )
                     if (unique_block and origin_labels.count(row[0]) == 1
                             and draft_labels.count(row[0]) == 1

@@ -80,3 +80,35 @@ async def test_manifest_and_index_must_register_the_same_markdown(tmp_path: Path
     with pytest.raises(ReportingError) as error:
         await editor.trace.load_index(changed_context)
     assert error.value.code == "snapshot_integrity_failed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_sorted_table_keeps_frozen_bindings_across_revisions(tmp_path: Path) -> None:
+    from smart_reporting.reporting.trace.table_builder import render_table_markdown
+
+    editor, _, context = await _make_editor_with_subject(tmp_path, period_table=True)
+    sorted_markdown = render_table_markdown(
+        "tbl-1", ("income_total",), [["2025-10", "2,400"], ["2025-09", "1,200"]],
+    )
+    wrong_markdown = render_table_markdown(
+        "tbl-1", ("income_total",), [["2025-10", "1,200"], ["2025-09", "2,400"]],
+    )
+    for revision in (2, 3):
+        manifest = await editor.trace.load_manifest(context)
+        index = await editor.trace.load_index(context)
+        target = f"reports/revision-{revision}/report.md"
+        thread = context.scope["threadId"]
+        await editor.workspace.awrite_text(thread, target, sorted_markdown)
+        digest = hashlib.sha256(sorted_markdown.encode()).hexdigest()
+        _, identity = await snapshot_revision_lineage(
+            editor.workspace, thread, manifest=manifest, index=index,
+            markdown_file=ArtifactFile(path=target, mediaType="text/markdown", size=len(sorted_markdown.encode()), sha256=digest),
+            target_revision=revision, path_map={},
+            manifest_path=f"reports/revision-{revision}/artifact-manifest.json",
+        )
+        context = context.model_copy(update={"revision": revision, "markdown_path": target, "artifact_manifest": identity})
+        valid = await editor.trace.validate(context, sorted_markdown, digest)
+        assert valid["tableSummary"]["valid"] == 2
+        wrong = await editor.trace.validate(context, wrong_markdown, hashlib.sha256(wrong_markdown.encode()).hexdigest())
+        assert wrong["tableSummary"]["stale"] == 2

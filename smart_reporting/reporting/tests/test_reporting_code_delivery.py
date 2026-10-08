@@ -1061,12 +1061,17 @@ async def test_view_image_reviews_multiple_paths_in_one_call(workspace):  # noqa
         ToolkitRuntime(),
         ReportingLspProcessManager(),
         vision_reviewer=reviewer,
+        visualization_plan={"charts": [{"sourcePath": "charts/a.png", "title": "门诊人次构成",
+                                       "metricCodes": ["outpatient_visits"]}]},
     )
     result = await toolkit.view_image(paths=["charts/a.png", "charts/b.png"])
     assert result["ok"] is True
     assert "receipts" in result
     assert len(result["receipts"]) == 2
     assert reviewer.review.await_count == 2
+    requests = {call.args[1]: call.kwargs for call in reviewer.review.await_args_list}
+    assert requests["charts/a.png"]["expected_chart"]["metricCodes"] == ["outpatient_visits"]
+    assert "expected_chart" not in requests["charts/b.png"]
     assert toolkit.has_current_visual_review("charts/a.png")
     assert toolkit.has_current_visual_review("charts/b.png")
 

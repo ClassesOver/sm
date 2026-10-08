@@ -173,6 +173,30 @@ def evaluate_publication_semantics(
 
 
 class RuntimePublicationMixin:
+    async def _retain_rendered_report(
+        self, run_context: RunContext, result: dict[str, Any],
+        pdf_path: str, word_path: str, validation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """验收失败时按实际文件身份保留下载输入，不伪造通过回执。"""
+        for label, path in (("pdf", pdf_path), ("word", word_path)):
+            identity = await self.workspace_service.ahash_file(self._scope(run_context)["threadId"], path)
+            if identity.get("missing") or not identity.get("sha256") or not identity.get("size"):
+                raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
+            result.update({
+                f"{label}Path": path, f"{label}Size": int(identity["size"]),
+                f"{label}Sha256": str(identity["sha256"]),
+            })
+        issues = validation.get("issues")
+        result.update({
+            "status": "validation_failed", "validation": {**validation, "ok": False},
+            "validationIssues": [
+                {key: str(item[key])[:500] for key in ("code", "message") if item.get(key) is not None}
+                for item in (issues[:20] if isinstance(issues, list) else []) if isinstance(item, dict)
+            ],
+        })
+        self._state(run_context)[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
+        return result
+
     async def validate_report(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
         return StepOutput(content=await self._render_and_validate(run_context))
 
@@ -232,15 +256,19 @@ class RuntimePublicationMixin:
         )
 
         word_path = str(PurePosixPath(pdf_path).with_suffix(".docx"))
+        validation = rendered_result.get("validation") if isinstance(rendered_result, dict) else None
+        if not isinstance(validation, dict) or validation.get("ok") is not True:
+            validation = validation if isinstance(validation, dict) else {
+                "ok": False,
+                "issues": [{"code": "validation_receipt_invalid"}],
+            }
+            return await self._retain_rendered_report(
+                run_context, result, pdf_path, word_path, validation
+            )
         try:
             if not isinstance(rendered_result, dict):
                 raise ReportingError(
                     "report_artifact_validation_failed", "PDF/Word 联合验收回执无效。"
-                )
-            validation = rendered_result.get("validation")
-            if not isinstance(validation, dict) or validation.get("ok") is not True:
-                raise ReportingError(
-                    "report_artifact_validation_failed", "PDF/Word 联合验收未通过。"
                 )
             if rendered_result.get("wordPath") != word_path:
                 raise ReportingError(
@@ -386,6 +414,20 @@ class RuntimePublicationMixin:
                 "wordPath": word_path,
                 "validation": validation,
             }
+        except Exception as error:
+            # 回执、状态或发布验收异常不应删除已生成文件。重新读取实际身份，
+            # 由下载签发保留文件；失败原因随回执明确返回。
+            logger.warning("report_artifact_validation_failed error_type={}", type(error).__name__)
+            return await self._retain_rendered_report(
+                run_context, result, pdf_path, word_path,
+                {**validation, "ok": False, "issues": [
+                    *(validation.get("issues") if isinstance(validation.get("issues"), list) else []),
+                    {
+                        "code": error.code if isinstance(error, ReportingError) else "report_artifact_validation_failed",
+                        "message": error.message if isinstance(error, ReportingError) else "PDF/Word 验收无法完成，产物已保留。",
+                    },
+                ]},
+            )
         except BaseException:
             # _render_report_pair 返回即表示 revision 目录已正式发布。之后任何回执、
             # 身份、manifest 或状态异常都必须删除同一 revision 的两种产物；取消也不能打断清理。
@@ -695,7 +737,11 @@ class RuntimePublicationMixin:
             issue("analysis_checkpoint_invalid", "发布门禁无法核验冻结分析产物。")
 
         if result.get("status") != "validated":
-            issue("artifact_not_validated", "Markdown、PDF 或 DOCX 尚未完成验收。")
+            issue(
+                "artifact_not_validated",
+                "Markdown、PDF 或 DOCX 尚未完成验收。",
+                validationIssues=result.get("validationIssues", [])[:20],
+            )
         for key in ("markdownPath", "pdfPath", "wordPath"):
             path = result.get(key)
             if not isinstance(path, str) or not path:
@@ -768,7 +814,18 @@ class RuntimePublicationMixin:
             raise ReportingError(
                 "report_artifact_manifest_invalid", "发布门禁缺少已验收的产物清单。"
             ) from error
-        gate = await self._dataset_publication_gate(run_context, result)
+        try:
+            gate = await self._dataset_publication_gate(run_context, result)
+        except Exception as error:
+            logger.warning("report_publication_gate_failed error_type={}", type(error).__name__)
+            gate = {
+                "formalReleaseAllowed": False,
+                "issues": [{
+                    "code": error.code if isinstance(error, ReportingError) else "report_publication_gate_failed",
+                    "message": error.message if isinstance(error, ReportingError) else "发布验收无法完成，已有产物仍可下载。",
+                }],
+                "warnings": [],
+            }
         manifest_identity = None
         if result.get("artifactManifest") is not None:
             manifest_identity = ArtifactFile.model_validate(result["artifactManifest"])
@@ -800,7 +857,7 @@ class RuntimePublicationMixin:
             editor_job = {**editor_job, "interactiveCharts": interactive_charts}
         return StepOutput(
             content={
-                "status": "validated",
+                "status": result.get("status", "validated"),
                 "formalReleaseAllowed": gate["formalReleaseAllowed"],
                 "publicationGate": gate,
                 "auditSummary": gate.get("auditSummary", {}),
@@ -826,6 +883,7 @@ class RuntimePublicationMixin:
                 "wordSize": result["wordSize"],
                 "wordSha256": result["wordSha256"],
                 "validation": result["validation"],
+                "validationIssues": result.get("validationIssues", []),
                 "sourceWarnings": result.get("sourceWarnings", []),
                 "codingReceipts": result.get("codingReceipts", []),
             }

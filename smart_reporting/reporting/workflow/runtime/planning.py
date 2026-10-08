@@ -861,7 +861,32 @@ class RuntimePlanningMixin:
             # 此分支不调用模型，HumanReview 谓词也会返回 False，因此不会制造无意义暂停。
             return StepOutput(content=MeasureSemanticProposal())
 
-        selected_tables = {item.table for item in plan.tables}
+        refs_by_table: dict[str, list[str]] = {}
+        for field_ref in candidate_refs:
+            refs_by_table.setdefault(field_ref.rsplit(".", 1)[0], []).append(field_ref)
+        decisions = []
+        for table_refs in refs_by_table.values():
+            for start in range(0, len(table_refs), 6):
+                output = await self._propose_measure_semantic_batch(
+                    step_input, run_context, snapshots=snapshots, profile=profile,
+                    candidate_refs=tuple(table_refs[start:start + 6]),
+                )
+                decisions.extend(output.content.decisions)
+        proposal = MeasureSemanticProposal(decisions=tuple(decisions))
+        # 分批只缩小单次输入与输出；完整审核对象仍必须覆盖所有候选，不能提交部分分类。
+        _apply_confirmed_measure_semantics(snapshots, proposal, candidate_refs)
+        return StepOutput(content=proposal)
+
+    async def _propose_measure_semantic_batch(
+        self, step_input: StepInput, run_context: RunContext, *,
+        snapshots: tuple[SourceSchemaSnapshot, ...], profile: EffectiveReportingProfile,
+        candidate_refs: tuple[str, ...],
+    ) -> StepOutput:
+        candidate_tables = {ref.rsplit(".", 1)[0].lower() for ref in candidate_refs}
+        selected_tables = {
+            f"{parsed.database}.{parsed.table}" for ref in candidate_refs
+            for parsed in (parse_field_ref(ref),)
+        }
         tables_by_ref = {
             (table.source_id.lower(), table.database.lower(), table.name.lower()): table
             for snapshot in snapshots
@@ -892,8 +917,15 @@ class RuntimePlanningMixin:
                 for item in snapshot.terms
             ],
             "dataShapes": [
-                item.model_dump(mode="json", by_alias=True)
+                {**item.model_dump(mode="json", by_alias=True), "tables": [
+                    table.model_dump(mode="json", by_alias=True) for table in item.tables
+                    if f"{item.source_id}.{table.database}.{table.table}".lower()
+                    in candidate_tables
+                ]}
                 for item in self._data_shapes(run_context)
+                if any(f"{item.source_id}.{table.database}.{table.table}".lower()
+                       in candidate_tables
+                       for table in item.tables)
             ],
             "scopeFilters": [
                 item.model_dump(mode="json", by_alias=True) for item in profile.scope_filters
@@ -1505,6 +1537,7 @@ class RuntimePlanningMixin:
         referenced_tables = {
             table.table for requirement in requirements for table in requirement.tables
         }
+        envelope = self._envelope(run_context)
         base_payload = {
             "requirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
             # requirements 已包含每张表的期间字段和粒度；SQL planner 只需列名、类型
@@ -1514,8 +1547,13 @@ class RuntimePlanningMixin:
                 tables=referenced_tables,
                 description_limit=0,
             ),
-            "period": self._envelope(run_context).period.model_dump(mode="json"),
-            "periodWindows": self._envelope(run_context).period_windows().public_dict(),
+            "period": envelope.period.model_dump(mode="json"),
+            "requirementPeriodWindows": {
+                requirement.requirement_id: envelope.model_copy(update={
+                    "comparison_roles": requirement.resolved_comparison_roles(envelope.comparison_roles),
+                }).period_windows(granularity=requirement.tables[0].period_granularity).public_dict()
+                for requirement in requirements
+            },
             "feedback": self._feedback(step_input),
             "queryExecutionModes": [
                 {
@@ -1527,7 +1565,6 @@ class RuntimePlanningMixin:
         }
         sources = {item.id: item for item in self._sources(run_context)}
         snapshots = self._snapshots(run_context)
-        envelope = self._envelope(run_context)
         validation_feedback: dict[str, Any] | None = None
         approved: tuple[ApprovedQuery, ...] | None = None
         call_budget = StructuredOutputCallBudget()
@@ -1538,7 +1575,7 @@ class RuntimePlanningMixin:
                     "attempt": attempt,
                     "validationFeedback": _compact_validation_feedback(validation_feedback),
                     "instruction": (
-                        "修正所有 issues；返回覆盖全部 requirements 和唯一期间窗口的完整 SQL 批次 JSON，"
+                        "修正所有 issues；只覆盖每个 requirementId 的 requirementPeriodWindows 中唯一期间窗口，返回完整 SQL 批次 JSON，"
                         "每个查询只使用所属 periodRole 的精确窗口；直接替换错误值，不把修正说明或标记写入字段；"
                         "不返回补丁、解释或 Markdown"
                     ),
@@ -1805,11 +1842,9 @@ def _compile_single_table_queries(
                     previous = scope_values.setdefault(column, value)
                     if previous != value:
                         return None
-            # 固定口径字段必须随冻结 CSV 一起物化，才能独立复核 WHERE 条件；
-            # 常量字段加入 GROUP BY 不改变聚合结果。
-            query_grain_columns = tuple(
-                dict.fromkeys((*requirement.grain_columns, *sorted(scope_values)))
-            )
+            # 固定过滤保留在 WHERE；不能扩展已批准粒度，否则兜底 SQL 自身无法通过审核。
+            # 未投影的固定字段仍可通过签发的 approved query 复核过滤口径。
+            query_grain_columns = requirement.grain_columns
             if row_preserving:
                 projections = [exp.column(column) for column in query_grain_columns]
                 projections.extend(exp.column(column) for column in table.measure_columns)

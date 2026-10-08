@@ -4,6 +4,8 @@ import asyncio
 import uuid
 from datetime import timedelta
 
+from loguru import logger
+
 from .models import Lease, TaskExecutionScope, utcnow
 from .repository import TaskExecutionRepository, TaskExecutionRepositoryError
 
@@ -74,6 +76,12 @@ class TaskSession:
                 )
             except asyncio.CancelledError:
                 raise
-            except TaskExecutionRepositoryError:
+            except TaskExecutionRepositoryError as error:
                 self._lost.set()
+                logger.bind(
+                    task_id=self.scope.external_run_id,
+                    lease_epoch=self.lease.epoch,
+                    lease_expires_at=self.lease.expires_at.isoformat(),
+                    error_code=error.code,
+                ).opt(exception=True).warning("task_session_heartbeat_failed")
                 raise

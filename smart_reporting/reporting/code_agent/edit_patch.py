@@ -11,7 +11,7 @@ EDIT_PATCH_GRAMMAR = (
     'edit_envelope: "*** Begin Edit" LF "*** SHA256: " SHA256 LF (edit+ | hunks) "*** End Edit" LF?\n'
     'patch_envelope: "*** Begin Patch" LF ("*** SHA256: " SHA256 LF)? '
     '"*** Update File: " PATH LF hunks "*** End Patch" LF?\n'
-    'edit: "<<<<<<< SEARCH" LF line+ "=======" LF line+ ">>>>>>> REPLACE" LF\n'
+    'edit: "<<<<<<< SEARCH" LF line+ "=======" LF line* ">>>>>>> REPLACE" LF\n'
     'hunks: hunk+ ("*** End of File" LF)?\n'
     "hunk: hunk_header? change_line+\n"
     'hunk_header: "@@" TEXT? LF\n'
@@ -30,9 +30,9 @@ _EDIT_PATCH = re.compile(
 # 空 REPLACE（删除）允许 ======= 后直接跟 >>>>>>> REPLACE；中间保留一个空行的
 # 旧写法仍解析为空文本，两种写法语义一致。
 _EDIT_BLOCK = re.compile(
-    r"<<<<<<< SEARCH\n(?P<old>.+?)\n=======\n(?:(?P<new>.*?)\n)?"
-    r">>>>>>> REPLACE\n",
-    re.DOTALL,
+    r"<<<<<<< SEARCH\n(?P<old>.+?)\n=======\n(?P<new>.*?)"
+    r"^>>>>>>> REPLACE\n",
+    re.DOTALL | re.MULTILINE,
 )
 _MARKERS = ("*** Begin Edit", "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE", "*** End Edit")
 
@@ -107,7 +107,7 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
                 position = 0
                 marker_hint = ""
                 while block := _EDIT_BLOCK.match(body, position):
-                    replacement = block["new"] or ""
+                    replacement = block["new"].removesuffix("\n")
                     if any(
                         marker in text.split("\n")
                         for text in (block["old"], replacement)

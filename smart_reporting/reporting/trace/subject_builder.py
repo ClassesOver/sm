@@ -356,8 +356,9 @@ def claim_status(
     expected_unit: str | None = None,
     expected_periods: tuple[str, ...] = (),
     expected_scope: Mapping[str, str] | None = None,
+    section_id: str | None = None,
 ) -> dict[str, Any]:
-    """标记被删除或重复 → unbound；唯一标记所在段落的有界窗口内找不到
+    """标记被删除或重复 → unbound；唯一标记所属句子的有界窗口内找不到
     完整事实值形态 → stale。排除协议标记文字和数字子串；此处仍属于
     语义软校验，stale 提示复核，不拒绝保存。
 
@@ -365,6 +366,14 @@ def claim_status(
     不同单位/期间 → 附带软告警，状态仍为 valid（AGENTS：软告警不阻断）。
     """
 
+    sections = list(re.finditer(r"\[\[section:([^\]\r\n]+)\]\]", markdown))
+    if section_id and sections:
+        matching = [index for index, section in enumerate(sections) if section[1] == section_id]
+        if len(matching) != 1:
+            return {"status": "unbound", "warnings": []}
+        index = matching[0]
+        end = sections[index + 1].start() if index + 1 < len(sections) else len(markdown)
+        markdown = markdown[sections[index].end():end]
     marker = claim_marker(claim_id)
     position = markdown.find(marker)
     if position < 0:
@@ -375,7 +384,14 @@ def claim_status(
     block_end = markdown.find("\n\n", position)
     start = max(0, position - window_chars, block_start + 2 if block_start >= 0 else 0)
     end = min(len(markdown), position + window_chars, block_end if block_end >= 0 else len(markdown))
-    window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", markdown[start:end])
+    before = markdown[start:position]
+    after = markdown[position + len(marker):end]
+    # 旧格式允许锚点位于句号后；此时只归属前一句，不能借用下一句。
+    if re.search(r"[。！？;；\n]\s*$", before):
+        before = re.sub(r"[。！？;；\n]+\s*$", "", before)
+        after = ""
+    statement = re.split(r"[。！？;；\n]", before)[-1] + re.split(r"[。！？;；\n]", after)[0]
+    window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", statement)
     statements = re.split(r"[。！？;；\n]", window)
     matched_statements = [statement for statement in statements if value_matches(statement, fact_value) or formatted_value_matches(statement, fact_value, expected_unit)]
     if matched_statements:

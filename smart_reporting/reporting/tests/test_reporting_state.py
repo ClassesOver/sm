@@ -27,6 +27,7 @@ from smart_reporting.reporting.workflow.state import (
     ReportingStateError,
     ReportingStateReducer,
     ReportingStateVersionUnsupported,
+    normalize_analysis_warnings,
 )
 from smart_reporting.runtime.database import create_agent_database
 
@@ -1102,6 +1103,27 @@ def test_complete_analysis_items_can_finish_out_of_order_and_remain_running():
     ).state
     assert completed.phase is ReportingPhase.ANALYSIS_RUNNING
     assert completed.payload["currentAnalysisId"] is None
+
+
+def test_complete_analysis_item_compacts_duplicate_and_oversized_warnings():
+    state = apply_phase(initial_state(), "start_analysis")
+    state = ReportingStateReducer.apply(
+        state,
+        {"name": "set_analysis_plan", "commandId": "warnings-plan", "payload":
+         {"analysisIds": ["analysis_001"]}},
+        state.state_version,
+    ).state
+    warnings = ["重复"] * 3 + [f"告警-{index}" for index in range(150)]
+    completed = ReportingStateReducer.apply(
+        state,
+        {"name": "complete_analysis_item", "commandId": "warnings-item", "payload":
+         {"analysisId": "analysis_001", "summary": "完成", "warnings": warnings}},
+        state.state_version,
+    ).state
+    stored = completed.payload["analysisItems"]["analysis_001"]["warnings"]
+    assert len(stored) == 100
+    assert len(stored) == len(set(stored))
+    assert stored[-1] == "告警-149"
 
 
 def test_finalize_checkpoint_advances_durable_phase_in_same_reducer_call() -> None:

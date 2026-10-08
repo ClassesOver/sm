@@ -437,7 +437,9 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
     section.className = 'trace-fact'
     const entry = detail.entry as Record<string, unknown>
     const formula = typeof entry.formula === 'string' ? entry.formula : ''
-    const unit = typeof entry.unit === 'string' ? entry.unit : ''
+    const unit = detail.displayUnit === undefined
+      ? (typeof entry.unit === 'string' ? entry.unit : '')
+      : (detail.displayUnit ?? '')
     section.innerHTML = `<div class="trace-fact-value"></div>
       ${formula ? `<div class="trace-fact-formula"></div>` : ''}
       ${detail.inputFactRefs.length ? '<ul class="trace-fact-inputs"></ul>' : ''}

@@ -614,3 +614,15 @@ async def test_publication_uses_confirmed_snapshot_semantics_not_static_profile(
     assert await runtime._build_drilldown_metrics(
         fact_files={"analysis_001": identity}, run_context=SimpleNamespace()
     ) == ()
+
+
+def test_ratio_drilldown_does_not_inherit_amount_unit():
+    result = build_drilldown_metrics(
+        bundles=[{"metrics": [metric("revenue", "revenue", 90), metric("visits", "visits", 120)],
+                  "derivedMetrics": [{"code": "revenue_per_visit", "numeratorMetric": "revenue", "denominatorMetric": "visits", "value": 0.75, "unit": "元", "datasetIds": ["dataset-drill01"]}]}],
+        dataset_columns={"dataset-drill01": ("department", "month", "revenue", "visits", "scope")},
+        profile_dimensions=DIMENSIONS, profile_metrics=METRICS, measure_semantics=SEMANTICS,
+    )
+    ratio = next(item for item in result if item.aggregation == "ratio")
+    assert ratio.expected_value == 0.75
+    assert ratio.unit is None

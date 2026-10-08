@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any
 
 from agno.agent import Agent
@@ -24,7 +25,10 @@ _IssueText = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
 ]
 _REPORT_VISION_PROMPT = """
-只审查图表的呈现质量，不判断数据真实性、业务口径或 citation 是否正确。
+审查图表呈现质量，不判断源数据真实性或 citation 是否正确。
+输入提供 expectedChart 时，比较图片内实际可见标题、图例、坐标轴指标和单位与该图声明；
+明显画了另一个指标或业务主题时，用 misleading warning 描述具体错配。不要仅凭声明猜图内
+数值正确，也不要自行推定单位；业务错配只告警，不设置 requiresRevision=true。
 
 逐项检查 blank、cropping、text_overlap、legend_occlusion、missing_units 和 misleading。
 每个发现必须用 issues 返回对应 category、severity 和 description。只有整张图片或绘图区空白、
@@ -165,6 +169,7 @@ class ReportVisionReviewer:
         path: str,
         *,
         detail: str = "high",
+        expected_chart: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if detail not in {"high", "original"}:
             raise WorkspaceError("图片 detail 必须是 high 或 original。")
@@ -184,9 +189,15 @@ class ReportVisionReviewer:
         )
 
         digest = hashlib.sha256(source.content).hexdigest()
+        prompt = "请按审查规则检查这张图片并返回结构化审查结果。"
+        if expected_chart:
+            expected = {key: expected_chart[key] for key in (
+                "title", "altText", "metricCodes", "currentPeriod", "aggregationGrain",
+            ) if key in expected_chart}
+            prompt += "\nexpectedChart=" + json.dumps(expected, ensure_ascii=False)
         try:
             response = await self._new_agent().arun(
-                "请按审查规则检查这张图片并返回结构化审查结果。",
+                prompt,
                 images=[image],
             )
             content = response.content

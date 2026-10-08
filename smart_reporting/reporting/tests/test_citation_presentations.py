@@ -52,6 +52,24 @@ async def test_daily_coverage_presentations_fit_job_state() -> None:
 
 
 @pytest.mark.anyio
+async def test_large_source_link_lists_are_bounded_in_job_state() -> None:
+    service, run_context, job_id = _service_with_job()
+    presentations = _presentations(["2025-01", "2025-12"])
+    for index, presentation in enumerate(presentations):
+        presentation["links"] = [
+            {"subjectId": f"subject-{item}", "label": "正文结论", "url": f"https://reports.example/{index}/{item}"}
+            for item in range(100)
+        ]
+
+    await service.bind_citation_presentations(job_id, presentations, run_context)
+
+    saved = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]["_citationPresentations"]
+    assert all(len(item["links"]) == 2 for item in saved)
+    assert all(item["links"][0]["subjectId"] == "subject-0" for item in saved)
+    assert all(item["links"][1]["subjectId"] == "subject-99" for item in saved)
+
+
+@pytest.mark.anyio
 async def test_rebinding_ignores_period_detail_but_rejects_changed_citations() -> None:
     service, run_context, job_id = _service_with_job()
     await service.bind_citation_presentations(

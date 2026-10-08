@@ -74,6 +74,10 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "标签不得重叠、截断或超出画布；系列、颜色和标注克制，主信息突出；"
     "所有数值、单位和比较口径必须与 facts 一致。",
     "图表标题、注释和图例必须标明数据期间及必要的口径（实际/预算、台账/汇总等）；"
+    "图内来源使用输入中的可读数据集名、指标名或业务来源说明，不展示 citation_003、analysis_001 "
+    "等内部ID；追溯ID只保留在结构化元数据。标题中的转正、转负和最高最低等结论须先按"
+    "实际绘制序列计算核对；若计划标题与数据矛盾，修正标题并说明，不照抄错误结论。"
+    "主标题与副标题必须预留独立空间，不能相互覆盖。"
     "金额偏低本身不能证明数据截断或未完整入账；缺少直接证据时，标题、注释和替代文本只说明数值偏低及原因待核实。",
     "若 facts 含未入账、字段为零或不可比告警，图中只能作为软告警呈现，不得用图形把"
     "缺失数据补成零值或把相关性表达成确定因果。",
@@ -88,6 +92,12 @@ _VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS = (
     "{columns, rows} 表格，按 dict(zip(columns, row)) 解码。nullableColumns 中的 null 是"
     "源数据的合法不可用值，必须保留并显式标注无数据，禁止替换成 0、空字符串或常数；"
     "columnMeta 声明的单位与是否百分数优先于自行推断。",
+    "同表含多个metric时，先按计划中的指标名称和期间筛选，再形成每条系列；"
+    "不得混合不同指标的月行或仅凭总行数要求12个月。单位为空时保留原始数值并标注"
+    "单位待核实，禁止追加元、万元或亿元、禁止换算，也不得因缺少单位抛错阻断作图。",
+    "chartInputs[].dataScope 或文件内 dataScope 标记 ranked_subset 时只展示排序组合明细，"
+    "不得据此生成完整院区、科室或类别构成。图内标题与图注须和计划的数据范围一致；"
+    "子集合计不是全院合计，不可当作全院占比分母。",
     "不在 chartInputs 中的图（或 facts 未提供 chartInputs 时的全部图）按 visualizationFacts "
     "与 binding.dataPath 从源文件根读取原始事实：metricIndex、findingIndex 是源文件数组零基"
     "下标；periodValues/topGroups/bottomGroups 是行对象数组，findings 是 columns+rows 表格，"

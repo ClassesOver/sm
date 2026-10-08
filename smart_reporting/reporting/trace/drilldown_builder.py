@@ -104,7 +104,6 @@ def build_drilldown_metrics(
                 columns=columns_by_dataset.get(dataset_id, ()),
                 profile_dimensions=profile_dimensions,
                 semantics_by_ref=semantics_by_ref,
-                unit=fact.get("unit"),
             )
             if declaration is not None:
                 candidates.append(declaration)
@@ -184,7 +183,8 @@ def _ratio_declaration(
     columns: Sequence[str],
     profile_dimensions: Sequence[Mapping[str, Any]],
     semantics_by_ref: Mapping[str, Mapping[str, Any]],
-    unit: object,
+) -> DrilldownMetricV1 | None:
+    value = _finite(expected)
     # 当前 ratio 声明只表达求和后相除，不支持计数、平均或跨期间时点值。
     for fact in (numerator, denominator):
         if fact.get("aggregation") != "sum":
@@ -195,8 +195,6 @@ def _ratio_declaration(
         )
         if period and str(period).casefold() not in additive:
             return None
-) -> DrilldownMetricV1 | None:
-    value = _finite(expected)
     numerator_field = str(numerator.get("field", ""))
     denominator_field = str(denominator.get("field", ""))
     if value is None or numerator_field not in columns or denominator_field not in columns:
@@ -248,7 +246,7 @@ def _ratio_declaration(
         fixedScope=scope,
         expectedValue=value,
         tolerance=max(0.01, abs(value) * 1e-9),
-        unit=unit,
+        unit=None,  # 原始比值不能继承分子、分母的金额单位。
         factKeys=(str(fact_key),) if fact_key else (),
     )
 

@@ -177,6 +177,7 @@ export interface TraceFactDetail {
   factId: string | null
   factKind: string
   displayValue: number | string | null
+  displayUnit?: string | null
   entry: Record<string, unknown>
   inputFactRefs: TraceFactRefLite[]
   warnings: string[]

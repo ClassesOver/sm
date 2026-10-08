@@ -13,6 +13,7 @@ from ..reporting.delivery.artifacts_v1 import (
     ReportArtifactManifest,
     _markdown_image_bindings,
     _markdown_table_artifacts,
+    _TABLE_BLOCK,
 )
 from ..reporting.models import ReportingError
 from ..workspace import WorkspacePathConflict
@@ -99,7 +100,8 @@ async def snapshot_revision_lineage(
         raise ReportingError("snapshot_integrity_failed", "Frozen markdown identity changed.")
     trace_identity = None
     if index is not None:
-        if any(chart.presentation_sha256 is None for chart in index.chart_traces):
+        if (any(chart.presentation_sha256 is None for chart in index.chart_traces)
+                or any(table.origin_markdown is None for table in index.tables)):
             from ..reporting.trace.chart_subjects import freeze_chart_presentations
 
             original = next(file for file in index.files if file.resource_id == index.markdown_file_resource_id)
@@ -107,6 +109,17 @@ async def snapshot_revision_lineage(
             if len(content) != original.size or hashlib.sha256(content).hexdigest() != original.sha256:
                 raise ReportingError("snapshot_integrity_failed", "冻结图注正文身份已变化。")
             index = freeze_chart_presentations(index, content.decode("utf-8"))
+            blocks = list(_TABLE_BLOCK.finditer(content.decode("utf-8")))
+            tables = []
+            for table in index.tables:
+                if table.origin_markdown is None:
+                    matches = [match.group(0) for match in blocks if match.group(1) == table.table_id]
+                    # 重复或缺失的表格不能借新修订的位置重新绑定。
+                    table = table.model_copy(update={
+                        "origin_markdown": matches[0] if len(matches) == 1 else "",
+                    })
+                tables.append(table)
+            index = index.model_copy(update={"tables": tuple(tables)})
         resource_ids = {file.resource_id: derive_resource_id(path_map.get(file.path, file.path)) for file in index.files}
         resource_ids[index.markdown_file_resource_id] = derive_resource_id(markdown_file.path)
         payload = _remap_references(index.model_dump(mode="json", by_alias=True), resource_ids)

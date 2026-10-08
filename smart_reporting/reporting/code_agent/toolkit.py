@@ -1913,11 +1913,16 @@ class ReportingCodeModeToolkit(Toolkit):
         output_preflight: Callable[[ExecutionReceipt], Awaitable[Mapping[str, Any] | None]]
         | None = None,
         failure_artifact_recorder: Callable[[Mapping[str, Any]], None] | None = None,
+        visualization_plan: Mapping[str, Any] | None = None,
     ) -> None:
         self.binding = binding
         self.runtime = runtime
         self.knowledge_index = knowledge_index
         self.vision_reviewer = vision_reviewer
+        self.expected_charts = {
+            chart["sourcePath"]: chart for chart in (visualization_plan or {}).get("charts", ())
+            if isinstance(chart, Mapping) and isinstance(chart.get("sourcePath"), str)
+        }
         self.lsp = ReportingWorkspaceLsp(binding, lsp_manager)
         self.submitted_receipt: ExecutionReceipt | None = None
         self.output_preflight = output_preflight
@@ -3456,7 +3461,9 @@ class ReportingCodeModeToolkit(Toolkit):
             try:
                 return ChartVisualInspectionReceipt.model_validate(
                     await self.vision_reviewer.review(
-                        self.context.workspace_key, source_path, detail=detail
+                        self.context.workspace_key, source_path, detail=detail,
+                        **({"expected_chart": self.expected_charts[source_path]}
+                           if source_path in self.expected_charts else {}),
                     )
                 )
             except Exception as error:

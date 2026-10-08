@@ -213,8 +213,9 @@ async def test_render_report_pair_reports_existing_revision_as_path_conflict(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("validation_ok", [True, False, "exception", None])
 async def test_render_report_pair_validates_and_atomically_publishes_pdf_and_word(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, validation_ok: bool,
 ) -> None:
     service = _ReportPairService(_report_pair_identities())
     report_service = WorkspaceReportService(service)  # type: ignore[arg-type]
@@ -259,8 +260,13 @@ async def test_render_report_pair_validates_and_atomically_publishes_pdf_and_wor
                 },
             }
         assert payload["job"]["render"]["documentContext"] == {"sections": ["section-1"] * 100}
+        if validation_ok == "exception":
+            raise RuntimeError("验收器不可用")
+        if validation_ok is None:
+            return None
         return {
-            "ok": True,
+            "ok": validation_ok,
+            "issues": [] if validation_ok else [{"code": "page_layout_mismatch"}],
             "pdfSha256": "pdf",
             "wordSha256": "word",
             "pages": [
@@ -300,10 +306,19 @@ async def test_render_report_pair_validates_and_atomically_publishes_pdf_and_wor
         )
     ]
     assert "htmlPath" not in result
-    assert len(result["validation"]["pages"]) == 200
+    if isinstance(validation_ok, bool):
+        assert len(result["validation"]["pages"]) == 200
+    else:
+        assert result["validation"]["ok"] is False
+        assert result["validation"]["issues"]
+    assert result["status"] == ("validated" if validation_ok is True else "validation_failed")
     stored_job = context.session_state[REPORT_JOBS_STATE_KEY][job["jobId"]]
-    assert stored_job["validation"] == {"ok": True}
+    assert stored_job["validation"] == {"ok": validation_ok is True}
     assert set(stored_job["render"]) == {"markdown", "pdf", "word", "images"}
+    assert not any(
+        call.args[0] == "reports/revision-1"
+        for call in report_service._delete_report_path.await_args_list
+    )
 
 
 @pytest.mark.anyio

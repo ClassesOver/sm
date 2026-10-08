@@ -17,12 +17,30 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from loguru import logger
 
 from ..delivery.draft_v1 import ReportChartRegistration
 from .checkpoint import ChartVisualInspectionReceipt, FileIdentity
 
 REPORTING_STATE_SCHEMA_VERSION = 3
 MAX_INLINE_APPLIED_COMMANDS = 1000
+MAX_ANALYSIS_WARNINGS = 100
+
+
+def normalize_analysis_warnings(value: Any) -> tuple[list[str], int]:
+    """压缩模型/业务告警，保证 durable evidence 满足 AnalysisEvidence 上限。"""
+    if not isinstance(value, (list, tuple)):
+        return [], 0
+    unique: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in unique:
+            unique.append(text)
+    omitted = max(0, len(unique) - MAX_ANALYSIS_WARNINGS)
+    if omitted:
+        unique = unique[-MAX_ANALYSIS_WARNINGS:]
+        logger.warning("report_analysis_warnings_compacted omitted_count={}", omitted)
+    return unique, omitted
 
 
 class ReportingPhase(StrEnum):
@@ -429,6 +447,8 @@ def apply(
             raise ReportingStateError("report_analysis_item_duplicate", "analysisId 已完成。")
         evidence = dict(arguments)
         evidence["analysisId"] = analysis_id
+        normalized_warnings, _ = normalize_analysis_warnings(evidence.get("warnings", ()))
+        evidence["warnings"] = normalized_warnings
         items = payload.setdefault("analysisItems", {})
         if not isinstance(items, dict):
             raise ReportingStateError("report_state_invalid", "analysisItems 状态损坏。")

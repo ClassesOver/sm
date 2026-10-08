@@ -51,7 +51,6 @@ from .analysis_item_workflow import (
 )
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
-    MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
     MAX_REPORT_INSTRUCTION_BYTES,
     MAX_REPORT_SECTION_PHASE_ATTEMPTS,
     REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY,
@@ -131,6 +130,7 @@ from .chart_inputs import (
     chart_input_root_for,
     fallback_plan,
     prepare_chart_inputs,
+    ranked_detail_scope,
     verify_plotly_chart_inputs,
     verify_static_chart_inputs_referenced,
 )
@@ -317,6 +317,25 @@ def visualization_read_paths(facts: list[dict[str, Any]]) -> tuple[str, ...]:
     return tuple(sorted({FileIdentity.model_validate(source).path for source in sources}))
 
 
+def _nested_supplemental_tables(
+    value: Any, data_path: str
+) -> list[tuple[str, Mapping[str, Any]]]:
+    """暴露补证嵌套表的原始路径，不继承父对象的单位等元数据。"""
+    tables: list[tuple[str, Mapping[str, Any]]] = []
+    if isinstance(value, Mapping):
+        if isinstance(value.get("columns"), list) and isinstance(value.get("rows"), list):
+            tables.append((data_path, value))
+        for key, child in value.items():
+            if key not in {"columns", "rows", "columnMeta"} and re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*", key
+            ):
+                tables.extend(_nested_supplemental_tables(child, f"{data_path}.{key}"))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            tables.extend(_nested_supplemental_tables(child, f"{data_path}[{index}]"))
+    return tables
+
+
 def _bound_collection_items(
     values: object, data_paths: set[str], *, prefix: str, index_key: str
 ) -> list[Any]:
@@ -437,6 +456,15 @@ def visualization_coding_facts(
             filtered["supplementalEvidenceSources"] = sources
         compact.append(filtered)
     return compact
+
+
+def _visualization_attempts(traces: Sequence[ContextTrace]) -> range:
+    """失效后的新图表沿用单调任务身份，每版证据保留独立且有界的纠错预算。"""
+    next_attempt = max((item.attempt for item in traces), default=-1) + 1
+    last_completed = max((item.attempt for item in traces if item.status == "completed"), default=-1)
+    used = sum(item.attempt > last_completed for item in traces)
+    remaining = max(0, MAX_REPORT_SECTION_PHASE_ATTEMPTS - used)
+    return range(next_attempt, next_attempt + remaining)
 
 
 def _requested_chart_limit(report_goal: str, analysis_count: int) -> int | None:
@@ -674,6 +702,16 @@ def _analysis_item_dataset_inputs(
         }
         if set(field_types) == set(context.fields):
             dataset_input["columnTypes"] = {field: field_types[field] for field in context.fields}
+        descriptions: dict[str, set[str]] = {}
+        for table in context.schema_snapshot.get("tables", ()):
+            for column in table.get("columns", ()):
+                name, description = column.get("name"), column.get("description")
+                if name in context.fields and isinstance(description, str) and description:
+                    descriptions.setdefault(name, set()).add(description)
+        if descriptions:
+            dataset_input["columnDescriptions"] = {
+                field: next(iter(labels)) for field, labels in descriptions.items() if len(labels) == 1
+            }
         # A3：确定性数据集画像（列角色、基数、缺失率），减少 planner 的字段选择推理。
         roles = {"categorical": "dimension", "numeric": "measure", "temporal": "period"}
         profile = {
@@ -951,11 +989,8 @@ class RuntimeAnalysisMixin:
             and item.work_kind == "visualization_section"
             and item.section_code == section_code
         ]
-        next_attempt = max((item.attempt for item in matching), default=-1) + 1
-        max_attempts = MAX_REPORT_SECTION_PHASE_ATTEMPTS * (
-            MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION + 1
-        )
-        if next_attempt >= max_attempts:
+        attempts = _visualization_attempts(matching)
+        if not attempts:
             raise ReportingError(
                 "report_visualization_section_attempts_exhausted",
                 "章节图表 fresh attempt 已达到上限，拒绝创建新的 Task。",
@@ -973,7 +1008,7 @@ class RuntimeAnalysisMixin:
             ),
             context.get("visualization_deadline", float("inf")),
         )
-        for attempt in range(next_attempt, max_attempts):
+        for attempt in attempts:
             root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
             task_id = reporting_phase_task_key(
                 str(run_context.run_id or "report"),
@@ -1104,7 +1139,7 @@ class RuntimeAnalysisMixin:
                     repair_workspace_key: str | None = None
                     knowledge_index = getattr(self, "knowledge_index", None)
                     code_runner_instance: ReportingCodeGenerationRunner | None = None
-                    # 同一 fixed Workflow 内计划只生成一次；chart-input 按计划物化一次复用。
+                    # 计划在绘图前最多纠正一次范围；chart-input 按最终计划物化并复用。
                     chart_input_cache: dict[str, ChartInputMaterialization | None] = {}
                     planner_metrics_recorder = invocation.model_metrics_settlement.stage_recorder(
                         "planner", agent_role="visualization-planner"
@@ -1313,7 +1348,7 @@ class RuntimeAnalysisMixin:
                                 )
                                 if executed_script_path:
                                     script_bytes, _mime = await task_workspace.afile_bytes(
-                                        thread_id=str(coding_task_id), path=executed_script_path
+                                        str(coding_task_id), executed_script_path
                                     )
                                     unresolved = verify_static_chart_inputs_referenced(
                                         plan,
@@ -1327,8 +1362,10 @@ class RuntimeAnalysisMixin:
                                             "来源一致性依赖视觉审查。",
                                             chart_id,
                                         )
-                            except Exception:  # noqa: BLE001 - 软校验不阻断交付
-                                loguru_logger.warning(
+                            except Exception as error:  # noqa: BLE001 - 软校验不阻断交付
+                                loguru_logger.bind(error_type=type(error).__name__).opt(
+                                    exception=True
+                                ).warning(
                                     "report_visualization_static_chart_input_check_failed"
                                 )
                         return result
@@ -1454,7 +1491,7 @@ class RuntimeAnalysisMixin:
                         workflow_kwargs["record_successful_repair"] = record_successful_repair
                     result = await VisualizationSectionWorkflow(
                         **workflow_kwargs,
-                        final_attempt=attempt == max_attempts - 1,
+                        final_attempt=attempt == attempts.stop - 1,
                         deadline=section_deadline,
                     ).run(instruction_payload, invocation.run_context)
                     return result.plan
@@ -1535,6 +1572,7 @@ class RuntimeAnalysisMixin:
                 {
                     "dataPath": f"metrics[{index}].{collection}",
                     "fields": fields,
+                    **({"dataScope": scope} if (scope := ranked_detail_scope(f"metrics[{index}].{collection}")) else {}),
                 }
                 for collection, fields in (
                     ("periodValues", ["period", "value"]),
@@ -1589,11 +1627,25 @@ class RuntimeAnalysisMixin:
                     ) from error
                 findings: list[dict[str, Any]] = []
                 supplemental_descriptors: list[dict[str, Any]] = []
-                for index, finding in enumerate(evidence.findings):
+                finding_nodes = [
+                    (index, data_path, node)
+                    for index, finding in enumerate(evidence.findings)
+                    for data_path, node in [
+                        (f"findings[{index}]", finding),
+                        *[
+                            (path, table)
+                            for path, table in _nested_supplemental_tables(
+                                finding, f"findings[{index}]"
+                            )
+                            if path != f"findings[{index}]"
+                        ],
+                    ]
+                ]
+                for index, data_path, finding in finding_nodes:
                     descriptor: dict[str, Any] = {
                         "findingIndex": index,
                         "name": finding.get("name"),
-                        "dataPath": f"findings[{index}]",
+                        "dataPath": data_path,
                         "fields": sorted(finding),
                     }
                     columns = finding.get("columns")
@@ -1612,7 +1664,7 @@ class RuntimeAnalysisMixin:
                         descriptor.update(
                             {
                                 "columns": columns,
-                                "rowsDataPath": f"findings[{index}].rows",
+                                "rowsDataPath": f"{data_path}.rows",
                                 "rowEncoding": "columns_rows",
                                 "rowCount": len(rows),
                                 **({"nullableFields": nullable_fields} if nullable_fields else {}),
@@ -1627,14 +1679,14 @@ class RuntimeAnalysisMixin:
                     findings.append(descriptor)
                     supplemental_descriptors.append(
                         {
-                            "dataPath": f"findings[{index}]",
+                            "dataPath": data_path,
                             "fields": sorted(finding),
                         }
                     )
                     if isinstance(columns, list) and isinstance(rows, list):
                         supplemental_descriptors.append(
                             {
-                                "dataPath": f"findings[{index}].rows",
+                                "dataPath": f"{data_path}.rows",
                                 "fields": columns,
                             }
                         )

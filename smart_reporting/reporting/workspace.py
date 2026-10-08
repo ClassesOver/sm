@@ -543,8 +543,15 @@ class WorkspaceReportService:
         """由 Workflow 绑定 PDF 可读引用；该内部方法不注册为 Agent 工具。"""
         if not isinstance(presentations, list) or not presentations:
             raise WorkspaceError("PDF 实际引用展示信息无效。")
+        stored_presentations = copy.deepcopy(presentations)
+        for presentation in stored_presentations:
+            if not isinstance(presentation, dict):
+                continue
+            links = presentation.get("links")
+            if isinstance(links, list) and len(links) > 2:
+                presentation["links"] = [links[0], links[-1]]
         encoded = json.dumps(
-            presentations,
+            stored_presentations,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -557,10 +564,10 @@ class WorkspaceReportService:
         # 覆盖期间只是展示细节（历史版本保存完整列表，现在只保存首尾）；绑定一致性按
         # 引用身份、标签和覆盖项名称判断，避免跨版本恢复的运行被误判为冲突。
         if existing is not None and _presentation_identity(existing) != _presentation_identity(
-            presentations
+            stored_presentations
         ):
             raise WorkspaceError("PDF 实际引用展示信息已经绑定且内容不同。")
-        job["_citationPresentations"] = copy.deepcopy(presentations)
+        job["_citationPresentations"] = stored_presentations
         self._store_job(job, run_context)
 
     async def _render_report_pair(
@@ -647,23 +654,44 @@ class WorkspaceReportService:
             staged_render["word"]["path"] = staged_word_relative
             staged_job = copy.deepcopy(job)
             staged_job["render"] = staged_render
-            validation = await self._run_report_runtime(
-                "validate_pdf",
-                {
-                    "job": staged_job,
-                    "pdf_path": staged_pdf_relative,
-                    "word_path": staged_word_relative,
-                    "temporary_directory": validation_directory,
-                    "artifact_manifest": artifact_manifest,
-                },
-                run_context,
-            )
+            try:
+                validation = await self._run_report_runtime(
+                    "validate_pdf",
+                    {
+                        "job": staged_job,
+                        "pdf_path": staged_pdf_relative,
+                        "word_path": staged_word_relative,
+                        "temporary_directory": validation_directory,
+                        "artifact_manifest": artifact_manifest,
+                    },
+                    run_context,
+                )
+            except Exception as error:
+                # 已核验的 PDF/Word 身份足以保留产物；验收器不可用不能触发
+                # 外层清理删除。取消仍由 BaseException 路径处理。
+                loguru_logger.warning(
+                    "report_runtime_validation_unavailable error_type={}", type(error).__name__
+                )
+                validation = {
+                    "ok": False,
+                    "issues": [{
+                        "code": "report_artifact_validation_unavailable",
+                        "message": "PDF/Word 验收器不可用，产物已保留。",
+                    }],
+                }
+            if not isinstance(validation, dict):
+                validation = {
+                    "ok": False,
+                    "issues": [{
+                        "code": "validation_receipt_invalid",
+                        "message": "PDF/Word 验收回执无效，产物已保留。",
+                    }],
+                }
             if validation.get("ok") is not True:
                 loguru_logger.warning(
                     "report_runtime_validation_failed details={}",
                     json.dumps(validation, ensure_ascii=False, default=str)[:4000],
                 )
-                raise WorkspaceError("PDF/Word 联合验收未通过。")
             await self.service.amove_files(thread_id, staging_relative, final_directory_relative)
             published = True
             current_pdf = await self.service.ahash_file(_thread(run_context), relative_output)
@@ -687,11 +715,11 @@ class WorkspaceReportService:
             job["render"] = {key: render[key] for key in ("markdown", "pdf", "word", "images")}
             # 逐页验收结果由本方法返回并写入 Workflow 权威状态；job 只需记录是否通过，
             # 否则最多 200 页的 pages 数组会让 durable job 再次线性越过 48 KiB。
-            job["validation"] = {"ok": True}
+            job["validation"] = {"ok": validation.get("ok") is True}
             self._store_job(job, run_context)
             result.update(
                 {
-                    "status": "validated",
+                    "status": "validated" if validation.get("ok") is True else "validation_failed",
                     "pdfPath": relative_output,
                     "wordPath": relative_word,
                     "validation": validation,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import pytest
 
@@ -9,8 +10,8 @@ from smart_reporting.reporting.trace.numeric_text import (
     format_fact_value,
     frozen_number_catalog,
     money_text_warnings,
-    replace_unregistered_numbers,
     render_frozen_numbers,
+    replace_unregistered_numbers,
 )
 
 
@@ -77,6 +78,70 @@ def test_unregistered_derived_numbers_are_replaced_before_publishing():
     }
     content = json.dumps(document)
     assert replace_unregistered_numbers('总额100元，派生比例12.3%。', [content]) == '总额100元，派生比例待核实。'
+
+
+def test_typed_supplement_numbers_keep_units_and_unrounded_precision():
+    from smart_reporting.reporting.trace.content_review import review_content
+
+    frozen = json.dumps({'analysisId': 'analysis_001', 'metrics': [{
+        'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+        'periodRoles': ['current'], 'field': 'amount', 'fieldRef': 'hospital.amount',
+        'aggregation': 'sum', 'unit': '元', 'formula': 'sum(amount)', 'total': 100,
+        'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+    }]})
+    supplement = json.dumps({'analysisId': 'analysis_001', 'datasetIds': ['current'],
+        'findings': [{'name': '完整收入构成', 'columns': ['amount', 'share', 'untyped'],
+            'columnMeta': {'amount': {'unit': '元'}, 'share': {'unit': '%', 'isPercent': True}},
+            'rows': [[5829976285, 61.27835359022789, 777], [None, None, None]]}],
+        'reconciliations': [{'name': '同期间对账', 'passed': True}], 'warnings': []})
+    contents = [frozen, supplement]
+    correct = '金额58.30亿元（5,829,976,285元），占比61.28%或61.3%。'
+    assert replace_unregistered_numbers(correct, contents) == correct
+    assert not any('冻结依据' in warning for warning in review_content(correct, contents))
+    incorrect = '金额61.27835359022789元，占比5829976285%，未标单位777元。'
+    assert replace_unregistered_numbers(incorrect, contents) == '金额待核实，占比待核实，未标单位待核实。'
+    assert len([warning for warning in review_content(incorrect, contents) if '冻结依据' in warning]) == 3
+
+
+def test_percent_metadata_does_not_treat_fraction_as_display_percent():
+    from smart_reporting.reporting.trace.content_review import review_content
+
+    supplement = json.dumps({'findings': [{'columns': ['fraction'], 'rows': [[0.6128]],
+        'columnMeta': {'fraction': {'unit': '%', 'isPercent': False}}}]})
+    assert any('冻结依据' in warning for warning in review_content('占比0.6128%。', [supplement]))
+
+
+def test_nested_supplement_numbers_require_metadata_at_the_same_table():
+    from smart_reporting.reporting.trace.content_review import review_content
+    from smart_reporting.reporting.trace.numeric_text import supplemental_number_values
+
+    supplement = json.dumps({'findings': [{'name': '分组', 'sections': [
+        {'columns': ['amount', 'share'], 'rows': [[123456, 12.345]],
+         'columnMeta': {'amount': {'unit': '元'}, 'share': {'unit': '%', 'isPercent': True}}},
+        {'columns': ['untyped'], 'rows': [[777]]},
+    ]}]})
+    values = supplemental_number_values([supplement])
+    assert Decimal('123456') in values['元']
+    correct = '金额123,456元，占比12.35%。'
+    assert replace_unregistered_numbers(correct, [supplement]) == correct
+    assert review_content(correct, [supplement]) == []
+    assert any('冻结依据' in w for w in review_content('未标单位777元。', [supplement]))
+
+
+@pytest.mark.parametrize(('text', 'supported'), [
+    ('2月环比下降18.38%。', True),
+    ('2月降幅为18.38%。', True),
+    ('2月环比增长18.38%。', False),
+    ('2月占比18.38%。', False),
+    ('2月环比下降18.39%。', False),
+])
+def test_negative_percent_supports_only_explicit_decline_magnitude(text, supported):
+    from smart_reporting.reporting.trace.content_review import review_content
+
+    content = json.dumps({'findings': [{'columns': ['change'], 'rows': [[-18.376]],
+                         'columnMeta': {'change': {'unit': '%', 'isPercent': True}}}]})
+    assert (replace_unregistered_numbers(text, [content]) == text) is supported
+    assert (review_content(text, [content]) == []) is supported
 
 
 def test_conflicting_monthly_extrema_are_rewritten_to_frozen_month():

@@ -463,6 +463,8 @@ class TableTraceV1(StrictModel):
         alias="columnKeys", min_length=1, max_length=200
     )
     cells: tuple[TableCellBindingV1, ...] = Field(default=(), max_length=2000)
+    # 首次人工修订前冻结的表格块，用于恢复行标签与结构键的原始对应关系。
+    origin_markdown: str | None = Field(default=None, alias="originMarkdown")
 
     @model_validator(mode="after")
     def validate_structure(self) -> TableTraceV1:

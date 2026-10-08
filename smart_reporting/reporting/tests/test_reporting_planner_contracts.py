@@ -846,7 +846,7 @@ def test_single_table_query_compiler_keeps_unapproved_numeric_fields_in_grain() 
     assert all("SUM(actual_medical_income)" in query.sql for query in approved)
 
 
-def test_single_table_query_compiler_projects_exclusive_scope_for_audit() -> None:
+def test_single_table_query_compiler_preserves_scope_and_approved_grain() -> None:
     requirement = reporting_runtime.QueryRequirement.model_validate(
         {
             "requirementId": "req_drug_cost",
@@ -879,7 +879,7 @@ def test_single_table_query_compiler_projects_exclusive_scope_for_audit() -> Non
     )
     envelope = reporting_contract.ReportRequestEnvelope.model_validate({
         "reportGoal": "分析药品成本", "period": {"start": "2025-01-01", "end": "2025-12-31"},
-        "sourceIds": ["rj"],
+        "sourceIds": ["rj"], "comparisonRoles": [],
     })
 
     generated = reporting_runtime._compile_single_table_queries(
@@ -887,9 +887,15 @@ def test_single_table_query_compiler_projects_exclusive_scope_for_audit() -> Non
     )
 
     assert generated is not None
-    sql = generated.queries[0].sql.lower()
-    assert "indicator_name" in sql
-    assert "group by" in sql and "indicator_name" in sql
+    approved, issues = reporting_runtime._approve_generated_queries(
+        generated, sources={"rj": SimpleNamespace(id="rj", database="rj")},
+        snapshots=(snapshot,), envelope=envelope, requirements=(requirement,),
+    )
+    assert issues == []
+    assert len(approved) == 1
+    query = parse_one(approved[0].sql, dialect="mysql")
+    assert "indicator_name = '药品成本'" in query.args['where'].sql()
+    assert [column.name for column in query.args['group'].expressions] == ['data_date']
 
 
 def test_analysis_grain_excludes_exact_constant_numeric_columns() -> None:
@@ -2121,6 +2127,11 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
         ),
         numericFields=("actual_income",),
         periodValues=(),
+        schema={'tables': [{'columns': [
+            {'name': 'income_type', 'description': '收入业务类型'},
+            {'name': 'actual_income', 'description': '实际医疗收入合计'},
+            {'name': 'unselected', 'description': '未签发字段不得进入脚本上下文'},
+        ]}]},
     )
     budget_context = context.model_copy(
         update={
@@ -2134,6 +2145,10 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
                 context.field_stats[1].model_copy(update={"name": "budget_income"}),
             ),
             "numeric_fields": ("budget_income",),
+            "schema_snapshot": {'tables': [{'columns': [
+                {'name': 'budget_type', 'description': '预算类型'},
+                {'name': 'budget_income', 'description': '预算医疗收入合计'},
+            ]}]},
         }
     )
 
@@ -2151,6 +2166,10 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
         "budget_type": "categorical",
         "budget_income": "numeric",
     }
+    assert inputs[0]['columnDescriptions'] == {'income_type': '收入业务类型',
+                                              'actual_income': '实际医疗收入合计'}
+    assert inputs[1]['columnDescriptions'] == {'budget_type': '预算类型',
+                                              'budget_income': '预算医疗收入合计'}
 
 
 def test_analysis_item_output_root_isolated_by_fresh_attempt() -> None:
@@ -2607,6 +2626,42 @@ def test_analysis_summary_instructions_define_projected_evidence_semantics() -> 
     assert "view.truncated 为 true 时 rows 只是投影视图" in source
     assert "omittedNumericSums 只汇总未进入 rows 的有限数值" in source
     assert "完整总量等于 rows 数值与 omittedNumericSums 之和" in source
+
+
+def test_summary_projects_nested_tables_without_mutating_complete_evidence():
+    from copy import deepcopy
+
+    from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+        _project_analysis_summary_payload,
+    )
+
+    rows = [[f'科室-{index}', (-1 if index % 3 == 0 else 1) * index]
+            for index in range(3000)]
+    small = {'name': '期间总额', 'columns': ['amount'], 'rows': [[sum(row[1] for row in rows)]],
+             'columnMeta': {'amount': {'unit': '元'}}}
+    payload = {'deterministicFacts': {'metrics': []}, 'supplementalEvidence': {
+        'findings': [{'name': '完整分组', 'sections': [
+            {'name': '明细', 'columns': ['department', 'amount'], 'rows': rows,
+             'columnMeta': {'amount': {'unit': '元'}}}, small]}],
+        'reconciliations': [{'name': '总量守恒', 'passed': True}], 'warnings': [],
+    }, 'supplementalEvidenceSource': {'path': 'evidence/full.json', 'sha256': 'b' * 64,
+                                     'size': 300000}}
+    original = deepcopy(payload)
+    def count(value):
+        return len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
+
+    projected = _project_analysis_summary_payload(payload, max_tokens=6000, count_tokens=count)
+    assert payload == original
+    assert count(projected) <= 6000
+    evidence = projected['supplementalEvidence']
+    detail, total = evidence['findings'][0]['sections']
+    assert total == small
+    assert detail['columnMeta'] == {'amount': {'unit': '元'}}
+    assert detail['view']['rowCount'] == len(rows)
+    assert len(detail['rows']) < len(rows)
+    assert sum(row[1] for row in detail['rows']) + detail['view']['omittedNumericSums']['amount'] == small['rows'][0][0]
+    assert evidence['reconciliations'] == payload['supplementalEvidence']['reconciliations']
+    assert evidence['sourceFile'] == payload['supplementalEvidenceSource']
 
 
 def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplicates_warnings() -> (
@@ -4678,6 +4733,144 @@ async def test_sql_planner_budget_exhaustion_falls_back_to_compiler(monkeypatch)
 
     assert planner_calls == [1]
     assert output.content == {"queries": [{"queryId": "q1"}]}
+
+
+@pytest.mark.anyio
+async def test_sql_planner_receives_requirement_scoped_period_windows() -> None:
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    envelope = reporting_contract.ReportRequestEnvelope.model_validate({
+        'reportGoal': '年度运营趋势', 'reportType': 'comprehensive',
+        'period': {'start': '2025-01-01', 'end': '2025-12-31'},
+        'comparisonRoles': ['yoy'], 'sourceIds': ['rj'],
+    })
+    requirements = [{
+        'requirementId': name, 'sourceId': 'rj',
+        'tables': [{'table': 'rj.dwd_visit', 'periodColumn': 'visit_date',
+                    'periodGranularity': 'date', 'measureColumns': ['amount']}],
+        'dimensionColumns': ['area'], 'grainColumns': ['area'],
+        **({'comparisonRoles': []} if name == 'current_only' else {}),
+    } for name in ('current_only', 'inherited')]
+    state = {reporting_planning.REPORT_DATA_REQUIREMENTS_STATE_KEY: requirements}
+
+    async def inspect_payload(_agent, payload, _context, **_kwargs):
+        windows = payload['requirementPeriodWindows']
+        assert [w['role'] for w in windows['current_only']['windows']] == ['current']
+        assert [w['role'] for w in windows['inherited']['windows']] == ['current', 'yoy']
+        assert windows['current_only']['windows'][0]['period']['start'] == '2025-01-01'
+        assert windows['current_only']['windows'][0]['period']['end'] == '2025-12-31'
+        raise ReportingError('probe_complete', '已检查模型实际接收的期间范围。')
+
+    runtime = SimpleNamespace(
+        _state=lambda _context: state, _data_shapes=lambda _context: (),
+        _snapshots=lambda _context: (), _envelope=lambda _context: envelope,
+        _feedback=lambda _input: None, _sources=lambda _context: (),
+        _run_planner=inspect_payload, _sql_agent=object(),
+    )
+    with pytest.raises(ReportingError, match='已检查'):
+        await reporting_planning.RuntimePlanningMixin.generate_query_candidates(
+            runtime, SimpleNamespace(), RunContext(run_id='run-1', session_id='session-1')
+        )
+
+
+@pytest.mark.anyio
+async def test_measure_semantic_batches_keep_all_fields_and_fail_without_partial_commit(monkeypatch):
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+    from smart_reporting.reporting.workflow.runtime.models import MeasureSemanticProposal
+
+    refs = tuple(f'rj.rj.first.amount_{index}' for index in range(8)) + ('rj.rj.second.amount',)
+    monkeypatch.setattr(reporting_planning, '_measure_semantic_candidate_refs', lambda *a: refs)
+    monkeypatch.setattr(reporting_planning, '_apply_confirmed_measure_semantics', lambda *a: ())
+    state = {'unchanged': True}
+    calls = []
+    fail_second = False
+
+    async def propose_batch(_step, _context, **kwargs):
+        batch = kwargs['candidate_refs']
+        calls.append(batch)
+        if fail_second and len(calls) == 2:
+            raise ReportingError('provider_failure', '上游失败。')
+        return StepOutput(content=MeasureSemanticProposal.model_validate({'decisions': [
+            {'fieldRef': ref, 'classification': 'dimension', 'reason': '非聚合维度'} for ref in batch
+        ]}))
+
+    runtime = SimpleNamespace(
+        _snapshots=lambda _: (), _data_understanding=lambda _: object(),
+        _profile=lambda _: object(), _propose_measure_semantic_batch=propose_batch,
+    )
+    context = RunContext(run_id='run-1', session_id='s-1', session_state=state)
+    result = await reporting_planning.RuntimePlanningMixin.propose_measure_semantics(
+        runtime, SimpleNamespace(), context
+    )
+    assert tuple(d.field_ref for d in result.content.decisions) == refs
+    assert [len(c) for c in calls] == [6, 2, 1]
+    assert all(len({ref.rsplit('.', 1)[0] for ref in c}) == 1 for c in calls)
+    assert state == {'unchanged': True}
+    calls.clear()
+    fail_second = True
+    with pytest.raises(ReportingError, match='上游失败'):
+        await reporting_planning.RuntimePlanningMixin.propose_measure_semantics(
+            runtime, SimpleNamespace(), context
+        )
+    assert len(calls) == 2
+    assert state == {'unchanged': True}
+
+
+@pytest.mark.parametrize(('statuses', 'expected'), [
+    ([], [0, 1, 2]),
+    (['failed'], [1, 2]),
+    (['failed', 'failed', 'failed'], []),
+    (['failed', 'failed', 'completed'], [3, 4, 5]),
+    (['failed'] * 5 + ['completed'], [6, 7, 8]),
+    (['failed', 'failed', 'completed', 'failed'], [4, 5]),
+    (['failed', 'failed', 'completed', 'failed', 'failed', 'failed'], []),
+])
+def test_visualization_rework_keeps_bounded_attempts_without_reusing_task_identity(statuses, expected):
+    from smart_reporting.reporting.workflow.runtime.analysis import _visualization_attempts
+    traces = [SimpleNamespace(attempt=index, status=status) for index, status in enumerate(statuses)]
+    assert list(_visualization_attempts(traces)) == expected
+
+
+@pytest.mark.anyio
+async def test_measure_semantic_batch_only_sends_candidate_table_shapes():
+    snapshot = _multi_date_snapshot(('amount', 'DECIMAL(18,2)', '金额'),
+                                    ('department', 'VARCHAR(100)', '科室'))
+    table = snapshot.tables[0]
+    other_table = table.model_copy(update={'name': 'unrelated'})
+    snapshot = snapshot.model_copy(update={'tables': (table, other_table)})
+    shape_table = {
+        'sourceId': 'rj', 'database': 'rj', 'table': 'dwd_visit',
+        'totalRowCount': 0, 'periodRowCount': 0, 'outsidePeriodRowCount': 0,
+        'periodNullCount': 0, 'columnCount': 1,
+        'columns': [{'name': 'amount', 'dataType': 'DECIMAL(18,2)', 'nullable': True,
+                     'nullCount': 0, 'nullRate': 0, 'distinctCount': 0,
+                     'distinctMode': 'exact', 'cardinalityRate': 0, 'unique': False}],
+    }
+    shape = DataShape.model_validate({
+        'sourceId': 'rj', 'metadataRevision': 'revision-1', 'schemaHash': 'a' * 64,
+        'statisticsVersion': '1', 'queryCount': 2,
+        'periodStart': '2025-01-01', 'periodEnd': '2025-12-31',
+        'tables': [shape_table, {**shape_table, 'table': 'unrelated'}],
+    })
+
+    async def inspect_payload(_agent, payload, _context, **_kwargs):
+        assert payload['candidateFieldRefs'] == ['rj.rj.dwd_visit.amount']
+        assert payload['candidateFieldContexts'][0]['sameTableColumnNames'] == ['department']
+        assert [t['table'] for s in payload['schemas'] for t in s['tables']] == ['rj.dwd_visit']
+        assert [t['table'] for s in payload['dataShapes'] for t in s['tables']] == ['dwd_visit']
+        raise ReportingError('probe_complete', '已检查实际输入过滤。')
+
+    runtime = SimpleNamespace(
+        _envelope=lambda _: SimpleNamespace(report_goal='综合运营分析'),
+        _data_shapes=lambda _: (shape,), _feedback=lambda _: None,
+        _run_planner=inspect_payload, _measure_semantic_agent=object(),
+    )
+    with pytest.raises(ReportingError, match='已检查实际输入过滤'):
+        await reporting_runtime.RuntimePlanningMixin._propose_measure_semantic_batch(
+            runtime, SimpleNamespace(), RunContext(run_id='run-1', session_id='s-1'),
+            snapshots=(snapshot,), profile=SimpleNamespace(scope_filters=()),
+            candidate_refs=('rj.rj.dwd_visit.amount',),
+        )
 
 
 def _outline_proposal(*sections: tuple[str, list[str]], report_type: str = "comprehensive"):

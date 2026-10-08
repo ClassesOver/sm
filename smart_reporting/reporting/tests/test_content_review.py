@@ -34,6 +34,14 @@ def test_review_keeps_registered_values_and_flags_invented_units():
     assert review_content("补充科室金额123.45元", [content, '{"departmentAmount":123.45}']) == []
 
 
+def test_amount_extrema_does_not_apply_to_type_share_extrema():
+    fact = {**_metric(values=(100, 70, 80)), 'unit': '元'}
+    content = json.dumps({'analysisId': 'analysis_001', 'metrics': [fact]})
+    assert review_content('3月卫生材料成本占比最高。', [content]) == []
+    assert review_content('3月手术室组织明细为最高单项。', [content]) == []
+    assert any('最高月份为1月' in w for w in review_content('3月成本总额最高。', [content]))
+
+
 def test_multi_metric_extrema_uses_unique_heading_field_definition():
     first = _metric("actual_open_bed", (149301, 134405, 132706))
     second = {**_metric("discharges_bed", (110625, 105655, 104718)), "factId": "fact-" + "c" * 16}
@@ -43,6 +51,117 @@ def test_multi_metric_extrema_uses_unique_heading_field_definition():
     warnings = review_content(text, [content], field_definitions=labels)
     assert sum("冻结月序列的最低月份为3月" in warning for warning in warnings) == 2
     assert review_content("### 两项指标走势\n\n2月最低", [content], field_definitions=labels) == []
+
+
+def test_multi_metric_extrema_uses_explicit_paragraph_label_and_deduplicates_facts():
+    outpatient = _metric("mantime_outpatient", (562826, 527550, 644217, 420422))
+    discharges = {**_metric("mantime_discharges", (22000, 18000, 25000, 20000)),
+                  "factId": "fact-" + "c" * 16}
+    contents = [json.dumps({"analysisId": analysis, "metrics": [outpatient, discharges]})
+                for analysis in ("analysis_001", "analysis_002")]
+    labels = {"mantime_outpatient": "门诊人次", "mantime_discharges": "出院人次"}
+    text = "### 三项指标月度走势与拐点特征\n\n门诊人次在2月录得527,550人次，为期间最低值。"
+    warnings = review_content(text, contents, field_definitions=labels)
+    assert sum("门诊人次：月度极值" in warning and "最低月份为4月" in warning
+               for warning in warnings) == 1
+    assert review_content("门诊人次1—2月中2月最低，为527,550人次。", contents,
+                          field_definitions=labels) == []
+    assert review_content("门诊人次与出院人次在2月最低。", contents,
+                          field_definitions=labels) == []
+
+
+def test_paragraph_extrema_does_not_confuse_subset_or_conflicting_snapshots():
+    outpatient = _metric("outpatient", (20, 10, 5))
+    subset = {**_metric("outpatient_non", (15, 5, 10)), "factId": "fact-" + "c" * 16}
+    labels = {"outpatient": "门诊人次", "outpatient_non": "不含体检和急诊门诊人次"}
+    contents = [json.dumps({"analysisId": "analysis_001", "metrics": [outpatient, subset]})]
+    assert review_content("不含体检和急诊门诊人次在2月最低，为5人次。", contents,
+                          field_definitions=labels) == []
+    assert review_content("门诊人次与不含体检和急诊门诊人次在1月最低。", contents,
+                          field_definitions=labels) == []
+    other = {**_metric("outpatient", (20, 5, 10)), "factId": "fact-" + "d" * 16}
+    contents.append(json.dumps({"analysisId": "analysis_002", "metrics": [other, subset]}))
+    assert review_content("门诊人次在2月最低。", contents, field_definitions=labels) == []
+    warnings = review_content("[[analysis:analysis_001]]门诊人次在2月最低。", contents,
+                              field_definitions=labels)
+    assert any("最低月份为3月" in warning for warning in warnings)
+
+
+def test_extrema_range_inside_claim_is_not_mistaken_for_another_month_claim():
+    fact = _metric(values=(545329, 527550, 644217, 420422, 0))
+    content = json.dumps({'analysisId': 'analysis_001', 'metrics': [fact]})
+    warnings = review_content('2月为1—4月期间最低值527,550人次。', [content])
+    assert any('2月被写为最低' in w and '最低月份为4月' in w for w in warnings)
+    assert review_content('4月为1—4月期间最低值420,422人次。', [content]) == []
+    assert review_content('1—3月期间波动；4月为有数据月份中的最低值。', [content]) == []
+
+
+def test_explicit_year_extrema_checks_comparison_year_without_using_current_year():
+    current = _metric(values=(10, 20, 30))
+    previous = {**_metric(values=(30, 10, 20)), "factId": "fact-" + "c" * 16,
+                "periodRoles": ["comparison"]}
+    previous["periodValues"] = [{**item, "period": item["period"].replace("2025", "2024")}
+                                for item in previous["periodValues"]]
+    contents = [json.dumps({"analysisId": "analysis_001", "metrics": [current, previous]})]
+    incorrect = "按2025年1—3月月度原始金额，3月最高；按2024年1—3月月度原始金额，3月最高。"
+    warnings = review_content(incorrect, contents)
+    assert any("2024年" in warning and "最高月份为1月" in warning for warning in warnings)
+    assert not any("2025年" in warning for warning in warnings)
+    assert review_content(incorrect.replace("2024年1—3月月度原始金额，3月", "2024年1—3月月度原始金额，1月"), contents) == []
+
+
+def test_explicit_year_extrema_skips_ambiguous_metrics():
+    first = _metric("income", values=(10, 20, 30))
+    second = {**_metric("cost", values=(30, 20, 10)), "factId": "fact-" + "c" * 16}
+    contents = [json.dumps({"analysisId": "analysis_001", "metrics": [first, second]})]
+    assert review_content("2025年两项指标2月最高。", contents) == []
+    warnings = review_content("2025年收入2月最高。", contents,
+                              field_definitions={"income": "收入", "cost": "成本"})
+    assert any("最高月份为3月" in warning for warning in warnings)
+    warnings = review_content("2025年2月最高。", contents, fact_ids=[first["factId"]])
+    assert any("最高月份为3月" in warning for warning in warnings)
+    assert review_content("2025年2月最高。", contents, fact_ids=[]) == []
+
+
+def _project_execution_evidence():
+    return {'findings': [{'name': '预算类型执行',
+        'columns': ['budget_type', 'budget_project_amount', 'contract_amount', 'payment_amount'],
+        'rows': [['专用设备', 100000, 51900, 41390], ['信息化建设', 100000, 84010, 19650]],
+        'columnMeta': {field: {'unit': '元', 'periodRole': 'current'} for field in
+                       ('budget_project_amount', 'contract_amount', 'payment_amount')}}]}
+
+
+def test_project_execution_ranking_checks_each_named_ratio_against_same_evidence():
+    contents = [json.dumps(_project_execution_evidence())]
+    warnings = review_content('专用设备签约率和付款率在各类型中相对最高。', contents)
+    assert len(warnings) == 1
+    assert '签约率排名需复核' in warnings[0] and '信息化建设' in warnings[0]
+    assert review_content('专用设备付款率最高。信息化建设签约率最高。', contents) == []
+    assert review_content('专用设备签约率不是最高。', contents) == []
+    assert review_content('专用设备与信息化建设签约率最高。', contents) == []
+
+
+def test_project_execution_ranking_skips_untyped_mixed_scope_and_conflicting_evidence():
+    evidence = _project_execution_evidence()
+    evidence['findings'][0]['columnMeta']['contract_amount']['unit'] = '万元'
+    assert review_content('专用设备签约率最高。', [json.dumps(evidence)]) == []
+    evidence = _project_execution_evidence()
+    evidence['findings'][0]['columnMeta']['contract_amount']['periodRole'] = 'yoy'
+    assert review_content('专用设备签约率最高。', [json.dumps(evidence)]) == []
+    other = _project_execution_evidence()
+    other['findings'][0]['rows'][0][2] = 99000
+    assert review_content('专用设备签约率最高。', [json.dumps(_project_execution_evidence()),
+                       json.dumps(other)]) == []
+    assert review_content('1月专用设备签约率最高。', [json.dumps(_project_execution_evidence())]) == []
+
+
+def test_project_execution_ranking_never_compares_groups_from_separate_tables():
+    evidence = _project_execution_evidence()
+    first = evidence['findings'][0]
+    second = {**first, 'rows': [['其他类型', 100000, 99000, 90000], ['另一类型', 100000, 98000, 80000]]}
+    first['rows'] = [['专用设备', 100000, 51900, 41390], ['信息化建设', 100000, 30000, 19650]]
+    evidence['findings'].append(second)
+    assert review_content('专用设备签约率最高。', [json.dumps(evidence)]) == []
 
 
 @pytest.mark.parametrize("text", [
@@ -108,6 +227,14 @@ def test_review_prefix_period_does_not_accept_full_year_total():
 
 def test_review_natural_days_cause_needs_direct_evidence():
     assert any('直接证据' in warning for warning in review_content('2月因自然天数较少，两项指标均为年内低谷。', []))
+
+
+def test_review_annual_budget_allocation_is_not_a_subperiod_total():
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(606259,) * 12)]})
+    text = "2025年1—9月各月预算诊疗人次均为606,259人次，系年度预算总量7,275,108[[claim:claim_006]]人次按月均摊形成。"
+    assert review_content(text, [content]) == []
+    wrong = "2025年1—9月预算人次累计7,275,108人次。年度预算总量7,275,108人次按月均摊。"
+    assert any("累计期间" in warning for warning in review_content(wrong, [content]))
 
 
 @pytest.mark.parametrize('text', [
@@ -227,3 +354,38 @@ def test_budget_percentage_review_rounds_once_from_exact_calculation():
     assert review_content('完成率10.0%。', [content]) == []
     assert review_content('完成率10.05%。', [content]) == []
     assert any('10.1%' in warning for warning in review_content('完成率10.1%。', [content]))
+
+
+@pytest.mark.parametrize(('rate', 'denominator', 'warns'), [
+    ('95.14', '全年预算总额', True),
+    ('79.28', '全年预算总额', False),
+    ('95.14', '同期间预算总额', False),
+])
+def test_review_budget_rate_checks_explicit_annual_denominator(rate, denominator, warns):
+    document = json.loads(_budget_pair_contents(actual_values=(1044347374.7,) * 10, budget_values=(1097718506,) * 12))
+    for entry in document['metrics']:
+        entry['unit'] = '元'
+    text = (f'2025年1—10月实际医疗收入累计10,443,473,747元，{denominator}为13,172,622,072元。'
+            f'按1—10月累计实际收入与{denominator}之比计算，执行率为{rate}%。')
+    issues = review_content(text, [json.dumps(document)])
+    found = [issue for issue in issues if '预算分母口径' in issue]
+    assert bool(found) is warns
+    if warns:
+        assert '79.28%' in found[0]
+
+
+def test_review_budget_denominator_does_not_join_different_snapshots():
+    document = json.loads(_budget_pair_contents(actual_values=(1044347374.7,) * 10, budget_values=(1097718506,) * 12, datasetSha256='c' * 64))
+    for entry in document['metrics']:
+        entry['unit'] = '元'
+    text = '2025年1—10月实际医疗收入累计10,443,473,747元，全年预算总额为13,172,622,072元。执行率为95.14%。'
+    assert not any('预算分母口径' in issue for issue in review_content(text, [json.dumps(document)]))
+
+
+def test_review_budget_annual_context_does_not_override_explicit_same_period_formula():
+    document = json.loads(_budget_pair_contents(actual_values=(1044347374.7,) * 10, budget_values=(1097718506,) * 12))
+    for entry in document['metrics']:
+        entry['unit'] = '元'
+    text = ('2025年1—10月实际医疗收入累计10,443,473,747元，全年预算总额为13,172,622,072元。'
+            '同期间预算为10,977,185,060元，按实际收入与同期间预算之比计算，执行率为95.14%。')
+    assert not any('预算分母口径' in issue for issue in review_content(text, [json.dumps(document)]))

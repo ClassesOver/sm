@@ -1239,12 +1239,13 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
 
 
 @pytest.mark.anyio
-async def test_http_workflow_does_not_expose_workspace_paths_when_publication_is_blocked(
+async def test_http_workflow_issues_download_links_when_publication_gate_has_issues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = {
         "formalReleaseAllowed": False,
         "reportId": "report-1",
+        "reportTitle": "年度运营分析报告",
         "revision": 1,
         "pdfPath": "reports/report.pdf",
         "pdfSize": 3,
@@ -1272,25 +1273,77 @@ async def test_http_workflow_does_not_expose_workspace_paths_when_publication_is
     runtime.artifact_persistence = object()
     runtime.publish_report = AsyncMock(return_value=StepOutput(content=output))
     runtime.issue_http_publication = AsyncMock()
+    runtime.issue_http_publication.return_value = {
+        "pdf": {"downloadUrl": "https://reports.example/report.pdf"},
+        "word": {"downloadUrl": "https://reports.example/report.docx"},
+    }
     runtime.issue_workspace_publication = AsyncMock()
     runtime.workflow()
 
-    with pytest.raises(ReportingError) as raised:
-        await captured["finalize_publication"](
-            SimpleNamespace(),
-            RunContext(
-                run_id="workflow-run",
-                session_id="thread",
-                user_id="native",
-                session_state={},
-            ),
+    result = await captured["finalize_publication"](
+        SimpleNamespace(),
+        RunContext(
+            run_id="workflow-run",
+            session_id="thread",
+            user_id="native",
+            session_state={},
         )
+    )
 
-    assert raised.value.code == "report_publication_blocked"
-    assert "artifact_changed" in raised.value.message
-    assert "reports/report.pdf" not in raised.value.message
-    runtime.issue_http_publication.assert_not_awaited()
+    assert result.content["pdf"]["downloadUrl"] == "https://reports.example/report.pdf"
+    assert result.content["word"]["downloadUrl"] == "https://reports.example/report.docx"
+    assert result.content["publicationGate"]["issues"][0]["code"] == "artifact_changed"
+    runtime.issue_http_publication.assert_awaited_once()
     runtime.issue_workspace_publication.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("gate_error", [
+    ReportingError("report_quality_audit_failed", "发布质量告警审计写入失败。"),
+    RuntimeError("审计服务不可用"),
+])
+async def test_publication_gate_exception_preserves_download_input_and_failed_validation(
+    monkeypatch, gate_error,
+):
+    from smart_reporting.reporting.workflow.runtime import publication
+
+    manifest = {
+        "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
+        "datasetSnapshotHash": "a" * 64, "effectiveProfileHash": "b" * 64,
+        "markdown": {"path": "reports/report.md", "mediaType": "text/markdown",
+                     "size": 1, "sha256": "c" * 64},
+        "citations": [{"citationId": "citation_001", "datasetId": "dataset_001",
+                       "requirementId": "requirement_001", "snapshotHash": "a" * 64}],
+        "sections": ["section_001"], "sectionNumbers": ["1"],
+        "headingNumbers": [{"level": 2, "number": "1", "title": "运营分析",
+                           "sectionCode": "section_001", "anchor": "report-section-001"}],
+    }
+    result = {
+        "status": "validation_failed", "jobId": "job-1", "revision": 1,
+        "markdownPath": "reports/report.md", "pdfPath": "reports/report.pdf",
+        "pdfSize": 3, "pdfSha256": "a" * 64, "wordPath": "reports/report.docx",
+        "wordSize": 4, "wordSha256": "b" * 64,
+        "validation": {"ok": False},
+        "validationIssues": [{"code": "page_layout_mismatch"}],
+    }
+    state = {"report_artifacts": {"draft": manifest}}
+    runtime = SimpleNamespace(
+        _feedback=lambda _step: None, _state=lambda _context: state,
+        _workflow_result=lambda _state: result,
+        _dataset_publication_gate=AsyncMock(side_effect=gate_error),
+        report_tools=SimpleNamespace(_load_job=lambda *_args: {}),
+        _tool_context=lambda context: context,
+    )
+    monkeypatch.setattr(publication, "_frozen_outline", lambda _state: SimpleNamespace(title="运营分析"))
+    output = await publication.RuntimePublicationMixin.publish_report(
+        runtime, SimpleNamespace(), RunContext(run_id="report-1", session_id="thread", session_state=state),
+    )
+    assert output.content["status"] == "validation_failed"
+    assert output.content["validation"]["ok"] is False
+    assert output.content["validationIssues"] == result["validationIssues"]
+    assert output.content["publicationGate"]["issues"]
+    for key in ("pdfPath", "pdfSize", "pdfSha256", "wordPath", "wordSize", "wordSha256"):
+        assert output.content[key] == result[key]
 
 
 @pytest.mark.anyio

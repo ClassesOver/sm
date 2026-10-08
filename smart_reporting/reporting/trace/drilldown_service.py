@@ -14,9 +14,11 @@ import json
 import math
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 
 import polars as pl
 
+from ..hospital_operation.deterministic_analysis import _parse_period
 from ..models import ReportingError
 from .contracts_v1 import (
     TRACE_BUDGETS_V1,
@@ -24,6 +26,17 @@ from .contracts_v1 import (
     canonical_json_bytes,
 )
 from .dataset_service import TraceDatasetFile
+
+@lru_cache(maxsize=4096)
+def _period_date(label: str):
+    """与冻结事实共用期间口径；缓存快照内重复的日期标签。"""
+    parsed = _parse_period(label)
+    return parsed.value if parsed is not None else None
+
+
+def _period_expression(field: str) -> pl.Expr:
+    return pl.col(field).cast(pl.String).map_elements(_period_date, return_dtype=pl.Date)
+
 
 _DEFAULT_LIMIT = 50
 _MAX_GROUPS = TRACE_BUDGETS_V1["drilldown_max_groups"]
@@ -281,11 +294,12 @@ class TraceDrilldownService:
             result = result.filter(pl.col(field).cast(pl.String) == pl.lit(value))
         if declaration.period_start is not None:
             assert declaration.period_field is not None
-            period = pl.col(declaration.period_field).cast(pl.String)
-            result = result.filter(
-                (period >= pl.lit(declaration.period_start))
-                & (period <= pl.lit(declaration.period_end))
-            )
+            start = _period_date(declaration.period_start)
+            end = _period_date(declaration.period_end)
+            if start is None or end is None:
+                raise ReportingError("drilldown_unavailable", "登记期间无法解析为日期。")
+            period = _period_expression(declaration.period_field)
+            result = result.filter((period >= pl.lit(start)) & (period <= pl.lit(end)))
         return result
 
     @classmethod
@@ -307,10 +321,10 @@ class TraceDrilldownService:
             # 时点指标必须让所有分组使用同一个冻结报告时点；逐组各取自己的
             # “最新”会把不同日期的余额混在同一结果中，不能用于总体对账。
             latest = frame.select(
-                pl.col(period).cast(pl.String).max().alias("__latest")
+                _period_expression(period).max().alias("__latest")
             )
             frame = frame.with_columns(
-                pl.col(period).cast(pl.String).alias("__period")
+                _period_expression(period).alias("__period")
             ).join(latest, how="cross")
             return frame.filter(pl.col("__period") == pl.col("__latest")).group_by(
                 "__group"
@@ -378,13 +392,13 @@ class TraceDrilldownService:
             assert declaration.period_field is not None
             assert declaration.value_field is not None
             latest = lazy.select(
-                pl.col(declaration.period_field).cast(pl.String).max()
+                _period_expression(declaration.period_field).max()
             ).collect(engine="streaming").item()
             if latest is None:
                 return None
             value = (
                 lazy.filter(
-                    pl.col(declaration.period_field).cast(pl.String) == pl.lit(latest)
+                    _period_expression(declaration.period_field) == pl.lit(latest)
                 )
                 .select(cls._value_expression(declaration))
                 .collect(engine="streaming")

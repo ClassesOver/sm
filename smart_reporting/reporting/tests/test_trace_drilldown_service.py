@@ -279,3 +279,15 @@ def test_contract_rejects_time_dimension_for_semi_additive() -> None:
                 "dimensions": [{"code": "month", "field": "month"}],
             }
         )
+
+
+@pytest.mark.parametrize("periods", [("2025-9", "2025-10"), ("2025/9/9", "2025/10/1"), ("202509", "202510")])
+@pytest.mark.parametrize("aggregation,expected", [("sum", 170), ("semi_additive_last", 80)])
+def test_period_selection_uses_calendar_order(tmp_path, periods, aggregation, expected):
+    content = f"department,month,revenue,scope\nA,{periods[0]},90,current\nA,{periods[1]},80,current\n".encode()
+    path = tmp_path / "periods.csv"
+    path.write_bytes(content)
+    file = TraceDatasetFile(dataset_id="dataset-drill01", local_path=path, size=len(content), sha256=hashlib.sha256(content).hexdigest(), row_count=2)
+    page = run(file, declaration(aggregation, valueField="revenue", periodField="month", periodStart=periods[0], periodEnd=periods[1], expectedValue=expected))
+    assert row_map(page) == {"A": expected}
+    assert page.reconciled is True

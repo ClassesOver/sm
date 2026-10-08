@@ -2771,6 +2771,20 @@ def create_reporting_generator_agent(
             "月度数据的日期仅为月度桶标签，末月金额偏低不能证明月中截止、数据截断或未完整入账。没有直接证据时，标题、注释、替代文本只写金额偏低及原因待核实。"
             "若事实含未入账、字段为零或不可比告警，图表只能支持软告警，不能把缺失值补成零，"
             "也不能仅凭相关变化命名为确定的因果驱动。"
+            "标题和altText的转正、转负及极值月份须与绑定序列逐月核对，不能把负差扩大写成首次转负。"
+            "读者可见的来源说明用业务名称，citation/analysis内部ID只放结构化引用字段。"
+        )
+        instructions.append(
+            "金额指标unit为空时保留原始值并注明单位待核实，标题、图注及visualForm均不得"
+            "补猜元、万元或亿元。嵌套补证表优先绑定明确的rowsDataPath及其列名；"
+            "一张表含多个metric时，在visualForm明确各系列的指标筛选条件。"
+        )
+        instructions.append(
+            "topGroups/bottomGroups 是多维组合的排序明细子集，不能按科室、院区或收入类别"
+            "再汇总称为全院构成、贡献或排名。完整分布只绑定对应期间和粒度的完整补证表；"
+            "缺少该表则省略该图并说明。仅展示排序明细时，title和altText均明确前/后N条明细，"
+            "aggregationGrain写组合明细；禁止以子集求和替代全院占比分母。"
+            "scopeCorrections存在时只纠正指出的图，保留其余图；不得改写事实、猜测汇总值。"
         )
         if output_schema_name == "VisualizationPlanDraft":
             instructions.append(

@@ -519,3 +519,17 @@ describe('createTracePanel', () => {
     expect((window as unknown as Record<string, unknown>).__tracePwned).toBeUndefined()
   })
 })
+
+it.each([['%', 'derived · 75 %'], [null, 'derived · 75']])('uses fact display unit %s instead of input amount unit', async (displayUnit, expected) => {
+  const fetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(new Response(JSON.stringify(SOURCES_PAYLOAD)))
+    .mockResolvedValueOnce(new Response(JSON.stringify({
+      analysisId: 'analysis_001', factId: 'fact-aaaaaaaaaaaaaaaa', factKind: 'derived',
+      displayValue: 75, displayUnit, entry: { unit: '元' }, inputFactRefs: [], warnings: [],
+    })))
+  const { root, panel } = setupPanel(fetcher as typeof fetch)
+  await panel.openSubject('sub-cccccccccccccccc')
+  await vi.waitFor(() => {
+    expect(root.querySelector('.trace-fact-value')?.textContent).toBe(expected)
+  })
+})

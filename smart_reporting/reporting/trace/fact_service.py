@@ -21,6 +21,9 @@ _JSON = json.JSONDecoder()
 def fact_display_value(entry: Mapping[str, Any]) -> Any:
     """从 fact 记录提取展示值（按 kind 取最自然的数值字段）。"""
 
+    # 比率不可计算时保留空值，difference 是另一种指标，不能作为回退值。
+    if "numeratorMetric" in entry:
+        return entry.get("percentage") if entry.get("percentage") is not None else entry.get("value")
     for key in ("total", "percentage", "value", "change", "difference"):
         if key in entry and entry[key] is not None:
             return entry[key]
@@ -31,7 +34,7 @@ def fact_display_unit(entry: Mapping[str, Any]) -> str | None:
     """展示值与单位使用同一字段选择，预算完成率不能显示成元或人次。"""
     if entry.get("total") is None and entry.get("percentage") is not None:
         return "%"
-    if entry.get("total") is None and entry.get("value") is not None and "numeratorMetric" in entry:
+    if entry.get("total") is None and "numeratorMetric" in entry:
         return None
     return entry.get("unit")
 
@@ -103,18 +106,23 @@ def _input_fact_refs(
         for key in ("numeratorMetric", "denominatorMetric"):
             code = entry.get(key)
             for metric in metrics:
-                if isinstance(metric, Mapping) and code in (metric.get("metricCodes") or ()):
+                if (
+                    isinstance(metric, Mapping)
+                    and code in (metric.get("metricCodes") or ())
+                    and metric.get("datasetId") in (entry.get("datasetIds") or ())
+                    and entry.get("periodRole") in (metric.get("periodRoles") or ())
+                ):
                     inputs.append(
                         {"analysisId": document.get("analysisId"), "factId": metric.get("factId")}
                     )
     elif kind == "comparison":
         field_ref = entry.get("fieldRef")
-        current_dataset = entry.get("currentDatasetId")
+        dataset_ids = (entry.get("currentDatasetId"), entry.get("baselineDatasetId"))
         for metric in metrics:
             if (
                 isinstance(metric, Mapping)
                 and metric.get("fieldRef") == field_ref
-                and metric.get("datasetId") == current_dataset
+                and metric.get("datasetId") in dataset_ids
             ):
                 inputs.append(
                     {"analysisId": document.get("analysisId"), "factId": metric.get("factId")}
@@ -123,7 +131,12 @@ def _input_fact_refs(
         for key in ("leftMetric", "rightMetric"):
             code = entry.get(key)
             for metric in metrics:
-                if isinstance(metric, Mapping) and code in (metric.get("metricCodes") or ()):
+                if (
+                    isinstance(metric, Mapping)
+                    and code in (metric.get("metricCodes") or ())
+                    and metric.get("datasetId") in (entry.get("datasetIds") or ())
+                    and entry.get("periodRole") in (metric.get("periodRoles") or ())
+                ):
                     inputs.append(
                         {"analysisId": document.get("analysisId"), "factId": metric.get("factId")}
                     )

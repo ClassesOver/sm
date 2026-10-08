@@ -52,6 +52,8 @@ SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
 MAX_COVERAGE_DATASET_BYTES = 32 * 1024 * 1024
 MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
 MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS = 256
+MAX_ANALYSIS_SUMMARY_WARNING_CHARS = 4000
+MAX_ANALYSIS_SUMMARY_STRING_CHARS = 2000
 _EXISTING_FACT_COLLECTIONS = (
     "metrics",
     "derivedMetrics",
@@ -69,7 +71,7 @@ _STAGE_NAMES = (
 
 
 def _compact_existing_facts(value: Any) -> dict[str, Any] | None:
-    """保留补证计算所需基准，去掉已在原 facts 中保存的长序列和分组明细。"""
+    """保留总量与月度对账基准，去掉长序列和分组明细。"""
 
     if not isinstance(value, Mapping):
         return None
@@ -86,6 +88,7 @@ def _compact_existing_facts(value: Any) -> dict[str, Any] | None:
                 item_key: item_value
                 for item_key, item_value in item.items()
                 if item_key not in _EXISTING_FACT_DETAIL_KEYS
+                or (item_key == "periodValues" and item.get("periodGranularity") == "month")
             }
             for item in collection
             if isinstance(item, Mapping)
@@ -134,11 +137,22 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
             "表格 finding 用 columns + rows：columns 不重复，每行与 columns 等长；"
             "NaN/无穷大不合法，缺失值用 JSON null。",
             "对账不通过如实写 passed=false 并在 warnings 说明；属软告警，非结构错误。",
+            "对账只能核验同一指标同一范围的聚合守恒，或已明确声明的业务等式。"
+            "字段描述未声明分项完整且互斥时，不要求分项合计等于总额；"
+            "将可见分项与总额的差额作为事实，不编造业务对账失败。",
+            "整数对账可精确比较；浮点汇总与Decimal汇总对账优先采用已声明的tolerance，"
+            "未声明时只允许math.isclose(rel_tol=1e-12, abs_tol=1e-9)覆盖数值表示误差。"
+            "等价判定为abs(left-right)<=max(1e-9,1e-12*max(abs(left),abs(right)))，"
+            "不能只取1e-9而漏掉相对容差。在对账项记录实际差额及采用的容差，"
+            "不将精度内差异称为业务不一致，超出容差仍passed=false。",
             "用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑写入，"
             "勿用 indent，勿删减已计算事实。",
             "每个 codingRequirements[].outputName 对应一个逐字相同的 findings[].name。",
             "表格 finding 可选 columnMeta：{列名: {unit, isPercent, periodRole}}；"
             "isPercent=true 表示已乘 100，periodRole 取 current/prior/change；不确定时省略。",
+            "嵌套tables中的每张columns+rows表自行声明columnMeta；父对象元数据不自动继承。"
+            "已计算的百分数列在本表声明unit='%'和isPercent=true。金额单位只能沿用"
+            "existingFacts内对应指标已登记的unit；unit为空时保留原始金额且不声明元、万元或亿元。",
         ],
     }
 
@@ -515,46 +529,77 @@ def _project_analysis_summary_payload(
     raw_findings = raw_evidence.get("findings")
     if not isinstance(raw_findings, list):
         raw_findings = list(raw_findings) if isinstance(raw_findings, tuple) else []
-    candidates = [
-        index
-        for index, finding in enumerate(raw_findings)
-        if isinstance(finding, Mapping)
-        and isinstance(finding.get("columns"), (list, tuple))
-        and isinstance(finding.get("rows"), (list, tuple))
-        and len(finding["rows"]) > 2
-    ]
+    candidates: list[tuple[int | str, ...]] = []
+
+    def collect(value: Any, path: tuple[int | str, ...]) -> None:
+        if isinstance(value, Mapping):
+            if (isinstance(value.get("columns"), (list, tuple))
+                    and isinstance(value.get("rows"), (list, tuple))):
+                if len(value["rows"]) > 2:
+                    candidates.append(path)
+            for key, child in value.items():
+                if key not in {"columns", "rows", "columnMeta"}:
+                    collect(child, (*path, key))
+        elif isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                collect(child, (*path, index))
+
+    def at_path(value: Any, path: tuple[int | str, ...]) -> Any:
+        for key in path:
+            value = value[key]
+        return value
+
+    collect(raw_findings, ())
     candidates.sort(
-        key=lambda index: len(
-            json.dumps(raw_findings[index], ensure_ascii=False, separators=(",", ":"))
+        key=lambda path: len(
+            json.dumps(at_path(raw_findings, path), ensure_ascii=False, separators=(",", ":"))
         ),
         reverse=True,
     )
 
-    projected_indices: set[int] = set()
+    projected_paths: set[tuple[int | str, ...]] = set()
     row_limit = MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS
+
+    def compact_non_tabular(value: Any, *, key: str | None = None) -> Any:
+        """压缩摘要中的重复长文本；完整 evidence 文件不受影响。"""
+        if isinstance(value, str):
+            limit = 80 if key == "warnings" else MAX_ANALYSIS_SUMMARY_STRING_CHARS
+            return value if len(value) <= limit else value[:limit] + "…[摘要截断]"
+        if isinstance(value, list):
+            if key == "warnings":
+                value = value[:4] + ([
+                    f"其余 {max(0, len(value) - 4)} 条告警已保留在完整 evidence 文件。"
+                ] if len(value) > 4 else [])
+            return [compact_non_tabular(item, key=key) for item in value]
+        if isinstance(value, dict):
+            return {
+                item_key: compact_non_tabular(item, key=item_key)
+                for item_key, item in value.items()
+            }
+        return value
 
     def build() -> dict[str, Any]:
         evidence = deepcopy(dict(raw_evidence))
-        evidence["findings"] = [
-            _project_tabular_finding(finding, row_limit=row_limit)
-            if index in projected_indices and isinstance(finding, Mapping)
-            else deepcopy(finding)
-            for index, finding in enumerate(raw_findings)
-        ]
+        evidence["findings"] = deepcopy(raw_findings)
+        for path in sorted(projected_paths, key=len):
+            parent = at_path(evidence["findings"], path[:-1])
+            parent[path[-1]] = _project_tabular_finding(
+                at_path(raw_findings, path), row_limit=row_limit)
         evidence["sourceFile"] = deepcopy(original.get("supplementalEvidenceSource"))
         evidence["projection"] = {
             "projected": True,
             "originalFindingCount": len(raw_findings),
-            "projectedFindingCount": len(projected_indices),
+            "projectedFindingCount": len({path[0] for path in projected_paths}),
+            "projectedTableCount": len(projected_paths),
         }
-        return {**original, "supplementalEvidence": evidence}
+        return compact_non_tabular({**original, "supplementalEvidence": evidence})
 
-    for index in candidates:
-        projected_indices.add(index)
+    for path in candidates:
+        projected_paths.add(path)
         candidate = build()
         if count_tokens(candidate) <= max_tokens:
             return candidate
-    while projected_indices and row_limit > 2:
+    while projected_paths and row_limit > 2:
         row_limit = max(2, row_limit // 2)
         candidate = build()
         if count_tokens(candidate) <= max_tokens:
@@ -570,7 +615,7 @@ def _project_analysis_summary_payload(
             "inputTokens": original_tokens,
             "projectedTokens": projected_tokens,
             "inputTokenBudget": max_tokens,
-            "projectedFindingCount": len(projected_indices),
+            "projectedFindingCount": len({path[0] for path in projected_paths}),
         },
     )
 
@@ -1351,6 +1396,15 @@ class AnalysisItemWorkflow:
         warnings = list(dict.fromkeys((*draft.warnings, *state.warnings)))
         if state.evidence is not None:
             warnings = list(dict.fromkeys((*warnings, *state.evidence.warnings)))
+        # 业务语义告警只做审计记录，不能因聚合数量超过模型字段上限而阻断成稿。
+        if len(warnings) > 100:
+            omitted = len(warnings) - 100
+            warnings = warnings[-100:]
+            logger.warning(
+                "report_analysis_warnings_compacted analysis_id={} omitted_count={}",
+                state.instruction.get("currentAnalysisId"),
+                omitted,
+            )
         result = await self.complete(
             analysisId=str(state.instruction.get("currentAnalysisId") or ""),
             summary=draft.summary,

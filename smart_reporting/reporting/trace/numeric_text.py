@@ -248,16 +248,79 @@ def render_frozen_numbers(markdown: str, catalog: dict[str, str]) -> str:
     return rendered
 
 
+def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal]]:
+    """只登记补证列元数据声明的数值及单位，不从数字大小猜测用途。"""
+    known: dict[str, set[Decimal]] = {}
+    for content in contents:
+        try:
+            document = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(document, dict) or not isinstance(document.get("findings"), list):
+            continue
+        pending = list(document["findings"])
+        while pending:
+            finding = pending.pop()
+            if isinstance(finding, list):
+                pending.extend(finding)
+                continue
+            if not isinstance(finding, dict):
+                continue
+            columns, rows, metadata = (finding.get(key) for key in ("columns", "rows", "columnMeta"))
+            if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
+                pending.extend(value for key, value in finding.items()
+                               if key not in {"columns", "rows", "columnMeta"}
+                               and isinstance(value, (dict, list)))
+                continue
+            for index, column in enumerate(columns):
+                meta = metadata.get(column) if isinstance(column, str) else None
+                if not isinstance(meta, dict):
+                    continue
+                unit = meta.get("unit")
+                if not isinstance(unit, str) or unit not in {*_MONEY_UNITS, "人次", "万人次", "床日", "%", "‰"}:
+                    continue
+                if unit == "%" and meta.get("isPercent") is not True:
+                    continue
+                for row in rows:
+                    if not isinstance(row, list) or len(row) != len(columns):
+                        continue
+                    value = row[index]
+                    if isinstance(value, bool) or not isinstance(value, (int, float)):
+                        continue
+                    number = Decimal(str(value))
+                    if not number.is_finite():
+                        continue
+                    known.setdefault(unit, set()).add(number)
+                    if unit in _MONEY_UNITS:
+                        for target, scale in _MONEY_UNITS.items():
+                            known.setdefault(target, set()).add(number * _MONEY_UNITS[unit] / scale)
+                    elif unit == "人次":
+                        known.setdefault("万人次", set()).add(number / 10000)
+    return known
+
+
+def registered_decline_magnitude(
+    number: Decimal, unit: str, candidates: Iterable[Decimal], *, prefix: str, quantum: Decimal,
+) -> bool:
+    """负增长率可表述为正的下降幅度，不能据此豁免增长或占比。"""
+    if unit != "%" or number <= 0 or not re.search(
+        r"(?:下降|减少|降低|回落|降幅)(?:了|约|为|达)?\s*$", prefix,
+    ):
+        return False
+    return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
+               for value in candidates)
+
+
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
 
     contents = tuple(contents)
     catalog = frozen_number_catalog(contents)
+    known = supplemental_number_values(contents)
     # 没有可解析的冻结事实时，服务端无法判断正文数字是否为派生值；
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
-    if not catalog:
+    if not catalog and not known:
         return markdown
-    known: dict[str, set[Decimal]] = {}
     value_pattern = re.compile(
         rf"(?P<number>{_NUMBER})(?P<unit>亿元|万元|元|万人次|人次|床日|%)"
     )
@@ -270,7 +333,11 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         number = Decimal(match["number"].replace(",", ""))
         digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
         quantum = Decimal(1).scaleb(-digits)
-        if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get(match["unit"], ())):
+        candidates = known.get(match["unit"], ())
+        if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
+                or registered_decline_magnitude(number, match["unit"], candidates,
+                                                prefix=markdown[max(0, match.start() - 12):match.start()],
+                                                quantum=quantum)):
             return match[0]
         logger.warning("report_unregistered_number_replaced value={}", match[0])
         return "待核实"
@@ -355,9 +422,22 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
             pattern = r"(?<![\d–—~-])(?P<month>\d{1,2})月(?:(?!\d{1,2}月)[^。；\n]){0,60}?(?P<kind>最高|最低|峰值|低点)"
             # “低点：2月”与“2月为最低”使用相同的冻结极值判定。
             text = re.sub(r"(低点|峰值)[：:]\s*(\d{1,2})月", r"\2月为\1", text)
-            for match in re.finditer(pattern, text):
+            # 范围端点不是另一项月份断言；掩去“月”但保持字符位置，
+            # 使“2月为1—10月最低”仍可匹配2月，范围则从原文取回。
+            masked = re.sub(r"(?<!\d)\d{1,2}月?\s*[–—~～至到-]\s*\d{1,2}月",
+                            lambda m: m[0].replace("月", "期"), text)
+            for match in re.finditer(pattern, masked):
+                if (re.search(r"占比|比重|比例|环比|同比|增长率|降幅|增幅|组织明细|明细分组|分组组合", match[0])
+                        or re.match(r"单项|单条", text[match.end():])):
+                    # 分项比例、变化率或组织明细极值不能用全院原始月序列复核。
+                    continue
                 high = match["kind"] in {"最高", "峰值"}
-                local = text[text.rfind("\n\n", 0, match.start()) + 2:match.end()] if "\n\n" in text[:match.start()] else text[:match.end()]
+                clause_start = max(text.rfind(separator, 0, match.start())
+                                   for separator in ("。", "；", "\n")) + 1
+                local = text[clause_start:match.end()]
+                named_years = set(re.findall(r"(?<!\d)(\d{4})年", local))
+                if named_years and named_years != {labels[0][:4]}:
+                    continue
                 ranges = list(re.finditer(r"(?<!\d)(\d{1,2})月?\s*[–—~～至到-]\s*(\d{1,2})月", local))
                 selected = monthly
                 if ranges:
@@ -365,6 +445,9 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
                     if start > stop or not all(month in monthly for month in range(start, stop + 1)):
                         continue
                     selected = {month: monthly[month] for month in range(start, stop + 1)}
+                elif re.search(r"有数据(?:的)?月份", local):
+                    # 未给明确范围时，零值不能据此判为无数据并排除。
+                    continue
                 extreme = (max if high else min)(selected.values())
                 months = {month for month, value in selected.items() if value == extreme}
                 if int(match["month"]) not in months:
@@ -373,6 +456,11 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
                     warnings.append(f"月度极值陈述需复核：{match['month']}月被写为{label}，冻结月序列的{label}月份为{expected}。")
             trend_pattern = r"(?<!\d)(\d{1,2})月?\s*[–—~～至到-]\s*(\d{1,2})月[^。；\n]{0,20}?连续(?:[一二三四五六七八九十\d]+个月)?(?:上升|增长|增加|回升|下降|减少|回落)"
             for match in re.finditer(trend_pattern, text):
+                clause_start = max(text.rfind(separator, 0, match.start())
+                                   for separator in ("。", "；", "\n")) + 1
+                named_years = set(re.findall(r"(?<!\d)(\d{4})年", text[clause_start:match.end()]))
+                if named_years and named_years != {labels[0][:4]}:
+                    continue
                 start, stop = int(match[1]), int(match[2])
                 if start >= stop or not all(month in monthly for month in range(start, stop + 1)):
                     continue

@@ -461,14 +461,27 @@ _ANALYSIS_CODE_INSTRUCTIONS = (
     *_ANALYSIS_CODE_COMMON_INSTRUCTIONS,
 )
 
+_GROUPED_EVIDENCE_INSTRUCTION = (
+    "topGroups/bottomGroups仅含完整维度组合的排序明细子集，不能按院区、科室或收入/成本类别"
+    "再次求和当作完整汇总，也不能用子集合计作全院占比分母。管理问题要求构成、贡献或排名时，"
+    "必须补算所要求期间和单一维度的完整分组金额、同范围总额与占比，保留全部分组并对账。"
+    "总额和topGroups存在不代表这些分组事实已齐备。"
+)
+
 _ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS = (
     "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
+    _GROUPED_EVIDENCE_INSTRUCTION,
     "只返回 requiresSupplementalEvidence、reason、missingFacts，不得生成 script 或任何代码。",
     "固定事实足够时 missingFacts 必须是空数组，不得为了探索数据而声明缺口。",
 )
 
 _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
+    _GROUPED_EVIDENCE_INSTRUCTION,
+    "datasets[].columnDescriptions 是当前签发 CSV 字段的业务定义；先据此区分合计和分项。"
+    "合计/总额字段不得再与它的分项相加，分别比较预算总额与实际总额，再分析各分项差额。"
+    "只有字段定义明确声明分项完整且互斥时，才要求分项合计等于总额；"
+    "未声明该等式时，分项与总额差额不代表数据对账失败。",
     "管理问题要求差额、完成率或分组贡献时，逐项核对所需期间和粒度：只有分子分母总额不等于已登记月度差额/完成率，完整组合的topGroups也不等于单一科室累计。所需计算未登记时将其声明为缺口，按明确分子分母和期间生成最小补充证据；不得把图注或模型摘要中的数字当作已冻结计算。",
     "比率补证必须记录分子、分母、差额和百分数；分母非零且分子为零时百分数为0%，只有分母为零或缺失时为null并软告警。",
     "只返回 requiresSupplementalEvidence、reason、missingFacts、codingRequirements，不得生成 script 或任何代码。",
@@ -660,6 +673,10 @@ class _ReportWorkflowRuntimeBase:
                 "candidateFieldRefs 中每个字段必须且只能在 decisions 中出现一次，不得增加、遗漏或替换字段",
                 "金额、数量等可聚合事实分类为 measure；年份、期间码、主外键、排序码、状态码和分类编码应分类为 dimension",
                 "measureSemantic.fieldRef 必须与当前 decision.fieldRef 完全一致",
+                "unit 只能来自当前字段说明、已提供的指标语义或明确适用于该字段的术语。"
+                "仅写金额、收入、成本、支出或kind=currency不证明单位是元；"
+                "DECIMAL/DOUBLE及数值大小也不证明单位。不具备单位依据时返回unit=null，"
+                "并在reason说明单位待确认；不得将预算单位自动套到实际金额字段。",
                 (
                     "additiveAcross 每项只能从当前 candidateFieldContexts.sameTableColumnNames "
                     "复制裸列名，不得使用完整 fieldRef、table.column 或重复值；不确定时返回空数组"
@@ -803,7 +820,7 @@ class _ReportWorkflowRuntimeBase:
             stage_instructions=(
                 "一次返回覆盖全部 requirements 的 SQL 批次",
                 "每项只生成一条 SELECT 或只读 CTE",
-                "每个 requirement 对 periodWindows 中每个唯一 queryWindowId 生成一条查询，并提交对应 periodRole",
+                "每个 requirement 只对 requirementPeriodWindows[requirementId] 中每个唯一 queryWindowId 生成一条查询，并提交对应 periodRole；不得添加该任务未登记的同比或环比查询",
                 "每张表只使用该 periodRole 的完整精确期间并按共同粒度预聚合",
                 "每个查询块的非聚合 SELECT 列和 GROUP BY 列必须逐项等于 grainColumns；只能额外 SELECT 聚合后的 measureColumns，不得把 dimensionColumns 全量带入",
                 "多表 requirement 必须为每张表建立独立聚合 CTE，再按完整 relations.joinColumns 连接 CTE；禁止直接连接基础表",
@@ -914,55 +931,28 @@ class _ReportWorkflowRuntimeBase:
             step_input: StepInput, run_context: RunContext
         ) -> StepOutput:
             # 发布门禁和外部签发共用一个可观察步骤，但保留明确的先后顺序：
-            # publish_report 先重新核对产物、血缘和快照，只有门禁允许时才调用
-            # issuer。这样减少一次 Workflow 状态恢复，不会把副作用提前到验收之前。
+            # publish_report 先核对产物、血缘和快照；门禁问题随下载链接返回，
+            # 已生成且身份可读取的产物继续签发。
             gate_output = await self.publish_report(step_input, run_context)
             content = gate_output.content
             if not isinstance(content, dict):
                 raise ReportingError("report_publication_invalid", "报表发布产物无效。")
             if content.get("formalReleaseAllowed") is False:
-                if self.download_grants is not None:
-                    # AgentOS 的正式交付只承诺持久化后的公开下载 URL。门禁失败时
-                    # sandbox 路径既不是 HTTP 下载地址，也可能随终态回收失效，
-                    # 因此不得把它作为完成回执暴露给 facade 或前端。
-                    gate = content.get("publicationGate")
-                    raw_issues = gate.get("issues") if isinstance(gate, dict) else None
-                    issue_codes = tuple(
-                        dict.fromkeys(
-                            str(item.get("code"))
-                            for item in (raw_issues if isinstance(raw_issues, list) else ())
-                            if isinstance(item, dict)
-                            and isinstance(item.get("code"), str)
-                            and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item["code"])
-                        )
-                    )[:10]
-                    diagnostic = ", ".join(issue_codes) or "unknown"
-                    logger.warning(
-                        "report_publication_blocked issue_codes={} issue_count={}",
-                        diagnostic,
-                        len(raw_issues) if isinstance(raw_issues, list) else 0,
+                gate = content.get("publicationGate")
+                raw_issues = gate.get("issues") if isinstance(gate, dict) else None
+                issue_codes = tuple(
+                    dict.fromkeys(
+                        str(item.get("code"))
+                        for item in (raw_issues if isinstance(raw_issues, list) else ())
+                        if isinstance(item, dict)
+                        and isinstance(item.get("code"), str)
+                        and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item["code"])
                     )
-                    raise ReportingError(
-                        "report_publication_blocked",
-                        f"报告未通过正式发布门禁，未生成下载链接。问题代码：{diagnostic}。",
-                    )
-                return StepOutput(
-                    content={
-                        "status": "formal_release_blocked",
-                        "reportId": content.get("reportId"),
-                        "revision": content.get("revision"),
-                        "path": content.get("pdfPath"),
-                        "size": content.get("pdfSize"),
-                        "sha256": content.get("pdfSha256"),
-                        "word": {
-                            "path": content.get("wordPath"),
-                            "size": content.get("wordSize"),
-                            "sha256": content.get("wordSha256"),
-                        },
-                        "publicationGate": content.get("publicationGate"),
-                        "sourceWarnings": content.get("sourceWarnings", []),
-                        "codingReceipts": content.get("codingReceipts", []),
-                    }
+                )[:10]
+                loguru_logger.warning(
+                    "report_publication_issues issue_codes={} issue_count={}",
+                    ",".join(issue_codes) or "unknown",
+                    len(raw_issues) if isinstance(raw_issues, list) else 0,
                 )
             scope = self._scope(run_context)
             if self.download_grants is not None:

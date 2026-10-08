@@ -1,7 +1,7 @@
 {
   "version": "1",
   "profileId": "ruijin",
-  "revision": "5",
+  "revision": "6",
   "extends": [
     "base"
   ],
@@ -114,14 +114,14 @@
     {
       "code": "outpatient_visits_non",
       "kind": "count",
-      "description": "非住院门诊人次",
+      "description": "不含体检和急诊门诊人次",
       "aggregation": "sum",
       "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_outpatient_non"
     },
     {
       "code": "discharges_non",
       "kind": "count",
-      "description": "非住院出院人次",
+      "description": "不含体检和急诊出院人次",
       "aggregation": "sum",
       "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_discharges_non"
     },

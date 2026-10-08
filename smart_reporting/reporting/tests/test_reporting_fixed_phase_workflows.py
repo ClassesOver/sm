@@ -343,6 +343,34 @@ def test_analysis_legacy_projection_omits_r7_requirements_but_keeps_existing_fac
     }
 
 
+def test_script_receives_registered_monthly_baselines_without_large_group_details():
+    state = _analysis_state_with_requirement()
+    periods = [{'period': '2025-01-01', 'value': 60}, {'period': '2025-02-01', 'value': 40}]
+    state.instruction['deterministicFacts'] = {
+        'analysisId': 'analysis_001', 'metrics': [{
+            'field': 'income', 'total': 100, 'unit': '元', 'periodGranularity': 'month',
+            'periodValues': periods, 'topGroups': [{'group': '科室', 'value': 50}],
+        }],
+    }
+    facts = _analysis_workflow()._script_task_facts(state)
+    metric = facts['existingFacts']['metrics'][0]
+    assert metric['periodValues'] == periods
+    assert metric['unit'] == '元'
+    assert 'topGroups' not in metric
+
+
+def test_script_does_not_expand_registered_daily_baselines():
+    state = _analysis_state_with_requirement()
+    state.instruction['deterministicFacts'] = {
+        'analysisId': 'analysis_001', 'metrics': [{
+            'field': 'income', 'total': 100, 'periodGranularity': 'day',
+            'periodValues': [{'period': '2025-01-01', 'value': 100}],
+        }],
+    }
+    facts = _analysis_workflow()._script_task_facts(state)
+    assert 'periodValues' not in facts['existingFacts']['metrics'][0]
+
+
 def test_analysis_workflow_uses_constructor_projection_for_coding_facts() -> None:
     workflow = _analysis_workflow(
         benchmark_projection=BenchmarkProjection.for_variant(BenchmarkVariant.LEGACY)
@@ -743,6 +771,10 @@ async def test_visualization_fact_projection_declares_period_value_fields() -> N
     assert "periodValues" not in metric_descriptor["fields"]
     assert "total" in metric_descriptor["fields"]
     assert projection["metrics"][0]["periodValueFields"] == ["period", "value"]
+    for collection in ("topGroups", "bottomGroups"):
+        descriptor = next(item for item in projection["dataDescriptors"] if item["dataPath"] == f"metrics[0].{collection}")
+        assert descriptor["dataScope"]["coverage"] == "ranked_subset"
+        assert descriptor["dataScope"]["canRepresentFullDistribution"] is False
     assert {
         "dataPath": "metrics[0].periodValues",
         "fields": ["period", "value"],
@@ -1310,7 +1342,7 @@ def test_section_plan_patch_with_non_string_claim_id_stays_validation_error() ->
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("whole_section", [False, True])
+@pytest.mark.parametrize("whole_section", [False, True, "oversized"])
 @pytest.mark.parametrize("recovery", [None, {"code": "report_phase_output_invalid"}])
 async def test_section_generation_switch_preserves_blocks_and_references(
     monkeypatch, whole_section, recovery
@@ -1327,7 +1359,9 @@ async def test_section_generation_switch_preserves_blocks_and_references(
 
     async def fake_stage(agent, schema, stage, payload, **kwargs):
         stages.append(stage)
-        assert payload["numberGuide"][0]["total"]["reference"] == "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
+        assert payload["numberGuide"][0]["total"]["reference"] == (
+            "100元" if stage == "plan" else "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
+        )
         assert payload["numberGuide"][0]["datasetId"] == "current"
         decision = select_reporting_thinking(kwargs["thinking_request"])
         assert decision.thinking_budget == (4096 if stage == "content" else 2048)
@@ -1335,7 +1369,7 @@ async def test_section_generation_switch_preserves_blocks_and_references(
             return SectionPlanOutput.model_validate({"kind": "render", **plan})
         token = "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
         assert payload["frozenNumbers"][token] == "100元"
-        if whole_section:
+        if stage == "content":
             assert stage == "content"
             assert payload["sectionPlan"]["blocks"] == plan["blocks"]
             assert len(payload["evidence"]["files"]) == 1
@@ -1350,6 +1384,11 @@ async def test_section_generation_switch_preserves_blocks_and_references(
         return SectionBlockContent(markdown=f"收入为{token}。")
 
     monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    if whole_section == "oversized":
+        async def oversized_content(*_args, **_kwargs):
+            raise ReportingError("report_section_context_too_large", "整章输入过大")
+
+        monkeypatch.setattr(reporting_sections, "_generate_whole_section_content", oversized_content)
     work_item = _revenue_work_item()
     evidence = SectionEvidenceBundle(
         sectionCode="section_001",
@@ -1378,7 +1417,9 @@ async def test_section_generation_switch_preserves_blocks_and_references(
         whole_section=whole_section,
         recovery=recovery,
     )
-    assert stages == (["plan", "content"] if whole_section else ["plan", "block-1", "block-2"])
+    assert stages == (
+        ["plan", "content"] if whole_section is True else ["plan", "block-1", "block-2"]
+    )
     assert [block.block_id for block in result.blocks] == ["block_1", "block_2"]
     assert [block.claim_ids for block in result.blocks] == [("claim_1",), ("claim_2",)]
     assert all(block.citation_ids == ("citation_001",) for block in result.blocks)
@@ -2696,6 +2737,87 @@ def test_section_evidence_projection_bounds_plateau_retries(
     assert len(attempted_budgets) <= 16
 
 
+@pytest.mark.parametrize("bind_fact_id", [False, True])
+def test_section_number_context_excludes_unrelated_facts_and_keeps_exact_values(bind_fact_id):
+    contents = (json.dumps({
+        "analysisId": "analysis_001",
+        "metrics": [
+            {
+                "factId": fact_id, "datasetId": "current", "datasetSha256": "a" * 64,
+                "periodRoles": ["current"], "field": code,
+                "fieldRef": f"hospital.revenue.{code}", "metricCodes": [code],
+                "aggregation": "sum", "unit": "元", "formula": f"sum({code})",
+                "total": total, "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+            }
+            for fact_id, code, total in (
+                ("fact-aaaaaaaaaaaaaaaa", "revenue", 11123541503),
+                ("fact-bbbbbbbbbbbbbbbb", "cost", 200),
+            )
+        ],
+    }),)
+    claim = SimpleNamespace(
+        fact_ids=("fact-aaaaaaaaaaaaaaaa",) if bind_fact_id else (), metric_code="revenue",
+    )
+    catalog, guide = reporting_sections._section_number_context(contents, {}, claims=(claim,))
+    assert [item["factId"] for item in guide] == ["fact-aaaaaaaaaaaaaaaa"]
+    token = "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
+    assert catalog[token] == "11,123,541,503元"
+    assert not any("fact-bbbbbbbbbbbbbbbb" in key for key in catalog)
+    assert json.loads(contents[0])["metrics"][1]["total"] == 200
+    _, planning = reporting_sections._section_number_context(contents, {})
+    assert planning[0]["total"]["reference"] == catalog[token]
+    assert [item["factId"] for item in planning] == [
+        "fact-aaaaaaaaaaaaaaaa", "fact-bbbbbbbbbbbbbbbb",
+    ]
+
+
+@pytest.mark.anyio
+async def test_section_stage_attempts_use_independent_sessions(monkeypatch):
+    sessions = []
+
+    async def execute(_self, _input, **kwargs):
+        sessions.append(kwargs["session_id"])
+        return SimpleNamespace(content=SectionBlockContent(markdown="收入情况待核实。"))
+
+    monkeypatch.setattr(reporting_sections.ReportingStructuredOutputExecutor, "execute", execute)
+    agent = Agent(model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"))
+    for attempt in ("block-1-1", "block-1-2"):
+        await reporting_sections._run_section_stage(
+            agent, SectionBlockContent, "block-1", {},
+            scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+            run_context=_context(),
+            thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+            section_code="section_001", attempt_key=attempt,
+        )
+    assert len(set(sessions)) == 2
+    assert all("task-1:section_001:block-1:" in session for session in sessions)
+
+
+def test_section_number_context_keeps_bound_comparison_without_metric_guide():
+    contents = (json.dumps({
+        "analysisId": "analysis_001",
+        "comparisons": [
+            {
+                "factId": fact_id, "comparisonType": "yoy", "field": "revenue",
+                "fieldRef": "hospital.revenue.amount", "currentDatasetId": "current",
+                "baselineDatasetId": "baseline", "currentDatasetSha256": "a" * 64,
+                "baselineDatasetSha256": "b" * 64, "currentTotal": 100,
+                "baselineTotal": 80, "change": 20, "changeRate": 25,
+                "formula": "current - baseline", "unit": "元",
+            }
+            for fact_id in ("fact-aaaaaaaaaaaaaaaa", "fact-bbbbbbbbbbbbbbbb")
+        ],
+    }),)
+    catalog, guide = reporting_sections._section_number_context(
+        contents, {}, claims=(SimpleNamespace(
+            fact_ids=("fact-aaaaaaaaaaaaaaaa",), metric_code="revenue",
+        ),),
+    )
+    assert not guide
+    assert catalog["{{value:fact-aaaaaaaaaaaaaaaa:change:元}}"] == "20元"
+    assert not any("fact-bbbbbbbbbbbbbbbb" in key for key in catalog)
+
+
 @pytest.mark.anyio
 async def test_section_workflow_reads_evidence_before_generation() -> None:
     events: list[str] = []
@@ -3138,12 +3260,15 @@ async def test_section_semantic_review_corrects_once_and_stays_soft(monkeypatch)
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure", ["timeout", "provider_unreachable"])
+@pytest.mark.parametrize("failure", ["timeout", "provider_unreachable", "context_hard_limit"])
 async def test_section_semantic_correction_provider_failure_keeps_previous_content(monkeypatch, failure):
     calls = []
     async def fake_stage(*args, **kwargs):
         calls.append(args[3])
         if len(calls) > 1:
+            if failure == "context_hard_limit":
+                from smart_reporting.context_management import TaskExecutionContextHardLimitError
+                raise TaskExecutionContextHardLimitError("纠错上下文超限", metrics={})
             if failure == "provider_unreachable":
                 from agno.exceptions import ModelProviderError
                 raise ModelProviderError("model provider unreachable")
@@ -3165,7 +3290,7 @@ async def test_section_semantic_correction_provider_failure_keeps_previous_conte
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure", ["timeout", "provider_unreachable"])
+@pytest.mark.parametrize("failure", ["timeout", "provider_unreachable", "context_hard_limit"])
 async def test_block_semantic_correction_provider_failure_keeps_previous_content(monkeypatch, failure):
     stages = []
     plan = {"sectionCode": "section_001",
@@ -3177,6 +3302,9 @@ async def test_block_semantic_correction_provider_failure_keeps_previous_content
         if stage == "plan":
             return SectionPlanOutput.model_validate({"kind": "render", **plan})
         if "correction" in payload:
+            if failure == "context_hard_limit":
+                from smart_reporting.context_management import TaskExecutionContextHardLimitError
+                raise TaskExecutionContextHardLimitError("纠错上下文超限", metrics={})
             if failure == "provider_unreachable":
                 from agno.exceptions import ModelProviderError
                 raise ModelProviderError("model provider unreachable")
@@ -3194,3 +3322,124 @@ async def test_block_semantic_correction_provider_failure_keeps_previous_content
     assert stages == ["plan", "block-1", "block-1"]
     assert "待核实" in result.blocks[0].markdown
     assert result.blocks[0].citation_ids == ("citation_001",)
+
+
+@pytest.mark.anyio
+async def test_initial_section_context_failure_is_not_reported_as_generated_content(monkeypatch):
+    from smart_reporting.context_management import TaskExecutionContextHardLimitError
+
+    async def fail_stage(*_args, **_kwargs):
+        raise TaskExecutionContextHardLimitError("首次正文上下文超限", metrics={})
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fail_stage)
+    work_item = _revenue_work_item()
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "收入", "claimIds": ["claim_1"]}],
+        "claims": [_plan_claim("claim_1")]})
+    with pytest.raises(TaskExecutionContextHardLimitError):
+        await reporting_sections._generate_whole_section_content(object(), {},
+            SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0], content="{}"),), factSummaries=()), work_item, plan,
+            scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+            run_context=_context(), thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("collection", ["topGroups", "bottomGroups"])
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+async def test_visualization_repairs_ranked_detail_used_as_complete_distribution(
+    collection: str, repair_succeeds: bool
+) -> None:
+    bad_payload = _chart().model_dump(mode="json", by_alias=True)
+    bad_payload.update(title="全院收入构成占比", altText="各院区收入贡献分布", aggregationGrain="院区汇总", visualForm="构成饼图")
+    bad_payload["dataBindings"][0].update(dataPath=f"metrics[0].{collection}", fields=["group", "value"])
+    bad = ChartDraft.model_validate(bad_payload)
+    repaired_payload = bad.model_dump(mode="json", by_alias=True)
+    repaired_payload["dataBindings"][0].update(factPath="evidence/supplement.json", dataPath="findings[0].rows", fields=["area", "income"])
+    repaired = ChartDraft.model_validate(repaired_payload)
+    payload = _visualization_payload()
+    facts = payload["visualizationFacts"][0]
+    facts["dataDescriptors"] = [{"dataPath": f"metrics[0].{collection}", "fields": ["group", "value"]}]
+    facts["supplementalEvidenceSources"] = [{"sourceFile": {"path": "evidence/supplement.json"}, "dataDescriptors": [{"dataPath": "findings[0].rows", "fields": ["area", "income"]}]}]
+    original = VisualizationPlanDraft(charts=(bad,))
+    generate = AsyncMock(side_effect=[original, VisualizationPlanDraft(charts=(repaired if repair_succeeds else bad,))])
+    run_code = AsyncMock(return_value=CodeGenerationResult(
+        script_file=FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt("charts/charts.py", 1, "b" * 64, ("charts/chart.png",)),
+        visual_inspection_receipts=(_inspection(),),
+    ))
+    submit = AsyncMock(return_value={"status": "accepted"})
+    result = await VisualizationSectionWorkflow(generate_plan=generate, run_code=run_code, submit=submit).run(payload, _context())
+
+    assert generate.await_count == 2
+    repair_payload = generate.await_args_list[1].args[0]
+    assert repair_payload["scopeCorrections"][0]["dataPath"] == f"metrics[0].{collection}"
+    assert "完整" in repair_payload["scopeCorrections"][0]["message"]
+    assert result.status == "accepted"
+    if repair_succeeds:
+        assert result.plan.charts == (repaired,)
+        run_code.assert_awaited_once()
+    else:
+        assert result.plan.charts == ()
+        assert any("图表数据范围" in w for w in result.plan.warnings)
+        run_code.assert_not_awaited()
+    submit.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_visualization_explicit_ranked_detail_needs_no_scope_repair() -> None:
+    payload = _visualization_payload()
+    payload["visualizationFacts"][0]["dataDescriptors"] = [{"dataPath": "metrics[0].topGroups", "fields": ["group", "value"]}]
+    raw = _chart().model_dump(mode="json", by_alias=True)
+    raw.update(title="收入最高10条组合明细", altText="收入最高10条明细记录，范围为排序子集", aggregationGrain="组合明细记录")
+    raw["dataBindings"][0].update(dataPath="metrics[0].topGroups", fields=["group", "value"])
+    chart = ChartDraft.model_validate(raw)
+    generate = AsyncMock(return_value=VisualizationPlanDraft(charts=(chart,)))
+    run_code = AsyncMock(return_value=CodeGenerationResult(
+        script_file=FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt("charts/charts.py", 1, "b" * 64, ("charts/chart.png",)),
+        visual_inspection_receipts=(_inspection(),),
+    ))
+    result = await VisualizationSectionWorkflow(generate_plan=generate, run_code=run_code, submit=AsyncMock(return_value={"status": "accepted"})).run(payload, _context())
+    assert result.plan.charts == (chart,)
+    generate.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_visualization_scope_repair_failure_keeps_unaffected_chart_and_delivery() -> None:
+    raw = _chart().model_dump(mode="json", by_alias=True)
+    raw.update(chartId="unsafe", sourcePath="charts/unsafe.png", title="全院成本构成", altText="全院成本比例", aggregationGrain="成本类别")
+    raw["dataBindings"][0].update(dataPath="metrics[0].topGroups", fields=["group", "value"])
+    bad = ChartDraft.model_validate(raw)
+    payload = _visualization_payload()
+    payload["visualizationFacts"][0]["dataDescriptors"].append({"dataPath": "metrics[0].topGroups", "fields": ["group", "value"]})
+    generate = AsyncMock(side_effect=[VisualizationPlanDraft(charts=(_chart(), bad)), ReportingError("report_generator_failed", "纠正模型不可用")])
+    run_code = AsyncMock(return_value=CodeGenerationResult(
+        script_file=FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt("charts/charts.py", 1, "b" * 64, ("charts/chart.png",)),
+        visual_inspection_receipts=(_inspection(),),
+    ))
+    submit = AsyncMock(return_value={"status": "accepted"})
+    result = await VisualizationSectionWorkflow(generate_plan=generate, run_code=run_code, submit=submit).run(payload, _context())
+    assert result.status == "accepted"
+    assert result.plan.charts == (_chart(),)
+    assert any("unsafe" in w and "图表数据范围" in w for w in result.plan.warnings)
+    assert generate.await_count == 2
+    run_code.assert_awaited_once()
+    submit.assert_awaited_once()
+
+
+def test_chart_input_preserves_ranked_subset_scope_for_plotting() -> None:
+    from smart_reporting.reporting.workflow.runtime.chart_inputs import materialize_chart_inputs
+
+    raw = _chart().model_dump(mode="json", by_alias=True)
+    raw["dataBindings"][0].update(dataPath="metrics[0].topGroups", fields=["group", "value"])
+    chart = ChartDraft.model_validate(raw)
+    facts = [{"analysisId": "analysis_001", "factFile": {"path": "facts/analysis_001.json", "sha256": "a" * 64}, "dataDescriptors": [{"dataPath": "metrics[0].topGroups", "fields": ["group", "value"]}]}]
+    documents = {"facts/analysis_001.json": {"metrics": [{"topGroups": [{"group": "2025-07 / 总部 / 住院", "value": 23846533}, {"group": "2025-03 / 总部 / 住院", "value": 23657899}]}]}}
+    result = materialize_chart_inputs(VisualizationPlanDraft(charts=(chart,)), facts, documents, output_root="charts/input")
+    file = json.loads(result.files[0].content)
+    assert file["rows"] == [["2025-07 / 总部 / 住院", 23846533], ["2025-03 / 总部 / 住院", 23657899]]
+    assert file["dataScope"] == result.entries[0]["dataScope"]
+    assert file["dataScope"]["coverage"] == "ranked_subset"
+    assert file["dataScope"]["canRepresentFullDistribution"] is False

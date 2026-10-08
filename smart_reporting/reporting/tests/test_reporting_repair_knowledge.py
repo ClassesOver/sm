@@ -315,6 +315,35 @@ async def test_analysis_does_not_record_repair_after_repair_exhaustion() -> None
 
 
 @pytest.mark.anyio
+async def test_analysis_compacts_excess_warnings_before_completion() -> None:
+    complete = AsyncMock(return_value={"status": "accepted", "taskFinished": True})
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(),
+        run_code=AsyncMock(),
+        summarize=AsyncMock(
+            return_value=AnalysisSummaryDraft(summary="完成", warnings=tuple(f"模型告警{i}" for i in range(60)))
+        ),
+        read_file=AsyncMock(),
+        complete=complete,
+    )
+    workflow._model_facts = lambda _state: {}  # type: ignore[method-assign]
+    state = _AnalysisItemState(
+        instruction={
+            "currentAnalysisId": "analysis_001",
+            "currentAnalysis": {"datasetIds": ["dataset_001"]},
+            "citationRegistry": (),
+        },
+        warnings=[f"业务告警{i}" for i in range(60)],
+    )
+
+    await workflow._complete_analysis(state, RunContext(run_id="run-1", session_id="session-1"))
+
+    warnings = complete.await_args.kwargs["warnings"]
+    assert len(warnings) == 100
+    assert warnings[-1] == "业务告警59"
+
+
+@pytest.mark.anyio
 async def test_runtime_repair_record_uses_scoped_metadata_without_diagnostic_content() -> None:
     record = AsyncMock()
     index = type("Knowledge", (), {"record_successful_repair": record})()

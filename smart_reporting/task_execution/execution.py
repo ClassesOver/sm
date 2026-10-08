@@ -1081,6 +1081,14 @@ class TaskExecutionKernel:
                 or task.lease_expires_at is None
                 or task.lease_expires_at <= utcnow()
             ):
+                logger.bind(
+                    task_id=external_run_id,
+                    bound_lease_epoch=lease_epoch,
+                    current_lease_epoch=task.lease_epoch,
+                    owner_matches=task.lease_owner == lease_owner,
+                    lease_expires_at=(task.lease_expires_at.isoformat() if task.lease_expires_at else None),
+                    task_state=task.state.value,
+                ).warning("task_execution_lease_binding_invalid")
                 raise TaskExecutionRepositoryError(
                     "task_lease_binding_invalid", "执行任务租约绑定无效。"
                 )

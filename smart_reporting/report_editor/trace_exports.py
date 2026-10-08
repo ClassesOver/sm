@@ -178,7 +178,7 @@ class TraceDerivedExportService:
         return job.to_payload()
 
     async def download(
-        self, context: Any, export_id: str
+        self, context: Any, export_id: str, *, blocked_columns: frozenset[str] = frozenset()
     ) -> tuple[Path, str, int, str]:
         """返回 (本地路径, 安全文件名, 大小, sha256)；重验归属与保留期。"""
 
@@ -194,11 +194,20 @@ class TraceDerivedExportService:
         host_path = workspace.paths.to_host_path(relative, allow_root=False)
         if not host_path.is_file():
             raise ReportingError("source_missing", "派生导出文件不存在。")
+        current = await self._workspace.ahash_file(context.scope["threadId"], job.workspace_path)
+        if (current.get("missing") or current.get("size") != job.size
+                or current.get("sha256") != job.sha256):
+            raise ReportingError("snapshot_integrity_failed", "派生导出文件与登记身份不一致。")
+        if blocked_columns:
+            header = await anyio.to_thread.run_sync(read_csv_header, host_path)
+            masked = set(job.params["columns"])
+            if any(is_blocked_column(name, blocked_columns) and name not in masked for name in header):
+                raise ReportingError("dataset_access_denied", "该派生导出未按当前会话的受限列要求脱敏。")
         return (
             host_path,
             _derived_filename(job),
-            job.size or host_path.stat().st_size,
-            job.sha256 or "",
+            job.size,
+            job.sha256,
         )
 
     # ------------------------------------------------------------------

@@ -11,9 +11,9 @@ import base64
 import hashlib
 import json
 import re
-from pathlib import Path
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from loguru import logger
@@ -25,6 +25,18 @@ CHART_INPUT_PREVIEW_ROWS = 3
 _PATH_TOKEN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)|\[(\d+)\]")
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_CHART_INPUT_BYTES = 8 * 1024 * 1024
+
+
+def ranked_detail_scope(data_path: str) -> dict[str, Any] | None:
+    if not re.fullmatch(r"metrics\[\d+\]\.(?:topGroups|bottomGroups)", data_path):
+        return None
+    return {
+        "coverage": "ranked_subset",
+        "grain": "complete_dimension_combination",
+        "canRepresentFullDistribution": False,
+        "meaning": "完整维度组合的排序明细子集，不能作为院区、科室或类别的完整汇总；"
+        "构成和贡献分析应使用对应粒度、期间的完整分组补证，并与同范围总额对账。",
+    }
 
 
 class ChartInputError(ValueError):
@@ -98,16 +110,21 @@ def _columns_rows_table(
         raise ChartInputError("columns 必须是字符串列表")
     if not isinstance(rows, list):
         raise ChartInputError("rows 必须是列表")
-    width = len(columns)
-    for row in rows:
-        if not isinstance(row, list) or len(row) != width:
-            raise ChartInputError("rows 与 columns 不等长")
-        if not all(_is_scalar(value) for value in row):
-            raise ChartInputError("rows 只能包含标量")
     missing = [name for name in fields if name not in columns]
     if missing:
         raise ChartInputError(f"绑定字段不在 columns 中：{missing}")
-    return list(columns), [list(row) for row in rows]
+    selected = list(fields) if fields else list(columns)
+    positions = [columns.index(name) for name in selected]
+    width = len(columns)
+    projected_rows: list[list[Any]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != width:
+            raise ChartInputError("rows 与 columns 不等长")
+        projected = [row[index] for index in positions]
+        if not all(_is_scalar(value) for value in projected):
+            raise ChartInputError("rows 只能包含标量")
+        projected_rows.append(projected)
+    return selected, projected_rows
 
 
 def _table_for_binding(
@@ -232,6 +249,9 @@ def _materialize_chart(
             "nullableColumns": nullable,
             "rowCount": len(rows),
         }
+        scope = ranked_detail_scope(binding.data_path)
+        if scope is not None:
+            payload["dataScope"] = scope
         if isinstance(column_meta, Mapping) and column_meta:
             payload["columnMeta"] = dict(column_meta)
         content = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
@@ -256,6 +276,8 @@ def _materialize_chart(
         }
         if "columnMeta" in payload:
             entry["columnMeta"] = payload["columnMeta"]
+        if "dataScope" in payload:
+            entry["dataScope"] = payload["dataScope"]
         entries.append(entry)
     return files, entries
 

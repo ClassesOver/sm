@@ -197,6 +197,41 @@ def test_patch_tolerates_unambiguous_format_noise(patch: str, expected: str) -> 
     assert sha == _SHA
 
 
+def test_multiple_deletions_do_not_consume_following_blocks() -> None:
+    from lark import Lark
+
+    from smart_reporting.reporting.code_agent.edit_patch import EDIT_PATCH_GRAMMAR, parse_edit_patch
+
+    patch = _ENVELOPE + "\n".join(
+        [
+            "<<<<<<< SEARCH",
+            'extra_output = "支出.png"',
+            "=======",
+            ">>>>>>> REPLACE",
+            "<<<<<<< SEARCH",
+            "fig.savefig(extra_output)",
+            "=======",
+            ">>>>>>> REPLACE",
+            "<<<<<<< SEARCH",
+            "plt.close(fig)",
+            "=======",
+            "plt.close(fig)",
+            'print("done")',
+            ">>>>>>> REPLACE",
+            "*** End Edit",
+            "",
+        ]
+    )
+    edits, sha = parse_edit_patch(patch, 10_000)
+    Lark(EDIT_PATCH_GRAMMAR).parse(patch)
+    source = 'import matplotlib.pyplot as plt\nextra_output = "支出.png"\nfig.savefig(extra_output)\nplt.close(fig)\n'
+
+    updated, _ = apply_edit_blocks(source, edits)
+
+    assert updated == 'import matplotlib.pyplot as plt\n\n\nplt.close(fig)\nprint("done")\n'
+    assert sha == _SHA
+
+
 @pytest.mark.parametrize(
     "patch",
     [

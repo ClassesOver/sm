@@ -188,16 +188,18 @@ def fact_input_relations(
     读取层按 fact_binding_unavailable 处理，不伪造依赖。
     """
 
-    metrics_by_code: dict[str, list[str]] = {}
+    metrics_by_code: dict[str, list[Any]] = {}
     for fact in bundle.metrics:
         for code in fact.metric_codes:
-            metrics_by_code.setdefault(code, []).append(fact.fact_id)
+            metrics_by_code.setdefault(code, []).append(fact)
 
     relations: dict[str, tuple[str, ...]] = {}
     for fact in bundle.derived_metrics:
         inputs = [
-            *(metrics_by_code.get(fact.numerator_metric, ())),
-            *(metrics_by_code.get(fact.denominator_metric, ())),
+            metric.fact_id
+            for code in (fact.numerator_metric, fact.denominator_metric)
+            for metric in metrics_by_code.get(code, ())
+            if metric.dataset_id in fact.dataset_ids and fact.period_role in metric.period_roles
         ]
         relations[fact.fact_id] = tuple(dict.fromkeys(inputs))
     for fact in bundle.comparisons:
@@ -205,14 +207,16 @@ def fact_input_relations(
         for metric_fact in bundle.metrics:
             if (
                 metric_fact.field_ref == fact.field_ref
-                and fact.current_dataset_id in (metric_fact.dataset_id,)
+                and metric_fact.dataset_id in (fact.current_dataset_id, fact.baseline_dataset_id)
             ):
                 inputs.append(metric_fact.fact_id)
         relations[fact.fact_id] = tuple(dict.fromkeys(inputs))
     for fact in bundle.reconciliations:
         inputs = [
-            *(metrics_by_code.get(fact.left_metric, ())),
-            *(metrics_by_code.get(fact.right_metric, ())),
+            metric.fact_id
+            for code in (fact.left_metric, fact.right_metric)
+            for metric in metrics_by_code.get(code, ())
+            if metric.dataset_id in fact.dataset_ids and fact.period_role in metric.period_roles
         ]
         relations[fact.fact_id] = tuple(dict.fromkeys(inputs))
     return relations

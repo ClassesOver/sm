@@ -100,7 +100,7 @@ def completed_report_content(
 
     template = template if template is not None else _DEFAULT_COMPLETION_TEMPLATE
     try:
-        return template.format(
+        content = template.format(
             report_title=report_title,
             editor_url=editor_url or "",
             pdf_url=pdf_url or "",
@@ -109,10 +109,24 @@ def completed_report_content(
         ).strip()
     except (KeyError, ValueError, IndexError, AttributeError, TypeError) as error:
         logger.bind(error_type=type(error).__name__).warning("report_completion_template_invalid")
-        return _DEFAULT_COMPLETION_TEMPLATE.format(
+        content = _DEFAULT_COMPLETION_TEMPLATE.format(
             report_title=report_title,
             editor_url=editor_url or "",
             pdf_url=pdf_url or "",
             word_url=word_url or "",
             actions=actions,
         ).strip()
+    gate = report.get("publicationGate")
+    if isinstance(gate, dict) and gate.get("formalReleaseAllowed") is False:
+        issues = gate.get("issues")
+        messages = list(dict.fromkeys(
+            " ".join(item["message"].split())[:160]
+            for item in (issues if isinstance(issues, list) else [])
+            if isinstance(item, dict) and isinstance(item.get("message"), str)
+            and item["message"].strip()
+        ))[:3]
+        notice = "验收或发布检查未通过，下载链接已签发。"
+        if messages:
+            notice += " 原因：" + "；".join(messages)
+        content += "\n\n" + notice
+    return content

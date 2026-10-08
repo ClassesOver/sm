@@ -27,7 +27,7 @@ CURRENT = b"month,department,amount\n2025-01,A,100\n2025-02,B,0\n2025-03,A,-10\n
 MOM = b"month,department,amount\n2025-02,A,60\n"
 
 
-def _bundle():
+def _bundle(*, roles=("current",), zero_budget=False):
     """含 metric/比较/派生比率/对账的完整样本（语义与既有确定性测试一致）。"""
 
     fields = ("month", "department", "actual_value", "budget_value", "ledger_value")
@@ -77,15 +77,18 @@ def _bundle():
     )
     return build_deterministic_analysis_bundle(
         analysis(fields=("actual_value", "budget_value", "ledger_value")),
-        (
+        tuple(
             (
-                "current",
+                role,
                 b"month,department,actual_value,budget_value,ledger_value\n"
-                b"2025-01,A,80,100,80\n"
-                b"2025-01,B,10,20,8\n",
-                dataset_context,
-                ("current",),
-            ),
+                + (
+                    b"2025-01,A,80,0,80\n" if zero_budget else
+                    b"2025-01,A,80,100,80\n2025-01,B,10,20,8\n"
+                ),
+                dataset_context.model_copy(update={"dataset_id": role}),
+                (role,),
+            )
+            for role in roles
         ),
         profile_metrics=profile_metrics,
         profile_reconciliations=reconciliations,
@@ -286,3 +289,69 @@ def test_expand_fact_tree_depth_and_node_budget() -> None:
     with pytest.raises(ReportingError) as exc:
         expand_fact_tree(_bundle_bytes(), ref, depth=99)
     assert exc.value.code == "request_invalid"
+
+
+@pytest.mark.parametrize(
+    ("kind", "attribute"),
+    [("derived", "derived_metrics"), ("reconciliation", "reconciliations"), ("comparison", "comparisons")],
+)
+def test_fact_dependencies_use_only_the_declared_datasets_and_period(kind, attribute):
+    bundle = _bundle(roles=("current", "yoy", "mom"))
+    relations = fact_input_relations(bundle)
+    facts = getattr(bundle, attribute)
+    assert facts
+    for fact in facts:
+        if kind == "comparison":
+            expected = {
+                metric.fact_id for metric in bundle.metrics
+                if metric.dataset_id in (fact.current_dataset_id, fact.baseline_dataset_id)
+                and metric.field_ref == fact.field_ref
+            }
+        else:
+            codes = (
+                (fact.numerator_metric, fact.denominator_metric) if kind == "derived"
+                else (fact.left_metric, fact.right_metric)
+            )
+            expected = {
+                metric.fact_id for metric in bundle.metrics
+                if metric.dataset_id in fact.dataset_ids
+                and fact.period_role in metric.period_roles
+                and set(metric.metric_codes) & set(codes)
+            }
+        assert len(expected) == 2
+        ref = FactRefV1(
+            analysisId=bundle.analysis_id,
+            fileResourceId="trf-" + "0" * 20,
+            jsonPointer=fact_pointer(bundle, fact.fact_id),
+            factKind=kind,
+            factKey=fact.fact_id,
+        )
+        payload = resolve_fact(bundle.model_dump_json(by_alias=True).encode(), ref)
+        assert {item["factId"] for item in payload["inputFactRefs"]} == expected
+        assert set(relations[fact.fact_id]) == expected
+
+
+def test_zero_denominator_ratio_does_not_display_its_difference():
+    bundle = _bundle(zero_budget=True)
+    fact = bundle.derived_metrics[0]
+    assert fact.percentage is None and fact.value is None and fact.difference == 80
+    ref = FactRefV1(
+        analysisId=bundle.analysis_id,
+        fileResourceId="trf-" + "0" * 20,
+        jsonPointer=fact_pointer(bundle, fact.fact_id),
+        factKind="derived",
+        factKey=fact.fact_id,
+    )
+    payload = resolve_fact(bundle.model_dump_json(by_alias=True).encode(), ref)
+    assert payload["displayValue"] is None
+    assert payload["displayUnit"] is None
+    assert any("分母为零" in warning for warning in payload["warnings"])
+    # 对账事实仍需展示差额，不能一并清空。
+    reconciliation = bundle.reconciliations[0]
+    ref = ref.model_copy(update={
+        "json_pointer": fact_pointer(bundle, reconciliation.fact_id),
+        "fact_kind": "reconciliation",
+        "fact_key": reconciliation.fact_id,
+    })
+    payload = resolve_fact(bundle.model_dump_json(by_alias=True).encode(), ref)
+    assert payload["displayValue"] == reconciliation.difference

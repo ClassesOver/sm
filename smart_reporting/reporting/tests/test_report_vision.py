@@ -66,6 +66,35 @@ async def test_vision_reviewer_reads_image_through_async_workspace_api() -> None
 
 
 @pytest.mark.anyio
+async def test_vision_metric_mismatch_has_expected_context_and_remains_warning():
+    class Workspace:
+        async def aview_image(self, *_args):
+            return ToolResult(content="loaded", images=[Image(content=b"image", mime_type="image/png")])
+
+    class Agent:
+        async def arun(self, prompt, *, images):
+            assert '"metricCodes": ["outpatient_visits"]' in prompt
+            assert '"title": "门诊人次构成"' in prompt
+            assert 'sourcePath' not in prompt
+            return SimpleNamespace(content={
+                "summary": "图片画了收入构成，与声明的门诊人次不符。",
+                "requiresRevision": True,
+                "issues": [{"category": "misleading", "severity": "critical",
+                            "description": "声明门诊人次，图内却是药品和材料收入。"}],
+                "warnings": [], "suggestions": [],
+            })
+
+    reviewer = ReportVisionReviewer(SimpleNamespace(report_vision_model="vision-model", debug=False),
+                                    Workspace(), agent_factory=Agent)
+    result = await reviewer.review("thread", "chart.png", expected_chart={
+        "title": "门诊人次构成", "metricCodes": ["outpatient_visits"], "sourcePath": "chart.png",
+    })
+    assert result["requiresRevision"] is False
+    assert result["issues"][0]["severity"] == "warning"
+    assert result["warnings"]
+
+
+@pytest.mark.anyio
 async def test_vision_reviewer_heals_schema_conversion_failure_with_raw_json() -> None:
     """candidate-34：供应商结构化输出转换偶发失败时 content 退化为原始 JSON 字符串，
     按原文解析继续审查，不判为审查不可用。"""

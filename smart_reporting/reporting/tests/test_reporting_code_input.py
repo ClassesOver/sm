@@ -149,6 +149,7 @@ def test_repair_facts_drop_repeated_visual_plan_but_keep_patch_contract():
                 "datasetId": "dataset-1",
                 "path": "data/income.csv",
                 "columns": ["income", "period"],
+                "columnDescriptions": {"income": "实际医疗收入合计"},
                 "provenance": {"periodRoles": ["current"], "sqlHash": "secret"},
                 "rows": [{"period": "2025", "income": 10}] * 1000,
             }
@@ -170,6 +171,7 @@ def test_repair_facts_drop_repeated_visual_plan_but_keep_patch_contract():
             "datasetId": "dataset-1",
             "path": "data/income.csv",
             "columns": ["income", "period"],
+            "columnDescriptions": {"income": "实际医疗收入合计"},
             "provenance": {"periodRoles": ["current"]},
         }
     ]

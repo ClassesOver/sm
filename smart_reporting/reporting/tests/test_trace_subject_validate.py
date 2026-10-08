@@ -66,6 +66,21 @@ def test_evaluate_subject_status_rejects_duplicate_markers_and_partial_numbers()
     assert evaluate_subject_status("收入 3800 万元[[claim:3600]]", "3600", 3600.0) == "stale"
 
 
+def test_claim_status_scopes_reused_claim_ids_to_registered_section():
+    markdown = (
+        "[[section:section_001]]\n\n门诊5,393,961[[claim:claim_001]]人次。\n\n"
+        "[[section:section_002]]\n\n门诊100[[claim:claim_001]]人次。"
+    )
+    assert claim_status(markdown, "claim_001", 5393961, section_id="section_001")["status"] == "valid"
+    assert claim_status(markdown, "claim_001", 5393961, section_id="section_002")["status"] == "stale"
+    assert claim_status(markdown, "claim_001", 5393961, section_id="section_003")["status"] == "unbound"
+    duplicate_section = markdown + "\n\n[[section:section_001]]\n\n重复章节。"
+    assert claim_status(duplicate_section, "claim_001", 5393961, section_id="section_001")["status"] == "unbound"
+    duplicate_claim = markdown.replace("人次。", "人次。[[claim:claim_001]]", 1)
+    assert claim_status(duplicate_claim, "claim_001", 5393961, section_id="section_001")["status"] == "unbound"
+    assert claim_status("门诊100[[claim:claim_001]]人次。", "claim_001", 100, section_id="section_001")["status"] == "valid"
+
+
 @pytest.mark.parametrize(
     ("text", "warning_count"),
     [
@@ -202,6 +217,7 @@ def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
 async def _make_editor_with_subject(
     tmp_path: Path,
     *, report_id: str = "report-1", period_table: bool = False, comparison_table: bool = False,
+    comparison_rate: float | None = 20,
 ) -> tuple:
     from smart_reporting.report_editor import (
         InMemoryReportEditorRepository,
@@ -301,11 +317,12 @@ async def _make_editor_with_subject(
         document = json.loads(bundle_bytes)
         document["comparisons"] = [{
             "factId": "fact-" + "c" * 16, "currentTotal": 3600,
-            "baselineTotal": 3000, "change": 600, "changeRate": 20,
+            "baselineTotal": 3000, "change": 600, "changeRate": comparison_rate,
             "unit": "元", "comparisonType": "yoy",
         }]
         bundle_bytes = json.dumps(document, ensure_ascii=False).encode()
-        table_block = render_table_markdown("tbl-1", ("数值",), [["本期", "3,600元"], ["同期", "3,000元"], ["变化", "600元"], ["同比", "20%"]])
+        rate_text = "—" if comparison_rate is None else f"{comparison_rate}%"
+        table_block = render_table_markdown("tbl-1", ("数值",), [["本期", "3,600元"], ["同期", "3,000元"], ["变化", "600元"], ["同比", rate_text]])
         markdown = f"# 报告\n\n{table_block}\n"
         await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
     await workspace.awrite_bytes(scope.workspace_key, fact_path, bundle_bytes)
@@ -800,6 +817,27 @@ async def test_comparison_table_validates_each_frozen_field(tmp_path: Path) -> N
     assert result["tableSummary"]["stale"] == 1
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize(("text", "valid", "stale"), [("—", 4, 0), ("0%", 3, 1), ("20%", 3, 1)])
+async def test_comparison_null_rate_placeholder_is_valid_but_numbers_are_stale(
+    tmp_path: Path, text: str, valid: int, stale: int,
+) -> None:
+    editor, grants, context = await _make_editor_with_subject(
+        tmp_path, comparison_table=True, comparison_rate=None,
+    )
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    from smart_reporting.reporting.trace.table_builder import render_table_markdown
+
+    markdown = render_table_markdown("tbl-1", ("数值",), [
+        ["本期", "3,600元"], ["同期", "3,000元"], ["变化", "600元"], ["同比", text],
+    ])
+    result = await editor.trace_validate(context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["tableSummary"]["valid"] == valid
+    assert result["tableSummary"]["stale"] == stale
+
+
 def test_month_bucket_dates_do_not_warn_on_same_month_prose():
     from smart_reporting.reporting.trace.subject_builder import fact_periods, unit_period_warnings
 
@@ -841,3 +879,12 @@ def test_bed_day_claim_unit_is_not_truncated_to_beds():
     detail = claim_status("累计1,501,876[[claim:claim_1]]床日。", "claim_1", 1501876, expected_unit="床日")
     assert detail['status'] == 'valid'
     assert detail['warnings'] == []
+
+
+@pytest.mark.parametrize("markdown", [
+    "上期收入3600万元。本期收入3800万元[[claim:claim-1]]。",
+    "本期收入3800万元[[claim:claim-1]]。上期收入3600万元。",
+    "上期收入3600万元。本期收入3800万元。[[claim:claim-1]]",
+])
+def test_claim_does_not_borrow_value_from_neighboring_sentence(markdown):
+    assert claim_status(markdown, "claim-1", 3600, expected_unit="万元")["status"] == "stale"
