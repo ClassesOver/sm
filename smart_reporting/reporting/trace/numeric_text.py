@@ -377,21 +377,31 @@ def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str
             continue
         if isinstance(parsed, dict):
             normalized.append(parsed)
-    warnings = period_extrema_warnings(markdown, normalized)
     corrected = markdown
-    for warning in warnings:
-        match = re.search(r"(\d+)月被写为(最高|最低)，冻结月序列的\2月份为([^。]+)", warning)
-        if match is None:
-            continue
-        wrong_month, kind, expected = match.groups()
-        clause = re.compile(
-            rf"(?<!\d){wrong_month}月[^。；\n]{{0,60}}?(?:最高|最低|峰值|低点)(?:值|月份)?[^。；\n]*"
-        )
-        corrected, count = clause.subn(
-            f"冻结序列的{kind}月份为{expected}", corrected, count=1
-        )
-        if count:
-            logger.warning("report_period_extrema_corrected wrong_month={} expected_months={}", wrong_month, expected)
+    for bundle in normalized:
+        # 告警按分析标记分段产生；改写也只能落在该分析的段落内，
+        # 否则会改掉其他分析中同月份的正确陈述。
+        for warning in period_extrema_warnings(corrected, [bundle]):
+            match = re.search(r"(\d+)月被写为(最高|最低)，冻结月序列的\2月份为([^。]+)", warning)
+            if match is None:
+                continue
+            wrong_month, kind, expected = match.groups()
+            clause = re.compile(
+                rf"(?<!\d){wrong_month}月[^。；\n]{{0,60}}?(?:最高|最低|峰值|低点)(?:值|月份)?[^。；\n]*"
+            )
+            markers = list(re.finditer(r"\[\[analysis:([^\]]+)\]\]", corrected))
+            for index, marker in enumerate(markers):
+                if marker[1] != bundle.get("analysisId"):
+                    continue
+                end = markers[index + 1].start() if index + 1 < len(markers) else len(corrected)
+                segment, count = clause.subn(
+                    f"冻结序列的{kind}月份为{expected}", corrected[marker.end():end], count=1
+                )
+                if count:
+                    corrected = corrected[:marker.end()] + segment + corrected[end:]
+                    logger.warning("report_period_extrema_corrected wrong_month={} expected_months={}",
+                                   wrong_month, expected)
+                    break
     return corrected
 
 
