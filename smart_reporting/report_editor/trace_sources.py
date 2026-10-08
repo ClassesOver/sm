@@ -193,7 +193,8 @@ class ReportEditorTraceService:
                     "filename": dataset.filename,
                     "businessLabel": dataset.business_label,
                     "sqlHash": dataset.sql_hash,
-                    "querySql": dataset.query_sql,
+                    # 原始 SQL 含库表结构、过滤字面值与列名；分享会话（受限能力）只见哈希。
+                    "querySql": dataset.query_sql if session_capabilities is None else None,
                     "rowCount": dataset.row_count,
                     "size": file_ref.size,
                     "materializedAt": dataset.materialized_at,

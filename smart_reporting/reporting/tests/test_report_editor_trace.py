@@ -133,6 +133,7 @@ async def _write_revision_files(
         sql_hash=hashlib.sha256(f"url_csv:{csv_sha}".encode()).hexdigest(),
         filename="收入明细.csv",
         materialized_at="2026-09-29T08:00:00Z",
+        query_sql="SELECT branch, revenue FROM finance.income WHERE patient_id = 'P001'",
     )
     lineage = DatasetLineage(
         datasetId=DATASET_ID,
@@ -1370,6 +1371,19 @@ async def test_subject_drilldown_lists_capability_and_reconciles(
         "difference": 0.0,
         "passed": True,
     }
+
+
+@pytest.mark.anyio
+async def test_share_sessions_do_not_receive_raw_query_sql(tmp_path: Path) -> None:
+    editor, grants, _ = await _make_editor(tmp_path)
+    full = await editor.trace_sources(_context(), SimpleNamespace(capabilities=None))
+    assert full["datasets"][0]["querySql"].startswith("SELECT branch, revenue")
+    raw, _ = await grants.issue(_context(), capabilities={"blocked_columns": ["revenue"]})
+    _token, session = await grants.exchange(raw)
+    # 分享会话是受限视图：原始 SQL 会暴露库表结构、过滤字面值和被屏蔽列名，只保留哈希。
+    shared = await editor.trace_sources(_context(), session)
+    assert shared["datasets"][0]["querySql"] is None
+    assert shared["datasets"][0]["sqlHash"] == full["datasets"][0]["sqlHash"]
 
 
 @pytest.mark.anyio
