@@ -583,7 +583,10 @@ async def test_analysis_executor_does_not_rerun_after_finalize_checkpoint(
 async def test_assemble_report_retries_only_finalization_and_preserves_frozen_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    checkpoint = SimpleNamespace(revision=2, phase="finalize")
+    # 汇编完成后会从 checkpoint 中取回已登记的 manifest 文件身份。
+    checkpoint = SimpleNamespace(revision=2, phase="finalize", files=[SimpleNamespace(
+        path="报表/智能分析/run-1/report-revision-2.manifest.json", size=2, sha256="a" * 64,
+    )])
     manifest = SimpleNamespace(model_dump=lambda **_kwargs: {"version": "1", "artifacts": []})
     durable = SimpleNamespace(
         phase=ReportingPhase.FINALIZE,
