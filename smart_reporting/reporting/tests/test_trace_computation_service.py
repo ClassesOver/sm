@@ -157,6 +157,61 @@ def test_expand_rejects_unknown_entry_and_bad_depth() -> None:
         expand_computation_chain((base, mid, top), top.computation_id, depth=99)
 
 
+@pytest.mark.parametrize("identity_field", ["json_pointer", "file_resource_id", "fact_kind"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_chain_matches_exact_fact_identity(identity_field, reverse) -> None:
+    first = _record(finding_count=1)
+    ref = first.output_fact_refs[0]
+    alternatives = {
+        "json_pointer": "/findings/rows/1",
+        "file_resource_id": "trf-" + "c" * 20,
+        "fact_kind": "correlation",
+    }
+    target_ref = ref.model_copy(update={identity_field: alternatives[identity_field]})
+    second = _record(execution={"runId": "second"}).model_copy(
+        update={"output_fact_refs": (target_ref,)}
+    )
+    consumer = _record(
+        analysis_id="analysis_002", execution={"runId": "consumer"},
+        input_fact_refs=(target_ref,),
+    )
+    records = (second, first, consumer) if reverse else (first, second, consumer)
+    tree = expand_computation_chain(records, consumer.computation_id)
+    assert [node["computationId"] for node in tree["inputs"]] == [second.computation_id]
+    # 同分析的另一个事实依赖消费者，不应凭分析 ID 误报环。
+    first = first.model_copy(update={"input_fact_refs": consumer.output_fact_refs})
+    assert detect_computation_cycles((first, second, consumer)) == []
+
+
+def test_chain_does_not_link_unproduced_fact() -> None:
+    provider = _record(finding_count=1)
+    missing = provider.output_fact_refs[0].model_copy(
+        update={"json_pointer": "/findings/rows/99"}
+    )
+    consumer = _record(analysis_id="analysis_002", input_fact_refs=(missing,))
+    tree = expand_computation_chain((provider, consumer), consumer.computation_id)
+    assert "inputs" not in tree
+
+
+def test_self_cycle_is_detected_and_chain_stops() -> None:
+    record = _record(finding_count=1)
+    record = record.model_copy(update={"input_fact_refs": record.output_fact_refs})
+    assert detect_computation_cycles((record,)) == [[record.computation_id]]
+    tree = expand_computation_chain((record,), record.computation_id, depth=3)
+    assert "inputs" not in tree
+
+
+def test_chain_stops_at_two_record_cycle() -> None:
+    first = _record(finding_count=1)
+    second = _record(analysis_id="analysis_002", input_fact_refs=first.output_fact_refs)
+    first = first.model_copy(update={"input_fact_refs": second.output_fact_refs})
+    assert len(detect_computation_cycles((first, second))) == 1
+    tree = expand_computation_chain((first, second), first.computation_id, depth=3)
+    child = tree["inputs"][0]
+    assert child["computationId"] == second.computation_id
+    assert "inputs" not in child
+
+
 def test_detect_computation_cycles_finds_loop() -> None:
     base, mid, top = _chain_records()
     assert detect_computation_cycles((base, mid, top)) == []

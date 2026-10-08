@@ -148,6 +148,59 @@ def test_builder_skips_missing_dimensions_and_conflicting_facts() -> None:
     assert result == ()
 
 
+@pytest.mark.parametrize("aggregation", ["count", "count_distinct", "average"])
+@pytest.mark.parametrize("side", ["revenue", "visits"])
+def test_ratio_skips_non_sum_inputs(aggregation: str, side: str) -> None:
+    facts = [metric("revenue", "revenue", 300), metric("visits", "visits", 2)]
+    for fact in facts:
+        if fact["metricCodes"] == [side]:
+            fact["aggregation"] = aggregation
+    result = build_drilldown_metrics(
+        bundles=[{
+            "metrics": facts,
+            "derivedMetrics": [{
+                "code": "revenue_per_visit", "numeratorMetric": "revenue",
+                "denominatorMetric": "visits", "value": 150,
+                "datasetIds": ["dataset-drill01"],
+            }],
+        }],
+        dataset_columns={"dataset-drill01": ("department", "month", "revenue", "visits", "scope")},
+        profile_dimensions=DIMENSIONS,
+        profile_metrics=tuple(
+            {**item, "aggregation": aggregation} if item["code"] == side else item
+            for item in METRICS
+        ),
+        measure_semantics=SEMANTICS,
+        row_preserving_dataset_ids=("dataset-drill01",),
+    )
+    assert {item.metric_code for item in result} == {"revenue", "visits"}
+
+
+@pytest.mark.parametrize("side", ["revenue", "visits"])
+def test_ratio_skips_semi_additive_inputs(side: str) -> None:
+    result = build_drilldown_metrics(
+        bundles=[{
+            "metrics": [metric("revenue", "revenue", 300), metric("visits", "visits", 2)],
+            "derivedMetrics": [{
+                "code": "revenue_per_visit", "numeratorMetric": "revenue",
+                "denominatorMetric": "visits", "value": 150,
+                "datasetIds": ["dataset-drill01"],
+            }],
+        }],
+        dataset_columns={"dataset-drill01": ("department", "month", "revenue", "visits", "scope")},
+        profile_dimensions=DIMENSIONS,
+        profile_metrics=METRICS,
+        measure_semantics=tuple(
+            {**item, "additiveAcross": ["department"]}
+            if item["fieldRef"] == f"s.db.fact.{side}" else item
+            for item in SEMANTICS
+        ),
+    )
+    by_code = {item.metric_code: item for item in result}
+    assert set(by_code) == {"revenue", "visits"}
+    assert by_code[side].aggregation == "semi_additive_last"
+
+
 def test_builder_requires_additivity_or_row_preserving_inputs() -> None:
     average = {
         **metric("avg_visits", "visits", 10),

@@ -185,6 +185,16 @@ def _ratio_declaration(
     profile_dimensions: Sequence[Mapping[str, Any]],
     semantics_by_ref: Mapping[str, Mapping[str, Any]],
     unit: object,
+    # 当前 ratio 声明只表达求和后相除，不支持计数、平均或跨期间时点值。
+    for fact in (numerator, denominator):
+        if fact.get("aggregation") != "sum":
+            return None
+        period = fact.get("periodField")
+        additive = _additive_fields(
+            semantics_by_ref.get(str(fact.get("fieldRef", "")).casefold())
+        )
+        if period and str(period).casefold() not in additive:
+            return None
 ) -> DrilldownMetricV1 | None:
     value = _finite(expected)
     numerator_field = str(numerator.get("field", ""))

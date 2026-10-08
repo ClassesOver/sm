@@ -47,7 +47,7 @@ class DrilldownPage:
     dataset_id: str
     dimension_code: str
     aggregation: str
-    rows: tuple[tuple[str, float | int | None], ...]
+    rows: tuple[tuple[str | None, float | int | None], ...]
     group_count_total: int
     offset: int
     limit: int
@@ -156,7 +156,7 @@ class TraceDrilldownService:
         grouped = self._aggregate(filtered, declaration, dimension.field)
         try:
             page_query = (
-                grouped.sort("__group")
+                grouped.sort("__group", nulls_last=True)
                 # 分组总数在分页前广播到结果，避免为了 count 和 page 对同一
                 # 大快照执行两次完整 group-by。
                 .with_columns(pl.len().alias("__total"))
@@ -189,7 +189,7 @@ class TraceDrilldownService:
             ) from error
 
         raw_rows = page_frame.head(limit).iter_rows(named=True)
-        rows: list[tuple[str, float | int | None]] = []
+        rows: list[tuple[str | None, float | int | None]] = []
         truncated_labels = 0
         for row in raw_rows:
             label, truncated = _bounded_label(row["__group"])
@@ -251,7 +251,8 @@ class TraceDrilldownService:
         try:
             # 大快照只做投影后的流式聚合并启用 low-memory 解析，避免把
             # CSV 块长期保留在进程内。
-            lazy = pl.scan_csv(file.local_path, low_memory=True)
+            # CSV 没有字段类型；保留标识原文，数值只在聚合表达式中转换。
+            lazy = pl.scan_csv(file.local_path, low_memory=True, infer_schema=False)
             columns = set(lazy.collect_schema().names())
         except (OSError, pl.exceptions.PolarsError) as error:
             raise ReportingError("snapshot_integrity_failed", "CSV 快照无法解析。") from error
@@ -297,7 +298,6 @@ class TraceDrilldownService:
         group = (
             pl.col(dimension_field)
             .cast(pl.String)
-            .fill_null("（空值）")
             .alias("__group")
         )
         frame = lazy.with_columns(group)
@@ -464,8 +464,10 @@ def _finite_value(value: object) -> float | int | None:
     return value
 
 
-def _bounded_label(value: object) -> tuple[str, bool]:
-    label = "（空值）" if value is None else str(value)
+def _bounded_label(value: object) -> tuple[str | None, bool]:
+    if value is None:
+        return None, False
+    label = str(value)
     encoded = label.encode("utf-8")
     if len(encoded) <= _MAX_GROUP_LABEL_BYTES:
         return label, False

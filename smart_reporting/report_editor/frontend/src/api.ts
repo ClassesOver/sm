@@ -117,7 +117,7 @@ export interface TraceDrilldownPage {
   datasetId: string
   dimensionCode: string
   aggregation: string
-  rows: { group: string; value: number | null }[]
+  rows: { group: string | null; value: number | null }[]
   groupCountTotal: number
   offset: number
   limit: number

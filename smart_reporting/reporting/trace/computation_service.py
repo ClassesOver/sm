@@ -125,25 +125,35 @@ def _computation_id(
     return "comp-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
 
+def _fact_identity(ref: FactRefV1) -> tuple[str, str, str, str]:
+    # factKey 是可选核对键；定位以冻结文件内的具体事实为准。
+    return ref.analysis_id, ref.file_resource_id, ref.json_pointer, ref.fact_kind
+
+
+def _output_providers(
+    records: Sequence[ComputationRecordV1],
+) -> dict[tuple[str, str, str, str], list[str]]:
+    providers: dict[tuple[str, str, str, str], list[str]] = {}
+    for record in records:
+        for ref in record.output_fact_refs:
+            providers.setdefault(_fact_identity(ref), []).append(record.computation_id)
+    return providers
+
+
 def detect_computation_cycles(records: Sequence[ComputationRecordV1]) -> list[list[str]]:
     """返回计算记录依赖图中的所有环（computationId 序列）；无环返回 []。
 
-    依赖边：record A 的 inputFactRefs 指向 record B 的 outputFactRefs 所在
-    analysis（同 analysisId 判定）。自环与多节点环都返回。
+    依赖边：record A 的 inputFactRefs 精确匹配 record B 的 outputFactRefs。
     """
 
-    output_by_analysis: dict[str, list[str]] = {}
-    for record in records:
-        for ref in record.output_fact_refs:
-            output_by_analysis.setdefault(ref.analysis_id, []).append(record.computation_id)
+    output_providers = _output_providers(records)
 
     graph: dict[str, set[str]] = {}
     for record in records:
         dependencies: set[str] = set()
         for ref in record.input_fact_refs:
-            for provider in output_by_analysis.get(ref.analysis_id, ()):
-                if provider != record.computation_id:
-                    dependencies.add(provider)
+            for provider in output_providers.get(_fact_identity(ref), ()):
+                dependencies.add(provider)
         graph[record.computation_id] = dependencies
 
     cycles: list[list[str]] = []
@@ -188,7 +198,7 @@ def expand_computation_chain(
 ) -> dict[str, Any]:
     """从入口计算记录沿输入依赖展开计算链（计划 5.1：一层按需加载扩展）。
 
-    深度与节点数受 B0 预算限制；同一记录不重复展开（环短路）。
+    深度与节点数受 B0 预算限制；同一路径中的记录不重复展开（环短路）。
     """
 
     max_depth = TRACE_BUDGETS_V1["fact_expand_max_depth"]
@@ -199,14 +209,13 @@ def expand_computation_chain(
     if entry_computation_id not in by_id:
         raise ReportingError("source_missing", "计算记录不存在。")
 
-    output_analysis: dict[str, str] = {}
-    for record in records:
-        for ref in record.output_fact_refs:
-            output_analysis.setdefault(ref.analysis_id, record.computation_id)
+    output_providers = _output_providers(records)
 
     node_count = 0
 
-    def _node(record: ComputationRecordV1, remaining: int) -> dict[str, Any]:
+    def _node(
+        record: ComputationRecordV1, remaining: int, ancestors: frozenset[str]
+    ) -> dict[str, Any]:
         nonlocal node_count
         node_count += 1
         if node_count > max_nodes:
@@ -220,22 +229,20 @@ def expand_computation_chain(
         }
         if remaining <= 0:
             return node
+        ancestors = ancestors | {record.computation_id}
         inputs: list[dict[str, Any]] = []
         seen: set[str] = set()
         for ref in record.input_fact_refs:
-            provider_id = output_analysis.get(ref.analysis_id)
-            if provider_id is None or provider_id in seen:
-                continue
-            provider = by_id.get(provider_id)
-            if provider is None:
-                continue
-            seen.add(provider_id)
-            inputs.append(_node(provider, remaining - 1))
+            for provider_id in output_providers.get(_fact_identity(ref), ()):
+                if provider_id in seen or provider_id in ancestors:
+                    continue
+                seen.add(provider_id)
+                inputs.append(_node(by_id[provider_id], remaining - 1, ancestors))
         if inputs:
             node["inputs"] = inputs
         return node
 
-    return _node(by_id[entry_computation_id], depth - 1)
+    return _node(by_id[entry_computation_id], depth - 1, frozenset())
 
 
 __all__ = [

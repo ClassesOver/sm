@@ -358,15 +358,17 @@ describe('createTracePanel', () => {
             rows: [
               { group: 'A院区', value: 1200 },
               { group: 'B院区', value: 2400 },
+              { group: '（空值）', value: 20 },
+              { group: null, value: 10 },
             ],
-            groupCountTotal: 2,
+            groupCountTotal: 4,
             offset: 0,
             limit: 50,
             nextCursor: null,
             unit: '元',
             reconciliation: {
-              expectedValue: 3600,
-              observedValue: 3600,
+              expectedValue: 3630,
+              observedValue: 3630,
               difference: 0,
               passed: true,
             },
@@ -396,6 +398,9 @@ describe('createTracePanel', () => {
     ;(root.querySelector('.trace-item-actions button') as HTMLButtonElement).click()
     await vi.waitFor(() => {
       expect(root.querySelector('.trace-table')?.textContent).toContain('B院区')
+      const rows = root.querySelectorAll('.trace-table tr')
+      expect(rows[3]?.textContent).toBe('（空值）20')
+      expect(rows[4]?.textContent).toBe('—10')
       expect(root.querySelector<HTMLElement>('[data-trace="status"]')?.textContent).toContain(
         '核对一致',
       )

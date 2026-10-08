@@ -59,7 +59,7 @@ def run(snapshot: TraceDatasetFile, item: DrilldownMetricV1, **values: object):
     )
 
 
-def row_map(page) -> dict[str, float | int | None]:
+def row_map(page) -> dict[str | None, float | int | None]:
     return dict(page.rows)
 
 
@@ -69,7 +69,7 @@ def test_sum_uses_registered_scope_and_reconciles(snapshot: TraceDatasetFile) ->
         declaration("sum", valueField="revenue", expectedValue=750.0),
     )
 
-    assert row_map(page) == {"A": 270.0, "B": 440.0, "（空值）": 40.0}
+    assert row_map(page) == {"A": 270.0, "B": 440.0, None: 40.0}
     assert page.observed_value == 750.0
     assert page.reconciled is True
     payload = page.to_payload()
@@ -96,8 +96,71 @@ def test_average_is_recomputed_not_average_of_group_averages(
         declaration("average", valueField="visits", expectedValue=53 / 6),
     )
 
-    assert row_map(page) == {"A": 9.0, "B": 11.0, "（空值）": 4.0}
+    assert row_map(page) == {"A": 9.0, "B": 11.0, None: 4.0}
     assert page.observed_value == pytest.approx(53 / 6)
+    assert page.reconciled is True
+
+
+def test_null_group_is_distinct_from_literal_null_label(tmp_path: Path) -> None:
+    content = "department,revenue,scope\n,10,current\n（空值）,20,current\n".encode()
+    path = tmp_path / "null-groups.csv"
+    path.write_bytes(content)
+    file = TraceDatasetFile(
+        dataset_id="dataset-drill01", local_path=path, size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(), row_count=2,
+    )
+    item = declaration("sum", valueField="revenue", expectedValue=30)
+    page = run(file, item)
+    assert row_map(page) == {None: 10.0, "（空值）": 20.0}
+    assert page.group_count_total == 2
+    assert page.observed_value == 30.0
+    assert page.reconciled is True
+    assert page.to_payload()["rows"] == [
+        {"group": "（空值）", "value": 20.0},
+        {"group": None, "value": 10.0},
+    ]
+    first = run(file, item, limit=1)
+    second = run(file, item, limit=1, cursor=first.next_cursor)
+    assert first.rows + second.rows == page.rows
+    assert second.next_cursor is None
+
+
+def test_leading_zero_groups_and_scope_preserve_csv_identity(tmp_path: Path) -> None:
+    content = b"department,revenue\n001,10\n1,20\n"
+    path = tmp_path / "leading-zero.csv"
+    path.write_bytes(content)
+    file = TraceDatasetFile(
+        dataset_id="dataset-drill01", local_path=path, size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(), row_count=2,
+    )
+    item = declaration("sum", valueField="revenue", fixedScope={}, expectedValue=30)
+    page = run(file, item)
+    assert page.rows == (("001", 10.0), ("1", 20.0))
+    assert page.group_count_total == 2
+    assert page.reconciled is True
+    first = run(file, item, limit=1)
+    second = run(file, item, limit=1, cursor=first.next_cursor)
+    assert first.rows + second.rows == page.rows
+    scoped = run(file, declaration(
+        "sum", valueField="revenue", fixedScope={"department": "001"}, expectedValue=10,
+    ))
+    assert scoped.rows == (("001", 10.0),)
+    assert scoped.reconciled is True
+
+
+def test_distinct_count_preserves_leading_zero_identifiers(tmp_path: Path) -> None:
+    content = b"department,patient_id\nA,001\nA,1\n"
+    path = tmp_path / "leading-zero-identifiers.csv"
+    path.write_bytes(content)
+    file = TraceDatasetFile(
+        dataset_id="dataset-drill01", local_path=path, size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(), row_count=2,
+    )
+    page = run(file, declaration(
+        "count_distinct", valueField="patient_id", fixedScope={}, expectedValue=2,
+    ))
+    assert page.rows == (("A", 2),)
+    assert page.observed_value == 2
     assert page.reconciled is True
 
 
@@ -112,7 +175,7 @@ def test_count_distinct_uses_identifier_and_independent_total(
     )
 
     # p1 同时存在于 A/B；组值不能相加冒充总体去重人数。
-    assert row_map(page) == {"A": 2, "B": 2, "（空值）": 1}
+    assert row_map(page) == {"A": 2, "B": 2, None: 1}
     assert page.observed_value == 4
     assert page.reconciled is True
 
@@ -132,7 +195,7 @@ def test_ratio_uses_summed_numerator_and_denominator(
 
     assert row_map(page)["A"] == 10.0
     assert row_map(page)["B"] == 20.0
-    assert row_map(page)["（空值）"] == 10.0
+    assert row_map(page)[None] == 10.0
     assert page.observed_value == pytest.approx(750 / 53)
     assert page.reconciled is True
 
@@ -149,7 +212,7 @@ def test_ratio_zero_denominator_returns_null_instead_of_infinity(
         ),
     )
 
-    assert row_map(page) == {"A": None, "B": None, "（空值）": None}
+    assert row_map(page) == {"A": None, "B": None, None: None}
     assert page.observed_value is None
     assert page.reconciled is None
 
@@ -167,7 +230,7 @@ def test_semi_additive_uses_one_latest_snapshot_period(
         ),
     )
 
-    assert row_map(page) == {"A": 110.0, "B": 230.0, "（空值）": 40.0}
+    assert row_map(page) == {"A": 110.0, "B": 230.0, None: 40.0}
     assert page.observed_value == 380.0
     assert page.reconciled is True
 
