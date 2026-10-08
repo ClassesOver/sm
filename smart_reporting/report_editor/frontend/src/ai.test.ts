@@ -11,6 +11,15 @@ describe('selectionAIProvider', () => {
     expect(streamRewrite.mock.calls.map(call => call[0])).toEqual(['原文', '原文'])
   })
 
+  it('keeps punctuation-only pieces between references instead of sending them to the model', async () => {
+    // 引用通常紧贴句号：“……增长5%[[citation]]。”；单独的“。”不是可改写正文。
+    const streamRewrite = vi.fn(async function* (selection: string) { yield selection.replace('收入增长', '收入稳步增长') })
+    const provider = selectionAIProvider({ streamRewrite })
+    const chunks = await Array.fromAsync(provider({ document: '', selection: '收入增长[[citation:revenue_001]]。', instruction: 'polish' }, new AbortController().signal))
+    expect(chunks).toEqual(['收入稳步增长[[citation:revenue_001]]。'])
+    expect(streamRewrite.mock.calls.map(call => call[0])).toEqual(['收入增长'])
+  })
+
   it('does not release partial content when a later segment fails', async () => {
     const streamRewrite = vi.fn(async function* (selection: string) {
       if (selection === '失败') throw new Error('network')
