@@ -389,3 +389,12 @@ def test_review_budget_annual_context_does_not_override_explicit_same_period_for
     text = ('2025年1—10月实际医疗收入累计10,443,473,747元，全年预算总额为13,172,622,072元。'
             '同期间预算为10,977,185,060元，按实际收入与同期间预算之比计算，执行率为95.14%。')
     assert not any('预算分母口径' in issue for issue in review_content(text, [json.dumps(document)]))
+
+
+def test_rounded_text_is_checked_against_raw_frozen_values_not_display_text():
+    # 原值 12,450元 = 1.245万元，显示值舍入为 1.25万元；正文写一位小数时应从原值舍入（1.2），
+    # 不能把显示值再舍入一次（1.3），否则正确数字被误报、错误数字被放过。
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [{**_metric(values=(12450,)), "unit": "元"}]})
+    assert not [warning for warning in review_content("收入1.2万元。", [content]) if "冻结依据" in warning]
+    assert [warning for warning in review_content("收入1.3万元。", [content]) if "冻结依据" in warning]
+    assert not [warning for warning in review_content("收入1.25万元。", [content]) if "冻结依据" in warning]

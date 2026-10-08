@@ -7,10 +7,9 @@ from collections.abc import Iterable, Mapping
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from .numeric_text import (
-    budget_comparison_values,
     frozen_number_catalog,
+    frozen_number_values,
     money_text_warnings,
     period_extrema_warnings,
     registered_decline_magnitude,
@@ -321,23 +320,11 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
             label = (field_definitions or {}).get(selected[0]["field"], selected[0]["field"])
             warnings.extend(f"{label}：{warning}" for warning in period_extrema_warnings(local, [{**bundle, "metrics": selected}]))
     known = supplemental_number_values(contents)
-    for token, display in catalog.items():
-        if ":budgetComparison." in token and ".percentage:%}}" in token:
-            continue
-        match = _VALUE.fullmatch(display)
-        if match:
-            number = Decimal(match[1].replace(",", ""))
-            known.setdefault(match[2], set()).add(number)
-            if match[2] == "人次":
-                known.setdefault("万人次", set()).add(number / 10000)
-    # 百分数复核直接按原值舍入，不能将两位小数显示值再次舍入成一位。
-    for content in contents:
-        try:
-            bundle = DeterministicAnalysisBundle.model_validate_json(content)
-        except ValueError:
-            continue
-        known.setdefault("%", set()).update(value["percentage"] for value in budget_comparison_values(bundle)
-                                           if value["percentage"] is not None)
+    # 复核直接按冻结原值舍入，不能将两位小数显示值再次舍入（如1.245万元→1.25→1.3）。
+    for unit, values in frozen_number_values(contents, catalog).items():
+        known.setdefault(unit, set()).update(values)
+        if unit == "人次":
+            known.setdefault("万人次", set()).update(value / 10000 for value in values)
     # 原始证据中的数字同样是可核对来源；冻结目录之外的数字仍会在有目录时
     # 触发告警，但不能把简化证据对象中的已给定事实误报为无依据数字。
     supplemental = set().union(*(_numeric_literals(document) for document in documents if "findings" not in document))

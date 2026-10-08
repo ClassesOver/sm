@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -79,8 +79,8 @@ def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[s
     return comparisons
 
 
-def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
-    catalog: dict[str, str] = {}
+def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
+    """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
     for content in contents:
         try:
             bundle = DeterministicAnalysisBundle.model_validate_json(content)
@@ -127,25 +127,44 @@ def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
                             else entry.get("unit"))
                     units = _MONEY_UNITS if unit in _MONEY_UNITS else (unit or "",)
                     for target in units:
-                        token = f"{{{{value:{fact_id}:{field}:{target}}}}}"
-                        text = format_fact_value(value, unit, target or None)
-                        if token in catalog and catalog[token] != text:
-                            # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
-                            catalog[token] = "数值待核实"
-                        else:
-                            catalog[token] = text
+                        yield f"{{{{value:{fact_id}:{field}:{target}}}}}", value, unit, target or None
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                 if comparison[field] is None:
                     continue
                 for target in (_MONEY_UNITS if unit in _MONEY_UNITS else (unit,)):
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{target}}}}}"
-                    display = format_fact_value(comparison[field], unit, target)
-                    if token in catalog and catalog[token] != display:
-                        catalog[token] = "数值待核实"
-                    else:
-                        catalog[token] = display
+                    yield token, comparison[field], unit, target
+
+
+def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
+    catalog: dict[str, str] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        text = format_fact_value(value, unit, target)
+        if token in catalog and catalog[token] != text:
+            # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
+            catalog[token] = "数值待核实"
+        else:
+            catalog[token] = text
     return catalog
+
+
+def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> dict[str, set[Decimal]]:
+    """按显示单位给出未舍入的冻结原值。
+
+    正文数字应由原值按其书写精度舍入后比较；若用两位小数的显示文本再舍入，
+    1.245万元会先变成1.25再变成1.3，正确的1.2反被判为无依据。
+    """
+    values: dict[str, set[Decimal]] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        display_unit = target or unit
+        if not display_unit or catalog.get(token) == "数值待核实":
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit:
+            number = number * _MONEY_UNITS[unit] / _MONEY_UNITS[display_unit]
+        values.setdefault(display_unit, set()).add(number)
+    return values
 
 
 def frozen_number_guide(
@@ -321,13 +340,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
     if not catalog and not known:
         return markdown
-    value_pattern = re.compile(
-        rf"(?P<number>{_NUMBER})(?P<unit>亿元|万元|元|万人次|人次|床日|%)"
-    )
-    for display in catalog.values():
-        match = value_pattern.fullmatch(display)
-        if match:
-            known.setdefault(match["unit"], set()).add(Decimal(match["number"].replace(",", "")))
+    for unit, values in frozen_number_values(contents, catalog).items():
+        known.setdefault(unit, set()).update(values)
 
     def replace(match: re.Match[str]) -> str:
         number = Decimal(match["number"].replace(",", ""))
