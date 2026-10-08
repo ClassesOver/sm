@@ -556,7 +556,8 @@ def test_postprocess_docx_uses_section_page_count_field(tmp_path: Path) -> None:
             if name.startswith("word/footer") and name.endswith(".xml")
         )
 
-    assert "SECTIONPAGES" in footer_xml
+    # 总页数引用本节末尾书签（LibreOffice 不可靠刷新 SECTIONPAGES）。
+    assert "PAGEREF report_section_end_" in footer_xml
     assert "NUMPAGES" not in footer_xml
 
 
@@ -587,7 +588,8 @@ def test_postprocess_docx_scales_tall_image_within_page_bounds(tmp_path: Path) -
 
 
 def test_word_page_fields_use_section_page_count() -> None:
-    assert _WORD_PAGE_FIELDS == {"page": "PAGE", "pages": "SECTIONPAGES"}
+    # “pages” 改由分节末尾书签的 PAGEREF 生成，不再使用 SECTIONPAGES。
+    assert _WORD_PAGE_FIELDS == {"page": "PAGE"}
 
 
 def _png(path: Path) -> None:
