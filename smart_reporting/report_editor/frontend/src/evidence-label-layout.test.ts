@@ -91,5 +91,6 @@ describe('密集长名称避障', () => {
         if (nodeIndex !== index) expect(area(label, { x: icon.x + 7, y: icon.y + 7, width: 14, height: 14 })).toBeLessThanOrEqual(1)
       })
     })
-  })
+  // 密集图布局在 Worker 中计算，单次需数秒（机器较慢时超过默认 5s）；放宽超时，不放宽断言。
+  }, 30_000)
 })
