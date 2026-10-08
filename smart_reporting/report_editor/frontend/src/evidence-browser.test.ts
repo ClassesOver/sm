@@ -177,6 +177,28 @@ describe('evidence browser shell', () => {
     root.remove()
   })
 
+  it('does not record the analysis overview scroll into the hidden active task', async () => {
+    const client = makeClient()
+    vi.spyOn(client, 'sources').mockResolvedValue({
+      available: true,
+      facts: [{ analysisId: 'analysis_001', factId: 'current', factKind: 'metric', label: '收入', datasetIds: [] }],
+    })
+    const { browser, shell, root } = setup(client)
+    browser.openObject(fact('fact-a', '华东营收'))
+    await flush()
+    browser._state.updatePage({ scroll: 120 })
+    await browser.openAnalysis('analysis_001')
+    expect(shell.querySelector('.evidence-analysis-overview')).not.toBeNull()
+    // 概览覆盖工作区时，滚动不属于仍处于激活状态的任务页。
+    const workspace = shell.querySelector<HTMLElement>('.evidence-workspace')!
+    workspace.scrollTop = 900
+    workspace.dispatchEvent(new Event('scroll'))
+    expect(browser._state.currentPage()?.scroll).toBe(120)
+    browser.reset()
+    await flush()
+    root.remove()
+  })
+
   it('restores the last closed task through the task picker and clears it on revision reset', async () => {
     const { shell, browser } = setup()
     browser.openObject(fact('fact-a', '华东营收'))
