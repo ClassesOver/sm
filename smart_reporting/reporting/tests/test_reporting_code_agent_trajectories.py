@@ -89,7 +89,8 @@ def test_output_contract_uses_schema_as_structural_authority_with_only_runtime_r
     assert set(contract) == {"format", "schema", "rules"}
     assert contract["schema"]["required"] == ["findings", "reconciliations", "warnings"]
     assert contract["schema"]["additionalProperties"] is False
-    assert len(encoded.encode("utf-8")) <= 1_200
+    # 2026-10-08：cecbe21 追加对账容差与嵌套 columnMeta 规则，实测 2_196 bytes，上调至 2_250。
+    assert len(encoded.encode("utf-8")) <= 2_250
     rules = "\n".join(contract["rules"])
     assert "rows" in rules and "columns" in rules
     assert "JSON null" in rules
