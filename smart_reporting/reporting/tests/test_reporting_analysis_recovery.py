@@ -109,3 +109,44 @@ async def test_new_evidence_outside_current_attempt_root_is_still_rejected() -> 
     )
 
     assert result["code"] == "report_analysis_output_path_invalid"
+
+
+@pytest.mark.anyio
+async def test_fresh_completion_binds_computation_record_and_script_identity() -> None:
+    """有补充 evidence 与执行回执时，计算记录和脚本身份来自同一回执写入 payload。"""
+
+    from smart_reporting.reporting.code_agent.context import ExecutionReceipt
+
+    toolkit, _stored = _recovery_toolkit()
+    durable = await toolkit._durable_state(None)
+    durable.payload["analysisItems"] = {}
+    toolkit._apply_durable = AsyncMock(return_value=durable)
+    evidence = "报表/智能分析/run-1/evidence/analysis_001/attempt-2/evidence.json"
+    script = {"path": "报表/智能分析/run-1/scripts/analysis_001.py", "size": 10, "sha256": "c" * 64}
+    receipt = ExecutionReceipt(
+        runId="exec-1",
+        sourceFile=script,
+        outputFiles=(_identity(evidence),),
+        environment={"python": "3.12.0"},
+    )
+    run_context = RunContext(
+        run_id="run-1",
+        session_id="session-1",
+        dependencies={"AgentOS 任务执行": SimpleNamespace(execution_receipt=receipt)},
+    )
+
+    result = await toolkit.complete_analysis_item(
+        analysisId="analysis_001",
+        summary="收入同比增长。",
+        datasetIds=["dataset-1"],
+        evidencePaths=[evidence],
+        citationIds=["citation-1"],
+        profileReadReceiptIds=[],
+        warnings=[],
+        run_context=run_context,
+    )
+
+    assert result["ok"] is True
+    payload = toolkit._apply_durable.await_args.kwargs["payload"]
+    assert payload["computationRecord"]["executionId"] == "exec-1"
+    assert payload["computationScriptFile"] == script

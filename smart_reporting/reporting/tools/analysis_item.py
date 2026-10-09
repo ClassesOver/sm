@@ -1016,9 +1016,12 @@ class RuntimeAnalysisMixin:
                 run_context=run_context,
                 requirements=planned if isinstance(planned, Mapping) else {},
             )
-            if computation_record is not None:
+            computation_receipt = self._computation_execution_receipt(run_context)
+            if computation_record is not None and computation_receipt is not None:
                 payload["computationRecord"] = computation_record
-                payload["computationScriptFile"] = script
+                payload["computationScriptFile"] = computation_receipt.source_file.model_dump(
+                    mode="json", by_alias=True
+                )
             if isinstance(durable_item, dict):
                 if durable_item != payload:
                     raise ReportingError(
@@ -1056,6 +1059,19 @@ class RuntimeAnalysisMixin:
         except (ReportingError, WorkspaceError) as error:
             return self._failure(error)
 
+    @staticmethod
+    def _computation_execution_receipt(run_context: RunContext | None) -> Any:
+        """计算记录与其脚本身份共用的执行回执；不可用时返回 None。"""
+
+        from ..code_agent.context import ExecutionReceipt
+
+        dependencies = getattr(run_context, "dependencies", None)
+        binding = (
+            dependencies.get("AgentOS 任务执行") if isinstance(dependencies, Mapping) else None
+        )
+        receipt = getattr(binding, "execution_receipt", None)
+        return receipt if isinstance(receipt, ExecutionReceipt) else None
+
     def _build_computation_record(
         self,
         *,
@@ -1068,16 +1084,10 @@ class RuntimeAnalysisMixin:
     ) -> dict[str, Any] | None:
         """服务端构造 ComputationRecordV1（B4）；不可得时返回 None，不伪造。"""
 
-        from ..code_agent.context import ExecutionReceipt
         from ..trace.computation_service import build_supplemental_computation_record
 
-        binding = None
-        dependencies = getattr(run_context, "dependencies", None)
-        if isinstance(dependencies, Mapping):
-            candidate = dependencies.get("AgentOS 任务执行")
-            binding = candidate if candidate is not None else None
-        receipt = getattr(binding, "execution_receipt", None)
-        if not isinstance(receipt, ExecutionReceipt):
+        receipt = self._computation_execution_receipt(run_context)
+        if receipt is None:
             return None
         supplemental = [
             item
