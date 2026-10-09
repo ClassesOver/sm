@@ -68,3 +68,17 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
     assert result["wordPath"] == "reports/report.docx"
     runtime.report_tools.discard_report_revision.assert_not_awaited()
     assert state["report_workflow_result"] is result
+
+
+def test_agents_nonblocking_contract_registry_points_at_existing_tests():
+    """AGENTS.md 登记的非阻断契约用例必须真实存在，重命名或删除即失败。"""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    agents = (root / "AGENTS.md").read_text(encoding="utf-8")
+    entries = re.findall(r"`(smart_reporting/reporting/tests/[\w/]+\.py)::(test_\w+)`", agents)
+    assert len(entries) >= 6
+    for path, name in entries:
+        source = (root / path).read_text(encoding="utf-8")
+        assert re.search(rf"^(?:async )?def {name}\(", source, re.MULTILINE), f"{path}::{name}"

@@ -492,6 +492,16 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
 )
 
 
+
+def merge_publication_issues(gate: Any, late_issues: Any) -> Any:
+    """签发阶段发现的门禁问题（如溯源清单核验失败）并入门禁，不得标记为正式发布通过。"""
+    if not late_issues:
+        return gate
+    merged = dict(gate) if isinstance(gate, dict) else {"issues": [], "warnings": []}
+    merged["issues"] = [*(merged.get("issues") or []), *late_issues]
+    merged["formalReleaseAllowed"] = False
+    return merged
+
 class _ReportWorkflowRuntimeBase:
     """v1 报表运行时；数据库连接只存在于服务端 adapter 内。"""
 
@@ -975,7 +985,9 @@ class _ReportWorkflowRuntimeBase:
                     output=content,
                 )
             published["reportTitle"] = content["reportTitle"]
-            published["publicationGate"] = content.get("publicationGate")
+            published["publicationGate"] = merge_publication_issues(
+                content.get("publicationGate"), published.pop("publicationIssues", None)
+            )
             # Persist the same reply returned by the facade. Native history and
             # direct Workflow streams read content through the chat protocol;
             # the structured publication receipt remains available for tools.

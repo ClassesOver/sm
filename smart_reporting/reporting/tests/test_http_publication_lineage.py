@@ -403,18 +403,73 @@ async def test_http_publication_relocates_registered_lineage_and_replays(tmp_pat
         "markdownSha256",
     ],
 )
-async def test_http_publication_rejects_hash_registered_foreign_index_before_copy(
+async def test_http_publication_drops_hash_registered_foreign_index_but_still_issues_links(
     tmp_path: Path,
     forged: str,
 ) -> None:
-    runtime, arguments, scope, durable, artifacts, grants, _, _ = await _publication_fixture(
+    runtime, arguments, scope, durable, artifacts, grants, files, _ = await _publication_fixture(
         tmp_path, forged=forged
     )
-    with pytest.raises(ReportingError) as error:
-        await runtime.issue_http_publication(**arguments)
-    assert error.value.code == "report_trace_index_invalid"
+    # AGENTS：清单/索引核验失败属于门禁问题，不阻止已生成 PDF/Word 的签发；
+    # 伪造索引仍绝不被使用——新修订不复制、不登记该索引，编辑上下文不带溯源清单。
+    result = await runtime.issue_http_publication(**arguments)
+    assert result["publicationIssues"][0]["code"] == "report_trace_index_invalid"
+    assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+    assert artifacts.records and grants.records
+    runtime.workspace_registry.resolve(scope)
     assert not await runtime.workspace_service.apath_exists(
-        scope.workspace_key, "reports/revision-2"
+        scope.workspace_key, "reports/revision-2/trace-index-v1.json"
     )
-    assert durable.payload == {} and durable.state_version == 3
-    assert not artifacts.records and not grants.records
+    context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
+    assert context.artifact_manifest is None
+    assert await runtime.workspace_service.aread_text(
+        scope.workspace_key, context.markdown_path
+    ) == files["reports/report.md"].decode()
+
+
+# ---------------------------------------------------------------------------
+# AGENTS 非阻断契约：PDF/Word 已生成且身份可读取时，签发阶段任何溯源/门禁类故障
+# 都不得阻止下载链接签发；须返回失败原因，且不得标记为正式发布通过。
+# 新增签发链路中可能失败的步骤时，在此登记一条故障注入用例。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot"])
+async def test_http_publication_never_blocks_links_on_lineage_faults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
+) -> None:
+    from smart_reporting.report_editor import trace_revisions
+    from smart_reporting.reporting.workflow.runtime.base import merge_publication_issues
+
+    runtime, arguments, scope, durable, artifacts, grants, _, _ = await _publication_fixture(tmp_path)
+    manifest_path = arguments["output"]["artifactManifest"]["path"]
+    workspace = runtime.workspace_service
+    original_read = workspace.read_limited_regular_file
+    if fault == "manifest_changed":
+        await workspace.awrite_bytes(scope.workspace_key, manifest_path, b"{}", overwrite=True)
+    elif fault in {"manifest_unreadable", "index_unreadable"}:
+        target = manifest_path if fault == "manifest_unreadable" else "reports/trace-index-v1.json"
+
+        async def failing_read(thread_id, path, **kwargs):
+            if path == target:
+                raise OSError("injected read failure")
+            return await original_read(thread_id, path, **kwargs)
+
+        monkeypatch.setattr(workspace, "read_limited_regular_file", failing_read)
+    else:
+        monkeypatch.setattr(
+            trace_revisions, "snapshot_revision_lineage",
+            AsyncMock(side_effect=ReportingError("snapshot_integrity_failed", "注入的溯源快照失败。")),
+        )
+
+    result = await runtime.issue_http_publication(**arguments)
+
+    assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+    assert result["editor"]["openUrl"]
+    assert artifacts.records and grants.records
+    assert result["publicationIssues"] and all(item["message"] for item in result["publicationIssues"])
+    context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
+    assert context.artifact_manifest is None
+    gate = merge_publication_issues({"formalReleaseAllowed": True, "issues": []}, result["publicationIssues"])
+    assert gate["formalReleaseAllowed"] is False and gate["issues"] == result["publicationIssues"]
