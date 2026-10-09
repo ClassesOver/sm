@@ -155,11 +155,27 @@ _HALF_WIDTH_PUNCTUATION = re.compile(
 _FULL_WIDTH = {",": "，", ":": "：", ";": "；"}
 
 
+# 同一行内成对、不嵌套的半角括号；括号内含中文或紧跟中文/全角标点时整对改为全角。
+_HALF_WIDTH_PARENTHESES = re.compile(r"\(([^()\r\n]{1,80})\)")
+_CJK_CONTEXT = r"[\u3400-\u9fff，。；：、！？（）“”]"
+
+
+def _full_width_parentheses(piece: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        before = piece[match.start() - 1] if match.start() > 0 else ""
+        if re.search(_CJK_CHAR, match[1]) or re.fullmatch(_CJK_CONTEXT, before):
+            return f"（{match[1]}）"
+        return match[0]
+
+    return _HALF_WIDTH_PARENTHESES.sub(replace, piece)
+
+
 def _normalize_cjk_punctuation_text(text: str) -> str:
     def convert(piece: str) -> str:
-        return _HALF_WIDTH_PUNCTUATION.sub(
+        piece = _HALF_WIDTH_PUNCTUATION.sub(
             lambda match: _FULL_WIDTH[match["after"] or match["before"]], piece
         )
+        return _full_width_parentheses(piece)
 
     pieces: list[str] = []
     previous_end = 0
@@ -172,10 +188,10 @@ def _normalize_cjk_punctuation_text(text: str) -> str:
 
 
 def normalize_cjk_punctuation(markdown: str) -> str:
-    """中文正文中的半角逗号、冒号、分号改为全角。
+    """中文正文中的半角逗号、冒号、分号与括号改为全角。
 
-    只改紧邻汉字的标点：千分位（1,234）、时间（12:30）、英文（A, B）、协议标记、
-    链接地址与代码保持原样。
+    只改紧邻汉字的标点与含中文的成对括号：千分位（1,234）、时间（12:30）、英文
+    （A, B、f(x)）、协议标记、链接地址与代码保持原样。
     """
 
     return _normalize_report_markdown_segments(markdown, _normalize_cjk_punctuation_text)

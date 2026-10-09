@@ -922,6 +922,13 @@ def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -
     ("见[说明](https://example.com/a,b:c)。", "见[说明](https://example.com/a,b:c)。"),
     ("配置 `a,b:c` 中文。", "配置 `a,b:c` 中文。"),
     ("```\n中文,代码:不变\n```", "```\n中文,代码:不变\n```"),
+    # 含中文或紧跟中文/全角标点的成对半角括号改为全角；英文、链接地址与代码不变。
+    ("收入结构稳定(门诊占比约45%)。", "收入结构稳定（门诊占比约45%）。"),
+    ("包括(1)门诊;(2)住院", "包括（1）门诊；（2）住院"),
+    ("| 收入(万元) | 1,234 |", "| 收入（万元） | 1,234 |"),
+    ("函数f(x)与 A (B) C 不变。", "函数f(x)与 A (B) C 不变。"),
+    ("见[收入(万元)](https://example.com/x(1))。", "见[收入（万元）](https://example.com/x(1))。"),
+    ("配置 `f(收入)` 不变。", "配置 `f(收入)` 不变。"),
 ])
 def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_punctuation
