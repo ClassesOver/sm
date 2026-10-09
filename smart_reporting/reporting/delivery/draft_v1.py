@@ -12,7 +12,11 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel
 from ..models import ReportingError
-from .report_runtime.markdown import format_heading_label, normalize_report_markdown_strong_spacing
+from .report_runtime.markdown import (
+    format_heading_label,
+    normalize_cjk_punctuation,
+    normalize_report_markdown_strong_spacing,
+)
 
 _LEADING_SECTION_HEADING = re.compile(
     r"\A#{1,2}[ \t]+(?P<title>[^\r\n]*?)(?:[ \t]+#+)?[ \t]*(?:\r?\n|\Z)"
@@ -887,7 +891,8 @@ def assemble_report_markdown(
         h3_count = 0
         h4_count = 0
         for block_index, block in enumerate(section.blocks):
-            block_markdown = normalize_report_markdown_strong_spacing(block.markdown)
+            # 中文正文的半角逗号/冒号/分号统一为全角；千分位、时间、英文与机器文本不变。
+            block_markdown = normalize_cjk_punctuation(normalize_report_markdown_strong_spacing(block.markdown))
             if block_markdown != block.markdown:
                 auto_fixes.append(
                     {
