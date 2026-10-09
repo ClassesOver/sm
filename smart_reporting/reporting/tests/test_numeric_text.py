@@ -325,3 +325,26 @@ def test_visit_counts_have_wan_display_and_verified_conversion():
     text = '门诊量123.46万人次，约123.5万人次。'
     assert replace_unregistered_numbers(text, [document]) == text
     assert replace_unregistered_numbers('门诊量123.47万人次。', [document]) == '门诊量待核实。'
+
+
+def test_signed_amount_decline_survives_post_processing_chain():
+    """“减少{负变化额}”经符号规范化为正幅度后，仍应认定为已登记数值，不能变成待核实。"""
+    from smart_reporting.reporting.trace.numeric_text import normalize_signed_wording
+
+    document = json.dumps({
+        'analysisId': 'analysis_001',
+        'comparisons': [{
+            'factId': 'fact-' + 'c' * 16, 'comparisonType': 'yoy', 'field': 'revenue',
+            'fieldRef': 'hospital.revenue', 'currentDatasetId': 'current', 'baselineDatasetId': 'base',
+            'currentDatasetSha256': 'b' * 64, 'baselineDatasetSha256': 'c' * 64,
+            'currentTotal': 123456789, 'baselineTotal': 130000000, 'change': -6543211,
+            'changeRate': -5.0332, 'formula': 'x', 'unit': '元',
+        }],
+    })
+    catalog = frozen_number_catalog([document])
+    rendered = render_frozen_numbers('收入减少{{value:fact-cccccccccccccccc:change:万元}}。', catalog)
+    assert rendered == '收入减少-654.32万元。'
+    normalized = normalize_signed_wording(rendered)
+    assert replace_unregistered_numbers(normalized, [document]) == '收入减少654.32万元。'
+    # 方向写反或脱离下降措辞的正数仍无依据。
+    assert replace_unregistered_numbers('收入增加654.32万元。', [document]) == '收入增加待核实。'

@@ -488,7 +488,8 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     ):
         decline = match["verb"] in {"下降", "减少", "降低", "回落", "下滑", "降幅"}
         if decline:
-            warnings.append(f"符号重复：{match[0]}。“{match['verb']}”后应写正的幅度，或改写为“变化率为{match['value']}”。")
+            label = "变化率" if match["value"].rstrip().endswith("%") else "变化额"
+            warnings.append(f"符号重复：{match[0]}。“{match['verb']}”后应写正的幅度，或改写为“{label}为{match['value']}”。")
         else:
             warnings.append(f"方向矛盾：{match[0]}。数值为负却写为“{match['verb']}”，请核对方向并改写为下降幅度。")
     # 读者可见正文不得出现内部标识或英文字段名（协议标记、图片与链接地址不可见，先移除）。

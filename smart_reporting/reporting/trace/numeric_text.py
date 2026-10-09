@@ -329,8 +329,12 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
 def registered_decline_magnitude(
     number: Decimal, unit: str, candidates: Iterable[Decimal], *, prefix: str, quantum: Decimal,
 ) -> bool:
-    """负增长率可表述为正的下降幅度，不能据此豁免增长或占比。"""
-    if unit != "%" or number <= 0 or not re.search(
+    """负的冻结值（变化率、变化额）可表述为“下降/减少”后接正幅度；不能据此豁免增长或占比。
+
+    符号规范化会把“减少-654.32万元”改写为“减少654.32万元”，金额、人次与百分数一样
+    必须按此认定为已登记数值，否则正确正文会被替换为待核实。
+    """
+    if number <= 0 or not re.search(
         r"(?:下降|减少|降低|回落|下滑|降幅)(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
