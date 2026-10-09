@@ -20,7 +20,9 @@ from smart_reporting.reporting.delivery.report_runtime.docx import (
     _postprocess_docx,
 )
 from smart_reporting.reporting.delivery.report_runtime.markdown import (
+    _bind_heading_anchors,
     _normalize_cjk_strong_markers,
+    _strip_strong_boundaries,
     normalize_report_markdown_strong_spacing,
 )
 from smart_reporting.reporting.delivery.report_runtime.pdf import (
@@ -411,11 +413,77 @@ def test_normalize_cjk_strong_markers_supports_chinese_punctuation() -> None:
     markdown = "呈**“年初低位—3月跳升”**形态"
 
     normalized = _normalize_cjk_strong_markers(markdown)
-    rendered = MarkdownIt("commonmark", {"html": False}).render(normalized)
+    rendered = _strip_strong_boundaries(
+        MarkdownIt("commonmark", {"html": False}).render(normalized)
+    )
 
-    assert normalized == "呈 **“年初低位—3月跳升”** 形态"
-    assert "<strong>“年初低位—3月跳升”</strong>" in rendered
+    assert normalized == "呈\u200a**“年初低位—3月跳升”**\u200a形态"
+    assert "<p>呈<strong>“年初低位—3月跳升”</strong>形态</p>" in rendered
     assert "**" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("收入**增长**明显", "<p>收入<strong>增长</strong>明显</p>"),
+        ("总收入为**1,234.5万元**。", "<p>总收入为<strong>1,234.5万元</strong>。</p>"),
+        ("门诊**（含急诊）**人次", "<p>门诊<strong>（含急诊）</strong>人次</p>"),
+        ("由**总部院区**、分院", "<p>由<strong>总部院区</strong>、分院</p>"),
+        (
+            "| 指标 | 说明 |\n| --- | --- |\n| 收入 | 同比**“双升”**态势 |",
+            "<td>同比<strong>“双升”</strong>态势</td>",
+        ),
+    ],
+)
+def test_cjk_strong_markers_render_without_visible_spaces(markdown: str, expected: str) -> None:
+    from markdown_it import MarkdownIt
+
+    rendered = _strip_strong_boundaries(
+        MarkdownIt("commonmark", {"html": False})
+        .enable("table")
+        .render(_normalize_cjk_strong_markers(markdown))
+    )
+
+    assert expected in rendered
+    assert "\u200a" not in rendered
+    assert "**" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("heading", "title"),
+    [
+        ("### 1.1 门诊**收入**分析", "门诊收入分析"),
+        ("### 1.1 门诊** 收入 **分析", "门诊** 收入 **分析"),
+        ("### 1.1 门诊收入（**同比**）", "门诊收入（同比）"),
+        ("### 1.1 呈**“双升”**态势", "呈**“双升”**态势"),
+    ],
+)
+def test_cjk_strong_markers_keep_heading_text_bound_to_draft_contract(
+    heading: str, title: str
+) -> None:
+    """标题锚点绑定使用草稿装配时的标题文本；规范粗体不能让 PDF 渲染失败。"""
+
+    from markdown_it import MarkdownIt
+
+    from smart_reporting.reporting.delivery.draft_v1 import _inline_heading_text
+
+    # 草稿装配先做粗体内侧空白规范，再按 CommonMark 文本生成标题契约。
+    draft_title = _inline_heading_text(
+        normalize_report_markdown_strong_spacing(heading.split(" ", 2)[2])
+    )
+    assert draft_title == title
+    markdown = f"# 报告\n\n## 1. 概述\n\n{heading}\n\n正文**增长**明显。\n"
+    tokens = MarkdownIt("commonmark", {"html": False}).parse(
+        _normalize_cjk_strong_markers(markdown)
+    )
+
+    _bind_heading_anchors(
+        tokens,
+        [
+            {"level": 2, "number": "1", "title": "概述", "anchor": "report-section-overview"},
+            {"level": 3, "number": "1.1", "title": draft_title, "anchor": "report-heading-a"},
+        ],
+    )
 
 
 def test_normalize_cjk_strong_markers_preserves_unmatched_stars() -> None:

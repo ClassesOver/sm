@@ -72,7 +72,7 @@ export function showPreflightPanel(root: HTMLElement, warnings: PreflightWarning
           <p class="panel-subtitle">发现 ${warnings.length} 个问题，建议先处理；也可以继续导出。</p>
         </div>
       </div>
-      <ul class="panel-body preflight-list">${warnings.map((warning) => `<li><button type="button" data-preflight-target="${warning.target ?? ''}"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg><span>${warning.label}</span></button></li>`).join('')}</ul>
+      <ul class="panel-body preflight-list">${warnings.map((warning, index) => `<li><button type="button" data-preflight-target="${index}"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg><span>${warning.label}</span></button></li>`).join('')}</ul>
       <div class="preflight-actions"><button type="button" class="ui-button ui-button--secondary" data-preflight="cancel">返回编辑</button><button type="button" class="ui-button ui-button--primary" data-preflight="continue">仍然导出</button></div>`,
   })
   const panel = modal.overlay
@@ -87,8 +87,10 @@ export function showPreflightPanel(root: HTMLElement, warnings: PreflightWarning
   modal.open(modal.closeButton)
   panel.querySelectorAll<HTMLButtonElement>('[data-preflight="close"], [data-preflight="cancel"]').forEach((button) => button.addEventListener('click', () => close(false)))
   panel.querySelector<HTMLButtonElement>('[data-preflight="continue"]')!.addEventListener('click', () => close(true))
+  // 属性只存警告序号：选择器含引号（img[alt=""]），直接写进 HTML 属性会被截断。
   panel.querySelectorAll<HTMLButtonElement>('[data-preflight-target]').forEach((button) => button.addEventListener('click', () => {
-    const target = button.dataset.preflightTarget ? root.querySelector<HTMLElement>(button.dataset.preflightTarget) : null
+    const selector = warnings[Number(button.dataset.preflightTarget)]?.target
+    const target = selector ? root.querySelector<HTMLElement>(selector) : null
     target?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
     target?.focus?.({ preventScroll: true })
   }))

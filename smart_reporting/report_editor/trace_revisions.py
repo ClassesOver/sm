@@ -16,7 +16,7 @@ from ..reporting.delivery.artifacts_v1 import (
     _TABLE_BLOCK,
 )
 from ..reporting.models import ReportingError
-from ..workspace import WorkspacePathConflict
+from ..workspace import WorkspaceError, WorkspacePathConflict
 from ..reporting.trace.contracts_v1 import (
     RevisionTraceIndexV1,
     canonical_json_bytes,
@@ -59,6 +59,35 @@ def _remap_references(value: Any, resource_ids: Mapping[str, str]) -> Any:
     return result
 
 
+def _lineage_identities(
+    manifest: ReportArtifactManifest, index: RevisionTraceIndexV1 | None
+) -> dict[str, Any]:
+    """新 revision 需要随迁的全部登记文件（图表、交互图规格与索引登记文件）。"""
+    identities: dict[str, Any] = {chart.path: chart for chart in manifest.charts}
+    identities.update({chart.interactive_spec.path: chart.interactive_spec for chart in manifest.charts if chart.interactive_spec})
+    if index is not None:
+        identities.update({file.path: file for file in index.files if file.resource_id != index.markdown_file_resource_id})
+    return identities
+
+
+async def verify_revision_lineage_files(
+    workspace: Any,
+    thread_id: str,
+    *,
+    manifest: ReportArtifactManifest,
+    index: RevisionTraceIndexV1 | None,
+) -> None:
+    """渲染前核对随迁文件身份；缺失或变化时由调用方在渲染前放弃追溯，避免成品
+    附录指向一个最终未登记索引的新 revision。"""
+    for path, identity in _lineage_identities(manifest, index).items():
+        try:
+            current = await workspace.ahash_file(thread_id, path)
+        except (OSError, WorkspaceError):
+            current = {"missing": True}
+        if current.get("missing") or current.get("size") != identity.size or current.get("sha256") != identity.sha256:
+            raise ReportingError("snapshot_integrity_failed", f"来源文件缺失或已变化：{path}")
+
+
 async def snapshot_revision_lineage(
     workspace: Any,
     thread_id: str,
@@ -76,10 +105,7 @@ async def snapshot_revision_lineage(
     their frozen identities. Subject fingerprints remain generation-time facts.
     The caller owns rollback of the target directory until its durable commit.
     """
-    identities: dict[str, Any] = {chart.path: chart for chart in manifest.charts}
-    identities.update({chart.interactive_spec.path: chart.interactive_spec for chart in manifest.charts if chart.interactive_spec})
-    if index is not None:
-        identities.update({file.path: file for file in index.files if file.resource_id != index.markdown_file_resource_id})
+    identities = _lineage_identities(manifest, index)
     for source, identity in identities.items():
         target = path_map.get(source, source)
         content, _media = await workspace.afile_bytes(thread_id, source)
@@ -160,6 +186,8 @@ async def rebuild_edited_manifest(
     bindings = _markdown_image_bindings(
         markdown, markdown_path,
         {citation.citation_id: citation.dataset_id for citation in manifest.citations},
+        # 编辑把图片与 citation 标记拆到不同段落时，已登记图表沿用登记的 Dataset。
+        registered_datasets={chart.path: chart.dataset_ids for chart in manifest.charts},
     )
     known = {chart.path: chart for chart in manifest.charts}
     charts = []

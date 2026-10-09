@@ -16,6 +16,7 @@ FactRef，不依赖最终 Markdown 里的位置猜测。总计行、比例列分
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Sequence
 
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
@@ -184,8 +185,33 @@ def render_table_markdown(
     return f"[[table:{table_id}]]\n{table}\n\n[[/table:{table_id}]]"
 
 
-def _fact_label(fact: Any, dataset_contexts: Sequence[Mapping[str, Any]]) -> str:
-    """仅使用与冻结事实快照身份一致的字段说明，避免把成本误称为收入。"""
+def _period_display_label(period: str, granularity: str | None) -> str:
+    """表格行标签按读者习惯显示期间；行键仍使用冻结期间文本。"""
+
+    if re.fullmatch(r"\d{4}", period):
+        return f"{period}年"
+    match = re.fullmatch(r"(\d{4})-(\d{2})(?:-(\d{2}))?", period)
+    if match is None:
+        return period
+    year, month, day = match.groups()
+    if day is None or (granularity == "month" and day == "01"):
+        return f"{year}年{int(month)}月"
+    return f"{year}年{int(month)}月{int(day)}日"
+
+
+_MAX_METRIC_LABEL_LENGTH = 24
+
+
+def _fact_label(
+    fact: Any,
+    dataset_contexts: Sequence[Mapping[str, Any]],
+    metric_descriptions: Mapping[str, str] | None = None,
+) -> str:
+    """仅使用与冻结事实快照身份一致的字段说明，避免把成本误称为收入。
+
+    数据集字段无说明时，退回 Profile 中与该事实指标代码唯一对应的简短指标说明；
+    仍无可靠名称才显示字段名。
+    """
     dataset_id = getattr(fact, "dataset_id", None) or getattr(fact, "current_dataset_id", None)
     sha256 = getattr(fact, "dataset_sha256", None) or getattr(fact, "current_dataset_sha256", None)
     for context in dataset_contexts:
@@ -201,6 +227,14 @@ def _fact_label(fact: Any, dataset_contexts: Sequence[Mapping[str, Any]]) -> str
                 description = column.get("description")
                 if ref == fact.field_ref and isinstance(description, str) and description.strip():
                     return description.strip()
+    profile_labels = {
+        description.strip()
+        for code in getattr(fact, "metric_codes", ()) or ()
+        if isinstance(description := (metric_descriptions or {}).get(code), str)
+        and 0 < len(description.strip()) <= _MAX_METRIC_LABEL_LENGTH
+    }
+    if len(profile_labels) == 1:
+        return next(iter(profile_labels))
     return {"revenue": "收入", "indicator_value": "指标值"}.get(fact.field, fact.field)
 
 
@@ -209,6 +243,7 @@ def build_analysis_table(
     *,
     fact_file_resource_id: str,
     dataset_contexts: Sequence[Mapping[str, Any]] = (),
+    metric_descriptions: Mapping[str, str] | None = None,
 ) -> tuple[TableTraceV1, str] | None:
     """按 B0 冻结规则从一个分析 bundle 自动生成服务端指标期间表。
 
@@ -224,7 +259,7 @@ def build_analysis_table(
         if not comparisons:
             return None
         types = {fact.comparison_type for fact in comparisons}
-        metric_labels = {_fact_label(fact, dataset_contexts) for fact in comparisons}
+        metric_labels = {_fact_label(fact, dataset_contexts, metric_descriptions) for fact in comparisons}
         metric_label = next(iter(metric_labels)) if len(metric_labels) == 1 else "数值"
         baseline_label = ("同期" if types == {"yoy"} else "上期" if types == {"mom"} else "基期") + metric_label
         rate_label = "同比增幅" if types == {"yoy"} else "环比增幅" if types == {"mom"} else "变化率"
@@ -275,12 +310,18 @@ def build_analysis_table(
         for period_value in fact.period_values:
             if period_value.period not in periods:
                 periods.append(period_value.period)
+    granularities = {fact.period_granularity for fact in selected}
+    granularity = next(iter(granularities)) if len(granularities) == 1 else None
+    labels_by_period = {period: _period_display_label(period, granularity) for period in periods}
+    if len(set(labels_by_period.values())) != len(labels_by_period):
+        # 不同冻结期间显示为同一标签时无法区分行，保留原始期间文本。
+        labels_by_period = {period: period for period in periods}
     rows = [
-        {"key": f"period:{period}", "label": period, "period": period}
+        {"key": f"period:{period}", "label": labels_by_period[period], "period": period}
         for period in periods
     ] or [{"key": "total", "label": "合计"}]
     labels = {
-        code: f"{_fact_label(facts_by_code[code], dataset_contexts)}（{facts_by_code[code].unit or '数值'}）"
+        code: f"{_fact_label(facts_by_code[code], dataset_contexts, metric_descriptions)}（{facts_by_code[code].unit or '数值'}）"
         for code in codes
     }
     if len(set(labels.values())) != len(labels):

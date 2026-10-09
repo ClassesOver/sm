@@ -1153,23 +1153,38 @@ class RuntimePublicationMixin:
         drilldown_metrics = await self._build_drilldown_metrics(
             fact_files=fact_files or {}, run_context=run_context
         )
-        index = build_csv_trace_index(
-            handles=handles,
-            lineage=lineage,
-            report_id=run_id,
-            revision=revision,
-            workflow_run_id=run_id,
-            markdown_file=markdown_artifact,
-            profile_hash=self._profile(run_context).effective_profile_hash,
-            fact_files=fact_files,
-            server_table_traces=server_table_traces,
-            chart_trace_files=chart_trace_files,
-            chart_traces=chart_traces,
-            computation_files=computation_files,
-            computations=computations,
-            subject_bindings=subject_bindings,
-            drilldown_metrics=drilldown_metrics,
-        )
+        def build(computation_files: tuple[FileIdentity, ...], computations: tuple) -> Any:
+            return build_csv_trace_index(
+                handles=handles,
+                lineage=lineage,
+                report_id=run_id,
+                revision=revision,
+                workflow_run_id=run_id,
+                markdown_file=markdown_artifact,
+                profile_hash=self._profile(run_context).effective_profile_hash,
+                fact_files=fact_files,
+                server_table_traces=server_table_traces,
+                chart_trace_files=chart_trace_files,
+                chart_traces=chart_traces,
+                computation_files=computation_files,
+                computations=computations,
+                subject_bindings=subject_bindings,
+                drilldown_metrics=drilldown_metrics,
+            )
+
+        try:
+            index = build(computation_files, computations)
+        except (ValidationError, ValueError) as error:
+            if not computations:
+                raise
+            # 补充分析计算层只是追溯元数据；契约不接受时不登记该层，其余索引照常生成。
+            logger.warning(
+                "report_trace_computations_dropped count={} error_type={} reason={}",
+                len(computations),
+                type(error).__name__,
+                str(error)[:500],
+            )
+            index = build((), ())
         if markdown is not None:
             from ...trace.chart_subjects import freeze_chart_presentations
 

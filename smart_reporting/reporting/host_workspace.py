@@ -121,8 +121,13 @@ def _ensure_directory(path: Path, root: Path) -> None:
         try:
             info = current.lstat()
         except FileNotFoundError:
-            current.mkdir(mode=0o700)
-            continue
+            try:
+                current.mkdir(mode=0o700)
+                continue
+            except FileExistsError:
+                # 并发执行可能在 lstat 与 mkdir 之间建好同一路径；按现有路径重新校验，
+                # 仍拒绝符号链接或非目录。
+                info = current.lstat()
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
 
