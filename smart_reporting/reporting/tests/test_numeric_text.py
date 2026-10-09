@@ -459,3 +459,26 @@ def test_budget_difference_direction_follows_frozen_sign():
         frozen_number_catalog([document]),
     )
     assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == '1—3月较预算增加10.00万元。'
+
+
+@pytest.mark.parametrize(('rate', 'text', 'expected'), [
+    # 比率主语 + 方向词描述比率本身升降到多少：不能改写动作词或去掉负号。
+    (5.0332, '收入增速下降为{{value:fact-cccccccccccccccc:changeRate:%}}。', '收入增速下降为5.03%。'),
+    (5.0332, '同比增幅回落为{{value:fact-cccccccccccccccc:changeRate:%}}。', '同比增幅回落为5.03%。'),
+    (-5.0332, '收入增速下降为{{value:fact-cccccccccccccccc:changeRate:%}}。', '收入增速下降为-5.03%。'),
+    (-5.0332, '增长率降低为{{value:fact-cccccccccccccccc:changeRate:%}}。', '增长率降低为-5.03%。'),
+])
+def test_rate_level_wording_is_not_treated_as_direction(rate, text, expected):
+    from smart_reporting.reporting.trace.content_review import review_content
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    document = _comparison_document(5, rate)
+    rendered = render_frozen_numbers(
+        align_placeholder_direction(text, [document]), frozen_number_catalog([document])
+    )
+    assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == expected
+    assert not [item for item in review_content(text, [document])
+                if item.startswith(('方向', '符号重复'))]

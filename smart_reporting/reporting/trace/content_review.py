@@ -14,6 +14,7 @@ from .numeric_text import (
     RISING_WORDS,
     _frozen_number_entries,
     _unit_scales,
+    describes_rate_level,
     frozen_number_catalog,
     frozen_number_values,
     money_text_warnings,
@@ -349,7 +350,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
             warnings.append(f"数值引用未登记：{token}。请选择 frozenNumbers 中的引用；没有对应事实时写待核实。")
     positive = positive_directed_placeholders(contents)
     for match in DIRECTED_PLACEHOLDER.finditer(markdown):
-        if match["token"] not in positive:
+        if match["token"] not in positive or describes_rate_level(markdown[:match.start()]):
             continue
         # “同比/环比下降{变化率}”由下方变化率方向检查覆盖，避免同一问题报两次。
         if ":changeRate:" in match["token"] and re.search(r"(?:同比|环比)$", markdown[:match.start()]):
@@ -503,6 +504,9 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         r"(?:了|约|为|达|幅度为)?\s*(?P<value>-\s*\d[\d,]*(?:\.\d+)?\s*(?:亿元|万元|元|万人次|人次|床日|%)?)",
         text,
     ):
+        if describes_rate_level(text[:match.start()]):
+            # “增速下降为-5.03%”说的是增速降到负值，不是符号重复或方向矛盾。
+            continue
         decline = match["verb"] in FALLING_WORDS
         if decline:
             label = "变化率" if match["value"].rstrip().endswith("%") else "变化额"

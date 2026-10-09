@@ -26,6 +26,16 @@ FALLING_TO_RISING = {
 RISING_WORDS = tuple(RISING_TO_FALLING)
 FALLING_WORDS = tuple(FALLING_TO_RISING)
 DIRECTION_WORD_PATTERN = "|".join((*RISING_WORDS, *FALLING_WORDS))
+# 方向词紧跟在比率名词之后（“增速下降为5.03%”“增幅回落为…”）时，描述的是比率本身
+# 升降到多少，不是数量的增减方向：不能按冻结符号改写动作词或去掉负号。
+_RATE_SUBJECT = re.compile(
+    r"(?:增速|增幅|增长率|增长速度|降幅|跌幅|涨幅|减幅|变化率|比重|占比|完成率|执行率)(?:\*\*)?\s*$"
+)
+
+
+def describes_rate_level(prefix: str) -> bool:
+    """方向词之前紧邻比率名词时返回 True。"""
+    return _RATE_SUBJECT.search(prefix) is not None
 _VISIT_UNITS = {"人次": Decimal(1), "万人次": Decimal(10_000)}
 
 
@@ -384,6 +394,8 @@ def normalize_signed_wording(markdown: str) -> str:
     """
 
     def replace(match: re.Match[str]) -> str:
+        if describes_rate_level(match.string[:match.start()]):
+            return match[0]
         verb = match["verb"]
         falling = RISING_TO_FALLING.get(verb, verb)
         logger.warning("report_signed_wording_normalized verb={} value={}", verb, match["value"])
@@ -437,7 +449,7 @@ def align_placeholder_direction(markdown: str, contents: Iterable[str]) -> str:
         return markdown
 
     def replace(match: re.Match[str]) -> str:
-        if match["token"] not in positive:
+        if match["token"] not in positive or describes_rate_level(match.string[:match.start()]):
             return match[0]
         rising = FALLING_TO_RISING[match["verb"]]
         logger.warning("report_direction_wording_aligned verb={} token={}", match["verb"], match["token"])
