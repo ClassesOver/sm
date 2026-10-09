@@ -15,7 +15,6 @@ from agno.run import RunContext
 from smart_reporting.report_editor import ReportEditorContext
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile, ChartArtifact
 from smart_reporting.reporting.delivery.publishing import ReportDownloadGrant
-from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
 from smart_reporting.reporting.tests.test_trace_subject_validate import _make_editor_with_subject
 from smart_reporting.reporting.trace.contracts_v1 import (
@@ -385,8 +384,15 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_export_revision_fails_cleanly_when_lineage_source_file_missing(tmp_path: Path) -> None:
-    """故障注入：导出期间来源 CSV 被删除，应失败且不留半成品的 revision-2。"""
+@pytest.mark.parametrize("fault", ["missing_source", "snapshot"])
+async def test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing(
+    tmp_path: Path, fault: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """故障注入：导出期间来源 CSV 被删除，或渲染后随迁追溯快照失败。
+
+    AGENTS：追溯数据不可用只拒绝使用该数据；PDF/Word 照常生成并签发，验收不通过且
+    明确返回原因，新 revision 不登记追溯清单。
+    """
     editor, grants, original = await _make_editor_with_subject(tmp_path)
     thread_id = original.scope["threadId"]
     workspace = editor.workspace
@@ -403,11 +409,30 @@ async def test_export_revision_fails_cleanly_when_lineage_source_file_missing(tm
     edited_markdown = header + "Revenue 3800 [[claim:claim-1]]" + footer
     await workspace.awrite_text(thread_id, original.markdown_path, edited_markdown, overwrite=True)
     await workspace.awrite_text(thread_id, "reports/revision-1/draft/report.md", edited_markdown)
-    await workspace.adelete_file(thread_id, csv_path)
+    if fault == "missing_source":
+        await workspace.adelete_file(thread_id, csv_path)
+    else:
+        from smart_reporting.report_editor import service as service_module
+
+        async def broken_snapshot(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(service_module, "snapshot_revision_lineage", broken_snapshot)
 
     await workspace.adelete_file(thread_id, original.artifact_manifest.path)
     manifest_identity = await register_trace_manifest(workspace, thread_id, index)
-    context = original.model_copy(update={"artifact_manifest": manifest_identity})
+    for suffix, content in (("pdf", b"old-pdf"), ("docx", b"old-word")):
+        await workspace.awrite_bytes(thread_id, f"reports/revision-1/report.{suffix}", content)
+    job = {
+        **original.job,
+        "render": {
+            "pdf": _identity("reports/revision-1/report.pdf", b"old-pdf"),
+            "word": _identity("reports/revision-1/report.docx", b"old-word"),
+            "markdown": _identity(original.markdown_path, edited_markdown.encode()),
+            "images": [],
+        },
+    }
+    context = original.model_copy(update={"job": job, "artifact_manifest": manifest_identity})
     durable = ReportingRunState.initial(
         report_run_id=context.workflow_run_id,
         external_run_id="external-1",
@@ -417,31 +442,68 @@ async def test_export_revision_fails_cleanly_when_lineage_source_file_missing(tm
     )
     repository = _StateRepository(durable, failure=None)
     editor.state_repository = repository
+    rendered_manifests: list[object] = []
 
     class ReportTools:
-        async def _render_report_pair(self, *_args, **_kwargs):
-            raise AssertionError("渲染不应在来源文件缺失时被调用")
+        async def _render_report_pair(
+            self, actual_job_id, markdown_path, output_path, *, artifact_manifest, run_context
+        ):
+            rendered_manifests.append(artifact_manifest)
+            render_job = run_context.session_state[REPORT_JOBS_STATE_KEY][actual_job_id]
+            assert ("_traceSourcePresentations" in render_job) is (fault == "snapshot")
+            snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
+            await workspace.awrite_bytes(thread_id, output_path, b"new-pdf")
+            await workspace.awrite_bytes(thread_id, "reports/revision-2/report.docx", b"new-word")
+            render_job["render"] = {
+                "pdf": _identity(output_path, b"new-pdf"),
+                "word": _identity("reports/revision-2/report.docx", b"new-word"),
+                "markdown": _identity(markdown_path, snapshot),
+                "images": [],
+            }
+            return {"status": "validated", "validation": {"ok": True}}
 
     class Persistence:
-        async def persist(self, **_values): return None
+        async def persist(self, **_values):
+            return None
 
-    class Grants:
-        async def issue(self, **_values):
-            raise AssertionError("授权不应在来源文件缺失时被调用")
+    class DownloadGrants:
+        async def issue(self, **values):
+            return "download-raw", ReportDownloadGrant(
+                grant_hash="d" * 64, expires_at=datetime(2026, 10, 15, tzinfo=UTC), **values
+            )
+
+    class EditorGrants:
+        async def issue(self, issued_context):
+            return "editor-raw", datetime(2026, 10, 15, tzinfo=UTC)
 
     editor.report_tools = ReportTools()
     editor.artifact_persistence = Persistence()
-    editor.download_grants = Grants()
-    editor.editor_grants = Grants()
+    editor.download_grants = DownloadGrants()
+    editor.editor_grants = EditorGrants()
     editor.public_base_url = "https://reports.example.com"
 
-    with pytest.raises((OSError, ReportingError)):
-        await editor.export_revision(context, expected_sha256=_sha(edited_markdown.encode()))
+    result = await editor.export_revision(context, expected_sha256=_sha(edited_markdown.encode()))
 
-    # 不留下 revision-2 半成品；原 revision-1 草稿保留。
-    assert "2" not in repository.durable.payload["reportEditorContexts"]
-    assert not await workspace.apath_exists(thread_id, "reports/revision-2")
-    assert await workspace.aread_text(thread_id, "reports/revision-1/draft/report.md") == edited_markdown
+    if fault == "missing_source":
+        # 渲染前即发现来源文件缺失：放弃追溯后渲染，成品不带指向无索引 revision 的附录。
+        assert rendered_manifests == [None]
+    else:
+        assert rendered_manifests[0] is not None
+    assert result["revision"] == 2
+    assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+    assert result["validation"]["ok"] is False
+    assert [issue["code"] for issue in result["validation"]["issues"]] == [
+        "report_editor_lineage_unavailable"
+    ]
+    message = result["validation"]["issues"][0]["message"]
+    assert "数据来源追溯不可用" in message
+    assert (csv_path in message) is (fault == "missing_source")
+    assert ("成品已生成" in message) is (fault == "snapshot")
+    committed = ReportEditorContext.model_validate(
+        repository.durable.payload["reportEditorContexts"]["2"]
+    )
+    assert committed.artifact_manifest is None
+    assert await workspace.aread_text(thread_id, committed.markdown_path) == edited_markdown
 
 
 def _sha(content: bytes) -> str:
@@ -465,3 +527,29 @@ class _StateRepository:
         if self.failure == "commit":
             raise RuntimeError("durable commit failed")
         self.durable = apply(self.durable, command, expected_version=expected_version).state
+
+
+def test_edited_export_keeps_registered_chart_binding_when_citation_moves() -> None:
+    """编辑把 citation 标记与图片拆到不同段落时，已登记图表沿用登记的 Dataset 绑定。
+
+    首次发布仍要求同段 citation；未登记图片不能借此获得绑定。
+    """
+    import pytest as _pytest
+
+    from smart_reporting.reporting.delivery.artifacts_v1 import _markdown_image_bindings
+    from smart_reporting.reporting.models import ReportingError
+
+    markdown = "![收入](chart-001.png)\n\n[[citation:citation_001]]\n"
+    citations = {"citation_001": "dataset-url-abc0001"}
+    registered = {"reports/revision-1/chart-001.png": ("dataset-url-abc0001",)}
+
+    with _pytest.raises(ReportingError, match="report_artifact_chart_citation_invalid"):
+        _markdown_image_bindings(markdown, "reports/revision-1/report.md", citations)
+    assert _markdown_image_bindings(
+        markdown, "reports/revision-1/report.md", citations, registered_datasets=registered
+    ) == {"reports/revision-1/chart-001.png": ("dataset-url-abc0001",)}
+    with _pytest.raises(ReportingError, match="report_artifact_chart_citation_invalid"):
+        _markdown_image_bindings(
+            "![其他](other.png)\n", "reports/revision-1/report.md", citations,
+            registered_datasets=registered,
+        )

@@ -6,6 +6,7 @@
     - `smart_reporting/reporting/tests/test_http_publication_lineage.py::test_http_publication_never_blocks_links_on_lineage_faults`（签发阶段溯源故障注入）
     - `smart_reporting/reporting/tests/test_http_publication_lineage.py::test_http_publication_drops_hash_registered_foreign_index_but_still_issues_links`（伪造索引不被使用但照常签发）
     - `smart_reporting/reporting/tests/test_report_editor.py::test_editor_export_creates_new_revision_without_overwriting_published_markdown`（编辑器导出验收失败照常签发）
+    - `smart_reporting/reporting/tests/test_report_editor_lineage_export.py::test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing`（编辑器导出追溯故障：渲染前来源缺失、渲染后追溯快照失败均照常签发并返回原因）
     - `smart_reporting/reporting/tests/test_reporting_completion_content.py::test_completed_report_content_states_the_specific_validation_reasons`（完成消息给出具体失败原因）
     - `smart_reporting/reporting/tests/test_publication_nonblocking.py::test_signing_chain_never_raises_gate_failures_without_fallback`（静态守卫：签发链路上验收/门禁/审计类 `raise` 必须被不再抛出的 `except Exception` 兜底；新增签发函数须登记到 `_SIGNING_CHAIN`）
   - 禁止用 `raise` 表达“验收/门禁未通过”来终止签发；应把原因写入 `validation.issues` 或 `publicationGate.issues` 并继续。安全边界（作用域不一致、身份伪造）只能拒绝使用对应数据，不能拒绝签发已核验身份的 PDF/Word。

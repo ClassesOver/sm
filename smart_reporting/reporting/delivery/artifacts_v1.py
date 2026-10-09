@@ -367,7 +367,13 @@ def _markdown_image_bindings(
     markdown: str,
     markdown_path: str,
     citation_datasets: dict[str, str],
+    registered_datasets: Mapping[str, tuple[str, ...]] | None = None,
 ) -> dict[str, tuple[str, ...]]:
+    """按图片所在段落的 citation 标记解析图表与 Dataset 的绑定。
+
+    ``registered_datasets`` 仅供编辑导出：编辑可能把 citation 标记与图片拆到不同段落，
+    已登记图表此时沿用其登记的 Dataset 绑定；首次发布不传，段落缺少 citation 仍拒绝。
+    """
     lines = markdown.splitlines()
     parent = PurePosixPath(markdown_path).parent
     dataset_bindings: dict[str, set[str]] = {}
@@ -380,7 +386,8 @@ def _markdown_image_bindings(
             re.findall(r"\[\[citation:([^\]\r\n]+)\]\]", "\n".join(lines[start:end]))
         )
         unknown = citation_ids - set(citation_datasets)
-        if unknown or not citation_ids:
+        unbound = bool(unknown or not citation_ids)
+        if unbound and registered_datasets is None:
             raise ReportingError(
                 "report_artifact_chart_citation_invalid",
                 "每个图表必须在同一 Markdown 段落绑定已注册 citation。",
@@ -404,6 +411,15 @@ def _markdown_image_bindings(
                     "report_artifact_chart_invalid", "Markdown 图表必须使用安全相对路径。"
                 )
             path = parent.joinpath(relative).as_posix()
+            if unbound:
+                registered = (registered_datasets or {}).get(path)
+                if not registered:
+                    raise ReportingError(
+                        "report_artifact_chart_citation_invalid",
+                        "每个图表必须在同一 Markdown 段落绑定已注册 citation。",
+                    )
+                dataset_bindings.setdefault(path, set()).update(registered)
+                continue
             dataset_bindings.setdefault(path, set()).update(
                 citation_datasets[item] for item in citation_ids
             )
