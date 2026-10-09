@@ -62,6 +62,23 @@ def test_completed_report_content_discloses_failed_checks_with_download_links(te
     assert content.count("PDF/Word 验收未通过。") == 1
 
 
+def test_completed_report_content_states_the_specific_validation_reasons():
+    # AGENTS：验收失败仍签发下载，但须明确返回失败原因，不能只给笼统的“尚未完成验收”。
+    content = _completed_report_content(_completed_payload(publicationGate={
+        "formalReleaseAllowed": False,
+        "issues": [{
+            "code": "artifact_not_validated", "message": "Markdown、PDF 或 DOCX 尚未完成验收。",
+            "details": {"validationIssues": [
+                {"code": "page_layout_mismatch", "message": "PDF 与 Word 页数不一致。"},
+                {"code": "font_missing"},
+            ]},
+        }],
+    }), template=None)
+    assert "[下载 PDF](https://reports.example/report.pdf)" in content
+    assert "PDF 与 Word 页数不一致。" in content
+    assert "font_missing" in content
+
+
 def test_completed_report_content_uses_custom_template() -> None:
     content = _completed_report_content(
         _completed_payload(),
