@@ -732,3 +732,33 @@ async def test_host_write_locks_are_released_after_use(tmp_path: Path) -> None:
     )
 
     assert workspace._write_locks == {}
+
+
+def test_ensure_directory_tolerates_concurrent_creation(tmp_path, monkeypatch):
+    """并发脚本执行在 lstat 与 mkdir 之间建好同一目录时，不应抛 FileExistsError。"""
+    from smart_reporting.reporting.host_workspace import _ensure_directory
+
+    original = Path.mkdir
+
+    def racing_mkdir(self, *args, **kwargs):
+        original(self, *args, **kwargs)  # 另一个执行者抢先创建
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", racing_mkdir)
+    _ensure_directory(tmp_path / ".reporting-exits" / "nested", tmp_path)
+    assert (tmp_path / ".reporting-exits" / "nested").is_dir()
+
+
+def test_ensure_directory_rejects_symlink_created_concurrently(tmp_path, monkeypatch):
+    from smart_reporting.reporting.host_workspace import _ensure_directory
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+
+    def racing_symlink(self, *args, **kwargs):
+        self.symlink_to(outside, target_is_directory=True)
+        raise FileExistsError(str(self))
+
+    monkeypatch.setattr(Path, "mkdir", racing_symlink)
+    with pytest.raises(WorkspaceError):
+        _ensure_directory(tmp_path / "linked", tmp_path)
