@@ -47,10 +47,26 @@ def format_fact_value(value: Any, unit: str | None, display_unit: str | None = N
         scales = _unit_scales(unit)
         number = number * scales[unit] / scales[target]
     if target in {"万元", "亿元", "万人次", "%", "‰"} or number != number.to_integral_value():
-        text = f"{number.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}"
+        rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        # 舍入为零的负数不能显示为“-0.00”。
+        text = f"{abs(rounded) if rounded == 0 else rounded:,f}"
     else:
         text = f"{number:,.0f}"
     return text + (target or "")
+
+
+def _hidden_by_rounding(value: Any, unit: str | None, target: str | None) -> bool:
+    """非零值换算到更大单位后舍入为 0.00（如 10万元 → 0.00亿元）时不提供该显示。"""
+    if not target or target == unit or value is None:
+        return False
+    number = Decimal(str(value))
+    if number == 0:
+        return False
+    scales = _unit_scales(unit)
+    if scales is None or target not in scales:
+        return False
+    converted = number * scales[unit] / scales[target]
+    return converted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == 0
 
 
 def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, Any]]:
@@ -147,12 +163,16 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                             else entry.get("unit"))
                     units = _unit_scales(unit) or (unit or "",)
                     for target in units:
+                        if _hidden_by_rounding(value, unit, target or None):
+                            continue
                         yield f"{{{{value:{fact_id}:{field}:{target}}}}}", value, unit, target or None
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                 if comparison[field] is None:
                     continue
                 for target in (_unit_scales(unit) or (unit,)):
+                    if _hidden_by_rounding(comparison[field], unit, target):
+                        continue
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{target}}}}}"
                     yield token, comparison[field], unit, target
 
@@ -391,7 +411,12 @@ def positive_directed_placeholders(contents: Iterable[str]) -> dict[str, Decimal
     values: dict[str, Decimal] = {}
     for token, value, _unit, _target in _frozen_number_entries(contents):
         parts = token.removeprefix("{{value:").removesuffix("}}").split(":")
-        if len(parts) != 3 or parts[1] not in _DIRECTED_FIELDS or value is None:
+        directed = parts[1] in _DIRECTED_FIELDS if len(parts) == 3 else False
+        # 预算比较的差额是“实际减预算”，与变化额同样带增减方向。
+        directed = directed or (
+            len(parts) == 3 and parts[1].startswith("budgetComparison.") and parts[1].endswith(".difference")
+        )
+        if not directed or value is None:
             continue
         number = Decimal(str(value))
         if number == 0:

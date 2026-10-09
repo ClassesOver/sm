@@ -418,3 +418,44 @@ def test_direction_wording_covers_common_synonyms(change, rate, verb, field, exp
     )
     final = replace_unregistered_numbers(normalize_signed_wording(rendered), [document])
     assert final == f'收入较上年{expected}。'
+
+
+def _budget_document():
+    def metric(letter, field, values):
+        return {
+            'factId': 'fact-' + letter * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': field, 'fieldRef': 'hospital.' + field,
+            'aggregation': 'sum', 'unit': '元', 'formula': 'sum', 'total': sum(values),
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0, 'periodGranularity': 'month',
+            'periodValues': [{'period': f'2025-{index + 1:02d}', 'value': value}
+                             for index, value in enumerate(values)],
+        }
+    return json.dumps({'analysisId': 'analysis_001', 'metrics': [
+        metric('a', 'actual_revenue', [900000, 1000000, 1200000]),
+        metric('b', 'budget_revenue', [1000000, 1000000, 1000000]),
+    ]})
+
+
+def test_display_never_shows_negative_zero_or_hides_nonzero_amounts_as_zero():
+    assert format_fact_value(-0.001, '%') == '0.00%'
+    catalog = frozen_number_catalog([_budget_document()])
+    prefix = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.'
+    # 非零差额（-10万元）换算到亿元会显示为 0.00，不提供该占位；真实的零差额仍可显示。
+    assert prefix + '2025-01.difference:亿元}}' not in catalog
+    assert catalog[prefix + '2025-01.difference:万元}}'] == '-10.00万元'
+    assert catalog[prefix + '2025-02.difference:亿元}}'] == '0.00亿元'
+
+
+def test_budget_difference_direction_follows_frozen_sign():
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    document = _budget_document()
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.2025-01..2025-03.difference:万元}}'
+    rendered = render_frozen_numbers(
+        align_placeholder_direction(f'1—3月较预算减少{token}。', [document]),
+        frozen_number_catalog([document]),
+    )
+    assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == '1—3月较预算增加10.00万元。'
