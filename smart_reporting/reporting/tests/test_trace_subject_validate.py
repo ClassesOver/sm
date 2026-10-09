@@ -217,7 +217,7 @@ def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
 async def _make_editor_with_subject(
     tmp_path: Path,
     *, report_id: str = "report-1", period_table: bool = False, comparison_table: bool = False,
-    comparison_rate: float | None = 20,
+    comparison_rate: float | None = 20, correlation_claim: bool = False,
 ) -> tuple:
     from smart_reporting.report_editor import (
         InMemoryReportEditorRepository,
@@ -313,6 +313,14 @@ async def _make_editor_with_subject(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    if correlation_claim:
+        document = json.loads(bundle_bytes)
+        document["correlationDetails"] = [{
+            "factId": "fact-" + "b" * 16, "datasetId": "dataset-url-abc0001",
+            "leftField": "收入", "rightField": "人次", "method": "pearson",
+            "sampleCount": 12, "value": 0.8,
+        }]
+        bundle_bytes = json.dumps(document, ensure_ascii=False).encode()
     if comparison_table:
         document = json.loads(bundle_bytes)
         document["comparisons"] = [{
@@ -365,6 +373,15 @@ async def _make_editor_with_subject(
             ),
         ),
     )
+    if correlation_claim:
+        fact_id = "fact-" + "b" * 16
+        claim = SimpleNamespace(claim_id="claim-1", value=0.8, metric_code="correlation",
+                                current_period="2025-09", fact_ids=(fact_id,))
+        subject = build_claim_subject_bindings(
+            (SimpleNamespace(section_code="section_002", claims=(claim,)),),
+            {fact_id: ("analysis_001", "/correlationDetails/0")},
+            {"analysis_001": derive_resource_id(fact_path)},
+        )[0]
     table_fact_ref = FactRefV1(
         analysisId="analysis_001",
         fileResourceId=derive_resource_id(fact_path),
@@ -888,6 +905,108 @@ def test_bed_day_claim_unit_is_not_truncated_to_beds():
 ])
 def test_claim_does_not_borrow_value_from_neighboring_sentence(markdown):
     assert claim_status(markdown, "claim-1", 3600, expected_unit="万元")["status"] == "stale"
+
+
+@pytest.mark.parametrize("text,warning", [
+    ("2025-09华东收入3600万元", False),
+    ("2025-09华西收入3600万元", True),
+    ("2025-09收入3600万元", True),
+    ("华东另有收入。2025-09华西收入3600万元", True),
+])
+def test_claim_registered_scope_requires_soft_review_when_absent(text, warning):
+    result = claim_status(
+        text + "[[claim:claim-1]]", "claim-1", 3600,
+        expected_unit="万元", expected_periods=("2025-09",),
+        expected_scope={"region": "华东"},
+    )
+    assert result["status"] == "valid"
+    assert bool(result["warnings"]) is warning
+    if warning:
+        assert "范围" in result["warnings"][0] and "华东" in result["warnings"][0]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_correlation_claim_generated_binding_validates(tmp_path):
+    editor, _, context = await _make_editor_with_subject(tmp_path, correlation_claim=True)
+    index = await editor.trace.load_index(context)
+    assert index.subject_bindings[0].fact_refs[0].fact_kind == "correlation"
+    markdown = "相关系数0.8[[claim:claim-1]]"
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["summary"] == {"valid": 1, "stale": 0, "unbound": 0}
+    assert result["subjects"][0]["factValue"] == 0.8
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("current,rate,valid,stale", [
+    ("0.36万元", "20%", 4, 0),
+    ("0.37万元", "20%", 3, 1),
+    ("0.36万元", "0.002万元", 3, 1),
+    ("3600万元", "20元", 2, 2),
+    ("3600元", "20%", 4, 0),
+])
+async def test_table_unit_conversion_uses_each_fields_unit(tmp_path, current, rate, valid, stale):
+    from smart_reporting.reporting.trace.table_builder import render_table_markdown
+
+    editor, _, context = await _make_editor_with_subject(tmp_path, comparison_table=True)
+    markdown = render_table_markdown("tbl-1", ("数值",), [
+        ["本期", current], ["同期", "0.30万元"], ["变化", "0.06万元"], ["同比", rate],
+    ])
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["tableSummary"]["valid"] == valid
+    assert result["tableSummary"]["stale"] == stale
+
+
+@pytest.mark.parametrize("sign", ["−", "－"])
+@pytest.mark.parametrize("value,unit,text", [(0.8, None, "0.8"), (3600, "元", "0.36万元")])
+def test_unicode_negative_does_not_match_positive_fact(sign, value, unit, text):
+    result = claim_status(f"数值{sign}{text}[[claim:c]]", "c", value, expected_unit=unit)
+    assert result["status"] == "stale"
+    assert result["warnings"]
+
+
+@pytest.mark.parametrize("sign", ["−", "－"])
+@pytest.mark.parametrize("value,unit,text", [(-0.8, None, "0.8"), (-3600, "元", "0.36万元")])
+def test_unicode_negative_matches_negative_fact(sign, value, unit, text):
+    result = claim_status(f"数值{sign}{text}[[claim:c]]", "c", value, expected_unit=unit)
+    assert result["status"] == "valid"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("wrapper", ["```markdown\n{}\n```", "~~~~\n{}\n~~~~", "<!--\n{}\n-->"])
+@pytest.mark.parametrize("keep_visible", [False, True])
+async def test_trace_ignores_hidden_markers(tmp_path, wrapper, keep_visible):
+    from smart_reporting.reporting.trace.table_builder import render_table_markdown
+
+    editor, _, context = await _make_editor_with_subject(tmp_path, comparison_table=True)
+    body = "收入3600元[[claim:claim-1]]\n\n" + render_table_markdown(
+        "tbl-1", ("数值",), [["本期", "3600元"], ["同期", "3000元"], ["变化", "600元"], ["同比", "20%"]],
+    )
+    markdown = (body + "\n\n" if keep_visible else "") + wrapper.format(body)
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["summary"] == {"valid": int(keep_visible), "stale": 0, "unbound": int(not keep_visible)}
+    assert result["tableSummary"]["valid"] == (4 if keep_visible else 0)
+    assert result["tableSummary"]["unbound"] == (0 if keep_visible else 4)
+    assert len(result["tables"][0]["locations"]) == (4 if keep_visible else 0)
+
+
+@pytest.mark.parametrize("hidden", [
+    "`3600[[claim:c]]`", "``3600[[claim:c]]``", "    3600[[claim:c]]",
+    "<!-- 3600[[claim:c]] -->", "<!-- 3600[[claim:c]]",
+])
+def test_claim_ignores_non_body_marker(hidden):
+    assert claim_status(hidden, "c", 3600)["status"] == "unbound"
+    assert claim_status("收入3600[[claim:c]]\n\n" + hidden, "c", 3600)["status"] == "valid"
+
+
+def test_inline_comment_literal_does_not_hide_table():
+    from smart_reporting.reporting.trace.markdown_body import trace_body
+
+    markdown = "注释语法 `<!--`。\n\n[[table:tbl-1]]\n| 指标 |\n"
+    assert trace_body(markdown, mask_inline_code=False) == markdown
+    assert "[[table:tbl-1]]" in trace_body(markdown)
 
 
 @pytest.mark.parametrize(("text", "matched"), [
