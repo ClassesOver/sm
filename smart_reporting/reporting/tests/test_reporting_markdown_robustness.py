@@ -73,3 +73,18 @@ def test_chart_figure_destination_survives_unsafe_file_names(file_name: str) -> 
 
     assert len(images) == 1
     assert unquote(str(images[0].attrGet("src"))) == file_name
+
+
+@pytest.mark.parametrize(("title", "alt", "expected_title", "expected_alt"), [
+    ("门诊收入趋势（analysis_001）", "门诊收入 · citation_002 月度趋势", "门诊收入趋势", "门诊收入 月度趋势"),
+    ("收入构成 fact-" + "a" * 16, "收入构成[analysis_003]", "收入构成", "收入构成"),
+    ("analysis_001", "chart_001", "图表", "图表"),
+    ("2025年门诊收入趋势", "按月收入", "2025年门诊收入趋势", "按月收入"),
+])
+def test_chart_labels_drop_internal_ids(title, alt, expected_title, expected_alt) -> None:
+    # 图题与替代文本读者可见；内部 ID 只应留在结构化引用字段中。
+    chart = ReportChartInput(chartId="chart_001", fileName="chart.png", title=title,
+                             altText=alt, citationIds=("citation_001",))
+    html = MarkdownIt("commonmark").render(_chart_figure_markdown(chart, "chart.png"))
+    assert f'alt="{expected_alt}"' in html
+    assert f"<em>图表：{expected_title}</em>" in html

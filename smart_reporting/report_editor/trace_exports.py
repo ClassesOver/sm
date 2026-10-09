@@ -120,6 +120,8 @@ class TraceDerivedExportService:
     def __init__(self, workspace: Any) -> None:
         self._workspace = workspace
         self._jobs: dict[str, TraceExportJob] = {}
+        # 事件循环只弱引用 Task；后台清理需持有强引用直到完成，否则可能中途被回收。
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self.source_guard = None
 
     # ------------------------------------------------------------------
@@ -332,7 +334,9 @@ class TraceDerivedExportService:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(_delete())
+        task = loop.create_task(_delete())
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
 
 
 def _derived_filename(job: TraceExportJob) -> str:

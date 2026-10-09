@@ -163,8 +163,49 @@ def test_conflicting_monthly_extrema_are_rewritten_to_frozen_month():
     corrected = correct_period_extrema(
         '[[analysis:analysis_001]]2月金额为最高值50元。', [content]
     )
-    assert '冻结序列的最高月份为1月' in corrected
-    assert '2月金额为最高' not in corrected
+    assert corrected == '[[analysis:analysis_001]]金额最高月份为1月。'
+
+
+def _monthly_document(analysis_id='analysis_001', values=(100, 50, 80, 120)):
+    return json.dumps({
+        'analysisId': analysis_id,
+        'metrics': [{
+            'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': 'amount', 'fieldRef': 'hospital.amount',
+            'aggregation': 'sum', 'unit': '元', 'formula': 'sum(amount)', 'total': sum(values),
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0, 'periodGranularity': 'month',
+            'periodValues': [{'period': f'2025-{index + 1:02d}', 'value': value}
+                             for index, value in enumerate(values)],
+        }],
+    })
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 章节 block 不含协议标记：唯一分析事实包即其作用域。
+    ('2月金额为最高值50元。', '金额最高月份为4月。'),
+    ('门诊收入在3月达到峰值80元，2月为全年低点50元。', '门诊收入最高月份为4月，2月为全年低点50元。'),
+    ('从月度走势看，2月收入达到全年最高，为50元；4月次之。', '从月度走势看，收入最高月份为4月；4月次之。'),
+    ('**2月**收入最高，需关注。', '收入最高月份为4月，需关注。'),
+    # 占比等豁免陈述保持原文，只改写对应的金额极值句。
+    ('2月门诊占比最高；2月金额为最高值50元。', '2月门诊占比最高；金额最高月份为4月。'),
+])
+def test_extrema_correction_rewrites_unmarked_block_readably(text, expected):
+    assert correct_period_extrema(text, [_monthly_document()]) == expected
+
+
+@pytest.mark.parametrize('text', [
+    '1—3月中，3月收入最高。',  # 子期间范围：改写会丢失范围语义
+    '2024年2月收入最高。',  # 其他年份不属于该序列
+    '4月收入最高，2月最低。',  # 与冻结序列一致
+    '2月金额为最高值；2月收入也最高。',  # 无法唯一定位，留给软告警
+])
+def test_extrema_correction_keeps_text_it_cannot_safely_rewrite(text):
+    assert correct_period_extrema(text, [_monthly_document()]) == text
+
+
+def test_extrema_correction_needs_a_unique_bundle_for_unmarked_text():
+    documents = [_monthly_document(), _monthly_document('analysis_002')]
+    assert correct_period_extrema('2月金额为最高值50元。', documents) == '2月金额为最高值50元。'
 
 
 def test_budget_ratio_catalog_preserves_amounts_and_dimensionless_value():
@@ -221,3 +262,66 @@ def test_ratio_guide_exposes_period_and_denominator_rules_without_inventing_mont
     }]})
     guide = frozen_number_guide([zero_denominator], frozen_number_catalog([zero_denominator]))[0]
     assert guide['references']['percentage'] is None
+
+
+def test_extrema_correction_only_rewrites_the_analysis_that_produced_the_warning():
+    def bundle(analysis_id, values):
+        return json.dumps({
+            'analysisId': analysis_id,
+            'metrics': [{
+                'factId': 'fact-' + analysis_id[-1] * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+                'periodRoles': ['current'], 'field': 'amount', 'fieldRef': 'hospital.amount',
+                'aggregation': 'sum', 'unit': '元', 'formula': 'sum(amount)', 'total': sum(values),
+                'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0, 'periodGranularity': 'month',
+                'periodValues': [{'period': f'2025-{month:02d}', 'value': value}
+                                 for month, value in enumerate(values, 1)],
+            }],
+        })
+
+    # 分析 1 的“5月最高”正确；分析 2 的“5月最高”与冻结序列（6月最高）冲突。
+    contents = [bundle('analysis_001', [1, 2, 3, 4, 9, 5]), bundle('analysis_002', [1, 2, 3, 4, 5, 9])]
+    markdown = '[[analysis:analysis_001]]5月门诊人次最高。\n\n[[analysis:analysis_002]]5月收入最高。'
+    corrected = correct_period_extrema(markdown, contents)
+    assert '[[analysis:analysis_001]]5月门诊人次最高。' in corrected
+    assert '5月收入最高' not in corrected
+    assert '[[analysis:analysis_002]]收入最高月份为6月。' in corrected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("收入同比下降-5.20%。", "收入同比下降5.20%。"),
+    ("门诊量减少了-1,200人次。", "门诊量减少了1,200人次。"),
+    ("收入同比增长-5.20%。", "收入同比下降5.20%。"),
+    ("费用增加-1,200元，增幅为-3.00%。", "费用减少1,200元，降幅为3.00%。"),
+    ("收入下滑-2.10%。", "收入下滑2.10%。"),
+    ("收入变化率为-5.20%，增长率-1.00%。", "收入变化率为-5.20%，增长率-1.00%。"),
+    ("2024-2025年收入增长5.20%。", "2024-2025年收入增长5.20%。"),
+])
+def test_signed_direction_wording_is_normalized_from_frozen_sign(text, expected):
+    from smart_reporting.reporting.trace.numeric_text import normalize_signed_wording
+
+    assert normalize_signed_wording(text) == expected
+
+
+def test_decline_magnitude_after_xiahua_stays_supported():
+    content = json.dumps({'findings': [{'columns': ['change'], 'rows': [[-2.1]],
+                         'columnMeta': {'change': {'unit': '%', 'isPercent': True}}}]})
+    assert replace_unregistered_numbers('收入下滑2.10%。', [content]) == '收入下滑2.10%。'
+
+
+def test_visit_counts_have_wan_display_and_verified_conversion():
+    """人次与金额一样可按固定倍率显示为万人次；正确换算不被替换为待核实。"""
+    document = json.dumps({
+        'analysisId': 'analysis_001',
+        'metrics': [{
+            'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': 'visits', 'fieldRef': 'hospital.visits',
+            'aggregation': 'sum', 'unit': '人次', 'formula': 'sum(visits)', 'total': 1234567,
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        }],
+    })
+    catalog = frozen_number_catalog([document])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:total:万人次}}'] == '123.46万人次'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:total:人次}}'] == '1,234,567人次'
+    text = '门诊量123.46万人次，约123.5万人次。'
+    assert replace_unregistered_numbers(text, [document]) == text
+    assert replace_unregistered_numbers('门诊量123.47万人次。', [document]) == '门诊量待核实。'

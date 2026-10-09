@@ -464,6 +464,10 @@ def analysis_bundle(*, table: str, period_granularity: str) -> AnalysisBundle:
                     "managementQuestion": "收入趋势是否发生显著变化？",
                     "primaryMetricFamily": "收入",
                     "requirementIds": ["req_income"],
+                    # 新分析计划必须显式声明名称、期间角色与序列粒度。
+                    "analysisName": "收入趋势",
+                    "periodRoles": ["current"],
+                    "seriesGranularity": None,
                 }
             ],
             "requirements": [
@@ -3375,10 +3379,7 @@ async def test_visualization_section_respects_report_level_deadline(monkeypatch)
 async def test_visualization_section_final_attempt_degrades_instead_of_failing_report(
     monkeypatch,
 ) -> None:
-    from smart_reporting.reporting.workflow.runtime.base import (
-        MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
-        MAX_REPORT_SECTION_PHASE_ATTEMPTS,
-    )
+    from smart_reporting.reporting.workflow.runtime.base import MAX_REPORT_SECTION_PHASE_ATTEMPTS
 
     async def failing_workflow(_workflow, _payload, _run_context):
         # 工作流内判为 fatal、不可降级的 provider 协议错误。
@@ -3390,7 +3391,8 @@ async def test_visualization_section_final_attempt_degrades_instead_of_failing_r
 
     await run_section()
 
-    max_attempts = MAX_REPORT_SECTION_PHASE_ATTEMPTS * (MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION + 1)
+    # 图表每版证据有独立的纠错预算（_visualization_attempts），不再乘分析返工次数。
+    max_attempts = MAX_REPORT_SECTION_PHASE_ATTEMPTS
     # 前面的 fresh attempt 照常失败重来，只有最后一次才降级为零图成稿。
     assert runtime.task_runner.start.await_count == max_attempts
     toolkit.submit_visualization_charts.assert_awaited_once()
@@ -4065,7 +4067,11 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
     )
 
     assert planner_calls == 2
-    assert AnalysisBundle.model_validate(output.content) == valid
+    # 分析项只声明本期，查询需求的同比/环比窗口按声明收敛为空。
+    expected = valid.model_copy(update={"requirements": (
+        valid.requirements[0].model_copy(update={"comparison_roles": ()}),
+    )})
+    assert AnalysisBundle.model_validate(output.content) == expected
 
 
 def test_analysis_planner_rejects_three_part_table_with_unrelated_source_prefix() -> None:

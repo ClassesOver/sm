@@ -600,5 +600,6 @@ def test_deterministic_period_order_uses_calendar_order_for_unpadded_months() ->
     )
 
     fact = bundle.metrics[0]
-    assert [item.period for item in fact.period_values][-2:] == ["2025-9", "2025-10"]
+    # 末尾零值保留原值并告警；未补零月份仍按日历顺序（9 月在 10 月之前）。
+    assert [item.period for item in fact.period_values][-4:] == ["2025-9", "2025-10", "2025-11", "2025-12"]
     assert any("2025-11 至 2025-12" in warning for warning in fact.warnings)

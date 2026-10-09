@@ -44,17 +44,17 @@ export function reorderMarkdownSections(markdown: string, from: number, to: numb
   const targetHeading = headings[to]
   if (source.level !== targetHeading.level) return markdown
   const targetEnd = sectionEnd(to)
+  // 移动而非互换：源章节放到目标章节位置，中间章节依次顺移；相邻移动两者等价，
+  // 跨章节拖拽时互换会把目标章节甩到源位置。
   const reordered = source.index < targetHeading.index ? [
       ...lines.slice(0, source.index),
-      ...lines.slice(targetHeading.index, targetEnd),
-      ...lines.slice(sourceEnd, targetHeading.index),
+      ...lines.slice(sourceEnd, targetEnd),
       ...lines.slice(source.index, sourceEnd),
       ...lines.slice(targetEnd),
     ] : [
     ...lines.slice(0, targetHeading.index),
     ...lines.slice(source.index, sourceEnd),
-    ...lines.slice(targetEnd, source.index),
-    ...lines.slice(targetHeading.index, targetEnd),
+    ...lines.slice(targetHeading.index, source.index),
     ...lines.slice(sourceEnd),
   ]
   const result = reordered.join('\n')

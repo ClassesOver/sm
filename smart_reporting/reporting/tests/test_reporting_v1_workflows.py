@@ -87,6 +87,8 @@ async def test_analysis_v1_workflow_executes_signed_code_and_completes_once() ->
     async def complete(**kwargs: object) -> dict[str, object]:
         calls.append("complete")
         assert kwargs["evidencePaths"] == [evidence_path]
+        # 已与补证文件核对的执行回执交给服务端登记计算记录。
+        assert kwargs["_execution_receipt"] == receipt
         return {"status": "accepted", "taskFinished": True}
 
     workflow = AnalysisItemWorkflow(
@@ -348,6 +350,8 @@ async def test_analysis_v1_degrades_after_no_submission() -> None:
     # code_agent_no_submission 和 test_evidence_feedback_to_workflow_completion）。
     assert run_count == 3
     assert len(completions) == 1
+    # 补证降级后没有可用的补证文件，不能附带执行回执。
+    assert completions[0]["_execution_receipt"] is None
 
 
 @pytest.mark.anyio

@@ -2765,9 +2765,12 @@ def create_reporting_generator_agent(
             "每张图只表达一个明确管理问题并绑定可信数据。高质量图要求：标题明确表达核心结论，"
             "坐标轴、单位、图例和数据标签完整，标签不重叠、不截断，系列与颜色克制，主信息突出。"
         )
+        # 旧版基准 schema 没有 visualForm/dataBindings；不能在其提示词中出现候选专有字段。
+        candidate_schema = output_schema_name == "VisualizationPlanDraft"
+        difference_fields = "visualForm 或 warnings" if candidate_schema else "warnings"
         instructions.append(
             "图表规划必须沿用同一 chart binding 的数据集、期间、单位和分子分母；"
-            "输入存在多个口径时，在 visualForm 或 warnings 中明确标注差异，禁止无标记混用。"
+            f"输入存在多个口径时，在 {difference_fields} 中明确标注差异，禁止无标记混用。"
             "月度数据的日期仅为月度桶标签，末月金额偏低不能证明月中截止、数据截断或未完整入账。没有直接证据时，标题、注释、替代文本只写金额偏低及原因待核实。"
             "若事实含未入账、字段为零或不可比告警，图表只能支持软告警，不能把缺失值补成零，"
             "也不能仅凭相关变化命名为确定的因果驱动。"
@@ -2778,6 +2781,8 @@ def create_reporting_generator_agent(
             "金额指标unit为空时保留原始值并注明单位待核实，标题、图注及visualForm均不得"
             "补猜元、万元或亿元。嵌套补证表优先绑定明确的rowsDataPath及其列名；"
             "一张表含多个metric时，在visualForm明确各系列的指标筛选条件。"
+            if candidate_schema else
+            "金额指标unit为空时保留原始值并注明单位待核实，标题及图注均不得补猜元、万元或亿元。"
         )
         instructions.append(
             "topGroups/bottomGroups 是多维组合的排序明细子集，不能按科室、院区或收入类别"

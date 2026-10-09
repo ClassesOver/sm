@@ -193,7 +193,8 @@ class ReportEditorTraceService:
                     "filename": dataset.filename,
                     "businessLabel": dataset.business_label,
                     "sqlHash": dataset.sql_hash,
-                    "querySql": dataset.query_sql,
+                    # 原始 SQL 含库表结构、过滤字面值与列名；分享会话（受限能力）只见哈希。
+                    "querySql": dataset.query_sql if session_capabilities is None else None,
                     "rowCount": dataset.row_count,
                     "size": file_ref.size,
                     "materializedAt": dataset.materialized_at,
@@ -206,10 +207,19 @@ class ReportEditorTraceService:
         for entry in index.fact_files:
             if entry.content_kind != "deterministic_bundle":
                 continue
-            raw = await self._read_registered_file(
-                context, files[entry.file_resource_id], max_bytes=16 * 1024 * 1024
-            )
-            document = json.loads(raw)
+            try:
+                raw = await self._read_registered_file(
+                    context, files[entry.file_resource_id], max_bytes=16 * 1024 * 1024
+                )
+                document = json.loads(raw)
+            except (ReportingError, ValueError) as error:
+                # 事实目录只是概览：保留期回收或文件损坏时不拖垮整个来源页，
+                # 数据集元数据照常返回；事实明细接口仍按登记身份严格校验。
+                logger.warning(
+                    "facts_overview_unavailable report={} revision={} analysis={} error={}",
+                    context.report_id, context.revision, entry.analysis_id, error,
+                )
+                continue
             for kind, key in (
                 ("metric", "metrics"), ("comparison", "comparisons"),
                 ("derived", "derivedMetrics"), ("reconciliation", "reconciliations"),

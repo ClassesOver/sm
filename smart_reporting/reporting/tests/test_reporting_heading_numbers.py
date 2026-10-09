@@ -172,6 +172,29 @@ def test_assemble_removes_numbered_duplicate_section_heading() -> None:
     assert rendered.auto_fixes[0]["code"] == "duplicate_section_heading_removed"
 
 
+def test_assemble_drops_trailing_sentence_punctuation_from_headings() -> None:
+    """标题末尾的冒号、句号进入目录与 PDF 后显得残缺；问号与括号内标点保留。"""
+    rendered = _render(
+        "### 收入趋势：\n\n正文\n\n#### **重点项目。**\n\n正文\n\n#### 为何下降？\n\n正文",
+        "### 成本结构（单位：万元）\n\n正文",
+    )
+
+    assert "### 1.1 收入趋势\n" in rendered.markdown
+    assert "#### 1.1.1 **重点项目**\n" in rendered.markdown
+    assert "#### 1.1.2 为何下降？\n" in rendered.markdown
+    assert "### 1.2 成本结构（单位：万元）\n" in rendered.markdown
+    assert [item.title for item in rendered.heading_numbers] == [
+        "经营分析", "收入趋势", "重点项目", "为何下降？", "成本结构（单位：万元）",
+    ]
+
+
+def test_assemble_removes_duplicate_section_heading_with_trailing_colon() -> None:
+    rendered = _render("## 经营分析：\n\n### 结论")
+
+    assert rendered.markdown.count("经营分析") == 1
+    assert rendered.auto_fixes[0]["code"] == "duplicate_section_heading_removed"
+
+
 def test_assemble_excludes_duplicate_chart_before_revalidating_later_block_binding() -> None:
     rendered = assemble_report_markdown(
         ReportDraft(
@@ -1046,3 +1069,26 @@ def test_assemble_explicit_numeric_map_omits_unsupported_claim_anchor():
     assert "100元[[claim:claim_2]]" in rendered.markdown
     legacy = assemble_report_markdown(draft, **arguments)
     assert "[[claim:claim_1]]" in legacy.markdown
+
+
+@pytest.mark.parametrize(("markdown_title", "expected"), [
+    ("一、收入趋势", "收入趋势"),
+    ("十二、收入趋势", "收入趋势"),
+    ("（一）收入趋势", "收入趋势"),
+    ("(2) 收入趋势", "收入趋势"),
+    ("3、收入趋势", "收入趋势"),
+    ("1.2、收入趋势", "收入趋势"),
+    ("3.收入趋势", "收入趋势"),
+    # 正文数字不是编号，必须保留。
+    ("2025年收入", "2025年收入"),
+    ("30天回款率", "30天回款率"),
+    ("一季度收入", "一季度收入"),
+    ("1.5万人次门诊量", "1.5万人次门诊量"),
+    ("(2025)收入预测", "(2025)收入预测"),
+])
+def test_assemble_strips_chinese_and_compact_manual_heading_numbers(markdown_title: str, expected: str) -> None:
+    # 中文报告常见的“一、”“（一）”“3、”编号会与服务端编号叠成“1.1 一、收入趋势”。
+    rendered = _render(f"### {markdown_title}\n\n正文")
+
+    assert f"### 1.1 {expected}\n" in rendered.markdown
+    assert rendered.heading_numbers[1].title == expected

@@ -367,7 +367,8 @@ def test_analysis_planner_instructions_only_add_candidate_requirements() -> None
         name="analysis-legacy",
         stage_instructions=_ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS,
     )
-    assert tuple(agent.instructions[-3:]) == _ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS
+    legacy_count = len(_ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS)
+    assert tuple(agent.instructions[-legacy_count:]) == _ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS
 
 
 def test_visualization_legacy_variant_requires_pre_request_adapter() -> None:

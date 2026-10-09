@@ -1007,3 +1007,43 @@ def test_inline_comment_literal_does_not_hide_table():
     markdown = "注释语法 `<!--`。\n\n[[table:tbl-1]]\n| 指标 |\n"
     assert trace_body(markdown, mask_inline_code=False) == markdown
     assert "[[table:tbl-1]]" in trace_body(markdown)
+
+
+@pytest.mark.parametrize(("text", "matched"), [
+    ("收入同比下降5.20%。", True),
+    ("门诊量减少了1,200人次。", True),
+    ("收入下滑5.2%。", True),
+    ("收入同比增长5.20%。", False),
+    ("收入为5.20%。", False),
+    ("收入同比下降-5.20%。", True),
+])
+def test_negative_frozen_values_match_decline_magnitudes(text, matched):
+    from smart_reporting.reporting.trace.subject_builder import (
+        anchor_claims,
+        formatted_value_matches,
+        value_matches,
+    )
+
+    # 负的冻结值按“下降/减少… + 正幅度”书写是推荐写法，绑定与锚定都必须识别。
+    rate_matched = value_matches(text, -5.2) or formatted_value_matches(text, -5.2, "%")
+    count_matched = value_matches(text, -1200)
+    assert (rate_matched or count_matched) is matched
+    if matched and "%" in text:
+        # 锚点紧跟数值（可位于数字与单位之间，渲染不可见）；未命中时才会追加到段尾。
+        anchored = anchor_claims(text, {"claim_1": (-5.2, "%")})
+        assert "[[claim:claim_1]]" in anchored and not anchored.endswith("[[claim:claim_1]]")
+
+
+def test_visit_count_claims_bind_when_written_in_wan_visits() -> None:
+    """人次事实写成万人次时仍按相同舍入核对并锚定，不能丢失数值绑定。"""
+    from smart_reporting.reporting.trace.subject_builder import (
+        anchor_claims,
+        formatted_value_matches,
+    )
+
+    assert formatted_value_matches("门诊量123.46万人次。", 1234567, "人次")
+    assert formatted_value_matches("门诊量1,234,567人次。", 1234567, "人次")
+    assert not formatted_value_matches("门诊量123.47万人次。", 1234567, "人次")
+    assert anchor_claims("门诊量123.46万人次，同比增长。", {"claim-1": (1234567, "人次")}) == (
+        "门诊量123.46万人次[[claim:claim-1]]，同比增长。"
+    )

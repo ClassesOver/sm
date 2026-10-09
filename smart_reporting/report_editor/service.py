@@ -39,7 +39,11 @@ from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from ..workspace import WorkspaceError, WorkspacePathConflict
 from .trace_retention import source_lifecycle, source_lifecycle_lock
-from .trace_revisions import rebuild_edited_manifest, snapshot_revision_lineage
+from .trace_revisions import (
+    rebuild_edited_manifest,
+    snapshot_revision_lineage,
+    verify_revision_lineage_files,
+)
 from .trace_sources import ReportEditorTraceService
 
 _SOURCE_STATUS_PRIORITY = {"valid": 0, "stale": 1, "unbound": 2, "missing": 3}
@@ -1709,44 +1713,68 @@ class ReportEditorService:
         snapshot_path = str(PurePosixPath(source_context.markdown_path).with_name(f".export-{uuid4().hex}.md"))
         await self.workspace.awrite_text(scope.workspace_key, snapshot_path, document.markdown)
         try:
-            artifact_manifest = await self.trace.load_manifest(source_context)
+            artifact_manifest = None
             trace_index = None
             render_manifest = None
-            if artifact_manifest is not None:
-                trace_index = await self.trace.load_index(source_context)
-                rebuilt = await rebuild_edited_manifest(
-                    self.workspace,
-                    scope.workspace_key,
-                    manifest=artifact_manifest,
-                    index=trace_index,
-                    markdown_path=snapshot_path,
-                    markdown=document.markdown,
-                    target_revision=context.revision + 1,
-                )
-                render_manifest = rebuilt.model_dump(mode="json", by_alias=True)
-            if trace_index is not None:
-                validation = await self.trace.validate(
-                    source_context, document.markdown, document.sha256
-                )
-                target_job = session_state[REPORT_JOBS_STATE_KEY][context.job_id]
-                if isinstance(target_job.get("_citationPresentations"), list):
-                    target_job["_citationPresentations"] = _export_citation_presentations(
-                        target_job["_citationPresentations"],
-                        validation,
+            rebuilt = None
+            # AGENTS：追溯数据不可用只拒绝使用该数据，不能阻止导出已核验身份的 PDF/Word；
+            # 原因写入 validation.issues 并照常签发。
+            lineage_issues: list[dict[str, str]] = []
+            target_job = session_state[REPORT_JOBS_STATE_KEY][context.job_id]
+            original_presentations = copy.deepcopy(target_job.get("_citationPresentations"))
+            try:
+                artifact_manifest = await self.trace.load_manifest(source_context)
+                if artifact_manifest is not None:
+                    trace_index = await self.trace.load_index(source_context)
+                    await verify_revision_lineage_files(
+                        self.workspace,
+                        scope.workspace_key,
+                        manifest=artifact_manifest,
+                        index=trace_index,
+                    )
+                    rebuilt = await rebuild_edited_manifest(
+                        self.workspace,
+                        scope.workspace_key,
+                        manifest=artifact_manifest,
+                        index=trace_index,
+                        markdown_path=snapshot_path,
+                        markdown=document.markdown,
+                        target_revision=context.revision + 1,
+                    )
+                    render_manifest = rebuilt.model_dump(mode="json", by_alias=True)
+                if trace_index is not None:
+                    validation = await self.trace.validate(
+                        source_context, document.markdown, document.sha256
+                    )
+                    if isinstance(target_job.get("_citationPresentations"), list):
+                        target_job["_citationPresentations"] = _export_citation_presentations(
+                            target_job["_citationPresentations"],
+                            validation,
+                            trace_index,
+                            public_base_url=public_base_url,
+                            report_id=context.report_id,
+                            revision=context.revision + 1,
+                            citations=artifact_manifest.citations,
+                        )
+                    # B8：数据来源附录与引用展示同一次快照联合渲染，编号由渲染器
+                    # 按正文首次出现顺序分配；无追溯索引的旧报告保持无附录导出。
+                    target_job["_traceSourcePresentations"] = _build_export_trace_sources(
                         trace_index,
+                        validation,
                         public_base_url=public_base_url,
                         report_id=context.report_id,
                         revision=context.revision + 1,
-                        citations=artifact_manifest.citations,
                     )
-                # B8：数据来源附录与引用展示同一次快照联合渲染，编号由渲染器
-                # 按正文首次出现顺序分配；无追溯索引的旧报告保持无附录导出。
-                target_job["_traceSourcePresentations"] = _build_export_trace_sources(
-                    trace_index,
-                    validation,
-                    public_base_url=public_base_url,
-                    report_id=context.report_id,
-                    revision=context.revision + 1,
+            except Exception as error:  # noqa: BLE001 - 追溯降级，导出继续
+                lineage_issues.append(_lineage_unavailable_issue(error, rendered=False))
+                artifact_manifest = trace_index = render_manifest = rebuilt = None
+                if isinstance(original_presentations, list):
+                    target_job["_citationPresentations"] = original_presentations
+                target_job.pop("_traceSourcePresentations", None)
+                logger.opt(exception=error).warning(
+                    "report_editor_export_lineage_dropped report_id={} base_revision={} stage=prepare",
+                    context.report_id,
+                    context.revision,
                 )
             try:
                 rendered = await report_tools._render_report_pair(
@@ -1762,17 +1790,33 @@ class ReportEditorService:
                 ) from error
             finally:
                 await self._delete_export_snapshot(scope.workspace_key, snapshot_path)
-            if (
-                not isinstance(rendered, dict)
-                or rendered.get("validation", {}).get("ok") is not True
-            ):
-                raise ReportingError(
-                    "report_artifact_validation_failed", "PDF/Word 联合验收未通过。"
+            # AGENTS：验收失败不阻止签发。PDF/Word 已生成且实际身份可读取时保留并签发，
+            # 同时返回失败原因；只有产物缺失或身份不可读才无法签发。
+            receipt = rendered.get("validation") if isinstance(rendered, dict) else None
+            validation_ok = isinstance(receipt, dict) and receipt.get("ok") is True
+            raw_issues = receipt.get("issues") if isinstance(receipt, dict) else None
+            validation_issues = [
+                {key: str(item[key])[:500] for key in ("code", "message") if item.get(key) is not None}
+                for item in (raw_issues[:20] if isinstance(raw_issues, list) else [])
+                if isinstance(item, dict)
+            ]
+            if not validation_ok:
+                validation_issues = validation_issues or [{
+                    "code": "report_artifact_validation_failed",
+                    "message": "PDF/Word 联合验收未通过。",
+                }]
+                logger.warning(
+                    "report_editor_export_validation_failed report_id={} base_revision={} issue_codes={}",
+                    context.report_id, context.revision,
+                    ",".join(item.get("code", "") for item in validation_issues),
                 )
             next_revision = context.revision + 1
             word_path = str(PurePosixPath(output_path).with_suffix(".docx"))
             pdf_identity = await self.workspace.ahash_file(scope.workspace_key, output_path)
             word_identity = await self.workspace.ahash_file(scope.workspace_key, word_path)
+            for identity in (pdf_identity, word_identity):
+                if identity.get("missing") or not identity.get("sha256") or not identity.get("size"):
+                    raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
             markdown_path = str(
                 PurePosixPath(output_path).with_name(PurePosixPath(context.markdown_path).name)
             )
@@ -1858,13 +1902,22 @@ class ReportEditorService:
                     path=markdown_path, mediaType="text/markdown",
                     size=len(document.markdown.encode()), sha256=document.sha256,
                 )
-                _, next_manifest_identity = await snapshot_revision_lineage(
-                    self.workspace, scope.workspace_key,
-                    manifest=awaitable_manifest, index=trace_index,
-                    markdown_file=next_markdown, target_revision=next_revision,
-                    path_map=path_map,
-                    manifest_path=str(PurePosixPath(markdown_path).with_name("artifact-manifest.json")),
-                )
+                try:
+                    _, next_manifest_identity = await snapshot_revision_lineage(
+                        self.workspace, scope.workspace_key,
+                        manifest=awaitable_manifest, index=trace_index,
+                        markdown_file=next_markdown, target_revision=next_revision,
+                        path_map=path_map,
+                        manifest_path=str(PurePosixPath(markdown_path).with_name("artifact-manifest.json")),
+                    )
+                except Exception as error:  # noqa: BLE001 - PDF/Word 已生成，追溯降级
+                    lineage_issues.append(_lineage_unavailable_issue(error, rendered=True))
+                    next_manifest_identity = None
+                    logger.opt(exception=error).warning(
+                        "report_editor_export_lineage_dropped report_id={} base_revision={} stage=snapshot",
+                        context.report_id,
+                        context.revision,
+                    )
             next_context = ReportEditorContext(
                 reportId=context.report_id,
                 revision=next_revision,
@@ -1921,15 +1974,21 @@ class ReportEditorService:
             scope.user_id,
             document.sha256,
         )
-        return publication_result(
-            report_id=context.report_id,
-            revision=next_revision,
-            raw_grant=raw_download,
-            grant=download_grant,
-            base_url=public_base_url,
-            editor_raw_grant=raw_editor,
-            editor_expires_at=editor_expires_at,
-        )
+        return {
+            **publication_result(
+                report_id=context.report_id,
+                revision=next_revision,
+                raw_grant=raw_download,
+                grant=download_grant,
+                base_url=public_base_url,
+                editor_raw_grant=raw_editor,
+                editor_expires_at=editor_expires_at,
+            ),
+            "validation": {
+                "ok": validation_ok and not lineage_issues,
+                "issues": [*([] if validation_ok else validation_issues), *lineage_issues],
+            },
+        }
 
     async def _copy_revision_assets(
         self,
@@ -2089,6 +2148,19 @@ def _registered_markdown_sha(job: dict[str, Any]) -> str:
     if isinstance(markdown, dict):
         return str(markdown.get("sha256", ""))
     return ""
+
+
+def _lineage_unavailable_issue(error: BaseException, *, rendered: bool) -> dict[str, str]:
+    reason = error.message if isinstance(error, ReportingError) else type(error).__name__
+    effect = (
+        "成品已生成，但新版本未登记追溯索引，来源附录中的在线定位不可用。"
+        if rendered
+        else "本次导出不含来源附录与追溯索引，新版本无法查看数据来源。"
+    )
+    return {
+        "code": "report_editor_lineage_unavailable",
+        "message": f"数据来源追溯不可用（{reason}）：{effect}"[:500],
+    }
 
 
 def _next_pdf_path(context: ReportEditorContext) -> str:

@@ -23,6 +23,7 @@ export interface ExportResult {
   pdf: { downloadUrl: string; path?: string; size?: number }
   word: { downloadUrl: string; path?: string; size?: number }
   editor?: { openUrl: string }
+  validation?: { ok: boolean; issues: { code?: string; message?: string }[] }
 }
 
 export interface ShareResult { openUrl: string; expiresAt: string }

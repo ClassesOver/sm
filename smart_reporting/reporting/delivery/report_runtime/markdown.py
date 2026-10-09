@@ -145,23 +145,91 @@ def _normalize_report_markdown_segments(
     return "".join(normalized)
 
 
+_CJK_CHAR = r"[\u3400-\u9fff]"
+# 协议标记与 Markdown 链接/图片地址是机器文本，不参与标点规范。
+_PUNCTUATION_PROTECTED = re.compile(r"\[\[[^\]\r\n]+\]\]|\]\([^)\r\n]*\)")
+_HALF_WIDTH_PUNCTUATION = re.compile(
+    rf"(?:(?<={_CJK_CHAR})(?P<after>[,:;])[ \t]*)"
+    rf"|(?:(?<![A-Za-z0-9])(?P<before>[,:;])[ \t]*(?={_CJK_CHAR}))"
+)
+_FULL_WIDTH = {",": "，", ":": "：", ";": "；"}
+
+
+def _normalize_cjk_punctuation_text(text: str) -> str:
+    def convert(piece: str) -> str:
+        return _HALF_WIDTH_PUNCTUATION.sub(
+            lambda match: _FULL_WIDTH[match["after"] or match["before"]], piece
+        )
+
+    pieces: list[str] = []
+    previous_end = 0
+    for protected in _PUNCTUATION_PROTECTED.finditer(text):
+        pieces.append(convert(text[previous_end : protected.start()]))
+        pieces.append(protected[0])
+        previous_end = protected.end()
+    pieces.append(convert(text[previous_end:]))
+    return "".join(pieces)
+
+
+def normalize_cjk_punctuation(markdown: str) -> str:
+    """中文正文中的半角逗号、冒号、分号改为全角。
+
+    只改紧邻汉字的标点：千分位（1,234）、时间（12:30）、英文（A, B）、协议标记、
+    链接地址与代码保持原样。
+    """
+
+    return _normalize_report_markdown_segments(markdown, _normalize_cjk_punctuation_text)
+
+
 def normalize_report_markdown_strong_spacing(markdown: str) -> str:
     """移除明确成对的中文或业务数值粗体标记内侧空白。"""
 
     return _normalize_report_markdown_segments(markdown, _normalize_strong_spacing_line)
 
 
+# CommonMark 把 U+200A 视为空白，可让紧贴标点的 ** 成为合法定界符；渲染后再
+# 移除，避免成品在中文与粗体之间出现可见空格。
+_STRONG_BOUNDARY = " "
+_STRONG_BOUNDARY_HTML = re.compile(
+    f"{_STRONG_BOUNDARY}(?=<strong>)|(?<=</strong>){_STRONG_BOUNDARY}"
+)
+_ATX_HEADING_LINE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|\r?\n|$)")
+
+
 def _normalize_cjk_strong_markers(markdown: str) -> str:
-    """让报告中的中文/数值粗体文本进入 CommonMark 的强调解析路径。"""
+    """让报告中的中文/数值粗体文本进入 CommonMark 的强调解析路径。
+
+    标题行只做粗体内侧空白规范：标题锚点按草稿装配时的原始解析文本绑定，
+    插入定界边界会改变标题文本并导致渲染失败。
+    """
 
     def add_boundaries(match: re.Match[str]) -> str:
-        return f"{match['left']} {match['open']}{match['content']}{match['close']} {match['right']}"
+        return (
+            f"{match['left']}{_STRONG_BOUNDARY}{match['open']}{match['content']}"
+            f"{match['close']}{_STRONG_BOUNDARY}{match['right']}"
+        )
 
     def normalize_line(line: str) -> str:
         normalized = _CJK_STRONG_MARKER.sub(add_boundaries, line)
         return _normalize_strong_spacing_line(normalized)
 
-    return _normalize_report_markdown_segments(markdown, normalize_line)
+    normalized = _normalize_report_markdown_segments(markdown, normalize_line)
+    return "".join(
+        normalize_report_markdown_strong_spacing(source)
+        if source != line and _ATX_HEADING_LINE.match(source)
+        else line
+        for source, line in zip(
+            markdown.splitlines(keepends=True),
+            normalized.splitlines(keepends=True),
+            strict=True,
+        )
+    )
+
+
+def _strip_strong_boundaries(html_body: str) -> str:
+    """移除 ``_normalize_cjk_strong_markers`` 为解析插入、已紧邻粗体标签的边界。"""
+
+    return _STRONG_BOUNDARY_HTML.sub("", html_body)
 
 
 def _document_context(value: Any) -> dict[str, Any]:

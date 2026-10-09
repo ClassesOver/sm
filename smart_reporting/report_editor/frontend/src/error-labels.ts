@@ -11,6 +11,7 @@ const CODE_LABELS: Record<string, string> = {
   report_editor_export_timeout: '导出超时 · 请稍后重试',
   report_editor_export_missing: '导出任务已失效 · 请重新导出',
   report_artifact_validation_failed: '导出验收未通过',
+  report_artifact_unavailable: '报告文件未生成或无法读取 · 无法签发下载链接',
 }
 
 export function errorLabel(error: unknown): string {

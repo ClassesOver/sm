@@ -11,7 +11,7 @@ from pydantic import ConfigDict, Field
 from sqlglot import exp
 
 from ....report_editor.service import ReportEditorContext
-from ....workspace import WorkspacePathConflict
+from ....workspace import WorkspaceError, WorkspacePathConflict
 from ...delivery.artifacts_v1 import ArtifactFile, ReportArtifactManifest
 from ...structured_output import StructuredOutputCallBudget
 from ...trace.contracts_v1 import RevisionTraceIndexV1, derive_resource_id
@@ -332,57 +332,81 @@ class RuntimePlanningMixin:
         source_manifest = None
         source_index = None
         manifest_identity = None
-        if content.get("artifactManifest") is not None:
-            manifest_identity = ArtifactFile.model_validate(content["artifactManifest"])
-            manifest_bytes = await self.workspace_service.read_limited_regular_file(
-                thread_id, manifest_identity.path, max_bytes=manifest_identity.size
+        # AGENTS：清单/追溯索引核验失败属于发布门禁问题，不得阻止已生成 PDF/Word 的签发。
+        # 失败时不使用该清单与索引（新修订不带溯源），照常签发并返回问题。
+        publication_issues: list[dict[str, str]] = []
+
+        def _drop_lineage(error: Exception) -> None:
+            nonlocal source_manifest, source_index, manifest_identity
+            source_manifest = source_index = manifest_identity = None
+            content["artifactManifest"] = None
+            content.pop("artifactManifestPath", None)
+            code = error.code if isinstance(error, ReportingError) else "report_lineage_unavailable"
+            loguru_logger.warning(
+                "report_publication_lineage_dropped report_id={} code={} error_type={}",
+                content["reportId"], code, type(error).__name__,
             )
-            if (
-                len(manifest_bytes) != manifest_identity.size
-                or sha256(manifest_bytes).hexdigest() != manifest_identity.sha256
-            ):
-                raise ReportingError(
-                    "report_artifact_manifest_changed", "已验收报告产物清单发生变化。"
-                )
-            source_manifest = ReportArtifactManifest.model_validate_json(manifest_bytes)
-            if (
-                source_manifest.report_id != content["reportId"]
-                or source_manifest.markdown.path != content["markdownPath"]
-                or source_manifest.revision not in {content["revision"], content["revision"] - 1}
-            ):
-                raise ReportingError(
-                    "report_artifact_manifest_invalid", "报告产物清单与发布身份不一致。"
-                )
-            if source_manifest.trace_index is not None:
-                index_file = source_manifest.trace_index
-                index_bytes = await self.workspace_service.read_limited_regular_file(
-                    thread_id, index_file.path, max_bytes=index_file.size
+            publication_issues.append({
+                "code": code,
+                "message": "报告溯源清单或索引核验未通过，本修订不提供来源追溯；下载链接已签发。",
+            })
+
+        if content.get("artifactManifest") is not None:
+            try:
+                manifest_identity = ArtifactFile.model_validate(content["artifactManifest"])
+                manifest_bytes = await self.workspace_service.read_limited_regular_file(
+                    thread_id, manifest_identity.path, max_bytes=manifest_identity.size
                 )
                 if (
-                    len(index_bytes) != index_file.size
-                    or sha256(index_bytes).hexdigest() != index_file.sha256
+                    len(manifest_bytes) != manifest_identity.size
+                    or sha256(manifest_bytes).hexdigest() != manifest_identity.sha256
                 ):
                     raise ReportingError(
-                        "report_trace_index_changed", "已验收追溯索引发生变化。"
+                        "report_artifact_manifest_changed", "已验收报告产物清单发生变化。"
                     )
-                source_index = RevisionTraceIndexV1.model_validate_json(index_bytes)
-                index_markdown = next(
-                    file for file in source_index.files
-                    if file.resource_id == source_index.markdown_file_resource_id
-                )
+                source_manifest = ReportArtifactManifest.model_validate_json(manifest_bytes)
                 if (
-                    source_index.report_id != source_manifest.report_id
-                    or source_index.revision != source_manifest.revision
-                    or source_index.workflow_run_id != workflow_run_id
-                    or source_index.markdown_file_resource_id
-                    != derive_resource_id(source_manifest.markdown.path)
-                    or index_markdown.path != source_manifest.markdown.path
-                    or index_markdown.size != source_manifest.markdown.size
-                    or index_markdown.sha256 != source_manifest.markdown.sha256
+                    source_manifest.report_id != content["reportId"]
+                    or source_manifest.markdown.path != content["markdownPath"]
+                    or source_manifest.revision not in {content["revision"], content["revision"] - 1}
                 ):
                     raise ReportingError(
-                        "report_trace_index_invalid", "报告追溯索引与发布身份不一致。"
+                        "report_artifact_manifest_invalid", "报告产物清单与发布身份不一致。"
                     )
+                if source_manifest.trace_index is not None:
+                    index_file = source_manifest.trace_index
+                    index_bytes = await self.workspace_service.read_limited_regular_file(
+                        thread_id, index_file.path, max_bytes=index_file.size
+                    )
+                    if (
+                        len(index_bytes) != index_file.size
+                        or sha256(index_bytes).hexdigest() != index_file.sha256
+                    ):
+                        raise ReportingError(
+                            "report_trace_index_changed", "已验收追溯索引发生变化。"
+                        )
+                    source_index = RevisionTraceIndexV1.model_validate_json(index_bytes)
+                    index_markdown = next(
+                        (file for file in source_index.files
+                         if file.resource_id == source_index.markdown_file_resource_id),
+                        None,
+                    )
+                    if (
+                        index_markdown is None
+                        or source_index.report_id != source_manifest.report_id
+                        or source_index.revision != source_manifest.revision
+                        or source_index.workflow_run_id != workflow_run_id
+                        or source_index.markdown_file_resource_id
+                        != derive_resource_id(source_manifest.markdown.path)
+                        or index_markdown.path != source_manifest.markdown.path
+                        or index_markdown.size != source_manifest.markdown.size
+                        or index_markdown.sha256 != source_manifest.markdown.sha256
+                    ):
+                        raise ReportingError(
+                            "report_trace_index_invalid", "报告追溯索引与发布身份不一致。"
+                        )
+            except (ReportingError, ValidationError, ValueError, OSError, WorkspaceError) as error:
+                _drop_lineage(error)
         source_markdown = PurePosixPath(content["markdownPath"])
         revision_directory = f"revision-{content['revision']}"
         revision_markdown = (
@@ -484,23 +508,27 @@ class RuntimePlanningMixin:
                 except ValueError:
                     relative = PurePosixPath("trace-resources") / source_path
                 path_map.setdefault(source_path, str(target_root / relative))
-            _relocated_manifest, relocated_identity = await snapshot_revision_lineage(
-                self.workspace_service,
-                thread_id,
-                manifest=source_manifest,
-                index=source_index,
-                markdown_file=ArtifactFile(
-                    path=str(revision_markdown),
-                    mediaType="text/markdown",
-                    size=source_manifest.markdown.size,
-                    sha256=source_manifest.markdown.sha256,
-                ),
-                target_revision=int(content["revision"]),
-                path_map=path_map,
-                manifest_path=target_manifest_path,
-            )
-            content["artifactManifestPath"] = relocated_identity.path
-            content["artifactManifest"] = relocated_identity.model_dump(mode="json", by_alias=True)
+            try:
+                _relocated_manifest, relocated_identity = await snapshot_revision_lineage(
+                    self.workspace_service,
+                    thread_id,
+                    manifest=source_manifest,
+                    index=source_index,
+                    markdown_file=ArtifactFile(
+                        path=str(revision_markdown),
+                        mediaType="text/markdown",
+                        size=source_manifest.markdown.size,
+                        sha256=source_manifest.markdown.sha256,
+                    ),
+                    target_revision=int(content["revision"]),
+                    path_map=path_map,
+                    manifest_path=target_manifest_path,
+                )
+            except (ReportingError, ValidationError, ValueError, OSError, WorkspaceError) as error:
+                _drop_lineage(error)
+            else:
+                content["artifactManifestPath"] = relocated_identity.path
+                content["artifactManifest"] = relocated_identity.model_dump(mode="json", by_alias=True)
         content["editorJob"] = editor_job
         durable = await self.state_repository.get(workflow_run_id)
         stored_scope = (
@@ -593,7 +621,7 @@ class RuntimePlanningMixin:
             word_sha256=content["wordSha256"],
         )
         editor_raw, editor_expires_at = await editor_grants.issue(editor_context)
-        return publication_result(
+        result = publication_result(
             report_id=content["reportId"],
             revision=content["revision"],
             raw_grant=raw,
@@ -604,6 +632,9 @@ class RuntimePlanningMixin:
             source_warnings=content["sourceWarnings"],
             task_receipts=content["codingReceipts"],
         )
+        if publication_issues:
+            result["publicationIssues"] = publication_issues
+        return result
 
     async def issue_workspace_publication(
         self,

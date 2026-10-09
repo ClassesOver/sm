@@ -31,7 +31,7 @@ from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
 from ...trace.computation_service import detect_computation_cycles
-from ...trace.content_review import review_content
+from ...trace.content_review import readability_warnings, repeated_sentence_warnings, review_content
 from ...trace.contracts_v1 import (
     ChartTraceV1,
     ComputationRecordV1,
@@ -45,6 +45,7 @@ from ...trace.numeric_text import (
     correct_period_extrema,
     frozen_number_catalog,
     frozen_number_guide,
+    normalize_signed_wording,
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
@@ -850,7 +851,7 @@ def _section_stage_agent(
             "不得输出 H1/H2、图片语法、协议标记或无证据数字；内部 ID 仅可用于 frozenNumbers 提供的数值占位符。",
             "月度日期是月度桶标签，不是数据截止时点；其他模型摘要或图表标题中的推测不构成直接证据。不得补写目录中不存在的月均值或派生金额。",
             "异常或偏低只描述事实与待核实事项；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
-            "frozenNumbers 中的数值必须使用对应 {{value:...}} 占位符，不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。需要元值和亿元同时展示时分别选择两个占位符。",
+            "frozenNumbers 中的数值必须使用对应 {{value:...}} 占位符，不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。需要元值和亿元同时展示时分别选择两个占位符；大额人次可选择万人次占位。",
             "reportGoal要求精确原始元值时，已登记元单位的关键金额必须选择元值占位符展示；"
             "可另附亿元或万元显示，但不得只写舍入后的大单位金额。",
             "冻结事实 unit 为空时，仍可用其占位符展示原始金额并注明‘金额单位待核实’，不得追加元、万元或亿元、不得换算；图表标题和其他模型摘要里的单位不能补作单位证据。",
@@ -1605,6 +1606,9 @@ async def _generate_section_in_blocks(
             run_context=run_context,
         )
         review_warnings: list[str] = []
+        first_block_content: Any = None
+        first_block_warnings: list[str] = []
+        first_block_score = (0, 0)
         for block_attempt in range(2):
             try:
                 content = await _run_section_stage(
@@ -1631,23 +1635,43 @@ async def _generate_section_in_blocks(
             review_warnings = review_content(content.markdown, (item.content for item in selected_files),
                                              field_definitions=block_payload["fieldDefinitions"],
                                              fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids))
+            accuracy_count = len(review_warnings)
+            # 各 block 独立生成，常重复前文的开场与结论；逐句重复同样进入纠错轮次。
+            review_warnings.extend(repeated_sentence_warnings(
+                content.markdown, (block.markdown for block in blocks), block_number_catalog,
+            ))
+            # 长句与数值堆砌按读者所见（占位换成显示值）度量，同样进入纠错轮次。
+            review_warnings.extend(readability_warnings(content.markdown, block_number_catalog))
+            # 准确性问题优先：先比准确性问题数，再比可读性（重复、长句）问题数。
+            review_score = (accuracy_count, len(review_warnings) - accuracy_count)
+            if block_attempt == 1 and review_score > first_block_score:
+                # 纠错后问题反而更严重时保留首轮版本，纠错不能让正文变差。
+                loguru_logger.warning("report_content_correction_reverted section={} blocks={}",
+                                      work_item.section_code, block_plan.block_id)
+                content, review_warnings = first_block_content, first_block_warnings
             loguru_logger.info("report_content_review_completed section={} block={} attempt={} issue_count={}",
                                work_item.section_code, block_plan.block_id, block_attempt, len(review_warnings))
             if review_warnings and block_attempt == 0:
+                first_block_content, first_block_warnings, first_block_score = content, review_warnings, review_score
                 block_payload["correction"] = {
                     "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
-                    "requiredAction": "修正有依据的数字和口径，删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。",
+                    "requiredAction": (
+                        "逐条处理 issues：修正有依据的数字和口径；内部 ID 和英文字段名改用业务名称；"
+                        "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
+                        "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子；删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。"
+                    ),
                 }
                 continue
             for warning in review_warnings:
                 loguru_logger.warning("report_content_review_warning section={} message={}", work_item.section_code, warning)
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
+                # 纠错后仍残留的负值方向措辞按冻结符号确定性改写，再核对未登记数字。
                 markdown=replace_unregistered_numbers(
-                    correct_period_extrema(
+                    normalize_signed_wording(correct_period_extrema(
                         render_frozen_numbers(content.markdown, block_number_catalog),
                         (item.content for item in selected_files),
-                    ),
+                    )),
                     (item.content for item in selected_files),
                 ),
                 citationIds=citation_ids,
@@ -1745,6 +1769,10 @@ async def _generate_whole_section_content(
         base_payload=payload,
         run_context=run_context,
     )
+    first_by_id: dict[str, Any] = {}
+    first_warnings: dict[str, list[str]] = {}
+    first_scores: dict[str, tuple[int, int]] = {}
+    flagged_ids: set[str] = set()
     for review_attempt in range(2):
         try:
             content = await _run_section_stage(
@@ -1778,22 +1806,69 @@ async def _generate_whole_section_content(
                     "actualBlockIds": [item.block_id for item in content.blocks],
                 },
             )
-        review_warnings = {
+        if review_attempt == 1:
+            # 纠错只针对有问题的 block；首轮无问题的 block 保留原文，避免整章重写把已通过的内容改坏。
+            content = content.model_copy(update={"blocks": tuple(
+                block if block.block_id in flagged_ids else first_by_id[block.block_id]
+                for block in content.blocks
+            )})
+            content_by_id = {item.block_id: item for item in content.blocks}
+        # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
+        accuracy_warnings = {
             block.block_id: review_content(block.markdown, (item.content for item in evidence.files),
-                                          field_definitions=payload["fieldDefinitions"],
-                                          fact_ids=block_fact_ids[block.block_id])
+                                           field_definitions=payload["fieldDefinitions"],
+                                           fact_ids=block_fact_ids[block.block_id])
             for block in content.blocks
         }
-        review_warnings = {key: value for key, value in review_warnings.items() if value}
+        style_warnings = {
+            block.block_id: [
+                *repeated_sentence_warnings(
+                    block.markdown, (earlier.markdown for earlier in content.blocks[:position]),
+                    section_number_catalog,
+                ),
+                *readability_warnings(block.markdown, section_number_catalog),
+            ]
+            for position, block in enumerate(content.blocks)
+        }
+        # 准确性问题优先于可读性问题：比较纠错前后时先比准确性问题数，再比可读性问题数。
+        review_scores = {key: (len(accuracy_warnings[key]), len(style_warnings[key])) for key in accuracy_warnings}
+        review_warnings = {
+            key: [*accuracy_warnings[key], *style_warnings[key]]
+            for key in accuracy_warnings if accuracy_warnings[key] or style_warnings[key]
+        }
+        if review_attempt == 1:
+            # 纠错后问题反而更严重的 block 回退到首轮版本，纠错不能让正文变差。
+            worse = {block_id for block_id in flagged_ids
+                     if review_scores[block_id] > first_scores[block_id]}
+            if worse:
+                loguru_logger.warning("report_content_correction_reverted section={} blocks={}",
+                                      work_item.section_code, ",".join(sorted(worse)))
+                content = content.model_copy(update={"blocks": tuple(
+                    first_by_id[block.block_id] if block.block_id in worse else block
+                    for block in content.blocks
+                )})
+                content_by_id = {item.block_id: item for item in content.blocks}
+                review_warnings = {**{key: value for key, value in review_warnings.items() if key not in worse},
+                                   **{key: first_warnings[key] for key in worse}}
         loguru_logger.info("report_content_review_completed section={} attempt={} issue_count={} block_count={}",
                            work_item.section_code, review_attempt,
                            len({warning for warnings in review_warnings.values() for warning in warnings}), len(content.blocks))
         if not review_warnings:
             break
         if review_attempt == 0:
+            first_by_id = content_by_id
+            first_warnings = review_warnings
+            first_scores = review_scores
+            flagged_ids = set(review_warnings)
             payload["correction"] = {
                 "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
-                "requiredAction": "仅修复指出的数字、字段口径和无证据解释；使用冻结数值引用。返回全部 block 完整正文，保留 blockId；问题仍不确定时删去推测或写待核实。",
+                "requiredAction": (
+                    "逐条处理 issues：修正数字与字段口径并使用冻结数值引用；内部 ID 和英文字段名改用业务名称；"
+                    "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
+                    "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子。"
+                    "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId；"
+                    "issues 未列出的 block 原样返回（服务端保留其首轮原文）。"
+                ),
             }
         else:
             for block_id, warnings in review_warnings.items():
@@ -1807,10 +1882,10 @@ async def _generate_whole_section_content(
         block = ReportDraftBlock(
             blockId=block_plan.block_id,
             markdown=replace_unregistered_numbers(
-                correct_period_extrema(
+                normalize_signed_wording(correct_period_extrema(
                     render_frozen_numbers(content_by_id[block_plan.block_id].markdown, section_number_catalog),
                     (item.content for item in evidence.files),
-                ),
+                )),
                 (item.content for item in evidence.files),
             ),
             claimIds=block_plan.claim_ids,
@@ -2644,6 +2719,15 @@ class RuntimeSectionsMixin:
         traces: list[TableTraceV1] = []
         fact_directory: dict[str, tuple[str, str]] = {}
         fact_values: dict[str, tuple[Any, str | None]] = {}
+        try:
+            # 表头指标名的兜底来源；Profile 不可读时表格照常生成（显示字段名）。
+            metric_descriptions = {
+                metric.code: metric.description
+                for metric in self._profile(run_context).metrics
+                if metric.description
+            }
+        except ReportingError:
+            metric_descriptions = {}
         for analysis_id, identity in checkpoint.deterministic_fact_files.items():
             try:
                 raw = await self._read_identity_bytes(
@@ -2672,6 +2756,7 @@ class RuntimeSectionsMixin:
                 built = build_analysis_table(
                     bundle, fact_file_resource_id=fact_resource,
                     dataset_contexts=self._state(run_context).get("report_analysis_data_context", ()),
+                    metric_descriptions=metric_descriptions,
                 )
                 if built is None:
                     continue
@@ -2937,11 +3022,12 @@ class RuntimeSectionsMixin:
                     computation_files.append(evidence_file)
             cycles = detect_computation_cycles(tuple(computation_records))
             if cycles:
-                raise ReportingError(
-                    "report_computation_cycle_invalid",
-                    "补充分析计算记录存在循环依赖，拒绝发布。",
-                    details={"cycles": cycles[:5]},
+                # 计算记录只是追溯元数据；循环依赖时不登记计算层，报告照常交付。
+                loguru_logger.warning(
+                    "report_computation_cycle_dropped cycles={}", cycles[:5]
                 )
+                computation_records = []
+                computation_files = []
         manifest = await self._build_and_write_artifact_manifest(
             manifest_path,
             accepted_artifacts=accepted_artifacts,

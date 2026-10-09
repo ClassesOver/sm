@@ -878,6 +878,7 @@ class RuntimeAnalysisMixin:
         warnings: list[str],
         chartIds: list[str] | None = None,
         run_context: RunContext | None = None,
+        _execution_receipt: Any = None,
     ) -> dict[str, Any]:
         """把不可变固定事实直接绑定为 evidence，并结束对应的独立 Task。
 
@@ -885,6 +886,9 @@ class RuntimeAnalysisMixin:
         的 deterministic fact 文件，并按路径、大小和 SHA-256 校验 durable artifact 账本。
         durable 游标已推进但 Task 收尾中断时，只允许相同 payload 在新 attempt 中幂等恢复，
         任何字段或文件身份变化都拒绝。
+
+        ``_execution_receipt`` 只由固定 Workflow 传入（模型工具 schema 禁止额外参数），
+        是已与补证文件核对一致的执行回执，用于服务端登记补充分析计算记录。
         """
 
         try:
@@ -1015,11 +1019,22 @@ class RuntimeAnalysisMixin:
                 deterministic_paths=bound_paths,
                 run_context=run_context,
                 requirements=planned if isinstance(planned, Mapping) else {},
+                execution_receipt=_execution_receipt,
             )
-            if computation_record is not None:
+            computation_receipt = self._computation_execution_receipt(
+                run_context, _execution_receipt
+            )
+            if computation_record is not None and computation_receipt is not None:
                 payload["computationRecord"] = computation_record
-                payload["computationScriptFile"] = script
+                payload["computationScriptFile"] = computation_receipt.source_file.model_dump(
+                    mode="json", by_alias=True
+                )
             if isinstance(durable_item, dict):
+                # durable 恢复重放没有执行回执；计算记录是服务端在首次完成时构造的，
+                # 沿用原值参与全等比对，避免恢复被误判为 payload 冲突。
+                for key in ("computationRecord", "computationScriptFile"):
+                    if key in durable_item and key not in payload:
+                        payload[key] = durable_item[key]
                 if durable_item != payload:
                     raise ReportingError(
                         "report_analysis_item_completion_conflict",
@@ -1056,6 +1071,26 @@ class RuntimeAnalysisMixin:
         except (ReportingError, WorkspaceError) as error:
             return self._failure(error)
 
+    @staticmethod
+    def _computation_execution_receipt(
+        run_context: RunContext | None, explicit: Any = None
+    ) -> Any:
+        """计算记录与其脚本身份共用的执行回执；不可用时返回 None。
+
+        固定 Workflow 显式传入的已核验回执优先；否则读取 Coding 任务绑定上的回执。
+        """
+
+        from ..code_agent.context import ExecutionReceipt
+
+        if isinstance(explicit, ExecutionReceipt):
+            return explicit
+        dependencies = getattr(run_context, "dependencies", None)
+        binding = (
+            dependencies.get("AgentOS 任务执行") if isinstance(dependencies, Mapping) else None
+        )
+        receipt = getattr(binding, "execution_receipt", None)
+        return receipt if isinstance(receipt, ExecutionReceipt) else None
+
     def _build_computation_record(
         self,
         *,
@@ -1065,19 +1100,14 @@ class RuntimeAnalysisMixin:
         deterministic_paths: set[str],
         run_context: RunContext | None,
         requirements: Mapping[str, Any],
+        execution_receipt: Any = None,
     ) -> dict[str, Any] | None:
         """服务端构造 ComputationRecordV1（B4）；不可得时返回 None，不伪造。"""
 
-        from ..code_agent.context import ExecutionReceipt
         from ..trace.computation_service import build_supplemental_computation_record
 
-        binding = None
-        dependencies = getattr(run_context, "dependencies", None)
-        if isinstance(dependencies, Mapping):
-            candidate = dependencies.get("AgentOS 任务执行")
-            binding = candidate if candidate is not None else None
-        receipt = getattr(binding, "execution_receipt", None)
-        if not isinstance(receipt, ExecutionReceipt):
+        receipt = self._computation_execution_receipt(run_context, execution_receipt)
+        if receipt is None:
             return None
         supplemental = [
             item

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -13,6 +13,12 @@ from loguru import logger
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 
 _MONEY_UNITS = {"元": Decimal(1), "万元": Decimal(10_000), "亿元": Decimal(100_000_000)}
+_VISIT_UNITS = {"人次": Decimal(1), "万人次": Decimal(10_000)}
+
+
+def _unit_scales(unit: str | None) -> dict[str, Decimal] | None:
+    """同一量纲内可互换的显示单位及倍率；只有金额与人次按固定倍率换算。"""
+    return next((family for family in (_MONEY_UNITS, _VISIT_UNITS) if unit in family), None)
 _VALUE_TOKEN = re.compile(r"\{\{value:[^{}\r\n]+\}\}")
 _NUMBER = r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _MONEY_PAIR = re.compile(
@@ -25,8 +31,9 @@ def format_fact_value(value: Any, unit: str | None, display_unit: str | None = N
     number = Decimal(str(value))
     target = display_unit or unit
     if target != unit:
-        number = number * _MONEY_UNITS[unit] / _MONEY_UNITS[target]
-    if target in {"万元", "亿元", "%", "‰"} or number != number.to_integral_value():
+        scales = _unit_scales(unit)
+        number = number * scales[unit] / scales[target]
+    if target in {"万元", "亿元", "万人次", "%", "‰"} or number != number.to_integral_value():
         text = f"{number.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}"
     else:
         text = f"{number:,.0f}"
@@ -79,8 +86,8 @@ def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[s
     return comparisons
 
 
-def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
-    catalog: dict[str, str] = {}
+def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
+    """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
     for content in contents:
         try:
             bundle = DeterministicAnalysisBundle.model_validate_json(content)
@@ -125,27 +132,47 @@ def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
                     unit = ("%" if field in {"changeRate", "percentage"}
                             else None if array == "derivedMetrics" and field == "value"
                             else entry.get("unit"))
-                    units = _MONEY_UNITS if unit in _MONEY_UNITS else (unit or "",)
+                    units = _unit_scales(unit) or (unit or "",)
                     for target in units:
-                        token = f"{{{{value:{fact_id}:{field}:{target}}}}}"
-                        text = format_fact_value(value, unit, target or None)
-                        if token in catalog and catalog[token] != text:
-                            # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
-                            catalog[token] = "数值待核实"
-                        else:
-                            catalog[token] = text
+                        yield f"{{{{value:{fact_id}:{field}:{target}}}}}", value, unit, target or None
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                 if comparison[field] is None:
                     continue
-                for target in (_MONEY_UNITS if unit in _MONEY_UNITS else (unit,)):
+                for target in (_unit_scales(unit) or (unit,)):
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{target}}}}}"
-                    display = format_fact_value(comparison[field], unit, target)
-                    if token in catalog and catalog[token] != display:
-                        catalog[token] = "数值待核实"
-                    else:
-                        catalog[token] = display
+                    yield token, comparison[field], unit, target
+
+
+def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
+    catalog: dict[str, str] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        text = format_fact_value(value, unit, target)
+        if token in catalog and catalog[token] != text:
+            # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
+            catalog[token] = "数值待核实"
+        else:
+            catalog[token] = text
     return catalog
+
+
+def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> dict[str, set[Decimal]]:
+    """按显示单位给出未舍入的冻结原值。
+
+    正文数字应由原值按其书写精度舍入后比较；若用两位小数的显示文本再舍入，
+    1.245万元会先变成1.25再变成1.3，正确的1.2反被判为无依据。
+    """
+    values: dict[str, set[Decimal]] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        display_unit = target or unit
+        if not display_unit or catalog.get(token) == "数值待核实":
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit:
+            scales = _unit_scales(unit)
+            number = number * scales[unit] / scales[display_unit]
+        values.setdefault(display_unit, set()).add(number)
+    return values
 
 
 def frozen_number_guide(
@@ -304,11 +331,35 @@ def registered_decline_magnitude(
 ) -> bool:
     """负增长率可表述为正的下降幅度，不能据此豁免增长或占比。"""
     if unit != "%" or number <= 0 or not re.search(
-        r"(?:下降|减少|降低|回落|降幅)(?:了|约|为|达)?\s*$", prefix,
+        r"(?:下降|减少|降低|回落|下滑|降幅)(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
     return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
                for value in candidates)
+
+
+_RISING_TO_FALLING = {"增长": "下降", "上升": "下降", "增加": "减少", "提高": "降低", "增幅": "降幅"}
+_FALLING = ("下降", "减少", "降低", "回落", "下滑", "降幅")
+
+
+def normalize_signed_wording(markdown: str) -> str:
+    """按冻结值的符号改写方向词：负值不能跟“增长”，也不能与“下降”构成双重否定。
+
+    冻结值决定方向，改写只调整措辞与负号，不改动数值本身。
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        verb = match["verb"]
+        falling = _RISING_TO_FALLING.get(verb, verb)
+        logger.warning("report_signed_wording_normalized verb={} value={}", verb, match["value"])
+        return f"{falling}{match['filler'] or ''}{match['space']}{match['value']}"
+
+    return re.sub(
+        rf"(?P<verb>{'|'.join((*_RISING_TO_FALLING, *_FALLING))})"
+        r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
+        replace,
+        markdown,
+    )
 
 
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
@@ -321,13 +372,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
     if not catalog and not known:
         return markdown
-    value_pattern = re.compile(
-        rf"(?P<number>{_NUMBER})(?P<unit>亿元|万元|元|万人次|人次|床日|%)"
-    )
-    for display in catalog.values():
-        match = value_pattern.fullmatch(display)
-        if match:
-            known.setdefault(match["unit"], set()).add(Decimal(match["number"].replace(",", "")))
+    for unit, values in frozen_number_values(contents, catalog).items():
+        known.setdefault(unit, set()).update(values)
 
     def replace(match: re.Match[str]) -> str:
         number = Decimal(match["number"].replace(",", ""))
@@ -363,22 +409,95 @@ def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str
             continue
         if isinstance(parsed, dict):
             normalized.append(parsed)
-    warnings = period_extrema_warnings(markdown, normalized)
-    corrected = markdown
-    for warning in warnings:
-        match = re.search(r"(\d+)月被写为(最高|最低)，冻结月序列的\2月份为([^。]+)", warning)
-        if match is None:
+    # 章节 block 由模型撰写，不含 [[analysis:…]] 协议标记；与 review_content 一致，
+    # 只有一个分析事实包时整段即其作用域，否则无标记正文无法归属，不做改写。
+    analysis_bundles = [item for item in normalized
+                        if item.get("metrics") and isinstance(item.get("analysisId"), str)]
+    scope = ""
+    if "[[analysis:" not in markdown and len(analysis_bundles) == 1:
+        scope = f"[[analysis:{analysis_bundles[0]['analysisId']}]]"
+    corrected = scope + markdown
+    for bundle in normalized:
+        # 告警按分析标记分段产生；改写也只能落在该分析的段落内，
+        # 否则会改掉其他分析中同月份的正确陈述。
+        for warning in period_extrema_warnings(corrected, [bundle]):
+            match = re.search(r"(\d+)月被写为(最高|最低)，冻结月序列的\2月份为([^。]+)", warning)
+            if match is None:
+                continue
+            wrong_month, kind, expected = match.groups()
+            markers = list(re.finditer(r"\[\[analysis:([^\]]+)\]\]", corrected))
+            for index, marker in enumerate(markers):
+                if marker[1] != bundle.get("analysisId"):
+                    continue
+                end = markers[index + 1].start() if index + 1 < len(markers) else len(corrected)
+                segment = _rewrite_extrema_sentence(
+                    corrected[marker.end():end], int(wrong_month), kind, expected,
+                    _series_year(bundle),
+                )
+                if segment is not None:
+                    corrected = corrected[:marker.end()] + segment + corrected[end:]
+                    logger.warning("report_period_extrema_corrected wrong_month={} expected_months={}",
+                                   wrong_month, expected)
+                    break
+    return corrected[len(scope):]
+
+
+_EXTREMA_WORDS = {"最高": "最高|峰值", "最低": "最低|低点"}
+# 与 period_extrema_warnings 的豁免一致：分项比例、变化率和组织明细的极值不按全院月序列改写。
+_EXTREMA_EXEMPT = re.compile(r"占比|比重|比例|环比|同比|增长率|降幅|增幅|组织明细|明细分组|分组组合")
+_MONTH_RANGE = re.compile(r"(?<!\d)\d{1,2}月?\s*[–—~～至到-]\s*\d{1,2}月")
+_EXTREMA_SUBJECT_SUFFIX = re.compile(
+    r"(?:为|是|达到|达|处于|出现|创下|创|录得|位居|居|全年|年内|期内|期间|当期|单月|各月|月度|的|中|内)$"
+)
+_DISPLAYED_VALUE = (
+    r"(?:\{\{value:[^{}\r\n]+\}\}"
+    r"|[+-]?\d[\d,]*(?:\.\d+)?\s*(?:亿元|万元|元|万人次|人次|床日|%)?)"
+)
+
+
+def _series_year(bundle: dict[str, Any]) -> str | None:
+    metrics = [entry for entry in bundle.get("metrics", ()) if "current" in entry.get("periodRoles", ())]
+    periods = metrics[0].get("periodValues", ()) if len(metrics) == 1 else ()
+    return str(periods[0]["period"])[:4] if periods else None
+
+
+def _rewrite_extrema_sentence(
+    segment: str, wrong_month: int, kind: str, expected: str, year: str | None,
+) -> str | None:
+    """只改写唯一一句与告警对应的极值陈述；无法唯一定位时保留原文，交由软告警复核。"""
+
+    claim = re.compile(
+        rf"(?<![\d–—~～至到-]){wrong_month}月(?P<between>(?:(?!\d{{1,2}}月)[^。；\n]){{0,60}}?)"
+        rf"(?:{_EXTREMA_WORDS[kind]})(?:值|月份|水平|点)?"
+    )
+    candidates = []
+    for sentence in re.finditer(r"[^。；\n]+", segment):
+        years = set(re.findall(r"(?<!\d)(\d{4})年", sentence[0]))
+        # 子期间范围的极值以范围内月份为准，改写会丢失范围语义；其他年份不属于该序列。
+        if _MONTH_RANGE.search(sentence[0]) or (years and years != {year}):
             continue
-        wrong_month, kind, expected = match.groups()
-        clause = re.compile(
-            rf"(?<!\d){wrong_month}月[^。；\n]{{0,60}}?(?:最高|最低|峰值|低点)(?:值|月份)?[^。；\n]*"
-        )
-        corrected, count = clause.subn(
-            f"冻结序列的{kind}月份为{expected}", corrected, count=1
-        )
-        if count:
-            logger.warning("report_period_extrema_corrected wrong_month={} expected_months={}", wrong_month, expected)
-    return corrected
+        candidates.extend((sentence, found) for found in claim.finditer(sentence[0])
+                          if not _EXTREMA_EXEMPT.search(found[0]))
+    if len(candidates) != 1:
+        return None
+    sentence, found = candidates[0]
+    before = sentence[0][:found.start()]
+    if before.endswith(("在", "于")):
+        before = before[:-1]
+    # 保留月份与极值词之间的指标名（“2月金额为最高值”→“金额最高月份为…”）；
+    # 夹带数值或分句时那是错误月份的数值，一并去掉。
+    subject = found["between"].replace("**", "")
+    while (stripped := _EXTREMA_SUBJECT_SUFFIX.sub("", subject)) != subject:
+        subject = stripped
+    if re.search(r"[\d，,、]|\{\{", subject):
+        subject = ""
+    after = sentence[0][found.end():]
+    after = re.sub(rf"^\s*(?:（[^）]*）)?\s*(?:为|达|约|计|是)?\s*{_DISPLAYED_VALUE}", "", after)
+    after = re.sub(rf"^[，,]\s*(?:为|达|约|计|金额为|数值为)\s*{_DISPLAYED_VALUE}", "", after)
+    rewritten = f"{before}{subject}{kind}月份为{expected}{after}"
+    if rewritten.count("**") % 2:
+        rewritten = rewritten.replace("**", "")
+    return segment[:sentence.start()] + rewritten + segment[sentence.end():]
 
 
 def money_text_warnings(markdown: str) -> list[str]:

@@ -134,32 +134,73 @@ def claim_marker(claim_id: str) -> str:
 _VALUE_BOUNDARY_TAIL = r"(?![\d.,eE])"
 
 
+# 负的冻结值推荐写成“下降/减少… + 正幅度”，绑定与锚定须把该写法视为同一数值。
+_DECLINE_PREFIX = r"(?:下降|减少|降低|回落|下滑|降幅)(?:了|约|为|达|幅度为)?\s*"
+
+
+def _negative_magnitude(fact_value: Any) -> float | None:
+    try:
+        number = float(fact_value)
+    except (TypeError, ValueError):
+        return None
+    return -number if number < 0 else None
+
+
+def _value_patterns(fact_value: Any) -> list[str]:
+    patterns = [
+        r"(?<![\d.,+\-a-zA-Z_])" + re.escape(variant) + _VALUE_BOUNDARY_TAIL
+        for variant in value_text_variants(fact_value)
+    ]
+    magnitude = _negative_magnitude(fact_value)
+    if magnitude is not None:
+        patterns.extend(
+            _DECLINE_PREFIX + re.escape(variant) + _VALUE_BOUNDARY_TAIL
+            for variant in value_text_variants(magnitude)
+        )
+    return patterns
+
+
 def value_matches(cell_text: str, fact_value: Any) -> bool:
     """判定单个文本片段是否呈现该事实值（带数字边界，供 claim 窗口与表格单元格共用）。"""
 
     cell_text = cell_text.replace("−", "-").replace("－", "-")
-    for variant in value_text_variants(fact_value):
-        if re.search(
-            r"(?<![\d.,+\-a-zA-Z_])" + re.escape(variant) + _VALUE_BOUNDARY_TAIL,
-            cell_text,
-        ):
-            return True
-    return False
+    return any(re.search(pattern, cell_text) for pattern in _value_patterns(fact_value))
 
+
+
+def _display_units(unit: str | None) -> tuple[str, ...] | None:
+    """冻结值可用的显示单位：金额与人次可按固定倍率换算，百分数/千分数原样；其余不核对。"""
+    from .numeric_text import _unit_scales
+
+    scales = _unit_scales(unit)
+    if scales is not None:
+        return tuple(scales)
+    return (unit,) if unit in {"%", "‰"} else None
 
 
 def formatted_value_matches(text: str, value: Any, unit: str | None) -> bool:
     """用冻结值的相同舍入规则核对带单位显示文本。"""
+    units = _display_units(unit)
+    if value is None or units is None:
+        return False
+    text = text.replace("−", "-").replace("－", "-").replace("**", "")
+    return any(re.search(pattern, text) for pattern in _formatted_patterns(value, unit, units))
+
+
+def _formatted_patterns(value: Any, unit: str | None, units: Sequence[str]) -> list[str]:
     from .numeric_text import format_fact_value
 
-    if value is None or unit not in {"元", "万元", "亿元", "%", "‰"}:
-        return False
-    text = text.replace("−", "-").replace("－", "-")
-    units = ("元", "万元", "亿元") if unit in {"元", "万元", "亿元"} else (unit,)
-    return any(re.search(
-        r"(?<![\d.,+\-])" + re.escape(format_fact_value(value, unit, target)) + r"(?![\d.])",
-        text.replace("**", ""),
-    ) for target in units)
+    patterns = [
+        r"(?<![\d.,+\-])" + re.escape(format_fact_value(value, unit, target)) + r"(?![\d.])"
+        for target in units
+    ]
+    magnitude = _negative_magnitude(value)
+    if magnitude is not None:
+        patterns.extend(
+            _DECLINE_PREFIX + re.escape(format_fact_value(magnitude, unit, target)) + r"(?![\d.])"
+            for target in units
+        )
+    return patterns
 
 
 def bind_local_claim_values(artifacts: Sequence[Any], fact_values: Mapping[str, tuple[Any, str | None]]) -> tuple[Any, ...]:
@@ -197,14 +238,10 @@ def anchor_claims(markdown: str, values: Mapping[str, tuple[Any, str | None] | N
                 for statement in re.split(r"(?<=[。！？；])", paragraph):
                     if formatted_value_matches(statement, value, unit) or value_matches(statement, value):
                         # 锚点紧跟数值，避免长句把金额推到校验窗口之外。
-                        from .numeric_text import format_fact_value
-
-                        targets = ("元", "万元", "亿元") if unit in {"元", "万元", "亿元"} else (unit,)
-                        variants = [format_fact_value(value, unit, target) for target in targets] if unit in {"元", "万元", "亿元", "%", "‰"} else []
-                        variants.extend(value_text_variants(value))
-                        matches = [match for variant in variants if (match := re.search(
-                            r"(?<![\d.,+\-a-zA-Z_])" + re.escape(variant) + r"(?![\d.,])", statement,
-                        ))]
+                        targets = _display_units(unit)
+                        patterns = _formatted_patterns(value, unit, targets) if targets else []
+                        patterns.extend(_value_patterns(value))
+                        matches = [match for pattern in patterns if (match := re.search(pattern, statement))]
                         if not matches:
                             continue
                         match = matches[0]

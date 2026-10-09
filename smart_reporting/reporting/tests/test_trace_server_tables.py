@@ -105,7 +105,7 @@ def test_build_analysis_table_generates_period_rows_from_bundle() -> None:
     assert trace.row_keys == ("period:2025-09",)
     assert trace.column_keys == ("收入（元）",)
     assert f"[[table:table-analysis_001]]" in markdown
-    assert "2025-09" in markdown and "3,600" in markdown
+    assert "| 2025年9月 | 3,600 |" in markdown
 
 
 def test_build_analysis_table_binds_unique_current_fact_with_same_code_yoy() -> None:
@@ -267,6 +267,12 @@ class _Harness:
     def _state(self, _run_context):
         return {}
 
+    def _profile(self, _run_context):
+        # 与生产一致：状态中没有有效 Profile 时报错，表格仍照常生成。
+        from smart_reporting.reporting.models import ReportingError
+
+        raise ReportingError("report_profile_state_invalid", "有效 Profile 状态无效。")
+
     async def _read_identity_bytes(self, thread_id, identity, *, max_bytes):
         return self._files[identity.path]
 
@@ -421,6 +427,41 @@ def test_analysis_table_keeps_union_of_periods_without_filling_missing_values():
         "fact_id": "fact-" + "b" * 16, "period_values": (PeriodValue(period="2025-09", value=1100),)})
     trace, markdown = build_analysis_table(bundle.model_copy(update={"metrics": (budget, actual)}), fact_file_resource_id=FACT_RESOURCE)
     assert trace.row_keys == ("period:2025-09", "period:2025-10")
-    assert "| 2025-10 | 1,200 | — |" in markdown
+    assert "| 2025年10月 | 1,200 | — |" in markdown
     assert trace.cells[-1].fact_refs == ()
     assert trace.cells[-2].fact_refs[0].fact_key == budget.fact_id
+
+
+def test_analysis_table_uses_readable_period_labels_and_profile_metric_names():
+    """行标签按读者习惯显示期间（行键不变）；字段无说明时用 Profile 中唯一的简短指标说明。"""
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import PeriodValue
+
+    bundle = _bundle()
+    budget = bundle.metrics[0].model_copy(update={"metric_codes": ("budget",),
+        "field": "budget_person_time", "unit": "人次", "fact_id": "fact-" + "a" * 16,
+        "period_granularity": "month",
+        "period_values": (PeriodValue(period="2025-09-01", value=1200), PeriodValue(period="2025-10-01", value=1200))})
+    actual = budget.model_copy(update={"metric_codes": ("actual",), "field": "actual_person_time",
+        "fact_id": "fact-" + "b" * 16})
+    descriptions = {"budget": "预算门诊人次", "actual": "实际门诊人次" * 10}
+    trace, markdown = build_analysis_table(
+        bundle.model_copy(update={"metrics": (budget, actual)}),
+        fact_file_resource_id=FACT_RESOURCE,
+        metric_descriptions=descriptions,
+    )
+    assert trace.row_keys == ("period:2025-09-01", "period:2025-10-01")
+    assert "| 2025年9月 | 1,200 | 1,200 |" in markdown
+    # 过长的 Profile 说明不适合作表头，仍退回字段名。
+    assert trace.column_keys == ("预算门诊人次（人次）", "actual_person_time（人次）")
+
+
+def test_analysis_table_keeps_raw_periods_when_readable_labels_collide():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import PeriodValue
+
+    bundle = _bundle()
+    fact = bundle.metrics[0].model_copy(update={"period_granularity": "month", "period_values": (
+        PeriodValue(period="2025-09", value=1), PeriodValue(period="2025-09-01", value=2))})
+    _trace, markdown = build_analysis_table(
+        bundle.model_copy(update={"metrics": (fact,)}), fact_file_resource_id=FACT_RESOURCE
+    )
+    assert "| 2025-09 |" in markdown and "| 2025-09-01 |" in markdown
