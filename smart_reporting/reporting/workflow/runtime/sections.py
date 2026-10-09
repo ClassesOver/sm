@@ -42,6 +42,7 @@ from ..state import normalize_analysis_warnings
 from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
 from ...trace.numeric_text import (
+    align_placeholder_direction,
     correct_period_extrema,
     frozen_number_catalog,
     frozen_number_guide,
@@ -1666,10 +1667,16 @@ async def _generate_section_in_blocks(
                 loguru_logger.warning("report_content_review_warning section={} message={}", work_item.section_code, warning)
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
-                # 纠错后仍残留的负值方向措辞按冻结符号确定性改写，再核对未登记数字。
+                # 纠错后仍残留的方向措辞按冻结符号确定性改写（正值配下降词在渲染前、
+                # 负值配增长词在渲染后），再核对未登记数字。
                 markdown=replace_unregistered_numbers(
                     normalize_signed_wording(correct_period_extrema(
-                        render_frozen_numbers(content.markdown, block_number_catalog),
+                        render_frozen_numbers(
+                            align_placeholder_direction(
+                                content.markdown, (item.content for item in selected_files)
+                            ),
+                            block_number_catalog,
+                        ),
                         (item.content for item in selected_files),
                     )),
                     (item.content for item in selected_files),
@@ -1883,7 +1890,13 @@ async def _generate_whole_section_content(
             blockId=block_plan.block_id,
             markdown=replace_unregistered_numbers(
                 normalize_signed_wording(correct_period_extrema(
-                    render_frozen_numbers(content_by_id[block_plan.block_id].markdown, section_number_catalog),
+                    render_frozen_numbers(
+                        align_placeholder_direction(
+                            content_by_id[block_plan.block_id].markdown,
+                            (item.content for item in evidence.files),
+                        ),
+                        section_number_catalog,
+                    ),
                     (item.content for item in evidence.files),
                 )),
                 (item.content for item in evidence.files),

@@ -618,3 +618,17 @@ def test_readability_suggests_wan_visits_for_long_visit_counts(text, flagged):
     warnings = readability_warnings(text)
     assert bool(warnings) is flagged
     assert all("万人次" in item for item in warnings)
+
+
+def test_review_flags_decline_wording_on_positive_registered_change_once():
+    from .test_numeric_text import _comparison_document
+
+    document = _comparison_document(6543211, 5.0332)
+    amount = review_content('收入较上年减少{{value:fact-cccccccccccccccc:change:万元}}。', [document])
+    assert [item for item in amount if item.startswith('方向与登记变化相反')] == [
+        '方向与登记变化相反：减少654.32万元。该变化已登记为正值（增加），请改写为增长/增加，并同步修正前后文的方向判断。'
+    ]
+    # “同比下降{变化率}”已有变化率方向检查，不重复提示。
+    rate = review_content('收入同比下降{{value:fact-cccccccccccccccc:changeRate:%}}。', [document])
+    assert sum(item.startswith('方向与登记变化') for item in rate) == 1
+    assert review_content('收入较上年增加{{value:fact-cccccccccccccccc:change:万元}}。', [document]) == []

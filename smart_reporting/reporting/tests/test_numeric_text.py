@@ -348,3 +348,45 @@ def test_signed_amount_decline_survives_post_processing_chain():
     assert replace_unregistered_numbers(normalized, [document]) == '收入减少654.32万元。'
     # 方向写反或脱离下降措辞的正数仍无依据。
     assert replace_unregistered_numbers('收入增加654.32万元。', [document]) == '收入增加待核实。'
+
+
+def _comparison_document(change, rate, total=130000000):
+    return json.dumps({
+        'analysisId': 'analysis_001',
+        'metrics': [{
+            'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': 'revenue', 'fieldRef': 'hospital.revenue',
+            'aggregation': 'sum', 'unit': '元', 'formula': 'sum(revenue)', 'total': total,
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        }],
+        'comparisons': [{
+            'factId': 'fact-' + 'c' * 16, 'comparisonType': 'yoy', 'field': 'revenue',
+            'fieldRef': 'hospital.revenue', 'currentDatasetId': 'current', 'baselineDatasetId': 'base',
+            'currentDatasetSha256': 'b' * 64, 'baselineDatasetSha256': 'c' * 64,
+            'currentTotal': 130000000 + change, 'baselineTotal': 130000000, 'change': change,
+            'changeRate': rate, 'formula': 'x', 'unit': '元',
+        }],
+    })
+
+
+@pytest.mark.parametrize(('change', 'rate', 'text', 'expected'), [
+    # 登记为正的变化写成下降词：渲染前改为增长词。
+    (6543211, 5.0332, '收入同比下降{{value:fact-cccccccccccccccc:changeRate:%}}。', '收入同比增长5.03%。'),
+    (6543211, 5.0332, '收入较上年减少了{{value:fact-cccccccccccccccc:change:万元}}。', '收入较上年增加了654.32万元。'),
+    (6543211, 5.0332, '降幅为{{value:fact-cccccccccccccccc:changeRate:%}}。', '增幅为5.03%。'),
+    # 登记为负的变化：下降词保留并去负号；增长词改为下降词（既有符号规范化）。
+    (-6543211, -5.0332, '收入较上年减少{{value:fact-cccccccccccccccc:change:万元}}。', '收入较上年减少654.32万元。'),
+    (-6543211, -5.0332, '收入同比增长{{value:fact-cccccccccccccccc:changeRate:%}}。', '收入同比下降5.03%。'),
+    # 合计等非变化字段不带方向语义，不改写。
+    (6543211, 5.0332, '收入下降{{value:fact-aaaaaaaaaaaaaaaa:total:亿元}}。', '收入下降1.30亿元。'),
+])
+def test_direction_wording_follows_frozen_sign(change, rate, text, expected):
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    document = _comparison_document(change, rate)
+    catalog = frozen_number_catalog([document])
+    rendered = render_frozen_numbers(align_placeholder_direction(text, [document]), catalog)
+    assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == expected

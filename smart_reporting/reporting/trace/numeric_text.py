@@ -366,6 +366,51 @@ def normalize_signed_wording(markdown: str) -> str:
     )
 
 
+_FALLING_TO_RISING = {"下降": "增长", "减少": "增加", "降低": "提高", "回落": "回升", "下滑": "上升", "降幅": "增幅"}
+# 只有比较事实的变化额/变化率带方向语义；合计、均值等前面的“下降至”不属于此类。
+_DIRECTED_FIELDS = frozenset({"change", "changeRate"})
+DIRECTED_PLACEHOLDER = re.compile(
+    "(?P<verb>" + "|".join(_FALLING_TO_RISING) + ")"
+    r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)(?P<token>\{\{value:[^{}\r\n]+\}\})"
+)
+
+
+def positive_directed_placeholders(contents: Iterable[str]) -> dict[str, Decimal]:
+    """变化额/变化率占位中登记值确定为正的引用（同一引用出现正负冲突时不计）。"""
+    signs: dict[str, set[bool]] = {}
+    values: dict[str, Decimal] = {}
+    for token, value, _unit, _target in _frozen_number_entries(contents):
+        parts = token.removeprefix("{{value:").removesuffix("}}").split(":")
+        if len(parts) != 3 or parts[1] not in _DIRECTED_FIELDS or value is None:
+            continue
+        number = Decimal(str(value))
+        if number == 0:
+            continue
+        signs.setdefault(token, set()).add(number > 0)
+        values[token] = number
+    return {token: values[token] for token, kinds in signs.items() if kinds == {True}}
+
+
+def align_placeholder_direction(markdown: str, contents: Iterable[str]) -> str:
+    """“下降/减少”后接登记为正的变化额/变化率时改为“增长/增加”。
+
+    冻结值决定方向；负值配“增长”由 normalize_signed_wording 在渲染后处理，这里补齐
+    正值配下降词的一侧。只改动作词，不改数值引用。
+    """
+    positive = positive_directed_placeholders(contents)
+    if not positive:
+        return markdown
+
+    def replace(match: re.Match[str]) -> str:
+        if match["token"] not in positive:
+            return match[0]
+        rising = _FALLING_TO_RISING[match["verb"]]
+        logger.warning("report_direction_wording_aligned verb={} token={}", match["verb"], match["token"])
+        return f"{rising}{match['filler'] or ''}{match['space']}{match['token']}"
+
+    return DIRECTED_PLACEHOLDER.sub(replace, markdown)
+
+
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
 

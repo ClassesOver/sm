@@ -8,12 +8,14 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from .numeric_text import (
+    DIRECTED_PLACEHOLDER,
     _frozen_number_entries,
     _unit_scales,
     frozen_number_catalog,
     frozen_number_values,
     money_text_warnings,
     period_extrema_warnings,
+    positive_directed_placeholders,
     registered_decline_magnitude,
     render_frozen_numbers,
     supplemental_number_values,
@@ -342,6 +344,18 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     for token in re.findall(r"\{\{value:[^{}\r\n]+\}\}", markdown):
         if token not in catalog:
             warnings.append(f"数值引用未登记：{token}。请选择 frozenNumbers 中的引用；没有对应事实时写待核实。")
+    positive = positive_directed_placeholders(contents)
+    for match in DIRECTED_PLACEHOLDER.finditer(markdown):
+        if match["token"] not in positive:
+            continue
+        # “同比/环比下降{变化率}”由下方变化率方向检查覆盖，避免同一问题报两次。
+        if ":changeRate:" in match["token"] and re.search(r"(?:同比|环比)$", markdown[:match.start()]):
+            continue
+        shown = catalog.get(match["token"], match["token"])
+        warnings.append(
+            f"方向与登记变化相反：{match['verb']}{shown}。该变化已登记为正值（增加），"
+            "请改写为增长/增加，并同步修正前后文的方向判断。"
+        )
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
