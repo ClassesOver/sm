@@ -389,11 +389,28 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     return list(dict.fromkeys(warnings))
 
 
+def _prose_lines(markdown: str) -> list[str]:
+    """读者可见的正文行：去协议标记与加粗，跳过代码块、表格、标题和图片行。
+
+    服务端表格的 [[table:…]] 标记紧贴表头、不隔空行，必须逐行判断而不能按段首判断。
+    """
+    lines: list[str] = []
+    fenced = False
+    for raw in markdown.splitlines():
+        line = re.sub(r"\[\[[^\]\r\n]+\]\]", "", raw).replace("**", "").strip()
+        if line.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or not line or line.startswith(("|", "#", "![")):
+            continue
+        lines.append(line)
+    return lines
+
+
 def _comparable_sentences(markdown: str) -> dict[str, str]:
     """按句切分并归一化（去协议标记、加粗与标点），返回 归一化文本 → 原句。"""
-    text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", markdown).replace("**", "")
     sentences: dict[str, str] = {}
-    for sentence in re.split(r"[。！？；\n]", text):
+    for sentence in (part for line in _prose_lines(markdown) for part in re.split(r"[。！？；]", line)):
         normalized = re.sub(r"[\s，、,:：（）()“”\"'·—-]", "", sentence)
         # 过短的句子（过渡语、标签）重复属正常写法，不计。
         if len(normalized) >= 12:
@@ -425,11 +442,8 @@ def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None
     if catalog is not None:
         markdown = re.sub(r"\{\{value:[^{}\r\n]+\}\}", lambda match: catalog.get(match[0], "数值待核实"), markdown)
     warnings: list[str] = []
-    for paragraph in markdown.split("\n\n"):
-        if paragraph.lstrip().startswith(("#", "|", "```", "![")):
-            continue
-        text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "")
-        for sentence in re.split(r"[。！？；\n]", text):
+    for line in _prose_lines(markdown):
+        for sentence in re.split(r"[。！？；]", line):
             sentence = sentence.strip()
             values = len(_VALUE.findall(sentence))
             if values > _READABLE_SENTENCE_VALUES:

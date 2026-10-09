@@ -457,3 +457,16 @@ def test_readability_warnings_ask_to_split_long_or_number_dense_sentences():
     token = "{{value:fact-" + "a" * 16 + ":total:元}}"
     # 占位按显示值度量：6 个占位即 6 个数值。
     assert any("数值过多" in w for w in readability_warnings("、".join([token] * 6) + "。", {token: "100元"}))
+
+
+def test_prose_checks_skip_server_tables_behind_protocol_markers():
+    from smart_reporting.reporting.trace.content_review import readability_warnings, repeated_sentence_warnings
+
+    # 服务端表格格式：[[table:id]] 紧贴表头，不隔空行；表格行不是正文句子。
+    table = (
+        "收入分月汇总\n\n[[table:table-analysis_001]]\n| | 1月 | 2月 | 3月 | 4月 | 5月 | 6月 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 门诊收入（元） | 100元 | 120元 | 130元 | 90元 | 80元 | 70元 |\n\n[[/table:table-analysis_001]]"
+    )
+    assert readability_warnings(table) == []
+    assert repeated_sentence_warnings(table, [table]) == []
