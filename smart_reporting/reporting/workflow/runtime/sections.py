@@ -1790,6 +1790,13 @@ async def _generate_whole_section_content(
                     "actualBlockIds": [item.block_id for item in content.blocks],
                 },
             )
+        if review_attempt == 1:
+            # 纠错只针对有问题的 block；首轮无问题的 block 保留原文，避免整章重写把已通过的内容改坏。
+            content = content.model_copy(update={"blocks": tuple(
+                block if block.block_id in flagged_ids else first_by_id[block.block_id]
+                for block in content.blocks
+            )})
+            content_by_id = {item.block_id: item for item in content.blocks}
         # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
         review_warnings = {
             block.block_id: [
@@ -1811,13 +1818,16 @@ async def _generate_whole_section_content(
         if not review_warnings:
             break
         if review_attempt == 0:
+            first_by_id = content_by_id
+            flagged_ids = set(review_warnings)
             payload["correction"] = {
                 "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
                 "requiredAction": (
                     "逐条处理 issues：修正数字与字段口径并使用冻结数值引用；内部 ID 和英文字段名改用业务名称；"
                     "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
                     "大额金额改用万元或亿元占位。"
-                    "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId。"
+                    "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId；"
+                    "issues 未列出的 block 原样返回（服务端保留其首轮原文）。"
                 ),
             }
         else:

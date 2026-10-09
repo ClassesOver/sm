@@ -3306,6 +3306,38 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
 
 
 @pytest.mark.anyio
+async def test_whole_section_correction_only_replaces_blocks_with_issues(monkeypatch):
+    from .test_content_review import _metric
+
+    clean = "本期门诊收入运行总体平稳，结构保持稳定。"
+    outputs = iter([
+        {"block_1": clean, "block_2": "另见 analysis_001 的明细。"},
+        # 纠错轮次把无问题的 block_1 改坏（引入无依据数字），只应采纳有问题的 block_2。
+        {"block_1": "本期门诊收入为999元。", "block_2": "住院收入结构有所变化，需结合科室明细复核。"},
+    ])
+
+    async def fake_stage(*args, **kwargs):
+        texts = next(outputs)
+        return SectionContent.model_validate({"blocks": [
+            {"blockId": block_id, "markdown": text} for block_id, text in texts.items()
+        ]})
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0],
+        content=json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(606259,) * 12)]})),), factSummaries=())
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "门诊", "claimIds": ["claim_1"]},
+                   {"blockId": "block_2", "objective": "住院", "claimIds": ["claim_2"]}],
+        "claims": [_plan_claim("claim_1"), _plan_claim("claim_2")]})
+    result = await reporting_sections._generate_whole_section_content(object(), {}, evidence, work_item, plan,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    assert [block.markdown for block in result.blocks] == [clean, "住院收入结构有所变化，需结合科室明细复核。"]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("failure", ["timeout", "provider_unreachable", "context_hard_limit"])
 async def test_section_semantic_correction_provider_failure_keeps_previous_content(monkeypatch, failure):
     calls = []
