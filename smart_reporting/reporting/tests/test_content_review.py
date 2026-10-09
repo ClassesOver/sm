@@ -480,3 +480,16 @@ def test_repeated_sentences_compare_displayed_numbers_not_placeholders():
     earlier = ["本期门诊收入合计为1,234元，较上期保持稳定。"]
     current = f"本期门诊收入合计为{token}，较上期保持稳定。"
     assert len(repeated_sentence_warnings(current, earlier, {token: "1,234元"})) == 1
+
+
+def test_percentage_point_differences_must_come_from_two_registered_percentages():
+    supplement = json.dumps({"findings": [{"columns": ["year", "share"], "rows": [["2024", 41.7], ["2025", 45.24]],
+                                           "columnMeta": {"share": {"unit": "%", "isPercent": True}}}]})
+
+    def pp_warnings(text):
+        return [w for w in review_content(text, [supplement]) if "百分点" in w]
+
+    # 45.24 − 41.7 = 3.54，按书写精度舍入后 3.5 或 3.54 均有依据。
+    assert pp_warnings("占比由41.7%提高到45.24%，提高3.5个百分点。") == []
+    assert pp_warnings("占比提高3.54个百分点。") == []
+    assert len(pp_warnings("占比提高4.1个百分点。")) == 1

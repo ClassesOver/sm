@@ -18,6 +18,8 @@ from .numeric_text import (
 )
 
 _VALUE = re.compile(r"(?<![\d.,])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(亿元|万元|元|万人次|人次|床日|%)")
+# 百分点核对按两两相减，候选过多时跳过以免复核耗时失控。
+_MAX_PERCENT_POINT_CANDIDATES = 400
 _INFERENCE = re.compile(
     r"(?:负值|零值|偏低|低点|异常)[^。\n]{0,60}(?:可能(?:源于|反映|存在)|系.{0,25}所致|属正常业务特征)"
     r"|(?:尚未启动(?:采购|合同)|字段未填充有效数值|尚无.{0,12}(?:数据|记录)入账|无实际支出记录|疑似未入账)"
@@ -341,6 +343,21 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
+    # “个百分点”不在数值单位核对范围内，而百分点差值从不登记，必然是模型自行相减；
+    # 只有两项已登记百分数之差按书写精度舍入后相等才有依据。
+    percents = sorted(known.get("%", ()))
+    if len(percents) <= _MAX_PERCENT_POINT_CANDIDATES:
+        for match in re.finditer(r"(?<![\d.,])(\d+(?:\.\d+)?)\s*个?百分点", text):
+            number = Decimal(match[1])
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            if not any(
+                abs(left - right).quantize(quantum, rounding=ROUND_HALF_UP) == number
+                for index, left in enumerate(percents) for right in percents[index + 1:]
+            ):
+                warnings.append(
+                    f"百分点差值缺少可核对的冻结依据：{match[0]}。须由两项已登记百分数相减得到，"
+                    "请写出两项百分数或删去该差值。"
+                )
     for match in _INFERENCE.finditer(text):
         # “不能证明尚未启动采购”等否定句没有作业务断言；只看当前分句，
         # 不能用前一句的否定来豁免后一句真实推测。
