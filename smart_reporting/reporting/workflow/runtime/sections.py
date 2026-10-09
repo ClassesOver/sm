@@ -2719,6 +2719,15 @@ class RuntimeSectionsMixin:
         traces: list[TableTraceV1] = []
         fact_directory: dict[str, tuple[str, str]] = {}
         fact_values: dict[str, tuple[Any, str | None]] = {}
+        try:
+            # 表头指标名的兜底来源；Profile 不可读时表格照常生成（显示字段名）。
+            metric_descriptions = {
+                metric.code: metric.description
+                for metric in self._profile(run_context).metrics
+                if metric.description
+            }
+        except ReportingError:
+            metric_descriptions = {}
         for analysis_id, identity in checkpoint.deterministic_fact_files.items():
             try:
                 raw = await self._read_identity_bytes(
@@ -2747,6 +2756,7 @@ class RuntimeSectionsMixin:
                 built = build_analysis_table(
                     bundle, fact_file_resource_id=fact_resource,
                     dataset_contexts=self._state(run_context).get("report_analysis_data_context", ()),
+                    metric_descriptions=metric_descriptions,
                 )
                 if built is None:
                     continue
