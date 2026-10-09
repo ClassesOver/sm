@@ -915,6 +915,43 @@ async def test_derived_export_guard_failure_marks_job_failed(tmp_path: Path) -> 
     assert "state repository" not in status["error"]["message"]
 
 
+@pytest.mark.anyio
+async def test_derived_export_expiry_cleanup_task_is_retained_until_done() -> None:
+    """过期清理在后台删除文件；Task 被持有到完成，不会因只有弱引用而中途回收。"""
+    import asyncio
+
+    from smart_reporting.report_editor.trace_exports import (
+        TraceDerivedExportService,
+        TraceExportJob,
+    )
+
+    deleted: list[tuple[str, str]] = []
+    release = asyncio.Event()
+
+    class Workspace:
+        async def adelete_file(self, thread_id: str, path: str) -> None:
+            await release.wait()
+            deleted.append((thread_id, path))
+
+    service = TraceDerivedExportService(workspace=Workspace())
+    job = TraceExportJob(
+        export_id="export-old", report_id="report-1", revision=1, dataset_id="dataset-1",
+        policy="masked_columns", params={}, source_dataset_id="dataset-1",
+        source_sha256="0" * 64, workspace_path="报表/.exports/old.csv", thread_id="thread-1",
+        created_at=0.0, status="completed", finished_at=0.0,
+    )
+    service._jobs[job.export_id] = job
+
+    service._cleanup_expired()
+
+    assert job.export_id not in service._jobs
+    assert len(service._cleanup_tasks) == 1
+    release.set()
+    await asyncio.gather(*service._cleanup_tasks)
+    assert deleted == [("thread-1", "报表/.exports/old.csv")]
+    assert not service._cleanup_tasks
+
+
 def test_derived_export_masks_duplicated_copies_of_blocked_columns(tmp_path: Path) -> None:
     """表头重复的受限列（polars 改名为 *_duplicated_n）同样强制掩码，不成为旁路。"""
     from smart_reporting.report_editor.trace_exports import _validate_masked_columns_policy
