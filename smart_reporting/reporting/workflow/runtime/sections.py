@@ -1638,9 +1638,15 @@ async def _generate_section_in_blocks(
             ))
             # 长句与数值堆砌按读者所见（占位换成显示值）度量，同样进入纠错轮次。
             review_warnings.extend(readability_warnings(content.markdown, block_number_catalog))
+            if block_attempt == 1 and len(review_warnings) > len(first_block_warnings):
+                # 纠错后问题反而更多时保留首轮版本，纠错不能让正文变差。
+                loguru_logger.warning("report_content_correction_reverted section={} blocks={}",
+                                      work_item.section_code, block_plan.block_id)
+                content, review_warnings = first_block_content, first_block_warnings
             loguru_logger.info("report_content_review_completed section={} block={} attempt={} issue_count={}",
                                work_item.section_code, block_plan.block_id, block_attempt, len(review_warnings))
             if review_warnings and block_attempt == 0:
+                first_block_content, first_block_warnings = content, review_warnings
                 block_payload["correction"] = {
                     "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
                     "requiredAction": (
@@ -1812,6 +1818,20 @@ async def _generate_whole_section_content(
             for position, block in enumerate(content.blocks)
         }
         review_warnings = {key: value for key, value in review_warnings.items() if value}
+        if review_attempt == 1:
+            # 纠错后问题反而更多的 block 回退到首轮版本，纠错不能让正文变差。
+            worse = {block_id for block_id in flagged_ids
+                     if len(review_warnings.get(block_id, ())) > len(first_warnings[block_id])}
+            if worse:
+                loguru_logger.warning("report_content_correction_reverted section={} blocks={}",
+                                      work_item.section_code, ",".join(sorted(worse)))
+                content = content.model_copy(update={"blocks": tuple(
+                    first_by_id[block.block_id] if block.block_id in worse else block
+                    for block in content.blocks
+                )})
+                content_by_id = {item.block_id: item for item in content.blocks}
+                review_warnings = {**{key: value for key, value in review_warnings.items() if key not in worse},
+                                   **{key: first_warnings[key] for key in worse}}
         loguru_logger.info("report_content_review_completed section={} attempt={} issue_count={} block_count={}",
                            work_item.section_code, review_attempt,
                            len({warning for warnings in review_warnings.values() for warning in warnings}), len(content.blocks))
@@ -1819,6 +1839,7 @@ async def _generate_whole_section_content(
             break
         if review_attempt == 0:
             first_by_id = content_by_id
+            first_warnings = review_warnings
             flagged_ids = set(review_warnings)
             payload["correction"] = {
                 "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),

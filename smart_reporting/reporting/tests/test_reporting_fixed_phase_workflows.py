@@ -3337,6 +3337,61 @@ async def test_whole_section_correction_only_replaces_blocks_with_issues(monkeyp
     assert [block.markdown for block in result.blocks] == [clean, "住院收入结构有所变化，需结合科室明细复核。"]
 
 
+_FIRST_WITH_ISSUE = "另见 analysis_001 的明细。"
+_WORSE_CORRECTION = "另见 analysis_001 与 fact-" + "a" * 16 + " 及 claim_001 的明细。"
+
+
+@pytest.mark.anyio
+async def test_whole_section_correction_that_adds_issues_is_reverted(monkeypatch):
+    from .test_content_review import _metric
+
+    outputs = iter([{"block_1": _FIRST_WITH_ISSUE}, {"block_1": _WORSE_CORRECTION}])
+
+    async def fake_stage(*args, **kwargs):
+        return SectionContent.model_validate({"blocks": [
+            {"blockId": block_id, "markdown": text} for block_id, text in next(outputs).items()
+        ]})
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0],
+        content=json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(606259,) * 12)]})),), factSummaries=())
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "门诊", "claimIds": ["claim_1"]}],
+        "claims": [_plan_claim("claim_1")]})
+    result = await reporting_sections._generate_whole_section_content(object(), {}, evidence, work_item, plan,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    # 纠错结果问题更多时保留首轮版本，不让纠错把正文改得更差。
+    assert result.blocks[0].markdown == _FIRST_WITH_ISSUE
+
+
+@pytest.mark.anyio
+async def test_block_correction_that_adds_issues_is_reverted(monkeypatch):
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", factSummaries=(), files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0],
+        content=json.dumps({"analysisId": "analysis_001", "metrics": []})),))
+    block_outputs = iter([_FIRST_WITH_ISSUE, _WORSE_CORRECTION])
+
+    async def fake_run_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == "plan":
+            return SectionPlanOutput.model_validate({"kind": "render", "sectionCode": "section_001",
+                "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+                "claims": [_plan_claim("claim_001")]})
+        return SectionBlockContent(markdown=next(block_outputs))
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+    result = await reporting_sections._generate_section_in_blocks(
+        object(), {}, evidence, work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+    )
+    assert result.blocks[0].markdown == _FIRST_WITH_ISSUE
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("failure", ["timeout", "provider_unreachable", "context_hard_limit"])
 async def test_section_semantic_correction_provider_failure_keeps_previous_content(monkeypatch, failure):
