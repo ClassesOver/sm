@@ -3263,6 +3263,49 @@ async def test_section_semantic_review_corrects_once_and_stays_soft(monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch):
+    from .test_content_review import _metric
+
+    calls = []
+    first = "本期门诊收入运行总体平稳，结构保持稳定。"
+    second_clean = "住院收入结构有所变化，需结合科室明细复核。"
+    outputs = iter([
+        # 默认整章生成：第二个 block 重复第一个 block 的句子并泄漏内部 ID。
+        {"block_1": first, "block_2": first + "另见 analysis_001 的明细。"},
+        {"block_1": first, "block_2": second_clean},
+    ])
+
+    async def fake_stage(*args, **kwargs):
+        calls.append(dict(args[3]))
+        texts = next(outputs)
+        return SectionContent.model_validate({"blocks": [
+            {"blockId": block_id, "markdown": text} for block_id, text in texts.items()
+        ]})
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0],
+        content=json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(606259,) * 12)]})),), factSummaries=())
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "门诊", "claimIds": ["claim_1"]},
+                   {"blockId": "block_2", "objective": "住院", "claimIds": ["claim_2"]}],
+        "claims": [_plan_claim("claim_1"), _plan_claim("claim_2")]})
+    result = await reporting_sections._generate_whole_section_content(object(), {}, evidence, work_item, plan,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    assert len(calls) == 2
+    correction = calls[1]["correction"]
+    assert set(correction["issues"]) == {"block_2"}
+    issues = "\n".join(correction["issues"]["block_2"])
+    assert "与本章前文重复" in issues and "analysis_001" in issues
+    # 纠错指令须覆盖可读性类问题，而不只是数字与口径。
+    for keyword in ("业务名称", "重复", "拆分"):
+        assert keyword in correction["requiredAction"]
+    assert result.blocks[1].markdown == second_clean
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("failure", ["timeout", "provider_unreachable", "context_hard_limit"])
 async def test_section_semantic_correction_provider_failure_keeps_previous_content(monkeypatch, failure):
     calls = []

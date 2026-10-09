@@ -435,7 +435,8 @@ def repeated_sentence_warnings(
     markdown = _displayed(markdown, catalog)
     earlier: set[str] = set()
     for block in earlier_blocks:
-        earlier.update(_comparable_sentences(block))
+        # 整章生成时前文 block 同样仍是占位；已渲染文本替换后不变。
+        earlier.update(_comparable_sentences(_displayed(block, catalog)))
     return [
         f"与本章前文重复：{original}。请删除重复表述，或补充前文未写的事实与解读。"
         for normalized, original in _comparable_sentences(markdown).items()

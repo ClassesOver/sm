@@ -1642,7 +1642,11 @@ async def _generate_section_in_blocks(
             if review_warnings and block_attempt == 0:
                 block_payload["correction"] = {
                     "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
-                    "requiredAction": "修正有依据的数字和口径，删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。",
+                    "requiredAction": (
+                        "逐条处理 issues：修正有依据的数字和口径；内部 ID 和英文字段名改用业务名称；"
+                        "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
+                        "删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。"
+                    ),
                 }
                 continue
             for warning in review_warnings:
@@ -1784,11 +1788,19 @@ async def _generate_whole_section_content(
                     "actualBlockIds": [item.block_id for item in content.blocks],
                 },
             )
+        # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
         review_warnings = {
-            block.block_id: review_content(block.markdown, (item.content for item in evidence.files),
-                                          field_definitions=payload["fieldDefinitions"],
-                                          fact_ids=block_fact_ids[block.block_id])
-            for block in content.blocks
+            block.block_id: [
+                *review_content(block.markdown, (item.content for item in evidence.files),
+                                field_definitions=payload["fieldDefinitions"],
+                                fact_ids=block_fact_ids[block.block_id]),
+                *repeated_sentence_warnings(
+                    block.markdown, (earlier.markdown for earlier in content.blocks[:position]),
+                    section_number_catalog,
+                ),
+                *readability_warnings(block.markdown, section_number_catalog),
+            ]
+            for position, block in enumerate(content.blocks)
         }
         review_warnings = {key: value for key, value in review_warnings.items() if value}
         loguru_logger.info("report_content_review_completed section={} attempt={} issue_count={} block_count={}",
@@ -1799,7 +1811,11 @@ async def _generate_whole_section_content(
         if review_attempt == 0:
             payload["correction"] = {
                 "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
-                "requiredAction": "仅修复指出的数字、字段口径和无证据解释；使用冻结数值引用。返回全部 block 完整正文，保留 blockId；问题仍不确定时删去推测或写待核实。",
+                "requiredAction": (
+                    "逐条处理 issues：修正数字与字段口径并使用冻结数值引用；内部 ID 和英文字段名改用业务名称；"
+                    "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子。"
+                    "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId。"
+                ),
             }
         else:
             for block_id, warnings in review_warnings.items():
