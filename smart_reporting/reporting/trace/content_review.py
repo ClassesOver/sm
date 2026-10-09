@@ -365,23 +365,35 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
             if (isinstance(entry, dict) and entry.get("comparisonType") in rates
                     and isinstance(entry.get("changeRate"), (int, float))
                     and not isinstance(entry.get("changeRate"), bool)):
-                rates[entry["comparisonType"]].add(abs(Decimal(str(entry["changeRate"]))))
+                rates[entry["comparisonType"]].add(Decimal(str(entry["changeRate"])))
     if rates["yoy"] or rates["mom"]:
         for match in re.finditer(
-            r"(?P<kind>同比|环比)(?:增长|下降|上升|减少|增加|降低|回落|增幅|降幅|变化|变动)?(?:率)?"
+            r"(?P<kind>同比|环比)(?P<verb>增长|下降|上升|减少|增加|降低|回落|下滑|增幅|降幅|变化|变动)?(?:率)?"
             r"(?:了|约|为|达)?\s*(?P<number>[+-]?\d+(?:\.\d+)?)%", text,
         ):
             written = abs(Decimal(match["number"]))
             quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
             stated, other = ("yoy", "mom") if match["kind"] == "同比" else ("mom", "yoy")
 
-            def matches(values: set[Decimal]) -> bool:
-                return any(value.quantize(quantum, rounding=ROUND_HALF_UP) == written for value in values)
+            def same_magnitude(values: set[Decimal]) -> list[Decimal]:
+                return [value for value in values
+                        if abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == written]
 
-            if not matches(rates[stated]) and matches(rates[other]):
+            stated_values = same_magnitude(rates[stated])
+            if not stated_values and same_magnitude(rates[other]):
                 other_label = "环比" if other == "mom" else "同比"
                 warnings.append(
                     f"同比/环比口径混淆：{match[0]}。该变化率对应已登记的{other_label}比较，请核对比较口径。"
+                )
+            # 幅度相同但方向相反：“下降”对应正的登记变化率，或“增长”对应负的登记变化率。
+            falling = match["verb"] in {"下降", "减少", "降低", "回落", "下滑", "降幅"}
+            rising = match["verb"] in {"增长", "上升", "增加", "增幅"}
+            signed = [value for value in stated_values if value]
+            if (signed and (falling or rising) and not match["number"].startswith(("-", "+"))
+                    and all((value > 0) == falling for value in signed)):
+                registered = ", ".join(f"{value:+}%" for value in stated_values)
+                warnings.append(
+                    f"方向与登记变化率相反：{match[0]}。已登记的{match['kind']}变化率为 {registered}，请核对增减方向。"
                 )
     for match in _INFERENCE.finditer(text):
         # “不能证明尚未启动采购”等否定句没有作业务断言；只看当前分句，
