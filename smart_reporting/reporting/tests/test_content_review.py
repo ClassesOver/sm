@@ -442,3 +442,18 @@ def test_repeated_sentences_across_blocks_are_flagged_for_correction():
     warnings = repeated_sentence_warnings(current, earlier)
     assert len(warnings) == 1 and "本期门诊收入保持稳定增长" in warnings[0]
     assert repeated_sentence_warnings("新增住院分析结论较为明确。", earlier) == []
+
+
+def test_readability_warnings_ask_to_split_long_or_number_dense_sentences():
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    dense = "1月收入100元、2月120元、3月130元、4月90元、5月80元、6月70元[[citation:cite_001]]。"
+    long_sentence = "本期" + "门诊收入保持稳定增长并且结构持续优化" * 9 + "。"
+    table = "| 月份 | 1月 | 2月 | 3月 | 4月 | 5月 | 6月 |\n| --- | 1元 | 2元 | 3元 | 4元 | 5元 | 6元 |"
+    warnings = readability_warnings("\n\n".join([dense, long_sentence, table, "## 收入" + "很长" * 80]))
+    assert len(warnings) == 2
+    assert any("数值过多" in w for w in warnings) and any("句子过长" in w for w in warnings)
+    assert readability_warnings("1月收入100元，2月120元。本期结构稳定。") == []
+    token = "{{value:fact-" + "a" * 16 + ":total:元}}"
+    # 占位按显示值度量：6 个占位即 6 个数值。
+    assert any("数值过多" in w for w in readability_warnings("、".join([token] * 6) + "。", {token: "100元"}))

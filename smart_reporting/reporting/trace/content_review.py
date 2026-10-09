@@ -411,3 +411,29 @@ def repeated_sentence_warnings(markdown: str, earlier_blocks: Iterable[str]) -> 
         for normalized, original in _comparable_sentences(markdown).items()
         if normalized in earlier
     ]
+
+
+_READABLE_SENTENCE_CHARS = 150
+_READABLE_SENTENCE_VALUES = 5
+
+
+def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None) -> list[str]:
+    """长句与数值堆砌的软告警：只看正文段落，不看表格、标题和代码。
+
+    正文仍含 {{value:…}} 占位时按冻结目录换成显示值再度量，与读者所见一致。
+    """
+    if catalog is not None:
+        markdown = re.sub(r"\{\{value:[^{}\r\n]+\}\}", lambda match: catalog.get(match[0], "数值待核实"), markdown)
+    warnings: list[str] = []
+    for paragraph in markdown.split("\n\n"):
+        if paragraph.lstrip().startswith(("#", "|", "```", "![")):
+            continue
+        text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "")
+        for sentence in re.split(r"[。！？；\n]", text):
+            sentence = sentence.strip()
+            values = len(_VALUE.findall(sentence))
+            if values > _READABLE_SENTENCE_VALUES:
+                warnings.append(f"单句数值过多（{values} 个）：{sentence[:40]}……请拆分为多句，或改用表格呈现明细。")
+            elif len(sentence) >= _READABLE_SENTENCE_CHARS:
+                warnings.append(f"句子过长（{len(sentence)} 字）：{sentence[:40]}……请拆分为结论句和支撑句。")
+    return warnings

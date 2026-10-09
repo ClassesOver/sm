@@ -31,7 +31,7 @@ from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
 from ...trace.computation_service import detect_computation_cycles
-from ...trace.content_review import repeated_sentence_warnings, review_content
+from ...trace.content_review import readability_warnings, repeated_sentence_warnings, review_content
 from ...trace.contracts_v1 import (
     ChartTraceV1,
     ComputationRecordV1,
@@ -1633,6 +1633,8 @@ async def _generate_section_in_blocks(
                                              fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids))
             # 各 block 独立生成，常重复前文的开场与结论；逐句重复同样进入纠错轮次。
             review_warnings.extend(repeated_sentence_warnings(content.markdown, (block.markdown for block in blocks)))
+            # 长句与数值堆砌按读者所见（占位换成显示值）度量，同样进入纠错轮次。
+            review_warnings.extend(readability_warnings(content.markdown, block_number_catalog))
             loguru_logger.info("report_content_review_completed section={} block={} attempt={} issue_count={}",
                                work_item.section_code, block_plan.block_id, block_attempt, len(review_warnings))
             if review_warnings and block_attempt == 0:
