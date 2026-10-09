@@ -209,6 +209,8 @@ interface ExportPanelResult {
   pdf: { downloadUrl: string; path?: string; size?: number }
   word: { downloadUrl: string; path?: string; size?: number }
   editor?: { openUrl: string }
+  /** 验收失败时文件仍签发下载；必须明确显示失败原因，不得显示为通过。 */
+  validation?: { ok: boolean; issues: { code?: string; message?: string }[] }
 }
 
 function exportArtifactLabel(
@@ -238,6 +240,7 @@ export function createExportPanel() {
         </div>
       </div>
       <p class="export-note">已生成新的报告版本，旧版本不会被覆盖。</p>
+      <div class="export-validation-warning" role="alert" hidden></div>
       <div class="panel-body">
         <div class="export-links">
           <div class="export-format-row"><a data-format="pdf" target="_blank" rel="noreferrer">下载 PDF</a><span data-artifact-meta="pdf"></span><button type="button" data-copy="pdf">复制链接</button></div>
@@ -267,8 +270,23 @@ export function createExportPanel() {
     dialog,
     close,
     show(result: ExportPanelResult, preferredFormat: 'pdf' | 'word' = 'pdf') {
+      const failed = result.validation?.ok === false
       dialog.querySelector<HTMLElement>('#export-title')!.textContent =
-        `${preferredFormat === 'pdf' ? 'PDF' : 'Word'} 导出完成`
+        `${preferredFormat === 'pdf' ? 'PDF' : 'Word'} ${failed ? '已生成 · 验收未通过' : '导出完成'}`
+      const warning = dialog.querySelector<HTMLElement>('.export-validation-warning')!
+      warning.hidden = !failed
+      warning.replaceChildren()
+      if (failed) {
+        const lead = document.createElement('p')
+        lead.textContent = '文件已生成并可下载，但 PDF/Word 联合验收未通过，请核对后再对外发布：'
+        const list = document.createElement('ul')
+        for (const issue of result.validation!.issues) {
+          const item = document.createElement('li')
+          item.textContent = issue.message || issue.code || '验收未通过'
+          list.append(item)
+        }
+        warning.append(lead, list)
+      }
       dialog.querySelector<HTMLElement>('.export-revision')!.textContent =
         `${formatRevisionLabel(result.revision)} 已生成`
       const pdf = dialog.querySelector<HTMLAnchorElement>('[data-format="pdf"]')!

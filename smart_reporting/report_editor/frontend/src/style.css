@@ -2512,6 +2512,27 @@ button {
   font-size: 13px;
 }
 
+/* 验收未通过仍签发下载：沿用来源预览的琥珀色告警，提示核对后再对外发布。 */
+.export-validation-warning {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #f3d9a8;
+  border-radius: 8px;
+  color: #8a5a17;
+  background: #fff7e9;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.export-validation-warning p {
+  margin: 0;
+}
+
+.export-validation-warning ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
 .export-links {
   display: grid;
   gap: 8px;

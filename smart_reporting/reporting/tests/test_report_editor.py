@@ -1023,10 +1023,15 @@ async def test_editor_save_records_manual_revision_soft_warning(tmp_path: Path) 
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("editor_grant_fails", [False, True])
+@pytest.mark.parametrize(("editor_grant_fails", "validation_fails"), [
+    (False, False), (True, False),
+    # AGENTS：验收失败不阻止签发；产物身份可读时保留并签发，同时返回失败原因。
+    (False, True),
+])
 async def test_editor_export_creates_new_revision_without_overwriting_published_markdown(
     tmp_path: Path,
     editor_grant_fails: bool,
+    validation_fails: bool,
 ) -> None:
     scope = _scope()
     registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
@@ -1166,6 +1171,10 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
                     "sha256": hashlib.sha256(b"new-word").hexdigest(),
                 },
             }
+            if validation_fails:
+                return {"status": "validation_failed", "validation": {"ok": False, "issues": [
+                    {"code": "page_layout_mismatch", "message": "PDF 与 Word 页数不一致。", "page": 3},
+                ]}}
             return {"status": "validated", "validation": {"ok": True}}
 
     persisted: list[object] = []
@@ -1235,6 +1244,12 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     assert result["revision"] == 2
     assert result["pdf"]["downloadUrl"].endswith("/reports/v1/download/download-raw")
     assert result["editor"]["openUrl"].endswith("/reports/v1/editor/open/editor-raw")
+    if validation_fails:
+        assert result["validation"] == {"ok": False, "issues": [
+            {"code": "page_layout_mismatch", "message": "PDF 与 Word 页数不一致。"},
+        ]}
+    else:
+        assert result["validation"] == {"ok": True, "issues": []}
     assert {item.artifact for item in persisted} == {"pdf", "word"}
     assert await workspace.aread_text(scope.workspace_key, context.markdown_path) == source_markdown
     assert (

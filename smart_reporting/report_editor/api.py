@@ -1036,7 +1036,7 @@ def _editor_error_status(code: str) -> int:
         return 410
     if code.startswith("report_editor_ai_"):
         return 400
-    if code in {"report_artifact_validation_failed", "report_editor_export_failed"}:
+    if code in {"report_artifact_validation_failed", "report_artifact_unavailable", "report_editor_export_failed"}:
         return 422
     # 追溯来源错误码（B0 冻结映射，见 reporting/trace/contracts_v1.py）。
     if code in TRACE_ERROR_HTTP_STATUS:

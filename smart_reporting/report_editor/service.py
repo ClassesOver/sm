@@ -1762,17 +1762,33 @@ class ReportEditorService:
                 ) from error
             finally:
                 await self._delete_export_snapshot(scope.workspace_key, snapshot_path)
-            if (
-                not isinstance(rendered, dict)
-                or rendered.get("validation", {}).get("ok") is not True
-            ):
-                raise ReportingError(
-                    "report_artifact_validation_failed", "PDF/Word 联合验收未通过。"
+            # AGENTS：验收失败不阻止签发。PDF/Word 已生成且实际身份可读取时保留并签发，
+            # 同时返回失败原因；只有产物缺失或身份不可读才无法签发。
+            receipt = rendered.get("validation") if isinstance(rendered, dict) else None
+            validation_ok = isinstance(receipt, dict) and receipt.get("ok") is True
+            raw_issues = receipt.get("issues") if isinstance(receipt, dict) else None
+            validation_issues = [
+                {key: str(item[key])[:500] for key in ("code", "message") if item.get(key) is not None}
+                for item in (raw_issues[:20] if isinstance(raw_issues, list) else [])
+                if isinstance(item, dict)
+            ]
+            if not validation_ok:
+                validation_issues = validation_issues or [{
+                    "code": "report_artifact_validation_failed",
+                    "message": "PDF/Word 联合验收未通过。",
+                }]
+                logger.warning(
+                    "report_editor_export_validation_failed report_id={} base_revision={} issue_codes={}",
+                    context.report_id, context.revision,
+                    ",".join(item.get("code", "") for item in validation_issues),
                 )
             next_revision = context.revision + 1
             word_path = str(PurePosixPath(output_path).with_suffix(".docx"))
             pdf_identity = await self.workspace.ahash_file(scope.workspace_key, output_path)
             word_identity = await self.workspace.ahash_file(scope.workspace_key, word_path)
+            for identity in (pdf_identity, word_identity):
+                if identity.get("missing") or not identity.get("sha256") or not identity.get("size"):
+                    raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
             markdown_path = str(
                 PurePosixPath(output_path).with_name(PurePosixPath(context.markdown_path).name)
             )
@@ -1921,15 +1937,18 @@ class ReportEditorService:
             scope.user_id,
             document.sha256,
         )
-        return publication_result(
-            report_id=context.report_id,
-            revision=next_revision,
-            raw_grant=raw_download,
-            grant=download_grant,
-            base_url=public_base_url,
-            editor_raw_grant=raw_editor,
-            editor_expires_at=editor_expires_at,
-        )
+        return {
+            **publication_result(
+                report_id=context.report_id,
+                revision=next_revision,
+                raw_grant=raw_download,
+                grant=download_grant,
+                base_url=public_base_url,
+                editor_raw_grant=raw_editor,
+                editor_expires_at=editor_expires_at,
+            ),
+            "validation": {"ok": validation_ok, "issues": [] if validation_ok else validation_issues},
+        }
 
     async def _copy_revision_assets(
         self,

@@ -840,7 +840,9 @@ try {
         durationMs: Math.round(performance.now() - exportStartedAt),
         format,
       })
-      status(`${formatLabel} 导出完成`)
+      // 验收失败仍签发下载（AGENTS），但状态必须如实提示，不能显示为完成通过。
+      if (result.validation?.ok === false) status(`${formatLabel} 已生成 · 验收未通过`, 'error')
+      else status(`${formatLabel} 导出完成`)
       exportPanel.show(result, format)
     } catch (error) {
       void telemetry.record({

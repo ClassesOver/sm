@@ -327,6 +327,24 @@ describe('report editor enhancements', () => {
     expect(panel.dialog.querySelector('[data-format="pdf"]')?.classList).not.toContain('is-primary')
   })
 
+  it('keeps download links but states the failed validation and its reasons', () => {
+    const panel = createExportPanel()
+    panel.show({
+      revision: 3, pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' },
+      validation: { ok: false, issues: [{ code: 'page_layout_mismatch', message: 'PDF 与 Word 页数不一致。' }] },
+    })
+    // 验收失败不得显示为“导出完成”的通过态，但下载链接照常可用。
+    expect(panel.dialog.querySelector('#export-title')?.textContent).toBe('PDF 已生成 · 验收未通过')
+    const warning = panel.dialog.querySelector<HTMLElement>('.export-validation-warning')!
+    expect(warning.hidden).toBe(false)
+    expect(warning.textContent).toContain('PDF 与 Word 页数不一致。')
+    expect(panel.dialog.querySelector<HTMLAnchorElement>('[data-format="pdf"]')?.getAttribute('href')).toBe('/pdf')
+
+    panel.show({ revision: 4, pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' }, validation: { ok: true, issues: [] } })
+    expect(panel.dialog.querySelector('#export-title')?.textContent).toBe('PDF 导出完成')
+    expect(warning.hidden).toBe(true)
+  })
+
   it('copies an exported artifact link with feedback', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
