@@ -45,6 +45,7 @@ from ...trace.numeric_text import (
     correct_period_extrema,
     frozen_number_catalog,
     frozen_number_guide,
+    normalize_signed_wording,
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
@@ -1653,11 +1654,12 @@ async def _generate_section_in_blocks(
                 loguru_logger.warning("report_content_review_warning section={} message={}", work_item.section_code, warning)
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
+                # 纠错后仍残留的负值方向措辞按冻结符号确定性改写，再核对未登记数字。
                 markdown=replace_unregistered_numbers(
-                    correct_period_extrema(
+                    normalize_signed_wording(correct_period_extrema(
                         render_frozen_numbers(content.markdown, block_number_catalog),
                         (item.content for item in selected_files),
-                    ),
+                    )),
                     (item.content for item in selected_files),
                 ),
                 citationIds=citation_ids,
@@ -1829,10 +1831,10 @@ async def _generate_whole_section_content(
         block = ReportDraftBlock(
             blockId=block_plan.block_id,
             markdown=replace_unregistered_numbers(
-                correct_period_extrema(
+                normalize_signed_wording(correct_period_extrema(
                     render_frozen_numbers(content_by_id[block_plan.block_id].markdown, section_number_catalog),
                     (item.content for item in evidence.files),
-                ),
+                )),
                 (item.content for item in evidence.files),
             ),
             claimIds=block_plan.claim_ids,

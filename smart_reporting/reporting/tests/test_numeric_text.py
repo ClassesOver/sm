@@ -244,3 +244,24 @@ def test_extrema_correction_only_rewrites_the_analysis_that_produced_the_warning
     assert '[[analysis:analysis_001]]5月门诊人次最高。' in corrected
     assert '5月收入最高' not in corrected
     assert '冻结序列的最高月份为6月' in corrected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("收入同比下降-5.20%。", "收入同比下降5.20%。"),
+    ("门诊量减少了-1,200人次。", "门诊量减少了1,200人次。"),
+    ("收入同比增长-5.20%。", "收入同比下降5.20%。"),
+    ("费用增加-1,200元，增幅为-3.00%。", "费用减少1,200元，降幅为3.00%。"),
+    ("收入下滑-2.10%。", "收入下滑2.10%。"),
+    ("收入变化率为-5.20%，增长率-1.00%。", "收入变化率为-5.20%，增长率-1.00%。"),
+    ("2024-2025年收入增长5.20%。", "2024-2025年收入增长5.20%。"),
+])
+def test_signed_direction_wording_is_normalized_from_frozen_sign(text, expected):
+    from smart_reporting.reporting.trace.numeric_text import normalize_signed_wording
+
+    assert normalize_signed_wording(text) == expected
+
+
+def test_decline_magnitude_after_xiahua_stays_supported():
+    content = json.dumps({'findings': [{'columns': ['change'], 'rows': [[-2.1]],
+                         'columnMeta': {'change': {'unit': '%', 'isPercent': True}}}]})
+    assert replace_unregistered_numbers('收入下滑2.10%。', [content]) == '收入下滑2.10%。'

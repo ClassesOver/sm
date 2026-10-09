@@ -323,11 +323,35 @@ def registered_decline_magnitude(
 ) -> bool:
     """负增长率可表述为正的下降幅度，不能据此豁免增长或占比。"""
     if unit != "%" or number <= 0 or not re.search(
-        r"(?:下降|减少|降低|回落|降幅)(?:了|约|为|达)?\s*$", prefix,
+        r"(?:下降|减少|降低|回落|下滑|降幅)(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
     return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
                for value in candidates)
+
+
+_RISING_TO_FALLING = {"增长": "下降", "上升": "下降", "增加": "减少", "提高": "降低", "增幅": "降幅"}
+_FALLING = ("下降", "减少", "降低", "回落", "下滑", "降幅")
+
+
+def normalize_signed_wording(markdown: str) -> str:
+    """按冻结值的符号改写方向词：负值不能跟“增长”，也不能与“下降”构成双重否定。
+
+    冻结值决定方向，改写只调整措辞与负号，不改动数值本身。
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        verb = match["verb"]
+        falling = _RISING_TO_FALLING.get(verb, verb)
+        logger.warning("report_signed_wording_normalized verb={} value={}", verb, match["value"])
+        return f"{falling}{match['filler'] or ''}{match['space']}{match['value']}"
+
+    return re.sub(
+        rf"(?P<verb>{'|'.join((*_RISING_TO_FALLING, *_FALLING))})"
+        r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
+        replace,
+        markdown,
+    )
 
 
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
