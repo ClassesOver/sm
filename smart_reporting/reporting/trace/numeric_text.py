@@ -13,6 +13,19 @@ from loguru import logger
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 
 _MONEY_UNITS = {"元": Decimal(1), "万元": Decimal(10_000), "亿元": Decimal(100_000_000)}
+# 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
+# （“跌幅-5%”“上涨-654万元”曾因词表不全原样发布）。
+RISING_TO_FALLING = {
+    "增长": "下降", "上升": "下降", "增加": "减少", "提高": "降低", "增幅": "降幅",
+    "涨幅": "跌幅", "上涨": "下跌", "回升": "回落",
+}
+FALLING_TO_RISING = {
+    "下降": "增长", "减少": "增加", "降低": "提高", "回落": "回升", "下滑": "上升",
+    "降幅": "增幅", "减幅": "增幅", "跌幅": "涨幅", "下跌": "上涨", "缩减": "增加",
+}
+RISING_WORDS = tuple(RISING_TO_FALLING)
+FALLING_WORDS = tuple(FALLING_TO_RISING)
+DIRECTION_WORD_PATTERN = "|".join((*RISING_WORDS, *FALLING_WORDS))
 _VISIT_UNITS = {"人次": Decimal(1), "万人次": Decimal(10_000)}
 
 
@@ -335,15 +348,13 @@ def registered_decline_magnitude(
     必须按此认定为已登记数值，否则正确正文会被替换为待核实。
     """
     if number <= 0 or not re.search(
-        r"(?:下降|减少|降低|回落|下滑|降幅)(?:了|约|为|达)?\s*$", prefix,
+        rf"(?:{'|'.join(FALLING_WORDS)})(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
     return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
                for value in candidates)
 
 
-_RISING_TO_FALLING = {"增长": "下降", "上升": "下降", "增加": "减少", "提高": "降低", "增幅": "降幅"}
-_FALLING = ("下降", "减少", "降低", "回落", "下滑", "降幅")
 
 
 def normalize_signed_wording(markdown: str) -> str:
@@ -354,23 +365,22 @@ def normalize_signed_wording(markdown: str) -> str:
 
     def replace(match: re.Match[str]) -> str:
         verb = match["verb"]
-        falling = _RISING_TO_FALLING.get(verb, verb)
+        falling = RISING_TO_FALLING.get(verb, verb)
         logger.warning("report_signed_wording_normalized verb={} value={}", verb, match["value"])
         return f"{falling}{match['filler'] or ''}{match['space']}{match['value']}"
 
     return re.sub(
-        rf"(?P<verb>{'|'.join((*_RISING_TO_FALLING, *_FALLING))})"
+        rf"(?P<verb>{DIRECTION_WORD_PATTERN})"
         r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
         replace,
         markdown,
     )
 
 
-_FALLING_TO_RISING = {"下降": "增长", "减少": "增加", "降低": "提高", "回落": "回升", "下滑": "上升", "降幅": "增幅"}
 # 只有比较事实的变化额/变化率带方向语义；合计、均值等前面的“下降至”不属于此类。
 _DIRECTED_FIELDS = frozenset({"change", "changeRate"})
 DIRECTED_PLACEHOLDER = re.compile(
-    "(?P<verb>" + "|".join(_FALLING_TO_RISING) + ")"
+    "(?P<verb>" + "|".join(FALLING_WORDS) + ")"
     r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)(?P<token>\{\{value:[^{}\r\n]+\}\})"
 )
 
@@ -404,7 +414,7 @@ def align_placeholder_direction(markdown: str, contents: Iterable[str]) -> str:
     def replace(match: re.Match[str]) -> str:
         if match["token"] not in positive:
             return match[0]
-        rising = _FALLING_TO_RISING[match["verb"]]
+        rising = FALLING_TO_RISING[match["verb"]]
         logger.warning("report_direction_wording_aligned verb={} token={}", match["verb"], match["token"])
         return f"{rising}{match['filler'] or ''}{match['space']}{match['token']}"
 

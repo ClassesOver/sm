@@ -390,3 +390,31 @@ def test_direction_wording_follows_frozen_sign(change, rate, text, expected):
     catalog = frozen_number_catalog([document])
     rendered = render_frozen_numbers(align_placeholder_direction(text, [document]), catalog)
     assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == expected
+
+
+@pytest.mark.parametrize(('change', 'rate', 'verb', 'field', 'expected'), [
+    (6543211, 5.0332, '减幅', 'changeRate', '增幅5.03%'),
+    (6543211, 5.0332, '跌幅', 'changeRate', '涨幅5.03%'),
+    (6543211, 5.0332, '下跌', 'change', '上涨654.32万元'),
+    (6543211, 5.0332, '缩减', 'change', '增加654.32万元'),
+    (-6543211, -5.0332, '减幅', 'changeRate', '减幅5.03%'),
+    (-6543211, -5.0332, '跌幅', 'changeRate', '跌幅5.03%'),
+    (-6543211, -5.0332, '涨幅', 'changeRate', '跌幅5.03%'),
+    (-6543211, -5.0332, '上涨', 'change', '下跌654.32万元'),
+    (-6543211, -5.0332, '回升', 'change', '回落654.32万元'),
+])
+def test_direction_wording_covers_common_synonyms(change, rate, verb, field, expected):
+    """涨幅/跌幅/减幅/上涨/下跌/回升/缩减与增长/下降同等按冻结符号处理。"""
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    unit = '%' if field == 'changeRate' else '万元'
+    document = _comparison_document(change, rate)
+    text = f'收入较上年{verb}{{{{value:fact-cccccccccccccccc:{field}:{unit}}}}}。'
+    rendered = render_frozen_numbers(
+        align_placeholder_direction(text, [document]), frozen_number_catalog([document])
+    )
+    final = replace_unregistered_numbers(normalize_signed_wording(rendered), [document])
+    assert final == f'收入较上年{expected}。'

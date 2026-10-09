@@ -1047,3 +1047,11 @@ def test_visit_count_claims_bind_when_written_in_wan_visits() -> None:
     assert anchor_claims("门诊量123.46万人次，同比增长。", {"claim-1": (1234567, "人次")}) == (
         "门诊量123.46万人次[[claim:claim-1]]，同比增长。"
     )
+
+
+def test_negative_fact_binds_through_decline_synonyms() -> None:
+    from smart_reporting.reporting.trace.subject_builder import formatted_value_matches, value_matches
+
+    assert formatted_value_matches("收入跌幅5.03%。", -5.0332, "%")
+    assert value_matches("门诊量下跌120人次。", -120)
+    assert not formatted_value_matches("收入涨幅5.03%。", -5.0332, "%")

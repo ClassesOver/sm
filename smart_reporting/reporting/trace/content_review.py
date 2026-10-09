@@ -9,6 +9,9 @@ from typing import Any
 
 from .numeric_text import (
     DIRECTED_PLACEHOLDER,
+    DIRECTION_WORD_PATTERN,
+    FALLING_WORDS,
+    RISING_WORDS,
     _frozen_number_entries,
     _unit_scales,
     frozen_number_catalog,
@@ -459,7 +462,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                 rates[entry["comparisonType"]].add(Decimal(str(entry["changeRate"])))
     if rates["yoy"] or rates["mom"]:
         for match in re.finditer(
-            r"(?P<kind>同比|环比)(?P<verb>增长|下降|上升|减少|增加|降低|回落|下滑|增幅|降幅|变化|变动)?(?:率)?"
+            rf"(?P<kind>同比|环比)(?P<verb>{DIRECTION_WORD_PATTERN}|变化|变动)?(?:率)?"
             r"(?:了|约|为|达)?\s*(?P<number>[+-]?\d+(?:\.\d+)?)%", text,
         ):
             written = abs(Decimal(match["number"]))
@@ -477,8 +480,8 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                     f"同比/环比口径混淆：{match[0]}。该变化率对应已登记的{other_label}比较，请核对比较口径。"
                 )
             # 幅度相同但方向相反：“下降”对应正的登记变化率，或“增长”对应负的登记变化率。
-            falling = match["verb"] in {"下降", "减少", "降低", "回落", "下滑", "降幅"}
-            rising = match["verb"] in {"增长", "上升", "增加", "增幅"}
+            falling = match["verb"] in FALLING_WORDS
+            rising = match["verb"] in RISING_WORDS
             signed = [value for value in stated_values if value]
             if (signed and (falling or rising) and not match["number"].startswith(("-", "+"))
                     and all((value > 0) == falling for value in signed)):
@@ -496,11 +499,11 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         warnings.append(f"业务原因或数据状态需直接证据：{match[0]}。数值为零不能证明流程未启动、字段未填充或未入账。")
     # 负值占位渲染后自带负号：与“下降/减少”连用成双重否定，与“增长/上升”连用方向矛盾。
     for match in re.finditer(
-        r"(?P<verb>下降|减少|降低|回落|下滑|降幅|增长|上升|增加|提高|增幅)"
+        rf"(?P<verb>{DIRECTION_WORD_PATTERN})"
         r"(?:了|约|为|达|幅度为)?\s*(?P<value>-\s*\d[\d,]*(?:\.\d+)?\s*(?:亿元|万元|元|万人次|人次|床日|%)?)",
         text,
     ):
-        decline = match["verb"] in {"下降", "减少", "降低", "回落", "下滑", "降幅"}
+        decline = match["verb"] in FALLING_WORDS
         if decline:
             label = "变化率" if match["value"].rstrip().endswith("%") else "变化额"
             warnings.append(f"符号重复：{match[0]}。“{match['verb']}”后应写正的幅度，或改写为“{label}为{match['value']}”。")

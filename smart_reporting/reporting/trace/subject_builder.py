@@ -135,7 +135,13 @@ _VALUE_BOUNDARY_TAIL = r"(?![\d.,eE])"
 
 
 # 负的冻结值推荐写成“下降/减少… + 正幅度”，绑定与锚定须把该写法视为同一数值。
-_DECLINE_PREFIX = r"(?:下降|减少|降低|回落|下滑|降幅)(?:了|约|为|达|幅度为)?\s*"
+def _decline_prefix() -> str:
+    from .numeric_text import FALLING_WORDS
+
+    return rf"(?:{'|'.join(FALLING_WORDS)})(?:了|约|为|达|幅度为)?\s*"
+
+
+_DECLINE_PREFIX = _decline_prefix()
 
 
 def _negative_magnitude(fact_value: Any) -> float | None:
