@@ -157,3 +157,52 @@ async def test_chart_caption_original_fingerprint_survives_two_edited_revisions(
         assert changed["charts"][0]["status"] == "stale"
         undone = await editor.trace.validate(context, ORIGINAL, hashlib.sha256(ORIGINAL.encode()).hexdigest())
         assert undone["charts"][0]["status"] == "valid"
+
+
+@pytest.mark.anyio
+async def test_trace_index_drops_rejected_computation_records_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    """补充分析计算层只是追溯元数据：契约拒收时不登记该层，索引与报告照常生成。"""
+    from smart_reporting.reporting.trace.contracts_v1 import RevisionTraceIndexV1
+    from smart_reporting.reporting.workflow.runtime.publication import RuntimePublicationMixin
+
+    from .test_trace_computation_service import _record
+    from .test_trace_index_builder import _handle, _lineage
+
+    editor, _grants, workspace = await _make_editor(tmp_path)
+    await editor.read_document(_context())
+    index = await editor.trace.load_index(_context())
+    assert index is not None
+    markdown = next(file for file in index.files if file.resource_id == index.markdown_file_resource_id)
+    context = _context()
+
+    async def metrics(**_kwargs):
+        return ()
+
+    runtime = SimpleNamespace(
+        workspace_service=workspace,
+        _scope=lambda _run: context.scope,
+        _profile=lambda _run: SimpleNamespace(effective_profile_hash="a" * 64),
+        _build_drilldown_metrics=metrics,
+    )
+    # 记录引用的脚本与补证文件未登记：RevisionTraceIndexV1 拒收该计算记录。
+    identity = await RuntimePublicationMixin._write_trace_index(
+        runtime,
+        "reports/publish-proof/artifact-manifest.json",
+        handles=(_handle("dataset-url-abc0001"),),
+        lineage=(_lineage("dataset-url-abc0001"),),
+        markdown_artifact=ArtifactFile(
+            path=markdown.path, mediaType=markdown.media_type, size=markdown.size, sha256=markdown.sha256
+        ),
+        revision=1,
+        run_context=SimpleNamespace(run_id="report-1"),
+        computations=(_record(),),
+    )
+
+    content = await workspace.read_limited_regular_file(
+        context.scope["threadId"], identity.path, max_bytes=identity.size
+    )
+    published = RevisionTraceIndexV1.model_validate_json(content)
+    assert published.computations == ()
+    assert [item.dataset_id for item in published.datasets] == ["dataset-url-abc0001"]

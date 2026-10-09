@@ -150,3 +150,75 @@ async def test_fresh_completion_binds_computation_record_and_script_identity() -
     payload = toolkit._apply_durable.await_args.kwargs["payload"]
     assert payload["computationRecord"]["executionId"] == "exec-1"
     assert payload["computationScriptFile"] == script
+
+
+def _receipt_and_paths():
+    from smart_reporting.reporting.code_agent.context import ExecutionReceipt
+
+    evidence = "报表/智能分析/run-1/evidence/analysis_001/attempt-2/evidence.json"
+    script = {"path": "报表/智能分析/run-1/scripts/analysis_001.py", "size": 10, "sha256": "c" * 64}
+    receipt = ExecutionReceipt(
+        runId="exec-2",
+        sourceFile=script,
+        outputFiles=(_identity(evidence),),
+        environment={"python": "3.12.0"},
+    )
+    return receipt, evidence, script
+
+
+@pytest.mark.anyio
+async def test_workflow_receipt_builds_computation_record_with_production_binding() -> None:
+    """生产中任务依赖是 Mapping，不带回执；固定 Workflow 显式传入的已核验回执生效。"""
+
+    toolkit, _stored = _recovery_toolkit()
+    durable = await toolkit._durable_state(None)
+    durable.payload["analysisItems"] = {}
+    toolkit._apply_durable = AsyncMock(return_value=durable)
+    receipt, evidence, script = _receipt_and_paths()
+    run_context = RunContext(
+        run_id="run-1",
+        session_id="session-1",
+        dependencies={"AgentOS 任务执行": {"reportingPhase": "analysis"}},
+    )
+
+    result = await toolkit.complete_analysis_item(
+        analysisId="analysis_001",
+        summary="收入同比增长。",
+        datasetIds=["dataset-1"],
+        evidencePaths=[evidence],
+        citationIds=["citation-1"],
+        profileReadReceiptIds=[],
+        warnings=[],
+        run_context=run_context,
+        _execution_receipt=receipt,
+    )
+
+    assert result["ok"] is True
+    payload = toolkit._apply_durable.await_args.kwargs["payload"]
+    assert payload["computationRecord"]["executionId"] == "exec-2"
+    assert payload["computationScriptFile"] == script
+
+
+@pytest.mark.anyio
+async def test_recovery_replay_keeps_server_built_computation_record() -> None:
+    """恢复重放没有执行回执；durable 中服务端构造的计算记录不能让全等比对失败。"""
+
+    toolkit, stored = _recovery_toolkit()
+    receipt, _evidence, script = _receipt_and_paths()
+    stored["computationRecord"] = {"computationId": "comp-" + "d" * 16, "executionId": "exec-2"}
+    stored["computationScriptFile"] = script
+    recovered = {
+        key: stored[key]
+        for key in (
+            "analysisId", "summary", "datasetIds", "evidencePaths", "citationIds",
+            "profileReadReceiptIds", "warnings", "chartIds",
+        )
+    }
+
+    result = await toolkit.complete_analysis_item(
+        **recovered, run_context=RunContext(run_id="run-1", session_id="session-1")
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "accepted"
+    toolkit._apply_durable.assert_not_awaited()

@@ -3012,11 +3012,12 @@ class RuntimeSectionsMixin:
                     computation_files.append(evidence_file)
             cycles = detect_computation_cycles(tuple(computation_records))
             if cycles:
-                raise ReportingError(
-                    "report_computation_cycle_invalid",
-                    "补充分析计算记录存在循环依赖，拒绝发布。",
-                    details={"cycles": cycles[:5]},
+                # 计算记录只是追溯元数据；循环依赖时不登记计算层，报告照常交付。
+                loguru_logger.warning(
+                    "report_computation_cycle_dropped cycles={}", cycles[:5]
                 )
+                computation_records = []
+                computation_files = []
         manifest = await self._build_and_write_artifact_manifest(
             manifest_path,
             accepted_artifacts=accepted_artifacts,

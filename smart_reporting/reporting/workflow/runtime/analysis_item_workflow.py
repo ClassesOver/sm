@@ -1415,6 +1415,9 @@ class AnalysisItemWorkflow:
             warnings=warnings,
             chartIds=[],
             run_context=run_context,
+            # 回执已在 load-evidence 步骤与补证文件身份核对一致；服务端据此登记计算记录，
+            # 模型工具 schema 不暴露该参数，无法伪造。
+            _execution_receipt=state.execution_receipt if state.evidence is not None else None,
         )
         self._validate_completion_result(result)
         if (
