@@ -913,3 +913,18 @@ def test_negative_frozen_values_match_decline_magnitudes(text, matched):
         # 锚点紧跟数值（可位于数字与单位之间，渲染不可见）；未命中时才会追加到段尾。
         anchored = anchor_claims(text, {"claim_1": (-5.2, "%")})
         assert "[[claim:claim_1]]" in anchored and not anchored.endswith("[[claim:claim_1]]")
+
+
+def test_visit_count_claims_bind_when_written_in_wan_visits() -> None:
+    """人次事实写成万人次时仍按相同舍入核对并锚定，不能丢失数值绑定。"""
+    from smart_reporting.reporting.trace.subject_builder import (
+        anchor_claims,
+        formatted_value_matches,
+    )
+
+    assert formatted_value_matches("门诊量123.46万人次。", 1234567, "人次")
+    assert formatted_value_matches("门诊量1,234,567人次。", 1234567, "人次")
+    assert not formatted_value_matches("门诊量123.47万人次。", 1234567, "人次")
+    assert anchor_claims("门诊量123.46万人次，同比增长。", {"claim-1": (1234567, "人次")}) == (
+        "门诊量123.46万人次[[claim:claim-1]]，同比增长。"
+    )

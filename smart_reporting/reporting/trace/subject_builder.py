@@ -167,11 +167,21 @@ def value_matches(cell_text: str, fact_value: Any) -> bool:
 
 
 
+def _display_units(unit: str | None) -> tuple[str, ...] | None:
+    """冻结值可用的显示单位：金额与人次可按固定倍率换算，百分数/千分数原样；其余不核对。"""
+    from .numeric_text import _unit_scales
+
+    scales = _unit_scales(unit)
+    if scales is not None:
+        return tuple(scales)
+    return (unit,) if unit in {"%", "‰"} else None
+
+
 def formatted_value_matches(text: str, value: Any, unit: str | None) -> bool:
     """用冻结值的相同舍入规则核对带单位显示文本。"""
-    if value is None or unit not in {"元", "万元", "亿元", "%", "‰"}:
+    units = _display_units(unit)
+    if value is None or units is None:
         return False
-    units = ("元", "万元", "亿元") if unit in {"元", "万元", "亿元"} else (unit,)
     return any(re.search(pattern, text.replace("**", "")) for pattern in _formatted_patterns(value, unit, units))
 
 
@@ -226,9 +236,8 @@ def anchor_claims(markdown: str, values: Mapping[str, tuple[Any, str | None] | N
                 for statement in re.split(r"(?<=[。！？；])", paragraph):
                     if formatted_value_matches(statement, value, unit) or value_matches(statement, value):
                         # 锚点紧跟数值，避免长句把金额推到校验窗口之外。
-                        targets = ("元", "万元", "亿元") if unit in {"元", "万元", "亿元"} else (unit,)
-                        patterns = (_formatted_patterns(value, unit, targets)
-                                    if unit in {"元", "万元", "亿元", "%", "‰"} else [])
+                        targets = _display_units(unit)
+                        patterns = _formatted_patterns(value, unit, targets) if targets else []
                         patterns.extend(_value_patterns(value))
                         matches = [match for pattern in patterns if (match := re.search(pattern, statement))]
                         if not matches:

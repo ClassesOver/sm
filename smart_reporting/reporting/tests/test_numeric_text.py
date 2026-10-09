@@ -306,3 +306,22 @@ def test_decline_magnitude_after_xiahua_stays_supported():
     content = json.dumps({'findings': [{'columns': ['change'], 'rows': [[-2.1]],
                          'columnMeta': {'change': {'unit': '%', 'isPercent': True}}}]})
     assert replace_unregistered_numbers('收入下滑2.10%。', [content]) == '收入下滑2.10%。'
+
+
+def test_visit_counts_have_wan_display_and_verified_conversion():
+    """人次与金额一样可按固定倍率显示为万人次；正确换算不被替换为待核实。"""
+    document = json.dumps({
+        'analysisId': 'analysis_001',
+        'metrics': [{
+            'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': 'visits', 'fieldRef': 'hospital.visits',
+            'aggregation': 'sum', 'unit': '人次', 'formula': 'sum(visits)', 'total': 1234567,
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        }],
+    })
+    catalog = frozen_number_catalog([document])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:total:万人次}}'] == '123.46万人次'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:total:人次}}'] == '1,234,567人次'
+    text = '门诊量123.46万人次，约123.5万人次。'
+    assert replace_unregistered_numbers(text, [document]) == text
+    assert replace_unregistered_numbers('门诊量123.47万人次。', [document]) == '门诊量待核实。'

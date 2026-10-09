@@ -605,3 +605,16 @@ def test_readability_accepts_complete_paragraphs_and_lead_ins(text):
     from smart_reporting.reporting.trace.content_review import readability_warnings
 
     assert readability_warnings(text) == []
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("门诊量1,234,567人次。", True),
+    ("门诊量123.46万人次（1,234,567人次）。", False),
+    ("门诊量123,456人次。", False),
+])
+def test_readability_suggests_wan_visits_for_long_visit_counts(text, flagged):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    warnings = readability_warnings(text)
+    assert bool(warnings) is flagged
+    assert all("万人次" in item for item in warnings)

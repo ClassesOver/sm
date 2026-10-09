@@ -13,6 +13,12 @@ from loguru import logger
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 
 _MONEY_UNITS = {"元": Decimal(1), "万元": Decimal(10_000), "亿元": Decimal(100_000_000)}
+_VISIT_UNITS = {"人次": Decimal(1), "万人次": Decimal(10_000)}
+
+
+def _unit_scales(unit: str | None) -> dict[str, Decimal] | None:
+    """同一量纲内可互换的显示单位及倍率；只有金额与人次按固定倍率换算。"""
+    return next((family for family in (_MONEY_UNITS, _VISIT_UNITS) if unit in family), None)
 _VALUE_TOKEN = re.compile(r"\{\{value:[^{}\r\n]+\}\}")
 _NUMBER = r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _MONEY_PAIR = re.compile(
@@ -25,8 +31,9 @@ def format_fact_value(value: Any, unit: str | None, display_unit: str | None = N
     number = Decimal(str(value))
     target = display_unit or unit
     if target != unit:
-        number = number * _MONEY_UNITS[unit] / _MONEY_UNITS[target]
-    if target in {"万元", "亿元", "%", "‰"} or number != number.to_integral_value():
+        scales = _unit_scales(unit)
+        number = number * scales[unit] / scales[target]
+    if target in {"万元", "亿元", "万人次", "%", "‰"} or number != number.to_integral_value():
         text = f"{number.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}"
     else:
         text = f"{number:,.0f}"
@@ -125,14 +132,14 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     unit = ("%" if field in {"changeRate", "percentage"}
                             else None if array == "derivedMetrics" and field == "value"
                             else entry.get("unit"))
-                    units = _MONEY_UNITS if unit in _MONEY_UNITS else (unit or "",)
+                    units = _unit_scales(unit) or (unit or "",)
                     for target in units:
                         yield f"{{{{value:{fact_id}:{field}:{target}}}}}", value, unit, target or None
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                 if comparison[field] is None:
                     continue
-                for target in (_MONEY_UNITS if unit in _MONEY_UNITS else (unit,)):
+                for target in (_unit_scales(unit) or (unit,)):
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{target}}}}}"
                     yield token, comparison[field], unit, target
 
@@ -162,7 +169,8 @@ def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> di
             continue
         number = Decimal(str(value))
         if display_unit != unit:
-            number = number * _MONEY_UNITS[unit] / _MONEY_UNITS[display_unit]
+            scales = _unit_scales(unit)
+            number = number * scales[unit] / scales[display_unit]
         values.setdefault(display_unit, set()).add(number)
     return values
 
