@@ -30,6 +30,17 @@ it('reorders same-level markdown sections without moving child sections out of t
   )
 })
 
+it('moves a dragged section past intermediate siblings instead of swapping', () => {
+  const markdown = '# 摘要\nA\n# 经营\nB\n## 门诊\nC\n# 风险\nD\n# 展望\nE\n'
+  // 下标为目录过滤后的标题序号：摘要 0、经营 1、门诊 2、风险 3、展望 4。
+  expect(reorderMarkdownSections(markdown, 0, 3)).toBe(
+    '# 经营\nB\n## 门诊\nC\n# 风险\nD\n# 摘要\nA\n# 展望\nE\n',
+  )
+  expect(reorderMarkdownSections(markdown, 4, 1)).toBe(
+    '# 摘要\nA\n# 展望\nE\n# 经营\nB\n## 门诊\nC\n# 风险\nD\n',
+  )
+})
+
 it('counts only named headings so outline indexes match after empty headings', () => {
   // 目录经 namedOutlineItems 过滤掉空标题；拖拽传入的是过滤后的下标。
   const markdown = '# 摘要\nA\n## \n# 经营\nB\n# 风险\nD\n'
