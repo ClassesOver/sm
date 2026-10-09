@@ -493,3 +493,20 @@ def test_percentage_point_differences_must_come_from_two_registered_percentages(
     assert pp_warnings("占比由41.7%提高到45.24%，提高3.5个百分点。") == []
     assert pp_warnings("占比提高3.54个百分点。") == []
     assert len(pp_warnings("占比提高4.1个百分点。")) == 1
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("收入同比增长5.2%。", False),
+    ("收入环比下降3.1%。", False),
+    ("收入环比增长5.2%。", True),
+    ("收入同比下降3.10%。", True),
+    ("收入同比增长7.7%。", False),  # 无对应变化率：由数值依据告警负责，不判为口径混淆
+])
+def test_review_flags_yoy_mom_mixups(text, flagged):
+    def comparison(kind, rate):
+        return {"comparisonType": kind, "changeRate": rate, "currentTotal": 1, "baselineTotal": 1, "change": 0}
+
+    content = json.dumps({"analysisId": "analysis_001",
+                          "comparisons": [comparison("yoy", 5.2), comparison("mom", -3.1)]})
+    warnings = [w for w in review_content(text, [content]) if "口径混淆" in w]
+    assert bool(warnings) is flagged

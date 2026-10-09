@@ -358,6 +358,31 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                     f"百分点差值缺少可核对的冻结依据：{match[0]}。须由两项已登记百分数相减得到，"
                     "请写出两项百分数或删去该差值。"
                 )
+    # 同比/环比口径混淆：数值本身已登记，但只对应另一种比较口径的变化率。
+    rates: dict[str, set[Decimal]] = {"yoy": set(), "mom": set()}
+    for document in documents:
+        for entry in document.get("comparisons") or ():
+            if (isinstance(entry, dict) and entry.get("comparisonType") in rates
+                    and isinstance(entry.get("changeRate"), (int, float))
+                    and not isinstance(entry.get("changeRate"), bool)):
+                rates[entry["comparisonType"]].add(abs(Decimal(str(entry["changeRate"]))))
+    if rates["yoy"] or rates["mom"]:
+        for match in re.finditer(
+            r"(?P<kind>同比|环比)(?:增长|下降|上升|减少|增加|降低|回落|增幅|降幅|变化|变动)?(?:率)?"
+            r"(?:了|约|为|达)?\s*(?P<number>[+-]?\d+(?:\.\d+)?)%", text,
+        ):
+            written = abs(Decimal(match["number"]))
+            quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+            stated, other = ("yoy", "mom") if match["kind"] == "同比" else ("mom", "yoy")
+
+            def matches(values: set[Decimal]) -> bool:
+                return any(value.quantize(quantum, rounding=ROUND_HALF_UP) == written for value in values)
+
+            if not matches(rates[stated]) and matches(rates[other]):
+                other_label = "环比" if other == "mom" else "同比"
+                warnings.append(
+                    f"同比/环比口径混淆：{match[0]}。该变化率对应已登记的{other_label}比较，请核对比较口径。"
+                )
     for match in _INFERENCE.finditer(text):
         # “不能证明尚未启动采购”等否定句没有作业务断言；只看当前分句，
         # 不能用前一句的否定来豁免后一句真实推测。
