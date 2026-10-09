@@ -573,3 +573,35 @@ def test_readability_suggests_wan_or_yi_for_long_yuan_amounts(text, flagged):
 
     warnings = [w for w in readability_warnings(text) if "金额位数" in w]
     assert bool(warnings) is flagged
+
+
+@pytest.mark.parametrize("text", [
+    "门诊收入整体呈",
+    "收入为1,234万元，同比增长5%，",
+    "收入增长较快，成本增长与",
+    "主要原因包括：",
+    "上半年收入平稳。\n\n下半年收入分别为",
+])
+def test_readability_flags_paragraphs_that_end_mid_sentence(text):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    warnings = readability_warnings(text)
+    assert len(warnings) == 1 and warnings[0].startswith("段落未写完")
+
+
+@pytest.mark.parametrize("text", [
+    "收入同比下降5%。原因待核实。",
+    "收入为1,234万元",
+    "主要原因包括：\n\n- 价格调整\n- 人次增加",
+    "各科室收入如下：\n\n[[table:t1]]\n| 科室 | 收入 |\n|---|---|\n| 内科 | 2 |",
+    "如图所示：\n\n![收入趋势](chart.png)",
+    "### 收入分析：\n\n收入增长。",
+    "- 门诊：\n- 住院：",
+    "收入较上年增长。[[claim:c1]]",
+    "全年收入达到**1,234万元**。",
+    "```text\n收入整体呈\n```",
+])
+def test_readability_accepts_complete_paragraphs_and_lead_ins(text):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    assert readability_warnings(text) == []

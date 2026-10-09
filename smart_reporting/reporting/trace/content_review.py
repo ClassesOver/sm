@@ -599,4 +599,61 @@ def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None
                 warnings.append(f"单句数值过多（{values} 个）：{sentence[:40]}……请拆分为多句，或改用表格呈现明细。")
             elif len(sentence) >= _READABLE_SENTENCE_CHARS:
                 warnings.append(f"句子过长（{len(sentence)} 字）：{sentence[:40]}……请拆分为结论句和支撑句。")
+    warnings.extend(_incomplete_paragraph_warnings(markdown))
+    return warnings
+
+
+_PROTOCOL_MARKER = re.compile(r"\[\[[^\]\r\n]+\]\]")
+_LIST_OR_TABLE_START = re.compile(r"^(?:[-*+]\s|\d{1,3}[.)、]\s?|\|)")
+# 段落停在逗号、顿号、分号或连接/谓语成分上，读者看到的是半句话（输出截断或模型漏写）。
+_DANGLING_TAIL = re.compile(
+    r"(?:[，、；;,]|分别为|包括|以及|达到|约为|由于|因为|其中|从而|并且|呈|为|是|和|与|及|较|比|达|即|但|而|则|对|在|于)$"
+)
+
+
+def _incomplete_paragraph_warnings(markdown: str) -> list[str]:
+    """正文段落以半句结尾的软告警；列表、表格、标题、图片和代码不计。
+
+    以冒号收尾、后接列表/表格/图片的引导句是正常写法。
+    """
+    paragraphs: list[list[str]] = []
+    current: list[str] = []
+    fenced = False
+    for raw in markdown.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith(("```", "~~~")):
+            fenced = not fenced
+            if current:
+                paragraphs.append(current)
+                current = []
+            continue
+        if fenced:
+            continue
+        if not stripped:
+            if current:
+                paragraphs.append(current)
+                current = []
+            continue
+        current.append(stripped)
+    if current:
+        paragraphs.append(current)
+
+    def visible(line: str) -> str:
+        return _PROTOCOL_MARKER.sub("", line).replace("**", "").strip()
+
+    warnings: list[str] = []
+    for index, lines in enumerate(paragraphs):
+        first = visible(lines[0])
+        if not first or first.startswith(("#", "|", "![", ">")) or _LIST_OR_TABLE_START.match(first):
+            continue
+        text = visible(lines[-1])
+        if not text:
+            continue
+        if text.endswith(("：", ":")):
+            following = paragraphs[index + 1][0] if index + 1 < len(paragraphs) else ""
+            if following.startswith(("[[table:", "|", "![")) or _LIST_OR_TABLE_START.match(visible(following)):
+                continue
+        elif not _DANGLING_TAIL.search(text):
+            continue
+        warnings.append(f"段落未写完：「……{text[-20:]}」。请补全这句话，或删去未完成的半句。")
     return warnings
