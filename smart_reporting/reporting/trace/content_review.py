@@ -17,6 +17,11 @@ from .numeric_text import (
     supplemental_number_values,
 )
 
+# 读者可见文本中不应出现的内部标识（正文复核与图表图注清理共用）。
+INTERNAL_ID_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:(?:analysis|section|citation|claim|dataset|chart|requirement)_\d{3,}"
+    r"|(?:fact|sub)-[0-9a-f]{16})(?![A-Za-z0-9_])"
+)
 _VALUE = re.compile(r"(?<![\d.,])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(亿元|万元|元|万人次|人次|床日|%)")
 # 百分点核对按两两相减，候选过多时跳过以免复核耗时失控。
 _MAX_PERCENT_POINT_CANDIDATES = 400
@@ -417,11 +422,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     # 读者可见正文不得出现内部标识或英文字段名（协议标记、图片与链接地址不可见，先移除）。
     # 软告警：进入一次纠错轮次，让模型改用业务名称，而不是等到成品验收才发现。
     visible = re.sub(r"!?\[[^\]\r\n]*\]\([^)\r\n]*\)|\[\[[^\]\r\n]+\]\]", "", text)
-    for identifier in dict.fromkeys(re.findall(
-        r"(?<![A-Za-z0-9_-])(?:(?:analysis|section|citation|claim|dataset|chart|requirement)_\d{3,}"
-        r"|(?:fact|sub)-[0-9a-f]{16})(?![A-Za-z0-9_])",
-        visible,
-    )):
+    for identifier in dict.fromkeys(INTERNAL_ID_PATTERN.findall(visible)):
         warnings.append(f"正文出现内部标识：{identifier}。读者可见内容只用业务名称，内部 ID 只放在结构化引用字段。")
     for field, description in (field_definitions or {}).items():
         # 紧跟登记说明的写法（如“字段（三级科室）”）用于数据质量说明，保持既有口径不告警。
