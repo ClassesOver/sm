@@ -215,7 +215,7 @@ const sourceValidation = createSourceValidationController(
       if (issues) {
         const numericWarnings = result.warnings?.length ?? 0
         sourceStatusLabel.textContent = [
-          numericWarnings ? `正文数值待复核 ${numericWarnings} 处` : '',
+          numericWarnings ? `正文表述待复核 ${numericWarnings} 处` : '',
           issues > numericWarnings ? `来源待复核 ${issues - numericWarnings} 处` : '',
         ].filter(Boolean).join(' · ')
         sourceStatusLabel.dataset.state = 'stale'
