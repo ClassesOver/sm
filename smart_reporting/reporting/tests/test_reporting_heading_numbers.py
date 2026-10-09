@@ -1046,3 +1046,26 @@ def test_assemble_explicit_numeric_map_omits_unsupported_claim_anchor():
     assert "100元[[claim:claim_2]]" in rendered.markdown
     legacy = assemble_report_markdown(draft, **arguments)
     assert "[[claim:claim_1]]" in legacy.markdown
+
+
+@pytest.mark.parametrize(("markdown_title", "expected"), [
+    ("一、收入趋势", "收入趋势"),
+    ("十二、收入趋势", "收入趋势"),
+    ("（一）收入趋势", "收入趋势"),
+    ("(2) 收入趋势", "收入趋势"),
+    ("3、收入趋势", "收入趋势"),
+    ("1.2、收入趋势", "收入趋势"),
+    ("3.收入趋势", "收入趋势"),
+    # 正文数字不是编号，必须保留。
+    ("2025年收入", "2025年收入"),
+    ("30天回款率", "30天回款率"),
+    ("一季度收入", "一季度收入"),
+    ("1.5万人次门诊量", "1.5万人次门诊量"),
+    ("(2025)收入预测", "(2025)收入预测"),
+])
+def test_assemble_strips_chinese_and_compact_manual_heading_numbers(markdown_title: str, expected: str) -> None:
+    # 中文报告常见的“一、”“（一）”“3、”编号会与服务端编号叠成“1.1 一、收入趋势”。
+    rendered = _render(f"### {markdown_title}\n\n正文")
+
+    assert f"### 1.1 {expected}\n" in rendered.markdown
+    assert rendered.heading_numbers[1].title == expected
