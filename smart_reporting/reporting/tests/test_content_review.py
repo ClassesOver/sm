@@ -537,3 +537,25 @@ def test_review_reports_each_extrema_issue_once_preferring_the_labelled_form():
     extrema = [w for w in warnings if "3月被写为最高" in w]
     # 同一极值问题不应以“带指标名”和“不带指标名”两种形式重复进入纠错 issues。
     assert len(extrema) == 1 and extrema[0].startswith("实际门诊人次：")
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("2024年门诊收入合计1,234.56万元。", True),
+    ("2025年门诊收入合计1,234.56万元。", False),
+    ("2024年同期门诊收入为1,173.54万元。", False),  # 基期合计没有登记期间，不判定
+    ("2025年1—9月门诊收入合计1,234.56万元，较2024年同期增长5.20%。", False),  # 两个年份，不判定
+    ("2024年9月门诊收入为145.56万元。", True),
+    ("2025年9月门诊收入为145.56万元。", False),
+])
+def test_review_flags_values_labelled_with_a_year_outside_their_registered_period(text, flagged):
+    metric = {**_metric(values=(1200000, 1300000, 1400000, 1350000, 1380000, 1420000, 1390000, 1450000, 1455600)),
+              "unit": "元", "periodStart": "2025-01", "periodEnd": "2025-09"}
+    comparison = {"factId": "fact-" + "b" * 16, "comparisonType": "yoy", "field": "actual",
+                  "fieldRef": metric["fieldRef"], "currentDatasetId": "current", "baselineDatasetId": "yoy",
+                  "currentDatasetSha256": "b" * 64, "baselineDatasetSha256": "c" * 64,
+                  "currentTotal": metric["total"], "baselineTotal": 11735360,
+                  "change": metric["total"] - 11735360, "changeRate": 5.2, "formula": "x", "unit": "元",
+                  "periodStart": "2025-01", "periodEnd": "2025-09"}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric], "comparisons": [comparison]})
+    warnings = [w for w in review_content(text, [content]) if "年份" in w]
+    assert bool(warnings) is flagged

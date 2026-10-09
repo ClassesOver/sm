@@ -8,6 +8,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from .numeric_text import (
+    _MONEY_UNITS,
+    _frozen_number_entries,
     frozen_number_catalog,
     frozen_number_values,
     money_text_warnings,
@@ -259,6 +261,75 @@ def _annual_budget_denominator_warnings(text: str, bundles: list[dict[str, Any]]
     return warnings
 
 
+
+def _years_between(start: Any, end: Any) -> frozenset[int] | None:
+    years = [int(value[:4]) for value in (start, end) if isinstance(value, str) and re.match(r"\d{4}", value)]
+    return frozenset(range(min(years), max(years) + 1)) if years else None
+
+
+def _registered_value_years(contents: Iterable[str]) -> list[tuple[str, Decimal, frozenset[int] | None]]:
+    """冻结数值（按显示单位）及其登记期间覆盖的年份；期间未登记时为 None。"""
+    contents = tuple(contents)
+    fact_years: dict[str, frozenset[int] | None] = {}
+    fact_periods: dict[str, list[str]] = {}
+    for document in _documents(contents):
+        for array in ("metrics", "comparisons", "derivedMetrics", "reconciliations"):
+            for entry in document.get(array) or ():
+                if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
+                    continue
+                periods = [str(item.get("period", "")) for item in entry.get("periodValues") or ()
+                           if isinstance(item, dict)]
+                fact_periods[entry["factId"]] = periods
+                fact_years[entry["factId"]] = (
+                    _years_between(entry.get("periodStart"), entry.get("periodEnd"))
+                    or _years_between(periods[0] if periods else None, periods[-1] if periods else None)
+                )
+    values: list[tuple[str, Decimal, frozenset[int] | None]] = []
+    for token, value, unit, target in _frozen_number_entries(contents):
+        _, fact_id, field, *_rest = token[2:-2].split(":")
+        if field == "baselineTotal":
+            years = None
+        elif field.startswith("periodValues."):
+            periods = fact_periods.get(fact_id, [])
+            index = int(field.split(".")[1])
+            years = _years_between(periods[index], periods[index]) if index < len(periods) else None
+        elif field.startswith("budgetComparison."):
+            period = field.split(".")[2]
+            years = _years_between(period, period)
+        else:
+            years = fact_years.get(fact_id)
+        display_unit = target or unit
+        if not display_unit:
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit and unit in _MONEY_UNITS:
+            number = number * _MONEY_UNITS[unit] / _MONEY_UNITS[display_unit]
+        values.append((display_unit, number, years))
+    return values
+
+
+def _year_label_warnings(text: str, contents: Iterable[str]) -> list[str]:
+    """只写一个年份的句子里，数值仅对应其他年份的登记期间时，提示年份标注需复核。"""
+    registered = _registered_value_years(contents)
+    warnings: list[str] = []
+    for sentence in re.split(r"[。；\n]", text):
+        years = {int(year) for year in re.findall(r"(?<!\d)(20\d{2})年", sentence)}
+        if len(years) != 1:
+            continue
+        year = years.pop()
+        for match in _VALUE.finditer(sentence):
+            number = Decimal(match[1].replace(",", ""))
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            candidates = [years for unit, value, years in registered
+                          if unit == match[2] and value.quantize(quantum, rounding=ROUND_HALF_UP) == number]
+            if candidates and all(item is not None and year not in item for item in candidates):
+                spans = sorted({value for item in candidates if item for value in item})
+                warnings.append(
+                    f"年份标注需复核：{sentence.strip()}。{match[0]}对应的登记期间为"
+                    f"{'、'.join(f'{value}年' for value in spans)}，不是{year}年。"
+                )
+    return warnings
+
 def review_content(markdown: str, contents: Iterable[str], *, field_definitions: Mapping[str, str] | None = None,
                    fact_ids: Iterable[str] | None = None) -> list[str]:
     contents = tuple(contents)
@@ -363,6 +434,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                     f"百分点差值缺少可核对的冻结依据：{match[0]}。须由两项已登记百分数相减得到，"
                     "请写出两项百分数或删去该差值。"
                 )
+    warnings.extend(_year_label_warnings(text, contents))
     # 同比/环比口径混淆：数值本身已登记，但只对应另一种比较口径的变化率。
     rates: dict[str, set[Decimal]] = {"yoy": set(), "mom": set()}
     for document in documents:
