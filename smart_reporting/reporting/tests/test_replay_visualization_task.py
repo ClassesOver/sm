@@ -1323,7 +1323,9 @@ def test_benchmark_model_config_reaches_code_responses_request() -> None:
     settings = SimpleNamespace(
         model_standard_id="environment-model",
         openai_api_key="test-key",
-        openai_base_url=("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
+        # 新版 /compatible-mode/v1 Responses 只发送 reasoning.effort；顶层 enable_thinking
+        # 仅保留在已完成真实探针的旧 /api/v2 端点上。
+        openai_base_url=("https://token-plan.cn-beijing.maas.aliyuncs.com/api/v2"),
         report_output_token_reserve=8192,
         model_timeout_seconds=60,
     )

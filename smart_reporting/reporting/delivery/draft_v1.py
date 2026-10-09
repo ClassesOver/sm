@@ -7,20 +7,33 @@ from pathlib import PurePosixPath
 from typing import Any, Literal
 from urllib.parse import quote
 
+from loguru import logger
 from markdown_it import MarkdownIt
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel
 from ..models import ReportingError
-from .report_runtime.markdown import format_heading_label, normalize_report_markdown_strong_spacing
+from .report_runtime.markdown import (
+    format_heading_label,
+    normalize_cjk_punctuation,
+    normalize_report_markdown_strong_spacing,
+)
 
 _LEADING_SECTION_HEADING = re.compile(
     r"\A#{1,2}[ \t]+(?P<title>[^\r\n]*?)(?:[ \t]+#+)?[ \t]*(?:\r?\n|\Z)"
 )
 _ATX_HEADING = re.compile(r"^(?P<prefix>#{1,6}[ \t]+)(?P<title>.*?)(?P<closing>[ \t]+#+)?[ \t]*$")
-# 模型手写的层级编号（1.2 / 3. / 3、）会与服务端编号重复，需剥离；但不带分隔符的
-# 纯整数是正文内容（"2025 年收入"、"30 天回款率"），不能当作编号删掉。
-_MANUAL_HEADING_NUMBER = re.compile(r"^(?:\d+(?:\.\d+)+[.、．]?|\d+[.、．])[ \t]+")
+# 模型手写的层级编号（1.2 / 3. / 3、/ 一、/（一））会与服务端编号重复，需剥离；但不带分隔符的
+# 数字是正文内容（"2025 年收入"、"30 天回款率"、"一季度"、"1.5万人次"），不能当作编号删掉。
+_MANUAL_HEADING_NUMBER = re.compile(
+    r"^(?:"
+    r"\d+(?:\.\d+)+[.、．]?[ \t]+"  # 1.2 收入 / 1.2. 收入
+    r"|\d+(?:\.\d+)*、[ \t]*"  # 3、收入 / 1.2、收入
+    r"|\d+[.．](?!\d)[ \t]*"  # 3. 收入 / 3.收入（不吞小数）
+    r"|[一二三四五六七八九十百]+[、．][ \t]*"  # 一、收入
+    r"|[（(](?:[一二三四五六七八九十百]+|\d{1,2})[）)][ \t]*"  # （一）收入 / (2) 收入；不吞 (2025)
+    r")"
+)
 _MODEL_PROTOCOL_MARKER = re.compile(
     r"(?<!\\)\[\[/?(?:citation|section|analysis|table):[^\]\r\n]*\]\]"
 )
@@ -612,10 +625,24 @@ def _link_destination(file_name: str) -> str:
     )
 
 
+def _without_internal_ids(text: str) -> str:
+    """图题/替代文本读者可见：去掉内部 ID 及其包裹的括号或分隔符，全为 ID 时回退为“图表”。"""
+    from ..trace.content_review import INTERNAL_ID_PATTERN
+
+    if not INTERNAL_ID_PATTERN.search(text):
+        return text
+    id_pattern = INTERNAL_ID_PATTERN.pattern
+    cleaned = re.sub(rf"\s*[（(\[【]\s*{id_pattern}\s*[）)\]】]", "", text)
+    cleaned = re.sub(rf"\s*[·•|/:：-]?\s*{id_pattern}", "", cleaned)
+    cleaned = _WHITESPACE_RUN.sub(" ", cleaned).strip(" ·•|/:：-")
+    logger.warning("report_chart_label_internal_id_removed")
+    return cleaned or "图表"
+
+
 def _chart_figure_markdown(chart: ReportChartInput, file_name: str) -> str:
-    title = _markdown_inline_text(chart.title)
+    title = _markdown_inline_text(_without_internal_ids(chart.title))
     return (
-        f'![{_chart_alt_text(chart.alt_text)}]({_link_destination(file_name)} "{title}")'
+        f'![{_chart_alt_text(_without_internal_ids(chart.alt_text))}]({_link_destination(file_name)} "{title}")'
         + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
         + f"\n\n*图表：{title}*"
     )
@@ -879,7 +906,8 @@ def assemble_report_markdown(
         h3_count = 0
         h4_count = 0
         for block_index, block in enumerate(section.blocks):
-            block_markdown = normalize_report_markdown_strong_spacing(block.markdown)
+            # 中文正文的半角逗号/冒号/分号统一为全角；千分位、时间、英文与机器文本不变。
+            block_markdown = normalize_cjk_punctuation(normalize_report_markdown_strong_spacing(block.markdown))
             if block_markdown != block.markdown:
                 auto_fixes.append(
                     {

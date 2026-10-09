@@ -556,7 +556,8 @@ def test_postprocess_docx_uses_section_page_count_field(tmp_path: Path) -> None:
             if name.startswith("word/footer") and name.endswith(".xml")
         )
 
-    assert "SECTIONPAGES" in footer_xml
+    # 总页数引用本节末尾书签（LibreOffice 不可靠刷新 SECTIONPAGES）。
+    assert "PAGEREF report_section_end_" in footer_xml
     assert "NUMPAGES" not in footer_xml
 
 
@@ -587,7 +588,8 @@ def test_postprocess_docx_scales_tall_image_within_page_bounds(tmp_path: Path) -
 
 
 def test_word_page_fields_use_section_page_count() -> None:
-    assert _WORD_PAGE_FIELDS == {"page": "PAGE", "pages": "SECTIONPAGES"}
+    # “pages” 改由分节末尾书签的 PAGEREF 生成，不再使用 SECTIONPAGES。
+    assert _WORD_PAGE_FIELDS == {"page": "PAGE"}
 
 
 def _png(path: Path) -> None:
@@ -839,3 +841,21 @@ def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -
 
     assert _usable_width(bare) == Mm(210) - Mm(31.8) - Mm(31.8)
     assert _usable_width(configured) == Mm(170)
+
+
+@pytest.mark.parametrize(("markdown", "expected"), [
+    ("收入增长5.2%,成本下降。", "收入增长5.2%，成本下降。"),
+    ("收入, 成本均有变化;详见下表。", "收入，成本均有变化；详见下表。"),
+    ("门诊收入:1,234元。", "门诊收入：1,234元。"),
+    # 千分位、时间、英文、协议标记、链接与代码保持原样。
+    ("收入1,234,567元,时间12:30。", "收入1,234,567元，时间12:30。"),
+    ("采用 Plan A, Plan B 对比。", "采用 Plan A, Plan B 对比。"),
+    ("收入稳定[[citation:cite_001]],详见附录。", "收入稳定[[citation:cite_001]]，详见附录。"),
+    ("见[说明](https://example.com/a,b:c)。", "见[说明](https://example.com/a,b:c)。"),
+    ("配置 `a,b:c` 中文。", "配置 `a,b:c` 中文。"),
+    ("```\n中文,代码:不变\n```", "```\n中文,代码:不变\n```"),
+])
+def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_punctuation
+
+    assert normalize_cjk_punctuation(markdown) == expected

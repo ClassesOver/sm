@@ -133,6 +133,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   let drilldownEnabled = options.drilldownEnabled ?? true
   let pageController: AbortController | null = null
   let renderingWorkspace = false
+  /** 分析概览临时占用工作区；其滚动不属于仍处于激活状态的任务页。 */
+  let showingAnalysisOverview = false
   let sourcesPromise: Promise<TraceSources> | null = null
   let sourcesController: AbortController | null = null
   let directoryController: AbortController | null = null
@@ -876,7 +878,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     'scroll',
     () => {
       const page = state.currentPage()
-      if (page && isOpen && !renderingWorkspace) {
+      if (page && isOpen && !renderingWorkspace && !showingAnalysisOverview) {
         page.scroll = workspace.scrollTop
         persist()
       }
@@ -887,6 +889,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   const renderWorkspace = (focusNode?: EvidenceObjectRef, graphScroll?: number) => {
     pageController?.abort()
     renderingWorkspace = true
+    showingAnalysisOverview = false
     workspace.innerHTML = ''
     const page = state.currentPage()
     if (!page) {
@@ -1097,6 +1100,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         }
         pageController?.abort()
         workspace.replaceChildren()
+        showingAnalysisOverview = true
         const overview = document.createElement('div')
         overview.className = 'evidence-analysis-overview'
         workspace.append(overview)

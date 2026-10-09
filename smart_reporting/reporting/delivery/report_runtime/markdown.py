@@ -145,6 +145,42 @@ def _normalize_report_markdown_segments(
     return "".join(normalized)
 
 
+_CJK_CHAR = r"[\u3400-\u9fff]"
+# 协议标记与 Markdown 链接/图片地址是机器文本，不参与标点规范。
+_PUNCTUATION_PROTECTED = re.compile(r"\[\[[^\]\r\n]+\]\]|\]\([^)\r\n]*\)")
+_HALF_WIDTH_PUNCTUATION = re.compile(
+    rf"(?:(?<={_CJK_CHAR})(?P<after>[,:;])[ \t]*)"
+    rf"|(?:(?<![A-Za-z0-9])(?P<before>[,:;])[ \t]*(?={_CJK_CHAR}))"
+)
+_FULL_WIDTH = {",": "，", ":": "：", ";": "；"}
+
+
+def _normalize_cjk_punctuation_text(text: str) -> str:
+    def convert(piece: str) -> str:
+        return _HALF_WIDTH_PUNCTUATION.sub(
+            lambda match: _FULL_WIDTH[match["after"] or match["before"]], piece
+        )
+
+    pieces: list[str] = []
+    previous_end = 0
+    for protected in _PUNCTUATION_PROTECTED.finditer(text):
+        pieces.append(convert(text[previous_end : protected.start()]))
+        pieces.append(protected[0])
+        previous_end = protected.end()
+    pieces.append(convert(text[previous_end:]))
+    return "".join(pieces)
+
+
+def normalize_cjk_punctuation(markdown: str) -> str:
+    """中文正文中的半角逗号、冒号、分号改为全角。
+
+    只改紧邻汉字的标点：千分位（1,234）、时间（12:30）、英文（A, B）、协议标记、
+    链接地址与代码保持原样。
+    """
+
+    return _normalize_report_markdown_segments(markdown, _normalize_cjk_punctuation_text)
+
+
 def normalize_report_markdown_strong_spacing(markdown: str) -> str:
     """移除明确成对的中文或业务数值粗体标记内侧空白。"""
 

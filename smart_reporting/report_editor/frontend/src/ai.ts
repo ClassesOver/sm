@@ -66,7 +66,9 @@ export function selectionAIProvider(client: SelectionAIClient): AIProvider {
     let rewritten = ''
     for (const marker of [...markers, { start: original.length, end: original.length, raw: '' }]) {
       const text = original.slice(cursor, marker.start)
-      if (text.trim()) {
+      // 只有含文字或数字的片段才是可改写正文；引用后的“。”等标点原样保留，
+      // 否则会单独请求模型，空回复让整次改写失败或在引用后插入多余内容。
+      if (/[\p{L}\p{N}]/u.test(text)) {
         let output = ''
         for await (const chunk of client.streamRewrite(text, action, signal)) {
           if (signal.aborted) throw new DOMException('已取消', 'AbortError')

@@ -389,3 +389,187 @@ def test_review_budget_annual_context_does_not_override_explicit_same_period_for
     text = ('2025年1—10月实际医疗收入累计10,443,473,747元，全年预算总额为13,172,622,072元。'
             '同期间预算为10,977,185,060元，按实际收入与同期间预算之比计算，执行率为95.14%。')
     assert not any('预算分母口径' in issue for issue in review_content(text, [json.dumps(document)]))
+
+
+def test_rounded_text_is_checked_against_raw_frozen_values_not_display_text():
+    # 原值 12,450元 = 1.245万元，显示值舍入为 1.25万元；正文写一位小数时应从原值舍入（1.2），
+    # 不能把显示值再舍入一次（1.3），否则正确数字被误报、错误数字被放过。
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [{**_metric(values=(12450,)), "unit": "元"}]})
+    assert not [warning for warning in review_content("收入1.2万元。", [content]) if "冻结依据" in warning]
+    assert [warning for warning in review_content("收入1.3万元。", [content]) if "冻结依据" in warning]
+    assert not [warning for warning in review_content("收入1.25万元。", [content]) if "冻结依据" in warning]
+
+
+def test_review_flags_internal_ids_and_raw_field_names_in_visible_prose():
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(10, 20, 0))]})
+    fields = {"actual": "实际门诊人次", "indicator_value": "指标值"}
+    # 协议标记里的内部 ID 不可见，不告警；正文里直接写出的 ID 和英文字段名须改为业务名称。
+    clean = "[[analysis:analysis_001]]实际门诊人次保持稳定[[citation:cite_001]]。"
+    assert not [w for w in review_content(clean, [content], field_definitions=fields) if "内部" in w]
+    leaked = "根据 analysis_001 的 indicator_value，fact-" + "a" * 16 + " 显示 actual 上升。"
+    warnings = [w for w in review_content(leaked, [content], field_definitions=fields) if "内部" in w]
+    assert any("analysis_001" in w for w in warnings)
+    assert any("fact-" + "a" * 16 in w for w in warnings)
+    assert any("indicator_value" in w and "指标值" in w for w in warnings)
+    assert any("actual" in w and "实际门诊人次" in w for w in warnings)
+    # 英文单词的一部分不算字段名泄漏。
+    assert not [w for w in review_content("actually 稳定。", [content], field_definitions=fields) if "内部" in w]
+
+
+@pytest.mark.parametrize(("text", "kind"), [
+    ("收入同比下降-5.20%。", "重复"),
+    ("门诊量减少了 -1,200人次。", "重复"),
+    ("收入同比增长-5.20%。", "矛盾"),
+    ("收入同比下降5.20%。", None),
+    ("收入变化率为-5.20%。", None),
+    ("收入同比增长5.20%。", None),
+])
+def test_review_flags_sign_and_direction_wording(text, kind):
+    # 负值占位渲染后带负号：“下降-5.20%”双重否定，“增长-5.20%”方向矛盾；读者易误读。
+    warnings = [w for w in review_content(text, []) if "符号" in w or "方向" in w]
+    if kind is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1 and kind in warnings[0]
+
+
+def test_repeated_sentences_across_blocks_are_flagged_for_correction():
+    from smart_reporting.reporting.trace.content_review import repeated_sentence_warnings
+
+    earlier = ["本期门诊收入保持稳定增长，结构持续优化[[citation:cite_001]]。\n\n其他内容。"]
+    # 标记、加粗与标点差异不影响判定；短句（如“其他内容”）不算重复。
+    current = "**本期门诊收入保持稳定增长，结构持续优化**。其他内容。新增住院分析结论较为明确。"
+    warnings = repeated_sentence_warnings(current, earlier)
+    assert len(warnings) == 1 and "本期门诊收入保持稳定增长" in warnings[0]
+    assert repeated_sentence_warnings("新增住院分析结论较为明确。", earlier) == []
+
+
+def test_readability_warnings_ask_to_split_long_or_number_dense_sentences():
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    dense = "1月收入100元、2月120元、3月130元、4月90元、5月80元、6月70元[[citation:cite_001]]。"
+    long_sentence = "本期" + "门诊收入保持稳定增长并且结构持续优化" * 9 + "。"
+    table = "| 月份 | 1月 | 2月 | 3月 | 4月 | 5月 | 6月 |\n| --- | 1元 | 2元 | 3元 | 4元 | 5元 | 6元 |"
+    warnings = readability_warnings("\n\n".join([dense, long_sentence, table, "## 收入" + "很长" * 80]))
+    assert len(warnings) == 2
+    assert any("数值过多" in w for w in warnings) and any("句子过长" in w for w in warnings)
+    assert readability_warnings("1月收入100元，2月120元。本期结构稳定。") == []
+    token = "{{value:fact-" + "a" * 16 + ":total:元}}"
+    # 占位按显示值度量：6 个占位即 6 个数值。
+    assert any("数值过多" in w for w in readability_warnings("、".join([token] * 6) + "。", {token: "100元"}))
+
+
+def test_prose_checks_skip_server_tables_behind_protocol_markers():
+    from smart_reporting.reporting.trace.content_review import readability_warnings, repeated_sentence_warnings
+
+    # 服务端表格格式：[[table:id]] 紧贴表头，不隔空行；表格行不是正文句子。
+    table = (
+        "收入分月汇总\n\n[[table:table-analysis_001]]\n| | 1月 | 2月 | 3月 | 4月 | 5月 | 6月 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 门诊收入（元） | 100元 | 120元 | 130元 | 90元 | 80元 | 70元 |\n\n[[/table:table-analysis_001]]"
+    )
+    assert readability_warnings(table) == []
+    assert repeated_sentence_warnings(table, [table]) == []
+
+
+def test_repeated_sentences_compare_displayed_numbers_not_placeholders():
+    from smart_reporting.reporting.trace.content_review import repeated_sentence_warnings
+
+    token = "{{value:fact-" + "a" * 16 + ":total:元}}"
+    # 已采纳 block 中数值已渲染；当前 block 仍是占位，须按显示值比较。
+    earlier = ["本期门诊收入合计为1,234元，较上期保持稳定。"]
+    current = f"本期门诊收入合计为{token}，较上期保持稳定。"
+    assert len(repeated_sentence_warnings(current, earlier, {token: "1,234元"})) == 1
+
+
+def test_percentage_point_differences_must_come_from_two_registered_percentages():
+    supplement = json.dumps({"findings": [{"columns": ["year", "share"], "rows": [["2024", 41.7], ["2025", 45.24]],
+                                           "columnMeta": {"share": {"unit": "%", "isPercent": True}}}]})
+
+    def pp_warnings(text):
+        return [w for w in review_content(text, [supplement]) if "百分点" in w]
+
+    # 45.24 − 41.7 = 3.54，按书写精度舍入后 3.5 或 3.54 均有依据。
+    assert pp_warnings("占比由41.7%提高到45.24%，提高3.5个百分点。") == []
+    assert pp_warnings("占比提高3.54个百分点。") == []
+    assert len(pp_warnings("占比提高4.1个百分点。")) == 1
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("收入同比增长5.2%。", False),
+    ("收入环比下降3.1%。", False),
+    ("收入环比增长5.2%。", True),
+    ("收入同比下降3.10%。", True),
+    ("收入同比增长7.7%。", False),  # 无对应变化率：由数值依据告警负责，不判为口径混淆
+])
+def test_review_flags_yoy_mom_mixups(text, flagged):
+    def comparison(kind, rate):
+        return {"comparisonType": kind, "changeRate": rate, "currentTotal": 1, "baselineTotal": 1, "change": 0}
+
+    content = json.dumps({"analysisId": "analysis_001",
+                          "comparisons": [comparison("yoy", 5.2), comparison("mom", -3.1)]})
+    warnings = [w for w in review_content(text, [content]) if "口径混淆" in w]
+    assert bool(warnings) is flagged
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("收入同比下降5.2%。", True),
+    ("收入环比增长3.1%。", True),
+    ("收入同比增长5.2%。", False),
+    ("收入环比下降3.1%。", False),
+    ("收入同比变化5.2%。", False),
+    ("门诊量环比下降0.0%。", False),  # 零变化率没有方向
+])
+def test_review_flags_direction_opposite_to_registered_change_rate(text, flagged):
+    def comparison(kind, rate):
+        return {"comparisonType": kind, "changeRate": rate, "currentTotal": 1, "baselineTotal": 1, "change": 0}
+
+    content = json.dumps({"analysisId": "analysis_001",
+                          "comparisons": [comparison("yoy", 5.2), comparison("mom", -3.1),
+                                          comparison("mom", 0.0)]})
+    warnings = [w for w in review_content(text, [content]) if "方向与登记" in w]
+    assert bool(warnings) is flagged
+
+
+def test_review_reports_each_extrema_issue_once_preferring_the_labelled_form():
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(10, 30, 20))]})
+    warnings = review_content("实际门诊人次在3月最高。", [content], field_definitions={"actual": "实际门诊人次"})
+    extrema = [w for w in warnings if "3月被写为最高" in w]
+    # 同一极值问题不应以“带指标名”和“不带指标名”两种形式重复进入纠错 issues。
+    assert len(extrema) == 1 and extrema[0].startswith("实际门诊人次：")
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("2024年门诊收入合计1,234.56万元。", True),
+    ("2025年门诊收入合计1,234.56万元。", False),
+    ("2024年同期门诊收入为1,173.54万元。", False),  # 基期合计没有登记期间，不判定
+    ("2025年1—9月门诊收入合计1,234.56万元，较2024年同期增长5.20%。", False),  # 两个年份，不判定
+    ("2024年9月门诊收入为145.56万元。", True),
+    ("2025年9月门诊收入为145.56万元。", False),
+])
+def test_review_flags_values_labelled_with_a_year_outside_their_registered_period(text, flagged):
+    metric = {**_metric(values=(1200000, 1300000, 1400000, 1350000, 1380000, 1420000, 1390000, 1450000, 1455600)),
+              "unit": "元", "periodStart": "2025-01", "periodEnd": "2025-09"}
+    comparison = {"factId": "fact-" + "b" * 16, "comparisonType": "yoy", "field": "actual",
+                  "fieldRef": metric["fieldRef"], "currentDatasetId": "current", "baselineDatasetId": "yoy",
+                  "currentDatasetSha256": "b" * 64, "baselineDatasetSha256": "c" * 64,
+                  "currentTotal": metric["total"], "baselineTotal": 11735360,
+                  "change": metric["total"] - 11735360, "changeRate": 5.2, "formula": "x", "unit": "元",
+                  "periodStart": "2025-01", "periodEnd": "2025-09"}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric], "comparisons": [comparison]})
+    warnings = [w for w in review_content(text, [content]) if "年份" in w]
+    assert bool(warnings) is flagged
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("门诊收入11,123,541,503元。", True),
+    ("门诊收入1,234,567元。", True),
+    ("门诊收入111.24亿元（11,123,541,503元）。", False),  # 括号内保留原始元值是规范写法
+    ("人均费用356.20元。", False),
+    ("门诊收入123.46万元。", False),
+])
+def test_readability_suggests_wan_or_yi_for_long_yuan_amounts(text, flagged):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    warnings = [w for w in readability_warnings(text) if "金额位数" in w]
+    assert bool(warnings) is flagged

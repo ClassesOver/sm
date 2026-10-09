@@ -119,12 +119,21 @@ def completed_report_content(
     gate = report.get("publicationGate")
     if isinstance(gate, dict) and gate.get("formalReleaseAllowed") is False:
         issues = gate.get("issues")
-        messages = list(dict.fromkeys(
-            " ".join(item["message"].split())[:160]
-            for item in (issues if isinstance(issues, list) else [])
-            if isinstance(item, dict) and isinstance(item.get("message"), str)
-            and item["message"].strip()
-        ))[:3]
+        reasons: list[str] = []
+        for item in issues if isinstance(issues, list) else []:
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("message"), str) and item["message"].strip():
+                reasons.append(item["message"])
+            # 验收失败的具体原因在 details.validationIssues，须一并返回，不能只给笼统结论。
+            details = item.get("details")
+            nested = details.get("validationIssues") if isinstance(details, dict) else None
+            for detail in nested if isinstance(nested, list) else []:
+                if isinstance(detail, dict):
+                    text = detail.get("message") or detail.get("code")
+                    if isinstance(text, str) and text.strip():
+                        reasons.append(text)
+        messages = list(dict.fromkeys(" ".join(text.split())[:160] for text in reasons))[:5]
         notice = "验收或发布检查未通过，下载链接已签发。"
         if messages:
             notice += " 原因：" + "；".join(messages)

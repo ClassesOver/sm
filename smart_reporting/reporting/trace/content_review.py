@@ -7,10 +7,11 @@ from collections.abc import Iterable, Mapping
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from .numeric_text import (
-    budget_comparison_values,
+    _MONEY_UNITS,
+    _frozen_number_entries,
     frozen_number_catalog,
+    frozen_number_values,
     money_text_warnings,
     period_extrema_warnings,
     registered_decline_magnitude,
@@ -18,7 +19,14 @@ from .numeric_text import (
     supplemental_number_values,
 )
 
+# 读者可见文本中不应出现的内部标识（正文复核与图表图注清理共用）。
+INTERNAL_ID_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:(?:analysis|section|citation|claim|dataset|chart|requirement)_\d{3,}"
+    r"|(?:fact|sub)-[0-9a-f]{16})(?![A-Za-z0-9_])"
+)
 _VALUE = re.compile(r"(?<![\d.,])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(亿元|万元|元|万人次|人次|床日|%)")
+# 百分点核对按两两相减，候选过多时跳过以免复核耗时失控。
+_MAX_PERCENT_POINT_CANDIDATES = 400
 _INFERENCE = re.compile(
     r"(?:负值|零值|偏低|低点|异常)[^。\n]{0,60}(?:可能(?:源于|反映|存在)|系.{0,25}所致|属正常业务特征)"
     r"|(?:尚未启动(?:采购|合同)|字段未填充有效数值|尚无.{0,12}(?:数据|记录)入账|无实际支出记录|疑似未入账)"
@@ -253,6 +261,75 @@ def _annual_budget_denominator_warnings(text: str, bundles: list[dict[str, Any]]
     return warnings
 
 
+
+def _years_between(start: Any, end: Any) -> frozenset[int] | None:
+    years = [int(value[:4]) for value in (start, end) if isinstance(value, str) and re.match(r"\d{4}", value)]
+    return frozenset(range(min(years), max(years) + 1)) if years else None
+
+
+def _registered_value_years(contents: Iterable[str]) -> list[tuple[str, Decimal, frozenset[int] | None]]:
+    """冻结数值（按显示单位）及其登记期间覆盖的年份；期间未登记时为 None。"""
+    contents = tuple(contents)
+    fact_years: dict[str, frozenset[int] | None] = {}
+    fact_periods: dict[str, list[str]] = {}
+    for document in _documents(contents):
+        for array in ("metrics", "comparisons", "derivedMetrics", "reconciliations"):
+            for entry in document.get(array) or ():
+                if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
+                    continue
+                periods = [str(item.get("period", "")) for item in entry.get("periodValues") or ()
+                           if isinstance(item, dict)]
+                fact_periods[entry["factId"]] = periods
+                fact_years[entry["factId"]] = (
+                    _years_between(entry.get("periodStart"), entry.get("periodEnd"))
+                    or _years_between(periods[0] if periods else None, periods[-1] if periods else None)
+                )
+    values: list[tuple[str, Decimal, frozenset[int] | None]] = []
+    for token, value, unit, target in _frozen_number_entries(contents):
+        _, fact_id, field, *_rest = token[2:-2].split(":")
+        if field == "baselineTotal":
+            years = None
+        elif field.startswith("periodValues."):
+            periods = fact_periods.get(fact_id, [])
+            index = int(field.split(".")[1])
+            years = _years_between(periods[index], periods[index]) if index < len(periods) else None
+        elif field.startswith("budgetComparison."):
+            period = field.split(".")[2]
+            years = _years_between(period, period)
+        else:
+            years = fact_years.get(fact_id)
+        display_unit = target or unit
+        if not display_unit:
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit and unit in _MONEY_UNITS:
+            number = number * _MONEY_UNITS[unit] / _MONEY_UNITS[display_unit]
+        values.append((display_unit, number, years))
+    return values
+
+
+def _year_label_warnings(text: str, contents: Iterable[str]) -> list[str]:
+    """只写一个年份的句子里，数值仅对应其他年份的登记期间时，提示年份标注需复核。"""
+    registered = _registered_value_years(contents)
+    warnings: list[str] = []
+    for sentence in re.split(r"[。；\n]", text):
+        years = {int(year) for year in re.findall(r"(?<!\d)(20\d{2})年", sentence)}
+        if len(years) != 1:
+            continue
+        year = years.pop()
+        for match in _VALUE.finditer(sentence):
+            number = Decimal(match[1].replace(",", ""))
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            candidates = [years for unit, value, years in registered
+                          if unit == match[2] and value.quantize(quantum, rounding=ROUND_HALF_UP) == number]
+            if candidates and all(item is not None and year not in item for item in candidates):
+                spans = sorted({value for item in candidates if item for value in item})
+                warnings.append(
+                    f"年份标注需复核：{sentence.strip()}。{match[0]}对应的登记期间为"
+                    f"{'、'.join(f'{value}年' for value in spans)}，不是{year}年。"
+                )
+    return warnings
+
 def review_content(markdown: str, contents: Iterable[str], *, field_definitions: Mapping[str, str] | None = None,
                    fact_ids: Iterable[str] | None = None) -> list[str]:
     contents = tuple(contents)
@@ -321,23 +398,11 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
             label = (field_definitions or {}).get(selected[0]["field"], selected[0]["field"])
             warnings.extend(f"{label}：{warning}" for warning in period_extrema_warnings(local, [{**bundle, "metrics": selected}]))
     known = supplemental_number_values(contents)
-    for token, display in catalog.items():
-        if ":budgetComparison." in token and ".percentage:%}}" in token:
-            continue
-        match = _VALUE.fullmatch(display)
-        if match:
-            number = Decimal(match[1].replace(",", ""))
-            known.setdefault(match[2], set()).add(number)
-            if match[2] == "人次":
-                known.setdefault("万人次", set()).add(number / 10000)
-    # 百分数复核直接按原值舍入，不能将两位小数显示值再次舍入成一位。
-    for content in contents:
-        try:
-            bundle = DeterministicAnalysisBundle.model_validate_json(content)
-        except ValueError:
-            continue
-        known.setdefault("%", set()).update(value["percentage"] for value in budget_comparison_values(bundle)
-                                           if value["percentage"] is not None)
+    # 复核直接按冻结原值舍入，不能将两位小数显示值再次舍入（如1.245万元→1.25→1.3）。
+    for unit, values in frozen_number_values(contents, catalog).items():
+        known.setdefault(unit, set()).update(values)
+        if unit == "人次":
+            known.setdefault("万人次", set()).update(value / 10000 for value in values)
     # 原始证据中的数字同样是可核对来源；冻结目录之外的数字仍会在有目录时
     # 触发告警，但不能把简化证据对象中的已给定事实误报为无依据数字。
     supplemental = set().union(*(_numeric_literals(document) for document in documents if "findings" not in document))
@@ -354,6 +419,59 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
+    # “个百分点”不在数值单位核对范围内，而百分点差值从不登记，必然是模型自行相减；
+    # 只有两项已登记百分数之差按书写精度舍入后相等才有依据。
+    percents = sorted(known.get("%", ()))
+    if len(percents) <= _MAX_PERCENT_POINT_CANDIDATES:
+        for match in re.finditer(r"(?<![\d.,])(\d+(?:\.\d+)?)\s*个?百分点", text):
+            number = Decimal(match[1])
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            if not any(
+                abs(left - right).quantize(quantum, rounding=ROUND_HALF_UP) == number
+                for index, left in enumerate(percents) for right in percents[index + 1:]
+            ):
+                warnings.append(
+                    f"百分点差值缺少可核对的冻结依据：{match[0]}。须由两项已登记百分数相减得到，"
+                    "请写出两项百分数或删去该差值。"
+                )
+    warnings.extend(_year_label_warnings(text, contents))
+    # 同比/环比口径混淆：数值本身已登记，但只对应另一种比较口径的变化率。
+    rates: dict[str, set[Decimal]] = {"yoy": set(), "mom": set()}
+    for document in documents:
+        for entry in document.get("comparisons") or ():
+            if (isinstance(entry, dict) and entry.get("comparisonType") in rates
+                    and isinstance(entry.get("changeRate"), (int, float))
+                    and not isinstance(entry.get("changeRate"), bool)):
+                rates[entry["comparisonType"]].add(Decimal(str(entry["changeRate"])))
+    if rates["yoy"] or rates["mom"]:
+        for match in re.finditer(
+            r"(?P<kind>同比|环比)(?P<verb>增长|下降|上升|减少|增加|降低|回落|下滑|增幅|降幅|变化|变动)?(?:率)?"
+            r"(?:了|约|为|达)?\s*(?P<number>[+-]?\d+(?:\.\d+)?)%", text,
+        ):
+            written = abs(Decimal(match["number"]))
+            quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+            stated, other = ("yoy", "mom") if match["kind"] == "同比" else ("mom", "yoy")
+
+            def same_magnitude(values: set[Decimal]) -> list[Decimal]:
+                return [value for value in values
+                        if abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == written]
+
+            stated_values = same_magnitude(rates[stated])
+            if not stated_values and same_magnitude(rates[other]):
+                other_label = "环比" if other == "mom" else "同比"
+                warnings.append(
+                    f"同比/环比口径混淆：{match[0]}。该变化率对应已登记的{other_label}比较，请核对比较口径。"
+                )
+            # 幅度相同但方向相反：“下降”对应正的登记变化率，或“增长”对应负的登记变化率。
+            falling = match["verb"] in {"下降", "减少", "降低", "回落", "下滑", "降幅"}
+            rising = match["verb"] in {"增长", "上升", "增加", "增幅"}
+            signed = [value for value in stated_values if value]
+            if (signed and (falling or rising) and not match["number"].startswith(("-", "+"))
+                    and all((value > 0) == falling for value in signed)):
+                registered = ", ".join(f"{value:+}%" for value in stated_values)
+                warnings.append(
+                    f"方向与登记变化率相反：{match[0]}。已登记的{match['kind']}变化率为 {registered}，请核对增减方向。"
+                )
     for match in _INFERENCE.finditer(text):
         # “不能证明尚未启动采购”等否定句没有作业务断言；只看当前分句，
         # 不能用前一句的否定来豁免后一句真实推测。
@@ -362,6 +480,28 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if re.search(r"(?:不能|不可|不足以|不应|无法|不代表|不得|不要|未能|并非|尚不能).{0,30}", assertion):
             continue
         warnings.append(f"业务原因或数据状态需直接证据：{match[0]}。数值为零不能证明流程未启动、字段未填充或未入账。")
+    # 负值占位渲染后自带负号：与“下降/减少”连用成双重否定，与“增长/上升”连用方向矛盾。
+    for match in re.finditer(
+        r"(?P<verb>下降|减少|降低|回落|下滑|降幅|增长|上升|增加|提高|增幅)"
+        r"(?:了|约|为|达|幅度为)?\s*(?P<value>-\s*\d[\d,]*(?:\.\d+)?\s*(?:亿元|万元|元|万人次|人次|床日|%)?)",
+        text,
+    ):
+        decline = match["verb"] in {"下降", "减少", "降低", "回落", "下滑", "降幅"}
+        if decline:
+            warnings.append(f"符号重复：{match[0]}。“{match['verb']}”后应写正的幅度，或改写为“变化率为{match['value']}”。")
+        else:
+            warnings.append(f"方向矛盾：{match[0]}。数值为负却写为“{match['verb']}”，请核对方向并改写为下降幅度。")
+    # 读者可见正文不得出现内部标识或英文字段名（协议标记、图片与链接地址不可见，先移除）。
+    # 软告警：进入一次纠错轮次，让模型改用业务名称，而不是等到成品验收才发现。
+    visible = re.sub(r"!?\[[^\]\r\n]*\]\([^)\r\n]*\)|\[\[[^\]\r\n]+\]\]", "", text)
+    for identifier in dict.fromkeys(INTERNAL_ID_PATTERN.findall(visible)):
+        warnings.append(f"正文出现内部标识：{identifier}。读者可见内容只用业务名称，内部 ID 只放在结构化引用字段。")
+    for field, description in (field_definitions or {}).items():
+        # 紧跟登记说明的写法（如“字段（三级科室）”）用于数据质量说明，保持既有口径不告警。
+        if (re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,}", field)
+                and re.search(rf"(?<![A-Za-z0-9_]){re.escape(field)}(?![A-Za-z0-9_])"
+                              rf"(?!\s*[（(]\s*{re.escape(description)}\s*[）)])", visible)):
+            warnings.append(f"正文出现内部字段名：{field}。请改用业务名称“{description}”。")
     for field, description in (field_definitions or {}).items():
         if field not in text:
             continue
@@ -373,4 +513,90 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
             labels = re.findall(r"一级科室|二级科室|三级科室|四级科室|院区", written)
             if labels and any(label not in description for label in labels):
                 warnings.append(f"字段口径需复核：{field} 的登记说明为“{description}”，不能解释成“{written}”。")
-    return list(dict.fromkeys(warnings))
+    unique = list(dict.fromkeys(warnings))
+    # 段落级（带指标名）与期间级复核可能报出同一问题；保留更具体的带指标名形式。
+    labelled = {warning.split("：", 1)[1] for warning in unique if "：" in warning}
+    return [warning for warning in unique if warning not in labelled]
+
+
+def _prose_lines(markdown: str) -> list[str]:
+    """读者可见的正文行：去协议标记与加粗，跳过代码块、表格、标题和图片行。
+
+    服务端表格的 [[table:…]] 标记紧贴表头、不隔空行，必须逐行判断而不能按段首判断。
+    """
+    lines: list[str] = []
+    fenced = False
+    for raw in markdown.splitlines():
+        line = re.sub(r"\[\[[^\]\r\n]+\]\]", "", raw).replace("**", "").strip()
+        if line.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or not line or line.startswith(("|", "#", "![")):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _comparable_sentences(markdown: str) -> dict[str, str]:
+    """按句切分并归一化（去协议标记、加粗与标点），返回 归一化文本 → 原句。"""
+    sentences: dict[str, str] = {}
+    for sentence in (part for line in _prose_lines(markdown) for part in re.split(r"[。！？；]", line)):
+        normalized = re.sub(r"[\s，、,:：（）()“”\"'·—-]", "", sentence)
+        # 过短的句子（过渡语、标签）重复属正常写法，不计。
+        if len(normalized) >= 12:
+            sentences.setdefault(normalized, sentence.strip())
+    return sentences
+
+
+def _displayed(markdown: str, catalog: Mapping[str, str] | None) -> str:
+    """把 {{value:…}} 占位换成冻结显示值，使度量与比较基于读者所见文本。"""
+    if catalog is None:
+        return markdown
+    return re.sub(r"\{\{value:[^{}\r\n]+\}\}", lambda match: catalog.get(match[0], "数值待核实"), markdown)
+
+
+def repeated_sentence_warnings(
+    markdown: str, earlier_blocks: Iterable[str], catalog: Mapping[str, str] | None = None,
+) -> list[str]:
+    """当前 block 与本章已写 block 逐句完全重复时给出软告警，交由纠错轮次改写。
+
+    已采纳 block 的数值已渲染，当前 block 仍是占位，故先按冻结目录换成显示值再比较。
+    """
+    markdown = _displayed(markdown, catalog)
+    earlier: set[str] = set()
+    for block in earlier_blocks:
+        # 整章生成时前文 block 同样仍是占位；已渲染文本替换后不变。
+        earlier.update(_comparable_sentences(_displayed(block, catalog)))
+    return [
+        f"与本章前文重复：{original}。请删除重复表述，或补充前文未写的事实与解读。"
+        for normalized, original in _comparable_sentences(markdown).items()
+        if normalized in earlier
+    ]
+
+
+_READABLE_SENTENCE_CHARS = 150
+_READABLE_SENTENCE_VALUES = 5
+
+
+def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None) -> list[str]:
+    """长句与数值堆砌的软告警：只看正文段落，不看表格、标题和代码。
+
+    正文仍含 {{value:…}} 占位时按冻结目录换成显示值再度量，与读者所见一致。
+    """
+    markdown = _displayed(markdown, catalog)
+    warnings: list[str] = []
+    for line in _prose_lines(markdown):
+        # 百万元以上的金额以“元”书写难以阅读；括号内紧随万元/亿元的原始元值是规范写法。
+        for match in re.finditer(r"(?<![\d.,（(])([+-]?\d{1,3}(?:,\d{3}){2,}|\d{7,})(?:\.\d+)?\s*元(?!\s*[）)])", line):
+            amount = Decimal(match[1].replace(",", ""))
+            if abs(amount) >= 1_000_000:
+                suggested = "亿元" if abs(amount) >= 100_000_000 else "万元"
+                warnings.append(f"金额位数过多：{match[0]}。建议改用{suggested}占位表述，需保留原始元值时写在括号内。")
+        for sentence in re.split(r"[。！？；]", line):
+            sentence = sentence.strip()
+            values = len(_VALUE.findall(sentence))
+            if values > _READABLE_SENTENCE_VALUES:
+                warnings.append(f"单句数值过多（{values} 个）：{sentence[:40]}……请拆分为多句，或改用表格呈现明细。")
+            elif len(sentence) >= _READABLE_SENTENCE_CHARS:
+                warnings.append(f"句子过长（{len(sentence)} 字）：{sentence[:40]}……请拆分为结论句和支撑句。")
+    return warnings

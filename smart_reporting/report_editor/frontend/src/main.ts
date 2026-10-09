@@ -215,7 +215,7 @@ const sourceValidation = createSourceValidationController(
       if (issues) {
         const numericWarnings = result.warnings?.length ?? 0
         sourceStatusLabel.textContent = [
-          numericWarnings ? `正文数值待复核 ${numericWarnings} 处` : '',
+          numericWarnings ? `正文表述待复核 ${numericWarnings} 处` : '',
           issues > numericWarnings ? `来源待复核 ${issues - numericWarnings} 处` : '',
         ].filter(Boolean).join(' · ')
         sourceStatusLabel.dataset.state = 'stale'
@@ -840,7 +840,9 @@ try {
         durationMs: Math.round(performance.now() - exportStartedAt),
         format,
       })
-      status(`${formatLabel} 导出完成`)
+      // 验收失败仍签发下载（AGENTS），但状态必须如实提示，不能显示为完成通过。
+      if (result.validation?.ok === false) status(`${formatLabel} 已生成 · 验收未通过`, 'error')
+      else status(`${formatLabel} 导出完成`)
       exportPanel.show(result, format)
     } catch (error) {
       void telemetry.record({

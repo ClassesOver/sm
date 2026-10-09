@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -79,8 +79,8 @@ def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[s
     return comparisons
 
 
-def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
-    catalog: dict[str, str] = {}
+def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
+    """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
     for content in contents:
         try:
             bundle = DeterministicAnalysisBundle.model_validate_json(content)
@@ -127,25 +127,44 @@ def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
                             else entry.get("unit"))
                     units = _MONEY_UNITS if unit in _MONEY_UNITS else (unit or "",)
                     for target in units:
-                        token = f"{{{{value:{fact_id}:{field}:{target}}}}}"
-                        text = format_fact_value(value, unit, target or None)
-                        if token in catalog and catalog[token] != text:
-                            # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
-                            catalog[token] = "数值待核实"
-                        else:
-                            catalog[token] = text
+                        yield f"{{{{value:{fact_id}:{field}:{target}}}}}", value, unit, target or None
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                 if comparison[field] is None:
                     continue
                 for target in (_MONEY_UNITS if unit in _MONEY_UNITS else (unit,)):
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{target}}}}}"
-                    display = format_fact_value(comparison[field], unit, target)
-                    if token in catalog and catalog[token] != display:
-                        catalog[token] = "数值待核实"
-                    else:
-                        catalog[token] = display
+                    yield token, comparison[field], unit, target
+
+
+def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
+    catalog: dict[str, str] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        text = format_fact_value(value, unit, target)
+        if token in catalog and catalog[token] != text:
+            # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
+            catalog[token] = "数值待核实"
+        else:
+            catalog[token] = text
     return catalog
+
+
+def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> dict[str, set[Decimal]]:
+    """按显示单位给出未舍入的冻结原值。
+
+    正文数字应由原值按其书写精度舍入后比较；若用两位小数的显示文本再舍入，
+    1.245万元会先变成1.25再变成1.3，正确的1.2反被判为无依据。
+    """
+    values: dict[str, set[Decimal]] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        display_unit = target or unit
+        if not display_unit or catalog.get(token) == "数值待核实":
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit:
+            number = number * _MONEY_UNITS[unit] / _MONEY_UNITS[display_unit]
+        values.setdefault(display_unit, set()).add(number)
+    return values
 
 
 def frozen_number_guide(
@@ -304,11 +323,35 @@ def registered_decline_magnitude(
 ) -> bool:
     """负增长率可表述为正的下降幅度，不能据此豁免增长或占比。"""
     if unit != "%" or number <= 0 or not re.search(
-        r"(?:下降|减少|降低|回落|降幅)(?:了|约|为|达)?\s*$", prefix,
+        r"(?:下降|减少|降低|回落|下滑|降幅)(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
     return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
                for value in candidates)
+
+
+_RISING_TO_FALLING = {"增长": "下降", "上升": "下降", "增加": "减少", "提高": "降低", "增幅": "降幅"}
+_FALLING = ("下降", "减少", "降低", "回落", "下滑", "降幅")
+
+
+def normalize_signed_wording(markdown: str) -> str:
+    """按冻结值的符号改写方向词：负值不能跟“增长”，也不能与“下降”构成双重否定。
+
+    冻结值决定方向，改写只调整措辞与负号，不改动数值本身。
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        verb = match["verb"]
+        falling = _RISING_TO_FALLING.get(verb, verb)
+        logger.warning("report_signed_wording_normalized verb={} value={}", verb, match["value"])
+        return f"{falling}{match['filler'] or ''}{match['space']}{match['value']}"
+
+    return re.sub(
+        rf"(?P<verb>{'|'.join((*_RISING_TO_FALLING, *_FALLING))})"
+        r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
+        replace,
+        markdown,
+    )
 
 
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
@@ -321,13 +364,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
     if not catalog and not known:
         return markdown
-    value_pattern = re.compile(
-        rf"(?P<number>{_NUMBER})(?P<unit>亿元|万元|元|万人次|人次|床日|%)"
-    )
-    for display in catalog.values():
-        match = value_pattern.fullmatch(display)
-        if match:
-            known.setdefault(match["unit"], set()).add(Decimal(match["number"].replace(",", "")))
+    for unit, values in frozen_number_values(contents, catalog).items():
+        known.setdefault(unit, set()).update(values)
 
     def replace(match: re.Match[str]) -> str:
         number = Decimal(match["number"].replace(",", ""))
@@ -363,21 +401,31 @@ def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str
             continue
         if isinstance(parsed, dict):
             normalized.append(parsed)
-    warnings = period_extrema_warnings(markdown, normalized)
     corrected = markdown
-    for warning in warnings:
-        match = re.search(r"(\d+)月被写为(最高|最低)，冻结月序列的\2月份为([^。]+)", warning)
-        if match is None:
-            continue
-        wrong_month, kind, expected = match.groups()
-        clause = re.compile(
-            rf"(?<!\d){wrong_month}月[^。；\n]{{0,60}}?(?:最高|最低|峰值|低点)(?:值|月份)?[^。；\n]*"
-        )
-        corrected, count = clause.subn(
-            f"冻结序列的{kind}月份为{expected}", corrected, count=1
-        )
-        if count:
-            logger.warning("report_period_extrema_corrected wrong_month={} expected_months={}", wrong_month, expected)
+    for bundle in normalized:
+        # 告警按分析标记分段产生；改写也只能落在该分析的段落内，
+        # 否则会改掉其他分析中同月份的正确陈述。
+        for warning in period_extrema_warnings(corrected, [bundle]):
+            match = re.search(r"(\d+)月被写为(最高|最低)，冻结月序列的\2月份为([^。]+)", warning)
+            if match is None:
+                continue
+            wrong_month, kind, expected = match.groups()
+            clause = re.compile(
+                rf"(?<!\d){wrong_month}月[^。；\n]{{0,60}}?(?:最高|最低|峰值|低点)(?:值|月份)?[^。；\n]*"
+            )
+            markers = list(re.finditer(r"\[\[analysis:([^\]]+)\]\]", corrected))
+            for index, marker in enumerate(markers):
+                if marker[1] != bundle.get("analysisId"):
+                    continue
+                end = markers[index + 1].start() if index + 1 < len(markers) else len(corrected)
+                segment, count = clause.subn(
+                    f"冻结序列的{kind}月份为{expected}", corrected[marker.end():end], count=1
+                )
+                if count:
+                    corrected = corrected[:marker.end()] + segment + corrected[end:]
+                    logger.warning("report_period_extrema_corrected wrong_month={} expected_months={}",
+                                   wrong_month, expected)
+                    break
     return corrected
 
 

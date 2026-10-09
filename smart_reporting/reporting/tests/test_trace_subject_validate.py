@@ -888,3 +888,28 @@ def test_bed_day_claim_unit_is_not_truncated_to_beds():
 ])
 def test_claim_does_not_borrow_value_from_neighboring_sentence(markdown):
     assert claim_status(markdown, "claim-1", 3600, expected_unit="万元")["status"] == "stale"
+
+
+@pytest.mark.parametrize(("text", "matched"), [
+    ("收入同比下降5.20%。", True),
+    ("门诊量减少了1,200人次。", True),
+    ("收入下滑5.2%。", True),
+    ("收入同比增长5.20%。", False),
+    ("收入为5.20%。", False),
+    ("收入同比下降-5.20%。", True),
+])
+def test_negative_frozen_values_match_decline_magnitudes(text, matched):
+    from smart_reporting.reporting.trace.subject_builder import (
+        anchor_claims,
+        formatted_value_matches,
+        value_matches,
+    )
+
+    # 负的冻结值按“下降/减少… + 正幅度”书写是推荐写法，绑定与锚定都必须识别。
+    rate_matched = value_matches(text, -5.2) or formatted_value_matches(text, -5.2, "%")
+    count_matched = value_matches(text, -1200)
+    assert (rate_matched or count_matched) is matched
+    if matched and "%" in text:
+        # 锚点紧跟数值（可位于数字与单位之间，渲染不可见）；未命中时才会追加到段尾。
+        anchored = anchor_claims(text, {"claim_1": (-5.2, "%")})
+        assert "[[claim:claim_1]]" in anchored and not anchored.endswith("[[claim:claim_1]]")

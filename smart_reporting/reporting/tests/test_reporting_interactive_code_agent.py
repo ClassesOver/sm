@@ -2264,7 +2264,9 @@ def test_task_specific_code_instructions_delegate_wire_protocol_and_fit_budget()
         # 2026-09-24：追加 facts/supplement 数据形状契约后上调至 5_100/1_600。
         # 2026-09-24：追加禁止通用 resolve() 后上调至 5_300/1_650。
         # 2026-09-24：追加禁止通用 helper / f-string / os.path.join 构造路径后上调至 5_600/1_750。
-        "visualization": {"bytes": 5_600, "cl100k_tokens": 1_750},
+        # 2026-10-08：此后提交（含 94823f2、e938b7b、cecbe21）追加口径、单位与补证绑定规则，
+        # 实测 6_819 bytes / 2_196 tokens，上调至 6_900/2_250，仍拦截意外膨胀。
+        "visualization": {"bytes": 6_900, "cl100k_tokens": 2_250},
     }
     tokenizer = tiktoken.get_encoding("cl100k_base")
 
