@@ -401,7 +401,14 @@ def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str
             continue
         if isinstance(parsed, dict):
             normalized.append(parsed)
-    corrected = markdown
+    # 章节 block 由模型撰写，不含 [[analysis:…]] 协议标记；与 review_content 一致，
+    # 只有一个分析事实包时整段即其作用域，否则无标记正文无法归属，不做改写。
+    analysis_bundles = [item for item in normalized
+                        if item.get("metrics") and isinstance(item.get("analysisId"), str)]
+    scope = ""
+    if "[[analysis:" not in markdown and len(analysis_bundles) == 1:
+        scope = f"[[analysis:{analysis_bundles[0]['analysisId']}]]"
+    corrected = scope + markdown
     for bundle in normalized:
         # 告警按分析标记分段产生；改写也只能落在该分析的段落内，
         # 否则会改掉其他分析中同月份的正确陈述。
@@ -410,23 +417,79 @@ def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str
             if match is None:
                 continue
             wrong_month, kind, expected = match.groups()
-            clause = re.compile(
-                rf"(?<!\d){wrong_month}月[^。；\n]{{0,60}}?(?:最高|最低|峰值|低点)(?:值|月份)?[^。；\n]*"
-            )
             markers = list(re.finditer(r"\[\[analysis:([^\]]+)\]\]", corrected))
             for index, marker in enumerate(markers):
                 if marker[1] != bundle.get("analysisId"):
                     continue
                 end = markers[index + 1].start() if index + 1 < len(markers) else len(corrected)
-                segment, count = clause.subn(
-                    f"冻结序列的{kind}月份为{expected}", corrected[marker.end():end], count=1
+                segment = _rewrite_extrema_sentence(
+                    corrected[marker.end():end], int(wrong_month), kind, expected,
+                    _series_year(bundle),
                 )
-                if count:
+                if segment is not None:
                     corrected = corrected[:marker.end()] + segment + corrected[end:]
                     logger.warning("report_period_extrema_corrected wrong_month={} expected_months={}",
                                    wrong_month, expected)
                     break
-    return corrected
+    return corrected[len(scope):]
+
+
+_EXTREMA_WORDS = {"最高": "最高|峰值", "最低": "最低|低点"}
+# 与 period_extrema_warnings 的豁免一致：分项比例、变化率和组织明细的极值不按全院月序列改写。
+_EXTREMA_EXEMPT = re.compile(r"占比|比重|比例|环比|同比|增长率|降幅|增幅|组织明细|明细分组|分组组合")
+_MONTH_RANGE = re.compile(r"(?<!\d)\d{1,2}月?\s*[–—~～至到-]\s*\d{1,2}月")
+_EXTREMA_SUBJECT_SUFFIX = re.compile(
+    r"(?:为|是|达到|达|处于|出现|创下|创|录得|位居|居|全年|年内|期内|期间|当期|单月|各月|月度|的|中|内)$"
+)
+_DISPLAYED_VALUE = (
+    r"(?:\{\{value:[^{}\r\n]+\}\}"
+    r"|[+-]?\d[\d,]*(?:\.\d+)?\s*(?:亿元|万元|元|万人次|人次|床日|%)?)"
+)
+
+
+def _series_year(bundle: dict[str, Any]) -> str | None:
+    metrics = [entry for entry in bundle.get("metrics", ()) if "current" in entry.get("periodRoles", ())]
+    periods = metrics[0].get("periodValues", ()) if len(metrics) == 1 else ()
+    return str(periods[0]["period"])[:4] if periods else None
+
+
+def _rewrite_extrema_sentence(
+    segment: str, wrong_month: int, kind: str, expected: str, year: str | None,
+) -> str | None:
+    """只改写唯一一句与告警对应的极值陈述；无法唯一定位时保留原文，交由软告警复核。"""
+
+    claim = re.compile(
+        rf"(?<![\d–—~～至到-]){wrong_month}月(?P<between>(?:(?!\d{{1,2}}月)[^。；\n]){{0,60}}?)"
+        rf"(?:{_EXTREMA_WORDS[kind]})(?:值|月份|水平|点)?"
+    )
+    candidates = []
+    for sentence in re.finditer(r"[^。；\n]+", segment):
+        years = set(re.findall(r"(?<!\d)(\d{4})年", sentence[0]))
+        # 子期间范围的极值以范围内月份为准，改写会丢失范围语义；其他年份不属于该序列。
+        if _MONTH_RANGE.search(sentence[0]) or (years and years != {year}):
+            continue
+        candidates.extend((sentence, found) for found in claim.finditer(sentence[0])
+                          if not _EXTREMA_EXEMPT.search(found[0]))
+    if len(candidates) != 1:
+        return None
+    sentence, found = candidates[0]
+    before = sentence[0][:found.start()]
+    if before.endswith(("在", "于")):
+        before = before[:-1]
+    # 保留月份与极值词之间的指标名（“2月金额为最高值”→“金额最高月份为…”）；
+    # 夹带数值或分句时那是错误月份的数值，一并去掉。
+    subject = found["between"].replace("**", "")
+    while (stripped := _EXTREMA_SUBJECT_SUFFIX.sub("", subject)) != subject:
+        subject = stripped
+    if re.search(r"[\d，,、]|\{\{", subject):
+        subject = ""
+    after = sentence[0][found.end():]
+    after = re.sub(rf"^\s*(?:（[^）]*）)?\s*(?:为|达|约|计|是)?\s*{_DISPLAYED_VALUE}", "", after)
+    after = re.sub(rf"^[，,]\s*(?:为|达|约|计|金额为|数值为)\s*{_DISPLAYED_VALUE}", "", after)
+    rewritten = f"{before}{subject}{kind}月份为{expected}{after}"
+    if rewritten.count("**") % 2:
+        rewritten = rewritten.replace("**", "")
+    return segment[:sentence.start()] + rewritten + segment[sentence.end():]
 
 
 def money_text_warnings(markdown: str) -> list[str]:
