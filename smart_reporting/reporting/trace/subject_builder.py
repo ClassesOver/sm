@@ -80,7 +80,7 @@ def build_claim_subject_bindings(
                         analysisId=analysis_id,
                         fileResourceId=resource_id,
                         jsonPointer=pointer,
-                        factKind={"comparisons": "comparison", "derivedMetrics": "derived", "reconciliations": "reconciliation"}.get(pointer.split("/")[1], pointer_kind),
+                        factKind={"comparisons": "comparison", "derivedMetrics": "derived", "reconciliations": "reconciliation", "correlationDetails": "correlation"}.get(pointer.split("/")[1], pointer_kind),
                         factKey=fact_id,
                     )
                 )
@@ -137,6 +137,7 @@ _VALUE_BOUNDARY_TAIL = r"(?![\d.,eE])"
 def value_matches(cell_text: str, fact_value: Any) -> bool:
     """判定单个文本片段是否呈现该事实值（带数字边界，供 claim 窗口与表格单元格共用）。"""
 
+    cell_text = cell_text.replace("−", "-").replace("－", "-")
     for variant in value_text_variants(fact_value):
         if re.search(
             r"(?<![\d.,+\-a-zA-Z_])" + re.escape(variant) + _VALUE_BOUNDARY_TAIL,
@@ -153,6 +154,7 @@ def formatted_value_matches(text: str, value: Any, unit: str | None) -> bool:
 
     if value is None or unit not in {"元", "万元", "亿元", "%", "‰"}:
         return False
+    text = text.replace("−", "-").replace("－", "-")
     units = ("元", "万元", "亿元") if unit in {"元", "万元", "亿元"} else (unit,)
     return any(re.search(
         r"(?<![\d.,+\-])" + re.escape(format_fact_value(value, unit, target)) + r"(?![\d.])",
@@ -275,6 +277,7 @@ def unit_period_warnings(
     不告警；只有明确写了与生成时不同的单位/期间才提示复核。
     """
 
+    window = window.replace("−", "-").replace("－", "-")
     warnings: list[str] = []
     if expected_unit and fact_value is not None:
         unit_pattern = "|".join(re.escape(unit) for unit in _UNIT_TOKENS)
@@ -364,8 +367,12 @@ def claim_status(
 
     值命中（valid）后若提供了生成时单位/期间，再核对邻近文本：明确写了
     不同单位/期间 → 附带软告警，状态仍为 valid（AGENTS：软告警不阻断）。
+    已登记业务范围未在引用句中体现时，同样提示复核，不推断替代范围。
     """
 
+    from .markdown_body import trace_body
+
+    markdown = trace_body(markdown)
     sections = list(re.finditer(r"\[\[section:([^\]\r\n]+)\]\]", markdown))
     if section_id and sections:
         matching = [index for index, section in enumerate(sections) if section[1] == section_id]
@@ -396,14 +403,18 @@ def claim_status(
     matched_statements = [statement for statement in statements if value_matches(statement, fact_value) or formatted_value_matches(statement, fact_value, expected_unit)]
     if matched_statements:
         warning_window = "\n".join(matched_statements)
+        warnings = unit_period_warnings(
+            warning_window,
+            expected_unit=expected_unit,
+            expected_periods=expected_periods,
+            fact_value=fact_value,
+        )
+        for key, value in (expected_scope or {}).items():
+            if value and value not in warning_window:
+                warnings.append(f"业务范围需复核：当前引用句未体现登记范围 {key}={value}。")
         return {
             "status": "valid",
-            "warnings": unit_period_warnings(
-                warning_window,
-                expected_unit=expected_unit,
-                expected_periods=expected_periods,
-                fact_value=fact_value,
-            ),
+            "warnings": warnings,
         }
     comparable = None
     comparable_statements = [statement for statement in statements if _NUMBER_UNIT_RE.search(statement)]

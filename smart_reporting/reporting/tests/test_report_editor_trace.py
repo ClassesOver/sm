@@ -1943,3 +1943,49 @@ async def test_http_computation_routes(tmp_path: Path) -> None:
         )
         assert missing.status_code == 404
         assert missing.json()["detail"]["code"] == "source_missing"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("change_stage", ["before_snapshot", "during_read"])
+async def test_drilldown_reads_verified_request_snapshot(tmp_path, monkeypatch, change_stage):
+    editor, grants, _ = await _make_editor(tmp_path, with_fact_file=True, with_drilldown=True)
+    raw, _ = await grants.issue(_context())
+    _, session = await grants.exchange(raw)
+    resolve = editor.trace._resolve_dataset_file
+    drilldown = editor.trace._drilldown.drilldown
+    source_paths = []
+    read_paths = []
+
+    def replace_source(path):
+        original = path.read_bytes()
+        changed = original.replace(b",1200,", b",1300,").replace(b",2400,", b",2300,")
+        assert original != changed and len(original) == len(changed)
+        path.write_bytes(changed)
+
+    async def resolve_and_change(*args, **kwargs):
+        file = await resolve(*args, **kwargs)
+        source_paths.append(file.local_path)
+        if change_stage == "before_snapshot":
+            replace_source(file.local_path)
+        return file
+
+    def read_and_change(file, *args, **kwargs):
+        read_paths.append(file.local_path)
+        if change_stage == "during_read":
+            replace_source(source_paths[0])
+        return drilldown(file, *args, **kwargs)
+
+    monkeypatch.setattr(editor.trace, "_resolve_dataset_file", resolve_and_change)
+    monkeypatch.setattr(editor.trace._drilldown, "drilldown", read_and_change)
+    arguments = dict(metric_code="income_total", dataset_id=DATASET_ID, dimension_code="branch")
+    if change_stage == "before_snapshot":
+        with pytest.raises(ReportingError) as error:
+            await editor.trace_drilldown(_context(), session, "sub-" + "c" * 16, **arguments)
+        assert error.value.code == "snapshot_integrity_failed"
+        assert not read_paths
+    else:
+        result = await editor.trace_drilldown(_context(), session, "sub-" + "c" * 16, **arguments)
+        assert result["rows"] == [{"group": "A院区", "value": 1200.0}, {"group": "B院区", "value": 2400.0}]
+        assert result["snapshot"]["sha256"] == hashlib.sha256(CSV_BYTES).hexdigest()
+        assert read_paths[0] != source_paths[0]
+        assert not read_paths[0].exists()

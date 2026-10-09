@@ -426,25 +426,31 @@ class ReportEditorTraceService:
                 "dataset_access_denied", "当前会话无权读取该下钻所需字段。"
             )
         file = await self._resolve_dataset_file(
-            context, index, declaration.dataset_id
+            context, index, declaration.dataset_id, verify=False
         )
         limiter = (
             self._drilldown_large_limiter
             if file.size >= _DRILLDOWN_LARGE_FILE_BYTES
             else self._drilldown_limiter
         )
+
+        def read_drilldown():
+            # 复制、校验与所有聚合读取在同一线程内，临时快照存活到计算结束。
+            with verified_dataset_snapshot(file) as snapshot:
+                return self._drilldown.drilldown(
+                    snapshot,
+                    declaration,
+                    dimension_code=dimension_code,
+                    report_id=str(context.report_id),
+                    revision=int(context.revision),
+                    limit=limit,
+                    cursor=cursor,
+                )
+
         try:
             with anyio.fail_after(_DRILLDOWN_TIMEOUT_SECONDS):
                 page = await anyio.to_thread.run_sync(
-                    lambda: self._drilldown.drilldown(
-                        file,
-                        declaration,
-                        dimension_code=dimension_code,
-                        report_id=str(context.report_id),
-                        revision=int(context.revision),
-                        limit=limit,
-                        cursor=cursor,
-                    ),
+                    read_drilldown,
                     abandon_on_cancel=True,
                     limiter=limiter,
                 )
@@ -782,6 +788,14 @@ class ReportEditorTraceService:
                 return values[0] if len(values) == 1 else None
             return _entry_value(entry)
 
+        async def _fact_unit_of(ref: Any, row_key: str) -> str | None:
+            entry = await _fact_entry_of(ref)
+            if entry is None:
+                return None
+            if row_key.startswith("comparison:"):
+                return "%" if row_key.rsplit(":", 1)[-1] == "changeRate" else entry.get("unit")
+            return fact_display_unit(entry)
+
         subjects: list[dict[str, Any]] = []
         summary = {"valid": 0, "stale": 0, "unbound": 0}
         for binding in index.subject_bindings:
@@ -829,7 +843,8 @@ class ReportEditorTraceService:
             )
 
         tables_payload, table_summary = await self._evaluate_tables(
-            index, context, markdown, _fact_value_of, _TABLE_BLOCK, value_matches
+            index, context, markdown, _fact_value_of, _TABLE_BLOCK, value_matches,
+            fact_unit_of=_fact_unit_of,
         )
         for table, payload in zip(index.tables, tables_payload, strict=True):
             dataset_ids: list[str] = []
@@ -913,6 +928,8 @@ class ReportEditorTraceService:
         fact_value_of: Any,
         table_block_pattern: Any,
         value_matches: Any,
+        *,
+        fact_unit_of: Any = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """表格身份重判（计划 6.1）：排序不失效，改值 stale，插删行/删块 unbound。
 
@@ -920,6 +937,16 @@ class ReportEditorTraceService:
         列按草稿表头文本 == columnKey 定位，表头被改
         即无法定位 → stale。全部为软语义，不阻断保存。
         """
+
+        from ..reporting.trace.subject_builder import formatted_value_matches, unit_period_warnings
+        from ..reporting.trace.markdown_body import trace_body
+
+        def matches_fact_value(text: str, value: Any, unit: str | None) -> bool:
+            # 等值换算优先；裸数命中不能掩盖显式单位不一致，stale 仅提示复核。
+            return formatted_value_matches(text, value, unit) or (
+                value_matches(text, value)
+                and not unit_period_warnings(text, expected_unit=unit, fact_value=value)
+            )
 
         committed = None
         try:
@@ -931,6 +958,11 @@ class ReportEditorTraceService:
             committed = committed_bytes.decode("utf-8")
         except (OSError, WorkspaceError, UnicodeDecodeError):
             committed = None
+
+        # 保留表格内的行内代码标签；代码块与注释中的整块表格不参与绑定。
+        draft_markdown = trace_body(draft_markdown, mask_inline_code=False)
+        if committed is not None:
+            committed = trace_body(committed, mask_inline_code=False)
 
         def _blocks(source: str | None) -> dict[str, str]:
             if not source:
@@ -978,7 +1010,10 @@ class ReportEditorTraceService:
             locations: list[dict[str, Any]] = []
             inserted_rows = 0
             copied_cells: list[dict[str, Any]] = []
-            origin_source = trace.origin_markdown if trace.origin_markdown is not None else committed
+            origin_source = (
+                trace_body(trace.origin_markdown, mask_inline_code=False)
+                if trace.origin_markdown is not None else committed
+            )
             origin_body = (
                 _blocks(origin_source).get(trace.table_id)
                 if trace.origin_markdown is not None else committed_blocks.get(trace.table_id)
@@ -1027,14 +1062,17 @@ class ReportEditorTraceService:
                             inserted_rows += 1
                     else:
                         row_by_key[key] = row
-                frozen_values: list[tuple[Any, Any]] = []
+                frozen_values: list[tuple[Any, Any, str | None]] = []
                 for cell in trace.cells:
                     value: Any = None
+                    unit: str | None = None
                     for ref in cell.fact_refs:
                         value = await fact_value_of(ref, cell.row_key)
                         if value is not None:
+                            if fact_unit_of is not None:
+                                unit = await fact_unit_of(ref, cell.row_key)
                             break
-                    frozen_values.append((cell, value))
+                    frozen_values.append((cell, value, unit))
                 for cell in trace.cells:
                     row = row_by_key.get(cell.row_key)
                     if row is None:
@@ -1045,9 +1083,11 @@ class ReportEditorTraceService:
                         counts["stale"] += 1
                         continue
                     fact_value: Any = None
-                    for frozen_cell, frozen_value in frozen_values:
+                    fact_unit: str | None = None
+                    for frozen_cell, frozen_value, frozen_unit in frozen_values:
                         if frozen_cell is cell:
                             fact_value = frozen_value
+                            fact_unit = frozen_unit
                             break
                     missing_unchanged = (
                         not cell.fact_refs and (cell.row_key, cell.column_key) in missing_cells
@@ -1057,7 +1097,7 @@ class ReportEditorTraceService:
                         "valid" if missing_unchanged or (
                             fact_value is not None and (
                                 row[column] == "—" if fact_value == "—"
-                                else value_matches(row[column], fact_value)
+                                else matches_fact_value(row[column], fact_value, fact_unit)
                             )
                         ) else "stale"
                     )
@@ -1088,9 +1128,9 @@ class ReportEditorTraceService:
                                     else None
                                 ),
                             }
-                            for frozen_cell, frozen_value in frozen_values
+                            for frozen_cell, frozen_value, frozen_unit in frozen_values
                             if frozen_value is not None
-                            and value_matches(cell_text, frozen_value)
+                            and matches_fact_value(cell_text, frozen_value, frozen_unit)
                         ]
                         if not matches:
                             continue
