@@ -34,6 +34,25 @@ describe('reportPreflight', () => {
     expect(panel.isConnected).toBe(false)
   })
 
+  it('focuses the image missing alt text from its warning', () => {
+    const root = document.createElement('main')
+    const editor = document.createElement('div')
+    const image = document.createElement('img')
+    image.alt = ''
+    image.tabIndex = -1
+    editor.append(image)
+    root.append(editor)
+    document.body.append(root)
+    const warnings = reportPreflight('# 标题\n', editor)
+    const panel = showPreflightPanel(root, warnings, () => {})
+    const buttons = Array.from(panel.querySelectorAll<HTMLButtonElement>('[data-preflight-target]'))
+    const imageWarning = buttons[warnings.findIndex((item) => item.code === 'image-alt')]
+
+    expect(imageWarning.textContent).toContain('张图片缺少说明')
+    expect(() => imageWarning.click()).not.toThrow()
+    expect(document.activeElement).toBe(image)
+  })
+
   it('returns to editing when Escape closes the preflight panel', () => {
     const root = document.createElement('main')
     document.body.append(root)
