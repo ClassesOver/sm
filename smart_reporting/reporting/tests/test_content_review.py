@@ -529,3 +529,11 @@ def test_review_flags_direction_opposite_to_registered_change_rate(text, flagged
                                           comparison("mom", 0.0)]})
     warnings = [w for w in review_content(text, [content]) if "方向与登记" in w]
     assert bool(warnings) is flagged
+
+
+def test_review_reports_each_extrema_issue_once_preferring_the_labelled_form():
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(10, 30, 20))]})
+    warnings = review_content("实际门诊人次在3月最高。", [content], field_definitions={"actual": "实际门诊人次"})
+    extrema = [w for w in warnings if "3月被写为最高" in w]
+    # 同一极值问题不应以“带指标名”和“不带指标名”两种形式重复进入纠错 issues。
+    assert len(extrema) == 1 and extrema[0].startswith("实际门诊人次：")

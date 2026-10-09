@@ -441,7 +441,10 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
             labels = re.findall(r"一级科室|二级科室|三级科室|四级科室|院区", written)
             if labels and any(label not in description for label in labels):
                 warnings.append(f"字段口径需复核：{field} 的登记说明为“{description}”，不能解释成“{written}”。")
-    return list(dict.fromkeys(warnings))
+    unique = list(dict.fromkeys(warnings))
+    # 段落级（带指标名）与期间级复核可能报出同一问题；保留更具体的带指标名形式。
+    labelled = {warning.split("：", 1)[1] for warning in unique if "：" in warning}
+    return [warning for warning in unique if warning not in labelled]
 
 
 def _prose_lines(markdown: str) -> list[str]:
