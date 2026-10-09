@@ -349,6 +349,21 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if re.search(r"(?:不能|不可|不足以|不应|无法|不代表|不得|不要|未能|并非|尚不能).{0,30}", assertion):
             continue
         warnings.append(f"业务原因或数据状态需直接证据：{match[0]}。数值为零不能证明流程未启动、字段未填充或未入账。")
+    # 读者可见正文不得出现内部标识或英文字段名（协议标记、图片与链接地址不可见，先移除）。
+    # 软告警：进入一次纠错轮次，让模型改用业务名称，而不是等到成品验收才发现。
+    visible = re.sub(r"!?\[[^\]\r\n]*\]\([^)\r\n]*\)|\[\[[^\]\r\n]+\]\]", "", text)
+    for identifier in dict.fromkeys(re.findall(
+        r"(?<![A-Za-z0-9_-])(?:(?:analysis|section|citation|claim|dataset|chart|requirement)_\d{3,}"
+        r"|(?:fact|sub)-[0-9a-f]{16})(?![A-Za-z0-9_])",
+        visible,
+    )):
+        warnings.append(f"正文出现内部标识：{identifier}。读者可见内容只用业务名称，内部 ID 只放在结构化引用字段。")
+    for field, description in (field_definitions or {}).items():
+        # 紧跟登记说明的写法（如“字段（三级科室）”）用于数据质量说明，保持既有口径不告警。
+        if (re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,}", field)
+                and re.search(rf"(?<![A-Za-z0-9_]){re.escape(field)}(?![A-Za-z0-9_])"
+                              rf"(?!\s*[（(]\s*{re.escape(description)}\s*[）)])", visible)):
+            warnings.append(f"正文出现内部字段名：{field}。请改用业务名称“{description}”。")
     for field, description in (field_definitions or {}).items():
         if field not in text:
             continue

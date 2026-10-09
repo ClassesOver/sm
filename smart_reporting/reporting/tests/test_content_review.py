@@ -398,3 +398,19 @@ def test_rounded_text_is_checked_against_raw_frozen_values_not_display_text():
     assert not [warning for warning in review_content("收入1.2万元。", [content]) if "冻结依据" in warning]
     assert [warning for warning in review_content("收入1.3万元。", [content]) if "冻结依据" in warning]
     assert not [warning for warning in review_content("收入1.25万元。", [content]) if "冻结依据" in warning]
+
+
+def test_review_flags_internal_ids_and_raw_field_names_in_visible_prose():
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(10, 20, 0))]})
+    fields = {"actual": "实际门诊人次", "indicator_value": "指标值"}
+    # 协议标记里的内部 ID 不可见，不告警；正文里直接写出的 ID 和英文字段名须改为业务名称。
+    clean = "[[analysis:analysis_001]]实际门诊人次保持稳定[[citation:cite_001]]。"
+    assert not [w for w in review_content(clean, [content], field_definitions=fields) if "内部" in w]
+    leaked = "根据 analysis_001 的 indicator_value，fact-" + "a" * 16 + " 显示 actual 上升。"
+    warnings = [w for w in review_content(leaked, [content], field_definitions=fields) if "内部" in w]
+    assert any("analysis_001" in w for w in warnings)
+    assert any("fact-" + "a" * 16 in w for w in warnings)
+    assert any("indicator_value" in w and "指标值" in w for w in warnings)
+    assert any("actual" in w and "实际门诊人次" in w for w in warnings)
+    # 英文单词的一部分不算字段名泄漏。
+    assert not [w for w in review_content("actually 稳定。", [content], field_definitions=fields) if "内部" in w]
