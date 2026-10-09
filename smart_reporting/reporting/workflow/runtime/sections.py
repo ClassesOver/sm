@@ -1646,7 +1646,7 @@ async def _generate_section_in_blocks(
                     "requiredAction": (
                         "逐条处理 issues：修正有依据的数字和口径；内部 ID 和英文字段名改用业务名称；"
                         "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
-                        "删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。"
+                        "大额金额改用万元或亿元占位；删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。"
                     ),
                 }
                 continue
@@ -1815,7 +1815,8 @@ async def _generate_whole_section_content(
                 "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
                 "requiredAction": (
                     "逐条处理 issues：修正数字与字段口径并使用冻结数值引用；内部 ID 和英文字段名改用业务名称；"
-                    "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子。"
+                    "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
+                    "大额金额改用万元或亿元占位。"
                     "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId。"
                 ),
             }

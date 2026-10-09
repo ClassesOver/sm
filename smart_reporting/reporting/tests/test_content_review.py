@@ -559,3 +559,17 @@ def test_review_flags_values_labelled_with_a_year_outside_their_registered_perio
     content = json.dumps({"analysisId": "analysis_001", "metrics": [metric], "comparisons": [comparison]})
     warnings = [w for w in review_content(text, [content]) if "年份" in w]
     assert bool(warnings) is flagged
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("门诊收入11,123,541,503元。", True),
+    ("门诊收入1,234,567元。", True),
+    ("门诊收入111.24亿元（11,123,541,503元）。", False),  # 括号内保留原始元值是规范写法
+    ("人均费用356.20元。", False),
+    ("门诊收入123.46万元。", False),
+])
+def test_readability_suggests_wan_or_yi_for_long_yuan_amounts(text, flagged):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    warnings = [w for w in readability_warnings(text) if "金额位数" in w]
+    assert bool(warnings) is flagged

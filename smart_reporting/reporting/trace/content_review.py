@@ -586,6 +586,12 @@ def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None
     markdown = _displayed(markdown, catalog)
     warnings: list[str] = []
     for line in _prose_lines(markdown):
+        # 百万元以上的金额以“元”书写难以阅读；括号内紧随万元/亿元的原始元值是规范写法。
+        for match in re.finditer(r"(?<![\d.,（(])([+-]?\d{1,3}(?:,\d{3}){2,}|\d{7,})(?:\.\d+)?\s*元(?!\s*[）)])", line):
+            amount = Decimal(match[1].replace(",", ""))
+            if abs(amount) >= 1_000_000:
+                suggested = "亿元" if abs(amount) >= 100_000_000 else "万元"
+                warnings.append(f"金额位数过多：{match[0]}。建议改用{suggested}占位表述，需保留原始元值时写在括号内。")
         for sentence in re.split(r"[。！？；]", line):
             sentence = sentence.strip()
             values = len(_VALUE.findall(sentence))
