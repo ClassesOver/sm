@@ -34,6 +34,18 @@ _MANUAL_HEADING_NUMBER = re.compile(
     r"|[（(](?:[一二三四五六七八九十百]+|\d{1,2})[）)][ \t]*"  # （一）收入 / (2) 收入；不吞 (2025)
     r")"
 )
+# 标题末尾的冒号、句号等是正文标点，进入目录与 PDF 标题后显得残缺；问号、叹号保留。
+_HEADING_TRAILING_PUNCTUATION = re.compile(r"[\s：:。；;，,、.]+(?=(?:\*\*)?$)")
+
+
+def _clean_heading_title(title: str) -> str:
+    """去掉模型手写的层级编号与标题末尾的正文标点。"""
+    title = _MANUAL_HEADING_NUMBER.sub("", title.strip()).strip()
+    cleaned = _HEADING_TRAILING_PUNCTUATION.sub("", title).strip()
+    # “**收入分析：**”去标点后变成“**收入分析**”；整段只剩标点时保留原文交由校验处理。
+    return cleaned if cleaned.replace("*", "").strip() else title
+
+
 _MODEL_PROTOCOL_MARKER = re.compile(
     r"(?<!\\)\[\[/?(?:citation|section|analysis|table):[^\]\r\n]*\]\]"
 )
@@ -399,11 +411,7 @@ def _marker_lines(
 
 def _strip_duplicate_section_heading(markdown: str, *, expected_title: str) -> tuple[str, bool]:
     match = _LEADING_SECTION_HEADING.match(markdown)
-    submitted_title = (
-        _MANUAL_HEADING_NUMBER.sub("", match.group("title").strip()).strip()
-        if match is not None
-        else ""
-    )
+    submitted_title = _clean_heading_title(match.group("title")) if match is not None else ""
     if match is None or submitted_title != expected_title.strip():
         return markdown, False
     # 正式章节标题以 effectiveProfile 为唯一事实来源，服务端会在所有正文块之前统一插入。
@@ -438,7 +446,7 @@ def _validated_block_headings(
             raise ReportingError(
                 "report_draft_heading_format_invalid", "章节正文标题必须使用 ATX Markdown 格式。"
             )
-        markdown_title = _MANUAL_HEADING_NUMBER.sub("", match.group("title").strip()).strip()
+        markdown_title = _clean_heading_title(match.group("title"))
         title = _inline_heading_text(markdown_title)
         if not markdown_title or not title:
             raise ReportingError("report_draft_heading_format_invalid", "章节正文标题不能为空。")

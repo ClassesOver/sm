@@ -172,6 +172,29 @@ def test_assemble_removes_numbered_duplicate_section_heading() -> None:
     assert rendered.auto_fixes[0]["code"] == "duplicate_section_heading_removed"
 
 
+def test_assemble_drops_trailing_sentence_punctuation_from_headings() -> None:
+    """标题末尾的冒号、句号进入目录与 PDF 后显得残缺；问号与括号内标点保留。"""
+    rendered = _render(
+        "### 收入趋势：\n\n正文\n\n#### **重点项目。**\n\n正文\n\n#### 为何下降？\n\n正文",
+        "### 成本结构（单位：万元）\n\n正文",
+    )
+
+    assert "### 1.1 收入趋势\n" in rendered.markdown
+    assert "#### 1.1.1 **重点项目**\n" in rendered.markdown
+    assert "#### 1.1.2 为何下降？\n" in rendered.markdown
+    assert "### 1.2 成本结构（单位：万元）\n" in rendered.markdown
+    assert [item.title for item in rendered.heading_numbers] == [
+        "经营分析", "收入趋势", "重点项目", "为何下降？", "成本结构（单位：万元）",
+    ]
+
+
+def test_assemble_removes_duplicate_section_heading_with_trailing_colon() -> None:
+    rendered = _render("## 经营分析：\n\n### 结论")
+
+    assert rendered.markdown.count("经营分析") == 1
+    assert rendered.auto_fixes[0]["code"] == "duplicate_section_heading_removed"
+
+
 def test_assemble_excludes_duplicate_chart_before_revalidating_later_block_binding() -> None:
     rendered = assemble_report_markdown(
         ReportDraft(
