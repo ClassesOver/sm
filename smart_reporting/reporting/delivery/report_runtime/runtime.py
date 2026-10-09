@@ -22,6 +22,7 @@ from .markdown import (
     _markdown_title,
     _normalize_cjk_strong_markers,
     _semantic_documents,
+    _strip_strong_boundaries,
     format_heading_label,
 )
 from .pdf import (
@@ -288,7 +289,9 @@ class ReportRuntime:
             allowed_images = self._images(source, tokens, state)
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
-            body = parser.renderer.render(_body_tokens(tokens), parser.options, {})
+            body = _strip_strong_boundaries(
+                parser.renderer.render(_body_tokens(tokens), parser.options, {})
+            )
             html_body = self._inline_images(
                 body, source.parent, allowed_images, self._image_sources
             )
