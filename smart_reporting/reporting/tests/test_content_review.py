@@ -414,3 +414,20 @@ def test_review_flags_internal_ids_and_raw_field_names_in_visible_prose():
     assert any("actual" in w and "实际门诊人次" in w for w in warnings)
     # 英文单词的一部分不算字段名泄漏。
     assert not [w for w in review_content("actually 稳定。", [content], field_definitions=fields) if "内部" in w]
+
+
+@pytest.mark.parametrize(("text", "kind"), [
+    ("收入同比下降-5.20%。", "重复"),
+    ("门诊量减少了 -1,200人次。", "重复"),
+    ("收入同比增长-5.20%。", "矛盾"),
+    ("收入同比下降5.20%。", None),
+    ("收入变化率为-5.20%。", None),
+    ("收入同比增长5.20%。", None),
+])
+def test_review_flags_sign_and_direction_wording(text, kind):
+    # 负值占位渲染后带负号：“下降-5.20%”双重否定，“增长-5.20%”方向矛盾；读者易误读。
+    warnings = [w for w in review_content(text, []) if "符号" in w or "方向" in w]
+    if kind is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1 and kind in warnings[0]

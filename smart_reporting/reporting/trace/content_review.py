@@ -349,6 +349,17 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if re.search(r"(?:不能|不可|不足以|不应|无法|不代表|不得|不要|未能|并非|尚不能).{0,30}", assertion):
             continue
         warnings.append(f"业务原因或数据状态需直接证据：{match[0]}。数值为零不能证明流程未启动、字段未填充或未入账。")
+    # 负值占位渲染后自带负号：与“下降/减少”连用成双重否定，与“增长/上升”连用方向矛盾。
+    for match in re.finditer(
+        r"(?P<verb>下降|减少|降低|回落|下滑|降幅|增长|上升|增加|提高|增幅)"
+        r"(?:了|约|为|达|幅度为)?\s*(?P<value>-\s*\d[\d,]*(?:\.\d+)?\s*(?:亿元|万元|元|万人次|人次|床日|%)?)",
+        text,
+    ):
+        decline = match["verb"] in {"下降", "减少", "降低", "回落", "下滑", "降幅"}
+        if decline:
+            warnings.append(f"符号重复：{match[0]}。“{match['verb']}”后应写正的幅度，或改写为“变化率为{match['value']}”。")
+        else:
+            warnings.append(f"方向矛盾：{match[0]}。数值为负却写为“{match['verb']}”，请核对方向并改写为下降幅度。")
     # 读者可见正文不得出现内部标识或英文字段名（协议标记、图片与链接地址不可见，先移除）。
     # 软告警：进入一次纠错轮次，让模型改用业务名称，而不是等到成品验收才发现。
     visible = re.sub(r"!?\[[^\]\r\n]*\]\([^)\r\n]*\)|\[\[[^\]\r\n]+\]\]", "", text)
