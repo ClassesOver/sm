@@ -7,6 +7,7 @@
     - `smart_reporting/reporting/tests/test_http_publication_lineage.py::test_http_publication_drops_hash_registered_foreign_index_but_still_issues_links`（伪造索引不被使用但照常签发）
     - `smart_reporting/reporting/tests/test_report_editor.py::test_editor_export_creates_new_revision_without_overwriting_published_markdown`（编辑器导出验收失败照常签发）
     - `smart_reporting/reporting/tests/test_reporting_completion_content.py::test_completed_report_content_states_the_specific_validation_reasons`（完成消息给出具体失败原因）
+    - `smart_reporting/reporting/tests/test_publication_nonblocking.py::test_signing_chain_never_raises_gate_failures_without_fallback`（静态守卫：签发链路上验收/门禁/审计类 `raise` 必须被不再抛出的 `except Exception` 兜底；新增签发函数须登记到 `_SIGNING_CHAIN`）
   - 禁止用 `raise` 表达“验收/门禁未通过”来终止签发；应把原因写入 `validation.issues` 或 `publicationGate.issues` 并继续。安全边界（作用域不一致、身份伪造）只能拒绝使用对应数据，不能拒绝签发已核验身份的 PDF/Word。
 - 应用代码日志系统使用loguru
 - 禁止重复完整测试
