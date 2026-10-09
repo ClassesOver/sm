@@ -431,3 +431,14 @@ def test_review_flags_sign_and_direction_wording(text, kind):
         assert warnings == []
     else:
         assert len(warnings) == 1 and kind in warnings[0]
+
+
+def test_repeated_sentences_across_blocks_are_flagged_for_correction():
+    from smart_reporting.reporting.trace.content_review import repeated_sentence_warnings
+
+    earlier = ["本期门诊收入保持稳定增长，结构持续优化[[citation:cite_001]]。\n\n其他内容。"]
+    # 标记、加粗与标点差异不影响判定；短句（如“其他内容”）不算重复。
+    current = "**本期门诊收入保持稳定增长，结构持续优化**。其他内容。新增住院分析结论较为明确。"
+    warnings = repeated_sentence_warnings(current, earlier)
+    assert len(warnings) == 1 and "本期门诊收入保持稳定增长" in warnings[0]
+    assert repeated_sentence_warnings("新增住院分析结论较为明确。", earlier) == []

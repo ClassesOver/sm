@@ -387,3 +387,27 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
             if labels and any(label not in description for label in labels):
                 warnings.append(f"字段口径需复核：{field} 的登记说明为“{description}”，不能解释成“{written}”。")
     return list(dict.fromkeys(warnings))
+
+
+def _comparable_sentences(markdown: str) -> dict[str, str]:
+    """按句切分并归一化（去协议标记、加粗与标点），返回 归一化文本 → 原句。"""
+    text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", markdown).replace("**", "")
+    sentences: dict[str, str] = {}
+    for sentence in re.split(r"[。！？；\n]", text):
+        normalized = re.sub(r"[\s，、,:：（）()“”\"'·—-]", "", sentence)
+        # 过短的句子（过渡语、标签）重复属正常写法，不计。
+        if len(normalized) >= 12:
+            sentences.setdefault(normalized, sentence.strip())
+    return sentences
+
+
+def repeated_sentence_warnings(markdown: str, earlier_blocks: Iterable[str]) -> list[str]:
+    """当前 block 与本章已写 block 逐句完全重复时给出软告警，交由纠错轮次改写。"""
+    earlier: set[str] = set()
+    for block in earlier_blocks:
+        earlier.update(_comparable_sentences(block))
+    return [
+        f"与本章前文重复：{original}。请删除重复表述，或补充前文未写的事实与解读。"
+        for normalized, original in _comparable_sentences(markdown).items()
+        if normalized in earlier
+    ]
