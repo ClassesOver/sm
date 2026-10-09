@@ -418,8 +418,21 @@ def _comparable_sentences(markdown: str) -> dict[str, str]:
     return sentences
 
 
-def repeated_sentence_warnings(markdown: str, earlier_blocks: Iterable[str]) -> list[str]:
-    """当前 block 与本章已写 block 逐句完全重复时给出软告警，交由纠错轮次改写。"""
+def _displayed(markdown: str, catalog: Mapping[str, str] | None) -> str:
+    """把 {{value:…}} 占位换成冻结显示值，使度量与比较基于读者所见文本。"""
+    if catalog is None:
+        return markdown
+    return re.sub(r"\{\{value:[^{}\r\n]+\}\}", lambda match: catalog.get(match[0], "数值待核实"), markdown)
+
+
+def repeated_sentence_warnings(
+    markdown: str, earlier_blocks: Iterable[str], catalog: Mapping[str, str] | None = None,
+) -> list[str]:
+    """当前 block 与本章已写 block 逐句完全重复时给出软告警，交由纠错轮次改写。
+
+    已采纳 block 的数值已渲染，当前 block 仍是占位，故先按冻结目录换成显示值再比较。
+    """
+    markdown = _displayed(markdown, catalog)
     earlier: set[str] = set()
     for block in earlier_blocks:
         earlier.update(_comparable_sentences(block))
@@ -439,8 +452,7 @@ def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None
 
     正文仍含 {{value:…}} 占位时按冻结目录换成显示值再度量，与读者所见一致。
     """
-    if catalog is not None:
-        markdown = re.sub(r"\{\{value:[^{}\r\n]+\}\}", lambda match: catalog.get(match[0], "数值待核实"), markdown)
+    markdown = _displayed(markdown, catalog)
     warnings: list[str] = []
     for line in _prose_lines(markdown):
         for sentence in re.split(r"[。！？；]", line):

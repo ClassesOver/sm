@@ -470,3 +470,13 @@ def test_prose_checks_skip_server_tables_behind_protocol_markers():
     )
     assert readability_warnings(table) == []
     assert repeated_sentence_warnings(table, [table]) == []
+
+
+def test_repeated_sentences_compare_displayed_numbers_not_placeholders():
+    from smart_reporting.reporting.trace.content_review import repeated_sentence_warnings
+
+    token = "{{value:fact-" + "a" * 16 + ":total:元}}"
+    # 已采纳 block 中数值已渲染；当前 block 仍是占位，须按显示值比较。
+    earlier = ["本期门诊收入合计为1,234元，较上期保持稳定。"]
+    current = f"本期门诊收入合计为{token}，较上期保持稳定。"
+    assert len(repeated_sentence_warnings(current, earlier, {token: "1,234元"})) == 1

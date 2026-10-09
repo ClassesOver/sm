@@ -1632,7 +1632,9 @@ async def _generate_section_in_blocks(
                                              field_definitions=block_payload["fieldDefinitions"],
                                              fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids))
             # 各 block 独立生成，常重复前文的开场与结论；逐句重复同样进入纠错轮次。
-            review_warnings.extend(repeated_sentence_warnings(content.markdown, (block.markdown for block in blocks)))
+            review_warnings.extend(repeated_sentence_warnings(
+                content.markdown, (block.markdown for block in blocks), block_number_catalog,
+            ))
             # 长句与数值堆砌按读者所见（占位换成显示值）度量，同样进入纠错轮次。
             review_warnings.extend(readability_warnings(content.markdown, block_number_catalog))
             loguru_logger.info("report_content_review_completed section={} block={} attempt={} issue_count={}",
