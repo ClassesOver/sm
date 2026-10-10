@@ -163,6 +163,52 @@ def _explicit_year_extrema_warnings(
     return warnings
 
 
+_MONTHLY_AVERAGE_CLAIM = re.compile(
+    r"(?:月均|月平均|平均每月|每月平均)[^。；，,\n\d]{0,12}?"
+    r"(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>亿元|万元|元|万人次|人次|床日)"
+)
+
+
+def _monthly_average_warnings(text: str, contents: Iterable[str]) -> list[str]:
+    """“月均X”中的 X 不是登记月均值、却等于原始行平均或合计/单月值时提示复核（软告警）。
+
+    原始行统计的 average 按数据行求平均，行数不等于月数时不是月均值；合计或单月值
+    写成月均同样是口径错误。对不上任何登记值的数字由无依据数值检查处理。
+    """
+    monthly: dict[str, set[Decimal]] = {}
+    row_average: dict[str, set[Decimal]] = {}
+    others: dict[str, set[Decimal]] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        display_unit = target or unit
+        if not display_unit or value is None:
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit and (scales := _unit_scales(unit)) is not None:
+            number = number * scales[unit] / scales[display_unit]
+        field = token[2:-2].split(":")[2]
+        bucket = monthly if field == "monthlyAverage" else row_average if field == "average" else others
+        bucket.setdefault(display_unit, set()).add(number)
+    warnings: list[str] = []
+    for match in _MONTHLY_AVERAGE_CLAIM.finditer(text):
+        number = Decimal(match["number"].replace(",", ""))
+        quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+
+        def matches(values: dict[str, set[Decimal]]) -> bool:
+            return any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number
+                       for value in values.get(match["unit"], ()))
+
+        if matches(monthly):
+            continue
+        expected = sorted(monthly.get(match["unit"], ()))
+        hint = (f"冻结月均值为{expected[0].quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}{match['unit']}。"
+                if len(expected) == 1 else "请改用月度统计中的月均值引用。")
+        if matches(row_average):
+            warnings.append(f"月均值需复核：{match[0]}使用的是原始行平均值，不是月均值；{hint}")
+        elif expected and matches(others):
+            warnings.append(f"月均值需复核：{match[0]}对应的是合计、单月或累计登记值，不是月均值；{hint}")
+    return list(dict.fromkeys(warnings))
+
+
 _GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "位居第一", "位列第一")
 _GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
 
@@ -427,6 +473,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
     warnings.extend(_group_ranking_warnings(text, documents))
+    warnings.extend(_monthly_average_warnings(text, contents))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
     scoped_text = text
     if "[[analysis:" not in text and len(bundles) == 1:

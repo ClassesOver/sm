@@ -695,3 +695,18 @@ def test_group_ranking_is_skipped_when_several_metrics_have_groups():
     document = json.loads(_grouped_metric_document())
     document["metrics"].append({**document["metrics"][0], "factId": "fact-" + "e" * 16, "field": "visits"})
     assert not [w for w in review_content("外科收入最高。", [json.dumps(document)]) if "分组排名" in w]
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("月均收入200.00万元。", []),
+    ("月均收入150.00万元。",
+     ["月均值需复核：月均收入150.00万元使用的是原始行平均值，不是月均值；冻结月均值为200.00万元。"]),
+    ("平均每月收入600万元。",
+     ["月均值需复核：平均每月收入600万元对应的是合计、单月或累计登记值，不是月均值；冻结月均值为200.00万元。"]),
+    # 对不上任何登记值的数字交给无依据数值检查；未写“月均”的合计不受影响。
+    ("月均收入999万元，收入合计600万元。", []),
+])
+def test_monthly_average_claims_use_the_monthly_statistic(text, expected):
+    metric = {**_metric(values=(1200000, 1800000, 3000000)), "unit": "元", "average": 1500000}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content(text, [content]) if "月均值" in w] == expected
