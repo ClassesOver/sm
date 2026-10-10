@@ -566,3 +566,25 @@ def test_percent_metric_change_review_and_display_unit():
     assert fact_display_unit(json.loads(document)['metrics'][0]) == '%'
     assert formatted_value_matches('同比提高2.10个百分点', 2.1, '个百分点')
     assert not formatted_value_matches('同比提高2.10%', 2.1, '个百分点')
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 按书写精度核对通过的数值，超过两位小数时按数值目录的显示精度舍入。
+    ('收入同比增长5.0332%。', '收入同比增长5.03%。'),
+    ('本期收入1.3654亿元。', '本期收入1.37亿元。'),
+    ('本期收入1.3654亿，', '本期收入1.37亿元，'),
+    # 两位及以内小数、整数与千分位写法保持原样。
+    ('收入同比增长5.03%，增长5.0%。', '收入同比增长5.03%，增长5.0%。'),
+    ('收入为130,000,000元。', '收入为130,000,000元。'),
+])
+def test_verified_numbers_are_published_at_display_precision(text, expected):
+    document = _comparison_document(6543211, 5.0332)
+    assert replace_unregistered_numbers(text, [document]) == expected
+
+
+def test_display_precision_keeps_tiny_values_readable():
+    from smart_reporting.reporting.trace.numeric_text import _display_precision
+
+    assert _display_precision('0.0042') == '0.0042'
+    assert _display_precision('-5.0350') == '-5.04'
+    assert _display_precision('1,234.5678') == '1,234.57'

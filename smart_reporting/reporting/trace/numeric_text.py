@@ -474,6 +474,22 @@ def align_placeholder_direction(markdown: str, contents: Iterable[str]) -> str:
     return DIRECTED_PLACEHOLDER.sub(replace, markdown)
 
 
+def _display_precision(number_text: str) -> str:
+    """超过两位小数的带单位数值按数值目录的显示精度（两位小数）舍入。
+
+    “5.0332%”“1.2345678亿元”按书写精度核对可通过，但原样发布难以阅读；非零值舍入为
+    零时保留原文，避免把很小的数写成 0.00。
+    """
+    if "." not in number_text or len(number_text.split(".", 1)[1]) <= 2:
+        return number_text
+    number = Decimal(number_text.replace(",", ""))
+    rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if rounded == 0:
+        return number_text
+    logger.warning("report_number_precision_rounded value={}", number_text)
+    return f"{rounded:,f}" if "," in number_text else f"{rounded:f}"
+
+
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
 
@@ -496,7 +512,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
                 or registered_decline_magnitude(number, match["unit"], candidates,
                                                 prefix=markdown[max(0, match.start() - 12):match.start()],
                                                 quantum=quantum)):
-            return match[0]
+            return _display_precision(match["number"]) + match[0][len(match["number"]):]
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
         points = known.get(PERCENT_POINT, ()) if match["unit"] == "%" else ()
@@ -505,7 +521,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
                                                        prefix=markdown[max(0, match.start() - 12):match.start()],
                                                        quantum=quantum)):
             logger.warning("report_percent_point_unit_corrected value={}", match[0])
-            return f"{match['number']}{PERCENT_POINT}"
+            return f"{_display_precision(match['number'])}{PERCENT_POINT}"
         logger.warning("report_unregistered_number_replaced value={}", match[0])
         return "待核实"
 
@@ -529,7 +545,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         if not matched:
             logger.warning("report_unregistered_number_replaced value={}", match[0])
             return "待核实"
-        return match[0] + matched[0][1:] if len(matched) == 1 else match[0]
+        written = _display_precision(match["number"]) + match["scale"]
+        return written + matched[0][1:] if len(matched) == 1 else written
 
     return BARE_SCALED_NUMBER.sub(replace_bare, replaced)
 
