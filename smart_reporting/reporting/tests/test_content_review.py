@@ -747,3 +747,19 @@ def test_colon_intro_followed_by_cjk_enumeration_is_complete(item):
     assert not [w for w in readability_warnings(f"主要发现如下：\n\n{item}") if "段落未写完" in w]
     # 冒号后接普通句子仍是半句话。
     assert [w for w in readability_warnings("主要发现如下：\n\n收入增长。") if "段落未写完" in w]
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("### 2025年门诊收入同比增长5.03%主要由于门诊量增加且人均费用上升\n\n正文。", True),
+    ("### 收入增长。成本下降\n\n正文。", True),
+    # 主题短语、末尾句号（装配时清理）、括号内单位说明、加粗与标记、代码块不告警。
+    ("### 门诊收入趋势\n\n正文。", False),
+    ("### 收入分析。\n\n正文。", False),
+    ("### 成本结构（单位：万元，统计口径为全院不含科研项目）\n\n正文。", False),
+    ("#### **重点科室收入变化**\n\n正文。", False),
+    ("```\n### 这是代码里的一行很长很长很长很长很长很长很长很长的文字\n```", False),
+])
+def test_sentence_like_headings_are_flagged(text, flagged):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    assert bool([w for w in readability_warnings(text) if "小标题" in w]) is flagged

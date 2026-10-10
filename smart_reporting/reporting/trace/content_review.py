@@ -824,7 +824,35 @@ def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None
                 warnings.append(f"单句数值过多（{values} 个）：{sentence[:40]}……请拆分为多句，或改用表格呈现明细。")
             elif len(sentence) >= _READABLE_SENTENCE_CHARS:
                 warnings.append(f"句子过长（{len(sentence)} 字）：{sentence[:40]}……请拆分为结论句和支撑句。")
+    warnings.extend(_heading_readability_warnings(markdown))
     warnings.extend(_incomplete_paragraph_warnings(markdown))
+    return warnings
+
+
+_READABLE_HEADING_CHARS = 24
+
+
+def _heading_readability_warnings(markdown: str) -> list[str]:
+    """小标题写成整句（过长或含句号、分号）时提示压缩为主题短语（软告警）。
+
+    小标题进入目录与 PDF 书签，结论和数值应写进正文；括号内的单位说明不计入长度。
+    """
+    warnings: list[str] = []
+    fenced = False
+    for raw in markdown.splitlines():
+        if raw.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        match = None if fenced else re.match(r"^#{3,4}[ \t]+(.+?)[ \t#]*$", raw)
+        if match is None:
+            continue
+        title = re.sub(r"\[\[[^\]\r\n]+\]\]", "", match[1]).replace("**", "").strip()
+        visible = re.sub(r"[（(][^（）()]*[）)]", "", title).strip()
+        if len(visible) > _READABLE_HEADING_CHARS or re.search(r"[。；;]", visible.rstrip("。；;")):
+            warnings.append(
+                f"小标题过长或写成整句（{len(visible)} 字）：{title[:40]}。"
+                f"请压缩为不超过 {_READABLE_HEADING_CHARS} 字的主题短语，结论与数值写进正文。"
+            )
     return warnings
 
 
