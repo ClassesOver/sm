@@ -161,7 +161,7 @@ async def test_editor_real_dual_export_preserves_edited_and_restored_snapshot(tm
         word_text = "\n".join(paragraph.text for paragraph in word_document.paragraphs)
         for text in (pdf_text, word_text):
             assert ("收入 3800 万元" if revision == 2 else "收入 3600 万元") in text
-            assert "事实值：3600 万元" in text
+            assert "事实值：3,600万元" in text
             assert "数据来源附录" in text
             assert ("状态：待复核" if revision == 2 else "状态：有效") in text
             citation_appendix = text.split("实际引用附录", 1)[1].split("数据来源附录", 1)[0]

@@ -4,6 +4,7 @@ import html
 import re
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 # 视觉主题属于服务端渲染契约，而不是模型自由生成的正文内容。PDF、Word、沙箱内
@@ -790,6 +791,54 @@ def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
     )
 
 
+_AGGREGATION_LABELS = {
+    "sum": "求和", "average": "平均", "min": "最小值", "max": "最大值",
+    "count": "计数", "count_distinct": "去重计数",
+}
+_FORMULA = re.compile(
+    r"^(?P<aggregation>sum|average|min|max|count|count_distinct)\((?P<field>[^()]+)\)"
+    r"(?: WHERE (?P<where>.+))?$"
+)
+
+
+_FIXED_FORMULAS = {
+    "(currentTotal-baselineTotal)/abs(baselineTotal)*100%": "变化率 =（本期合计 − 基期合计）÷ 基期合计绝对值 × 100%",
+}
+_RATIO_FORMULA = re.compile(r"^(?P<numerator>[^/;]+)/(?P<denominator>[^/;]+); difference=\1-\2$")
+
+
+def _readable_formula(formula: str) -> str:
+    """冻结事实的计算口径（sum(revenue) WHERE 院区='东院'）改为读者可读的中文说明。"""
+    formula = formula.strip()
+    if formula in _FIXED_FORMULAS:
+        return _FIXED_FORMULAS[formula]
+    ratio = _RATIO_FORMULA.match(formula)
+    if ratio is not None:
+        return f"比率 = {ratio['numerator']} ÷ {ratio['denominator']}；差额 = {ratio['numerator']} − {ratio['denominator']}"
+    match = _FORMULA.match(formula)
+    if match is None:
+        return formula
+    text = f"{match['field']} {_AGGREGATION_LABELS[match['aggregation']]}"
+    if match["where"]:
+        conditions = [re.sub(r"^\s*([^=]+?)\s*=\s*'(.*)'\s*$", r"\1=\2", part)
+                      for part in match["where"].split(" AND ")]
+        text += f"（筛选：{'、'.join(conditions)}）"
+    return text
+
+
+def _readable_fact_value(value: Any, unit: str | None) -> str:
+    """事实值按千分位、至多两位小数显示，与正文数值写法一致。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return f"{value}{unit or ''}"
+    number = Decimal(str(value))
+    if number == number.to_integral_value():
+        text = f"{number.to_integral_value():,f}"
+    else:
+        rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        text = f"{rounded:,f}" if rounded != 0 else f"{number:f}"
+    return f"{text}{unit or ''}"
+
+
 def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
     """数据来源附录（B8）：正文事实、表格与静态图共用一个编号序列。
 
@@ -844,12 +893,11 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
         ]
         if kind == "claim":
             value = entry.get("factValue")
-            unit = entry.get("unit")
-            if isinstance(value, float) and value.is_integer():
-                value = int(value)
-            value_text = "未登记" if value is None else f"{value} {unit or ''}".strip()
-            rows.append(f"<dd>事实值：{html.escape(str(value_text))}</dd>")
-            periods = "、".join(entry.get("periods") or ()) or None
+            value_text = "未登记" if value is None else _readable_fact_value(value, entry.get("unit"))
+            rows.append(f"<dd>事实值：{html.escape(value_text)}</dd>")
+            # 逐个列出的冻结期间按正文规则写成中文日期（2025-09 → 2025年9月）。
+            joined = "、".join(entry.get("periods") or ())
+            periods = _normalize_cjk_wording_text(joined) if joined else None
         else:
             periods = "、".join(dataset_period_labels(dataset_ids)) or None
         rows.append(f"<dd>期间：{html.escape(periods or '未登记')}</dd>")
@@ -863,9 +911,9 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
         if kind == "claim":
             formula = entry.get("formula")
             if isinstance(formula, str) and formula:
-                methods.append(formula)
+                methods.append(_readable_formula(formula))
         else:
-            methods.extend(entry.get("methods") or ())
+            methods.extend(_readable_formula(method) for method in entry.get("methods") or ())
             if kind == "chart":
                 methods.extend(f"转换：{note}" for note in (entry.get("transformNotes") or ()))
         rows.append(f"<dd>方法：{html.escape('；'.join(methods) or '未登记')}</dd>")

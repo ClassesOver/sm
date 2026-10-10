@@ -678,10 +678,10 @@ def test_render_markdown_publishes_trace_source_appendix_in_pdf_and_word(
     assert "状态：待复核" in pdf_text
     assert "状态：未绑定" in pdf_text
     assert "状态：有效" in pdf_text
-    assert "事实值：3600 万元" in pdf_text
-    assert "期间：2025-09、2025-08" in pdf_text
+    assert "事实值：3,600万元" in pdf_text
+    assert "期间：2025年9月、2025年8月" in pdf_text
     assert "范围：院区=全部院区" in pdf_text
-    assert "方法：sum(revenue)" in pdf_text
+    assert "方法：revenue 求和" in pdf_text
     assert "集团医院营业收入按月汇总冻结数据长中文业务名称" in pdf_text
     assert "超长中文文件名用于验证附录换行与截断场景的明细数据导出.csv" in pdf_text
     assert "未提供在线定位" in pdf_text
