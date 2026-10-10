@@ -653,3 +653,18 @@ def test_pipe_less_model_tables_are_checked_too():
     # 分隔线与 setext 标题不是表格。
     text = "说明 | 金额（万元）\n\n---\n\n9,999.99"
     assert replace_unregistered_numbers(text, [document]) == text
+
+
+
+def test_number_guide_explains_comparison_type_and_window():
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    document = json.loads(_comparison_document(6543211, 5.0332))
+    document['comparisons'][0].update({'periodStart': '2025-01', 'periodEnd': '2025-09'})
+    content = json.dumps(document)
+    guide = frozen_number_guide([content], frozen_number_catalog([content]))
+    comparison = next(item for item in guide if item.get('kind') == 'comparison')
+    # 比较口径与累计窗口随引用一起给到模型，避免写成单月变化或混用同比环比。
+    assert (comparison['comparisonType'], comparison['periodStart'], comparison['periodEnd']) == ('同比', '2025-01', '2025-09')
+    assert comparison['references']['changeRate'] == '{{value:fact-cccccccccccccccc:changeRate:%}}'
+    assert '累计窗口' in comparison['meaning']

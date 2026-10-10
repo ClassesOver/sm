@@ -335,6 +335,24 @@ def frozen_number_guide(
                 "references": references,
                 "meaning": "分母为零时不可计算；分子为零且分母非零时为0%。仅使用已登记的比率期间，不扩展为月度比率",
             })
+        for fact in bundle.comparisons:
+            if not fact.fact_id or fact.fact_id in seen:
+                continue
+            seen.add(fact.fact_id)
+            references = {}
+            for field in ("currentTotal", "baselineTotal", "change", "changeRate"):
+                unit = "%" if field == "changeRate" else (fact.unit or "")
+                token = f"{{{{value:{fact.fact_id}:{field}:{unit}}}}}"
+                references[field] = token if token in catalog and catalog[token] != "数值待核实" else None
+            guide.append({
+                "factId": fact.fact_id, "analysisId": bundle.analysis_id, "kind": "comparison",
+                "comparisonType": {"yoy": "同比", "mom": "环比"}[fact.comparison_type],
+                "metric": (field_definitions or {}).get(fact.field, fact.field), "unit": fact.unit,
+                "periodStart": fact.period_start, "periodEnd": fact.period_end,
+                "references": references,
+                "meaning": "本期与基期取同一连续窗口的合计后比较；periodStart 与 periodEnd 跨多个月时是累计窗口，"
+                           "正文须写明该窗口，不能写成单月变化；同比与环比不可混用",
+            })
     return guide
 
 

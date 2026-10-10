@@ -2816,7 +2816,11 @@ def test_section_number_context_keeps_bound_comparison_without_metric_guide():
             fact_ids=("fact-aaaaaaaaaaaaaaaa",), metric_code="revenue",
         ),),
     )
-    assert not guide
+    # 同比事实带比较口径与窗口进入 numberGuide，只保留当前结论绑定的那一条。
+    assert [(item["factId"], item["kind"], item["comparisonType"]) for item in guide] == [
+        ("fact-aaaaaaaaaaaaaaaa", "comparison", "同比"),
+    ]
+    assert guide[0]["references"]["change"] == "{{value:fact-aaaaaaaaaaaaaaaa:change:元}}"
     assert catalog["{{value:fact-aaaaaaaaaaaaaaaa:change:元}}"] == "20元"
     assert not any("fact-bbbbbbbbbbbbbbbb" in key for key in catalog)
 
@@ -3223,7 +3227,10 @@ async def test_section_workflow_skips_model_recovery_for_infrastructure_failures
     ("生成两张图表", 1, None),
 ])
 def test_explicit_chart_count_follows_user_request(goal, count, expected):
-    from smart_reporting.reporting.workflow.runtime.analysis import _limit_requested_charts, _requested_chart_limit
+    from smart_reporting.reporting.workflow.runtime.analysis import (
+        _limit_requested_charts,
+        _requested_chart_limit,
+    )
 
     assert _requested_chart_limit(goal, count) == expected
     charts = tuple(_chart().model_copy(update={"chart_id": f"chart_{index:03d}", "source_path": f"charts/{index}.png"}) for index in range(3))
