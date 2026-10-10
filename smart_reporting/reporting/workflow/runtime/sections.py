@@ -38,7 +38,6 @@ from ...trace.contracts_v1 import (
     TableTraceV1,
     derive_resource_id,
 )
-from ..state import normalize_analysis_warnings
 from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
 from ...trace.numeric_text import (
@@ -59,6 +58,7 @@ from ..checkpoint import (
     SectionClaimSubmission,
 )
 from ..execution import ReportingTaskInvocation
+from ..state import normalize_analysis_warnings
 from .analysis import (
     _finalize_semantic_catalog,
     _reporting_detailed_analysis_plan,
@@ -677,6 +677,16 @@ def _project_text_evidence(
         "truncated": len(selected_indices) < len(lines),
         "matchedLineCount": len(matching),
     }
+
+
+def _verified_caption(text: str, number_contents: tuple[str, ...]) -> str:
+    """图注标题/替代文字与正文同规则核对数值；没有核对依据时原样返回。"""
+
+    if not number_contents:
+        return text
+    checked = replace_unregistered_numbers(text, number_contents)
+    # “待核实”比被替换的数字长，超出图注 200 字上限时截断而不是让装配失败。
+    return checked if len(checked) <= 200 else f"{checked[:199]}…"
 
 
 def _project_section_evidence_files(
@@ -2702,6 +2712,43 @@ class RuntimeSectionsMixin:
         assert last_error is not None
         raise last_error
 
+    async def _registered_number_contents(
+        self, thread_id: str, checkpoint: ReportingCheckpoint
+    ) -> tuple[str, ...]:
+        """冻结事实与补证 evidence 原文，供图注等装配期文本核对数值。
+
+        与章节正文核对同源（全部 evidence 文本文件）；非 UTF-8 文件本身无法登记数值，
+        跳过即可。任一文件不可读时返回空元组：依据不全时无法判断数值是否登记，不做替换。
+        """
+
+        identities = list(checkpoint.deterministic_fact_files.values())
+        if checkpoint.evidence_manifest is not None:
+            identities.extend(
+                identity
+                for item in checkpoint.evidence_manifest.evidence
+                for identity in item.evidence_files
+            )
+        contents: list[str] = []
+        seen: set[str] = set()
+        for identity in identities:
+            if identity.path in seen:
+                continue
+            seen.add(identity.path)
+            try:
+                raw = await self._read_identity_bytes(thread_id, identity, max_bytes=16 * 1024 * 1024)
+            except Exception as error:  # noqa: BLE001 - 依据不全时只放弃核对
+                loguru_logger.warning(
+                    "report_chart_text_verification_skipped path={} error_type={}",
+                    identity.path,
+                    type(error).__name__,
+                )
+                return ()
+            try:
+                contents.append(raw.decode("utf-8"))
+            except UnicodeDecodeError:
+                continue
+        return tuple(contents)
+
     async def _build_server_tables(
         self,
         run_context: RunContext,
@@ -2832,6 +2879,8 @@ class RuntimeSectionsMixin:
         chart_inputs: list[ReportChartInput] = []
         destination_by_chart: dict[str, str] = {}
         report_parent = PurePosixPath(markdown_path).parent
+        # 图注标题/替代文字由模型登记，装配时直接进入正文；与正文数值同规则核对。
+        number_contents = await self._registered_number_contents(scope["threadId"], checkpoint)
         for index, chart in enumerate(checkpoint.evidence_manifest.charts, start=1):
             suffix = PurePosixPath(chart.source_file.path).suffix.lower()
             if suffix not in {".png", ".jpg", ".jpeg"}:
@@ -2844,8 +2893,8 @@ class RuntimeSectionsMixin:
                 ReportChartInput(
                     chartId=chart.chart_id,
                     fileName=file_name,
-                    title=chart.title,
-                    altText=chart.alt_text,
+                    title=_verified_caption(chart.title, number_contents),
+                    altText=_verified_caption(chart.alt_text, number_contents),
                     citationIds=chart.citation_ids,
                 )
             )

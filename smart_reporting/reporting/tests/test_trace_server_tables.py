@@ -104,7 +104,7 @@ def test_build_analysis_table_generates_period_rows_from_bundle() -> None:
     # 行 = bundle 指标 periodValues 的期间（2025-09）。
     assert trace.row_keys == ("period:2025-09",)
     assert trace.column_keys == ("收入（元）",)
-    assert f"[[table:table-analysis_001]]" in markdown
+    assert "[[table:table-analysis_001]]" in markdown
     assert "| 2025年9月 | 3,600 |" in markdown
 
 
@@ -350,7 +350,9 @@ async def test_finalize_skips_table_when_analysis_unassigned() -> None:
 
 
 def test_comparison_table_uses_aligned_totals_and_readable_labels() -> None:
-    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicComparison
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+    )
 
     bundle = _bundle()
     comparison = DeterministicComparison(
@@ -375,7 +377,9 @@ def test_comparison_table_uses_aligned_totals_and_readable_labels() -> None:
 
 
 def test_multiple_comparisons_keep_unique_rows_and_source_identity() -> None:
-    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicComparison
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+    )
 
     bundle = _bundle()
     fact = DeterministicComparison(
@@ -465,3 +469,63 @@ def test_analysis_table_keeps_raw_periods_when_readable_labels_collide():
         bundle.model_copy(update={"metrics": (fact,)}), fact_file_resource_id=FACT_RESOURCE
     )
     assert "| 2025-09 |" in markdown and "| 2025-09-01 |" in markdown
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_caption_numbers_are_verified_against_registered_facts() -> None:
+    """图注标题由模型登记、装配时直接进入正文，须与正文数值同规则核对；依据不全时不替换。"""
+    import hashlib
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.trace.numeric_text import replace_unregistered_numbers
+    from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+    from smart_reporting.reporting.workflow.runtime.sections import (
+        RuntimeSectionsMixin,
+        _verified_caption,
+    )
+
+    facts = json.dumps({"analysisId": "analysis_001", "metrics": [{
+        "factId": "fact-" + "a" * 16, "datasetId": "current", "datasetSha256": "b" * 64,
+        "periodRoles": ["current"], "field": "revenue", "fieldRef": "h.revenue",
+        "aggregation": "sum", "unit": "元", "formula": "sum", "total": 123456789,
+        "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+    }]}).encode()
+    evidence = b'{"findings": []}'
+
+    def identity(path: str, content: bytes) -> FileIdentity:
+        return FileIdentity(path=path, size=len(content), sha256=hashlib.sha256(content).hexdigest())
+
+    fact_file = identity("facts/analysis_001.json", facts)
+    evidence_file = identity("evidence/analysis_001/supplement.json", evidence)
+    table = "科室,收入\n内科,8.5\n".encode()
+    table_file = identity("evidence/analysis_001/supplement.csv", table)
+    binary = b"\x89PNG\r\n\x1a\n\xff\xfe"
+    binary_file = identity("evidence/analysis_001/supplement.bin", binary)
+    checkpoint = SimpleNamespace(
+        deterministic_fact_files={"analysis_001": fact_file},
+        evidence_manifest=SimpleNamespace(evidence=(
+            SimpleNamespace(evidence_files=(fact_file, evidence_file, table_file, binary_file)),
+        )),
+    )
+    harness = _Harness({
+        fact_file.path: facts, evidence_file.path: evidence,
+        table_file.path: table, binary_file.path: binary,
+    })
+
+    # 与章节正文核对同源：CSV 等文本 evidence 里的数值同样视为已登记；二进制文件跳过。
+    contents = await RuntimeSectionsMixin._registered_number_contents(harness, "thread-1", checkpoint)
+    assert contents == (facts.decode(), evidence.decode(), table.decode())
+    assert replace_unregistered_numbers("内科收入8.5", contents) == "内科收入8.5"
+    contents = (facts.decode(), evidence.decode())
+    assert replace_unregistered_numbers("2025年收入1.23亿元", contents) == "2025年收入1.23亿元"
+    assert replace_unregistered_numbers("2025年收入同比增长8.5%", contents) == "2025年收入同比增长待核实"
+
+    assert _verified_caption("2025年收入同比增长8.5%", contents) == "2025年收入同比增长待核实"
+    assert _verified_caption("2025年收入同比增长8.5%", ()) == "2025年收入同比增长8.5%"
+    # “待核实”比原数字长：超出图注 200 字上限时截断，不让装配因长度校验失败。
+    long_caption = _verified_caption("增长9%；" * 40, contents)
+    assert len(long_caption) == 200 and long_caption.endswith("…") and "9" not in long_caption
+
+    missing = _Harness({fact_file.path: facts})
+    assert await RuntimeSectionsMixin._registered_number_contents(missing, "thread-1", checkpoint) == ()
