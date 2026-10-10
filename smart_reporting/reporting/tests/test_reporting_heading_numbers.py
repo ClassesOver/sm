@@ -1134,3 +1134,20 @@ def test_chart_is_not_inserted_inside_a_cjk_enumeration() -> None:
     )
     body = rendered.markdown
     assert body.index("3、住院收入回落。") < body.index("![") < body.index("后续需持续跟踪。")
+
+
+@pytest.mark.parametrize("title", ["收入分析(2025)", "2025-01至2025-06收入分析", "收入分析 (门诊)"])
+def test_duplicate_section_heading_is_removed_after_text_normalization(title: str) -> None:
+    # 装配时正文先规范标点、日期与空格；模型重复的章节标题须按同一规则识别并剥离，
+    # 否则残留的 H2 会让装配以标题层级错误失败。
+    draft = ReportDraft(sections=(ReportDraftSection(
+        sectionCode="section_001",
+        blocks=(ReportDraftBlock(blockId="block_1", markdown=f"## {title}\n\n正文。"),),
+    ),))
+    rendered = assemble_report_markdown(
+        draft, expected_title="运营报告", markdown_path="reports/report.md",
+        sections=(ReportSectionDefinition(code="section_001", sectionNumber="1", title=title),),
+        citation_ids=(),
+    )
+    assert rendered.markdown.count("## ") == 1
+    assert any(item["code"] == "duplicate_section_heading_removed" for item in rendered.auto_fixes)

@@ -418,7 +418,14 @@ def _marker_lines(
 def _strip_duplicate_section_heading(markdown: str, *, expected_title: str) -> tuple[str, bool]:
     match = _LEADING_SECTION_HEADING.match(markdown)
     submitted_title = _clean_heading_title(match.group("title")) if match is not None else ""
-    if match is None or submitted_title != expected_title.strip():
+    # 装配时正文先经过标点、日期与空格规范，模型重复的“收入分析(2025)”已变成
+    # “收入分析（2025）”；冻结标题按同一规则规范后再比较，否则重复的 H2 留在正文里
+    # 触发标题层级校验失败。
+    expected = {
+        expected_title.strip(),
+        _clean_heading_title(normalize_cjk_punctuation(normalize_cjk_wording(expected_title))),
+    }
+    if match is None or submitted_title not in expected:
         return markdown, False
     # 正式章节标题以 effectiveProfile 为唯一事实来源，服务端会在所有正文块之前统一插入。
     # 这里只移除首块开头精确同名的 H1/H2，避免模型重复外层标题，同时保留其余子标题和正文。
