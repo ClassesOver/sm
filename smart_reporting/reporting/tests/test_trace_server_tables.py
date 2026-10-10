@@ -376,6 +376,29 @@ def test_comparison_table_uses_aligned_totals_and_readable_labels() -> None:
     assert all(cell.fact_refs[0].fact_kind == 'comparison' for cell in trace.cells)
 
 
+def test_percent_metric_comparison_table_shows_change_in_percentage_points() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+    )
+
+    bundle = _bundle()
+    rate_metric = bundle.metrics[0].model_copy(update={'unit': '%', 'aggregation': 'average'})
+    comparison = DeterministicComparison(
+        factId='fact-' + 'c' * 16, comparisonType='yoy', field='revenue',
+        fieldRef=rate_metric.field_ref,
+        currentDatasetId='current', baselineDatasetId='baseline',
+        currentDatasetSha256=SHA, baselineDatasetSha256=SHA,
+        currentTotal=85.3, baselineTotal=83.2, change=2.1, changeRate=2.524,
+        formula='(currentTotal-baselineTotal)/abs(baselineTotal)*100%', unit='%',
+    )
+    bundle = bundle.model_copy(update={'metrics': (rate_metric,), 'comparisons': (comparison,)})
+    _trace, markdown = build_analysis_table(bundle, fact_file_resource_id=FACT_RESOURCE)
+    # 两项百分数之差是百分点，写成 2.10% 会被读成相对增幅（实际相对增幅为 2.52%）。
+    assert '收入变化 | 2.10个百分点' in markdown
+    assert '同比增幅 | 2.52%' in markdown
+    assert '2.10%' not in markdown
+
+
 def test_multiple_comparisons_keep_unique_rows_and_source_identity() -> None:
     from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
         DeterministicComparison,

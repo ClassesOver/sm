@@ -502,3 +502,67 @@ def test_numbers_with_omitted_units_are_verified(text, expected):
         for letter, field, unit, total in (('a', 'revenue', '元', 123456789), ('e', 'visits', '人次', 353000))
     ]})
     assert replace_unregistered_numbers(text, [document]) == expected
+
+
+def _rate_comparison_document(change):
+    return json.dumps({
+        'analysisId': 'analysis_001',
+        'metrics': [{
+            'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': 'bed_rate', 'fieldRef': 'hospital.bed_rate',
+            'aggregation': 'average', 'unit': '%', 'formula': 'avg(bed_rate)', 'total': 83.2 + change,
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        }],
+        'comparisons': [{
+            'factId': 'fact-' + 'c' * 16, 'comparisonType': 'yoy', 'field': 'bed_rate',
+            'fieldRef': 'hospital.bed_rate', 'currentDatasetId': 'current', 'baselineDatasetId': 'base',
+            'currentDatasetSha256': 'b' * 64, 'baselineDatasetSha256': 'c' * 64,
+            'currentTotal': 83.2 + change, 'baselineTotal': 83.2, 'change': change,
+            'changeRate': change / 83.2 * 100, 'formula': 'x', 'unit': '%',
+        }],
+    })
+
+
+@pytest.mark.parametrize(('change', 'text', 'expected'), [
+    # 百分数指标的变化额是两项百分数之差，按百分点显示；数值引用名不变。
+    (2.1, '床位使用率同比提高{{value:fact-cccccccccccccccc:change:%}}，由{{value:fact-cccccccccccccccc:baselineTotal:%}}升至{{value:fact-cccccccccccccccc:currentTotal:%}}。',
+     '床位使用率同比提高2.10个百分点，由83.20%升至85.30%。'),
+    (-2.1, '床位使用率同比下降{{value:fact-cccccccccccccccc:change:%}}。', '床位使用率同比下降2.10个百分点。'),
+    (-2.1, '床位使用率同比提高{{value:fact-cccccccccccccccc:change:%}}。', '床位使用率同比降低2.10个百分点。'),
+    # 相对变化率仍是百分数。
+    (2.1, '床位使用率同比增长{{value:fact-cccccccccccccccc:changeRate:%}}。', '床位使用率同比增长2.52%。'),
+    # 手写成百分数、但只对得上登记百分点差值的，改写单位；对不上的照常替换。
+    (2.1, '床位使用率同比提高2.10%。', '床位使用率同比提高2.10个百分点。'),
+    (-2.1, '床位使用率同比下降2.1%。', '床位使用率同比下降2.1个百分点。'),
+    (2.1, '床位使用率同比提高3.40%。', '床位使用率同比提高待核实。'),
+])
+def test_percent_metric_change_is_published_in_percentage_points(change, text, expected):
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    document = _rate_comparison_document(change)
+    catalog = frozen_number_catalog([document])
+    rendered = render_frozen_numbers(align_placeholder_direction(text, [document]), catalog)
+    assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == expected
+
+
+def test_percent_metric_change_review_and_display_unit():
+    from smart_reporting.reporting.trace.content_review import review_content
+    from smart_reporting.reporting.trace.fact_service import fact_display_unit
+    from smart_reporting.reporting.trace.subject_builder import formatted_value_matches
+
+    document = _rate_comparison_document(2.1)
+    contents = [document]
+    assert not [warning for warning in review_content('床位使用率同比提高2.10个百分点。', contents)
+                if '百分点' in warning or '冻结依据' in warning]
+    warnings = review_content('床位使用率同比提高2.10%。', contents)
+    assert any('应写为2.10个百分点' in warning for warning in warnings)
+    assert not any('冻结依据' in warning for warning in warnings)
+
+    comparison = json.loads(document)['comparisons'][0]
+    assert fact_display_unit(comparison) == '个百分点'
+    assert fact_display_unit(json.loads(document)['metrics'][0]) == '%'
+    assert formatted_value_matches('同比提高2.10个百分点', 2.1, '个百分点')
+    assert not formatted_value_matches('同比提高2.10%', 2.1, '个百分点')

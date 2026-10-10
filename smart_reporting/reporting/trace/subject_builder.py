@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from .contracts_v1 import (
     FactRefV1,
@@ -176,12 +177,12 @@ def value_matches(cell_text: str, fact_value: Any) -> bool:
 
 def _display_units(unit: str | None) -> tuple[str, ...] | None:
     """冻结值可用的显示单位：金额与人次可按固定倍率换算，百分数/千分数原样；其余不核对。"""
-    from .numeric_text import _unit_scales
+    from .numeric_text import PERCENT_POINT, _unit_scales
 
     scales = _unit_scales(unit)
     if scales is not None:
         return tuple(scales)
-    return (unit,) if unit in {"%", "‰"} else None
+    return (unit,) if unit in {"%", "‰", PERCENT_POINT} else None
 
 
 def formatted_value_matches(text: str, value: Any, unit: str | None) -> bool:
@@ -279,7 +280,7 @@ _PERIOD_TOKEN = re.compile(
     r"\d{4}\s*[-/年.]\s*\d{1,2}(?:\s*[-/月.]\s*\d{1,2}\s*日?)?"
     r"|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
 )
-_UNIT_TOKENS = ("亿元", "万元", "千元", "%", "‰", "万人次", "人次", "万人", "床日", "床", "张", "次", "人", "元")
+_UNIT_TOKENS = ("亿元", "万元", "千元", "个百分点", "%", "‰", "万人次", "人次", "万人", "床日", "床", "张", "次", "人", "元")
 _NUMBER_UNIT_RE = re.compile(
     r"(?<![\d.,+\-])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?))\s*"
     r"(?P<unit>亿元|万元|千元|%|‰|万人次|人次|万人|床日|床|张|次|人|元)(?![\w])"

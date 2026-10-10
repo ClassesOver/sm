@@ -9,11 +9,13 @@ Editor API 层负责把 resource_id 解析为 bundle 内容并复核文件身份
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ..models import ReportingError
 from .contracts_v1 import TRACE_BUDGETS_V1, FactRefV1
 from .fact_index import fact_entry_from_pointer
+from .numeric_text import PERCENT_POINT
 
 _JSON = json.JSONDecoder()
 
@@ -36,7 +38,12 @@ def fact_display_unit(entry: Mapping[str, Any]) -> str | None:
         return "%"
     if entry.get("total") is None and "numeratorMetric" in entry:
         return None
-    return entry.get("unit")
+    unit = entry.get("unit")
+    # 百分数指标的变化额/差额是百分点差值，与正文、表格同样按百分点展示。
+    if (unit == "%" and entry.get("total") is None and entry.get("value") is None
+            and (entry.get("change") is not None or entry.get("difference") is not None)):
+        return PERCENT_POINT
+    return unit
 
 
 def resolve_fact(

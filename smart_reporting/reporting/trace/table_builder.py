@@ -17,7 +17,8 @@ FactRef，不依赖最终 Markdown 里的位置猜测。总计行、比例列分
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ..models import ReportingError
@@ -27,6 +28,7 @@ from .contracts_v1 import (
     TableTraceV1,
 )
 from .fact_index import fact_pointer
+from .numeric_text import PERCENT_POINT, percent_point_field
 
 _TABLE_ID_PATTERN_RULES = "表格 ID 只允许字母数字与 _ . :-"
 
@@ -269,13 +271,16 @@ def build_analysis_table(
         rows: list[list[str]] = []
         cells: list[TableCellBindingV1] = []
         row_keys: list[str] = []
-        for field, label in (("currentTotal", "本期" + metric_label), ("baselineTotal", baseline_label), ("change", metric_label + "变化额"), ("changeRate", rate_label)):
+        # 百分数指标（床位使用率等）的变化是百分点差值，不是“变化额”，也不能显示为 %。
+        change_label = metric_label + ("变化" if all(fact.unit == "%" for fact in comparisons) else "变化额")
+        for field, label in (("currentTotal", "本期" + metric_label), ("baselineTotal", baseline_label), ("change", change_label), ("changeRate", rate_label)):
             row_key = f"comparison:0:{field}"
             row_keys.append(row_key)
             row = [label]
             for column, fact in zip(columns, comparisons):
                 value = fact.model_dump(mode="json", by_alias=True)[field]
-                unit = "%" if field == "changeRate" else fact.unit
+                unit = ("%" if field == "changeRate"
+                        else PERCENT_POINT if percent_point_field(field, fact.unit) else fact.unit)
                 row.append("—" if value is None else _format_number(value, unit) + (unit or ""))
                 cells.append(TableCellBindingV1(
                     rowKey=row_key, columnKey=column,

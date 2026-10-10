@@ -21,7 +21,6 @@ import anyio
 from loguru import logger
 
 from ..reporting.delivery.artifacts_v1 import ReportArtifactManifest
-from ..reporting.workflow.checkpoint import FileIdentity
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import (
     TRACE_BUDGETS_V1,
@@ -39,6 +38,8 @@ from ..reporting.trace.dataset_service import (
 from ..reporting.trace.drilldown_service import TraceDrilldownService
 from ..reporting.trace.fact_service import fact_display_unit, fact_display_value
 from ..reporting.trace.index_builder import TRACE_INDEX_FILENAME
+from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field
+from ..reporting.workflow.checkpoint import FileIdentity
 from ..workspace import WorkspaceError
 from .trace_exports import TraceDerivedExportService
 
@@ -803,7 +804,10 @@ class ReportEditorTraceService:
             if entry is None:
                 return None
             if row_key.startswith("comparison:"):
-                return "%" if row_key.rsplit(":", 1)[-1] == "changeRate" else entry.get("unit")
+                field = row_key.rsplit(":", 1)[-1]
+                if field == "changeRate":
+                    return "%"
+                return PERCENT_POINT if percent_point_field(field, entry.get("unit")) else entry.get("unit")
             return fact_display_unit(entry)
 
         subjects: list[dict[str, Any]] = []
@@ -948,8 +952,8 @@ class ReportEditorTraceService:
         即无法定位 → stale。全部为软语义，不阻断保存。
         """
 
-        from ..reporting.trace.subject_builder import formatted_value_matches, unit_period_warnings
         from ..reporting.trace.markdown_body import trace_body
+        from ..reporting.trace.subject_builder import formatted_value_matches, unit_period_warnings
 
         def matches_fact_value(text: str, value: Any, unit: str | None) -> bool:
             # 等值换算优先；裸数命中不能掩盖显式单位不一致，stale 仅提示复核。

@@ -50,13 +50,23 @@ _MONEY_PAIR = re.compile(
 )
 
 
+# 百分数指标的变化额/差额是两项百分数之差：85.30%→83.20% 是下降 2.10 个百分点，
+# 写成“下降2.10%”会被读成相对降幅。数值引用仍沿用 % 单位名，显示改为百分点。
+PERCENT_POINT = "个百分点"
+
+
+def percent_point_field(field: str, unit: str | None) -> bool:
+    """百分数指标的变化额、差额（含预算差额）按百分点显示。"""
+    return unit == "%" and (field in {"change", "difference"} or field.endswith(".difference"))
+
+
 def format_fact_value(value: Any, unit: str | None, display_unit: str | None = None) -> str:
     number = Decimal(str(value))
     target = display_unit or unit
-    if target != unit:
+    if target != unit and not (unit == "%" and target == PERCENT_POINT):
         scales = _unit_scales(unit)
         number = number * scales[unit] / scales[target]
-    if target in {"万元", "亿元", "万人次", "%", "‰"} or number != number.to_integral_value():
+    if target in {"万元", "亿元", "万人次", "%", "‰", PERCENT_POINT} or number != number.to_integral_value():
         rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         # 舍入为零的负数不能显示为“-0.00”。
         text = f"{abs(rounded) if rounded == 0 else rounded:,f}"
@@ -171,6 +181,9 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     unit = ("%" if field in {"changeRate", "percentage"}
                             else None if array == "derivedMetrics" and field == "value"
                             else entry.get("unit"))
+                    if percent_point_field(field, unit):
+                        yield f"{{{{value:{fact_id}:{field}:%}}}}", value, unit, PERCENT_POINT
+                        continue
                     units = _unit_scales(unit) or (unit or "",)
                     for target in units:
                         if _hidden_by_rounding(value, unit, target or None):
@@ -179,6 +192,10 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                 if comparison[field] is None:
+                    continue
+                if percent_point_field(field, unit):
+                    token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:%}}}}"
+                    yield token, comparison[field], unit, PERCENT_POINT
                     continue
                 for target in (_unit_scales(unit) or (unit,)):
                     if _hidden_by_rounding(comparison[field], unit, target):
@@ -211,8 +228,7 @@ def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> di
         if not display_unit or catalog.get(token) == "数值待核实":
             continue
         number = Decimal(str(value))
-        if display_unit != unit:
-            scales = _unit_scales(unit)
+        if display_unit != unit and (scales := _unit_scales(unit)) is not None:
             number = number * scales[unit] / scales[display_unit]
         values.setdefault(display_unit, set()).add(number)
     return values
@@ -481,6 +497,15 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
                                                 prefix=markdown[max(0, match.start() - 12):match.start()],
                                                 quantum=quantum)):
             return match[0]
+        # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
+        # 避免把两项百分数之差读成相对变化率。
+        points = known.get(PERCENT_POINT, ()) if match["unit"] == "%" else ()
+        if points and (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points)
+                       or registered_decline_magnitude(number, PERCENT_POINT, points,
+                                                       prefix=markdown[max(0, match.start() - 12):match.start()],
+                                                       quantum=quantum)):
+            logger.warning("report_percent_point_unit_corrected value={}", match[0])
+            return f"{match['number']}{PERCENT_POINT}"
         logger.warning("report_unregistered_number_replaced value={}", match[0])
         return "待核实"
 

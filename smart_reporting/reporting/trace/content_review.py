@@ -12,6 +12,7 @@ from .numeric_text import (
     DIRECTED_PLACEHOLDER,
     DIRECTION_WORD_PATTERN,
     FALLING_WORDS,
+    PERCENT_POINT,
     RISING_WORDS,
     _frozen_number_entries,
     _unit_scales,
@@ -434,6 +435,18 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         number = Decimal(match[1].replace(",", ""))
         digits = len(match[1].split(".")[1]) if "." in match[1] else 0
         quantum = Decimal(1).scaleb(-digits)
+        # 原始证据里的数字不区分百分数与百分点：只对得上百分点差值的“X%”先单独提示。
+        if (match[2] == "%" and (number, match[2]) not in reported_values
+                and not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number
+                            for value in known.get("%", ()))
+                and any(abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == abs(number)
+                        for value in known.get(PERCENT_POINT, ()))):
+            reported_values.add((number, match[2]))
+            warnings.append(
+                f"百分数指标的变化是百分点差值：{match[0]}应写为{abs(number)}个百分点，"
+                "写成百分数会被读成相对变化率。"
+            )
+            continue
         candidates = known.get(match[2], set()) | supplemental
         supported = (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                      or registered_decline_magnitude(number, match[2], candidates,
@@ -442,14 +455,18 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
-    # “个百分点”不在数值单位核对范围内，而百分点差值从不登记，必然是模型自行相减；
-    # 只有两项已登记百分数之差按书写精度舍入后相等才有依据。
+    # 百分数指标的变化额以百分点登记；其余“个百分点”只能由两项已登记百分数相减得到，
+    # 按书写精度舍入后相等才有依据。
     percents = sorted(known.get("%", ()))
-    if len(percents) <= _MAX_PERCENT_POINT_CANDIDATES:
+    points = {abs(value) for value in known.get(PERCENT_POINT, ())}
+    pairwise = len(percents) <= _MAX_PERCENT_POINT_CANDIDATES
+    if points or pairwise:
         for match in re.finditer(r"(?<![\d.,])(\d+(?:\.\d+)?)\s*个?百分点", text):
             number = Decimal(match[1])
             quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
-            if not any(
+            if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points):
+                continue
+            if pairwise and not any(
                 abs(left - right).quantize(quantum, rounding=ROUND_HALF_UP) == number
                 for index, left in enumerate(percents) for right in percents[index + 1:]
             ):
