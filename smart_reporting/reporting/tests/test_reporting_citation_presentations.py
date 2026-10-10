@@ -385,3 +385,22 @@ def test_trace_source_visibility_gate_matches_export_settings() -> None:
     runtime._validate_trace_source_visibility(hidden, "只有正文")
     with pytest.raises(ReportFailure, match="关闭来源展示"):
         runtime._validate_trace_source_visibility(hidden, "[数据来源 001]")
+
+
+def test_citation_appendix_shows_readable_scope_and_periods() -> None:
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _source_appendix_html
+
+    def presentation(scope: str, periods: list[str]) -> dict:
+        return {
+            "alias": "[来源 001]", "label": "门诊收入明细", "status": "valid",
+            "coverageItems": [{"label": "门诊收入表", "periods": periods}],
+            "scope": scope, "method": "CSV 文件冻结快照", "summary": "12 行", "links": [],
+        }
+
+    # 期间角色代码换成中文名称，ISO 期间与区间按正文同一规则写成中文日期（含旧任务保存的数据）。
+    html = _source_appendix_html([presentation("current、yoy", ["2025-01-01至2025-12-31"])])
+    assert "范围：本期、同比基期" in html
+    assert "门诊收入表（2025年1月1日至12月31日）" in html
+    html = _source_appendix_html([presentation("院区=全部院区", ["2025-01", "2025-03"])])
+    assert "范围：院区=全部院区" in html
+    assert "门诊收入表（2025年1月、2025年3月）" in html

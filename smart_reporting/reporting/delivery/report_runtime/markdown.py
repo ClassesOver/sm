@@ -737,6 +737,9 @@ def _semantic_documents(
     return pdf_document, word_document
 
 
+_PERIOD_ROLE_LABELS = {"current": "本期", "yoy": "同比基期", "mom": "环比基期"}
+
+
 def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
     if not presentations:
         return ""
@@ -750,8 +753,14 @@ def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
     for item in presentations:
         coverage = []
         for covered in item["coverageItems"]:
-            periods = "、".join(covered["periods"]) if covered["periods"] else "未登记"
+            # 期间按正文同一规则写成中文日期（2026-01至2026-12 → 2026年1月至12月）。
+            periods = (_normalize_cjk_wording_text("、".join(covered["periods"]))
+                       if covered["periods"] else "未登记")
             coverage.append(f"{covered['label']}（{periods}）")
+        # 旧任务保存的范围是期间角色代码（current、yoy），读者可见时换成中文名称。
+        roles = item["scope"].split("、")
+        scope = ("、".join(_PERIOD_ROLE_LABELS[role] for role in roles)
+                 if all(role in _PERIOD_ROLE_LABELS for role in roles) else item["scope"])
         status = item["status"]
         online_links = [
             f'<a href="{html.escape(link["url"], quote=True)}">'
@@ -768,7 +777,7 @@ def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
             '<dl class="report-source-entry">'
             f'<dt>{html.escape(item["alias"])} {html.escape(item["label"])}</dt>'
             f'<dd class="report-source-status-{status}">状态：{status_labels[status]}</dd>'
-            f'<dd>范围：{html.escape(item["scope"])}</dd>'
+            f'<dd>范围：{html.escape(scope)}</dd>'
             f'<dd>期间：{html.escape("、".join(coverage) if coverage else "未登记")}</dd>'
             f'<dd>方法：{html.escape(item["method"])}</dd>'
             f"{summary}<dd>在线定位：{online}</dd></dl>"

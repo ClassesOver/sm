@@ -195,7 +195,7 @@ def test_render_markdown_full_runtime_publishes_hash_verified_pdf_and_docx(
     for rendered_text in (pdf_text, word_text):
         assert "[来源 001]" in rendered_text
         assert "实际引用附录" in rendered_text
-        assert "营业收入明细（2026-01、2026-12）" in rendered_text
+        assert "营业收入明细（2026年1月、2026年12月）" in rendered_text
         # 中文之间的段内换行不能渲染成空格。
         assert "门诊收入持续增长住院收入有所回落。" in rendered_text
 
