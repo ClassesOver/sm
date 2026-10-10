@@ -439,6 +439,17 @@ def test_large_amount_tables_use_wan_yuan_columns() -> None:
     assert '同比增幅 | 5.03%' in markdown
 
 
+def test_server_table_numbers_are_right_aligned_in_rendered_html() -> None:
+    from markdown_it import MarkdownIt
+
+    _trace, markdown = build_analysis_table(_bundle(), fact_file_resource_id=FACT_RESOURCE)
+    # 行标签左对齐、数值列右对齐；报告运行时用同一 markdown-it 配置渲染 PDF/Word 的 HTML。
+    assert '| --- | ---: |' in markdown
+    html = MarkdownIt('commonmark', {'html': False}).enable('table').render(markdown)
+    assert '<td style="text-align:right">3,600</td>' in html
+    assert '<td>2025年9月</td>' in html
+
+
 def test_multiple_comparisons_keep_unique_rows_and_source_identity() -> None:
     from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
         DeterministicComparison,

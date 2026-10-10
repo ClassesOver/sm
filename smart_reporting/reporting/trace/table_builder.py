@@ -193,7 +193,8 @@ def render_table_markdown(
     """
 
     header = "| " + " | ".join(("", *column_keys)) + " |"
-    separator = "| " + " | ".join(("---",) * (len(column_keys) + 1)) + " |"
+    # 行标签左对齐，数值列右对齐，便于逐行比较位数与小数点。
+    separator = "| " + " | ".join(("---", *("---:",) * len(column_keys))) + " |"
     for row in rows:
         if len(row) != len(column_keys) + 1:
             raise ReportingError(

@@ -579,6 +579,7 @@ def _semantic_documents(
         "th,td{border:0.6pt solid "
         f"{theme['grid']}"
         ";padding:5px 7px;text-align:left}"
+        "td{font-variant-numeric:tabular-nums}"
         "th{background:"
         f"{theme['surface']}"
         ";color:"
