@@ -32,6 +32,14 @@ INTERNAL_ID_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])(?:(?:analysis|section|citation|claim|dataset|chart|requirement)_\d{3,}"
     r"|(?:fact|sub)-[0-9a-f]{16})(?![A-Za-z0-9_])"
 )
+# 成品图表只有标题、不编号：正文“如图1所示”“见表2”读者无从对应。只认引用语境
+# （如/见/据…之后，或后接所示/显示…），“代表1名”等词内数字不算。
+_FIGURE_REFERENCE = re.compile(
+    r"(?:(?<=[如见据由从（(])|(?<=参见)|(?<=详见))(?P<label>[图表])\s*(?P<number>\d{1,3})(?![\d.,%])"
+    r"|(?P<label2>[图表])\s*(?P<number2>\d{1,3})(?=\s*(?:所示|显示|可见|反映|表明|展示))"
+)
+# 模型自拟的图表标题行（“表1：科室收入”“**图2 趋势**”）定义了编号，引用它不告警。
+_FIGURE_DEFINITION = re.compile(r"^\s*[*_]*附?(?P<label>[图表])\s*(?P<number>\d{1,3})(?:[\s:：.、*_]|$)", re.MULTILINE)
 # 数值目录与 numberGuide 的 JSON 字段名；模型照抄进正文时读者看不懂。
 _CONTRACT_FIELD_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])(?:currentTotal|baselineTotal|changeRate|periodValues|periodTotals|prefixTotals"
@@ -547,6 +555,16 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     visible = re.sub(r"!?\[[^\]\r\n]*\]\([^)\r\n]*\)|\[\[[^\]\r\n]+\]\]", "", text)
     for identifier in dict.fromkeys(INTERNAL_ID_PATTERN.findall(visible)):
         warnings.append(f"正文出现内部标识：{identifier}。读者可见内容只用业务名称，内部 ID 只放在结构化引用字段。")
+    defined_figures = {(match["label"], match["number"]) for match in _FIGURE_DEFINITION.finditer(visible)}
+    for reference in dict.fromkeys(
+        (match["label"] or match["label2"], match["number"] or match["number2"])
+        for match in _FIGURE_REFERENCE.finditer(visible)
+    ):
+        if reference not in defined_figures:
+            warnings.append(
+                f"正文引用了图表编号：{''.join(reference)}。成品图表只有标题、不编号，"
+                "请改用图表标题的主题词指代（如“门诊收入趋势图显示”）。"
+            )
     for field in dict.fromkeys(_CONTRACT_FIELD_PATTERN.findall(re.sub(r"`[^`\r\n]*`", "", visible))):
         warnings.append(
             f"正文出现数据字段名：{field}。读者可见内容改用中文业务表述（如合计、同比、环比、月均、变化额）。"

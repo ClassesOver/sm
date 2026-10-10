@@ -656,3 +656,16 @@ def test_contract_field_names_in_prose_are_flagged(text, fields):
     content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric()]})
     warnings = [w for w in review_content(text, [content]) if "数据字段名" in w]
     assert [w.split("：", 1)[1].split("。", 1)[0] for w in warnings] == fields
+
+
+@pytest.mark.parametrize(("text", "references"), [
+    ("如图1所示，门诊收入增长。", ["图1"]),
+    ("收入增长（见表2），图3显示回落，详见图4。", ["表2", "图3", "图4"]),
+    # 模型自拟编号标题时引用一致；词内数字、标题主题词指代不告警。
+    ("表1：科室收入\n\n| 科室 | 收入 |\n| --- | --- |\n\n见表1。", []),
+    ("**图2 收入趋势**\n\n如图2所示。", []),
+    ("代表1名医生，试图1次完成，门诊收入趋势图显示增长。", []),
+])
+def test_unnumbered_figure_references_are_flagged(text, references):
+    warnings = [w for w in review_content(text, []) if "图表编号" in w]
+    assert [w.split("：", 1)[1].split("。", 1)[0] for w in warnings] == references
