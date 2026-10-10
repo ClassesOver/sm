@@ -763,3 +763,15 @@ def test_sentence_like_headings_are_flagged(text, flagged):
     from smart_reporting.reporting.trace.content_review import readability_warnings
 
     assert bool([w for w in readability_warnings(text) if "小标题" in w]) is flagged
+
+
+def test_model_table_cells_without_basis_are_flagged():
+    table = (
+        "| 项目 | 金额（万元） | 同比（%） |\n| --- | ---: | ---: |\n"
+        "| 本期收入 | 13,654.32 | 5.03 |\n| 编造项目 | 9,999.99 | 7.77 |"
+    )
+    warnings = [w for w in review_content(table, [_comparison_content()]) if "表格数值" in w]
+    assert warnings == [
+        "表格数值缺少可核对的冻结依据：9,999.99（万元列）。请使用对应数值引用，或删去未登记的计算结果。",
+        "表格数值缺少可核对的冻结依据：7.77（%列）。请使用对应数值引用，或删去未登记的计算结果。",
+    ]

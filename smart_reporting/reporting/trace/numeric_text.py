@@ -508,6 +508,64 @@ def _display_precision(number_text: str) -> str:
     return f"{rounded:,f}" if "," in number_text else f"{rounded:f}"
 
 
+_TABLE_SEPARATOR_ROW = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
+_TABLE_HEADER_UNIT = re.compile(
+    r"[（(]\s*(?:单位\s*[:：]\s*)?(亿元|万元|元|万人次|人次|床日|%|个百分点)\s*[）)]\s*$"
+)
+_BARE_CELL_NUMBER = re.compile(
+    r"^\s*(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*$"
+)
+
+
+def _table_cells(line: str) -> list[tuple[int, int]]:
+    """管道表一行的单元格区间（不含分隔竖线），忽略转义的“\\|”。"""
+    pipes = [index for index, character in enumerate(line)
+             if character == "|" and (index == 0 or line[index - 1] != "\\")]
+    if not pipes:
+        return []
+    cells = [(pipes[index] + 1, pipes[index + 1]) for index in range(len(pipes) - 1)]
+    if line[:pipes[0]].strip():
+        cells.insert(0, (0, pipes[0]))
+    if line[pipes[-1] + 1:].strip():
+        cells.append((pipes[-1] + 1, len(line)))
+    return cells
+
+
+def table_unit_cells(markdown: str) -> list[tuple[int, int, str, str]]:
+    """管道表中表头带单位列（“金额（万元）”“同比（%）”）的裸数字单元格。
+
+    返回 (起点, 终点, 数字, 单位)，位置是数字在 markdown 中的区间；无单位列与已带单位的
+    单元格不在此列，后者由正文数值核对处理。
+    """
+    lines = markdown.split("\n")
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line) + 1)
+    found: list[tuple[int, int, str, str]] = []
+    index = 0
+    while index < len(lines) - 1:
+        if not (lines[index].lstrip().startswith("|") and _TABLE_SEPARATOR_ROW.match(lines[index + 1])):
+            index += 1
+            continue
+        header = lines[index]
+        units = []
+        for start, end in _table_cells(header):
+            match = _TABLE_HEADER_UNIT.search(header[start:end].replace("**", "").strip())
+            units.append(match[1] if match else None)
+        row = index + 2
+        while row < len(lines) and lines[row].lstrip().startswith("|"):
+            for column, (start, end) in enumerate(_table_cells(lines[row])):
+                if column >= len(units) or units[column] is None:
+                    continue
+                match = _BARE_CELL_NUMBER.match(lines[row][start:end])
+                if match is not None:
+                    found.append((offsets[row] + start + match.start("number"),
+                                  offsets[row] + start + match.end("number"), match["number"], units[column]))
+            row += 1
+        index = row
+    return found
+
+
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
 
@@ -521,27 +579,39 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
 
-    def replace(match: re.Match[str]) -> str:
-        number = Decimal(match["number"].replace(",", ""))
-        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+    def verify(number_text: str, unit: str, prefix: str) -> tuple[str, str]:
+        """返回 (结论, 数字)：registered 按显示精度保留，percent_point 改写为百分点，missing 替换。"""
+        number = Decimal(number_text.replace(",", ""))
+        digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
         quantum = Decimal(1).scaleb(-digits)
-        candidates = known.get(match["unit"], ())
+        candidates = known.get(unit, ())
         if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
-                or registered_decline_magnitude(number, match["unit"], candidates,
-                                                prefix=markdown[max(0, match.start() - 12):match.start()],
-                                                quantum=quantum)):
-            return _display_precision(match["number"]) + match[0][len(match["number"]):]
+                or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)):
+            return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
-        points = known.get(PERCENT_POINT, ()) if match["unit"] == "%" else ()
+        points = known.get(PERCENT_POINT, ()) if unit == "%" else ()
         if points and (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points)
                        or registered_decline_magnitude(number, PERCENT_POINT, points,
-                                                       prefix=markdown[max(0, match.start() - 12):match.start()],
-                                                       quantum=quantum)):
-            logger.warning("report_percent_point_unit_corrected value={}", match[0])
-            return f"{_display_precision(match['number'])}{PERCENT_POINT}"
-        logger.warning("report_unregistered_number_replaced value={}", match[0])
-        return "待核实"
+                                                       prefix=prefix, quantum=quantum)):
+            logger.warning("report_percent_point_unit_corrected value={}{}", number_text, unit)
+            return "percent_point", _display_precision(number_text)
+        logger.warning("report_unregistered_number_replaced value={}{}", number_text, unit)
+        return "missing", number_text
+
+    # 模型自写表格把单位写在表头（“金额（万元）”），单元格只有数字：按表头单位同样核对。
+    for start, end, number_text, unit in reversed(table_unit_cells(markdown)):
+        verdict, written = verify(number_text, unit, "")
+        cell = (written if verdict == "registered" else f"{written}{PERCENT_POINT}"
+                if verdict == "percent_point" else "待核实")
+        markdown = markdown[:start] + cell + markdown[end:]
+
+    def replace(match: re.Match[str]) -> str:
+        verdict, written = verify(match["number"], match["unit"],
+                                  markdown[max(0, match.start() - 12):match.start()])
+        if verdict == "registered":
+            return written + match[0][len(match["number"]):]
+        return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else "待核实"
 
     replaced = re.sub(
         r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>亿元|万元|元|万人次|人次|床日|%)",

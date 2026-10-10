@@ -607,3 +607,24 @@ def test_small_scaled_values_are_displayed_in_a_readable_unit(token, expected):
     assert catalog[token] == expected
     # 手写的“0.07亿元”仍按书写精度核对通过，不被替换。
     assert replace_unregistered_numbers('同比增加0.07亿元。', [document]) == '同比增加0.07亿元。'
+
+
+def test_model_table_cells_are_checked_against_the_header_unit():
+    from smart_reporting.reporting.trace.numeric_text import table_unit_cells
+
+    document = _comparison_document(6543211, 5.0332)
+    table = (
+        "| 项目 | 金额（万元） | 同比（%） | 排名 |\n| --- | ---: | ---: | ---: |\n"
+        "| 本期收入 | 13,654.32 | 5.0332 | 1 |\n| 编造项目 | 9,999.99 | 7.77 | 2 |\n"
+        "| 带单位 | 654.32万元 | — | 3 |"
+    )
+    # 只取表头带单位列的裸数字：排名列、已带单位与“—”单元格不在此列。
+    assert [(number, unit) for _start, _end, number, unit in table_unit_cells(table)] == [
+        ("13,654.32", "万元"), ("5.0332", "%"), ("9,999.99", "万元"), ("7.77", "%"),
+    ]
+    # 有依据的单元格按显示精度保留，编造的数字替换为待核实。
+    assert replace_unregistered_numbers(table, [document]) == (
+        "| 项目 | 金额（万元） | 同比（%） | 排名 |\n| --- | ---: | ---: | ---: |\n"
+        "| 本期收入 | 13,654.32 | 5.03 | 1 |\n| 编造项目 | 待核实 | 待核实 | 2 |\n"
+        "| 带单位 | 654.32万元 | — | 3 |"
+    )

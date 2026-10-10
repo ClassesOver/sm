@@ -26,6 +26,7 @@ from .numeric_text import (
     registered_decline_magnitude,
     render_frozen_numbers,
     supplemental_number_values,
+    table_unit_cells,
 )
 
 # 读者可见文本中不应出现的内部标识（正文复核与图表图注清理共用）。
@@ -618,6 +619,18 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
+    # 自写表格把单位写在表头、单元格只写数字：按表头单位同样核对。
+    for _start, _end, number_text, unit in table_unit_cells(text):
+        number = Decimal(number_text.replace(",", ""))
+        quantum = Decimal(1).scaleb(-(len(number_text.split(".")[1]) if "." in number_text else 0))
+        candidates = known.get(unit, set()) | known.get(PERCENT_POINT if unit == "%" else unit, set()) | supplemental
+        if (not any(abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == abs(number) for value in candidates)
+                and (number, unit) not in reported_values):
+            reported_values.add((number, unit))
+            warnings.append(
+                f"表格数值缺少可核对的冻结依据：{number_text}（{unit}列）。"
+                "请使用对应数值引用，或删去未登记的计算结果。"
+            )
     # 百分数指标的变化额以百分点登记；其余“个百分点”只能由两项已登记百分数相减得到，
     # 按书写精度舍入后相等才有依据。
     percents = sorted(known.get("%", ()))
