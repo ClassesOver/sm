@@ -1091,6 +1091,9 @@ def test_assemble_explicit_numeric_map_omits_unsupported_claim_anchor():
     # 空格分隔的单个编号同样是手写编号；后接量词的仍是正文数字。
     ("1 收入分析", "收入分析"),
     ("12 个科室收入", "12个科室收入"),
+    ("3 大举措", "3大举措"),
+    ("5 条建议", "5条建议"),
+    ("10 所医院对比", "10所医院对比"),
 ])
 def test_assemble_strips_chinese_and_compact_manual_heading_numbers(markdown_title: str, expected: str) -> None:
     # 中文报告常见的“一、”“（一）”“3、”编号会与服务端编号叠成“1.1 一、收入趋势”。

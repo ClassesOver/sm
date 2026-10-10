@@ -15,6 +15,7 @@ from ..contract import StrictModel
 from ..models import ReportingError
 from .report_runtime.markdown import (
     CJK_ENUMERATION_LINE,
+    HEADING_QUANTITY_WORDS,
     format_heading_label,
     normalize_cjk_punctuation,
     normalize_cjk_wording,
@@ -35,8 +36,8 @@ _MANUAL_HEADING_NUMBER = re.compile(
     r"|\d+[.．](?!\d)[ \t]*"  # 3. 收入 / 3.收入（不吞小数）
     r"|[一二三四五六七八九十百]+[、．][ \t]*"  # 一、收入
     r"|[（(](?:[一二三四五六七八九十百]+|\d{1,2})[）)][ \t]*"  # （一）收入 / (2) 收入；不吞 (2025)
-    # 1 收入分析；后接单位或量词（3 月、12 个、1 万元）的是正文数字，不吞
-    r"|\d{1,2}[ \t]+(?![年月日个家名张床次人天项例台季周号期级类万亿元])(?=[\u3400-\u9fff])"
+    # 1 收入分析；后接单位或量词（3 月、12 个、1 万元、3 大举措）的是正文数字，不吞
+    rf"|\d{{1,2}}[ \t]+(?![{HEADING_QUANTITY_WORDS}])(?=[\u3400-\u9fff])"
     r")"
 )
 # 标题末尾的冒号、句号等是正文标点，进入目录与 PDF 标题后显得残缺；问号、叹号保留。
