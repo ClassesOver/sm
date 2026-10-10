@@ -163,6 +163,49 @@ def _explicit_year_extrema_warnings(
     return warnings
 
 
+_GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "位居第一", "位列第一")
+_GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
+
+
+def _group_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+    """“外科收入最高”与冻结分组排名不符时提示复核（软告警）。
+
+    只在全部证据中恰有一个本期指标带分组排名时判定；一个分句只点名一个已登记分组、
+    只有一个极值词，且不含月份、比率或否定表述，避免把月度极值或占比排名误判为分组总额排名。
+    """
+    metrics = [entry for document in documents for entry in document.get("metrics") or ()
+               if isinstance(entry, dict) and "current" in (entry.get("periodRoles") or ())
+               and (entry.get("topGroups") or entry.get("bottomGroups"))]
+    if len(metrics) != 1:
+        return []
+    top = [item for item in metrics[0].get("topGroups") or () if isinstance(item, dict)]
+    bottom = [item for item in metrics[0].get("bottomGroups") or () if isinstance(item, dict)]
+    values = {str(item["group"]): Decimal(str(item["value"])) for item in (*top, *bottom)
+              if item.get("group") and isinstance(item.get("value"), (int, float))
+              and not isinstance(item.get("value"), bool)}
+    if len(values) < 2:
+        return []
+    highest, lowest = max(values.values()), min(values.values())
+    warnings: list[str] = []
+    for clause in re.split(r"[。；，,\n]", text):
+        named = [group for group in values if group in clause]
+        # “心内科”同时命中“内科”时只认最长的组名。
+        named = [group for group in named if not any(group != other and group in other for other in named)]
+        high = [word for word in _GROUP_HIGH_WORDS if word in clause]
+        low = [word for word in _GROUP_LOW_WORDS if word in clause]
+        if (len(named) != 1 or len(high) + len(low) != 1
+                or re.search(r"\d{1,2}月|季度|占比|比重|比例|增长率|增幅|降幅|增速|同比|环比|变化|不是|并非|未必|不能", clause)):
+            continue
+        group = named[0]
+        expected_value = highest if high else lowest
+        if values[group] == expected_value:
+            continue
+        label = "最高" if high else "最低"
+        expected = "、".join(name for name, value in values.items() if value == expected_value)
+        warnings.append(f"分组排名需复核：{group}被写为{label}，冻结分组结果的{label}为{expected}。")
+    return list(dict.fromkeys(warnings))
+
+
 def _project_ratio_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
     warnings = []
     for label, numerator_field in (("签约率", "contract_amount"), ("付款率", "payment_amount")):
@@ -383,6 +426,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         )
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
+    warnings.extend(_group_ranking_warnings(text, documents))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
     scoped_text = text
     if "[[analysis:" not in text and len(bundles) == 1:

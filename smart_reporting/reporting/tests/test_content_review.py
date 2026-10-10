@@ -669,3 +669,29 @@ def test_contract_field_names_in_prose_are_flagged(text, fields):
 def test_unnumbered_figure_references_are_flagged(text, references):
     warnings = [w for w in review_content(text, []) if "图表编号" in w]
     assert [w.split("：", 1)[1].split("。", 1)[0] for w in warnings] == references
+
+
+def _grouped_metric_document():
+    groups = [{"group": "心内科", "value": 300}, {"group": "外科", "value": 200}, {"group": "内科", "value": 100}]
+    return json.dumps({"analysisId": "analysis_001", "metrics": [{
+        **_metric(), "unit": "元", "topGroups": groups, "bottomGroups": list(reversed(groups)),
+    }]})
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("外科收入最高。", ["分组排名需复核：外科被写为最高，冻结分组结果的最高为心内科。"]),
+    ("内科收入居首。", ["分组排名需复核：内科被写为最高，冻结分组结果的最高为心内科。"]),
+    ("外科收入最低。", ["分组排名需复核：外科被写为最低，冻结分组结果的最低为内科。"]),
+    # 排名正确（“心内科”不误认为“内科”）、月度极值、占比排名与否定表述不告警。
+    ("心内科收入最高，内科最低。", []),
+    ("外科9月收入最高，外科收入占比最高，外科并非最高。", []),
+])
+def test_group_ranking_claims_are_checked_against_frozen_groups(text, expected):
+    warnings = [w for w in review_content(text, [_grouped_metric_document()]) if "分组排名" in w]
+    assert warnings == expected
+
+
+def test_group_ranking_is_skipped_when_several_metrics_have_groups():
+    document = json.loads(_grouped_metric_document())
+    document["metrics"].append({**document["metrics"][0], "factId": "fact-" + "e" * 16, "field": "visits"})
+    assert not [w for w in review_content("外科收入最高。", [json.dumps(document)]) if "分组排名" in w]
