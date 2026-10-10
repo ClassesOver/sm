@@ -84,6 +84,9 @@ def _build_workspace(workspace: Path) -> dict[str, Any]:
         "- PDF 与 Word 产物由同一份语义文档生成，标题编号与目录锚点一致。\n"
         "- 页眉、页脚与水印在发布前合并到 PDF 页面上。\n"
         "\n"
+        "门诊收入持续增长\n"
+        "住院收入有所回落。\n"
+        "\n"
         "> 备注：本报告由 Reporting Workflow 在受限运行时内自动生成，封面与目录已按导出设置关闭。\n",
         encoding="utf-8",
     )
@@ -193,6 +196,8 @@ def test_render_markdown_full_runtime_publishes_hash_verified_pdf_and_docx(
         assert "[来源 001]" in rendered_text
         assert "实际引用附录" in rendered_text
         assert "营业收入明细（2026-01、2026-12）" in rendered_text
+        # 中文之间的段内换行不能渲染成空格。
+        assert "门诊收入持续增长住院收入有所回落。" in rendered_text
 
     # 源 Markdown 的产物身份同样与磁盘内容一致，且未混入图片产物。
     assert result["render"]["images"] == []

@@ -19,6 +19,7 @@ from .markdown import (
     _bind_heading_anchors,
     _body_tokens,
     _document_context,
+    _join_cjk_soft_breaks,
     _markdown_title,
     _normalize_cjk_strong_markers,
     _semantic_documents,
@@ -290,7 +291,9 @@ class ReportRuntime:
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = _strip_strong_boundaries(
-                parser.renderer.render(_body_tokens(tokens), parser.options, {})
+                parser.renderer.render(
+                    _join_cjk_soft_breaks(_body_tokens(tokens)), parser.options, {}
+                )
             )
             html_body = self._inline_images(
                 body, source.parent, allowed_images, self._image_sources

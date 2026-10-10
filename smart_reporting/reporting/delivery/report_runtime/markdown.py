@@ -508,6 +508,38 @@ def _bind_heading_anchors(tokens: list[Any], headings_contract: list[dict[str, A
         token.attrSet("id", item["anchor"])
 
 
+# 东亚宽字符（汉字与全角标点）。CSS 规定两侧均为宽字符的段内换行不产生空格，
+# WeasyPrint 未实现该规则，会把“增长\n住院”渲染成“增长 住院”。
+_WIDE_CHARACTER = re.compile(r"[\u2e80-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef“”‘’]")
+_INLINE_MARKUP = frozenset({"strong_open", "strong_close", "em_open", "em_close", "s_open", "s_close"})
+
+
+def _join_cjk_soft_breaks(tokens: list[Any]) -> list[Any]:
+    """两侧均为宽字符的段内软换行渲染为空，不在中文之间留下空格。"""
+
+    def edge(children: list[Any], start: int, step: int) -> str:
+        index = start
+        while 0 <= index < len(children):
+            child = children[index]
+            if child.type == "text" and child.content:
+                return child.content[-1] if step < 0 else child.content[0]
+            # 粗体/斜体标记两侧会有空文本 token，跳过后继续找相邻字符。
+            if child.type not in _INLINE_MARKUP and not (child.type == "text" and not child.content):
+                return ""
+            index += step
+        return ""
+
+    for token in tokens:
+        children = token.children or []
+        for index, child in enumerate(children):
+            if (child.type == "softbreak"
+                    and _WIDE_CHARACTER.fullmatch(edge(children, index - 1, -1) or " ")
+                    and _WIDE_CHARACTER.fullmatch(edge(children, index + 1, 1) or " ")):
+                child.type = "text"
+                child.content = ""
+    return tokens
+
+
 def _body_tokens(tokens: list[Any]) -> list[Any]:
     for index, token in enumerate(tokens[:-2]):
         if token.type == "heading_open" and token.tag == "h1":
@@ -847,6 +879,7 @@ __all__ = [
     "_WORD_MARKERS",
     "_bind_heading_anchors",
     "_body_tokens",
+    "_join_cjk_soft_breaks",
     "_document_context",
     "format_heading_label",
     "_markdown_title",

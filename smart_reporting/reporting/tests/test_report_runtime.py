@@ -989,3 +989,24 @@ def test_cjk_enumerated_lines_become_separate_paragraphs(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import separate_enumerated_lines
 
     assert separate_enumerated_lines(markdown) == expected
+
+
+
+@pytest.mark.parametrize(("markdown", "expected"), [
+    # WeasyPrint 把中文之间的段内换行渲染成空格：两侧均为宽字符时去掉换行。
+    ("门诊收入持续增长\n住院收入有所回落", "<p>门诊收入持续增长住院收入有所回落</p>\n"),
+    ("收入增长，\n住院回落", "<p>收入增长，住院回落</p>\n"),
+    ("**门诊收入**\n住院回落", "<p><strong>门诊收入</strong>住院回落</p>\n"),
+    # 英文、数字或代码一侧保留换行（渲染为空格）；代码块不变。
+    ("Revenue grew\nslightly", "<p>Revenue grew\nslightly</p>\n"),
+    ("收入增长5%\n住院回落", "<p>收入增长5%\n住院回落</p>\n"),
+    ("门诊`code`\n住院", "<p>门诊<code>code</code>\n住院</p>\n"),
+    ("```\n说明\n代码\n```", "<pre><code>说明\n代码\n</code></pre>\n"),
+])
+def test_cjk_soft_breaks_render_without_spaces(markdown, expected):
+    from markdown_it import MarkdownIt
+
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _join_cjk_soft_breaks
+
+    parser = MarkdownIt("commonmark", {"html": False}).enable("table")
+    assert parser.renderer.render(_join_cjk_soft_breaks(parser.parse(markdown)), parser.options, {}) == expected
