@@ -837,3 +837,19 @@ def test_cjk_enumeration_items_ending_with_semicolons_are_complete(item):
 
     text = f"主要发现如下：\n\n{item}\n\n（2）外科收入居中。"
     assert not [w for w in readability_warnings(text) if "段落未写完" in w]
+
+
+@pytest.mark.parametrize(("window", "text", "expected"), [
+    (("2025-01", "2025-09"), "9月收入同比增长5.03%。",
+     ["比较口径需复核：5.03%是2025年1—9月的累计比较结果，不是9月单月；请写明比较期间。"]),
+    (("2025-01", "2025-09"), "9月收入同比增加654.32万元。",
+     ["比较口径需复核：654.32万元是2025年1—9月的累计比较结果，不是9月单月；请写明比较期间。"]),
+    # 写明区间、累计或截至，或比较本身就是单月时不告警。
+    (("2025-01", "2025-09"), "1—9月收入同比增长5.03%，截至9月累计同比增长5.03%。", []),
+    (("2025-09", "2025-09"), "9月收入同比增长5.03%。", []),
+])
+def test_window_comparisons_are_not_called_single_month_changes(window, text, expected):
+    document = json.loads(_comparison_content())
+    document["comparisons"][0].update({"periodStart": window[0], "periodEnd": window[1]})
+    warnings = [w for w in review_content(text, [json.dumps(document)]) if "比较口径" in w]
+    assert warnings == expected

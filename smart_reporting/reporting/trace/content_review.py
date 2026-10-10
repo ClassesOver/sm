@@ -363,6 +363,55 @@ def _non_additive_total_warnings(text: str, contents: Iterable[str], documents: 
     return list(dict.fromkeys(warnings))
 
 
+def _comparison_window_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]]) -> list[str]:
+    """多月窗口的同比/环比变化写成单月变化时提示复核（软告警）。
+
+    “9月收入同比增长5.03%”中的 5.03% 若是 1—9 月累计窗口的变化率，读者会理解为
+    9 月单月；只在分句点名单个月份、没有区间或累计表述，且数值等于多月窗口变化时判定。
+    """
+    windows: dict[str, str] = {}
+    for document in documents:
+        for entry in document.get("comparisons") or ():
+            if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
+                continue
+            start, end = str(entry.get("periodStart") or ""), str(entry.get("periodEnd") or "")
+            if (re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", start) and re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", end)
+                    and start[:7] != end[:7]):
+                same_year = start[:4] == end[:4]
+                windows[entry["factId"]] = (
+                    f"{start[:4]}年{int(start[5:7])}—{int(end[5:7])}月" if same_year
+                    else f"{start[:4]}年{int(start[5:7])}月至{end[:4]}年{int(end[5:7])}月"
+                )
+    if not windows:
+        return []
+    values: dict[str, list[tuple[str, Decimal]]] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        _, fact_id, field, *_rest = token[2:-2].split(":")
+        display_unit = target or unit
+        if field not in {"change", "changeRate"} or fact_id not in windows or not display_unit or value is None:
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit and (scales := _unit_scales(unit)) is not None:
+            number = number * scales[unit] / scales[display_unit]
+        values.setdefault(display_unit, []).append((fact_id, abs(number)))
+    warnings: list[str] = []
+    for clause in re.split(r"[。；，,\n]", text):
+        months = re.findall(r"(?<![\d—–~～至到-])(\d{1,2})月(?!\s*[—–~～至到-]\s*\d)", clause)
+        if (len(set(months)) != 1 or not re.search(r"同比|环比|较上年|较去年|较上月", clause)
+                or re.search(r"\d{1,2}月?\s*[—–~～至到-]\s*\d{1,2}月|累计|截至|前三季度|上半年|下半年|季度|全年", clause)):
+            continue
+        for match in _VALUE.finditer(clause):
+            number = abs(Decimal(match[1].replace(",", "")))
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            for fact_id, value in values.get(match[2], ()):
+                if value.quantize(quantum, rounding=ROUND_HALF_UP) == number:
+                    warnings.append(
+                        f"比较口径需复核：{match[0]}是{windows[fact_id]}的累计比较结果，"
+                        f"不是{months[0]}月单月；请写明比较期间。"
+                    )
+    return list(dict.fromkeys(warnings))
+
+
 _GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "位居第一", "位列第一")
 _GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
 
@@ -631,6 +680,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     warnings.extend(_comparison_amount_warnings(text, contents, documents))
     warnings.extend(_full_year_warnings(text, contents, documents))
     warnings.extend(_non_additive_total_warnings(text, contents, documents))
+    warnings.extend(_comparison_window_warnings(text, contents, documents))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
     scoped_text = text
     if "[[analysis:" not in text and len(bundles) == 1:
