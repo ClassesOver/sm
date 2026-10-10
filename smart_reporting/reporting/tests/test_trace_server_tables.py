@@ -399,6 +399,46 @@ def test_percent_metric_comparison_table_shows_change_in_percentage_points() -> 
     assert '2.10%' not in markdown
 
 
+def test_large_amount_tables_use_wan_yuan_columns() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+        PeriodValue,
+    )
+
+    bundle = _bundle()
+    metric = bundle.metrics[0].model_copy(update={
+        'period_values': (
+            PeriodValue(period='2025-09', value=1112354150.0),
+            PeriodValue(period='2025-10', value=2400.0),
+        ),
+        'total': 1112356550.0,
+    })
+    trace, markdown = build_analysis_table(
+        bundle.model_copy(update={'metrics': (metric,)}), fact_file_resource_id=FACT_RESOURCE,
+    )
+    # 百万以上的元整列改为万元两位小数，表头写单位，单元格只写数字；小额月份同列换算。
+    assert trace.column_keys == ('收入（万元）',)
+    assert '| 2025年9月 | 111,235.42 |' in markdown
+    assert '| 2025年10月 | 0.24 |' in markdown
+    assert '1,112,354,150' not in markdown
+
+    comparison = DeterministicComparison(
+        factId='fact-' + 'c' * 16, comparisonType='yoy', field='revenue',
+        fieldRef=metric.field_ref,
+        currentDatasetId='current', baselineDatasetId='baseline',
+        currentDatasetSha256=SHA, baselineDatasetSha256=SHA,
+        currentTotal=1365432110, baselineTotal=1300000000, change=65432110, changeRate=5.0332,
+        formula='(currentTotal-baselineTotal)/abs(baselineTotal)*100%', unit='元',
+    )
+    _trace, markdown = build_analysis_table(
+        bundle.model_copy(update={'comparisons': (comparison,)}), fact_file_resource_id=FACT_RESOURCE,
+    )
+    assert '本期收入 | 136,543.21万元' in markdown
+    assert '同期收入 | 130,000.00万元' in markdown
+    assert '收入变化额 | 6,543.21万元' in markdown
+    assert '同比增幅 | 5.03%' in markdown
+
+
 def test_multiple_comparisons_keep_unique_rows_and_source_identity() -> None:
     from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
         DeterministicComparison,

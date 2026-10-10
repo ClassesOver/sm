@@ -216,8 +216,12 @@ def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
 async def _make_editor_with_subject(
     tmp_path: Path,
     *, report_id: str = "report-1", period_table: bool = False, comparison_table: bool = False,
-    comparison_rate: float | None = 20, correlation_claim: bool = False,
+    comparison_rate: float | None = 20, correlation_claim: bool = False, large_amounts: bool = False,
 ) -> tuple:
+    # large_amounts：元为单位的大额分期间表，服务端按“收入（万元）”表头写换算后的数字。
+    column_key = "收入（万元）" if large_amounts else "income_total"
+    period_numbers = (11123541503.0, 2400000.0) if large_amounts else (1200.0, 2400.0)
+    period_cells = ["1,112,354.15", "240.00"] if large_amounts else ["1,200", "2,400"]
     from smart_reporting.report_editor import (
         InMemoryReportEditorRepository,
         ReportEditorContext,
@@ -263,8 +267,8 @@ async def _make_editor_with_subject(
     from smart_reporting.reporting.trace.table_builder import render_table_markdown
 
     table_block = render_table_markdown(
-        "tbl-1", ("income_total",),
-        [["2025-09", "1,200"], ["2025-10", "2,400"]] if period_table
+        "tbl-1", (column_key,),
+        [["2025-09", period_cells[0]], ["2025-10", period_cells[1]]] if period_table
         else [["本期", "3,600"], ["上期", "3,600"]],
     )
     markdown = f"# 报告\n\n{table_block}\n"
@@ -290,10 +294,10 @@ async def _make_editor_with_subject(
                     "aggregation": "sum",
                     "formula": "sum(revenue)",
                     "scope": {},
-                    "total": 3600.0,
-                    "unit": "万元",
-                    "periodValues": ([{"period": "2025-09", "value": 1200.0},
-                                      {"period": "2025-10", "value": 2400.0}] if period_table
+                    "total": sum(period_numbers) if large_amounts else 3600.0,
+                    "unit": "元" if large_amounts else "万元",
+                    "periodValues": ([{"period": "2025-09", "value": period_numbers[0]},
+                                      {"period": "2025-10", "value": period_numbers[1]}] if period_table
                                      else [{"period": "2025-09", "value": 3600.0}]),
                     "missingCount": 0,
                     "zeroCount": 0,
@@ -391,10 +395,10 @@ async def _make_editor_with_subject(
     table_trace = TableTraceV1(
         tableId="tbl-1",
         rowKeys=("period:2025-09", "period:2025-10") if period_table else ("row:cur", "row:prev"),
-        columnKeys=("income_total",),
+        columnKeys=(column_key,),
         cells=(
-            TableCellBindingV1(rowKey="period:2025-09" if period_table else "row:cur", columnKey="income_total", factRefs=(table_fact_ref,)),
-            TableCellBindingV1(rowKey="period:2025-10" if period_table else "row:prev", columnKey="income_total", factRefs=(table_fact_ref,)),
+            TableCellBindingV1(rowKey="period:2025-09" if period_table else "row:cur", columnKey=column_key, factRefs=(table_fact_ref,)),
+            TableCellBindingV1(rowKey="period:2025-10" if period_table else "row:prev", columnKey=column_key, factRefs=(table_fact_ref,)),
         ),
     )
     if comparison_table:
@@ -620,6 +624,35 @@ async def test_period_table_sources_and_values_use_frozen_months(tmp_path: Path)
         context, session, modified, hashlib.sha256(modified.encode()).hexdigest()
     )
     assert result["tableSummary"]["stale"] == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_scaled_table_cells_are_verified_with_the_header_unit(tmp_path: Path) -> None:
+    """大额列以“收入（万元）”表头写换算后的数字，单元格须按表头单位核对，不能全判 stale。"""
+    editor, grants, context = await _make_editor_with_subject(
+        tmp_path, period_table=True, large_amounts=True
+    )
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    markdown = _table_markdown_with(
+        "收入（万元）", [["2025-09", "1,112,354.15"], ["2025-10", "240.00"]]
+    )
+    result = await editor.trace_validate(
+        context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest()
+    )
+    assert result["tableSummary"]["valid"] == 2
+    modified = markdown.replace("240.00", "250.00")
+    result = await editor.trace_validate(
+        context, session, modified, hashlib.sha256(modified.encode()).hexdigest()
+    )
+    assert result["tableSummary"]["stale"] == 1
+
+
+def _table_markdown_with(column_key: str, rows: list[list[str]]) -> str:
+    from smart_reporting.reporting.trace.table_builder import render_table_markdown
+
+    return render_table_markdown("tbl-1", (column_key,), rows)
 
 
 @pytest.mark.anyio

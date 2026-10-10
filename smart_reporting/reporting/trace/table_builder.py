@@ -28,7 +28,7 @@ from .contracts_v1 import (
     TableTraceV1,
 )
 from .fact_index import fact_pointer
-from .numeric_text import PERCENT_POINT, percent_point_field
+from .numeric_text import PERCENT_POINT, format_fact_value, percent_point_field
 
 _TABLE_ID_PATTERN_RULES = "表格 ID 只允许字母数字与 _ . :-"
 
@@ -134,8 +134,11 @@ def build_table_trace(
                 ) if value is not None else (),
             )
             cells.append(cell)
+            display_unit = spec.get("displayUnits", {}).get(code)
             rendered_row.append(
-                "—" if value is None else _format_number(value, fact.unit)
+                "—" if value is None
+                else _scaled_number(value, fact.unit, display_unit) if display_unit
+                else _format_number(value, fact.unit)
             )
         markdown_rows.append(rendered_row)
 
@@ -156,6 +159,24 @@ def _format_number(value: float, unit: str | None) -> str:
     if float(value).is_integer():
         return f"{int(value):,}"
     return f"{value:,.2f}"
+
+
+# 百万以上的元/人次整列改用万元/万人次两位小数，“1,112,354,150”难以阅读。
+_TABLE_SCALED_UNITS = {"元": "万元", "人次": "万人次"}
+_TABLE_SCALE_THRESHOLD = 1_000_000
+
+
+def _table_display_unit(unit: str | None, values: Sequence[float | None]) -> str | None:
+    """整列（或整组对比值）最大绝对值达到百万时返回万元/万人次，否则沿用原单位。"""
+    present = [abs(value) for value in values if value is not None]
+    if unit in _TABLE_SCALED_UNITS and present and max(present) >= _TABLE_SCALE_THRESHOLD:
+        return _TABLE_SCALED_UNITS[unit]
+    return unit
+
+
+def _scaled_number(value: float, unit: str | None, display_unit: str) -> str:
+    """按数值目录同一规则换算并舍入，单元格只写数字（单位在表头或另行追加）。"""
+    return format_fact_value(value, unit, display_unit).removesuffix(display_unit)
 
 
 def render_table_markdown(
@@ -281,7 +302,16 @@ def build_analysis_table(
                 value = fact.model_dump(mode="json", by_alias=True)[field]
                 unit = ("%" if field == "changeRate"
                         else PERCENT_POINT if percent_point_field(field, fact.unit) else fact.unit)
-                row.append("—" if value is None else _format_number(value, unit) + (unit or ""))
+                display_unit = (
+                    _table_display_unit(unit, (fact.current_total, fact.baseline_total, fact.change))
+                    if field in {"currentTotal", "baselineTotal", "change"} else unit
+                )
+                row.append(
+                    "—" if value is None
+                    else _scaled_number(value, unit, display_unit) + display_unit
+                    if display_unit != unit and display_unit
+                    else _format_number(value, unit) + (unit or "")
+                )
                 cells.append(TableCellBindingV1(
                     rowKey=row_key, columnKey=column,
                     factRefs=(FactRefV1(
@@ -325,8 +355,16 @@ def build_analysis_table(
         {"key": f"period:{period}", "label": labels_by_period[period], "period": period}
         for period in periods
     ] or [{"key": "total", "label": "合计"}]
+    display_units = {
+        code: _table_display_unit(
+            facts_by_code[code].unit,
+            [item.value for item in facts_by_code[code].period_values]
+            or [_metric_value(facts_by_code[code], "total")],
+        )
+        for code in codes
+    }
     labels = {
-        code: f"{_fact_label(facts_by_code[code], dataset_contexts, metric_descriptions)}（{facts_by_code[code].unit or '数值'}）"
+        code: f"{_fact_label(facts_by_code[code], dataset_contexts, metric_descriptions)}（{display_units[code] or '数值'}）"
         for code in codes
     }
     if len(set(labels.values())) != len(labels):
@@ -338,6 +376,9 @@ def build_analysis_table(
         "factIds": {code: fact.fact_id for code, fact in facts_by_code.items() if fact.fact_id},
         "rows": rows,
         "allowMissingPeriods": True,
+        "displayUnits": {
+            code: unit for code, unit in display_units.items() if unit != facts_by_code[code].unit
+        },
         "caption": bundle.analysis_name or "分期间指标汇总",
     }
     return build_table_trace(bundle, spec, fact_file_resource_id=fact_file_resource_id)
