@@ -568,7 +568,9 @@ def table_unit_cells(markdown: str) -> list[tuple[int, int, str, str]]:
     found: list[tuple[int, int, str, str]] = []
     index = 0
     while index < len(lines) - 1:
-        if not (lines[index].lstrip().startswith("|") and _TABLE_SEPARATOR_ROW.match(lines[index + 1])):
+        # GFM 表格可以省略首尾竖线；分隔行也须含竖线，避免把“---”分隔线或 setext 标题当表格。
+        if not ("|" in lines[index] and "|" in lines[index + 1]
+                and _TABLE_SEPARATOR_ROW.match(lines[index + 1])):
             index += 1
             continue
         header = lines[index]
@@ -577,7 +579,7 @@ def table_unit_cells(markdown: str) -> list[tuple[int, int, str, str]]:
             match = _TABLE_HEADER_UNIT.search(header[start:end].replace("**", "").strip())
             units.append(match[1] if match else None)
         row = index + 2
-        while row < len(lines) and lines[row].lstrip().startswith("|"):
+        while row < len(lines) and "|" in lines[row] and lines[row].strip():
             for column, (start, end) in enumerate(_table_cells(lines[row])):
                 if column >= len(units) or units[column] is None:
                     continue

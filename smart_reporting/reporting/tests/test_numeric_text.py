@@ -641,3 +641,15 @@ def test_model_table_cells_are_checked_against_the_header_unit():
 def test_multiples_need_a_registered_ratio(text, expected):
     document = _comparison_document(6543211, 5.0332)
     assert replace_unregistered_numbers(text, [document]) == expected
+
+
+
+def test_pipe_less_model_tables_are_checked_too():
+    document = _comparison_document(6543211, 5.0332)
+    table = "项目 | 金额（万元）\n--- | ---:\n本期收入 | 13,654.32\n编造项目 | 9,999.99"
+    assert replace_unregistered_numbers(table, [document]) == (
+        "项目 | 金额（万元）\n--- | ---:\n本期收入 | 13,654.32\n编造项目 | 待核实"
+    )
+    # 分隔线与 setext 标题不是表格。
+    text = "说明 | 金额（万元）\n\n---\n\n9,999.99"
+    assert replace_unregistered_numbers(text, [document]) == text
