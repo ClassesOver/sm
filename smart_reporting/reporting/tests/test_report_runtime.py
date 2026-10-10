@@ -937,6 +937,7 @@ def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -
     ('所谓"门诊收入"指诊疗收入，称为"DRG"付费，\'门诊\'口径。', "所谓“门诊收入”指诊疗收入，称为“DRG”付费，‘门诊’口径。"),
     ('He said "hello", don\'t stop.', 'He said "hello", don\'t stop.'),
     ('见`"收入"`与[说明](a.md "门诊收入")。', '见`"收入"`与[说明](a.md "门诊收入")。'),
+    ('[1]: https://example.com/a "门诊收入"', '[1]: https://example.com/a "门诊收入"'),
     # 中文语境的省略号写作“……”；英文与数字中的点不变。
     ("包括内科、外科等...，以及医技等…。", "包括内科、外科等……，以及医技等……。"),
     ("wait... ok，区间1...3", "wait... ok，区间1...3"),
