@@ -775,3 +775,11 @@ def test_model_table_cells_without_basis_are_flagged():
         "表格数值缺少可核对的冻结依据：9,999.99（万元列）。请使用对应数值引用，或删去未登记的计算结果。",
         "表格数值缺少可核对的冻结依据：7.77（%列）。请使用对应数值引用，或删去未登记的计算结果。",
     ]
+
+
+def test_unregistered_multiples_are_flagged():
+    warnings = [w for w in review_content("本期收入是上年同期的3.2倍，较上年为1.05倍。", [_comparison_content()])
+                if "倍数" in w]
+    assert warnings == [
+        "倍数缺少可核对的冻结依据：3.2倍。须由已登记的本期与基期合计或比率得出，请改用变化率表述或删去该倍数。"
+    ]

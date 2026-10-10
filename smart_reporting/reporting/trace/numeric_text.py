@@ -508,6 +508,30 @@ def _display_precision(number_text: str) -> str:
     return f"{rounded:,f}" if "," in number_text else f"{rounded:f}"
 
 
+# “是上年同期的1.05倍”“增长2倍”：倍数只能由已登记的比较或比率得出。
+# “3倍标准差”“1.5倍四分位距”是统计阈值，不是事实之间的倍数。
+MULTIPLE_NUMBER = re.compile(r"(?<![\d.,])(?P<number>\d+(?:\.\d+)?)\s*倍(?!数|标准差|四分位|方差|IQR)")
+
+
+def registered_multiples(contents: Iterable[str]) -> set[Decimal]:
+    """可作为“X倍”依据的登记值：本期÷基期合计、变化率÷100、比率百分数÷100。"""
+    totals: dict[str, dict[str, Decimal]] = {}
+    multiples: set[Decimal] = set()
+    for token, value, unit, target in _frozen_number_entries(contents):
+        if value is None or (target or unit) != unit:
+            continue
+        fact_id, field = token[2:-2].split(":")[1:3]
+        number = Decimal(str(value))
+        if field in {"currentTotal", "baselineTotal"}:
+            totals.setdefault(fact_id, {})[field] = number
+        elif field in {"changeRate", "percentage"} or field.endswith(".percentage"):
+            multiples.add(abs(number) / 100)
+    for pair in totals.values():
+        if pair.get("baselineTotal") and "currentTotal" in pair:
+            multiples.add(abs(pair["currentTotal"] / pair["baselineTotal"]))
+    return multiples
+
+
 _TABLE_SEPARATOR_ROW = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
 _TABLE_HEADER_UNIT = re.compile(
     r"[（(]\s*(?:单位\s*[:：]\s*)?(亿元|万元|元|万人次|人次|床日|%|个百分点)\s*[）)]\s*$"
@@ -636,7 +660,18 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         written = _display_precision(match["number"]) + match["scale"]
         return written + matched[0][1:] if len(matched) == 1 else written
 
-    return BARE_SCALED_NUMBER.sub(replace_bare, replaced)
+    multiples = registered_multiples(contents)
+
+    def replace_multiple(match: re.Match[str]) -> str:
+        number = Decimal(match["number"])
+        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+        quantum = Decimal(1).scaleb(-digits)
+        if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in multiples):
+            return _display_precision(match["number"]) + match[0][len(match["number"]):]
+        logger.warning("report_unregistered_multiple_replaced value={}", match[0])
+        return "待核实"
+
+    return MULTIPLE_NUMBER.sub(replace_multiple, BARE_SCALED_NUMBER.sub(replace_bare, replaced))
 
 
 # 省略单位的“X亿”“X万”：只在其后是标点、空白或段尾时认定为完整数量，

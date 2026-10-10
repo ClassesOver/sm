@@ -13,6 +13,7 @@ from .numeric_text import (
     DIRECTED_PLACEHOLDER,
     DIRECTION_WORD_PATTERN,
     FALLING_WORDS,
+    MULTIPLE_NUMBER,
     PERCENT_POINT,
     RISING_WORDS,
     _frozen_number_entries,
@@ -24,6 +25,7 @@ from .numeric_text import (
     period_extrema_warnings,
     positive_directed_placeholders,
     registered_decline_magnitude,
+    registered_multiples,
     render_frozen_numbers,
     supplemental_number_values,
     table_unit_cells,
@@ -619,6 +621,17 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
+    # “是上年同期的1.05倍”：倍数只能由登记的本期与基期合计、变化率或比率得出。
+    if catalog:
+        multiples = registered_multiples(contents)
+        for match in MULTIPLE_NUMBER.finditer(text):
+            number = Decimal(match["number"])
+            quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+            if not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in multiples):
+                warnings.append(
+                    f"倍数缺少可核对的冻结依据：{match[0]}。须由已登记的本期与基期合计或比率得出，"
+                    "请改用变化率表述或删去该倍数。"
+                )
     # 自写表格把单位写在表头、单元格只写数字：按表头单位同样核对。
     for _start, _end, number_text, unit in table_unit_cells(text):
         number = Decimal(number_text.replace(",", ""))

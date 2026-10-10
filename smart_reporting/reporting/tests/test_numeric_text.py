@@ -628,3 +628,16 @@ def test_model_table_cells_are_checked_against_the_header_unit():
         "| 本期收入 | 13,654.32 | 5.03 | 1 |\n| 编造项目 | 待核实 | 待核实 | 2 |\n"
         "| 带单位 | 654.32万元 | — | 3 |"
     )
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 倍数只能由登记的本期÷基期合计、变化率或比率得出；按书写精度核对并按显示精度保留。
+    ('本期收入是上年同期的1.0503倍。', '本期收入是上年同期的1.05倍。'),
+    ('收入增长0.05倍。', '收入增长0.05倍。'),
+    ('本期收入是上年同期的3.2倍。', '本期收入是上年同期的待核实。'),
+    # “倍数”一词与统计阈值不是事实倍数。
+    ('倍数关系明显，超过均值3倍标准差。', '倍数关系明显，超过均值3倍标准差。'),
+])
+def test_multiples_need_a_registered_ratio(text, expected):
+    document = _comparison_document(6543211, 5.0332)
+    assert replace_unregistered_numbers(text, [document]) == expected
