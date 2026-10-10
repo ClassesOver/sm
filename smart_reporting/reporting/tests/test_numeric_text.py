@@ -685,3 +685,15 @@ def test_number_guide_states_how_to_read_the_total(aggregation, meaning):
     metric = next(item for item in guide if item['factId'] == 'fact-' + 'a' * 16)
     # 平均口径的 total 是均值：说明随引用一起给到模型，避免写成“合计”。
     assert (metric['total']['aggregation'], metric['total']['meaning']) == (aggregation, meaning)
+
+
+
+def test_number_guide_spells_out_month_coverage():
+    from smart_reporting.reporting.trace.numeric_text import _month_coverage
+
+    assert _month_coverage([f'2025-{month:02d}' for month in range(1, 11)]) == '2025年1—10月（10个月），不是全年'
+    assert _month_coverage([f'2025-{month:02d}-01' for month in range(1, 13)]) == '2025年1—12月（12个月）'
+    assert _month_coverage(['2025-01', '2025-03']) == '2025年1月、3月（2个月），不是全年'
+    # 跨年或非月度期间不给覆盖说明。
+    assert _month_coverage(['2024-12', '2025-01']) is None
+    assert _month_coverage(['2025']) is None

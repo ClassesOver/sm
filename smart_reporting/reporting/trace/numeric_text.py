@@ -252,6 +252,20 @@ def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> di
     return values
 
 
+def _month_coverage(periods: list[str]) -> str | None:
+    """单一年度月度期间的覆盖说明（“2025年1—10月（10个月），不是全年”），供模型直接引用。"""
+    if not periods or not all(re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", period) for period in periods):
+        return None
+    years = {period[:4] for period in periods}
+    months = sorted({int(period[5:7]) for period in periods})
+    if len(years) != 1 or len(months) != len(periods):
+        return None
+    span = (f"{months[0]}—{months[-1]}月" if months == list(range(months[0], months[-1] + 1))
+            else "、".join(f"{month}月" for month in months))
+    note = "" if len(months) == 12 else "，不是全年"
+    return f"{years.pop()}年{span}（{len(months)}个月）{note}"
+
+
 # numberGuide 中 total 的读法：只有 sum/count 是加总，平均与极值口径不能写成合计或累计。
 _TOTAL_MEANINGS = {
     "sum": "完整期间合计",
@@ -295,7 +309,8 @@ def frozen_number_guide(
                 "total": {"reference": reference("total"), "periods": periods,
                           "periodStart": fact.period_start, "periodEnd": fact.period_end,
                           "aggregation": fact.aggregation,
-                          "meaning": _TOTAL_MEANINGS.get(fact.aggregation, "完整期间的统计值")},
+                          "meaning": _TOTAL_MEANINGS.get(fact.aggregation, "完整期间的统计值"),
+                          **({"coverage": coverage} if (coverage := _month_coverage(periods)) else {})},
                 "rowStatistics": {"average": reference("average"), "minimum": reference("minimum"),
                                   "maximum": reference("maximum"),
                                   "meaning": "原始行统计，不能称为月均值或月度极值"},
