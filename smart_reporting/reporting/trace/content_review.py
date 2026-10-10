@@ -8,6 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from .numeric_text import (
+    BARE_SCALED_NUMBER,
     DIRECTED_PLACEHOLDER,
     DIRECTION_WORD_PATTERN,
     FALLING_WORDS,
@@ -348,6 +349,10 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     for token in re.findall(r"\{\{value:[^{}\r\n]+\}\}", markdown):
         if token not in catalog:
             warnings.append(f"数值引用未登记：{token}。请选择 frozenNumbers 中的引用；没有对应事实时写待核实。")
+    for match in BARE_SCALED_NUMBER.finditer(text):
+        warnings.append(
+            f"数值缺少单位：{match[0]}。请使用带单位的冻结数值引用（如亿元、万元、万人次），不得省略单位。"
+        )
     positive = positive_directed_placeholders(contents)
     for match in DIRECTED_PLACEHOLDER.finditer(markdown):
         if match["token"] not in positive or describes_rate_level(markdown[:match.start()]):

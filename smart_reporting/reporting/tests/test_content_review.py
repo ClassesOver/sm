@@ -632,3 +632,10 @@ def test_review_flags_decline_wording_on_positive_registered_change_once():
     rate = review_content('收入同比下降{{value:fact-cccccccccccccccc:changeRate:%}}。', [document])
     assert sum(item.startswith('方向与登记变化') for item in rate) == 1
     assert review_content('收入较上年增加{{value:fact-cccccccccccccccc:change:万元}}。', [document]) == []
+
+
+def test_review_asks_for_units_on_bare_wan_and_yi_numbers():
+    warnings = review_content('收入约9.99亿，门诊量88万。约2万多名患者。', [])
+    assert [item.split('。')[0] for item in warnings if item.startswith('数值缺少单位')] == [
+        '数值缺少单位：9.99亿', '数值缺少单位：88万',
+    ]

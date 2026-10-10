@@ -484,11 +484,37 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         logger.warning("report_unregistered_number_replaced value={}", match[0])
         return "待核实"
 
-    return re.sub(
+    replaced = re.sub(
         r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>亿元|万元|元|万人次|人次|床日|%)",
         replace,
         markdown,
     )
+
+    def replace_bare(match: re.Match[str]) -> str:
+        # “收入1.23亿”“门诊量35.3万”省略了单位：按亿元/万元/万人次的登记值核对；
+        # 只对上一种单位时补全单位，对不上的手写数值同样替换为待核实。
+        number = Decimal(match["number"].replace(",", ""))
+        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+        quantum = Decimal(1).scaleb(-digits)
+        targets = ("亿元",) if match["scale"] == "亿" else ("万元", "万人次")
+        matched = [
+            target for target in targets
+            if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get(target, ()))
+        ]
+        if not matched:
+            logger.warning("report_unregistered_number_replaced value={}", match[0])
+            return "待核实"
+        return match[0] + matched[0][1:] if len(matched) == 1 else match[0]
+
+    return BARE_SCALED_NUMBER.sub(replace_bare, replaced)
+
+
+# 省略单位的“X亿”“X万”：只在其后是标点、空白或段尾时认定为完整数量，
+# “2万多名”“上万”等后接汉字的写法不处理。
+BARE_SCALED_NUMBER = re.compile(
+    r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?P<scale>亿|万)"
+    r"(?=[，。；、,.;:：）)\]\s*]|$)"
+)
 
 
 def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str]) -> str:

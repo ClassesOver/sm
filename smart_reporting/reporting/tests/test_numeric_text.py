@@ -482,3 +482,23 @@ def test_rate_level_wording_is_not_treated_as_direction(rate, text, expected):
     assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == expected
     assert not [item for item in review_content(text, [document])
                 if item.startswith(('方向', '符号重复'))]
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 省略单位的登记值：核对通过并补全唯一单位。
+    ('医院收入1.23亿，门诊量35.3万。', '医院收入1.23亿元，门诊量35.3万人次。'),
+    ('收入12,345.68万。', '收入12,345.68万元。'),
+    # 省略单位的手写数值同样无依据。
+    ('收入约9.99亿，门诊量88万。', '收入约待核实，门诊量待核实。'),
+    # 后接汉字的“2万多名”“上万”不是完整数量，不处理。
+    ('约2万多名患者，上万人次。', '约2万多名患者，上万人次。'),
+])
+def test_numbers_with_omitted_units_are_verified(text, expected):
+    document = json.dumps({'analysisId': 'analysis_001', 'metrics': [
+        {'factId': 'fact-' + letter * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+         'periodRoles': ['current'], 'field': field, 'fieldRef': 'hospital.' + field,
+         'aggregation': 'sum', 'unit': unit, 'formula': 'sum', 'total': total,
+         'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0}
+        for letter, field, unit, total in (('a', 'revenue', '元', 123456789), ('e', 'visits', '人次', 353000))
+    ]})
+    assert replace_unregistered_numbers(text, [document]) == expected
