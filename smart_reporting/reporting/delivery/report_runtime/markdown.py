@@ -188,10 +188,8 @@ def _full_width_punctuation(piece: str) -> str:
     )
 
 
-def _normalize_cjk_punctuation_text(text: str) -> str:
-    def convert(piece: str) -> str:
-        # 括号改为全角后，紧随其后的“（表1）,”“（元）:”才具备中文上下文，需再规范一次。
-        return _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
+def _convert_unprotected(text: str, convert: Callable[[str], str]) -> str:
+    """只改写协议标记、数值占位与链接地址之外的文本。"""
 
     pieces: list[str] = []
     previous_end = 0
@@ -201,6 +199,14 @@ def _normalize_cjk_punctuation_text(text: str) -> str:
         previous_end = protected.end()
     pieces.append(convert(text[previous_end:]))
     return "".join(pieces)
+
+
+def _normalize_cjk_punctuation_text(text: str) -> str:
+    def convert(piece: str) -> str:
+        # 括号改为全角后，紧随其后的“（表1）,”“（元）:”才具备中文上下文，需再规范一次。
+        return _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
+
+    return _convert_unprotected(text, convert)
 
 
 def normalize_cjk_punctuation(markdown: str) -> str:
@@ -229,6 +235,8 @@ _ISO_DATE_RANGE = re.compile(
 _ISO_DATE_SINGLE = re.compile(
     _ISO_DATE_BOUNDARY_BEFORE + _ISO_DATE.format(p="a") + _ISO_DATE_BOUNDARY_AFTER
 )
+_COMPARISON_TERMS = {"yoy": "同比", "mom": "环比"}
+_COMPARISON_TERM = re.compile(r"(?<![A-Za-z0-9_])(?i:yoy|mom)(?![A-Za-z0-9_])")
 _PADDED_CJK_DATE = re.compile(r"(?<=\d年)0(?=[1-9]月)|(?<=\d月)0(?=[1-9]日)")
 
 
@@ -239,7 +247,7 @@ def _cjk_date(match: re.Match[str], prefix: str, *, omit_year: bool = False) -> 
     return text + (f"{int(day)}日" if day else "")
 
 
-def _normalize_cjk_dates_text(text: str) -> str:
+def _normalize_cjk_wording_text(text: str) -> str:
     def range_text(match: re.Match[str]) -> str:
         start = _cjk_date(match, "a")
         same_year = match["ay"] == match["by"] and bool(match["ad"]) == bool(match["bd"])
@@ -248,25 +256,21 @@ def _normalize_cjk_dates_text(text: str) -> str:
     def convert(piece: str) -> str:
         piece = _ISO_DATE_RANGE.sub(range_text, piece)
         piece = _ISO_DATE_SINGLE.sub(lambda match: _cjk_date(match, "a"), piece)
-        return _PADDED_CJK_DATE.sub("", piece)
+        piece = _PADDED_CJK_DATE.sub("", piece)
+        # 数值目录的比较口径 yoy/mom 是字段值，正文写中文“同比/环比”。
+        return _COMPARISON_TERM.sub(lambda match: _COMPARISON_TERMS[match[0].casefold()], piece)
 
-    pieces: list[str] = []
-    previous_end = 0
-    for protected in _PUNCTUATION_PROTECTED.finditer(text):
-        pieces.append(convert(text[previous_end : protected.start()]))
-        pieces.append(protected[0])
-        previous_end = protected.end()
-    pieces.append(convert(text[previous_end:]))
-    return "".join(pieces)
+    return _convert_unprotected(text, convert)
 
 
-def normalize_cjk_dates(markdown: str) -> str:
-    """正文中的 ISO 日期与期间区间改为中文写法（2025-01至2025-12 → 2025年1月至12月）。
+def normalize_cjk_wording(markdown: str) -> str:
+    """正文中的 ISO 日期与期间区间改为中文写法（2025-01至2025-12 → 2025年1月至12月），
+    比较口径 yoy/mom 改为同比/环比。
 
     协议标记、数值占位、链接地址与代码保持原样；文件名、版本号等紧邻字母数字的写法不改。
     """
 
-    return _normalize_report_markdown_segments(markdown, _normalize_cjk_dates_text)
+    return _normalize_report_markdown_segments(markdown, _normalize_cjk_wording_text)
 
 
 def normalize_report_markdown_strong_spacing(markdown: str) -> str:

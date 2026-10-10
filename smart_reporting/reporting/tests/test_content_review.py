@@ -460,7 +460,10 @@ def test_readability_warnings_ask_to_split_long_or_number_dense_sentences():
 
 
 def test_prose_checks_skip_server_tables_behind_protocol_markers():
-    from smart_reporting.reporting.trace.content_review import readability_warnings, repeated_sentence_warnings
+    from smart_reporting.reporting.trace.content_review import (
+        readability_warnings,
+        repeated_sentence_warnings,
+    )
 
     # 服务端表格格式：[[table:id]] 紧贴表头，不隔空行；表格行不是正文句子。
     table = (
@@ -639,3 +642,17 @@ def test_review_asks_for_units_on_bare_wan_and_yi_numbers():
     assert [item.split('。')[0] for item in warnings if item.startswith('数值缺少单位')] == [
         '数值缺少单位：9.99亿', '数值缺少单位：88万',
     ]
+
+
+@pytest.mark.parametrize(("text", "fields"), [
+    ("收入yoy增长。", ["yoy"]),
+    ("门诊量MoM回落，total为合计。", ["MoM", "total"]),
+    ("periodTotals显示累计增长，changeRate较高。", ["periodTotals", "changeRate"]),
+    # 数值占位、协议标记、链接地址、行内代码、业务缩写与英文单词不告警。
+    ("收入{{value:fact-" + "a" * 16 + ":total:人次}}，CMI与DRG组数增加[[analysis:analysis_001]]，"
+     "见[附表](https://x.com/total)，代码`total`，Totally fine。", []),
+])
+def test_contract_field_names_in_prose_are_flagged(text, fields):
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric()]})
+    warnings = [w for w in review_content(text, [content]) if "数据字段名" in w]
+    assert [w.split("：", 1)[1].split("。", 1)[0] for w in warnings] == fields

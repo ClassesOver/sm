@@ -32,6 +32,13 @@ INTERNAL_ID_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])(?:(?:analysis|section|citation|claim|dataset|chart|requirement)_\d{3,}"
     r"|(?:fact|sub)-[0-9a-f]{16})(?![A-Za-z0-9_])"
 )
+# 数值目录与 numberGuide 的 JSON 字段名；模型照抄进正文时读者看不懂。
+_CONTRACT_FIELD_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:currentTotal|baselineTotal|changeRate|periodValues|periodTotals|prefixTotals"
+    r"|monthlyAverage|monthlyMinimum|monthlyMaximum|monthlyStatistics|rowStatistics|topGroups|bottomGroups"
+    r"|budgetComparisons?|numberGuide|frozenNumbers|factId|analysisId|datasetId|total|average|minimum"
+    r"|maximum|change|numerator|denominator|difference|percentage|(?i:yoy|mom))(?![A-Za-z0-9_])"
+)
 _VALUE = re.compile(r"(?<![\d.,])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(亿元|万元|元|万人次|人次|床日|%)")
 # 百分点核对按两两相减，候选过多时跳过以免复核耗时失控。
 _MAX_PERCENT_POINT_CANDIDATES = 400
@@ -540,6 +547,10 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     visible = re.sub(r"!?\[[^\]\r\n]*\]\([^)\r\n]*\)|\[\[[^\]\r\n]+\]\]", "", text)
     for identifier in dict.fromkeys(INTERNAL_ID_PATTERN.findall(visible)):
         warnings.append(f"正文出现内部标识：{identifier}。读者可见内容只用业务名称，内部 ID 只放在结构化引用字段。")
+    for field in dict.fromkeys(_CONTRACT_FIELD_PATTERN.findall(re.sub(r"`[^`\r\n]*`", "", visible))):
+        warnings.append(
+            f"正文出现数据字段名：{field}。读者可见内容改用中文业务表述（如合计、同比、环比、月均、变化额）。"
+        )
     for field, description in (field_definitions or {}).items():
         # 紧跟登记说明的写法（如“字段（三级科室）”）用于数据质量说明，保持既有口径不告警。
         if (re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,}", field)

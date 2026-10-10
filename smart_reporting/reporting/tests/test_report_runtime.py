@@ -962,8 +962,11 @@ def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected)
     ("配置 `2025-01` 不变。", "配置 `2025-01` 不变。"),
     ("[[analysis:2025-01]]", "[[analysis:2025-01]]"),
     ("2024-2025年度与2025-13不变。", "2024-2025年度与2025-13不变。"),
+    # 数值目录的比较口径字段值改为中文；英文单词、字段名、标记与代码不变。
+    ("收入yoy增长5.03%，MoM下降2.1%。", "收入同比增长5.03%，环比下降2.1%。"),
+    ("moment、yoy_rate、[[analysis:yoy]]与`mom`不变。", "moment、yoy_rate、[[analysis:yoy]]与`mom`不变。"),
 ])
 def test_iso_dates_in_prose_are_written_in_chinese(markdown, expected):
-    from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_dates
+    from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_wording
 
-    assert normalize_cjk_dates(markdown) == expected
+    assert normalize_cjk_wording(markdown) == expected
