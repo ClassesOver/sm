@@ -231,11 +231,18 @@ def _full_width_quotes(piece: str) -> str:
     return piece
 
 
+# 中文语境的省略号写作“……”：“等...”“等…”“。。。”都改写。
+_CJK_ELLIPSIS = re.compile(
+    rf"(?:(?<={_CJK_CONTEXT})(?:\.{{3,}}|…+|。{{3,}})|(?:\.{{3,}}|…+|。{{3,}})(?={_CJK_CONTEXT}))"
+)
+
+
 def _normalize_cjk_punctuation_text(text: str) -> str:
     def convert(piece: str) -> str:
         # 括号改为全角后，紧随其后的“（表1）,”“（元）:”才具备中文上下文，需再规范一次。
         piece = _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
-        return _SPACE_AROUND_FULL_WIDTH.sub("", _full_width_quotes(piece))
+        piece = _CJK_ELLIPSIS.sub("……", _full_width_quotes(piece))
+        return _SPACE_AROUND_FULL_WIDTH.sub("", piece)
 
     return _convert_unprotected(text, convert)
 
