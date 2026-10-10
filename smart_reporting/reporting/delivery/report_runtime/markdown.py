@@ -146,16 +146,23 @@ def _normalize_report_markdown_segments(
 
 
 _CJK_CHAR = r"[\u3400-\u9fff]"
-# 协议标记与 Markdown 链接/图片地址是机器文本，不参与标点规范。
-_PUNCTUATION_PROTECTED = re.compile(r"\[\[[^\]\r\n]+\]\]|\]\([^)\r\n]*\)")
+# 汉字或全角收尾符号（括号、引号、书名号）之后的半角标点同样属于中文正文。
+_CJK_CLOSING = r"[\u3400-\u9fff）”》】]"
+# 协议标记、数值占位与 Markdown 链接/图片地址是机器文本，不参与标点规范。
+_PUNCTUATION_PROTECTED = re.compile(
+    r"\[\[[^\]\r\n]+\]\]|\{\{[^{}\r\n]+\}\}|\]\([^)\r\n]*\)"
+)
+# 前接汉字（含粗体收尾“**”）或后接汉字的半角标点改为全角。后接汉字时前面是数字
+# 也不可能是千分位或时间（二者后面都是数字），“10:30,地点”同样改写。
 _HALF_WIDTH_PUNCTUATION = re.compile(
-    rf"(?:(?<={_CJK_CHAR})(?P<after>[,:;])[ \t]*)"
-    rf"|(?:(?<![A-Za-z0-9])(?P<before>[,:;])[ \t]*(?={_CJK_CHAR}))"
+    rf"(?:(?:(?<={_CJK_CLOSING})|(?<={_CJK_CLOSING}\*\*))(?P<after>[,:;])[ \t]*)"
+    rf"|(?:(?P<before>[,:;])[ \t]*(?={_CJK_CHAR}))"
 )
 _FULL_WIDTH = {",": "，", ":": "：", ";": "；"}
 
 
-# 同一行内成对、不嵌套的半角括号；括号内含中文或紧跟中文/全角标点时整对改为全角。
+# 同一行内成对、不嵌套的半角括号；括号内含中文、前接中文/全角标点，或位于行首/空白后
+# 且后接中文（“(1)门诊量”）时整对改为全角。前接英文数字的 f(x) 保持原样。
 _HALF_WIDTH_PARENTHESES = re.compile(r"\(([^()\r\n]{1,80})\)")
 _CJK_CONTEXT = r"[\u3400-\u9fff，。；：、！？（）“”]"
 
@@ -163,19 +170,28 @@ _CJK_CONTEXT = r"[\u3400-\u9fff，。；：、！？（）“”]"
 def _full_width_parentheses(piece: str) -> str:
     def replace(match: re.Match[str]) -> str:
         before = piece[match.start() - 1] if match.start() > 0 else ""
-        if re.search(_CJK_CHAR, match[1]) or re.fullmatch(_CJK_CONTEXT, before):
+        after = piece[match.end()] if match.end() < len(piece) else ""
+        if (
+            re.search(_CJK_CHAR, match[1])
+            or re.fullmatch(_CJK_CONTEXT, before)
+            or (re.fullmatch(_CJK_CHAR, after) and not re.fullmatch(r"[A-Za-z0-9_]", before))
+        ):
             return f"（{match[1]}）"
         return match[0]
 
     return _HALF_WIDTH_PARENTHESES.sub(replace, piece)
 
 
+def _full_width_punctuation(piece: str) -> str:
+    return _HALF_WIDTH_PUNCTUATION.sub(
+        lambda match: _FULL_WIDTH[match["after"] or match["before"]], piece
+    )
+
+
 def _normalize_cjk_punctuation_text(text: str) -> str:
     def convert(piece: str) -> str:
-        piece = _HALF_WIDTH_PUNCTUATION.sub(
-            lambda match: _FULL_WIDTH[match["after"] or match["before"]], piece
-        )
-        return _full_width_parentheses(piece)
+        # 括号改为全角后，紧随其后的“（表1）,”“（元）:”才具备中文上下文，需再规范一次。
+        return _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
 
     pieces: list[str] = []
     previous_end = 0

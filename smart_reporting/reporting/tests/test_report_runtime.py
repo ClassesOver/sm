@@ -929,6 +929,16 @@ def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -
     ("函数f(x)与 A (B) C 不变。", "函数f(x)与 A (B) C 不变。"),
     ("见[收入(万元)](https://example.com/x(1))。", "见[收入（万元）](https://example.com/x(1))。"),
     ("配置 `f(收入)` 不变。", "配置 `f(收入)` 不变。"),
+    # 全角括号、粗体收尾或数字之后的半角标点，只要处于中文语境同样改写。
+    ("详见附表(表1),同比持平", "详见附表（表1），同比持平"),
+    ("收入(元):123", "收入（元）：123"),
+    ("**门诊量(万人次)**:35.3", "**门诊量（万人次）**：35.3"),
+    ("会议时间10:30,地点会议室", "会议时间10:30，地点会议室"),
+    ("门诊与住院比为3:1,较上年持平", "门诊与住院比为3:1，较上年持平"),
+    ("(1)门诊量增长", "（1）门诊量增长"),
+    ("函数f(x)为正,Q1(2025)", "函数f(x)为正，Q1(2025)"),
+    # 数值占位是机器文本。
+    ("收入{{value:fact-0123456789abcdef:total:亿元}}", "收入{{value:fact-0123456789abcdef:total:亿元}}"),
 ])
 def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_punctuation

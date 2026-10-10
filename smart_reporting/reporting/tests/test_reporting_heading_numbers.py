@@ -1084,7 +1084,8 @@ def test_assemble_explicit_numeric_map_omits_unsupported_claim_anchor():
     ("30天回款率", "30天回款率"),
     ("一季度收入", "一季度收入"),
     ("1.5万人次门诊量", "1.5万人次门诊量"),
-    ("(2025)收入预测", "(2025)收入预测"),
+    # 后接中文的半角括号按中文排版改为全角，但仍不当作编号剥离。
+    ("(2025)收入预测", "（2025）收入预测"),
 ])
 def test_assemble_strips_chinese_and_compact_manual_heading_numbers(markdown_title: str, expected: str) -> None:
     # 中文报告常见的“一、”“（一）”“3、”编号会与服务端编号叠成“1.1 一、收入趋势”。
