@@ -210,11 +210,32 @@ _SPACE_AROUND_FULL_WIDTH = re.compile(
 )
 
 
+# 同一行内成对的半角引号；引号内含中文或紧邻中文时改为中文引号，英文引语不变。
+_STRAIGHT_QUOTES = (
+    (re.compile(r'"([^"\r\n]{1,80})"'), "“", "”"),
+    (re.compile(r"'([^'\r\n]{1,80})'"), "‘", "’"),
+)
+
+
+def _full_width_quotes(piece: str) -> str:
+    for pattern, left, right in _STRAIGHT_QUOTES:
+        def replace(match: re.Match[str], left: str = left, right: str = right) -> str:
+            before = piece[match.start() - 1] if match.start() > 0 else ""
+            after = piece[match.end()] if match.end() < len(piece) else ""
+            if (re.search(_CJK_CHAR, match[1]) or re.fullmatch(_CJK_CONTEXT, before)
+                    or re.fullmatch(_CJK_CONTEXT, after)):
+                return f"{left}{match[1]}{right}"
+            return match[0]
+
+        piece = pattern.sub(replace, piece)
+    return piece
+
+
 def _normalize_cjk_punctuation_text(text: str) -> str:
     def convert(piece: str) -> str:
         # 括号改为全角后，紧随其后的“（表1）,”“（元）:”才具备中文上下文，需再规范一次。
         piece = _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
-        return _SPACE_AROUND_FULL_WIDTH.sub("", piece)
+        return _SPACE_AROUND_FULL_WIDTH.sub("", _full_width_quotes(piece))
 
     return _convert_unprotected(text, convert)
 
