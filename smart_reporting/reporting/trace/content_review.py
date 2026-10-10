@@ -1057,7 +1057,9 @@ def _incomplete_paragraph_warnings(markdown: str) -> list[str]:
     warnings: list[str] = []
     for index, lines in enumerate(paragraphs):
         first = visible(lines[0])
-        if not first or first.startswith(("#", "|", "![", ">")) or _LIST_OR_TABLE_START.match(first):
+        # 列表与“（1）”“一是”“第一，”等中文条目以分号收尾是正常写法，不算半句话。
+        if (not first or first.startswith(("#", "|", "![", ">")) or _LIST_OR_TABLE_START.match(first)
+                or CJK_ENUMERATION_LINE.match(first)):
             continue
         text = visible(lines[-1])
         if not text:

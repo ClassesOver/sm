@@ -829,3 +829,11 @@ def test_full_year_warning_names_the_metric_aggregation():
     assert [w for w in review_content("全年床位使用率85.00%。", [content]) if "期间口径" in w] == [
         "期间口径需复核：85.00%是2025年1—3月（3个月）的平均值，不能称为全年；请写明实际覆盖月份。"
     ]
+
+
+@pytest.mark.parametrize("item", ["（1）心内科收入领先；", "一是门诊收入增长；", "第一，门诊收入增长；"])
+def test_cjk_enumeration_items_ending_with_semicolons_are_complete(item):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    text = f"主要发现如下：\n\n{item}\n\n（2）外科收入居中。"
+    assert not [w for w in readability_warnings(text) if "段落未写完" in w]
