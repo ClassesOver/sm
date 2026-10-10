@@ -412,6 +412,36 @@ def _comparison_window_warnings(text: str, contents: Iterable[str], documents: l
     return list(dict.fromkeys(warnings))
 
 
+_FROM_TO_CHANGE = re.compile(
+    r"(?:由|从)\s*(?P<a>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<ua>亿元|万元|元|万人次|人次|床日|%)"
+    rf"[^。；，,\n\d]{{0,6}}?(?P<verb>{DIRECTION_WORD_PATTERN}|降|升)(?:到|至|为)"
+    r"\s*(?P<b>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<ub>亿元|万元|元|万人次|人次|床日|%)"
+)
+
+
+def _from_to_direction_warnings(text: str) -> list[str]:
+    """“由X增长至Y”而 X 大于 Y（或“下降至”而 X 小于 Y）时提示方向矛盾（软告警）。
+
+    两端数值都写在句中，按同一量纲换算后直接比较，不依赖冻结事实。
+    """
+    warnings: list[str] = []
+    for match in _FROM_TO_CHANGE.finditer(text):
+        units = (match["ua"], match["ub"])
+        scales = _unit_scales(units[0])
+        if units[0] != units[1] and (scales is None or units[1] not in scales):
+            continue
+        start, end = (Decimal(match[key].replace(",", "")) for key in ("a", "b"))
+        if scales is not None:
+            start, end = start * scales[units[0]], end * scales[units[1]]
+        if start == end:
+            continue
+        rising = match["verb"] in RISING_WORDS or match["verb"] == "升"
+        if rising != (end > start):
+            actual = "增加" if end > start else "减少"
+            warnings.append(f"方向矛盾：{match[0]}。数值实际在{actual}，请核对增减措辞或起止数值。")
+    return warnings
+
+
 _GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "位居第一", "位列第一")
 _GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
 
@@ -681,6 +711,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     warnings.extend(_full_year_warnings(text, contents, documents))
     warnings.extend(_non_additive_total_warnings(text, contents, documents))
     warnings.extend(_comparison_window_warnings(text, contents, documents))
+    warnings.extend(_from_to_direction_warnings(text))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
     scoped_text = text
     if "[[analysis:" not in text and len(bundles) == 1:

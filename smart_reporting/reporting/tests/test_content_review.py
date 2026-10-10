@@ -853,3 +853,15 @@ def test_window_comparisons_are_not_called_single_month_changes(window, text, ex
     document["comparisons"][0].update({"periodStart": window[0], "periodEnd": window[1]})
     warnings = [w for w in review_content(text, [json.dumps(document)]) if "比较口径" in w]
     assert warnings == expected
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("收入由1.37亿元增长至1.30亿元。", True),
+    ("收入从1.30亿元下降至1.37亿元。", True),
+    ("占比由50%提高到45%。", True),
+    # 方向一致（含亿元与万元换算）的起止写法不告警。
+    ("收入由1.30亿元增长至1.37亿元，后由1.37亿元回落至13,000.00万元。", False),
+])
+def test_from_to_wording_must_match_the_direction_of_the_values(text, flagged):
+    warnings = [w for w in review_content(text, [_comparison_content()]) if "方向矛盾" in w]
+    assert bool(warnings) is flagged
