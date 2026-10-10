@@ -668,3 +668,20 @@ def test_number_guide_explains_comparison_type_and_window():
     assert (comparison['comparisonType'], comparison['periodStart'], comparison['periodEnd']) == ('同比', '2025-01', '2025-09')
     assert comparison['references']['changeRate'] == '{{value:fact-cccccccccccccccc:changeRate:%}}'
     assert '累计窗口' in comparison['meaning']
+
+
+
+@pytest.mark.parametrize(('aggregation', 'meaning'), [
+    ('sum', '完整期间合计'),
+    ('average', '完整期间平均值，不能称为合计、累计或总额'),
+])
+def test_number_guide_states_how_to_read_the_total(aggregation, meaning):
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    document = json.loads(_comparison_document(6543211, 5.0332))
+    document['metrics'][0]['aggregation'] = aggregation
+    content = json.dumps(document)
+    guide = frozen_number_guide([content], frozen_number_catalog([content]))
+    metric = next(item for item in guide if item['factId'] == 'fact-' + 'a' * 16)
+    # 平均口径的 total 是均值：说明随引用一起给到模型，避免写成“合计”。
+    assert (metric['total']['aggregation'], metric['total']['meaning']) == (aggregation, meaning)

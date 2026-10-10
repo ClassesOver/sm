@@ -252,6 +252,17 @@ def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> di
     return values
 
 
+# numberGuide 中 total 的读法：只有 sum/count 是加总，平均与极值口径不能写成合计或累计。
+_TOTAL_MEANINGS = {
+    "sum": "完整期间合计",
+    "count": "完整期间计数",
+    "count_distinct": "完整期间去重计数，不能按月相加",
+    "average": "完整期间平均值，不能称为合计、累计或总额",
+    "min": "完整期间最小值，不能称为合计、累计或总额",
+    "max": "完整期间最大值，不能称为合计、累计或总额",
+}
+
+
 def frozen_number_guide(
     contents: Iterable[str], catalog: dict[str, str], *, field_definitions: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -282,7 +293,9 @@ def frozen_number_guide(
                 "unit": fact.unit, "periodRoles": list(fact.period_roles),
                 "periodGranularity": fact.period_granularity,
                 "total": {"reference": reference("total"), "periods": periods,
-                          "periodStart": fact.period_start, "periodEnd": fact.period_end},
+                          "periodStart": fact.period_start, "periodEnd": fact.period_end,
+                          "aggregation": fact.aggregation,
+                          "meaning": _TOTAL_MEANINGS.get(fact.aggregation, "完整期间的统计值")},
                 "rowStatistics": {"average": reference("average"), "minimum": reference("minimum"),
                                   "maximum": reference("maximum"),
                                   "meaning": "原始行统计，不能称为月均值或月度极值"},
