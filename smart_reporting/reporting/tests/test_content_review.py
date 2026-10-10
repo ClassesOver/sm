@@ -808,3 +808,24 @@ def test_full_year_wording_needs_twelve_months(months, text, expected):
     metric = {**_metric(values=tuple(range(1000000, (months + 1) * 1000000, 1000000))), "unit": "元"}
     content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
     assert [w for w in review_content(text, [content]) if "期间口径" in w] == expected
+
+
+@pytest.mark.parametrize(("aggregation", "text", "expected"), [
+    ("average", "床位使用率合计85.00%。", ["统计口径需复核：85.00%是平均值，不能称为合计或累计；请写明为平均值。"]),
+    ("max", "单月累计最高85.00%。", ["统计口径需复核：85.00%是最大值，不能称为合计或累计；请写明为最大值。"]),
+    # 平均值写成“平均”、加总指标写成“合计”都不告警。
+    ("average", "平均床位使用率85.00%。", []),
+    ("sum", "收入合计85.00%。", []),
+])
+def test_non_additive_values_are_not_called_totals(aggregation, text, expected):
+    metric = {**_metric(values=(80, 85, 90)), "unit": "%", "aggregation": aggregation, "total": 85.0}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content(text, [content]) if "统计口径" in w] == expected
+
+
+def test_full_year_warning_names_the_metric_aggregation():
+    metric = {**_metric(values=(80, 85, 90)), "unit": "%", "aggregation": "average", "total": 85.0}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content("全年床位使用率85.00%。", [content]) if "期间口径" in w] == [
+        "期间口径需复核：85.00%是2025年1—3月（3个月）的平均值，不能称为全年；请写明实际覆盖月份。"
+    ]

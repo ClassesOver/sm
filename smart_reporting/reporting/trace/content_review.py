@@ -275,10 +275,13 @@ def _full_year_warnings(text: str, contents: Iterable[str], documents: list[dict
     只在分句数值等于该指标完整期间合计时判定，“全年预算/目标”不在此列。
     """
     partial: dict[str, str] = {}
+    labels: dict[str, str] = {}
     for document in documents:
         for entry in document.get("metrics") or ():
             if not isinstance(entry, dict) or entry.get("periodGranularity") != "month":
                 continue
+            if isinstance(entry.get("factId"), str):
+                labels[entry["factId"]] = _AGGREGATION_NOUNS.get(entry.get("aggregation"), "合计")
             periods = [str(item.get("period", "")) for item in entry.get("periodValues") or ()
                        if isinstance(item, dict)]
             months = sorted({int(period[5:7]) for period in periods
@@ -310,7 +313,52 @@ def _full_year_warnings(text: str, contents: Iterable[str], documents: list[dict
             for fact_id, value in totals.get(match[2], ()):
                 if value.quantize(quantum, rounding=ROUND_HALF_UP) == number:
                     warnings.append(
-                        f"期间口径需复核：{match[0]}是{partial[fact_id]}的合计，不能称为全年；请写明实际覆盖月份。"
+                        f"期间口径需复核：{match[0]}是{partial[fact_id]}的{labels.get(fact_id, '合计')}，"
+                        "不能称为全年；请写明实际覆盖月份。"
+                    )
+    return list(dict.fromkeys(warnings))
+
+
+_AGGREGATION_NOUNS = {
+    "sum": "合计", "count": "计数", "average": "平均值", "min": "最小值", "max": "最大值",
+    "count_distinct": "去重计数",
+}
+
+
+def _non_additive_total_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]]) -> list[str]:
+    """平均值、最小值、最大值写成“合计/累计/总计”时提示复核（软告警）。
+
+    平均口径指标（床位使用率等）的完整期间值是均值，不是加总；只在分句数值等于该
+    指标完整期间值时判定。
+    """
+    labels = {entry["factId"]: _AGGREGATION_NOUNS[entry["aggregation"]]
+              for document in documents for entry in document.get("metrics") or ()
+              if isinstance(entry, dict) and isinstance(entry.get("factId"), str)
+              and entry.get("aggregation") in {"average", "min", "max"}}
+    if not labels:
+        return []
+    values: dict[str, list[tuple[str, Decimal]]] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        _, fact_id, field, *_rest = token[2:-2].split(":")
+        display_unit = target or unit
+        if field != "total" or fact_id not in labels or not display_unit or value is None:
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit and (scales := _unit_scales(unit)) is not None:
+            number = number * scales[unit] / scales[display_unit]
+        values.setdefault(display_unit, []).append((fact_id, number))
+    warnings: list[str] = []
+    for sentence in re.split(r"[。；，,\n]", text):
+        if not re.search(r"合计|累计|总计|总额|总和|汇总", sentence):
+            continue
+        for match in _VALUE.finditer(sentence):
+            number = Decimal(match[1].replace(",", ""))
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            for fact_id, value in values.get(match[2], ()):
+                if value.quantize(quantum, rounding=ROUND_HALF_UP) == number:
+                    warnings.append(
+                        f"统计口径需复核：{match[0]}是{labels[fact_id]}，不能称为合计或累计；"
+                        f"请写明为{labels[fact_id]}。"
                     )
     return list(dict.fromkeys(warnings))
 
@@ -582,6 +630,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     warnings.extend(_monthly_average_warnings(text, contents))
     warnings.extend(_comparison_amount_warnings(text, contents, documents))
     warnings.extend(_full_year_warnings(text, contents, documents))
+    warnings.extend(_non_additive_total_warnings(text, contents, documents))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
     scoped_text = text
     if "[[analysis:" not in text and len(bundles) == 1:
