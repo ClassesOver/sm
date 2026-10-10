@@ -738,3 +738,12 @@ def test_comparison_amount_claims_check_type_and_direction(text, expected):
     warnings = [w for w in review_content(text, [_comparison_content()])
                 if "变化额" in w and ("口径混淆" in w or "方向" in w)]
     assert warnings == expected
+
+
+@pytest.mark.parametrize("item", ["（1）门诊收入增长。", "一是门诊收入增长。", "第一，门诊收入增长。", "1、门诊收入增长。"])
+def test_colon_intro_followed_by_cjk_enumeration_is_complete(item):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    assert not [w for w in readability_warnings(f"主要发现如下：\n\n{item}") if "段落未写完" in w]
+    # 冒号后接普通句子仍是半句话。
+    assert [w for w in readability_warnings("主要发现如下：\n\n收入增长。") if "段落未写完" in w]

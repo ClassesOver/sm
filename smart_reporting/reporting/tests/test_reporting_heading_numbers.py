@@ -1102,3 +1102,27 @@ def test_assemble_writes_iso_periods_as_chinese_dates() -> None:
     assert "### 1.1 2025年1月至6月收入趋势\n" in rendered.markdown
     assert "2025年3月门诊量最高，详见 report-2025-01.pdf。" in rendered.markdown
     assert rendered.heading_numbers[1].title == "2025年1月至6月收入趋势"
+
+
+def test_assembled_cjk_enumeration_renders_one_paragraph_per_item() -> None:
+    from markdown_it import MarkdownIt
+
+    rendered = _render("### 主要发现\n\n主要发现如下：\n1、门诊收入增长；\n2、住院收入下降。")
+    html = MarkdownIt("commonmark", {"html": False}).enable("table").render(rendered.markdown)
+    assert "<p>1、门诊收入增长；</p>" in html
+    assert "<p>2、住院收入下降。</p>" in html
+
+
+def test_chart_is_not_inserted_inside_a_cjk_enumeration() -> None:
+    # 条目各自成段后仍是一个整体：图表放在全部条目之后，不插在“如下：”与条目之间或条目中间。
+    rendered = _assemble_charts(
+        (ReportDraftBlock(
+            blockId="block_1",
+            markdown="主要发现如下：\n1、门诊收入保持增长；\n2、药品成本结构占比最高；\n3、住院收入回落。\n\n后续需持续跟踪。",
+            citationIds=("citation_001",),
+            chartIds=("chart_001",),
+        ),),
+        (_chart("chart_001", "药品成本结构", "citation_001"),),
+    )
+    body = rendered.markdown
+    assert body.index("3、住院收入回落。") < body.index("![") < body.index("后续需持续跟踪。")

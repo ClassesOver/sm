@@ -273,6 +273,45 @@ def normalize_cjk_wording(markdown: str) -> str:
     return _normalize_report_markdown_segments(markdown, _normalize_cjk_wording_text)
 
 
+# 中文条目编号（“1、”“（1）”“一是”“第一，”“一、”）不是 Markdown 列表：与上一行之间
+# 只有单个换行时会并入同一段落，渲染成一行连写。
+CJK_ENUMERATION_LINE = re.compile(
+    r"^[*_]*(?:\d{1,2}[、．]|[（(]\d{1,2}[）)]|[（(][一二三四五六七八九十]{1,3}[）)]"
+    r"|[一二三四五六七八九十]{1,3}(?:是|、)|第[一二三四五六七八九十]{1,3}[，,、：:是])"
+)
+_STRUCTURAL_LINE = re.compile(r"^(?:#{1,6}\s|\||[-*+]\s|\d{1,3}[.)]\s|>|!\[|\[\[)")
+
+
+def separate_enumerated_lines(markdown: str) -> str:
+    """单个换行分隔的中文条目各自成段，避免渲染时并成一行。
+
+    只在上一行是普通正文或条目时插入空行；表格、列表、标题、引用、图片、协议标记
+    与代码块保持原样。
+    """
+
+    lines = markdown.split("\n")
+    result: list[str] = []
+    fence: str | None = None
+    for line in lines:
+        opening = _FENCED_CODE_START.match(line)
+        if fence is not None:
+            if opening is not None and opening["fence"][0] == fence:
+                fence = None
+            result.append(line)
+            continue
+        if opening is not None:
+            fence = opening["fence"][0]
+            result.append(line)
+            continue
+        previous = result[-1] if result else ""
+        if (CJK_ENUMERATION_LINE.match(line.strip()) and not line.startswith((" ", "\t"))
+                and previous.strip() and not previous.startswith((" ", "\t"))
+                and not _STRUCTURAL_LINE.match(previous.strip())):
+            result.append("")
+        result.append(line)
+    return "\n".join(result)
+
+
 def normalize_report_markdown_strong_spacing(markdown: str) -> str:
     """移除明确成对的中文或业务数值粗体标记内侧空白。"""
 

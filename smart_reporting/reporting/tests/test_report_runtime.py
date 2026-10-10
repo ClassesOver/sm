@@ -970,3 +970,22 @@ def test_iso_dates_in_prose_are_written_in_chinese(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_wording
 
     assert normalize_cjk_wording(markdown) == expected
+
+@pytest.mark.parametrize(("markdown", "expected"), [
+    # 单个换行分隔的中文条目会并成一个段落、渲染成一行连写：各自成段。
+    ("主要发现如下：\n1、门诊收入增长；\n2、住院收入下降。", "主要发现如下：\n\n1、门诊收入增长；\n\n2、住院收入下降。"),
+    ("（1）门诊收入增长；\n（2）住院收入下降。", "（1）门诊收入增长；\n\n（2）住院收入下降。"),
+    ("一是门诊增长；\n二是住院下降。", "一是门诊增长；\n\n二是住院下降。"),
+    ("第一，收入增长。\n第二，成本下降。", "第一，收入增长。\n\n第二，成本下降。"),
+    ("**1、门诊**增长；\n**2、住院**下降。", "**1、门诊**增长；\n\n**2、住院**下降。"),
+    # Markdown 列表、表格、代码块、已分段条目与普通换行保持原样。
+    ("发现：\n1. 门诊增长；\n2. 住院下降。", "发现：\n1. 门诊增长；\n2. 住院下降。"),
+    ("| 科室 | 说明 |\n| --- | --- |\n| 1、内科 | 增长 |", "| 科室 | 说明 |\n| --- | --- |\n| 1、内科 | 增长 |"),
+    ("```\n说明\n1、代码\n```", "```\n说明\n1、代码\n```"),
+    ("发现：\n\n1、门诊", "发现：\n\n1、门诊"),
+    ("第一行\n第二行", "第一行\n第二行"),
+])
+def test_cjk_enumerated_lines_become_separate_paragraphs(markdown, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import separate_enumerated_lines
+
+    assert separate_enumerated_lines(markdown) == expected

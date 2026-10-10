@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from ..delivery.report_runtime.markdown import CJK_ENUMERATION_LINE
 from .numeric_text import (
     BARE_SCALED_NUMBER,
     DIRECTED_PLACEHOLDER,
@@ -875,7 +876,10 @@ def _incomplete_paragraph_warnings(markdown: str) -> list[str]:
             continue
         if text.endswith(("：", ":")):
             following = paragraphs[index + 1][0] if index + 1 < len(paragraphs) else ""
-            if following.startswith(("[[table:", "|", "![")) or _LIST_OR_TABLE_START.match(visible(following)):
+            if (following.startswith(("[[table:", "|", "!["))
+                    or _LIST_OR_TABLE_START.match(visible(following))
+                    or CJK_ENUMERATION_LINE.match(visible(following))):
+                # “如下：”后接列表、表格、图片或“（1）”“一是”“第一，”等中文条目是完整的引导句。
                 continue
         elif not _DANGLING_TAIL.search(text):
             continue

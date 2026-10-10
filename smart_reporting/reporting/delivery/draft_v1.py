@@ -14,10 +14,12 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from ..contract import StrictModel
 from ..models import ReportingError
 from .report_runtime.markdown import (
+    CJK_ENUMERATION_LINE,
     format_heading_label,
     normalize_cjk_punctuation,
     normalize_cjk_wording,
     normalize_report_markdown_strong_spacing,
+    separate_enumerated_lines,
 )
 
 _LEADING_SECTION_HEADING = re.compile(
@@ -710,13 +712,15 @@ def _block_units(markdown: str) -> list[str]:
             pending_heading.append(text)
             previous_is_list = False
             continue
-        is_list = _LIST_ITEM_LINE.match(lines[0]) is not None or (
-            previous_is_list and lines[0][:1] in {" ", "\t"}
-        )
+        # “1、”“（1）”等中文条目与 Markdown 列表一样不能被图表打断。
+        is_list = (_LIST_ITEM_LINE.match(lines[0]) is not None
+                   or CJK_ENUMERATION_LINE.match(lines[0].strip()) is not None
+                   or (previous_is_list and lines[0][:1] in {" ", "\t"}))
         if pending_heading:
             units.append("\n\n".join((*pending_heading, text)))
             pending_heading = []
-        elif is_list and previous_is_list and units:
+        elif is_list and units and (previous_is_list or units[-1].rstrip().endswith(("：", ":"))):
+            # 以冒号收尾的引导句与其后的列表同属一个单元，图表不插在“如下：”与条目之间。
             units[-1] = f"{units[-1]}\n\n{text}"
         else:
             units.append(text)
@@ -916,10 +920,10 @@ def assemble_report_markdown(
         h4_count = 0
         for block_index, block in enumerate(section.blocks):
             # 中文正文的半角逗号/冒号/分号统一为全角，ISO 期间改为中文日期、yoy/mom 改为同比/环比；
-            # 千分位、时间、英文、文件名与机器文本不变。
-            block_markdown = normalize_cjk_punctuation(
+            # 单个换行分隔的“1、”“（1）”等中文条目各自成段；千分位、时间、英文、文件名与机器文本不变。
+            block_markdown = separate_enumerated_lines(normalize_cjk_punctuation(
                 normalize_cjk_wording(normalize_report_markdown_strong_spacing(block.markdown))
-            )
+            ))
             if block_markdown != block.markdown:
                 auto_fixes.append(
                     {
