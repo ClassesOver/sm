@@ -851,7 +851,44 @@ def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None
             elif len(sentence) >= _READABLE_SENTENCE_CHARS:
                 warnings.append(f"句子过长（{len(sentence)} 字）：{sentence[:40]}……请拆分为结论句和支撑句。")
     warnings.extend(_heading_readability_warnings(markdown))
+    warnings.extend(_paragraph_length_warnings(markdown))
     warnings.extend(_incomplete_paragraph_warnings(markdown))
+    return warnings
+
+
+_READABLE_PARAGRAPH_CHARS = 360
+
+
+def _paragraph_length_warnings(markdown: str) -> list[str]:
+    """单个正文段落过长时提示拆分（软告警）；表格、列表、标题、代码与图片不计。
+
+    逐句长度合格的段落仍可能堆成一整屏文字，PDF 中难以定位结论。
+    """
+    warnings: list[str] = []
+    fenced = False
+    paragraph: list[str] = []
+
+    def flush() -> None:
+        text = "".join(paragraph)
+        if len(text) > _READABLE_PARAGRAPH_CHARS:
+            warnings.append(
+                f"段落过长（{len(text)} 字）：{text[:30]}……请按“结论—证据—建议”拆分为多个段落。"
+            )
+        paragraph.clear()
+
+    for raw in markdown.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith(("```", "~~~")):
+            fenced = not fenced
+            flush()
+            continue
+        line = re.sub(r"\[\[[^\]\r\n]+\]\]", "", stripped).replace("**", "").strip()
+        if (fenced or not line or line.startswith(("|", "#", "![", ">"))
+                or _LIST_OR_TABLE_START.match(line)):
+            flush()
+            continue
+        paragraph.append(line)
+    flush()
     return warnings
 
 

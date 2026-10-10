@@ -783,3 +783,13 @@ def test_unregistered_multiples_are_flagged():
     assert warnings == [
         "倍数缺少可核对的冻结依据：3.2倍。须由已登记的本期与基期合计或比率得出，请改用变化率表述或删去该倍数。"
     ]
+
+
+def test_overlong_paragraphs_are_flagged_but_lists_and_tables_are_not():
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    sentence = "门诊收入保持增长。"
+    warnings = [w for w in readability_warnings(sentence * 45) if "段落过长" in w]
+    assert len(warnings) == 1 and warnings[0].startswith("段落过长（405 字）：门诊收入保持增长。")
+    for text in ((sentence + "\n\n") * 45, "- " + sentence * 45, "| a | b |\n| --- | --- |\n| " + "门诊" * 200 + " | 1 |"):
+        assert not [w for w in readability_warnings(text) if "段落过长" in w]

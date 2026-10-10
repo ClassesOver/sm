@@ -205,7 +205,7 @@ _SECTION_BLOCK_OMISSION_MARKER = "[...已省略与当前正文块无关的证据
 # 小标题），两种生成路径共用。
 _LATER_CORRECTION_ACTIONS = (
     "同比/环比、月均值与分组排名按登记结果改正；图表编号改用图表标题主题词指代；"
-    "小标题压缩为不超过 24 字的主题短语。"
+    "小标题压缩为不超过 24 字的主题短语；过长段落按结论、证据、建议拆分；倍数改用已登记的变化率。"
 )
 _MAX_EXECUTIVE_SUMMARY_CHARS = 8_000
 _EXECUTIVE_SUMMARY_SEPARATOR = "；"
