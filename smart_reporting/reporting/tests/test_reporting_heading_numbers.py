@@ -1159,3 +1159,14 @@ def test_chart_title_match_survives_text_normalization() -> None:
     chart = _chart("chart_001", "门诊收入(万元)", "citation_001")
     # 正文已规范为全角括号，图注原文仍应按完整标题命中。
     assert _chart_unit_score("门诊收入（万元）月度走势平稳。", chart) == 1000
+
+
+def test_chart_caption_and_alt_text_follow_body_typography() -> None:
+    rendered = _assemble_charts(
+        (ReportDraftBlock(blockId="block_1", markdown="门诊收入月度走势平稳。",
+                          citationIds=("citation_001",), chartIds=("chart_001",)),),
+        (_chart("chart_001", "门诊收入(万元) 2025-01至2025-06", "citation_001"),),
+    )
+    assert '"门诊收入（万元）2025年1月至6月")' in rendered.markdown
+    assert "*图表：门诊收入（万元）2025年1月至6月*" in rendered.markdown
+    assert "![门诊收入（万元）2025年1月至6月图]" in rendered.markdown

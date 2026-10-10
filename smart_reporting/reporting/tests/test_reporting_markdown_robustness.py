@@ -20,11 +20,15 @@ def test_chart_figure_survives_quotes_and_emphasis_in_title() -> None:
 
     html = MarkdownIt("commonmark").render(_chart_figure_markdown(chart, "chart.png"))
 
-    assert (
-        '<img src="chart.png" alt="收入［门诊］ 趋势" title="门诊&quot;收入&quot;*增长*率" />'
-        in html
-    )
-    assert "<em>图表：门诊&quot;收入&quot;*增长*率</em>" in html
+    # 中文语境的半角引号按正文规则改为中文引号；强调符号不破坏图片与图注。
+    assert '<img src="chart.png" alt="收入［门诊］ 趋势" title="门诊“收入”*增长*率" />' in html
+    assert "<em>图表：门诊“收入”*增长*率</em>" in html
+
+    # 英文标题保留半角引号，图片标题与图注中按 HTML 转义。
+    english = chart.model_copy(update={"title": 'Revenue "A" *growth*'})
+    html = MarkdownIt("commonmark").render(_chart_figure_markdown(english, "chart.png"))
+    assert 'title="Revenue &quot;A&quot; *growth*"' in html
+    assert "<em>图表：Revenue &quot;A&quot; *growth*</em>" in html
 
 
 @pytest.mark.parametrize(
@@ -76,7 +80,8 @@ def test_chart_figure_destination_survives_unsafe_file_names(file_name: str) -> 
 
 
 @pytest.mark.parametrize(("title", "alt", "expected_title", "expected_alt"), [
-    ("门诊收入趋势（analysis_001）", "门诊收入 · citation_002 月度趋势", "门诊收入趋势", "门诊收入 月度趋势"),
+    # 去掉内部 ID 后汉字间的空格按正文规则一并去掉。
+    ("门诊收入趋势（analysis_001）", "门诊收入 · citation_002 月度趋势", "门诊收入趋势", "门诊收入月度趋势"),
     ("收入构成 fact-" + "a" * 16, "收入构成[analysis_003]", "收入构成", "收入构成"),
     ("analysis_001", "chart_001", "图表", "图表"),
     ("2025年门诊收入趋势", "按月收入", "2025年门诊收入趋势", "按月收入"),

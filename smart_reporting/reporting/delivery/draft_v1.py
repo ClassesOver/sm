@@ -660,10 +660,15 @@ def _without_internal_ids(text: str) -> str:
     return cleaned or "图表"
 
 
+def _readable_label(text: str) -> str:
+    """图注与替代文字按正文同一规则规范标点、日期与空格，与相邻正文写法一致。"""
+    return normalize_cjk_punctuation(normalize_cjk_wording(text)).strip() or text
+
+
 def _chart_figure_markdown(chart: ReportChartInput, file_name: str) -> str:
-    title = _markdown_inline_text(_without_internal_ids(chart.title))
+    title = _markdown_inline_text(_readable_label(_without_internal_ids(chart.title)))
     return (
-        f'![{_chart_alt_text(_without_internal_ids(chart.alt_text))}]({_link_destination(file_name)} "{title}")'
+        f'![{_chart_alt_text(_readable_label(_without_internal_ids(chart.alt_text)))}]({_link_destination(file_name)} "{title}")'
         + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
         + f"\n\n*图表：{title}*"
     )
@@ -750,7 +755,7 @@ def _chart_terms(text: str) -> frozenset[str]:
 def _chart_unit_score(unit: str, chart: ReportChartInput) -> int:
     title = chart.title.strip()
     # 正文已经过标点与日期规范（“门诊收入(万元)”→“门诊收入（万元）”），图注按同一规则比较。
-    normalized = normalize_cjk_punctuation(normalize_cjk_wording(title)).strip()
+    normalized = _readable_label(title)
     if title and (title in unit or normalized in unit):
         return 1000
     return len(_chart_terms(f"{chart.title} {chart.alt_text}") & _chart_terms(unit))
