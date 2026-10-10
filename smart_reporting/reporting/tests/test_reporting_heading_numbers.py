@@ -982,8 +982,9 @@ def test_assemble_single_unmatched_chart_keeps_block_text_verbatim() -> None:
 def test_assemble_keeps_leading_quantities_that_are_not_heading_numbers() -> None:
     rendered = _render("### 2025 年门诊收入\n\n正文\n\n#### 30 天回款率", "### 3. 成本结构")
 
-    assert "### 1.1 2025 年门诊收入" in rendered.markdown
-    assert "#### 1.1.1 30 天回款率" in rendered.markdown
+    # 数量不是编号、不剥离；数字与汉字之间的空格按中文排版去掉。
+    assert "### 1.1 2025年门诊收入" in rendered.markdown
+    assert "#### 1.1.1 30天回款率" in rendered.markdown
     assert "### 1.2 成本结构" in rendered.markdown
 
 
@@ -1086,6 +1087,9 @@ def test_assemble_explicit_numeric_map_omits_unsupported_claim_anchor():
     ("1.5万人次门诊量", "1.5万人次门诊量"),
     # 后接中文的半角括号按中文排版改为全角，但仍不当作编号剥离。
     ("(2025)收入预测", "（2025）收入预测"),
+    # 空格分隔的单个编号同样是手写编号；后接量词的仍是正文数字。
+    ("1 收入分析", "收入分析"),
+    ("12 个科室收入", "12个科室收入"),
 ])
 def test_assemble_strips_chinese_and_compact_manual_heading_numbers(markdown_title: str, expected: str) -> None:
     # 中文报告常见的“一、”“（一）”“3、”编号会与服务端编号叠成“1.1 一、收入趋势”。

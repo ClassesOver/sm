@@ -965,6 +965,12 @@ def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected)
     # 数值目录的比较口径字段值改为中文；英文单词、字段名、标记与代码不变。
     ("收入yoy增长5.03%，MoM下降2.1%。", "收入同比增长5.03%，环比下降2.1%。"),
     ("moment、yoy_rate、[[analysis:yoy]]与`mom`不变。", "moment、yoy_rate、[[analysis:yoy]]与`mom`不变。"),
+    # 数字与汉字、单位之间的空格去掉，与数值目录写法一致；英文单词两侧、表格分隔与代码不变。
+    ("收入 3,600 万元，同比增长 8.6 %。", "收入3,600万元，同比增长8.6%。"),
+    ("**收入** 3,600 万元，共 12 个科室。", "**收入**3,600万元，共12个科室。"),
+    ("采用 Plan A 方案，CMI 为 1.05。", "采用 Plan A 方案，CMI 为1.05。"),
+    ("| 内科 | 3,600 |", "| 内科 | 3,600 |"),
+    ("见 `收入 3 万` 代码。", "见 `收入 3 万` 代码。"),
 ])
 def test_iso_dates_in_prose_are_written_in_chinese(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_wording

@@ -235,6 +235,17 @@ _ISO_DATE_RANGE = re.compile(
 _ISO_DATE_SINGLE = re.compile(
     _ISO_DATE_BOUNDARY_BEFORE + _ISO_DATE.format(p="a") + _ISO_DATE_BOUNDARY_AFTER
 )
+# 中文正文中数字与汉字、单位之间的空格（“收入 3,600 万元”“增长 8.6 %”）与数值目录
+# 的写法（3,600万元）不一致；英文单词两侧的空格不动。
+_SPACE_AFTER_NUMBER = re.compile(r"(?<=\d)[ \t]+(?=[\u3400-\u9fff%‰])")
+_SPACE_BEFORE_NUMBER = re.compile(
+    r"(?:(?<=[\u3400-\u9fff])|(?<=[\u3400-\u9fff]\*\*))[ \t]+(?=[+\-]?\d)"
+)
+# 标题行首“1 收入分析”“2.3 收入趋势”的手写编号留给标题编号清理识别，不并成
+# “2.3收入趋势”；后接单位或量词的（1.5 万人次、3 月）是数量，照常去空格。
+_HEADING_NUMBER_PREFIX = re.compile(
+    r"^#{1,6}[ \t]+\d+(?:\.\d+)*[.、．]?[ \t]+(?![年月日个家名张床次人天项例台季周号期级类万亿元%‰])"
+)
 _COMPARISON_TERMS = {"yoy": "同比", "mom": "环比"}
 _COMPARISON_TERM = re.compile(r"(?<![A-Za-z0-9_])(?i:yoy|mom)(?![A-Za-z0-9_])")
 _PADDED_CJK_DATE = re.compile(r"(?<=\d年)0(?=[1-9]月)|(?<=\d月)0(?=[1-9]日)")
@@ -258,14 +269,18 @@ def _normalize_cjk_wording_text(text: str) -> str:
         piece = _ISO_DATE_SINGLE.sub(lambda match: _cjk_date(match, "a"), piece)
         piece = _PADDED_CJK_DATE.sub("", piece)
         # 数值目录的比较口径 yoy/mom 是字段值，正文写中文“同比/环比”。
-        return _COMPARISON_TERM.sub(lambda match: _COMPARISON_TERMS[match[0].casefold()], piece)
+        piece = _COMPARISON_TERM.sub(lambda match: _COMPARISON_TERMS[match[0].casefold()], piece)
+        heading_prefix = _HEADING_NUMBER_PREFIX.match(piece)
+        prefix = heading_prefix[0] if heading_prefix else ""
+        rest = _SPACE_BEFORE_NUMBER.sub("", _SPACE_AFTER_NUMBER.sub("", piece[len(prefix):]))
+        return prefix + rest
 
     return _convert_unprotected(text, convert)
 
 
 def normalize_cjk_wording(markdown: str) -> str:
     """正文中的 ISO 日期与期间区间改为中文写法（2025-01至2025-12 → 2025年1月至12月），
-    比较口径 yoy/mom 改为同比/环比。
+    比较口径 yoy/mom 改为同比/环比，去掉数字与汉字、单位之间的空格。
 
     协议标记、数值占位、链接地址与代码保持原样；文件名、版本号等紧邻字母数字的写法不改。
     """
