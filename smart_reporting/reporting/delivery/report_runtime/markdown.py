@@ -202,10 +202,19 @@ def _convert_unprotected(text: str, convert: Callable[[str], str]) -> str:
     return "".join(pieces)
 
 
+# 全角标点两侧的空格（“见附表 （表1）”“（1） 门诊”）；列表标记“- ”“1. ”后与表格竖线
+# 两侧的空格不动。
+_SPACE_AROUND_FULL_WIDTH = re.compile(
+    r"(?:(?<=[\u3400-\u9fff（）。，；：、！？“”A-Za-z0-9%])|(?<=[^\s*]\*\*))[ \t]+(?=[（）。，；：、！？“”])"
+    r"|(?<=[（）。，；：、！？“”])[ \t]+(?=[^\s|])"
+)
+
+
 def _normalize_cjk_punctuation_text(text: str) -> str:
     def convert(piece: str) -> str:
         # 括号改为全角后，紧随其后的“（表1）,”“（元）:”才具备中文上下文，需再规范一次。
-        return _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
+        piece = _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
+        return _SPACE_AROUND_FULL_WIDTH.sub("", piece)
 
     return _convert_unprotected(text, convert)
 
@@ -242,6 +251,12 @@ _SPACE_AFTER_NUMBER = re.compile(r"(?<=\d)[ \t]+(?=[\u3400-\u9fff%‰])")
 _SPACE_BEFORE_NUMBER = re.compile(
     r"(?:(?<=[\u3400-\u9fff])|(?<=[\u3400-\u9fff]\*\*))[ \t]+(?=[+\-]?\d)"
 )
+# 两个汉字之间（含粗体标记两侧）的空格在中文正文中没有意义：“2025年1月 收入”
+# “**2025年1月** 收入”。
+_SPACE_BETWEEN_CJK = re.compile(
+    r"(?:(?<=[\u3400-\u9fff])|(?<=[\u3400-\u9fff]\*\*))[ \t]+"
+    r"(?=[\u3400-\u9fff]|\*\*[\u3400-\u9fff\d])"
+)
 # 标题行首“1 收入分析”“2.3 收入趋势”的手写编号留给标题编号清理识别，不并成
 # “2.3收入趋势”；后接单位或量词的（1.5 万人次、3 月）是数量，照常去空格。
 _HEADING_NUMBER_PREFIX = re.compile(
@@ -274,7 +289,7 @@ def _normalize_cjk_wording_text(text: str) -> str:
         heading_prefix = _HEADING_NUMBER_PREFIX.match(piece)
         prefix = heading_prefix[0] if heading_prefix else ""
         rest = _SPACE_BEFORE_NUMBER.sub("", _SPACE_AFTER_NUMBER.sub("", piece[len(prefix):]))
-        return prefix + rest
+        return prefix + _SPACE_BETWEEN_CJK.sub("", rest)
 
     return _convert_unprotected(text, convert)
 

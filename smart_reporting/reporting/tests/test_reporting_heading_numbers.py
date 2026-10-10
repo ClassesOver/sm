@@ -109,8 +109,9 @@ def test_assemble_does_not_rewrite_fenced_heading() -> None:
 def test_assemble_preserves_inline_markdown_but_records_visible_title() -> None:
     rendered = _render("### **经营结论** 与 `预算`")
 
-    assert "### 1.1 **经营结论** 与 `预算`" in rendered.markdown
-    assert rendered.heading_numbers[1].title == "经营结论 与 预算"
+    # 行内标记保留；粗体收尾与汉字之间的空格按中文排版去掉。
+    assert "### 1.1 **经营结论**与 `预算`" in rendered.markdown
+    assert rendered.heading_numbers[1].title == "经营结论与 预算"
 
 
 @pytest.mark.parametrize(

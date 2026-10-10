@@ -929,6 +929,10 @@ def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -
     ("函数f(x)与 A (B) C 不变。", "函数f(x)与 A (B) C 不变。"),
     ("见[收入(万元)](https://example.com/x(1))。", "见[收入（万元）](https://example.com/x(1))。"),
     ("配置 `f(收入)` 不变。", "配置 `f(收入)` 不变。"),
+    # 全角标点两侧的空格去掉；列表标记后与表格竖线两侧的空格不动。
+    ("见附表 (表1)，（1） 门诊增长**明显** 。", "见附表（表1），（1）门诊增长**明显**。"),
+    ("- （1）门诊\n* （2）住院\n1. （3）医技", "- （1）门诊\n* （2）住院\n1. （3）医技"),
+    ("| 收入（万元） | 1,234 |", "| 收入（万元） | 1,234 |"),
     # 全角括号、粗体收尾或数字之后的半角标点，只要处于中文语境同样改写。
     ("详见附表(表1),同比持平", "详见附表（表1），同比持平"),
     ("收入(元):123", "收入（元）：123"),
@@ -971,6 +975,9 @@ def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected)
     ("采用 Plan A 方案，CMI 为 1.05。", "采用 Plan A 方案，CMI 为1.05。"),
     ("| 内科 | 3,600 |", "| 内科 | 3,600 |"),
     ("见 `收入 3 万` 代码。", "见 `收入 3 万` 代码。"),
+    # 汉字之间（含粗体两侧）的空格去掉，日期改写后留下的空格同样去掉。
+    ("2025-01 收入最高，内科 门诊增长。", "2025年1月收入最高，内科门诊增长。"),
+    ("**2025-01** 收入最高。", "**2025年1月**收入最高。"),
 ])
 def test_iso_dates_in_prose_are_written_in_chinese(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_wording
