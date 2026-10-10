@@ -209,6 +209,61 @@ def _monthly_average_warnings(text: str, contents: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(warnings))
 
 
+_COMPARISON_AMOUNT_CLAIM = re.compile(
+    rf"(?P<kind>同比|环比|较上年同期|较去年同期|较上年|较去年|较上月)(?P<verb>{DIRECTION_WORD_PATTERN})"
+    r"(?:了|约|为|达)?\s*(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
+    r"(?P<unit>亿元|万元|元|万人次|人次|床日|个百分点)"
+)
+
+
+def _comparison_amount_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]]) -> list[str]:
+    """变化额的比较口径与方向核对（软告警），与变化率的同比/环比检查对应。
+
+    “环比增加654.32万元”只对得上已登记的同比变化额，或“同比减少654.32万元”对应
+    的登记变化额为正时提示复核；数字本身已登记，无依据数值检查不会拦下这类口径错误。
+    """
+    types = {entry["factId"]: entry["comparisonType"]
+             for document in documents for entry in document.get("comparisons") or ()
+             if isinstance(entry, dict) and isinstance(entry.get("factId"), str)
+             and entry.get("comparisonType") in {"yoy", "mom"}}
+    if not types:
+        return []
+    amounts: dict[tuple[str, str], set[Decimal]] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        _, fact_id, field, *_rest = token[2:-2].split(":")
+        display_unit = target or unit
+        if field != "change" or fact_id not in types or not display_unit or value is None:
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit and (scales := _unit_scales(unit)) is not None:
+            number = number * scales[unit] / scales[display_unit]
+        amounts.setdefault((types[fact_id], display_unit), set()).add(number)
+    warnings: list[str] = []
+    for match in _COMPARISON_AMOUNT_CLAIM.finditer(text):
+        if describes_rate_level(text[:match.start()]):
+            continue
+        written = abs(Decimal(match["number"].replace(",", "")))
+        quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+        stated = "mom" if match["kind"] in {"环比", "较上月"} else "yoy"
+        other = "yoy" if stated == "mom" else "mom"
+
+        def same_magnitude(kind: str) -> list[Decimal]:
+            return [value for value in amounts.get((kind, match["unit"]), ())
+                    if abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == written]
+
+        stated_values = same_magnitude(stated)
+        if not stated_values and same_magnitude(other):
+            label = "环比" if other == "mom" else "同比"
+            warnings.append(f"同比/环比口径混淆：{match[0]}。该变化额对应已登记的{label}比较，请核对比较口径。")
+            continue
+        falling = match["verb"] in FALLING_WORDS
+        signed = [value for value in stated_values if value]
+        if (signed and not match["number"].startswith(("-", "+"))
+                and all((value > 0) == falling for value in signed)):
+            warnings.append(f"方向与登记变化额相反：{match[0]}。请核对增减方向。")
+    return list(dict.fromkeys(warnings))
+
+
 _GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "位居第一", "位列第一")
 _GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
 
@@ -474,6 +529,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
     warnings.extend(_group_ranking_warnings(text, documents))
     warnings.extend(_monthly_average_warnings(text, contents))
+    warnings.extend(_comparison_amount_warnings(text, contents, documents))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
     scoped_text = text
     if "[[analysis:" not in text and len(bundles) == 1:

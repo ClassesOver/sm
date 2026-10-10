@@ -710,3 +710,31 @@ def test_monthly_average_claims_use_the_monthly_statistic(text, expected):
     metric = {**_metric(values=(1200000, 1800000, 3000000)), "unit": "元", "average": 1500000}
     content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
     assert [w for w in review_content(text, [content]) if "月均值" in w] == expected
+
+
+def _comparison_content(change=6543211):
+    return json.dumps({
+        "analysisId": "analysis_001",
+        "metrics": [{**_metric(), "unit": "元", "total": 136543211}],
+        "comparisons": [{
+            "factId": "fact-" + "c" * 16, "comparisonType": "yoy", "field": "revenue",
+            "fieldRef": "hospital.revenue", "currentDatasetId": "current", "baselineDatasetId": "base",
+            "currentDatasetSha256": "b" * 64, "baselineDatasetSha256": "c" * 64,
+            "currentTotal": 130000000 + change, "baselineTotal": 130000000, "change": change,
+            "changeRate": change / 130000000 * 100, "formula": "x", "unit": "元",
+        }],
+    })
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("收入同比增加654.32万元，较上年增加0.07亿元。", []),
+    ("收入环比增加654.32万元。",
+     ["同比/环比口径混淆：环比增加654.32万元。该变化额对应已登记的同比比较，请核对比较口径。"]),
+    ("收入较上月增加654.32万元。",
+     ["同比/环比口径混淆：较上月增加654.32万元。该变化额对应已登记的同比比较，请核对比较口径。"]),
+    ("收入同比减少654.32万元。", ["方向与登记变化额相反：同比减少654.32万元。请核对增减方向。"]),
+])
+def test_comparison_amount_claims_check_type_and_direction(text, expected):
+    warnings = [w for w in review_content(text, [_comparison_content()])
+                if "变化额" in w and ("口径混淆" in w or "方向" in w)]
+    assert warnings == expected
