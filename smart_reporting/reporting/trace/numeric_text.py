@@ -186,8 +186,6 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                         continue
                     units = _unit_scales(unit) or (unit or "",)
                     for target in units:
-                        if _hidden_by_rounding(value, unit, target or None):
-                            continue
                         yield f"{{{{value:{fact_id}:{field}:{target}}}}}", value, unit, target or None
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
@@ -198,16 +196,34 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     yield token, comparison[field], unit, PERCENT_POINT
                     continue
                 for target in (_unit_scales(unit) or (unit,)):
-                    if _hidden_by_rounding(comparison[field], unit, target):
-                        continue
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{target}}}}}"
                     yield token, comparison[field], unit, target
+
+
+def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> str | None:
+    """换算后绝对值不足 1 的非零值改用同量纲中能写成不小于 1 的最大单位。
+
+    654.32万元的变化额写成“0.07亿元”既难读又丢精度（误差约 7%）；数值引用名不变，
+    只换显示单位，模型选了亿元引用也会显示为“654.32万元”。
+    """
+    if not target or target == unit or value is None:
+        return target
+    scales = _unit_scales(unit)
+    if scales is None or target not in scales:
+        return target
+    amount = abs(Decimal(str(value)) * scales[unit])
+    if amount == 0 or amount / scales[target] >= 1:
+        return target
+    for candidate, scale in sorted(scales.items(), key=lambda item: item[1], reverse=True):
+        if amount / scale >= 1:
+            return candidate
+    return min(scales, key=lambda candidate: scales[candidate])
 
 
 def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
     catalog: dict[str, str] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
-        text = format_fact_value(value, unit, target)
+        text = format_fact_value(value, unit, _readable_display_unit(value, unit, target))
         if token in catalog and catalog[token] != text:
             # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
             catalog[token] = "数值待核实"
@@ -225,7 +241,9 @@ def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> di
     values: dict[str, set[Decimal]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
         display_unit = target or unit
-        if not display_unit or catalog.get(token) == "数值待核实":
+        # 非零值换算后舍入为 0.00（-10万元 → 0.00亿元）不能作为依据，手写“0.00亿元”仍替换。
+        if (not display_unit or catalog.get(token) == "数值待核实"
+                or _hidden_by_rounding(value, unit, target)):
             continue
         number = Decimal(str(value))
         if display_unit != unit and (scales := _unit_scales(unit)) is not None:

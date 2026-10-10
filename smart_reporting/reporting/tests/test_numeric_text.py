@@ -440,10 +440,14 @@ def test_display_never_shows_negative_zero_or_hides_nonzero_amounts_as_zero():
     assert format_fact_value(-0.001, '%') == '0.00%'
     catalog = frozen_number_catalog([_budget_document()])
     prefix = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.'
-    # 非零差额（-10万元）换算到亿元会显示为 0.00，不提供该占位；真实的零差额仍可显示。
-    assert prefix + '2025-01.difference:亿元}}' not in catalog
+    # 非零差额（-10万元）换算到亿元会显示为 0.00：亿元引用改按万元显示；真实的零差额仍可显示。
+    assert catalog[prefix + '2025-01.difference:亿元}}'] == '-10.00万元'
     assert catalog[prefix + '2025-01.difference:万元}}'] == '-10.00万元'
     assert catalog[prefix + '2025-02.difference:亿元}}'] == '0.00亿元'
+    # 非零差额舍入为 0.00亿元的原值不作为亿元依据，手写“0.00亿元”不能借它通过核对。
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_values
+
+    assert Decimal('-0.001') not in frozen_number_values([_budget_document()], catalog)['亿元']
 
 
 def test_budget_difference_direction_follows_frozen_sign():
@@ -588,3 +592,18 @@ def test_display_precision_keeps_tiny_values_readable():
     assert _display_precision('0.0042') == '0.0042'
     assert _display_precision('-5.0350') == '-5.04'
     assert _display_precision('1,234.5678') == '1,234.57'
+
+
+
+@pytest.mark.parametrize(('token', 'expected'), [
+    # 换算后不足 1 的非零值改用能写成不小于 1 的最大单位，引用名不变。
+    ('{{value:fact-cccccccccccccccc:change:亿元}}', '654.32万元'),
+    ('{{value:fact-cccccccccccccccc:change:万元}}', '654.32万元'),
+    ('{{value:fact-cccccccccccccccc:currentTotal:亿元}}', '1.37亿元'),
+])
+def test_small_scaled_values_are_displayed_in_a_readable_unit(token, expected):
+    document = _comparison_document(6543211, 5.0332)
+    catalog = frozen_number_catalog([document])
+    assert catalog[token] == expected
+    # 手写的“0.07亿元”仍按书写精度核对通过，不被替换。
+    assert replace_unregistered_numbers('同比增加0.07亿元。', [document]) == '同比增加0.07亿元。'
