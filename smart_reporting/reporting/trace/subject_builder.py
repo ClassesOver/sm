@@ -132,7 +132,8 @@ def claim_marker(claim_id: str) -> str:
     return f"[[claim:{claim_id}]]"
 
 
-_VALUE_BOUNDARY_TAIL = r"(?![\d.,eE])"
+# 紧跟“月”的数字是日期（2025年12月），不是事实值；“8.5日”“本月35.3万人次”不受影响。
+_VALUE_BOUNDARY_TAIL = r"(?![\d.,eE])(?!\s*月)"
 
 
 # 负的冻结值推荐写成“下降/减少… + 正幅度”，绑定与锚定须把该写法视为同一数值。

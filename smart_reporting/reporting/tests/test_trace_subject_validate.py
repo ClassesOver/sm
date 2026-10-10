@@ -25,7 +25,6 @@ from smart_reporting.reporting.trace.subject_builder import (
     value_text_variants,
 )
 
-
 # ---------------------------------------------------------------------------
 # 值形态与状态判定（纯函数）
 # ---------------------------------------------------------------------------
@@ -870,8 +869,8 @@ def test_month_bucket_dates_do_not_warn_on_same_month_prose():
 
 def test_numeric_claim_bindings_only_use_values_present_in_the_local_block():
     from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
-    from smart_reporting.reporting.workflow.checkpoint import SectionArtifact, SectionClaim
     from smart_reporting.reporting.trace.subject_builder import bind_local_claim_values
+    from smart_reporting.reporting.workflow.checkpoint import SectionArtifact, SectionClaim
 
     fact_id = "fact-" + "a" * 16
     claim = SectionClaim(claimId="claim_1", metricCode="income", value=3600, periodBasis="本期",
@@ -1049,8 +1048,24 @@ def test_visit_count_claims_bind_when_written_in_wan_visits() -> None:
     )
 
 
+def test_claim_anchor_never_lands_inside_a_date() -> None:
+    """“2025年12月”中紧跟“月”的数字是日期，不能被当成事实值把锚点插进日期中间。"""
+    from smart_reporting.reporting.trace.subject_builder import anchor_claims, value_matches
+
+    assert anchor_claims("2025年12月开放床位数为12。", {"claim-1": (12, "张")}) == (
+        "2025年12月开放床位数为12[[claim:claim-1]]。"
+    )
+    assert not value_matches("2025年12月", 12)
+    # 平均住院日、“本月”后的数值仍正常匹配。
+    assert value_matches("平均住院日8.5日。", 8.5)
+    assert value_matches("本月35.3万人次。", 35.3)
+
+
 def test_negative_fact_binds_through_decline_synonyms() -> None:
-    from smart_reporting.reporting.trace.subject_builder import formatted_value_matches, value_matches
+    from smart_reporting.reporting.trace.subject_builder import (
+        formatted_value_matches,
+        value_matches,
+    )
 
     assert formatted_value_matches("收入跌幅5.03%。", -5.0332, "%")
     assert value_matches("门诊量下跌120人次。", -120)

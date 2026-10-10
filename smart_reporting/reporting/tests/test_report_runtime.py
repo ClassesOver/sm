@@ -944,3 +944,26 @@ def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected)
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_punctuation
 
     assert normalize_cjk_punctuation(markdown) == expected
+
+
+
+@pytest.mark.parametrize(("markdown", "expected"), [
+    # 模型照抄数值目录的 ISO 期间：改为中文日期，同年区间省略后一个年份。
+    ("2025-01至2025-12期间，门诊收入稳定增长。", "2025年1月至12月期间，门诊收入稳定增长。"),
+    ("报告期为2025-01-01至2025-12-31。", "报告期为2025年1月1日至12月31日。"),
+    ("2024-07至2025-06跨年度对比。", "2024年7月至2025年6月跨年度对比。"),
+    ("2025-01~2025-06收入增长。", "2025年1月至6月收入增长。"),
+    ("**2025-03**门诊量最高。", "**2025年3月**门诊量最高。"),
+    ("| 2025-01 | 123 |", "| 2025年1月 | 123 |"),
+    ("2025年01月最高，2025年3月05日最低。", "2025年1月最高，2025年3月5日最低。"),
+    # 文件名、地址、编号、代码、协议标记、数值占位与非日期保持原样。
+    ("见 report-2025-01.pdf 与 https://x.com/2025-01/a。", "见 report-2025-01.pdf 与 https://x.com/2025-01/a。"),
+    ("版本v2025-01与编号A2025-01不变。", "版本v2025-01与编号A2025-01不变。"),
+    ("配置 `2025-01` 不变。", "配置 `2025-01` 不变。"),
+    ("[[analysis:2025-01]]", "[[analysis:2025-01]]"),
+    ("2024-2025年度与2025-13不变。", "2024-2025年度与2025-13不变。"),
+])
+def test_iso_dates_in_prose_are_written_in_chinese(markdown, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_dates
+
+    assert normalize_cjk_dates(markdown) == expected

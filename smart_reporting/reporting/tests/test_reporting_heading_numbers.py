@@ -1093,3 +1093,12 @@ def test_assemble_strips_chinese_and_compact_manual_heading_numbers(markdown_tit
 
     assert f"### 1.1 {expected}\n" in rendered.markdown
     assert rendered.heading_numbers[1].title == expected
+
+
+def test_assemble_writes_iso_periods_as_chinese_dates() -> None:
+    # 数值目录给出的期间是 ISO 文本，模型照抄进正文和小标题时，成品应按中文日期呈现。
+    rendered = _render("### 2025-01至2025-06收入趋势\n\n2025-03门诊量最高，详见 report-2025-01.pdf。")
+
+    assert "### 1.1 2025年1月至6月收入趋势\n" in rendered.markdown
+    assert "2025年3月门诊量最高，详见 report-2025-01.pdf。" in rendered.markdown
+    assert rendered.heading_numbers[1].title == "2025年1月至6月收入趋势"

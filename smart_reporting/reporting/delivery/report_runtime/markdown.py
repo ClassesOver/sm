@@ -213,6 +213,62 @@ def normalize_cjk_punctuation(markdown: str) -> str:
     return _normalize_report_markdown_segments(markdown, _normalize_cjk_punctuation_text)
 
 
+# 模型从数值目录抄来的 ISO 期间（2025-01、2025-01-31）在正文中改为中文日期。
+# 前后紧邻字母数字、连字符、斜杠或点时是文件名、地址或编号，不改。
+_ISO_DATE = (
+    r"(?P<{p}y>(?:19|20)\d{{2}})-(?P<{p}m>0[1-9]|1[0-2])"
+    r"(?:-(?P<{p}d>0[1-9]|[12]\d|3[01]))?"
+)
+# 只看 ASCII 字母数字：Python 的 \w 含汉字，“期间2025-01”同样需要改写。
+_ISO_DATE_BOUNDARY_BEFORE = r"(?<![A-Za-z0-9_./\-])"
+_ISO_DATE_BOUNDARY_AFTER = r"(?![A-Za-z0-9_./\-:])"
+_ISO_DATE_RANGE = re.compile(
+    _ISO_DATE_BOUNDARY_BEFORE + _ISO_DATE.format(p="a")
+    + r"\s*(?:至|到|~|～|—|–|-)\s*" + _ISO_DATE.format(p="b") + _ISO_DATE_BOUNDARY_AFTER
+)
+_ISO_DATE_SINGLE = re.compile(
+    _ISO_DATE_BOUNDARY_BEFORE + _ISO_DATE.format(p="a") + _ISO_DATE_BOUNDARY_AFTER
+)
+_PADDED_CJK_DATE = re.compile(r"(?<=\d年)0(?=[1-9]月)|(?<=\d月)0(?=[1-9]日)")
+
+
+def _cjk_date(match: re.Match[str], prefix: str, *, omit_year: bool = False) -> str:
+    year, month, day = (match[f"{prefix}{part}"] for part in ("y", "m", "d"))
+    text = "" if omit_year else f"{year}年"
+    text += f"{int(month)}月"
+    return text + (f"{int(day)}日" if day else "")
+
+
+def _normalize_cjk_dates_text(text: str) -> str:
+    def range_text(match: re.Match[str]) -> str:
+        start = _cjk_date(match, "a")
+        same_year = match["ay"] == match["by"] and bool(match["ad"]) == bool(match["bd"])
+        return f"{start}至{_cjk_date(match, 'b', omit_year=same_year)}"
+
+    def convert(piece: str) -> str:
+        piece = _ISO_DATE_RANGE.sub(range_text, piece)
+        piece = _ISO_DATE_SINGLE.sub(lambda match: _cjk_date(match, "a"), piece)
+        return _PADDED_CJK_DATE.sub("", piece)
+
+    pieces: list[str] = []
+    previous_end = 0
+    for protected in _PUNCTUATION_PROTECTED.finditer(text):
+        pieces.append(convert(text[previous_end : protected.start()]))
+        pieces.append(protected[0])
+        previous_end = protected.end()
+    pieces.append(convert(text[previous_end:]))
+    return "".join(pieces)
+
+
+def normalize_cjk_dates(markdown: str) -> str:
+    """正文中的 ISO 日期与期间区间改为中文写法（2025-01至2025-12 → 2025年1月至12月）。
+
+    协议标记、数值占位、链接地址与代码保持原样；文件名、版本号等紧邻字母数字的写法不改。
+    """
+
+    return _normalize_report_markdown_segments(markdown, _normalize_cjk_dates_text)
+
+
 def normalize_report_markdown_strong_spacing(markdown: str) -> str:
     """移除明确成对的中文或业务数值粗体标记内侧空白。"""
 
