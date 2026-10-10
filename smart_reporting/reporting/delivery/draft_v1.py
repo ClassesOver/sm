@@ -749,7 +749,9 @@ def _chart_terms(text: str) -> frozenset[str]:
 
 def _chart_unit_score(unit: str, chart: ReportChartInput) -> int:
     title = chart.title.strip()
-    if title and title in unit:
+    # 正文已经过标点与日期规范（“门诊收入(万元)”→“门诊收入（万元）”），图注按同一规则比较。
+    normalized = normalize_cjk_punctuation(normalize_cjk_wording(title)).strip()
+    if title and (title in unit or normalized in unit):
         return 1000
     return len(_chart_terms(f"{chart.title} {chart.alt_text}") & _chart_terms(unit))
 

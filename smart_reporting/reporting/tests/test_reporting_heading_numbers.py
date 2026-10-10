@@ -1151,3 +1151,11 @@ def test_duplicate_section_heading_is_removed_after_text_normalization(title: st
     )
     assert rendered.markdown.count("## ") == 1
     assert any(item["code"] == "duplicate_section_heading_removed" for item in rendered.auto_fixes)
+
+
+def test_chart_title_match_survives_text_normalization() -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import _chart_unit_score
+
+    chart = _chart("chart_001", "门诊收入(万元)", "citation_001")
+    # 正文已规范为全角括号，图注原文仍应按完整标题命中。
+    assert _chart_unit_score("门诊收入（万元）月度走势平稳。", chart) == 1000
