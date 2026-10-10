@@ -201,6 +201,12 @@ _SECTION_BLOCK_MAX_RELEVANCE_TERMS = 128
 _SECTION_BLOCK_MIN_FILE_TOKENS = 128
 _SECTION_BLOCK_MAX_PROJECTION_ATTEMPTS = 16
 _SECTION_BLOCK_OMISSION_MARKER = "[...已省略与当前正文块无关的证据内容...]"
+# 纠错指令中与复核告警一一对应的处理方式（同比/环比、月均与分组排名口径，图表编号，
+# 小标题），两种生成路径共用。
+_LATER_CORRECTION_ACTIONS = (
+    "同比/环比、月均值与分组排名按登记结果改正；图表编号改用图表标题主题词指代；"
+    "小标题压缩为不超过 24 字的主题短语。"
+)
 _MAX_EXECUTIVE_SUMMARY_CHARS = 8_000
 _EXECUTIVE_SUMMARY_SEPARATOR = "；"
 _EXECUTIVE_SUMMARY_ELLIPSIS = "…"
@@ -1671,7 +1677,8 @@ async def _generate_section_in_blocks(
                     "requiredAction": (
                         "逐条处理 issues：修正有依据的数字和口径；内部 ID 和英文字段名改用业务名称；"
                         "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
-                        "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子；删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。"
+                        "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子；删除无直接证据的原因。"
+                        + _LATER_CORRECTION_ACTIONS + "返回当前 block 完整正文；语义问题不阻断发布。"
                     ),
                 }
                 continue
@@ -1885,7 +1892,8 @@ async def _generate_whole_section_content(
                     "逐条处理 issues：修正数字与字段口径并使用冻结数值引用；内部 ID 和英文字段名改用业务名称；"
                     "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
                     "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子。"
-                    "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId；"
+                    + _LATER_CORRECTION_ACTIONS
+                    + "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId；"
                     "issues 未列出的 block 原样返回（服务端保留其首轮原文）。"
                 ),
             }

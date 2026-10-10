@@ -3300,7 +3300,7 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
     issues = "\n".join(correction["issues"]["block_2"])
     assert "与本章前文重复" in issues and "analysis_001" in issues
     # 纠错指令须覆盖可读性类问题，而不只是数字与口径。
-    for keyword in ("业务名称", "重复", "拆分", "补全未写完的句子"):
+    for keyword in ("业务名称", "重复", "拆分", "补全未写完的句子", "同比/环比", "图表编号", "小标题"):
         assert keyword in correction["requiredAction"]
     assert result.blocks[1].markdown == second_clean
 
