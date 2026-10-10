@@ -793,3 +793,18 @@ def test_overlong_paragraphs_are_flagged_but_lists_and_tables_are_not():
     assert len(warnings) == 1 and warnings[0].startswith("段落过长（405 字）：门诊收入保持增长。")
     for text in ((sentence + "\n\n") * 45, "- " + sentence * 45, "| a | b |\n| --- | --- |\n| " + "门诊" * 200 + " | 1 |"):
         assert not [w for w in readability_warnings(text) if "段落过长" in w]
+
+
+@pytest.mark.parametrize(("months", "text", "expected"), [
+    (10, "2025年全年收入5,500.00万元。",
+     ["期间口径需复核：5,500.00万元是2025年1—10月（10个月）的合计，不能称为全年；请写明实际覆盖月份。"]),
+    (10, "全年收入0.55亿元。",
+     ["期间口径需复核：0.55亿元是2025年1—10月（10个月）的合计，不能称为全年；请写明实际覆盖月份。"]),
+    # 写明实际月份、全年预算或数据确实覆盖 12 个月时不告警。
+    (10, "2025年1—10月收入5,500.00万元，全年预算5,500.00万元。", []),
+    (12, "2025年全年收入7,800.00万元。", []),
+])
+def test_full_year_wording_needs_twelve_months(months, text, expected):
+    metric = {**_metric(values=tuple(range(1000000, (months + 1) * 1000000, 1000000))), "unit": "元"}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content(text, [content]) if "期间口径" in w] == expected

@@ -268,6 +268,53 @@ def _comparison_amount_warnings(text: str, contents: Iterable[str], documents: l
     return list(dict.fromkeys(warnings))
 
 
+def _full_year_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]]) -> list[str]:
+    """“全年”配不足 12 个月的完整期间合计时提示复核（软告警）。
+
+    冻结数据只覆盖 1—10 月时，10 个月合计写成“2025年全年收入…”会被读成全年实际；
+    只在分句数值等于该指标完整期间合计时判定，“全年预算/目标”不在此列。
+    """
+    partial: dict[str, str] = {}
+    for document in documents:
+        for entry in document.get("metrics") or ():
+            if not isinstance(entry, dict) or entry.get("periodGranularity") != "month":
+                continue
+            periods = [str(item.get("period", "")) for item in entry.get("periodValues") or ()
+                       if isinstance(item, dict)]
+            months = sorted({int(period[5:7]) for period in periods
+                             if re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", period)})
+            years = {period[:4] for period in periods}
+            if months and len(years) == 1 and len(months) < 12 and isinstance(entry.get("factId"), str):
+                span = f"{months[0]}—{months[-1]}月" if months == list(range(months[0], months[-1] + 1)) \
+                    else "、".join(f"{month}月" for month in months)
+                partial[entry["factId"]] = f"{years.pop()}年{span}（{len(months)}个月）"
+    if not partial:
+        return []
+    totals: dict[str, list[tuple[str, Decimal]]] = {}
+    for token, value, unit, target in _frozen_number_entries(contents):
+        _, fact_id, field, *_rest = token[2:-2].split(":")
+        display_unit = target or unit
+        if field != "total" or fact_id not in partial or not display_unit or value is None:
+            continue
+        number = Decimal(str(value))
+        if display_unit != unit and (scales := _unit_scales(unit)) is not None:
+            number = number * scales[unit] / scales[display_unit]
+        totals.setdefault(display_unit, []).append((fact_id, number))
+    warnings: list[str] = []
+    for sentence in re.split(r"[。；\n]", text):
+        if "全年" not in sentence or re.search(r"全年(?:预算|目标|计划)", sentence):
+            continue
+        for match in _VALUE.finditer(sentence):
+            number = Decimal(match[1].replace(",", ""))
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            for fact_id, value in totals.get(match[2], ()):
+                if value.quantize(quantum, rounding=ROUND_HALF_UP) == number:
+                    warnings.append(
+                        f"期间口径需复核：{match[0]}是{partial[fact_id]}的合计，不能称为全年；请写明实际覆盖月份。"
+                    )
+    return list(dict.fromkeys(warnings))
+
+
 _GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "位居第一", "位列第一")
 _GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
 
@@ -534,6 +581,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     warnings.extend(_group_ranking_warnings(text, documents))
     warnings.extend(_monthly_average_warnings(text, contents))
     warnings.extend(_comparison_amount_warnings(text, contents, documents))
+    warnings.extend(_full_year_warnings(text, contents, documents))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
     scoped_text = text
     if "[[analysis:" not in text and len(bundles) == 1:
