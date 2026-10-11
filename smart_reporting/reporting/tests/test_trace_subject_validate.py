@@ -169,6 +169,45 @@ def test_percentage_point_claim_exposes_comparable_edited_value() -> None:
         ) is None
 
 
+@pytest.mark.parametrize(("written", "expected"), [
+    ("2个百分点后趋稳", 2), ("−2个百分点", -2), ("－2个百分点", -2),
+    ("1,234.5个百分点", 1234.5), ("-1,234.5个百分点", -1234.5),
+    ("1e2个百分点", None), ("metric2个百分点", None), ("1,23个百分点", None),
+])
+def test_comparable_percentage_points_preserve_whole_number_identity(written, expected):
+    result = claim_status(
+        f"2026年10月东院变化{written}。[[claim:claim-1]]", "claim-1", -1,
+        expected_unit="个百分点", expected_periods=("2026-10",),
+        expected_scope={"院区": "东院"},
+    )
+    assert result["status"] == "stale"
+    if expected is None:
+        assert "draftValue" not in result
+    else:
+        assert result["draftValue"] == expected
+
+
+@pytest.mark.parametrize(("verb", "expected", "direction"), [
+    ("下降", -2, "decrease"), ("降低了", -2, "decrease"),
+    ("回落约", -2, "decrease"), ("提高", 2, "increase"), ("涨幅为", 2, "increase"),
+])
+def test_percentage_point_draft_preserves_direction(verb, expected, direction):
+    result = claim_status(
+        f"2026年10月东院占比{verb}2个百分点。[[claim:claim-1]]", "claim-1", -1,
+        expected_unit="个百分点", expected_periods=("2026-10",),
+    )
+    assert result["draftValue"] == expected
+    assert result["draftDirection"] == direction
+
+
+@pytest.mark.parametrize("verb", ["下降", "上升"])
+def test_ambiguous_signed_percentage_point_magnitude_is_not_comparable(verb):
+    assert extract_comparable_value(
+        f"2026年10月占比{verb}-2个百分点。",
+        expected_unit="个百分点", expected_periods=("2026-10",),
+    ) is None
+
+
 def test_claim_status_exposes_only_a_conservative_comparable_draft_value() -> None:
     result = claim_status(
         "2025-09华东收入3,780万元[[claim:claim-1]]",
@@ -235,6 +274,7 @@ async def _make_editor_with_subject(
     tmp_path: Path,
     *, report_id: str = "report-1", period_table: bool = False, comparison_table: bool = False,
     comparison_rate: float | None = 20, correlation_claim: bool = False, large_amounts: bool = False,
+    percentage_point_claim: bool = False,
 ) -> tuple:
     # large_amounts：元为单位的大额分期间表，服务端按“收入（万元）”表头写换算后的数字。
     column_key = "收入（万元）" if large_amounts else "income_total"
@@ -334,6 +374,11 @@ async def _make_editor_with_subject(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    if percentage_point_claim:
+        document = json.loads(bundle_bytes)
+        document["metrics"][0].update(total=-1, unit="个百分点",
+                                      periodValues=[{"period": "2025-09", "value": -1}])
+        bundle_bytes = json.dumps(document, ensure_ascii=False).encode()
     if correlation_claim:
         document = json.loads(bundle_bytes)
         document["correlationDetails"] = [{
@@ -557,19 +602,22 @@ async def test_validate_returns_unit_and_period_warnings(tmp_path: Path) -> None
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_validate_returns_conservative_comparable_draft_value(tmp_path: Path) -> None:
-    editor, grants, context = await _make_editor_with_subject(tmp_path)
+@pytest.mark.parametrize("percentage_point_claim", [False, True])
+async def test_validate_returns_conservative_comparable_draft_value(tmp_path: Path, percentage_point_claim) -> None:
+    editor, grants, context = await _make_editor_with_subject(tmp_path, percentage_point_claim=percentage_point_claim)
     raw, _ = await grants.issue(context)
     _token, session = await grants.exchange(raw)
-    markdown = "2025-09收入3780万元[[claim:claim-1]]"
+    markdown = ("2025-09占比下降2个百分点[[claim:claim-1]]" if percentage_point_claim
+                else "2025-09收入3780万元[[claim:claim-1]]")
     result = await editor.trace_validate(
         context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest()
     )
     subject = result["subjects"][0]
     assert subject["status"] == "stale"
     assert subject["comparable"] is True
-    assert subject["draftValue"] == 3780
-    assert subject["draftUnit"] == "万元"
+    assert subject["draftValue"] == (-2 if percentage_point_claim else 3780)
+    assert subject["draftUnit"] == ("个百分点" if percentage_point_claim else "万元")
+    assert subject["draftDirection"] == ("decrease" if percentage_point_claim else None)
     assert subject["draftPeriods"] == ["2025-09"]
 
 

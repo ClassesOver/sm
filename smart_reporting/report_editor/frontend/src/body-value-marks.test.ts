@@ -91,6 +91,46 @@ describe('body value marks', () => {
     expect(formatRegisteredValue(3.14159, '%')).toBe('3.14%')
   })
 
+  it.each(['−', '－'])('restores the entire negative value including the %s sign', (minus) => {
+    const result = validation('stale', -2)
+    Object.assign(result.subjects[0], { factValue: -1, unit: '个百分点', draftUnit: '个百分点' })
+    const text = `2026年10月东院变化${minus}2个百分点。[[citation:sub-1]]`
+    const marks = findValueMarks(text, result)
+    expect(marks).toHaveLength(1)
+    expect(text.slice(marks[0].start, marks[0].end)).toBe(`${minus}2个百分点`)
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+    expect(view.state.doc.textContent).toBe(text.replace(`${minus}2`, '-1'))
+  })
+
+  it.each(['1e2个百分点', 'metric2个百分点', '1,23个百分点'])('does not mark a numeric suffix in %s', (written) => {
+    const result = validation('stale', 2)
+    Object.assign(result.subjects[0], { factValue: 1, unit: '个百分点', draftUnit: '个百分点' })
+    expect(findValueMarks(`${written}。[[citation:sub-1]]`, result)).toEqual([])
+  })
+
+  it.each(['下降', '降低了', '回落约'])('preserves the %s wording when restoring a registered decline', (verb) => {
+    const result = validation('stale', -2)
+    Object.assign(result.subjects[0], { factValue: -1, unit: '个百分点', draftUnit: '个百分点', draftDirection: 'decrease' })
+    const text = `2026年10月东院占比${verb}2个百分点。[[citation:sub-1]]`
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+    expect(view.state.doc.textContent).toBe(text.replace('2个百分点', '1个百分点'))
+  })
+
+  it.each([
+    { verb: '下降', factValue: 1, draftValue: -2, draftDirection: 'decrease' },
+    { verb: '提高', factValue: -1, draftValue: 2, draftDirection: 'increase' },
+    { verb: '下降', factValue: -1, draftValue: 2, draftDirection: undefined },
+  ] as const)('does not guess a replacement when direction conflicts or is unknown: $verb / $factValue', (entry) => {
+    const result = validation('stale', entry.draftValue)
+    Object.assign(result.subjects[0], entry, { unit: '个百分点', draftUnit: '个百分点' })
+    const text = `占比${entry.verb}2个百分点。[[citation:sub-1]]`
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe(text)
+  })
+
   it('shows and hides the read-only hover card', () => {
     const root = document.createElement('div')
     root.innerHTML = '<span class="report-value-mark" tabindex="0" data-value-state="valid" data-value-card=\'["指标：华东营收","登记值：12,450万元"]\'>12,450 万元</span>'

@@ -24,7 +24,7 @@ const UNIT_SCALES: Record<string, Record<string, number>> = {
   visits: { 人次: 1, 万人次: 1e4 },
 }
 // 正文数值：千分位数字 + 可选单位；“待核实”是服务端替换无依据数值后的占位。
-const VALUE_PATTERN = /[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[+-]?\d+(?:\.\d+)?/g
+const VALUE_PATTERN = /(?<![\dA-Za-z_.,+−－-])[+−－-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d.,eE])/g
 const UNIT_AFTER = /^\s*(亿元|万元|元|万人次|人次|个百分点|%|‰)/
 const UNVERIFIED = '待核实'
 
@@ -34,7 +34,7 @@ function unitFamily(unit: string): Record<string, number> | undefined {
 
 /** 正文写法换算到登记单位后，按正文书写精度舍入比较。 */
 function sameValue(written: string, writtenUnit: string, registered: number, registeredUnit: string): boolean {
-  const number = Number(written.replace(/,/g, ''))
+  const number = Number(written.replace(/,/g, '').replace(/[−－]/g, '-'))
   if (!Number.isFinite(number)) return false
   let target = registered
   if (writtenUnit && registeredUnit && writtenUnit !== registeredUnit) {
@@ -191,10 +191,21 @@ export function restoreRegisteredValue(view: EditorView, subjectId: string, vali
     .filter(mark => mark.subjectId === subjectId && mark.state !== 'valid')
   if (targets.length !== 1) return false
   const [target] = targets
+  const written = view.state.doc.textBetween(target.from, target.to)
+  let replacementValue = subject.factValue
+  if (subject.draftDirection) {
+    // 只恢复幅度，不猜测或改写方向；登记方向与正文冲突时保留人工处理。
+    if ((subject.draftDirection === 'decrease' && replacementValue > 0) ||
+      (subject.draftDirection === 'increase' && replacementValue < 0)) return false
+    replacementValue = Math.abs(replacementValue)
+  } else if (replacementValue < 0 && !/^[−－-]/.test(written)) {
+    // 旧校验响应或占位没有足够的方向信息，不能把负值填到可能是“下降”的正幅度中。
+    return false
+  }
   // 沿用正文原有的数字与单位间距写法，只替换数值。
-  const spaced = /\d\s+\D/.test(view.state.doc.textBetween(target.from, target.to))
+  const spaced = /\d\s+\D/.test(written)
   const replacement = spaced && subject.unit
-    ? `${formatRegisteredValue(subject.factValue)} ${subject.unit}` : formatRegisteredValue(subject.factValue, subject.unit)
+    ? `${formatRegisteredValue(replacementValue)} ${subject.unit}` : formatRegisteredValue(replacementValue, subject.unit)
   const tr: Transaction = view.state.tr.insertText(replacement, target.from, target.to)
   view.dispatch(tr)
   return true

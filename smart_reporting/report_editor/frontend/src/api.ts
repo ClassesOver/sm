@@ -229,6 +229,8 @@ export interface TraceValidation {
     draftValue?: number
     draftUnit?: string | null
     draftPeriods?: string[]
+    /** 服务端确认的百分点幅度方向；用于恢复时保留方向词，避免“下降-1”。 */
+    draftDirection?: 'decrease' | 'increase' | null
     comparable?: boolean
     warnings?: string[]
     unit?: string | null

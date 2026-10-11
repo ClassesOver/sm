@@ -851,6 +851,7 @@ class ReportEditorTraceService:
                     "draftValue": detail.get("draftValue"),
                     "draftUnit": detail.get("draftUnit"),
                     "draftPeriods": detail.get("draftPeriods"),
+                    "draftDirection": detail.get("draftDirection"),
                     "comparable": detail.get("comparable", False),
                     # B8 导出来源附录的冻结摘要字段：单位、期间、公式、范围与
                     # 数据集身份都取自事实登记，不从草稿反推。
