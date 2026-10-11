@@ -1491,6 +1491,9 @@ def test_whole_section_stage_requests_all_blocks():
     instructions = "\n".join(stage.instructions)
     assert "一次生成 sectionPlan 中全部 block" in instructions
     assert "不得生成其他 block" not in instructions
+    # 生成端预防：占位符后重复单位、数值写错归属、全角数字与百分点缩写。
+    for keyword in ("其后不得再写单位", "所属指标、科室或期间", "百分点写“个百分点”"):
+        assert keyword in instructions
 
 
 @pytest.mark.anyio
@@ -3307,7 +3310,7 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
     issues = "\n".join(correction["issues"]["block_2"])
     assert "与本章前文重复" in issues and "analysis_001" in issues
     # 纠错指令须覆盖可读性类问题，而不只是数字与口径。
-    for keyword in ("业务名称", "重复", "拆分", "补全未写完的句子", "同比/环比", "图表编号", "小标题"):
+    for keyword in ("业务名称", "重复", "拆分", "补全未写完的句子", "同比/环比", "图表编号", "小标题", "数值归属", "历史新高"):
         assert keyword in correction["requiredAction"]
     assert result.blocks[1].markdown == second_clean
 
