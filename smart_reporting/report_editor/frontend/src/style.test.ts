@@ -612,3 +612,16 @@ describe('report editor visual hierarchy', () => {
     expect(mobileHeadings.style.scrollMarginTop).toBe('calc(var(--app-bar-height, 56px) + 16px)')
   })
 })
+
+describe('body source markers', () => {
+  const css = readFileSync('src/style.css', 'utf8')
+  it('uses a data icon distinct from the toolbar link icon', () => {
+    expect(css).toContain("mask: url('./assets/source-data.svg')")
+    expect(css).not.toContain('source-link.svg')
+  })
+  it('extends the touch target to 44px on coarse pointers without changing line layout', () => {
+    const coarse = css.slice(css.indexOf('@media (pointer: coarse)'))
+    expect(coarse).toMatch(/width: 44px;\s*height: 44px;\s*border: 12px solid transparent/)
+    expect(coarse).toMatch(/margin: -12px/)
+  })
+})
