@@ -872,3 +872,17 @@ def test_visit_counts_written_as_persons_are_flagged():
     content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
     warnings = [w for w in review_content("门诊量35.30万人，医生120人。", [content]) if "单位混用" in w]
     assert warnings == ["单位混用：35.30万人对应登记的万人次（就诊次数），不是人数；请写为35.30万人次。"]
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("本期收入创历史新高。", True),
+    ("收入首次突破1亿元。", True),
+    ("收入达到历年最高水平，创近五年新高。", True),
+    # 期内新高可由月度序列核对；否定表述与普通水平描述不告警。
+    ("12月收入创年内新高。", False),
+    ("现有数据不能判断是否创历史新高。", False),
+    ("收入增长较快，处于较高水平。", False),
+])
+def test_historical_claims_need_longer_history(text, flagged):
+    warnings = [w for w in review_content(text, [_comparison_content()]) if "历史比较" in w]
+    assert bool(warnings) is flagged

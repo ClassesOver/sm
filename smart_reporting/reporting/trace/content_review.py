@@ -55,6 +55,11 @@ _CONTRACT_FIELD_PATTERN = re.compile(
 _VALUE = re.compile(r"(?<![\d.,])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(亿元|万元|元|万人次|人次|床日|%)")
 # 百分点核对按两两相减，候选过多时跳过以免复核耗时失控。
 _MAX_PERCENT_POINT_CANDIDATES = 400
+# 冻结数据只覆盖本期与对比期：“创历史新高”“首次突破1亿元”“历年最高”需要更长历史才能判断。
+_HISTORICAL_CLAIM = re.compile(
+    r"历史(?:新高|新低|最高|最低|同期最高|同期最低)|历年(?:最高|最低)|史上|"
+    r"首次(?:突破|超过|跌破|低于|高于)|创(?!年内|本年|今年|期内|月内)[^。；，,\n]{0,4}?(?:新高|新低)"
+)
 _INFERENCE = re.compile(
     r"(?:负值|零值|偏低|低点|异常)[^。\n]{0,60}(?:可能(?:源于|反映|存在)|系.{0,25}所致|属正常业务特征)"
     r"|(?:尚未启动(?:采购|合同)|字段未填充有效数值|尚无.{0,12}(?:数据|记录)入账|无实际支出记录|疑似未入账)"
@@ -896,6 +901,14 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         if re.search(r"(?:不能|不可|不足以|不应|无法|不代表|不得|不要|未能|并非|尚不能).{0,30}", assertion):
             continue
         warnings.append(f"业务原因或数据状态需直接证据：{match[0]}。数值为零不能证明流程未启动、字段未填充或未入账。")
+    for match in _HISTORICAL_CLAIM.finditer(text):
+        clause = re.split(r"[。！？；，,\n]", text[:match.start()])[-1] + match[0]
+        if re.search(r"不能|无法|不足以|并非|不代表|尚不能", clause):
+            continue
+        warnings.append(
+            f"历史比较需直接证据：{match[0]}。冻结数据只覆盖本期与对比期，不能判断历史新高或首次突破；"
+            "请改为与对比期的比较。"
+        )
     # 负值占位渲染后自带负号：与“下降/减少”连用成双重否定，与“增长/上升”连用方向矛盾。
     for match in re.finditer(
         rf"(?P<verb>{DIRECTION_WORD_PATTERN})"
