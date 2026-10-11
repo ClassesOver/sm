@@ -1210,3 +1210,8 @@ PR #14 合并后找 bug（2026-10-09）：
 /loop 第 89 轮（2026-10-11）：
 
 - Word 表格宽度与引用块（delivery/report_runtime/docx）：继续逐页对照 Word 与 PDF。pandoc 产出的表格为 auto 宽度、等宽列，只占约八成版心（PDF 为 100%）；引用块（“注：…”）在 Word 中只是缩进文字，PDF 为左侧主题色竖线加浅色底纹。现 Word 表格宽度设为 100%（tblW pct 5000），引用块样式（Block Text）加左侧 accent 竖线与 surface 底纹；新增的 tblW、pBdr、shd 以及既有的 tblBorders 均按 OOXML 架构顺序插入（此前 tblBorders 追加在 tblLook 之后，Word 比 LibreOffice 更严格）。新增 1 例（修复前失败），整稿渲染、编辑器真实导出、渲染运行时、编辑器与非阻断相关 204 项通过，目检表格铺满、引用块成框。
+
+/loop 第 90 轮（2026-10-11）：
+
+- 阶段性全量回归（覆盖第 80–89 轮；渲染依赖已装齐）：`smart_reporting/reporting/tests` 与质量告警测试共 3128 项通过、5 跳过（均为 V1 已移除旧契约的显式跳过）、0 失败（6 分 37 秒）；此前因缺 pandoc/LibreOffice Writer 跳过的整稿渲染与真实导出测试已全部运行并通过。`smart_reporting/tests/test_contract.py` 在收集阶段需要至少 32 字节的编辑授权密钥（环境未配置），不计入本次范围。
+- 会话启动钩子（`.claude/hooks/session-start.sh`，在 `.claude/settings.json` 登记，仅云会话执行，同步模式）：幂等安装报告渲染依赖（libreoffice-writer、pandoc、fonts-noto-cjk，已装则跳过）、`uv sync --no-install-project` 与报告编辑器前端依赖（`npm ci`，仅在 node_modules 缺失或旧于锁文件时执行；首版用 npm install 会改写 package-lock.json，已改并还原）。验证：钩子执行成功（依赖齐备时 0.18 秒）、ruff 通过、整稿渲染测试与前端 vitest 用例通过。仓库无 CI 配置，渲染测试纳入 CI 待确认。
