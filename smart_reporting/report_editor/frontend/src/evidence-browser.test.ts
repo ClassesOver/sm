@@ -877,3 +877,24 @@ describe('evidence browser shell', () => {
     expect(onReturnToReport).toHaveBeenCalled()
   })
 })
+
+describe('trace list download', () => {
+  it('offers the trace list only when provided and reports failures without blocking', async () => {
+    const { shell } = setup()
+    expect(shell.querySelector<HTMLButtonElement>('.evidence-trace-list-download')!.hidden).toBe(true)
+    const root = document.createElement('div')
+    document.body.append(root)
+    const download = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined)
+    createEvidenceBrowser(root, { client: makeClient(), revisionLabel: '修订 12', onReturnToReport: vi.fn(), locateSubject: vi.fn(), downloadTraceList: download })
+    const button = root.querySelector<HTMLButtonElement>('.evidence-trace-list-download')!
+    expect(button.hidden).toBe(false)
+    button.click()
+    expect(button.disabled).toBe(true)
+    await flush()
+    expect(button.disabled).toBe(false)
+    expect(root.querySelector('.evidence-notice')?.textContent).toBe('溯源清单生成失败，请稍后重试')
+    button.click()
+    await flush()
+    expect(download).toHaveBeenCalledTimes(2)
+  })
+})

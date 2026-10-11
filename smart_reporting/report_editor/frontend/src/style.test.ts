@@ -636,3 +636,34 @@ describe('toolbar export labels', () => {
     expect(block).not.toContain('[data-action="word"] span')
   })
 })
+
+describe('auxiliary text contrast', () => {
+  const luminance = (hex: string) => {
+    const [r, g, b] = [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16) / 255)
+      .map(channel => channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+  }
+  const contrast = (a: string, b: string) => {
+    const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+    return (high + 0.05) / (low + 0.05)
+  }
+
+  it('keeps every non-disabled gray text color at 4.5:1 or more on the light panels', () => {
+    const css = readFileSync('src/style.css', 'utf8')
+    const failures: string[] = []
+    for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const [selector, body] = [rule[1].trim(), rule[2]]
+      if (selector.includes(':disabled') || selector.includes('[disabled]')) continue
+      for (const match of body.matchAll(/(?<![-\w])color:\s*(#[0-9a-fA-F]{6})\b/g)) {
+        const color = match[1].toLowerCase()
+        const [r, g, b] = [1, 3, 5].map(index => parseInt(color.slice(index, index + 2), 16))
+        // 只检查灰蓝色系辅助文字（低饱和、中等亮度）；白字与浅色装饰色用于深色底，另行设计。
+        const gray = Math.max(r, g, b) - Math.min(r, g, b) < 60 && luminance(color) > 0.08 && luminance(color) < 0.5
+        // 拖动手柄与关系箭头是图形符号，按非文字内容 3:1 要求。
+        const graphic = /::before|evidence-relation-arrow/.test(selector)
+        if (gray && contrast(color, '#f2f7fa') < (graphic ? 3 : 4.5)) failures.push(`${selector.split('\n').at(-1)} ${color}`)
+      }
+    }
+    expect(failures).toEqual([])
+  })
+})

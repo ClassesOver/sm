@@ -243,8 +243,12 @@ let captureEvidenceEditor = () => {}
 let restoreEvidenceEditor = () => shell.editor.focus({ preventScroll: true })
 let focusEvidenceTarget = (_target: HTMLElement) => shell.editor.focus({ preventScroll: true })
 let evidenceLocateIntent = 0
-const { createEvidenceBrowser } = await import('./evidence-browser')
-const evidenceBrowser = createEvidenceBrowser(root, {
+// 证据浏览器在后台预加载，不阻塞编辑器首屏；加载完成前的调用按顺序排队，
+// isOpen 在加载前恒为 false（浏览器尚未打开）。
+type EvidenceBrowser = ReturnType<typeof import('./evidence-browser').createEvidenceBrowser>
+let loadedEvidenceBrowser: EvidenceBrowser | null = null
+const evidenceBrowserReady: Promise<EvidenceBrowser> = import('./evidence-browser').then(({ createEvidenceBrowser }) =>
+  loadedEvidenceBrowser = createEvidenceBrowser(root, {
   client,
   revisionLabel: formatRevisionLabel(revision),
   storageKey: `smart-reporting-evidence:${basePath}`,
@@ -316,7 +320,33 @@ const evidenceBrowser = createEvidenceBrowser(root, {
     })
   },
   getDraft: () => ({ markdown: getEditorMarkdown(), sha256 }),
-})
+  downloadTraceList: async () => {
+    const markdown = getEditorMarkdown()
+    const [sources, { buildTraceListCsv, downloadTraceList }] = await Promise.all([loadBodyCatalog(), import('./trace-list')])
+    let validation = currentBodyValidationMarkdown === markdown ? currentBodyValidation : null
+    if (!validation) {
+      // 尚无本稿校验结果时现场校验一次；失败时清单标为“未校验”，不阻止下载。
+      const digest = await markdownSha256(markdown)
+      validation = await client.validateSources(markdown, digest).then(result => result.draftSha256 === digest ? result : null, () => null)
+    }
+    downloadTraceList(buildTraceListCsv(markdown, sources, validation), `溯源清单-${formatRevisionLabel(revision)}.csv`)
+  },
+}))
+const withEvidenceBrowser = <T>(action: (browser: EvidenceBrowser) => T): Promise<T> => {
+  const result = loadedEvidenceBrowser ? Promise.resolve(action(loadedEvidenceBrowser)) : evidenceBrowserReady.then(action)
+  result.catch(() => status('来源浏览器加载失败，请刷新页面后重试', 'dirty'))
+  return result
+}
+const evidenceBrowser = {
+  isOpen: () => loadedEvidenceBrowser?.isOpen() ?? false,
+  open: () => void withEvidenceBrowser(browser => browser.open()),
+  openObject: (ref: Parameters<EvidenceBrowser['openObject']>[0]) => void withEvidenceBrowser(browser => browser.openObject(ref)),
+  openAnalysis: (analysisId: string) => withEvidenceBrowser(browser => browser.openAnalysis(analysisId)),
+  openSubject: (subjectId: string) => withEvidenceBrowser(browser => browser.openSubject(subjectId)),
+  setDownloadEnabled: (enabled: boolean) => void withEvidenceBrowser(browser => browser.setDownloadEnabled(enabled)),
+  setDrilldownEnabled: (enabled: boolean) => void withEvidenceBrowser(browser => browser.setDrilldownEnabled(enabled)),
+  reset: () => void withEvidenceBrowser(browser => browser.reset()),
+}
 evidenceCovering = () => evidenceBrowser.isOpen()
 shell.sources.addEventListener('click', () => {
   document.querySelector<HTMLDialogElement>('.report-source-preview')?.close('selected')
