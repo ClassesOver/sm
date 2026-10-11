@@ -697,3 +697,20 @@ def test_number_guide_spells_out_month_coverage():
     # 跨年或非月度期间不给覆盖说明。
     assert _month_coverage(['2024-12', '2025-01']) is None
     assert _month_coverage(['2025']) is None
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 人次（就诊次数）写成人数且数值对得上登记人次时改回人次。
+    ('门诊量35.30万人。', '门诊量35.30万人次。'),
+    ('门诊接诊353,000人。', '门诊接诊353,000人次。'),
+    # 对不上人次的人数（职工、人口等）不改写。
+    ('门诊量99.99万人，医生120人，服务人口35.3万人口。', '门诊量99.99万人，医生120人，服务人口35.3万人口。'),
+])
+def test_visit_counts_written_as_persons_are_corrected(text, expected):
+    metric = {
+        'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+        'periodRoles': ['current'], 'field': 'visits', 'fieldRef': 'hospital.visits',
+        'aggregation': 'sum', 'unit': '人次', 'formula': 'sum', 'total': 353000,
+        'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+    }
+    assert replace_unregistered_numbers(text, [json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]})]) == expected

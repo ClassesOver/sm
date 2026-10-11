@@ -865,3 +865,10 @@ def test_window_comparisons_are_not_called_single_month_changes(window, text, ex
 def test_from_to_wording_must_match_the_direction_of_the_values(text, flagged):
     warnings = [w for w in review_content(text, [_comparison_content()]) if "方向矛盾" in w]
     assert bool(warnings) is flagged
+
+
+def test_visit_counts_written_as_persons_are_flagged():
+    metric = {**_metric(values=(100000, 120000, 133000)), "unit": "人次"}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    warnings = [w for w in review_content("门诊量35.30万人，医生120人。", [content]) if "单位混用" in w]
+    assert warnings == ["单位混用：35.30万人对应登记的万人次（就诊次数），不是人数；请写为35.30万人次。"]

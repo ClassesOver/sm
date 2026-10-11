@@ -15,6 +15,7 @@ from .numeric_text import (
     FALLING_WORDS,
     MULTIPLE_NUMBER,
     PERCENT_POINT,
+    PERSON_COUNT,
     RISING_WORDS,
     _frozen_number_entries,
     _unit_scales,
@@ -810,6 +811,14 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                     f"倍数缺少可核对的冻结依据：{match[0]}。须由已登记的本期与基期合计或比率得出，"
                     "请改用变化率表述或删去该倍数。"
                 )
+    # 人次（就诊次数）写成人数：“门诊量35.3万人”。
+    for match in PERSON_COUNT.finditer(text):
+        number = Decimal(match["number"].replace(",", ""))
+        quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+        visit_unit = "万人次" if match["scale"] else "人次"
+        if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get(visit_unit, ()))
+                and not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get("人", ()))):
+            warnings.append(f"单位混用：{match[0]}对应登记的{visit_unit}（就诊次数），不是人数；请写为{match['number']}{visit_unit}。")
     # 自写表格把单位写在表头、单元格只写数字：按表头单位同样核对。
     for _start, _end, number_text, unit in table_unit_cells(text):
         number = Decimal(number_text.replace(",", ""))

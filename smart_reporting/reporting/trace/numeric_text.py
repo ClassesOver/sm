@@ -554,6 +554,10 @@ def _display_precision(number_text: str) -> str:
     return f"{rounded:,f}" if "," in number_text else f"{rounded:f}"
 
 
+# “35.3万人”“353,000人”：人数写法；“人次”“人均”“人员”“人口”不在此列。
+PERSON_COUNT = re.compile(
+    r"(?<![\d.,])(?P<number>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<scale>万)?人(?!次|均|员|口|民)"
+)
 # “是上年同期的1.05倍”“增长2倍”：倍数只能由已登记的比较或比率得出。
 # “3倍标准差”“1.5倍四分位距”是统计阈值，不是事实之间的倍数。
 MULTIPLE_NUMBER = re.compile(r"(?<![\d.,])(?P<number>\d+(?:\.\d+)?)\s*倍(?!数|标准差|四分位|方差|IQR)")
@@ -708,6 +712,20 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         written = _display_precision(match["number"]) + match["scale"]
         return written + matched[0][1:] if len(matched) == 1 else written
 
+    def replace_persons(match: re.Match[str]) -> str:
+        # “门诊量35.3万人”：人次（就诊次数）写成了人数。数值只对得上登记的人次时改回人次；
+        # 对不上的“人”可能是职工、床位等其他人数，不在此替换。
+        number = Decimal(match["number"].replace(",", ""))
+        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+        quantum = Decimal(1).scaleb(-digits)
+        visit_unit = "万人次" if match["scale"] else "人次"
+        if (not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get(visit_unit, ()))
+                or any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get("人", ()))):
+            return match[0]
+        logger.warning("report_visit_unit_corrected value={}", match[0])
+        return f"{_display_precision(match['number'])}{match['scale'] or ''}人次"
+
+    replaced = PERSON_COUNT.sub(replace_persons, replaced)
     multiples = registered_multiples(contents)
 
     def replace_multiple(match: re.Match[str]) -> str:
