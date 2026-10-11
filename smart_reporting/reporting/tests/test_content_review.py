@@ -691,6 +691,34 @@ def test_group_ranking_claims_are_checked_against_frozen_groups(text, expected):
     assert warnings == expected
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("外科收入100元。", ["分组数值归属需复核：外科名下的100元是内科的登记值。请改用外科对应的数值引用，或改写主语。"]),
+    # 占位选错分组同样拦下（“心内科”不误认为“内科”）。
+    ("外科收入{{value:fact-aaaaaaaaaaaaaaaa:topGroups.0:元}}，心内科收入100元。", [
+        "分组数值归属需复核：外科名下的300元是心内科的登记值。请改用外科对应的数值引用，或改写主语。",
+        "分组数值归属需复核：心内科名下的100元是内科的登记值。请改用心内科对应的数值引用，或改写主语。",
+    ]),
+    # 归属正确、比较或合计语境、多个分组并列、对得上指标自身登记值时不告警。
+    ("外科收入200元，心内科300元。", []),
+    ("外科收入较上年增加100元，外科占全院300元。", []),
+    ("外科收入100元、心内科300元。", []),
+    ("内科收入30元。", []),
+])
+def test_group_values_written_under_another_group_are_flagged(text, expected):
+    warnings = [w for w in review_content(text, [_grouped_metric_document()]) if "数值归属" in w]
+    assert warnings == expected
+
+
+def test_group_value_attribution_keeps_thousands_separators_and_ignores_code_names():
+    # 千分位逗号不拆分句；编码类组名（“01”）不当作点名。
+    groups = [{"group": "心血管内科", "value": 34567}, {"group": "儿科", "value": 9876}, {"group": "01", "value": 1}]
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [{
+        **_metric(), "topGroups": groups, "bottomGroups": list(reversed(groups)),
+    }]})
+    warnings = [w for w in review_content("儿科门诊量34,567人次，01号诊室9,876人次。", [content]) if "数值归属" in w]
+    assert warnings == ["分组数值归属需复核：儿科名下的34,567人次是心血管内科的登记值。请改用儿科对应的数值引用，或改写主语。"]
+
+
 def test_group_ranking_is_skipped_when_several_metrics_have_groups():
     document = json.loads(_grouped_metric_document())
     document["metrics"].append({**document["metrics"][0], "factId": "fact-" + "e" * 16, "field": "visits"})

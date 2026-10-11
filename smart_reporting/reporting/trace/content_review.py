@@ -491,6 +491,72 @@ def _group_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[
     return list(dict.fromkeys(warnings))
 
 
+# 分句含比较、变化或全院合计语境时，数值不一定是该分组自身的值。
+_GROUP_VALUE_CONTEXT = re.compile(
+    r"较|比上|同比|环比|增加|减少|增长|下降|相差|差距|高出|低出|多出|少于|超出|全院|合计|共计|累计|总|占"
+)
+
+
+def _group_value_attribution_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+    """“内科收入200元”而 200元 是外科的登记分组值时提示数值归属（软告警）。
+
+    分句只点名一个已登记分组、不含比较或合计语境时判定：数值对不上该分组在任何同量纲
+    指标中的登记值、也对不上指标本身的其他登记值，却恰好对上同一指标中另一个分组的值。
+    """
+    tables: list[tuple[str, dict[str, Decimal]]] = []
+    # 指标、比较与派生事实中分组结果以外的登记值：对得上其中任何一个时不判定归属。
+    registered: list[tuple[str, set[Decimal]]] = []
+    for document in documents:
+        for array in ("metrics", "comparisons", "derivedMetrics", "reconciliations"):
+            for entry in document.get(array) or ():
+                if not isinstance(entry, dict) or not isinstance(entry.get("unit"), str):
+                    continue
+                registered.append((entry["unit"], _numeric_literals(
+                    {key: value for key, value in entry.items() if key not in {"topGroups", "bottomGroups"}})))
+                if array != "metrics" or "current" not in (entry.get("periodRoles") or ()):
+                    continue
+                groups = {str(item["group"]): Decimal(str(item["value"]))
+                          for item in (*(entry.get("topGroups") or ()), *(entry.get("bottomGroups") or ()))
+                          if isinstance(item, dict) and item.get("group")
+                          and isinstance(item.get("value"), (int, float)) and not isinstance(item.get("value"), bool)}
+                if len(groups) >= 2:
+                    tables.append((entry["unit"], groups))
+    # 编码类组名（“1”“A01”）会在数字中误命中；只认含汉字、至少两个字符的组名。
+    names = {group for _, groups in tables for group in groups
+             if len(group) >= 2 and re.search(r"[\u3400-\u9fff]", group)}
+    warnings: list[str] = []
+    # 千分位逗号不是分句符：“34,567人次”不能拆成两段。
+    for clause in re.split(r"[。；，\n]|,(?!\d)", text):
+        named = [group for group in names if group in clause]
+        named = [group for group in named if not any(group != other and group in other for other in named)]
+        if len(named) != 1 or _GROUP_VALUE_CONTEXT.search(clause):
+            continue
+        group = named[0]
+        for match in _VALUE.finditer(clause):
+            number = Decimal(match[1].replace(",", ""))
+            digits = len(match[1].split(".", 1)[1]) if "." in match[1] else 0
+            quantum = Decimal(1).scaleb(-digits)
+
+            def shown(value: Decimal, unit: str, match: re.Match[str] = match, number: Decimal = number,
+                      quantum: Decimal = quantum) -> bool:
+                scales = _unit_scales(unit)
+                if unit != match[2] and (scales is None or match[2] not in scales):
+                    return False
+                converted = value if unit == match[2] else value * scales[unit] / scales[match[2]]
+                return converted.quantize(quantum, rounding=ROUND_HALF_UP) == number
+
+            if (number == 0
+                    or any(shown(value, unit) for unit, values in registered for value in values)
+                    or any(shown(groups[group], unit) for unit, groups in tables if group in groups)):
+                continue
+            owners = {other for unit, groups in tables if group in groups
+                      for other, value in groups.items() if other != group and shown(value, unit)}
+            if len(owners) == 1:
+                warnings.append(f"分组数值归属需复核：{group}名下的{match[0]}是{next(iter(owners))}的登记值。"
+                                f"请改用{group}对应的数值引用，或改写主语。")
+    return list(dict.fromkeys(warnings))
+
+
 def _project_ratio_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
     warnings = []
     for label, numerator_field in (("签约率", "contract_amount"), ("付款率", "payment_amount")):
@@ -714,6 +780,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
     warnings.extend(_group_ranking_warnings(text, documents))
+    warnings.extend(_group_value_attribution_warnings(text, documents))
     warnings.extend(_monthly_average_warnings(text, contents))
     warnings.extend(_comparison_amount_warnings(text, contents, documents))
     warnings.extend(_full_year_warnings(text, contents, documents))
