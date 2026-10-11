@@ -31,13 +31,24 @@ export function sourceCoverageSummary(result: TraceValidation, markdown: string)
 }
 
 /**
- * 正文中需处理的位置（改动数值、待核实、待复核表格/图表入口）中，文档位置在 after 之后的下一处；
+ * 正文中需处理的位置（改动数值、待核实、过期引用、待复核表格/图表入口）中，文档位置在 after 之后的下一处；
  * 到末尾后回到第一处。按文档位置而非元素身份接续，装饰重绘后不会回到开头。
  */
-export function nextSourceIssue(root: HTMLElement, after: number | null, positionOf: (element: HTMLElement) => number): HTMLElement | null {
+export function nextSourceIssue(root: HTMLElement, after: number | null, positionOf: (element: HTMLElement) => number,
+  validation: TraceValidation | null = null): HTMLElement | null {
+  const staleSubjects = new Set(validation?.subjects.filter(subject => subject.status === 'stale').map(subject => subject.subjectId))
+  const valueSubjects = new Set([...root.querySelectorAll<HTMLElement>(
+    '.report-value-mark--stale, .report-value-mark--unverified',
+  )].map(mark => mark.dataset.valueSubject))
+  // 无法提取唯一正文值时，使用协议引用兜底。读取整组引用，兼容首项为 analysis 的合并入口。
   const issues = [...root.querySelectorAll<HTMLElement>(
-    '.report-value-mark--stale, .report-value-mark--unverified, .report-object-source-marker[data-marker-state="stale"]',
-  )]
+    '.report-value-mark--stale, .report-value-mark--unverified, .report-object-source-marker[data-marker-state="stale"], .report-protocol-marker[data-marker-references]',
+  )].filter(item => {
+    if (item.matches('.report-value-mark--stale, .report-value-mark--unverified, .report-object-source-marker[data-marker-state="stale"]')) return true
+    if (item.classList.contains('report-object-source-marker')) return false
+    const references: Array<{ kind: string; value: string }> = JSON.parse(item.dataset.markerReferences ?? '[]')
+    return references.some(ref => ref.kind === 'citation' && staleSubjects.has(ref.value) && !valueSubjects.has(ref.value))
+  })
   if (!issues.length) return null
   return (after === null ? undefined : issues.find(item => positionOf(item) > after)) ?? issues[0]
 }
