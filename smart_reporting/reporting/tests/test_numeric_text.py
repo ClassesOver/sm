@@ -64,6 +64,27 @@ def test_catalog_and_render_use_frozen_totals_and_months():
     assert render_frozen_numbers('{{value:fact-aaaaaaaaaaaaaaaa:total:元}}', conflict) == '数值待核实'
 
 
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 显示值已带单位：占位后重复书写的同一量纲单位去掉（含显示单位与占位单位不同的情形）。
+    ('收入{{value:a:total:亿元}}亿元', '收入1.37亿元'),
+    ('增加{{value:a:change:亿元}}亿元', '增加654.32万元'),
+    ('同比增长{{value:a:changeRate:%}}%，', '同比增长5.03%，'),
+    ('门诊{{value:a:visits:人次}} 人次', '门诊35.30万人次'),
+    ('提高{{value:a:share:%}}个百分点', '提高2.10个百分点'),
+    # 其后不是单位、量纲不同、显示值不带单位或占位无法解析时不动。
+    ('收入{{value:a:total:亿元}}以上，次均{{value:a:visits:人次}}次均', '收入1.37亿元以上，次均35.30万人次次均'),
+    ('增长{{value:a:changeRate:%}}元', '增长5.03%元'),
+    ('金额{{value:b:total}}元（单位待核实）', '金额136,543,211元（单位待核实）'),
+])
+def test_unit_written_again_after_placeholder_is_not_duplicated(text, expected):
+    catalog = {
+        '{{value:a:total:亿元}}': '1.37亿元', '{{value:a:change:亿元}}': '654.32万元',
+        '{{value:a:changeRate:%}}': '5.03%', '{{value:a:visits:人次}}': '35.30万人次',
+        '{{value:a:share:%}}': '2.10个百分点', '{{value:b:total}}': '136,543,211',
+    }
+    assert render_frozen_numbers(text, catalog) == expected
+
+
 def test_unregistered_derived_numbers_are_replaced_before_publishing():
     document = {
         'analysisId': 'analysis_001',

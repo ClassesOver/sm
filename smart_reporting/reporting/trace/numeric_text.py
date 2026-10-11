@@ -42,7 +42,6 @@ _VISIT_UNITS = {"人次": Decimal(1), "万人次": Decimal(10_000)}
 def _unit_scales(unit: str | None) -> dict[str, Decimal] | None:
     """同一量纲内可互换的显示单位及倍率；只有金额与人次按固定倍率换算。"""
     return next((family for family in (_MONEY_UNITS, _VISIT_UNITS) if unit in family), None)
-_VALUE_TOKEN = re.compile(r"\{\{value:[^{}\r\n]+\}\}")
 _NUMBER = r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _MONEY_PAIR = re.compile(
     rf"(?<![\d.,])(?P<large>{_NUMBER})\s*(?P<unit>亿元|万元)"
@@ -384,15 +383,34 @@ def frozen_number_guide(
     return guide
 
 
+# 占位渲染为带单位的显示值；模型常在占位后再写一遍单位（“{{…:亿元}}亿元”“{{…:%}}%”），
+# 渲染后成为“1.37亿元亿元”“654.32万元亿元”“5.03%%”。显示值已带单位时，紧随其后的
+# 同一量纲单位去掉；显示值不带单位（单位待核实）或量纲不同的不动。
+_UNIT_FAMILIES = (("亿元", "万元", "元"), ("万人次", "人次"), (PERCENT_POINT, "百分点", "%"), ("‰",), ("床日",))
+_TRAILING_UNIT = "|".join(sorted({unit for family in _UNIT_FAMILIES for unit in family}, key=len, reverse=True))
+_VALUE_TOKEN_WITH_UNIT = re.compile(
+    rf"(?P<token>\{{\{{value:[^{{}}\r\n]+\}}\}})(?P<unit>[ \t]*(?:{_TRAILING_UNIT}))?"
+)
+
+
+def _unit_family(unit: str) -> tuple[str, ...] | None:
+    return next((family for family in _UNIT_FAMILIES if unit in family), None)
+
+
 def render_frozen_numbers(markdown: str, catalog: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
-        text = catalog.get(match[0])
+        text = catalog.get(match["token"])
+        written = match["unit"] or ""
         if text is None:
-            logger.warning("report_number_reference_unavailable token={}", match[0])
-            return "数值待核实"
-        return text
+            logger.warning("report_number_reference_unavailable token={}", match["token"])
+            return "数值待核实" + written
+        shown = re.search(rf"(?:{_TRAILING_UNIT})$", text)
+        if written and shown and _unit_family(shown[0]) == _unit_family(written.strip()):
+            logger.warning("report_duplicate_unit_removed token={} unit={}", match["token"], written.strip())
+            return text
+        return text + written
 
-    rendered = _VALUE_TOKEN.sub(replace, markdown)
+    rendered = _VALUE_TOKEN_WITH_UNIT.sub(replace, markdown)
     for warning in money_text_warnings(rendered):
         logger.warning("report_number_conversion_warning message={}", warning)
     return rendered
