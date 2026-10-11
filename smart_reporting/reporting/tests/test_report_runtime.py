@@ -655,6 +655,24 @@ def test_postprocess_docx_scales_tall_image_within_page_bounds(tmp_path: Path) -
     assert abs(shape.width / shape.height - 1 / 3) < 0.001
 
 
+def test_postprocess_docx_heading_styles_follow_pdf_hierarchy(tmp_path: Path) -> None:
+    # 章节、小标题、四级标题字号逐级递减并加粗，与 PDF 一致；标题前留白并与下文同页。
+    docx = pytest.importorskip("docx")
+    from docx.shared import Pt
+
+    path = tmp_path / "report.docx"
+    _docx_postprocess_fixture(docx).save(path)
+    _postprocess_docx(path, context=_docx_postprocess_context(), layout=DEFAULT_PAGE_LAYOUT)
+
+    styles = docx.Document(path).styles
+    sizes = [styles[name].font.size for name in ("Heading 1", "Heading 2", "Heading 3", "Normal")]
+    assert sizes == [Pt(16), Pt(12.5), Pt(11), Pt(10.5)]
+    for name in ("Heading 1", "Heading 2", "Heading 3"):
+        assert styles[name].font.bold is True
+        assert styles[name].paragraph_format.space_before >= Pt(8)
+        assert styles[name].paragraph_format.keep_with_next is True
+
+
 def test_word_page_fields_use_section_page_count() -> None:
     # “pages” 改由分节末尾书签的 PAGEREF 生成，不再使用 SECTIONPAGES。
     assert _WORD_PAGE_FIELDS == {"page": "PAGE"}

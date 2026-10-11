@@ -47,6 +47,18 @@ def _fit_image_dimensions(
     return int(width * scale), int(height * scale)
 
 
+# Word 样式与 PDF 版式同一层级：正文 10.5pt；章节（H2→Heading 1）16pt 主题色、小标题
+# （H3→Heading 2）12.5pt、四级（H4→Heading 3）11pt，标题均加粗。此前三级标题同为 14pt，
+# 章节与小标题在 Word 中无法区分。值为（字号, 主题色, 加粗, 段前磅值）。
+_WORD_STYLE_HIERARCHY: dict[str, tuple[float, str, bool | None, float | None]] = {
+    "Normal": (10.5, "ink", None, None),
+    "Title": (22, "primary", True, None),
+    "Heading 1": (16, "primary", True, 14),
+    "Heading 2": (12.5, "ink", True, 10),
+    "Heading 3": (11, "ink", True, 8),
+}
+
+
 def _render_docx(
     html_document: str,
     *,
@@ -266,20 +278,25 @@ def _postprocess_docx(
         section.header_distance = Mm(8)
         section.footer_distance = Mm(8)
 
-    for style_name in ("Normal", "Title", "Heading 1", "Heading 2", "Heading 3"):
+    for style_name, (size, color, bold, space_before) in _WORD_STYLE_HIERARCHY.items():
         style = (
             document.styles[style_name]
             if style_name in document.styles
             else document.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
         )
         style.font.name = "Noto Sans CJK SC"
-        style.font.size = Pt(10.5 if style_name == "Normal" else 14)
-        style.font.color.rgb = (
-            theme_colors["ink"] if style_name == "Normal" else theme_colors["primary"]
-        )
+        style.font.size = Pt(size)
+        style.font.color.rgb = theme_colors[color]
         style._element.get_or_add_rPr().get_or_add_rFonts().set(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
+        if bold is not None:
+            style.font.bold = bold
+        if space_before is not None:
+            # 标题前留白并与下文同页，紧接表格的小标题不再贴住表格下框线。
+            style.paragraph_format.space_before = Pt(space_before)
+            style.paragraph_format.space_after = Pt(space_before / 2)
+            style.paragraph_format.keep_with_next = True
     if "Report Signature" not in document.styles:
         signature_style = document.styles.add_style("Report Signature", WD_STYLE_TYPE.PARAGRAPH)
         signature_style.font.name = "Noto Sans CJK SC"

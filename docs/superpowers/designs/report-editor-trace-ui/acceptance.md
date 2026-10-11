@@ -1201,3 +1201,8 @@ PR #14 合并后找 bug（2026-10-09）：
 
 - 安装渲染依赖（应用户要求）：第 86 轮的 LibreOffice 失败根因是本环境只装了 `libreoffice-core`，缺少 `libreoffice-writer` 组件，因而无法加载任何 DOCX/HTML。本会话已以 apt 安装 `libreoffice-writer` 与 `pandoc`（3.1.3），不再依赖临时 PATH；LibreOffice 可正常把 DOCX 转为 PDF。整稿渲染与编辑器真实导出 7 项全部通过（此前 6 过 1 败），`test_report_runtime.py` 148 项通过。持久化需在云环境设置脚本中加入：`apt-get update && apt-get install -y --no-install-recommends libreoffice-writer pandoc fonts-noto-cjk`。
 - 富样本目检：以真实渲染链路（WeasyPrint + pandoc）渲染含 H2/H3、粗体数值、中文条目（1）（2）（3）、右对齐数值表、列表与引用块的正文，排版、换行、表格与附录均正常，未发现新问题。
+
+/loop 第 88 轮（2026-10-11）：
+
+- Word 标题层级（delivery/report_runtime/docx）：以真实链路生成 Word 并经 LibreOffice 转图目检，发现 Word 中章节（H2→Heading 1）、小标题（H3→Heading 2）、四级标题（H4→Heading 3）统一为 14pt、不加粗，章节与小标题无法区分；表格后紧跟的小标题贴住表格下框线。PDF 为 16pt / 12.5pt / 11pt 加粗。现 Word 样式与 PDF 同一层级（章节 16pt 主题色、小标题 12.5pt、四级 11pt，均加粗；标题 22pt），标题段前 14/10/8 磅、段后减半并与下文同页。新增 1 例（修复前失败），整稿渲染、编辑器真实导出、渲染运行时、编辑器与非阻断相关 203 项通过，目检 Word 层级清晰。
+- 已知差异（不改）：Word/LibreOffice 默认在汉字与数字之间自动加间距（“2025 年”），PDF 无此间距；属 Word 中文排版默认行为，保留。
