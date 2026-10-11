@@ -303,6 +303,21 @@ def _postprocess_docx(
         signature_style._element.get_or_add_rPr().get_or_add_rFonts().set(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
+    # 落款与正文同字号（此前继承文档默认字号，明显大于正文）。
+    document.styles["Report Signature"].font.size = Pt(10.5)
+    # 来源附录的条目（pandoc 定义列表）与 PDF 一致：条目名主题色加粗，各字段缩进、行距紧凑；
+    # 此前字段不缩进且段后留白不一，首个字段紧贴条目名。
+    if "Definition Term" in document.styles:
+        term_style = document.styles["Definition Term"]
+        term_style.font.bold = True
+        term_style.font.color.rgb = theme_colors["primary"]
+        term_style.paragraph_format.space_before = Pt(8)
+        term_style.paragraph_format.space_after = Pt(2)
+    if "Definition" in document.styles:
+        definition_format = document.styles["Definition"].paragraph_format
+        definition_format.left_indent = Mm(6)
+        definition_format.space_before = Pt(0)
+        definition_format.space_after = Pt(2)
     if "Report Source Appendix" not in document.styles:
         source_style = document.styles.add_style(
             "Report Source Appendix", WD_STYLE_TYPE.PARAGRAPH
@@ -598,10 +613,15 @@ def _postprocess_docx(
             shape.width = new_width
             shape.height = new_height
 
+    signature_started = False
     for paragraph in paragraphs[body_start_index + 1 :]:
         if paragraph.text.strip() in {context["organizationName"], context["generatedDate"]}:
             paragraph.style = document.styles["Report Signature"]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            if not signature_started:
+                # 与 PDF 落款一致：与上文隔开 18mm，不紧贴附录或正文末段。
+                paragraph.paragraph_format.space_before = Mm(18)
+                signature_started = True
 
     settings = document.settings._element
     for existing in settings.findall(qn("w:updateFields")):

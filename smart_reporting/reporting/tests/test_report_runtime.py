@@ -703,6 +703,32 @@ def test_postprocess_docx_tables_fill_text_width_and_quotes_are_boxed(tmp_path: 
     assert tags.index(qn("w:pBdr")) < tags.index(qn("w:shd"))
 
 
+def test_postprocess_docx_source_appendix_entries_and_signature_match_pdf(tmp_path: Path) -> None:
+    # 来源附录条目字段缩进、行距紧凑，落款与正文同字号。
+    docx = pytest.importorskip("docx")
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.shared import Mm, Pt
+
+    path = tmp_path / "report.docx"
+    document = _docx_postprocess_fixture(docx)
+    for name in ("Definition Term", "Definition"):
+        if name not in document.styles:
+            document.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+    document.save(path)
+    _postprocess_docx(path, context=_docx_postprocess_context(), layout=DEFAULT_PAGE_LAYOUT)
+
+    processed = docx.Document(path)
+    styles = processed.styles
+    assert styles["Report Signature"].font.size == Pt(10.5)
+    signature = [item for item in processed.paragraphs if item.style.name == "Report Signature"]
+    assert [item.text for item in signature] == ["测试机构", "2026-08-17"]
+    assert abs(signature[0].paragraph_format.space_before - Mm(18)) < Mm(0.1)
+    assert signature[1].paragraph_format.space_before is None
+    assert styles["Definition Term"].font.bold is True
+    assert abs(styles["Definition"].paragraph_format.left_indent - Mm(6)) < Mm(0.1)
+    assert styles["Definition"].paragraph_format.space_after == Pt(2)
+
+
 def test_word_page_fields_use_section_page_count() -> None:
     # “pages” 改由分节末尾书签的 PAGEREF 生成，不再使用 SECTIONPAGES。
     assert _WORD_PAGE_FIELDS == {"page": "PAGE"}
