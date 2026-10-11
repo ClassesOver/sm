@@ -673,6 +673,36 @@ def test_postprocess_docx_heading_styles_follow_pdf_hierarchy(tmp_path: Path) ->
         assert styles[name].paragraph_format.keep_with_next is True
 
 
+def test_postprocess_docx_tables_fill_text_width_and_quotes_are_boxed(tmp_path: Path) -> None:
+    # 表格与 PDF 一致铺满版心；引用块有左侧竖线与底纹。子元素按 OOXML 架构顺序插入。
+    docx = pytest.importorskip("docx")
+    from docx.oxml.ns import qn
+
+    path = tmp_path / "report.docx"
+    document = _docx_postprocess_fixture(docx)
+    document.add_table(rows=2, cols=3)
+    if "Block Text" not in document.styles:
+        from docx.enum.style import WD_STYLE_TYPE
+
+        document.styles.add_style("Block Text", WD_STYLE_TYPE.PARAGRAPH)
+    document.add_paragraph("注：本节数值均来自冻结分析结果。", style="Block Text")
+    document.save(path)
+    _postprocess_docx(path, context=_docx_postprocess_context(), layout=DEFAULT_PAGE_LAYOUT)
+
+    processed = docx.Document(path)
+    table_properties = processed.tables[0]._tbl.tblPr
+    width = table_properties.find(qn("w:tblW"))
+    assert (width.get(qn("w:type")), width.get(qn("w:w"))) == ("pct", "5000")
+    order = [child.tag for child in table_properties]
+    assert order.index(qn("w:tblW")) < order.index(qn("w:tblBorders"))
+    if qn("w:tblLook") in order:
+        assert order.index(qn("w:tblBorders")) < order.index(qn("w:tblLook"))
+    block = processed.styles["Block Text"]._element.pPr
+    tags = [child.tag for child in block]
+    assert qn("w:pBdr") in tags and qn("w:shd") in tags
+    assert tags.index(qn("w:pBdr")) < tags.index(qn("w:shd"))
+
+
 def test_word_page_fields_use_section_page_count() -> None:
     # “pages” 改由分节末尾书签的 PAGEREF 生成，不再使用 SECTIONPAGES。
     assert _WORD_PAGE_FIELDS == {"page": "PAGE"}

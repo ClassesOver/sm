@@ -315,6 +315,31 @@ def _postprocess_docx(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
 
+    if "Block Text" in document.styles:
+        # 引用块（注、说明）与 PDF 一致：左侧主题色竖线与浅色底纹，不再只是缩进文字。
+        block_properties = document.styles["Block Text"]._element.get_or_add_pPr()
+        for tag in ("w:pBdr", "w:shd"):
+            for existing in block_properties.findall(qn(tag)):
+                block_properties.remove(existing)
+        block_border = OxmlElement("w:pBdr")
+        left_border = OxmlElement("w:left")
+        left_border.set(qn("w:val"), "single")
+        left_border.set(qn("w:sz"), "18")
+        left_border.set(qn("w:space"), "6")
+        left_border.set(qn("w:color"), str(REPORT_VISUAL_THEME["accent"]).removeprefix("#"))
+        block_border.append(left_border)
+        block_shading = OxmlElement("w:shd")
+        block_shading.set(qn("w:val"), "clear")
+        block_shading.set(qn("w:fill"), str(REPORT_VISUAL_THEME["surface"]).removeprefix("#"))
+        successors = ("w:tabs", "w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap", "w:overflowPunct",
+                      "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi", "w:adjustRightInd",
+                      "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing", "w:mirrorIndents",
+                      "w:suppressOverlap", "w:jc", "w:textDirection", "w:textAlignment",
+                      "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr",
+                      "w:sectPr", "w:pPrChange")
+        block_properties.insert_element_before(block_shading, *successors)
+        block_properties.insert_element_before(block_border, "w:shd", *successors)
+
     paragraphs = document.paragraphs
     for source_appendix_title in (
         item for item in paragraphs if item.text.strip() in ("实际引用附录", "数据来源附录")
@@ -528,6 +553,17 @@ def _postprocess_docx(
         if "Table Grid" in document.styles:
             table.style = "Table Grid"
         table_properties = table._tbl.tblPr
+        # 与 PDF 一致铺满正文宽度：pandoc 产出 auto 宽度与等宽列，表格只占约八成版心。
+        for existing in table_properties.findall(qn("w:tblW")):
+            table_properties.remove(existing)
+        table_width = OxmlElement("w:tblW")
+        table_width.set(qn("w:type"), "pct")
+        table_width.set(qn("w:w"), "5000")
+        # OOXML 要求 tblPr 子元素按架构顺序排列；Word 比 LibreOffice 更严格。
+        table_properties.insert_element_before(
+            table_width, "w:jc", "w:tblCellSpacing", "w:tblInd", "w:tblBorders", "w:shd",
+            "w:tblLayout", "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
+        )
         for existing in table_properties.findall(qn("w:tblBorders")):
             table_properties.remove(existing)
         borders = OxmlElement("w:tblBorders")
@@ -537,7 +573,9 @@ def _postprocess_docx(
             border.set(qn("w:sz"), "4")
             border.set(qn("w:color"), str(REPORT_VISUAL_THEME["grid"]).removeprefix("#"))
             borders.append(border)
-        table_properties.append(borders)
+        table_properties.insert_element_before(
+            borders, "w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
+        )
         if table.rows:
             row_properties = table.rows[0]._tr.get_or_add_trPr()
             table_header = OxmlElement("w:tblHeader")

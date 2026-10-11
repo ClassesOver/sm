@@ -1206,3 +1206,7 @@ PR #14 合并后找 bug（2026-10-09）：
 
 - Word 标题层级（delivery/report_runtime/docx）：以真实链路生成 Word 并经 LibreOffice 转图目检，发现 Word 中章节（H2→Heading 1）、小标题（H3→Heading 2）、四级标题（H4→Heading 3）统一为 14pt、不加粗，章节与小标题无法区分；表格后紧跟的小标题贴住表格下框线。PDF 为 16pt / 12.5pt / 11pt 加粗。现 Word 样式与 PDF 同一层级（章节 16pt 主题色、小标题 12.5pt、四级 11pt，均加粗；标题 22pt），标题段前 14/10/8 磅、段后减半并与下文同页。新增 1 例（修复前失败），整稿渲染、编辑器真实导出、渲染运行时、编辑器与非阻断相关 203 项通过，目检 Word 层级清晰。
 - 已知差异（不改）：Word/LibreOffice 默认在汉字与数字之间自动加间距（“2025 年”），PDF 无此间距；属 Word 中文排版默认行为，保留。
+
+/loop 第 89 轮（2026-10-11）：
+
+- Word 表格宽度与引用块（delivery/report_runtime/docx）：继续逐页对照 Word 与 PDF。pandoc 产出的表格为 auto 宽度、等宽列，只占约八成版心（PDF 为 100%）；引用块（“注：…”）在 Word 中只是缩进文字，PDF 为左侧主题色竖线加浅色底纹。现 Word 表格宽度设为 100%（tblW pct 5000），引用块样式（Block Text）加左侧 accent 竖线与 surface 底纹；新增的 tblW、pBdr、shd 以及既有的 tblBorders 均按 OOXML 架构顺序插入（此前 tblBorders 追加在 tblLook 之后，Word 比 LibreOffice 更严格）。新增 1 例（修复前失败），整稿渲染、编辑器真实导出、渲染运行时、编辑器与非阻断相关 204 项通过，目检表格铺满、引用块成框。
