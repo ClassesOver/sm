@@ -625,3 +625,13 @@ describe('body source markers', () => {
     expect(coarse).toMatch(/margin: -12px/)
   })
 })
+
+describe('toolbar export labels', () => {
+  it('keeps PDF and Word text labels on standard desktop widths', () => {
+    const css = readFileSync('src/style.css', 'utf8')
+    const start = css.indexOf('@media (min-width: 1181px) and (max-width: 1600px)')
+    const block = css.slice(start, css.indexOf('\n}\n', start))
+    expect(block).not.toContain('[data-action="pdf"] span')
+    expect(block).not.toContain('[data-action="word"] span')
+  })
+})

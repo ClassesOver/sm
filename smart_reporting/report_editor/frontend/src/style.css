@@ -295,15 +295,12 @@ button {
   .report-actions [data-action="more"] { display: none; }
   .toolbar-group-edit-view [data-action="shortcuts"] span,
   .toolbar-group-edit-view [data-action="focus"] span,
-  .toolbar-group-output [data-action="pdf"] span,
-  .toolbar-group-output [data-action="word"] span,
   .toolbar-group-utility [data-action="shortcuts"] span,
   .toolbar-shortcuts span,
   .toolbar-settings span { display: none; }
+  /* 导出按钮保留“PDF / Word”文字：两个文件图标相近，仅凭图标难以区分。 */
   .toolbar-group-edit-view [data-action="shortcuts"],
   .toolbar-group-edit-view [data-action="focus"],
-  .toolbar-group-output [data-action="pdf"],
-  .toolbar-group-output [data-action="word"],
   .toolbar-group-utility [data-action="shortcuts"],
   .toolbar-shortcuts,
   .toolbar-settings { min-width: 36px; padding: 0 8px; }
