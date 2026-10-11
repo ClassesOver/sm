@@ -357,6 +357,11 @@ def normalize_number_notation(text: str) -> str:
 _COMPARISON_TERMS = {"yoy": "同比", "mom": "环比"}
 _COMPARISON_TERM = re.compile(r"(?<![A-Za-z0-9_])(?i:yoy|mom)(?![A-Za-z0-9_])")
 _PADDED_CJK_DATE = re.compile(r"(?<=\d年)0(?=[1-9]月)|(?<=\d月)0(?=[1-9]日)")
+# 月份区间“1-10月”“1~10月”“1月-10月”与服务端期间说明（2025年1—10月）写法不一致：同一年内
+# 升序的月份区间统一为“1—10月”。跨年（12-1月）、编号（ICD-10、v1-2）与非月份区间不动。
+_MONTH_RANGE = re.compile(
+    r"(?<![A-Za-z0-9_.\-—])(?P<a>1[0-2]|0?[1-9])[ \t]*月?[ \t]*[-~～–][ \t]*(?P<b>1[0-2]|0?[1-9])[ \t]*月"
+)
 
 
 def _cjk_date(match: re.Match[str], prefix: str, *, omit_year: bool = False) -> str:
@@ -376,6 +381,10 @@ def _normalize_cjk_wording_text(text: str) -> str:
         piece = _ISO_DATE_RANGE.sub(range_text, normalize_number_notation(piece))
         piece = _ISO_DATE_SINGLE.sub(lambda match: _cjk_date(match, "a"), piece)
         piece = _PADDED_CJK_DATE.sub("", piece)
+        piece = _MONTH_RANGE.sub(
+            lambda match: f"{int(match['a'])}—{int(match['b'])}月" if int(match["a"]) < int(match["b"]) else match[0],
+            piece,
+        )
         # 数值目录的比较口径 yoy/mom 是字段值，正文写中文“同比/环比”。
         piece = _COMPARISON_TERM.sub(lambda match: _COMPARISON_TERMS[match[0].casefold()], piece)
         heading_prefix = _HEADING_NUMBER_PREFIX.match(piece)
