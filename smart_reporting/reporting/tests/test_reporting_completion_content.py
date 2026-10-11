@@ -79,6 +79,27 @@ def test_completed_report_content_states_the_specific_validation_reasons():
     assert "font_missing" in content
 
 
+def test_completed_report_content_discloses_residual_content_review_as_soft_notice():
+    # 纠错后仍残留的复核告警与“待核实”替换不阻断发布，但须告知用户；只给结论句，不给模型纠正指引。
+    review = {"code": "report_section_block_content_review",
+              "message": "指标数值归属需复核：门诊收入名下的2.26%是住院收入的登记值。请改用门诊收入对应的数值引用，或改写主语。"}
+    content = _completed_report_content(_completed_payload(publicationGate={
+        "formalReleaseAllowed": True, "issues": [],
+        "warnings": [
+            review, review,
+            {"code": "report_section_block_unverified_numbers", "message": "2 处……", "details": {"count": 2}},
+            {"code": "report_section_block_unverified_numbers", "message": "1 处……", "details": {"count": 1}},
+            {"code": "unused_chart_excluded", "message": "未被正文引用的图表已从发布包排除。"},
+        ],
+    }), template=None)
+    assert content.endswith(
+        "正文复核提示（不影响下载，建议在编辑器中核对）：3 处缺少登记依据的数值已标注为“待核实”；"
+        "1 条正文复核提示未能自动修正，如：指标数值归属需复核：门诊收入名下的2.26%是住院收入的登记值。"
+    )
+    assert "验收或发布检查未通过" not in content and "请改用" not in content
+    assert "[下载 PDF](https://reports.example/report.pdf)" in content
+
+
 def test_completed_report_content_uses_custom_template() -> None:
     content = _completed_report_content(
         _completed_payload(),

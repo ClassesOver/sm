@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from agno.run import RunContext
@@ -23,6 +23,20 @@ from ..workflow.checkpoint import (
     SectionWorkItem,
 )
 from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
+
+# 固定 Workflow 可随章节提交的服务端正文复核告警；模型工具 schema 不暴露该参数。
+_REVIEW_WARNING_CODES = frozenset({"report_section_block_content_review", "report_section_block_unverified_numbers"})
+_MAX_REVIEW_WARNINGS = 200
+
+
+def accepted_review_warnings(items: Sequence[Any]) -> list[dict[str, Any]]:
+    """只保留服务端登记的两类块级复核告警（含消息），其余条目丢弃。"""
+
+    return [
+        dict(item) for item in items[:_MAX_REVIEW_WARNINGS]
+        if isinstance(item, Mapping) and item.get("code") in _REVIEW_WARNING_CODES
+        and isinstance(item.get("message"), str)
+    ]
 
 
 class RuntimeSectionsMixin:
@@ -479,6 +493,7 @@ class RuntimeSectionsMixin:
         claims: list[dict[str, Any]],
         state: dict[str, Any] | None,
         run_context: RunContext | None,
+        review_warnings: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         parameters, contract = self._phase_parameters(scope, "section")
         output_path = parameters.get("sectionOutputPath")
@@ -505,6 +520,9 @@ class RuntimeSectionsMixin:
         )
         referenced_claim_ids = {claim_id for block in parsed_blocks for claim_id in block.claim_ids}
         warning_items = list(claim_warnings)
+        # 固定 Workflow 纠错后仍残留的正文复核告警与“待核实”替换：只接受服务端登记的
+        # 两类块级软告警，随章节产物进入发布门禁 warnings，不阻断发布。
+        warning_items.extend(accepted_review_warnings(review_warnings))
         unreferenced_claim_ids = [
             claim.claim_id
             for claim in normalized_claims
@@ -1062,6 +1080,7 @@ class RuntimeSectionsMixin:
         blocks: list[dict[str, Any]],
         claims: list[dict[str, Any]],
         run_context: RunContext | None = None,
+        review_warnings: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         state = self._session_state(run_context)
         try:
@@ -1078,6 +1097,7 @@ class RuntimeSectionsMixin:
                 claims=claims,
                 state=state,
                 run_context=run_context,
+                review_warnings=review_warnings,
             )
         except (ReportingError, ValidationError, WorkspaceError) as error:
             return self._failure(error)

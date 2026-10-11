@@ -214,6 +214,30 @@ _EXECUTIVE_SUMMARY_SEPARATOR = "；"
 _EXECUTIVE_SUMMARY_ELLIPSIS = "…"
 
 
+_MAX_BLOCK_REVIEW_NOTICES = 20
+
+
+def _block_review_notices(
+    section_code: str, block_id: str, warnings: Sequence[str], generated: str, published: str,
+) -> list[dict[str, Any]]:
+    """纠错后仍残留的复核告警与“待核实”替换，作为不阻断发布的块级质量告警返回用户。"""
+
+    details = {"sectionCode": section_code, "blockId": block_id}
+    notices: list[dict[str, Any]] = [
+        {"code": "report_section_block_content_review", "message": warning[:300], "details": details}
+        for warning in list(dict.fromkeys(warnings))[:_MAX_BLOCK_REVIEW_NOTICES]
+    ]
+    # 服务端只会新增“待核实”（替换无依据数值或无法解析的占位），差值即替换处数。
+    replaced = published.count("待核实") - generated.count("待核实")
+    if replaced > 0:
+        notices.append({
+            "code": "report_section_block_unverified_numbers",
+            "message": f"{replaced} 处缺少登记依据的数值已替换为“待核实”。",
+            "details": {**details, "count": replaced},
+        })
+    return notices
+
+
 def _bounded_executive_summary(summaries: Sequence[str]) -> str:
     """在 ReportBrief 上限内公平保留每个分析项的管理摘要。"""
 
@@ -1315,8 +1339,12 @@ async def _generate_section_in_blocks(
     thinking_request: ThinkingRequest,
     recovery: Mapping[str, Any] | None = None,
     whole_section: bool = False,
+    review_notices: dict[str, list[dict[str, Any]]] | None = None,
 ) -> SectionDecision:
-    """复用章节规划，按开关整章生成或沿用原有逐块生成。"""
+    """复用章节规划，按开关整章生成或沿用原有逐块生成。
+
+    review_notices 按 blockId 收集纠错后仍残留的复核告警，供章节提交时并入质量告警。
+    """
 
     # 规划阶段只收到文件身份，不能要求模型从摘要猜测内容寻址的事实 ID。
     # 目录仅从本轮已验证 SHA 的证据正文提取，不接受模型提交的编号别名。
@@ -1522,6 +1550,7 @@ async def _generate_section_in_blocks(
                 scope=scope,
                 run_context=run_context,
                 thinking_request=thinking_request,
+                review_notices=review_notices,
             )
         except ReportingError as error:
             if error.code != "report_section_context_too_large":
@@ -1707,6 +1736,11 @@ async def _generate_section_in_blocks(
                 chartIds=chart_ids,
                 claimIds=block_plan.claim_ids,
             )
+            if review_notices is not None:
+                review_notices[block_plan.block_id] = _block_review_notices(
+                    work_item.section_code, block_plan.block_id, review_warnings,
+                    content.markdown, candidate.markdown,
+                )
             try:
                 validate_report_draft_blocks(
                     (*blocks, candidate),
@@ -1752,6 +1786,7 @@ async def _generate_whole_section_content(
     scope: TaskExecutionScope,
     run_context: RunContext,
     thinking_request: ThinkingRequest,
+    review_notices: dict[str, list[dict[str, Any]]] | None = None,
 ) -> RenderSectionDecision:
     """一次生成整章正文；引用与顺序始终由已校验规划决定。"""
 
@@ -1928,6 +1963,11 @@ async def _generate_whole_section_content(
             citationIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.citation_ids)),
             chartIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.chart_ids)),
         )
+        if review_notices is not None:
+            review_notices[block_plan.block_id] = _block_review_notices(
+                work_item.section_code, block_plan.block_id, review_warnings.get(block_plan.block_id, ()),
+                content_by_id[block_plan.block_id].markdown, block.markdown,
+            )
         try:
             validate_report_draft_blocks((*blocks, block), expected_section_title=work_item.title)
         except ReportingError as error:
@@ -2451,6 +2491,8 @@ class RuntimeSectionsMixin:
                         )
                     toolkit = toolkits[0]
                     validated_evidence: SectionEvidenceBundle | None = None
+                    # 本次生成（或恢复生成）纠错后仍残留的块级复核告警，随章节提交进入质量告警。
+                    review_notices: dict[str, list[dict[str, Any]]] = {}
 
                     async def read_evidence(
                         path: str, offset: int, task_context: RunContext
@@ -2471,12 +2513,14 @@ class RuntimeSectionsMixin:
                     ) -> SectionDecision:
                         nonlocal validated_evidence
                         validated_evidence = evidence
+                        review_notices.clear()
                         return await _generate_section_in_blocks(
                             self.section_generator,
                             instruction_payload,
                             evidence,
                             work_item,
                             whole_section=self.section_whole_generation,
+                            review_notices=review_notices,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(
@@ -2510,12 +2554,14 @@ class RuntimeSectionsMixin:
                                 "report_section_recovery_evidence_missing",
                                 "章节恢复缺少当前执行已验证的证据对象。",
                             )
+                        review_notices.clear()
                         return await _generate_section_in_blocks(
                             self.section_recovery,
                             instruction_payload,
                             validated_evidence,
                             work_item,
                             whole_section=self.section_whole_generation,
+                            review_notices=review_notices,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(
@@ -2544,6 +2590,10 @@ class RuntimeSectionsMixin:
                                 for item in decision.claims
                             ],
                             run_context=task_context,
+                            review_warnings=[
+                                notice for block in decision.blocks
+                                for notice in review_notices.get(block.block_id, ())
+                            ],
                         )
 
                     async def rework(

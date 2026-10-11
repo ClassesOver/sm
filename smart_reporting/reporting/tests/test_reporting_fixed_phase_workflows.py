@@ -3273,6 +3273,49 @@ async def test_section_semantic_review_corrects_once_and_stays_soft(monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_residual_review_warnings_are_collected_as_soft_block_notices(monkeypatch):
+    # 纠错后仍残留的复核告警与“待核实”替换按 blockId 收集，随章节提交进入质量告警；不阻断。
+    from .test_content_review import _metric
+
+    async def fake_stage(*args, **kwargs):
+        return SectionContent.model_validate({"blocks": [{"blockId": "block_1", "markdown": "预算累计6,062,600人次。"}]})
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0],
+        content=json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(606259,) * 12)]})),), factSummaries=())
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "预算执行", "claimIds": ["claim_1"]}],
+        "claims": [_plan_claim("claim_1")]})
+    notices: dict[str, list[dict]] = {}
+    result = await reporting_sections._generate_whole_section_content(object(), {}, evidence, work_item, plan,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+        review_notices=notices)
+    assert result.blocks[0].markdown == "预算累计待核实。"
+    codes = [item["code"] for item in notices["block_1"]]
+    assert "report_section_block_content_review" in codes
+    assert notices["block_1"][-1] == {
+        "code": "report_section_block_unverified_numbers",
+        "message": "1 处缺少登记依据的数值已替换为“待核实”。",
+        "details": {"sectionCode": "section_001", "blockId": "block_1", "count": 1},
+    }
+    assert all(item["details"]["blockId"] == "block_1" for item in notices["block_1"])
+
+
+def test_block_review_notices_count_only_server_added_unverified_markers():
+    notices = reporting_sections._block_review_notices(
+        "section_001", "block_1", ["复核A。", "复核A。"], "原因待核实，收入{{value:x}}。", "原因待核实，收入待核实。",
+    )
+    assert [item["code"] for item in notices] == [
+        "report_section_block_content_review", "report_section_block_unverified_numbers",
+    ]
+    assert notices[1]["details"]["count"] == 1
+    assert reporting_sections._block_review_notices("s", "b", [], "收入待核实。", "收入待核实。") == []
+
+
+@pytest.mark.anyio
 async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch):
     from .test_content_review import _metric
 

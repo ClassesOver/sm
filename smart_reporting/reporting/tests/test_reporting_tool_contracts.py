@@ -59,6 +59,18 @@ def test_render_report_section_is_bound_to_toolkit_instance() -> None:
     assert not isinstance(descriptor, staticmethod)
 
 
+def test_render_report_section_accepts_only_registered_review_warnings() -> None:
+    from smart_reporting.reporting.tools.sections import accepted_review_warnings
+
+    review = {"code": "report_section_block_content_review", "message": "复核提示。",
+              "details": {"sectionCode": "section_001", "blockId": "block_1"}}
+    unverified = {"code": "report_section_block_unverified_numbers", "message": "1 处……", "details": {"count": 1}}
+    assert accepted_review_warnings([review, unverified, {"code": "report_period_basis_conflict", "message": "x"},
+                                     {"code": "report_section_block_content_review"}, "text"]) == [review, unverified]
+    # 服务端复核告警只由固定 Workflow 直接传入，模型可见的工具 schema 不暴露该参数。
+    assert "review_warnings" in inspect.signature(RuntimeSectionsMixin.render_report_section).parameters
+
+
 def test_analysis_patch_contract_is_patch_only() -> None:
     schema = analysis_patch_parameters()
     assert set(schema["properties"]) == {"patch"}
