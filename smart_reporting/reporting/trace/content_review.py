@@ -836,6 +836,24 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                 f"表格数值缺少可核对的冻结依据：{number_text}（{unit}列）。"
                 "请使用对应数值引用，或删去未登记的计算结果。"
             )
+    # “超过1.37亿元”而登记值为1.3654亿元：数值按书写精度舍入后一致，但“超过/不足”的
+    # 方向与真实值相反。
+    for match in re.finditer(
+        r"(?P<qualifier>超过|逾|高于|突破|多于|不足|低于|未达|少于|不到)\s*"
+        r"(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>亿元|万元|元|万人次|人次|床日|%)",
+        text,
+    ):
+        number = Decimal(match["number"].replace(",", ""))
+        quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+        rounded = [value for value in known.get(match["unit"], ())
+                   if value.quantize(quantum, rounding=ROUND_HALF_UP) == number]
+        above = match["qualifier"] in {"超过", "逾", "高于", "突破", "多于"}
+        if rounded and all((value <= number) if above else (value >= number) for value in rounded):
+            actual = rounded[0].quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP).normalize()
+            warnings.append(
+                f"约数方向需复核：{match[0]}，但登记值为{actual:f}{match['unit']}，"
+                f"舍入后才是{match['number']}{match['unit']}；请改为“约{match['number']}{match['unit']}”。"
+            )
     # 百分数指标的变化额以百分点登记；其余“个百分点”只能由两项已登记百分数相减得到，
     # 按书写精度舍入后相等才有依据。
     percents = sorted(known.get("%", ()))

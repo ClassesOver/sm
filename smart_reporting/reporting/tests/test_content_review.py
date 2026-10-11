@@ -899,3 +899,13 @@ def test_other_percentages_written_as_growth_rates_are_flagged(text, flagged):
                                 "unit": "%", "aggregation": "average", "total": 45.0})
     warnings = [w for w in review_content(text, [json.dumps(document)]) if "变化率口径" in w]
     assert bool(warnings) is flagged
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("本期收入超过1.37亿元。",
+     ["约数方向需复核：超过1.37亿元，但登记值为1.3654亿元，舍入后才是1.37亿元；请改为“约1.37亿元”。"]),
+    # 方向正确的约数（5.0332% 确实超过 5%）与“约/不足”的正确写法不告警。
+    ("本期收入约1.37亿元，不足1.37亿元，同比增长超过5%。", []),
+])
+def test_bound_qualifiers_must_agree_with_the_unrounded_value(text, expected):
+    assert [w for w in review_content(text, [_comparison_content()]) if "约数方向" in w] == expected
