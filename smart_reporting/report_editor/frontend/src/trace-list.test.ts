@@ -43,4 +43,20 @@ describe('trace list csv', () => {
     expect(csvCell('-3.5')).toBe('-3.5')
     expect(csvCell(null)).toBe('')
   })
+
+  it.each([
+    ['-1+SUM(A1)', "'-1+SUM(A1)"],
+    ['-1+cmd|...', "'-1+cmd|..."],
+    ['-.+1', "'-.+1"],
+    ['-1e2+3', "'-1e2+3"],
+    ['-', "'-"],
+    ['-1\n', '"\'-1\n"'],
+    ['-1+SUM(A1,B1)', '"\'-1+SUM(A1,B1)"'],
+  ])('neutralises the complete minus-leading cell %j', (text, expected) => {
+    expect(csvCell(text)).toBe(expected)
+  })
+
+  it.each(['-123', '-3.5', '-.5', '-1.', '-1e-2', '-1E+3'])('keeps the negative numeric literal %s', (text) => {
+    expect(csvCell(text)).toBe(text)
+  })
 })

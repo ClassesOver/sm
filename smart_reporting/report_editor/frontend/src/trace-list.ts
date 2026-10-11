@@ -17,7 +17,9 @@ const KIND_LABELS: Record<string, string> = { text_claim: '正文数值', table_
 /** CSV 单元格：按 RFC 4180 转义；以公式字符开头的文本前加单引号，避免表格软件执行。 */
 export function csvCell(value: unknown): string {
   let text = value === null || value === undefined ? '' : String(value)
-  if (/^[=+@\t\r]/.test(text) || /^-(?![\d.])/.test(text)) text = `'${text}`
+  // 只豁免完整负数；数字后接运算符/函数仍是公式。比较完整匹配也排除末尾换行。
+  const negativeNumber = /^-(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.exec(text)?.[0] === text
+  if (/^[=+@\t\r]/.test(text) || (text.startsWith('-') && !negativeNumber)) text = `'${text}`
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
