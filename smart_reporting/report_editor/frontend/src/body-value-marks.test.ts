@@ -62,6 +62,19 @@ describe('body value marks', () => {
     expect(findValueMarks('共有 37 家门店[[citation:sub-1]]', validation('valid'))).toEqual([])
   })
 
+  it('marks and restores an edited percentage-point value', () => {
+    const result = validation('stale', 2)
+    Object.assign(result.subjects[0], { factValue: 1, unit: '个百分点', draftUnit: '个百分点' })
+    const text = '2026年10月东院占比提高2个百分点。[[citation:sub-1]]'
+    const marks = findValueMarks(text, result)
+    expect(marks).toHaveLength(1)
+    expect(text.slice(marks[0].start, marks[0].end)).toBe('2个百分点')
+    expect(marks[0].state).toBe('stale')
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+    expect(view.state.doc.textContent).toBe(text.replace('2个百分点', '1个百分点'))
+  })
+
   it('restores the registered value into the single stale mark only', () => {
     const view = fakeView('华东营收为 12,780 万元[[citation:sub-1]]')
     expect(documentValueMarks(view.state.doc, validation('stale', 12780))).toHaveLength(1)

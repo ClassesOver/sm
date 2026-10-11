@@ -151,6 +151,24 @@ def test_extract_comparable_value_requires_unique_value_unit_period_and_scope() 
     ) is None
 
 
+def test_percentage_point_claim_exposes_comparable_edited_value() -> None:
+    result = claim_status(
+        "2026年10月东院占比提高2个百分点。[[claim:claim-1]]", "claim-1", 1,
+        expected_unit="个百分点", expected_periods=("2026-10",),
+        expected_scope={"院区": "东院"},
+    )
+    assert result["status"] == "stale"
+    assert result["draftValue"] == 2
+    assert result["draftUnit"] == "个百分点"
+    assert result["comparable"] is True
+    for text in ("东院提高2个百分点。", "2026年10月提高2个百分点。",
+                 "2026年10月东院提高2个百分点，另提高3个百分点。"):
+        assert extract_comparable_value(
+            text, expected_unit="个百分点", expected_periods=("2026-10",),
+            expected_scope={"院区": "东院"},
+        ) is None
+
+
 def test_claim_status_exposes_only_a_conservative_comparable_draft_value() -> None:
     result = claim_status(
         "2025-09华东收入3,780万元[[claim:claim-1]]",
