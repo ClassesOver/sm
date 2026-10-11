@@ -1191,3 +1191,8 @@ PR #14 合并后找 bug（2026-10-09）：
 /loop 第 85 轮（2026-10-11）：
 
 - 多指标分组排名不再整体跳过（trace/content_review）：第 84 轮基线记录的已知漏报——门诊收入与住院收入都带科室排名时，“儿科收入最高”因无法确定指向而整体跳过。现最高/最低与前/后 N 名两项检查按分句点名的指标业务名称（字段定义）选取候选指标，未点名时所有带分组排名的指标都是候选；说法对任一候选成立即不告警，对所有候选都不成立才告警，并列出各指标的冻结结果（结论一致时不重复指标名）。基线样本由 5/6 提升为 6/6 识别（expected.json 显式更新）；原“多指标时跳过”用例改为新语义的 3 个断言（未点名且对门诊人次成立不告警、点名门诊收入按该指标判定、对两个指标都不成立时列出各自结果）。复核、质量扫描、数值目录、章节生成、编辑器追溯与非阻断相关测试通过。
+
+/loop 第 86 轮（2026-10-11）：
+
+- 整稿真实渲染首次在本环境跑通（评估建议第 4 项的本地验证）：此前因缺 pandoc，整稿渲染与编辑器真实导出测试一直跳过。本轮以 uv 临时环境取得 PyPI `pypandoc_binary` 自带的 pandoc 3.9（仅放入临时 PATH，未改项目依赖），`test_report_runtime_full_render.py` 与 `test_report_editor_real_export.py` 共 7 项：6 项通过；1 项（`test_render_markdown_publishes_trace_source_appendix_in_pdf_and_word`）失败在测试后段 `validate_pdf` 的 LibreOffice 转换 Word，经核实为环境问题——本沙箱 LibreOffice 连 python-docx 生成的单段落 DOCX 也报 “source file could not be loaded”，在基线分支 `code` 上同样失败，与本分支改动无关。结论：第 1–85 轮改动未破坏真实 PDF/Word 生成链路。
+- 渲染页面目检（pdftoppm 光栅化）：标题、表格、数据来源编号与附录排版正常；附录“方法”一栏对“sum(revenue)/sum(visits)”这类两聚合之比原样显示代码式公式。现分子分母分别写成中文口径（“revenue 求和 ÷ visits 求和”）；含筛选条件的写法保持原有处理。新增 1 例（修复前失败），引用展示、渲染相关 181 项与整稿渲染 6 项通过。

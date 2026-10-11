@@ -931,6 +931,10 @@ def _readable_formula(formula: str) -> str:
     ratio = _RATIO_FORMULA.match(formula)
     if ratio is not None:
         return f"比率 = {ratio['numerator']} ÷ {ratio['denominator']}；差额 = {ratio['numerator']} − {ratio['denominator']}"
+    # 两个聚合之比（sum(revenue)/sum(visits)）：分子分母分别写成中文聚合口径。
+    parts = formula.split("/")
+    if len(parts) == 2 and all(_FORMULA.match(part.strip()) and " WHERE " not in part for part in parts):
+        return " ÷ ".join(_readable_formula(part) for part in parts)
     match = _FORMULA.match(formula)
     if match is None:
         return formula

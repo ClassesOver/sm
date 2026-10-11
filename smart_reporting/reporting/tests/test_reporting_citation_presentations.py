@@ -412,6 +412,8 @@ def test_citation_appendix_shows_readable_scope_and_periods() -> None:
     ("average(床位使用率) WHERE 院区='东院' AND 科室='内科'", "床位使用率 平均（筛选：院区=东院、科室=内科）"),
     ("(currentTotal-baselineTotal)/abs(baselineTotal)*100%", "变化率 =（本期合计 − 基期合计）÷ 基期合计绝对值 × 100%"),
     ("actual/budget; difference=actual-budget", "比率 = actual ÷ budget；差额 = actual − budget"),
+    # 两个聚合之比：分子分母分别写成中文口径（第 86 轮整稿渲染核查发现附录原样显示）。
+    ("sum(revenue)/sum(visits)", "revenue 求和 ÷ visits 求和"),
     # 未登记的写法原样保留。
     ("自定义口径", "自定义口径"),
 ])
