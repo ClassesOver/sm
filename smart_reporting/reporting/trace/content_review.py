@@ -528,28 +528,56 @@ _GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "�
 _GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
 
 
-def _group_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+def _group_ranking_tables(documents: list[dict[str, Any]],
+                          field_definitions: Mapping[str, str] | None) -> list[dict[str, Any]]:
+    """本期指标的冻结分组排名：业务名称、前列、末列与全部已登记分组值。"""
+    tables: list[dict[str, Any]] = []
+    for document in documents:
+        for entry in document.get("metrics") or ():
+            if not isinstance(entry, dict) or "current" not in (entry.get("periodRoles") or ()):
+                continue
+            ranked = {
+                side: [(str(item["group"]), Decimal(str(item["value"]))) for item in entry.get(key) or ()
+                       if isinstance(item, dict) and item.get("group")
+                       and isinstance(item.get("value"), (int, float)) and not isinstance(item.get("value"), bool)]
+                for side, key in (("top", "topGroups"), ("bottom", "bottomGroups"))
+            }
+            values = dict((*ranked["top"], *ranked["bottom"]))
+            if len(values) >= 2:
+                label = (field_definitions or {}).get(str(entry.get("field", "")), "")
+                tables.append({"label": label if isinstance(label, str) else "", **ranked, "values": values})
+    return tables
+
+
+def _clause_ranking_tables(clause: str, tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """分句点名了指标业务名称时只看该指标的分组排名；未点名时所有带分组的指标都是候选。"""
+    named = [table for table in tables if len(table["label"]) >= 2 and table["label"] in clause]
+    named = [table for table in named
+             if not any(table["label"] != other["label"] and table["label"] in other["label"] for other in named)]
+    return named or tables
+
+
+def _expected_groups(results: list[tuple[str, str]]) -> str:
+    """各候选指标下的冻结结果；各指标结论一致时不重复列出指标名称。"""
+    shown = list(dict.fromkeys(expected for expected, _ in results))
+    if len(shown) == 1:
+        return shown[0]
+    return "；".join(f"{expected}（{label}）" if label else expected for expected, label in dict.fromkeys(results))
+
+
+def _group_ranking_warnings(text: str, documents: list[dict[str, Any]],
+                            field_definitions: Mapping[str, str] | None = None) -> list[str]:
     """“外科收入最高”与冻结分组排名不符时提示复核（软告警）。
 
-    只在全部证据中恰有一个本期指标带分组排名时判定；一个分句只点名一个已登记分组、
-    只有一个极值词，且不含月份、比率或否定表述，避免把月度极值或占比排名误判为分组总额排名。
+    一个分句只点名一个已登记分组、只有一个极值词，且不含月份、比率或否定表述时判定，避免把
+    月度极值或占比排名误判为分组总额排名。多个指标带分组排名时，按分句点名的指标业务名称
+    取候选；无法确定指向时，只有该说法对所有候选指标都不成立才告警。
     """
-    metrics = [entry for document in documents for entry in document.get("metrics") or ()
-               if isinstance(entry, dict) and "current" in (entry.get("periodRoles") or ())
-               and (entry.get("topGroups") or entry.get("bottomGroups"))]
-    if len(metrics) != 1:
-        return []
-    top = [item for item in metrics[0].get("topGroups") or () if isinstance(item, dict)]
-    bottom = [item for item in metrics[0].get("bottomGroups") or () if isinstance(item, dict)]
-    values = {str(item["group"]): Decimal(str(item["value"])) for item in (*top, *bottom)
-              if item.get("group") and isinstance(item.get("value"), (int, float))
-              and not isinstance(item.get("value"), bool)}
-    if len(values) < 2:
-        return []
-    highest, lowest = max(values.values()), min(values.values())
+    tables = _group_ranking_tables(documents, field_definitions)
+    names = {group for table in tables for group in table["values"]}
     warnings: list[str] = []
     for clause in _CLAUSE_BREAK.split(text):
-        named = [group for group in values if group in clause]
+        named = [group for group in names if group in clause]
         # “心内科”同时命中“内科”时只认最长的组名。
         named = [group for group in named if not any(group != other and group in other for other in named)]
         high = [word for word in _GROUP_HIGH_WORDS if word in clause]
@@ -558,12 +586,19 @@ def _group_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[
                 or re.search(r"\d{1,2}月|季度|占比|比重|比例|增长率|增幅|降幅|增速|同比|环比|变化|不是|并非|未必|不能", clause)):
             continue
         group = named[0]
-        expected_value = highest if high else lowest
-        if values[group] == expected_value:
-            continue
-        label = "最高" if high else "最低"
-        expected = "、".join(name for name, value in values.items() if value == expected_value)
-        warnings.append(f"分组排名需复核：{group}被写为{label}，冻结分组结果的{label}为{expected}。")
+        results: list[tuple[str, str]] = []
+        for table in _clause_ranking_tables(clause, tables):
+            values = table["values"]
+            if group not in values:
+                continue
+            expected_value = max(values.values()) if high else min(values.values())
+            if values[group] == expected_value:
+                results = []
+                break
+            results.append(("、".join(name for name, value in values.items() if value == expected_value), table["label"]))
+        if results:
+            label = "最高" if high else "最低"
+            warnings.append(f"分组排名需复核：{group}被写为{label}，冻结分组结果的{label}为{_expected_groups(results)}。")
     return list(dict.fromkeys(warnings))
 
 
@@ -626,40 +661,40 @@ _GROUP_TOP_N = re.compile(
 )
 
 
-def _group_top_n_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+def _group_top_n_warnings(text: str, documents: list[dict[str, Any]],
+                          field_definitions: Mapping[str, str] | None = None) -> list[str]:
     """“外科、骨科、儿科位列前三”与冻结分组排名不符时提示复核（软告警）。
 
-    与最高/最低检查同一前提：全部证据中恰有一个本期指标带分组排名。句中点名的已登记
-    分组数须等于 N，且第 N 名与第 N+1 名不并列；月份、比率、同比环比与否定表述不判定。
+    与最高/最低检查同一取候选规则。句中点名的已登记分组数须等于 N，且第 N 名与第 N+1 名
+    不并列；月份、比率、同比环比与否定表述不判定；对任一候选指标成立即不告警。
     """
-    metrics = [entry for document in documents for entry in document.get("metrics") or ()
-               if isinstance(entry, dict) and "current" in (entry.get("periodRoles") or ())
-               and (entry.get("topGroups") or entry.get("bottomGroups"))]
-    if len(metrics) != 1:
-        return []
-    ranked = {}
-    for side, key in (("top", "topGroups"), ("bottom", "bottomGroups")):
-        ranked[side] = [(str(item["group"]), Decimal(str(item["value"]))) for item in metrics[0].get(key) or ()
-                        if isinstance(item, dict) and item.get("group")
-                        and isinstance(item.get("value"), (int, float)) and not isinstance(item.get("value"), bool)]
-    names = {group for items in ranked.values() for group, _ in items}
+    tables = _group_ranking_tables(documents, field_definitions)
+    names = {group for table in tables for group in table["values"]}
     warnings: list[str] = []
     for sentence in re.split(r"[。；\n]", text):
         claim = _GROUP_TOP_N.search(sentence)
         if (claim is None or re.search(r"\d{1,2}月|占比|比重|比例|增长率|增幅|降幅|增速|同比|环比|不是|并非|未进入|未能|未进|不在", sentence)):
             continue
         count = _CHINESE_COUNTS.get(claim["n"]) or int(claim["n"])
-        items = ranked["top" if claim["side"] == "前" else "bottom"]
         named = [group for group in names if group in sentence]
         named = [group for group in named if not any(group != other and group in other for other in named)]
-        if len(named) != count or len(items) < count or (len(items) > count and items[count - 1][1] == items[count][1]):
+        if len(named) != count:
             continue
-        expected = [group for group, _ in items[:count]]
-        if set(named) != set(expected):
+        results: list[tuple[str, str]] = []
+        for table in _clause_ranking_tables(sentence, tables):
+            items = table["top" if claim["side"] == "前" else "bottom"]
+            if len(items) < count or (len(items) > count and items[count - 1][1] == items[count][1]):
+                continue
+            expected = [group for group, _ in items[:count]]
+            if set(named) == set(expected):
+                results = []
+                break
+            results.append(("、".join(expected), table["label"]))
+        if results:
             side = "前" if claim["side"] == "前" else "后"
             written = "、".join(sorted(named, key=sentence.index))
             warnings.append(f"分组排名需复核：{written}被写为{side}{claim['n']}名，"
-                            f"冻结分组结果的{side}{claim['n']}名为{'、'.join(expected)}。")
+                            f"冻结分组结果的{side}{claim['n']}名为{_expected_groups(results)}。")
     return list(dict.fromkeys(warnings))
 
 
@@ -950,8 +985,8 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         )
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
-    warnings.extend(_group_ranking_warnings(text, documents))
-    warnings.extend(_group_top_n_warnings(text, documents))
+    warnings.extend(_group_ranking_warnings(text, documents, field_definitions))
+    warnings.extend(_group_top_n_warnings(text, documents, field_definitions))
     warnings.extend(_group_value_attribution_warnings(text, documents))
     warnings.extend(_metric_value_attribution_warnings(text, contents, documents, field_definitions or {}))
     warnings.extend(_monthly_average_warnings(text, contents))

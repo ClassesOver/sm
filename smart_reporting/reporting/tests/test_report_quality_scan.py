@@ -17,8 +17,8 @@ def _sample() -> tuple[str, list[str], dict[str, str]]:
 
 
 def test_sample_report_quality_matches_baseline():
-    # 埋入 6 处问题：无依据变化率、指标归属、分组归属、约数、历史新高可识别；
-    # “儿科收入最高”因两个指标都带分组排名、无法确定指向，按设计不判定（已知漏报）。
+    # 埋入 6 处问题全部识别：无依据变化率、指标归属、分组归属、约数、历史新高，以及
+    # “儿科收入最高”（两个指标都带分组排名、未点名指标，但对两个指标都不成立）。
     markdown, contents, fields = _sample()
     result = scan_report_quality(markdown, contents, field_definitions=fields)
     assert result == json.loads((_SAMPLE / "expected.json").read_text(encoding="utf-8"))

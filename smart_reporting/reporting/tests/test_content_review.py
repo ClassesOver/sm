@@ -767,10 +767,25 @@ def test_group_top_n_claims_are_checked_against_frozen_groups(text, expected):
     assert [w for w in review_content(text, [content]) if "分组排名" in w] == expected
 
 
-def test_group_ranking_is_skipped_when_several_metrics_have_groups():
+def test_group_ranking_with_several_grouped_metrics_needs_the_claim_to_fail_for_every_candidate():
+    # 多个指标带分组排名：分句点名指标业务名称时只看该指标；未点名时，对所有候选指标都不成立才告警。
     document = json.loads(_grouped_metric_document())
-    document["metrics"].append({**document["metrics"][0], "factId": "fact-" + "e" * 16, "field": "visits"})
-    assert not [w for w in review_content("外科收入最高。", [json.dumps(document)]) if "分组排名" in w]
+    visit_groups = [{"group": "外科", "value": 900}, {"group": "心内科", "value": 300}, {"group": "内科", "value": 100}]
+    visits = {**document["metrics"][0], "factId": "fact-" + "e" * 16, "field": "visits",
+              "topGroups": visit_groups, "bottomGroups": list(reversed(visit_groups))}
+    document["metrics"][0]["field"] = "revenue"
+    document["metrics"].append(visits)
+    content = [json.dumps(document)]
+    fields = {"revenue": "门诊收入", "visits": "门诊人次"}
+
+    def ranking(text):
+        return [w for w in review_content(text, content, field_definitions=fields) if "分组排名" in w]
+
+    # “外科最高”对门诊人次成立，未点名指标时不告警；点名门诊收入时按该指标判定。
+    assert ranking("外科最高。") == []
+    assert ranking("外科门诊收入最高。") == ["分组排名需复核：外科被写为最高，冻结分组结果的最高为心内科。"]
+    # 对两个指标都不成立：列出各指标的冻结结果。
+    assert ranking("内科最高。") == ["分组排名需复核：内科被写为最高，冻结分组结果的最高为心内科（门诊收入）；外科（门诊人次）。"]
 
 
 @pytest.mark.parametrize(("text", "expected"), [
