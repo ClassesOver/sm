@@ -159,14 +159,15 @@ def test_render_markdown_full_runtime_publishes_hash_verified_pdf_and_docx(
     assert result["imageCount"] == 0
     assert result["pageCount"] >= 1
 
-    # 导出设置按服务端契约回显。
+    # 导出设置按服务端契约回显；导出报表默认不含来源编号与附录。
     assert result["render"]["exportSettings"] == {
         "cover": False,
         "toc": False,
         "headerFooter": True,
         "pageNumbers": True,
-        "sources": True,
+        "sources": False,
     }
+    assert result["render"]["citationAppendixPresent"] is False
 
     # PDF 产物存在且与返回身份逐字节一致。
     pdf_path = workspace / "out" / "report.pdf"
@@ -176,7 +177,6 @@ def test_render_markdown_full_runtime_publishes_hash_verified_pdf_and_docx(
     assert result["size"] == len(pdf_bytes) == result["render"]["pdf"]["size"]
     assert _sha256_bytes(pdf_bytes) == result["render"]["pdf"]["sha256"]
     assert result["render"]["pdf"]["path"] == "out/report.pdf"
-    assert result["render"]["citationAppendixPresent"] is True
 
     # Word 产物存在且与返回身份逐字节一致。
     docx_path = workspace / "out" / "report.docx"
@@ -193,9 +193,9 @@ def test_render_markdown_full_runtime_publishes_hash_verified_pdf_and_docx(
     pdf_text = "\n".join(page.extract_text() or "" for page in pypdf.PdfReader(pdf_path).pages)
     word_text = "\n".join(paragraph.text for paragraph in Document(docx_path).paragraphs)
     for rendered_text in (pdf_text, word_text):
-        assert "[来源 001]" in rendered_text
-        assert "实际引用附录" in rendered_text
-        assert "营业收入明细（2026年1月、2026年12月）" in rendered_text
+        # 导出报表默认不含来源编号与附录。
+        assert "[来源 001]" not in rendered_text
+        assert "实际引用附录" not in rendered_text
         # 中文之间的段内换行不能渲染成空格。
         assert "门诊收入持续增长住院收入有所回落。" in rendered_text
 
@@ -208,9 +208,10 @@ def test_render_markdown_full_runtime_publishes_hash_verified_pdf_and_docx(
     }
 
 
-def test_render_markdown_can_hide_source_appendix_without_losing_render(
+def test_render_markdown_shows_source_appendix_only_when_enabled(
     tmp_path: Path,
 ) -> None:
+    # 来源编号与附录默认不导出；导出设置显式开启时 PDF 与 Word 同时展示。
     import pypdf
     from docx import Document
 
@@ -219,7 +220,7 @@ def test_render_markdown_can_hide_source_appendix_without_losing_render(
     state["_editorExportSettings"] = {
         "cover": False,
         "toc": False,
-        "sources": False,
+        "sources": True,
     }
     result = ReportRuntime(workspace).render_markdown(
         state,
@@ -228,7 +229,7 @@ def test_render_markdown_can_hide_source_appendix_without_losing_render(
         ".reporting-tmp/workspace-report-no-source-render/render.pdf",
     )
 
-    assert result["render"]["citationAppendixPresent"] is False
+    assert result["render"]["citationAppendixPresent"] is True
     assert result["render"]["citationPresentations"][0]["citationId"] == "citation_001"
     pdf_text = "\n".join(
         page.extract_text() or ""
@@ -239,8 +240,9 @@ def test_render_markdown_can_hide_source_appendix_without_losing_render(
         for paragraph in Document(workspace / "out/report.docx").paragraphs
     )
     for rendered_text in (pdf_text, word_text):
-        assert "[来源 001]" not in rendered_text
-        assert "实际引用附录" not in rendered_text
+        assert "[来源 001]" in rendered_text
+        assert "实际引用附录" in rendered_text
+        assert "营业收入明细（2026年1月、2026年12月）" in rendered_text
 
 
 _IMAGE_RENDER_TEMPORARY_PDF_PATH = (
@@ -384,7 +386,7 @@ def test_render_markdown_full_runtime_binds_image_with_cover_and_toc(
         "toc": True,
         "headerFooter": True,
         "pageNumbers": True,
-        "sources": True,
+        "sources": False,
     }
 
     # 标题编号契约：目录与正文共用 format_heading_label 的精确文本，锚点规范。
@@ -540,7 +542,8 @@ def _build_trace_appendix_workspace(workspace: Path) -> dict[str, Any]:
                 }
             ],
         },
-        "_editorExportSettings": {"cover": False, "toc": False},
+        # 来源编号与附录默认不导出；本组用例验证显式开启时的附录渲染。
+        "_editorExportSettings": {"cover": False, "toc": False, "sources": True},
         "_traceSourcePresentations": {
             "claims": [
                 {

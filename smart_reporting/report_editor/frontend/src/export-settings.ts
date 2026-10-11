@@ -27,11 +27,12 @@ export function createExportSettingsPanel(root: HTMLElement) {
           <p class="panel-subtitle">配置导出内容与版本备注</p>
         </div>
       </div>
-      <div class="panel-body export-settings-body"><label><input type="checkbox" name="cover"> 包含封面</label><label><input type="checkbox" name="toc" checked> 包含目录</label><label><input type="checkbox" name="headerFooter" checked> 页眉页脚</label><label><input type="checkbox" name="pageNumbers" checked> 页码</label><label><input type="checkbox" name="sources" checked> 来源编号与附录</label><label class="export-note-field"><span>版本备注</span><textarea name="note" maxlength="200" rows="3" placeholder="例如：运营数据复核后发布"></textarea></label></div>
+      <div class="panel-body export-settings-body"><label><input type="checkbox" name="cover"> 包含封面</label><label><input type="checkbox" name="toc" checked> 包含目录</label><label><input type="checkbox" name="headerFooter" checked> 页眉页脚</label><label><input type="checkbox" name="pageNumbers" checked> 页码</label><label><input type="checkbox" name="sources"> 来源编号与附录</label><label class="export-note-field"><span>版本备注</span><textarea name="note" maxlength="200" rows="3" placeholder="例如：运营数据复核后发布"></textarea></label></div>
       <div class="export-settings-actions"><button type="button" class="ui-button ui-button--secondary" data-export-settings="cancel">取消</button><button type="button" class="ui-button ui-button--primary" data-export-settings="confirm">继续导出</button></div>`,
   })
   const dialog = modal.overlay
-  const storageKey = `smart-reporting-editor:export-settings:${window.location.pathname}`
+  // v2：来源编号与附录改为默认不导出，旧版本按原默认值保存的“开启”不再沿用。
+  const storageKey = `smart-reporting-editor:export-settings:v2:${window.location.pathname}`
   try {
     const saved = JSON.parse(readStorage(storageKey) ?? '{}') as Partial<ExportSettings>
     for (const name of ['cover', 'toc', 'headerFooter', 'pageNumbers', 'sources'] as const) {

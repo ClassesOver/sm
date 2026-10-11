@@ -251,9 +251,8 @@ class ReportRuntime:
                 raise ReportFailure("Markdown 文件必须使用 UTF-8 编码") from error
 
             export_settings = state.get("_editorExportSettings")
-            include_sources = not isinstance(export_settings, dict) or export_settings.get(
-                "sources", True
-            )
+            # 导出的 PDF/Word 默认不带来源编号与附录；只有导出设置显式开启时才展示。
+            include_sources = isinstance(export_settings, dict) and export_settings.get("sources") is True
             pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
                 markdown,
                 state.get("_citationPresentations"),
@@ -821,7 +820,7 @@ class ReportRuntime:
         trace = render.get("traceSourcePresentations")
         raw_entries = trace.get("entries") if isinstance(trace, dict) else None
         entries = [item for item in raw_entries or [] if isinstance(item, dict)]
-        sources_enabled = render.get("exportSettings", {}).get("sources", True)
+        sources_enabled = render.get("exportSettings", {}).get("sources", False)
         appendix_present = render.get("traceSourceAppendixPresent")
         aliases = [item.get("alias") for item in entries]
         if sources_enabled:
@@ -891,7 +890,7 @@ class ReportRuntime:
             if isinstance(value, str):
                 citation_ids.append(value)
         presentations = render.get("citationPresentations")
-        source_display_enabled = render.get("exportSettings", {}).get("sources", True)
+        source_display_enabled = render.get("exportSettings", {}).get("sources", False)
         invalid_presentation = (
             len(citation_ids) != len(citations)
             or not isinstance(presentations, list)

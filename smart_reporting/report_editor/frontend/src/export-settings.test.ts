@@ -17,15 +17,15 @@ describe('createExportSettingsPanel', () => {
       toc: false,
       headerFooter: true,
       pageNumbers: true,
-      sources: true,
+      sources: false,
       note: '运营数据复核后发布',
     })
   })
 
   it('defaults to the server export defaults and restores saved preferences', () => {
-    // 面板默认值须与服务端 EditorExportSettings 默认一致（不含封面），导出直接读取面板状态。
+    // 面板默认值须与服务端 EditorExportSettings 默认一致（不含封面、不含来源编号与附录），导出直接读取面板状态。
     expect(createExportSettingsPanel(document.body).read()).toEqual({
-      cover: false, toc: true, headerFooter: true, pageNumbers: true, sources: true, note: '',
+      cover: false, toc: true, headerFooter: true, pageNumbers: true, sources: false, note: '',
     })
     const first = createExportSettingsPanel(document.body)
     first.dialog.querySelector<HTMLInputElement>('[name="toc"]')!.checked = false
@@ -47,11 +47,22 @@ describe('createExportSettingsPanel', () => {
         toc: true,
         headerFooter: true,
         pageNumbers: true,
-        sources: true,
+        sources: false,
       })
     } finally {
       setItem.mockRestore()
     }
+  })
+
+  it('does not carry over source export saved under the old default', () => {
+    // 旧版本默认开启来源附录并保存在 v1 键下；改为默认不导出后不再沿用。
+    localStorage.setItem(`smart-reporting-editor:export-settings:${window.location.pathname}`, JSON.stringify({ sources: true }))
+    expect(createExportSettingsPanel(document.body).read().sources).toBe(false)
+    const panel = createExportSettingsPanel(document.body)
+    panel.dialog.querySelector<HTMLInputElement>('[name="sources"]')!.checked = true
+    panel.read()
+    // 新版本下用户主动开启后照常记住。
+    expect(createExportSettingsPanel(document.body).read().sources).toBe(true)
   })
 
   it('restores focus when the panel is closed after confirmation', () => {

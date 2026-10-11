@@ -139,7 +139,7 @@ async def test_editor_real_dual_export_preserves_edited_and_restored_snapshot(tm
             await editor.restore_history(context, 1, expected_sha256=before.sha256)
         document = await editor.read_document(context)
         assert document.markdown == expected
-        result = await editor.export_revision(context, expected_sha256=document.sha256, settings={"cover": True, "toc": True})
+        result = await editor.export_revision(context, expected_sha256=document.sha256, settings={"cover": True, "toc": True, "sources": True})
         assert result["revision"] == revision
         context = ReportEditorContext.model_validate(repository.durable.payload["reportEditorContexts"][str(revision)])
         current_manifest = await editor.trace.load_manifest(context)
