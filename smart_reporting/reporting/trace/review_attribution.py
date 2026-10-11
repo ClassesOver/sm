@@ -1,0 +1,319 @@
+"""正文复核：分组排名与数值归属（科室、指标、项目比率排名）。"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
+
+from .numeric_text import (
+    _frozen_number_entries,
+    _unit_scales,
+    supplemental_number_values,
+)
+from .review_common import _CLAUSE_BREAK, _VALUE, _numeric_literals
+
+_GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "位居第一", "位列第一")
+
+
+_GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
+
+
+def _group_ranking_tables(documents: list[dict[str, Any]],
+                          field_definitions: Mapping[str, str] | None) -> list[dict[str, Any]]:
+    """本期指标的冻结分组排名：业务名称、前列、末列与全部已登记分组值。"""
+    tables: list[dict[str, Any]] = []
+    for document in documents:
+        for entry in document.get("metrics") or ():
+            if not isinstance(entry, dict) or "current" not in (entry.get("periodRoles") or ()):
+                continue
+            ranked = {
+                side: [(str(item["group"]), Decimal(str(item["value"]))) for item in entry.get(key) or ()
+                       if isinstance(item, dict) and item.get("group")
+                       and isinstance(item.get("value"), (int, float)) and not isinstance(item.get("value"), bool)]
+                for side, key in (("top", "topGroups"), ("bottom", "bottomGroups"))
+            }
+            values = dict((*ranked["top"], *ranked["bottom"]))
+            if len(values) >= 2:
+                label = (field_definitions or {}).get(str(entry.get("field", "")), "")
+                tables.append({"label": label if isinstance(label, str) else "", **ranked, "values": values})
+    return tables
+
+
+def _clause_ranking_tables(clause: str, tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """分句点名了指标业务名称时只看该指标的分组排名；未点名时所有带分组的指标都是候选。"""
+    named = [table for table in tables if len(table["label"]) >= 2 and table["label"] in clause]
+    named = [table for table in named
+             if not any(table["label"] != other["label"] and table["label"] in other["label"] for other in named)]
+    return named or tables
+
+
+def _expected_groups(results: list[tuple[str, str]]) -> str:
+    """各候选指标下的冻结结果；各指标结论一致时不重复列出指标名称。"""
+    shown = list(dict.fromkeys(expected for expected, _ in results))
+    if len(shown) == 1:
+        return shown[0]
+    return "；".join(f"{expected}（{label}）" if label else expected for expected, label in dict.fromkeys(results))
+
+
+def _group_ranking_warnings(text: str, documents: list[dict[str, Any]],
+                            field_definitions: Mapping[str, str] | None = None) -> list[str]:
+    """“外科收入最高”与冻结分组排名不符时提示复核（软告警）。
+
+    一个分句只点名一个已登记分组、只有一个极值词，且不含月份、比率或否定表述时判定，避免把
+    月度极值或占比排名误判为分组总额排名。多个指标带分组排名时，按分句点名的指标业务名称
+    取候选；无法确定指向时，只有该说法对所有候选指标都不成立才告警。
+    """
+    tables = _group_ranking_tables(documents, field_definitions)
+    names = {group for table in tables for group in table["values"]}
+    warnings: list[str] = []
+    for clause in _CLAUSE_BREAK.split(text):
+        named = [group for group in names if group in clause]
+        # “心内科”同时命中“内科”时只认最长的组名。
+        named = [group for group in named if not any(group != other and group in other for other in named)]
+        high = [word for word in _GROUP_HIGH_WORDS if word in clause]
+        low = [word for word in _GROUP_LOW_WORDS if word in clause]
+        if (len(named) != 1 or len(high) + len(low) != 1
+                or re.search(r"\d{1,2}月|季度|占比|比重|比例|增长率|增幅|降幅|增速|同比|环比|变化|不是|并非|未必|不能", clause)):
+            continue
+        group = named[0]
+        results: list[tuple[str, str]] = []
+        for table in _clause_ranking_tables(clause, tables):
+            values = table["values"]
+            if group not in values:
+                continue
+            expected_value = max(values.values()) if high else min(values.values())
+            if values[group] == expected_value:
+                results = []
+                break
+            results.append(("、".join(name for name, value in values.items() if value == expected_value), table["label"]))
+        if results:
+            label = "最高" if high else "最低"
+            warnings.append(f"分组排名需复核：{group}被写为{label}，冻结分组结果的{label}为{_expected_groups(results)}。")
+    return list(dict.fromkeys(warnings))
+
+
+def _metric_value_attribution_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]],
+                                       field_definitions: Mapping[str, str]) -> list[str]:
+    """“门诊收入同比增长5.03%”而 5.03% 是住院收入的登记值时提示数值归属（软告警）。
+
+    分句只点名一个指标业务名称时判定：数值只对得上其他指标的登记值，对不上该指标、
+    派生指标或补证中的任何登记值。业务名称取字段定义中含汉字、至少两个字符的名称。
+    """
+    labels_by_fact: dict[str, str] = {}
+    for document in documents:
+        for array in ("metrics", "comparisons"):
+            for entry in document.get(array) or ():
+                if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
+                    continue
+                label = field_definitions.get(str(entry.get("field", "")))
+                if isinstance(label, str) and len(label) >= 2 and re.search(r"[\u3400-\u9fff]", label):
+                    labels_by_fact[entry["factId"]] = label
+    labels = set(labels_by_fact.values())
+    if len(labels) < 2:
+        return []
+    # (业务名称或 None, 单位, 原值)：None 表示派生、对账或补证数值，对上时不判定归属。
+    values: list[tuple[str | None, str, Decimal]] = []
+    for token, value, unit, _target in _frozen_number_entries(contents):
+        if value is not None and unit:
+            values.append((labels_by_fact.get(token[2:-2].split(":")[1]), unit, Decimal(str(value))))
+    for unit, numbers in supplemental_number_values(contents).items():
+        values.extend((None, unit, number) for number in numbers)
+    warnings: list[str] = []
+    for clause in _CLAUSE_BREAK.split(text):
+        named = [label for label in labels if label in clause]
+        named = [label for label in named if not any(label != other and label in other for other in named)]
+        if len(named) != 1:
+            continue
+        for match in _VALUE.finditer(clause):
+            number = Decimal(match[1].replace(",", ""))
+            if number == 0:
+                continue
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            owners: set[str | None] = set()
+            for label, unit, value in values:
+                scales = _unit_scales(unit)
+                if unit != match[2] and (scales is None or match[2] not in scales):
+                    continue
+                converted = value if unit == match[2] else value * scales[unit] / scales[match[2]]
+                # 下降幅度常写成正数：变化额、变化率按绝对值核对。
+                if abs(converted).quantize(quantum, rounding=ROUND_HALF_UP) == abs(number):
+                    owners.add(label)
+            if len(owners) == 1 and None not in owners and named[0] not in owners:
+                warnings.append(f"指标数值归属需复核：{named[0]}名下的{match[0]}是{next(iter(owners))}的登记值。"
+                                f"请改用{named[0]}对应的数值引用，或改写主语。")
+    return list(dict.fromkeys(warnings))
+
+
+_CHINESE_COUNTS = {**{word: index for index, word in enumerate("一二三四五六七八九十", 1)}, "两": 2}
+
+
+# “位列前三”“排名后5位”；“前三季度”“前3个月”等期间写法不是排名。
+_GROUP_TOP_N = re.compile(
+    r"(?P<side>前|后|末|倒数)\s*(?P<n>[两二三四五六七八九十]|[2-9]|10)\s*(?:名|位)?(?!\s*(?:个|季|月|周|年|天|日|期|次|项|成))"
+)
+
+
+def _group_top_n_warnings(text: str, documents: list[dict[str, Any]],
+                          field_definitions: Mapping[str, str] | None = None) -> list[str]:
+    """“外科、骨科、儿科位列前三”与冻结分组排名不符时提示复核（软告警）。
+
+    与最高/最低检查同一取候选规则。句中点名的已登记分组数须等于 N，且第 N 名与第 N+1 名
+    不并列；月份、比率、同比环比与否定表述不判定；对任一候选指标成立即不告警。
+    """
+    tables = _group_ranking_tables(documents, field_definitions)
+    names = {group for table in tables for group in table["values"]}
+    warnings: list[str] = []
+    for sentence in re.split(r"[。；\n]", text):
+        claim = _GROUP_TOP_N.search(sentence)
+        if (claim is None or re.search(r"\d{1,2}月|占比|比重|比例|增长率|增幅|降幅|增速|同比|环比|不是|并非|未进入|未能|未进|不在", sentence)):
+            continue
+        count = _CHINESE_COUNTS.get(claim["n"]) or int(claim["n"])
+        named = [group for group in names if group in sentence]
+        named = [group for group in named if not any(group != other and group in other for other in named)]
+        if len(named) != count:
+            continue
+        results: list[tuple[str, str]] = []
+        for table in _clause_ranking_tables(sentence, tables):
+            items = table["top" if claim["side"] == "前" else "bottom"]
+            if len(items) < count or (len(items) > count and items[count - 1][1] == items[count][1]):
+                continue
+            expected = [group for group, _ in items[:count]]
+            if set(named) == set(expected):
+                results = []
+                break
+            results.append(("、".join(expected), table["label"]))
+        if results:
+            side = "前" if claim["side"] == "前" else "后"
+            written = "、".join(sorted(named, key=sentence.index))
+            warnings.append(f"分组排名需复核：{written}被写为{side}{claim['n']}名，"
+                            f"冻结分组结果的{side}{claim['n']}名为{_expected_groups(results)}。")
+    return list(dict.fromkeys(warnings))
+
+
+# 分句含比较、变化或全院合计语境时，数值不一定是该分组自身的值。
+_GROUP_VALUE_CONTEXT = re.compile(
+    r"较|比上|同比|环比|增加|减少|增长|下降|相差|差距|高出|低出|多出|少于|超出|全院|合计|共计|累计|总|占"
+)
+
+
+def _group_value_attribution_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+    """“内科收入200元”而 200元 是外科的登记分组值时提示数值归属（软告警）。
+
+    分句只点名一个已登记分组、不含比较或合计语境时判定：数值对不上该分组在任何同量纲
+    指标中的登记值、也对不上指标本身的其他登记值，却恰好对上同一指标中另一个分组的值。
+    """
+    tables: list[tuple[str, dict[str, Decimal]]] = []
+    # 指标、比较与派生事实中分组结果以外的登记值：对得上其中任何一个时不判定归属。
+    registered: list[tuple[str, set[Decimal]]] = []
+    for document in documents:
+        for array in ("metrics", "comparisons", "derivedMetrics", "reconciliations"):
+            for entry in document.get(array) or ():
+                if not isinstance(entry, dict) or not isinstance(entry.get("unit"), str):
+                    continue
+                registered.append((entry["unit"], _numeric_literals(
+                    {key: value for key, value in entry.items() if key not in {"topGroups", "bottomGroups"}})))
+                if array != "metrics" or "current" not in (entry.get("periodRoles") or ()):
+                    continue
+                groups = {str(item["group"]): Decimal(str(item["value"]))
+                          for item in (*(entry.get("topGroups") or ()), *(entry.get("bottomGroups") or ()))
+                          if isinstance(item, dict) and item.get("group")
+                          and isinstance(item.get("value"), (int, float)) and not isinstance(item.get("value"), bool)}
+                if len(groups) >= 2:
+                    tables.append((entry["unit"], groups))
+    # 编码类组名（“1”“A01”）会在数字中误命中；只认含汉字、至少两个字符的组名。
+    names = {group for _, groups in tables for group in groups
+             if len(group) >= 2 and re.search(r"[\u3400-\u9fff]", group)}
+    warnings: list[str] = []
+    for clause in _CLAUSE_BREAK.split(text):
+        named = [group for group in names if group in clause]
+        named = [group for group in named if not any(group != other and group in other for other in named)]
+        if len(named) != 1 or _GROUP_VALUE_CONTEXT.search(clause):
+            continue
+        group = named[0]
+        for match in _VALUE.finditer(clause):
+            number = Decimal(match[1].replace(",", ""))
+            digits = len(match[1].split(".", 1)[1]) if "." in match[1] else 0
+            quantum = Decimal(1).scaleb(-digits)
+
+            def shown(value: Decimal, unit: str, match: re.Match[str] = match, number: Decimal = number,
+                      quantum: Decimal = quantum) -> bool:
+                scales = _unit_scales(unit)
+                if unit != match[2] and (scales is None or match[2] not in scales):
+                    return False
+                converted = value if unit == match[2] else value * scales[unit] / scales[match[2]]
+                return converted.quantize(quantum, rounding=ROUND_HALF_UP) == number
+
+            if (number == 0
+                    or any(shown(value, unit) for unit, values in registered for value in values)
+                    or any(shown(groups[group], unit) for unit, groups in tables if group in groups)):
+                continue
+            owners = {other for unit, groups in tables if group in groups
+                      for other, value in groups.items() if other != group and shown(value, unit)}
+            if len(owners) == 1:
+                warnings.append(f"分组数值归属需复核：{group}名下的{match[0]}是{next(iter(owners))}的登记值。"
+                                f"请改用{group}对应的数值引用，或改写主语。")
+    return list(dict.fromkeys(warnings))
+
+
+def _project_ratio_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+    warnings = []
+    for label, numerator_field in (("签约率", "contract_amount"), ("付款率", "payment_amount")):
+        tables: dict[tuple[tuple[str, Decimal], ...], dict[str, Decimal]] = {}
+        for document in documents:
+            pending = list(document.get("findings", ()))
+            while pending:
+                finding = pending.pop()
+                if isinstance(finding, list):
+                    pending.extend(finding)
+                    continue
+                if not isinstance(finding, dict):
+                    continue
+                columns, rows, metadata = (finding.get(key) for key in ("columns", "rows", "columnMeta"))
+                if not isinstance(columns, list) or not isinstance(rows, list):
+                    pending.extend(value for value in finding.values() if isinstance(value, (list, dict)))
+                    continue
+                fields = ("budget_type", "budget_project_amount", numerator_field)
+                if not all(field in columns for field in fields) or not isinstance(metadata, dict):
+                    continue
+                metas = [metadata.get(field, {}) for field in fields[1:]]
+                if (any(meta.get("unit") != "元" for meta in metas)
+                        or any(meta.get("periodRole") != "current" for meta in metas)):
+                    continue
+                indices = [columns.index(field) for field in fields]
+                rates: dict[str, set[Decimal]] = {}
+                for row in rows:
+                    if not isinstance(row, list) or len(row) != len(columns):
+                        continue
+                    group, denominator, numerator = (row[index] for index in indices)
+                    if (not isinstance(group, str) or not group
+                            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                                   for value in (denominator, numerator))):
+                        continue
+                    denominator, numerator = Decimal(str(denominator)), Decimal(str(numerator))
+                    if denominator.is_finite() and numerator.is_finite() and denominator > 0:
+                        rates.setdefault(group, set()).add(numerator / denominator * 100)
+                if len(rates) >= 2 and all(len(values) == 1 for values in rates.values()):
+                    values = {group: next(iter(numbers)) for group, numbers in rates.items()}
+                    tables[tuple(sorted(values.items()))] = values
+        for sentence in re.split(r"[。；\n]", text):
+            groups = {group for values in tables.values() for group in values if group in sentence}
+            claim = re.search(re.escape(label) + r"[^。；\n]{0,25}?(最高|最低)", sentence)
+            if (len(groups) != 1 or claim is None
+                    or re.search(r"不是|并非|不能|不可|无法|未必", claim[0])
+                    or re.search(r"\d{1,2}月|上年|去年|同期|同比", sentence)):
+                continue
+            group = next(iter(groups))
+            choices = [values for values in tables.values() if group in values]
+            if len(choices) != 1:
+                continue
+            values = choices[0]
+            high = claim[1] == "最高"
+            contrary = [other for other in values if
+                        (values[other] > values[group] if high else values[other] < values[group])]
+            if contrary:
+                other = (max if high else min)(contrary, key=values.get)
+                warnings.append(f"{label}排名需复核：{group}被写为{claim[1]}，同一补证中{other}的{label}为{values[other]:.2f}%，"
+                                f"{'高' if high else '低'}于{group}的{values[group]:.2f}%。按同期间合同或付款金额/预算金额复核。")
+    return warnings

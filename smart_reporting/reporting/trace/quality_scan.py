@@ -18,8 +18,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .content_review import _VALUE, _prose_lines, readability_warnings, review_content
+from .content_review import review_content
 from .numeric_text import replace_unregistered_numbers
+from .review_common import _VALUE
+from .review_readability import _prose_lines, readability_warnings
 
 _MAX_EXAMPLES = 10
 
