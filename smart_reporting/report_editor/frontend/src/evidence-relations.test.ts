@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { TraceSources } from './api'
 import {
   citationLabel,
+  sectionTitleFromDraft,
+  subjectBusinessLabel,
   assembleChartRelations,
   assembleComputationRelations,
   assembleDatasetRelations,
@@ -419,5 +421,36 @@ describe('renderRelationList', () => {
     const empty = container.querySelector('.evidence-relation-empty')!
     expect(empty.getAttribute('role')).toBe('status')
     expect(empty.getAttribute('aria-live')).toBe('polite')
+  })
+})
+
+describe('business labels', () => {
+  const sources = (): TraceSources => ({
+    available: true,
+    subjects: [
+      { subjectId: 'sub-aaaaaa111111', subjectKind: 'claim', locator: {}, factRefs: [{ analysisId: 'a', factId: 'f1' }], computationId: null },
+      { subjectId: 'sub-bbbbbb222222', subjectKind: 'claim', locator: {}, factRefs: [{ analysisId: 'a', factId: 'f1' }], computationId: null },
+      { subjectId: 'sub-cccccc333333', subjectKind: 'claim', locator: {}, factRefs: [{ analysisId: 'a', factId: 'f2' }, { analysisId: 'a', factId: 'f1' }], computationId: null },
+      { subjectId: 'sub-dddddd444444', subjectKind: 'claim', locator: {}, factRefs: [], computationId: null },
+    ],
+    facts: [
+      { analysisId: 'a', factId: 'f1', factKind: 'metric', label: 'revenue', name: '华东营收', unit: '万元', displayValue: 1, datasetIds: [] },
+      { analysisId: 'a', factId: 'f2', factKind: 'metric', label: 'visits', name: '门诊人次', unit: '人次', displayValue: 1, datasetIds: [] },
+    ],
+  } as unknown as TraceSources)
+
+  it('names text citations by metric and disambiguates duplicates', () => {
+    const catalog = sources()
+    expect(subjectBusinessLabel('sub-aaaaaa111111', catalog)).toBe('正文引用 · 华东营收 #aaaaaa')
+    expect(subjectBusinessLabel('sub-bbbbbb222222', catalog)).toBe('正文引用 · 华东营收 #bbbbbb')
+    expect(subjectBusinessLabel('sub-cccccc333333', catalog)).toBe('正文引用 · 门诊人次 等 2 项')
+    expect(subjectBusinessLabel('sub-dddddd444444', catalog)).toBe('正文引用 #dddddd')
+  })
+
+  it('reads the section heading after its protocol marker', () => {
+    const markdown = '# 报告\n\n[[section:sec-1]]\n## 核心结论[[analysis:a]]\n\n正文'
+    expect(sectionTitleFromDraft(markdown, 'sec-1')).toBe('核心结论')
+    expect(sectionTitleFromDraft(markdown, 'sec-2')).toBeUndefined()
+    expect(sectionTitleFromDraft('[[section:sec-1]]\n正文段落', 'sec-1')).toBeUndefined()
   })
 })

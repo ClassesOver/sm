@@ -25,6 +25,7 @@ import {
   factPeriodLabel,
   relabelRelations,
   renderRelationList,
+  sectionTitleFromDraft,
   subjectRef,
   subjectShortFromLabel,
   subjectShortId,
@@ -260,7 +261,8 @@ export function graphLabel(ref: EvidenceObjectRef, max: number, head: number, ta
     if (compact) return compact
   }
   // 短号长度按修订内唯一性确定，以显示名中的短号为准。
-  const short = ref.kind === 'subject' && /^正文引用(?:\s|$)/.test(label)
+  // 业务名（“正文引用 · 指标名”）按普通文字截断，只有短号显示名才缩成“引用 #短号”。
+  const short = ref.kind === 'subject' && (/^正文引用$/.test(label) || label.startsWith('正文引用 #'))
     ? subjectShortFromLabel(label) ?? subjectShortId(ref.key) : undefined
   // 缩写不得超过该位置的长度上限（紧凑图标签只有 4 个字符宽，超长会遮挡相邻节点）。
   const fitting = short && [`引用 ${short}`, short].find((text) => text.length <= max)
@@ -301,7 +303,8 @@ interface PageSkeleton {
   detailBox: HTMLElement
 }
 
-function buildSkeleton(container: HTMLElement, ctx: EvidencePageContext, note: string): PageSkeleton {
+/** objectId 是登记编号：不放进可见副标题（读者看业务名称），保留在悬停提示与 data 属性中供核对复制。 */
+function buildSkeleton(container: HTMLElement, ctx: EvidencePageContext, note: string, objectId?: string): PageSkeleton {
   const header = document.createElement('header')
   header.className = 'evidence-object-header'
   const eyebrow = document.createElement('span')
@@ -314,6 +317,10 @@ function buildSkeleton(container: HTMLElement, ctx: EvidencePageContext, note: s
   const noteP = document.createElement('p')
   noteP.className = 'evidence-object-note'
   noteP.textContent = note
+  if (objectId) {
+    noteP.title = `登记编号：${objectId}`
+    noteP.dataset.objectId = objectId
+  }
   header.append(eyebrow, title, noteP)
   const statusArea = document.createElement('div')
   statusArea.className = 'evidence-status-area'
@@ -2399,7 +2406,7 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const { detail } = data
-  const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 计算记录 ${detail.computationId}`)
+  const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 计算记录`, detail.computationId)
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
   // 方法、核对与复算条件与事实页使用同一种状态行，两类页面的信息层级保持一致。
@@ -2623,7 +2630,7 @@ async function renderExpiredDataset(container: HTMLElement, ctx: EvidencePageCon
   if (ctx.isStale()) return
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
-  const skeleton = buildSkeleton(container, ctx, `${ctx.page.ref.key} · ${ctx.revisionLabel}`)
+  const skeleton = buildSkeleton(container, ctx, ctx.revisionLabel, ctx.page.ref.key)
   skeleton.statusBox.hidden = false
   skeleton.statusBox.classList.add('evidence-expired-note')
   skeleton.statusBox.textContent = '数据快照已超过保留期：以下为登记信息，明细不可预览或下载。'
@@ -2692,7 +2699,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   }
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
-  const skeleton = buildSkeleton(container, ctx, `${ctx.page.ref.key} · ${ctx.revisionLabel}`)
+  const skeleton = buildSkeleton(container, ctx, ctx.revisionLabel, ctx.page.ref.key)
   renderDatasetInfo(skeleton.statusArea, data.info)
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
@@ -3144,7 +3151,7 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const { detail } = data
-  const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 引用 ${detail.subjectId}`)
+  const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · ${SUBJECT_KIND_LABELS[detail.subjectKind] ?? '正文引用'}`, detail.subjectId)
 
   // 软告警放在全部状态行之后，不把“引用状态/引用类型/正文位置”拆成两段。
   let citationWarning: HTMLElement | null = null
@@ -3179,7 +3186,12 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   makeStatusRow(skeleton.statusArea, '引用类型', 'kind').textContent =
     SUBJECT_KIND_LABELS[detail.subjectKind] ?? detail.subjectKind
   const locatorParts: string[] = []
-  if (detail.locator.sectionId) locatorParts.push(`章节 ${detail.locator.sectionId}`)
+  if (detail.locator.sectionId) {
+    // 章节以正文标题显示；草稿中找不到对应标题时才显示登记编号。
+    const draft = ctx.getDraft()?.markdown
+    const title = draft ? sectionTitleFromDraft(draft, detail.locator.sectionId) : undefined
+    locatorParts.push(title ? `章节「${title}」` : `章节 ${detail.locator.sectionId}`)
+  }
   if (detail.locator.tableId) locatorParts.push(`表格 ${detail.locator.tableId}`)
   if (detail.locator.rowKey) locatorParts.push(`行 ${detail.locator.rowKey}`)
   if (detail.locator.columnKey) locatorParts.push(`列 ${detail.locator.columnKey}`)

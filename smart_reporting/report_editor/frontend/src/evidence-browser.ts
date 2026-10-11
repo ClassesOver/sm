@@ -10,7 +10,7 @@ import {
   type EvidenceTask,
 } from './evidence-state'
 import { appendHighlighted, groupDigits, renderEvidencePage } from './evidence-pages'
-import { analysisLabel, citationLabel, datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabelsFor } from './evidence-relations'
+import { analysisLabel, citationLabel, datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectBusinessLabel } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
@@ -20,7 +20,7 @@ function sourceSubjectLabel(subject: NonNullable<TraceSources['subjects']>[numbe
     const fact = sources.facts?.find(item => item.analysisId === ref?.analysisId && item.factId === ref?.factId)
     if (fact) return `${subject.locator.rowKey?.replace(/^period:/, '')} · ${fact.name || fact.label} · ${analysisLabel(fact.analysisId, sources)}`
   }
-  return subjectLabelsFor((sources.subjects ?? []).map(item => item.subjectId))(subject.subjectId)
+  return subjectBusinessLabel(subject.subjectId, sources)
 }
 
 /**

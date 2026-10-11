@@ -1538,6 +1538,14 @@ describe('详情入口统一导航', () => {
   })
 })
 
+describe('graphLabel business names', () => {
+  it('truncates business subject names as text instead of collapsing to an internal short id', () => {
+    const subject = { kind: 'subject' as const, key: 'sub-aaaaaa111111', label: '正文引用 · 华东地区门诊营收合计' }
+    expect(graphLabel(subject, 10, 6, 3)).toBe('正文引用 ·…收合计')
+    expect(graphLabel({ ...subject, label: '正文引用 #aaaaaa' }, 10, 6, 3)).toBe('引用 #aaaaaa')
+  })
+})
+
 describe('graphLabel', () => {
   it('keeps registered month labels instead of replacing them with citation hashes', () => {
     const subject: EvidenceObjectRef = { kind: 'subject', key: 'sub-month', label: '2025-01-01 · 收入金额 · 分析 001' }
@@ -1928,11 +1936,15 @@ describe('引用页', () => {
       throw new Error(`unexpected ${url}`)
     }) as unknown as typeof fetch
     const { container, ctx } = setupPage(fetcher, SUBJECT_REF, {
-      getDraft: () => ({ markdown: '报告正文', sha256: 'x' }),
+      getDraft: () => ({ markdown: '[[section:section_002]]\n## 收入分析\n\n报告正文', sha256: 'x' }),
     })
     await renderEvidencePage(container, ctx)
     expect(container.querySelector('[data-status-row="citation"]')?.textContent).toContain('✓ 引用有效')
-    expect(container.querySelector('[data-status-row="locator"]')?.textContent).toContain('章节 section_002')
+    // 章节显示正文标题；登记编号不出现在可见副标题，只留在悬停提示中。
+    expect(container.querySelector('[data-status-row="locator"]')?.textContent).toContain('章节「收入分析」')
+    const note = container.querySelector<HTMLElement>('.evidence-object-note')!
+    expect(note.textContent).not.toContain('sub-cccccccccccccccc')
+    expect(note.title).toBe('登记编号：sub-cccccccccccccccc')
     const locate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === '定位正文')!
     // 定位操作紧挨正文位置，而不是游离在页面底部。
