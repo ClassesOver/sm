@@ -34,7 +34,8 @@ export interface EvidencePage {
   showList: boolean
   graphView: boolean
   /** 关系图渲染模式；新页面默认使用成熟 3D 组件，2D 为兼容回退。 */
-  graphMode: '2d' | '3d'
+  /** auto：未手动切换时按节点数选择（≤15 个节点用 2D，更多用 3D）。 */
+  graphMode: '2d' | '3d' | 'auto'
   /** 3D 名称显示偏好；未选择时密集图只显示关注名称。 */
   graphLabels?: 'all' | 'focus'
   /** 当前预览对象的2D/3D共用关系范围/端点，按身份恢复历史现场。 */
@@ -76,7 +77,7 @@ function samePath(a: EvidenceObjectRef[], b: EvidenceObjectRef[]): boolean {
   return a.length === b.length && a.every((ref, index) => sameEvidenceRef(ref, b[index]))
 }
 
-function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[], graphMode: '2d' | '3d' = '3d'): EvidencePage {
+function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[], graphMode: EvidencePage['graphMode'] = 'auto'): EvidencePage {
   return {
     ref,
     path,
@@ -104,9 +105,9 @@ export interface EvidenceStore {
 }
 
 export function createEvidenceState(store: EvidenceStore = { tasks: [], active: REPORT_TAB }) {
-  // 兼容旧版持久化页面：未记录模式的历史页按新的默认 3D 处理。
+  // 兼容旧版持久化页面：未记录模式的历史页按节点数自动选择。
   for (const task of store.tasks) {
-    for (const page of task.history) page.graphMode ??= '3d'
+    for (const page of task.history) page.graphMode ??= 'auto'
   }
   const closedTasks: EvidenceTask[] = []
   let counter = store.tasks.reduce((max, task) => {
@@ -214,10 +215,10 @@ export function createEvidenceState(store: EvidenceStore = { tasks: [], active: 
     )
     const next = remembered ? {
       ...remembered, ref, path,
-      graphMode: remembered.graphMode ?? '3d',
+      graphMode: remembered.graphMode ?? 'auto',
       graphScroll: { ...remembered.graphScroll }, graphPan: { ...remembered.graphPan },
       datasetCursors: [...remembered.datasetCursors], columnWidths: { ...remembered.columnWidths },
-    } : makePage(ref, path, page.graphMode ?? '3d')
+    } : makePage(ref, path, page.graphMode ?? 'auto')
     task.history = [...task.history.slice(0, task.index + 1), next]
     task.index = task.history.length - 1
     return task.history[task.index]

@@ -1,4 +1,5 @@
 import { bodySourceLinksPlugin, updateBodySourceLinks } from './body-source-links'
+import { bodyValueMarksPlugin, installValueCard, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 import '@milkdown/crepe/theme/common/prosemirror.css'
 import '@milkdown/crepe/theme/common/reset.css'
 import '@milkdown/crepe/theme/common/block-edit.css'
@@ -74,7 +75,7 @@ import { formalHeadings, reportPreflight, showPreflightPanel } from './preflight
 import { editorChineseLocale, formatRevisionLabel } from './localization'
 import { createReportEditor } from './editor-features'
 import { createSharePanel } from './share'
-import { createSourceValidationController, sourceValidationIssueCount, markdownSha256 } from './source-validation'
+import { createSourceValidationController, markdownSha256, nextSourceIssue, sourceCoverageSummary } from './source-validation'
 import { linkedSubjectFromSearch } from './linked-subject'
 
 const root = document.querySelector<HTMLElement>('#app')
@@ -156,9 +157,11 @@ const revisionLabel = root.querySelector<HTMLElement>('.revision-label')
 const metricsLabel = root.querySelector<HTMLElement>('.doc-metrics')
 const structureLabel = root.querySelector<HTMLElement>('.structure-status')
 const imageQualityLabel = root.querySelector<HTMLElement>('.image-quality-status')
-const sourceStatusLabel = document.createElement('span')
+// 有待处理位置时可点击，依次跳到正文中的改动数值、待核实与待复核表格/图表。
+const sourceStatusLabel = document.createElement('button')
+sourceStatusLabel.type = 'button'
 sourceStatusLabel.className = 'source-validation-status'
-sourceStatusLabel.setAttribute('role', 'status')
+sourceStatusLabel.disabled = true
 sourceStatusLabel.setAttribute('aria-live', 'polite')
 sourceStatusLabel.hidden = true
 structureLabel?.after(sourceStatusLabel)
@@ -197,6 +200,7 @@ let bodyCatalog: Promise<import('./api').TraceSources> | undefined
 const loadBodyCatalog = () => bodyCatalog ??= client.sources().catch(error => { bodyCatalog = undefined; throw error })
 let lineagePanelEnabled = true
 let refreshBodySourceLinks = (_result: import('./api').TraceValidation | null) => {}
+let restoreBodyValue = (_subjectId: string) => false
 const sourceValidation = createSourceValidationController(
   client,
   () => getEditorMarkdown(),
@@ -211,21 +215,11 @@ const sourceValidation = createSourceValidationController(
     } else {
       // 表格与 claim 同为软语义：排序不失效，改值/插删行计入待复核；
       // 复制出的新格（与冻结值重复）同样提示复核，不自动赋予绑定。
-      const issues = sourceValidationIssueCount(result)
-      if (issues) {
-        const numericWarnings = result.warnings?.length ?? 0
-        sourceStatusLabel.textContent = [
-          numericWarnings ? `正文表述待复核 ${numericWarnings} 处` : '',
-          issues > numericWarnings ? `来源待复核 ${issues - numericWarnings} 处` : '',
-        ].filter(Boolean).join(' · ')
-        sourceStatusLabel.dataset.state = 'stale'
-      } else {
-        const hasBindings = result.subjects.length > 0 || (result.tableSummary?.valid ?? 0) > 0 ||
-          (result.charts?.some((chart) => chart.status === 'valid') ?? false)
-        sourceStatusLabel.textContent = hasBindings ? '来源对应当前内容' : '当前内容无精确来源绑定'
-        sourceStatusLabel.dataset.state = hasBindings ? 'valid' : 'unknown'
-      }
+      const coverage = sourceCoverageSummary(result, getEditorMarkdown())
+      sourceStatusLabel.textContent = coverage.text
+      sourceStatusLabel.dataset.state = coverage.state
     }
+    sourceStatusLabel.disabled = sourceStatusLabel.dataset.state !== 'stale'
     sourceStatusLabel.hidden = false
     refreshBodySourceLinks(result)
   },
@@ -236,6 +230,7 @@ const sourceValidation = createSourceValidationController(
     if (!lineagePanelEnabled) return
     sourceStatusLabel.textContent = '来源校验中'
     sourceStatusLabel.dataset.state = 'checking'
+    sourceStatusLabel.disabled = true
     sourceStatusLabel.hidden = false
   },
 )
@@ -248,8 +243,12 @@ let captureEvidenceEditor = () => {}
 let restoreEvidenceEditor = () => shell.editor.focus({ preventScroll: true })
 let focusEvidenceTarget = (_target: HTMLElement) => shell.editor.focus({ preventScroll: true })
 let evidenceLocateIntent = 0
-const { createEvidenceBrowser } = await import('./evidence-browser')
-const evidenceBrowser = createEvidenceBrowser(root, {
+// 证据浏览器在后台预加载，不阻塞编辑器首屏；加载完成前的调用按顺序排队，
+// isOpen 在加载前恒为 false（浏览器尚未打开）。
+type EvidenceBrowser = ReturnType<typeof import('./evidence-browser').createEvidenceBrowser>
+let loadedEvidenceBrowser: EvidenceBrowser | null = null
+const evidenceBrowserReady: Promise<EvidenceBrowser> = import('./evidence-browser').then(({ createEvidenceBrowser }) =>
+  loadedEvidenceBrowser = createEvidenceBrowser(root, {
   client,
   revisionLabel: formatRevisionLabel(revision),
   storageKey: `smart-reporting-evidence:${basePath}`,
@@ -321,7 +320,33 @@ const evidenceBrowser = createEvidenceBrowser(root, {
     })
   },
   getDraft: () => ({ markdown: getEditorMarkdown(), sha256 }),
-})
+  downloadTraceList: async () => {
+    const markdown = getEditorMarkdown()
+    const [sources, { buildTraceListCsv, downloadTraceList }] = await Promise.all([loadBodyCatalog(), import('./trace-list')])
+    let validation = currentBodyValidationMarkdown === markdown ? currentBodyValidation : null
+    if (!validation) {
+      // 尚无本稿校验结果时现场校验一次；失败时清单标为“未校验”，不阻止下载。
+      const digest = await markdownSha256(markdown)
+      validation = await client.validateSources(markdown, digest).then(result => result.draftSha256 === digest ? result : null, () => null)
+    }
+    downloadTraceList(buildTraceListCsv(markdown, sources, validation), `溯源清单-${formatRevisionLabel(revision)}.csv`)
+  },
+}))
+const withEvidenceBrowser = <T>(action: (browser: EvidenceBrowser) => T): Promise<T> => {
+  const result = loadedEvidenceBrowser ? Promise.resolve(action(loadedEvidenceBrowser)) : evidenceBrowserReady.then(action)
+  result.catch(() => status('来源浏览器加载失败，请刷新页面后重试', 'dirty'))
+  return result
+}
+const evidenceBrowser = {
+  isOpen: () => loadedEvidenceBrowser?.isOpen() ?? false,
+  open: () => void withEvidenceBrowser(browser => browser.open()),
+  openObject: (ref: Parameters<EvidenceBrowser['openObject']>[0]) => void withEvidenceBrowser(browser => browser.openObject(ref)),
+  openAnalysis: (analysisId: string) => withEvidenceBrowser(browser => browser.openAnalysis(analysisId)),
+  openSubject: (subjectId: string) => withEvidenceBrowser(browser => browser.openSubject(subjectId)),
+  setDownloadEnabled: (enabled: boolean) => void withEvidenceBrowser(browser => browser.setDownloadEnabled(enabled)),
+  setDrilldownEnabled: (enabled: boolean) => void withEvidenceBrowser(browser => browser.setDrilldownEnabled(enabled)),
+  reset: () => void withEvidenceBrowser(browser => browser.reset()),
+}
 evidenceCovering = () => evidenceBrowser.isOpen()
 shell.sources.addEventListener('click', () => {
   document.querySelector<HTMLDialogElement>('.report-source-preview')?.close('selected')
@@ -331,8 +356,10 @@ const previewBodySource = createBodySourcePreview({
   client,
   sources: loadBodyCatalog,
   validation: () => currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null,
+  restore: subjectId => restoreBodyValue(subjectId),
   open: reference => {
-    if (reference.kind === 'analysis') void evidenceBrowser.openAnalysis(reference.value)
+    if (reference.kind === 'dataset') evidenceBrowser.openObject({ kind: 'dataset', key: reference.value, label: reference.label })
+    else if (reference.kind === 'analysis') void evidenceBrowser.openAnalysis(reference.value)
     else if (reference.kind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: reference.value, label: '图表数据来源' })
     else void evidenceBrowser.openSubject(reference.value)
   },
@@ -349,6 +376,7 @@ const openBodySource = (event: MouseEvent | KeyboardEvent) => {
   void previewBodySource(marker, selected)
 }
 shell.editor.addEventListener('click', openBodySource)
+installValueCard(shell.editor)
 shell.editor.addEventListener('keydown', openBodySource, { capture: true })
 const telemetry = createTelemetryReporter((payload) => client.reportEvent(payload))
 const loadStartedAt = performance.now()
@@ -475,6 +503,7 @@ try {
   crepe.editor.use(protocolMarkerPlugin)
   crepe.editor.use(evidenceLocationPlugin)
   crepe.editor.use(bodySourceLinksPlugin)
+  crepe.editor.use(bodyValueMarksPlugin)
   crepe.editor.use(searchHighlightPlugin)
   crepe.editor.use(indent)
   crepe.editor.use(trailing)
@@ -507,7 +536,13 @@ try {
     void bodySources.then(sources => {
       if (!sources || intent !== bodySourceIntent || getEditorMarkdown() !== markdown) return
       updateBodySourceLinks(evidenceView, shell.editor, sources, result)
+      updateBodyValueMarks(evidenceView, result, sources)
     })
+  }
+  restoreBodyValue = (subjectId) => {
+    const validation = currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null
+    if (reviewMode !== 'idle' || !validation) return false
+    return restoreRegisteredValue(evidenceView, subjectId, validation)
   }
   let evidenceLocationTimer: number | undefined
   focusEvidenceTarget = (target) => {
@@ -518,6 +553,19 @@ try {
       evidenceView.dispatch(evidenceView.state.tr.setMeta(evidenceLocationKey, null).setMeta('addToHistory', false))
     }, 1800)
   }
+  let lastSourceIssue: number | null = null
+  sourceStatusLabel.addEventListener('click', () => {
+    const target = nextSourceIssue(shell.editor, lastSourceIssue, element => evidenceView.posAtDOM(element, 0))
+    if (!target) {
+      status(sourceStatusLabel.title ? '待复核的是正文表述，详见状态提示' : '正文中暂无可定位的待处理位置', 'dirty')
+      return
+    }
+    lastSourceIssue = evidenceView.posAtDOM(target, 0)
+    focusEvidenceTarget(target)
+    target.scrollIntoView({ block: 'center' })
+    // 光标落在标注起点外侧，主动展示该处核对卡片。
+    target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+  })
   let evidenceScene: {
     doc: typeof evidenceView.state.doc
     selection: ReturnType<typeof evidenceView.state.selection.getBookmark>
@@ -572,6 +620,7 @@ try {
         refreshBodySourceLinks(null)
         sourceStatusLabel.textContent = '候选内容尚未核验'
         sourceStatusLabel.dataset.state = 'unknown'
+        sourceStatusLabel.disabled = true
         sourceStatusLabel.title = ''
         status(reviewMessage(), 'dirty')
         return

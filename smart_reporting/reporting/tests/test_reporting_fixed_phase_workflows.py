@@ -1491,6 +1491,9 @@ def test_whole_section_stage_requests_all_blocks():
     instructions = "\n".join(stage.instructions)
     assert "一次生成 sectionPlan 中全部 block" in instructions
     assert "不得生成其他 block" not in instructions
+    # 生成端预防：占位符后重复单位、数值写错归属、全角数字与百分点缩写。
+    for keyword in ("其后不得再写单位", "所属指标、科室或期间", "百分点写“个百分点”"):
+        assert keyword in instructions
 
 
 @pytest.mark.anyio
@@ -2816,7 +2819,11 @@ def test_section_number_context_keeps_bound_comparison_without_metric_guide():
             fact_ids=("fact-aaaaaaaaaaaaaaaa",), metric_code="revenue",
         ),),
     )
-    assert not guide
+    # 同比事实带比较口径与窗口进入 numberGuide，只保留当前结论绑定的那一条。
+    assert [(item["factId"], item["kind"], item["comparisonType"]) for item in guide] == [
+        ("fact-aaaaaaaaaaaaaaaa", "comparison", "同比"),
+    ]
+    assert guide[0]["references"]["change"] == "{{value:fact-aaaaaaaaaaaaaaaa:change:元}}"
     assert catalog["{{value:fact-aaaaaaaaaaaaaaaa:change:元}}"] == "20元"
     assert not any("fact-bbbbbbbbbbbbbbbb" in key for key in catalog)
 
@@ -3223,7 +3230,10 @@ async def test_section_workflow_skips_model_recovery_for_infrastructure_failures
     ("生成两张图表", 1, None),
 ])
 def test_explicit_chart_count_follows_user_request(goal, count, expected):
-    from smart_reporting.reporting.workflow.runtime.analysis import _limit_requested_charts, _requested_chart_limit
+    from smart_reporting.reporting.workflow.runtime.analysis import (
+        _limit_requested_charts,
+        _requested_chart_limit,
+    )
 
     assert _requested_chart_limit(goal, count) == expected
     charts = tuple(_chart().model_copy(update={"chart_id": f"chart_{index:03d}", "source_path": f"charts/{index}.png"}) for index in range(3))
@@ -3260,6 +3270,49 @@ async def test_section_semantic_review_corrects_once_and_stays_soft(monkeypatch)
     assert "6,062,600人次" in str(calls[1]["correction"]["issues"])
     assert result.blocks[0].markdown == "预算累计6,062,590人次。"
     assert result.blocks[0].citation_ids == ("citation_001",)
+
+
+@pytest.mark.anyio
+async def test_residual_review_warnings_are_collected_as_soft_block_notices(monkeypatch):
+    # 纠错后仍残留的复核告警与“待核实”替换按 blockId 收集，随章节提交进入质量告警；不阻断。
+    from .test_content_review import _metric
+
+    async def fake_stage(*args, **kwargs):
+        return SectionContent.model_validate({"blocks": [{"blockId": "block_1", "markdown": "预算累计6,062,600人次。"}]})
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0],
+        content=json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(606259,) * 12)]})),), factSummaries=())
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "预算执行", "claimIds": ["claim_1"]}],
+        "claims": [_plan_claim("claim_1")]})
+    notices: dict[str, list[dict]] = {}
+    result = await reporting_sections._generate_whole_section_content(object(), {}, evidence, work_item, plan,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+        review_notices=notices)
+    assert result.blocks[0].markdown == "预算累计待核实。"
+    codes = [item["code"] for item in notices["block_1"]]
+    assert "report_section_block_content_review" in codes
+    assert notices["block_1"][-1] == {
+        "code": "report_section_block_unverified_numbers",
+        "message": "1 处缺少登记依据的数值已替换为“待核实”。",
+        "details": {"sectionCode": "section_001", "blockId": "block_1", "count": 1},
+    }
+    assert all(item["details"]["blockId"] == "block_1" for item in notices["block_1"])
+
+
+def test_block_review_notices_count_only_server_added_unverified_markers():
+    notices = reporting_sections._block_review_notices(
+        "section_001", "block_1", ["复核A。", "复核A。"], "原因待核实，收入{{value:x}}。", "原因待核实，收入待核实。",
+    )
+    assert [item["code"] for item in notices] == [
+        "report_section_block_content_review", "report_section_block_unverified_numbers",
+    ]
+    assert notices[1]["details"]["count"] == 1
+    assert reporting_sections._block_review_notices("s", "b", [], "收入待核实。", "收入待核实。") == []
 
 
 @pytest.mark.anyio
@@ -3300,7 +3353,7 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
     issues = "\n".join(correction["issues"]["block_2"])
     assert "与本章前文重复" in issues and "analysis_001" in issues
     # 纠错指令须覆盖可读性类问题，而不只是数字与口径。
-    for keyword in ("业务名称", "重复", "拆分", "补全未写完的句子"):
+    for keyword in ("业务名称", "重复", "拆分", "补全未写完的句子", "同比/环比", "图表编号", "小标题", "数值归属", "历史新高"):
         assert keyword in correction["requiredAction"]
     assert result.blocks[1].markdown == second_clean
 

@@ -1,0 +1,179 @@
+{
+ "analysisId": "analysis_001",
+ "metrics": [
+  {
+   "factId": "fact-aaaaaaaaaaaaaaaa",
+   "datasetId": "current",
+   "datasetSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "periodRoles": [
+    "current"
+   ],
+   "field": "outpatient_income",
+   "fieldRef": "hospital.outpatient_income",
+   "aggregation": "sum",
+   "unit": "元",
+   "formula": "sum(outpatient_income)",
+   "total": 37740000,
+   "missingCount": 0,
+   "zeroCount": 0,
+   "negativeCount": 0,
+   "periodGranularity": "month",
+   "periodValues": [
+    {
+     "period": "2025-01",
+     "value": 12000000
+    },
+    {
+     "period": "2025-02",
+     "value": 13200000
+    },
+    {
+     "period": "2025-03",
+     "value": 12540000
+    }
+   ],
+   "topGroups": [
+    {
+     "group": "心内科",
+     "value": 9000000
+    },
+    {
+     "group": "骨科",
+     "value": 7600000
+    },
+    {
+     "group": "儿科",
+     "value": 5200000
+    },
+    {
+     "group": "眼科",
+     "value": 3100000
+    }
+   ],
+   "bottomGroups": [
+    {
+     "group": "眼科",
+     "value": 3100000
+    },
+    {
+     "group": "儿科",
+     "value": 5200000
+    },
+    {
+     "group": "骨科",
+     "value": 7600000
+    },
+    {
+     "group": "心内科",
+     "value": 9000000
+    }
+   ]
+  },
+  {
+   "factId": "fact-bbbbbbbbbbbbbbbb",
+   "datasetId": "current",
+   "datasetSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "periodRoles": [
+    "current"
+   ],
+   "field": "inpatient_income",
+   "fieldRef": "hospital.inpatient_income",
+   "aggregation": "sum",
+   "unit": "元",
+   "formula": "sum(inpatient_income)",
+   "total": 63050000,
+   "missingCount": 0,
+   "zeroCount": 0,
+   "negativeCount": 0,
+   "periodGranularity": "month",
+   "periodValues": [
+    {
+     "period": "2025-01",
+     "value": 20000000
+    },
+    {
+     "period": "2025-02",
+     "value": 21000000
+    },
+    {
+     "period": "2025-03",
+     "value": 22050000
+    }
+   ],
+   "topGroups": [
+    {
+     "group": "心内科",
+     "value": 15000000
+    },
+    {
+     "group": "骨科",
+     "value": 12000000
+    },
+    {
+     "group": "儿科",
+     "value": 8000000
+    },
+    {
+     "group": "眼科",
+     "value": 4000000
+    }
+   ],
+   "bottomGroups": [
+    {
+     "group": "眼科",
+     "value": 4000000
+    },
+    {
+     "group": "儿科",
+     "value": 8000000
+    },
+    {
+     "group": "骨科",
+     "value": 12000000
+    },
+    {
+     "group": "心内科",
+     "value": 15000000
+    }
+   ]
+  }
+ ],
+ "comparisons": [
+  {
+   "factId": "fact-cccccccccccccccc",
+   "comparisonType": "yoy",
+   "field": "outpatient_income",
+   "fieldRef": "hospital.outpatient_income",
+   "currentDatasetId": "current",
+   "baselineDatasetId": "yoy",
+   "currentDatasetSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "baselineDatasetSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "currentTotal": 37740000,
+   "baselineTotal": 34000000,
+   "change": 3740000,
+   "changeRate": 11.0,
+   "formula": "(current-baseline)/baseline",
+   "unit": "元",
+   "periodStart": "2025-01",
+   "periodEnd": "2025-03"
+  },
+  {
+   "factId": "fact-dddddddddddddddd",
+   "comparisonType": "yoy",
+   "field": "inpatient_income",
+   "fieldRef": "hospital.inpatient_income",
+   "currentDatasetId": "current",
+   "baselineDatasetId": "yoy",
+   "currentDatasetSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "baselineDatasetSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "currentTotal": 63050000,
+   "baselineTotal": 65000000,
+   "change": -1950000,
+   "changeRate": -3.0,
+   "formula": "(current-baseline)/baseline",
+   "unit": "元",
+   "periodStart": "2025-01",
+   "periodEnd": "2025-03"
+  }
+ ]
+}

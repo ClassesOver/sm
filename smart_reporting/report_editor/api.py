@@ -70,7 +70,8 @@ class EditorExportSettings(BaseModel):
     toc: StrictBool = True
     header_footer: StrictBool = Field(True, alias="headerFooter")
     page_numbers: StrictBool = Field(True, alias="pageNumbers")
-    sources: StrictBool = True
+    # 导出报表默认不含来源编号与附录，需要时在导出设置中开启。
+    sources: StrictBool = False
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

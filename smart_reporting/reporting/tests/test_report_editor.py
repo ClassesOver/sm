@@ -56,6 +56,8 @@ def test_editor_export_settings_are_strict_and_whitelisted() -> None:
         }
     )
     assert payload.settings.model_dump(by_alias=True)["cover"] is True
+    # 导出报表默认不含来源编号与附录，需要时显式开启。
+    assert payload.settings.model_dump(by_alias=True)["sources"] is False
     assert payload.note == "运营数据复核后发布"
     defaults = EditorExportPayload.model_validate({"expectedSha256": "a" * 64}).settings
     assert defaults is None

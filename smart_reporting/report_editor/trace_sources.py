@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
@@ -21,7 +22,7 @@ import anyio
 from loguru import logger
 
 from ..reporting.delivery.artifacts_v1 import ReportArtifactManifest
-from ..reporting.workflow.checkpoint import FileIdentity
+from ..reporting.delivery.report_runtime.markdown import readable_formula
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import (
     TRACE_BUDGETS_V1,
@@ -39,6 +40,8 @@ from ..reporting.trace.dataset_service import (
 from ..reporting.trace.drilldown_service import TraceDrilldownService
 from ..reporting.trace.fact_service import fact_display_unit, fact_display_value
 from ..reporting.trace.index_builder import TRACE_INDEX_FILENAME
+from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field
+from ..reporting.workflow.checkpoint import FileIdentity
 from ..workspace import WorkspaceError
 from .trace_exports import TraceDerivedExportService
 
@@ -46,6 +49,10 @@ _MAX_INDEX_BYTES = 4 * 1024 * 1024
 _DRILLDOWN_TIMEOUT_SECONDS = 10.0
 _DRILLDOWN_LARGE_FILE_BYTES = 64 * 1024 * 1024
 
+
+
+# 服务端表格大额列的表头单位（“门诊收入（万元）”）；单元格只写换算后的数字。
+_TABLE_HEADER_UNIT = re.compile(r"（(万元|亿元|万人次)）$")
 
 class _RegisteredFile(Protocol):
     """已登记文件身份：清单产物与追溯索引文件引用都满足。"""
@@ -803,7 +810,10 @@ class ReportEditorTraceService:
             if entry is None:
                 return None
             if row_key.startswith("comparison:"):
-                return "%" if row_key.rsplit(":", 1)[-1] == "changeRate" else entry.get("unit")
+                field = row_key.rsplit(":", 1)[-1]
+                if field == "changeRate":
+                    return "%"
+                return PERCENT_POINT if percent_point_field(field, entry.get("unit")) else entry.get("unit")
             return fact_display_unit(entry)
 
         subjects: list[dict[str, Any]] = []
@@ -847,6 +857,8 @@ class ReportEditorTraceService:
                     "unit": expected_unit,
                     "periods": list(expected_periods),
                     "formula": _entry_formula(entry),
+                    # 编辑器核对卡片展示的中文口径，与导出附录同一转换规则。
+                    "formulaText": readable_formula(formula) if (formula := _entry_formula(entry)) else None,
                     "scope": _entry_scope(entry),
                     "datasetIds": _entry_dataset_ids(entry),
                 }
@@ -948,12 +960,19 @@ class ReportEditorTraceService:
         即无法定位 → stale。全部为软语义，不阻断保存。
         """
 
-        from ..reporting.trace.subject_builder import formatted_value_matches, unit_period_warnings
         from ..reporting.trace.markdown_body import trace_body
+        from ..reporting.trace.subject_builder import formatted_value_matches, unit_period_warnings
 
-        def matches_fact_value(text: str, value: Any, unit: str | None) -> bool:
+        def matches_fact_value(
+            text: str, value: Any, unit: str | None, column_key: str | None = None
+        ) -> bool:
             # 等值换算优先；裸数命中不能掩盖显式单位不一致，stale 仅提示复核。
+            # 大额列按表头单位（“收入（万元）”）显示，单元格只写数字：补上表头单位再核对。
+            header_unit = _TABLE_HEADER_UNIT.search(column_key or "")
             return formatted_value_matches(text, value, unit) or (
+                header_unit is not None
+                and formatted_value_matches(f"{text}{header_unit[1]}", value, unit)
+            ) or (
                 value_matches(text, value)
                 and not unit_period_warnings(text, expected_unit=unit, fact_value=value)
             )
@@ -1107,7 +1126,7 @@ class ReportEditorTraceService:
                         "valid" if missing_unchanged or (
                             fact_value is not None and (
                                 row[column] == "—" if fact_value == "—"
-                                else matches_fact_value(row[column], fact_value, fact_unit)
+                                else matches_fact_value(row[column], fact_value, fact_unit, cell.column_key)
                             )
                         ) else "stale"
                     )
@@ -1140,7 +1159,9 @@ class ReportEditorTraceService:
                             }
                             for frozen_cell, frozen_value, frozen_unit in frozen_values
                             if frozen_value is not None
-                            and matches_fact_value(cell_text, frozen_value, frozen_unit)
+                            and matches_fact_value(
+                                cell_text, frozen_value, frozen_unit, frozen_cell.column_key
+                            )
                         ]
                         if not matches:
                             continue

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from decimal import Decimal
 
 import pytest
@@ -62,6 +63,27 @@ def test_catalog_and_render_use_frozen_totals_and_months():
     document['metrics'][0]['total'] = 100
     conflict = frozen_number_catalog([json.dumps(document), json.dumps({**document, 'metrics': [{**document['metrics'][0], 'total': 200}]})])
     assert render_frozen_numbers('{{value:fact-aaaaaaaaaaaaaaaa:total:元}}', conflict) == '数值待核实'
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 显示值已带单位：占位后重复书写的同一量纲单位去掉（含显示单位与占位单位不同的情形）。
+    ('收入{{value:a:total:亿元}}亿元', '收入1.37亿元'),
+    ('增加{{value:a:change:亿元}}亿元', '增加654.32万元'),
+    ('同比增长{{value:a:changeRate:%}}%，', '同比增长5.03%，'),
+    ('门诊{{value:a:visits:人次}} 人次', '门诊35.30万人次'),
+    ('提高{{value:a:share:%}}个百分点', '提高2.10个百分点'),
+    # 其后不是单位、量纲不同、显示值不带单位或占位无法解析时不动。
+    ('收入{{value:a:total:亿元}}以上，次均{{value:a:visits:人次}}次均', '收入1.37亿元以上，次均35.30万人次次均'),
+    ('增长{{value:a:changeRate:%}}元', '增长5.03%元'),
+    ('金额{{value:b:total}}元（单位待核实）', '金额136,543,211元（单位待核实）'),
+])
+def test_unit_written_again_after_placeholder_is_not_duplicated(text, expected):
+    catalog = {
+        '{{value:a:total:亿元}}': '1.37亿元', '{{value:a:change:亿元}}': '654.32万元',
+        '{{value:a:changeRate:%}}': '5.03%', '{{value:a:visits:人次}}': '35.30万人次',
+        '{{value:a:share:%}}': '2.10个百分点', '{{value:b:total}}': '136,543,211',
+    }
+    assert render_frozen_numbers(text, catalog) == expected
 
 
 def test_unregistered_derived_numbers_are_replaced_before_publishing():
@@ -325,3 +347,449 @@ def test_visit_counts_have_wan_display_and_verified_conversion():
     text = '门诊量123.46万人次，约123.5万人次。'
     assert replace_unregistered_numbers(text, [document]) == text
     assert replace_unregistered_numbers('门诊量123.47万人次。', [document]) == '门诊量待核实。'
+
+
+def test_signed_amount_decline_survives_post_processing_chain():
+    """“减少{负变化额}”经符号规范化为正幅度后，仍应认定为已登记数值，不能变成待核实。"""
+    from smart_reporting.reporting.trace.numeric_text import normalize_signed_wording
+
+    document = json.dumps({
+        'analysisId': 'analysis_001',
+        'comparisons': [{
+            'factId': 'fact-' + 'c' * 16, 'comparisonType': 'yoy', 'field': 'revenue',
+            'fieldRef': 'hospital.revenue', 'currentDatasetId': 'current', 'baselineDatasetId': 'base',
+            'currentDatasetSha256': 'b' * 64, 'baselineDatasetSha256': 'c' * 64,
+            'currentTotal': 123456789, 'baselineTotal': 130000000, 'change': -6543211,
+            'changeRate': -5.0332, 'formula': 'x', 'unit': '元',
+        }],
+    })
+    catalog = frozen_number_catalog([document])
+    rendered = render_frozen_numbers('收入减少{{value:fact-cccccccccccccccc:change:万元}}。', catalog)
+    assert rendered == '收入减少-654.32万元。'
+    normalized = normalize_signed_wording(rendered)
+    assert replace_unregistered_numbers(normalized, [document]) == '收入减少654.32万元。'
+    # 方向写反或脱离下降措辞的正数仍无依据。
+    assert replace_unregistered_numbers('收入增加654.32万元。', [document]) == '收入增加待核实。'
+
+
+def _comparison_document(change, rate, total=130000000):
+    return json.dumps({
+        'analysisId': 'analysis_001',
+        'metrics': [{
+            'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': 'revenue', 'fieldRef': 'hospital.revenue',
+            'aggregation': 'sum', 'unit': '元', 'formula': 'sum(revenue)', 'total': total,
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        }],
+        'comparisons': [{
+            'factId': 'fact-' + 'c' * 16, 'comparisonType': 'yoy', 'field': 'revenue',
+            'fieldRef': 'hospital.revenue', 'currentDatasetId': 'current', 'baselineDatasetId': 'base',
+            'currentDatasetSha256': 'b' * 64, 'baselineDatasetSha256': 'c' * 64,
+            'currentTotal': 130000000 + change, 'baselineTotal': 130000000, 'change': change,
+            'changeRate': rate, 'formula': 'x', 'unit': '元',
+        }],
+    })
+
+
+@pytest.mark.parametrize(('change', 'rate', 'text', 'expected'), [
+    # 登记为正的变化写成下降词：渲染前改为增长词。
+    (6543211, 5.0332, '收入同比下降{{value:fact-cccccccccccccccc:changeRate:%}}。', '收入同比增长5.03%。'),
+    (6543211, 5.0332, '收入较上年减少了{{value:fact-cccccccccccccccc:change:万元}}。', '收入较上年增加了654.32万元。'),
+    (6543211, 5.0332, '降幅为{{value:fact-cccccccccccccccc:changeRate:%}}。', '增幅为5.03%。'),
+    # 登记为负的变化：下降词保留并去负号；增长词改为下降词（既有符号规范化）。
+    (-6543211, -5.0332, '收入较上年减少{{value:fact-cccccccccccccccc:change:万元}}。', '收入较上年减少654.32万元。'),
+    (-6543211, -5.0332, '收入同比增长{{value:fact-cccccccccccccccc:changeRate:%}}。', '收入同比下降5.03%。'),
+    # 合计等非变化字段不带方向语义，不改写。
+    (6543211, 5.0332, '收入下降{{value:fact-aaaaaaaaaaaaaaaa:total:亿元}}。', '收入下降1.30亿元。'),
+])
+def test_direction_wording_follows_frozen_sign(change, rate, text, expected):
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    document = _comparison_document(change, rate)
+    catalog = frozen_number_catalog([document])
+    rendered = render_frozen_numbers(align_placeholder_direction(text, [document]), catalog)
+    assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == expected
+
+
+@pytest.mark.parametrize(('change', 'rate', 'verb', 'field', 'expected'), [
+    (6543211, 5.0332, '减幅', 'changeRate', '增幅5.03%'),
+    (6543211, 5.0332, '跌幅', 'changeRate', '涨幅5.03%'),
+    (6543211, 5.0332, '下跌', 'change', '上涨654.32万元'),
+    (6543211, 5.0332, '缩减', 'change', '增加654.32万元'),
+    (-6543211, -5.0332, '减幅', 'changeRate', '减幅5.03%'),
+    (-6543211, -5.0332, '跌幅', 'changeRate', '跌幅5.03%'),
+    (-6543211, -5.0332, '涨幅', 'changeRate', '跌幅5.03%'),
+    (-6543211, -5.0332, '上涨', 'change', '下跌654.32万元'),
+    (-6543211, -5.0332, '回升', 'change', '回落654.32万元'),
+])
+def test_direction_wording_covers_common_synonyms(change, rate, verb, field, expected):
+    """涨幅/跌幅/减幅/上涨/下跌/回升/缩减与增长/下降同等按冻结符号处理。"""
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    unit = '%' if field == 'changeRate' else '万元'
+    document = _comparison_document(change, rate)
+    text = f'收入较上年{verb}{{{{value:fact-cccccccccccccccc:{field}:{unit}}}}}。'
+    rendered = render_frozen_numbers(
+        align_placeholder_direction(text, [document]), frozen_number_catalog([document])
+    )
+    final = replace_unregistered_numbers(normalize_signed_wording(rendered), [document])
+    assert final == f'收入较上年{expected}。'
+
+
+def _budget_document():
+    def metric(letter, field, values):
+        return {
+            'factId': 'fact-' + letter * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': field, 'fieldRef': 'hospital.' + field,
+            'aggregation': 'sum', 'unit': '元', 'formula': 'sum', 'total': sum(values),
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0, 'periodGranularity': 'month',
+            'periodValues': [{'period': f'2025-{index + 1:02d}', 'value': value}
+                             for index, value in enumerate(values)],
+        }
+    return json.dumps({'analysisId': 'analysis_001', 'metrics': [
+        metric('a', 'actual_revenue', [900000, 1000000, 1200000]),
+        metric('b', 'budget_revenue', [1000000, 1000000, 1000000]),
+    ]})
+
+
+def test_display_never_shows_negative_zero_or_hides_nonzero_amounts_as_zero():
+    assert format_fact_value(-0.001, '%') == '0.00%'
+    catalog = frozen_number_catalog([_budget_document()])
+    prefix = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.'
+    # 非零差额（-10万元）换算到亿元会显示为 0.00：亿元引用改按万元显示；真实的零差额仍可显示。
+    assert catalog[prefix + '2025-01.difference:亿元}}'] == '-10.00万元'
+    assert catalog[prefix + '2025-01.difference:万元}}'] == '-10.00万元'
+    assert catalog[prefix + '2025-02.difference:亿元}}'] == '0.00亿元'
+    # 非零差额舍入为 0.00亿元的原值不作为亿元依据，手写“0.00亿元”不能借它通过核对。
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_values
+
+    assert Decimal('-0.001') not in frozen_number_values([_budget_document()], catalog)['亿元']
+
+
+def test_budget_difference_direction_follows_frozen_sign():
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    document = _budget_document()
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.2025-01..2025-03.difference:万元}}'
+    rendered = render_frozen_numbers(
+        align_placeholder_direction(f'1—3月较预算减少{token}。', [document]),
+        frozen_number_catalog([document]),
+    )
+    assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == '1—3月较预算增加10.00万元。'
+
+
+@pytest.mark.parametrize(('rate', 'text', 'expected'), [
+    # 比率主语 + 方向词描述比率本身升降到多少：不能改写动作词或去掉负号。
+    (5.0332, '收入增速下降为{{value:fact-cccccccccccccccc:changeRate:%}}。', '收入增速下降为5.03%。'),
+    (5.0332, '同比增幅回落为{{value:fact-cccccccccccccccc:changeRate:%}}。', '同比增幅回落为5.03%。'),
+    (-5.0332, '收入增速下降为{{value:fact-cccccccccccccccc:changeRate:%}}。', '收入增速下降为-5.03%。'),
+    (-5.0332, '增长率降低为{{value:fact-cccccccccccccccc:changeRate:%}}。', '增长率降低为-5.03%。'),
+])
+def test_rate_level_wording_is_not_treated_as_direction(rate, text, expected):
+    from smart_reporting.reporting.trace.content_review import review_content
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    document = _comparison_document(5, rate)
+    rendered = render_frozen_numbers(
+        align_placeholder_direction(text, [document]), frozen_number_catalog([document])
+    )
+    assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == expected
+    assert not [item for item in review_content(text, [document])
+                if item.startswith(('方向', '符号重复'))]
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 省略单位的登记值：核对通过并补全唯一单位。
+    ('医院收入1.23亿，门诊量35.3万。', '医院收入1.23亿元，门诊量35.3万人次。'),
+    ('收入12,345.68万。', '收入12,345.68万元。'),
+    # 省略单位的手写数值同样无依据。
+    ('收入约9.99亿，门诊量88万。', '收入约待核实，门诊量待核实。'),
+    # 后接汉字的“2万多名”“上万”不是完整数量，不处理。
+    ('约2万多名患者，上万人次。', '约2万多名患者，上万人次。'),
+])
+def test_numbers_with_omitted_units_are_verified(text, expected):
+    document = json.dumps({'analysisId': 'analysis_001', 'metrics': [
+        {'factId': 'fact-' + letter * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+         'periodRoles': ['current'], 'field': field, 'fieldRef': 'hospital.' + field,
+         'aggregation': 'sum', 'unit': unit, 'formula': 'sum', 'total': total,
+         'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0}
+        for letter, field, unit, total in (('a', 'revenue', '元', 123456789), ('e', 'visits', '人次', 353000))
+    ]})
+    assert replace_unregistered_numbers(text, [document]) == expected
+
+
+def _rate_comparison_document(change):
+    return json.dumps({
+        'analysisId': 'analysis_001',
+        'metrics': [{
+            'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': 'bed_rate', 'fieldRef': 'hospital.bed_rate',
+            'aggregation': 'average', 'unit': '%', 'formula': 'avg(bed_rate)', 'total': 83.2 + change,
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        }],
+        'comparisons': [{
+            'factId': 'fact-' + 'c' * 16, 'comparisonType': 'yoy', 'field': 'bed_rate',
+            'fieldRef': 'hospital.bed_rate', 'currentDatasetId': 'current', 'baselineDatasetId': 'base',
+            'currentDatasetSha256': 'b' * 64, 'baselineDatasetSha256': 'c' * 64,
+            'currentTotal': 83.2 + change, 'baselineTotal': 83.2, 'change': change,
+            'changeRate': change / 83.2 * 100, 'formula': 'x', 'unit': '%',
+        }],
+    })
+
+
+@pytest.mark.parametrize(('change', 'text', 'expected'), [
+    # 百分数指标的变化额是两项百分数之差，按百分点显示；数值引用名不变。
+    (2.1, '床位使用率同比提高{{value:fact-cccccccccccccccc:change:%}}，由{{value:fact-cccccccccccccccc:baselineTotal:%}}升至{{value:fact-cccccccccccccccc:currentTotal:%}}。',
+     '床位使用率同比提高2.10个百分点，由83.20%升至85.30%。'),
+    (-2.1, '床位使用率同比下降{{value:fact-cccccccccccccccc:change:%}}。', '床位使用率同比下降2.10个百分点。'),
+    (-2.1, '床位使用率同比提高{{value:fact-cccccccccccccccc:change:%}}。', '床位使用率同比降低2.10个百分点。'),
+    # 相对变化率仍是百分数。
+    (2.1, '床位使用率同比增长{{value:fact-cccccccccccccccc:changeRate:%}}。', '床位使用率同比增长2.52%。'),
+    # 手写成百分数、但只对得上登记百分点差值的，改写单位；对不上的照常替换。
+    (2.1, '床位使用率同比提高2.10%。', '床位使用率同比提高2.10个百分点。'),
+    (-2.1, '床位使用率同比下降2.1%。', '床位使用率同比下降2.1个百分点。'),
+    (2.1, '床位使用率同比提高3.40%。', '床位使用率同比提高待核实。'),
+])
+def test_percent_metric_change_is_published_in_percentage_points(change, text, expected):
+    from smart_reporting.reporting.trace.numeric_text import (
+        align_placeholder_direction,
+        normalize_signed_wording,
+    )
+
+    document = _rate_comparison_document(change)
+    catalog = frozen_number_catalog([document])
+    rendered = render_frozen_numbers(align_placeholder_direction(text, [document]), catalog)
+    assert replace_unregistered_numbers(normalize_signed_wording(rendered), [document]) == expected
+
+
+def test_percent_metric_change_review_and_display_unit():
+    from smart_reporting.reporting.trace.content_review import review_content
+    from smart_reporting.reporting.trace.fact_service import fact_display_unit
+    from smart_reporting.reporting.trace.subject_builder import formatted_value_matches
+
+    document = _rate_comparison_document(2.1)
+    contents = [document]
+    assert not [warning for warning in review_content('床位使用率同比提高2.10个百分点。', contents)
+                if '百分点' in warning or '冻结依据' in warning]
+    warnings = review_content('床位使用率同比提高2.10%。', contents)
+    assert any('应写为2.10个百分点' in warning for warning in warnings)
+    assert not any('冻结依据' in warning for warning in warnings)
+
+    comparison = json.loads(document)['comparisons'][0]
+    assert fact_display_unit(comparison) == '个百分点'
+    assert fact_display_unit(json.loads(document)['metrics'][0]) == '%'
+    assert formatted_value_matches('同比提高2.10个百分点', 2.1, '个百分点')
+    assert not formatted_value_matches('同比提高2.10%', 2.1, '个百分点')
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 按书写精度核对通过的数值，超过两位小数时按数值目录的显示精度舍入。
+    ('收入同比增长5.0332%。', '收入同比增长5.03%。'),
+    ('本期收入1.3654亿元。', '本期收入1.37亿元。'),
+    ('本期收入1.3654亿，', '本期收入1.37亿元，'),
+    # 两位及以内小数、整数与千分位写法保持原样。
+    ('收入同比增长5.03%，增长5.0%。', '收入同比增长5.03%，增长5.0%。'),
+    ('收入为130,000,000元。', '收入为130,000,000元。'),
+])
+def test_verified_numbers_are_published_at_display_precision(text, expected):
+    document = _comparison_document(6543211, 5.0332)
+    assert replace_unregistered_numbers(text, [document]) == expected
+
+
+def test_display_precision_keeps_tiny_values_readable():
+    from smart_reporting.reporting.trace.numeric_text import _display_precision
+
+    assert _display_precision('0.0042') == '0.0042'
+    assert _display_precision('-5.0350') == '-5.04'
+    assert _display_precision('1,234.5678') == '1,234.57'
+
+
+
+@pytest.mark.parametrize(('token', 'expected'), [
+    # 换算后不足 1 的非零值改用能写成不小于 1 的最大单位，引用名不变。
+    ('{{value:fact-cccccccccccccccc:change:亿元}}', '654.32万元'),
+    ('{{value:fact-cccccccccccccccc:change:万元}}', '654.32万元'),
+    ('{{value:fact-cccccccccccccccc:currentTotal:亿元}}', '1.37亿元'),
+])
+def test_small_scaled_values_are_displayed_in_a_readable_unit(token, expected):
+    document = _comparison_document(6543211, 5.0332)
+    catalog = frozen_number_catalog([document])
+    assert catalog[token] == expected
+    # 手写的“0.07亿元”仍按书写精度核对通过，不被替换。
+    assert replace_unregistered_numbers('同比增加0.07亿元。', [document]) == '同比增加0.07亿元。'
+
+
+def test_model_table_cells_are_checked_against_the_header_unit():
+    from smart_reporting.reporting.trace.numeric_text import table_unit_cells
+
+    document = _comparison_document(6543211, 5.0332)
+    table = (
+        "| 项目 | 金额（万元） | 同比（%） | 排名 |\n| --- | ---: | ---: | ---: |\n"
+        "| 本期收入 | 13,654.32 | 5.0332 | 1 |\n| 编造项目 | 9,999.99 | 7.77 | 2 |\n"
+        "| 带单位 | 654.32万元 | — | 3 |"
+    )
+    # 只取表头带单位列的裸数字：排名列、已带单位与“—”单元格不在此列。
+    assert [(number, unit) for _start, _end, number, unit in table_unit_cells(table)] == [
+        ("13,654.32", "万元"), ("5.0332", "%"), ("9,999.99", "万元"), ("7.77", "%"),
+    ]
+    # 有依据的单元格按显示精度保留，编造的数字替换为待核实。
+    assert replace_unregistered_numbers(table, [document]) == (
+        "| 项目 | 金额（万元） | 同比（%） | 排名 |\n| --- | ---: | ---: | ---: |\n"
+        "| 本期收入 | 13,654.32 | 5.03 | 1 |\n| 编造项目 | 待核实 | 待核实 | 2 |\n"
+        "| 带单位 | 654.32万元 | — | 3 |"
+    )
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 倍数只能由登记的本期÷基期合计、变化率或比率得出；按书写精度核对并按显示精度保留。
+    ('本期收入是上年同期的1.0503倍。', '本期收入是上年同期的1.05倍。'),
+    ('收入增长0.05倍。', '收入增长0.05倍。'),
+    ('本期收入是上年同期的3.2倍。', '本期收入是上年同期的待核实。'),
+    # “倍数”一词与统计阈值不是事实倍数。
+    ('倍数关系明显，超过均值3倍标准差。', '倍数关系明显，超过均值3倍标准差。'),
+])
+def test_multiples_need_a_registered_ratio(text, expected):
+    document = _comparison_document(6543211, 5.0332)
+    assert replace_unregistered_numbers(text, [document]) == expected
+
+
+
+def test_pipe_less_model_tables_are_checked_too():
+    document = _comparison_document(6543211, 5.0332)
+    table = "项目 | 金额（万元）\n--- | ---:\n本期收入 | 13,654.32\n编造项目 | 9,999.99"
+    assert replace_unregistered_numbers(table, [document]) == (
+        "项目 | 金额（万元）\n--- | ---:\n本期收入 | 13,654.32\n编造项目 | 待核实"
+    )
+    # 分隔线与 setext 标题不是表格。
+    text = "说明 | 金额（万元）\n\n---\n\n9,999.99"
+    assert replace_unregistered_numbers(text, [document]) == text
+
+
+
+def test_number_guide_explains_comparison_type_and_window():
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    document = json.loads(_comparison_document(6543211, 5.0332))
+    document['comparisons'][0].update({'periodStart': '2025-01', 'periodEnd': '2025-09'})
+    content = json.dumps(document)
+    guide = frozen_number_guide([content], frozen_number_catalog([content]))
+    comparison = next(item for item in guide if item.get('kind') == 'comparison')
+    # 比较口径与累计窗口随引用一起给到模型，避免写成单月变化或混用同比环比。
+    assert (comparison['comparisonType'], comparison['periodStart'], comparison['periodEnd']) == ('同比', '2025-01', '2025-09')
+    assert comparison['references']['changeRate'] == '{{value:fact-cccccccccccccccc:changeRate:%}}'
+    assert '累计窗口' in comparison['meaning']
+
+
+
+@pytest.mark.parametrize(('aggregation', 'meaning'), [
+    ('sum', '完整期间合计'),
+    ('average', '完整期间平均值，不能称为合计、累计或总额'),
+])
+def test_number_guide_states_how_to_read_the_total(aggregation, meaning):
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    document = json.loads(_comparison_document(6543211, 5.0332))
+    document['metrics'][0]['aggregation'] = aggregation
+    content = json.dumps(document)
+    guide = frozen_number_guide([content], frozen_number_catalog([content]))
+    metric = next(item for item in guide if item['factId'] == 'fact-' + 'a' * 16)
+    # 平均口径的 total 是均值：说明随引用一起给到模型，避免写成“合计”。
+    assert (metric['total']['aggregation'], metric['total']['meaning']) == (aggregation, meaning)
+
+
+
+def test_adjacent_month_changes_are_registered_from_frozen_monthly_values():
+    # “2月环比增长20.00%”是按登记月度值计算的相邻两月变化：服务端登记后可引用，模型写对时不被替换为待核实。
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    metric = {
+        'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+        'periodRoles': ['current'], 'field': 'amount', 'fieldRef': 'hospital.amount',
+        'aggregation': 'sum', 'unit': '元', 'formula': 'sum(amount)', 'total': 4280000,
+        'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0, 'periodGranularity': 'month',
+        'periodValues': [{'period': period, 'value': value} for period, value in
+                         (('2025-01', 1000000), ('2025-02', 1200000), ('2025-03', 1080000), ('2025-05', 1000000))],
+    }
+    content = json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]})
+    catalog = frozen_number_catalog([content])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodChanges.1:万元}}'] == '20.00万元'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodChangeRates.1:%}}'] == '20.00%'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodChangeRates.2:%}}'] == '-10.00%'
+    # 3月与5月不相邻：不登记“环比”。
+    assert not [token for token in catalog if 'periodChange' in token and token.split(':')[2].endswith('.3')]
+    # 数值说明直接给显示值（金额按万元）；引用只供服务端核对，不进模型可见目录，避免目录膨胀。
+    guide = frozen_number_guide([content], catalog)[0]['monthlyStatistics']['monthOverMonth']
+    assert guide == [{'period': '2025-02', 'change': '20.00万元', 'changeRate': '20.00%'},
+                     {'period': '2025-03', 'change': '-12.00万元', 'changeRate': '-10.00%'}]
+    from smart_reporting.reporting.trace.numeric_text import prompt_number_catalog
+    prompt = prompt_number_catalog(catalog)
+    assert not [token for token in prompt if 'periodChange' in token]
+    assert set(catalog) - set(prompt) == {token for token in catalog if 'periodChange' in token}
+    text = '2月收入环比增长20.00%，增加20.00万元；3月环比下降10.00%；5月环比增长7.41%。'
+    assert replace_unregistered_numbers(text, [content]) == (
+        '2月收入环比增长20.00%，增加20.00万元；3月环比下降10.00%；5月环比增长待核实。'
+    )
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 变化率写成百分点：数值对得上登记的同比/相邻月变化率、对不上百分点差值时改回“%”。
+    ('门诊收入同比增长11个百分点，住院收入同比下降3.00个百分点。', '门诊收入同比增长11%，住院收入同比下降3.00%。'),
+    ('2月门诊收入环比增长10.00个百分点。', '2月门诊收入环比增长10.00%。'),
+    # 占比、比率、增速的变化本以百分点计；对不上任何变化率的百分点交给复核，均不改写。
+    ('门诊收入占比同比提高11.00个百分点，增速提高11.00个百分点，增长7.77个百分点。',
+     '门诊收入占比同比提高11.00个百分点，增速提高11.00个百分点，增长7.77个百分点。'),
+])
+def test_change_rates_written_as_percent_points_are_corrected(text, expected):
+    sample = Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json'
+    assert replace_unregistered_numbers(text, [sample.read_text(encoding='utf-8')]) == expected
+
+
+def test_unicode_minus_keeps_registered_negative_values():
+    # 模型常用 Unicode 减号“−”写负值：入模清洗改为半角后，登记的负变化率与变化额不再被替换为待核实。
+    from smart_reporting.reporting.workflow.runtime.phase_models import SectionBlockContent
+
+    sample = (Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json').read_text(encoding='utf-8')
+    block = SectionBlockContent(markdown='### 住院收入\n\n住院收入同比−3.00%，变化额为−195.00万元。\n\n| 科室 | 同比 |\n| --- | ---: |\n| 住院 | −3.00% |')
+    assert replace_unregistered_numbers(block.markdown, [sample]) == (
+        '### 住院收入\n\n住院收入同比-3.00%，变化额为-195.00万元。\n\n| 科室 | 同比 |\n| --- | ---: |\n| 住院 | -3.00% |'
+    )
+
+
+def test_number_guide_spells_out_month_coverage():
+    from smart_reporting.reporting.trace.numeric_text import _month_coverage
+
+    assert _month_coverage([f'2025-{month:02d}' for month in range(1, 11)]) == '2025年1—10月（10个月），不是全年'
+    assert _month_coverage([f'2025-{month:02d}-01' for month in range(1, 13)]) == '2025年1—12月（12个月）'
+    assert _month_coverage(['2025-01', '2025-03']) == '2025年1月、3月（2个月），不是全年'
+    # 跨年或非月度期间不给覆盖说明。
+    assert _month_coverage(['2024-12', '2025-01']) is None
+    assert _month_coverage(['2025']) is None
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 人次（就诊次数）写成人数且数值对得上登记人次时改回人次。
+    ('门诊量35.30万人。', '门诊量35.30万人次。'),
+    ('门诊接诊353,000人。', '门诊接诊353,000人次。'),
+    # 对不上人次的人数（职工、人口等）不改写。
+    ('门诊量99.99万人，医生120人，服务人口35.3万人口。', '门诊量99.99万人，医生120人，服务人口35.3万人口。'),
+])
+def test_visit_counts_written_as_persons_are_corrected(text, expected):
+    metric = {
+        'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+        'periodRoles': ['current'], 'field': 'visits', 'fieldRef': 'hospital.visits',
+        'aggregation': 'sum', 'unit': '人次', 'formula': 'sum', 'total': 353000,
+        'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+    }
+    assert replace_unregistered_numbers(text, [json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]})]) == expected

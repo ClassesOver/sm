@@ -72,6 +72,8 @@ try {
   await page.locator('[data-action="sources"]').click()
   await page.locator('.evidence-directory-item', { hasText: '正文引用' }).click()
   await page.locator('.evidence-subject-links button', { hasText: '事实' }).click()
+  // 15 个节点以内的小图默认 2D；本检查针对 3D，先显式切换。
+  await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
   const canvas = page.locator('.evidence-graph-3d canvas')
   const settledCanvas = async (options) => {
     await page.waitForFunction(() => document.querySelector('.evidence-graph-3d')?.dataset.labelLayout !== 'settling')

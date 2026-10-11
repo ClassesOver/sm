@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -13,13 +13,35 @@ from loguru import logger
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 
 _MONEY_UNITS = {"元": Decimal(1), "万元": Decimal(10_000), "亿元": Decimal(100_000_000)}
+# 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
+# （“跌幅-5%”“上涨-654万元”曾因词表不全原样发布）。
+RISING_TO_FALLING = {
+    "增长": "下降", "上升": "下降", "增加": "减少", "提高": "降低", "增幅": "降幅",
+    "涨幅": "跌幅", "上涨": "下跌", "回升": "回落",
+}
+FALLING_TO_RISING = {
+    "下降": "增长", "减少": "增加", "降低": "提高", "回落": "回升", "下滑": "上升",
+    "降幅": "增幅", "减幅": "增幅", "跌幅": "涨幅", "下跌": "上涨", "缩减": "增加",
+}
+RISING_WORDS = tuple(RISING_TO_FALLING)
+FALLING_WORDS = tuple(FALLING_TO_RISING)
+DIRECTION_WORD_PATTERN = "|".join((*RISING_WORDS, *FALLING_WORDS))
+# 方向词紧跟在比率名词之后（“增速下降为5.03%”“增幅回落为…”）时，描述的是比率本身
+# 升降到多少，不是数量的增减方向：不能按冻结符号改写动作词或去掉负号。
+_RATE_SUBJECT = re.compile(
+    r"(?:增速|增幅|增长率|增长速度|降幅|跌幅|涨幅|减幅|变化率|比重|占比|完成率|执行率)(?:\*\*)?\s*$"
+)
+
+
+def describes_rate_level(prefix: str) -> bool:
+    """方向词之前紧邻比率名词时返回 True。"""
+    return _RATE_SUBJECT.search(prefix) is not None
 _VISIT_UNITS = {"人次": Decimal(1), "万人次": Decimal(10_000)}
 
 
 def _unit_scales(unit: str | None) -> dict[str, Decimal] | None:
     """同一量纲内可互换的显示单位及倍率；只有金额与人次按固定倍率换算。"""
     return next((family for family in (_MONEY_UNITS, _VISIT_UNITS) if unit in family), None)
-_VALUE_TOKEN = re.compile(r"\{\{value:[^{}\r\n]+\}\}")
 _NUMBER = r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _MONEY_PAIR = re.compile(
     rf"(?<![\d.,])(?P<large>{_NUMBER})\s*(?P<unit>亿元|万元)"
@@ -27,17 +49,43 @@ _MONEY_PAIR = re.compile(
 )
 
 
+# 百分数指标的变化额/差额是两项百分数之差：85.30%→83.20% 是下降 2.10 个百分点，
+# 写成“下降2.10%”会被读成相对降幅。数值引用仍沿用 % 单位名，显示改为百分点。
+PERCENT_POINT = "个百分点"
+
+
+def percent_point_field(field: str, unit: str | None) -> bool:
+    """百分数指标的变化额、差额（含预算差额）按百分点显示。"""
+    return unit == "%" and (field in {"change", "difference"} or field.endswith(".difference"))
+
+
 def format_fact_value(value: Any, unit: str | None, display_unit: str | None = None) -> str:
     number = Decimal(str(value))
     target = display_unit or unit
-    if target != unit:
+    if target != unit and not (unit == "%" and target == PERCENT_POINT):
         scales = _unit_scales(unit)
         number = number * scales[unit] / scales[target]
-    if target in {"万元", "亿元", "万人次", "%", "‰"} or number != number.to_integral_value():
-        text = f"{number.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}"
+    if target in {"万元", "亿元", "万人次", "%", "‰", PERCENT_POINT} or number != number.to_integral_value():
+        rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        # 舍入为零的负数不能显示为“-0.00”。
+        text = f"{abs(rounded) if rounded == 0 else rounded:,f}"
     else:
         text = f"{number:,.0f}"
     return text + (target or "")
+
+
+def _hidden_by_rounding(value: Any, unit: str | None, target: str | None) -> bool:
+    """非零值换算到更大单位后舍入为 0.00（如 10万元 → 0.00亿元）时不提供该显示。"""
+    if not target or target == unit or value is None:
+        return False
+    number = Decimal(str(value))
+    if number == 0:
+        return False
+    scales = _unit_scales(unit)
+    if scales is None or target not in scales:
+        return False
+    converted = number * scales[unit] / scales[target]
+    return converted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == 0
 
 
 def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, Any]]:
@@ -124,14 +172,27 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     for index, amount in enumerate(amounts):
                         running += amount
                         values.append((f"periodTotals.0-{index}", running))
+                    # 相邻两月的变化额与变化率（“3月环比增长…”）由服务端按登记月度值计算：只在月份
+                    # 连续时登记，基期为零时不给变化率；百分数指标的差值口径不同，不在此登记。
+                    months = [int(item["period"][5:7]) for item in periods]
+                    for index in range(1, len(amounts)) if entry.get("unit") != "%" else ():
+                        if months[index] != months[index - 1] + 1:
+                            continue
+                        change = amounts[index] - amounts[index - 1]
+                        values.append((f"periodChanges.{index}", change))
+                        if amounts[index - 1]:
+                            values.append((f"periodChangeRates.{index}", change / amounts[index - 1] * 100))
 
                 for field, value in values:
                     if value is None:
                         continue
                     # 派生事实的 unit 是分子/差额单位，比值本身无量纲。
-                    unit = ("%" if field in {"changeRate", "percentage"}
+                    unit = ("%" if field in {"changeRate", "percentage"} or field.startswith("periodChangeRates.")
                             else None if array == "derivedMetrics" and field == "value"
                             else entry.get("unit"))
+                    if percent_point_field(field, unit):
+                        yield f"{{{{value:{fact_id}:{field}:%}}}}", value, unit, PERCENT_POINT
+                        continue
                     units = _unit_scales(unit) or (unit or "",)
                     for target in units:
                         yield f"{{{{value:{fact_id}:{field}:{target}}}}}", value, unit, target or None
@@ -139,15 +200,49 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                 if comparison[field] is None:
                     continue
+                if percent_point_field(field, unit):
+                    token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:%}}}}"
+                    yield token, comparison[field], unit, PERCENT_POINT
+                    continue
                 for target in (_unit_scales(unit) or (unit,)):
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{target}}}}}"
                     yield token, comparison[field], unit, target
 
 
+def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> str | None:
+    """换算后绝对值不足 1 的非零值改用同量纲中能写成不小于 1 的最大单位。
+
+    654.32万元的变化额写成“0.07亿元”既难读又丢精度（误差约 7%）；数值引用名不变，
+    只换显示单位，模型选了亿元引用也会显示为“654.32万元”。
+    """
+    if not target or target == unit or value is None:
+        return target
+    scales = _unit_scales(unit)
+    if scales is None or target not in scales:
+        return target
+    amount = abs(Decimal(str(value)) * scales[unit])
+    if amount == 0 or amount / scales[target] >= 1:
+        return target
+    for candidate, scale in sorted(scales.items(), key=lambda item: item[1], reverse=True):
+        if amount / scale >= 1:
+            return candidate
+    return min(scales, key=lambda candidate: scales[candidate])
+
+
+# 只供服务端核对与渲染的派生数值引用：不放进模型可见的数值目录。
+_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.")
+
+
+def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
+    """模型可见的数值目录：去掉只供服务端核对的相邻月变化引用。"""
+    return {token: text for token, text in catalog.items()
+            if not token[2:-2].split(":")[2].startswith(_SERVER_ONLY_FIELDS)}
+
+
 def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
     catalog: dict[str, str] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
-        text = format_fact_value(value, unit, target)
+        text = format_fact_value(value, unit, _readable_display_unit(value, unit, target))
         if token in catalog and catalog[token] != text:
             # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
             catalog[token] = "数值待核实"
@@ -165,14 +260,40 @@ def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> di
     values: dict[str, set[Decimal]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
         display_unit = target or unit
-        if not display_unit or catalog.get(token) == "数值待核实":
+        # 非零值换算后舍入为 0.00（-10万元 → 0.00亿元）不能作为依据，手写“0.00亿元”仍替换。
+        if (not display_unit or catalog.get(token) == "数值待核实"
+                or _hidden_by_rounding(value, unit, target)):
             continue
         number = Decimal(str(value))
-        if display_unit != unit:
-            scales = _unit_scales(unit)
+        if display_unit != unit and (scales := _unit_scales(unit)) is not None:
             number = number * scales[unit] / scales[display_unit]
         values.setdefault(display_unit, set()).add(number)
     return values
+
+
+def _month_coverage(periods: list[str]) -> str | None:
+    """单一年度月度期间的覆盖说明（“2025年1—10月（10个月），不是全年”），供模型直接引用。"""
+    if not periods or not all(re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", period) for period in periods):
+        return None
+    years = {period[:4] for period in periods}
+    months = sorted({int(period[5:7]) for period in periods})
+    if len(years) != 1 or len(months) != len(periods):
+        return None
+    span = (f"{months[0]}—{months[-1]}月" if months == list(range(months[0], months[-1] + 1))
+            else "、".join(f"{month}月" for month in months))
+    note = "" if len(months) == 12 else "，不是全年"
+    return f"{years.pop()}年{span}（{len(months)}个月）{note}"
+
+
+# numberGuide 中 total 的读法：只有 sum/count 是加总，平均与极值口径不能写成合计或累计。
+_TOTAL_MEANINGS = {
+    "sum": "完整期间合计",
+    "count": "完整期间计数",
+    "count_distinct": "完整期间去重计数，不能按月相加",
+    "average": "完整期间平均值，不能称为合计、累计或总额",
+    "min": "完整期间最小值，不能称为合计、累计或总额",
+    "max": "完整期间最大值，不能称为合计、累计或总额",
+}
 
 
 def frozen_number_guide(
@@ -196,6 +317,12 @@ def frozen_number_guide(
                 token = f"{{{{value:{fact.fact_id}:{field}:{fact.unit or ''}}}}}"
                 return token if token in catalog and catalog[token] != "数值待核实" else None
 
+            def shown(field: str, unit: str | None = None) -> str | None:
+                # 相邻月变化不进模型数值目录（避免目录膨胀），这里直接给显示值；金额按万元显示。
+                target = unit or ("万元" if fact.unit in _MONEY_UNITS else fact.unit or "")
+                text = catalog.get(f"{{{{value:{fact.fact_id}:{field}:{target}}}}}")
+                return text if text and text != "数值待核实" else None
+
             periods = [item.period for item in fact.period_values]
             item: dict[str, Any] = {
                 "factId": fact.fact_id, "analysisId": bundle.analysis_id,
@@ -205,7 +332,10 @@ def frozen_number_guide(
                 "unit": fact.unit, "periodRoles": list(fact.period_roles),
                 "periodGranularity": fact.period_granularity,
                 "total": {"reference": reference("total"), "periods": periods,
-                          "periodStart": fact.period_start, "periodEnd": fact.period_end},
+                          "periodStart": fact.period_start, "periodEnd": fact.period_end,
+                          "aggregation": fact.aggregation,
+                          "meaning": _TOTAL_MEANINGS.get(fact.aggregation, "完整期间的统计值"),
+                          **({"coverage": coverage} if (coverage := _month_coverage(periods)) else {})},
                 "rowStatistics": {"average": reference("average"), "minimum": reference("minimum"),
                                   "maximum": reference("maximum"),
                                   "meaning": "原始行统计，不能称为月均值或月度极值"},
@@ -222,7 +352,14 @@ def frozen_number_guide(
                     "prefixTotals": [{"start": periods[0], "end": period,
                                       "reference": reference(f"periodTotals.0-{index}")}
                                      for index, period in enumerate(periods)],
-                    "meaning": "包含已登记的零值月份；零值本身不证明未入账或缺失。局部极值必须明确子期间",
+                    "monthOverMonth": [
+                        {"period": period, "change": shown(f"periodChanges.{index}"),
+                         "changeRate": shown(f"periodChangeRates.{index}", "%")}
+                        for index, period in enumerate(periods) if shown(f"periodChanges.{index}")
+                    ],
+                    "meaning": "包含已登记的零值月份；零值本身不证明未入账或缺失。局部极值必须明确子期间。"
+                               "monthOverMonth 是服务端按登记月度值计算的相邻两月变化额与变化率（某月较上月），"
+                               "可按显示值直接书写，不是环比比较事实的窗口变化",
                 }
             item["groups"] = [{"group": group.group, "reference": reference(f"{key}.{index}"),
                                "meaning": "完整分组组合的数值，不能称为单一科室或院区累计"}
@@ -258,18 +395,55 @@ def frozen_number_guide(
                 "references": references,
                 "meaning": "分母为零时不可计算；分子为零且分母非零时为0%。仅使用已登记的比率期间，不扩展为月度比率",
             })
+        for fact in bundle.comparisons:
+            if not fact.fact_id or fact.fact_id in seen:
+                continue
+            seen.add(fact.fact_id)
+            references = {}
+            for field in ("currentTotal", "baselineTotal", "change", "changeRate"):
+                unit = "%" if field == "changeRate" else (fact.unit or "")
+                token = f"{{{{value:{fact.fact_id}:{field}:{unit}}}}}"
+                references[field] = token if token in catalog and catalog[token] != "数值待核实" else None
+            guide.append({
+                "factId": fact.fact_id, "analysisId": bundle.analysis_id, "kind": "comparison",
+                "comparisonType": {"yoy": "同比", "mom": "环比"}[fact.comparison_type],
+                "metric": (field_definitions or {}).get(fact.field, fact.field), "unit": fact.unit,
+                "periodStart": fact.period_start, "periodEnd": fact.period_end,
+                "references": references,
+                "meaning": "本期与基期取同一连续窗口的合计后比较；periodStart 与 periodEnd 跨多个月时是累计窗口，"
+                           "正文须写明该窗口，不能写成单月变化；同比与环比不可混用",
+            })
     return guide
+
+
+# 占位渲染为带单位的显示值；模型常在占位后再写一遍单位（“{{…:亿元}}亿元”“{{…:%}}%”），
+# 渲染后成为“1.37亿元亿元”“654.32万元亿元”“5.03%%”。显示值已带单位时，紧随其后的
+# 同一量纲单位去掉；显示值不带单位（单位待核实）或量纲不同的不动。
+_UNIT_FAMILIES = (("亿元", "万元", "元"), ("万人次", "人次"), (PERCENT_POINT, "百分点", "%"), ("‰",), ("床日",))
+_TRAILING_UNIT = "|".join(sorted({unit for family in _UNIT_FAMILIES for unit in family}, key=len, reverse=True))
+_VALUE_TOKEN_WITH_UNIT = re.compile(
+    rf"(?P<token>\{{\{{value:[^{{}}\r\n]+\}}\}})(?P<unit>[ \t]*(?:{_TRAILING_UNIT}))?"
+)
+
+
+def _unit_family(unit: str) -> tuple[str, ...] | None:
+    return next((family for family in _UNIT_FAMILIES if unit in family), None)
 
 
 def render_frozen_numbers(markdown: str, catalog: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
-        text = catalog.get(match[0])
+        text = catalog.get(match["token"])
+        written = match["unit"] or ""
         if text is None:
-            logger.warning("report_number_reference_unavailable token={}", match[0])
-            return "数值待核实"
-        return text
+            logger.warning("report_number_reference_unavailable token={}", match["token"])
+            return "数值待核实" + written
+        shown = re.search(rf"(?:{_TRAILING_UNIT})$", text)
+        if written and shown and _unit_family(shown[0]) == _unit_family(written.strip()):
+            logger.warning("report_duplicate_unit_removed token={} unit={}", match["token"], written.strip())
+            return text
+        return text + written
 
-    rendered = _VALUE_TOKEN.sub(replace, markdown)
+    rendered = _VALUE_TOKEN_WITH_UNIT.sub(replace, markdown)
     for warning in money_text_warnings(rendered):
         logger.warning("report_number_conversion_warning message={}", warning)
     return rendered
@@ -329,17 +503,19 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
 def registered_decline_magnitude(
     number: Decimal, unit: str, candidates: Iterable[Decimal], *, prefix: str, quantum: Decimal,
 ) -> bool:
-    """负增长率可表述为正的下降幅度，不能据此豁免增长或占比。"""
-    if unit != "%" or number <= 0 or not re.search(
-        r"(?:下降|减少|降低|回落|下滑|降幅)(?:了|约|为|达)?\s*$", prefix,
+    """负的冻结值（变化率、变化额）可表述为“下降/减少”后接正幅度；不能据此豁免增长或占比。
+
+    符号规范化会把“减少-654.32万元”改写为“减少654.32万元”，金额、人次与百分数一样
+    必须按此认定为已登记数值，否则正确正文会被替换为待核实。
+    """
+    if number <= 0 or not re.search(
+        rf"(?:{'|'.join(FALLING_WORDS)})(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
     return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
                for value in candidates)
 
 
-_RISING_TO_FALLING = {"增长": "下降", "上升": "下降", "增加": "减少", "提高": "降低", "增幅": "降幅"}
-_FALLING = ("下降", "减少", "降低", "回落", "下滑", "降幅")
 
 
 def normalize_signed_wording(markdown: str) -> str:
@@ -349,17 +525,208 @@ def normalize_signed_wording(markdown: str) -> str:
     """
 
     def replace(match: re.Match[str]) -> str:
+        if describes_rate_level(match.string[:match.start()]):
+            return match[0]
         verb = match["verb"]
-        falling = _RISING_TO_FALLING.get(verb, verb)
+        falling = RISING_TO_FALLING.get(verb, verb)
         logger.warning("report_signed_wording_normalized verb={} value={}", verb, match["value"])
         return f"{falling}{match['filler'] or ''}{match['space']}{match['value']}"
 
     return re.sub(
-        rf"(?P<verb>{'|'.join((*_RISING_TO_FALLING, *_FALLING))})"
+        rf"(?P<verb>{DIRECTION_WORD_PATTERN})"
         r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
         replace,
         markdown,
     )
+
+
+# 只有比较事实的变化额/变化率带方向语义；合计、均值等前面的“下降至”不属于此类。
+_DIRECTED_FIELDS = frozenset({"change", "changeRate"})
+DIRECTED_PLACEHOLDER = re.compile(
+    "(?P<verb>" + "|".join(FALLING_WORDS) + ")"
+    r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)(?P<token>\{\{value:[^{}\r\n]+\}\})"
+)
+
+
+def positive_directed_placeholders(contents: Iterable[str]) -> dict[str, Decimal]:
+    """变化额/变化率占位中登记值确定为正的引用（同一引用出现正负冲突时不计）。"""
+    signs: dict[str, set[bool]] = {}
+    values: dict[str, Decimal] = {}
+    for token, value, _unit, _target in _frozen_number_entries(contents):
+        parts = token.removeprefix("{{value:").removesuffix("}}").split(":")
+        directed = parts[1] in _DIRECTED_FIELDS if len(parts) == 3 else False
+        # 预算比较的差额是“实际减预算”，与变化额同样带增减方向。
+        directed = directed or (
+            len(parts) == 3 and parts[1].startswith("budgetComparison.") and parts[1].endswith(".difference")
+        )
+        if not directed or value is None:
+            continue
+        number = Decimal(str(value))
+        if number == 0:
+            continue
+        signs.setdefault(token, set()).add(number > 0)
+        values[token] = number
+    return {token: values[token] for token, kinds in signs.items() if kinds == {True}}
+
+
+def align_placeholder_direction(markdown: str, contents: Iterable[str]) -> str:
+    """“下降/减少”后接登记为正的变化额/变化率时改为“增长/增加”。
+
+    冻结值决定方向；负值配“增长”由 normalize_signed_wording 在渲染后处理，这里补齐
+    正值配下降词的一侧。只改动作词，不改数值引用。
+    """
+    positive = positive_directed_placeholders(contents)
+    if not positive:
+        return markdown
+
+    def replace(match: re.Match[str]) -> str:
+        if match["token"] not in positive or describes_rate_level(match.string[:match.start()]):
+            return match[0]
+        rising = FALLING_TO_RISING[match["verb"]]
+        logger.warning("report_direction_wording_aligned verb={} token={}", match["verb"], match["token"])
+        return f"{rising}{match['filler'] or ''}{match['space']}{match['token']}"
+
+    return DIRECTED_PLACEHOLDER.sub(replace, markdown)
+
+
+def _display_precision(number_text: str) -> str:
+    """超过两位小数的带单位数值按数值目录的显示精度（两位小数）舍入。
+
+    “5.0332%”“1.2345678亿元”按书写精度核对可通过，但原样发布难以阅读；非零值舍入为
+    零时保留原文，避免把很小的数写成 0.00。
+    """
+    if "." not in number_text or len(number_text.split(".", 1)[1]) <= 2:
+        return number_text
+    number = Decimal(number_text.replace(",", ""))
+    rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if rounded == 0:
+        return number_text
+    logger.warning("report_number_precision_rounded value={}", number_text)
+    return f"{rounded:,f}" if "," in number_text else f"{rounded:f}"
+
+
+# “35.3万人”“353,000人”：人数写法；“人次”“人均”“人员”“人口”不在此列。
+PERSON_COUNT = re.compile(
+    r"(?<![\d.,])(?P<number>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<scale>万)?人(?!次|均|员|口|民)"
+)
+# “是上年同期的1.05倍”“增长2倍”：倍数只能由已登记的比较或比率得出。
+# “3倍标准差”“1.5倍四分位距”是统计阈值，不是事实之间的倍数。
+MULTIPLE_NUMBER = re.compile(r"(?<![\d.,])(?P<number>\d+(?:\.\d+)?)\s*倍(?!数|标准差|四分位|方差|IQR)")
+
+
+# “同比增长11.00个百分点”：变化率写成了百分点。占比、比重、比例或“率”的变化本来就以百分点计，
+# 这类分句不改写。
+RATE_AS_PERCENT_POINT = re.compile(r"(?<![\d.,])(?P<number>\d+(?:\.\d+)?)\s*个?百分点")
+_PERCENT_POINT_SUBJECT = re.compile(r"占比|比重|比例|构成|率|增速|增幅|降幅|涨幅|跌幅")
+
+
+def registered_change_rates(contents: Iterable[str]) -> set[Decimal]:
+    """已登记的变化率幅度：比较事实的同比/环比变化率与相邻两月的变化率。"""
+    return {abs(Decimal(str(value))) for token, value, _unit, _target in _frozen_number_entries(contents)
+            if value is not None and token[2:-2].split(":")[2] == "changeRate"
+            or value is not None and token[2:-2].split(":")[2].startswith("periodChangeRates.")}
+
+
+def percent_point_written_for_rate(
+    match: re.Match[str], text: str, rates: set[Decimal], points: Iterable[Decimal], percents: Sequence[Decimal],
+) -> bool:
+    """“个百分点”的数值只对得上登记变化率、对不上百分点差值且分句不是占比/比率类时返回 True。"""
+    clause = re.split(r"[。；，\n]", text[:match.start()])[-1]
+    if _PERCENT_POINT_SUBJECT.search(clause):
+        return False
+    number = Decimal(match["number"])
+    quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+
+    def shown(values: Iterable[Decimal]) -> bool:
+        return any(abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == number for value in values)
+
+    if not shown(rates) or shown(points):
+        return False
+    # 两项登记百分数（占比、完成率等水平值）之差同样是有依据的百分点；变化率之间的差只在
+    # “增速/增幅”语境下才是百分点，已在上方跳过。候选过多时不比较，按变化率处理。
+    ordered = sorted(value for value in percents if abs(value) not in rates)
+    return not (len(ordered) <= 400 and shown(
+        right - left for index, left in enumerate(ordered) for right in ordered[index + 1:]
+    ))
+
+
+def registered_multiples(contents: Iterable[str]) -> set[Decimal]:
+    """可作为“X倍”依据的登记值：本期÷基期合计、变化率÷100、比率百分数÷100。"""
+    totals: dict[str, dict[str, Decimal]] = {}
+    multiples: set[Decimal] = set()
+    for token, value, unit, target in _frozen_number_entries(contents):
+        if value is None or (target or unit) != unit:
+            continue
+        fact_id, field = token[2:-2].split(":")[1:3]
+        number = Decimal(str(value))
+        if field in {"currentTotal", "baselineTotal"}:
+            totals.setdefault(fact_id, {})[field] = number
+        elif field in {"changeRate", "percentage"} or field.endswith(".percentage"):
+            multiples.add(abs(number) / 100)
+    for pair in totals.values():
+        if pair.get("baselineTotal") and "currentTotal" in pair:
+            multiples.add(abs(pair["currentTotal"] / pair["baselineTotal"]))
+    return multiples
+
+
+_TABLE_SEPARATOR_ROW = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
+_TABLE_HEADER_UNIT = re.compile(
+    r"[（(]\s*(?:单位\s*[:：]\s*)?(亿元|万元|元|万人次|人次|床日|%|个百分点)\s*[）)]\s*$"
+)
+_BARE_CELL_NUMBER = re.compile(
+    r"^\s*(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*$"
+)
+
+
+def _table_cells(line: str) -> list[tuple[int, int]]:
+    """管道表一行的单元格区间（不含分隔竖线），忽略转义的“\\|”。"""
+    pipes = [index for index, character in enumerate(line)
+             if character == "|" and (index == 0 or line[index - 1] != "\\")]
+    if not pipes:
+        return []
+    cells = [(pipes[index] + 1, pipes[index + 1]) for index in range(len(pipes) - 1)]
+    if line[:pipes[0]].strip():
+        cells.insert(0, (0, pipes[0]))
+    if line[pipes[-1] + 1:].strip():
+        cells.append((pipes[-1] + 1, len(line)))
+    return cells
+
+
+def table_unit_cells(markdown: str) -> list[tuple[int, int, str, str]]:
+    """管道表中表头带单位列（“金额（万元）”“同比（%）”）的裸数字单元格。
+
+    返回 (起点, 终点, 数字, 单位)，位置是数字在 markdown 中的区间；无单位列与已带单位的
+    单元格不在此列，后者由正文数值核对处理。
+    """
+    lines = markdown.split("\n")
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line) + 1)
+    found: list[tuple[int, int, str, str]] = []
+    index = 0
+    while index < len(lines) - 1:
+        # GFM 表格可以省略首尾竖线；分隔行也须含竖线，避免把“---”分隔线或 setext 标题当表格。
+        if not ("|" in lines[index] and "|" in lines[index + 1]
+                and _TABLE_SEPARATOR_ROW.match(lines[index + 1])):
+            index += 1
+            continue
+        header = lines[index]
+        units = []
+        for start, end in _table_cells(header):
+            match = _TABLE_HEADER_UNIT.search(header[start:end].replace("**", "").strip())
+            units.append(match[1] if match else None)
+        row = index + 2
+        while row < len(lines) and "|" in lines[row] and lines[row].strip():
+            for column, (start, end) in enumerate(_table_cells(lines[row])):
+                if column >= len(units) or units[column] is None:
+                    continue
+                match = _BARE_CELL_NUMBER.match(lines[row][start:end])
+                if match is not None:
+                    found.append((offsets[row] + start + match.start("number"),
+                                  offsets[row] + start + match.end("number"), match["number"], units[column]))
+            row += 1
+        index = row
+    return found
 
 
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
@@ -375,24 +742,107 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
 
-    def replace(match: re.Match[str]) -> str:
-        number = Decimal(match["number"].replace(",", ""))
-        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+    def verify(number_text: str, unit: str, prefix: str) -> tuple[str, str]:
+        """返回 (结论, 数字)：registered 按显示精度保留，percent_point 改写为百分点，missing 替换。"""
+        number = Decimal(number_text.replace(",", ""))
+        digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
         quantum = Decimal(1).scaleb(-digits)
-        candidates = known.get(match["unit"], ())
+        candidates = known.get(unit, ())
         if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
-                or registered_decline_magnitude(number, match["unit"], candidates,
-                                                prefix=markdown[max(0, match.start() - 12):match.start()],
-                                                quantum=quantum)):
-            return match[0]
-        logger.warning("report_unregistered_number_replaced value={}", match[0])
-        return "待核实"
+                or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)):
+            return "registered", _display_precision(number_text)
+        # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
+        # 避免把两项百分数之差读成相对变化率。
+        points = known.get(PERCENT_POINT, ()) if unit == "%" else ()
+        if points and (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points)
+                       or registered_decline_magnitude(number, PERCENT_POINT, points,
+                                                       prefix=prefix, quantum=quantum)):
+            logger.warning("report_percent_point_unit_corrected value={}{}", number_text, unit)
+            return "percent_point", _display_precision(number_text)
+        logger.warning("report_unregistered_number_replaced value={}{}", number_text, unit)
+        return "missing", number_text
 
-    return re.sub(
+    # 模型自写表格把单位写在表头（“金额（万元）”），单元格只有数字：按表头单位同样核对。
+    for start, end, number_text, unit in reversed(table_unit_cells(markdown)):
+        verdict, written = verify(number_text, unit, "")
+        cell = (written if verdict == "registered" else f"{written}{PERCENT_POINT}"
+                if verdict == "percent_point" else "待核实")
+        markdown = markdown[:start] + cell + markdown[end:]
+
+    def replace(match: re.Match[str]) -> str:
+        verdict, written = verify(match["number"], match["unit"],
+                                  markdown[max(0, match.start() - 12):match.start()])
+        if verdict == "registered":
+            return written + match[0][len(match["number"]):]
+        return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else "待核实"
+
+    replaced = re.sub(
         r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>亿元|万元|元|万人次|人次|床日|%)",
         replace,
         markdown,
     )
+
+    def replace_bare(match: re.Match[str]) -> str:
+        # “收入1.23亿”“门诊量35.3万”省略了单位：按亿元/万元/万人次的登记值核对；
+        # 只对上一种单位时补全单位，对不上的手写数值同样替换为待核实。
+        number = Decimal(match["number"].replace(",", ""))
+        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+        quantum = Decimal(1).scaleb(-digits)
+        targets = ("亿元",) if match["scale"] == "亿" else ("万元", "万人次")
+        matched = [
+            target for target in targets
+            if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get(target, ()))
+        ]
+        if not matched:
+            logger.warning("report_unregistered_number_replaced value={}", match[0])
+            return "待核实"
+        written = _display_precision(match["number"]) + match["scale"]
+        return written + matched[0][1:] if len(matched) == 1 else written
+
+    def replace_persons(match: re.Match[str]) -> str:
+        # “门诊量35.3万人”：人次（就诊次数）写成了人数。数值只对得上登记的人次时改回人次；
+        # 对不上的“人”可能是职工、床位等其他人数，不在此替换。
+        number = Decimal(match["number"].replace(",", ""))
+        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+        quantum = Decimal(1).scaleb(-digits)
+        visit_unit = "万人次" if match["scale"] else "人次"
+        if (not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get(visit_unit, ()))
+                or any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get("人", ()))):
+            return match[0]
+        logger.warning("report_visit_unit_corrected value={}", match[0])
+        return f"{_display_precision(match['number'])}{match['scale'] or ''}人次"
+
+    replaced = PERSON_COUNT.sub(replace_persons, replaced)
+    rates = registered_change_rates(contents)
+
+    def replace_rate_points(match: re.Match[str]) -> str:
+        if not percent_point_written_for_rate(match, replaced, rates, known.get(PERCENT_POINT, ()),
+                                              tuple(known.get("%", ()))):
+            return match[0]
+        logger.warning("report_change_rate_unit_corrected value={}", match[0])
+        return f"{_display_precision(match['number'])}%"
+
+    replaced = RATE_AS_PERCENT_POINT.sub(replace_rate_points, replaced) if rates else replaced
+    multiples = registered_multiples(contents)
+
+    def replace_multiple(match: re.Match[str]) -> str:
+        number = Decimal(match["number"])
+        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+        quantum = Decimal(1).scaleb(-digits)
+        if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in multiples):
+            return _display_precision(match["number"]) + match[0][len(match["number"]):]
+        logger.warning("report_unregistered_multiple_replaced value={}", match[0])
+        return "待核实"
+
+    return MULTIPLE_NUMBER.sub(replace_multiple, BARE_SCALED_NUMBER.sub(replace_bare, replaced))
+
+
+# 省略单位的“X亿”“X万”：只在其后是标点、空白或段尾时认定为完整数量，
+# “2万多名”“上万”等后接汉字的写法不处理。
+BARE_SCALED_NUMBER = re.compile(
+    r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?P<scale>亿|万)"
+    r"(?=[，。；、,.;:：）)\]\s*]|$)"
+)
 
 
 def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str]) -> str:

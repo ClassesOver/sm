@@ -47,6 +47,18 @@ def _fit_image_dimensions(
     return int(width * scale), int(height * scale)
 
 
+# Word 样式与 PDF 版式同一层级：正文 10.5pt；章节（H2→Heading 1）16pt 主题色、小标题
+# （H3→Heading 2）12.5pt、四级（H4→Heading 3）11pt，标题均加粗。此前三级标题同为 14pt，
+# 章节与小标题在 Word 中无法区分。值为（字号, 主题色, 加粗, 段前磅值）。
+_WORD_STYLE_HIERARCHY: dict[str, tuple[float, str, bool | None, float | None]] = {
+    "Normal": (10.5, "ink", None, None),
+    "Title": (22, "primary", True, None),
+    "Heading 1": (16, "primary", True, 14),
+    "Heading 2": (12.5, "ink", True, 10),
+    "Heading 3": (11, "ink", True, 8),
+}
+
+
 def _render_docx(
     html_document: str,
     *,
@@ -266,26 +278,46 @@ def _postprocess_docx(
         section.header_distance = Mm(8)
         section.footer_distance = Mm(8)
 
-    for style_name in ("Normal", "Title", "Heading 1", "Heading 2", "Heading 3"):
+    for style_name, (size, color, bold, space_before) in _WORD_STYLE_HIERARCHY.items():
         style = (
             document.styles[style_name]
             if style_name in document.styles
             else document.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
         )
         style.font.name = "Noto Sans CJK SC"
-        style.font.size = Pt(10.5 if style_name == "Normal" else 14)
-        style.font.color.rgb = (
-            theme_colors["ink"] if style_name == "Normal" else theme_colors["primary"]
-        )
+        style.font.size = Pt(size)
+        style.font.color.rgb = theme_colors[color]
         style._element.get_or_add_rPr().get_or_add_rFonts().set(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
+        if bold is not None:
+            style.font.bold = bold
+        if space_before is not None:
+            # 标题前留白并与下文同页，紧接表格的小标题不再贴住表格下框线。
+            style.paragraph_format.space_before = Pt(space_before)
+            style.paragraph_format.space_after = Pt(space_before / 2)
+            style.paragraph_format.keep_with_next = True
     if "Report Signature" not in document.styles:
         signature_style = document.styles.add_style("Report Signature", WD_STYLE_TYPE.PARAGRAPH)
         signature_style.font.name = "Noto Sans CJK SC"
         signature_style._element.get_or_add_rPr().get_or_add_rFonts().set(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
+    # 落款与正文同字号（此前继承文档默认字号，明显大于正文）。
+    document.styles["Report Signature"].font.size = Pt(10.5)
+    # 来源附录的条目（pandoc 定义列表）与 PDF 一致：条目名主题色加粗，各字段缩进、行距紧凑；
+    # 此前字段不缩进且段后留白不一，首个字段紧贴条目名。
+    if "Definition Term" in document.styles:
+        term_style = document.styles["Definition Term"]
+        term_style.font.bold = True
+        term_style.font.color.rgb = theme_colors["primary"]
+        term_style.paragraph_format.space_before = Pt(8)
+        term_style.paragraph_format.space_after = Pt(2)
+    if "Definition" in document.styles:
+        definition_format = document.styles["Definition"].paragraph_format
+        definition_format.left_indent = Mm(6)
+        definition_format.space_before = Pt(0)
+        definition_format.space_after = Pt(2)
     if "Report Source Appendix" not in document.styles:
         source_style = document.styles.add_style(
             "Report Source Appendix", WD_STYLE_TYPE.PARAGRAPH
@@ -297,6 +329,31 @@ def _postprocess_docx(
         source_style._element.get_or_add_rPr().get_or_add_rFonts().set(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
+
+    if "Block Text" in document.styles:
+        # 引用块（注、说明）与 PDF 一致：左侧主题色竖线与浅色底纹，不再只是缩进文字。
+        block_properties = document.styles["Block Text"]._element.get_or_add_pPr()
+        for tag in ("w:pBdr", "w:shd"):
+            for existing in block_properties.findall(qn(tag)):
+                block_properties.remove(existing)
+        block_border = OxmlElement("w:pBdr")
+        left_border = OxmlElement("w:left")
+        left_border.set(qn("w:val"), "single")
+        left_border.set(qn("w:sz"), "18")
+        left_border.set(qn("w:space"), "6")
+        left_border.set(qn("w:color"), str(REPORT_VISUAL_THEME["accent"]).removeprefix("#"))
+        block_border.append(left_border)
+        block_shading = OxmlElement("w:shd")
+        block_shading.set(qn("w:val"), "clear")
+        block_shading.set(qn("w:fill"), str(REPORT_VISUAL_THEME["surface"]).removeprefix("#"))
+        successors = ("w:tabs", "w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap", "w:overflowPunct",
+                      "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi", "w:adjustRightInd",
+                      "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing", "w:mirrorIndents",
+                      "w:suppressOverlap", "w:jc", "w:textDirection", "w:textAlignment",
+                      "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr",
+                      "w:sectPr", "w:pPrChange")
+        block_properties.insert_element_before(block_shading, *successors)
+        block_properties.insert_element_before(block_border, "w:shd", *successors)
 
     paragraphs = document.paragraphs
     for source_appendix_title in (
@@ -511,6 +568,17 @@ def _postprocess_docx(
         if "Table Grid" in document.styles:
             table.style = "Table Grid"
         table_properties = table._tbl.tblPr
+        # 与 PDF 一致铺满正文宽度：pandoc 产出 auto 宽度与等宽列，表格只占约八成版心。
+        for existing in table_properties.findall(qn("w:tblW")):
+            table_properties.remove(existing)
+        table_width = OxmlElement("w:tblW")
+        table_width.set(qn("w:type"), "pct")
+        table_width.set(qn("w:w"), "5000")
+        # OOXML 要求 tblPr 子元素按架构顺序排列；Word 比 LibreOffice 更严格。
+        table_properties.insert_element_before(
+            table_width, "w:jc", "w:tblCellSpacing", "w:tblInd", "w:tblBorders", "w:shd",
+            "w:tblLayout", "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
+        )
         for existing in table_properties.findall(qn("w:tblBorders")):
             table_properties.remove(existing)
         borders = OxmlElement("w:tblBorders")
@@ -520,7 +588,9 @@ def _postprocess_docx(
             border.set(qn("w:sz"), "4")
             border.set(qn("w:color"), str(REPORT_VISUAL_THEME["grid"]).removeprefix("#"))
             borders.append(border)
-        table_properties.append(borders)
+        table_properties.insert_element_before(
+            borders, "w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
+        )
         if table.rows:
             row_properties = table.rows[0]._tr.get_or_add_trPr()
             table_header = OxmlElement("w:tblHeader")
@@ -543,10 +613,15 @@ def _postprocess_docx(
             shape.width = new_width
             shape.height = new_height
 
+    signature_started = False
     for paragraph in paragraphs[body_start_index + 1 :]:
         if paragraph.text.strip() in {context["organizationName"], context["generatedDate"]}:
             paragraph.style = document.styles["Report Signature"]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            if not signature_started:
+                # 与 PDF 落款一致：与上文隔开 18mm，不紧贴附录或正文末段。
+                paragraph.paragraph_format.space_before = Mm(18)
+                signature_started = True
 
     settings = document.settings._element
     for existing in settings.findall(qn("w:updateFields")):

@@ -343,10 +343,11 @@ def test_trace_source_appendix_renders_status_and_summary_fields() -> None:
     assert "[数据来源 001] 正文事实" in html
     assert "[数据来源 002] 静态图表" in html
     assert "状态：待复核" in html and "状态：有效" in html
-    assert "事实值：3600 万元" in html
-    assert "期间：2025-09、2025-08" in html
+    # 事实值不在数字与单位间留空格；期间写中文日期；计算口径写中文说明。
+    assert "事实值：3,600万元" in html
+    assert "期间：2025年9月、2025年8月" in html
     assert "范围：院区=全部院区" in html
-    assert "方法：sum(revenue)" in html
+    assert "方法：revenue 求和" in html
     assert "方法：转换：按期间升序排序" in html
     assert "源文件：收入明细.csv" in html
     assert 'href="https://reports.test/reports/v1/editor/report-1/2?subject=' in html
@@ -385,3 +386,51 @@ def test_trace_source_visibility_gate_matches_export_settings() -> None:
     runtime._validate_trace_source_visibility(hidden, "只有正文")
     with pytest.raises(ReportFailure, match="关闭来源展示"):
         runtime._validate_trace_source_visibility(hidden, "[数据来源 001]")
+
+
+def test_citation_appendix_shows_readable_scope_and_periods() -> None:
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _source_appendix_html
+
+    def presentation(scope: str, periods: list[str]) -> dict:
+        return {
+            "alias": "[来源 001]", "label": "门诊收入明细", "status": "valid",
+            "coverageItems": [{"label": "门诊收入表", "periods": periods}],
+            "scope": scope, "method": "CSV 文件冻结快照", "summary": "12 行", "links": [],
+        }
+
+    # 期间角色代码换成中文名称，ISO 期间与区间按正文同一规则写成中文日期（含旧任务保存的数据）。
+    html = _source_appendix_html([presentation("current、yoy", ["2025-01-01至2025-12-31"])])
+    assert "范围：本期、同比基期" in html
+    assert "门诊收入表（2025年1月1日至12月31日）" in html
+    html = _source_appendix_html([presentation("院区=全部院区", ["2025-01", "2025-03"])])
+    assert "范围：院区=全部院区" in html
+    assert "门诊收入表（2025年1月、2025年3月）" in html
+
+
+@pytest.mark.parametrize(("formula", "expected"), [
+    ("sum(revenue)", "revenue 求和"),
+    ("average(床位使用率) WHERE 院区='东院' AND 科室='内科'", "床位使用率 平均（筛选：院区=东院、科室=内科）"),
+    ("(currentTotal-baselineTotal)/abs(baselineTotal)*100%", "变化率 =（本期合计 − 基期合计）÷ 基期合计绝对值 × 100%"),
+    ("actual/budget; difference=actual-budget", "比率 = actual ÷ budget；差额 = actual − budget"),
+    # 两个聚合之比：分子分母分别写成中文口径（第 86 轮整稿渲染核查发现附录原样显示）。
+    ("sum(revenue)/sum(visits)", "revenue 求和 ÷ visits 求和"),
+    # 未登记的写法原样保留。
+    ("自定义口径", "自定义口径"),
+])
+def test_trace_appendix_methods_are_written_for_readers(formula, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import readable_formula
+
+    assert readable_formula(formula) == expected
+
+
+@pytest.mark.parametrize(("value", "unit", "expected"), [
+    (1112354150.0, "元", "1,112,354,150元"),
+    (5.033219, "%", "5.03%"),
+    (2.1, "个百分点", "2.10个百分点"),
+    # 非零小值不显示成 0.00。
+    (0.0042, "%", "0.0042%"),
+])
+def test_trace_appendix_fact_values_use_display_precision(value, unit, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _readable_fact_value
+
+    assert _readable_fact_value(value, unit) == expected

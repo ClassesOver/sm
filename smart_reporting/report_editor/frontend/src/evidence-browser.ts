@@ -10,7 +10,7 @@ import {
   type EvidenceTask,
 } from './evidence-state'
 import { appendHighlighted, groupDigits, renderEvidencePage } from './evidence-pages'
-import { analysisLabel, citationLabel, datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabelsFor } from './evidence-relations'
+import { analysisLabel, citationLabel, datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectBusinessLabel } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
@@ -20,7 +20,7 @@ function sourceSubjectLabel(subject: NonNullable<TraceSources['subjects']>[numbe
     const fact = sources.facts?.find(item => item.analysisId === ref?.analysisId && item.factId === ref?.factId)
     if (fact) return `${subject.locator.rowKey?.replace(/^period:/, '')} · ${fact.name || fact.label} · ${analysisLabel(fact.analysisId, sources)}`
   }
-  return subjectLabelsFor((sources.subjects ?? []).map(item => item.subjectId))(subject.subjectId)
+  return subjectBusinessLabel(subject.subjectId, sources)
 }
 
 /**
@@ -56,6 +56,8 @@ export interface EvidenceBrowserOptions {
   getDraft?: () => { markdown: string; sha256: string } | null
   downloadEnabled?: boolean
   drilldownEnabled?: boolean
+  /** 下载当前草稿的溯源清单（CSV）；未提供时不显示入口。 */
+  downloadTraceList?: () => Promise<void>
 }
 
 const SOURCE_UNAVAILABLE_LABELS: Record<string, string> = {
@@ -181,6 +183,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         <input type="search" class="evidence-directory-search" placeholder="搜索来源目录"
           aria-label="搜索来源目录" />
         <div class="evidence-directory-items"></div>
+        <button type="button" class="ui-button evidence-trace-list-download" hidden>下载溯源清单（CSV）</button>
         <p class="evidence-directory-note">目录与搜索会开启独立核对任务，不覆盖当前任务的导航历史。</p>
       </aside>
       <div class="evidence-directory-scrim" hidden></div>
@@ -222,6 +225,17 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   const announcer = shell.querySelector<HTMLElement>('.evidence-announcer')!
 
   revisionBadge.textContent = options.revisionLabel
+  const traceListButton = shell.querySelector<HTMLButtonElement>('.evidence-trace-list-download')!
+  if (options.downloadTraceList) {
+    const download = options.downloadTraceList
+    traceListButton.hidden = false
+    traceListButton.title = '每个登记来源一行：正文语句、指标、正文值与登记值、期间、口径、核对状态与数据快照'
+    traceListButton.addEventListener('click', () => {
+      traceListButton.disabled = true
+      void download().then(() => announce('已生成溯源清单'), () => showNotice('溯源清单生成失败，请稍后重试'))
+        .finally(() => { traceListButton.disabled = false })
+    })
+  }
   directoryHead.textContent = `来源目录 · ${options.revisionLabel}`
 
   const announce = (message: string) => {

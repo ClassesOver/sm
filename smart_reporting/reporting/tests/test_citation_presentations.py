@@ -38,7 +38,10 @@ def _service_with_job() -> tuple[WorkspaceReportService, RunContext, str]:
 
 def test_coverage_periods_keep_bounds_for_fine_grained_data() -> None:
     assert _coverage_period_bounds({"2025-02", "2025-01"}) == ["2025-01", "2025-02"]
-    assert _coverage_period_bounds(_DAILY) == ["2025-01-01", "2025-12-31"]
+    # 首尾写成一个区间，避免两项并列被读成两个孤立期间；写不下时保留首尾两项。
+    assert _coverage_period_bounds(_DAILY) == ["2025-01-01至2025-12-31"]
+    stamps = {f"2025-01-{day:02d} 00:00:00" for day in range(1, 31)}
+    assert _coverage_period_bounds(stamps) == ["2025-01-01 00:00:00", "2025-01-30 00:00:00"]
 
 
 @pytest.mark.anyio
@@ -84,3 +87,18 @@ async def test_rebinding_ignores_period_detail_but_rejects_changed_citations() -
     changed[0]["label"] = "住院日报表"
     with pytest.raises(Exception, match="已经绑定且内容不同"):
         await service.bind_citation_presentations(job_id, changed, run_context)
+
+
+def test_citation_presentation_scope_uses_reader_facing_period_roles() -> None:
+    from smart_reporting.reporting.workflow.query_pipeline import DatasetLineage
+    from smart_reporting.reporting.workflow.runtime.publication import _citation_presentations
+
+    lineage = DatasetLineage(
+        datasetId="dataset-1", sourceId="source-1", requirementId="requirement-1",
+        sqlHash="a" * 64, rowCount=12, size=100, sha256="b" * 64, periodRoles=("current", "yoy"),
+    )
+    presentations = _citation_presentations(
+        lineage=(lineage,), requirements=(), analyses=(), snapshots=(), observed_facts=[],
+    )
+    # current/yoy 是内部代码，附录“范围”写本期、同比基期。
+    assert presentations[0]["scope"] == "本期、同比基期"

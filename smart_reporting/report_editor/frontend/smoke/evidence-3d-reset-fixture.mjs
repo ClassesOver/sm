@@ -36,6 +36,8 @@ try {
   await page.goto(process.env.REPORT_EDITOR_URL ?? 'http://127.0.0.1:4173/reports/v1/editor/fixture-report/1', { waitUntil: 'networkidle' })
   await page.locator('[data-action="sources"]').click()
   await page.locator('.evidence-directory-item', { hasText: '事实产出' }).click()
+  // 七节点小图默认 2D；本检查针对 3D，先显式切换。
+  await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
   await page.waitForFunction(() => {
     const graph = window.currentGraph3d
     return graph && Math.abs(graph.cameraPosition().x) > 1 && Math.abs(graph.cameraPosition().y) > 1

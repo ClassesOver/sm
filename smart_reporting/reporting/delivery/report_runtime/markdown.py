@@ -4,6 +4,7 @@ import html
 import re
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 # 视觉主题属于服务端渲染契约，而不是模型自由生成的正文内容。PDF、Word、沙箱内
@@ -146,20 +147,52 @@ def _normalize_report_markdown_segments(
 
 
 _CJK_CHAR = r"[\u3400-\u9fff]"
-# 协议标记与 Markdown 链接/图片地址是机器文本，不参与标点规范。
-_PUNCTUATION_PROTECTED = re.compile(r"\[\[[^\]\r\n]+\]\]|\]\([^)\r\n]*\)")
+# 汉字或全角收尾符号（括号、引号、书名号）之后的半角标点同样属于中文正文。
+_CJK_CLOSING = r"[\u3400-\u9fff）”》】]"
+# 协议标记、数值占位与 Markdown 链接/图片地址是机器文本，不参与标点规范。
+# 引用式链接定义行（“[1]: url "标题"”）整行是机器语法，标题必须保留半角引号。
+_PUNCTUATION_PROTECTED = re.compile(
+    r"\[\[[^\]\r\n]+\]\]|\{\{[^{}\r\n]+\}\}|\]\([^)\r\n]*\)"
+    r"|^ {0,3}\[[^\]\r\n]+\]:[^\r\n]*"
+)
+# 前接汉字（含粗体收尾“**”）或后接汉字的半角标点改为全角。后接汉字时前面是数字
+# 也不可能是千分位或时间（二者后面都是数字），“10:30,地点”同样改写。
 _HALF_WIDTH_PUNCTUATION = re.compile(
-    rf"(?:(?<={_CJK_CHAR})(?P<after>[,:;])[ \t]*)"
-    rf"|(?:(?<![A-Za-z0-9])(?P<before>[,:;])[ \t]*(?={_CJK_CHAR}))"
+    rf"(?:(?:(?<={_CJK_CLOSING})|(?<={_CJK_CLOSING}\*\*))(?P<after>[,:;])[ \t]*)"
+    rf"|(?:(?P<before>[,:;])[ \t]*(?={_CJK_CHAR}))"
 )
 _FULL_WIDTH = {",": "，", ":": "：", ";": "；"}
 
 
-def _normalize_cjk_punctuation_text(text: str) -> str:
-    def convert(piece: str) -> str:
-        return _HALF_WIDTH_PUNCTUATION.sub(
-            lambda match: _FULL_WIDTH[match["after"] or match["before"]], piece
-        )
+# 同一行内成对、不嵌套的半角括号；括号内含中文、前接中文/全角标点，或位于行首/空白后
+# 且后接中文（“(1)门诊量”）时整对改为全角。前接英文数字的 f(x) 保持原样。
+_HALF_WIDTH_PARENTHESES = re.compile(r"\(([^()\r\n]{1,80})\)")
+_CJK_CONTEXT = r"[\u3400-\u9fff，。；：、！？（）“”]"
+
+
+def _full_width_parentheses(piece: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        before = piece[match.start() - 1] if match.start() > 0 else ""
+        after = piece[match.end()] if match.end() < len(piece) else ""
+        if (
+            re.search(_CJK_CHAR, match[1])
+            or re.fullmatch(_CJK_CONTEXT, before)
+            or (re.fullmatch(_CJK_CHAR, after) and not re.fullmatch(r"[A-Za-z0-9_]", before))
+        ):
+            return f"（{match[1]}）"
+        return match[0]
+
+    return _HALF_WIDTH_PARENTHESES.sub(replace, piece)
+
+
+def _full_width_punctuation(piece: str) -> str:
+    return _HALF_WIDTH_PUNCTUATION.sub(
+        lambda match: _FULL_WIDTH[match["after"] or match["before"]], piece
+    )
+
+
+def _convert_unprotected(text: str, convert: Callable[[str], str]) -> str:
+    """只改写协议标记、数值占位与链接地址之外的文本。"""
 
     pieces: list[str] = []
     previous_end = 0
@@ -171,14 +204,250 @@ def _normalize_cjk_punctuation_text(text: str) -> str:
     return "".join(pieces)
 
 
-def normalize_cjk_punctuation(markdown: str) -> str:
-    """中文正文中的半角逗号、冒号、分号改为全角。
+# 全角标点两侧的空格（“见附表 （表1）”“（1） 门诊”）；列表标记“- ”“1. ”后与表格竖线
+# 两侧的空格不动。
+_SPACE_AROUND_FULL_WIDTH = re.compile(
+    r"(?:(?<=[\u3400-\u9fff（）。，；：、！？“”A-Za-z0-9%])|(?<=[^\s*]\*\*))[ \t]+(?=[（）。，；：、！？“”])"
+    r"|(?<=[（）。，；：、！？“”])[ \t]+(?=[^\s|])"
+)
 
-    只改紧邻汉字的标点：千分位（1,234）、时间（12:30）、英文（A, B）、协议标记、
-    链接地址与代码保持原样。
+
+# 同一行内成对的半角引号；引号内含中文或紧邻中文时改为中文引号，英文引语不变。
+_STRAIGHT_QUOTES = (
+    (re.compile(r'"([^"\r\n]{1,80})"'), "“", "”"),
+    (re.compile(r"'([^'\r\n]{1,80})'"), "‘", "’"),
+)
+
+
+def _full_width_quotes(piece: str) -> str:
+    for pattern, left, right in _STRAIGHT_QUOTES:
+        def replace(match: re.Match[str], left: str = left, right: str = right) -> str:
+            before = piece[match.start() - 1] if match.start() > 0 else ""
+            after = piece[match.end()] if match.end() < len(piece) else ""
+            if (re.search(_CJK_CHAR, match[1]) or re.fullmatch(_CJK_CONTEXT, before)
+                    or re.fullmatch(_CJK_CONTEXT, after)):
+                return f"{left}{match[1]}{right}"
+            return match[0]
+
+        piece = pattern.sub(replace, piece)
+    return piece
+
+
+# 中文语境的省略号写作“……”：“等...”“等…”“。。。”都改写。
+_CJK_ELLIPSIS = re.compile(
+    rf"(?:(?<={_CJK_CONTEXT})(?:\.{{3,}}|…+|。{{3,}})|(?:\.{{3,}}|…+|。{{3,}})(?={_CJK_CONTEXT}))"
+)
+
+
+# 中文句末的半角句号、问号、叹号（“收入1.37亿元.”“增长5.03%.”“是否持续?”）：前接汉字、
+# 全角收尾符号或百分号（含粗体收尾“**”），且位于行尾或后接汉字时改为全角。小数、文件名、
+# 省略号与图片语法“![”不变。
+_SENTENCE_END_CONTEXT = rf"(?:(?<={_CJK_CLOSING})|(?<=[%‰])|(?<={_CJK_CLOSING}\*\*)|(?<=[%‰]\*\*))"
+_SENTENCE_END_FOLLOW = rf"(?=\*{{0,2}}[ \t]*(?:\r?\n|\Z|\|)|[ \t]*{_CJK_CHAR})"
+_HALF_WIDTH_SENTENCE_END = re.compile(
+    rf"{_SENTENCE_END_CONTEXT}(?<!\.)(?P<mark>[.?!])(?![.\[]){_SENTENCE_END_FOLLOW}"
+)
+# 数值占位“{{value:…}}.”渲染后是带单位的数值，其后的半角句号同样是中文句末。
+_VALUE_PLACEHOLDER_PERIOD = re.compile(rf"(?P<token>\{{\{{value:[^{{}}\r\n]+\}}\}})\.{_SENTENCE_END_FOLLOW}")
+# 行首的“一.”“第一.”是条目编号，不是句号。
+_ENUMERATION_PREFIX = re.compile(r"[ \t]*(?:#{1,6}[ \t]+)?[*_]*第?[一二三四五六七八九十]{1,3}")
+_FULL_WIDTH_SENTENCE_END = {".": "。", "?": "？", "!": "！"}
+
+
+def _full_width_sentence_ends(piece: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        line_start = piece.rfind("\n", 0, match.start()) + 1
+        line_end = piece.find("\n", match.end())
+        line = piece[line_start : len(piece) if line_end < 0 else line_end]
+        if (_ENUMERATION_PREFIX.fullmatch(piece, line_start, match.start())
+                or not re.search(_CJK_CHAR, line)):
+            return match[0]
+        return _FULL_WIDTH_SENTENCE_END[match["mark"]]
+
+    return _HALF_WIDTH_SENTENCE_END.sub(replace, piece)
+
+
+def _normalize_cjk_punctuation_text(text: str) -> str:
+    def convert(piece: str) -> str:
+        # 括号改为全角后，紧随其后的“（表1）,”“（元）:”才具备中文上下文，需再规范一次。
+        piece = _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
+        piece = _full_width_sentence_ends(_CJK_ELLIPSIS.sub("……", _full_width_quotes(piece)))
+        return _SPACE_AROUND_FULL_WIDTH.sub("", piece)
+
+    return _convert_unprotected(_VALUE_PLACEHOLDER_PERIOD.sub(r"\g<token>。", text), convert)
+
+
+def normalize_cjk_punctuation(markdown: str) -> str:
+    """中文正文中的半角逗号、冒号、分号、括号与句末句号、问号、叹号改为全角。
+
+    只改紧邻汉字的标点与含中文的成对括号：千分位（1,234）、时间（12:30）、英文
+    （A, B、f(x)）、协议标记、链接地址与代码保持原样。
     """
 
     return _normalize_report_markdown_segments(markdown, _normalize_cjk_punctuation_text)
+
+
+# 模型从数值目录抄来的 ISO 期间（2025-01、2025-01-31）在正文中改为中文日期。
+# 前后紧邻字母数字、连字符、斜杠或点时是文件名、地址或编号，不改。
+_ISO_DATE = (
+    r"(?P<{p}y>(?:19|20)\d{{2}})-(?P<{p}m>0[1-9]|1[0-2])"
+    r"(?:-(?P<{p}d>0[1-9]|[12]\d|3[01]))?"
+)
+# 只看 ASCII 字母数字：Python 的 \w 含汉字，“期间2025-01”同样需要改写。
+_ISO_DATE_BOUNDARY_BEFORE = r"(?<![A-Za-z0-9_./\-])"
+_ISO_DATE_BOUNDARY_AFTER = r"(?![A-Za-z0-9_./\-:])"
+_ISO_DATE_RANGE = re.compile(
+    _ISO_DATE_BOUNDARY_BEFORE + _ISO_DATE.format(p="a")
+    + r"\s*(?:至|到|~|～|—|–|-)\s*" + _ISO_DATE.format(p="b") + _ISO_DATE_BOUNDARY_AFTER
+)
+_ISO_DATE_SINGLE = re.compile(
+    _ISO_DATE_BOUNDARY_BEFORE + _ISO_DATE.format(p="a") + _ISO_DATE_BOUNDARY_AFTER
+)
+# 中文正文中数字与汉字、单位之间的空格（“收入 3,600 万元”“增长 8.6 %”）与数值目录
+# 的写法（3,600万元）不一致；英文单词两侧的空格不动。
+_SPACE_AFTER_NUMBER = re.compile(r"(?<=\d)[ \t]+(?=[\u3400-\u9fff%‰])")
+_SPACE_BEFORE_NUMBER = re.compile(
+    r"(?:(?<=[\u3400-\u9fff])|(?<=[\u3400-\u9fff]\*\*))[ \t]+(?=[+\-]?\d)"
+)
+# 两个汉字之间（含粗体标记两侧）的空格在中文正文中没有意义：“2025年1月 收入”
+# “**2025年1月** 收入”。
+_SPACE_BETWEEN_CJK = re.compile(
+    r"(?:(?<=[\u3400-\u9fff])|(?<=[\u3400-\u9fff]\*\*))[ \t]+"
+    r"(?=[\u3400-\u9fff]|\*\*[\u3400-\u9fff\d])"
+)
+# 数字后接单位或量词时是数量（3 月、12 个、3 大举措、5 条建议），不是手写标题编号；
+# 标题编号清理与这里的空格规范共用同一份字表。
+HEADING_QUANTITY_WORDS = "年月日个家名张床次人天项例台季周号期级类万亿元%‰大条点种方位所批组倍成岁层栋"
+# 标题行首“1 收入分析”“2.3 收入趋势”的手写编号留给标题编号清理识别，不并成
+# “2.3收入趋势”；后接单位或量词的（1.5 万人次、3 月）是数量，照常去空格。
+_HEADING_NUMBER_PREFIX = re.compile(
+    rf"^#{{1,6}}[ \t]+\d+(?:\.\d+)*[.、．]?[ \t]+(?![{HEADING_QUANTITY_WORDS}])"
+)
+# 全角阿拉伯数字与百分号（“５．０３％”“5.03％”）：GB/T 15835 规定阿拉伯数字用半角；
+# 全角写法还让数值核对与复核认不出数字，未登记的数值因此原样落盘。
+_FULL_WIDTH_NUMERALS = str.maketrans("０１２３４５６７８９％", "0123456789%")
+_FULL_WIDTH_DECIMAL_POINT = re.compile(r"(?<=[0-9])．(?=[0-9])")
+# 全角千分位“１３，６５４．３２万元”：只在全角数字三位一组、以小数或金额人次单位收尾时
+# 改为半角逗号；否则只改数字时“654.32万元”会被单独核对，替换后变成“13，待核实”。
+# 半角数字间的全角逗号（“分别为120，135，150张”）是列举，不动。
+_FULL_WIDTH_GROUPED_NUMBER = re.compile(
+    r"(?<![０-９])[０-９]{1,3}(?:，[０-９]{3})+(?=．[０-９]|\s*(?:亿元|万元|元|万人次|人次))"
+)
+
+
+# “提高2pp”“提升2个pct”“2 ppt”是百分点的英文缩写：中文报告写“个百分点”，复核才能按
+# 两项登记百分数之差核对。前接字母、连字符、点或冒号的是标识符，不改。
+_PERCENT_POINT_ABBREVIATION = re.compile(
+    r"(?<![A-Za-z0-9_.:\-])(?P<number>\d+(?:\.\d+)?)[ \t]*(?:个[ \t]*)?(?i:pp|ppt|pct)(?![A-Za-z0-9_])"
+)
+
+
+# 数字前的 Unicode 减号“−”、全角“－”“﹣”与全角“＋”：不改为半角时负号认不出，登记的负值
+# （“同比−3.00%”）被当作正数核对而替换为“待核实”，成稿出现“同比−待核实”残句。
+_UNICODE_SIGN = re.compile(r"[−－﹣＋](?=[0-9])")
+
+
+def normalize_number_notation(text: str) -> str:
+    """数字写法统一为数值核对可识别的形式。
+
+    全角数字与百分号改为半角，数字之间的全角点改为小数点（“1．收入”等条目编号不动）；
+    数字前的 Unicode 减号与全角正负号改为半角；百分点缩写 pp/ppt/pct 改为“个百分点”。
+    """
+
+    text = _FULL_WIDTH_GROUPED_NUMBER.sub(lambda match: match[0].replace("，", ","), text)
+    text = _FULL_WIDTH_DECIMAL_POINT.sub(".", text.translate(_FULL_WIDTH_NUMERALS))
+    text = _UNICODE_SIGN.sub(lambda match: "+" if match[0] == "＋" else "-", text)
+    return _PERCENT_POINT_ABBREVIATION.sub(lambda match: f"{match['number']}个百分点", text)
+
+
+_COMPARISON_TERMS = {"yoy": "同比", "mom": "环比"}
+_COMPARISON_TERM = re.compile(r"(?<![A-Za-z0-9_])(?i:yoy|mom)(?![A-Za-z0-9_])")
+_PADDED_CJK_DATE = re.compile(r"(?<=\d年)0(?=[1-9]月)|(?<=\d月)0(?=[1-9]日)")
+# 月份区间“1-10月”“1~10月”“1月-10月”与服务端期间说明（2025年1—10月）写法不一致：同一年内
+# 升序的月份区间统一为“1—10月”。跨年（12-1月）、编号（ICD-10、v1-2）与非月份区间不动。
+_MONTH_RANGE = re.compile(
+    r"(?<![A-Za-z0-9_.\-—])(?P<a>1[0-2]|0?[1-9])[ \t]*月?[ \t]*[-~～–][ \t]*(?P<b>1[0-2]|0?[1-9])[ \t]*月"
+)
+
+
+def _cjk_date(match: re.Match[str], prefix: str, *, omit_year: bool = False) -> str:
+    year, month, day = (match[f"{prefix}{part}"] for part in ("y", "m", "d"))
+    text = "" if omit_year else f"{year}年"
+    text += f"{int(month)}月"
+    return text + (f"{int(day)}日" if day else "")
+
+
+def _normalize_cjk_wording_text(text: str) -> str:
+    def range_text(match: re.Match[str]) -> str:
+        start = _cjk_date(match, "a")
+        same_year = match["ay"] == match["by"] and bool(match["ad"]) == bool(match["bd"])
+        return f"{start}至{_cjk_date(match, 'b', omit_year=same_year)}"
+
+    def convert(piece: str) -> str:
+        piece = _ISO_DATE_RANGE.sub(range_text, normalize_number_notation(piece))
+        piece = _ISO_DATE_SINGLE.sub(lambda match: _cjk_date(match, "a"), piece)
+        piece = _PADDED_CJK_DATE.sub("", piece)
+        piece = _MONTH_RANGE.sub(
+            lambda match: f"{int(match['a'])}—{int(match['b'])}月" if int(match["a"]) < int(match["b"]) else match[0],
+            piece,
+        )
+        # 数值目录的比较口径 yoy/mom 是字段值，正文写中文“同比/环比”。
+        piece = _COMPARISON_TERM.sub(lambda match: _COMPARISON_TERMS[match[0].casefold()], piece)
+        heading_prefix = _HEADING_NUMBER_PREFIX.match(piece)
+        prefix = heading_prefix[0] if heading_prefix else ""
+        rest = _SPACE_BEFORE_NUMBER.sub("", _SPACE_AFTER_NUMBER.sub("", piece[len(prefix):]))
+        return prefix + _SPACE_BETWEEN_CJK.sub("", rest)
+
+    return _convert_unprotected(text, convert)
+
+
+def normalize_cjk_wording(markdown: str) -> str:
+    """正文中的 ISO 日期与期间区间改为中文写法（2025-01至2025-12 → 2025年1月至12月），
+    比较口径 yoy/mom 改为同比/环比，去掉数字与汉字、单位之间的空格。
+
+    协议标记、数值占位、链接地址与代码保持原样；文件名、版本号等紧邻字母数字的写法不改。
+    """
+
+    return _normalize_report_markdown_segments(markdown, _normalize_cjk_wording_text)
+
+
+# 中文条目编号（“1、”“（1）”“一是”“第一，”“一、”）不是 Markdown 列表：与上一行之间
+# 只有单个换行时会并入同一段落，渲染成一行连写。
+CJK_ENUMERATION_LINE = re.compile(
+    r"^[*_]*(?:\d{1,2}[、．]|[（(]\d{1,2}[）)]|[（(][一二三四五六七八九十]{1,3}[）)]"
+    r"|[一二三四五六七八九十]{1,3}(?:是|、)|第[一二三四五六七八九十]{1,3}[，,、：:是])"
+)
+_STRUCTURAL_LINE = re.compile(r"^(?:#{1,6}\s|\||[-*+]\s|\d{1,3}[.)]\s|>|!\[|\[\[)")
+
+
+def separate_enumerated_lines(markdown: str) -> str:
+    """单个换行分隔的中文条目各自成段，避免渲染时并成一行。
+
+    只在上一行是普通正文或条目时插入空行；表格、列表、标题、引用、图片、协议标记
+    与代码块保持原样。
+    """
+
+    lines = markdown.split("\n")
+    result: list[str] = []
+    fence: str | None = None
+    for line in lines:
+        opening = _FENCED_CODE_START.match(line)
+        if fence is not None:
+            if opening is not None and opening["fence"][0] == fence:
+                fence = None
+            result.append(line)
+            continue
+        if opening is not None:
+            fence = opening["fence"][0]
+            result.append(line)
+            continue
+        previous = result[-1] if result else ""
+        if (CJK_ENUMERATION_LINE.match(line.strip()) and not line.startswith((" ", "\t"))
+                and previous.strip() and not previous.startswith((" ", "\t"))
+                and not _STRUCTURAL_LINE.match(previous.strip())):
+            result.append("")
+        result.append(line)
+    return "\n".join(result)
 
 
 def normalize_report_markdown_strong_spacing(markdown: str) -> str:
@@ -377,6 +646,38 @@ def _bind_heading_anchors(tokens: list[Any], headings_contract: list[dict[str, A
         token.attrSet("id", item["anchor"])
 
 
+# 东亚宽字符（汉字与全角标点）。CSS 规定两侧均为宽字符的段内换行不产生空格，
+# WeasyPrint 未实现该规则，会把“增长\n住院”渲染成“增长 住院”。
+_WIDE_CHARACTER = re.compile(r"[\u2e80-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef“”‘’]")
+_INLINE_MARKUP = frozenset({"strong_open", "strong_close", "em_open", "em_close", "s_open", "s_close"})
+
+
+def _join_cjk_soft_breaks(tokens: list[Any]) -> list[Any]:
+    """两侧均为宽字符的段内软换行渲染为空，不在中文之间留下空格。"""
+
+    def edge(children: list[Any], start: int, step: int) -> str:
+        index = start
+        while 0 <= index < len(children):
+            child = children[index]
+            if child.type == "text" and child.content:
+                return child.content[-1] if step < 0 else child.content[0]
+            # 粗体/斜体标记两侧会有空文本 token，跳过后继续找相邻字符。
+            if child.type not in _INLINE_MARKUP and not (child.type == "text" and not child.content):
+                return ""
+            index += step
+        return ""
+
+    for token in tokens:
+        children = token.children or []
+        for index, child in enumerate(children):
+            if (child.type == "softbreak"
+                    and _WIDE_CHARACTER.fullmatch(edge(children, index - 1, -1) or " ")
+                    and _WIDE_CHARACTER.fullmatch(edge(children, index + 1, 1) or " ")):
+                child.type = "text"
+                child.content = ""
+    return tokens
+
+
 def _body_tokens(tokens: list[Any]) -> list[Any]:
     for index, token in enumerate(tokens[:-2]):
         if token.type == "heading_open" and token.tag == "h1":
@@ -487,6 +788,7 @@ def _semantic_documents(
         "th,td{border:0.6pt solid "
         f"{theme['grid']}"
         ";padding:5px 7px;text-align:left}"
+        "td{font-variant-numeric:tabular-nums}"
         "th{background:"
         f"{theme['surface']}"
         ";color:"
@@ -558,6 +860,9 @@ def _semantic_documents(
     return pdf_document, word_document
 
 
+_PERIOD_ROLE_LABELS = {"current": "本期", "yoy": "同比基期", "mom": "环比基期"}
+
+
 def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
     if not presentations:
         return ""
@@ -571,8 +876,14 @@ def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
     for item in presentations:
         coverage = []
         for covered in item["coverageItems"]:
-            periods = "、".join(covered["periods"]) if covered["periods"] else "未登记"
+            # 期间按正文同一规则写成中文日期（2026-01至2026-12 → 2026年1月至12月）。
+            periods = (_normalize_cjk_wording_text("、".join(covered["periods"]))
+                       if covered["periods"] else "未登记")
             coverage.append(f"{covered['label']}（{periods}）")
+        # 旧任务保存的范围是期间角色代码（current、yoy），读者可见时换成中文名称。
+        roles = item["scope"].split("、")
+        scope = ("、".join(_PERIOD_ROLE_LABELS[role] for role in roles)
+                 if all(role in _PERIOD_ROLE_LABELS for role in roles) else item["scope"])
         status = item["status"]
         online_links = [
             f'<a href="{html.escape(link["url"], quote=True)}">'
@@ -589,7 +900,7 @@ def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
             '<dl class="report-source-entry">'
             f'<dt>{html.escape(item["alias"])} {html.escape(item["label"])}</dt>'
             f'<dd class="report-source-status-{status}">状态：{status_labels[status]}</dd>'
-            f'<dd>范围：{html.escape(item["scope"])}</dd>'
+            f'<dd>范围：{html.escape(scope)}</dd>'
             f'<dd>期间：{html.escape("、".join(coverage) if coverage else "未登记")}</dd>'
             f'<dd>方法：{html.escape(item["method"])}</dd>'
             f"{summary}<dd>在线定位：{online}</dd></dl>"
@@ -600,6 +911,58 @@ def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
         '<p>以下编号由服务端按正文首次出现顺序生成，相同来源复用同一编号。</p>'
         f'{"".join(entries)}</section>'
     )
+
+
+_AGGREGATION_LABELS = {
+    "sum": "求和", "average": "平均", "min": "最小值", "max": "最大值",
+    "count": "计数", "count_distinct": "去重计数",
+}
+_FORMULA = re.compile(
+    r"^(?P<aggregation>sum|average|min|max|count|count_distinct)\((?P<field>[^()]+)\)"
+    r"(?: WHERE (?P<where>.+))?$"
+)
+
+
+_FIXED_FORMULAS = {
+    "(currentTotal-baselineTotal)/abs(baselineTotal)*100%": "变化率 =（本期合计 − 基期合计）÷ 基期合计绝对值 × 100%",
+}
+_RATIO_FORMULA = re.compile(r"^(?P<numerator>[^/;]+)/(?P<denominator>[^/;]+); difference=\1-\2$")
+
+
+def readable_formula(formula: str) -> str:
+    """冻结事实的计算口径（sum(revenue) WHERE 院区='东院'）改为读者可读的中文说明。"""
+    formula = formula.strip()
+    if formula in _FIXED_FORMULAS:
+        return _FIXED_FORMULAS[formula]
+    ratio = _RATIO_FORMULA.match(formula)
+    if ratio is not None:
+        return f"比率 = {ratio['numerator']} ÷ {ratio['denominator']}；差额 = {ratio['numerator']} − {ratio['denominator']}"
+    # 两个聚合之比（sum(revenue)/sum(visits)）：分子分母分别写成中文聚合口径。
+    parts = formula.split("/")
+    if len(parts) == 2 and all(_FORMULA.match(part.strip()) and " WHERE " not in part for part in parts):
+        return " ÷ ".join(readable_formula(part) for part in parts)
+    match = _FORMULA.match(formula)
+    if match is None:
+        return formula
+    text = f"{match['field']} {_AGGREGATION_LABELS[match['aggregation']]}"
+    if match["where"]:
+        conditions = [re.sub(r"^\s*([^=]+?)\s*=\s*'(.*)'\s*$", r"\1=\2", part)
+                      for part in match["where"].split(" AND ")]
+        text += f"（筛选：{'、'.join(conditions)}）"
+    return text
+
+
+def _readable_fact_value(value: Any, unit: str | None) -> str:
+    """事实值按千分位、至多两位小数显示，与正文数值写法一致。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return f"{value}{unit or ''}"
+    number = Decimal(str(value))
+    if number == number.to_integral_value():
+        text = f"{number.to_integral_value():,f}"
+    else:
+        rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        text = f"{rounded:,f}" if rounded != 0 else f"{number:f}"
+    return f"{text}{unit or ''}"
 
 
 def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
@@ -656,12 +1019,11 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
         ]
         if kind == "claim":
             value = entry.get("factValue")
-            unit = entry.get("unit")
-            if isinstance(value, float) and value.is_integer():
-                value = int(value)
-            value_text = "未登记" if value is None else f"{value} {unit or ''}".strip()
-            rows.append(f"<dd>事实值：{html.escape(str(value_text))}</dd>")
-            periods = "、".join(entry.get("periods") or ()) or None
+            value_text = "未登记" if value is None else _readable_fact_value(value, entry.get("unit"))
+            rows.append(f"<dd>事实值：{html.escape(value_text)}</dd>")
+            # 逐个列出的冻结期间按正文规则写成中文日期（2025-09 → 2025年9月）。
+            joined = "、".join(entry.get("periods") or ())
+            periods = _normalize_cjk_wording_text(joined) if joined else None
         else:
             periods = "、".join(dataset_period_labels(dataset_ids)) or None
         rows.append(f"<dd>期间：{html.escape(periods or '未登记')}</dd>")
@@ -675,9 +1037,9 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
         if kind == "claim":
             formula = entry.get("formula")
             if isinstance(formula, str) and formula:
-                methods.append(formula)
+                methods.append(readable_formula(formula))
         else:
-            methods.extend(entry.get("methods") or ())
+            methods.extend(readable_formula(method) for method in entry.get("methods") or ())
             if kind == "chart":
                 methods.extend(f"转换：{note}" for note in (entry.get("transformNotes") or ()))
         rows.append(f"<dd>方法：{html.escape('；'.join(methods) or '未登记')}</dd>")
@@ -715,6 +1077,7 @@ __all__ = [
     "_WORD_MARKERS",
     "_bind_heading_anchors",
     "_body_tokens",
+    "_join_cjk_soft_breaks",
     "_document_context",
     "format_heading_label",
     "_markdown_title",

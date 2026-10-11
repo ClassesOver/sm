@@ -460,7 +460,10 @@ def test_readability_warnings_ask_to_split_long_or_number_dense_sentences():
 
 
 def test_prose_checks_skip_server_tables_behind_protocol_markers():
-    from smart_reporting.reporting.trace.content_review import readability_warnings, repeated_sentence_warnings
+    from smart_reporting.reporting.trace.content_review import (
+        readability_warnings,
+        repeated_sentence_warnings,
+    )
 
     # 服务端表格格式：[[table:id]] 紧贴表头，不隔空行；表格行不是正文句子。
     table = (
@@ -618,3 +621,453 @@ def test_readability_suggests_wan_visits_for_long_visit_counts(text, flagged):
     warnings = readability_warnings(text)
     assert bool(warnings) is flagged
     assert all("万人次" in item for item in warnings)
+
+
+def test_review_flags_decline_wording_on_positive_registered_change_once():
+    from .test_numeric_text import _comparison_document
+
+    document = _comparison_document(6543211, 5.0332)
+    amount = review_content('收入较上年减少{{value:fact-cccccccccccccccc:change:万元}}。', [document])
+    assert [item for item in amount if item.startswith('方向与登记变化相反')] == [
+        '方向与登记变化相反：减少654.32万元。该变化已登记为正值（增加），请改写为增长/增加，并同步修正前后文的方向判断。'
+    ]
+    # “同比下降{变化率}”已有变化率方向检查，不重复提示。
+    rate = review_content('收入同比下降{{value:fact-cccccccccccccccc:changeRate:%}}。', [document])
+    assert sum(item.startswith('方向与登记变化') for item in rate) == 1
+    assert review_content('收入较上年增加{{value:fact-cccccccccccccccc:change:万元}}。', [document]) == []
+
+
+def test_review_asks_for_units_on_bare_wan_and_yi_numbers():
+    warnings = review_content('收入约9.99亿，门诊量88万。约2万多名患者。', [])
+    assert [item.split('。')[0] for item in warnings if item.startswith('数值缺少单位')] == [
+        '数值缺少单位：9.99亿', '数值缺少单位：88万',
+    ]
+
+
+@pytest.mark.parametrize(("text", "fields"), [
+    ("收入yoy增长。", ["yoy"]),
+    ("门诊量MoM回落，total为合计。", ["MoM", "total"]),
+    ("periodTotals显示累计增长，changeRate较高。", ["periodTotals", "changeRate"]),
+    # 数值占位、协议标记、链接地址、行内代码、业务缩写与英文单词不告警。
+    ("收入{{value:fact-" + "a" * 16 + ":total:人次}}，CMI与DRG组数增加[[analysis:analysis_001]]，"
+     "见[附表](https://x.com/total)，代码`total`，Totally fine。", []),
+])
+def test_contract_field_names_in_prose_are_flagged(text, fields):
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric()]})
+    warnings = [w for w in review_content(text, [content]) if "数据字段名" in w]
+    assert [w.split("：", 1)[1].split("。", 1)[0] for w in warnings] == fields
+
+
+@pytest.mark.parametrize(("text", "references"), [
+    ("如图1所示，门诊收入增长。", ["图1"]),
+    ("收入增长（见表2），图3显示回落，详见图4。", ["表2", "图3", "图4"]),
+    # 模型自拟编号标题时引用一致；词内数字、标题主题词指代不告警。
+    ("表1：科室收入\n\n| 科室 | 收入 |\n| --- | --- |\n\n见表1。", []),
+    ("**图2 收入趋势**\n\n如图2所示。", []),
+    ("代表1名医生，试图1次完成，门诊收入趋势图显示增长。", []),
+])
+def test_unnumbered_figure_references_are_flagged(text, references):
+    warnings = [w for w in review_content(text, []) if "图表编号" in w]
+    assert [w.split("：", 1)[1].split("。", 1)[0] for w in warnings] == references
+
+
+def _grouped_metric_document():
+    groups = [{"group": "心内科", "value": 300}, {"group": "外科", "value": 200}, {"group": "内科", "value": 100}]
+    return json.dumps({"analysisId": "analysis_001", "metrics": [{
+        **_metric(), "unit": "元", "topGroups": groups, "bottomGroups": list(reversed(groups)),
+    }]})
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("外科收入最高。", ["分组排名需复核：外科被写为最高，冻结分组结果的最高为心内科。"]),
+    ("内科收入居首。", ["分组排名需复核：内科被写为最高，冻结分组结果的最高为心内科。"]),
+    ("外科收入最低。", ["分组排名需复核：外科被写为最低，冻结分组结果的最低为内科。"]),
+    # 排名正确（“心内科”不误认为“内科”）、月度极值、占比排名与否定表述不告警。
+    ("心内科收入最高，内科最低。", []),
+    ("外科9月收入最高，外科收入占比最高，外科并非最高。", []),
+])
+def test_group_ranking_claims_are_checked_against_frozen_groups(text, expected):
+    warnings = [w for w in review_content(text, [_grouped_metric_document()]) if "分组排名" in w]
+    assert warnings == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("外科收入100元。", ["分组数值归属需复核：外科名下的100元是内科的登记值。请改用外科对应的数值引用，或改写主语。"]),
+    # 占位选错分组同样拦下（“心内科”不误认为“内科”）。
+    ("外科收入{{value:fact-aaaaaaaaaaaaaaaa:topGroups.0:元}}，心内科收入100元。", [
+        "分组数值归属需复核：外科名下的300元是心内科的登记值。请改用外科对应的数值引用，或改写主语。",
+        "分组数值归属需复核：心内科名下的100元是内科的登记值。请改用心内科对应的数值引用，或改写主语。",
+    ]),
+    # 归属正确、比较或合计语境、多个分组并列、对得上指标自身登记值时不告警。
+    ("外科收入200元，心内科300元。", []),
+    ("外科收入较上年增加100元，外科占全院300元。", []),
+    ("外科收入100元、心内科300元。", []),
+    ("内科收入30元。", []),
+])
+def test_group_values_written_under_another_group_are_flagged(text, expected):
+    warnings = [w for w in review_content(text, [_grouped_metric_document()]) if "数值归属" in w]
+    assert warnings == expected
+
+
+def test_group_value_attribution_keeps_thousands_separators_and_ignores_code_names():
+    # 千分位逗号不拆分句；编码类组名（“01”）不当作点名。
+    groups = [{"group": "心血管内科", "value": 34567}, {"group": "儿科", "value": 9876}, {"group": "01", "value": 1}]
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [{
+        **_metric(), "topGroups": groups, "bottomGroups": list(reversed(groups)),
+    }]})
+    warnings = [w for w in review_content("儿科门诊量34,567人次，01号诊室9,876人次。", [content]) if "数值归属" in w]
+    assert warnings == ["分组数值归属需复核：儿科名下的34,567人次是心血管内科的登记值。请改用儿科对应的数值引用，或改写主语。"]
+
+
+def _two_metric_content():
+    def comparison(letter, field, current, baseline):
+        return {"factId": "fact-" + letter * 16, "comparisonType": "yoy", "field": field, "fieldRef": "h." + field,
+                "currentDatasetId": "current", "baselineDatasetId": "base", "currentDatasetSha256": "b" * 64,
+                "baselineDatasetSha256": "c" * 64, "currentTotal": current, "baselineTotal": baseline,
+                "change": current - baseline, "changeRate": (current - baseline) / baseline * 100,
+                "formula": "x", "unit": "元"}
+    return json.dumps({"analysisId": "analysis_001", "metrics": [
+        {**_metric("outpatient"), "factId": "fact-" + "a" * 16, "unit": "元", "total": 12345600},
+        {**_metric("inpatient"), "factId": "fact-" + "b" * 16, "unit": "元", "total": 23456700},
+    ], "comparisons": [comparison("c", "outpatient", 12345600, 11735360),
+                       comparison("d", "inpatient", 23456700, 24000000)]})
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("门诊收入同比增长2.26%。",
+     ["指标数值归属需复核：门诊收入名下的2.26%是住院收入的登记值。请改用门诊收入对应的数值引用，或改写主语。"]),
+    ("住院收入1,234.56万元。",
+     ["指标数值归属需复核：住院收入名下的1,234.56万元是门诊收入的登记值。请改用住院收入对应的数值引用，或改写主语。"]),
+    # 归属正确（含下降幅度写成正数）、多个指标并列与未点名指标的分句不告警。
+    ("门诊收入1,234.56万元，同比增长5.20%；住院收入同比减少54.33万元，降幅2.26%。", []),
+    ("门诊收入较住院收入低1,111.11万元，两者合计3,580.23万元。", []),
+])
+def test_metric_values_written_under_another_metric_are_flagged(text, expected):
+    fields = {"outpatient": "门诊收入", "inpatient": "住院收入"}
+    warnings = [w for w in review_content(text, [_two_metric_content()], field_definitions=fields) if "数值归属" in w]
+    assert warnings == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("外科、骨科、儿科收入位列前三。",
+     ["分组排名需复核：外科、骨科、儿科被写为前三名，冻结分组结果的前三名为心内科、外科、骨科。"]),
+    ("收入排名后两位的是儿科和外科。", ["分组排名需复核：儿科、外科被写为后两名，冻结分组结果的后两名为内科、儿科。"]),
+    # 排名正确、期间写法（前三季度、前3个月）、否定表述与点名数不等于 N 时不告警。
+    ("收入位列前三的科室为心内科、外科、骨科；后2名为儿科、内科。", []),
+    ("前三季度外科、骨科、儿科收入增长，前3个月外科与骨科收入较高。", []),
+    ("外科、骨科、儿科并非前三。", []),
+    ("心内科、外科、骨科位列前三，内科最低。", []),
+])
+def test_group_top_n_claims_are_checked_against_frozen_groups(text, expected):
+    groups = [{"group": group, "value": value}
+              for group, value in (("心内科", 500), ("外科", 400), ("骨科", 300), ("儿科", 200), ("内科", 100))]
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [{
+        **_metric(), "unit": "元", "topGroups": groups, "bottomGroups": list(reversed(groups)),
+    }]})
+    assert [w for w in review_content(text, [content]) if "分组排名" in w] == expected
+
+
+def test_group_ranking_with_several_grouped_metrics_needs_the_claim_to_fail_for_every_candidate():
+    # 多个指标带分组排名：分句点名指标业务名称时只看该指标；未点名时，对所有候选指标都不成立才告警。
+    document = json.loads(_grouped_metric_document())
+    visit_groups = [{"group": "外科", "value": 900}, {"group": "心内科", "value": 300}, {"group": "内科", "value": 100}]
+    visits = {**document["metrics"][0], "factId": "fact-" + "e" * 16, "field": "visits",
+              "topGroups": visit_groups, "bottomGroups": list(reversed(visit_groups))}
+    document["metrics"][0]["field"] = "revenue"
+    document["metrics"].append(visits)
+    content = [json.dumps(document)]
+    fields = {"revenue": "门诊收入", "visits": "门诊人次"}
+
+    def ranking(text):
+        return [w for w in review_content(text, content, field_definitions=fields) if "分组排名" in w]
+
+    # “外科最高”对门诊人次成立，未点名指标时不告警；点名门诊收入时按该指标判定。
+    assert ranking("外科最高。") == []
+    assert ranking("外科门诊收入最高。") == ["分组排名需复核：外科被写为最高，冻结分组结果的最高为心内科。"]
+    # 对两个指标都不成立：列出各指标的冻结结果。
+    assert ranking("内科最高。") == ["分组排名需复核：内科被写为最高，冻结分组结果的最高为心内科（门诊收入）；外科（门诊人次）。"]
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("月均收入200.00万元。", []),
+    ("月均收入150.00万元。",
+     ["月均值需复核：月均收入150.00万元使用的是原始行平均值，不是月均值；冻结月均值为200.00万元。"]),
+    ("平均每月收入600万元。",
+     ["月均值需复核：平均每月收入600万元对应的是合计、单月或累计登记值，不是月均值；冻结月均值为200.00万元。"]),
+    # 对不上任何登记值的数字交给无依据数值检查；未写“月均”的合计不受影响。
+    ("月均收入999万元，收入合计600万元。", []),
+])
+def test_monthly_average_claims_use_the_monthly_statistic(text, expected):
+    metric = {**_metric(values=(1200000, 1800000, 3000000)), "unit": "元", "average": 1500000}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content(text, [content]) if "月均值" in w] == expected
+
+
+def _comparison_content(change=6543211):
+    return json.dumps({
+        "analysisId": "analysis_001",
+        "metrics": [{**_metric(), "unit": "元", "total": 136543211}],
+        "comparisons": [{
+            "factId": "fact-" + "c" * 16, "comparisonType": "yoy", "field": "revenue",
+            "fieldRef": "hospital.revenue", "currentDatasetId": "current", "baselineDatasetId": "base",
+            "currentDatasetSha256": "b" * 64, "baselineDatasetSha256": "c" * 64,
+            "currentTotal": 130000000 + change, "baselineTotal": 130000000, "change": change,
+            "changeRate": change / 130000000 * 100, "formula": "x", "unit": "元",
+        }],
+    })
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("收入同比增加654.32万元，较上年增加0.07亿元。", []),
+    ("收入环比增加654.32万元。",
+     ["同比/环比口径混淆：环比增加654.32万元。该变化额对应已登记的同比比较，请核对比较口径。"]),
+    ("收入较上月增加654.32万元。",
+     ["同比/环比口径混淆：较上月增加654.32万元。该变化额对应已登记的同比比较，请核对比较口径。"]),
+    ("收入同比减少654.32万元。", ["方向与登记变化额相反：同比减少654.32万元。请核对增减方向。"]),
+])
+def test_comparison_amount_claims_check_type_and_direction(text, expected):
+    warnings = [w for w in review_content(text, [_comparison_content()])
+                if "变化额" in w and ("口径混淆" in w or "方向" in w)]
+    assert warnings == expected
+
+
+@pytest.mark.parametrize("item", ["（1）门诊收入增长。", "一是门诊收入增长。", "第一，门诊收入增长。", "1、门诊收入增长。"])
+def test_colon_intro_followed_by_cjk_enumeration_is_complete(item):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    assert not [w for w in readability_warnings(f"主要发现如下：\n\n{item}") if "段落未写完" in w]
+    # 冒号后接普通句子仍是半句话。
+    assert [w for w in readability_warnings("主要发现如下：\n\n收入增长。") if "段落未写完" in w]
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("### 2025年门诊收入同比增长5.03%主要由于门诊量增加且人均费用上升\n\n正文。", True),
+    ("### 收入增长。成本下降\n\n正文。", True),
+    # 主题短语、末尾句号（装配时清理）、括号内单位说明、加粗与标记、代码块不告警。
+    ("### 门诊收入趋势\n\n正文。", False),
+    ("### 收入分析。\n\n正文。", False),
+    ("### 成本结构（单位：万元，统计口径为全院不含科研项目）\n\n正文。", False),
+    ("#### **重点科室收入变化**\n\n正文。", False),
+    ("```\n### 这是代码里的一行很长很长很长很长很长很长很长很长的文字\n```", False),
+])
+def test_sentence_like_headings_are_flagged(text, flagged):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    assert bool([w for w in readability_warnings(text) if "小标题" in w]) is flagged
+
+
+def test_model_table_cells_without_basis_are_flagged():
+    table = (
+        "| 项目 | 金额（万元） | 同比（%） |\n| --- | ---: | ---: |\n"
+        "| 本期收入 | 13,654.32 | 5.03 |\n| 编造项目 | 9,999.99 | 7.77 |"
+    )
+    warnings = [w for w in review_content(table, [_comparison_content()]) if "表格数值" in w]
+    assert warnings == [
+        "表格数值缺少可核对的冻结依据：9,999.99（万元列）。请使用对应数值引用，或删去未登记的计算结果。",
+        "表格数值缺少可核对的冻结依据：7.77（%列）。请使用对应数值引用，或删去未登记的计算结果。",
+    ]
+
+
+def test_full_width_numbers_are_checked_like_half_width():
+    # 编辑器复核用户手输的全角数字：未登记的“７．７７％”同样告警，已登记的全角写法不误报。
+    warnings = [w for w in review_content("本期收入达１３，６５４．３２万元，同比增长５．０３％，较预算增长７．７７％。",
+                                          [_comparison_content()]) if "冻结依据" in w]
+    assert warnings == ["数值缺少可核对的冻结依据：7.77%。请使用对应数值引用，或删去未登记的计算结果。"]
+
+
+def test_percent_point_abbreviations_are_checked_like_percent_points():
+    # “提高9.99pp”与“9.99个百分点”同样须由两项登记百分数相减得到。
+    warnings = [w for w in review_content("占比提高9.99pp。", [_comparison_content()]) if "百分点差值" in w]
+    assert warnings == ["百分点差值缺少可核对的冻结依据：9.99个百分点。须由两项已登记百分数相减得到，"
+                        "请写出两项百分数或删去该差值。"]
+
+
+def test_unregistered_multiples_are_flagged():
+    warnings = [w for w in review_content("本期收入是上年同期的3.2倍，较上年为1.05倍。", [_comparison_content()])
+                if "倍数" in w]
+    assert warnings == [
+        "倍数缺少可核对的冻结依据：3.2倍。须由已登记的本期与基期合计或比率得出，请改用变化率表述或删去该倍数。"
+    ]
+
+
+def test_overlong_paragraphs_are_flagged_but_lists_and_tables_are_not():
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    sentence = "门诊收入保持增长。"
+    warnings = [w for w in readability_warnings(sentence * 45) if "段落过长" in w]
+    assert len(warnings) == 1 and warnings[0].startswith("段落过长（405 字）：门诊收入保持增长。")
+    for text in ((sentence + "\n\n") * 45, "- " + sentence * 45, "| a | b |\n| --- | --- |\n| " + "门诊" * 200 + " | 1 |"):
+        assert not [w for w in readability_warnings(text) if "段落过长" in w]
+
+
+@pytest.mark.parametrize(("months", "text", "expected"), [
+    (10, "2025年全年收入5,500.00万元。",
+     ["期间口径需复核：5,500.00万元是2025年1—10月（10个月）的合计，不能称为全年；请写明实际覆盖月份。"]),
+    (10, "全年收入0.55亿元。",
+     ["期间口径需复核：0.55亿元是2025年1—10月（10个月）的合计，不能称为全年；请写明实际覆盖月份。"]),
+    # 写明实际月份、全年预算或数据确实覆盖 12 个月时不告警。
+    (10, "2025年1—10月收入5,500.00万元，全年预算5,500.00万元。", []),
+    (12, "2025年全年收入7,800.00万元。", []),
+])
+def test_full_year_wording_needs_twelve_months(months, text, expected):
+    metric = {**_metric(values=tuple(range(1000000, (months + 1) * 1000000, 1000000))), "unit": "元"}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content(text, [content]) if "期间口径" in w] == expected
+
+
+@pytest.mark.parametrize(("aggregation", "text", "expected"), [
+    ("average", "床位使用率合计85.00%。", ["统计口径需复核：85.00%是平均值，不能称为合计或累计；请写明为平均值。"]),
+    ("max", "单月累计最高85.00%。", ["统计口径需复核：85.00%是最大值，不能称为合计或累计；请写明为最大值。"]),
+    # 平均值写成“平均”、加总指标写成“合计”都不告警。
+    ("average", "平均床位使用率85.00%。", []),
+    ("sum", "收入合计85.00%。", []),
+])
+def test_non_additive_values_are_not_called_totals(aggregation, text, expected):
+    metric = {**_metric(values=(80, 85, 90)), "unit": "%", "aggregation": aggregation, "total": 85.0}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content(text, [content]) if "统计口径" in w] == expected
+
+
+def test_full_year_warning_names_the_metric_aggregation():
+    metric = {**_metric(values=(80, 85, 90)), "unit": "%", "aggregation": "average", "total": 85.0}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content("全年床位使用率85.00%。", [content]) if "期间口径" in w] == [
+        "期间口径需复核：85.00%是2025年1—3月（3个月）的平均值，不能称为全年；请写明实际覆盖月份。"
+    ]
+
+
+@pytest.mark.parametrize("item", ["（1）心内科收入领先；", "一是门诊收入增长；", "第一，门诊收入增长；"])
+def test_cjk_enumeration_items_ending_with_semicolons_are_complete(item):
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    text = f"主要发现如下：\n\n{item}\n\n（2）外科收入居中。"
+    assert not [w for w in readability_warnings(text) if "段落未写完" in w]
+
+
+@pytest.mark.parametrize(("window", "text", "expected"), [
+    (("2025-01", "2025-09"), "9月收入同比增长5.03%。",
+     ["比较口径需复核：5.03%是2025年1—9月的累计比较结果，不是9月单月；请写明比较期间。"]),
+    (("2025-01", "2025-09"), "9月收入同比增加654.32万元。",
+     ["比较口径需复核：654.32万元是2025年1—9月的累计比较结果，不是9月单月；请写明比较期间。"]),
+    # 写明区间、累计或截至，或比较本身就是单月时不告警。
+    (("2025-01", "2025-09"), "1—9月收入同比增长5.03%，截至9月累计同比增长5.03%。", []),
+    (("2025-09", "2025-09"), "9月收入同比增长5.03%。", []),
+])
+def test_window_comparisons_are_not_called_single_month_changes(window, text, expected):
+    document = json.loads(_comparison_content())
+    document["comparisons"][0].update({"periodStart": window[0], "periodEnd": window[1]})
+    warnings = [w for w in review_content(text, [json.dumps(document)]) if "比较口径" in w]
+    assert warnings == expected
+
+
+@pytest.mark.parametrize(("change", "text", "expected"), [
+    (6543211, "收入同比增长约三成。", ["约数表述需复核：增长约三成与登记的同比变化率（5.03%）不符；请直接写登记变化率或调整约数。"]),
+    (40000000, "收入同比增长近三成。", ["约数表述需复核：增长近三成与登记的同比变化率（30.77%）不符；请直接写登记变化率或调整约数。"]),
+    (65000000, "收入同比翻了一番。", ["约数表述需复核：翻了一番与登记的同比变化率（50.00%）不符；请直接写登记变化率或调整约数。"]),
+    # 约数与登记变化率相符（含相邻两月的环比变化率）、比例而非变化率（“三成科室”“占比约三成”）不告警。
+    (39000000, "收入同比增长约三成。", []),
+    (-26000000, "收入同比下降近两成。", []),
+    (130000000, "收入同比翻了一番。", []),
+    (6543211, "三成科室同比增长，占比约三成，2月收入环比增长约一倍。", []),
+])
+def test_approximate_rate_wording_is_checked_against_registered_change_rates(change, text, expected):
+    warnings = [w for w in review_content(text, [_comparison_content(change=change)]) if "约数" in w]
+    assert warnings == expected
+
+
+def test_adjacent_month_rates_count_as_month_over_month_not_other_percents():
+    metric = {**_metric(values=(1000000, 1200000, 1080000)), "unit": "元"}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert review_content("2月收入环比增长20.00%，3月环比下降10.00%。", [content]) == []
+    assert review_content("2月收入同比增长20.00%。", [content]) == [
+        "同比/环比口径混淆：同比增长20.00%。该变化率对应已登记的环比比较，请核对比较口径。"
+    ]
+
+
+def test_change_rate_written_as_percent_points_is_named_as_unit_misuse():
+    from pathlib import Path
+
+    sample = (Path(__file__).parent / "fixtures" / "report_quality" / "facts.json").read_text(encoding="utf-8")
+    warnings = [w for w in review_content("门诊收入同比增长11.00个百分点，增长7.77个百分点。", [sample]) if "百分点" in w]
+    assert warnings == [
+        "变化率单位误用：11.00个百分点对应已登记的变化率11.00%，应写作“11.00%”；百分点只用于两项百分数之差。",
+        "百分点差值缺少可核对的冻结依据：7.77个百分点。须由两项已登记百分数相减得到，请写出两项百分数或删去该差值。",
+    ]
+
+
+def test_unicode_minus_is_read_as_a_negative_sign_in_review():
+    from pathlib import Path
+
+    sample = (Path(__file__).parent / "fixtures" / "report_quality" / "facts.json").read_text(encoding="utf-8")
+    assert review_content("住院收入同比−3.00%，变化额为−195.00万元。", [sample]) == []
+
+
+def test_clause_checks_do_not_split_numbers_at_thousands_separators():
+    # 千分位逗号不是分句符：完整数值仍与“9月”“同比”“累计”“不能”处在同一分句。
+    document = json.loads(_comparison_content(change=12345611))
+    document["comparisons"][0].update({"periodStart": "2025-01", "periodEnd": "2025-09"})
+    assert [w for w in review_content("9月收入同比增加1,234.56万元。", [json.dumps(document)]) if "比较口径" in w] == [
+        "比较口径需复核：1,234.56万元是2025年1—9月的累计比较结果，不是9月单月；请写明比较期间。"
+    ]
+    metric = {**_metric(values=(1200, 1234.56, 1300)), "unit": "元", "aggregation": "average", "total": 1234.56}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content("次均费用累计1,234.56元。", [content]) if "统计口径" in w] == [
+        "统计口径需复核：1,234.56元是平均值，不能称为合计或累计；请写明为平均值。"
+    ]
+    assert not [w for w in review_content("不能仅凭1,234.56元判断创历史新高。", [content]) if "历史比较" in w]
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("收入由1.37亿元增长至1.30亿元。", True),
+    ("收入从1.30亿元下降至1.37亿元。", True),
+    ("占比由50%提高到45%。", True),
+    # 方向一致（含亿元与万元换算）的起止写法不告警。
+    ("收入由1.30亿元增长至1.37亿元，后由1.37亿元回落至13,000.00万元。", False),
+])
+def test_from_to_wording_must_match_the_direction_of_the_values(text, flagged):
+    warnings = [w for w in review_content(text, [_comparison_content()]) if "方向矛盾" in w]
+    assert bool(warnings) is flagged
+
+
+def test_visit_counts_written_as_persons_are_flagged():
+    metric = {**_metric(values=(100000, 120000, 133000)), "unit": "人次"}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    warnings = [w for w in review_content("门诊量35.30万人，医生120人。", [content]) if "单位混用" in w]
+    assert warnings == ["单位混用：35.30万人对应登记的万人次（就诊次数），不是人数；请写为35.30万人次。"]
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("本期收入创历史新高。", True),
+    ("收入首次突破1亿元。", True),
+    ("收入达到历年最高水平，创近五年新高。", True),
+    # 期内新高可由月度序列核对；否定表述与普通水平描述不告警。
+    ("12月收入创年内新高。", False),
+    ("现有数据不能判断是否创历史新高。", False),
+    ("收入增长较快，处于较高水平。", False),
+])
+def test_historical_claims_need_longer_history(text, flagged):
+    warnings = [w for w in review_content(text, [_comparison_content()]) if "历史比较" in w]
+    assert bool(warnings) is flagged
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("收入同比增长45.00%。", True),
+    # 登记的同比变化率与占比本身的写法不告警。
+    ("收入同比增长5.03%，门诊收入占比45.00%。", False),
+])
+def test_other_percentages_written_as_growth_rates_are_flagged(text, flagged):
+    document = json.loads(_comparison_content())
+    document["metrics"].append({**_metric(field="share", values=(40, 45, 50)), "factId": "fact-" + "e" * 16,
+                                "unit": "%", "aggregation": "average", "total": 45.0})
+    warnings = [w for w in review_content(text, [json.dumps(document)]) if "变化率口径" in w]
+    assert bool(warnings) is flagged
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("本期收入超过1.37亿元。",
+     ["约数方向需复核：超过1.37亿元，但登记值为1.3654亿元，舍入后才是1.37亿元；请改为“约1.37亿元”。"]),
+    # 方向正确的约数（5.0332% 确实超过 5%）与“约/不足”的正确写法不告警。
+    ("本期收入约1.37亿元，不足1.37亿元，同比增长超过5%。", []),
+])
+def test_bound_qualifiers_must_agree_with_the_unrounded_value(text, expected):
+    assert [w for w in review_content(text, [_comparison_content()]) if "约数方向" in w] == expected

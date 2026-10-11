@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { TraceValidation } from './api'
-import { createSourceValidationController, markdownSha256, sourceValidationIssueCount } from './source-validation'
+import { createSourceValidationController, markdownSha256, nextSourceIssue, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 const validation = (draftSha256: string): TraceValidation => ({
   draftSha256,
@@ -114,5 +114,37 @@ describe('source validation', () => {
     controller.schedule()
     controller.cancel()
     expect(validateSources).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('source coverage summary', () => {
+  it('summarises traceable, review and unverified counts', () => {
+    const result: TraceValidation = {
+      draftSha256: 'x',
+      subjects: [
+        { subjectId: 'a', claimId: 'a', sectionId: null, status: 'valid', factValue: 1 },
+        { subjectId: 'b', claimId: 'b', sectionId: null, status: 'stale', factValue: 2 },
+      ],
+      summary: { valid: 1, stale: 1, unbound: 0 },
+      tableSummary: { valid: 3, stale: 0, unbound: 0, insertedRows: 0, copiedCells: 0 },
+      charts: [{ chartId: 'c', imagePath: null, status: 'valid' }],
+    }
+    expect(sourceCoverageSummary(result, '收入待核实，利润待核实')).toEqual({ text: '可溯源 5/6 · 待复核 1 · 待核实 2', state: 'stale' })
+    expect(sourceCoverageSummary({ ...result, subjects: [], summary: { valid: 0, stale: 0, unbound: 0 }, tableSummary: undefined, charts: [] }, ''))
+      .toEqual({ text: '当前内容无精确来源绑定', state: 'unknown' })
+  })
+
+  it('cycles through issue positions in document order', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<p><span class="report-value-mark report-value-mark--valid">1</span><span id="a" class="report-value-mark report-value-mark--stale">2</span></p>' +
+      '<p><span id="b" class="report-value-mark report-value-mark--unverified">待核实</span><span id="c" class="report-object-source-marker" data-marker-state="stale"></span></p>'
+    document.body.append(root)
+    const order = [...root.querySelectorAll<HTMLElement>('span')]
+    const position = (element: HTMLElement) => order.indexOf(element)
+    expect(nextSourceIssue(root, null, position)?.id).toBe('a')
+    expect(nextSourceIssue(root, position(root.querySelector('#a')!), position)?.id).toBe('b')
+    expect(nextSourceIssue(root, position(root.querySelector('#c')!), position)?.id).toBe('a')
+    expect(nextSourceIssue(document.createElement('div'), null, position)).toBeNull()
+    root.remove()
   })
 })

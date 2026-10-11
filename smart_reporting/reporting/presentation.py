@@ -138,4 +138,33 @@ def completed_report_content(
         if messages:
             notice += " 原因：" + "；".join(messages)
         content += "\n\n" + notice
+    review = _content_review_notice(gate.get("warnings") if isinstance(gate, dict) else None)
+    if review:
+        content += "\n\n" + review
     return content
+
+
+def _content_review_notice(warnings: Any) -> str | None:
+    """纠错后仍残留的正文复核告警与“待核实”替换：软告警，不影响下载，但须告知用户。"""
+
+    unverified = 0
+    findings: list[str] = []
+    for item in warnings if isinstance(warnings, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("message"), str):
+            continue
+        if item.get("code") == "report_section_block_unverified_numbers":
+            details = item.get("details")
+            count = details.get("count") if isinstance(details, dict) else None
+            unverified += count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 1
+        elif item.get("code") == "report_section_block_content_review":
+            # 只给读者结论句；“请改用……”是写给生成模型的纠正指引。
+            findings.append(" ".join(item["message"].split("。", 1)[0].split())[:120])
+    findings = list(dict.fromkeys(findings))
+    if not unverified and not findings:
+        return None
+    parts = []
+    if unverified:
+        parts.append(f"{unverified} 处缺少登记依据的数值已标注为“待核实”")
+    if findings:
+        parts.append(f"{len(findings)} 条正文复核提示未能自动修正，如：" + "；".join(findings[:3]))
+    return "正文复核提示（不影响下载，建议在编辑器中核对）：" + "；".join(parts) + "。"

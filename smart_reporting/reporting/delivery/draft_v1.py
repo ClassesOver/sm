@@ -14,9 +14,14 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from ..contract import StrictModel
 from ..models import ReportingError
 from .report_runtime.markdown import (
+    CJK_ENUMERATION_LINE,
+    HEADING_QUANTITY_WORDS,
     format_heading_label,
     normalize_cjk_punctuation,
+    normalize_cjk_wording,
+    normalize_number_notation,
     normalize_report_markdown_strong_spacing,
+    separate_enumerated_lines,
 )
 
 _LEADING_SECTION_HEADING = re.compile(
@@ -32,6 +37,8 @@ _MANUAL_HEADING_NUMBER = re.compile(
     r"|\d+[.．](?!\d)[ \t]*"  # 3. 收入 / 3.收入（不吞小数）
     r"|[一二三四五六七八九十百]+[、．][ \t]*"  # 一、收入
     r"|[（(](?:[一二三四五六七八九十百]+|\d{1,2})[）)][ \t]*"  # （一）收入 / (2) 收入；不吞 (2025)
+    # 1 收入分析；后接单位或量词（3 月、12 个、1 万元、3 大举措）的是正文数字，不吞
+    rf"|\d{{1,2}}[ \t]+(?![{HEADING_QUANTITY_WORDS}])(?=[\u3400-\u9fff])"
     r")"
 )
 # 标题末尾的冒号、句号等是正文标点，进入目录与 PDF 标题后显得残缺；问号、叹号保留。
@@ -295,7 +302,8 @@ def validate_report_body_markdown(markdown: str) -> None:
 
 
 def _normalize_model_text(markdown: str) -> str:
-    normalized = _MODEL_PROTOCOL_MARKER.sub("", markdown)
+    # 全角数字与百分点缩写先统一写法，之后的数值核对与复核才能识别“５．０３％”“2pp”。
+    normalized = _MODEL_PROTOCOL_MARKER.sub("", normalize_number_notation(markdown))
     # alt 文本通常包含模型对图表的业务解释，保留为普通文本；真实图片仍只由
     # chartIds 绑定并由服务端装配，模型提供的路径和 title 永远不会进入产物。
     return _MODEL_IMAGE.sub(lambda match: match.group("alt").strip(), normalized)
@@ -412,7 +420,14 @@ def _marker_lines(
 def _strip_duplicate_section_heading(markdown: str, *, expected_title: str) -> tuple[str, bool]:
     match = _LEADING_SECTION_HEADING.match(markdown)
     submitted_title = _clean_heading_title(match.group("title")) if match is not None else ""
-    if match is None or submitted_title != expected_title.strip():
+    # 装配时正文先经过标点、日期与空格规范，模型重复的“收入分析(2025)”已变成
+    # “收入分析（2025）”；冻结标题按同一规则规范后再比较，否则重复的 H2 留在正文里
+    # 触发标题层级校验失败。
+    expected = {
+        expected_title.strip(),
+        _clean_heading_title(normalize_cjk_punctuation(normalize_cjk_wording(expected_title))),
+    }
+    if match is None or submitted_title not in expected:
         return markdown, False
     # 正式章节标题以 effectiveProfile 为唯一事实来源，服务端会在所有正文块之前统一插入。
     # 这里只移除首块开头精确同名的 H1/H2，避免模型重复外层标题，同时保留其余子标题和正文。
@@ -647,10 +662,15 @@ def _without_internal_ids(text: str) -> str:
     return cleaned or "图表"
 
 
+def _readable_label(text: str) -> str:
+    """图注与替代文字按正文同一规则规范标点、日期与空格，与相邻正文写法一致。"""
+    return normalize_cjk_punctuation(normalize_cjk_wording(text)).strip() or text
+
+
 def _chart_figure_markdown(chart: ReportChartInput, file_name: str) -> str:
-    title = _markdown_inline_text(_without_internal_ids(chart.title))
+    title = _markdown_inline_text(_readable_label(_without_internal_ids(chart.title)))
     return (
-        f'![{_chart_alt_text(_without_internal_ids(chart.alt_text))}]({_link_destination(file_name)} "{title}")'
+        f'![{_chart_alt_text(_readable_label(_without_internal_ids(chart.alt_text)))}]({_link_destination(file_name)} "{title}")'
         + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
         + f"\n\n*图表：{title}*"
     )
@@ -709,13 +729,15 @@ def _block_units(markdown: str) -> list[str]:
             pending_heading.append(text)
             previous_is_list = False
             continue
-        is_list = _LIST_ITEM_LINE.match(lines[0]) is not None or (
-            previous_is_list and lines[0][:1] in {" ", "\t"}
-        )
+        # “1、”“（1）”等中文条目与 Markdown 列表一样不能被图表打断。
+        is_list = (_LIST_ITEM_LINE.match(lines[0]) is not None
+                   or CJK_ENUMERATION_LINE.match(lines[0].strip()) is not None
+                   or (previous_is_list and lines[0][:1] in {" ", "\t"}))
         if pending_heading:
             units.append("\n\n".join((*pending_heading, text)))
             pending_heading = []
-        elif is_list and previous_is_list and units:
+        elif is_list and units and (previous_is_list or units[-1].rstrip().endswith(("：", ":"))):
+            # 以冒号收尾的引导句与其后的列表同属一个单元，图表不插在“如下：”与条目之间。
             units[-1] = f"{units[-1]}\n\n{text}"
         else:
             units.append(text)
@@ -734,7 +756,9 @@ def _chart_terms(text: str) -> frozenset[str]:
 
 def _chart_unit_score(unit: str, chart: ReportChartInput) -> int:
     title = chart.title.strip()
-    if title and title in unit:
+    # 正文已经过标点与日期规范（“门诊收入(万元)”→“门诊收入（万元）”），图注按同一规则比较。
+    normalized = _readable_label(title)
+    if title and (title in unit or normalized in unit):
         return 1000
     return len(_chart_terms(f"{chart.title} {chart.alt_text}") & _chart_terms(unit))
 
@@ -914,8 +938,11 @@ def assemble_report_markdown(
         h3_count = 0
         h4_count = 0
         for block_index, block in enumerate(section.blocks):
-            # 中文正文的半角逗号/冒号/分号统一为全角；千分位、时间、英文与机器文本不变。
-            block_markdown = normalize_cjk_punctuation(normalize_report_markdown_strong_spacing(block.markdown))
+            # 中文正文的半角逗号/冒号/分号统一为全角，ISO 期间改为中文日期、yoy/mom 改为同比/环比；
+            # 单个换行分隔的“1、”“（1）”等中文条目各自成段；千分位、时间、英文、文件名与机器文本不变。
+            block_markdown = separate_enumerated_lines(normalize_cjk_punctuation(
+                normalize_cjk_wording(normalize_report_markdown_strong_spacing(block.markdown))
+            ))
             if block_markdown != block.markdown:
                 auto_fixes.append(
                     {

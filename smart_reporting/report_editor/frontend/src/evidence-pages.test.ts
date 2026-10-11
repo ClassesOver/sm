@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReportEditorClient } from './api'
 import { createEvidenceGraph, mergeEvidenceGraph } from './evidence-graph'
-import { formatBytes, formatDifference, graphLabel, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
+import { effectiveGraphMode, formatBytes, formatDifference, graphLabel, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
 import { createEvidenceState, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 
@@ -638,21 +638,29 @@ describe('事实页', () => {
     expect(list.querySelectorAll('.evidence-relation-row').length).toBeGreaterThan(0)
   })
 
-  it('defaults to 3D, switches to 2D, and preserves preview state', async () => {
+  it('defaults small graphs to 2D, switches modes explicitly, and preserves preview state', async () => {
     const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
     page.selected = { ...FACT_REF, key: 'fact-input', label: '输入事实' }
     await renderEvidencePage(container, ctx)
-    expect(page.graphMode).toBe('3d')
+    expect(page.graphMode).toBe('auto')
     const toggle = container.querySelector<HTMLButtonElement>('.evidence-graph-mode-toggle')!
-    expect(toggle.getAttribute('aria-label')).toBe('切换到 2D 关系图')
-    expect(toggle.title).toBe('当前为 3D，切换到 2D')
+    expect(toggle.getAttribute('aria-label')).toBe('切换到 3D 关系图')
+    expect(toggle.title).toBe('当前为 2D，切换到 3D')
     toggle.click()
+    expect(page.graphMode).toBe('3d')
+    expect(page.selected?.key).toBe('fact-input')
+    container.querySelector<HTMLButtonElement>('.evidence-graph-mode-toggle')!.click()
     expect(page.graphMode).toBe('2d')
     expect(page.selected?.key).toBe('fact-input')
     expect(container.querySelector('.evidence-node')).not.toBeNull()
-    container.querySelector<HTMLButtonElement>('.evidence-graph-mode-toggle')!.click()
-    expect(page.graphMode).toBe('3d')
-    expect(page.selected?.key).toBe('fact-input')
+  })
+
+  it('chooses 3D automatically only for graphs with more than 15 nodes', () => {
+    expect(effectiveGraphMode('auto', 15)).toBe('2d')
+    expect(effectiveGraphMode('auto', 16)).toBe('3d')
+    expect(effectiveGraphMode(undefined, 3)).toBe('2d')
+    expect(effectiveGraphMode('3d', 3)).toBe('3d')
+    expect(effectiveGraphMode('2d', 40)).toBe('2d')
   })
 
   it('opens a dedicated graph view from a collapsed detail and restores the detail on return', async () => {
@@ -887,8 +895,22 @@ describe('事实页', () => {
     expect(body.hidden).toBe(true)
   })
 
+  it('fits an automatic 2D graph that overflows a narrow first view', async () => {
+    const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
+    document.body.append(container)
+    await renderEvidencePage(container, ctx)
+    const scroll = container.querySelector<HTMLElement>('.evidence-graph-scroll')!
+    Object.defineProperties(scroll, { clientWidth: { value: 200 }, clientHeight: { value: 200 } })
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    expect(page.graphScale).toBeLessThan(1)
+    expect(page.graphMode).toBe('auto')
+    container.remove()
+  })
+
   it('reveals the current node on a narrow first view without changing scale or pan', async () => {
     const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
+    // 用户已明确选择 2D 时不自动缩放，只滚动到当前节点。
+    page.graphMode = '2d'
     document.body.append(container)
     await renderEvidencePage(container, ctx)
     const scroll = container.querySelector<HTMLElement>('.evidence-graph-scroll')!
@@ -1538,6 +1560,51 @@ describe('详情入口统一导航', () => {
   })
 })
 
+describe('subject trace chain', () => {
+  it('lists the linear chain from body to raw rows with registered links only', async () => {
+    const payload = {
+      ...SOURCES_PAYLOAD,
+      facts: [{ analysisId: 'analysis_001', factId: 'fact-aaaaaaaaaaaaaaaa', factKind: 'metric', label: 'income', name: '营收', unit: '万元', displayValue: 12450, datasetIds: ['dataset-url-abc0001'] }],
+    }
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/sources')) return json(payload)
+      throw new Error(`unexpected ${String(input)}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 · 营收' })
+    await renderEvidencePage(container, ctx)
+    const steps = [...container.querySelectorAll<HTMLElement>('.evidence-trace-chain li')]
+    expect(steps.map(step => step.querySelector('.evidence-trace-step-label')?.textContent)).toEqual(['正文', '事实', '计算', '快照', '原始行'])
+    expect(steps.every(step => !('missing' in step.dataset))).toBe(true)
+    expect(steps[3].textContent).toContain('收入明细.csv')
+    expect(steps[4].textContent).toContain('查看 4 行原始数据')
+    // 追溯链位于关系图之前。
+    const chain = container.querySelector('.evidence-trace-chain')!
+    expect(chain.compareDocumentPosition(container.querySelector('.evidence-relation-slot')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    steps[4].querySelector('button')!.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+    expect(ctx.openBackground).toHaveBeenLastCalledWith({ kind: 'dataset', key: 'dataset-url-abc0001', label: '收入明细.csv' }, false)
+  })
+
+  it('marks unregistered links instead of inventing them', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/sources')) return json({ ...SOURCES_PAYLOAD, subjects: [{ ...SOURCES_PAYLOAD.subjects[0], computationId: null }] })
+      throw new Error(`unexpected ${String(input)}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 · 营收' })
+    await renderEvidencePage(container, ctx)
+    const missing = [...container.querySelectorAll<HTMLElement>('.evidence-trace-chain li[data-missing]')]
+      .map(step => step.querySelector('.evidence-trace-step-label')?.textContent)
+    expect(missing).toEqual(['计算', '快照', '原始行'])
+  })
+})
+
+describe('graphLabel business names', () => {
+  it('truncates business subject names as text instead of collapsing to an internal short id', () => {
+    const subject = { kind: 'subject' as const, key: 'sub-aaaaaa111111', label: '正文引用 · 华东地区门诊营收合计' }
+    expect(graphLabel(subject, 10, 6, 3)).toBe('正文引用 ·…收合计')
+    expect(graphLabel({ ...subject, label: '正文引用 #aaaaaa' }, 10, 6, 3)).toBe('引用 #aaaaaa')
+  })
+})
+
 describe('graphLabel', () => {
   it('keeps registered month labels instead of replacing them with citation hashes', () => {
     const subject: EvidenceObjectRef = { kind: 'subject', key: 'sub-month', label: '2025-01-01 · 收入金额 · 分析 001' }
@@ -1928,11 +1995,15 @@ describe('引用页', () => {
       throw new Error(`unexpected ${url}`)
     }) as unknown as typeof fetch
     const { container, ctx } = setupPage(fetcher, SUBJECT_REF, {
-      getDraft: () => ({ markdown: '报告正文', sha256: 'x' }),
+      getDraft: () => ({ markdown: '[[section:section_002]]\n## 收入分析\n\n报告正文', sha256: 'x' }),
     })
     await renderEvidencePage(container, ctx)
     expect(container.querySelector('[data-status-row="citation"]')?.textContent).toContain('✓ 引用有效')
-    expect(container.querySelector('[data-status-row="locator"]')?.textContent).toContain('章节 section_002')
+    // 章节显示正文标题；登记编号不出现在可见副标题，只留在悬停提示中。
+    expect(container.querySelector('[data-status-row="locator"]')?.textContent).toContain('章节「收入分析」')
+    const note = container.querySelector<HTMLElement>('.evidence-object-note')!
+    expect(note.textContent).not.toContain('sub-cccccccccccccccc')
+    expect(note.title).toBe('登记编号：sub-cccccccccccccccc')
     const locate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === '定位正文')!
     // 定位操作紧挨正文位置，而不是游离在页面底部。

@@ -20,11 +20,13 @@ import {
   assembleFactRelations,
   assembleSubjectRelations,
   bindEvidenceNavigation,
+  datasetLabel,
   EVIDENCE_KIND_COLORS,
   EVIDENCE_KIND_ICONS,
   factPeriodLabel,
   relabelRelations,
   renderRelationList,
+  sectionTitleFromDraft,
   subjectRef,
   subjectShortFromLabel,
   subjectShortId,
@@ -260,7 +262,8 @@ export function graphLabel(ref: EvidenceObjectRef, max: number, head: number, ta
     if (compact) return compact
   }
   // 短号长度按修订内唯一性确定，以显示名中的短号为准。
-  const short = ref.kind === 'subject' && /^正文引用(?:\s|$)/.test(label)
+  // 业务名（“正文引用 · 指标名”）按普通文字截断，只有短号显示名才缩成“引用 #短号”。
+  const short = ref.kind === 'subject' && (/^正文引用$/.test(label) || label.startsWith('正文引用 #'))
     ? subjectShortFromLabel(label) ?? subjectShortId(ref.key) : undefined
   // 缩写不得超过该位置的长度上限（紧凑图标签只有 4 个字符宽，超长会遮挡相邻节点）。
   const fitting = short && [`引用 ${short}`, short].find((text) => text.length <= max)
@@ -301,7 +304,8 @@ interface PageSkeleton {
   detailBox: HTMLElement
 }
 
-function buildSkeleton(container: HTMLElement, ctx: EvidencePageContext, note: string): PageSkeleton {
+/** objectId 是登记编号：不放进可见副标题（读者看业务名称），保留在悬停提示与 data 属性中供核对复制。 */
+function buildSkeleton(container: HTMLElement, ctx: EvidencePageContext, note: string, objectId?: string): PageSkeleton {
   const header = document.createElement('header')
   header.className = 'evidence-object-header'
   const eyebrow = document.createElement('span')
@@ -314,6 +318,10 @@ function buildSkeleton(container: HTMLElement, ctx: EvidencePageContext, note: s
   const noteP = document.createElement('p')
   noteP.className = 'evidence-object-note'
   noteP.textContent = note
+  if (objectId) {
+    noteP.title = `登记编号：${objectId}`
+    noteP.dataset.objectId = objectId
+  }
   header.append(eyebrow, title, noteP)
   const statusArea = document.createElement('div')
   statusArea.className = 'evidence-status-area'
@@ -420,11 +428,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   controls.className = 'evidence-graph-controls'
   controls.setAttribute('role', 'toolbar')
   controls.setAttribute('aria-label', '关系图工具')
-  const modeToggle = makeButton(ctx.page.graphMode === '3d' ? '2D' : '3D', 'evidence-icon-button evidence-graph-mode-toggle')
-  modeToggle.setAttribute('aria-label', ctx.page.graphMode === '3d' ? '切换到 2D 关系图' : '切换到 3D 关系图')
-  modeToggle.title = ctx.page.graphMode === '3d' ? '当前为 3D，切换到 2D' : '当前为 2D，切换到 3D'
+  const allNodes = [relations.center, ...relations.nodes.filter((node) => !sameEvidenceRef(node, relations.center))]
+  // 未手动切换时，小图（≤15 个节点）用 2D 平面图更易读，较大的图用 3D。
+  const graphMode = effectiveGraphMode(ctx.page.graphMode, allNodes.length)
+  const modeToggle = makeButton(graphMode === '3d' ? '2D' : '3D', 'evidence-icon-button evidence-graph-mode-toggle')
+  modeToggle.setAttribute('aria-label', graphMode === '3d' ? '切换到 2D 关系图' : '切换到 3D 关系图')
+  modeToggle.title = graphMode === '3d' ? '当前为 3D，切换到 2D' : '当前为 2D，切换到 3D'
   modeToggle.addEventListener('click', () => {
-    ctx.updatePage({ graphMode: ctx.page.graphMode === '3d' ? '2d' : '3d' })
+    ctx.updatePage({ graphMode: graphMode === '3d' ? '2d' : '3d' })
     rerender()
   })
   controls.append(modeToggle)
@@ -450,11 +461,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   fit.title = '适应关系图'
   controls.append(zoomOut, zoomIn, fit, reset, locate)
   host.append(controls)
-  const allNodes = [relations.center, ...relations.nodes.filter((node) => !sameEvidenceRef(node, relations.center))]
   const graph = ctx.graph!
 
   // 3D 只在真实浏览器 WebGL 环境启用；无 WebGL（例如单测 DOM）继续使用同一套 2D 关系图。
-  const canRender3d = ctx.page.graphMode === '3d' && (() => {
+  const canRender3d = graphMode === '3d' && (() => {
     if (typeof WebGLRenderingContext === 'undefined') return false
     try {
       const canvas = document.createElement('canvas')
@@ -1274,7 +1284,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   scroll.scrollLeft = ctx.page.graphScroll.left
   scroll.scrollTop = ctx.page.graphScroll.top
   requestAnimationFrame(() => {
-    if (!ctx.isStale() && scroll.isConnected) revealCurrentNode(scroll, ctx)
+    if (ctx.isStale() || !scroll.isConnected) return
+    // 自动模式下未调整过视角且图宽超出视口时，首屏整体适应；否则只保证当前节点可见。
+    const untouched = ctx.page.graphScale === 1 && ctx.page.graphPan.x === 0 && ctx.page.graphPan.y === 0 &&
+      ctx.page.graphScroll.left === 0 && ctx.page.graphScroll.top === 0
+    if (ctx.page.graphMode === 'auto' && untouched && scroll.clientWidth > 0 && mapWidth > scroll.clientWidth - 32) fit.click()
+    else revealCurrentNode(scroll, ctx)
   })
   scroll.addEventListener('scroll', () => {
     ctx.updatePage({ graphScroll: { left: scroll.scrollLeft, top: scroll.scrollTop } })
@@ -1887,6 +1902,11 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rawR
  * 2D 关系图尚无用户视角（未滚动、平移、缩放）时，窄屏下当前节点可能落在可视区右侧之外：
  * 只做最小横向滚动让当前节点完整可见，不改变缩放与布局。视口不可见（宽度为 0）时不处理。
  */
+export function effectiveGraphMode(mode: EvidencePage['graphMode'] | undefined, nodeCount: number): '2d' | '3d' {
+  if (mode === '2d' || mode === '3d') return mode
+  return nodeCount <= 15 ? '2d' : '3d'
+}
+
 function revealCurrentNode(viewport: HTMLElement, ctx: EvidencePageContext): void {
   const page = ctx.page
   const untouched = page.graphScale === 1 && page.graphPan.x === 0 && page.graphPan.y === 0 &&
@@ -2399,7 +2419,7 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const { detail } = data
-  const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 计算记录 ${detail.computationId}`)
+  const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 计算记录`, detail.computationId)
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
   // 方法、核对与复算条件与事实页使用同一种状态行，两类页面的信息层级保持一致。
@@ -2623,7 +2643,7 @@ async function renderExpiredDataset(container: HTMLElement, ctx: EvidencePageCon
   if (ctx.isStale()) return
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
-  const skeleton = buildSkeleton(container, ctx, `${ctx.page.ref.key} · ${ctx.revisionLabel}`)
+  const skeleton = buildSkeleton(container, ctx, ctx.revisionLabel, ctx.page.ref.key)
   skeleton.statusBox.hidden = false
   skeleton.statusBox.classList.add('evidence-expired-note')
   skeleton.statusBox.textContent = '数据快照已超过保留期：以下为登记信息，明细不可预览或下载。'
@@ -2692,7 +2712,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   }
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
-  const skeleton = buildSkeleton(container, ctx, `${ctx.page.ref.key} · ${ctx.revisionLabel}`)
+  const skeleton = buildSkeleton(container, ctx, ctx.revisionLabel, ctx.page.ref.key)
   renderDatasetInfo(skeleton.statusArea, data.info)
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
@@ -3122,6 +3142,57 @@ interface SubjectPageData extends DraftValidation {
   validation: TraceValidation | null
 }
 
+/**
+ * 线性追溯链：正文 → 事实 → 计算 → 快照 → 原始行，按登记关系逐级给出入口，默认展示在关系图之前。
+ * 只列登记存在的环节；缺失环节标为“未登记”，不补造关系。
+ */
+function renderTraceChain(detail: TraceSubjectInfo, sources: TraceSources | null, ctx: EvidencePageContext): HTMLElement {
+  const section = document.createElement('section')
+  section.className = 'evidence-trace-chain'
+  section.setAttribute('aria-label', '追溯链')
+  const heading = document.createElement('h2')
+  heading.textContent = '追溯链'
+  const list = document.createElement('ol')
+  const step = (title: string, content: Array<HTMLElement | string>) => {
+    const item = document.createElement('li')
+    const label = document.createElement('span')
+    label.className = 'evidence-trace-step-label'
+    label.textContent = title
+    const body = document.createElement('div')
+    body.className = 'evidence-trace-step-body'
+    if (content.length) body.append(...content)
+    else {
+      body.textContent = '未登记'
+      item.dataset.missing = ''
+    }
+    item.append(label, body)
+    list.append(item)
+  }
+  const current = document.createElement('strong')
+  current.textContent = ctx.page.ref.label
+  step('正文', [current])
+  const facts = detail.factRefs.filter(ref => ref.factId).map(ref => {
+    const target: EvidenceObjectRef = { kind: 'fact', key: ref.factId!, analysisId: ref.analysisId, label: ref.factId! }
+    return makeEvidenceLink({ ...target, label: ctx.labelFor?.(target) ?? target.label }, ctx.labelFor?.(target) ?? target.label, ctx)
+  })
+  step('事实', facts)
+  const computation: EvidenceObjectRef | null = detail.computationId
+    ? { kind: 'computation', key: detail.computationId, label: detail.computationId } : null
+  step('计算', computation ? [makeEvidenceLink({ ...computation, label: ctx.labelFor?.(computation) ?? computation.label }, ctx.labelFor?.(computation) ?? computation.label, ctx)] : [])
+  const datasetIds = [...new Set(detail.factRefs.flatMap(ref =>
+    sources?.facts?.find(fact => fact.analysisId === ref.analysisId && fact.factId === ref.factId)?.datasetIds ?? []))]
+  const datasets = datasetIds.map(id => sources?.datasets?.find(item => item.datasetId === id)).filter((item): item is NonNullable<typeof item> => !!item)
+  const datasetRef = (dataset: (typeof datasets)[number]): EvidenceObjectRef => ({ kind: 'dataset', key: dataset.datasetId, label: datasetLabel(dataset, sources?.datasets) })
+  step('快照', datasets.map(dataset => makeEvidenceLink(datasetRef(dataset), datasetRef(dataset).label, ctx)))
+  step('原始行', datasets.map(dataset => {
+    const link = makeEvidenceLink(datasetRef(dataset), `查看 ${dataset.rowCount.toLocaleString('zh-CN')} 行原始数据`, ctx)
+    link.classList.add('evidence-trace-rows')
+    return link
+  }))
+  section.append(heading, list)
+  return section
+}
+
 async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContext): Promise<void> {
   let data = ctx.pageData<SubjectPageData>()
   if (!data) {
@@ -3144,7 +3215,7 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const { detail } = data
-  const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 引用 ${detail.subjectId}`)
+  const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · ${SUBJECT_KIND_LABELS[detail.subjectKind] ?? '正文引用'}`, detail.subjectId)
 
   // 软告警放在全部状态行之后，不把“引用状态/引用类型/正文位置”拆成两段。
   let citationWarning: HTMLElement | null = null
@@ -3174,12 +3245,20 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   }
 
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
+  const sources = await ctx.loadSources().catch(() => null)
+  if (ctx.isStale()) return
+  skeleton.relationSlot.before(renderTraceChain(detail, sources, ctx))
 
   // 引用类型与正文位置使用与其他对象页相同的状态行；定位操作紧挨位置信息。
   makeStatusRow(skeleton.statusArea, '引用类型', 'kind').textContent =
     SUBJECT_KIND_LABELS[detail.subjectKind] ?? detail.subjectKind
   const locatorParts: string[] = []
-  if (detail.locator.sectionId) locatorParts.push(`章节 ${detail.locator.sectionId}`)
+  if (detail.locator.sectionId) {
+    // 章节以正文标题显示；草稿中找不到对应标题时才显示登记编号。
+    const draft = ctx.getDraft()?.markdown
+    const title = draft ? sectionTitleFromDraft(draft, detail.locator.sectionId) : undefined
+    locatorParts.push(title ? `章节「${title}」` : `章节 ${detail.locator.sectionId}`)
+  }
   if (detail.locator.tableId) locatorParts.push(`表格 ${detail.locator.tableId}`)
   if (detail.locator.rowKey) locatorParts.push(`行 ${detail.locator.rowKey}`)
   if (detail.locator.columnKey) locatorParts.push(`列 ${detail.locator.columnKey}`)

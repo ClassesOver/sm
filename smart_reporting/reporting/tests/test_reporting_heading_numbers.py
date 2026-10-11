@@ -109,8 +109,9 @@ def test_assemble_does_not_rewrite_fenced_heading() -> None:
 def test_assemble_preserves_inline_markdown_but_records_visible_title() -> None:
     rendered = _render("### **经营结论** 与 `预算`")
 
-    assert "### 1.1 **经营结论** 与 `预算`" in rendered.markdown
-    assert rendered.heading_numbers[1].title == "经营结论 与 预算"
+    # 行内标记保留；粗体收尾与汉字之间的空格按中文排版去掉。
+    assert "### 1.1 **经营结论**与 `预算`" in rendered.markdown
+    assert rendered.heading_numbers[1].title == "经营结论与 预算"
 
 
 @pytest.mark.parametrize(
@@ -982,8 +983,9 @@ def test_assemble_single_unmatched_chart_keeps_block_text_verbatim() -> None:
 def test_assemble_keeps_leading_quantities_that_are_not_heading_numbers() -> None:
     rendered = _render("### 2025 年门诊收入\n\n正文\n\n#### 30 天回款率", "### 3. 成本结构")
 
-    assert "### 1.1 2025 年门诊收入" in rendered.markdown
-    assert "#### 1.1.1 30 天回款率" in rendered.markdown
+    # 数量不是编号、不剥离；数字与汉字之间的空格按中文排版去掉。
+    assert "### 1.1 2025年门诊收入" in rendered.markdown
+    assert "#### 1.1.1 30天回款率" in rendered.markdown
     assert "### 1.2 成本结构" in rendered.markdown
 
 
@@ -1084,7 +1086,14 @@ def test_assemble_explicit_numeric_map_omits_unsupported_claim_anchor():
     ("30天回款率", "30天回款率"),
     ("一季度收入", "一季度收入"),
     ("1.5万人次门诊量", "1.5万人次门诊量"),
-    ("(2025)收入预测", "(2025)收入预测"),
+    # 后接中文的半角括号按中文排版改为全角，但仍不当作编号剥离。
+    ("(2025)收入预测", "（2025）收入预测"),
+    # 空格分隔的单个编号同样是手写编号；后接量词的仍是正文数字。
+    ("1 收入分析", "收入分析"),
+    ("12 个科室收入", "12个科室收入"),
+    ("3 大举措", "3大举措"),
+    ("5 条建议", "5条建议"),
+    ("10 所医院对比", "10所医院对比"),
 ])
 def test_assemble_strips_chinese_and_compact_manual_heading_numbers(markdown_title: str, expected: str) -> None:
     # 中文报告常见的“一、”“（一）”“3、”编号会与服务端编号叠成“1.1 一、收入趋势”。
@@ -1092,3 +1101,72 @@ def test_assemble_strips_chinese_and_compact_manual_heading_numbers(markdown_tit
 
     assert f"### 1.1 {expected}\n" in rendered.markdown
     assert rendered.heading_numbers[1].title == expected
+
+
+def test_assemble_writes_iso_periods_as_chinese_dates() -> None:
+    # 数值目录给出的期间是 ISO 文本，模型照抄进正文和小标题时，成品应按中文日期呈现。
+    rendered = _render("### 2025-01至2025-06收入趋势\n\n2025-03门诊量最高，详见 report-2025-01.pdf。")
+
+    assert "### 1.1 2025年1月至6月收入趋势\n" in rendered.markdown
+    assert "2025年3月门诊量最高，详见 report-2025-01.pdf。" in rendered.markdown
+    assert rendered.heading_numbers[1].title == "2025年1月至6月收入趋势"
+
+
+def test_assembled_cjk_enumeration_renders_one_paragraph_per_item() -> None:
+    from markdown_it import MarkdownIt
+
+    rendered = _render("### 主要发现\n\n主要发现如下：\n1、门诊收入增长；\n2、住院收入下降。")
+    html = MarkdownIt("commonmark", {"html": False}).enable("table").render(rendered.markdown)
+    assert "<p>1、门诊收入增长；</p>" in html
+    assert "<p>2、住院收入下降。</p>" in html
+
+
+def test_chart_is_not_inserted_inside_a_cjk_enumeration() -> None:
+    # 条目各自成段后仍是一个整体：图表放在全部条目之后，不插在“如下：”与条目之间或条目中间。
+    rendered = _assemble_charts(
+        (ReportDraftBlock(
+            blockId="block_1",
+            markdown="主要发现如下：\n1、门诊收入保持增长；\n2、药品成本结构占比最高；\n3、住院收入回落。\n\n后续需持续跟踪。",
+            citationIds=("citation_001",),
+            chartIds=("chart_001",),
+        ),),
+        (_chart("chart_001", "药品成本结构", "citation_001"),),
+    )
+    body = rendered.markdown
+    assert body.index("3、住院收入回落。") < body.index("![") < body.index("后续需持续跟踪。")
+
+
+@pytest.mark.parametrize("title", ["收入分析(2025)", "2025-01至2025-06收入分析", "收入分析 (门诊)"])
+def test_duplicate_section_heading_is_removed_after_text_normalization(title: str) -> None:
+    # 装配时正文先规范标点、日期与空格；模型重复的章节标题须按同一规则识别并剥离，
+    # 否则残留的 H2 会让装配以标题层级错误失败。
+    draft = ReportDraft(sections=(ReportDraftSection(
+        sectionCode="section_001",
+        blocks=(ReportDraftBlock(blockId="block_1", markdown=f"## {title}\n\n正文。"),),
+    ),))
+    rendered = assemble_report_markdown(
+        draft, expected_title="运营报告", markdown_path="reports/report.md",
+        sections=(ReportSectionDefinition(code="section_001", sectionNumber="1", title=title),),
+        citation_ids=(),
+    )
+    assert rendered.markdown.count("## ") == 1
+    assert any(item["code"] == "duplicate_section_heading_removed" for item in rendered.auto_fixes)
+
+
+def test_chart_title_match_survives_text_normalization() -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import _chart_unit_score
+
+    chart = _chart("chart_001", "门诊收入(万元)", "citation_001")
+    # 正文已规范为全角括号，图注原文仍应按完整标题命中。
+    assert _chart_unit_score("门诊收入（万元）月度走势平稳。", chart) == 1000
+
+
+def test_chart_caption_and_alt_text_follow_body_typography() -> None:
+    rendered = _assemble_charts(
+        (ReportDraftBlock(blockId="block_1", markdown="门诊收入月度走势平稳。",
+                          citationIds=("citation_001",), chartIds=("chart_001",)),),
+        (_chart("chart_001", "门诊收入(万元) 2025-01至2025-06", "citation_001"),),
+    )
+    assert '"门诊收入（万元）2025年1月至6月")' in rendered.markdown
+    assert "*图表：门诊收入（万元）2025年1月至6月*" in rendered.markdown
+    assert "![门诊收入（万元）2025年1月至6月图]" in rendered.markdown

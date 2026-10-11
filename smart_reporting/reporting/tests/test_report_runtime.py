@@ -655,6 +655,80 @@ def test_postprocess_docx_scales_tall_image_within_page_bounds(tmp_path: Path) -
     assert abs(shape.width / shape.height - 1 / 3) < 0.001
 
 
+def test_postprocess_docx_heading_styles_follow_pdf_hierarchy(tmp_path: Path) -> None:
+    # 章节、小标题、四级标题字号逐级递减并加粗，与 PDF 一致；标题前留白并与下文同页。
+    docx = pytest.importorskip("docx")
+    from docx.shared import Pt
+
+    path = tmp_path / "report.docx"
+    _docx_postprocess_fixture(docx).save(path)
+    _postprocess_docx(path, context=_docx_postprocess_context(), layout=DEFAULT_PAGE_LAYOUT)
+
+    styles = docx.Document(path).styles
+    sizes = [styles[name].font.size for name in ("Heading 1", "Heading 2", "Heading 3", "Normal")]
+    assert sizes == [Pt(16), Pt(12.5), Pt(11), Pt(10.5)]
+    for name in ("Heading 1", "Heading 2", "Heading 3"):
+        assert styles[name].font.bold is True
+        assert styles[name].paragraph_format.space_before >= Pt(8)
+        assert styles[name].paragraph_format.keep_with_next is True
+
+
+def test_postprocess_docx_tables_fill_text_width_and_quotes_are_boxed(tmp_path: Path) -> None:
+    # 表格与 PDF 一致铺满版心；引用块有左侧竖线与底纹。子元素按 OOXML 架构顺序插入。
+    docx = pytest.importorskip("docx")
+    from docx.oxml.ns import qn
+
+    path = tmp_path / "report.docx"
+    document = _docx_postprocess_fixture(docx)
+    document.add_table(rows=2, cols=3)
+    if "Block Text" not in document.styles:
+        from docx.enum.style import WD_STYLE_TYPE
+
+        document.styles.add_style("Block Text", WD_STYLE_TYPE.PARAGRAPH)
+    document.add_paragraph("注：本节数值均来自冻结分析结果。", style="Block Text")
+    document.save(path)
+    _postprocess_docx(path, context=_docx_postprocess_context(), layout=DEFAULT_PAGE_LAYOUT)
+
+    processed = docx.Document(path)
+    table_properties = processed.tables[0]._tbl.tblPr
+    width = table_properties.find(qn("w:tblW"))
+    assert (width.get(qn("w:type")), width.get(qn("w:w"))) == ("pct", "5000")
+    order = [child.tag for child in table_properties]
+    assert order.index(qn("w:tblW")) < order.index(qn("w:tblBorders"))
+    if qn("w:tblLook") in order:
+        assert order.index(qn("w:tblBorders")) < order.index(qn("w:tblLook"))
+    block = processed.styles["Block Text"]._element.pPr
+    tags = [child.tag for child in block]
+    assert qn("w:pBdr") in tags and qn("w:shd") in tags
+    assert tags.index(qn("w:pBdr")) < tags.index(qn("w:shd"))
+
+
+def test_postprocess_docx_source_appendix_entries_and_signature_match_pdf(tmp_path: Path) -> None:
+    # 来源附录条目字段缩进、行距紧凑，落款与正文同字号。
+    docx = pytest.importorskip("docx")
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.shared import Mm, Pt
+
+    path = tmp_path / "report.docx"
+    document = _docx_postprocess_fixture(docx)
+    for name in ("Definition Term", "Definition"):
+        if name not in document.styles:
+            document.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+    document.save(path)
+    _postprocess_docx(path, context=_docx_postprocess_context(), layout=DEFAULT_PAGE_LAYOUT)
+
+    processed = docx.Document(path)
+    styles = processed.styles
+    assert styles["Report Signature"].font.size == Pt(10.5)
+    signature = [item for item in processed.paragraphs if item.style.name == "Report Signature"]
+    assert [item.text for item in signature] == ["测试机构", "2026-08-17"]
+    assert abs(signature[0].paragraph_format.space_before - Mm(18)) < Mm(0.1)
+    assert signature[1].paragraph_format.space_before is None
+    assert styles["Definition Term"].font.bold is True
+    assert abs(styles["Definition"].paragraph_format.left_indent - Mm(6)) < Mm(0.1)
+    assert styles["Definition"].paragraph_format.space_after == Pt(2)
+
+
 def test_word_page_fields_use_section_page_count() -> None:
     # “pages” 改由分节末尾书签的 PAGEREF 生成，不再使用 SECTIONPAGES。
     assert _WORD_PAGE_FIELDS == {"page": "PAGE"}
@@ -922,8 +996,131 @@ def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -
     ("见[说明](https://example.com/a,b:c)。", "见[说明](https://example.com/a,b:c)。"),
     ("配置 `a,b:c` 中文。", "配置 `a,b:c` 中文。"),
     ("```\n中文,代码:不变\n```", "```\n中文,代码:不变\n```"),
+    # 含中文或紧跟中文/全角标点的成对半角括号改为全角；英文、链接地址与代码不变。
+    ("收入结构稳定(门诊占比约45%)。", "收入结构稳定（门诊占比约45%）。"),
+    ("包括(1)门诊;(2)住院", "包括（1）门诊；（2）住院"),
+    ("| 收入(万元) | 1,234 |", "| 收入（万元） | 1,234 |"),
+    ("函数f(x)与 A (B) C 不变。", "函数f(x)与 A (B) C 不变。"),
+    ("见[收入(万元)](https://example.com/x(1))。", "见[收入（万元）](https://example.com/x(1))。"),
+    ("配置 `f(收入)` 不变。", "配置 `f(收入)` 不变。"),
+    # 全角标点两侧的空格去掉；列表标记后与表格竖线两侧的空格不动。
+    ("见附表 (表1)，（1） 门诊增长**明显** 。", "见附表（表1），（1）门诊增长**明显**。"),
+    ("- （1）门诊\n* （2）住院\n1. （3）医技", "- （1）门诊\n* （2）住院\n1. （3）医技"),
+    ("| 收入（万元） | 1,234 |", "| 收入（万元） | 1,234 |"),
+    # 中文语境的半角引号改为中文引号；英文引语、撇号、代码、链接标题与协议标记不变。
+    ('所谓"门诊收入"指诊疗收入，称为"DRG"付费，\'门诊\'口径。', "所谓“门诊收入”指诊疗收入，称为“DRG”付费，‘门诊’口径。"),
+    ('He said "hello", don\'t stop.', 'He said "hello", don\'t stop.'),
+    ('见`"收入"`与[说明](a.md "门诊收入")。', '见`"收入"`与[说明](a.md "门诊收入")。'),
+    ('[1]: https://example.com/a "门诊收入"', '[1]: https://example.com/a "门诊收入"'),
+    # 中文语境的省略号写作“……”；英文与数字中的点不变。
+    ("包括内科、外科等...，以及医技等…。", "包括内科、外科等……，以及医技等……。"),
+    ("wait... ok，区间1...3", "wait... ok，区间1...3"),
+    # 全角括号、粗体收尾或数字之后的半角标点，只要处于中文语境同样改写。
+    ("详见附表(表1),同比持平", "详见附表（表1），同比持平"),
+    ("收入(元):123", "收入（元）：123"),
+    ("**门诊量(万人次)**:35.3", "**门诊量（万人次）**：35.3"),
+    ("会议时间10:30,地点会议室", "会议时间10:30，地点会议室"),
+    ("门诊与住院比为3:1,较上年持平", "门诊与住院比为3:1，较上年持平"),
+    ("(1)门诊量增长", "（1）门诊量增长"),
+    ("函数f(x)为正,Q1(2025)", "函数f(x)为正，Q1(2025)"),
+    # 数值占位是机器文本。
+    ("收入{{value:fact-0123456789abcdef:total:亿元}}", "收入{{value:fact-0123456789abcdef:total:亿元}}"),
+    # 中文句末的半角句号、问号、叹号改为全角（含百分号、粗体收尾、数值占位与表格单元格之后）。
+    ("收入1.37亿元.占比30%. 是否持续?需观察!", "收入1.37亿元。占比30%。是否持续？需观察！"),
+    ("**收入增长**.\n\n收入{{value:fact-0123456789abcdef:total:亿元}}.", "**收入增长**。\n\n收入{{value:fact-0123456789abcdef:total:亿元}}。"),
+    ("| 收入增长. | 1.5 |", "| 收入增长。 | 1.5 |"),
+    # 条目编号、小数、文件名、省略号、图片语法与英文句子不变。
+    ("一.收入分析\n第二.成本见报告.pdf与v1.2版", "一.收入分析\n第二.成本见报告.pdf与v1.2版"),
+    ("如图![趋势](a.png)\nGrowth was 5%.", "如图![趋势](a.png)\nGrowth was 5%."),
 ])
 def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_punctuation
 
     assert normalize_cjk_punctuation(markdown) == expected
+
+
+
+@pytest.mark.parametrize(("markdown", "expected"), [
+    # 模型照抄数值目录的 ISO 期间：改为中文日期，同年区间省略后一个年份。
+    ("2025-01至2025-12期间，门诊收入稳定增长。", "2025年1月至12月期间，门诊收入稳定增长。"),
+    ("报告期为2025-01-01至2025-12-31。", "报告期为2025年1月1日至12月31日。"),
+    ("2024-07至2025-06跨年度对比。", "2024年7月至2025年6月跨年度对比。"),
+    ("2025-01~2025-06收入增长。", "2025年1月至6月收入增长。"),
+    ("**2025-03**门诊量最高。", "**2025年3月**门诊量最高。"),
+    ("| 2025-01 | 123 |", "| 2025年1月 | 123 |"),
+    ("2025年01月最高，2025年3月05日最低。", "2025年1月最高，2025年3月5日最低。"),
+    # 文件名、地址、编号、代码、协议标记、数值占位与非日期保持原样。
+    ("见 report-2025-01.pdf 与 https://x.com/2025-01/a。", "见 report-2025-01.pdf 与 https://x.com/2025-01/a。"),
+    ("版本v2025-01与编号A2025-01不变。", "版本v2025-01与编号A2025-01不变。"),
+    ("配置 `2025-01` 不变。", "配置 `2025-01` 不变。"),
+    ("[[analysis:2025-01]]", "[[analysis:2025-01]]"),
+    ("2024-2025年度与2025-13不变。", "2024-2025年度与2025-13不变。"),
+    # 数值目录的比较口径字段值改为中文；英文单词、字段名、标记与代码不变。
+    ("收入yoy增长5.03%，MoM下降2.1%。", "收入同比增长5.03%，环比下降2.1%。"),
+    ("moment、yoy_rate、[[analysis:yoy]]与`mom`不变。", "moment、yoy_rate、[[analysis:yoy]]与`mom`不变。"),
+    # 数字与汉字、单位之间的空格去掉，与数值目录写法一致；英文单词两侧、表格分隔与代码不变。
+    ("收入 3,600 万元，同比增长 8.6 %。", "收入3,600万元，同比增长8.6%。"),
+    ("**收入** 3,600 万元，共 12 个科室。", "**收入**3,600万元，共12个科室。"),
+    ("采用 Plan A 方案，CMI 为 1.05。", "采用 Plan A 方案，CMI 为1.05。"),
+    ("| 内科 | 3,600 |", "| 内科 | 3,600 |"),
+    ("见 `收入 3 万` 代码。", "见 `收入 3 万` 代码。"),
+    # 汉字之间（含粗体两侧）的空格去掉，日期改写后留下的空格同样去掉。
+    ("2025-01 收入最高，内科 门诊增长。", "2025年1月收入最高，内科门诊增长。"),
+    ("**2025-01** 收入最高。", "**2025年1月**收入最高。"),
+    # 全角数字、百分号与全角千分位改为半角；条目编号“1．”与半角数字的全角逗号列举不变。
+    ("收入１３，６５４．３２万元，同比增长５．０３％。", "收入13,654.32万元，同比增长5.03%。"),
+    ("１．床位分别为１２０，１３５，１５０张；2．增长5.03％。", "1．床位分别为120，135，150张；2．增长5.03%。"),
+    # 同一年内升序的月份区间统一为“1—10月”；跨年、编号与非月份区间不变。
+    ("2025年1-10月收入，1~3月、1月-10月与2025年1月～3月。", "2025年1—10月收入，1—3月、1—10月与2025年1—3月。"),
+    ("12-1月、ICD-10月度、v1-2月、3-5人与第1-3名不变。", "12-1月、ICD-10月度、v1-2月、3-5人与第1-3名不变。"),
+    # 数字前的 Unicode 减号、全角正负号改为半角；不在数字前的破折号不变。
+    ("同比−3.00%，变化额－195.00万元，同比＋11.00%。", "同比-3.00%，变化额-195.00万元，同比+11.00%。"),
+    ("收入结构−门诊为主，见附表－说明。", "收入结构−门诊为主，见附表－说明。"),
+    # 百分点缩写 pp/ppt/pct 改为“个百分点”；标识符、行内代码与英文单词不变。
+    ("占比提高2pp，提升1.5个pct，下降0.8 PPT。", "占比提高2个百分点，提升1.5个百分点，下降0.8个百分点。"),
+    ("v2pp、fact.3pct、`2pp`与2 apps不变。", "v2pp、fact.3pct、`2pp`与2 apps不变。"),
+])
+def test_iso_dates_in_prose_are_written_in_chinese(markdown, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_wording
+
+    assert normalize_cjk_wording(markdown) == expected
+
+@pytest.mark.parametrize(("markdown", "expected"), [
+    # 单个换行分隔的中文条目会并成一个段落、渲染成一行连写：各自成段。
+    ("主要发现如下：\n1、门诊收入增长；\n2、住院收入下降。", "主要发现如下：\n\n1、门诊收入增长；\n\n2、住院收入下降。"),
+    ("（1）门诊收入增长；\n（2）住院收入下降。", "（1）门诊收入增长；\n\n（2）住院收入下降。"),
+    ("一是门诊增长；\n二是住院下降。", "一是门诊增长；\n\n二是住院下降。"),
+    ("第一，收入增长。\n第二，成本下降。", "第一，收入增长。\n\n第二，成本下降。"),
+    ("**1、门诊**增长；\n**2、住院**下降。", "**1、门诊**增长；\n\n**2、住院**下降。"),
+    # Markdown 列表、表格、代码块、已分段条目与普通换行保持原样。
+    ("发现：\n1. 门诊增长；\n2. 住院下降。", "发现：\n1. 门诊增长；\n2. 住院下降。"),
+    ("| 科室 | 说明 |\n| --- | --- |\n| 1、内科 | 增长 |", "| 科室 | 说明 |\n| --- | --- |\n| 1、内科 | 增长 |"),
+    ("```\n说明\n1、代码\n```", "```\n说明\n1、代码\n```"),
+    ("发现：\n\n1、门诊", "发现：\n\n1、门诊"),
+    ("第一行\n第二行", "第一行\n第二行"),
+])
+def test_cjk_enumerated_lines_become_separate_paragraphs(markdown, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import separate_enumerated_lines
+
+    assert separate_enumerated_lines(markdown) == expected
+
+
+
+@pytest.mark.parametrize(("markdown", "expected"), [
+    # WeasyPrint 把中文之间的段内换行渲染成空格：两侧均为宽字符时去掉换行。
+    ("门诊收入持续增长\n住院收入有所回落", "<p>门诊收入持续增长住院收入有所回落</p>\n"),
+    ("收入增长，\n住院回落", "<p>收入增长，住院回落</p>\n"),
+    ("**门诊收入**\n住院回落", "<p><strong>门诊收入</strong>住院回落</p>\n"),
+    # 英文、数字或代码一侧保留换行（渲染为空格）；代码块不变。
+    ("Revenue grew\nslightly", "<p>Revenue grew\nslightly</p>\n"),
+    ("收入增长5%\n住院回落", "<p>收入增长5%\n住院回落</p>\n"),
+    ("门诊`code`\n住院", "<p>门诊<code>code</code>\n住院</p>\n"),
+    ("```\n说明\n代码\n```", "<pre><code>说明\n代码\n</code></pre>\n"),
+])
+def test_cjk_soft_breaks_render_without_spaces(markdown, expected):
+    from markdown_it import MarkdownIt
+
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _join_cjk_soft_breaks
+
+    parser = MarkdownIt("commonmark", {"html": False}).enable("table")
+    assert parser.renderer.render(_join_cjk_soft_breaks(parser.parse(markdown)), parser.options, {}) == expected

@@ -143,6 +143,47 @@ export function subjectLabelsFor(subjectIds: readonly string[]): (subjectId: str
   return (subjectId) => subjectLabel(subjectId, tail)
 }
 
+const businessLabelCache = new WeakMap<TraceSources, Map<string, string>>()
+
+/**
+ * 文字类正文引用的业务名：“正文引用 · 指标名”（多项依据时加“等 n 项”）。同名引用再接短号区分；
+ * 找不到指标名时退回短号显示名。表格单元格的显示名由调用方按行列组装。
+ */
+export function subjectBusinessLabel(subjectId: string, sources: TraceSources): string {
+  let labels = businessLabelCache.get(sources)
+  if (!labels) {
+    labels = new Map()
+    const subjects = sources.subjects ?? []
+    const tail = subjectShortTail(subjects.map(item => item.subjectId))
+    const names = new Map<string, string>()
+    for (const subject of subjects) {
+      const ref = subject.factRefs[0]
+      const fact = sources.facts?.find(item => item.analysisId === ref?.analysisId && item.factId === ref?.factId)
+      const name = (fact?.name || fact?.label || '').trim()
+      if (name) names.set(subject.subjectId, `${SUBJECT_LABEL_PREFIX.trim()} · ${name}${subject.factRefs.length > 1 ? ` 等 ${subject.factRefs.length} 项` : ''}`)
+    }
+    const counts = new Map<string, number>()
+    for (const name of names.values()) counts.set(name, (counts.get(name) ?? 0) + 1)
+    for (const subject of subjects) {
+      const name = names.get(subject.subjectId)
+      labels.set(subject.subjectId, !name ? subjectLabel(subject.subjectId, tail)
+        : counts.get(name)! > 1 ? `${name} ${subjectShortId(subject.subjectId, tail)}` : name)
+    }
+    businessLabelCache.set(sources, labels)
+  }
+  return labels.get(subjectId) ?? subjectLabel(subjectId)
+}
+
+/** 草稿中章节协议标记（[[section:ID]] 后紧跟标题行）对应的标题文字；找不到时返回 undefined。 */
+export function sectionTitleFromDraft(markdown: string, sectionId: string): string | undefined {
+  const marker = `[[section:${sectionId}]]`
+  const index = markdown.indexOf(marker)
+  if (index < 0) return undefined
+  const heading = markdown.slice(index + marker.length).split('\n').map(line => line.trim()).find(Boolean)
+  if (!heading?.startsWith('#')) return undefined
+  return heading.replace(/^#+\s*/, '').replace(/\[\[[a-z/-]+(?::[^\]]*)?\]\]/g, '').trim() || undefined
+}
+
 export function subjectRef(subjectId: string): EvidenceObjectRef {
   return { kind: 'subject', key: subjectId, label: subjectLabel(subjectId) }
 }

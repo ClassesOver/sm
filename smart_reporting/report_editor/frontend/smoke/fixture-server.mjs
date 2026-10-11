@@ -96,7 +96,7 @@ const server = http.createServer(async (request, response) => {
     const changed = String(payload.markdown).includes('12,780')
     json(response, {
       draftSha256,
-      subjects: [{ subjectId: 'sub-fixture-001', claimId: 'claim-fixture-001', sectionId: 'section-fixture', status: changed ? 'stale' : 'valid', factValue: 12450, unit: '万元' }],
+      subjects: [{ subjectId: 'sub-fixture-001', claimId: 'claim-fixture-001', sectionId: 'section-fixture', status: changed ? 'stale' : 'valid', factValue: 12450, unit: '万元', ...(changed ? { draftValue: 12780, draftUnit: '万元', comparable: true } : {}), periods: ['2025-01', '2025-10'], formula: 'sum(revenue)', formulaText: '营收 求和' }],
       summary: { valid: changed ? 0 : 1, stale: changed ? 1 : 0, unbound: 0 },
     })
     return

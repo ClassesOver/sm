@@ -1,14 +1,79 @@
-import { createElement, ArrowUpRight, Database, Link2, X, CircleCheck, TriangleAlert } from 'lucide'
+import { createElement, ArrowUpRight, Database, X, CircleCheck, TriangleAlert, Rows3, Undo2 } from 'lucide'
 import type { ReportEditorClient, TraceSources, TraceValidation } from './api'
+import { formatRegisteredValue } from './body-value-marks'
 import { analysisLabel, citationLabel, datasetLabel } from './evidence-relations'
 import { sourceSubjectStatus } from './source-status'
 
 type Reference = { kind: 'analysis' | 'citation' | 'chart'; value: string }
+type OpenTarget = Reference | { kind: 'dataset'; value: string; label: string }
 type Options = {
   client: ReportEditorClient
   sources: () => Promise<TraceSources>
   validation: () => TraceValidation | null
-  open: (reference: Reference) => void
+  open: (reference: OpenTarget) => void
+  /** 把正文中该来源唯一的改动数值恢复为登记值；找不到唯一位置时返回 false。 */
+  restore?: (subjectId: string) => boolean
+}
+
+type ValidationSubject = TraceValidation['subjects'][number]
+
+function periodText(periods: unknown): string {
+  if (Array.isArray(periods)) return periods.filter(item => typeof item === 'string').join(' — ')
+  return typeof periods === 'string' ? periods : ''
+}
+
+/** 文字类来源的核对结论：正文值与登记值对照、期间、口径；只读展示，恢复需用户点击。 */
+function claimVerification(entry: ValidationSubject, restore: (() => boolean) | undefined): HTMLElement {
+  const block = document.createElement('div')
+  block.className = 'source-preview-verification'
+  const valid = entry.status === 'valid'
+  const badge = document.createElement('div')
+  badge.className = `source-preview-status ${valid ? 'is-valid' : 'is-warning'}`
+  badge.append(createElement(valid ? CircleCheck : TriangleAlert, { width: 14, height: 14 }),
+    valid ? '核对结论：正文与登记值一致' : entry.status === 'stale' ? '核对结论：正文已改动，需复核' : '核对结论：暂无法比较')
+  block.append(badge)
+  const values = document.createElement('div')
+  values.className = 'source-preview-values'
+  const cell = (label: string, text: string) => {
+    const item = document.createElement('div')
+    const small = document.createElement('small')
+    small.textContent = label
+    const strong = document.createElement('strong')
+    strong.textContent = text
+    item.append(small, strong)
+    return item
+  }
+  const draft = typeof entry.draftValue === 'number' ? formatRegisteredValue(entry.draftValue, entry.draftUnit ?? entry.unit)
+    : valid ? formatRegisteredValue(entry.factValue, entry.unit) : '未能从正文提取'
+  values.append(cell('正文当前值', draft), cell('登记值', formatRegisteredValue(entry.factValue, entry.unit)))
+  block.append(values)
+  const facts = document.createElement('dl')
+  facts.className = 'source-preview-facts'
+  for (const [label, text] of [['期间', periodText(entry.periods)], ['口径', entry.formulaText || entry.formula || '']] as const) {
+    if (!text) continue
+    const term = document.createElement('dt')
+    term.textContent = label
+    const detail = document.createElement('dd')
+    detail.textContent = text
+    facts.append(term, detail)
+  }
+  if (facts.childElementCount) block.append(facts)
+  if (!valid && restore && typeof entry.factValue === 'number') {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'source-preview-restore'
+    button.append(createElement(Undo2, { width: 15, height: 15 }), `恢复为登记值 ${formatRegisteredValue(entry.factValue, entry.unit)}`)
+    button.onclick = () => {
+      if (restore()) return
+      const note = document.createElement('p')
+      note.className = 'source-preview-note'
+      note.setAttribute('role', 'status')
+      note.textContent = '正文中找不到唯一可替换的数值，请手动修改。'
+      button.replaceWith(note)
+    }
+    block.append(button)
+  }
+  return block
 }
 
 // 只读取已登记来源；预览不会写入正文或为缺失的数据补值。
@@ -23,7 +88,7 @@ export function createBodySourcePreview(options: Options) {
     const controller = new AbortController()
     const heading = document.createElement('header')
     const title = document.createElement('h2')
-    title.append(createElement(Link2, { width: 18, height: 18 }), '正文来源')
+    title.append(createElement(Database, { width: 18, height: 18 }), '正文来源')
     const close = document.createElement('button')
     close.type = 'button'
     close.className = 'source-preview-close'
@@ -77,7 +142,7 @@ export function createBodySourcePreview(options: Options) {
         }
       }, { capture: true, signal: controller.signal })
     } else dialog.showModal()
-    const open = (reference: Reference) => {
+    const open = (reference: OpenTarget) => {
       dialog.close('selected')
       options.open(reference)
     }
@@ -115,6 +180,16 @@ export function createBodySourcePreview(options: Options) {
           }
           const validation = options.validation()
           const status = subject && validation ? sourceSubjectStatus(validation, subject) : undefined
+          const entry = subject && subject.subjectKind !== 'table_cell'
+            ? validation?.subjects.find(item => item.subjectId === subject.subjectId) : undefined
+          if (entry && subject) {
+            const restore = options.restore
+            card.append(claimVerification(entry, restore && (() => {
+              const restored = restore(subject.subjectId)
+              if (restored) dialog.close('edited')
+              return restored
+            })))
+          }
           if (subject?.subjectKind === 'table_cell' && subject.factRefs.length === 1 && factRef?.factId) {
             const detail = await options.client.factDetail(factRef.analysisId, factRef.factId, controller.signal)
             if (controller.signal.aborted) return
@@ -188,7 +263,12 @@ export function createBodySourcePreview(options: Options) {
             info.textContent = [`记录数：${dataset.rowCount.toLocaleString('zh-CN')} 行`, `数据说明：${name.textContent}`,
               `登记时间：${dataset.materializedAt ? new Date(dataset.materializedAt).toLocaleString('zh-CN') : '未登记'}`].join('\n')
             details.append(summary, info)
-            card.append(details)
+            const rows = document.createElement('button')
+            rows.type = 'button'
+            rows.className = 'source-preview-rows'
+            rows.append(createElement(Rows3, { width: 14, height: 14 }), '查看原始数据行')
+            rows.onclick = () => open({ kind: 'dataset', value: dataset.datasetId, label: name.textContent || '数据快照' })
+            card.append(details, rows)
           }
           const button = document.createElement('button')
           button.type = 'button'

@@ -84,3 +84,46 @@ it('falls back per reference instead of duplicating every link after a partial f
   expect(document.querySelectorAll('.source-preview-open')).toHaveLength(2)
   expect(document.querySelectorAll('.source-preview-card')[1].textContent).toContain('来源预览暂不可用')
 })
+
+const claimSources = (): TraceSources => ({
+  ...baseSources(),
+  subjects: [{ subjectId: 'sub-c', subjectKind: 'claim', locator: {}, factRefs: [{ analysisId: 'analysis_001', factId: 'fact-c' }], computationId: null }],
+  facts: [{ analysisId: 'analysis_001', factId: 'fact-c', factKind: 'metric', label: '收入', name: '华东营收', unit: '万元', displayValue: 12450, datasetIds: ['data-a'] }],
+} as unknown as TraceSources)
+const claimValidation = (status: 'valid' | 'stale') => ({
+  draftSha256: 'x', summary: { valid: 0, stale: 1, unbound: 0 },
+  subjects: [{ subjectId: 'sub-c', claimId: 'c', sectionId: null, status, factValue: 12450, unit: '万元',
+    draftValue: status === 'stale' ? 12780 : undefined, periods: ['2025-01', '2025-10'], formula: 'sum(revenue)', formulaText: '营收 求和' }],
+})
+
+it('states the verification conclusion and restores the registered value on request', async () => {
+  asyncDialogs()
+  const client = new ReportEditorClient('/test')
+  const open = vi.fn()
+  const restore = vi.fn().mockReturnValueOnce(false).mockReturnValue(true)
+  const preview = createBodySourcePreview({ client, sources: async () => claimSources(), validation: () => claimValidation('stale'), open, restore })
+  document.body.innerHTML = '<p>华东营收为 12,780 万元<span id="marker" class="report-protocol-marker"></span></p>'
+  await preview(document.getElementById('marker')!, [{ kind: 'citation', value: 'sub-c' }])
+  const verification = document.querySelector('.source-preview-verification')!
+  expect(verification.textContent).toContain('正文已改动，需复核')
+  expect(verification.textContent).toContain('正文当前值12,780万元')
+  expect(verification.textContent).toContain('登记值12,450万元')
+  expect(verification.textContent).toContain('期间2025-01 — 2025-10')
+  expect(verification.textContent).toContain('口径营收 求和')
+  // 找不到唯一位置时保留来源并提示手动修改，不猜测替换。
+  ;(document.querySelector('.source-preview-restore') as HTMLButtonElement).click()
+  expect(restore).toHaveBeenCalledWith('sub-c')
+  expect(verification.textContent).toContain('请手动修改')
+  ;(document.querySelector('.source-preview-rows') as HTMLButtonElement).click()
+  expect(open).toHaveBeenCalledWith({ kind: 'dataset', value: 'data-a', label: '收入台账' })
+})
+
+it('does not offer a restore action when the body already matches', async () => {
+  asyncDialogs()
+  const client = new ReportEditorClient('/test')
+  const preview = createBodySourcePreview({ client, sources: async () => claimSources(), validation: () => claimValidation('valid'), open: vi.fn(), restore: vi.fn() })
+  document.body.innerHTML = '<p>华东营收为 12,450 万元<span id="marker" class="report-protocol-marker"></span></p>'
+  await preview(document.getElementById('marker')!, [{ kind: 'citation', value: 'sub-c' }])
+  expect(document.querySelector('.source-preview-verification')?.textContent).toContain('正文与登记值一致')
+  expect(document.querySelector('.source-preview-restore')).toBeNull()
+})

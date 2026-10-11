@@ -1459,6 +1459,9 @@ def _publication_warning_notice(item: Mapping[str, Any], *, run_id: str, source_
 
 
 _MAX_PRESENTED_COVERAGE_PERIODS = 12
+_MAX_PRESENTED_PERIOD_LENGTH = 32
+# 附录读者可见的期间角色名称；current/yoy/mom 是内部代码。
+_PERIOD_ROLE_LABELS = {"current": "本期", "yoy": "同比基期", "mom": "环比基期"}
 
 
 def _coverage_period_bounds(periods: set[str]) -> list[str]:
@@ -1471,7 +1474,10 @@ def _coverage_period_bounds(periods: set[str]) -> list[str]:
     ordered = sorted(periods)
     if len(ordered) <= _MAX_PRESENTED_COVERAGE_PERIODS:
         return ordered
-    return [ordered[0], ordered[-1]]
+    # 首尾写成一个区间：两项并列会被读成两个孤立期间。渲染端单项上限 32 字符，
+    # 带时刻的长期间写不下区间时保留首尾两项，不能让展示信息导致渲染失败。
+    span = f"{ordered[0]}至{ordered[-1]}"
+    return [span] if len(span) <= _MAX_PRESENTED_PERIOD_LENGTH else [ordered[0], ordered[-1]]
 
 
 def _citation_presentations(
@@ -1552,7 +1558,7 @@ def _citation_presentations(
                     if binding.source_type == "starrocks_materialized"
                     else "CSV 文件冻结快照"
                 ),
-                "scope": "、".join(binding.period_roles),
+                "scope": "、".join(_PERIOD_ROLE_LABELS.get(role, role) for role in binding.period_roles),
                 "summary": f"{binding.row_count} 行，快照 {binding.sha256[:12]}",
                 "links": list((source_links_by_dataset or {}).get(citation.dataset_id, ())),
             }

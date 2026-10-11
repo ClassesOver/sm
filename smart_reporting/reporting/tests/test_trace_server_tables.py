@@ -104,7 +104,7 @@ def test_build_analysis_table_generates_period_rows_from_bundle() -> None:
     # 行 = bundle 指标 periodValues 的期间（2025-09）。
     assert trace.row_keys == ("period:2025-09",)
     assert trace.column_keys == ("收入（元）",)
-    assert f"[[table:table-analysis_001]]" in markdown
+    assert "[[table:table-analysis_001]]" in markdown
     assert "| 2025年9月 | 3,600 |" in markdown
 
 
@@ -350,7 +350,9 @@ async def test_finalize_skips_table_when_analysis_unassigned() -> None:
 
 
 def test_comparison_table_uses_aligned_totals_and_readable_labels() -> None:
-    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicComparison
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+    )
 
     bundle = _bundle()
     comparison = DeterministicComparison(
@@ -374,8 +376,84 @@ def test_comparison_table_uses_aligned_totals_and_readable_labels() -> None:
     assert all(cell.fact_refs[0].fact_kind == 'comparison' for cell in trace.cells)
 
 
+def test_percent_metric_comparison_table_shows_change_in_percentage_points() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+    )
+
+    bundle = _bundle()
+    rate_metric = bundle.metrics[0].model_copy(update={'unit': '%', 'aggregation': 'average'})
+    comparison = DeterministicComparison(
+        factId='fact-' + 'c' * 16, comparisonType='yoy', field='revenue',
+        fieldRef=rate_metric.field_ref,
+        currentDatasetId='current', baselineDatasetId='baseline',
+        currentDatasetSha256=SHA, baselineDatasetSha256=SHA,
+        currentTotal=85.3, baselineTotal=83.2, change=2.1, changeRate=2.524,
+        formula='(currentTotal-baselineTotal)/abs(baselineTotal)*100%', unit='%',
+    )
+    bundle = bundle.model_copy(update={'metrics': (rate_metric,), 'comparisons': (comparison,)})
+    _trace, markdown = build_analysis_table(bundle, fact_file_resource_id=FACT_RESOURCE)
+    # 两项百分数之差是百分点，写成 2.10% 会被读成相对增幅（实际相对增幅为 2.52%）。
+    assert '收入变化 | 2.10个百分点' in markdown
+    assert '同比增幅 | 2.52%' in markdown
+    assert '2.10%' not in markdown
+
+
+def test_large_amount_tables_use_wan_yuan_columns() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+        PeriodValue,
+    )
+
+    bundle = _bundle()
+    metric = bundle.metrics[0].model_copy(update={
+        'period_values': (
+            PeriodValue(period='2025-09', value=1112354150.0),
+            PeriodValue(period='2025-10', value=2400.0),
+        ),
+        'total': 1112356550.0,
+    })
+    trace, markdown = build_analysis_table(
+        bundle.model_copy(update={'metrics': (metric,)}), fact_file_resource_id=FACT_RESOURCE,
+    )
+    # 百万以上的元整列改为万元两位小数，表头写单位，单元格只写数字；小额月份同列换算。
+    assert trace.column_keys == ('收入（万元）',)
+    assert '| 2025年9月 | 111,235.42 |' in markdown
+    assert '| 2025年10月 | 0.24 |' in markdown
+    assert '1,112,354,150' not in markdown
+
+    comparison = DeterministicComparison(
+        factId='fact-' + 'c' * 16, comparisonType='yoy', field='revenue',
+        fieldRef=metric.field_ref,
+        currentDatasetId='current', baselineDatasetId='baseline',
+        currentDatasetSha256=SHA, baselineDatasetSha256=SHA,
+        currentTotal=1365432110, baselineTotal=1300000000, change=65432110, changeRate=5.0332,
+        formula='(currentTotal-baselineTotal)/abs(baselineTotal)*100%', unit='元',
+    )
+    _trace, markdown = build_analysis_table(
+        bundle.model_copy(update={'comparisons': (comparison,)}), fact_file_resource_id=FACT_RESOURCE,
+    )
+    assert '本期收入 | 136,543.21万元' in markdown
+    assert '同期收入 | 130,000.00万元' in markdown
+    assert '收入变化额 | 6,543.21万元' in markdown
+    assert '同比增幅 | 5.03%' in markdown
+
+
+def test_server_table_numbers_are_right_aligned_in_rendered_html() -> None:
+    from markdown_it import MarkdownIt
+
+    _trace, markdown = build_analysis_table(_bundle(), fact_file_resource_id=FACT_RESOURCE)
+    # 行标签左对齐、数值列右对齐；报告运行时用同一 markdown-it 配置渲染 PDF/Word 的 HTML。
+    assert '| --- | ---: |' in markdown
+    html = MarkdownIt('commonmark', {'html': False}).enable('table').render(markdown)
+    assert '<td style="text-align:right">3,600</td>' in html
+    assert '<td>2025年9月</td>' in html
+
+
 def test_multiple_comparisons_keep_unique_rows_and_source_identity() -> None:
-    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicComparison
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+    )
 
     bundle = _bundle()
     fact = DeterministicComparison(
@@ -465,3 +543,66 @@ def test_analysis_table_keeps_raw_periods_when_readable_labels_collide():
         bundle.model_copy(update={"metrics": (fact,)}), fact_file_resource_id=FACT_RESOURCE
     )
     assert "| 2025-09 |" in markdown and "| 2025-09-01 |" in markdown
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_caption_numbers_are_verified_against_registered_facts() -> None:
+    """图注标题由模型登记、装配时直接进入正文，须与正文数值同规则核对；依据不全时不替换。"""
+    import hashlib
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.trace.numeric_text import replace_unregistered_numbers
+    from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+    from smart_reporting.reporting.workflow.runtime.sections import (
+        RuntimeSectionsMixin,
+        _verified_caption,
+    )
+
+    facts = json.dumps({"analysisId": "analysis_001", "metrics": [{
+        "factId": "fact-" + "a" * 16, "datasetId": "current", "datasetSha256": "b" * 64,
+        "periodRoles": ["current"], "field": "revenue", "fieldRef": "h.revenue",
+        "aggregation": "sum", "unit": "元", "formula": "sum", "total": 123456789,
+        "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+    }]}).encode()
+    evidence = b'{"findings": []}'
+
+    def identity(path: str, content: bytes) -> FileIdentity:
+        return FileIdentity(path=path, size=len(content), sha256=hashlib.sha256(content).hexdigest())
+
+    fact_file = identity("facts/analysis_001.json", facts)
+    evidence_file = identity("evidence/analysis_001/supplement.json", evidence)
+    table = "科室,收入\n内科,8.5\n".encode()
+    table_file = identity("evidence/analysis_001/supplement.csv", table)
+    binary = b"\x89PNG\r\n\x1a\n\xff\xfe"
+    binary_file = identity("evidence/analysis_001/supplement.bin", binary)
+    checkpoint = SimpleNamespace(
+        deterministic_fact_files={"analysis_001": fact_file},
+        evidence_manifest=SimpleNamespace(evidence=(
+            SimpleNamespace(evidence_files=(fact_file, evidence_file, table_file, binary_file)),
+        )),
+    )
+    harness = _Harness({
+        fact_file.path: facts, evidence_file.path: evidence,
+        table_file.path: table, binary_file.path: binary,
+    })
+
+    # 与章节正文核对同源：CSV 等文本 evidence 里的数值同样视为已登记；二进制文件跳过。
+    contents = await RuntimeSectionsMixin._registered_number_contents(harness, "thread-1", checkpoint)
+    assert contents == (facts.decode(), evidence.decode(), table.decode())
+    assert replace_unregistered_numbers("内科收入8.5", contents) == "内科收入8.5"
+    contents = (facts.decode(), evidence.decode())
+    assert replace_unregistered_numbers("2025年收入1.23亿元", contents) == "2025年收入1.23亿元"
+    assert replace_unregistered_numbers("2025年收入同比增长8.5%", contents) == "2025年收入同比增长待核实"
+
+    assert _verified_caption("2025年收入同比增长8.5%", contents) == "2025年收入同比增长待核实"
+    assert _verified_caption("2025年收入同比增长8.5%", ()) == "2025年收入同比增长8.5%"
+    # 全角写法同样核对：先改半角，未登记的数值不会因全角而原样留在图注里。
+    assert _verified_caption("2025年收入同比增长８．５％", contents) == "2025年收入同比增长待核实"
+    assert _verified_caption("2025年收入１．２３亿元", contents) == "2025年收入1.23亿元"
+    # “待核实”比原数字长：超出图注 200 字上限时截断，不让装配因长度校验失败。
+    long_caption = _verified_caption("增长9%；" * 40, contents)
+    assert len(long_caption) == 200 and long_caption.endswith("…") and "9" not in long_caption
+
+    missing = _Harness({fact_file.path: facts})
+    assert await RuntimeSectionsMixin._registered_number_contents(missing, "thread-1", checkpoint) == ()

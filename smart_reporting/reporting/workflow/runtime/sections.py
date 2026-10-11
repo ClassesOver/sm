@@ -21,6 +21,7 @@ from ...delivery.draft_v1 import (
     ReportServerTable,
     promote_orphan_h4_headings,
 )
+from ...delivery.report_runtime.markdown import normalize_number_notation
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...model_policy import (
     ThinkingFailureKind,
@@ -38,14 +39,15 @@ from ...trace.contracts_v1 import (
     TableTraceV1,
     derive_resource_id,
 )
-from ..state import normalize_analysis_warnings
 from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
 from ...trace.numeric_text import (
+    align_placeholder_direction,
     correct_period_extrema,
     frozen_number_catalog,
     frozen_number_guide,
     normalize_signed_wording,
+    prompt_number_catalog,
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
@@ -58,6 +60,7 @@ from ..checkpoint import (
     SectionClaimSubmission,
 )
 from ..execution import ReportingTaskInvocation
+from ..state import normalize_analysis_warnings
 from .analysis import (
     _finalize_semantic_catalog,
     _reporting_detailed_analysis_plan,
@@ -200,9 +203,40 @@ _SECTION_BLOCK_MAX_RELEVANCE_TERMS = 128
 _SECTION_BLOCK_MIN_FILE_TOKENS = 128
 _SECTION_BLOCK_MAX_PROJECTION_ATTEMPTS = 16
 _SECTION_BLOCK_OMISSION_MARKER = "[...已省略与当前正文块无关的证据内容...]"
+# 纠错指令中与复核告警一一对应的处理方式（同比/环比、月均与分组排名口径，图表编号，
+# 小标题），两种生成路径共用。
+_LATER_CORRECTION_ACTIONS = (
+    "同比/环比、月均值与分组排名按登记结果改正；数值归属与点名的指标或科室不符时改用该对象的数值引用或改写主语；"
+    "历史新高、首次突破等表述改为与对比期的比较；图表编号改用图表标题主题词指代；"
+    "小标题压缩为不超过 24 字的主题短语；过长段落按结论、证据、建议拆分；倍数改用已登记的变化率。"
+)
 _MAX_EXECUTIVE_SUMMARY_CHARS = 8_000
 _EXECUTIVE_SUMMARY_SEPARATOR = "；"
 _EXECUTIVE_SUMMARY_ELLIPSIS = "…"
+
+
+_MAX_BLOCK_REVIEW_NOTICES = 20
+
+
+def _block_review_notices(
+    section_code: str, block_id: str, warnings: Sequence[str], generated: str, published: str,
+) -> list[dict[str, Any]]:
+    """纠错后仍残留的复核告警与“待核实”替换，作为不阻断发布的块级质量告警返回用户。"""
+
+    details = {"sectionCode": section_code, "blockId": block_id}
+    notices: list[dict[str, Any]] = [
+        {"code": "report_section_block_content_review", "message": warning[:300], "details": details}
+        for warning in list(dict.fromkeys(warnings))[:_MAX_BLOCK_REVIEW_NOTICES]
+    ]
+    # 服务端只会新增“待核实”（替换无依据数值或无法解析的占位），差值即替换处数。
+    replaced = published.count("待核实") - generated.count("待核实")
+    if replaced > 0:
+        notices.append({
+            "code": "report_section_block_unverified_numbers",
+            "message": f"{replaced} 处缺少登记依据的数值已替换为“待核实”。",
+            "details": {**details, "count": replaced},
+        })
+    return notices
 
 
 def _bounded_executive_summary(summaries: Sequence[str]) -> str:
@@ -304,10 +338,10 @@ def _section_number_context(
             if "monthlyStatistics" in projected:
                 projected["monthlyStatistics"] = {
                     key: value for key, value in projected["monthlyStatistics"].items()
-                    if key != "prefixTotals"
+                    if key not in {"prefixTotals", "monthOverMonth"}
                 }
             planning_guide.append(projected)
-        return catalog, json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
+        return prompt_number_catalog(catalog), json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
     fact_ids = {fact_id for claim in claims for fact_id in claim.fact_ids}
     unbound_metrics = {claim.metric_code for claim in claims if not claim.fact_ids}
     guide = [
@@ -318,12 +352,12 @@ def _section_number_context(
     ]
     if not guide and not fact_ids:
         # 旧证据可能没有 factId/metricCodes，沿用完整目录，不能猜测绑定。
-        return catalog, frozen_number_guide(contents, catalog, field_definitions=field_definitions)
+        return prompt_number_catalog(catalog), frozen_number_guide(contents, catalog, field_definitions=field_definitions)
     # 同比/对账事实也有数值目录，但不在 metric 的 numberGuide 中；显式绑定
     # 的 factId 必须仍保留，不能因此回退到整份无关目录。
     selected_ids = fact_ids | {item["factId"] for item in guide}
     catalog = {
-        token: value for token, value in catalog.items()
+        token: value for token, value in prompt_number_catalog(catalog).items()
         if token.split(":", 2)[1] in selected_ids
     }
     return catalog, guide
@@ -678,6 +712,16 @@ def _project_text_evidence(
     }
 
 
+def _verified_caption(text: str, number_contents: tuple[str, ...]) -> str:
+    """图注标题/替代文字与正文同规则核对数值；没有核对依据时原样返回。"""
+
+    if not number_contents:
+        return text
+    checked = replace_unregistered_numbers(normalize_number_notation(text), number_contents)
+    # “待核实”比被替换的数字长，超出图注 200 字上限时截断而不是让装配失败。
+    return checked if len(checked) <= 200 else f"{checked[:199]}…"
+
+
 def _project_section_evidence_files(
     agent: Any,
     files: Sequence[Any],
@@ -852,6 +896,7 @@ def _section_stage_agent(
             "月度日期是月度桶标签，不是数据截止时点；其他模型摘要或图表标题中的推测不构成直接证据。不得补写目录中不存在的月均值或派生金额。",
             "异常或偏低只描述事实与待核实事项；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
             "frozenNumbers 中的数值必须使用对应 {{value:...}} 占位符，不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。需要元值和亿元同时展示时分别选择两个占位符；大额人次可选择万人次占位。",
+            "占位符渲染后已带单位，其后不得再写单位（不写“{{value:…:亿元}}亿元”）；每个数值写在其所属指标、科室或期间的名下，不得把一个科室或指标的引用写到另一个名下。数字与百分号用半角，百分点写“个百分点”，不写 pp、pct。",
             "reportGoal要求精确原始元值时，已登记元单位的关键金额必须选择元值占位符展示；"
             "可另附亿元或万元显示，但不得只写舍入后的大单位金额。",
             "冻结事实 unit 为空时，仍可用其占位符展示原始金额并注明‘金额单位待核实’，不得追加元、万元或亿元、不得换算；图表标题和其他模型摘要里的单位不能补作单位证据。",
@@ -864,6 +909,7 @@ def _section_stage_agent(
                 "H3/H4 必须是不超过 40 个中文字符的短标题，并独占一个物理行。"
                 "标题行后必须立即换行；有正文时，使用『### 收入分析\n\n本季度收入……』格式。"
                 "禁止『### 收入分析：本季度收入……』同一行混写。"
+                "小标题是不超过 24 字的主题短语，结论和数值写进正文。"
             ),
             (
                 "Markdown 的标题和正文都不得出现 citationIds、chartIds、图表文件名、"
@@ -872,6 +918,7 @@ def _section_stage_agent(
             (
                 "输入 charts 非空时，按 charts 顺序为每张图表各写一个独立段落解读，段落中写出"
                 "图表标题的主题词；图表会插在最匹配的段落之后，不要把多张图表合并到一段描述。"
+                "成品图表与表格不编号，不要写“如图1所示”“见表2”，用标题主题词指代。"
             ),
             (
                 "口径纪律：每个结论必须沿用当前 block facts 的同一数据集、期间、单位和分子分母；"
@@ -1293,8 +1340,12 @@ async def _generate_section_in_blocks(
     thinking_request: ThinkingRequest,
     recovery: Mapping[str, Any] | None = None,
     whole_section: bool = False,
+    review_notices: dict[str, list[dict[str, Any]]] | None = None,
 ) -> SectionDecision:
-    """复用章节规划，按开关整章生成或沿用原有逐块生成。"""
+    """复用章节规划，按开关整章生成或沿用原有逐块生成。
+
+    review_notices 按 blockId 收集纠错后仍残留的复核告警，供章节提交时并入质量告警。
+    """
 
     # 规划阶段只收到文件身份，不能要求模型从摘要猜测内容寻址的事实 ID。
     # 目录仅从本轮已验证 SHA 的证据正文提取，不接受模型提交的编号别名。
@@ -1500,6 +1551,7 @@ async def _generate_section_in_blocks(
                 scope=scope,
                 run_context=run_context,
                 thinking_request=thinking_request,
+                review_notices=review_notices,
             )
         except ReportingError as error:
             if error.code != "report_section_context_too_large":
@@ -1658,7 +1710,8 @@ async def _generate_section_in_blocks(
                     "requiredAction": (
                         "逐条处理 issues：修正有依据的数字和口径；内部 ID 和英文字段名改用业务名称；"
                         "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
-                        "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子；删除无直接证据的原因。返回当前 block 完整正文；语义问题不阻断发布。"
+                        "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子；删除无直接证据的原因。"
+                        + _LATER_CORRECTION_ACTIONS + "返回当前 block 完整正文；语义问题不阻断发布。"
                     ),
                 }
                 continue
@@ -1666,10 +1719,16 @@ async def _generate_section_in_blocks(
                 loguru_logger.warning("report_content_review_warning section={} message={}", work_item.section_code, warning)
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
-                # 纠错后仍残留的负值方向措辞按冻结符号确定性改写，再核对未登记数字。
+                # 纠错后仍残留的方向措辞按冻结符号确定性改写（正值配下降词在渲染前、
+                # 负值配增长词在渲染后），再核对未登记数字。
                 markdown=replace_unregistered_numbers(
                     normalize_signed_wording(correct_period_extrema(
-                        render_frozen_numbers(content.markdown, block_number_catalog),
+                        render_frozen_numbers(
+                            align_placeholder_direction(
+                                content.markdown, (item.content for item in selected_files)
+                            ),
+                            block_number_catalog,
+                        ),
                         (item.content for item in selected_files),
                     )),
                     (item.content for item in selected_files),
@@ -1678,6 +1737,11 @@ async def _generate_section_in_blocks(
                 chartIds=chart_ids,
                 claimIds=block_plan.claim_ids,
             )
+            if review_notices is not None:
+                review_notices[block_plan.block_id] = _block_review_notices(
+                    work_item.section_code, block_plan.block_id, review_warnings,
+                    content.markdown, candidate.markdown,
+                )
             try:
                 validate_report_draft_blocks(
                     (*blocks, candidate),
@@ -1723,13 +1787,14 @@ async def _generate_whole_section_content(
     scope: TaskExecutionScope,
     run_context: RunContext,
     thinking_request: ThinkingRequest,
+    review_notices: dict[str, list[dict[str, Any]]] | None = None,
 ) -> RenderSectionDecision:
     """一次生成整章正文；引用与顺序始终由已校验规划决定。"""
 
     payload = {
         "phase": "section",
         "generationStage": "content",
-        "frozenNumbers": frozen_number_catalog(item.content for item in evidence.files),
+        "frozenNumbers": prompt_number_catalog(frozen_number_catalog(item.content for item in evidence.files)),
         "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
         "reportGoal": instruction_payload.get("reportGoal", ""),
         "sectionGoal": instruction_payload.get("sectionGoal", {}),
@@ -1866,7 +1931,8 @@ async def _generate_whole_section_content(
                     "逐条处理 issues：修正数字与字段口径并使用冻结数值引用；内部 ID 和英文字段名改用业务名称；"
                     "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
                     "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子。"
-                    "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId；"
+                    + _LATER_CORRECTION_ACTIONS
+                    + "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId；"
                     "issues 未列出的 block 原样返回（服务端保留其首轮原文）。"
                 ),
             }
@@ -1883,7 +1949,13 @@ async def _generate_whole_section_content(
             blockId=block_plan.block_id,
             markdown=replace_unregistered_numbers(
                 normalize_signed_wording(correct_period_extrema(
-                    render_frozen_numbers(content_by_id[block_plan.block_id].markdown, section_number_catalog),
+                    render_frozen_numbers(
+                        align_placeholder_direction(
+                            content_by_id[block_plan.block_id].markdown,
+                            (item.content for item in evidence.files),
+                        ),
+                        section_number_catalog,
+                    ),
                     (item.content for item in evidence.files),
                 )),
                 (item.content for item in evidence.files),
@@ -1892,6 +1964,11 @@ async def _generate_whole_section_content(
             citationIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.citation_ids)),
             chartIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.chart_ids)),
         )
+        if review_notices is not None:
+            review_notices[block_plan.block_id] = _block_review_notices(
+                work_item.section_code, block_plan.block_id, review_warnings.get(block_plan.block_id, ()),
+                content_by_id[block_plan.block_id].markdown, block.markdown,
+            )
         try:
             validate_report_draft_blocks((*blocks, block), expected_section_title=work_item.title)
         except ReportingError as error:
@@ -2415,6 +2492,8 @@ class RuntimeSectionsMixin:
                         )
                     toolkit = toolkits[0]
                     validated_evidence: SectionEvidenceBundle | None = None
+                    # 本次生成（或恢复生成）纠错后仍残留的块级复核告警，随章节提交进入质量告警。
+                    review_notices: dict[str, list[dict[str, Any]]] = {}
 
                     async def read_evidence(
                         path: str, offset: int, task_context: RunContext
@@ -2435,12 +2514,14 @@ class RuntimeSectionsMixin:
                     ) -> SectionDecision:
                         nonlocal validated_evidence
                         validated_evidence = evidence
+                        review_notices.clear()
                         return await _generate_section_in_blocks(
                             self.section_generator,
                             instruction_payload,
                             evidence,
                             work_item,
                             whole_section=self.section_whole_generation,
+                            review_notices=review_notices,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(
@@ -2474,12 +2555,14 @@ class RuntimeSectionsMixin:
                                 "report_section_recovery_evidence_missing",
                                 "章节恢复缺少当前执行已验证的证据对象。",
                             )
+                        review_notices.clear()
                         return await _generate_section_in_blocks(
                             self.section_recovery,
                             instruction_payload,
                             validated_evidence,
                             work_item,
                             whole_section=self.section_whole_generation,
+                            review_notices=review_notices,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(
@@ -2508,6 +2591,10 @@ class RuntimeSectionsMixin:
                                 for item in decision.claims
                             ],
                             run_context=task_context,
+                            review_warnings=[
+                                notice for block in decision.blocks
+                                for notice in review_notices.get(block.block_id, ())
+                            ],
                         )
 
                     async def rework(
@@ -2689,6 +2776,43 @@ class RuntimeSectionsMixin:
         assert last_error is not None
         raise last_error
 
+    async def _registered_number_contents(
+        self, thread_id: str, checkpoint: ReportingCheckpoint
+    ) -> tuple[str, ...]:
+        """冻结事实与补证 evidence 原文，供图注等装配期文本核对数值。
+
+        与章节正文核对同源（全部 evidence 文本文件）；非 UTF-8 文件本身无法登记数值，
+        跳过即可。任一文件不可读时返回空元组：依据不全时无法判断数值是否登记，不做替换。
+        """
+
+        identities = list(checkpoint.deterministic_fact_files.values())
+        if checkpoint.evidence_manifest is not None:
+            identities.extend(
+                identity
+                for item in checkpoint.evidence_manifest.evidence
+                for identity in item.evidence_files
+            )
+        contents: list[str] = []
+        seen: set[str] = set()
+        for identity in identities:
+            if identity.path in seen:
+                continue
+            seen.add(identity.path)
+            try:
+                raw = await self._read_identity_bytes(thread_id, identity, max_bytes=16 * 1024 * 1024)
+            except Exception as error:  # noqa: BLE001 - 依据不全时只放弃核对
+                loguru_logger.warning(
+                    "report_chart_text_verification_skipped path={} error_type={}",
+                    identity.path,
+                    type(error).__name__,
+                )
+                return ()
+            try:
+                contents.append(raw.decode("utf-8"))
+            except UnicodeDecodeError:
+                continue
+        return tuple(contents)
+
     async def _build_server_tables(
         self,
         run_context: RunContext,
@@ -2819,6 +2943,8 @@ class RuntimeSectionsMixin:
         chart_inputs: list[ReportChartInput] = []
         destination_by_chart: dict[str, str] = {}
         report_parent = PurePosixPath(markdown_path).parent
+        # 图注标题/替代文字由模型登记，装配时直接进入正文；与正文数值同规则核对。
+        number_contents = await self._registered_number_contents(scope["threadId"], checkpoint)
         for index, chart in enumerate(checkpoint.evidence_manifest.charts, start=1):
             suffix = PurePosixPath(chart.source_file.path).suffix.lower()
             if suffix not in {".png", ".jpg", ".jpeg"}:
@@ -2831,8 +2957,8 @@ class RuntimeSectionsMixin:
                 ReportChartInput(
                     chartId=chart.chart_id,
                     fileName=file_name,
-                    title=chart.title,
-                    altText=chart.alt_text,
+                    title=_verified_caption(chart.title, number_contents),
+                    altText=_verified_caption(chart.alt_text, number_contents),
                     citationIds=chart.citation_ids,
                 )
             )
