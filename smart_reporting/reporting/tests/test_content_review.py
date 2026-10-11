@@ -984,6 +984,17 @@ def test_adjacent_month_rates_count_as_month_over_month_not_other_percents():
     ]
 
 
+def test_change_rate_written_as_percent_points_is_named_as_unit_misuse():
+    from pathlib import Path
+
+    sample = (Path(__file__).parent / "fixtures" / "report_quality" / "facts.json").read_text(encoding="utf-8")
+    warnings = [w for w in review_content("门诊收入同比增长11.00个百分点，增长7.77个百分点。", [sample]) if "百分点" in w]
+    assert warnings == [
+        "变化率单位误用：11.00个百分点对应已登记的变化率11.00%，应写作“11.00%”；百分点只用于两项百分数之差。",
+        "百分点差值缺少可核对的冻结依据：7.77个百分点。须由两项已登记百分数相减得到，请写出两项百分数或删去该差值。",
+    ]
+
+
 def test_clause_checks_do_not_split_numbers_at_thousands_separators():
     # 千分位逗号不是分句符：完整数值仍与“9月”“同比”“累计”“不能”处在同一分句。
     document = json.loads(_comparison_content(change=12345611))

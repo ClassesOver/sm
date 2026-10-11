@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from decimal import Decimal
 
 import pytest
@@ -740,6 +741,19 @@ def test_adjacent_month_changes_are_registered_from_frozen_monthly_values():
     assert replace_unregistered_numbers(text, [content]) == (
         '2月收入环比增长20.00%，增加20.00万元；3月环比下降10.00%；5月环比增长待核实。'
     )
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 变化率写成百分点：数值对得上登记的同比/相邻月变化率、对不上百分点差值时改回“%”。
+    ('门诊收入同比增长11个百分点，住院收入同比下降3.00个百分点。', '门诊收入同比增长11%，住院收入同比下降3.00%。'),
+    ('2月门诊收入环比增长10.00个百分点。', '2月门诊收入环比增长10.00%。'),
+    # 占比、比率、增速的变化本以百分点计；对不上任何变化率的百分点交给复核，均不改写。
+    ('门诊收入占比同比提高11.00个百分点，增速提高11.00个百分点，增长7.77个百分点。',
+     '门诊收入占比同比提高11.00个百分点，增速提高11.00个百分点，增长7.77个百分点。'),
+])
+def test_change_rates_written_as_percent_points_are_corrected(text, expected):
+    sample = Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json'
+    assert replace_unregistered_numbers(text, [sample.read_text(encoding='utf-8')]) == expected
 
 
 def test_number_guide_spells_out_month_coverage():

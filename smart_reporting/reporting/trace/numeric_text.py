@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -614,6 +614,42 @@ PERSON_COUNT = re.compile(
 MULTIPLE_NUMBER = re.compile(r"(?<![\d.,])(?P<number>\d+(?:\.\d+)?)\s*倍(?!数|标准差|四分位|方差|IQR)")
 
 
+# “同比增长11.00个百分点”：变化率写成了百分点。占比、比重、比例或“率”的变化本来就以百分点计，
+# 这类分句不改写。
+RATE_AS_PERCENT_POINT = re.compile(r"(?<![\d.,])(?P<number>\d+(?:\.\d+)?)\s*个?百分点")
+_PERCENT_POINT_SUBJECT = re.compile(r"占比|比重|比例|构成|率|增速|增幅|降幅|涨幅|跌幅")
+
+
+def registered_change_rates(contents: Iterable[str]) -> set[Decimal]:
+    """已登记的变化率幅度：比较事实的同比/环比变化率与相邻两月的变化率。"""
+    return {abs(Decimal(str(value))) for token, value, _unit, _target in _frozen_number_entries(contents)
+            if value is not None and token[2:-2].split(":")[2] == "changeRate"
+            or value is not None and token[2:-2].split(":")[2].startswith("periodChangeRates.")}
+
+
+def percent_point_written_for_rate(
+    match: re.Match[str], text: str, rates: set[Decimal], points: Iterable[Decimal], percents: Sequence[Decimal],
+) -> bool:
+    """“个百分点”的数值只对得上登记变化率、对不上百分点差值且分句不是占比/比率类时返回 True。"""
+    clause = re.split(r"[。；，\n]", text[:match.start()])[-1]
+    if _PERCENT_POINT_SUBJECT.search(clause):
+        return False
+    number = Decimal(match["number"])
+    quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+
+    def shown(values: Iterable[Decimal]) -> bool:
+        return any(abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == number for value in values)
+
+    if not shown(rates) or shown(points):
+        return False
+    # 两项登记百分数（占比、完成率等水平值）之差同样是有依据的百分点；变化率之间的差只在
+    # “增速/增幅”语境下才是百分点，已在上方跳过。候选过多时不比较，按变化率处理。
+    ordered = sorted(value for value in percents if abs(value) not in rates)
+    return not (len(ordered) <= 400 and shown(
+        right - left for index, left in enumerate(ordered) for right in ordered[index + 1:]
+    ))
+
+
 def registered_multiples(contents: Iterable[str]) -> set[Decimal]:
     """可作为“X倍”依据的登记值：本期÷基期合计、变化率÷100、比率百分数÷100。"""
     totals: dict[str, dict[str, Decimal]] = {}
@@ -777,6 +813,16 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         return f"{_display_precision(match['number'])}{match['scale'] or ''}人次"
 
     replaced = PERSON_COUNT.sub(replace_persons, replaced)
+    rates = registered_change_rates(contents)
+
+    def replace_rate_points(match: re.Match[str]) -> str:
+        if not percent_point_written_for_rate(match, replaced, rates, known.get(PERCENT_POINT, ()),
+                                              tuple(known.get("%", ()))):
+            return match[0]
+        logger.warning("report_change_rate_unit_corrected value={}", match[0])
+        return f"{_display_precision(match['number'])}%"
+
+    replaced = RATE_AS_PERCENT_POINT.sub(replace_rate_points, replaced) if rates else replaced
     multiples = registered_multiples(contents)
 
     def replace_multiple(match: re.Match[str]) -> str:

@@ -16,6 +16,7 @@ from .numeric_text import (
     MULTIPLE_NUMBER,
     PERCENT_POINT,
     PERSON_COUNT,
+    RATE_AS_PERCENT_POINT,
     RISING_WORDS,
     _frozen_number_entries,
     _unit_scales,
@@ -23,8 +24,10 @@ from .numeric_text import (
     frozen_number_catalog,
     frozen_number_values,
     money_text_warnings,
+    percent_point_written_for_rate,
     period_extrema_warnings,
     positive_directed_placeholders,
+    registered_change_rates,
     registered_decline_magnitude,
     registered_multiples,
     render_frozen_numbers,
@@ -1137,11 +1140,18 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     percents = sorted(known.get("%", ()))
     points = {abs(value) for value in known.get(PERCENT_POINT, ())}
     pairwise = len(percents) <= _MAX_PERCENT_POINT_CANDIDATES
+    change_rates = registered_change_rates(contents)
     if points or pairwise:
-        for match in re.finditer(r"(?<![\d.,])(\d+(?:\.\d+)?)\s*个?百分点", text):
+        for match in RATE_AS_PERCENT_POINT.finditer(text):
             number = Decimal(match[1])
             quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
             if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points):
+                continue
+            if percent_point_written_for_rate(match, text, change_rates, points, percents):
+                warnings.append(
+                    f"变化率单位误用：{match[0]}对应已登记的变化率{match[1]}%，应写作“{match[1]}%”；"
+                    "百分点只用于两项百分数之差。"
+                )
                 continue
             if pairwise and not any(
                 abs(left - right).quantize(quantum, rounding=ROUND_HALF_UP) == number
