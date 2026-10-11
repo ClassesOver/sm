@@ -239,18 +239,46 @@ _CJK_ELLIPSIS = re.compile(
 )
 
 
+# 中文句末的半角句号、问号、叹号（“收入1.37亿元.”“增长5.03%.”“是否持续?”）：前接汉字、
+# 全角收尾符号或百分号（含粗体收尾“**”），且位于行尾或后接汉字时改为全角。小数、文件名、
+# 省略号与图片语法“![”不变。
+_SENTENCE_END_CONTEXT = rf"(?:(?<={_CJK_CLOSING})|(?<=[%‰])|(?<={_CJK_CLOSING}\*\*)|(?<=[%‰]\*\*))"
+_SENTENCE_END_FOLLOW = rf"(?=\*{{0,2}}[ \t]*(?:\r?\n|\Z|\|)|[ \t]*{_CJK_CHAR})"
+_HALF_WIDTH_SENTENCE_END = re.compile(
+    rf"{_SENTENCE_END_CONTEXT}(?<!\.)(?P<mark>[.?!])(?![.\[]){_SENTENCE_END_FOLLOW}"
+)
+# 数值占位“{{value:…}}.”渲染后是带单位的数值，其后的半角句号同样是中文句末。
+_VALUE_PLACEHOLDER_PERIOD = re.compile(rf"(?P<token>\{{\{{value:[^{{}}\r\n]+\}}\}})\.{_SENTENCE_END_FOLLOW}")
+# 行首的“一.”“第一.”是条目编号，不是句号。
+_ENUMERATION_PREFIX = re.compile(r"[ \t]*(?:#{1,6}[ \t]+)?[*_]*第?[一二三四五六七八九十]{1,3}")
+_FULL_WIDTH_SENTENCE_END = {".": "。", "?": "？", "!": "！"}
+
+
+def _full_width_sentence_ends(piece: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        line_start = piece.rfind("\n", 0, match.start()) + 1
+        line_end = piece.find("\n", match.end())
+        line = piece[line_start : len(piece) if line_end < 0 else line_end]
+        if (_ENUMERATION_PREFIX.fullmatch(piece, line_start, match.start())
+                or not re.search(_CJK_CHAR, line)):
+            return match[0]
+        return _FULL_WIDTH_SENTENCE_END[match["mark"]]
+
+    return _HALF_WIDTH_SENTENCE_END.sub(replace, piece)
+
+
 def _normalize_cjk_punctuation_text(text: str) -> str:
     def convert(piece: str) -> str:
         # 括号改为全角后，紧随其后的“（表1）,”“（元）:”才具备中文上下文，需再规范一次。
         piece = _full_width_punctuation(_full_width_parentheses(_full_width_punctuation(piece)))
-        piece = _CJK_ELLIPSIS.sub("……", _full_width_quotes(piece))
+        piece = _full_width_sentence_ends(_CJK_ELLIPSIS.sub("……", _full_width_quotes(piece)))
         return _SPACE_AROUND_FULL_WIDTH.sub("", piece)
 
-    return _convert_unprotected(text, convert)
+    return _convert_unprotected(_VALUE_PLACEHOLDER_PERIOD.sub(r"\g<token>。", text), convert)
 
 
 def normalize_cjk_punctuation(markdown: str) -> str:
-    """中文正文中的半角逗号、冒号、分号与括号改为全角。
+    """中文正文中的半角逗号、冒号、分号、括号与句末句号、问号、叹号改为全角。
 
     只改紧邻汉字的标点与含中文的成对括号：千分位（1,234）、时间（12:30）、英文
     （A, B、f(x)）、协议标记、链接地址与代码保持原样。

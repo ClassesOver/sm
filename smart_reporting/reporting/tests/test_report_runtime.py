@@ -951,6 +951,13 @@ def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -
     ("函数f(x)为正,Q1(2025)", "函数f(x)为正，Q1(2025)"),
     # 数值占位是机器文本。
     ("收入{{value:fact-0123456789abcdef:total:亿元}}", "收入{{value:fact-0123456789abcdef:total:亿元}}"),
+    # 中文句末的半角句号、问号、叹号改为全角（含百分号、粗体收尾、数值占位与表格单元格之后）。
+    ("收入1.37亿元.占比30%. 是否持续?需观察!", "收入1.37亿元。占比30%。是否持续？需观察！"),
+    ("**收入增长**.\n\n收入{{value:fact-0123456789abcdef:total:亿元}}.", "**收入增长**。\n\n收入{{value:fact-0123456789abcdef:total:亿元}}。"),
+    ("| 收入增长. | 1.5 |", "| 收入增长。 | 1.5 |"),
+    # 条目编号、小数、文件名、省略号、图片语法与英文句子不变。
+    ("一.收入分析\n第二.成本见报告.pdf与v1.2版", "一.收入分析\n第二.成本见报告.pdf与v1.2版"),
+    ("如图![趋势](a.png)\nGrowth was 5%.", "如图![趋势](a.png)\nGrowth was 5%."),
 ])
 def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_punctuation
