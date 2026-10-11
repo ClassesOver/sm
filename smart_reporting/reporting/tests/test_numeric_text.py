@@ -709,6 +709,39 @@ def test_number_guide_states_how_to_read_the_total(aggregation, meaning):
 
 
 
+def test_adjacent_month_changes_are_registered_from_frozen_monthly_values():
+    # “2月环比增长20.00%”是按登记月度值计算的相邻两月变化：服务端登记后可引用，模型写对时不被替换为待核实。
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    metric = {
+        'factId': 'fact-' + 'a' * 16, 'datasetId': 'current', 'datasetSha256': 'b' * 64,
+        'periodRoles': ['current'], 'field': 'amount', 'fieldRef': 'hospital.amount',
+        'aggregation': 'sum', 'unit': '元', 'formula': 'sum(amount)', 'total': 4280000,
+        'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0, 'periodGranularity': 'month',
+        'periodValues': [{'period': period, 'value': value} for period, value in
+                         (('2025-01', 1000000), ('2025-02', 1200000), ('2025-03', 1080000), ('2025-05', 1000000))],
+    }
+    content = json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]})
+    catalog = frozen_number_catalog([content])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodChanges.1:万元}}'] == '20.00万元'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodChangeRates.1:%}}'] == '20.00%'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodChangeRates.2:%}}'] == '-10.00%'
+    # 3月与5月不相邻：不登记“环比”。
+    assert not [token for token in catalog if 'periodChange' in token and token.split(':')[2].endswith('.3')]
+    # 数值说明直接给显示值（金额按万元）；引用只供服务端核对，不进模型可见目录，避免目录膨胀。
+    guide = frozen_number_guide([content], catalog)[0]['monthlyStatistics']['monthOverMonth']
+    assert guide == [{'period': '2025-02', 'change': '20.00万元', 'changeRate': '20.00%'},
+                     {'period': '2025-03', 'change': '-12.00万元', 'changeRate': '-10.00%'}]
+    from smart_reporting.reporting.trace.numeric_text import prompt_number_catalog
+    prompt = prompt_number_catalog(catalog)
+    assert not [token for token in prompt if 'periodChange' in token]
+    assert set(catalog) - set(prompt) == {token for token in catalog if 'periodChange' in token}
+    text = '2月收入环比增长20.00%，增加20.00万元；3月环比下降10.00%；5月环比增长7.41%。'
+    assert replace_unregistered_numbers(text, [content]) == (
+        '2月收入环比增长20.00%，增加20.00万元；3月环比下降10.00%；5月环比增长待核实。'
+    )
+
+
 def test_number_guide_spells_out_month_coverage():
     from smart_reporting.reporting.trace.numeric_text import _month_coverage
 

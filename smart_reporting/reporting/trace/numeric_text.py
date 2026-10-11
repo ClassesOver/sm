@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -172,12 +172,22 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     for index, amount in enumerate(amounts):
                         running += amount
                         values.append((f"periodTotals.0-{index}", running))
+                    # 相邻两月的变化额与变化率（“3月环比增长…”）由服务端按登记月度值计算：只在月份
+                    # 连续时登记，基期为零时不给变化率；百分数指标的差值口径不同，不在此登记。
+                    months = [int(item["period"][5:7]) for item in periods]
+                    for index in range(1, len(amounts)) if entry.get("unit") != "%" else ():
+                        if months[index] != months[index - 1] + 1:
+                            continue
+                        change = amounts[index] - amounts[index - 1]
+                        values.append((f"periodChanges.{index}", change))
+                        if amounts[index - 1]:
+                            values.append((f"periodChangeRates.{index}", change / amounts[index - 1] * 100))
 
                 for field, value in values:
                     if value is None:
                         continue
                     # 派生事实的 unit 是分子/差额单位，比值本身无量纲。
-                    unit = ("%" if field in {"changeRate", "percentage"}
+                    unit = ("%" if field in {"changeRate", "percentage"} or field.startswith("periodChangeRates.")
                             else None if array == "derivedMetrics" and field == "value"
                             else entry.get("unit"))
                     if percent_point_field(field, unit):
@@ -217,6 +227,16 @@ def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> 
         if amount / scale >= 1:
             return candidate
     return min(scales, key=lambda candidate: scales[candidate])
+
+
+# 只供服务端核对与渲染的派生数值引用：不放进模型可见的数值目录。
+_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.")
+
+
+def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
+    """模型可见的数值目录：去掉只供服务端核对的相邻月变化引用。"""
+    return {token: text for token, text in catalog.items()
+            if not token[2:-2].split(":")[2].startswith(_SERVER_ONLY_FIELDS)}
 
 
 def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
@@ -297,6 +317,12 @@ def frozen_number_guide(
                 token = f"{{{{value:{fact.fact_id}:{field}:{fact.unit or ''}}}}}"
                 return token if token in catalog and catalog[token] != "数值待核实" else None
 
+            def shown(field: str, unit: str | None = None) -> str | None:
+                # 相邻月变化不进模型数值目录（避免目录膨胀），这里直接给显示值；金额按万元显示。
+                target = unit or ("万元" if fact.unit in _MONEY_UNITS else fact.unit or "")
+                text = catalog.get(f"{{{{value:{fact.fact_id}:{field}:{target}}}}}")
+                return text if text and text != "数值待核实" else None
+
             periods = [item.period for item in fact.period_values]
             item: dict[str, Any] = {
                 "factId": fact.fact_id, "analysisId": bundle.analysis_id,
@@ -326,7 +352,14 @@ def frozen_number_guide(
                     "prefixTotals": [{"start": periods[0], "end": period,
                                       "reference": reference(f"periodTotals.0-{index}")}
                                      for index, period in enumerate(periods)],
-                    "meaning": "包含已登记的零值月份；零值本身不证明未入账或缺失。局部极值必须明确子期间",
+                    "monthOverMonth": [
+                        {"period": period, "change": shown(f"periodChanges.{index}"),
+                         "changeRate": shown(f"periodChangeRates.{index}", "%")}
+                        for index, period in enumerate(periods) if shown(f"periodChanges.{index}")
+                    ],
+                    "meaning": "包含已登记的零值月份；零值本身不证明未入账或缺失。局部极值必须明确子期间。"
+                               "monthOverMonth 是服务端按登记月度值计算的相邻两月变化额与变化率（某月较上月），"
+                               "可按显示值直接书写，不是环比比较事实的窗口变化",
                 }
             item["groups"] = [{"group": group.group, "reference": reference(f"{key}.{index}"),
                                "meaning": "完整分组组合的数值，不能称为单一科室或院区累计"}

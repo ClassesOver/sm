@@ -464,7 +464,14 @@ def _approximate_rate_bounds(match: re.Match[str]) -> tuple[Decimal, Decimal, st
     return value - step / 2, value + step / 2, qualifier or ""
 
 
-def _approximate_rate_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+def _adjacent_month_rates(contents: Iterable[str]) -> set[Decimal]:
+    """服务端按月度登记值计算的相邻两月变化率（环比口径）。"""
+    return {Decimal(str(value)) for token, value, _unit, _target in _frozen_number_entries(contents)
+            if value is not None and token[2:-2].split(":")[2].startswith("periodChangeRates.")}
+
+
+def _approximate_rate_warnings(text: str, documents: list[dict[str, Any]],
+                               contents: Iterable[str] = ()) -> list[str]:
     """“同比增长约三成”与登记的同比变化率都不符时提示复核（软告警）。
 
     只在分句写明同比/环比（或较上年/较上月）时判定，按比较口径取全部登记变化率的幅度；
@@ -476,6 +483,7 @@ def _approximate_rate_warnings(text: str, documents: list[dict[str, Any]]) -> li
             if (isinstance(entry, dict) and entry.get("comparisonType") in rates
                     and isinstance(entry.get("changeRate"), (int, float)) and not isinstance(entry.get("changeRate"), bool)):
                 rates[entry["comparisonType"]].add(abs(Decimal(str(entry["changeRate"]))))
+    rates["mom"].update(abs(rate) for rate in _adjacent_month_rates(contents))
     warnings: list[str] = []
     for clause in _CLAUSE_BREAK.split(text):
         kind = ("yoy" if re.search(r"同比|较上年|较去年|比上年|比去年", clause)
@@ -952,7 +960,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     warnings.extend(_non_additive_total_warnings(text, contents, documents))
     warnings.extend(_comparison_window_warnings(text, contents, documents))
     warnings.extend(_from_to_direction_warnings(text))
-    warnings.extend(_approximate_rate_warnings(text, documents))
+    warnings.extend(_approximate_rate_warnings(text, documents, contents))
     warnings.extend(_annual_budget_denominator_warnings(text, bundles))
     scoped_text = text
     if "[[analysis:" not in text and len(bundles) == 1:
@@ -1123,7 +1131,10 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         Decimal(str(value)) for token, value, unit, target in _frozen_number_entries(contents)
         if (target or unit) == "%" and value is not None
         and token[2:-2].split(":")[2] not in {"changeRate", "change"}
+        and not token[2:-2].split(":")[2].startswith(("periodChanges.", "periodChangeRates."))
     }
+    # 相邻两月的变化率（某月较上月）属于环比口径。
+    rates["mom"].update(_adjacent_month_rates(contents))
     if rates["yoy"] or rates["mom"] or other_percents:
         for match in re.finditer(
             rf"(?P<kind>同比|环比)(?P<verb>{DIRECTION_WORD_PATTERN}|变化|变动)?(?:率)?"

@@ -47,6 +47,7 @@ from ...trace.numeric_text import (
     frozen_number_catalog,
     frozen_number_guide,
     normalize_signed_wording,
+    prompt_number_catalog,
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
@@ -337,10 +338,10 @@ def _section_number_context(
             if "monthlyStatistics" in projected:
                 projected["monthlyStatistics"] = {
                     key: value for key, value in projected["monthlyStatistics"].items()
-                    if key != "prefixTotals"
+                    if key not in {"prefixTotals", "monthOverMonth"}
                 }
             planning_guide.append(projected)
-        return catalog, json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
+        return prompt_number_catalog(catalog), json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
     fact_ids = {fact_id for claim in claims for fact_id in claim.fact_ids}
     unbound_metrics = {claim.metric_code for claim in claims if not claim.fact_ids}
     guide = [
@@ -351,12 +352,12 @@ def _section_number_context(
     ]
     if not guide and not fact_ids:
         # 旧证据可能没有 factId/metricCodes，沿用完整目录，不能猜测绑定。
-        return catalog, frozen_number_guide(contents, catalog, field_definitions=field_definitions)
+        return prompt_number_catalog(catalog), frozen_number_guide(contents, catalog, field_definitions=field_definitions)
     # 同比/对账事实也有数值目录，但不在 metric 的 numberGuide 中；显式绑定
     # 的 factId 必须仍保留，不能因此回退到整份无关目录。
     selected_ids = fact_ids | {item["factId"] for item in guide}
     catalog = {
-        token: value for token, value in catalog.items()
+        token: value for token, value in prompt_number_catalog(catalog).items()
         if token.split(":", 2)[1] in selected_ids
     }
     return catalog, guide
@@ -1793,7 +1794,7 @@ async def _generate_whole_section_content(
     payload = {
         "phase": "section",
         "generationStage": "content",
-        "frozenNumbers": frozen_number_catalog(item.content for item in evidence.files),
+        "frozenNumbers": prompt_number_catalog(frozen_number_catalog(item.content for item in evidence.files)),
         "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
         "reportGoal": instruction_payload.get("reportGoal", ""),
         "sectionGoal": instruction_payload.get("sectionGoal", {}),
