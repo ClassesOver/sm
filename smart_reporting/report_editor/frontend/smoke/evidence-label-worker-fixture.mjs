@@ -43,6 +43,8 @@ try {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole('button', { name: '查看关系图', exact: true }).click()
   const picker = page.getByRole('combobox', { name: '选择 3D 节点预览' })
+  // 3D 组件按需加载后才填充节点选项，等待填充完成再计数。
+  await picker.locator('option').nth(39).waitFor({ state: 'attached' })
   const count = await picker.locator('option').count()
   assert.ok(count >= 40)
   await page.getByRole('button', { name: '显示全部节点名称', exact: true }).click()
