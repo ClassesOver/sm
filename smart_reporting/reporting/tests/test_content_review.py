@@ -897,6 +897,21 @@ def test_window_comparisons_are_not_called_single_month_changes(window, text, ex
     assert warnings == expected
 
 
+def test_clause_checks_do_not_split_numbers_at_thousands_separators():
+    # 千分位逗号不是分句符：完整数值仍与“9月”“同比”“累计”“不能”处在同一分句。
+    document = json.loads(_comparison_content(change=12345611))
+    document["comparisons"][0].update({"periodStart": "2025-01", "periodEnd": "2025-09"})
+    assert [w for w in review_content("9月收入同比增加1,234.56万元。", [json.dumps(document)]) if "比较口径" in w] == [
+        "比较口径需复核：1,234.56万元是2025年1—9月的累计比较结果，不是9月单月；请写明比较期间。"
+    ]
+    metric = {**_metric(values=(1200, 1234.56, 1300)), "unit": "元", "aggregation": "average", "total": 1234.56}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert [w for w in review_content("次均费用累计1,234.56元。", [content]) if "统计口径" in w] == [
+        "统计口径需复核：1,234.56元是平均值，不能称为合计或累计；请写明为平均值。"
+    ]
+    assert not [w for w in review_content("不能仅凭1,234.56元判断创历史新高。", [content]) if "历史比较" in w]
+
+
 @pytest.mark.parametrize(("text", "flagged"), [
     ("收入由1.37亿元增长至1.30亿元。", True),
     ("收入从1.30亿元下降至1.37亿元。", True),

@@ -67,6 +67,12 @@ _INFERENCE = re.compile(
 )
 
 
+# 分句边界：千分位逗号（“34,567”“1,234,567”）不是分句符，否则“同比增加1,234.56万元”
+# 会拆成“同比增加1”与“234.56万元”，口径与语境检查都看不到完整数值。
+_CLAUSE_BREAK = re.compile(r"[。；，\n]|(?<!\d),|,(?!\d{3}(?!\d))")
+_CLAUSE_BREAK_WITH_MARKS = re.compile(r"[。！？；，\n]|(?<!\d),|,(?!\d{3}(?!\d))")
+
+
 def _documents(contents: Iterable[str]) -> list[dict[str, Any]]:
     documents = []
     for content in contents:
@@ -354,7 +360,7 @@ def _non_additive_total_warnings(text: str, contents: Iterable[str], documents: 
             number = number * scales[unit] / scales[display_unit]
         values.setdefault(display_unit, []).append((fact_id, number))
     warnings: list[str] = []
-    for sentence in re.split(r"[。；，,\n]", text):
+    for sentence in _CLAUSE_BREAK.split(text):
         if not re.search(r"合计|累计|总计|总额|总和|汇总", sentence):
             continue
         for match in _VALUE.finditer(sentence):
@@ -401,7 +407,7 @@ def _comparison_window_warnings(text: str, contents: Iterable[str], documents: l
             number = number * scales[unit] / scales[display_unit]
         values.setdefault(display_unit, []).append((fact_id, abs(number)))
     warnings: list[str] = []
-    for clause in re.split(r"[。；，,\n]", text):
+    for clause in _CLAUSE_BREAK.split(text):
         months = re.findall(r"(?<![\d—–~～至到-])(\d{1,2})月(?!\s*[—–~～至到-]\s*\d)", clause)
         if (len(set(months)) != 1 or not re.search(r"同比|环比|较上年|较去年|较上月", clause)
                 or re.search(r"\d{1,2}月?\s*[—–~～至到-]\s*\d{1,2}月|累计|截至|前三季度|上半年|下半年|季度|全年", clause)):
@@ -472,7 +478,7 @@ def _group_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[
         return []
     highest, lowest = max(values.values()), min(values.values())
     warnings: list[str] = []
-    for clause in re.split(r"[。；，,\n]", text):
+    for clause in _CLAUSE_BREAK.split(text):
         named = [group for group in values if group in clause]
         # “心内科”同时命中“内科”时只认最长的组名。
         named = [group for group in named if not any(group != other and group in other for other in named)]
@@ -525,8 +531,7 @@ def _group_value_attribution_warnings(text: str, documents: list[dict[str, Any]]
     names = {group for _, groups in tables for group in groups
              if len(group) >= 2 and re.search(r"[\u3400-\u9fff]", group)}
     warnings: list[str] = []
-    # 千分位逗号不是分句符：“34,567人次”不能拆成两段。
-    for clause in re.split(r"[。；，\n]|,(?!\d)", text):
+    for clause in _CLAUSE_BREAK.split(text):
         named = [group for group in names if group in clause]
         named = [group for group in named if not any(group != other and group in other for other in named)]
         if len(named) != 1 or _GROUP_VALUE_CONTEXT.search(clause):
@@ -996,13 +1001,13 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     for match in _INFERENCE.finditer(text):
         # “不能证明尚未启动采购”等否定句没有作业务断言；只看当前分句，
         # 不能用前一句的否定来豁免后一句真实推测。
-        prefix = re.split(r"[。！？；，,\n]", text[:match.start()])[-1]
-        assertion = re.split(r"[。！？；，,\n]", prefix + match[0])[-1]
+        prefix = _CLAUSE_BREAK_WITH_MARKS.split(text[:match.start()])[-1]
+        assertion = _CLAUSE_BREAK_WITH_MARKS.split(prefix + match[0])[-1]
         if re.search(r"(?:不能|不可|不足以|不应|无法|不代表|不得|不要|未能|并非|尚不能).{0,30}", assertion):
             continue
         warnings.append(f"业务原因或数据状态需直接证据：{match[0]}。数值为零不能证明流程未启动、字段未填充或未入账。")
     for match in _HISTORICAL_CLAIM.finditer(text):
-        clause = re.split(r"[。！？；，,\n]", text[:match.start()])[-1] + match[0]
+        clause = _CLAUSE_BREAK_WITH_MARKS.split(text[:match.start()])[-1] + match[0]
         if re.search(r"不能|无法|不足以|并非|不代表|尚不能", clause):
             continue
         warnings.append(
