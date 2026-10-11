@@ -295,6 +295,25 @@ HEADING_QUANTITY_WORDS = "年月日个家名张床次人天项例台季周号期
 _HEADING_NUMBER_PREFIX = re.compile(
     rf"^#{{1,6}}[ \t]+\d+(?:\.\d+)*[.、．]?[ \t]+(?![{HEADING_QUANTITY_WORDS}])"
 )
+# 全角阿拉伯数字与百分号（“５．０３％”“5.03％”）：GB/T 15835 规定阿拉伯数字用半角；
+# 全角写法还让数值核对与复核认不出数字，未登记的数值因此原样落盘。
+_FULL_WIDTH_NUMERALS = str.maketrans("０１２３４５６７８９％", "0123456789%")
+_FULL_WIDTH_DECIMAL_POINT = re.compile(r"(?<=[0-9])．(?=[0-9])")
+# 全角千分位“１３，６５４．３２万元”：只在全角数字三位一组、以小数或金额人次单位收尾时
+# 改为半角逗号；否则只改数字时“654.32万元”会被单独核对，替换后变成“13，待核实”。
+# 半角数字间的全角逗号（“分别为120，135，150张”）是列举，不动。
+_FULL_WIDTH_GROUPED_NUMBER = re.compile(
+    r"(?<![０-９])[０-９]{1,3}(?:，[０-９]{3})+(?=．[０-９]|\s*(?:亿元|万元|元|万人次|人次))"
+)
+
+
+def normalize_full_width_numbers(text: str) -> str:
+    """全角数字与百分号改为半角，数字之间的全角点改为小数点；“1．收入”等条目编号不动。"""
+
+    text = _FULL_WIDTH_GROUPED_NUMBER.sub(lambda match: match[0].replace("，", ","), text)
+    return _FULL_WIDTH_DECIMAL_POINT.sub(".", text.translate(_FULL_WIDTH_NUMERALS))
+
+
 _COMPARISON_TERMS = {"yoy": "同比", "mom": "环比"}
 _COMPARISON_TERM = re.compile(r"(?<![A-Za-z0-9_])(?i:yoy|mom)(?![A-Za-z0-9_])")
 _PADDED_CJK_DATE = re.compile(r"(?<=\d年)0(?=[1-9]月)|(?<=\d月)0(?=[1-9]日)")
@@ -314,7 +333,7 @@ def _normalize_cjk_wording_text(text: str) -> str:
         return f"{start}至{_cjk_date(match, 'b', omit_year=same_year)}"
 
     def convert(piece: str) -> str:
-        piece = _ISO_DATE_RANGE.sub(range_text, piece)
+        piece = _ISO_DATE_RANGE.sub(range_text, normalize_full_width_numbers(piece))
         piece = _ISO_DATE_SINGLE.sub(lambda match: _cjk_date(match, "a"), piece)
         piece = _PADDED_CJK_DATE.sub("", piece)
         # 数值目录的比较口径 yoy/mom 是字段值，正文写中文“同比/环比”。

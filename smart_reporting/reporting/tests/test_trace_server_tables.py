@@ -597,6 +597,9 @@ async def test_chart_caption_numbers_are_verified_against_registered_facts() -> 
 
     assert _verified_caption("2025年收入同比增长8.5%", contents) == "2025年收入同比增长待核实"
     assert _verified_caption("2025年收入同比增长8.5%", ()) == "2025年收入同比增长8.5%"
+    # 全角写法同样核对：先改半角，未登记的数值不会因全角而原样留在图注里。
+    assert _verified_caption("2025年收入同比增长８．５％", contents) == "2025年收入同比增长待核实"
+    assert _verified_caption("2025年收入１．２３亿元", contents) == "2025年收入1.23亿元"
     # “待核实”比原数字长：超出图注 200 字上限时截断，不让装配因长度校验失败。
     long_caption = _verified_caption("增长9%；" * 40, contents)
     assert len(long_caption) == 200 and long_caption.endswith("…") and "9" not in long_caption

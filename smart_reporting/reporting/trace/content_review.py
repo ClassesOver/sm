@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from ..delivery.report_runtime.markdown import CJK_ENUMERATION_LINE
+from ..delivery.report_runtime.markdown import CJK_ENUMERATION_LINE, normalize_full_width_numbers
 from .numeric_text import (
     BARE_SCALED_NUMBER,
     DIRECTED_PLACEHOLDER,
@@ -685,6 +685,8 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                    fact_ids: Iterable[str] | None = None) -> list[str]:
     contents = tuple(contents)
     catalog = frozen_number_catalog(contents)
+    # 编辑器复核的是用户可能手输的正文：全角数字同样要识别。
+    markdown = normalize_full_width_numbers(markdown)
     text = render_frozen_numbers(markdown, catalog).replace("**", "")
     # 数值锚点可能插在数字与单位之间；复核时只移除非分析协议标记。
     text = re.sub(r"\[\[(?:claim|citation|section|table|/table):[^\]]+\]\]", "", text)

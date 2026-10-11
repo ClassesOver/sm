@@ -777,6 +777,13 @@ def test_model_table_cells_without_basis_are_flagged():
     ]
 
 
+def test_full_width_numbers_are_checked_like_half_width():
+    # 编辑器复核用户手输的全角数字：未登记的“７．７７％”同样告警，已登记的全角写法不误报。
+    warnings = [w for w in review_content("本期收入达１３，６５４．３２万元，同比增长５．０３％，较预算增长７．７７％。",
+                                          [_comparison_content()]) if "冻结依据" in w]
+    assert warnings == ["数值缺少可核对的冻结依据：7.77%。请使用对应数值引用，或删去未登记的计算结果。"]
+
+
 def test_unregistered_multiples_are_flagged():
     warnings = [w for w in review_content("本期收入是上年同期的3.2倍，较上年为1.05倍。", [_comparison_content()])
                 if "倍数" in w]

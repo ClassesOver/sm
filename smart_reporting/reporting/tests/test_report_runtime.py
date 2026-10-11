@@ -986,6 +986,9 @@ def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected)
     # 汉字之间（含粗体两侧）的空格去掉，日期改写后留下的空格同样去掉。
     ("2025-01 收入最高，内科 门诊增长。", "2025年1月收入最高，内科门诊增长。"),
     ("**2025-01** 收入最高。", "**2025年1月**收入最高。"),
+    # 全角数字、百分号与全角千分位改为半角；条目编号“1．”与半角数字的全角逗号列举不变。
+    ("收入１３，６５４．３２万元，同比增长５．０３％。", "收入13,654.32万元，同比增长5.03%。"),
+    ("１．床位分别为１２０，１３５，１５０张；2．增长5.03％。", "1．床位分别为120，135，150张；2．增长5.03%。"),
 ])
 def test_iso_dates_in_prose_are_written_in_chinese(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_wording
