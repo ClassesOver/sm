@@ -342,15 +342,21 @@ _PERCENT_POINT_ABBREVIATION = re.compile(
 )
 
 
+# 数字前的 Unicode 减号“−”、全角“－”“﹣”与全角“＋”：不改为半角时负号认不出，登记的负值
+# （“同比−3.00%”）被当作正数核对而替换为“待核实”，成稿出现“同比−待核实”残句。
+_UNICODE_SIGN = re.compile(r"[−－﹣＋](?=[0-9])")
+
+
 def normalize_number_notation(text: str) -> str:
     """数字写法统一为数值核对可识别的形式。
 
     全角数字与百分号改为半角，数字之间的全角点改为小数点（“1．收入”等条目编号不动）；
-    百分点缩写 pp/ppt/pct 改为“个百分点”。
+    数字前的 Unicode 减号与全角正负号改为半角；百分点缩写 pp/ppt/pct 改为“个百分点”。
     """
 
     text = _FULL_WIDTH_GROUPED_NUMBER.sub(lambda match: match[0].replace("，", ","), text)
     text = _FULL_WIDTH_DECIMAL_POINT.sub(".", text.translate(_FULL_WIDTH_NUMERALS))
+    text = _UNICODE_SIGN.sub(lambda match: "+" if match[0] == "＋" else "-", text)
     return _PERCENT_POINT_ABBREVIATION.sub(lambda match: f"{match['number']}个百分点", text)
 
 

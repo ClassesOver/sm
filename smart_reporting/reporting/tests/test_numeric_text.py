@@ -756,6 +756,17 @@ def test_change_rates_written_as_percent_points_are_corrected(text, expected):
     assert replace_unregistered_numbers(text, [sample.read_text(encoding='utf-8')]) == expected
 
 
+def test_unicode_minus_keeps_registered_negative_values():
+    # 模型常用 Unicode 减号“−”写负值：入模清洗改为半角后，登记的负变化率与变化额不再被替换为待核实。
+    from smart_reporting.reporting.workflow.runtime.phase_models import SectionBlockContent
+
+    sample = (Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json').read_text(encoding='utf-8')
+    block = SectionBlockContent(markdown='### 住院收入\n\n住院收入同比−3.00%，变化额为−195.00万元。\n\n| 科室 | 同比 |\n| --- | ---: |\n| 住院 | −3.00% |')
+    assert replace_unregistered_numbers(block.markdown, [sample]) == (
+        '### 住院收入\n\n住院收入同比-3.00%，变化额为-195.00万元。\n\n| 科室 | 同比 |\n| --- | ---: |\n| 住院 | -3.00% |'
+    )
+
+
 def test_number_guide_spells_out_month_coverage():
     from smart_reporting.reporting.trace.numeric_text import _month_coverage
 

@@ -995,6 +995,13 @@ def test_change_rate_written_as_percent_points_is_named_as_unit_misuse():
     ]
 
 
+def test_unicode_minus_is_read_as_a_negative_sign_in_review():
+    from pathlib import Path
+
+    sample = (Path(__file__).parent / "fixtures" / "report_quality" / "facts.json").read_text(encoding="utf-8")
+    assert review_content("住院收入同比−3.00%，变化额为−195.00万元。", [sample]) == []
+
+
 def test_clause_checks_do_not_split_numbers_at_thousands_separators():
     # 千分位逗号不是分句符：完整数值仍与“9月”“同比”“累计”“不能”处在同一分句。
     document = json.loads(_comparison_content(change=12345611))
