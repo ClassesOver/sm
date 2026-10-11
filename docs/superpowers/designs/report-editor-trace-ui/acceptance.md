@@ -1196,3 +1196,8 @@ PR #14 合并后找 bug（2026-10-09）：
 
 - 整稿真实渲染首次在本环境跑通（评估建议第 4 项的本地验证）：此前因缺 pandoc，整稿渲染与编辑器真实导出测试一直跳过。本轮以 uv 临时环境取得 PyPI `pypandoc_binary` 自带的 pandoc 3.9（仅放入临时 PATH，未改项目依赖），`test_report_runtime_full_render.py` 与 `test_report_editor_real_export.py` 共 7 项：6 项通过；1 项（`test_render_markdown_publishes_trace_source_appendix_in_pdf_and_word`）失败在测试后段 `validate_pdf` 的 LibreOffice 转换 Word，经核实为环境问题——本沙箱 LibreOffice 连 python-docx 生成的单段落 DOCX 也报 “source file could not be loaded”，在基线分支 `code` 上同样失败，与本分支改动无关。结论：第 1–85 轮改动未破坏真实 PDF/Word 生成链路。
 - 渲染页面目检（pdftoppm 光栅化）：标题、表格、数据来源编号与附录排版正常；附录“方法”一栏对“sum(revenue)/sum(visits)”这类两聚合之比原样显示代码式公式。现分子分母分别写成中文口径（“revenue 求和 ÷ visits 求和”）；含筛选条件的写法保持原有处理。新增 1 例（修复前失败），引用展示、渲染相关 181 项与整稿渲染 6 项通过。
+
+/loop 第 87 轮（2026-10-11）：
+
+- 安装渲染依赖（应用户要求）：第 86 轮的 LibreOffice 失败根因是本环境只装了 `libreoffice-core`，缺少 `libreoffice-writer` 组件，因而无法加载任何 DOCX/HTML。本会话已以 apt 安装 `libreoffice-writer` 与 `pandoc`（3.1.3），不再依赖临时 PATH；LibreOffice 可正常把 DOCX 转为 PDF。整稿渲染与编辑器真实导出 7 项全部通过（此前 6 过 1 败），`test_report_runtime.py` 148 项通过。持久化需在云环境设置脚本中加入：`apt-get update && apt-get install -y --no-install-recommends libreoffice-writer pandoc fonts-noto-cjk`。
+- 富样本目检：以真实渲染链路（WeasyPrint + pandoc）渲染含 H2/H3、粗体数值、中文条目（1）（2）（3）、右对齐数值表、列表与引用块的正文，排版、换行、表格与附录均正常，未发现新问题。
