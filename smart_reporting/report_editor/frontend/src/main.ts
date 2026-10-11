@@ -75,7 +75,7 @@ import { formalHeadings, reportPreflight, showPreflightPanel } from './preflight
 import { editorChineseLocale, formatRevisionLabel } from './localization'
 import { createReportEditor } from './editor-features'
 import { createSharePanel } from './share'
-import { createSourceValidationController, sourceValidationIssueCount, markdownSha256 } from './source-validation'
+import { createSourceValidationController, markdownSha256, nextSourceIssue, sourceCoverageSummary } from './source-validation'
 import { linkedSubjectFromSearch } from './linked-subject'
 
 const root = document.querySelector<HTMLElement>('#app')
@@ -157,9 +157,11 @@ const revisionLabel = root.querySelector<HTMLElement>('.revision-label')
 const metricsLabel = root.querySelector<HTMLElement>('.doc-metrics')
 const structureLabel = root.querySelector<HTMLElement>('.structure-status')
 const imageQualityLabel = root.querySelector<HTMLElement>('.image-quality-status')
-const sourceStatusLabel = document.createElement('span')
+// 有待处理位置时可点击，依次跳到正文中的改动数值、待核实与待复核表格/图表。
+const sourceStatusLabel = document.createElement('button')
+sourceStatusLabel.type = 'button'
 sourceStatusLabel.className = 'source-validation-status'
-sourceStatusLabel.setAttribute('role', 'status')
+sourceStatusLabel.disabled = true
 sourceStatusLabel.setAttribute('aria-live', 'polite')
 sourceStatusLabel.hidden = true
 structureLabel?.after(sourceStatusLabel)
@@ -213,21 +215,11 @@ const sourceValidation = createSourceValidationController(
     } else {
       // 表格与 claim 同为软语义：排序不失效，改值/插删行计入待复核；
       // 复制出的新格（与冻结值重复）同样提示复核，不自动赋予绑定。
-      const issues = sourceValidationIssueCount(result)
-      if (issues) {
-        const numericWarnings = result.warnings?.length ?? 0
-        sourceStatusLabel.textContent = [
-          numericWarnings ? `正文表述待复核 ${numericWarnings} 处` : '',
-          issues > numericWarnings ? `来源待复核 ${issues - numericWarnings} 处` : '',
-        ].filter(Boolean).join(' · ')
-        sourceStatusLabel.dataset.state = 'stale'
-      } else {
-        const hasBindings = result.subjects.length > 0 || (result.tableSummary?.valid ?? 0) > 0 ||
-          (result.charts?.some((chart) => chart.status === 'valid') ?? false)
-        sourceStatusLabel.textContent = hasBindings ? '来源对应当前内容' : '当前内容无精确来源绑定'
-        sourceStatusLabel.dataset.state = hasBindings ? 'valid' : 'unknown'
-      }
+      const coverage = sourceCoverageSummary(result, getEditorMarkdown())
+      sourceStatusLabel.textContent = coverage.text
+      sourceStatusLabel.dataset.state = coverage.state
     }
+    sourceStatusLabel.disabled = sourceStatusLabel.dataset.state !== 'stale'
     sourceStatusLabel.hidden = false
     refreshBodySourceLinks(result)
   },
@@ -238,6 +230,7 @@ const sourceValidation = createSourceValidationController(
     if (!lineagePanelEnabled) return
     sourceStatusLabel.textContent = '来源校验中'
     sourceStatusLabel.dataset.state = 'checking'
+    sourceStatusLabel.disabled = true
     sourceStatusLabel.hidden = false
   },
 )
@@ -530,6 +523,19 @@ try {
       evidenceView.dispatch(evidenceView.state.tr.setMeta(evidenceLocationKey, null).setMeta('addToHistory', false))
     }, 1800)
   }
+  let lastSourceIssue: number | null = null
+  sourceStatusLabel.addEventListener('click', () => {
+    const target = nextSourceIssue(shell.editor, lastSourceIssue, element => evidenceView.posAtDOM(element, 0))
+    if (!target) {
+      status(sourceStatusLabel.title ? '待复核的是正文表述，详见状态提示' : '正文中暂无可定位的待处理位置', 'dirty')
+      return
+    }
+    lastSourceIssue = evidenceView.posAtDOM(target, 0)
+    focusEvidenceTarget(target)
+    target.scrollIntoView({ block: 'center' })
+    // 光标落在标注起点外侧，主动展示该处核对卡片。
+    target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+  })
   let evidenceScene: {
     doc: typeof evidenceView.state.doc
     selection: ReturnType<typeof evidenceView.state.selection.getBookmark>
@@ -584,6 +590,7 @@ try {
         refreshBodySourceLinks(null)
         sourceStatusLabel.textContent = '候选内容尚未核验'
         sourceStatusLabel.dataset.state = 'unknown'
+        sourceStatusLabel.disabled = true
         sourceStatusLabel.title = ''
         status(reviewMessage(), 'dirty')
         return

@@ -211,6 +211,7 @@ export function installValueCard(root: HTMLElement): () => void {
     const mark = target?.closest<HTMLElement>('.report-value-mark')
     if (!mark || !root.contains(mark) || mark === active) return
     active = mark
+    byCaret = false
     let lines: string[] = []
     try { lines = JSON.parse(mark.dataset.valueCard ?? '[]') } catch { lines = [] }
     card.replaceChildren(...lines.map(line => {
@@ -230,11 +231,17 @@ export function installValueCard(root: HTMLElement): () => void {
     active = null
     card.hidden = true
   }
-  const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && active) hide() }
+  // Esc 关闭；开始键入时收起指针或跳转打开的卡片，避免遮挡正文。
+  const escape = (event: KeyboardEvent) => { if (active && (event.key === 'Escape' || !byCaret)) hide() }
+  // 光标打开的卡片随光标离开关闭；指针打开的卡片只随指针离开关闭。
+  let byCaret = false
   const caret = () => {
     const anchor = document.getSelection()?.anchorNode ?? null
-    if (anchor && root.contains(anchor) && (anchor instanceof Element ? anchor : anchor.parentElement)?.closest('.report-value-mark')) show({ target: anchor })
-    else if (active && document.activeElement && root.contains(document.activeElement)) hide()
+    if (anchor && root.contains(anchor) && (anchor instanceof Element ? anchor : anchor.parentElement)?.closest('.report-value-mark')) {
+      const before = active
+      show({ target: anchor })
+      if (active !== before) byCaret = true
+    } else if (active && byCaret) hide()
   }
   root.addEventListener('mouseover', show)
   root.addEventListener('focusin', show)

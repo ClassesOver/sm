@@ -3686,6 +3686,11 @@ button {
   min-height: 18px;
 }
 
+.source-validation-status { padding: 0; border: 0; background: none; color: #2f6b55; font: inherit; }
+.source-validation-status[hidden] { display: none; }
+.source-validation-status:disabled { cursor: default; }
+.source-validation-status:not(:disabled) { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.source-validation-status:not(:disabled):hover { color: #8a3a19; }
 .source-validation-status[data-state='stale'] { color: #a24823; }
 .source-validation-status[data-state='checking'] { color: #326c91; }
 .source-validation-status[data-state='unknown'] { color: #687889; }

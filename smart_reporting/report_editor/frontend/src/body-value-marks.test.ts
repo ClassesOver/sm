@@ -117,3 +117,16 @@ it('shows the hover card when the caret moves into a value mark without touching
   observer.disconnect()
   uninstall()
 })
+
+it('keeps a pointer-opened card when the caret moves elsewhere', () => {
+  const root = document.createElement('div')
+  root.innerHTML = '<p id="plain">正文</p><p><span class="report-value-mark" data-value-state="stale" data-value-card=\'["状态：正文已改动，需复核"]\'>12,780 万元</span></p>'
+  document.body.append(root)
+  const uninstall = installValueCard(root)
+  root.querySelector('.report-value-mark')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+  document.getSelection()!.collapse(root.querySelector('#plain')!.firstChild!, 1)
+  document.dispatchEvent(new Event('selectionchange'))
+  const card = document.querySelector<HTMLElement>('.report-value-card')!
+  expect(card.hidden).toBe(false)
+  uninstall()
+})
