@@ -130,3 +130,30 @@ it('keeps a pointer-opened card when the caret moves elsewhere', () => {
   expect(card.hidden).toBe(false)
   uninstall()
 })
+
+describe('unverified placeholders', () => {
+  const stale = (): TraceValidation => ({
+    draftSha256: 'x', summary: { valid: 1, stale: 0, unbound: 0 },
+    subjects: [
+      { subjectId: 'sub-1', claimId: 'c', sectionId: null, status: 'valid', factValue: 12450, unit: '万元' },
+      { subjectId: 'sub-2', claimId: 'd', sectionId: null, status: 'valid', factValue: 37, unit: '家' },
+    ],
+  })
+
+  it('links a placeholder only to the single source in its own sentence', () => {
+    const own = findValueMarks('华东营收为待核实。[[citation:sub-1]]', stale())
+    expect(own[0].subjectId).toBe('sub-1')
+    const nextSentence = findValueMarks('华北营收为待核实。门店共 37 家。[[citation:sub-2]]', stale())
+    expect(nextSentence.find(mark => mark.state === 'unverified')?.subjectId).toBeUndefined()
+    const two = findValueMarks('营收为待核实[[citation:sub-1]]，门店 37 家[[citation:sub-2]]。', stale())
+    expect(two.find(mark => mark.state === 'unverified')?.subjectId).toBe('sub-1')
+    const ambiguous = findValueMarks('营收为待核实，利润 12,450 万元[[citation:sub-1]]，门店 37 家[[citation:sub-2]]。', stale())
+    expect(ambiguous.find(mark => mark.state === 'unverified')?.subjectId).toBeUndefined()
+  })
+
+  it('does not restore a placeholder from another sentence’s source', () => {
+    const view = fakeView('华北营收为待核实。门店共 37 家。[[citation:sub-2]]')
+    expect(restoreRegisteredValue(view, 'sub-2', stale())).toBe(false)
+    expect(view.state.doc.textContent).toContain('待核实')
+  })
+})

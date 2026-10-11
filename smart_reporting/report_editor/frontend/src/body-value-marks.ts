@@ -113,8 +113,16 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
   }
   for (let index = text.indexOf(UNVERIFIED); index >= 0; index = text.indexOf(UNVERIFIED, index + UNVERIFIED.length)) {
     if (hidden(index)) continue
-    const subjectId = findProtocolMarkers(text.slice(index)).find(marker => marker.kind === 'citation')?.value
-    const subject = validation?.subjects.find(item => item.subjectId === subjectId)
+    // 只关联同一句内唯一的来源（句末标点后紧跟的标记也算本句）；跨句或多个来源时不猜测，
+    // 避免“恢复为登记值”把别的指标的数值填进来。
+    const tail = text.slice(index)
+    const stop = tail.search(/[。；\n]/)
+    const sentence = stop < 0 ? tail : tail.slice(0, stop + 1) + (/^(?:\s*\[\[[a-z/-]+(?::[^\]]*)?\]\])*/.exec(tail.slice(stop + 1))?.[0] ?? '')
+    const citations = [...new Set(findProtocolMarkers(sentence).filter(marker => marker.kind === 'citation').map(marker => marker.value))]
+    // 占位后紧跟的来源标记（中间只有标点）直接归属该来源。
+    const adjacent = /^[\s，、。；]*\[\[citation:([^\]]+)\]\]/.exec(tail.slice(UNVERIFIED.length))?.[1]
+    const linked = adjacent ?? (citations.length === 1 ? citations[0] : undefined)
+    const subject = linked ? validation?.subjects.find(item => item.subjectId === linked) : undefined
     marks.push({
       start: index, end: index + UNVERIFIED.length, state: 'unverified', subjectId: subject?.subjectId,
       card: ['缺少登记依据的数值，发布前已替换为“待核实”',
