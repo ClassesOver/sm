@@ -945,6 +945,21 @@ def test_window_comparisons_are_not_called_single_month_changes(window, text, ex
     assert warnings == expected
 
 
+@pytest.mark.parametrize(("change", "text", "expected"), [
+    (6543211, "收入同比增长约三成。", ["约数表述需复核：增长约三成与登记的同比变化率（5.03%）不符；请直接写登记变化率或调整约数。"]),
+    (40000000, "收入同比增长近三成。", ["约数表述需复核：增长近三成与登记的同比变化率（30.77%）不符；请直接写登记变化率或调整约数。"]),
+    (65000000, "收入同比翻了一番。", ["约数表述需复核：翻了一番与登记的同比变化率（50.00%）不符；请直接写登记变化率或调整约数。"]),
+    # 约数与登记变化率相符、没有对应口径的比较、比例而非变化率（“三成科室”“占比约三成”）不告警。
+    (39000000, "收入同比增长约三成。", []),
+    (-26000000, "收入同比下降近两成。", []),
+    (130000000, "收入同比翻了一番。", []),
+    (6543211, "收入环比增长约三成，三成科室同比增长，占比约三成。", []),
+])
+def test_approximate_rate_wording_is_checked_against_registered_change_rates(change, text, expected):
+    warnings = [w for w in review_content(text, [_comparison_content(change=change)]) if "约数" in w]
+    assert warnings == expected
+
+
 def test_clause_checks_do_not_split_numbers_at_thousands_separators():
     # 千分位逗号不是分句符：完整数值仍与“9月”“同比”“累计”“不能”处在同一分句。
     document = json.loads(_comparison_content(change=12345611))
