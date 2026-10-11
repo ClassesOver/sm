@@ -1,4 +1,5 @@
 import { bodySourceLinksPlugin, updateBodySourceLinks } from './body-source-links'
+import { bodyValueMarksPlugin, installValueCard, updateBodyValueMarks } from './body-value-marks'
 import '@milkdown/crepe/theme/common/prosemirror.css'
 import '@milkdown/crepe/theme/common/reset.css'
 import '@milkdown/crepe/theme/common/block-edit.css'
@@ -349,6 +350,7 @@ const openBodySource = (event: MouseEvent | KeyboardEvent) => {
   void previewBodySource(marker, selected)
 }
 shell.editor.addEventListener('click', openBodySource)
+installValueCard(shell.editor)
 shell.editor.addEventListener('keydown', openBodySource, { capture: true })
 const telemetry = createTelemetryReporter((payload) => client.reportEvent(payload))
 const loadStartedAt = performance.now()
@@ -475,6 +477,7 @@ try {
   crepe.editor.use(protocolMarkerPlugin)
   crepe.editor.use(evidenceLocationPlugin)
   crepe.editor.use(bodySourceLinksPlugin)
+  crepe.editor.use(bodyValueMarksPlugin)
   crepe.editor.use(searchHighlightPlugin)
   crepe.editor.use(indent)
   crepe.editor.use(trailing)
@@ -507,6 +510,7 @@ try {
     void bodySources.then(sources => {
       if (!sources || intent !== bodySourceIntent || getEditorMarkdown() !== markdown) return
       updateBodySourceLinks(evidenceView, shell.editor, sources, result)
+      updateBodyValueMarks(evidenceView, result, sources)
     })
   }
   let evidenceLocationTimer: number | undefined
