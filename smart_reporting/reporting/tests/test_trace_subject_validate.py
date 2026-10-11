@@ -486,6 +486,8 @@ async def test_validate_reports_valid_stale_unbound(tmp_path: Path) -> None:
     assert result["subjects"][0]["unit"] == "万元"
     assert result["subjects"][0]["periods"] == ["2025-09"]
     assert result["subjects"][0]["formula"] == "sum(revenue)"
+    # 编辑器核对卡片使用与导出附录相同的中文口径。
+    assert result["subjects"][0]["formulaText"] == "revenue 求和"
     assert result["subjects"][0]["datasetIds"] == ["dataset-url-abc0001"]
 
     stale_markdown = "收入 3800 万元[[claim:claim-1]]"

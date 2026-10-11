@@ -66,7 +66,7 @@ function subjectCard(subject: Subject, sources: TraceSources | undefined, writte
     `登记值：${formatRegisteredValue(subject.factValue, subject.unit)}`,
     written ? `正文值：${written}` : '',
     periodText(subject.periods) ? `期间：${periodText(subject.periods)}` : '',
-    subject.formula ? `口径：${subject.formula}` : '',
+    subject.formulaText || subject.formula ? `口径：${subject.formulaText || subject.formula}` : '',
     subject.status === 'valid' ? '状态：与登记值一致' : '状态：正文已改动，需复核',
   ].filter(Boolean)
 }
@@ -183,7 +183,10 @@ export function restoreRegisteredValue(view: EditorView, subjectId: string, vali
     .filter(mark => mark.subjectId === subjectId && mark.state !== 'valid')
   if (targets.length !== 1) return false
   const [target] = targets
-  const replacement = formatRegisteredValue(subject.factValue, subject.unit)
+  // 沿用正文原有的数字与单位间距写法，只替换数值。
+  const spaced = /\d\s+\D/.test(view.state.doc.textBetween(target.from, target.to))
+  const replacement = spaced && subject.unit
+    ? `${formatRegisteredValue(subject.factValue)} ${subject.unit}` : formatRegisteredValue(subject.factValue, subject.unit)
   const tr: Transaction = view.state.tr.insertText(replacement, target.from, target.to)
   view.dispatch(tr)
   return true
@@ -191,7 +194,9 @@ export function restoreRegisteredValue(view: EditorView, subjectId: string, vali
 
 /**
  * 悬停数值标注或光标移入时显示核对卡片；卡片只读，不改写正文。返回卸载函数。
- * 标注位于可编辑正文内无法单独获得焦点，键盘用户通过光标位置触发。
+ * 标注位于可编辑正文内无法单独获得焦点，键盘用户通过光标位置触发；读屏内容由标注自身的
+ * aria-label 提供。不得改写标注元素属性：ProseMirror 会把这类 DOM 变动当作外部修改而重绘，
+ * 光标在标注内时重绘又触发 selectionchange，形成死循环。
  */
 export function installValueCard(root: HTMLElement): () => void {
   const card = document.createElement('div')
@@ -214,7 +219,6 @@ export function installValueCard(root: HTMLElement): () => void {
       return row
     }))
     card.dataset.state = mark.dataset.valueState ?? ''
-    mark.setAttribute('aria-describedby', card.id)
     card.hidden = !lines.length
     const box = mark.getBoundingClientRect()
     card.style.left = `${Math.max(8, Math.min(window.scrollX + box.left, window.scrollX + window.innerWidth - 300))}px`
@@ -223,7 +227,6 @@ export function installValueCard(root: HTMLElement): () => void {
   const hide = (event?: Event) => {
     const next = (event as FocusEvent | MouseEvent | undefined)?.relatedTarget as HTMLElement | null | undefined
     if (!active || (next && active.contains(next))) return
-    active.removeAttribute('aria-describedby')
     active = null
     card.hidden = true
   }

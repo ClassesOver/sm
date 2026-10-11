@@ -929,7 +929,7 @@ _FIXED_FORMULAS = {
 _RATIO_FORMULA = re.compile(r"^(?P<numerator>[^/;]+)/(?P<denominator>[^/;]+); difference=\1-\2$")
 
 
-def _readable_formula(formula: str) -> str:
+def readable_formula(formula: str) -> str:
     """冻结事实的计算口径（sum(revenue) WHERE 院区='东院'）改为读者可读的中文说明。"""
     formula = formula.strip()
     if formula in _FIXED_FORMULAS:
@@ -940,7 +940,7 @@ def _readable_formula(formula: str) -> str:
     # 两个聚合之比（sum(revenue)/sum(visits)）：分子分母分别写成中文聚合口径。
     parts = formula.split("/")
     if len(parts) == 2 and all(_FORMULA.match(part.strip()) and " WHERE " not in part for part in parts):
-        return " ÷ ".join(_readable_formula(part) for part in parts)
+        return " ÷ ".join(readable_formula(part) for part in parts)
     match = _FORMULA.match(formula)
     if match is None:
         return formula
@@ -1037,9 +1037,9 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
         if kind == "claim":
             formula = entry.get("formula")
             if isinstance(formula, str) and formula:
-                methods.append(_readable_formula(formula))
+                methods.append(readable_formula(formula))
         else:
-            methods.extend(_readable_formula(method) for method in entry.get("methods") or ())
+            methods.extend(readable_formula(method) for method in entry.get("methods") or ())
             if kind == "chart":
                 methods.extend(f"转换：{note}" for note in (entry.get("transformNotes") or ()))
         rows.append(f"<dd>方法：{html.escape('；'.join(methods) or '未登记')}</dd>")

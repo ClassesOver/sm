@@ -418,9 +418,9 @@ def test_citation_appendix_shows_readable_scope_and_periods() -> None:
     ("自定义口径", "自定义口径"),
 ])
 def test_trace_appendix_methods_are_written_for_readers(formula, expected):
-    from smart_reporting.reporting.delivery.report_runtime.markdown import _readable_formula
+    from smart_reporting.reporting.delivery.report_runtime.markdown import readable_formula
 
-    assert _readable_formula(formula) == expected
+    assert readable_formula(formula) == expected
 
 
 @pytest.mark.parametrize(("value", "unit", "expected"), [

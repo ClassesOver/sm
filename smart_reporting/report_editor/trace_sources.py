@@ -22,6 +22,7 @@ import anyio
 from loguru import logger
 
 from ..reporting.delivery.artifacts_v1 import ReportArtifactManifest
+from ..reporting.delivery.report_runtime.markdown import readable_formula
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import (
     TRACE_BUDGETS_V1,
@@ -856,6 +857,8 @@ class ReportEditorTraceService:
                     "unit": expected_unit,
                     "periods": list(expected_periods),
                     "formula": _entry_formula(entry),
+                    # 编辑器核对卡片展示的中文口径，与导出附录同一转换规则。
+                    "formulaText": readable_formula(formula) if (formula := _entry_formula(entry)) else None,
                     "scope": _entry_scope(entry),
                     "datasetIds": _entry_dataset_ids(entry),
                 }

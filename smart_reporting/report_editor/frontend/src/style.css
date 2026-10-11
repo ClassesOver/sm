@@ -4989,3 +4989,14 @@ button {
   .report-object-source-marker[data-marker-kind="chart"] { margin: -4px -12px -4px auto; }
   .report-object-source-marker[data-marker-state="stale"] { border-color: transparent; box-shadow: inset 0 0 0 1px #efd3a7; }
 }
+
+/* 侧栏核对结论：对照、期间与口径、恢复登记值、原始数据行入口。 */
+.source-preview-verification { margin: 4px 0 14px; }
+.source-preview-verification .source-preview-values { margin-bottom: 10px; }
+.source-preview-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 10px; font-size: 12px; line-height: 1.6; }
+.source-preview-facts dt { color: #5b6b7a; }
+.source-preview-facts dd { margin: 0; color: #234052; overflow-wrap: anywhere; }
+.source-preview-restore { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #e6c48f; border-radius: 8px; background: #fff7e9; color: #8a4b0f; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.source-preview-restore:hover { background: #ffefd2; }
+.source-preview-rows { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 8px 27px; padding: 4px 0; border: 0; background: none; color: #1d5f80; font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.source-preview-rows:hover { color: #0b4f8a; }

@@ -66,8 +66,11 @@ describe('body value marks', () => {
     const view = fakeView('华东营收为 12,780 万元[[citation:sub-1]]')
     expect(documentValueMarks(view.state.doc, validation('stale', 12780))).toHaveLength(1)
     expect(restoreRegisteredValue(view, 'sub-1', validation('stale', 12780))).toBe(true)
-    expect(view.state.doc.textContent).toBe('华东营收为 12,450万元[[citation:sub-1]]')
+    expect(view.state.doc.textContent).toBe('华东营收为 12,450 万元[[citation:sub-1]]')
     expect(restoreRegisteredValue(view, 'sub-1', validation('valid'))).toBe(false)
+    const compact = fakeView('营收12,780万元[[citation:sub-1]]')
+    expect(restoreRegisteredValue(compact, 'sub-1', validation('stale', 12780))).toBe(true)
+    expect(compact.state.doc.textContent).toBe('营收12,450万元[[citation:sub-1]]')
   })
 
   it('formats unknown registered values without inventing data', () => {
@@ -85,7 +88,8 @@ describe('body value marks', () => {
     const card = document.querySelector<HTMLElement>('.report-value-card')!
     expect(card.hidden).toBe(false)
     expect(card.textContent).toBe('指标：华东营收登记值：12,450万元')
-    expect(mark.getAttribute('aria-describedby')).toBe(card.id)
+    // 不改写编辑器内的标注元素，避免 ProseMirror 重绘循环。
+    expect(mark.hasAttribute('aria-describedby')).toBe(false)
     mark.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
     expect(card.hidden).toBe(true)
     uninstall()
@@ -93,7 +97,7 @@ describe('body value marks', () => {
   })
 })
 
-it('shows the hover card when the caret moves into a value mark', () => {
+it('shows the hover card when the caret moves into a value mark without touching editor DOM', async () => {
   const root = document.createElement('div')
   root.innerHTML = '<p>营收 <span class="report-value-mark" data-value-state="stale" data-value-card=\'["状态：正文已改动，需复核"]\'>12,780 万元</span></p>'
   document.body.append(root)
@@ -104,5 +108,12 @@ it('shows the hover card when the caret moves into a value mark', () => {
   const card = document.querySelector<HTMLElement>('.report-value-card')!
   expect(card.hidden).toBe(false)
   expect(card.dataset.state).toBe('stale')
+  const mutations: MutationRecord[] = []
+  const observer = new MutationObserver(records => mutations.push(...records))
+  observer.observe(root, { subtree: true, attributes: true, childList: true })
+  document.dispatchEvent(new Event('selectionchange'))
+  await Promise.resolve()
+  expect([...mutations, ...observer.takeRecords()]).toEqual([])
+  observer.disconnect()
   uninstall()
 })

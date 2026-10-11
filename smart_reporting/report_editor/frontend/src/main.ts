@@ -1,5 +1,5 @@
 import { bodySourceLinksPlugin, updateBodySourceLinks } from './body-source-links'
-import { bodyValueMarksPlugin, installValueCard, updateBodyValueMarks } from './body-value-marks'
+import { bodyValueMarksPlugin, installValueCard, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 import '@milkdown/crepe/theme/common/prosemirror.css'
 import '@milkdown/crepe/theme/common/reset.css'
 import '@milkdown/crepe/theme/common/block-edit.css'
@@ -198,6 +198,7 @@ let bodyCatalog: Promise<import('./api').TraceSources> | undefined
 const loadBodyCatalog = () => bodyCatalog ??= client.sources().catch(error => { bodyCatalog = undefined; throw error })
 let lineagePanelEnabled = true
 let refreshBodySourceLinks = (_result: import('./api').TraceValidation | null) => {}
+let restoreBodyValue = (_subjectId: string) => false
 const sourceValidation = createSourceValidationController(
   client,
   () => getEditorMarkdown(),
@@ -332,8 +333,10 @@ const previewBodySource = createBodySourcePreview({
   client,
   sources: loadBodyCatalog,
   validation: () => currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null,
+  restore: subjectId => restoreBodyValue(subjectId),
   open: reference => {
-    if (reference.kind === 'analysis') void evidenceBrowser.openAnalysis(reference.value)
+    if (reference.kind === 'dataset') evidenceBrowser.openObject({ kind: 'dataset', key: reference.value, label: reference.label })
+    else if (reference.kind === 'analysis') void evidenceBrowser.openAnalysis(reference.value)
     else if (reference.kind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: reference.value, label: '图表数据来源' })
     else void evidenceBrowser.openSubject(reference.value)
   },
@@ -512,6 +515,11 @@ try {
       updateBodySourceLinks(evidenceView, shell.editor, sources, result)
       updateBodyValueMarks(evidenceView, result, sources)
     })
+  }
+  restoreBodyValue = (subjectId) => {
+    const validation = currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null
+    if (reviewMode !== 'idle' || !validation) return false
+    return restoreRegisteredValue(evidenceView, subjectId, validation)
   }
   let evidenceLocationTimer: number | undefined
   focusEvidenceTarget = (target) => {

@@ -234,6 +234,8 @@ export interface TraceValidation {
     unit?: string | null
     periods?: unknown
     formula?: string | null
+    /** 服务端按导出附录规则转换的中文口径。 */
+    formulaText?: string | null
     scope?: unknown
     datasetIds?: string[]
   }[]
