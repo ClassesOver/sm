@@ -1109,7 +1109,10 @@ def test_cjk_enumerated_lines_become_separate_paragraphs(markdown, expected):
 @pytest.mark.parametrize("interior", ["short", "info", "other", "indented"])
 @pytest.mark.parametrize("closing", ["same", "longer"])
 def test_cjk_enumeration_preserves_fence_contents_and_resumes_after_close(fence, interior, closing):
-    from smart_reporting.reporting.delivery.report_runtime.markdown import separate_enumerated_lines
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        _normalize_report_markdown_segments,
+        separate_enumerated_lines,
+    )
 
     candidates = {
         "short": fence[:-1], "info": fence + "python",
@@ -1119,6 +1122,10 @@ def test_cjk_enumeration_preserves_fence_contents_and_resumes_after_close(fence,
     code = f"{fence}\n{candidates[interior]}\n一、literal\n{close}"
     markdown = code + "\n正文\n一、条目"
     assert separate_enumerated_lines(markdown) == code + "\n正文\n\n一、条目"
+    for protected in (code, code.replace("\n", "\r\n")):
+        assert _normalize_report_markdown_segments(
+            protected, lambda line: line.replace("literal", "changed"),
+        ) == protected
 
 
 
