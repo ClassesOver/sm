@@ -864,7 +864,14 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                     and isinstance(entry.get("changeRate"), (int, float))
                     and not isinstance(entry.get("changeRate"), bool)):
                 rates[entry["comparisonType"]].add(Decimal(str(entry["changeRate"])))
-    if rates["yoy"] or rates["mom"]:
+    # 冻结事实中不是变化率的百分数（占比、完成率、百分数指标本身）；补证脚本给出的
+    # 变化率不在此列，不能据此判定“同比增长X%”写错了口径。
+    other_percents = {
+        Decimal(str(value)) for token, value, unit, target in _frozen_number_entries(contents)
+        if (target or unit) == "%" and value is not None
+        and token[2:-2].split(":")[2] not in {"changeRate", "change"}
+    }
+    if rates["yoy"] or rates["mom"] or other_percents:
         for match in re.finditer(
             rf"(?P<kind>同比|环比)(?P<verb>{DIRECTION_WORD_PATTERN}|变化|变动)?(?:率)?"
             r"(?:了|约|为|达)?\s*(?P<number>[+-]?\d+(?:\.\d+)?)%", text,
@@ -882,6 +889,12 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
                 other_label = "环比" if other == "mom" else "同比"
                 warnings.append(
                     f"同比/环比口径混淆：{match[0]}。该变化率对应已登记的{other_label}比较，请核对比较口径。"
+                )
+            elif not stated_values and same_magnitude(other_percents):
+                # 数字本身已登记，但只是占比、完成率等其他百分数，不是任何比较的变化率。
+                warnings.append(
+                    f"变化率口径需复核：{match[0]}。该百分数对应已登记的其他指标（如占比、完成率），"
+                    f"不是{match['kind']}变化率。"
                 )
             # 幅度相同但方向相反：“下降”对应正的登记变化率，或“增长”对应负的登记变化率。
             falling = match["verb"] in FALLING_WORDS

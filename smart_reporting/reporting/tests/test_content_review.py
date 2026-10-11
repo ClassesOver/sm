@@ -886,3 +886,16 @@ def test_visit_counts_written_as_persons_are_flagged():
 def test_historical_claims_need_longer_history(text, flagged):
     warnings = [w for w in review_content(text, [_comparison_content()]) if "历史比较" in w]
     assert bool(warnings) is flagged
+
+
+@pytest.mark.parametrize(("text", "flagged"), [
+    ("收入同比增长45.00%。", True),
+    # 登记的同比变化率与占比本身的写法不告警。
+    ("收入同比增长5.03%，门诊收入占比45.00%。", False),
+])
+def test_other_percentages_written_as_growth_rates_are_flagged(text, flagged):
+    document = json.loads(_comparison_content())
+    document["metrics"].append({**_metric(field="share", values=(40, 45, 50)), "factId": "fact-" + "e" * 16,
+                                "unit": "%", "aggregation": "average", "total": 45.0})
+    warnings = [w for w in review_content(text, [json.dumps(document)]) if "变化率口径" in w]
+    assert bool(warnings) is flagged
