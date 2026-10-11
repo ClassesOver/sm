@@ -391,11 +391,15 @@ def test_section_block_content_keeps_short_heading_with_punctuation() -> None:
     assert content.markdown == "### 收入分析：门诊与住院\n\n正文。"
 
 
-def test_section_block_content_writes_full_width_numbers_in_half_width() -> None:
+def test_section_block_content_normalizes_number_notation() -> None:
     # 全角数字与百分号会让数值核对认不出数字：入模校验前先改为半角，行内代码保持原样。
     content = SectionBlockContent(markdown="### 收入规模\n\n收入１３，６５４．３２万元，同比增长５．０３％，见`５％`。")
 
     assert content.markdown == "### 收入规模\n\n收入13,654.32万元，同比增长5.03%，见`５％`。"
+    # 百分点缩写同样在入模校验前改写，复核才能核对百分点差值。
+    assert SectionBlockContent(markdown="### 收入结构\n\n药占比下降2.1pct。").markdown == (
+        "### 收入结构\n\n药占比下降2.1个百分点。"
+    )
 
 
 def test_section_block_content_rejects_runon_heading_without_short_prefix() -> None:

@@ -307,11 +307,23 @@ _FULL_WIDTH_GROUPED_NUMBER = re.compile(
 )
 
 
-def normalize_full_width_numbers(text: str) -> str:
-    """全角数字与百分号改为半角，数字之间的全角点改为小数点；“1．收入”等条目编号不动。"""
+# “提高2pp”“提升2个pct”“2 ppt”是百分点的英文缩写：中文报告写“个百分点”，复核才能按
+# 两项登记百分数之差核对。前接字母、连字符、点或冒号的是标识符，不改。
+_PERCENT_POINT_ABBREVIATION = re.compile(
+    r"(?<![A-Za-z0-9_.:\-])(?P<number>\d+(?:\.\d+)?)[ \t]*(?:个[ \t]*)?(?i:pp|ppt|pct)(?![A-Za-z0-9_])"
+)
+
+
+def normalize_number_notation(text: str) -> str:
+    """数字写法统一为数值核对可识别的形式。
+
+    全角数字与百分号改为半角，数字之间的全角点改为小数点（“1．收入”等条目编号不动）；
+    百分点缩写 pp/ppt/pct 改为“个百分点”。
+    """
 
     text = _FULL_WIDTH_GROUPED_NUMBER.sub(lambda match: match[0].replace("，", ","), text)
-    return _FULL_WIDTH_DECIMAL_POINT.sub(".", text.translate(_FULL_WIDTH_NUMERALS))
+    text = _FULL_WIDTH_DECIMAL_POINT.sub(".", text.translate(_FULL_WIDTH_NUMERALS))
+    return _PERCENT_POINT_ABBREVIATION.sub(lambda match: f"{match['number']}个百分点", text)
 
 
 _COMPARISON_TERMS = {"yoy": "同比", "mom": "环比"}
@@ -333,7 +345,7 @@ def _normalize_cjk_wording_text(text: str) -> str:
         return f"{start}至{_cjk_date(match, 'b', omit_year=same_year)}"
 
     def convert(piece: str) -> str:
-        piece = _ISO_DATE_RANGE.sub(range_text, normalize_full_width_numbers(piece))
+        piece = _ISO_DATE_RANGE.sub(range_text, normalize_number_notation(piece))
         piece = _ISO_DATE_SINGLE.sub(lambda match: _cjk_date(match, "a"), piece)
         piece = _PADDED_CJK_DATE.sub("", piece)
         # 数值目录的比较口径 yoy/mom 是字段值，正文写中文“同比/环比”。

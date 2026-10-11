@@ -989,6 +989,9 @@ def test_cjk_punctuation_is_normalized_only_in_chinese_prose(markdown, expected)
     # 全角数字、百分号与全角千分位改为半角；条目编号“1．”与半角数字的全角逗号列举不变。
     ("收入１３，６５４．３２万元，同比增长５．０３％。", "收入13,654.32万元，同比增长5.03%。"),
     ("１．床位分别为１２０，１３５，１５０张；2．增长5.03％。", "1．床位分别为120，135，150张；2．增长5.03%。"),
+    # 百分点缩写 pp/ppt/pct 改为“个百分点”；标识符、行内代码与英文单词不变。
+    ("占比提高2pp，提升1.5个pct，下降0.8 PPT。", "占比提高2个百分点，提升1.5个百分点，下降0.8个百分点。"),
+    ("v2pp、fact.3pct、`2pp`与2 apps不变。", "v2pp、fact.3pct、`2pp`与2 apps不变。"),
 ])
 def test_iso_dates_in_prose_are_written_in_chinese(markdown, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import normalize_cjk_wording

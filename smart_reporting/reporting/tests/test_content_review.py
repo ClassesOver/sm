@@ -784,6 +784,13 @@ def test_full_width_numbers_are_checked_like_half_width():
     assert warnings == ["数值缺少可核对的冻结依据：7.77%。请使用对应数值引用，或删去未登记的计算结果。"]
 
 
+def test_percent_point_abbreviations_are_checked_like_percent_points():
+    # “提高9.99pp”与“9.99个百分点”同样须由两项登记百分数相减得到。
+    warnings = [w for w in review_content("占比提高9.99pp。", [_comparison_content()]) if "百分点差值" in w]
+    assert warnings == ["百分点差值缺少可核对的冻结依据：9.99个百分点。须由两项已登记百分数相减得到，"
+                        "请写出两项百分数或删去该差值。"]
+
+
 def test_unregistered_multiples_are_flagged():
     warnings = [w for w in review_content("本期收入是上年同期的3.2倍，较上年为1.05倍。", [_comparison_content()])
                 if "倍数" in w]

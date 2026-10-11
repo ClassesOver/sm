@@ -21,7 +21,7 @@ from ...delivery.draft_v1 import (
     ReportServerTable,
     promote_orphan_h4_headings,
 )
-from ...delivery.report_runtime.markdown import normalize_full_width_numbers
+from ...delivery.report_runtime.markdown import normalize_number_notation
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...model_policy import (
     ThinkingFailureKind,
@@ -691,7 +691,7 @@ def _verified_caption(text: str, number_contents: tuple[str, ...]) -> str:
 
     if not number_contents:
         return text
-    checked = replace_unregistered_numbers(normalize_full_width_numbers(text), number_contents)
+    checked = replace_unregistered_numbers(normalize_number_notation(text), number_contents)
     # “待核实”比被替换的数字长，超出图注 200 字上限时截断而不是让装配失败。
     return checked if len(checked) <= 200 else f"{checked[:199]}…"
 

@@ -19,7 +19,7 @@ from .report_runtime.markdown import (
     format_heading_label,
     normalize_cjk_punctuation,
     normalize_cjk_wording,
-    normalize_full_width_numbers,
+    normalize_number_notation,
     normalize_report_markdown_strong_spacing,
     separate_enumerated_lines,
 )
@@ -302,8 +302,8 @@ def validate_report_body_markdown(markdown: str) -> None:
 
 
 def _normalize_model_text(markdown: str) -> str:
-    # 全角数字先改半角，之后的数值核对与复核才能识别“５．０３％”这类写法。
-    normalized = _MODEL_PROTOCOL_MARKER.sub("", normalize_full_width_numbers(markdown))
+    # 全角数字与百分点缩写先统一写法，之后的数值核对与复核才能识别“５．０３％”“2pp”。
+    normalized = _MODEL_PROTOCOL_MARKER.sub("", normalize_number_notation(markdown))
     # alt 文本通常包含模型对图表的业务解释，保留为普通文本；真实图片仍只由
     # chartIds 绑定并由服务端装配，模型提供的路径和 title 永远不会进入产物。
     return _MODEL_IMAGE.sub(lambda match: match.group("alt").strip(), normalized)
