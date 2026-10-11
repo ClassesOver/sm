@@ -497,6 +497,58 @@ def _group_ranking_warnings(text: str, documents: list[dict[str, Any]]) -> list[
     return list(dict.fromkeys(warnings))
 
 
+def _metric_value_attribution_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]],
+                                       field_definitions: Mapping[str, str]) -> list[str]:
+    """“门诊收入同比增长5.03%”而 5.03% 是住院收入的登记值时提示数值归属（软告警）。
+
+    分句只点名一个指标业务名称时判定：数值只对得上其他指标的登记值，对不上该指标、
+    派生指标或补证中的任何登记值。业务名称取字段定义中含汉字、至少两个字符的名称。
+    """
+    labels_by_fact: dict[str, str] = {}
+    for document in documents:
+        for array in ("metrics", "comparisons"):
+            for entry in document.get(array) or ():
+                if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
+                    continue
+                label = field_definitions.get(str(entry.get("field", "")))
+                if isinstance(label, str) and len(label) >= 2 and re.search(r"[\u3400-\u9fff]", label):
+                    labels_by_fact[entry["factId"]] = label
+    labels = set(labels_by_fact.values())
+    if len(labels) < 2:
+        return []
+    # (业务名称或 None, 单位, 原值)：None 表示派生、对账或补证数值，对上时不判定归属。
+    values: list[tuple[str | None, str, Decimal]] = []
+    for token, value, unit, _target in _frozen_number_entries(contents):
+        if value is not None and unit:
+            values.append((labels_by_fact.get(token[2:-2].split(":")[1]), unit, Decimal(str(value))))
+    for unit, numbers in supplemental_number_values(contents).items():
+        values.extend((None, unit, number) for number in numbers)
+    warnings: list[str] = []
+    for clause in _CLAUSE_BREAK.split(text):
+        named = [label for label in labels if label in clause]
+        named = [label for label in named if not any(label != other and label in other for other in named)]
+        if len(named) != 1:
+            continue
+        for match in _VALUE.finditer(clause):
+            number = Decimal(match[1].replace(",", ""))
+            if number == 0:
+                continue
+            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+            owners: set[str | None] = set()
+            for label, unit, value in values:
+                scales = _unit_scales(unit)
+                if unit != match[2] and (scales is None or match[2] not in scales):
+                    continue
+                converted = value if unit == match[2] else value * scales[unit] / scales[match[2]]
+                # 下降幅度常写成正数：变化额、变化率按绝对值核对。
+                if abs(converted).quantize(quantum, rounding=ROUND_HALF_UP) == abs(number):
+                    owners.add(label)
+            if len(owners) == 1 and None not in owners and named[0] not in owners:
+                warnings.append(f"指标数值归属需复核：{named[0]}名下的{match[0]}是{next(iter(owners))}的登记值。"
+                                f"请改用{named[0]}对应的数值引用，或改写主语。")
+    return list(dict.fromkeys(warnings))
+
+
 # 分句含比较、变化或全院合计语境时，数值不一定是该分组自身的值。
 _GROUP_VALUE_CONTEXT = re.compile(
     r"较|比上|同比|环比|增加|减少|增长|下降|相差|差距|高出|低出|多出|少于|超出|全院|合计|共计|累计|总|占"
@@ -786,6 +838,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
     warnings.extend(_group_ranking_warnings(text, documents))
     warnings.extend(_group_value_attribution_warnings(text, documents))
+    warnings.extend(_metric_value_attribution_warnings(text, contents, documents, field_definitions or {}))
     warnings.extend(_monthly_average_warnings(text, contents))
     warnings.extend(_comparison_amount_warnings(text, contents, documents))
     warnings.extend(_full_year_warnings(text, contents, documents))

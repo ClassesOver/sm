@@ -719,6 +719,35 @@ def test_group_value_attribution_keeps_thousands_separators_and_ignores_code_nam
     assert warnings == ["分组数值归属需复核：儿科名下的34,567人次是心血管内科的登记值。请改用儿科对应的数值引用，或改写主语。"]
 
 
+def _two_metric_content():
+    def comparison(letter, field, current, baseline):
+        return {"factId": "fact-" + letter * 16, "comparisonType": "yoy", "field": field, "fieldRef": "h." + field,
+                "currentDatasetId": "current", "baselineDatasetId": "base", "currentDatasetSha256": "b" * 64,
+                "baselineDatasetSha256": "c" * 64, "currentTotal": current, "baselineTotal": baseline,
+                "change": current - baseline, "changeRate": (current - baseline) / baseline * 100,
+                "formula": "x", "unit": "元"}
+    return json.dumps({"analysisId": "analysis_001", "metrics": [
+        {**_metric("outpatient"), "factId": "fact-" + "a" * 16, "unit": "元", "total": 12345600},
+        {**_metric("inpatient"), "factId": "fact-" + "b" * 16, "unit": "元", "total": 23456700},
+    ], "comparisons": [comparison("c", "outpatient", 12345600, 11735360),
+                       comparison("d", "inpatient", 23456700, 24000000)]})
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("门诊收入同比增长2.26%。",
+     ["指标数值归属需复核：门诊收入名下的2.26%是住院收入的登记值。请改用门诊收入对应的数值引用，或改写主语。"]),
+    ("住院收入1,234.56万元。",
+     ["指标数值归属需复核：住院收入名下的1,234.56万元是门诊收入的登记值。请改用住院收入对应的数值引用，或改写主语。"]),
+    # 归属正确（含下降幅度写成正数）、多个指标并列与未点名指标的分句不告警。
+    ("门诊收入1,234.56万元，同比增长5.20%；住院收入同比减少54.33万元，降幅2.26%。", []),
+    ("门诊收入较住院收入低1,111.11万元，两者合计3,580.23万元。", []),
+])
+def test_metric_values_written_under_another_metric_are_flagged(text, expected):
+    fields = {"outpatient": "门诊收入", "inpatient": "住院收入"}
+    warnings = [w for w in review_content(text, [_two_metric_content()], field_definitions=fields) if "数值归属" in w]
+    assert warnings == expected
+
+
 def test_group_ranking_is_skipped_when_several_metrics_have_groups():
     document = json.loads(_grouped_metric_document())
     document["metrics"].append({**document["metrics"][0], "factId": "fact-" + "e" * 16, "field": "visits"})
