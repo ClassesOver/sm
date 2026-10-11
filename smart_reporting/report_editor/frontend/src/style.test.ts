@@ -275,7 +275,8 @@ describe('report editor visual hierarchy', () => {
 
     expect(declaration(mediumRules, '.secondary-actions', 'display')).toBe('inline-flex')
     expect(declaration(mediumRules, '.report-actions [data-action="more"]', 'display')).toBe('none')
-    expect(declaration(mediumRules, '.toolbar-group-output [data-action="pdf"] span', 'display')).toBe('none')
+    // 导出按钮保留文字，区分两个相近的文件图标。
+    expect(declaration(mediumRules, '.toolbar-group-output [data-action="pdf"] span', 'display')).toBeUndefined()
     expect(declaration(mediumRules, '.toolbar-group-edit-view [data-action="focus"] span', 'display')).toBe('none')
     expect(declaration(compactRules, '.secondary-actions', 'display')).toBe('none')
     expect(declaration(compactRules, '.report-actions [data-action="more"]', 'display')).toBe('inline-flex')
