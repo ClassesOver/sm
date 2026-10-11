@@ -748,6 +748,25 @@ def test_metric_values_written_under_another_metric_are_flagged(text, expected):
     assert warnings == expected
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("外科、骨科、儿科收入位列前三。",
+     ["分组排名需复核：外科、骨科、儿科被写为前三名，冻结分组结果的前三名为心内科、外科、骨科。"]),
+    ("收入排名后两位的是儿科和外科。", ["分组排名需复核：儿科、外科被写为后两名，冻结分组结果的后两名为内科、儿科。"]),
+    # 排名正确、期间写法（前三季度、前3个月）、否定表述与点名数不等于 N 时不告警。
+    ("收入位列前三的科室为心内科、外科、骨科；后2名为儿科、内科。", []),
+    ("前三季度外科、骨科、儿科收入增长，前3个月外科与骨科收入较高。", []),
+    ("外科、骨科、儿科并非前三。", []),
+    ("心内科、外科、骨科位列前三，内科最低。", []),
+])
+def test_group_top_n_claims_are_checked_against_frozen_groups(text, expected):
+    groups = [{"group": group, "value": value}
+              for group, value in (("心内科", 500), ("外科", 400), ("骨科", 300), ("儿科", 200), ("内科", 100))]
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [{
+        **_metric(), "unit": "元", "topGroups": groups, "bottomGroups": list(reversed(groups)),
+    }]})
+    assert [w for w in review_content(text, [content]) if "分组排名" in w] == expected
+
+
 def test_group_ranking_is_skipped_when_several_metrics_have_groups():
     document = json.loads(_grouped_metric_document())
     document["metrics"].append({**document["metrics"][0], "factId": "fact-" + "e" * 16, "field": "visits"})

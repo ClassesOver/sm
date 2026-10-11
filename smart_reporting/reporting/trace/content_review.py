@@ -549,6 +549,50 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
     return list(dict.fromkeys(warnings))
 
 
+_CHINESE_COUNTS = {**{word: index for index, word in enumerate("一二三四五六七八九十", 1)}, "两": 2}
+# “位列前三”“排名后5位”；“前三季度”“前3个月”等期间写法不是排名。
+_GROUP_TOP_N = re.compile(
+    r"(?P<side>前|后|末|倒数)\s*(?P<n>[两二三四五六七八九十]|[2-9]|10)\s*(?:名|位)?(?!\s*(?:个|季|月|周|年|天|日|期|次|项|成))"
+)
+
+
+def _group_top_n_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+    """“外科、骨科、儿科位列前三”与冻结分组排名不符时提示复核（软告警）。
+
+    与最高/最低检查同一前提：全部证据中恰有一个本期指标带分组排名。句中点名的已登记
+    分组数须等于 N，且第 N 名与第 N+1 名不并列；月份、比率、同比环比与否定表述不判定。
+    """
+    metrics = [entry for document in documents for entry in document.get("metrics") or ()
+               if isinstance(entry, dict) and "current" in (entry.get("periodRoles") or ())
+               and (entry.get("topGroups") or entry.get("bottomGroups"))]
+    if len(metrics) != 1:
+        return []
+    ranked = {}
+    for side, key in (("top", "topGroups"), ("bottom", "bottomGroups")):
+        ranked[side] = [(str(item["group"]), Decimal(str(item["value"]))) for item in metrics[0].get(key) or ()
+                        if isinstance(item, dict) and item.get("group")
+                        and isinstance(item.get("value"), (int, float)) and not isinstance(item.get("value"), bool)]
+    names = {group for items in ranked.values() for group, _ in items}
+    warnings: list[str] = []
+    for sentence in re.split(r"[。；\n]", text):
+        claim = _GROUP_TOP_N.search(sentence)
+        if (claim is None or re.search(r"\d{1,2}月|占比|比重|比例|增长率|增幅|降幅|增速|同比|环比|不是|并非|未进入|未能|未进|不在", sentence)):
+            continue
+        count = _CHINESE_COUNTS.get(claim["n"]) or int(claim["n"])
+        items = ranked["top" if claim["side"] == "前" else "bottom"]
+        named = [group for group in names if group in sentence]
+        named = [group for group in named if not any(group != other and group in other for other in named)]
+        if len(named) != count or len(items) < count or (len(items) > count and items[count - 1][1] == items[count][1]):
+            continue
+        expected = [group for group, _ in items[:count]]
+        if set(named) != set(expected):
+            side = "前" if claim["side"] == "前" else "后"
+            written = "、".join(sorted(named, key=sentence.index))
+            warnings.append(f"分组排名需复核：{written}被写为{side}{claim['n']}名，"
+                            f"冻结分组结果的{side}{claim['n']}名为{'、'.join(expected)}。")
+    return list(dict.fromkeys(warnings))
+
+
 # 分句含比较、变化或全院合计语境时，数值不一定是该分组自身的值。
 _GROUP_VALUE_CONTEXT = re.compile(
     r"较|比上|同比|环比|增加|减少|增长|下降|相差|差距|高出|低出|多出|少于|超出|全院|合计|共计|累计|总|占"
@@ -837,6 +881,7 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
     warnings.extend(_group_ranking_warnings(text, documents))
+    warnings.extend(_group_top_n_warnings(text, documents))
     warnings.extend(_group_value_attribution_warnings(text, documents))
     warnings.extend(_metric_value_attribution_warnings(text, contents, documents, field_definitions or {}))
     warnings.extend(_monthly_average_warnings(text, contents))
