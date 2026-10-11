@@ -5005,3 +5005,19 @@ button {
 .source-preview-restore:hover { background: #ffefd2; }
 .source-preview-rows { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 8px 27px; padding: 4px 0; border: 0; background: none; color: #1d5f80; font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .source-preview-rows:hover { color: #0b4f8a; }
+
+/* 引用页线性追溯链：正文 → 事实 → 计算 → 快照 → 原始行，窄屏纵向排列。 */
+.evidence-trace-chain { margin: 16px 0 6px; }
+.evidence-trace-chain h2 { margin: 0 0 10px; color: #1b2a41; font-size: 15px; }
+.evidence-trace-chain ol { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 0; padding: 0; list-style: none; counter-reset: trace-step; }
+.evidence-trace-chain li { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 132px; flex: 1 1 132px; padding: 10px 12px; border: 1px solid #d8e5ed; border-radius: 10px; background: #fff; }
+.evidence-trace-chain li + li::before { content: '→'; position: absolute; left: -8px; top: 50%; transform: translate(-50%, -50%); color: #5b6b7a; font-size: 12px; }
+.evidence-trace-chain li[data-missing] { border-style: dashed; background: #f7f9fb; }
+.evidence-trace-chain li[data-missing] .evidence-trace-step-body { color: #5b6b7a; }
+.evidence-trace-step-label { color: #4a5d6e; font-size: 12px; font-weight: 600; letter-spacing: .5px; }
+.evidence-trace-step-body { display: flex; flex-wrap: wrap; gap: 6px; color: #1b2a41; font-size: 13px; overflow-wrap: anywhere; }
+.evidence-trace-step-body .ui-button { min-height: 30px; padding: 4px 10px; font-size: 12.5px; }
+@media (max-width: 720px) {
+  .evidence-trace-chain ol { flex-direction: column; }
+  .evidence-trace-chain li + li::before { content: '↓'; left: 50%; top: -8px; transform: translate(-50%, -50%); }
+}
