@@ -429,16 +429,19 @@ def separate_enumerated_lines(markdown: str) -> str:
 
     lines = markdown.split("\n")
     result: list[str] = []
-    fence: str | None = None
+    fence: tuple[str, int] | None = None
     for line in lines:
         opening = _FENCED_CODE_START.match(line)
         if fence is not None:
-            if opening is not None and opening["fence"][0] == fence:
+            indent = len(line) - len(line.lstrip(" "))
+            candidate = line.lstrip(" ").rstrip(" \t\r")
+            if indent <= 3 and len(candidate) >= fence[1] and set(candidate) == {fence[0]}:
                 fence = None
             result.append(line)
             continue
         if opening is not None:
-            fence = opening["fence"][0]
+            marker = opening["fence"]
+            fence = (marker[0], len(marker))
             result.append(line)
             continue
         previous = result[-1] if result else ""

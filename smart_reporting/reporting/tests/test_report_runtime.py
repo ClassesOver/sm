@@ -1105,6 +1105,22 @@ def test_cjk_enumerated_lines_become_separate_paragraphs(markdown, expected):
     assert separate_enumerated_lines(markdown) == expected
 
 
+@pytest.mark.parametrize("fence", ["````", "~~~~"])
+@pytest.mark.parametrize("interior", ["short", "info", "other", "indented"])
+@pytest.mark.parametrize("closing", ["same", "longer"])
+def test_cjk_enumeration_preserves_fence_contents_and_resumes_after_close(fence, interior, closing):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import separate_enumerated_lines
+
+    candidates = {
+        "short": fence[:-1], "info": fence + "python",
+        "other": "~~~~" if fence[0] == "`" else "````", "indented": "    " + fence,
+    }
+    close = "   " + fence + (fence[0] if closing == "longer" else "") + " \t"
+    code = f"{fence}\n{candidates[interior]}\n一、literal\n{close}"
+    markdown = code + "\n正文\n一、条目"
+    assert separate_enumerated_lines(markdown) == code + "\n正文\n\n一、条目"
+
+
 
 @pytest.mark.parametrize(("markdown", "expected"), [
     # WeasyPrint 把中文之间的段内换行渲染成空格：两侧均为宽字符时去掉换行。
