@@ -23,6 +23,8 @@ try {
   await page.goto('http://127.0.0.1:4173/reports/v1/editor/fixture-report/1', { waitUntil: 'networkidle' })
   await page.locator('[data-action="sources"]').click()
   await page.locator('.evidence-directory-item').filter({ hasText: '事实产出' }).click()
+  // 15 个节点以内的小图默认 2D；本检查针对 3D，先显式切换。
+  await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
   await page.locator('.evidence-graph-3d canvas').waitFor()
   const choose = async (id, value, period) => {
     await page.getByRole('combobox', { name: '选择 3D 节点预览' }).selectOption(id)

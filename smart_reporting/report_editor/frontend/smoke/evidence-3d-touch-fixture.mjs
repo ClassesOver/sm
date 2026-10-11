@@ -14,6 +14,8 @@ try {
   await page.locator('.evidence-directory-toggle').tap()
   await page.locator('.evidence-directory-item', { hasText: '正文引用' }).tap()
   await page.getByRole('button', { name: '查看关系图', exact: true }).tap()
+  // 15 个节点以内的小图默认 2D；本检查针对 3D，先显式切换。
+  await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).tap()
   const canvas = page.locator('.evidence-graph-3d canvas')
   const picker = page.getByRole('combobox', { name: '选择 3D 节点预览' })
   await canvas.waitFor()

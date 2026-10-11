@@ -18,10 +18,6 @@ const traceSources = {
     subjectId: 'sub-fixture-001', subjectKind: 'text_claim', locator: { sectionId: 'section-fixture' },
     factRefs: [{ analysisId: 'analysis-fixture-001', factId: 'fact-fixture-001' }], computationId: 'comp-fixture-001',
   }],
-  facts: [{
-    analysisId: 'analysis-fixture-001', factId: 'fact-fixture-001', factKind: 'metric', label: 'revenue', name: '华东营收',
-    unit: '万元', displayValue: 12450, datasetIds: ['dataset-fixture-001'],
-  }],
   drilldown: { enabled: false, metrics: [], subjects: [] },
 }
 const traceComputation = {
