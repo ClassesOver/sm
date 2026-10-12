@@ -33,7 +33,7 @@ import {
   type EvidenceRelations,
 } from './evidence-relations'
 import { extendStageLayout } from './evidence-3d-layout'
-import { CARD_WORLD, drawEvidenceCard, EVIDENCE_3D_THEME, floorCanvas, type EvidenceCardState } from './evidence-3d-theme'
+import { CARD_WORLD, drawEvidenceCard, EVIDENCE_3D_THEME, type EvidenceCardState } from './evidence-3d-theme'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 import { sourceSubjectStatus } from './source-status'
@@ -500,7 +500,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
     }))
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
-    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { AmbientLight, CanvasTexture, DoubleSide, FogExp2, Group, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace }]) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { AmbientLight, BufferAttribute, CanvasTexture, Color, CubicBezierCurve3, DoubleSide, FogExp2, Group, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, TubeGeometry, Vector3 }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
     const icons = EVIDENCE_KIND_ICONS
     // 类型图标先解码为位图，再绘入卡片贴图；加载失败的图标留空，不影响卡片其余信息。
@@ -565,8 +565,6 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (nodeId) return (from === nodeId || to === nodeId) && (!selectedId || from === selectedId || to === selectedId)
       return selectedId !== null && (from === selectedId || to === selectedId)
     }
-    const linkColor = (link: { id: string }) => highlightedLink(link) ? THEME.linkHighlight : selectedId || tracedId() ? THEME.linkDimmed : THEME.link
-    const linkWidth = (link: { id: string }) => highlightedLink(link) ? 1.5 : selectedId || tracedId() ? 0.3 : 0.6
     const nodeColor = (node: { ref: EvidenceObjectRef }) => {
       const id = evidenceRefId(node.ref)
       if (id === selectedId || sameEvidenceRef(node.ref, ctx.page.ref)) return THEME.kinds[node.ref.kind]
@@ -621,6 +619,43 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       card.mesh.renderOrder = state === 'current' || state === 'selected' ? 12 : 11
     }
     const updateCards = () => { for (const card of cards.values()) drawCard(card) }
+    type Flow3d = { mesh: InstanceType<typeof Mesh>; key: string }
+    const flows = new Map<string, Flow3d>()
+    const flowColor = (id: string, end: 'from' | 'to') => new Color(THEME.kinds[graph.edges.get(id)![end].kind])
+    const placeFlow = (id: string, start: GraphPoint3d, end: GraphPoint3d) => {
+      const flow = flows.get(id)
+      if (!flow || ![start.x, start.y, start.z, end.x, end.y, end.z].every(Number.isFinite)) return
+      const key = [start.x, start.y, start.z, end.x, end.y, end.z].map(value => value.toFixed(2)).join(',')
+      if (key === flow.key) return
+      flow.key = key
+      const half = CARD_WORLD.width / 2
+      const forward = end.x >= start.x
+      const from = new Vector3(start.x + (forward ? half : -half), start.y, start.z)
+      const to = new Vector3(end.x + (forward ? -half : half), end.y, end.z)
+      const reach = Math.max(24, Math.abs(to.x - from.x) * 0.5) * (forward ? 1 : -1)
+      const curve = new CubicBezierCurve3(from, from.clone().add(new Vector3(reach, 0, 0)), to.clone().sub(new Vector3(reach, 0, 0)), to)
+      const geometry = new TubeGeometry(curve, 40, THEME.flow.radius, 6, false)
+      // 沿管体长度方向由源类型色渐变到目标类型色。
+      const source = flowColor(id, 'from')
+      const target = flowColor(id, 'to')
+      const uv = geometry.getAttribute('uv')
+      const colors = new Float32Array(uv.count * 3)
+      for (let index = 0; index < uv.count; index++) {
+        const color = source.clone().lerp(target, uv.getX(index))
+        colors.set([color.r, color.g, color.b], index * 3)
+      }
+      geometry.setAttribute('color', new BufferAttribute(colors, 3))
+      flow.mesh.geometry.dispose()
+      flow.mesh.geometry = geometry
+    }
+    const styleFlow = (id: string) => {
+      const flow = flows.get(id)
+      if (!flow) return
+      const highlighted = highlightedLink({ id })
+      const material = flow.mesh.material as InstanceType<typeof MeshBasicMaterial>
+      material.opacity = highlighted ? THEME.flow.highlight : selectedId || tracedId() ? THEME.flow.dimmed : THEME.flow.normal
+      flow.mesh.renderOrder = highlighted ? 11 : 10
+    }
     const instance: any = new (ForceGraph3D as any)(viewport)
       .backgroundColor(THEME.background)
       .lights([new AmbientLight(0xffffff, Math.PI)])
@@ -658,20 +693,21 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       .nodeRelSize(5)
       .nodeOpacity(1)
       .nodeColor(nodeColor)
-      .linkColor(linkColor)
-      .linkWidth(linkWidth)
-      // 分层布局下跨阶段关系用直线，扇入扇出清晰；只有自环与互逆关系弯曲以免重叠。
-      .linkCurvature((link: { id: string }) => {
-        const edge = graph.edges.get(link.id)!
-        if (sameEvidenceRef(edge.from, edge.to)) return 0.6
-        const reverse = [...graph.edges.values()].some(other =>
-          sameEvidenceRef(edge.from, other.to) && sameEvidenceRef(edge.to, other.from))
-        return reverse ? 0.16 : 0
+      // 关系线：从源卡片右缘到目标卡片左缘的 S 形流线（细管体），颜色由源类型渐变到目标类型，
+      // 方向随颜色与左→右布局一目了然。坐标固定，几何只在端点变化时重建。
+      .linkThreeObject((link: { id: string }) => {
+        const material = new MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, toneMapped: false })
+        const mesh = new Mesh(new TubeGeometry(new CubicBezierCurve3(new Vector3(), new Vector3(), new Vector3(), new Vector3(1, 0, 0)), 2, 0.1, 3), material)
+        mesh.renderOrder = 10
+        flows.set(link.id, { mesh, key: '' })
+        styleFlow(link.id)
+        return mesh
       })
-      .linkOpacity((link: { id: string }) => highlightedLink(link) ? 0.95 : selectedId || tracedId() ? 0.28 : 0.62)
-      .linkDirectionalArrowLength(3.5)
-      .linkDirectionalArrowResolution(12)
-      .linkDirectionalArrowRelPos(1)
+      .linkThreeObjectExtend(false)
+      .linkPositionUpdate((object: unknown, ends: { start: GraphPoint3d; end: GraphPoint3d }, link: { id: string }) => {
+        placeFlow(link.id, ends.start, ends.end)
+        return true
+      })
 
       .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
         const id = evidenceRefId(node.ref)
@@ -749,17 +785,6 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       cameraReadout.textContent = `缩放 ${zoom}\n水平 ${degrees(rotation.y)}° · 俯仰 ${degrees(-rotation.x)}° · 倾斜 ${degrees(rotation.z)}°`
     }
     // 原生地面网格只提供空间参照，不参与节点、关系计数或拾取。
-    const floorTexture = new CanvasTexture(floorCanvas())
-    floorTexture.colorSpace = SRGBColorSpace
-    floorTexture.anisotropy = 4
-    const spatialGrid = new Mesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
-      map: floorTexture, transparent: true, opacity: THEME.grid.opacity, depthWrite: false, side: DoubleSide, toneMapped: false,
-    }))
-    spatialGrid.name = 'evidence-floor'
-    spatialGrid.rotation.x = -Math.PI / 2
-    spatialGrid.renderOrder = 1
-    spatialGrid.raycast = () => {}
-    instance.scene().add(spatialGrid)
     // 指数雾：远处网格、连线与节点逐渐隐入底色，形成纵深。
     instance.scene().fog = new FogExp2(THEME.background, THEME.fogDensity)
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -806,10 +831,6 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       removal.disconnect()
       ctx.signal.removeEventListener('abort', dispose)
       const renderer = instance.renderer()
-      instance.scene().remove(spatialGrid)
-      spatialGrid.geometry.dispose()
-      spatialGrid.material.dispose()
-      floorTexture.dispose()
       instance.scene().remove(stageObjects)
       for (const title of stageObjects.children) (title as InstanceType<typeof SpriteText>).material.dispose()
       for (const card of cards.values()) {
@@ -817,6 +838,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         ;(card.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
       }
       cardGeometry.dispose()
+      for (const flow of flows.values()) {
+        flow.mesh.geometry.dispose()
+        ;(flow.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
+      }
       instance._destructor()
       // 组件已dispose GPU对象；Three原生接口同步释放移除画布的上下文。
       renderer.forceContextLoss()
@@ -876,30 +901,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       camera.updateMatrixWorld()
       instance.zoomToFit(0, fitPadding(), filter)
       instance.controls().update()
-      keepFloorInView()
       baseDistance = cameraDistance()
       updateCameraReadout()
-    }
-    // 组件适应只包含节点对象；地面圆盘可见边缘（贴图渐隐止于 85% 半径）超出画布时沿视线后退相机。
-    const keepFloorInView = () => {
-      if (!spatialGrid.visible || spatialGrid.scale.x <= 1) return
-      const radius = spatialGrid.scale.x / 2 * 0.85
-      const { x: cx, y: cy, z: cz } = spatialGrid.position
-      const ring = Array.from({ length: 24 }, (_, index) => {
-        const angle = index / 24 * Math.PI * 2
-        return { x: cx + Math.cos(angle) * radius, y: cy, z: cz + Math.sin(angle) * radius }
-      })
-      const camera = instance.camera()
-      const target = instance.controls().target
-      for (let attempt = 0; attempt < 12; attempt++) {
-        camera.updateMatrixWorld()
-        const inside = ring.every(point => {
-          const screen = instance.graph2ScreenCoords(point.x, point.y, point.z)
-          return screen.x >= 6 && screen.y >= 6 && screen.x <= viewport.clientWidth - 6 && screen.y <= viewport.clientHeight - 6
-        })
-        if (inside) return
-        camera.position.sub(target).multiplyScalar(1.08).add(target)
-      }
     }
     fitInitialView = () => {
       if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
@@ -925,10 +928,6 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (ctx.isStale() || !viewport.isConnected) return
       instance.zoomToFit(cameraDuration(), fitPadding(),
         (node: { id: string }) => nodeVisible(node.id))
-      // 过渡结束后再检查地面边缘，避免与相机动画争抢位置。
-      window.setTimeout(() => {
-        if (!ctx.isStale() && viewport.isConnected) keepFloorInView()
-      }, cameraDuration() + 20)
     }))
     viewport.setAttribute('aria-label', '3D 关系图；卡片从左到右按溯源阶段排列，连线表示登记关系；请使用关系列表中的文字入口')
     const zoom3d = (factor: number) => {
@@ -957,30 +956,15 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       }, { x: node.x, y: node.y, z: node.z }, cameraDuration())
     })
     // canvas 出现早于图对象就绪；过早适应会取得空包围盒而无声失效。
-    // 地面按节点实际坐标放置在所有卡片下方，布局停止后再放一次，取最终范围。
-    const placeFloor = () => {
-      const nodes = (instance.graphData().nodes as Array<GraphPoint3d & { id: string }>)
-        .filter(node => [node.x, node.y, node.z].every(Number.isFinite))
-      if (!nodes.length) return
-      const span = (axis: 'x' | 'y' | 'z') => [Math.min(...nodes.map(node => node[axis])), Math.max(...nodes.map(node => node[axis]))]
-      const [x, y, z] = [span('x'), span('y'), span('z')]
-      // 地面边缘渐隐为透明；取节点范围的 0.9 倍，作为各阶段的底座且不迫使相机后退。
-      const size = Math.max(x[1] - x[0], z[1] - z[0], (y[1] - y[0]) * 0.8, 80) * 0.9
-      const floorY = y[0] - 24
-      spatialGrid.scale.set(size, size, 1)
-      spatialGrid.position.set((x[0] + x[1]) / 2, floorY, (z[0] + z[1]) / 2)
-    }
     const ready = () => {
       layoutReady = true
       fitResizedView()
       updateCameraReadout()
-      placeFloor()
       for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
       fitInitialView()
       let finalFitDone = false
       instance.onEngineTick(() => {}).onEngineStop(() => {
-        placeFloor()
-        // 落地线随最终布局变长：仅首次布局停止时、用户未操作且无历史视角才按最终范围重新适应；
+        // 首次布局停止时卡片已按最终状态绘制：用户未操作且无历史视角才按最终范围重新适应；
         // 之后悬停、高亮触发的重新布局不再移动相机。
         if (!finalFitDone && !userMovedCamera && !rememberedView && !initialFitPending) fitFromObliqueView()
         finalFitDone = true
@@ -1067,7 +1051,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     traceStatus.setAttribute('role', 'status')
     legend.append(traceStatus)
     refreshTrace = () => {
-      instance.linkColor(linkColor).linkWidth(linkWidth).nodeColor(nodeColor)
+      for (const id of flows.keys()) styleFlow(id)
       instance.nodeVisibility((node: { id: string }) => nodeVisible(node.id))
         .linkVisibility((link: { id: string }) => {
           if (pinnedId) return highlightedLink(link)

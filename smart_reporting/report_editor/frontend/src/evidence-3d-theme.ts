@@ -15,54 +15,15 @@ export const EVIDENCE_3D_THEME = {
     fact: '#4f9dff', computation: '#a78bfa', dataset: '#2dd4bf', chart: '#fbbf24', subject: '#94a3b8',
   } as Record<EvidenceObjectKind, string>,
   dimmedNode: '#1c3247',
-  link: '#3f8fbf',
-  linkHighlight: '#67e8f9',
-  linkDimmed: '#16293b',
+  /** 关系流线：管体半径与三种状态的不透明度。 */
+  flow: { radius: 0.55, normal: 0.55, highlight: 1, dimmed: 0.08 },
   /** 阶段标题。 */
   stage: { edge: '#2c8fb8', title: '#e2f4ff', titleBackground: 'rgba(12, 44, 66, 0.92)' },
-  grid: { line: '#1b7fa3', ring: '#22d3ee', opacity: 0.55 },
-}
-
-/**
- * 全息地面贴图：网格线 + 同心雷达环，整体按径向渐隐到透明。边缘完全透明，
- * 地面铺得再大也不会在画布边缘留下网格。
- */
-export function floorCanvas(size = 1024): HTMLCanvasElement {
-  const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = size
-  const context = canvas.getContext('2d')
-  if (!context) return canvas
-  const { line, ring } = EVIDENCE_3D_THEME.grid
-  const center = size / 2
-  context.strokeStyle = line
-  context.globalAlpha = 0.55
-  context.lineWidth = 1.5
-  const cells = 24
-  for (let index = 0; index <= cells; index++) {
-    const offset = index * size / cells
-    context.beginPath(); context.moveTo(offset, 0); context.lineTo(offset, size); context.stroke()
-    context.beginPath(); context.moveTo(0, offset); context.lineTo(size, offset); context.stroke()
-  }
-  context.strokeStyle = ring
-  context.globalAlpha = 0.7
-  context.lineWidth = 2.5
-  for (const radius of [0.14, 0.28, 0.42]) {
-    context.beginPath(); context.arc(center, center, radius * size, 0, Math.PI * 2); context.stroke()
-  }
-  // 径向遮罩：中心不透明，向外渐隐到完全透明。
-  context.globalAlpha = 1
-  context.globalCompositeOperation = 'destination-in'
-  const mask = context.createRadialGradient(center, center, 0, center, center, center)
-  mask.addColorStop(0, 'rgba(0,0,0,1)')
-  mask.addColorStop(0.5, 'rgba(0,0,0,0.8)')
-  mask.addColorStop(0.85, 'rgba(0,0,0,0)')
-  context.fillStyle = mask
-  context.fillRect(0, 0, size, size)
-  return canvas
 }
 
 export type EvidenceCardState = 'normal' | 'current' | 'selected' | 'dimmed'
 export const CARD_PIXELS = { width: 560, height: 150, padding: 12 }
+export const CARD_RESOLUTION = 2
 /** 卡片在世界坐标中的尺寸（与贴图宽高比一致）。 */
 export const CARD_WORLD = { width: 150, height: 150 * CARD_PIXELS.height / CARD_PIXELS.width }
 
@@ -90,10 +51,12 @@ function fitText(context: CanvasRenderingContext2D, text: string, width: number)
  */
 export function drawEvidenceCard(canvas: HTMLCanvasElement, card: { kind: EvidenceObjectKind; name: string; detail: string; state: EvidenceCardState; icon?: CanvasImageSource | null }): void {
   const { width, height, padding } = CARD_PIXELS
-  canvas.width = width
-  canvas.height = height
+  // 贴图按两倍分辨率绘制，缩小显示时文字更清晰。
+  canvas.width = width * CARD_RESOLUTION
+  canvas.height = height * CARD_RESOLUTION
   const context = canvas.getContext('2d')
   if (!context) return
+  context.setTransform(CARD_RESOLUTION, 0, 0, CARD_RESOLUTION, 0, 0)
   const accent = EVIDENCE_3D_THEME.kinds[card.kind]
   const x = padding
   const y = padding

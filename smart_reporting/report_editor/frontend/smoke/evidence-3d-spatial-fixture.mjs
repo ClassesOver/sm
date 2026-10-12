@@ -64,10 +64,13 @@ try {
   await page.waitForTimeout(250)
   const savedReadout = await readout.textContent()
   await page.evaluate(() => {
-    const grid = window.currentGraph3d.scene().children.find(object => object.name === 'evidence-floor')
+    // 阶段标题随视图释放：切换模式时 GPU 资源（标题贴图材质与卡片几何）被回收。
+    const stages = window.currentGraph3d.scene().children.find(object => object.name === 'evidence-stages')
+    const card = []
+    window.currentGraph3d.scene().traverse(object => { if (object.userData?.evidenceCard) card.push(object) })
     window.gridDisposed = { geometry: false, material: false }
-    grid.geometry.addEventListener('dispose', () => window.gridDisposed.geometry = true)
-    grid.material.addEventListener('dispose', () => window.gridDisposed.material = true)
+    card[0].geometry.addEventListener('dispose', () => window.gridDisposed.geometry = true)
+    stages.children[0].material.addEventListener('dispose', () => window.gridDisposed.material = true)
   })
   await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   assert.deepEqual(await page.evaluate(() => window.gridDisposed), { geometry: true, material: true })
@@ -76,7 +79,7 @@ try {
   const restored = await page.evaluate(() => window.currentGraph3d.graphData().nodes.map(({ id, x, y, z }) => ({ id, x, y, z })))
   assert.deepEqual(restored, initial.positions, '模式往返保持已有节点坐标')
   assert.equal(await readout.textContent(), savedReadout, '模式往返保持缩放及旋转刻度')
-  assert.equal(await page.evaluate(() => window.currentGraph3d.scene().children.filter(object => object.name === 'evidence-floor').length), 1)
+  assert.equal(await page.evaluate(() => window.currentGraph3d.scene().children.filter(object => object.name === 'evidence-stages').length), 1)
   await page.evaluate(() => {
     window.currentGraph3d.cameraPosition({ x: 0, y: 0, z: 300 }, { x: 0, y: 0, z: 0 }, 0)
     window.currentGraph3d.controls().update()

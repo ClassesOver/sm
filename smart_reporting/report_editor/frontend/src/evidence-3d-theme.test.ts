@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { CARD_PIXELS, drawEvidenceCard } from './evidence-3d-theme'
+import { CARD_PIXELS, CARD_RESOLUTION, drawEvidenceCard } from './evidence-3d-theme'
 
 function recordingCanvas() {
   const calls: Array<[string, unknown[]]> = []
@@ -21,7 +21,7 @@ describe('evidence card drawing', () => {
   it('draws without an icon when the icon failed to decode and truncates long names', () => {
     const { canvas, calls } = recordingCanvas()
     drawEvidenceCard(canvas, { kind: 'fact', name: '华东地区门诊收入成本口径调整后的合计金额与上年同期相比的变化情况说明', detail: '事实 · 当前页', state: 'current', icon: null })
-    expect(canvas.width).toBe(CARD_PIXELS.width)
+    expect(canvas.width).toBe(CARD_PIXELS.width * CARD_RESOLUTION)
     expect(calls.some(([name]) => name === 'drawImage')).toBe(false)
     const texts = calls.filter(([name]) => name === 'fillText').map(([, args]) => args[0] as string)
     expect(texts[0].endsWith('…')).toBe(true)
