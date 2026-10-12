@@ -7,7 +7,8 @@ import type { TraceSources, TraceValidation } from './api'
 import { documentValueMarks, findValueMarks, formatRegisteredValue, installValueCard, restoreRegisteredValue } from './body-value-marks'
 
 const schema = new Schema({
-  nodes: { doc: { content: 'paragraph+' }, paragraph: { content: 'text*', toDOM: () => ['p', 0] }, text: {} },
+  nodes: { doc: { content: 'paragraph+' }, paragraph: { content: 'inline*', toDOM: () => ['p', 0] },
+    text: { group: 'inline' }, hard_break: { inline: true, group: 'inline', toDOM: () => ['br'] } },
   marks: { strong: { toDOM: () => ['strong', 0] } },
 })
 
@@ -60,6 +61,69 @@ describe('body value marks', () => {
 
   it('does not guess a source for an unrelated number', () => {
     expect(findValueMarks('共有 37 家门店[[citation:sub-1]]', validation('valid'))).toEqual([])
+  })
+
+  it.each(['2026年1月', '2026-01', '2026/01/12', '2026.01.12', '1—10月'])('does not restore a calendar number in %s', (period) => {
+    const result = validation('stale')
+    Object.assign(result.subjects[0], { factValue: period.includes('月') ? 1 : 2026, unit: '个百分点' })
+    const text = `${period}占比提高3个百分点。[[citation:sub-1]]`
+    expect(findValueMarks(text, result)).toEqual([])
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe(text)
+  })
+
+  it('keeps decimal amounts distinct from calendar dates', () => {
+    const result = validation('valid')
+    Object.assign(result.subjects[0], { factValue: 2026.01 })
+    const text = '收入2026.01万元[[citation:sub-1]]'
+    const marks = findValueMarks(text, result)
+    expect(marks).toHaveLength(1)
+    expect(text.slice(marks[0].start, marks[0].end)).toBe('2026.01万元')
+  })
+
+  it('does not join digits across a hard break and delete that break on restore', () => {
+    const view = fakeView('占位')
+    view.state = EditorState.create({ doc: schema.node('doc', null, [schema.node('paragraph', null, [
+      schema.text('12'), schema.node('hard_break'), schema.text('780万元[[citation:sub-1]]'),
+    ])]) })
+    const before = view.state.doc
+    expect(documentValueMarks(before, validation('stale', 12780))).toEqual([])
+    expect(restoreRegisteredValue(view, 'sub-1', validation('stale', 12780))).toBe(false)
+    expect(view.state.doc.eq(before)).toBe(true)
+  })
+
+  it('still restores a number split only by bold styling', () => {
+    const view = fakeView('占位')
+    view.state = EditorState.create({ doc: schema.node('doc', null, [schema.node('paragraph', null, [
+      schema.text('12'), schema.text('780', [schema.marks.strong.create()]), schema.text('万元[[citation:sub-1]]'),
+    ])]) })
+    expect(restoreRegisteredValue(view, 'sub-1', validation('stale', 12780))).toBe(true)
+    expect(view.state.doc.textContent).toBe('12,450万元[[citation:sub-1]]')
+  })
+
+  it('restores a complete value after a hard break without changing that break', () => {
+    const view = fakeView('占位')
+    view.state = EditorState.create({ doc: schema.node('doc', null, [schema.node('paragraph', null, [
+      schema.text('前文'), schema.node('hard_break'), schema.text('12780万元[[citation:sub-1]]'),
+    ])]) })
+    expect(restoreRegisteredValue(view, 'sub-1', validation('stale', 12780))).toBe(true)
+    expect(view.state.doc.firstChild!.child(1).type.name).toBe('hard_break')
+    expect(view.state.doc.textContent).toBe('前文12,450万元[[citation:sub-1]]')
+  })
+
+  it.each(['！', '？', ';'])('does not borrow the preceding sentence across %s', (stop) => {
+    const text = `前句收入12,450万元${stop}本句无数值[[citation:sub-1]]`
+    expect(findValueMarks(text, validation('stale'))).toEqual([])
+    const placeholder = `前句待核实${stop}本句无数值[[citation:sub-1]]`
+    expect(findValueMarks(placeholder, validation('stale'))[0].subjectId).toBeUndefined()
+  })
+
+  it('keeps a citation attached to the preceding sentence across trailing punctuation and spaces', () => {
+    const text = '收入12,780万元。  [[citation:sub-1]]'
+    const marks = findValueMarks(text, validation('stale', 12780))
+    expect(marks).toHaveLength(1)
+    expect(text.slice(marks[0].start, marks[0].end)).toBe('12,780万元')
   })
 
   it('marks and restores an edited percentage-point value', () => {

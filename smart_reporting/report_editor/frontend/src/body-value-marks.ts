@@ -26,6 +26,8 @@ const UNIT_SCALES: Record<string, Record<string, number>> = {
 // 正文数值：千分位数字 + 可选单位；“待核实”是服务端替换无依据数值后的占位。
 const VALUE_PATTERN = /(?<![\dA-Za-z_.,+−－-])[+−－-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d.,eE])/g
 const UNIT_AFTER = /^\s*(亿元|万元|元|万人次|人次|个百分点|%|‰)/
+// 日期中的数字不能作为正文事实恢复；覆盖中文和常见 ISO/斜线日期。
+const DATE_PATTERN = /\d{4}\s*(?:年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?|[-/]\s*\d{1,2}(?:\s*[-/]\s*\d{1,2})?|\.\s*\d{1,2}\s*\.\s*\d{1,2})(?!\d)|\d{1,2}\s*月?\s*[-—~～至]\s*\d{1,2}\s*月/g
 const UNVERIFIED = '待核实'
 
 function unitFamily(unit: string): Record<string, number> | undefined {
@@ -79,6 +81,7 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
   const marks: ValueMark[] = []
   const markers = findProtocolMarkers(text)
   const hidden = (index: number) => markers.some(marker => index >= marker.start && index < marker.end)
+  const dates = [...text.matchAll(DATE_PATTERN)]
   let segmentStart = 0
   for (const marker of markers) {
     if (marker.kind !== 'citation') {
@@ -86,14 +89,19 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
       continue
     }
     const subject = validation?.subjects.find(item => item.subjectId === marker.value)
-    // 句号之后的数字属于下一句，不归入当前来源。
-    const sentenceStart = Math.max(segmentStart, ...['。', '；', '\n'].map(mark => text.lastIndexOf(mark, marker.start - 2) + 1))
+    // 与服务端保持相同句界；引用可位于句末标点和空白之后。
+    const before = text.slice(segmentStart, marker.start).replace(/[。！？;；\n]+\s*$/, '')
+    const lastStop = [...before.matchAll(/[。！？;；\n]/g)].at(-1)
+    const sentenceStart = segmentStart + (lastStop ? lastStop.index! + 1 : 0)
     if (subject && typeof subject.factValue === 'number') {
       const segment = text.slice(sentenceStart, marker.start)
       for (const match of segment.matchAll(VALUE_PATTERN)) {
         const start = sentenceStart + match.index!
         if (hidden(start)) continue
-        const unit = UNIT_AFTER.exec(text.slice(start + match[0].length))
+        const tail = text.slice(start + match[0].length)
+        if (dates.some(date => start >= date.index! && start < date.index! + date[0].length) ||
+          (/^\d+$/.test(match[0]) && /^\s*[年月日]/.test(tail))) continue
+        const unit = UNIT_AFTER.exec(tail)
         const writtenUnit = unit?.[1] ?? ''
         const registeredUnit = subject.unit ?? ''
         const matchesRegistered = sameValue(match[0], writtenUnit, subject.factValue, registeredUnit)
@@ -116,11 +124,11 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
     // 只关联同一句内唯一的来源（句末标点后紧跟的标记也算本句）；跨句或多个来源时不猜测，
     // 避免“恢复为登记值”把别的指标的数值填进来。
     const tail = text.slice(index)
-    const stop = tail.search(/[。；\n]/)
+    const stop = tail.search(/[。！？;；\n]/)
     const sentence = stop < 0 ? tail : tail.slice(0, stop + 1) + (/^(?:\s*\[\[[a-z/-]+(?::[^\]]*)?\]\])*/.exec(tail.slice(stop + 1))?.[0] ?? '')
     const citations = [...new Set(findProtocolMarkers(sentence).filter(marker => marker.kind === 'citation').map(marker => marker.value))]
     // 占位后紧跟的来源标记（中间只有标点）直接归属该来源。
-    const adjacent = /^[\s，、。；]*\[\[citation:([^\]]+)\]\]/.exec(tail.slice(UNVERIFIED.length))?.[1]
+    const adjacent = /^[\s，、。！？;；]*\[\[citation:([^\]]+)\]\]/.exec(tail.slice(UNVERIFIED.length))?.[1]
     const linked = adjacent ?? (citations.length === 1 ? citations[0] : undefined)
     const subject = linked ? validation?.subjects.find(item => item.subjectId === linked) : undefined
     marks.push({
@@ -132,19 +140,24 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
   return marks.sort((left, right) => left.start - right.start)
 }
 
-/** 文本块中各文本节点的拼接文本及其在文档中的起点，用于跨粗体等标记定位。 */
+/** 只拼接连续文本节点（可跨粗体等样式）；硬换行、图片等非文本节点分隔引用窗口。 */
 function textBlocks(doc: ProseNode): Array<{ text: string; positions: number[] }> {
   const blocks: Array<{ text: string; positions: number[] }> = []
   doc.descendants((node, position) => {
     if (!node.isTextblock) return true
     let text = ''
-    const positions: number[] = []
+    let positions: number[] = []
+    const flush = () => {
+      if (text) blocks.push({ text, positions })
+      text = ''
+      positions = []
+    }
     node.forEach((child, offset) => {
-      if (!child.isText || !child.text) return
+      if (!child.isText || !child.text) { flush(); return }
       for (let index = 0; index < child.text.length; index++) positions.push(position + 1 + offset + index)
       text += child.text
     })
-    blocks.push({ text, positions })
+    flush()
     return false
   })
   return blocks
