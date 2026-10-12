@@ -34,7 +34,7 @@ try {
       for (let y = 2; y < probe.height - 2; y++) {
         for (let x = 2; x < probe.width - 2; x++) {
           const offset = (y * probe.width + x) * 4
-          if ([247, 251, 253].some((value, channel) => Math.abs(data[offset + channel] - value) > 10)) {
+          if ([7, 19, 33].some((value, channel) => Math.abs(data[offset + channel] - value) > 10)) {
             top = Math.min(top, y)
             bottom = Math.max(bottom, y)
           }

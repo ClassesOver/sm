@@ -32,6 +32,7 @@ import {
   subjectShortId,
   type EvidenceRelations,
 } from './evidence-relations'
+import { EVIDENCE_3D_THEME, floorCanvas, haloCanvas } from './evidence-3d-theme'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 import { sourceSubjectStatus } from './source-status'
@@ -98,6 +99,7 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
 }
 
 const KIND_COLORS = EVIDENCE_KIND_COLORS
+const THEME = EVIDENCE_3D_THEME
 
 const TRACE_ERROR_LABELS: Record<string, string> = {
   source_missing: '来源不存在或不在当前修订中',
@@ -506,13 +508,13 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     for (const ids of linkGroups.values()) ids.sort()
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
     let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
-    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { AmbientLight, DirectionalLight, GridHelper, Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutEvidenceLabels }]) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { AdditiveBlending, AmbientLight, BufferGeometry, CanvasTexture, DirectionalLight, DoubleSide, FogExp2, Group, Line, LineBasicMaterial, Mesh, MeshBasicMaterial, PlaneGeometry, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutEvidenceLabels }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
     const icons = EVIDENCE_KIND_ICONS
     const textures = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
-      const svg = createElement(icons[kind], { width: 24, height: 24, color: KIND_COLORS[kind] })
+      const svg = createElement(icons[kind], { width: 24, height: 24, color: THEME.kinds[kind] })
       const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-      for (const [key, value] of Object.entries({ width: '24', height: '24', rx: '5', fill: '#ffffff', stroke: '#c7dce8', 'stroke-width': '1' })) background.setAttribute(key, value)
+      for (const [key, value] of Object.entries({ width: '24', height: '24', rx: '5', fill: '#0b1d2e', stroke: THEME.kinds[kind], 'stroke-width': '1' })) background.setAttribute(key, value)
       svg.prepend(background)
       const texture = await new TextureLoader().loadAsync(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`)
       texture.colorSpace = SRGBColorSpace
@@ -570,18 +572,18 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (nodeId) return (from === nodeId || to === nodeId) && (!selectedId || from === selectedId || to === selectedId)
       return selectedId !== null && (from === selectedId || to === selectedId)
     }
-    const linkColor = (link: { id: string }) => highlightedLink(link) ? '#007ea7' : selectedId || tracedId() ? '#edf3f6' : '#6387a3'
+    const linkColor = (link: { id: string }) => highlightedLink(link) ? THEME.linkHighlight : selectedId || tracedId() ? THEME.linkDimmed : THEME.link
     const linkWidth = (link: { id: string }) => highlightedLink(link) ? 1.5 : selectedId || tracedId() ? 0.3 : 0.6
     const nodeColor = (node: { ref: EvidenceObjectRef }) => {
       const id = evidenceRefId(node.ref)
-      if (id === selectedId || sameEvidenceRef(node.ref, ctx.page.ref)) return KIND_COLORS[node.ref.kind]
+      if (id === selectedId || sameEvidenceRef(node.ref, ctx.page.ref)) return THEME.kinds[node.ref.kind]
       const traced = tracedId()
       const connected = !selectedId && [...graph.edges.values()].some(edge => {
         const from = evidenceRefId(edge.from)
         const to = evidenceRefId(edge.to)
         return from === traced && to === id || to === traced && from === id
       })
-      return traced && id !== traced && !connected ? '#dce6ed' : KIND_COLORS[node.ref.kind]
+      return traced && id !== traced && !connected ? THEME.dimmedNode : THEME.kinds[node.ref.kind]
     }
     let lastNodeClick: { id: string; at: number } | null = null
     let pendingPreview: number | null = null
@@ -644,11 +646,28 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (name) factNameCounts.set(name, (factNameCounts.get(name) ?? 0) + 1)
     }
     // 使用组件已有球体与原生光照形成明暗侧面，保持节点和名称的占用范围。
+    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
     const keyLight = new DirectionalLight(0xffffff, Math.PI * 0.85)
     keyLight.position.set(-100, 200, 150)
+    // 背光从后上方勾出球体轮廓，配合雾化与辉光形成空间纵深。
+    const rimLight = new DirectionalLight(0x38bdf8, Math.PI * 0.6)
+    rimLight.position.set(120, 80, -220)
+    const haloTextures = new Map<EvidenceObjectKind, InstanceType<typeof CanvasTexture>>()
+    const haloTexture = (kind: EvidenceObjectKind) => {
+      let texture = haloTextures.get(kind)
+      if (!texture) {
+        texture = new CanvasTexture(haloCanvas(THEME.kinds[kind]))
+        texture.colorSpace = SRGBColorSpace
+        haloTextures.set(kind, texture)
+      }
+      return texture
+    }
+    const dropMaterial = new LineBasicMaterial({ color: THEME.drop.line, transparent: true, opacity: THEME.drop.opacity, depthWrite: false })
+    const dropMarkerMaterial = new SpriteMaterial({ map: haloTexture('dataset'), color: THEME.drop.marker, blending: AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.7 })
+    const dropLines = new Map<string, { drop: InstanceType<typeof Line>; marker: InstanceType<typeof Sprite> }>()
     const instance: any = new (ForceGraph3D as any)(viewport)
-      .backgroundColor('#f7fbfd')
-      .lights([new AmbientLight(0xffffff, Math.PI * 0.35), keyLight])
+      .backgroundColor(THEME.background)
+      .lights([new AmbientLight(0xffffff, Math.PI * 0.22), keyLight, rimLight])
       .showNavInfo(false)
       // 关系浏览只改变视角，节点位置由布局/缓存维护，避免节点起点捏合误拖动。
       .enableNodeDrag(false)
@@ -666,13 +685,15 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           ? { ...node.ref, label: businessName } : node.ref
         const name = graphLabel(labelRef, 4, 1, 2)
         const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
-        const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
+        const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, THEME.label.text)
         label.fontWeight = '600'
         // 半透明文字底图不写深度，避免前景标签的透明区域遮住其他名称。
         label.material.depthWrite = false
         label.material.toneMapped = false
-        label.backgroundColor = current ? '#e4f3fa' : '#ffffff'
-        label.borderColor = selected ? '#007ea7' : '#c7dce8'
+        // 名称不受雾化影响，远处节点变暗但文字仍可读。
+        label.material.fog = false
+        label.backgroundColor = current ? THEME.label.current : THEME.label.background
+        label.borderColor = selected || current ? THEME.label.selected : THEME.label.border
         label.borderWidth = selected ? 0.12 : 0.06
         label.borderRadius = 1
         label.padding = [1, 0.5]
@@ -684,8 +705,25 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         icon.renderOrder = 13
         // 图标仅作节点信息，拾取继续交给组件球体和名称。
         icon.raycast = () => {}
+        // 叠加混合的光晕让节点像发光体；不写深度、不参与拾取。
+        const halo = new Sprite(new SpriteMaterial({ map: haloTexture(node.ref.kind), blending: AdditiveBlending, depthWrite: false, transparent: true }))
+        halo.material.toneMapped = false
+        const haloSize = current || selected ? 34 : 22
+        halo.scale.set(haloSize, haloSize, 1)
+        halo.renderOrder = 5
+        halo.raycast = () => {}
+        // 落地线与投影点挂在节点组内，随节点显隐；地面高度在布局完成后设置。
+        // 空几何体的包围盒为无穷大，会让组件适应视图算出 NaN 相机，先用两个重合点占位。
+        const drop = new Line(new BufferGeometry().setFromPoints([{ x: 0, y: 0, z: 0 } as never, { x: 0, y: 0, z: 0 } as never]), dropMaterial)
+        drop.raycast = () => {}
+        drop.visible = false
+        const marker = new Sprite(dropMarkerMaterial)
+        marker.scale.set(7, 7, 1)
+        marker.raycast = () => {}
+        marker.visible = false
+        dropLines.set(id, { drop, marker })
         const group = new Group()
-        group.add(label, icon)
+        group.add(halo, drop, marker, label, icon)
         const traceName = graphLabel(labelRef, 14, 9, 4)
         const sized = {
           sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
@@ -699,6 +737,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       })
       .nodeThreeObjectExtend(true)
       .nodeResolution(24)
+      .nodeRelSize(5)
       .nodeOpacity(1)
       .nodeColor(nodeColor)
       .linkColor(linkColor)
@@ -718,9 +757,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         return (slot - (group.length - 1) / 2) * 0.07
       })
       .linkOpacity((link: { id: string }) => highlightedLink(link) ? 0.95 : selectedId || tracedId() ? 0.28 : 0.62)
-      .linkDirectionalArrowLength(6)
+      .linkDirectionalArrowLength(3.5)
       .linkDirectionalArrowResolution(12)
       .linkDirectionalArrowRelPos(1)
+      // 粒子沿登记方向流动，强调“输入 → 产出 → 引用”；减少动态效果时关闭。
+      .linkDirectionalParticles((link: { id: string }) => reducedMotionQuery.matches ? 0 : highlightedLink(link) ? 4 : selectedId || tracedId() ? 0 : 2)
+      .linkDirectionalParticleSpeed(0.0045)
+      .linkDirectionalParticleWidth((link: { id: string }) => highlightedLink(link) ? 2.2 : 1.4)
+      .linkDirectionalParticleColor(() => THEME.particle)
       .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
         const id = evidenceRefId(node.ref)
         const now = Date.now()
@@ -782,13 +826,18 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       cameraReadout.textContent = `缩放 ${zoom}\n水平 ${degrees(rotation.y)}° · 俯仰 ${degrees(-rotation.x)}° · 倾斜 ${degrees(rotation.z)}°`
     }
     // 原生地面网格只提供空间参照，不参与节点、关系计数或拾取。
-    const spatialGrid = new GridHelper(1, 8, '#9dbacb', '#cadce6')
-    spatialGrid.material.transparent = true
-    spatialGrid.material.opacity = 0.4
-    spatialGrid.material.depthWrite = false
-    spatialGrid.material.toneMapped = false
+    const floorTexture = new CanvasTexture(floorCanvas())
+    floorTexture.colorSpace = SRGBColorSpace
+    floorTexture.anisotropy = 4
+    const spatialGrid = new Mesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
+      map: floorTexture, transparent: true, opacity: THEME.grid.opacity, depthWrite: false, side: DoubleSide, toneMapped: false,
+    }))
+    spatialGrid.rotation.x = -Math.PI / 2
+    spatialGrid.renderOrder = 1
     spatialGrid.raycast = () => {}
     instance.scene().add(spatialGrid)
+    // 指数雾：远处网格、连线与节点逐渐隐入底色，形成纵深。
+    instance.scene().fog = new FogExp2(THEME.background, THEME.fogDensity)
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
     const cameraDuration = () => reducedMotion.matches ? 0 : 180
     const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
@@ -800,7 +849,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const guides = new Map<string, SVGLineElement>()
     for (const node of restoredNodes) {
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
-      line.setAttribute('stroke', '#b8cbd5')
+      line.setAttribute('stroke', THEME.guide)
       line.setAttribute('stroke-width', '0.55')
       line.setAttribute('stroke-dasharray', '2 4')
       line.style.display = 'none'
@@ -950,6 +999,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       }, 120)
     }
     instance.controls().addEventListener('change', onCameraChange)
+    let userMovedCamera = false
+    instance.controls().addEventListener('start', () => { userMovedCamera = true })
     if (rememberedView) {
       instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
       instance.camera().up.set(rememberedView.up.x, rememberedView.up.y, rememberedView.up.z)
@@ -991,6 +1042,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       instance.scene().remove(spatialGrid)
       spatialGrid.geometry.dispose()
       spatialGrid.material.dispose()
+      floorTexture.dispose()
+      for (const texture of haloTextures.values()) texture.dispose()
+      for (const { drop } of dropLines.values()) drop.geometry.dispose()
+      dropMaterial.dispose()
+      dropMarkerMaterial.dispose()
       instance._destructor()
       // 组件已dispose GPU对象；Three原生接口同步释放移除画布的上下文。
       renderer.forceContextLoss()
@@ -1050,6 +1106,26 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         placeLabels()
       })
     }
+    // 斜视初始视角：相机位于图包围盒中心的右上前方，俯角约 35°，地面呈圆盘、节点悬浮其上。直接设置位置、目标与朝向后再适应——
+    // 组件 fitToBbox 沿相机当前视线计算距离，若朝向尚未随 cameraPosition 更新，会沿旧视线
+    // 贴近图心，导致节点溢出画布、边缘球体透视变形。
+    const fitFromObliqueView = () => {
+      const filter = (node: { id: string }) => nodeVisible(node.id)
+      const bounds = instance.getGraphBbox(filter)
+      const center = bounds
+        ? { x: (bounds.x[0] + bounds.x[1]) / 2, y: (bounds.y[0] + bounds.y[1]) / 2, z: (bounds.z[0] + bounds.z[1]) / 2 }
+        : { x: 0, y: 0, z: 0 }
+      const camera = instance.camera()
+      camera.up.set(0, 1, 0)
+      camera.position.set(center.x + 120, center.y + 150, center.z + 180)
+      instance.controls().target.set(center.x, center.y, center.z)
+      camera.lookAt(center.x, center.y, center.z)
+      camera.updateMatrixWorld()
+      instance.zoomToFit(0, fitPadding(), filter)
+      instance.controls().update()
+      baseDistance = cameraDistance()
+      updateCameraReadout()
+    }
     fitInitialView = () => {
       if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
       initialFitPending = false
@@ -1060,13 +1136,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           return
         }
         // 仅初始化无历史视角的新页面，用户操作与后退恢复不自动改相机。
-        instance.cameraPosition({ x: 120, y: 80, z: 180 }, { x: 0, y: 0, z: 0 }, 0)
-        instance.controls().update()
-        instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
-        baseDistance = cameraDistance()
+        fitFromObliqueView()
         viewWidth = viewport.clientWidth
         viewHeight = viewport.clientHeight
-        updateCameraReadout()
+        // 首帧标签与节点对象尺寸仍在更新；用户未操作时下一帧按最终范围再适应一次。
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (ctx.isStale() || !viewport.isConnected || userMovedCamera) return
+          fitFromObliqueView()
+        }))
       })
     }
     fit3d.addEventListener('click', () => requestAnimationFrame(() => {
@@ -1113,15 +1190,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
     zoomOut.addEventListener('click', () => zoom3d(1.25))
     zoomIn.addEventListener('click', () => zoom3d(0.8))
-    reset.addEventListener('click', () => {
-      instance.camera().up.set(0, 1, 0)
-      instance.cameraPosition({ x: 120, y: 80, z: 180 }, { x: 0, y: 0, z: 0 }, 0)
-      instance.controls().update()
-      // 重置以当前可见关系的原生适应距离为100%，不沿用概览的旧基准。
-      instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
-      baseDistance = cameraDistance()
-      updateCameraReadout()
-    })
+    // 重置以当前可见关系的原生适应距离为100%，不沿用概览的旧基准。
+    reset.addEventListener('click', () => fitFromObliqueView())
     locate.addEventListener('click', () => {
       const node = instance.graphData().nodes.find((item: { id: string }) => item.id === evidenceRefId(ctx.page.ref))
       if (!node || ![node.x, node.y, node.z].every(Number.isFinite)) return
@@ -1135,20 +1205,43 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       }, { x: node.x, y: node.y, z: node.z }, cameraDuration())
     })
     // canvas 出现早于图对象就绪；过早适应会取得空包围盒而无声失效。
+    // 地面与落地线按节点实际坐标放置（组件包围盒含落地线自身，会让地面逐次下沉），
+    // 布局停止后再放一次，取最终范围。
+    const placeFloor = () => {
+      const nodes = (instance.graphData().nodes as Array<GraphPoint3d & { id: string }>)
+        .filter(node => [node.x, node.y, node.z].every(Number.isFinite))
+      if (!nodes.length) return
+      const span = (axis: 'x' | 'y' | 'z') => [Math.min(...nodes.map(node => node[axis])), Math.max(...nodes.map(node => node[axis]))]
+      const [x, y, z] = [span('x'), span('y'), span('z')]
+      // 地面边缘渐隐为透明；铺到节点水平范围的 1.15 倍，留在适应后的画布内。
+      const size = Math.max(x[1] - x[0], z[1] - z[0], (y[1] - y[0]) * 0.8, 80) * 1.15
+      const floorY = y[0] - 24
+      spatialGrid.scale.set(size, size, 1)
+      spatialGrid.position.set((x[0] + x[1]) / 2, floorY, (z[0] + z[1]) / 2)
+      for (const node of nodes) {
+        const entry = dropLines.get(node.id)
+        if (!entry) continue
+        const depth = floorY - node.y
+        entry.drop.geometry.setFromPoints([{ x: 0, y: 0, z: 0 } as never, { x: 0, y: depth, z: 0 } as never])
+        entry.drop.visible = true
+        entry.marker.position.set(0, depth, 0)
+        entry.marker.visible = true
+      }
+    }
     const ready = () => {
       layoutReady = true
       fitResizedView()
       updateCameraReadout()
-      const bounds = instance.getGraphBbox()
-      if (bounds) {
-        const size = Math.max(bounds.x[1] - bounds.x[0], bounds.z[1] - bounds.z[0], 80)
-        spatialGrid.scale.set(size, 1, size)
-        spatialGrid.position.set((bounds.x[0] + bounds.x[1]) / 2, bounds.y[0] - 12, (bounds.z[0] + bounds.z[1]) / 2)
-      }
+      placeFloor()
       placeLabels()
       for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
       fitInitialView()
-      instance.onEngineTick(placeLabels).onEngineStop(placeLabels)
+      instance.onEngineTick(placeLabels).onEngineStop(() => {
+        placeFloor()
+        // 落地线随最终布局变长，用户未操作且无历史视角时按最终范围重新适应。
+        if (!userMovedCamera && !rememberedView && !initialFitPending) fitFromObliqueView()
+        placeLabels()
+      })
     }
     instance.onEngineTick(ready).onEngineStop(ready)
     const legend = document.createElement('div')
@@ -1163,8 +1256,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       item.dataset.kind = kind
       const key = document.createElement('i')
       key.className = 'key'
-      key.style.backgroundColor = KIND_COLORS[kind]
-      key.style.borderColor = KIND_COLORS[kind]
+      key.style.backgroundColor = THEME.kinds[kind]
+      key.style.borderColor = THEME.kinds[kind]
       key.setAttribute('aria-hidden', 'true')
       item.append(key, KIND_LABELS[kind])
       legend.append(item)

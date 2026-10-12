@@ -92,7 +92,7 @@ try {
     const { data } = context.getImageData(0, 0, probe.width, probe.height)
     const background = (x, y) => {
       const offset = (y * probe.width + x) * 4
-      return [247, 251, 253].every((value, channel) => Math.abs(data[offset + channel] - value) <= 2)
+      return [7, 19, 33].every((value, channel) => Math.abs(data[offset + channel] - value) <= 2)
     }
     const pixel = (x, y) => ({ x, y, color: [...data.slice((y * probe.width + x) * 4, (y * probe.width + x) * 4 + 4)] })
     for (let x = 2; x < probe.width - 2; x++) {

@@ -198,7 +198,7 @@ try {
           const context = probe.getContext('2d')
           context.drawImage(image, 0, 0)
           const { data } = context.getImageData(0, 0, probe.width, probe.height)
-          const ink = (x, y) => [247, 251, 253].some((value, channel) =>
+          const ink = (x, y) => [7, 19, 33].some((value, channel) =>
             Math.abs(data[(y * probe.width + x) * 4 + channel] - value) > 2)
           for (let x = 2; x < probe.width - 2; x++) {
             if (ink(x, 2) || ink(x, probe.height - 3)) return true
