@@ -128,7 +128,7 @@ describe('body value marks', () => {
 
   it('marks and restores an edited percentage-point value', () => {
     const result = validation('stale', 2)
-    Object.assign(result.subjects[0], { factValue: 1, unit: '个百分点', draftUnit: '个百分点' })
+    Object.assign(result.subjects[0], { factValue: 1, unit: '个百分点', draftUnit: '个百分点', draftDirection: 'increase' })
     const text = '2026年10月东院占比提高2个百分点。[[citation:sub-1]]'
     const marks = findValueMarks(text, result)
     expect(marks).toHaveLength(1)
@@ -244,7 +244,7 @@ describe('body value marks', () => {
     expect(findValueMarks(`${written}。[[citation:sub-1]]`, result)).toEqual([])
   })
 
-  it.each(['下降', '降低了', '回落约'])('preserves the %s wording when restoring a registered decline', (verb) => {
+  it.each(['下降', '降低了', '回落约', '下降了约', '下降 约'])('preserves the %s wording when restoring a registered decline', (verb) => {
     const result = validation('stale', -2)
     Object.assign(result.subjects[0], { factValue: -1, unit: '个百分点', draftUnit: '个百分点', draftDirection: 'decrease' })
     const text = `2026年10月东院占比${verb}2个百分点。[[citation:sub-1]]`
@@ -257,6 +257,10 @@ describe('body value marks', () => {
     { verb: '下降', factValue: 1, draftValue: -2, draftDirection: 'decrease' },
     { verb: '提高', factValue: -1, draftValue: 2, draftDirection: 'increase' },
     { verb: '下降', factValue: -1, draftValue: 2, draftDirection: undefined },
+    { verb: '下降了约', factValue: 1, draftValue: 2, draftDirection: undefined },
+    { verb: '提高', factValue: 1, draftValue: 2, draftDirection: undefined },
+    { verb: '下降 约', factValue: 1, draftValue: 2, draftDirection: undefined },
+    { verb: '下降了约', factValue: 1, draftValue: -2, draftDirection: 'decrease' },
   ] as const)('does not guess a replacement when direction conflicts or is unknown: $verb / $factValue', (entry) => {
     const result = validation('stale', entry.draftValue)
     Object.assign(result.subjects[0], entry, { unit: '个百分点', draftUnit: '个百分点' })
@@ -264,6 +268,19 @@ describe('body value marks', () => {
     const view = fakeView(text)
     expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
     expect(view.state.doc.textContent).toBe(text)
+  })
+
+  it.each([undefined, 'decrease'] as const)('rejects an opposite positive fact with bold magnitude (%s)', (draftDirection) => {
+    const result = validation('stale', draftDirection ? -2 : 2)
+    Object.assign(result.subjects[0], { factValue: 1, unit: '个百分点', draftUnit: '个百分点', draftDirection })
+    const view = fakeView('占位')
+    view.state = EditorState.create({ doc: schema.node('doc', null, [schema.node('paragraph', null, [
+      schema.text('2026年10月占比下降'), schema.text('2个百分点', [schema.marks.strong.create()]),
+      schema.text('。[[citation:sub-1]]'),
+    ])]) })
+    const before = view.state.doc
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.eq(before)).toBe(true)
   })
 
   it('shows and hides the read-only hover card', () => {

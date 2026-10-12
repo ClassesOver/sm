@@ -208,6 +208,32 @@ def test_ambiguous_signed_percentage_point_magnitude_is_not_comparable(verb):
     ) is None
 
 
+@pytest.mark.parametrize("phrase", ["下降了约{n}个百分点", "下降 约{n}个百分点", "下降**{n}个百分点**", "**下降了约{n}个百分点**"])
+def test_percentage_point_direction_survives_modifiers_and_emphasis(phrase):
+    def validate(n, fact):
+        return claim_status(
+            "2026年10月占比" + phrase.format(n=n) + "。[[claim:c]]", "c", fact,
+            expected_unit="个百分点", expected_periods=("2026-10",),
+        )
+    edited = validate(2, 1)
+    assert edited["status"] == "stale"
+    assert edited["draftValue"] == -2
+    assert edited["draftDirection"] == "decrease"
+    # Matching magnitude must not hide the opposite sign, including after restoration.
+    assert validate(1, 1)["status"] == "stale"
+    assert validate(1, -1)["status"] == "valid"
+
+
+@pytest.mark.parametrize("phrase", ["提高了约1个百分点", "上升**1个百分点**"])
+def test_percentage_point_increase_cannot_validate_a_negative_fact(phrase):
+    result = claim_status(
+        "2026年10月占比" + phrase + "。[[claim:c]]", "c", -1,
+        expected_unit="个百分点", expected_periods=("2026-10",),
+    )
+    assert result["status"] == "stale"
+    assert result["draftDirection"] == "increase"
+
+
 def test_claim_status_exposes_only_a_conservative_comparable_draft_value() -> None:
     result = claim_status(
         "2025-09华东收入3,780万元[[claim:claim-1]]",

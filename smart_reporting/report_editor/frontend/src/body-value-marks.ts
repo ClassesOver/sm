@@ -215,6 +215,12 @@ export function restoreRegisteredValue(view: EditorView, subjectId: string, vali
   if (targets.length !== 1) return false
   const [target] = targets
   const written = view.state.doc.textBetween(target.from, target.to)
+  // 旧响应或未识别修饰语不能把正登记值写进下降表述；样式节点已由 textBetween 合并。
+  if (subject.unit === '个百分点' && !subject.draftDirection) {
+    const position = view.state.doc.resolve(target.from)
+    const prefix = position.parent.textBetween(0, position.parentOffset, '\n', '\n')
+    if (/(?:增长|上升|增加|提高|增幅|涨幅|上涨|回升|下降|减少|降低|回落|下滑|降幅|减幅|跌幅|下跌|缩减)[^\d。！？;；\n，,]*$/.test(prefix)) return false
+  }
   let replacementValue = subject.factValue
   if (subject.draftDirection) {
     // 只恢复幅度，不猜测或改写方向；登记方向与正文冲突时保留人工处理。
