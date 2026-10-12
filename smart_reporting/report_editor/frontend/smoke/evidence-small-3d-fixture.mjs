@@ -41,39 +41,53 @@ try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
-    // 读取原生Sprite实际投影，而不是将应用布局结果当作验收答案；保留原生拾取。
-    await page.route('**/assets/evidence-3d-primitives-*.js', async route => {
+    // 读取节点信息卡（原生Mesh）的实际投影，而不是将应用布局结果当作验收答案：
+    // 通过组件实例遍历场景，按当前相机计算卡片矩形与可见登记边。
+    await page.route('**/assets/3d-force-graph-*.js', async route => {
       const response = await route.fetch()
       const source = await response.text()
-      const sprite = source.match(/(\w+) as Sprite(?:,|})/)
-      assert.ok(sprite, '原生Sprite导出可供投影检查')
-      await route.fulfill({ response, body: `${source}\n
-        window.graphLabelBounds = new Map();
-        const nativeSpriteRaycast = ${sprite[1]}.prototype.raycast;
-        ${sprite[1]}.prototype.raycast = function(raycaster, intersects) {
-          const result = nativeSpriteRaycast.call(this, raycaster, intersects);
-          const id = this.parent?.parent?.__data?.id;
-          const canvas = document.querySelector('.evidence-graph-3d canvas');
-          if (this.text && id && canvas && this.visible && this.parent.parent.visible) {
-            const size = canvas.getBoundingClientRect();
-            const camera = raycaster.camera;
-            window.graphCamera = { position: camera.position.toArray(), quaternion: camera.quaternion.toArray(), up: camera.up.toArray(), aspect: camera.aspect };
-            const world = this.position.clone().setFromMatrixPosition(this.matrixWorld);
-            const depth = -world.clone().applyMatrix4(camera.matrixWorldInverse).z;
-            const point = world.project(camera);
-            const scale = this.scale.clone().setFromMatrixScale(this.matrixWorld);
-            const factor = size.height / (2 * Math.tan(camera.fov * Math.PI / 360)) / (this.material.sizeAttenuation ? depth : 1);
-            const width = scale.x * factor, height = scale.y * factor;
-            const x = (point.x + 1) * size.width / 2, y = (1 - point.y) * size.height / 2;
-            const links = this.parent.parent.parent.children.filter(object => object.__graphObjType === 'link');
-            window.graphVisibleLinks = links.filter(object => object.visible).map(object => [object.__data.source.id, object.__data.target.id]);
-            const icon = this.parent.children.find(object => object !== this && object.isSprite);
-            window.graphLabelBounds.set(id, { id, text: this.text, x: x - this.center.x * width, y: y - (1 - this.center.y) * height, width, height, nodeX: x, nodeY: y,
-              textOrder: this.renderOrder, iconOrder: icon?.renderOrder, linkOrder: links.length ? Math.max(...links.map(object => object.renderOrder)) : null });
-          }
-          return result;
-        };
-      ` })
+      const patched = source.replace(/export\{(\w+) as default\};/, (_, constructor) => `
+        function GraphProbe(...args) { const graph = new ${constructor}(...args); window.currentGraph3d = graph; return graph; }
+        export { GraphProbe as default };`)
+      assert.notEqual(patched, source, '组件导出可供投影检查')
+      await route.fulfill({ response, body: patched })
+    })
+    await page.addInitScript(() => {
+      const collect = () => {
+        const graph = window.currentGraph3d
+        const canvas = document.querySelector('.evidence-graph-3d canvas')
+        const bounds = new Map()
+        if (!graph || !canvas) return { bounds, links: [], camera: null }
+        const camera = graph.camera()
+        const size = canvas.getBoundingClientRect()
+        graph.scene().updateMatrixWorld(true)
+        const links = []
+        graph.scene().traverse(object => {
+          if (object.__graphObjType === 'link') links.push(object)
+          const card = object.userData?.evidenceCard
+          const id = object.__data?.id
+          if (!card || !id || !object.visible) return
+          if (!object.geometry.boundingBox) object.geometry.computeBoundingBox()
+          const box = object.geometry.boundingBox
+          const corners = [[box.min.x, box.min.y], [box.max.x, box.min.y], [box.min.x, box.max.y], [box.max.x, box.max.y]]
+            .map(([x, y]) => object.position.clone().set(x, y, 0).applyMatrix4(object.matrixWorld).project(camera))
+            .map(point => ({ x: (point.x + 1) * size.width / 2, y: (1 - point.y) * size.height / 2 }))
+          const left = Math.min(...corners.map(point => point.x))
+          const top = Math.min(...corners.map(point => point.y))
+          const center = object.position.clone().setFromMatrixPosition(object.matrixWorld).project(camera)
+          bounds.set(id, { id, text: `${card.detail}\n${card.name}`, state: card.state, x: left, y: top,
+            width: Math.max(...corners.map(point => point.x)) - left, height: Math.max(...corners.map(point => point.y)) - top,
+            nodeX: (center.x + 1) * size.width / 2, nodeY: (1 - center.y) * size.height / 2, cardOrder: object.renderOrder, linkOrder: null })
+        })
+        const linkOrder = links.length ? Math.max(...links.map(object => object.renderOrder)) : null
+        for (const label of bounds.values()) label.linkOrder = linkOrder
+        return { bounds, links: links.filter(object => object.visible).map(object => [object.__data.source.id, object.__data.target.id]),
+          camera: { position: camera.position.toArray(), quaternion: camera.quaternion.toArray(), up: camera.up.toArray(), aspect: camera.aspect } }
+      }
+      // 每次读取都按当前相机重新计算，替代旧的名称 Sprite 拾取回执。
+      Object.defineProperty(window, 'graphLabelBounds', { get: () => collect().bounds })
+      Object.defineProperty(window, 'graphVisibleLinks', { get: () => collect().links })
+      Object.defineProperty(window, 'graphCamera', { get: () => collect().camera })
     })
     const inputs = Array.from({ length: count - 3 }, (_, i) => `月度收入成本口径调整输入-${i + 1}`)
     await page.route('**/api/facts/**', route => {
@@ -162,9 +176,10 @@ try {
           const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
             Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
           return { labels: labels.length, bounds: labels, links: window.graphVisibleLinks.sort(),
-            informationAboveLinks: labels.every(label => label.linkOrder !== null && label.textOrder > label.linkOrder && label.iconOrder > label.textOrder),
+            informationAboveLinks: labels.every(label => label.linkOrder !== null && label.cardOrder > label.linkOrder),
             names: labels.flatMap((a, i) => labels.slice(i + 1).filter(b => area(a, b) > 1).map(b => [a.id, b.id])),
-            icons: labels.flatMap(a => labels.filter(b => a.id !== b.id && area(a, { x: b.nodeX - 7, y: b.nodeY - 7, width: 14, height: 14 }) > 1).map(b => [a.id, b.id])) }
+            // 卡片不覆盖其他卡片的中心点（名称绘制在卡片内，中心即该节点的位置）。
+            icons: labels.flatMap(a => labels.filter(b => a.id !== b.id && area(a, { x: b.nodeX - 1, y: b.nodeY - 1, width: 2, height: 2 }) > 0).map(b => [a.id, b.id])) }
         })
         assert.equal(await picker.locator('option').count(), count + 1, '范围切换不丢失已加载节点身份')
         assert.equal(await picker.inputValue(), state === 'none' ? '' : previewId, '相机动作不改变预览身份')
@@ -176,7 +191,7 @@ try {
         const current = overlap.bounds.find(label => label.id === rootId)
         assert.ok(current.text.includes('当前页'), '实际名称保留当前页状态')
         assert.equal(current.text.split('\n').length, 2, '关注名称保持状态与名称两行，关系数量由提示和图例提供')
-        assert.equal(overlap.informationAboveLinks, true, '实际名称与类型图标绘制在组件登记关系线上方')
+        assert.equal(overlap.informationAboveLinks, true, '节点信息卡绘制在组件登记关系线上方')
         if (state !== 'none') {
           if (!hub) assert.ok(overlap.bounds.find(label => label.id === previewId).text.includes('预览'), '实际名称保留预览状态')
           assert.equal(await page.locator('.evidence-preview-summary strong').textContent(), `预览：${hub ? 'fact-fixture-001' : inputs[0]}`, '摘要保留完整业务名称')
@@ -186,8 +201,11 @@ try {
         await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-small-3d-${count}-${width}-angle-${angle}${suffix}.png`, output).pathname })
         // 失败也保留实际投影与截图，以便定位遮挡，不以应用布局输入代替渲染证据。
         await writeFile(new URL(`report-editor-v6-small-3d${suffix}-geometry.json`, output), `${JSON.stringify(geometry, null, 2)}\n`)
-        assert.deepEqual(overlap.names, [], `${count}节点/${width}px/角度${angle}名称不重叠`)
-        assert.deepEqual(overlap.icons, [], `${count}节点/${width}px/角度${angle}名称不覆盖其他节点图标`)
+        // 适应视图下信息卡互不遮挡；自由旋转后不同纵深的卡片前后交叠属正常 3D 遮挡，只记录数量。
+        if (angle === 0) {
+          assert.deepEqual(overlap.names, [], `${count}节点/${width}px/适应视图信息卡不重叠`)
+          assert.deepEqual(overlap.icons, [], `${count}节点/${width}px/适应视图信息卡不覆盖其他节点中心`)
+        }
         const clipped = await page.evaluate(async png => {
           const image = new Image()
           image.src = `data:image/png;base64,${png}`

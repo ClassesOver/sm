@@ -46,15 +46,16 @@ try {
     const graph = window.currentGraph3d
     const nodes = graph.graphData().nodes
     return {
-      mode: graph.dagMode(),
-      layers: new Set(nodes.map(node => node.z)).size,
+      stages: graph.scene().children.find(object => object.name === 'evidence-stages')?.children.length ?? 0,
+      layers: new Set(nodes.map(node => node.x)).size,
       positions: nodes.map(({ id, x, y, z }) => ({ id, x, y, z })),
-      directions: graph.graphData().links.map(link => link.target.z - link.source.z),
+      directions: graph.graphData().links.map(link => link.target.x - link.source.x),
     }
   })
-  assert.equal(initial.mode, 'zin')
+  // 分层流水布局：溯源阶段从左到右，每个阶段顶部一个标题。
   assert.ok(initial.layers >= 2)
-  assert.ok(initial.directions.every(distance => distance > 0), '输入位于产出后方')
+  assert.ok(initial.stages >= 2)
+  assert.ok(initial.directions.every(distance => distance > 0), '输入位于产出左侧')
   const readout = page.locator('.evidence-camera-readout')
   assert.ok((await readout.textContent()).includes('缩放 100%'))
   assert.match(await readout.textContent(), /水平 -?\d+° · 俯仰 -?\d+° · 倾斜 -?\d+°/)
