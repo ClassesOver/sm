@@ -167,6 +167,12 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                             (f"groupShares.{groups_key}.{index}", Decimal(str(item["value"])) / Decimal(str(total)) * 100)
                             for index, item in enumerate(entry.get(groups_key, ()))
                             if isinstance(item.get("value"), (int, float)) and item["value"] >= 0)
+                # 分组之间的差额（“心内科较骨科多140.00万元”）：按登记的前列分组两两相减，只登记非负差额。
+                top = [item for item in entry.get("topGroups", ()) if isinstance(item.get("value"), (int, float))]
+                if array == "metrics" and entry.get("unit") != "%" and len(top) <= 12:
+                    values.extend(
+                        (f"groupGaps.{left}-{right}", abs(Decimal(str(top[left]["value"])) - Decimal(str(top[right]["value"]))))
+                        for left in range(len(top)) for right in range(left + 1, len(top)))
                 periods = entry.get("periodValues", ())
                 if (array == "metrics" and entry.get("aggregation") == "sum"
                         and entry.get("periodGranularity") == "month" and periods
@@ -240,12 +246,12 @@ def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> 
     return min(scales, key=lambda candidate: scales[candidate])
 
 
-# 只供服务端核对与渲染的派生数值引用（相邻月变化、分组占比）：不放进模型可见的数值目录。
-_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.", "groupShares.")
+# 只供服务端核对与渲染的派生数值引用（相邻月变化、分组占比与分组差额）：不放进模型可见的数值目录。
+_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.", "groupShares.", "groupGaps.")
 
 
 def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
-    """模型可见的数值目录：去掉只供服务端核对的相邻月变化与分组占比引用。"""
+    """模型可见的数值目录：去掉只供服务端核对的相邻月变化、分组占比与分组差额引用。"""
     return {token: text for token, text in catalog.items()
             if not token[2:-2].split(":")[2].startswith(_SERVER_ONLY_FIELDS)}
 

@@ -831,3 +831,15 @@ def test_visit_counts_written_as_persons_are_corrected(text, expected):
 def test_integer_bounds_supported_by_registered_values_are_kept(text, expected):
     sample = Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json'
     assert replace_unregistered_numbers(text, [sample.read_text(encoding='utf-8')]) == expected
+
+
+def test_group_gaps_are_registered_between_top_groups():
+    # “心内科较骨科多140.00万元”：两个登记分组值之差，服务端登记后写对不被替换，写错仍替换。
+    from smart_reporting.reporting.trace.numeric_text import prompt_number_catalog
+
+    sample = (Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json').read_text(encoding='utf-8')
+    catalog = frozen_number_catalog([sample])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:groupGaps.0-1:万元}}'] == '140.00万元'
+    assert not [token for token in prompt_number_catalog(catalog) if 'groupGaps' in token]
+    text = '心内科门诊收入较骨科多140.00万元，骨科较儿科多240.00万元，较眼科多500.00万元。'
+    assert replace_unregistered_numbers(text, [sample]) == '心内科门诊收入较骨科多140.00万元，骨科较儿科多240.00万元，较眼科多待核实。'
