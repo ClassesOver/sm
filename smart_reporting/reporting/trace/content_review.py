@@ -41,6 +41,7 @@ from .review_attribution import (
     _group_value_attribution_warnings,
     _metric_value_attribution_warnings,
     _project_ratio_ranking_warnings,
+    _project_ratio_value_warnings,
 )
 from .review_common import (
     _CLAUSE_BREAK_WITH_MARKS,
@@ -156,6 +157,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         )
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
+    warnings.extend(_project_ratio_value_warnings(text, documents))
     warnings.extend(_group_ranking_warnings(text, documents, field_definitions))
     warnings.extend(_group_top_n_warnings(text, documents, field_definitions))
     warnings.extend(_group_value_attribution_warnings(text, documents))
@@ -228,7 +230,8 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
             known.setdefault("万人次", set()).update(value / 10000 for value in values)
     # 原始证据中的数字同样是可核对来源；冻结目录之外的数字仍会在有目录时
     # 触发告警，但不能把简化证据对象中的已给定事实误报为无依据数字。
-    supplemental = set().union(*(_numeric_literals(document) for document in documents if "findings" not in document))
+    supplemental = set().union(*(_numeric_literals(document) for document in documents
+                                 if "findings" not in document and document.get("schema") != "chart-input/v1"))
     reported_values: set[tuple[Decimal, str]] = set()
     for match in _VALUE.finditer(text):
         number = Decimal(match[1].replace(",", ""))
@@ -280,7 +283,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         number = Decimal(number_text.replace(",", ""))
         quantum = Decimal(1).scaleb(-(len(number_text.split(".")[1]) if "." in number_text else 0))
         candidates = known.get(unit, set()) | known.get(PERCENT_POINT if unit == "%" else unit, set()) | supplemental
-        if (not any(abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == abs(number) for value in candidates)
+        if (not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                 and (number, unit) not in reported_values):
             reported_values.add((number, unit))
             warnings.append(

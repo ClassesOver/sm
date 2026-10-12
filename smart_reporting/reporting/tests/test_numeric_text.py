@@ -263,6 +263,21 @@ def test_period_extrema_warning_uses_frozen_series_and_analysis_scope():
     assert period_extrema_warnings("[[analysis:analysis_001]]1月成本为1—7月单月最高值。", bundles) == []
 
 
+@pytest.mark.parametrize("text", [
+    "月度最低值为50（出现在11月），月度最高值为100（出现在9月）。",
+    "11月为50，较10月减少30，为9—11月的最低值。",
+])
+def test_extrema_does_not_assign_the_previous_clause_month_to_the_next_extreme(text):
+    from smart_reporting.reporting.trace.numeric_text import period_extrema_warnings
+
+    bundle = {"analysisId": "analysis_001", "metrics": [{"periodRoles": ["current"],
+        "periodGranularity": "month", "periodValues": [
+            {"period": "2025-09", "value": 100}, {"period": "2025-10", "value": 80},
+            {"period": "2025-11", "value": 50}]}]}
+    assert period_extrema_warnings("[[analysis:analysis_001]]" + text, [bundle]) == []
+    assert period_extrema_warnings("[[analysis:analysis_001]]10月为最低值80。", [bundle])
+
+
 def test_ratio_guide_exposes_period_and_denominator_rules_without_inventing_monthly_rates():
     from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
 
@@ -463,7 +478,9 @@ def test_budget_ratio_is_available_when_both_amount_units_are_unknown():
     for metric in document['metrics']:
         metric['unit'] = None
     content = json.dumps(document)
-    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
     from smart_reporting.reporting.trace.numeric_text import budget_comparison_values
 
     comparisons = budget_comparison_values(DeterministicAnalysisBundle.model_validate(document))

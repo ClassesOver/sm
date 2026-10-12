@@ -173,10 +173,12 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
             "businessLabel": business_label,
             "periodRoles": list(period_roles),
         }
-    claims: dict[str, dict[str, Any]] = {}
+    claims: dict[str | tuple[str | None, str], dict[str, Any]] = {}
     for item in value["claims"]:
         extra_claim_ids = item.get("claimIds") if isinstance(item, dict) else None
-        normalized_item = {key: item_value for key, item_value in item.items() if key != "claimIds"} if isinstance(item, dict) else item
+        claim_locators = item.get("claimLocators") if isinstance(item, dict) else None
+        normalized_item = {key: item_value for key, item_value in item.items()
+                           if key not in {"claimIds", "claimLocators"}} if isinstance(item, dict) else item
         entry = _normalize_trace_entry(normalized_item, keys=_TRACE_CLAIM_KEYS, kind="claim")
         claim_id = entry["claimId"]
         fact_value = entry["factValue"]
@@ -186,7 +188,7 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
         if (
             not isinstance(claim_id, str)
             or not 1 <= len(claim_id) <= 128
-            or claim_id in claims
+            or (claim_locators is None and claim_id in claims)
         ):
             raise ReportFailure("PDF 数据来源 claim 无效或重复")
         if isinstance(fact_value, bool) or not (
@@ -215,10 +217,25 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
         )
         if not claim_ids or claim_id not in claim_ids or len(set(claim_ids)) != len(claim_ids):
             raise ReportFailure("PDF 数据来源 claim 无效或重复")
-        for registered_id in claim_ids:
-            if registered_id in claims:
+        keys: list[str | tuple[str | None, str]] = list(claim_ids)
+        if claim_locators is not None:
+            if not isinstance(claim_locators, list) or not 1 <= len(claim_locators) <= _MAX_TRACE_CLAIMS:
+                raise ReportFailure("PDF 数据来源 claim 定位无效")
+            keys = []
+            for locator in claim_locators:
+                if not isinstance(locator, dict) or set(locator) != {"sectionId", "claimId"}:
+                    raise ReportFailure("PDF 数据来源 claim 定位无效")
+                section_id, registered_id = locator["sectionId"], locator["claimId"]
+                if ((section_id is not None and (not isinstance(section_id, str) or not 1 <= len(section_id) <= 128))
+                        or not isinstance(registered_id, str) or registered_id not in claim_ids):
+                    raise ReportFailure("PDF 数据来源 claim 定位无效")
+                keys.append((section_id, registered_id))
+            if {key[1] for key in keys} != set(claim_ids):
+                raise ReportFailure("PDF 数据来源 claim 定位不完整")
+        for key in keys:
+            if key in claims:
                 raise ReportFailure("PDF 数据来源 claim 无效或重复")
-            claims[registered_id] = entry
+            claims[key] = entry
     tables: dict[str, dict[str, Any]] = {}
     for item in value["tables"]:
         entry = _normalize_trace_entry(item, keys=_TRACE_TABLE_KEYS, kind="table")
@@ -263,6 +280,13 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
     return {"claims": claims, "tables": tables, "charts": charts, "datasets": datasets}
 
 
+def _trace_claim_at(trace: dict[str, Any], markdown: str, position: int, claim_id: str) -> dict[str, Any] | None:
+    sections = list(_SECTION_MARKER.finditer(markdown, 0, position))
+    section_id = sections[-1][1] if sections else None
+    return (trace["claims"].get((section_id, claim_id))
+            or trace["claims"].get((None, claim_id)) or trace["claims"].get(claim_id))
+
+
 def _assign_trace_aliases(markdown: str, trace: dict[str, Any]) -> dict[str, str]:
     """按正文首次出现顺序分配数据来源编号；未出现的登记项排在其后。
 
@@ -287,7 +311,7 @@ def _assign_trace_aliases(markdown: str, trace: dict[str, Any]) -> dict[str, str
         table_id = match.group("table")
         src = match.group("src")
         if claim_id is not None:
-            entry = trace["claims"].get(claim_id)
+            entry = _trace_claim_at(trace, markdown, match.start(), claim_id)
             if entry is not None:
                 assign(entry)
         elif table_id is not None:
@@ -441,7 +465,6 @@ def _normalize_citation_presentations(
                 "alias": f"[来源 {index:03d}]",
             }
         )
-    aliases = {item["citationId"]: item["alias"] for item in normalized}
     return normalized
 
 
@@ -473,7 +496,7 @@ def _pdf_markdown(
     def visible_claim(match: re.Match[str]) -> str:
         if not include_sources:
             return ""
-        entry = trace["claims"].get(match.group(1))
+        entry = _trace_claim_at(trace, base_markdown, match.start(), match.group(1))
         return entry["alias"] if entry is not None else ""
 
     def visible_table_close(match: re.Match[str]) -> str:
@@ -497,10 +520,7 @@ def _pdf_markdown(
             "",
             _CHART_IMAGE_WITH_CAPTION.sub(
                 visible_chart_caption,
-                _CLAIM_MARKER.sub(
-                    visible_claim,
-                    _ANALYSIS_MARKER.sub("", _SECTION_MARKER.sub("", base_markdown)),
-                ),
+                _ANALYSIS_MARKER.sub("", _SECTION_MARKER.sub("", _CLAIM_MARKER.sub(visible_claim, base_markdown))),
             ),
         ),
     )

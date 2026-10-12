@@ -1083,10 +1083,19 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
             pattern = r"(?<![\d–—~-])(?P<month>\d{1,2})月(?:(?!\d{1,2}月)[^。；\n]){0,60}?(?P<kind>最高|最低|峰值|低点)"
             # “低点：2月”与“2月为最低”使用相同的冻结极值判定。
             text = re.sub(r"(低点|峰值)[：:]\s*(\d{1,2})月", r"\2月为\1", text)
+            # 后置月份只属于括号前的极值，不能被下一分句的极值词接走。
+            text = re.sub(
+                rf"(?P<kind>最高|最低|峰值|低点)(?:值)?\s*(?:为|是|[：:])?\s*"
+                rf"{_DISPLAYED_VALUE}\s*[（(](?:出现在|出现于|在|于)(?P<month>\d{{1,2}})月[）)]",
+                lambda m: f"{m['month']}月为{m['kind']}", text,
+            )
             # 范围端点不是另一项月份断言；掩去“月”但保持字符位置，
             # 使“2月为1—10月最低”仍可匹配2月，范围则从原文取回。
             masked = re.sub(r"(?<!\d)\d{1,2}月?\s*[–—~～至到-]\s*\d{1,2}月",
                             lambda m: m[0].replace("月", "期"), text)
+            # “11月较10月减少，为最低值”中的10月是比较基期，不是极值主语。
+            masked = re.sub(r"(?:较|相比于?|相较于?|比)\s*\d{1,2}月",
+                            lambda m: m[0].replace("月", "期"), masked)
             for match in re.finditer(pattern, masked):
                 if (re.search(r"占比|比重|比例|环比|同比|增长率|降幅|增幅|组织明细|明细分组|分组组合", match[0])
                         or re.match(r"单项|单条", text[match.end():])):

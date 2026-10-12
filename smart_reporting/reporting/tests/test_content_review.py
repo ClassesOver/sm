@@ -34,6 +34,52 @@ def test_review_keeps_registered_values_and_flags_invented_units():
     assert review_content("补充科室金额123.45元", [content, '{"departmentAmount":123.45}']) == []
 
 
+@pytest.mark.parametrize("text", [
+    "项目签约率为25.00%，付款率为45.00%。",
+    "已签合同金额合计为90，占同快照项目预算总额的25.00%；已付款金额合计为50，占同快照项目预算总额的45.00%。",
+])
+def test_project_ratio_values_cannot_be_swapped_between_contract_and_payment(text):
+    metrics = [{**_metric(field), "factId": "fact-" + letter * 16, "unit": None,
+                "total": total, "periodValues": []}
+               for letter, field, total in (("a", "budget_project_amount", 200),
+                                            ("b", "contract_amount", 90), ("c", "payment_amount", 50))]
+    content = json.dumps({"analysisId": "analysis_001", "metrics": metrics})
+    assert review_content("项目签约率为45.00%，付款率为25.00%。", [content]) == []
+    warnings = review_content(text, [content])
+    assert any("签约率" in warning and "45" in warning for warning in warnings)
+    assert any("付款率" in warning and "25" in warning for warning in warnings)
+
+
+def test_project_total_rates_do_not_override_named_project_groups():
+    metrics = [{**_metric(field), "factId": "fact-" + letter * 16, "unit": None,
+                "total": total, "periodValues": []}
+               for letter, field, total in (("a", "budget_project_amount", 200),
+                                            ("b", "contract_amount", 90), ("c", "payment_amount", 50))]
+    content = json.dumps({"analysisId": "analysis_001", "metrics": metrics})
+    chart = json.dumps({"schema": "chart-input/v1", "columns": ["group", "contract", "payment"],
+                       "rows": [["专用设备", 51.9, 41.39]],
+                       "columnMeta": {key: {"unit": "%", "isPercent": True} for key in ("contract", "payment")}})
+    assert review_content("专用设备签约率为51.90%，付款率为41.39%。", [content, chart]) == []
+
+
+@pytest.mark.parametrize("unit", ["%", "元"])
+def test_unbound_table_values_keep_the_registered_sign(unit):
+    chart = json.dumps({"schema": "chart-input/v1", "columns": ["name", "value"],
+                       "rows": [["收入", 25]], "columnMeta": {"value": {"unit": unit, "isPercent": True}}})
+    table = f"| 指标 | 数值（{unit}） |\n| --- | --- |\n| 收入 | {{value}} |"
+    assert review_content(table.replace("{value}", "25.00"), [chart]) == []
+    assert any("表格数值" in warning for warning in review_content(table.replace("{value}", "-25.00"), [chart]))
+
+
+@pytest.mark.parametrize("meta", [{"unit": "%", "isPercent": False}, {"unit": "%"}, {"unit": "元"}])
+def test_chart_numbers_cannot_bypass_percent_column_metadata(meta):
+    chart = {"schema": "chart-input/v1", "columns": ["name", "value"], "rows": [["药品", 0.5]],
+             "columnMeta": {"value": meta}}
+    assert review_content("药品占比0.50%。", [json.dumps(chart)])
+    chart["columnMeta"]["value"] = {"unit": "%", "isPercent": True}
+    assert review_content("药品占比0.50%。", [json.dumps(chart)]) == []
+
+
 def test_amount_extrema_does_not_apply_to_type_share_extrema():
     fact = {**_metric(values=(100, 70, 80)), 'unit': '元'}
     content = json.dumps({'analysisId': 'analysis_001', 'metrics': [fact]})
@@ -1121,7 +1167,10 @@ def test_repetition_preserves_the_sign_of_numeric_facts():
     "    {text}\n",
 ])
 def test_readability_harness_excludes_markdown_code_with_real_fence_rules(template):
-    from smart_reporting.reporting.trace.content_review import readability_warnings, repeated_sentence_warnings
+    from smart_reporting.reporting.trace.content_review import (
+        readability_warnings,
+        repeated_sentence_warnings,
+    )
 
     text = "这里是代码示例中的解释文字" * 40 + "。"
     code = template.format(text=text)
