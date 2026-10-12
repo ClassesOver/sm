@@ -136,11 +136,13 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
     const group = groupProtocolMarkers(tail)[0]
     const adjacent = group && /^[\s，、。！？;；]*$/.test(tail.slice(0, group[0].start))
     const citations = adjacent ? [...new Set(group.filter(marker => marker.kind === 'citation').map(marker => marker.value))] : []
-    const linked = citations.length === 1 ? citations[0] : undefined
+    // 报告也会写‘原因/单位/口径待核实’；这些是解释性告警，不是数值占位。
+    const explanatory = /(?:原因|单位|口径)\s*$/.test(text.slice(0, index))
+    const linked = !explanatory && citations.length === 1 ? citations[0] : undefined
     const subject = linked ? validation?.subjects.find(item => item.subjectId === linked) : undefined
     marks.push({
       start: index, end: index + UNVERIFIED.length, state: 'unverified', subjectId: subject?.subjectId,
-      card: ['缺少登记依据的数值，发布前已替换为“待核实”',
+      card: [explanatory ? '该处说明仍待核实，请核对原因、单位或口径' : '缺少登记依据的数值，发布前已替换为“待核实”',
         subject && typeof subject.factValue === 'number' ? `同句来源登记值：${formatRegisteredValue(subject.factValue, subject.unit)}` : '请核对数据后改写或删除'],
     })
   }

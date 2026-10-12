@@ -377,6 +377,17 @@ describe('unverified placeholders', () => {
     expect(view.state.doc.textContent).toBe('营收12,450万元。[[analysis:a]][[citation:sub-1]]')
   })
 
+  it.each(['原因待核实', '金额单位待核实', '统计口径待核实'])('preserves the explanatory caveat %s instead of filling in a number', (caveat) => {
+    const text = `营收12,450万元，${caveat}[[citation:sub-1]]`
+    const view = fakeView(text)
+    const marks = findValueMarks(text, stale())
+    const note = marks.find(mark => mark.state === 'unverified')!
+    expect(note.subjectId).toBeUndefined()
+    expect(note.card.join('')).not.toContain('已替换')
+    expect(restoreRegisteredValue(view, 'sub-1', stale())).toBe(false)
+    expect(view.state.doc.textContent).toBe(text)
+  })
+
   it('does not restore a placeholder from another sentence’s source', () => {
     const view = fakeView('华北营收为待核实。门店共 37 家。[[citation:sub-2]]')
     expect(restoreRegisteredValue(view, 'sub-2', stale())).toBe(false)
