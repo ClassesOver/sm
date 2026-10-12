@@ -6,14 +6,20 @@ export function sourceValidationIssueCount(result: TraceValidation): number {
   ).length
   const table = result.tableSummary
   const chartIssues = result.charts?.filter((chart) => chart.status !== 'valid').length ?? 0
-  return (result.warnings?.length ?? 0) + result.summary.stale + result.summary.unbound + warningSubjects +
+  return result.summary.stale + result.summary.unbound + warningSubjects +
     (table ? table.stale + table.unbound + table.insertedRows + (table.copiedCells ?? 0) : 0) + chartIssues
 }
 
-const UNVERIFIED_PLACEHOLDER = '待核实'
+function numericalPlaceholderCount(visibleText: string): number {
+  let count = 0
+  for (const match of visibleText.matchAll(/待核实/g)) {
+    if (!/(?:原因|单位|口径|完整性|状态)\s*$/.test(visibleText.slice(Math.max(0, match.index - 8), match.index))) count++
+  }
+  return count
+}
 
 /** 状态栏溯源覆盖摘要：可溯源 x/y · 待复核 n · 待核实 n。只统计，不改变校验结论。 */
-export function sourceCoverageSummary(result: TraceValidation, markdown: string): { text: string; state: 'valid' | 'stale' | 'unknown' } {
+export function sourceCoverageSummary(result: TraceValidation, visibleText: string): { text: string; state: 'valid' | 'stale' | 'unknown' } {
   const warningSubjects = result.subjects.filter(subject => subject.status === 'valid' && (subject.warnings?.length ?? 0) > 0).length
   const table = result.tableSummary
   const charts = result.charts ?? []
@@ -21,13 +27,15 @@ export function sourceCoverageSummary(result: TraceValidation, markdown: string)
     (table ? table.valid + table.stale + table.unbound : 0) + charts.length
   const traceable = result.summary.valid - warningSubjects + (table?.valid ?? 0) + charts.filter(chart => chart.status === 'valid').length
   const issues = sourceValidationIssueCount(result)
-  const unverified = markdown.split(UNVERIFIED_PLACEHOLDER).length - 1
+  const unverified = numericalPlaceholderCount(visibleText)
+  const contentWarnings = result.warnings?.length ?? 0
   const text = [
     total ? `可溯源 ${traceable}/${total}` : '当前内容无精确来源绑定',
     issues ? `待复核 ${issues}` : '',
-    unverified ? `待核实 ${unverified}` : '',
+    unverified ? `待核实数值 ${unverified}` : '',
+    contentWarnings ? `内容提示 ${contentWarnings}` : '',
   ].filter(Boolean).join(' · ')
-  return { text, state: issues || unverified ? 'stale' : total ? 'valid' : 'unknown' }
+  return { text, state: issues || unverified || contentWarnings ? 'stale' : total ? 'valid' : 'unknown' }
 }
 
 /**

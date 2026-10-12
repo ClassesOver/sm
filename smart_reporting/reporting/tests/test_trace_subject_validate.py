@@ -11,10 +11,12 @@ import pytest
 
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.trace.contracts_v1 import (
+    ChartTraceV1,
     FactRefV1,
     SubjectBindingV1,
     TableCellBindingV1,
     TableTraceV1,
+    TraceFileRefV1,
     derive_resource_id,
 )
 from smart_reporting.reporting.trace.subject_builder import (
@@ -608,6 +610,52 @@ async def test_validate_content_warnings_survive_missing_claim_anchor(tmp_path: 
     assert result["summary"]["unbound"] == 1
     assert any("3800万元" in warning for warning in result["warnings"])
     assert any("直接证据" in warning for warning in result["warnings"])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_validate_uses_registered_chart_percentages(tmp_path: Path) -> None:
+    from smart_reporting.reporting.trace.index_builder import encode_trace_index
+
+    from .lineage_fixtures.manifest import register_trace_manifest
+
+    editor, _grants, context = await _make_editor_with_subject(tmp_path)
+    index = await editor.trace.load_index(context)
+    assert index is not None
+    image_path = "reports/revision-1/chart.png"
+    plot_path = "reports/revision-1/chart.chart-input.json"
+    plot = json.dumps({
+        "schema": "chart-input/v1", "chartId": "chart_001", "columns": ["name", "share"],
+        "rows": [["药品", 27.387028071755648]], "rowCount": 1,
+        "columnMeta": {"share": {"unit": "%", "isPercent": True}},
+    }).encode()
+    files = []
+    for path, data, media_type in ((image_path, b"png", "image/png"),
+                                   (plot_path, plot, "application/json")):
+        await editor.workspace.awrite_bytes(context.scope["threadId"], path, data)
+        files.append(TraceFileRefV1(
+            resourceId=derive_resource_id(path), path=path, mediaType=media_type,
+            size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+        ))
+    index = index.model_copy(update={
+        "files": (*index.files, *files),
+        "chart_traces": (ChartTraceV1(
+            chartId="chart_001", imageFileResourceId=derive_resource_id(image_path),
+            plotDataFileResourceIds=(derive_resource_id(plot_path),),
+            datasetIds=("dataset-url-abc0001",),
+        ),),
+    })
+    await editor.workspace.awrite_bytes(
+        context.scope["threadId"], "reports/revision-1/trace-index-v1.json",
+        encode_trace_index(index), overwrite=True,
+    )
+    manifest = await register_trace_manifest(
+        editor.workspace, context.scope["threadId"], index, overwrite=True,
+    )
+    context = context.model_copy(update={"artifact_manifest": manifest})
+    markdown = "药品占比27.39%。"
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert not any("27.39%" in warning for warning in result["warnings"])
 
 
 

@@ -875,6 +875,12 @@ def test_full_width_numbers_are_checked_like_half_width():
     assert warnings == ["数值缺少可核对的冻结依据：7.77%。请使用对应数值引用，或删去未登记的计算结果。"]
 
 
+def test_unknown_money_unit_conflicts_with_yuan_conversion_claim():
+    text = "金额单位待核实。正文引用的冻结数值为原始元值，图表按亿元换算展示。"
+    warnings = review_content(text, [])
+    assert any("金额单位断言矛盾" in warning for warning in warnings)
+
+
 def test_percent_point_abbreviations_are_checked_like_percent_points():
     # “提高9.99pp”与“9.99个百分点”同样须由两项登记百分数相减得到。
     warnings = [w for w in review_content("占比提高9.99pp。", [_comparison_content()]) if "百分点差值" in w]

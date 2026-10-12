@@ -17,10 +17,11 @@ const deferred = <T>() => {
 }
 
 describe('source validation', () => {
-  it('counts amount conversion warnings even without a nearby claim binding', () => {
+  it('separates content warnings from source binding issues', () => {
     const result = validation('draft')
     result.warnings = ['金额单位换算不一致']
-    expect(sourceValidationIssueCount(result)).toBe(1)
+    expect(sourceValidationIssueCount(result)).toBe(0)
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '当前内容无精确来源绑定 · 内容提示 1', state: 'stale' })
   })
   it('counts deleted or stale charts alongside claim and table issues', () => {
     const result = validation('draft')
@@ -130,9 +131,17 @@ describe('source coverage summary', () => {
       tableSummary: { valid: 3, stale: 0, unbound: 0, insertedRows: 0, copiedCells: 0 },
       charts: [{ chartId: 'c', imagePath: null, status: 'valid' }],
     }
-    expect(sourceCoverageSummary(result, '收入待核实，利润待核实')).toEqual({ text: '可溯源 5/6 · 待复核 1 · 待核实 2', state: 'stale' })
+    expect(sourceCoverageSummary(result, '收入待核实，利润待核实')).toEqual({ text: '可溯源 5/6 · 待复核 1 · 待核实数值 2', state: 'stale' })
     expect(sourceCoverageSummary({ ...result, subjects: [], summary: { valid: 0, stale: 0, unbound: 0 }, tableSummary: undefined, charts: [] }, ''))
       .toEqual({ text: '当前内容无精确来源绑定', state: 'unknown' })
+  })
+
+  it('counts only visible numerical placeholders', () => {
+    const result = validation('draft')
+    const visible = '执行率约待核实。金额单位待核实，零值原因待核实。'
+    expect(sourceCoverageSummary(result, visible)).toEqual({
+      text: '当前内容无精确来源绑定 · 待核实数值 1', state: 'stale',
+    })
   })
 
   it('cycles through issue positions in document order', () => {

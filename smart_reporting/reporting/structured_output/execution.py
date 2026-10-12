@@ -951,6 +951,7 @@ def _is_schema_transport_error(error: BaseException) -> bool:
             "unsupported",
             "invalid",
             "not available",
+            "unavailable",
             "not allowed",
             "does not support",
             "cannot find field $defs",

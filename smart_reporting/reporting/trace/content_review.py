@@ -132,6 +132,9 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     text = re.sub(r"\[\[(?:claim|citation|section|table|/table):[^\]]+\]\]", "", text)
     documents = _documents(contents)
     warnings = money_text_warnings(text)
+    if any("金额单位待核实" in paragraph and re.search(r"(?:原始元值|按(?:万元|亿元)换算)", paragraph)
+           for paragraph in re.split(r"\n\s*\n", text)):
+        warnings.append("金额单位断言矛盾：已标注金额单位待核实，不能断言原始值为元或按万元、亿元换算。")
     for token in re.findall(r"\{\{value:[^{}\r\n]+\}\}", markdown):
         if token not in catalog:
             warnings.append(f"数值引用未登记：{token}。请选择 frozenNumbers 中的引用；没有对应事实时写待核实。")

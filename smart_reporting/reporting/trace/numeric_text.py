@@ -92,7 +92,7 @@ def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[s
     """仅对唯一、同快照、同范围的 budget_/actual_ 月度事实提供数学比较。"""
     comparisons = []
     for actual in bundle.metrics:
-        if not actual.fact_id or not actual.field.startswith("actual_") or not actual.unit:
+        if not actual.fact_id or not actual.field.startswith("actual_"):
             continue
         budgets = [fact for fact in bundle.metrics if fact.field == "budget_" + actual.field.removeprefix("actual_")
                    and fact.dataset_id == actual.dataset_id and fact.dataset_sha256 == actual.dataset_sha256
@@ -132,6 +132,32 @@ def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[s
                     "percentage": current / planned * 100 if planned != 0 else None,
                 })
     return comparisons
+
+
+def project_ratio_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, Any]]:
+    """由同快照项目预算与合同/付款总额计算无量纲比例。"""
+    ratios = []
+    for numerator in bundle.metrics:
+        if numerator.field not in {"contract_amount", "payment_amount"} or not numerator.fact_id:
+            continue
+        budgets = [budget for budget in bundle.metrics
+                   if budget.field == "budget_project_amount" and budget.fact_id
+                   and budget.aggregation == numerator.aggregation == "sum"
+                   and budget.dataset_id == numerator.dataset_id
+                   and budget.dataset_sha256 == numerator.dataset_sha256
+                   and budget.scope == numerator.scope and budget.unit == numerator.unit
+                   and budget.period_roles == numerator.period_roles
+                   and budget.period_start == numerator.period_start
+                   and budget.period_end == numerator.period_end
+                   and budget.field_ref.rsplit(".", 1)[0] == numerator.field_ref.rsplit(".", 1)[0]]
+        if len(budgets) != 1 or not budgets[0].total:
+            continue
+        ratios.append({
+            "numeratorFactId": numerator.fact_id, "budgetFactId": budgets[0].fact_id,
+            "numeratorMetric": numerator.field, "percentage":
+                Decimal(str(numerator.total)) / Decimal(str(budgets[0].total)) * 100,
+        })
+    return ratios
 
 
 def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
@@ -221,9 +247,12 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:%}}}}"
                     yield token, comparison[field], unit, PERCENT_POINT
                     continue
-                for target in (_unit_scales(unit) or (unit,)):
+                for target in (_unit_scales(unit) or (unit or "",)):
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{target}}}}}"
-                    yield token, comparison[field], unit, target
+                    yield token, comparison[field], unit, target or None
+        for ratio in project_ratio_values(bundle):
+            yield (f"{{{{value:{ratio['numeratorFactId']}:projectRatio.{ratio['budgetFactId']}.percentage:%}}}}",
+                   ratio["percentage"], "%", "%")
 
 
 def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> str | None:
@@ -325,6 +354,7 @@ def frozen_number_guide(
         except ValueError:
             continue
         comparisons = budget_comparison_values(bundle)
+        project_ratios = project_ratio_values(bundle)
         for fact in bundle.metrics:
             if not fact.fact_id or fact.fact_id in seen:
                 continue
@@ -388,13 +418,20 @@ def frozen_number_guide(
                     continue
                 references = {}
                 for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
-                    token = f"{{{{value:{fact.fact_id}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{unit}}}}}"
+                    token = f"{{{{value:{fact.fact_id}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{unit or ''}}}}}"
                     references[field] = token if token in catalog and catalog[token] != "数值待核实" else None
                 item["budgetComparisons"].append({
                     "budgetFactId": comparison["budgetFactId"], "period": comparison["period"],
                     "numeratorMetric": comparison["numeratorMetric"], "denominatorMetric": comparison["denominatorMetric"],
                     "references": references, "meaning": "同范围实际减预算、实际除预算×100%；百分数引用为空表示分母为零",
                 })
+            item["projectRatios"] = [{
+                "budgetFactId": ratio["budgetFactId"],
+                "numeratorMetric": ratio["numeratorMetric"],
+                "reference": token,
+                "meaning": "同快照合同或付款总额除以项目预算总额×100%；金额单位未知不影响比率。",
+            } for ratio in project_ratios if ratio["numeratorFactId"] == fact.fact_id
+            if (token := f"{{{{value:{fact.fact_id}:projectRatio.{ratio['budgetFactId']}.percentage:%}}}}") in catalog]
             guide.append(item)
         for fact in bundle.derived_metrics:
             if not fact.fact_id or fact.fact_id in seen:
@@ -474,9 +511,14 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
             document = json.loads(content)
         except (TypeError, ValueError):
             continue
-        if not isinstance(document, dict) or not isinstance(document.get("findings"), list):
+        if not isinstance(document, dict):
             continue
-        pending = list(document["findings"])
+        if document.get("schema") == "chart-input/v1":
+            pending = [document]
+        elif isinstance(document.get("findings"), list):
+            pending = list(document["findings"])
+        else:
+            continue
         while pending:
             finding = pending.pop()
             if isinstance(finding, list):

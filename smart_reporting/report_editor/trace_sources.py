@@ -900,10 +900,26 @@ class ReportEditorTraceService:
             if identity.path not in bundle_cache:
                 raw = await self._read_registered_file(context, identity, max_bytes=16 * 1024 * 1024)
                 bundle_cache[identity.path] = _json.loads(raw)
+        plot_contents: list[str] = []
+        plot_ids = {
+            resource_id
+            for chart in index.chart_traces
+            for resource_id in chart.plot_data_file_resource_ids
+        }
+        for resource_id in sorted(plot_ids):
+            try:
+                raw = await self._read_registered_file(context, files[resource_id], max_bytes=8 * 1024 * 1024)
+                plot_contents.append(raw.decode("utf-8"))
+            except (ReportingError, UnicodeDecodeError) as error:
+                logger.warning("report_editor_plot_validation_source_unavailable resource_id={} reason={}",
+                               resource_id, type(error).__name__)
 
         return {
             "draftSha256": draft_sha256,
-            "warnings": review_content(markdown, (_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values())),
+            "warnings": review_content(markdown, (
+                *(_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values()),
+                *plot_contents,
+            )),
             "subjects": subjects,
             "summary": summary,
             "tables": tables_payload,

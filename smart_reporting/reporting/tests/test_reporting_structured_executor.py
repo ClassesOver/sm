@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from agno.agent import Agent
 from agno.agent import _response as agno_response
+from agno.exceptions import ModelProviderError
 from agno.metrics import RunMetrics
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
@@ -645,11 +646,18 @@ def test_qwen_wire_decoder_removes_non_selected_union_transport_fields() -> None
 
 
 @pytest.mark.anyio
-async def test_schema_transport_rejection_falls_back_with_original_instruction() -> None:
+@pytest.mark.parametrize(
+    "rejected",
+    [
+        RuntimeError("invalid response_format: json_schema is not supported"),
+        ModelProviderError("This response_format type is unavailable now", status_code=400),
+    ],
+)
+async def test_schema_transport_rejection_falls_back_with_original_instruction(rejected) -> None:
     executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
     executor._execute_mode = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
-            RuntimeError("invalid response_format: json_schema is not supported"),
+            rejected,
             (executor.agent, Mock(content={"value": 7})),
         ]
     )
@@ -930,11 +938,12 @@ async def test_exhausted_call_budget_does_not_select_thinking() -> None:
 
 
 @pytest.mark.anyio
-async def test_schema_named_auth_error_does_not_trigger_protocol_fallback() -> None:
+@pytest.mark.parametrize("status_code", [401, 403, 429, 500, 503])
+async def test_schema_named_auth_error_does_not_trigger_protocol_fallback(status_code) -> None:
     executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
     rejected = _HttpStatusError(
-        "invalid credentials for json_schema request",
-        status_code=401,
+        "This response_format type is unavailable now",
+        status_code=status_code,
     )
     executor._execute_mode = AsyncMock(side_effect=rejected)  # type: ignore[method-assign]
 

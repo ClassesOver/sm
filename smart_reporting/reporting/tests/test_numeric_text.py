@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -456,6 +456,51 @@ def _budget_document():
         metric('a', 'actual_revenue', [900000, 1000000, 1200000]),
         metric('b', 'budget_revenue', [1000000, 1000000, 1000000]),
     ]})
+
+
+def test_budget_ratio_is_available_when_both_amount_units_are_unknown():
+    document = json.loads(_budget_document())
+    for metric in document['metrics']:
+        metric['unit'] = None
+    content = json.dumps(document)
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+    from smart_reporting.reporting.trace.numeric_text import budget_comparison_values
+
+    comparisons = budget_comparison_values(DeterministicAnalysisBundle.model_validate(document))
+    assert comparisons[-1]['percentage'] == Decimal('103.3333333333333333333333333')
+    assert '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.2025-01..2025-03.percentage:%}}' in frozen_number_catalog([content])
+
+
+def test_registered_chart_percent_is_accepted_without_treating_fraction_as_percent():
+    from smart_reporting.reporting.trace.numeric_text import supplemental_number_values
+
+    chart = json.dumps({
+        'schema': 'chart-input/v1', 'chartId': 'chart-1', 'columns': ['name', 'share'],
+        'rows': [['药品', 27.387028071755648]], 'rowCount': 1,
+        'columnMeta': {'share': {'unit': '%', 'isPercent': True}},
+    })
+    assert supplemental_number_values([chart])['%'] == {Decimal('27.387028071755648')}
+
+
+def test_project_rates_use_only_matching_frozen_budget_snapshot():
+    def metric(letter, field, amount, dataset='project'):
+        return {
+            'factId': 'fact-' + letter * 16, 'datasetId': dataset, 'datasetSha256': 'b' * 64,
+            'periodRoles': ['current'], 'field': field, 'fieldRef': 'hospital.projects.' + field,
+            'aggregation': 'sum', 'unit': None, 'formula': 'sum', 'total': amount,
+            'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        }
+
+    document = {'analysisId': 'analysis_001', 'metrics': [
+        metric('a', 'budget_project_amount', 200),
+        metric('b', 'contract_amount', 90),
+        metric('c', 'payment_amount', 50),
+    ]}
+    catalog = frozen_number_catalog([json.dumps(document)])
+    assert catalog['{{value:fact-bbbbbbbbbbbbbbbb:projectRatio.fact-aaaaaaaaaaaaaaaa.percentage:%}}'] == '45.00%'
+    assert catalog['{{value:fact-cccccccccccccccc:projectRatio.fact-aaaaaaaaaaaaaaaa.percentage:%}}'] == '25.00%'
+    document['metrics'][1]['datasetId'] = 'foreign'
+    assert '{{value:fact-bbbbbbbbbbbbbbbb:projectRatio.fact-aaaaaaaaaaaaaaaa.percentage:%}}' not in frozen_number_catalog([json.dumps(document)])
 
 
 def test_display_never_shows_negative_zero_or_hides_nonzero_amounts_as_zero():
