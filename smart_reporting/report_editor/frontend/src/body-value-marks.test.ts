@@ -221,6 +221,24 @@ describe('body value marks', () => {
     expect(view.state.doc.textContent).toBe(text)
   })
 
+  it.each(['37ABC', '37_code', '37万元ABC', '37万元2'])('does not restore a numeric prefix inside identifier %s', (token) => {
+    const result = validation('stale')
+    Object.assign(result.subjects[0], { factValue: 37 })
+    const text = `编号${token}，金额另行核实[[citation:sub-1]]`
+    const view = fakeView(text)
+    expect(findValueMarks(text, result)).toEqual([])
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe(text)
+  })
+
+  it('still accepts a registered Latin unit and Chinese continuation', () => {
+    const result = validation('stale', 37)
+    Object.assign(result.subjects[0], { factValue: 35, unit: 'USD', draftUnit: 'USD' })
+    const view = fakeView('收入37USD后趋稳[[citation:sub-1]]')
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+    expect(view.state.doc.textContent).toBe('收入35USD后趋稳[[citation:sub-1]]')
+  })
+
   it('formats unknown registered values without inventing data', () => {
     expect(formatRegisteredValue(null, '万元')).toBe('暂无法确认')
     expect(formatRegisteredValue(3.14159, '%')).toBe('3.14%')
