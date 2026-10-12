@@ -111,6 +111,8 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
         if (dates.some(date => start >= date.index! && start < date.index! + date[0].length) ||
           (/^\d+$/.test(match[0]) && /^\s*[年月日]/.test(tail))) continue
         const unit = unitAfter(tail, subject)
+        // 数字或完整单位后仍紧接标识符字符时，不把前缀当成独立事实。
+        if (/^[\dA-Za-z_]/.test(tail.slice(unit.length))) continue
         const writtenUnit = unit.unit
         const registeredUnit = subject.unit ?? ''
         const matchesRegistered = sameValue(match[0], writtenUnit, subject.factValue, registeredUnit)
