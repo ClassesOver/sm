@@ -153,6 +153,8 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
 function textBlocks(doc: ProseNode): Array<{ text: string; positions: number[] }> {
   const blocks: Array<{ text: string; positions: number[] }> = []
   doc.descendants((node, position) => {
+    // 与服务端 trace_body 一致，代码示例不参与正文数值绑定。
+    if (node.type.spec.code) return false
     if (!node.isTextblock) return true
     let text = ''
     let positions: number[] = []
@@ -162,7 +164,7 @@ function textBlocks(doc: ProseNode): Array<{ text: string; positions: number[] }
       positions = []
     }
     node.forEach((child, offset) => {
-      if (!child.isText || !child.text) { flush(); return }
+      if (!child.isText || !child.text || child.marks.some(mark => mark.type.spec.code)) { flush(); return }
       for (let index = 0; index < child.text.length; index++) positions.push(position + 1 + offset + index)
       text += child.text
     })
@@ -208,7 +210,8 @@ export function updateBodyValueMarks(view: EditorView, validation: TraceValidati
 export function restoreRegisteredValue(view: EditorView, subjectId: string, validation: TraceValidation | null,
   sources?: TraceSources): boolean {
   const subject = validation?.subjects.find(item => item.subjectId === subjectId)
-  if (!subject || typeof subject.factValue !== 'number' || !Number.isFinite(subject.factValue)) return false
+  // 缺失或重复引用尚未形成唯一绑定，不能仅凭一个候选数值自动写入。
+  if (!subject || subject.status === 'unbound' || typeof subject.factValue !== 'number' || !Number.isFinite(subject.factValue)) return false
   const targets = documentValueMarks(view.state.doc, validation, sources)
     .filter(mark => mark.subjectId === subjectId && mark.state !== 'valid')
   if (targets.length !== 1) return false

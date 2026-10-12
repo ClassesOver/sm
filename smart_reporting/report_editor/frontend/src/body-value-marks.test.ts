@@ -7,9 +7,9 @@ import type { TraceSources, TraceValidation } from './api'
 import { documentValueMarks, findValueMarks, formatRegisteredValue, installValueCard, restoreRegisteredValue } from './body-value-marks'
 
 const schema = new Schema({
-  nodes: { doc: { content: 'paragraph+' }, paragraph: { content: 'inline*', toDOM: () => ['p', 0] },
+  nodes: { doc: { content: 'block+' }, code_block: { content: 'text*', group: 'block', code: true, toDOM: () => ['pre', ['code', 0]] }, paragraph: { group: 'block', content: 'inline*', toDOM: () => ['p', 0] },
     text: { group: 'inline' }, hard_break: { inline: true, group: 'inline', toDOM: () => ['br'] } },
-  marks: { strong: { toDOM: () => ['strong', 0] } },
+  marks: { code: { code: true, toDOM: () => ['code', 0] }, strong: { toDOM: () => ['strong', 0] } },
 })
 
 function validation(status: 'valid' | 'stale', draftValue?: number): TraceValidation {
@@ -177,6 +177,48 @@ describe('body value marks', () => {
     const restored = view.state.doc.textContent.split('%')[0].slice(2).replace(/,/g, '')
     expect(Number(restored)).toBe(factValue)
     expect(restored).not.toMatch(/[eE]/)
+  })
+
+  it.each(['block', 'inline'])('does not restore a placeholder inside %s code', (kind) => {
+    const view = fakeView('占位')
+    const literal = '待核实[[citation:sub-1]]'
+    const node = kind === 'block' ? schema.node('code_block', null, schema.text(literal))
+      : schema.node('paragraph', null, schema.text(literal, [schema.marks.code.create()]))
+    view.state = EditorState.create({ doc: schema.node('doc', null, [node]) })
+    const before = view.state.doc
+    expect(documentValueMarks(before, validation('stale'))).toEqual([])
+    expect(restoreRegisteredValue(view, 'sub-1', validation('stale'))).toBe(false)
+    expect(view.state.doc.eq(before)).toBe(true)
+  })
+
+  it('does not join numbers through inline code to find a citation', () => {
+    const view = fakeView('占位')
+    view.state = EditorState.create({ doc: schema.node('doc', null, schema.node('paragraph', null, [
+      schema.text('12780'), schema.text('万元', [schema.marks.code.create()]), schema.text('[[citation:sub-1]]'),
+    ])) })
+    expect(documentValueMarks(view.state.doc, validation('stale', 12780))).toEqual([])
+    expect(restoreRegisteredValue(view, 'sub-1', validation('stale', 12780))).toBe(false)
+  })
+
+  it('ignores a code example while restoring the actual prose', () => {
+    const view = fakeView('占位')
+    const literal = '12780万元[[citation:sub-1]]'
+    view.state = EditorState.create({ doc: schema.node('doc', null, [
+      schema.node('code_block', null, schema.text(literal)),
+      schema.node('paragraph', null, schema.text(literal)),
+    ]) })
+    expect(restoreRegisteredValue(view, 'sub-1', validation('stale', 12780))).toBe(true)
+    expect(view.state.doc.child(0).textContent).toBe(literal)
+    expect(view.state.doc.child(1).textContent).toBe('12,450万元[[citation:sub-1]]')
+  })
+
+  it('does not restore an unbound subject even when only one duplicate has a placeholder', () => {
+    const result = validation('stale')
+    result.subjects[0].status = 'unbound'
+    const text = '待核实[[citation:sub-1]]。另一个引用[[citation:sub-1]]'
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe(text)
   })
 
   it('formats unknown registered values without inventing data', () => {
