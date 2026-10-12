@@ -1834,6 +1834,35 @@ async def _generate_whole_section_content(
         base_payload=payload,
         run_context=run_context,
     )
+
+    def review_blocks(
+        candidate: SectionContent,
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, list[str]]]:
+        # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
+        accuracy_warnings = {
+            block.block_id: review_content(block.markdown, (item.content for item in evidence.files),
+                                           field_definitions=payload["fieldDefinitions"],
+                                           fact_ids=block_fact_ids[block.block_id])
+            for block in candidate.blocks
+        }
+        style_warnings = {
+            block.block_id: [
+                *repeated_sentence_warnings(
+                    block.markdown, (earlier.markdown for earlier in candidate.blocks[:position]),
+                    section_number_catalog,
+                ),
+                *readability_warnings(block.markdown, section_number_catalog),
+            ]
+            for position, block in enumerate(candidate.blocks)
+        }
+        # 准确性问题优先于可读性问题：比较纠错前后时先比准确性问题数，再比可读性问题数。
+        review_scores = {key: (len(accuracy_warnings[key]), len(style_warnings[key])) for key in accuracy_warnings}
+        review_warnings = {
+            key: [*accuracy_warnings[key], *style_warnings[key]]
+            for key in accuracy_warnings if accuracy_warnings[key] or style_warnings[key]
+        }
+        return review_scores, review_warnings
+
     first_by_id: dict[str, Any] = {}
     first_warnings: dict[str, list[str]] = {}
     first_scores: dict[str, tuple[int, int]] = {}
@@ -1853,24 +1882,29 @@ async def _generate_whole_section_content(
                 section_code=work_item.section_code,
                 attempt_key=f"content-{review_attempt + 1}",
             )
+            if not isinstance(content, SectionContent):
+                raise ReportingError("report_phase_output_invalid", "整章正文 Agent 未返回声明的结果。")
+            content_by_id = {item.block_id: item for item in content.blocks}
+            expected_ids = {item.block_id for item in plan.blocks}
+            if len(content_by_id) != len(content.blocks) or set(content_by_id) != expected_ids:
+                raise ReportingError(
+                    "report_section_content_blocks_invalid",
+                    "整章正文 blockId 必须与规划一一对应，不得遗漏、重复或新增。",
+                    details={
+                        "expectedBlockIds": [item.block_id for item in plan.blocks],
+                        "actualBlockIds": [item.block_id for item in content.blocks],
+                    },
+                )
         except (ReportingError, ModelProviderError, TaskExecutionContextHardLimitError) as error:
             if review_attempt == 0:
                 raise
             loguru_logger.warning("report_content_review_correction_unavailable section={} code={}", work_item.section_code, getattr(error, "code", type(error).__name__))
+            content_by_id, review_warnings = first_by_id, first_warnings
             break
-        if not isinstance(content, SectionContent):
-            raise ReportingError("report_phase_output_invalid", "整章正文 Agent 未返回声明的结果。")
-        content_by_id = {item.block_id: item for item in content.blocks}
-        expected_ids = {item.block_id for item in plan.blocks}
-        if len(content_by_id) != len(content.blocks) or set(content_by_id) != expected_ids:
-            raise ReportingError(
-                "report_section_content_blocks_invalid",
-                "整章正文 blockId 必须与规划一一对应，不得遗漏、重复或新增。",
-                details={
-                    "expectedBlockIds": [item.block_id for item in plan.blocks],
-                    "actualBlockIds": [item.block_id for item in content.blocks],
-                },
-            )
+        # 模型响应可乱序；复核与最终装配必须使用同一规划顺序。
+        content = content.model_copy(update={"blocks": tuple(
+            content_by_id[block.block_id] for block in plan.blocks
+        )})
         if review_attempt == 1:
             # 纠错只针对有问题的 block；首轮无问题的 block 保留原文，避免整章重写把已通过的内容改坏。
             content = content.model_copy(update={"blocks": tuple(
@@ -1878,29 +1912,7 @@ async def _generate_whole_section_content(
                 for block in content.blocks
             )})
             content_by_id = {item.block_id: item for item in content.blocks}
-        # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
-        accuracy_warnings = {
-            block.block_id: review_content(block.markdown, (item.content for item in evidence.files),
-                                           field_definitions=payload["fieldDefinitions"],
-                                           fact_ids=block_fact_ids[block.block_id])
-            for block in content.blocks
-        }
-        style_warnings = {
-            block.block_id: [
-                *repeated_sentence_warnings(
-                    block.markdown, (earlier.markdown for earlier in content.blocks[:position]),
-                    section_number_catalog,
-                ),
-                *readability_warnings(block.markdown, section_number_catalog),
-            ]
-            for position, block in enumerate(content.blocks)
-        }
-        # 准确性问题优先于可读性问题：比较纠错前后时先比准确性问题数，再比可读性问题数。
-        review_scores = {key: (len(accuracy_warnings[key]), len(style_warnings[key])) for key in accuracy_warnings}
-        review_warnings = {
-            key: [*accuracy_warnings[key], *style_warnings[key]]
-            for key in accuracy_warnings if accuracy_warnings[key] or style_warnings[key]
-        }
+        review_scores, review_warnings = review_blocks(content)
         if review_attempt == 1:
             # 纠错后问题反而更严重的 block 回退到首轮版本，纠错不能让正文变差。
             worse = {block_id for block_id in flagged_ids
@@ -1913,8 +1925,8 @@ async def _generate_whole_section_content(
                     for block in content.blocks
                 )})
                 content_by_id = {item.block_id: item for item in content.blocks}
-                review_warnings = {**{key: value for key, value in review_warnings.items() if key not in worse},
-                                   **{key: first_warnings[key] for key in worse}}
+                # 部分回退会改变其他 block 的“前文”，旧的重复检测结果已失效。
+                _, review_warnings = review_blocks(content)
         loguru_logger.info("report_content_review_completed section={} attempt={} issue_count={} block_count={}",
                            work_item.section_code, review_attempt,
                            len({warning for warnings in review_warnings.values() for warning in warnings}), len(content.blocks))
