@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { TraceValidation } from './api'
+import { findValueMarks } from './body-value-marks'
 import { createSourceValidationController, markdownSha256, nextSourceIssue, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 const validation = (draftSha256: string): TraceValidation => ({
@@ -146,5 +147,43 @@ describe('source coverage summary', () => {
     expect(nextSourceIssue(root, position(root.querySelector('#c')!), position)?.id).toBe('a')
     expect(nextSourceIssue(document.createElement('div'), null, position)).toBeNull()
     root.remove()
+  })
+
+  it('locates stale citations without draft values, including grouped analysis/citation markers', () => {
+    const root = document.createElement('div')
+    const add = (id: string, references: Array<{ kind: string; value: string }>) => {
+      const marker = document.createElement('span')
+      marker.id = id
+      marker.className = 'report-protocol-marker report-citation-marker'
+      marker.dataset.markerReferences = JSON.stringify(references)
+      root.append(marker)
+    }
+    add('valid', [{ kind: 'citation', value: 'valid' }])
+    add('stale', [{ kind: 'citation', value: 'a' }])
+    add('group', [{ kind: 'analysis', value: 'analysis' }, { kind: 'citation', value: 'valid' }, { kind: 'citation', value: 'b' }])
+    const result = validation('draft')
+    result.summary.stale = 2
+    result.subjects = ['a', 'b'].map(subjectId => ({ subjectId, claimId: subjectId, sectionId: null, status: 'stale', factValue: 1 }))
+    expect(findValueMarks('提高2个百分点。[[citation:a]]', result)).toEqual([])
+    const position = (element: HTMLElement) => [...root.children].indexOf(element)
+    expect(nextSourceIssue(root, null, position, result)?.id).toBe('stale')
+    expect(nextSourceIssue(root, 1, position, result)?.id).toBe('group')
+    expect(nextSourceIssue(root, 2, position, result)?.id).toBe('stale')
+    expect(nextSourceIssue(root, null, position, null)).toBeNull()
+    result.subjects.forEach(subject => { subject.status = 'valid' })
+    expect(nextSourceIssue(root, null, position, result)).toBeNull()
+  })
+
+  it('prefers the marked value over its fallback citation', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<span id="value" class="report-value-mark--stale" data-value-subject="a">2</span>' +
+      '<span id="citation" class="report-protocol-marker" data-marker-references=\'[{"kind":"citation","value":"a"}]\'></span>' +
+      '<span id="other" class="report-value-mark--unverified">待核实</span>'
+    const result = validation('draft')
+    result.subjects = [{ subjectId: 'a', claimId: 'a', sectionId: null, status: 'stale', factValue: 1, draftValue: 2 }]
+    const position = (element: HTMLElement) => [...root.children].indexOf(element)
+    expect(nextSourceIssue(root, null, position, result)?.id).toBe('value')
+    expect(nextSourceIssue(root, 0, position, result)?.id).toBe('other')
+    expect(nextSourceIssue(root, 2, position, result)?.id).toBe('value')
   })
 })

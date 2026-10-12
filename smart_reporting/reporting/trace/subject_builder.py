@@ -140,7 +140,7 @@ _VALUE_BOUNDARY_TAIL = r"(?![\d.,eE])(?!\s*月)"
 def _decline_prefix() -> str:
     from .numeric_text import FALLING_WORDS
 
-    return rf"(?:{'|'.join(FALLING_WORDS)})(?:了|约|为|达|幅度为)?\s*"
+    return rf"(?:{'|'.join(FALLING_WORDS)})(?:\s*(?:了|约|为|达|幅度为))*\s*"
 
 
 _DECLINE_PREFIX = _decline_prefix()
@@ -282,9 +282,10 @@ _PERIOD_TOKEN = re.compile(
     r"|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
 )
 _UNIT_TOKENS = ("亿元", "万元", "千元", "个百分点", "%", "‰", "万人次", "人次", "万人", "床日", "床", "张", "次", "人", "元")
+_UNIT_PATTERN = "|".join(re.escape(unit) for unit in _UNIT_TOKENS)
 _NUMBER_UNIT_RE = re.compile(
-    r"(?<![\d.,+\-])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?))\s*"
-    r"(?P<unit>亿元|万元|千元|%|‰|万人次|人次|万人|床日|床|张|次|人|元)(?![\w])"
+    r"(?<![\dA-Za-z_.,+−－-])(?P<number>[+−－-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
+    rf"(?P<unit>{_UNIT_PATTERN})(?![\dA-Za-z_])"
 )
 
 
@@ -325,12 +326,11 @@ def unit_period_warnings(
     window = window.replace("−", "-").replace("－", "-")
     warnings: list[str] = []
     if expected_unit and fact_value is not None:
-        unit_pattern = "|".join(re.escape(unit) for unit in _UNIT_TOKENS)
         present: list[str] = []
         for variant in value_text_variants(fact_value):
             present.extend(re.findall(
                 r"(?<![\d.,+\-a-zA-Z_])" + re.escape(variant) +
-                _VALUE_BOUNDARY_TAIL + r"\s*(" + unit_pattern + r")",
+                _VALUE_BOUNDARY_TAIL + r"\s*(" + _UNIT_PATTERN + r")",
                 window,
             ))
         if present and any(unit != expected_unit for unit in present):
@@ -353,6 +353,33 @@ def unit_period_warnings(
     return warnings
 
 
+def _point_plain_text(text: str) -> str:
+    # Remove paired emphasis only; never concatenate arithmetic or identifier tokens.
+    return re.sub(r"(?<![A-Za-z0-9_])(\*\*|__|\*)(?=\S)(.+?)(?<=\S)\1(?![A-Za-z0-9_])", r"\2", text)
+
+
+def _point_direction(prefix: str) -> str | None:
+    from .numeric_text import RISING_WORDS
+
+    if re.search(_DECLINE_PREFIX + r"$", prefix):
+        return "decrease"
+    if re.search(rf"(?:{'|'.join(RISING_WORDS)})(?:\s*(?:了|约|为|达|幅度为))*\s*$", prefix):
+        return "increase"
+    return None
+
+
+def _point_direction_conflicts(statement: str, fact_value: Any) -> bool:
+    if not isinstance(fact_value, (int, float)):
+        return False
+    for match in _NUMBER_UNIT_RE.finditer(statement):
+        if match.group("unit") != "个百分点":
+            continue
+        direction = _point_direction(statement[:match.start()])
+        if (direction == "decrease" and fact_value > 0) or (direction == "increase" and fact_value < 0):
+            return True
+    return False
+
+
 def extract_comparable_value(
     statement: str,
     *,
@@ -367,6 +394,8 @@ def extract_comparable_value(
     validation; ambiguous prose returns ``None``.
     """
 
+    if expected_unit == "个百分点":
+        statement = _point_plain_text(statement)
     if not expected_unit or not expected_periods:
         return None
     if expected_scope and any(not value or value not in statement for value in expected_scope.values()):
@@ -385,13 +414,23 @@ def extract_comparable_value(
     if len(candidates) != 1:
         return None
     try:
-        value = float(candidates[0].group("number").replace(",", ""))
+        value = float(candidates[0].group("number").replace(",", "").replace("−", "-").replace("－", "-"))
     except ValueError:
         return None
+    direction = None
+    if expected_unit == "个百分点":
+        direction = _point_direction(statement[:candidates[0].start()])
+        # 方向词后的数值是幅度；带负号的双重方向表述留给人工复核。
+        if direction is not None:
+            if value < 0:
+                return None
+            if direction == "decrease":
+                value = -value
     return {
         "value": int(value) if value.is_integer() else value,
         "unit": expected_unit,
         "periods": written_periods,
+        **({"direction": direction} if direction is not None else {}),
     }
 
 
@@ -444,8 +483,14 @@ def claim_status(
         after = ""
     statement = re.split(r"[。！？;；\n]", before)[-1] + re.split(r"[。！？;；\n]", after)[0]
     window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", statement)
+    if expected_unit == "个百分点":
+        window = _point_plain_text(window)
     statements = re.split(r"[。！？;；\n]", window)
-    matched_statements = [statement for statement in statements if value_matches(statement, fact_value) or formatted_value_matches(statement, fact_value, expected_unit)]
+    matched_statements = [
+        statement for statement in statements
+        if (value_matches(statement, fact_value) or formatted_value_matches(statement, fact_value, expected_unit))
+        and not (expected_unit == "个百分点" and _point_direction_conflicts(statement, fact_value))
+    ]
     if matched_statements:
         warning_window = "\n".join(matched_statements)
         warnings = unit_period_warnings(
@@ -475,6 +520,8 @@ def claim_status(
         result["draftValue"] = comparable["value"]
         result["draftUnit"] = comparable["unit"]
         result["draftPeriods"] = comparable["periods"]
+        if "direction" in comparable:
+            result["draftDirection"] = comparable["direction"]
         result["comparable"] = True
         result["warnings"] = ["正文数值与登记事实不一致，请核对数值、单位和期间。"]
     else:

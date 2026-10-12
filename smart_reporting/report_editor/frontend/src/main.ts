@@ -555,7 +555,8 @@ try {
   }
   let lastSourceIssue: number | null = null
   sourceStatusLabel.addEventListener('click', () => {
-    const target = nextSourceIssue(shell.editor, lastSourceIssue, element => evidenceView.posAtDOM(element, 0))
+    const validation = currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null
+    const target = nextSourceIssue(shell.editor, lastSourceIssue, element => evidenceView.posAtDOM(element, 0), validation)
     if (!target) {
       status(sourceStatusLabel.title ? '待复核的是正文表述，详见状态提示' : '正文中暂无可定位的待处理位置', 'dirty')
       return

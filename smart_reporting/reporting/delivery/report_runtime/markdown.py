@@ -116,6 +116,13 @@ def _normalize_inline_text_segments(
     return "".join(normalized)
 
 
+def _is_fence_close(line: str, fence: tuple[str, int]) -> bool:
+    without_ending = line.rstrip("\r\n")
+    indent = len(without_ending) - len(without_ending.lstrip(" "))
+    candidate = without_ending.lstrip(" ").rstrip(" \t")
+    return indent <= 3 and len(candidate) >= fence[1] and set(candidate) == {fence[0]}
+
+
 def _normalize_report_markdown_segments(
     markdown: str,
     normalize_line: Callable[[str], str],
@@ -127,10 +134,7 @@ def _normalize_report_markdown_segments(
     for line in markdown.splitlines(keepends=True):
         if fence is not None:
             normalized.append(line)
-            without_ending = line.rstrip("\r\n")
-            indent = len(without_ending) - len(without_ending.lstrip(" "))
-            candidate = without_ending.lstrip(" ").rstrip(" \t")
-            if indent <= 3 and len(candidate) >= fence[1] and set(candidate) == {fence[0]}:
+            if _is_fence_close(line, fence):
                 fence = None
             continue
         opening = _FENCED_CODE_START.match(line)
@@ -429,16 +433,17 @@ def separate_enumerated_lines(markdown: str) -> str:
 
     lines = markdown.split("\n")
     result: list[str] = []
-    fence: str | None = None
+    fence: tuple[str, int] | None = None
     for line in lines:
         opening = _FENCED_CODE_START.match(line)
         if fence is not None:
-            if opening is not None and opening["fence"][0] == fence:
+            if _is_fence_close(line, fence):
                 fence = None
             result.append(line)
             continue
         if opening is not None:
-            fence = opening["fence"][0]
+            marker = opening["fence"]
+            fence = (marker[0], len(marker))
             result.append(line)
             continue
         previous = result[-1] if result else ""
