@@ -3766,3 +3766,44 @@ async def test_block_harness_prioritizes_facts_over_internal_labels(monkeypatch,
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(), thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
     assert result.blocks[0].markdown == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("invalid", [None, {"markdown": "未通过结构校验的内容。"}, SectionContent.model_validate({
+    "blocks": [{"blockId": "block_1", "markdown": "错误响应类型。"}],
+})])
+@pytest.mark.parametrize("first_invalid", [False, True])
+async def test_block_harness_invalid_response_uses_only_a_valid_previous_draft(monkeypatch, invalid, first_invalid):
+    calls = []
+    original = _FIRST_WITH_ISSUE
+
+    async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == "plan":
+            return SectionPlanOutput.model_validate({"kind": "render", "sectionCode": "section_001",
+                "blocks": [{"blockId": "block_1", "objective": "收入", "claimIds": ["claim_1"]}],
+                "claims": [_plan_claim("claim_1")]})
+        calls.append(stage)
+        if first_invalid or len(calls) == 2:
+            return invalid
+        return SectionBlockContent(markdown=original)
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0], content='{"收入":100}'),), factSummaries=())
+    notices = {}
+    operation = reporting_sections._generate_section_in_blocks(object(), {}, evidence, work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"), review_notices=notices)
+    if first_invalid:
+        with pytest.raises(ReportingError) as error:
+            await operation
+        assert error.value.code == "report_phase_output_invalid"
+        assert len(calls) == 1
+        assert notices == {}
+    else:
+        result = await operation
+        assert len(calls) == 2
+        assert result.blocks[0].markdown == original
+        assert result.blocks[0].citation_ids == ("citation_001",)
+        assert any("analysis_001" in item["message"] for item in notices["block_1"])

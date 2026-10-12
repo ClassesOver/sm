@@ -1676,14 +1676,16 @@ async def _generate_section_in_blocks(
                     section_code=work_item.section_code,
                     attempt_key=f"block-{index}-{block_attempt + 1}",
                 )
+                if not isinstance(content, SectionBlockContent):
+                    raise ReportingError(
+                        "report_phase_output_invalid", "章节正文 Agent 未返回声明的结果。"
+                    )
             except (ReportingError, ModelProviderError, TaskExecutionContextHardLimitError) as error:
-                if block_attempt == 0 or not review_warnings:
+                if block_attempt == 0 or not isinstance(first_block_content, SectionBlockContent):
                     raise
                 loguru_logger.warning("report_content_review_correction_unavailable section={} code={}", work_item.section_code, getattr(error, "code", type(error).__name__))
-            if not isinstance(content, SectionBlockContent):
-                raise ReportingError(
-                    "report_phase_output_invalid", "章节正文 Agent 未返回声明的结果。"
-                )
+                # 不让无效纠错响应覆盖已验证的首轮正文。
+                content = first_block_content
             content_review = review_content_result(content.markdown, (item.content for item in selected_files),
                                              field_definitions=block_payload["fieldDefinitions"],
                                              fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids))
