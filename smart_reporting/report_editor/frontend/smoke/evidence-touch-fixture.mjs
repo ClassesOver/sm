@@ -6,6 +6,8 @@ import { chromium } from 'playwright'
 const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  // 视差随指针偏转视角；像素与几何检查需要静止视角，先关闭。
+  await page.addInitScript(() => localStorage.setItem('smart-reporting-evidence-3d-parallax', 'off'))
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
   await page.goto(process.env.REPORT_EDITOR_URL ?? 'http://127.0.0.1:4173/reports/v1/editor/fixture-report/1', { waitUntil: 'networkidle' })

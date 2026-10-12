@@ -4544,8 +4544,8 @@ button {
   min-height: 420px;
   height: min(58vh, 560px);
   overflow: hidden;
-  /* 与 3D 画布底色一致（EVIDENCE_3D_THEME.background），画布就绪前不闪白。 */
-  background: #071321;
+  /* 暗角渐变：中心微亮、四周压暗；椭圆半径小于到各边的距离，画布边缘为纯底色（EVIDENCE_3D_THEME.background）。 */
+  background: radial-gradient(ellipse 48% 44% at 50% 46%, #132b4c 0%, #0c1d34 55%, #071321 100%), #071321;
   color-scheme: dark;
 }
 
