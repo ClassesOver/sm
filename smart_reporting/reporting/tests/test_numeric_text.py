@@ -743,6 +743,28 @@ def test_adjacent_month_changes_are_registered_from_frozen_monthly_values():
     )
 
 
+def test_group_shares_are_registered_from_frozen_groups_and_total():
+    # “心内科占全院门诊收入的23.85%”按登记分组值与合计计算：服务端登记后写对不被替换，写错仍替换。
+    from smart_reporting.reporting.trace.numeric_text import prompt_number_catalog
+
+    sample = (Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json').read_text(encoding='utf-8')
+    catalog = frozen_number_catalog([sample])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:groupShares.topGroups.0:%}}'] == '23.85%'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:groupShares.bottomGroups.0:%}}'] == '8.21%'
+    # 只供服务端核对，不进模型可见目录。
+    assert not [token for token in prompt_number_catalog(catalog) if 'groupShares' in token]
+    text = '心内科门诊收入占全院门诊收入的23.85%，眼科占8.21%，骨科占25.00%。'
+    assert replace_unregistered_numbers(text, [sample]) == '心内科门诊收入占全院门诊收入的23.85%，眼科占8.21%，骨科占待核实。'
+
+
+def test_group_shares_are_not_registered_for_averages_or_negative_values():
+    document = json.loads((Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json').read_text(encoding='utf-8'))
+    document['metrics'][0]['aggregation'] = 'average'
+    document['metrics'][1]['negativeCount'] = 2
+    catalog = frozen_number_catalog([json.dumps(document)])
+    assert not [token for token in catalog if 'groupShares' in token]
+
+
 @pytest.mark.parametrize(('text', 'expected'), [
     # 变化率写成百分点：数值对得上登记的同比/相邻月变化率、对不上百分点差值时改回“%”。
     ('门诊收入同比增长11个百分点，住院收入同比下降3.00个百分点。', '门诊收入同比增长11%，住院收入同比下降3.00%。'),

@@ -157,6 +157,16 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                 for groups_key in ("topGroups", "bottomGroups"):
                     values.extend((f"{groups_key}.{index}", item["value"])
                                   for index, item in enumerate(entry.get(groups_key, ())))
+                # 分组占比（“心内科占全院门诊收入的23.85%”）由服务端按登记分组值与合计计算：
+                # 仅限求和指标、合计为正且无负值，百分数指标的占比无意义，不在此登记。
+                total = entry.get("total")
+                if (array == "metrics" and entry.get("aggregation") == "sum" and entry.get("unit") != "%"
+                        and isinstance(total, (int, float)) and total > 0 and not entry.get("negativeCount")):
+                    for groups_key in ("topGroups", "bottomGroups"):
+                        values.extend(
+                            (f"groupShares.{groups_key}.{index}", Decimal(str(item["value"])) / Decimal(str(total)) * 100)
+                            for index, item in enumerate(entry.get(groups_key, ()))
+                            if isinstance(item.get("value"), (int, float)) and item["value"] >= 0)
                 periods = entry.get("periodValues", ())
                 if (array == "metrics" and entry.get("aggregation") == "sum"
                         and entry.get("periodGranularity") == "month" and periods
@@ -187,7 +197,8 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     if value is None:
                         continue
                     # 派生事实的 unit 是分子/差额单位，比值本身无量纲。
-                    unit = ("%" if field in {"changeRate", "percentage"} or field.startswith("periodChangeRates.")
+                    unit = ("%" if field in {"changeRate", "percentage"}
+                            or field.startswith(("periodChangeRates.", "groupShares."))
                             else None if array == "derivedMetrics" and field == "value"
                             else entry.get("unit"))
                     if percent_point_field(field, unit):
@@ -229,12 +240,12 @@ def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> 
     return min(scales, key=lambda candidate: scales[candidate])
 
 
-# 只供服务端核对与渲染的派生数值引用：不放进模型可见的数值目录。
-_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.")
+# 只供服务端核对与渲染的派生数值引用（相邻月变化、分组占比）：不放进模型可见的数值目录。
+_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.", "groupShares.")
 
 
 def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
-    """模型可见的数值目录：去掉只供服务端核对的相邻月变化引用。"""
+    """模型可见的数值目录：去掉只供服务端核对的相邻月变化与分组占比引用。"""
     return {token: text for token, text in catalog.items()
             if not token[2:-2].split(":")[2].startswith(_SERVER_ONLY_FIELDS)}
 
@@ -627,6 +638,12 @@ def registered_change_rates(contents: Iterable[str]) -> set[Decimal]:
             or value is not None and token[2:-2].split(":")[2].startswith("periodChangeRates.")}
 
 
+def registered_group_shares(contents: Iterable[str]) -> set[Decimal]:
+    """服务端按分组值与合计登记的分组占比（只供核对）。"""
+    return {Decimal(str(value)) for token, value, _unit, _target in _frozen_number_entries(contents)
+            if value is not None and token[2:-2].split(":")[2].startswith("groupShares.")}
+
+
 def percent_point_written_for_rate(
     match: re.Match[str], text: str, rates: set[Decimal], points: Iterable[Decimal], percents: Sequence[Decimal],
 ) -> bool:
@@ -814,10 +831,12 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
 
     replaced = PERSON_COUNT.sub(replace_persons, replaced)
     rates = registered_change_rates(contents)
+    # 分组占比两两相减的组合很多，取整后容易凑上变化率；判断“变化率误写为百分点”时不用它们作依据。
+    shares = registered_group_shares(contents)
+    rate_level_percents = tuple(value for value in known.get("%", ()) if value not in shares)
 
     def replace_rate_points(match: re.Match[str]) -> str:
-        if not percent_point_written_for_rate(match, replaced, rates, known.get(PERCENT_POINT, ()),
-                                              tuple(known.get("%", ()))):
+        if not percent_point_written_for_rate(match, replaced, rates, known.get(PERCENT_POINT, ()), rate_level_percents):
             return match[0]
         logger.warning("report_change_rate_unit_corrected value={}", match[0])
         return f"{_display_precision(match['number'])}%"
