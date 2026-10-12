@@ -1316,3 +1316,7 @@ PR #14 合并后找 bug（2026-10-09）：
   - “互不遮挡”只在适应视图下断言；自由旋转后不同纵深的卡片交叠属正常 3D 遮挡，只记录数量。
   - spatial 改为断言“输入位于产出左侧”。
 - **验证**：前端 525 例通过（新增布局 5 例，删除名称避让 10 例）；3D smoke 7/7 通过（resize、spatial、touch、dense-fact-preview、fact-preview、small-3d、reset）。
+- 卡片 3D 自查修复：
+  - 类型图标 SVG 解码失败时不再把损坏的图片交给 `drawImage`（会抛 InvalidStateError，导致整张卡片无法创建），改为不画图标。
+  - 组件重建节点对象时，同时释放上一张卡片的材质。
+  - 新增卡片绘制单测 2 例（模拟画布：无图标时不调用 drawImage、长名称截断、无关项变暗）。前端 527 例通过；fact-preview、reset、spatial smoke 通过。

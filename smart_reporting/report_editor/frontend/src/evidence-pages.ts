@@ -508,8 +508,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const svg = createElement(icons[kind], { width: 48, height: 48, color: THEME.kinds[kind], 'stroke-width': 2 })
       const image = new Image()
       image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`
-      await image.decode().catch(() => undefined)
-      return [kind, image] as const
+      // 解码失败的图片交给 drawImage 会抛 InvalidStateError，整张卡片无法创建；失败时不画图标。
+      const decoded = await image.decode().then(() => image.naturalWidth > 0, () => false)
+      return [kind, decoded ? image : null] as const
     })))
     if (ctx.isStale() || !viewport.isConnected) return
     const relationCounts = new Map<string, number>()
@@ -642,7 +643,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         // 卡片始终正对镜头，旋转视角时文字不变形；空间层次由位置、透视大小与遮挡体现。
         mesh.onBeforeRender = (_renderer: unknown, _scene: unknown, camera: { quaternion: unknown }) => { mesh.quaternion.copy(camera.quaternion as never) }
         const card: Card3d = { mesh, canvas, texture, ref: node.ref, name: cardName(node.ref), state: '' }
-        cards.get(id)?.texture.dispose()
+        // 组件重建节点对象时释放上一张卡片的贴图与材质。
+        const previous = cards.get(id)
+        if (previous) {
+          previous.texture.dispose()
+          ;(previous.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
+        }
         cards.set(id, card)
         drawCard(card)
         return mesh
