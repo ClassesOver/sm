@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from loguru import logger
@@ -746,6 +746,30 @@ def table_unit_cells(markdown: str) -> list[tuple[int, int, str, str]]:
     return found
 
 
+# “超过3,700万元”“近4,000万元”：以整数界限描述登记值。界限必须是某个登记值按 1～2 位有效数字
+# 向下取整（超过/逾/突破…）或向上取整（不足/近/接近…）的结果，避免任意登记值碰巧落在宽松区间内。
+_LOWER_BOUND = re.compile(r"(?:超过|逾|突破|高于|多于|大于)\s*$")
+_UPPER_BOUND = re.compile(r"(?:不足|低于|少于|小于|近|接近|将近|不到)\s*$")
+
+
+def bounded_by_registered(number: Decimal, number_text: str, values: Iterable[Decimal], *, prefix: str) -> bool:
+    """整数界限是否为某个登记值按 1～2 位有效数字朝界限方向取整的结果。"""
+    if "." in number_text or number <= 0:
+        return False
+    above = _LOWER_BOUND.search(prefix) is not None
+    if not above and _UPPER_BOUND.search(prefix) is None:
+        return False
+    for value in values:
+        if value <= 0 or (value <= number if above else value >= number):
+            continue
+        for significant in (1, 2):
+            step = Decimal(1).scaleb(value.adjusted() - significant + 1)
+            bound = (value / step).to_integral_value(rounding=ROUND_FLOOR if above else ROUND_CEILING) * step
+            if bound == number:
+                return True
+    return False
+
+
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
 
@@ -766,7 +790,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         quantum = Decimal(1).scaleb(-digits)
         candidates = known.get(unit, ())
         if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
-                or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)):
+                or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
+                or bounded_by_registered(number, number_text, candidates, prefix=prefix)):
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。

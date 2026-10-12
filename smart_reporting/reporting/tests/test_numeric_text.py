@@ -815,3 +815,19 @@ def test_visit_counts_written_as_persons_are_corrected(text, expected):
         'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
     }
     assert replace_unregistered_numbers(text, [json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]})]) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 整数界限由登记值支持（门诊收入 3,774.00 万元）：保留，不替换成“超过待核实”。
+    ('门诊收入超过3,700万元。', '门诊收入超过3,700万元。'),
+    ('门诊收入近4,000万元。', '门诊收入近4,000万元。'),
+    ('门诊收入超过3,000万元。', '门诊收入超过3,000万元。'),
+    # 界限须是登记值按 1～2 位有效数字朝界限方向取整的结果：方向相反、无登记值支持、带小数的仍替换。
+    ('门诊收入超过3,800万元。', '门诊收入超过待核实。'),
+    ('门诊收入不足3,700万元。', '门诊收入不足待核实。'),
+    ('门诊收入超过5,000万元。', '门诊收入超过待核实。'),
+    ('门诊收入超过3,700.50万元。', '门诊收入超过待核实。'),
+])
+def test_integer_bounds_supported_by_registered_values_are_kept(text, expected):
+    sample = Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json'
+    assert replace_unregistered_numbers(text, [sample.read_text(encoding='utf-8')]) == expected

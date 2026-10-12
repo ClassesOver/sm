@@ -17,6 +17,7 @@ from .numeric_text import (
     RATE_AS_PERCENT_POINT,
     RISING_WORDS,
     _frozen_number_entries,
+    bounded_by_registered,
     describes_rate_level,
     frozen_number_catalog,
     frozen_number_values,
@@ -227,7 +228,9 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         supported = (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                      or registered_decline_magnitude(number, match[2], candidates,
                                                      prefix=text[max(0, match.start() - 12):match.start()],
-                                                     quantum=quantum))
+                                                     quantum=quantum)
+                     or bounded_by_registered(number, match[1], known.get(match[2], ()),
+                                              prefix=text[max(0, match.start() - 12):match.start()]))
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
