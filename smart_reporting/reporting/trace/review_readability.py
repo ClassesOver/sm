@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from decimal import Decimal
 
 from ..delivery.report_runtime.markdown import CJK_ENUMERATION_LINE
+from .markdown_body import trace_body
 from .review_common import _VALUE
 
 
@@ -16,23 +17,19 @@ def _prose_lines(markdown: str) -> list[str]:
     服务端表格的 [[table:…]] 标记紧贴表头、不隔空行，必须逐行判断而不能按段首判断。
     """
     lines: list[str] = []
-    fenced = False
     for raw in markdown.splitlines():
         line = re.sub(r"\[\[[^\]\r\n]+\]\]", "", raw).replace("**", "").strip()
-        if line.startswith("```"):
-            fenced = not fenced
-            continue
-        if fenced or not line or line.startswith(("|", "#", "![")):
+        if not line or line.startswith(("|", "#", "![")):
             continue
         lines.append(line)
     return lines
 
 
 def _comparable_sentences(markdown: str) -> dict[str, str]:
-    """按句切分并归一化（去协议标记、加粗与标点），返回 归一化文本 → 原句。"""
+    """按句归一化，保留正负号与区间符号，避免不同事实被误判为重复。"""
     sentences: dict[str, str] = {}
     for sentence in (part for line in _prose_lines(markdown) for part in re.split(r"[。！？；]", line)):
-        normalized = re.sub(r"[\s，、,:：（）()“”\"'·—-]", "", sentence)
+        normalized = re.sub(r"[\s，、,:：（）()“”\"'·]", "", sentence)
         # 过短的句子（过渡语、标签）重复属正常写法，不计。
         if len(normalized) >= 12:
             sentences.setdefault(normalized, sentence.strip())
@@ -41,6 +38,8 @@ def _comparable_sentences(markdown: str) -> dict[str, str]:
 
 def _displayed(markdown: str, catalog: Mapping[str, str] | None) -> str:
     """把 {{value:…}} 占位换成冻结显示值，使度量与比较基于读者所见文本。"""
+    # 复用 CommonMark 解析，正确处理长围栏、波浪线及缩进代码；行内代码仍是可见正文。
+    markdown = trace_body(markdown, mask_inline_code=False)
     if catalog is None:
         return markdown
     return re.sub(r"\{\{value:[^{}\r\n]+\}\}", lambda match: catalog.get(match[0], "数值待核实"), markdown)
@@ -111,7 +110,6 @@ def _paragraph_length_warnings(markdown: str) -> list[str]:
     逐句长度合格的段落仍可能堆成一整屏文字，PDF 中难以定位结论。
     """
     warnings: list[str] = []
-    fenced = False
     paragraph: list[str] = []
 
     def flush() -> None:
@@ -124,12 +122,8 @@ def _paragraph_length_warnings(markdown: str) -> list[str]:
 
     for raw in markdown.splitlines():
         stripped = raw.strip()
-        if stripped.startswith(("```", "~~~")):
-            fenced = not fenced
-            flush()
-            continue
         line = re.sub(r"\[\[[^\]\r\n]+\]\]", "", stripped).replace("**", "").strip()
-        if (fenced or not line or line.startswith(("|", "#", "![", ">"))
+        if (not line or line.startswith(("|", "#", "![", ">"))
                 or _LIST_OR_TABLE_START.match(line)):
             flush()
             continue
@@ -147,12 +141,8 @@ def _heading_readability_warnings(markdown: str) -> list[str]:
     小标题进入目录与 PDF 书签，结论和数值应写进正文；括号内的单位说明不计入长度。
     """
     warnings: list[str] = []
-    fenced = False
     for raw in markdown.splitlines():
-        if raw.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        match = None if fenced else re.match(r"^#{3,4}[ \t]+(.+?)[ \t#]*$", raw)
+        match = re.match(r"^#{3,4}[ \t]+(.+?)[ \t#]*$", raw)
         if match is None:
             continue
         title = re.sub(r"\[\[[^\]\r\n]+\]\]", "", match[1]).replace("**", "").strip()
@@ -184,17 +174,8 @@ def _incomplete_paragraph_warnings(markdown: str) -> list[str]:
     """
     paragraphs: list[list[str]] = []
     current: list[str] = []
-    fenced = False
     for raw in markdown.splitlines():
         stripped = raw.strip()
-        if stripped.startswith(("```", "~~~")):
-            fenced = not fenced
-            if current:
-                paragraphs.append(current)
-                current = []
-            continue
-        if fenced:
-            continue
         if not stripped:
             if current:
                 paragraphs.append(current)

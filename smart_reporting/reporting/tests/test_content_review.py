@@ -1096,3 +1096,37 @@ def test_field_scope_mismatch_remains_an_accuracy_issue():
     assert result.accuracy_count == 1
     assert any("字段口径需复核" in warning for warning in result.warnings)
     assert result.presentation_count == 1
+
+
+def test_repetition_preserves_the_sign_of_numeric_facts():
+    from smart_reporting.reporting.trace.content_review import repeated_sentence_warnings
+
+    positive = "本期各院区的净利润合计为100万元。"
+    negative = "本期各院区的净利润合计为-100万元。"
+    assert repeated_sentence_warnings(negative, [positive]) == []
+    assert repeated_sentence_warnings(positive, [negative]) == []
+    assert len(repeated_sentence_warnings(negative, [negative])) == 1
+
+
+@pytest.mark.parametrize("template", [
+    "````\n```\n{text}\n````\n",
+    "~~~\n{text}\n~~~\n",
+    "```\n~~~\n{text}\n```\n",
+    "    {text}\n",
+])
+def test_readability_harness_excludes_markdown_code_with_real_fence_rules(template):
+    from smart_reporting.reporting.trace.content_review import readability_warnings, repeated_sentence_warnings
+
+    text = "这里是代码示例中的解释文字" * 40 + "。"
+    code = template.format(text=text)
+    assert readability_warnings(code) == []
+    assert repeated_sentence_warnings(code, [text]) == []
+    assert repeated_sentence_warnings(text, [code]) == []
+
+
+def test_readability_harness_checks_prose_after_a_long_fence():
+    from smart_reporting.reporting.trace.content_review import readability_warnings
+
+    text = "这段真实正文需要拆分以便读者核对" * 12 + "。"
+    markdown = "````\n```\n示例\n````\n\n" + text
+    assert any("句子过长" in warning for warning in readability_warnings(markdown))
