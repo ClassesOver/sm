@@ -1071,3 +1071,28 @@ def test_other_percentages_written_as_growth_rates_are_flagged(text, flagged):
 ])
 def test_bound_qualifiers_must_agree_with_the_unrounded_value(text, expected):
     assert [w for w in review_content(text, [_comparison_content()]) if "约数方向" in w] == expected
+
+
+@pytest.mark.parametrize("text,accuracy,presentation", [
+    ("另见 analysis_001 的明细。", 0, 1),
+    ("收入为999元。", 1, 0),
+    ("收入为999元，另见 analysis_001 的明细。", 1, 1),
+])
+def test_content_review_result_distinguishes_facts_from_presentation(text, accuracy, presentation):
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    evidence = ['{"收入":100}']
+    result = review_content_result(text, evidence)
+    assert result.accuracy_count == accuracy
+    assert result.presentation_count == presentation
+    assert list(result.warnings) == review_content(text, evidence)
+
+
+def test_field_scope_mismatch_remains_an_accuracy_issue():
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    result = review_content_result("deptCode（院区）用于统计。", [],
+                                   field_definitions={"deptCode": "三级科室"})
+    assert result.accuracy_count == 1
+    assert any("字段口径需复核" in warning for warning in result.warnings)
+    assert result.presentation_count == 1

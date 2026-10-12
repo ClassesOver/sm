@@ -32,7 +32,7 @@ from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
 from ...trace.computation_service import detect_computation_cycles
-from ...trace.content_review import readability_warnings, repeated_sentence_warnings, review_content
+from ...trace.content_review import readability_warnings, repeated_sentence_warnings, review_content_result
 from ...trace.contracts_v1 import (
     ChartTraceV1,
     ComputationRecordV1,
@@ -1684,10 +1684,11 @@ async def _generate_section_in_blocks(
                 raise ReportingError(
                     "report_phase_output_invalid", "章节正文 Agent 未返回声明的结果。"
                 )
-            review_warnings = review_content(content.markdown, (item.content for item in selected_files),
+            content_review = review_content_result(content.markdown, (item.content for item in selected_files),
                                              field_definitions=block_payload["fieldDefinitions"],
                                              fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids))
-            accuracy_count = len(review_warnings)
+            review_warnings = list(content_review.warnings)
+            accuracy_count = content_review.accuracy_count
             # 各 block 独立生成，常重复前文的开场与结论；逐句重复同样进入纠错轮次。
             review_warnings.extend(repeated_sentence_warnings(
                 content.markdown, (block.markdown for block in blocks), block_number_catalog,
@@ -1839,8 +1840,8 @@ async def _generate_whole_section_content(
         candidate: SectionContent,
     ) -> tuple[dict[str, tuple[int, int]], dict[str, list[str]]]:
         # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
-        accuracy_warnings = {
-            block.block_id: review_content(block.markdown, (item.content for item in evidence.files),
+        content_reviews = {
+            block.block_id: review_content_result(block.markdown, (item.content for item in evidence.files),
                                            field_definitions=payload["fieldDefinitions"],
                                            fact_ids=block_fact_ids[block.block_id])
             for block in candidate.blocks
@@ -1856,10 +1857,11 @@ async def _generate_whole_section_content(
             for position, block in enumerate(candidate.blocks)
         }
         # 准确性问题优先于可读性问题：比较纠错前后时先比准确性问题数，再比可读性问题数。
-        review_scores = {key: (len(accuracy_warnings[key]), len(style_warnings[key])) for key in accuracy_warnings}
+        review_scores = {key: (review.accuracy_count, review.presentation_count + len(style_warnings[key]))
+                         for key, review in content_reviews.items()}
         review_warnings = {
-            key: [*accuracy_warnings[key], *style_warnings[key]]
-            for key in accuracy_warnings if accuracy_warnings[key] or style_warnings[key]
+            key: [*review.warnings, *style_warnings[key]]
+            for key, review in content_reviews.items() if review.warnings or style_warnings[key]
         }
         return review_scores, review_warnings
 

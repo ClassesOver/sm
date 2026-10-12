@@ -3727,3 +3727,42 @@ async def test_correction_harness_rechecks_repetition_after_partial_rollback(mon
     assert result.blocks[0].markdown == repeated + _FIRST_WITH_ISSUE
     assert result.blocks[1].markdown == repeated
     assert any("与本章前文重复" in item["message"] for item in notices["block_2"])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first,corrected,expected", [
+    (_WORSE_CORRECTION, "门诊收入为999元。", _WORSE_CORRECTION),
+    ("门诊收入为999元。", _WORSE_CORRECTION, _WORSE_CORRECTION),
+])
+async def test_correction_harness_prioritizes_facts_over_internal_labels(monkeypatch, first, corrected, expected):
+    result, _, calls = await _run_correction_harness(monkeypatch, [
+        [("block_1", first), ("block_2", "门诊收入总体保持平稳。")],
+        [("block_1", corrected), ("block_2", "门诊收入总体保持平稳。")],
+    ])
+    assert len(calls) == 2
+    assert result.blocks[0].markdown == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first,corrected,expected", [
+    (_WORSE_CORRECTION, "门诊收入为999元。", _WORSE_CORRECTION),
+    ("门诊收入为999元。", _WORSE_CORRECTION, _WORSE_CORRECTION),
+])
+async def test_block_harness_prioritizes_facts_over_internal_labels(monkeypatch, first, corrected, expected):
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", factSummaries=(), files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0], content='{"收入":100}'),))
+    outputs = iter([first, corrected])
+
+    async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == "plan":
+            return SectionPlanOutput.model_validate({"kind": "render", "sectionCode": "section_001",
+                "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+                "claims": [_plan_claim("claim_001")]})
+        return SectionBlockContent(markdown=next(outputs))
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    result = await reporting_sections._generate_section_in_blocks(object(), {}, evidence, work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(), thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    assert result.blocks[0].markdown == expected
