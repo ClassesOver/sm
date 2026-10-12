@@ -3657,3 +3657,153 @@ def test_chart_input_preserves_ranked_subset_scope_for_plotting() -> None:
     assert file["dataScope"] == result.entries[0]["dataScope"]
     assert file["dataScope"]["coverage"] == "ranked_subset"
     assert file["dataScope"]["canRepresentFullDistribution"] is False
+
+
+async def _run_correction_harness(monkeypatch, outputs):
+    """Replay model responses through the real review/selection/render path."""
+    calls = []
+    responses = iter(outputs)
+
+    async def fake_stage(*args, **kwargs):
+        calls.append(dict(args[3]))
+        response = next(responses)
+        if isinstance(response, list):
+            return SectionContent.model_validate({"blocks": [
+                {"blockId": block_id, "markdown": text} for block_id, text in response
+            ]})
+        return response
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": f"block_{index}", "objective": "收入", "claimIds": ["claim_1"]}
+                   for index in (1, 2)],
+        "claims": [_plan_claim("claim_1")]})
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0], content='{"收入":100}'),), factSummaries=())
+    notices = {}
+    result = await reporting_sections._generate_whole_section_content(object(), {}, evidence, work_item, plan,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"), review_notices=notices)
+    return result, notices, calls
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("correction", [
+    [("block_1", "更正正文。")],
+    [("block_1", "更正正文。"), ("block_1", "重复编号。")],
+    [("block_1", "更正正文。"), ("block_2", "其他正文。"), ("block_3", "额外正文。")],
+    "not a SectionContent",
+])
+async def test_correction_harness_preserves_first_draft_on_invalid_response(monkeypatch, correction):
+    first = [("block_1", _FIRST_WITH_ISSUE), ("block_2", "门诊收入总体保持平稳。")]
+    result, notices, calls = await _run_correction_harness(monkeypatch, [first, correction])
+    assert len(calls) == 2
+    assert [(block.block_id, block.markdown) for block in result.blocks] == first
+    assert any("analysis_001" in item["message"] for item in notices["block_1"])
+    assert all(block.citation_ids == ("citation_001",) for block in result.blocks)
+
+
+@pytest.mark.anyio
+async def test_correction_harness_reviews_in_plan_order(monkeypatch):
+    repeated = "本期门诊收入运行总体平稳，结构保持稳定。"
+    clean = "住院收入变化需结合科室明细进一步核对。"
+    result, _, calls = await _run_correction_harness(monkeypatch, [
+        [("block_2", repeated), ("block_1", repeated)],
+        [("block_2", clean), ("block_1", repeated)],
+    ])
+    assert set(calls[1]["correction"]["issues"]) == {"block_2"}
+    assert [block.markdown for block in result.blocks] == [repeated, clean]
+
+
+@pytest.mark.anyio
+async def test_correction_harness_rechecks_repetition_after_partial_rollback(monkeypatch):
+    repeated = "本期门诊收入运行总体平稳，结构保持稳定。"
+    result, notices, calls = await _run_correction_harness(monkeypatch, [
+        [("block_1", repeated + _FIRST_WITH_ISSUE), ("block_2", _FIRST_WITH_ISSUE)],
+        [("block_1", _WORSE_CORRECTION), ("block_2", repeated)],
+    ])
+    assert len(calls) == 2
+    assert result.blocks[0].markdown == repeated + _FIRST_WITH_ISSUE
+    assert result.blocks[1].markdown == repeated
+    assert any("与本章前文重复" in item["message"] for item in notices["block_2"])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first,corrected,expected", [
+    (_WORSE_CORRECTION, "门诊收入为999元。", _WORSE_CORRECTION),
+    ("门诊收入为999元。", _WORSE_CORRECTION, _WORSE_CORRECTION),
+])
+async def test_correction_harness_prioritizes_facts_over_internal_labels(monkeypatch, first, corrected, expected):
+    result, _, calls = await _run_correction_harness(monkeypatch, [
+        [("block_1", first), ("block_2", "门诊收入总体保持平稳。")],
+        [("block_1", corrected), ("block_2", "门诊收入总体保持平稳。")],
+    ])
+    assert len(calls) == 2
+    assert result.blocks[0].markdown == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first,corrected,expected", [
+    (_WORSE_CORRECTION, "门诊收入为999元。", _WORSE_CORRECTION),
+    ("门诊收入为999元。", _WORSE_CORRECTION, _WORSE_CORRECTION),
+])
+async def test_block_harness_prioritizes_facts_over_internal_labels(monkeypatch, first, corrected, expected):
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", factSummaries=(), files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0], content='{"收入":100}'),))
+    outputs = iter([first, corrected])
+
+    async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == "plan":
+            return SectionPlanOutput.model_validate({"kind": "render", "sectionCode": "section_001",
+                "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+                "claims": [_plan_claim("claim_001")]})
+        return SectionBlockContent(markdown=next(outputs))
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    result = await reporting_sections._generate_section_in_blocks(object(), {}, evidence, work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(), thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    assert result.blocks[0].markdown == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("invalid", [None, {"markdown": "未通过结构校验的内容。"}, SectionContent.model_validate({
+    "blocks": [{"blockId": "block_1", "markdown": "错误响应类型。"}],
+})])
+@pytest.mark.parametrize("first_invalid", [False, True])
+async def test_block_harness_invalid_response_uses_only_a_valid_previous_draft(monkeypatch, invalid, first_invalid):
+    calls = []
+    original = _FIRST_WITH_ISSUE
+
+    async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == "plan":
+            return SectionPlanOutput.model_validate({"kind": "render", "sectionCode": "section_001",
+                "blocks": [{"blockId": "block_1", "objective": "收入", "claimIds": ["claim_1"]}],
+                "claims": [_plan_claim("claim_1")]})
+        calls.append(stage)
+        if first_invalid or len(calls) == 2:
+            return invalid
+        return SectionBlockContent(markdown=original)
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0], content='{"收入":100}'),), factSummaries=())
+    notices = {}
+    operation = reporting_sections._generate_section_in_blocks(object(), {}, evidence, work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"), run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"), review_notices=notices)
+    if first_invalid:
+        with pytest.raises(ReportingError) as error:
+            await operation
+        assert error.value.code == "report_phase_output_invalid"
+        assert len(calls) == 1
+        assert notices == {}
+    else:
+        result = await operation
+        assert len(calls) == 2
+        assert result.blocks[0].markdown == original
+        assert result.blocks[0].citation_ids == ("citation_001",)
+        assert any("analysis_001" in item["message"] for item in notices["block_1"])
