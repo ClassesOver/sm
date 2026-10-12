@@ -150,6 +150,35 @@ describe('body value marks', () => {
     expect(compact.state.doc.textContent).toBe('营收12,450万元[[citation:sub-1]]')
   })
 
+  it.each(['千元', '万人', '床日', '床', '张', '次', '人', '家', '元/人'])('restores the whole value without duplicating unit %s', (unit) => {
+    const result = validation('stale', 37)
+    Object.assign(result.subjects[0], { factValue: 35, unit, draftUnit: unit })
+    const view = fakeView(`指标37${unit}[[citation:sub-1]]`)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+    expect(view.state.doc.textContent).toBe(`指标35${unit}[[citation:sub-1]]`)
+  })
+
+  it('converts thousands of yuan without leaving the original unit behind', () => {
+    const result = validation('stale', 370)
+    Object.assign(result.subjects[0], { factValue: 35, unit: '万元', draftUnit: '千元' })
+    const view = fakeView('收入370 千元[[citation:sub-1]]')
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+    expect(view.state.doc.textContent).toBe('收入35 万元[[citation:sub-1]]')
+    const marks = findValueMarks('收入350千元[[citation:sub-1]]', { ...result, subjects: [{ ...result.subjects[0], status: 'valid' }] })
+    expect(marks).toHaveLength(1)
+    expect(marks[0].state).toBe('valid')
+  })
+
+  it.each([3.14159, 0.00001, 1e-25])('restores registered precision for %s without display rounding', (factValue) => {
+    const result = validation('stale', 2)
+    Object.assign(result.subjects[0], { factValue, unit: '%' })
+    const view = fakeView('占比2%[[citation:sub-1]]')
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+    const restored = view.state.doc.textContent.split('%')[0].slice(2).replace(/,/g, '')
+    expect(Number(restored)).toBe(factValue)
+    expect(restored).not.toMatch(/[eE]/)
+  })
+
   it('formats unknown registered values without inventing data', () => {
     expect(formatRegisteredValue(null, '万元')).toBe('暂无法确认')
     expect(formatRegisteredValue(3.14159, '%')).toBe('3.14%')

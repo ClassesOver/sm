@@ -20,12 +20,21 @@ export interface ValueMark {
 type Subject = TraceValidation['subjects'][number]
 
 const UNIT_SCALES: Record<string, Record<string, number>> = {
-  money: { 元: 1, 万元: 1e4, 亿元: 1e8 },
+  money: { 元: 1, 千元: 1e3, 万元: 1e4, 亿元: 1e8 },
   visits: { 人次: 1, 万人次: 1e4 },
 }
 // 正文数值：千分位数字 + 可选单位；“待核实”是服务端替换无依据数值后的占位。
 const VALUE_PATTERN = /(?<![\dA-Za-z_.,+−－-])[+−－-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d.,eE])/g
-const UNIT_AFTER = /^\s*(亿元|万元|元|万人次|人次|个百分点|%|‰)/
+const UNIT_TOKENS = ['亿元', '万元', '千元', '元', '万人次', '人次', '万人', '床日', '床', '张', '次', '人', '个百分点', '%', '‰']
+
+function unitAfter(tail: string, subject: Subject): { unit: string; length: number } {
+  const spaces = /^\s*/.exec(tail)![0].length
+  // 优先完整的登记/草稿单位，防止复合单位被短前缀截断。
+  const unit = [...UNIT_TOKENS, subject.unit ?? '', subject.draftUnit ?? '']
+    .filter(Boolean).sort((a, b) => b.length - a.length)
+    .find(candidate => tail.startsWith(candidate, spaces)) ?? ''
+  return { unit, length: unit ? spaces + unit.length : 0 }
+}
 // 日期中的数字不能作为正文事实恢复；覆盖中文和常见 ISO/斜线日期。
 const DATE_PATTERN = /\d{4}\s*(?:年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?|[-/]\s*\d{1,2}(?:\s*[-/]\s*\d{1,2})?|\.\s*\d{1,2}\s*\.\s*\d{1,2})(?!\d)|\d{1,2}\s*月?\s*[-—~～至]\s*\d{1,2}\s*月/g
 const UNVERIFIED = '待核实'
@@ -101,14 +110,14 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
         const tail = text.slice(start + match[0].length)
         if (dates.some(date => start >= date.index! && start < date.index! + date[0].length) ||
           (/^\d+$/.test(match[0]) && /^\s*[年月日]/.test(tail))) continue
-        const unit = UNIT_AFTER.exec(tail)
-        const writtenUnit = unit?.[1] ?? ''
+        const unit = unitAfter(tail, subject)
+        const writtenUnit = unit.unit
         const registeredUnit = subject.unit ?? ''
         const matchesRegistered = sameValue(match[0], writtenUnit, subject.factValue, registeredUnit)
         const matchesDraft = subject.status !== 'valid' && typeof subject.draftValue === 'number' &&
           sameValue(match[0], writtenUnit, subject.draftValue, subject.draftUnit ?? registeredUnit)
         if (!matchesRegistered && !matchesDraft) continue
-        const end = start + match[0].length + (unit?.[0].length ?? 0)
+        const end = start + match[0].length + unit.length
         const written = text.slice(start, end).replace(/\s+/g, '')
         marks.push({
           start, end, subjectId: subject.subjectId,
@@ -199,7 +208,7 @@ export function updateBodyValueMarks(view: EditorView, validation: TraceValidati
 export function restoreRegisteredValue(view: EditorView, subjectId: string, validation: TraceValidation | null,
   sources?: TraceSources): boolean {
   const subject = validation?.subjects.find(item => item.subjectId === subjectId)
-  if (!subject || typeof subject.factValue !== 'number') return false
+  if (!subject || typeof subject.factValue !== 'number' || !Number.isFinite(subject.factValue)) return false
   const targets = documentValueMarks(view.state.doc, validation, sources)
     .filter(mark => mark.subjectId === subjectId && mark.state !== 'valid')
   if (targets.length !== 1) return false
@@ -217,8 +226,9 @@ export function restoreRegisteredValue(view: EditorView, subjectId: string, vali
   }
   // 沿用正文原有的数字与单位间距写法，只替换数值。
   const spaced = /\d\s+\D/.test(written)
-  const replacement = spaced && subject.unit
-    ? `${formatRegisteredValue(replacementValue)} ${subject.unit}` : formatRegisteredValue(replacementValue, subject.unit)
+  // 写回正文保留登记值精度；卡片的两位小数仅用于展示，不能用于数据恢复。
+  const exactValue = replacementValue.toLocaleString('zh-CN', { maximumSignificantDigits: 21 })
+  const replacement = `${exactValue}${spaced && subject.unit ? ' ' : ''}${subject.unit ?? ''}`
   const tr: Transaction = view.state.tr.insertText(replacement, target.from, target.to)
   view.dispatch(tr)
   return true
