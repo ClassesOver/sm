@@ -8,6 +8,7 @@ import type { EvidenceObjectKind } from './evidence-state'
 export const EVIDENCE_3D_THEME = {
   background: '#071321',
   backgroundRgb: [7, 19, 33] as const,
+  transparentBackground: 'rgba(7, 19, 33, 0)',
   /** 指数雾密度：越远的节点与连线越暗，形成纵深。 */
   fogDensity: 0.0009,
   /** 深色底上的类型主色（比 2D 类型色更亮），用于卡片色条、图标与图例。 */
@@ -17,8 +18,12 @@ export const EVIDENCE_3D_THEME = {
   dimmedNode: '#1c3247',
   /** 关系流线：管体半径与三种状态的不透明度。 */
   flow: { radius: 0.55, normal: 0.55, highlight: 1, dimmed: 0.08 },
-  /** 阶段标题。 */
-  stage: { edge: '#2c8fb8', title: '#e2f4ff', titleBackground: 'rgba(12, 44, 66, 0.92)' },
+  /** 视差最大偏转角（弧度）：水平约 6°、竖直约 4°。 */
+  parallax: { yaw: 0.1, pitch: 0.07 },
+  /** 当前页与预览卡片向镜头凸出的距离（出屏感）。 */
+  popOut: { current: 34, selected: 14 },
+  /** 阶段标题与泳道。 */
+  stage: { title: '#e2f4ff', outline: '#071321' },
 }
 
 export type EvidenceCardState = 'normal' | 'current' | 'selected' | 'dimmed'
@@ -63,47 +68,93 @@ export function drawEvidenceCard(canvas: HTMLCanvasElement, card: { kind: Eviden
   const w = width - padding * 2
   const h = height - padding * 2
   context.clearRect(0, 0, width, height)
-  context.globalAlpha = card.state === 'dimmed' ? 0.38 : 1
-  // 投影与发光
+  context.globalAlpha = card.state === 'dimmed' ? 0.34 : 1
+  const radius = 18
+  const highlighted = card.state === 'current' || card.state === 'selected'
+  // 柔和投影；当前页用类型色发光。
   context.save()
-  context.shadowColor = card.state === 'current' ? 'rgba(34, 211, 238, 0.75)' : 'rgba(0, 0, 0, 0.55)'
-  context.shadowBlur = card.state === 'current' ? 14 : 10
-  context.shadowOffsetY = card.state === 'current' ? 0 : 4
-  roundedRect(context, x, y, w, h, 14)
-  const fill = context.createLinearGradient(0, y, 0, y + h)
-  fill.addColorStop(0, '#16324c')
-  fill.addColorStop(1, '#0d2136')
-  context.fillStyle = fill
+  context.shadowColor = card.state === 'current' ? `${accent}cc` : 'rgba(0, 0, 0, 0.6)'
+  context.shadowBlur = card.state === 'current' ? 18 : 12
+  context.shadowOffsetY = card.state === 'current' ? 0 : 5
+  roundedRect(context, x, y, w, h, radius)
+  context.fillStyle = '#0d2236'
   context.fill()
   context.restore()
-  // 描边
-  roundedRect(context, x, y, w, h, 14)
-  context.lineWidth = card.state === 'current' ? 4 : card.state === 'selected' ? 3.5 : 2
-  context.strokeStyle = card.state === 'current' ? '#22d3ee' : card.state === 'selected' ? '#f1f5f9' : 'rgba(120, 170, 205, 0.45)'
-  context.stroke()
-  // 类型色条
+  // 玻璃质感：自上而下的冷色渐变，叠一层类型色的斜向晕染。
   context.save()
-  roundedRect(context, x, y, w, h, 14)
+  roundedRect(context, x, y, w, h, radius)
   context.clip()
+  const glass = context.createLinearGradient(0, y, 0, y + h)
+  glass.addColorStop(0, highlighted ? '#1d4466' : '#183552')
+  glass.addColorStop(1, '#0c1e31')
+  context.fillStyle = glass
+  context.fillRect(x, y, w, h)
+  const tint = context.createLinearGradient(x, y, x + w * 0.6, y + h)
+  tint.addColorStop(0, `${accent}33`)
+  tint.addColorStop(1, `${accent}00`)
+  context.fillStyle = tint
+  context.fillRect(x, y, w, h)
+  // 顶部高光
+  const shine = context.createLinearGradient(0, y, 0, y + h * 0.45)
+  shine.addColorStop(0, 'rgba(255, 255, 255, 0.10)')
+  shine.addColorStop(1, 'rgba(255, 255, 255, 0)')
+  context.fillStyle = shine
+  context.fillRect(x, y, w, h * 0.45)
+  // 左侧类型色条（带辉光）
+  context.shadowColor = accent
+  context.shadowBlur = 10
   context.fillStyle = accent
-  context.fillRect(x, y, 10, h)
+  context.fillRect(x, y, 7, h)
   context.restore()
-  // 图标
-  const iconSize = 50
-  const iconX = x + 26
+  // 描边：当前页为类型色、预览为浅色，其余为极细的冷色描边。
+  roundedRect(context, x + 0.75, y + 0.75, w - 1.5, h - 1.5, radius)
+  context.lineWidth = card.state === 'current' ? 3.5 : card.state === 'selected' ? 3 : 1.5
+  context.strokeStyle = card.state === 'current' ? accent : card.state === 'selected' ? '#e2f1fb' : 'rgba(150, 200, 232, 0.28)'
+  context.stroke()
+  // 图标底座
+  const iconSize = 46
+  const iconX = x + 28
   const iconY = y + (h - iconSize) / 2
-  roundedRect(context, iconX - 6, iconY - 6, iconSize + 12, iconSize + 12, 12)
-  context.fillStyle = `${accent}26`
+  context.beginPath()
+  context.arc(iconX + iconSize / 2, iconY + iconSize / 2, iconSize / 2 + 9, 0, Math.PI * 2)
+  context.fillStyle = `${accent}22`
   context.fill()
+  context.lineWidth = 1.5
+  context.strokeStyle = `${accent}66`
+  context.stroke()
   if (card.icon) context.drawImage(card.icon, iconX, iconY, iconSize, iconSize)
-  // 文字
-  const textX = iconX + iconSize + 20
-  const textWidth = x + w - textX - 14
+  // 文字：名称为主，类型与状态以类型色小字标注。
+  const textX = iconX + iconSize + 24
+  const textWidth = x + w - textX - 16
   context.textBaseline = 'alphabetic'
-  context.fillStyle = '#eef7ff'
-  context.font = '600 46px "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif'
-  context.fillText(fitText(context, card.name, textWidth), textX, y + h / 2 + 4)
-  context.fillStyle = card.state === 'current' ? '#7ee8fa' : '#93b6cf'
-  context.font = '500 27px "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif'
-  context.fillText(fitText(context, card.detail, textWidth), textX, y + h / 2 + 40)
+  context.fillStyle = '#f2f8ff'
+  context.font = '600 44px "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif'
+  context.fillText(fitText(context, card.name, textWidth), textX, y + h / 2 + 2)
+  context.fillStyle = card.state === 'current' ? accent : '#8fb4cd'
+  context.font = '500 26px "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif'
+  context.fillText(fitText(context, card.detail, textWidth), textX, y + h / 2 + 38)
+}
+
+/** 阶段泳道贴图：竖向柔光带，四周渐隐到透明，避免硬边玻璃板的生硬感。 */
+export function laneCanvas(width = 256, height = 512): HTMLCanvasElement {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) return canvas
+  const horizontal = context.createLinearGradient(0, 0, width, 0)
+  horizontal.addColorStop(0, 'rgba(56, 140, 200, 0)')
+  horizontal.addColorStop(0.5, 'rgba(56, 140, 200, 0.22)')
+  horizontal.addColorStop(1, 'rgba(56, 140, 200, 0)')
+  context.fillStyle = horizontal
+  context.fillRect(0, 0, width, height)
+  context.globalCompositeOperation = 'destination-in'
+  const vertical = context.createLinearGradient(0, 0, 0, height)
+  vertical.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  vertical.addColorStop(0.18, 'rgba(0, 0, 0, 1)')
+  vertical.addColorStop(0.82, 'rgba(0, 0, 0, 1)')
+  vertical.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  context.fillStyle = vertical
+  context.fillRect(0, 0, width, height)
+  return canvas
 }

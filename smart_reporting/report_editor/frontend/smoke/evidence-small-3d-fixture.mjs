@@ -39,6 +39,8 @@ assert.ok(counts.every(count => [5, 9, 15].includes(count)))
 try {
   for (const count of counts) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+    // 视差随指针偏转视角；像素与几何检查需要静止视角，先关闭。
+    await page.addInitScript(() => localStorage.setItem('smart-reporting-evidence-3d-parallax', 'off'))
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
     // 读取节点信息卡（原生Mesh）的实际投影，而不是将应用布局结果当作验收答案：

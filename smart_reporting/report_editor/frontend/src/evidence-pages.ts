@@ -32,16 +32,28 @@ import {
   subjectShortId,
   type EvidenceRelations,
 } from './evidence-relations'
+import { buildDiorama } from './evidence-3d-diorama'
 import { extendStageLayout } from './evidence-3d-layout'
-import { CARD_WORLD, drawEvidenceCard, EVIDENCE_3D_THEME, type EvidenceCardState } from './evidence-3d-theme'
+import { CARD_WORLD, drawEvidenceCard, EVIDENCE_3D_THEME, laneCanvas, type EvidenceCardState } from './evidence-3d-theme'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 import { sourceSubjectStatus } from './source-status'
-import { ArrowRight, CircleAlert, createElement, Expand, ExternalLink, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut } from 'lucide'
+import { ArrowRight, CircleAlert, createElement, Expand, ExternalLink, LocateFixed, Network, Rotate3d, RotateCcw, Tags, X, ZoomIn, ZoomOut } from 'lucide'
 
 type GraphPoint3d = { x: number; y: number; z: number }
 // 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
 const graph3dViews = new WeakMap<EvidencePage, { position: GraphPoint3d; target: GraphPoint3d; up: GraphPoint3d; baseDistance: number; width: number; height: number; focusPicker: boolean }>()
+const PARALLAX_STORAGE_KEY = 'smart-reporting-evidence-3d-parallax'
+
+/** 视差偏好按浏览器记住；存储不可用时默认开启。 */
+function readParallaxPreference(): boolean {
+  try { return window.localStorage.getItem(PARALLAX_STORAGE_KEY) !== 'off' } catch { return true }
+}
+
+function writeParallaxPreference(enabled: boolean): void {
+  try { window.localStorage.setItem(PARALLAX_STORAGE_KEY, enabled ? 'on' : 'off') } catch { /* 存储不可用时只在本页生效 */ }
+}
+
 const graph3dPositions = new WeakMap<EvidenceGraph, Map<string, GraphPoint3d>>()
 
 /**
@@ -500,7 +512,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
     }))
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
-    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { AmbientLight, BufferAttribute, CanvasTexture, Color, CubicBezierCurve3, DoubleSide, FogExp2, Group, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, TubeGeometry, Vector3 }]) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, three]) => {
+    const { AmbientLight, BufferAttribute, CanvasTexture, Color, CubicBezierCurve3, DoubleSide, FogExp2, Group, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, TubeGeometry, Vector3 } = three
     if (ctx.isStale() || !viewport.isConnected) return
     const icons = EVIDENCE_KIND_ICONS
     // 类型图标先解码为位图，再绘入卡片贴图；加载失败的图标留空，不影响卡片其余信息。
@@ -614,8 +627,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       // 卡片文字只存在于贴图中；同步记录在对象上，供读屏之外的自动化检查读取实际绘制内容。
       card.mesh.userData.evidenceCard = { name: card.name, detail, state }
       card.texture.needsUpdate = true
-      // 当前页与预览卡片略微前移，压在同排卡片与连线之上。
-      card.mesh.position.z = state === 'current' || state === 'selected' ? 6 : 0
+      // 当前页明显向前凸出（出屏感），预览项略微前移；在节点原有纵深上叠加，后排卡片不会被拉到前排。
+      const baseZ = stagePlan.positions.get(evidenceRefId(card.ref))?.z ?? 0
+      card.mesh.position.z = baseZ + (state === 'current' ? THEME.popOut.current : state === 'selected' ? THEME.popOut.selected : 0)
       card.mesh.renderOrder = state === 'current' || state === 'selected' ? 12 : 11
     }
     const updateCards = () => { for (const card of cards.values()) drawCard(card) }
@@ -657,7 +671,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       flow.mesh.renderOrder = highlighted ? 11 : 10
     }
     const instance: any = new (ForceGraph3D as any)(viewport)
-      .backgroundColor(THEME.background)
+      // 画布透明，底色由容器的暗角渐变提供（边缘为纯底色）。
+      .backgroundColor(THEME.transparentBackground)
       .lights([new AmbientLight(0xffffff, Math.PI)])
       .showNavInfo(false)
       // 关系浏览只改变视角，节点位置由布局/缓存维护，避免节点起点捏合误拖动。
@@ -746,14 +761,18 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     // 阶段标题：每列顶部写阶段序号、名称与数量，一眼看清“快照 → 计算 → 事实 → 正文”的流向。
     const stageObjects = new Group()
     stageObjects.name = 'evidence-stages'
+    const laneObjects = new Group()
+    laneObjects.name = 'evidence-lanes'
+    const laneTexture = new CanvasTexture(laneCanvas())
+    laneTexture.colorSpace = SRGBColorSpace
+    const laneGeometry = new PlaneGeometry(1, 1)
+    const laneMaterial = new MeshBasicMaterial({ map: laneTexture, transparent: true, depthWrite: false, side: DoubleSide, toneMapped: false })
     for (const stage of stagePlan.stages) {
       const title = new SpriteText(`${STAGE_NUMERALS[stage.index] ?? stage.index + 1} ${stage.kinds.map(kind => STAGE_KIND_NAMES[kind]).join('、')} · ${stage.count}`, 3, THEME.stage.title)
       title.fontWeight = '700'
-      title.backgroundColor = THEME.stage.titleBackground
-      title.borderColor = THEME.stage.edge
-      title.borderWidth = 0.1
-      title.borderRadius = 1.2
-      title.padding = [1.6, 0.8]
+      // 无边框的轻量标题，深色描边保证压在流线上时仍可读。
+      title.strokeWidth = 0.6
+      title.strokeColor = THEME.stage.outline
       // 阶段标题固定 15 CSS px，缩放视图时始终可读。
       title.material.sizeAttenuation = false
       const titleScale = 15 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3
@@ -765,10 +784,22 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       title.material.toneMapped = false
       title.position.set(stage.centerX, stage.top + 14, stage.front)
       title.renderOrder = 14
+      title.userData.members = stage.members
       title.raycast = () => {}
       stageObjects.add(title)
+      // 泳道：每列背后一条四周渐隐的柔光带，区分阶段又不形成硬边。
+      const laneWidth = (stage.centerX - stage.x) * 2 + CARD_WORLD.width + 70
+      const laneHeight = stage.top - stage.bottom + 60
+      const lane = new Mesh(laneGeometry, laneMaterial)
+      lane.scale.set(laneWidth, laneHeight, 1)
+      lane.position.set(stage.centerX, (stage.top + stage.bottom) / 2 + 10, stage.back - 30)
+      lane.renderOrder = 1
+      lane.raycast = () => {}
+      laneObjects.add(lane)
     }
-    instance.scene().add(stageObjects)
+    // 裸眼 3D 展台：线框盒子、背墙与地板网格、卡片投在背墙上的阴影。
+    const diorama = buildDiorama(three, stagePlan.positions)
+    instance.scene().add(stageObjects, laneObjects, diorama.group)
     viewport.append(cameraReadout)
     const cameraControls = instance.controls()
     cameraControls.rotateSpeed = 0.45
@@ -795,7 +826,64 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const onCameraChange = () => updateCameraReadout()
     instance.controls().addEventListener('change', onCameraChange)
     let userMovedCamera = false
-    instance.controls().addEventListener('start', () => { userMovedCamera = true })
+    let draggingCamera = false
+    instance.controls().addEventListener('start', () => { userMovedCamera = true; draggingCamera = true })
+    instance.controls().addEventListener('end', () => { draggingCamera = false })
+    // 裸眼 3D 视差：指针在画布上移动时视角随之轻微偏转（约 ±6°/±4°），离开画布回正；
+    // 拖动相机、关闭开关或系统要求减少动态效果时不生效。以增量方式旋转，不覆盖用户已有的视角。
+    let parallaxEnabled = readParallaxPreference()
+    const parallaxTarget = { yaw: 0, pitch: 0 }
+    const parallaxCurrent = { yaw: 0, pitch: 0 }
+    let parallaxFrame: number | undefined
+    const stepParallax = () => {
+      parallaxFrame = undefined
+      if (ctx.isStale() || !viewport.isConnected) return
+      const yaw = (parallaxTarget.yaw - parallaxCurrent.yaw) * 0.14
+      const pitch = (parallaxTarget.pitch - parallaxCurrent.pitch) * 0.14
+      if (Math.abs(yaw) < 1e-5 && Math.abs(pitch) < 1e-5) return
+      parallaxCurrent.yaw += yaw
+      parallaxCurrent.pitch += pitch
+      const camera = instance.camera()
+      const target = instance.controls().target
+      const offset = camera.position.clone().sub(target)
+      offset.applyAxisAngle(camera.up, -yaw)
+      const right = new Vector3().crossVectors(camera.up, offset).normalize()
+      offset.applyAxisAngle(right, pitch)
+      camera.position.copy(target).add(offset)
+      camera.lookAt(target)
+      updateCameraReadout()
+      parallaxFrame = requestAnimationFrame(stepParallax)
+    }
+    const aimParallax = (yaw: number, pitch: number) => {
+      parallaxTarget.yaw = yaw
+      parallaxTarget.pitch = pitch
+      if (parallaxFrame === undefined) parallaxFrame = requestAnimationFrame(stepParallax)
+    }
+    const onParallaxMove = (event: PointerEvent) => {
+      if (!parallaxEnabled || reducedMotion.matches || draggingCamera || event.pointerType === 'touch') return
+      const rect = viewport.getBoundingClientRect()
+      const nx = Math.max(-1, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width) * 2 - 1))
+      const ny = Math.max(-1, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height) * 2 - 1))
+      aimParallax(nx * THEME.parallax.yaw, ny * THEME.parallax.pitch)
+    }
+    const onParallaxLeave = () => aimParallax(0, 0)
+    viewport.addEventListener('pointermove', onParallaxMove)
+    viewport.addEventListener('pointerleave', onParallaxLeave)
+    const parallaxToggle = makeButton('', 'evidence-icon-button evidence-3d-parallax-toggle')
+    parallaxToggle.append(createElement(Rotate3d, { width: 16, height: 16, 'aria-hidden': 'true' }))
+    const updateParallaxToggle = () => {
+      parallaxToggle.setAttribute('aria-pressed', String(parallaxEnabled))
+      parallaxToggle.setAttribute('aria-label', parallaxEnabled ? '关闭视差' : '开启视差')
+      parallaxToggle.title = parallaxEnabled ? '视差已开启：视角随指针轻微偏转' : '视差已关闭'
+    }
+    updateParallaxToggle()
+    parallaxToggle.addEventListener('click', () => {
+      parallaxEnabled = !parallaxEnabled
+      writeParallaxPreference(parallaxEnabled)
+      if (!parallaxEnabled) aimParallax(0, 0)
+      updateParallaxToggle()
+    })
+    controls.append(parallaxToggle)
     if (rememberedView) {
       instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
       instance.camera().up.set(rememberedView.up.x, rememberedView.up.y, rememberedView.up.z)
@@ -818,6 +906,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       reducedMotion.removeEventListener('change', applyMotionPreference)
       instance.controls().removeEventListener('change', onCameraChange)
       if (resizeFitFrame !== undefined) cancelAnimationFrame(resizeFitFrame)
+      if (parallaxFrame !== undefined) cancelAnimationFrame(parallaxFrame)
+      viewport.removeEventListener('pointermove', onParallaxMove)
+      viewport.removeEventListener('pointerleave', onParallaxLeave)
       const point = (value: GraphPoint3d): GraphPoint3d => ({ x: value.x, y: value.y, z: value.z })
       graph3dViews.set(ctx.page, {
         position: point(instance.camera().position), target: point(instance.controls().target), up: point(instance.camera().up),
@@ -831,7 +922,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       removal.disconnect()
       ctx.signal.removeEventListener('abort', dispose)
       const renderer = instance.renderer()
-      instance.scene().remove(stageObjects)
+      instance.scene().remove(stageObjects, laneObjects, diorama.group)
+      diorama.dispose()
+      laneTexture.dispose()
+      laneGeometry.dispose()
+      laneMaterial.dispose()
       for (const title of stageObjects.children) (title as InstanceType<typeof SpriteText>).material.dispose()
       for (const card of cards.values()) {
         card.texture.dispose()
@@ -856,6 +951,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     fit3d.disabled = true
     // 卡片尺寸已计入组件包围盒；留白再为顶部固定字号的阶段标题留出空间。
     const fitPadding = () => Math.min(60, Math.max(0, viewport.clientHeight / 2 - 8))
+    // 小画布上完整展示展台盒子会把相机推远、卡片缩到难以辨认；此时隐藏展台，只保留卡片与流线。
+    const dioramaCorners = () => {
+      diorama.group.visible = viewport.clientWidth >= 640 && viewport.clientHeight >= 320
+      return diorama.group.visible ? diorama.corners : []
+    }
     fitResizedView = () => {
       if (resizeFitFrame !== undefined) cancelAnimationFrame(resizeFitFrame)
       resizeFitFrame = requestAnimationFrame(() => {
@@ -872,6 +972,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           const up = instance.camera().up.clone()
           const zoom = baseDistance / offset.length()
           instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
+          fitContentToView()
           baseDistance = cameraDistance()
           // 沿原视线调整距离，保留用户缩放比例、旋转及平移目标。
           const position = offset.normalize().multiplyScalar(baseDistance / zoom).add(target)
@@ -901,8 +1002,59 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       camera.updateMatrixWorld()
       instance.zoomToFit(0, fitPadding(), filter)
       instance.controls().update()
+      fitContentToView()
       baseDistance = cameraDistance()
       updateCameraReadout()
+    }
+    // 组件 zoomToFit 按包围盒最长边估算距离，宽而矮的画布上内容只占一小块、卡片挤成几像素。
+    // 这里沿当前视线二分求出最近距离：可见卡片四角、所属阶段标题（固定像素高度）与展台盒子都落在画布留白内。
+    const fitContentToView = () => {
+      const camera = instance.camera()
+      const target = instance.controls().target
+      const width = viewport.clientWidth
+      const height = viewport.clientHeight
+      const points: GraphPoint3d[] = []
+      const visibleIds = new Set<string>()
+      for (const [id, card] of cards) {
+        if (!card.mesh.visible || !nodeVisible(id)) continue
+        visibleIds.add(id)
+        const center = card.mesh.position
+        for (const dx of [-1, 1]) for (const dy of [-1, 1])
+          points.push({ x: center.x + dx * CARD_WORLD.width / 2, y: center.y + dy * CARD_WORLD.height / 2, z: center.z })
+      }
+      const titles = stageObjects.children
+        .filter(title => (title.userData.members as string[]).some(id => visibleIds.has(id)))
+        .map(title => title.position)
+      points.push(...dioramaCorners())
+      if (!points.length || !width || !height) return
+      const pad = Math.min(24, height / 10)
+      const titleHeight = 20
+      const offset = camera.position.clone().sub(target)
+      const base = offset.length()
+      if (!base) return
+      const direction = offset.clone().multiplyScalar(-1 / base)
+      const place = (distance: number) => {
+        camera.position.copy(target).addScaledVector(offset, distance / base)
+        camera.updateMatrixWorld()
+      }
+      const visible = (point: GraphPoint3d, top: number) => {
+        // 位于相机身后的点投影会翻转到画布内，先排除。
+        if ((point.x - camera.position.x) * direction.x + (point.y - camera.position.y) * direction.y + (point.z - camera.position.z) * direction.z <= camera.near) return false
+        const screen = instance.graph2ScreenCoords(point.x, point.y, point.z)
+        return screen.x >= pad && screen.x <= width - pad && screen.y >= top && screen.y <= height - pad
+      }
+      const fits = () => points.every(point => visible(point, pad)) && titles.every(point => visible(point, pad + titleHeight))
+      let near = base * 0.02
+      let far = base * 40
+      place(far)
+      if (!fits()) { place(base); return }
+      for (let step = 0; step < 28; step++) {
+        const middle = (near + far) / 2
+        place(middle)
+        if (fits()) far = middle
+        else near = middle
+      }
+      place(far)
     }
     fitInitialView = () => {
       if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
@@ -926,8 +1078,20 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
     fit3d.addEventListener('click', () => requestAnimationFrame(() => {
       if (ctx.isStale() || !viewport.isConnected) return
-      instance.zoomToFit(cameraDuration(), fitPadding(),
-        (node: { id: string }) => nodeVisible(node.id))
+      // 先在当前帧同步求出“适应节点且展台完整可见”的最终机位，再从原机位平滑过渡过去；
+      // 避免先动画再检查时，慢帧下动画晚于检查结束、把镜头重新拉近。
+      const camera = instance.camera()
+      const controlsTarget = instance.controls().target
+      const startPosition = camera.position.clone()
+      const startTarget = controlsTarget.clone()
+      instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
+      fitContentToView()
+      const endPosition = camera.position.clone()
+      const endTarget = controlsTarget.clone()
+      camera.position.copy(startPosition)
+      controlsTarget.copy(startTarget)
+      camera.lookAt(startTarget)
+      instance.cameraPosition(endPosition, endTarget, cameraDuration())
     }))
     viewport.setAttribute('aria-label', '3D 关系图；卡片从左到右按溯源阶段排列，连线表示登记关系；请使用关系列表中的文字入口')
     const zoom3d = (factor: number) => {
