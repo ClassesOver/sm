@@ -1130,3 +1130,26 @@ def test_readability_harness_checks_prose_after_a_long_fence():
     text = "这段真实正文需要拆分以便读者核对" * 12 + "。"
     markdown = "````\n```\n示例\n````\n\n" + text
     assert any("句子过长" in warning for warning in readability_warnings(markdown))
+
+
+@pytest.mark.parametrize("template", [
+    "````\n```\n{text}\n````\n",
+    "~~~\n{text}\n~~~\n",
+    "<!-- {text} -->",
+])
+def test_fact_review_does_not_use_code_or_hidden_comments_as_report_claims(template):
+    text = "收入999元，另见 analysis_001 和{{value:unknown}}。"
+    assert review_content(template.format(text=text), ['{"收入":100}']) == []
+    warnings = review_content(template.format(text=text) + "\n\n实际收入999元。", ['{"收入":100}'])
+    assert any("999元" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("analysis_001", "正文出现内部标识"),
+    ("currentTotal", "正文出现数据字段名"),
+    ("详见图1", "正文引用了图表编号"),
+])
+def test_fact_review_checks_visible_link_labels(label, expected):
+    warnings = review_content(f"[{label}](https://example.test/reference)", [])
+    assert any(expected in warning for warning in warnings)
+    assert review_content(f"[收入明细](https://example.test/{label})", []) == []

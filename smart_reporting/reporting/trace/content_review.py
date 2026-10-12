@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 from ..delivery.report_runtime.markdown import normalize_number_notation
+from .markdown_body import trace_body
 from .numeric_text import (
     BARE_SCALED_NUMBER,
     DIRECTED_PLACEHOLDER,
@@ -125,7 +126,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     contents = tuple(contents)
     catalog = frozen_number_catalog(contents)
     # 编辑器复核的是用户可能手输的正文：全角数字与百分点缩写同样要识别。
-    markdown = normalize_number_notation(markdown)
+    markdown = normalize_number_notation(trace_body(markdown, mask_inline_code=False))
     text = render_frozen_numbers(markdown, catalog).replace("**", "")
     # 数值锚点可能插在数字与单位之间；复核时只移除非分析协议标记。
     text = re.sub(r"\[\[(?:claim|citation|section|table|/table):[^\]]+\]\]", "", text)
@@ -418,7 +419,9 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     # 读者可见正文不得出现内部标识或英文字段名（协议标记、图片与链接地址不可见，先移除）。
     # 软告警：进入一次纠错轮次，让模型改用业务名称，而不是等到成品验收才发现。
     presentation_start = len(warnings)
-    visible = re.sub(r"!?\[[^\]\r\n]*\]\([^)\r\n]*\)|\[\[[^\]\r\n]+\]\]", "", text)
+    visible = re.sub(r"!\[[^\]\r\n]*\]\([^)\r\n]*\)|\[\[[^\]\r\n]+\]\]", "", text)
+    # 链接目标不可见，但链接文字属于读者可见正文，仍须复核。
+    visible = re.sub(r"\[([^\]\r\n]*)\]\([^)\r\n]*\)", r"\1", visible)
     for identifier in dict.fromkeys(INTERNAL_ID_PATTERN.findall(visible)):
         warnings.append(f"正文出现内部标识：{identifier}。读者可见内容只用业务名称，内部 ID 只放在结构化引用字段。")
     defined_figures = {(match["label"], match["number"]) for match in _FIGURE_DEFINITION.finditer(visible)}
