@@ -33,11 +33,8 @@ export interface EvidencePage {
   collapsed: boolean
   showList: boolean
   graphView: boolean
-  /** 关系图渲染模式；新页面默认使用成熟 3D 组件，2D 为兼容回退。 */
-  /** auto：未手动切换时按节点数选择（≤15 个节点用 2D，更多用 3D）。 */
+  /** 关系图渲染模式；auto 在未手动切换时按节点数选择（≤15 个节点用 2D，更多用 3D）。 */
   graphMode: '2d' | '3d' | 'auto'
-  /** 3D 名称显示偏好；未选择时密集图只显示关注名称。 */
-  graphLabels?: 'all' | 'focus'
   /** 当前预览对象的2D/3D共用关系范围/端点，按身份恢复历史现场。 */
   graph3dTrace?: { previewId: string; value: string }
   filter: string

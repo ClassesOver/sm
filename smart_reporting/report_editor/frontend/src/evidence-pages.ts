@@ -32,6 +32,8 @@ import {
   subjectShortId,
   type EvidenceRelations,
 } from './evidence-relations'
+import { extendStageLayout } from './evidence-3d-layout'
+import { CARD_WORLD, drawEvidenceCard, EVIDENCE_3D_THEME, type EvidenceCardState } from './evidence-3d-theme'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 import { sourceSubjectStatus } from './source-status'
@@ -98,6 +100,9 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
 }
 
 const KIND_COLORS = EVIDENCE_KIND_COLORS
+const THEME = EVIDENCE_3D_THEME
+const STAGE_NUMERALS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨']
+const STAGE_KIND_NAMES: Record<EvidenceObjectKind, string> = { dataset: '数据快照', computation: '计算', fact: '事实', chart: '图表', subject: '正文引用' }
 
 const TRACE_ERROR_LABELS: Record<string, string> = {
   source_missing: '来源不存在或不在当前修订中',
@@ -494,34 +499,20 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const linkData = [...graph.edges].map(([id, edge]) => ({
       id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
     }))
-    // 共享端点的多条登记关系使用组件原生弧线轻微分开，避免全图概览在汇聚处糊成一束。
-    const linkGroups = new Map<string, string[]>()
-    for (const link of linkData) {
-      for (const endpoint of [link.source, link.target]) {
-        const ids = linkGroups.get(endpoint) ?? []
-        ids.push(link.id)
-        linkGroups.set(endpoint, ids)
-      }
-    }
-    for (const ids of linkGroups.values()) ids.sort()
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
-    let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
-    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { AmbientLight, DirectionalLight, GridHelper, Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutEvidenceLabels }]) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { AmbientLight, BufferAttribute, CanvasTexture, Color, CubicBezierCurve3, DoubleSide, FogExp2, Group, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, TubeGeometry, Vector3 }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
     const icons = EVIDENCE_KIND_ICONS
-    const textures = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
-      const svg = createElement(icons[kind], { width: 24, height: 24, color: KIND_COLORS[kind] })
-      const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-      for (const [key, value] of Object.entries({ width: '24', height: '24', rx: '5', fill: '#ffffff', stroke: '#c7dce8', 'stroke-width': '1' })) background.setAttribute(key, value)
-      svg.prepend(background)
-      const texture = await new TextureLoader().loadAsync(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`)
-      texture.colorSpace = SRGBColorSpace
-      return [kind, texture] as const
+    // 类型图标先解码为位图，再绘入卡片贴图；加载失败的图标留空，不影响卡片其余信息。
+    const iconImages = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
+      const svg = createElement(icons[kind], { width: 48, height: 48, color: THEME.kinds[kind], 'stroke-width': 2 })
+      const image = new Image()
+      image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`
+      // 解码失败的图片交给 drawImage 会抛 InvalidStateError，整张卡片无法创建；失败时不画图标。
+      const decoded = await image.decode().then(() => image.naturalWidth > 0, () => false)
+      return [kind, decoded ? image : null] as const
     })))
-    if (ctx.isStale() || !viewport.isConnected) {
-      for (const texture of textures.values()) texture.dispose()
-      return
-    }
+    if (ctx.isStale() || !viewport.isConnected) return
     const relationCounts = new Map<string, number>()
     for (const edge of graph.edges.values()) {
       for (const id of new Set([evidenceRefId(edge.from), evidenceRefId(edge.to)])) relationCounts.set(id, (relationCounts.get(id) ?? 0) + 1)
@@ -540,11 +531,15 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     let viewWidth = rememberedView?.width ?? 0
     let viewHeight = rememberedView?.height ?? 0
     let resizeFitFrame: number | undefined
-    const rememberedPositions = graph3dPositions.get(graph)
+    // 分层流水布局：溯源阶段从左到右，坐标由登记关系决定，模式往返与重新打开位置一致。
+    // 展开分支时保留已布局节点坐标，新节点就近放在相连节点旁。
+    const stagePlan = extendStageLayout(graph3dPositions.get(graph),
+      nodeData.map(node => ({ id: node.id, kind: node.ref.kind, label: node.label })),
+      linkData.map(link => ({ source: link.source, target: link.target })),
+    )
     const restoredNodes = nodeData.map(node => {
-      const position = rememberedPositions?.get(node.id)
-      // 已加载节点固定在原坐标；新增分支仍交给组件布局。
-      return position ? { ...node, ...position, fx: position.x, fy: position.y, fz: position.z } : node
+      const position = stagePlan.positions.get(node.id)!
+      return { ...node, ...position, fx: position.x, fy: position.y, fz: position.z }
     })
     const neighbours = new Set<string>()
     for (const edge of graph.edges.values()) {
@@ -570,69 +565,19 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (nodeId) return (from === nodeId || to === nodeId) && (!selectedId || from === selectedId || to === selectedId)
       return selectedId !== null && (from === selectedId || to === selectedId)
     }
-    const linkColor = (link: { id: string }) => highlightedLink(link) ? '#007ea7' : selectedId || tracedId() ? '#edf3f6' : '#6387a3'
-    const linkWidth = (link: { id: string }) => highlightedLink(link) ? 1.5 : selectedId || tracedId() ? 0.3 : 0.6
     const nodeColor = (node: { ref: EvidenceObjectRef }) => {
       const id = evidenceRefId(node.ref)
-      if (id === selectedId || sameEvidenceRef(node.ref, ctx.page.ref)) return KIND_COLORS[node.ref.kind]
+      if (id === selectedId || sameEvidenceRef(node.ref, ctx.page.ref)) return THEME.kinds[node.ref.kind]
       const traced = tracedId()
       const connected = !selectedId && [...graph.edges.values()].some(edge => {
         const from = evidenceRefId(edge.from)
         const to = evidenceRefId(edge.to)
         return from === traced && to === id || to === traced && from === id
       })
-      return traced && id !== traced && !connected ? '#dce6ed' : KIND_COLORS[node.ref.kind]
+      return traced && id !== traced && !connected ? THEME.dimmedNode : THEME.kinds[node.ref.kind]
     }
     let lastNodeClick: { id: string; at: number } | null = null
     let pendingPreview: number | null = null
-    type Label3d = { sprite: InstanceType<typeof SpriteText>; icon: InstanceType<typeof Sprite>; scale: GraphPoint3d; text: string; traceText: string; name: string }
-    const labels = new Map<string, Label3d>()
-    const sizeLabel = (id: string, label: Label3d) => {
-      const { sprite, scale } = label
-      const current = id === evidenceRefId(ctx.page.ref)
-      const focused = Boolean(pinnedId) || current || id === selectedId || !(allLabels && allNodes.length > 15) && id === viewport.dataset.hovered
-      const fixedSize = allLabels || focused || allNodes.length <= 15
-      sprite.visible = allLabels || focused
-      // Three拾取默认仍会检查不可见对象；原生图层同时排除隐藏文字的命中范围。
-      sprite.layers.set(sprite.visible ? 0 : 1)
-      label.icon.visible = sprite.visible
-      const iconSize = 14 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight)
-      label.icon.scale.set(iconSize, iconSize, 1)
-      const text = fixedSize ? focused ? label.traceText : label.name : label.text
-      if (sprite.text !== text) {
-        sprite.text = text
-        scale.x = sprite.scale.x
-        scale.y = sprite.scale.y
-        scale.z = sprite.scale.z
-      }
-      const attenuate = !fixedSize
-      if (sprite.material.sizeAttenuation !== attenuate) {
-        sprite.material.sizeAttenuation = attenuate
-        sprite.material.depthTest = attenuate
-        sprite.material.needsUpdate = true
-      }
-      // SpriteMaterial 原生支持固定屏幕尺寸；小图与关注对象文字保持12 CSS px。
-      const factor = fixedSize ? 12 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3 : 1
-      sprite.scale.set(scale.x * factor, scale.y * factor, scale.z * factor)
-      let below = pinnedId ? id === pinnedId : id === selectedId && !current
-      const partnerId = pinnedId ? id === pinnedId ? selectedId : pinnedId : current ? selectedId : id === selectedId ? evidenceRefId(ctx.page.ref) : null
-      if (fixedSize && partnerId && partnerId !== id) {
-        const nodes = instance.graphData().nodes
-        const node = nodes.find((item: { id: string }) => item.id === id)
-        const partner = nodes.find((item: { id: string }) => item.id === partnerId)
-        if (node && partner && [node.x, node.y, node.z, partner.x, partner.y, partner.z].every(Number.isFinite)) {
-          instance.camera().updateMatrixWorld()
-          const nodeY = instance.graph2ScreenCoords(node.x, node.y, node.z).y
-          const partnerY = instance.graph2ScreenCoords(partner.x, partner.y, partner.z).y
-          if (Math.abs(nodeY - partnerY) > 1) below = nodeY > partnerY
-        }
-      }
-      // 使用Sprite原生锚点向两端屏幕外侧展开，旋转时不靠世界Y偏移定位文字。
-      sprite.position.y = fixedSize ? 0 : 8
-      sprite.center.set(0.5, fixedSize ? below ? 1.25 : -0.25 : 0.5)
-      // 组件连线renderOrder为10，信息层需在其后绘制，避免线条划穿文字。
-      sprite.renderOrder = focused ? 12 : 11
-    }
     const cancelPreview = () => {
       if (pendingPreview !== null) window.clearTimeout(pendingPreview)
       pendingPreview = null
@@ -643,12 +588,77 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const name = node.ref.kind === 'fact' ? ctx.factFor?.(node.ref)?.name : undefined
       if (name) factNameCounts.set(name, (factNameCounts.get(name) ?? 0) + 1)
     }
-    // 使用组件已有球体与原生光照形成明暗侧面，保持节点和名称的占用范围。
-    const keyLight = new DirectionalLight(0xffffff, Math.PI * 0.85)
-    keyLight.position.set(-100, 200, 150)
+    // 节点信息卡：每个节点一张贴图卡片（类型色条、图标、业务名称、类型与状态），立在空间中，
+    // 后排卡片随透视自然变小，取代“小球 + 分离名称 + 引导线”。悬停、预览、追踪时重绘状态。
+    type Card3d = { mesh: InstanceType<typeof Mesh>; canvas: HTMLCanvasElement; texture: InstanceType<typeof CanvasTexture>; ref: EvidenceObjectRef; name: string; state: EvidenceCardState | '' }
+    const cards = new Map<string, Card3d>()
+    const cardGeometry = new PlaneGeometry(CARD_WORLD.width, CARD_WORLD.height)
+    const cardName = (ref: EvidenceObjectRef) => {
+      // 图内名称复用登记业务名；同名事实保留期间信息以便区分。
+      const businessName = ref.kind === 'fact' ? ctx.factFor?.(ref)?.name : undefined
+      return businessName && factNameCounts.get(businessName) === 1 ? businessName : ref.label
+    }
+    const cardState = (ref: EvidenceObjectRef): EvidenceCardState => {
+      const id = evidenceRefId(ref)
+      if (sameEvidenceRef(ref, ctx.page.ref)) return 'current'
+      if (id === selectedId || id === pinnedId) return 'selected'
+      return nodeColor({ ref }) === THEME.dimmedNode ? 'dimmed' : 'normal'
+    }
+    const drawCard = (card: Card3d) => {
+      const state = cardState(card.ref)
+      if (state === card.state) return
+      card.state = state
+      const status = state === 'current' ? ' · 当前页' : state === 'selected' ? evidenceRefId(card.ref) === pinnedId ? ' · 追踪' : ' · 预览' : ''
+      const detail = `${KIND_LABELS[card.ref.kind]}${status}`
+      drawEvidenceCard(card.canvas, { kind: card.ref.kind, name: card.name, detail, state, icon: iconImages.get(card.ref.kind) })
+      // 卡片文字只存在于贴图中；同步记录在对象上，供读屏之外的自动化检查读取实际绘制内容。
+      card.mesh.userData.evidenceCard = { name: card.name, detail, state }
+      card.texture.needsUpdate = true
+      // 当前页与预览卡片略微前移，压在同排卡片与连线之上。
+      card.mesh.position.z = state === 'current' || state === 'selected' ? 6 : 0
+      card.mesh.renderOrder = state === 'current' || state === 'selected' ? 12 : 11
+    }
+    const updateCards = () => { for (const card of cards.values()) drawCard(card) }
+    type Flow3d = { mesh: InstanceType<typeof Mesh>; key: string }
+    const flows = new Map<string, Flow3d>()
+    const flowColor = (id: string, end: 'from' | 'to') => new Color(THEME.kinds[graph.edges.get(id)![end].kind])
+    const placeFlow = (id: string, start: GraphPoint3d, end: GraphPoint3d) => {
+      const flow = flows.get(id)
+      if (!flow || ![start.x, start.y, start.z, end.x, end.y, end.z].every(Number.isFinite)) return
+      const key = [start.x, start.y, start.z, end.x, end.y, end.z].map(value => value.toFixed(2)).join(',')
+      if (key === flow.key) return
+      flow.key = key
+      const half = CARD_WORLD.width / 2
+      const forward = end.x >= start.x
+      const from = new Vector3(start.x + (forward ? half : -half), start.y, start.z)
+      const to = new Vector3(end.x + (forward ? -half : half), end.y, end.z)
+      const reach = Math.max(24, Math.abs(to.x - from.x) * 0.5) * (forward ? 1 : -1)
+      const curve = new CubicBezierCurve3(from, from.clone().add(new Vector3(reach, 0, 0)), to.clone().sub(new Vector3(reach, 0, 0)), to)
+      const geometry = new TubeGeometry(curve, 40, THEME.flow.radius, 6, false)
+      // 沿管体长度方向由源类型色渐变到目标类型色。
+      const source = flowColor(id, 'from')
+      const target = flowColor(id, 'to')
+      const uv = geometry.getAttribute('uv')
+      const colors = new Float32Array(uv.count * 3)
+      for (let index = 0; index < uv.count; index++) {
+        const color = source.clone().lerp(target, uv.getX(index))
+        colors.set([color.r, color.g, color.b], index * 3)
+      }
+      geometry.setAttribute('color', new BufferAttribute(colors, 3))
+      flow.mesh.geometry.dispose()
+      flow.mesh.geometry = geometry
+    }
+    const styleFlow = (id: string) => {
+      const flow = flows.get(id)
+      if (!flow) return
+      const highlighted = highlightedLink({ id })
+      const material = flow.mesh.material as InstanceType<typeof MeshBasicMaterial>
+      material.opacity = highlighted ? THEME.flow.highlight : selectedId || tracedId() ? THEME.flow.dimmed : THEME.flow.normal
+      flow.mesh.renderOrder = highlighted ? 11 : 10
+    }
     const instance: any = new (ForceGraph3D as any)(viewport)
-      .backgroundColor('#f7fbfd')
-      .lights([new AmbientLight(0xffffff, Math.PI * 0.35), keyLight])
+      .backgroundColor(THEME.background)
+      .lights([new AmbientLight(0xffffff, Math.PI)])
       .showNavInfo(false)
       // 关系浏览只改变视角，节点位置由布局/缓存维护，避免节点起点捏合误拖动。
       .enableNodeDrag(false)
@@ -658,69 +668,47 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         return label
       })
       .nodeThreeObject((node: { ref: EvidenceObjectRef }) => {
-        const current = sameEvidenceRef(node.ref, ctx.page.ref)
-        const selected = evidenceRefId(node.ref) === selectedId
-        // 图内名称复用登记业务名；期间保留在悬停和预览，避免每个标签重复日期。
-        const businessName = node.ref.kind === 'fact' ? ctx.factFor?.(node.ref)?.name : undefined
-        const labelRef = businessName && factNameCounts.get(businessName) === 1
-          ? { ...node.ref, label: businessName } : node.ref
-        const name = graphLabel(labelRef, 4, 1, 2)
-        const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
-        const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
-        label.fontWeight = '600'
-        // 半透明文字底图不写深度，避免前景标签的透明区域遮住其他名称。
-        label.material.depthWrite = false
-        label.material.toneMapped = false
-        label.backgroundColor = current ? '#e4f3fa' : '#ffffff'
-        label.borderColor = selected ? '#007ea7' : '#c7dce8'
-        label.borderWidth = selected ? 0.12 : 0.06
-        label.borderRadius = 1
-        label.padding = [1, 0.5]
-        label.position.y = 8
         const id = evidenceRefId(node.ref)
-        const icon = new Sprite(new SpriteMaterial({ map: textures.get(node.ref.kind), sizeAttenuation: false, depthTest: false }))
-        icon.material.depthWrite = false
-        icon.material.toneMapped = false
-        icon.renderOrder = 13
-        // 图标仅作节点信息，拾取继续交给组件球体和名称。
-        icon.raycast = () => {}
-        const group = new Group()
-        group.add(label, icon)
-        const traceName = graphLabel(labelRef, 14, 9, 4)
-        const sized = {
-          sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
-          name: graphLabel(labelRef, 10, 5, 4),
-          text: `${KIND_LABELS[node.ref.kind]} · ${name}${status}\n${nodeInfo(node.ref)}`,
-          traceText: `${KIND_LABELS[node.ref.kind]}${status}\n${traceName}`,
+        const canvas = document.createElement('canvas')
+        const texture = new CanvasTexture(canvas)
+        texture.colorSpace = SRGBColorSpace
+        texture.anisotropy = 4
+        const material = new MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.02, side: DoubleSide, toneMapped: false })
+        const mesh = new Mesh(cardGeometry, material)
+        // 卡片始终正对镜头，旋转视角时文字不变形；空间层次由位置、透视大小与遮挡体现。
+        mesh.onBeforeRender = (_renderer: unknown, _scene: unknown, camera: { quaternion: unknown }) => { mesh.quaternion.copy(camera.quaternion as never) }
+        const card: Card3d = { mesh, canvas, texture, ref: node.ref, name: cardName(node.ref), state: '' }
+        // 组件重建节点对象时释放上一张卡片的贴图与材质。
+        const previous = cards.get(id)
+        if (previous) {
+          previous.texture.dispose()
+          ;(previous.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
         }
-        labels.set(id, sized)
-        sizeLabel(id, sized)
-        return group
+        cards.set(id, card)
+        drawCard(card)
+        return mesh
       })
-      .nodeThreeObjectExtend(true)
+      .nodeThreeObjectExtend(false)
       .nodeResolution(24)
+      .nodeRelSize(5)
       .nodeOpacity(1)
       .nodeColor(nodeColor)
-      .linkColor(linkColor)
-      .linkWidth(linkWidth)
-      .linkCurvature((link: { id: string }) => {
-        const edge = graph.edges.get(link.id)!
-        if (sameEvidenceRef(edge.from, edge.to)) return 0.6
-        const reverse = [...graph.edges.values()].some(other =>
-          sameEvidenceRef(edge.from, other.to) && sameEvidenceRef(edge.to, other.from))
-        if (reverse) return 0.16
-        const endpointGroups = [evidenceRefId(edge.from), evidenceRefId(edge.to)]
-          .map(endpoint => linkGroups.get(endpoint) ?? [])
-          .filter(group => group.length > 1)
-        if (!endpointGroups.length) return 0
-        const group = endpointGroups.sort((a, b) => b.length - a.length)[0]
-        const slot = group.indexOf(link.id)
-        return (slot - (group.length - 1) / 2) * 0.07
+      // 关系线：从源卡片右缘到目标卡片左缘的 S 形流线（细管体），颜色由源类型渐变到目标类型，
+      // 方向随颜色与左→右布局一目了然。坐标固定，几何只在端点变化时重建。
+      .linkThreeObject((link: { id: string }) => {
+        const material = new MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, toneMapped: false })
+        const mesh = new Mesh(new TubeGeometry(new CubicBezierCurve3(new Vector3(), new Vector3(), new Vector3(), new Vector3(1, 0, 0)), 2, 0.1, 3), material)
+        mesh.renderOrder = 10
+        flows.set(link.id, { mesh, key: '' })
+        styleFlow(link.id)
+        return mesh
       })
-      .linkOpacity((link: { id: string }) => highlightedLink(link) ? 0.95 : selectedId || tracedId() ? 0.28 : 0.62)
-      .linkDirectionalArrowLength(6)
-      .linkDirectionalArrowResolution(12)
-      .linkDirectionalArrowRelPos(1)
+      .linkThreeObjectExtend(false)
+      .linkPositionUpdate((object: unknown, ends: { start: GraphPoint3d; end: GraphPoint3d }, link: { id: string }) => {
+        placeFlow(link.id, ends.start, ends.end)
+        return true
+      })
+
       .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
         const id = evidenceRefId(node.ref)
         const now = Date.now()
@@ -753,19 +741,34 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         hoveredId = !selectedId || id === selectedId || (id !== null && neighbours.has(id)) ? id : null
         refreshTrace()
       })
-    // 首次无环登记关系沿深度方向分层；已有坐标和反馈关系保留原生三维力布局。
-    const topology = new graphlib.Graph()
-    for (const node of nodeData) topology.setNode(node.id)
-    for (const link of linkData) topology.setEdge(link.source, link.target)
-    const layeredTopology = !rememberedPositions && graphlib.alg.isAcyclic(topology)
-    instance.dagMode(layeredTopology ? 'zin' : null).dagLevelDistance(80)
-    // 使用组件现有力布局为名称留出空间；预热新增节点，避免立即预览时缓存拥挤的初始坐标。
-    instance.d3Force('link').distance(layeredTopology ? 120 : 70)
-    instance.d3Force('charge').strength(-100)
-    // 组件默认 d3AlphaMin=0：预热后按动画帧继续推进直到 15 秒挂钟冷却，最终坐标随帧率变化，
-    // 同一关系图每次布局不同（名称避障结果随之漂移）。改为预热阶段同步推进到收敛
-    // （300 步时 alpha≈0.001，即 d3 默认收敛阈值），不再按帧冷却，同一输入得到同一布局。
-    instance.warmupTicks(300).cooldownTicks(0).graphData({ nodes: restoredNodes, links: linkData })
+    // 节点全部固定在分层坐标上，不做力学模拟；一次预热即触发布局完成回调。
+    instance.dagMode(null).warmupTicks(1).cooldownTicks(0).graphData({ nodes: restoredNodes, links: linkData })
+    // 阶段标题：每列顶部写阶段序号、名称与数量，一眼看清“快照 → 计算 → 事实 → 正文”的流向。
+    const stageObjects = new Group()
+    stageObjects.name = 'evidence-stages'
+    for (const stage of stagePlan.stages) {
+      const title = new SpriteText(`${STAGE_NUMERALS[stage.index] ?? stage.index + 1} ${stage.kinds.map(kind => STAGE_KIND_NAMES[kind]).join('、')} · ${stage.count}`, 3, THEME.stage.title)
+      title.fontWeight = '700'
+      title.backgroundColor = THEME.stage.titleBackground
+      title.borderColor = THEME.stage.edge
+      title.borderWidth = 0.1
+      title.borderRadius = 1.2
+      title.padding = [1.6, 0.8]
+      // 阶段标题固定 15 CSS px，缩放视图时始终可读。
+      title.material.sizeAttenuation = false
+      const titleScale = 15 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3
+      title.scale.multiplyScalar(titleScale)
+      title.center.set(0.5, 0)
+      title.material.depthTest = false
+      title.material.depthWrite = false
+      title.material.fog = false
+      title.material.toneMapped = false
+      title.position.set(stage.centerX, stage.top + 14, stage.front)
+      title.renderOrder = 14
+      title.raycast = () => {}
+      stageObjects.add(title)
+    }
+    instance.scene().add(stageObjects)
     viewport.append(cameraReadout)
     const cameraControls = instance.controls()
     cameraControls.rotateSpeed = 0.45
@@ -782,174 +785,17 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       cameraReadout.textContent = `缩放 ${zoom}\n水平 ${degrees(rotation.y)}° · 俯仰 ${degrees(-rotation.x)}° · 倾斜 ${degrees(rotation.z)}°`
     }
     // 原生地面网格只提供空间参照，不参与节点、关系计数或拾取。
-    const spatialGrid = new GridHelper(1, 8, '#9dbacb', '#cadce6')
-    spatialGrid.material.transparent = true
-    spatialGrid.material.opacity = 0.4
-    spatialGrid.material.depthWrite = false
-    spatialGrid.material.toneMapped = false
-    spatialGrid.raycast = () => {}
-    instance.scene().add(spatialGrid)
+    // 指数雾：远处网格、连线与节点逐渐隐入底色，形成纵深。
+    instance.scene().fog = new FogExp2(THEME.background, THEME.fogDensity)
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
     const cameraDuration = () => reducedMotion.matches ? 0 : 180
     const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
     applyMotionPreference()
     reducedMotion.addEventListener('change', applyMotionPreference)
-    const labelGuides = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-    labelGuides.setAttribute('aria-hidden', 'true')
-    labelGuides.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none'
-    const guides = new Map<string, SVGLineElement>()
-    for (const node of restoredNodes) {
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
-      line.setAttribute('stroke', '#b8cbd5')
-      line.setAttribute('stroke-width', '0.55')
-      line.setAttribute('stroke-dasharray', '2 4')
-      line.style.display = 'none'
-      labelGuides.append(line)
-      guides.set(node.id, line)
-    }
-    viewport.append(labelGuides)
-    const layoutStatus = document.createElement('span')
-    layoutStatus.className = 'evidence-label-layout-status'
-    layoutStatus.setAttribute('role', 'status')
-    layoutStatus.textContent = '正在排布名称…'
-    layoutStatus.hidden = true
-    viewport.append(layoutStatus)
-    let cachedLabelLayoutKey = ''
-    let cachedLabelRectangles: Array<{ x: number; y: number; width: number; height: number }> = []
-    let cachedLabelPositions = new Map<string, typeof cachedLabelRectangles[number]>()
-    let cachedLabelViewport = ''
-    let cameraSettling = false
-    let labelLayoutTimer: number | undefined
-    let labelWorker: Worker | undefined
-    let labelWorkerUnavailable = false
-    let pendingLabelLayoutKey = ''
-    const recoverLabelWorker = (event?: Event) => {
-      event?.preventDefault()
-      labelWorkerUnavailable = true
-      labelWorker?.terminate()
-      labelWorker = undefined
-      pendingLabelLayoutKey = ''
-      layoutStatus.hidden = true
-      viewport.removeAttribute('aria-busy')
-      if (ctx.isStale() || !viewport.isConnected) return
-      placeLabels()
-      if (!cameraSettling) viewport.dataset.labelLayout = 'ready'
-    }
-    const placeLabels = () => {
-      for (const [id, label] of labels) sizeLabel(id, label)
-      for (const guide of guides.values()) guide.style.display = 'none'
-      // 小图及全名称模式做屏幕标签排布；复用Sprite锚点，不改节点坐标或相机。
-      if ((!allLabels && allNodes.length > 15) || !viewport.clientHeight) return
-      instance.camera().updateMatrixWorld()
-      const pixels = viewport.clientHeight / (2 * Math.tan(instance.camera().fov * Math.PI / 360))
-      const nodes = instance.graphData().nodes.filter((node: { id: string; x: number; y: number; z: number }) =>
-        nodeVisible(node.id) && [node.x, node.y, node.z].every(Number.isFinite))
-      const priority = (id: string) => id === selectedId || id === evidenceRefId(ctx.page.ref) || id === pinnedId ? 0 : 1
-      nodes.sort((a: { id: string }, b: { id: string }) => priority(a.id) - priority(b.id) || a.id.localeCompare(b.id))
-      const items: Array<{ node: GraphPoint3d & { id: string }; sprite: InstanceType<typeof SpriteText>;
-        point: { x: number; y: number }; width: number; height: number }> = nodes.filter((node: { id: string }) => labels.get(node.id)?.sprite.visible)
-        .map((node: GraphPoint3d & { id: string }) => {
-          const sprite = labels.get(node.id)!.sprite
-          return { node, sprite, point: instance.graph2ScreenCoords(node.x, node.y, node.z),
-            width: sprite.scale.x * pixels, height: sprite.scale.y * pixels }
-        })
-      items.sort((a, b) => priority(a.node.id) - priority(b.node.id) || Math.round(b.point.y) - Math.round(a.point.y) || a.node.id.localeCompare(b.node.id))
-      // 使用d3fc成熟布局策略；不采用隐藏重叠标签策略，保留全部可见名称。
-      let rectangles = items.map((item: { point: { x: number; y: number }; width: number; height: number }) =>
-        // 相机阻尼末尾的亚像素浮点差异不应反复改变等价的标签放置方向。
-        ({ x: Math.round(item.point.x), y: Math.round(item.point.y), width: item.width + 6, height: item.height + 6 }))
-      const obstacles = nodes.map((node: GraphPoint3d) => {
-        const point = instance.graph2ScreenCoords(node.x, node.y, node.z)
-        return { x: Math.round(point.x) - 14, y: Math.round(point.y) - 14, width: 28, height: 28, fixed: true }
-      })
-      obstacles.push({ x: cameraReadout.offsetLeft - 4, y: cameraReadout.offsetTop - 4,
-        width: cameraReadout.offsetWidth + 8, height: cameraReadout.offsetHeight + 8, fixed: true })
-      const layoutKey = JSON.stringify([viewport.clientWidth, viewport.clientHeight, previewOnly, items.map(item => item.node.id), rectangles, obstacles])
-      const viewportKey = `${viewport.clientWidth}/${viewport.clientHeight}`
-      const reusePositions = cameraSettling && cachedLabelViewport === viewportKey
-        && items.every(item => cachedLabelPositions.has(item.node.id))
-      // 旋转期间名称保持已有屏幕位置，引导线跟随真实节点；停止后再做完整避障，避免阻塞相机操作。
-      if (reusePositions) rectangles = items.map(item => cachedLabelPositions.get(item.node.id)!)
-      else if (layoutKey === cachedLabelLayoutKey) rectangles = cachedLabelRectangles
-      else {
-        const input = { rectangles, obstacles,
-          icons: items.map(item => ({ x: Math.round(item.point.x) - 14, y: Math.round(item.point.y) - 14, width: 28, height: 28 })),
-          priorities: items.map(item => priority(item.node.id)),
-          width: viewport.clientWidth, height: viewport.clientHeight }
-        if (allLabels && allNodes.length > 15 && !labelWorkerUnavailable) {
-          if (!pendingLabelLayoutKey) {
-            pendingLabelLayoutKey = layoutKey
-            viewport.dataset.labelLayout = 'settling'
-            layoutStatus.hidden = false
-            viewport.setAttribute('aria-busy', 'true')
-            try {
-              labelWorker ??= new Worker(new URL('./evidence-label-layout.worker.ts', import.meta.url), { type: 'module' })
-            } catch {
-              recoverLabelWorker()
-              return
-            }
-            labelWorker.onerror = recoverLabelWorker
-            labelWorker.onmessage = (event: MessageEvent<{ key: string; rectangles: typeof rectangles }>) => {
-              if (event.data.key !== pendingLabelLayoutKey || ctx.isStale() || !viewport.isConnected) return
-              pendingLabelLayoutKey = ''
-              layoutStatus.hidden = true
-              viewport.removeAttribute('aria-busy')
-              cachedLabelLayoutKey = event.data.key
-              cachedLabelRectangles = event.data.rectangles
-              cachedLabelPositions = new Map(items.map((item, index) => [item.node.id, event.data.rectangles[index]]))
-              cachedLabelViewport = viewportKey
-              placeLabels()
-              if (!cameraSettling && !pendingLabelLayoutKey) viewport.dataset.labelLayout = 'ready'
-            }
-            labelWorker.postMessage({ key: layoutKey, input })
-          }
-          return
-        }
-        rectangles = layoutEvidenceLabels(input)
-        cachedLabelLayoutKey = layoutKey
-        cachedLabelRectangles = rectangles
-      }
-      if (!reusePositions) {
-        cachedLabelPositions = new Map(items.map((item, index) => [item.node.id, rectangles[index]]))
-        cachedLabelViewport = viewportKey
-      }
-      items.forEach(({ node, sprite, point, width, height }, index: number) => {
-        const rectangle = rectangles[index]
-        // 标签本身仍保留画布边缘留白。
-        const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 3))
-        const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 3))
-        const bounds = { left, top, right: left + width, bottom: top + height }
-        // 布局起点取整；锚点须使用实际投影，补偿亚像素偏移，确保绘制边界与避障结果一致。
-        const anchor = point
-        sprite.center.set((anchor.x - bounds.left) / width, 1 - (anchor.y - bounds.top) / height)
-        // 虚线仅连接标签和球体，区别于组件中的真实登记关系线，不参与拾取。
-        const guide = guides.get(node.id)
-        if (!guide) return
-        guide.style.display = ''
-        for (const [key, value] of Object.entries({ x1: anchor.x, y1: anchor.y,
-          x2: Math.max(bounds.left, Math.min(bounds.right, anchor.x)),
-          y2: Math.max(bounds.top, Math.min(bounds.bottom, anchor.y)) })) guide.setAttribute(key, String(value))
-      })
-    }
-    const onCameraChange = () => {
-      updateCameraReadout()
-      if (!allLabels || allNodes.length <= 15) {
-        placeLabels()
-        return
-      }
-      cameraSettling = true
-      viewport.dataset.labelLayout = 'settling'
-      window.clearTimeout(labelLayoutTimer)
-      placeLabels()
-      labelLayoutTimer = window.setTimeout(() => {
-        cameraSettling = false
-        labelLayoutTimer = undefined
-        if (ctx.isStale() || !viewport.isConnected) return
-        placeLabels()
-        if (!pendingLabelLayoutKey) viewport.dataset.labelLayout = 'ready'
-      }, 120)
-    }
+    const onCameraChange = () => updateCameraReadout()
     instance.controls().addEventListener('change', onCameraChange)
+    let userMovedCamera = false
+    instance.controls().addEventListener('start', () => { userMovedCamera = true })
     if (rememberedView) {
       instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
       instance.camera().up.set(rememberedView.up.x, rememberedView.up.y, rememberedView.up.z)
@@ -959,7 +805,6 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (viewport.clientWidth && viewport.clientHeight) {
         instance.width(viewport.clientWidth).height(viewport.clientHeight)
         fitResizedView()
-        placeLabels()
         instance.resumeAnimation()
         fitInitialView()
       } else instance.pauseAnimation()
@@ -972,9 +817,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       cancelPreview()
       reducedMotion.removeEventListener('change', applyMotionPreference)
       instance.controls().removeEventListener('change', onCameraChange)
-      window.clearTimeout(labelLayoutTimer)
       if (resizeFitFrame !== undefined) cancelAnimationFrame(resizeFitFrame)
-      labelWorker?.terminate()
       const point = (value: GraphPoint3d): GraphPoint3d => ({ x: value.x, y: value.y, z: value.z })
       graph3dViews.set(ctx.page, {
         position: point(instance.camera().position), target: point(instance.controls().target), up: point(instance.camera().up),
@@ -988,9 +831,17 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       removal.disconnect()
       ctx.signal.removeEventListener('abort', dispose)
       const renderer = instance.renderer()
-      instance.scene().remove(spatialGrid)
-      spatialGrid.geometry.dispose()
-      spatialGrid.material.dispose()
+      instance.scene().remove(stageObjects)
+      for (const title of stageObjects.children) (title as InstanceType<typeof SpriteText>).material.dispose()
+      for (const card of cards.values()) {
+        card.texture.dispose()
+        ;(card.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
+      }
+      cardGeometry.dispose()
+      for (const flow of flows.values()) {
+        flow.mesh.geometry.dispose()
+        ;(flow.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
+      }
       instance._destructor()
       // 组件已dispose GPU对象；Three原生接口同步释放移除画布的上下文。
       renderer.forceContextLoss()
@@ -1003,24 +854,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const fit3d = fit
     fit3d.classList.add('evidence-3d-fit')
     fit3d.disabled = true
-    // 固定字号标签不随相机距离缩小；把其屏幕范围计入组件原生适应动作的留白。
-    const fitPadding = () => {
-      const height = viewport.clientHeight
-      const pixelScale = height / (2 * Math.tan(instance.camera().fov * Math.PI / 360))
-      let padding = 32
-      for (const [id, { sprite }] of labels) {
-        if (!sprite.visible || sprite.material.sizeAttenuation || !nodeVisible(id)) continue
-        padding = Math.max(padding, sprite.scale.y * pixelScale * 1.25 + 8,
-          sprite.scale.x * pixelScale / 2 * height / Math.max(1, viewport.clientWidth) + 8)
-      }
-      // 仅收紧窄屏概览；竖屏预览和固定追踪保留固定名称的边界余量，避免端点标签触边。
-      const compactPortraitOverview = !selectedId && !previewOnly && !pinnedId
-        && window.innerWidth < 480 && window.innerHeight > window.innerWidth
-      const compactLandscapeOverview = !previewOnly && !pinnedId
-        && window.innerWidth >= 650 && window.innerWidth <= 900 && window.innerHeight <= 500
-      const compactOverview = compactPortraitOverview || compactLandscapeOverview
-      return Math.min(padding, compactOverview ? 32 : Math.max(0, height / 2 - 8))
-    }
+    // 卡片尺寸已计入组件包围盒；留白再为顶部固定字号的阶段标题留出空间。
+    const fitPadding = () => Math.min(60, Math.max(0, viewport.clientHeight / 2 - 8))
     fitResizedView = () => {
       if (resizeFitFrame !== undefined) cancelAnimationFrame(resizeFitFrame)
       resizeFitFrame = requestAnimationFrame(() => {
@@ -1047,8 +882,27 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         }
         viewWidth = width
         viewHeight = height
-        placeLabels()
       })
+    }
+    // 斜视初始视角：相机位于正前方略偏右、略俯视（约 20°），阶段从左到右展开，纵深折排可见。直接设置位置、目标与朝向后再适应——
+    // 组件 fitToBbox 沿相机当前视线计算距离，若朝向尚未随 cameraPosition 更新，会沿旧视线
+    // 贴近图心，导致节点溢出画布、边缘球体透视变形。
+    const fitFromObliqueView = () => {
+      const filter = (node: { id: string }) => nodeVisible(node.id)
+      const bounds = instance.getGraphBbox(filter)
+      const center = bounds
+        ? { x: (bounds.x[0] + bounds.x[1]) / 2, y: (bounds.y[0] + bounds.y[1]) / 2, z: (bounds.z[0] + bounds.z[1]) / 2 }
+        : { x: 0, y: 0, z: 0 }
+      const camera = instance.camera()
+      camera.up.set(0, 1, 0)
+      camera.position.set(center.x + 70, center.y + 110, center.z + 300)
+      instance.controls().target.set(center.x, center.y, center.z)
+      camera.lookAt(center.x, center.y, center.z)
+      camera.updateMatrixWorld()
+      instance.zoomToFit(0, fitPadding(), filter)
+      instance.controls().update()
+      baseDistance = cameraDistance()
+      updateCameraReadout()
     }
     fitInitialView = () => {
       if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
@@ -1060,13 +914,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           return
         }
         // 仅初始化无历史视角的新页面，用户操作与后退恢复不自动改相机。
-        instance.cameraPosition({ x: 120, y: 80, z: 180 }, { x: 0, y: 0, z: 0 }, 0)
-        instance.controls().update()
-        instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
-        baseDistance = cameraDistance()
+        fitFromObliqueView()
         viewWidth = viewport.clientWidth
         viewHeight = viewport.clientHeight
-        updateCameraReadout()
+        // 首帧标签与节点对象尺寸仍在更新；用户未操作时下一帧按最终范围再适应一次。
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (ctx.isStale() || !viewport.isConnected || userMovedCamera) return
+          fitFromObliqueView()
+        }))
       })
     }
     fit3d.addEventListener('click', () => requestAnimationFrame(() => {
@@ -1074,34 +929,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       instance.zoomToFit(cameraDuration(), fitPadding(),
         (node: { id: string }) => nodeVisible(node.id))
     }))
-    const guideKey = document.createElement('span')
-    guideKey.className = 'evidence-3d-line-key is-guide'
-    guideKey.textContent = '虚线：名称引导'
-    const updateGuideKey = () => {
-      const hasGuides = allLabels || allNodes.length <= 15
-      guideKey.hidden = !hasGuides
-      viewport.setAttribute('aria-label', `3D 关系图；实线箭头表示登记关系${hasGuides ? '，虚线仅连接节点与名称' : ''}；请使用关系列表中的文字入口`)
-    }
-    updateGuideKey()
-    if (allNodes.length > 15) {
-      const labelsToggle = makeButton('', 'evidence-icon-button evidence-3d-labels-toggle')
-      labelsToggle.append(createElement(Tags, { width: 16, height: 16, 'aria-hidden': 'true' }))
-      const updateLabelsToggle = () => {
-        labelsToggle.setAttribute('aria-label', allLabels ? '只显示重点节点名称' : '显示全部节点名称')
-        labelsToggle.setAttribute('aria-pressed', String(allLabels))
-        labelsToggle.title = allLabels ? '只显示当前页、预览和悬停名称' : '显示所有名称；密集处可能重叠'
-        viewport.dataset.labels = allLabels ? 'all' : 'focus'
-      }
-      updateLabelsToggle()
-      labelsToggle.addEventListener('click', () => {
-        allLabels = !allLabels
-        ctx.updatePage({ graphLabels: allLabels ? 'all' : 'focus' })
-        placeLabels()
-        updateLabelsToggle()
-        updateGuideKey()
-      })
-      controls.append(labelsToggle)
-    }
+    viewport.setAttribute('aria-label', '3D 关系图；卡片从左到右按溯源阶段排列，连线表示登记关系；请使用关系列表中的文字入口')
     const zoom3d = (factor: number) => {
       const position = instance.cameraPosition()
       const target = instance.controls().target
@@ -1113,15 +941,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
     zoomOut.addEventListener('click', () => zoom3d(1.25))
     zoomIn.addEventListener('click', () => zoom3d(0.8))
-    reset.addEventListener('click', () => {
-      instance.camera().up.set(0, 1, 0)
-      instance.cameraPosition({ x: 120, y: 80, z: 180 }, { x: 0, y: 0, z: 0 }, 0)
-      instance.controls().update()
-      // 重置以当前可见关系的原生适应距离为100%，不沿用概览的旧基准。
-      instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
-      baseDistance = cameraDistance()
-      updateCameraReadout()
-    })
+    // 重置以当前可见关系的原生适应距离为100%，不沿用概览的旧基准。
+    reset.addEventListener('click', () => fitFromObliqueView())
     locate.addEventListener('click', () => {
       const node = instance.graphData().nodes.find((item: { id: string }) => item.id === evidenceRefId(ctx.page.ref))
       if (!node || ![node.x, node.y, node.z].every(Number.isFinite)) return
@@ -1139,16 +960,15 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       layoutReady = true
       fitResizedView()
       updateCameraReadout()
-      const bounds = instance.getGraphBbox()
-      if (bounds) {
-        const size = Math.max(bounds.x[1] - bounds.x[0], bounds.z[1] - bounds.z[0], 80)
-        spatialGrid.scale.set(size, 1, size)
-        spatialGrid.position.set((bounds.x[0] + bounds.x[1]) / 2, bounds.y[0] - 12, (bounds.z[0] + bounds.z[1]) / 2)
-      }
-      placeLabels()
       for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
       fitInitialView()
-      instance.onEngineTick(placeLabels).onEngineStop(placeLabels)
+      let finalFitDone = false
+      instance.onEngineTick(() => {}).onEngineStop(() => {
+        // 首次布局停止时卡片已按最终状态绘制：用户未操作且无历史视角才按最终范围重新适应；
+        // 之后悬停、高亮触发的重新布局不再移动相机。
+        if (!finalFitDone && !userMovedCamera && !rememberedView && !initialFitPending) fitFromObliqueView()
+        finalFitDone = true
+      })
     }
     instance.onEngineTick(ready).onEngineStop(ready)
     const legend = document.createElement('div')
@@ -1163,8 +983,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       item.dataset.kind = kind
       const key = document.createElement('i')
       key.className = 'key'
-      key.style.backgroundColor = KIND_COLORS[kind]
-      key.style.borderColor = KIND_COLORS[kind]
+      key.style.backgroundColor = THEME.kinds[kind]
+      key.style.borderColor = THEME.kinds[kind]
       key.setAttribute('aria-hidden', 'true')
       item.append(key, KIND_LABELS[kind])
       legend.append(item)
@@ -1175,7 +995,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const relationKey = document.createElement('span')
     relationKey.className = 'evidence-3d-line-key'
     relationKey.textContent = '实线箭头：登记关系'
-    legend.append(relationKey, guideKey)
+    legend.append(relationKey)
     host.append(legend)
     const nodePicker = document.createElement('select')
     nodePicker.className = 'evidence-trace-picker evidence-3d-node-picker'
@@ -1231,14 +1051,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     traceStatus.setAttribute('role', 'status')
     legend.append(traceStatus)
     refreshTrace = () => {
-      instance.linkColor(linkColor).linkWidth(linkWidth).nodeColor(nodeColor)
+      for (const id of flows.keys()) styleFlow(id)
       instance.nodeVisibility((node: { id: string }) => nodeVisible(node.id))
         .linkVisibility((link: { id: string }) => {
           if (pinnedId) return highlightedLink(link)
           const edge = graph.edges.get(link.id)!
           return !previewOnly || evidenceRefId(edge.from) === selectedId || evidenceRefId(edge.to) === selectedId
         })
-      placeLabels()
+      updateCards()
       const count = linkData.filter(highlightedLink).length
       traceStatus.textContent = selectedId || tracedId()
         ? `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : previewOnly ? ' · 仅显示预览直接关系' : ''}` : ''

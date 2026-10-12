@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from loguru import logger
@@ -157,6 +157,22 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                 for groups_key in ("topGroups", "bottomGroups"):
                     values.extend((f"{groups_key}.{index}", item["value"])
                                   for index, item in enumerate(entry.get(groups_key, ())))
+                # 分组占比（“心内科占全院门诊收入的23.85%”）由服务端按登记分组值与合计计算：
+                # 仅限求和指标、合计为正且无负值，百分数指标的占比无意义，不在此登记。
+                total = entry.get("total")
+                if (array == "metrics" and entry.get("aggregation") == "sum" and entry.get("unit") != "%"
+                        and isinstance(total, (int, float)) and total > 0 and not entry.get("negativeCount")):
+                    for groups_key in ("topGroups", "bottomGroups"):
+                        values.extend(
+                            (f"groupShares.{groups_key}.{index}", Decimal(str(item["value"])) / Decimal(str(total)) * 100)
+                            for index, item in enumerate(entry.get(groups_key, ()))
+                            if isinstance(item.get("value"), (int, float)) and item["value"] >= 0)
+                # 分组之间的差额（“心内科较骨科多140.00万元”）：按登记的前列分组两两相减，只登记非负差额。
+                top = [item for item in entry.get("topGroups", ()) if isinstance(item.get("value"), (int, float))]
+                if array == "metrics" and entry.get("unit") != "%" and len(top) <= 12:
+                    values.extend(
+                        (f"groupGaps.{left}-{right}", abs(Decimal(str(top[left]["value"])) - Decimal(str(top[right]["value"]))))
+                        for left in range(len(top)) for right in range(left + 1, len(top)))
                 periods = entry.get("periodValues", ())
                 if (array == "metrics" and entry.get("aggregation") == "sum"
                         and entry.get("periodGranularity") == "month" and periods
@@ -187,7 +203,8 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     if value is None:
                         continue
                     # 派生事实的 unit 是分子/差额单位，比值本身无量纲。
-                    unit = ("%" if field in {"changeRate", "percentage"} or field.startswith("periodChangeRates.")
+                    unit = ("%" if field in {"changeRate", "percentage"}
+                            or field.startswith(("periodChangeRates.", "groupShares."))
                             else None if array == "derivedMetrics" and field == "value"
                             else entry.get("unit"))
                     if percent_point_field(field, unit):
@@ -229,12 +246,12 @@ def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> 
     return min(scales, key=lambda candidate: scales[candidate])
 
 
-# 只供服务端核对与渲染的派生数值引用：不放进模型可见的数值目录。
-_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.")
+# 只供服务端核对与渲染的派生数值引用（相邻月变化、分组占比与分组差额）：不放进模型可见的数值目录。
+_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.", "groupShares.", "groupGaps.")
 
 
 def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
-    """模型可见的数值目录：去掉只供服务端核对的相邻月变化引用。"""
+    """模型可见的数值目录：去掉只供服务端核对的相邻月变化、分组占比与分组差额引用。"""
     return {token: text for token, text in catalog.items()
             if not token[2:-2].split(":")[2].startswith(_SERVER_ONLY_FIELDS)}
 
@@ -627,6 +644,12 @@ def registered_change_rates(contents: Iterable[str]) -> set[Decimal]:
             or value is not None and token[2:-2].split(":")[2].startswith("periodChangeRates.")}
 
 
+def registered_group_shares(contents: Iterable[str]) -> set[Decimal]:
+    """服务端按分组值与合计登记的分组占比（只供核对）。"""
+    return {Decimal(str(value)) for token, value, _unit, _target in _frozen_number_entries(contents)
+            if value is not None and token[2:-2].split(":")[2].startswith("groupShares.")}
+
+
 def percent_point_written_for_rate(
     match: re.Match[str], text: str, rates: set[Decimal], points: Iterable[Decimal], percents: Sequence[Decimal],
 ) -> bool:
@@ -729,6 +752,30 @@ def table_unit_cells(markdown: str) -> list[tuple[int, int, str, str]]:
     return found
 
 
+# “超过3,700万元”“近4,000万元”：以整数界限描述登记值。界限必须是某个登记值按 1～2 位有效数字
+# 向下取整（超过/逾/突破…）或向上取整（不足/近/接近…）的结果，避免任意登记值碰巧落在宽松区间内。
+_LOWER_BOUND = re.compile(r"(?:超过|逾|突破|高于|多于|大于)\s*$")
+_UPPER_BOUND = re.compile(r"(?:不足|低于|少于|小于|近|接近|将近|不到)\s*$")
+
+
+def bounded_by_registered(number: Decimal, number_text: str, values: Iterable[Decimal], *, prefix: str) -> bool:
+    """整数界限是否为某个登记值按 1～2 位有效数字朝界限方向取整的结果。"""
+    if "." in number_text or number <= 0:
+        return False
+    above = _LOWER_BOUND.search(prefix) is not None
+    if not above and _UPPER_BOUND.search(prefix) is None:
+        return False
+    for value in values:
+        if value <= 0 or (value <= number if above else value >= number):
+            continue
+        for significant in (1, 2):
+            step = Decimal(1).scaleb(value.adjusted() - significant + 1)
+            bound = (value / step).to_integral_value(rounding=ROUND_FLOOR if above else ROUND_CEILING) * step
+            if bound == number:
+                return True
+    return False
+
+
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
 
@@ -749,7 +796,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         quantum = Decimal(1).scaleb(-digits)
         candidates = known.get(unit, ())
         if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
-                or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)):
+                or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
+                or bounded_by_registered(number, number_text, candidates, prefix=prefix)):
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
@@ -814,10 +862,12 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
 
     replaced = PERSON_COUNT.sub(replace_persons, replaced)
     rates = registered_change_rates(contents)
+    # 分组占比两两相减的组合很多，取整后容易凑上变化率；判断“变化率误写为百分点”时不用它们作依据。
+    shares = registered_group_shares(contents)
+    rate_level_percents = tuple(value for value in known.get("%", ()) if value not in shares)
 
     def replace_rate_points(match: re.Match[str]) -> str:
-        if not percent_point_written_for_rate(match, replaced, rates, known.get(PERCENT_POINT, ()),
-                                              tuple(known.get("%", ()))):
+        if not percent_point_written_for_rate(match, replaced, rates, known.get(PERCENT_POINT, ()), rate_level_percents):
             return match[0]
         logger.warning("report_change_rate_unit_corrected value={}", match[0])
         return f"{_display_precision(match['number'])}%"

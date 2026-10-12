@@ -17,6 +17,7 @@ from .numeric_text import (
     RATE_AS_PERCENT_POINT,
     RISING_WORDS,
     _frozen_number_entries,
+    bounded_by_registered,
     describes_rate_level,
     frozen_number_catalog,
     frozen_number_values,
@@ -26,6 +27,7 @@ from .numeric_text import (
     positive_directed_placeholders,
     registered_change_rates,
     registered_decline_magnitude,
+    registered_group_shares,
     registered_multiples,
     render_frozen_numbers,
     supplemental_number_values,
@@ -226,7 +228,9 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
         supported = (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                      or registered_decline_magnitude(number, match[2], candidates,
                                                      prefix=text[max(0, match.start() - 12):match.start()],
-                                                     quantum=quantum))
+                                                     quantum=quantum)
+                     or bounded_by_registered(number, match[1], known.get(match[2], ()),
+                                              prefix=text[max(0, match.start() - 12):match.start()]))
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
@@ -285,13 +289,16 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     points = {abs(value) for value in known.get(PERCENT_POINT, ())}
     pairwise = len(percents) <= _MAX_PERCENT_POINT_CANDIDATES
     change_rates = registered_change_rates(contents)
+    # 分组占比两两相减组合多、取整后易凑上变化率：判断“变化率误写为百分点”时不作依据。
+    shares = registered_group_shares(contents)
+    rate_level_percents = [value for value in percents if value not in shares]
     if points or pairwise:
         for match in RATE_AS_PERCENT_POINT.finditer(text):
             number = Decimal(match[1])
             quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
             if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points):
                 continue
-            if percent_point_written_for_rate(match, text, change_rates, points, percents):
+            if percent_point_written_for_rate(match, text, change_rates, points, rate_level_percents):
                 warnings.append(
                     f"变化率单位误用：{match[0]}对应已登记的变化率{match[1]}%，应写作“{match[1]}%”；"
                     "百分点只用于两项百分数之差。"

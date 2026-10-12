@@ -743,6 +743,28 @@ def test_adjacent_month_changes_are_registered_from_frozen_monthly_values():
     )
 
 
+def test_group_shares_are_registered_from_frozen_groups_and_total():
+    # “心内科占全院门诊收入的23.85%”按登记分组值与合计计算：服务端登记后写对不被替换，写错仍替换。
+    from smart_reporting.reporting.trace.numeric_text import prompt_number_catalog
+
+    sample = (Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json').read_text(encoding='utf-8')
+    catalog = frozen_number_catalog([sample])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:groupShares.topGroups.0:%}}'] == '23.85%'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:groupShares.bottomGroups.0:%}}'] == '8.21%'
+    # 只供服务端核对，不进模型可见目录。
+    assert not [token for token in prompt_number_catalog(catalog) if 'groupShares' in token]
+    text = '心内科门诊收入占全院门诊收入的23.85%，眼科占8.21%，骨科占25.00%。'
+    assert replace_unregistered_numbers(text, [sample]) == '心内科门诊收入占全院门诊收入的23.85%，眼科占8.21%，骨科占待核实。'
+
+
+def test_group_shares_are_not_registered_for_averages_or_negative_values():
+    document = json.loads((Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json').read_text(encoding='utf-8'))
+    document['metrics'][0]['aggregation'] = 'average'
+    document['metrics'][1]['negativeCount'] = 2
+    catalog = frozen_number_catalog([json.dumps(document)])
+    assert not [token for token in catalog if 'groupShares' in token]
+
+
 @pytest.mark.parametrize(('text', 'expected'), [
     # 变化率写成百分点：数值对得上登记的同比/相邻月变化率、对不上百分点差值时改回“%”。
     ('门诊收入同比增长11个百分点，住院收入同比下降3.00个百分点。', '门诊收入同比增长11%，住院收入同比下降3.00%。'),
@@ -793,3 +815,31 @@ def test_visit_counts_written_as_persons_are_corrected(text, expected):
         'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
     }
     assert replace_unregistered_numbers(text, [json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]})]) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 整数界限由登记值支持（门诊收入 3,774.00 万元）：保留，不替换成“超过待核实”。
+    ('门诊收入超过3,700万元。', '门诊收入超过3,700万元。'),
+    ('门诊收入近4,000万元。', '门诊收入近4,000万元。'),
+    ('门诊收入超过3,000万元。', '门诊收入超过3,000万元。'),
+    # 界限须是登记值按 1～2 位有效数字朝界限方向取整的结果：方向相反、无登记值支持、带小数的仍替换。
+    ('门诊收入超过3,800万元。', '门诊收入超过待核实。'),
+    ('门诊收入不足3,700万元。', '门诊收入不足待核实。'),
+    ('门诊收入超过5,000万元。', '门诊收入超过待核实。'),
+    ('门诊收入超过3,700.50万元。', '门诊收入超过待核实。'),
+])
+def test_integer_bounds_supported_by_registered_values_are_kept(text, expected):
+    sample = Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json'
+    assert replace_unregistered_numbers(text, [sample.read_text(encoding='utf-8')]) == expected
+
+
+def test_group_gaps_are_registered_between_top_groups():
+    # “心内科较骨科多140.00万元”：两个登记分组值之差，服务端登记后写对不被替换，写错仍替换。
+    from smart_reporting.reporting.trace.numeric_text import prompt_number_catalog
+
+    sample = (Path(__file__).parent / 'fixtures' / 'report_quality' / 'facts.json').read_text(encoding='utf-8')
+    catalog = frozen_number_catalog([sample])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:groupGaps.0-1:万元}}'] == '140.00万元'
+    assert not [token for token in prompt_number_catalog(catalog) if 'groupGaps' in token]
+    text = '心内科门诊收入较骨科多140.00万元，骨科较儿科多240.00万元，较眼科多500.00万元。'
+    assert replace_unregistered_numbers(text, [sample]) == '心内科门诊收入较骨科多140.00万元，骨科较儿科多240.00万元，较眼科多待核实。'
