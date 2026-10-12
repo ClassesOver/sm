@@ -18,7 +18,6 @@ export const EVIDENCE_3D_THEME = {
   link: '#3f8fbf',
   linkHighlight: '#67e8f9',
   linkDimmed: '#16293b',
-  particle: '#a5f3fc',
   label: { text: '#bfe0f2', background: 'rgba(9, 27, 43, 0.86)', current: 'rgba(14, 58, 82, 0.92)', border: '#24506b', selected: '#22d3ee' },
   guide: '#2f5d78',
   /** 节点到地面的落地线与投影点：标出节点悬浮高度，增强空间感。 */

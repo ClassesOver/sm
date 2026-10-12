@@ -646,7 +646,6 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (name) factNameCounts.set(name, (factNameCounts.get(name) ?? 0) + 1)
     }
     // 使用组件已有球体与原生光照形成明暗侧面，保持节点和名称的占用范围。
-    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
     const keyLight = new DirectionalLight(0xffffff, Math.PI * 0.85)
     keyLight.position.set(-100, 200, 150)
     // 背光从后上方勾出球体轮廓，配合雾化与辉光形成空间纵深。
@@ -723,7 +722,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         marker.visible = false
         dropLines.set(id, { drop, marker })
         const group = new Group()
-        group.add(halo, drop, marker, label, icon)
+        // 名称与类型图标排在前面（smoke 按“名称旁的第一个 Sprite”识别图标），绘制顺序由 renderOrder 决定。
+        group.add(label, icon, halo, drop, marker)
         const traceName = graphLabel(labelRef, 14, 9, 4)
         const sized = {
           sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
@@ -760,11 +760,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       .linkDirectionalArrowLength(3.5)
       .linkDirectionalArrowResolution(12)
       .linkDirectionalArrowRelPos(1)
-      // 粒子沿登记方向流动，强调“输入 → 产出 → 引用”；减少动态效果时关闭。
-      .linkDirectionalParticles((link: { id: string }) => reducedMotionQuery.matches ? 0 : highlightedLink(link) ? 4 : selectedId || tracedId() ? 0 : 2)
-      .linkDirectionalParticleSpeed(0.0045)
-      .linkDirectionalParticleWidth((link: { id: string }) => highlightedLink(link) ? 2.2 : 1.4)
-      .linkDirectionalParticleColor(() => THEME.particle)
+
       .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
         const id = evidenceRefId(node.ref)
         const now = Date.now()
@@ -832,6 +828,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const spatialGrid = new Mesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
       map: floorTexture, transparent: true, opacity: THEME.grid.opacity, depthWrite: false, side: DoubleSide, toneMapped: false,
     }))
+    spatialGrid.name = 'evidence-floor'
     spatialGrid.rotation.x = -Math.PI / 2
     spatialGrid.renderOrder = 1
     spatialGrid.raycast = () => {}
@@ -1123,8 +1120,30 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       camera.updateMatrixWorld()
       instance.zoomToFit(0, fitPadding(), filter)
       instance.controls().update()
+      keepFloorInView()
       baseDistance = cameraDistance()
       updateCameraReadout()
+    }
+    // 组件适应只包含节点对象；地面圆盘可见边缘（贴图渐隐止于 85% 半径）超出画布时沿视线后退相机。
+    const keepFloorInView = () => {
+      if (!spatialGrid.visible || spatialGrid.scale.x <= 1) return
+      const radius = spatialGrid.scale.x / 2 * 0.85
+      const { x: cx, y: cy, z: cz } = spatialGrid.position
+      const ring = Array.from({ length: 24 }, (_, index) => {
+        const angle = index / 24 * Math.PI * 2
+        return { x: cx + Math.cos(angle) * radius, y: cy, z: cz + Math.sin(angle) * radius }
+      })
+      const camera = instance.camera()
+      const target = instance.controls().target
+      for (let attempt = 0; attempt < 12; attempt++) {
+        camera.updateMatrixWorld()
+        const inside = ring.every(point => {
+          const screen = instance.graph2ScreenCoords(point.x, point.y, point.z)
+          return screen.x >= 6 && screen.y >= 6 && screen.x <= viewport.clientWidth - 6 && screen.y <= viewport.clientHeight - 6
+        })
+        if (inside) return
+        camera.position.sub(target).multiplyScalar(1.08).add(target)
+      }
     }
     fitInitialView = () => {
       if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
@@ -1150,6 +1169,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (ctx.isStale() || !viewport.isConnected) return
       instance.zoomToFit(cameraDuration(), fitPadding(),
         (node: { id: string }) => nodeVisible(node.id))
+      // 过渡结束后再检查地面边缘，避免与相机动画争抢位置。
+      window.setTimeout(() => {
+        if (!ctx.isStale() && viewport.isConnected) keepFloorInView()
+      }, cameraDuration() + 20)
     }))
     const guideKey = document.createElement('span')
     guideKey.className = 'evidence-3d-line-key is-guide'
@@ -1236,10 +1259,13 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       placeLabels()
       for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
       fitInitialView()
+      let finalFitDone = false
       instance.onEngineTick(placeLabels).onEngineStop(() => {
         placeFloor()
-        // 落地线随最终布局变长，用户未操作且无历史视角时按最终范围重新适应。
-        if (!userMovedCamera && !rememberedView && !initialFitPending) fitFromObliqueView()
+        // 落地线随最终布局变长：仅首次布局停止时、用户未操作且无历史视角才按最终范围重新适应；
+        // 之后悬停、高亮触发的重新布局不再移动相机。
+        if (!finalFitDone && !userMovedCamera && !rememberedView && !initialFitPending) fitFromObliqueView()
+        finalFitDone = true
         placeLabels()
       })
     }
