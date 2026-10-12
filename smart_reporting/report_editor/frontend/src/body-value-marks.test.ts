@@ -339,6 +339,27 @@ describe('unverified placeholders', () => {
     expect(ambiguous.find(mark => mark.state === 'unverified')?.subjectId).toBeUndefined()
   })
 
+  it.each([
+    '营收待核实，门店37家[[citation:sub-2]]',
+    '营收待核实，另一个指标说明[[citation:sub-2]]',
+    '待核实[[citation:sub-1]][[citation:sub-2]]',
+    '待核实。[[analysis:a]][[citation:sub-1]] [[citation:sub-2]]',
+  ])('does not guess a placeholder source in %s', (text) => {
+    const result = stale()
+    expect(findValueMarks(text, result).find(mark => mark.state === 'unverified')?.subjectId).toBeUndefined()
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(restoreRegisteredValue(view, 'sub-2', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe(text)
+  })
+
+  it('accepts an adjacent source group with one unique citation', () => {
+    const text = '营收待核实。[[analysis:a]][[citation:sub-1]]'
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', stale())).toBe(true)
+    expect(view.state.doc.textContent).toBe('营收12,450万元。[[analysis:a]][[citation:sub-1]]')
+  })
+
   it('does not restore a placeholder from another sentence’s source', () => {
     const view = fakeView('华北营收为待核实。门店共 37 家。[[citation:sub-2]]')
     expect(restoreRegisteredValue(view, 'sub-2', stale())).toBe(false)
