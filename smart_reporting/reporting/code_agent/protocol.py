@@ -1516,8 +1516,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         request_metrics = getattr(self, "_code_request_metrics", [])
         request_metric = request_metrics[-1] if request_metrics else None
         budget = getattr(self, "_code_budget", None)
-        required_delivery_tools = self._required_delivery_tools()
         for call in function_calls:
+            # 同批前序调用可能推进交付阶段；预算放行与当前阶段白名单保持一致。
+            required_delivery_tools = self._required_delivery_tools()
             tool_name = call.function.name
             if stopped:
                 skipped = Message(

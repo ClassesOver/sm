@@ -244,7 +244,7 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                         yield f"{{{{value:{fact_id}:{field}:{target}}}}}", value, unit, target or None
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
-                if comparison[field] is None:
+                if comparison[field] is None or (field == "difference" and not unit):
                     continue
                 if percent_point_field(field, unit):
                     token = f"{{{{value:{comparison['actualFactId']}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:%}}}}"
