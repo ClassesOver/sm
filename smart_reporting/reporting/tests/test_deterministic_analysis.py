@@ -87,6 +87,80 @@ def test_measure_semantic_accepts_confirmed_unit() -> None:
     assert value.unit == "元"
 
 
+def test_untyped_income_fact_defaults_to_cny_yuan() -> None:
+    dataset_context = context(
+        "current",
+        fields=("month", "department", "revenue_amount"),
+        semantics=(semantic("revenue_amount"),),
+    )
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("revenue_amount",)),
+        (("current", b"month,department,revenue_amount\n2025-01,A,100\n", dataset_context, ("current",)),),
+        profile_metrics=({
+            "code": "revenue_total",
+            "kind": "amount",
+            "aggregation": "sum",
+            "fieldRef": "dynamic_source.dynamic_db.dynamic_table.revenue_amount",
+        },),
+    )
+
+    assert bundle.metrics[0].unit == "元"
+    explicit = build_deterministic_analysis_bundle(
+        analysis(fields=("revenue_amount",)),
+        (("current", b"month,department,revenue_amount\n2025-01,A,100\n",
+          context("current", fields=("month", "department", "revenue_amount"),
+                  semantics=(semantic("revenue_amount", unit="元"),)), ("current",)),),
+        profile_metrics=({
+            "code": "revenue_total", "kind": "amount", "aggregation": "sum",
+            "fieldRef": "dynamic_source.dynamic_db.dynamic_table.revenue_amount",
+        },),
+    )
+    assert bundle.metrics[0].fact_id == explicit.metrics[0].fact_id
+
+
+@pytest.mark.parametrize("kind,aggregation,unit,expected", [
+    ("amount", "sum", None, "元"),
+    ("currency", "average", None, "元"),
+    ("amount", "sum", "CNY", "元"),
+    ("amount", "sum", "万元", "万元"),
+    ("amount", "sum", "USD", "USD"),
+    ("amount", "count", None, None),
+    ("amount", "count_distinct", None, None),
+    ("count", "sum", None, None),
+    ("ratio", "average", "%", "%"),
+    ("count", "sum", "床日", "床日"),
+    (None, "sum", None, None),
+])
+def test_default_cny_uses_confirmed_metric_kind(kind, aggregation, unit, expected):
+    # 即使分析属于收入域、指标别名含收入字样，也不能把未确定量纲的字段当作金额。
+    metric = {"code": "income_metric", "kind": kind, "aggregation": aggregation,
+              "fieldRef": "dynamic_source.dynamic_db.dynamic_table.dynamic_value"}
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("dynamic_value",)),
+        (("current", b"month,department,dynamic_value\n2025-01,A,123456\n",
+          context("current", fields=("month", "department", "dynamic_value"),
+                  semantics=(semantic("dynamic_value", aggregation, unit=unit),)), ("current",)),),
+        profile_metrics=(metric,),
+    )
+    assert bundle.metrics[0].unit == expected
+    if expected == "元":
+        from smart_reporting.reporting.trace.content_review import review_content
+        from smart_reporting.reporting.trace.numeric_text import (
+            frozen_number_catalog,
+            replace_unregistered_numbers,
+        )
+
+        contents = [bundle.model_dump_json(by_alias=True)]
+        catalog = frozen_number_catalog(contents)
+        fact_id = bundle.metrics[0].fact_id
+        assert catalog[f"{{{{value:{fact_id}:total:元}}}}"] == "123,456元"
+        assert catalog[f"{{{{value:{fact_id}:total:万元}}}}"] == "12.35万元"
+        text = "收入123,456元（12.35万元）。"
+        assert replace_unregistered_numbers(text, contents) == text
+        assert review_content(text, contents) == []
+        assert replace_unregistered_numbers("收入999,999元。", contents) == "收入待核实。"
+
+
 def test_validate_metric_code_bindings_rejects_numeric_fact_without_authoritative_code() -> None:
     bundle = build_deterministic_analysis_bundle(
         analysis(),
@@ -326,11 +400,12 @@ def test_deterministic_bundle_applies_exclusive_scope_without_fixed_table_names(
     assert "scope_type='approved'" in fact.formula
 
 
-def test_deterministic_bundle_builds_profile_ratio_difference_and_reconciliation() -> None:
+@pytest.mark.parametrize("unit", [None, "元"])
+def test_deterministic_bundle_builds_profile_ratio_difference_and_reconciliation(unit) -> None:
     semantics = (
-        semantic("actual_value", unit="元"),
-        semantic("budget_value", unit="元"),
-        semantic("ledger_value", unit="元"),
+        semantic("actual_value", unit=unit),
+        semantic("budget_value", unit=unit),
+        semantic("ledger_value", unit=unit),
     )
     dataset_context = context(
         "current",
@@ -404,6 +479,7 @@ def test_deterministic_bundle_builds_profile_ratio_difference_and_reconciliation
     assert ratio.value == 0.75
     assert ratio.percentage == 75.0
     assert ratio.difference == -30
+    assert ratio.unit == "元"
     assert ratio.dataset_sha256s == ("b" * 64,)
     reconciliation = bundle.reconciliations[0]
     assert reconciliation.code == "actual_ledger_check"
@@ -603,3 +679,16 @@ def test_deterministic_period_order_uses_calendar_order_for_unpadded_months() ->
     # 末尾零值保留原值并告警；未补零月份仍按日历顺序（9 月在 10 月之前）。
     assert [item.period for item in fact.period_values][-4:] == ["2025-9", "2025-10", "2025-11", "2025-12"]
     assert any("2025-11 至 2025-12" in warning for warning in fact.warnings)
+
+
+def test_freezes_metric_label_from_matching_schema():
+    ctx = context('current').model_copy(update={'schema_snapshot': {
+        'sourceId': 'dynamic_source', 'tables': [{
+            'database': 'dynamic_db', 'name': 'dynamic_table',
+            'columns': [{'name': 'amount', 'description': '设备租赁回款'}],
+        }],
+    }})
+    bundle = build_deterministic_analysis_bundle(
+        analysis(), (('current', b'month,department,amount\n2025-01,A,10\n', ctx, ('current',)),),
+    )
+    assert bundle.metrics[0].display_name == '设备租赁回款'

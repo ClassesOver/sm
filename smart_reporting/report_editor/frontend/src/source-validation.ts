@@ -1,4 +1,6 @@
 import type { ReportEditorClient, TraceValidation } from './api'
+import { findEvidenceChartImage } from './evidence-location'
+import { isExplanatoryUnverified } from './unverified-text'
 
 export function sourceValidationIssueCount(result: TraceValidation): number {
   const warningSubjects = result.subjects.filter(
@@ -13,7 +15,7 @@ export function sourceValidationIssueCount(result: TraceValidation): number {
 function numericalPlaceholderCount(visibleText: string): number {
   let count = 0
   for (const match of visibleText.matchAll(/待核实/g)) {
-    if (!/(?:原因|单位|口径|完整性|状态)\s*$/.test(visibleText.slice(Math.max(0, match.index - 8), match.index))) count++
+    if (!isExplanatoryUnverified(visibleText, match.index)) count++
   }
   return count
 }
@@ -27,15 +29,19 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
     (table ? table.valid + table.stale + table.unbound : 0) + charts.length
   const traceable = result.summary.valid - warningSubjects + (table?.valid ?? 0) + charts.filter(chart => chart.status === 'valid').length
   const issues = sourceValidationIssueCount(result)
-  const unverified = numericalPlaceholderCount(visibleText)
+  const unverified = result.reviewNotices !== undefined
+    ? result.reviewNotices.filter(notice => notice.kind === 'numeric_unverified').reduce((sum, notice) => sum + notice.occurrences, 0)
+    : numericalPlaceholderCount(visibleText)
+  const reviewTexts = result.reviewNotices?.filter(notice => notice.kind === 'source_review').reduce((sum, notice) => sum + notice.occurrences, 0) ?? 0
   const contentWarnings = result.warnings?.length ?? 0
   const text = [
     total ? `可溯源 ${traceable}/${total}` : '当前内容无精确来源绑定',
     issues ? `待复核 ${issues}` : '',
     unverified ? `待核实数值 ${unverified}` : '',
+    reviewTexts ? `文字待确认 ${reviewTexts}` : '',
     contentWarnings ? `内容提示 ${contentWarnings}` : '',
   ].filter(Boolean).join(' · ')
-  return { text, state: issues || unverified || contentWarnings ? 'stale' : total ? 'valid' : 'unknown' }
+  return { text, state: issues || unverified || reviewTexts || contentWarnings ? 'stale' : total ? 'valid' : 'unknown' }
 }
 
 /**
@@ -57,8 +63,15 @@ export function nextSourceIssue(root: HTMLElement, after: number | null, positio
     const references: Array<{ kind: string; value: string }> = JSON.parse(item.dataset.markerReferences ?? '[]')
     return references.some(ref => ref.kind === 'citation' && staleSubjects.has(ref.value) && !valueSubjects.has(ref.value))
   })
-  if (!issues.length) return null
-  return (after === null ? undefined : issues.find(item => positionOf(item) > after)) ?? issues[0]
+  // 未绑定但仍在正文的图可以定位；不为它创建指向不存在的来源记录的按钮。
+  for (const chart of validation?.charts ?? []) {
+    if (chart.status !== 'unbound' || !chart.locationSource) continue
+    const target = findEvidenceChartImage(root, chart.locationSource, document.baseURI)
+    if (target) issues.push(target)
+  }
+  const ordered = [...new Set(issues)].sort((a, b) => positionOf(a) - positionOf(b))
+  if (!ordered.length) return null
+  return (after === null ? undefined : ordered.find(item => positionOf(item) > after)) ?? ordered[0]
 }
 
 export async function markdownSha256(markdown: string): Promise<string> {

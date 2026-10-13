@@ -196,3 +196,40 @@ describe('source coverage summary', () => {
     expect(nextSourceIssue(root, 2, position, result)?.id).toBe('value')
   })
 })
+
+it('excludes explanatory uncertainty from numeric counts and navigation', () => {
+  const text = '是否涉及跨期结算或集中入账待核实。零值原因待核实。数据完整性待核实。执行率约待核实。'
+  expect(sourceCoverageSummary(validation('x'), text).text).toBe('当前内容无精确来源绑定 · 待核实数值 1')
+  expect(findValueMarks(text, validation('x')).map(mark => text.slice(mark.start, mark.end))).toEqual(['待核实'])
+})
+
+it('locates present unbound charts in order without inventing source links', () => {
+  const root = document.createElement('div')
+  root.innerHTML = '<p id="first"><img src="chart-013.png"></p>' +
+    '<p><span id="stale" class="report-object-source-marker" data-marker-state="stale"></span></p>' +
+    '<p id="last"><img src="chart-014.png"></p>'
+  const result = validation('x')
+  result.charts = [
+    { chartId: 'missing-2', imagePath: 'chart-014.png', locationSource: 'chart-014.png', status: 'unbound' },
+    { chartId: 'missing-1', imagePath: 'chart-013.png', locationSource: 'chart-013.png', status: 'unbound' },
+    { chartId: 'deleted', imagePath: 'chart-015.png', locationSource: null, status: 'unbound' },
+  ]
+  const order = ['first', 'stale', 'last']
+  const position = (element: HTMLElement) => order.indexOf(element.id)
+  expect(nextSourceIssue(root, null, position, result)?.id).toBe('first')
+  expect(nextSourceIssue(root, 0, position, result)?.id).toBe('stale')
+  expect(nextSourceIssue(root, 1, position, result)?.id).toBe('last')
+  expect(nextSourceIssue(root, 2, position, result)?.id).toBe('first')
+})
+
+it('counts typed numeric placeholders independently of visible wording', () => {
+  const result = validation('draft')
+  result.reviewNotices = [
+    { claimId: 'note', sectionId: null, kind: 'source_review', occurrences: 1, bound: true },
+    { claimId: 'number', sectionId: null, kind: 'numeric_unverified', occurrences: 2, bound: false },
+  ]
+  expect(sourceCoverageSummary(result, '任意业务描述待核实').text).toContain('待核实数值 2')
+  expect(sourceCoverageSummary(result, '任意业务描述待核实').text).toContain('文字待确认 1')
+  result.reviewNotices = []
+  expect(sourceCoverageSummary(result, '任意业务描述待核实').text).not.toContain('待核实数值')
+})

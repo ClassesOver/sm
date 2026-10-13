@@ -29,6 +29,7 @@ from ..models import (
     ReportingError,
     ReportReviewSnapshot,
     ReportWorkflowControl,
+    reporting_failure,
 )
 from .scope import REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY, REPORT_WORKFLOW_SCOPE_DEPENDENCY
 from .state import ReportingStateError
@@ -675,8 +676,8 @@ class ReportWorkflowController:
                     return {"ok": True, "status": "cancelled"}
                 try:
                     return task.result()
-                except BaseException:
-                    return {"ok": False, "status": "failed"}
+                except Exception as error:
+                    return {"ok": False, "status": "failed", "error": reporting_failure(error)}
         stored_user = getattr(output, "user_id", None)
         if stored_user is not None and str(stored_user) != user_id:
             raise ReportingError("report_workflow_scope_mismatch", "报表工作流不属于当前用户。")
@@ -1573,6 +1574,7 @@ class ReportWorkflowController:
             threadId=scope["thread_id"],
             userId=scope["user_id"],
             status=terminal_status,
+            error=reporting_failure(run_error) if terminal_status == "failed" else None,
         )
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = terminal.public_dict()
         async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
@@ -2083,6 +2085,8 @@ class ReportWorkflowController:
     ) -> ReportWorkflowControl:
         status = self._status(getattr(output, "status", None))
         review = self._review(output) if status == "paused" else None
+        metadata = getattr(output, "metadata", None)
+        failure = metadata.get("reportingFailure") if isinstance(metadata, dict) else None
         return ReportWorkflowControl(
             workflowId=_WORKFLOW_ID,
             workflowRunId=workflow_run_id,
@@ -2092,6 +2096,7 @@ class ReportWorkflowController:
             userId=scope["user_id"],
             status=status,
             review=review,
+            error=failure if status == "failed" and isinstance(failure, dict) else None,
             updatedAt=datetime.now(UTC),
         )
 
@@ -2179,6 +2184,12 @@ class ReportWorkflowController:
     @staticmethod
     def _result(control: ReportWorkflowControl, output: Any) -> dict[str, Any]:
         result: dict[str, Any] = {"ok": control.status != "failed", "status": control.status}
+        if control.status == "failed":
+            result["error"] = control.error or {
+                "code": "report_workflow_failed",
+                "message": str(getattr(output, "content", None) or "报表工作流执行失败。")[:1000],
+                "retryable": False,
+            }
         if control.review is not None:
             result["review"] = control.review.model_dump(mode="json", by_alias=True)
         if control.status == "completed":
@@ -2233,7 +2244,16 @@ class ReportWorkflowToolkit(Toolkit):
         """将当前用户原文交给报表 Workflow 首步。"""
         prompt = self._current_user_prompt(run_context)
         workflow_input = parse_reporting_workflow_input(prompt)
-        return await self.controller.start(workflow_input, run_context)
+        return await self._workflow_result(self.controller.start(workflow_input, run_context))
+
+    @staticmethod
+    async def _workflow_result(operation: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+        try:
+            return await operation
+        except (asyncio.CancelledError, RunCancelledException):
+            raise
+        except Exception as error:
+            return {"ok": False, "status": "failed", "error": reporting_failure(error)}
 
     @staticmethod
     def _current_user_prompt(run_context: RunContext | None) -> str:
@@ -2263,8 +2283,8 @@ class ReportWorkflowToolkit(Toolkit):
             feedback: 拒绝或补充信息时必填的完整意见。
         """
         if action == "approve":
-            return await self.controller.approve(run_context)
-        return await self.controller.reject(feedback, run_context)
+            return await self._workflow_result(self.controller.approve(run_context))
+        return await self._workflow_result(self.controller.reject(feedback, run_context))
 
     @tool(requires_confirmation=True)
     async def report_workflow_approve(
@@ -2272,7 +2292,7 @@ class ReportWorkflowToolkit(Toolkit):
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """批准当前展示的报表审核项并继续 Workflow。"""
-        return await self.controller.approve(run_context)
+        return await self._workflow_result(self.controller.approve(run_context))
 
     @tool()
     async def report_workflow_reject(
@@ -2281,4 +2301,4 @@ class ReportWorkflowToolkit(Toolkit):
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """将 AgentOS 原生确认的拒绝备注提交给报表 Workflow。"""
-        return await self.controller.reject(feedback, run_context)
+        return await self._workflow_result(self.controller.reject(feedback, run_context))

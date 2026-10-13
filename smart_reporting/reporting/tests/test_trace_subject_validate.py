@@ -302,7 +302,8 @@ async def _make_editor_with_subject(
     tmp_path: Path,
     *, report_id: str = "report-1", period_table: bool = False, comparison_table: bool = False,
     comparison_rate: float | None = 20, correlation_claim: bool = False, large_amounts: bool = False,
-    percentage_point_claim: bool = False,
+    percentage_point_claim: bool = False, window_claim: str | None = None, window_date_labels: bool = False,
+    number_reference: bool = False,
 ) -> tuple:
     # large_amounts：元为单位的大额分期间表，服务端按“收入（万元）”表头写换算后的数字。
     column_key = "收入（万元）" if large_amounts else "income_total"
@@ -382,6 +383,7 @@ async def _make_editor_with_subject(
                     "scope": {},
                     "total": sum(period_numbers) if large_amounts else 3600.0,
                     "unit": "元" if large_amounts else "万元",
+                    "periodGranularity": "month",
                     "periodValues": ([{"period": "2025-09", "value": period_numbers[0]},
                                       {"period": "2025-10", "value": period_numbers[1]}] if period_table
                                      else [{"period": "2025-09", "value": 3600.0}]),
@@ -415,14 +417,30 @@ async def _make_editor_with_subject(
             "sampleCount": 12, "value": 0.8,
         }]
         bundle_bytes = json.dumps(document, ensure_ascii=False).encode()
-    if comparison_table:
+    if comparison_table or window_claim == "comparison":
         document = json.loads(bundle_bytes)
         document["comparisons"] = [{
             "factId": "fact-" + "c" * 16, "currentTotal": 3600,
             "baselineTotal": 3000, "change": 600, "changeRate": comparison_rate,
             "unit": "元", "comparisonType": "yoy",
+            "fieldRef": "dynamic_source.dynamic_db.dynamic_table.revenue",
+            "currentDatasetId": "dataset-url-abc0001",
+            "periodStart": "2025-09-01" if window_date_labels else "2025-09",
+            "periodEnd": "2025-09-01" if window_date_labels else "2025-09",
         }]
         bundle_bytes = json.dumps(document, ensure_ascii=False).encode()
+    if window_claim == "derived":
+        document = json.loads(bundle_bytes)
+        document["derivedMetrics"] = [{
+            "factId": "fact-" + "c" * 16, "code": "revenue_ratio", "kind": "ratio",
+            "numeratorMetric": "income_total", "denominatorMetric": "income_total",
+            "datasetIds": ["dataset-url-abc0001"], "periodRole": "current",
+            "value": 1, "percentage": 100, "unit": "万元",
+            "periodStart": "2025-09-01" if window_date_labels else "2025-09",
+            "periodEnd": "2025-09-01" if window_date_labels else "2025-09",
+        }]
+        bundle_bytes = json.dumps(document, ensure_ascii=False).encode()
+    if comparison_table:
         rate_text = "—" if comparison_rate is None else f"{comparison_rate}%"
         table_block = render_table_markdown("tbl-1", ("数值",), [["本期", "3,600元"], ["同期", "3,000元"], ["变化", "600元"], ["同比", rate_text]])
         markdown = f"# 报告\n\n{table_block}\n"
@@ -467,6 +485,23 @@ async def _make_editor_with_subject(
             ),
         ),
     )
+    review_notices = None
+    if number_reference:
+        from smart_reporting.reporting.trace.semantic_bindings import anchor_bound_numbers, render_bound_numbers
+
+        markdown, references, review_notices = render_bound_numbers(
+            "10月收入{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:万元}}。供应商回复待核实。金额999999元。",
+            [bundle_bytes.decode()], key="section_002:block",
+        )
+        markdown = anchor_bound_numbers(markdown, references, review_notices)
+        subject = subject.model_copy(update={"claim_id": references[0].claim_id,
+                                             "number_reference": references[0]})
+        await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown, overwrite=True)
+    if window_claim:
+        array = "comparisons" if window_claim == "comparison" else "derivedMetrics"
+        subject = subject.model_copy(update={"fact_refs": (subject.fact_refs[0].model_copy(update={
+            "json_pointer": f"/{array}/0", "fact_kind": window_claim, "fact_key": "fact-" + "c" * 16,
+        }),)})
     if correlation_claim:
         fact_id = "fact-" + "b" * 16
         claim = SimpleNamespace(claim_id="claim-1", value=0.8, metric_code="correlation",
@@ -521,6 +556,7 @@ async def _make_editor_with_subject(
             )
         },
         subject_bindings=(subject,),
+        review_notices=review_notices,
         server_table_traces=(table_trace,),
     )
     await workspace.awrite_bytes(
@@ -671,6 +707,26 @@ async def test_validate_returns_unit_and_period_warnings(tmp_path: Path) -> None
     )
     assert result["subjects"][0]["status"] == "valid"
     assert len(result["subjects"][0]["warnings"]) == 2
+    assert result["summary"]["valid"] == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("window_claim", ["comparison", "derived"])
+@pytest.mark.parametrize("window_date_labels", [False, True])
+@pytest.mark.parametrize(("month", "warns"), [(9, False), (10, True)])
+async def test_validate_checks_comparison_and_derived_claim_periods(tmp_path, window_claim, window_date_labels, month, warns):
+    editor, grants, context = await _make_editor_with_subject(
+        tmp_path, window_claim=window_claim, window_date_labels=window_date_labels)
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    statement = "收入同比增加600元" if window_claim == "comparison" else "收入比率100%"
+    markdown = f"2025年{month}月{statement}[[claim:claim-1]]。"
+    result = await editor.trace_validate(context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    subject = result["subjects"][0]
+    assert subject["status"] == "valid"
+    assert bool([w for w in subject["warnings"] if "期间文本" in w]) is warns
+    assert subject["periods"] == ["2025-09"]
     assert result["summary"]["valid"] == 1
 
 
@@ -1029,6 +1085,36 @@ async def test_comparison_null_rate_placeholder_is_valid_but_numbers_are_stale(
     assert result["tableSummary"]["stale"] == stale
 
 
+@pytest.mark.parametrize(("entry", "periods", "within", "outside"), [
+    ({"periodStart": "2025-09", "periodEnd": "2025-09"}, ("2025-09",), "2025年9月", "2025年10月"),
+    ({"periodStart": "2024-11", "periodEnd": "2025-02"},
+     ("2024-11", "2024-12", "2025-01", "2025-02"), "2025年1月", "2025年3月"),
+    ({"periodStart": "2024-02-28", "periodEnd": "2024-03-01"},
+     ("2024-02-28", "2024-02-29", "2024-03-01"), "2024年2月29日", "2024年3月2日"),
+    ({"periodGranularity": "month", "periodStart": "2025-01-01", "periodEnd": "2025-03-01"},
+     ("2025-01", "2025-02", "2025-03"), "2025年2月", "2025年4月"),
+])
+def test_fact_period_windows_include_interior_buckets(entry, periods, within, outside):
+    from smart_reporting.reporting.trace.subject_builder import fact_periods, unit_period_warnings
+
+    assert fact_periods(entry) == periods
+    assert unit_period_warnings(within, expected_periods=fact_periods(entry)) == []
+    assert unit_period_warnings(outside, expected_periods=fact_periods(entry))
+
+
+def test_fact_period_windows_keep_explicit_buckets_and_unknown_periods():
+    from smart_reporting.reporting.trace.subject_builder import fact_periods
+
+    assert fact_periods({}) == ()
+    assert fact_periods({"periodStart": "2025-09", "periodEnd": None}) == ()
+    assert fact_periods({"periodStart": "2025-10", "periodEnd": "2025-09"}) == ()
+    assert fact_periods({"periodStart": "2025-13", "periodEnd": "2025-14"}) == ()
+    assert fact_periods({"periodStart": "2024", "periodEnd": "2026"}) == ("2024", "2025", "2026")
+    assert fact_periods({"periodStart": "2025-01", "periodEnd": "2025-03", "periodValues": [
+        {"period": "2025-01", "value": 100}, {"period": "2025-03", "value": 200}]}) == ("2025-01", "2025-03")
+    assert fact_periods({"periodStart": "2025-09-01", "periodEnd": "2025-09-01"}) == ("2025-09",)
+
+
 def test_month_bucket_dates_do_not_warn_on_same_month_prose():
     from smart_reporting.reporting.trace.subject_builder import fact_periods, unit_period_warnings
 
@@ -1245,3 +1331,31 @@ def test_negative_fact_binds_through_decline_synonyms() -> None:
     assert formatted_value_matches("收入跌幅5.03%。", -5.0332, "%")
     assert value_matches("门诊量下跌120人次。", -120)
     assert not formatted_value_matches("收入涨幅5.03%。", -5.0332, "%")
+
+
+@pytest.mark.anyio
+async def test_exact_number_reference_validates_month_and_detects_changed_subject(tmp_path):
+    editor, grants, context = await _make_editor_with_subject(tmp_path, period_table=True, number_reference=True)
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    from smart_reporting.reporting.trace.semantic_bindings import statement_fingerprint
+    from hashlib import sha256
+
+    claim_id = "number-" + sha256(b"section_002:block:2").hexdigest()[:20]
+    # 原文的来源复核先登记，因此数值引用使用序号 2。
+    markdown = next(tmp_path.rglob("report.md")).read_text()
+    assert statement_fingerprint(markdown, claim_id)
+    result = await editor.trace_validate(context, session, markdown, sha256(markdown.encode()).hexdigest())
+    assert result['subjects'][0]['factValue'] == 2400
+    assert result['subjects'][0]['periods'] == ['2025-10']
+    assert result['subjects'][0]['status'] == 'valid'
+    assert {item['kind'] for item in result['reviewNotices']} == {'source_review', 'numeric_unverified'}
+    assert all(item['occurrences'] == 1 and item['bound'] for item in result['reviewNotices'])
+    for variant, occurrences, bound in ((markdown + markdown, 2, False), (f'<!--{markdown}-->', 0, False),
+                                        (markdown.replace('待核实[[', '**待核实**[['), 1, True)):
+        checked = await editor.trace_validate(context, session, variant, sha256(variant.encode()).hexdigest())
+        assert all(item['occurrences'] == occurrences and item['bound'] is bound for item in checked['reviewNotices'])
+    changed = markdown.replace('收入', '成本')
+    result = await editor.trace_validate(context, session, changed, sha256(changed.encode()).hexdigest())
+    assert result['subjects'][0]['status'] == 'stale'
+    assert result['subjects'][0]['comparable'] is False

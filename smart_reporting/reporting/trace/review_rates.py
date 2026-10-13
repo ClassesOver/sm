@@ -82,7 +82,7 @@ _FROM_TO_CHANGE = re.compile(
 # “同比增长约三成”“翻一番”“增长近一倍”“腰斩”：用中文约数概括变化率。“X成”须紧跟增减词，
 # “三成科室”“占比约三成”是比例，不是变化率。
 _APPROXIMATE_RATE = re.compile(
-    r"(?:增长|增加|提高|上升|上涨|下降|减少|降低|回落|下滑|下跌|增幅|降幅|涨幅|跌幅)了?(?:幅度)?(?:达|为)?"
+    rf"(?P<verb>{DIRECTION_WORD_PATTERN})了?(?:幅度)?(?:达|为)?"
     r"(?P<q>大约|接近|将近|超过|不足|不到|近|约|超|逾)?(?P<n>[一二两三四五六七八九])成"
     r"|翻(?:了)?(?P<turns>一|两|二|三)?番"
     r"|(?:增长|增加|提高|上升)了?(?P<qt>大约|接近|将近|超过|不足|不到|近|约|超|逾)?(?P<times>一|两|二|三)倍"
@@ -120,16 +120,16 @@ def _approximate_rate_warnings(text: str, documents: list[dict[str, Any]],
                                contents: Iterable[str] = ()) -> list[str]:
     """“同比增长约三成”与登记的同比变化率都不符时提示复核（软告警）。
 
-    只在分句写明同比/环比（或较上年/较上月）时判定，按比较口径取全部登记变化率的幅度；
-    任一登记值落在约数区间内即不告警，不判断该约数指向哪个指标。
+    只在分句写明同比/环比（或较上年/较上月）时判定，保留登记变化率的增减方向；
+    任一登记值方向一致且落在约数区间内即不告警，不判断该约数指向哪个指标。
     """
     rates: dict[str, set[Decimal]] = {"yoy": set(), "mom": set()}
     for document in documents:
         for entry in document.get("comparisons") or ():
             if (isinstance(entry, dict) and entry.get("comparisonType") in rates
                     and isinstance(entry.get("changeRate"), (int, float)) and not isinstance(entry.get("changeRate"), bool)):
-                rates[entry["comparisonType"]].add(abs(Decimal(str(entry["changeRate"]))))
-    rates["mom"].update(abs(rate) for rate in _adjacent_month_rates(contents))
+                rates[entry["comparisonType"]].add(Decimal(str(entry["changeRate"])))
+    rates["mom"].update(_adjacent_month_rates(contents))
     warnings: list[str] = []
     for clause in _CLAUSE_BREAK.split(text):
         kind = ("yoy" if re.search(r"同比|较上年|较去年|比上年|比去年", clause)
@@ -138,6 +138,8 @@ def _approximate_rate_warnings(text: str, documents: list[dict[str, Any]],
             continue
         for match in _APPROXIMATE_RATE.finditer(clause):
             low, high, _qualifier = _approximate_rate_bounds(match)
+            if match["half"] or match["verb"] in FALLING_WORDS:
+                low, high = -high, -low
             if any(low <= rate <= high for rate in rates[kind]):
                 continue
             label = "同比" if kind == "yoy" else "环比"

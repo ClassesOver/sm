@@ -1641,9 +1641,7 @@ def _forced_review_response(
         if not isinstance(content, str):
             return None
         if message.tool_name == "report_workflow_start" and message.tool_call_error:
-            return ModelResponse(
-                content=f"报表工作流执行失败：{content}",
-            )
+            raise ReportingError("report_workflow_failed", f"报表工作流执行失败：{content}")
         if message.tool_name == "report_workflow_approve" and message.tool_call_error:
             return _tool_response(
                 "report_workflow_reject",
@@ -1658,6 +1656,18 @@ def _forced_review_response(
             except (SyntaxError, ValueError):
                 return None
         if not isinstance(payload, dict) or payload.get("status") != "paused":
+            if isinstance(payload, dict) and payload.get("status") == "failed":
+                failure = payload.get("error") or {}
+                reason = failure.get("message") or "报表工作流执行失败。"
+                stage = failure.get("stage") or "unknown"
+                status = failure.get("statusCode")
+                raise ReportingError(
+                    failure.get("code") or "report_workflow_failed",
+                    f"报表工作流执行失败（阶段：{stage}"
+                    + (f"，HTTP {status}" if status is not None else "")
+                    + f"）：{reason}",
+                    details=failure,
+                )
             completed = (
                 _completed_report_content(payload, template=completion_template)
                 if isinstance(payload, dict)
@@ -2615,7 +2625,7 @@ def create_reporting_phase_agent(
         _report_model(
             settings,
             enable_thinking=settings.report_phase_enable_thinking,
-            retries=0,
+            retries=2,
             timeout_seconds=min(
                 settings.model_timeout_seconds,
                 _REPORTING_PHASE_MODEL_TIMEOUT_CAP_SECONDS,
@@ -2778,11 +2788,12 @@ def create_reporting_generator_agent(
             "读者可见的来源说明用业务名称，citation/analysis内部ID只放结构化引用字段。"
         )
         instructions.append(
-            "金额指标unit为空时保留原始值并注明单位待核实，标题、图注及visualForm均不得"
-            "补猜元、万元或亿元。嵌套补证表优先绑定明确的rowsDataPath及其列名；"
+            "金额默认币种为 CNY（人民币），服务端已在冻结事实中登记单位；图表仅按登记单位换算，unit为空时保留原值。"
+            "百分比、人数、床日等非金额字段不得套用 CNY。嵌套补证表优先绑定明确的rowsDataPath及其列名；"
             "一张表含多个metric时，在visualForm明确各系列的指标筛选条件。"
             if candidate_schema else
-            "金额指标unit为空时保留原始值并注明单位待核实，标题及图注均不得补猜元、万元或亿元。"
+            "金额默认币种为 CNY（人民币），服务端已在冻结事实中登记单位；图表仅按登记单位换算，unit为空时保留原值。"
+            "百分比、人数、床日等非金额字段不得套用 CNY。"
         )
         instructions.append(
             "topGroups/bottomGroups 是多维组合的排序明细子集，不能按科室、院区或收入类别"

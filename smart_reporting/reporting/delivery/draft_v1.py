@@ -13,6 +13,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel
 from ..models import ReportingError
+from ..trace.contracts_v1 import NumberReferenceV1, ReviewNoticeV1
 from .report_runtime.markdown import (
     CJK_ENUMERATION_LINE,
     HEADING_QUANTITY_WORDS,
@@ -194,6 +195,9 @@ class ReportDraftBlock(StrictModel):
         alias="chartIds",
         description="当前正文块实际展示的冻结图表 ID；使用图表时必须显式填写。",
     )
+    number_references: tuple[NumberReferenceV1, ...] = Field(default=(), alias="numberReferences", max_length=500)
+    review_notices: tuple[ReviewNoticeV1, ...] | None = Field(default=None, alias="reviewNotices", max_length=500)
+    chart_placement: Literal["legacy", "explicit"] = Field(default="legacy", alias="chartPlacement")
     claim_ids: tuple[str, ...] = Field(default=(), alias="claimIds", max_length=100)
 
     @field_validator("markdown")
@@ -770,9 +774,25 @@ def _place_charts_in_units(
 
     placements: dict[int, list[str]] = {}
     unmatched: list[str] = []
+    headings = []
+    current_heading = ''
+    for unit in units:
+        local_headings = re.findall(r'^#{3,6}\s+(.+)$', unit, re.MULTILINE)
+        if local_headings:
+            current_heading = local_headings[-1]
+        headings.append(current_heading)
     for chart in charts:
         scores = [_chart_unit_score(unit, chart) for unit in units]
         qualified = [index for index, score in enumerate(scores) if score >= _CHART_UNIT_MIN_SCORE]
+        # 多小节共享大量通用词时，先尊重唯一匹配的主题标题，再在该小节内选择段落。
+        heading_scores = {heading: len(_chart_terms(heading) & _chart_terms(chart.title))
+                          for heading in headings if heading}
+        best = max(heading_scores.values(), default=0)
+        winners = [heading for heading, score in heading_scores.items() if score == best]
+        if best >= _CHART_UNIT_MIN_SCORE and len(winners) == 1:
+            local = [index for index in qualified if headings[index] == winners[0]]
+            if local:
+                qualified = local
         if not qualified:
             unmatched.append(chart.chart_id)
             continue
@@ -861,7 +881,8 @@ def assemble_report_markdown(
             auto_fixes.append(auto_fix)
         normalized_charts[chart.chart_id] = (chart, file_name)
 
-    # 模型可能把 chartId 绑定到偏晚的正文 block，导致 PDF 图表滞后于对应结论。
+    # 新块严格使用显式 chartIds 位置；以下 citation/主题定位仅供旧冻结块兼容。
+    # 旧模型可能把 chartId 绑定到偏晚的正文 block，导致 PDF 图表滞后于对应结论。
     # 装配前先按 citation 交集预计算每张图的锚点：优先选同章节内第一个命中的
     # 正文 block，图片改在锚点渲染，原引用位置只保留 citation 标记；引用 block
     # 自身的 citation 子集硬校验不变，图表也不会跨章节移动。
@@ -876,6 +897,14 @@ def assemble_report_markdown(
             for chart_id in block.chart_ids:
                 if chart_id in chart_plans or chart_id not in chart_registry:
                     continue
+                if block.chart_placement == "explicit":
+                    chart_plans[chart_id] = _ChartRenderPlan(
+                        reference=(section_index, block_index), render=(section_index, block_index),
+                        render_block_id=block.block_id, citation_anchor_missing=False,
+                    )
+                    last_render_index = block_index
+                    occupied_locations.add((section_index, block_index))
+                    continue
                 matched_indexes = _chart_citation_block_indexes(
                     section.blocks, chart_registry[chart_id].citation_ids
                 )
@@ -887,6 +916,13 @@ def assemble_report_markdown(
                     if last_render_index <= index < block_index
                     and (section_index, index) not in occupied_locations
                 ]
+                # 同一来源可覆盖多个主题。引用块已在解释这张图时，不能仅因前文
+                # 共享 citation 就把图移到前一个小节；只在前文更匹配时前移。
+                chart = chart_registry[chart_id]
+                reference_score = _chart_unit_score(block.markdown, chart)
+                if reference_score >= _CHART_UNIT_MIN_SCORE:
+                    free_anchors = [index for index in free_anchors
+                                    if _chart_unit_score(section.blocks[index].markdown, chart) > reference_score]
                 render_index = free_anchors[0] if free_anchors else block_index
                 last_render_index = render_index
                 occupied_locations.add((section_index, render_index))
@@ -938,10 +974,14 @@ def assemble_report_markdown(
         h3_count = 0
         h4_count = 0
         for block_index, block in enumerate(section.blocks):
+            from ..trace.semantic_bindings import anchor_bound_numbers
+
+            validate_report_body_markdown(block.markdown)
+            source_markdown = anchor_bound_numbers(block.markdown, block.number_references, block.review_notices)
             # 中文正文的半角逗号/冒号/分号统一为全角，ISO 期间改为中文日期、yoy/mom 改为同比/环比；
             # 单个换行分隔的“1、”“（1）”等中文条目各自成段；千分位、时间、英文、文件名与机器文本不变。
             block_markdown = separate_enumerated_lines(normalize_cjk_punctuation(
-                normalize_cjk_wording(normalize_report_markdown_strong_spacing(block.markdown))
+                normalize_cjk_wording(normalize_report_markdown_strong_spacing(source_markdown))
             ))
             if block_markdown != block.markdown:
                 auto_fixes.append(
@@ -965,7 +1005,6 @@ def assemble_report_markdown(
                             "title": definition.title,
                         }
                     )
-            validate_report_body_markdown(block_markdown)
             block_markdown, h3_count, h4_count, block_headings = _number_block_headings(
                 block_markdown,
                 definition=definition,
@@ -985,9 +1024,16 @@ def assemble_report_markdown(
             anchored_markdown = anchor_claims(
                 block_markdown,
                 {claim_id: (claim_values or {}).get((definition.code, claim_id))
-                 for claim_id in block.claim_ids
+                 for claim_id in (() if block.review_notices is not None else block.claim_ids)
                  if claim_values is None or (definition.code, claim_id) in claim_values},
             )
+            from ..trace.subject_builder import _subject_id
+
+            for number in block.number_references:
+                marker = f"[[claim:{number.claim_id}]]"
+                anchored_markdown = anchored_markdown.replace(
+                    marker, f"[[citation:{_subject_id(definition.code, number.claim_id)}]]" + marker,
+                )
             block_text = _marker_lines(anchored_markdown, block.citation_ids, ())
             for chart_id in block.chart_ids:
                 chart, _file_name = normalized_charts[chart_id]
@@ -1023,7 +1069,7 @@ def assemble_report_markdown(
                             "toBlockId": plan.render_block_id,
                         }
                     )
-                elif plan.citation_anchor_missing:
+                elif plan.citation_anchor_missing and block.chart_placement == "legacy":
                     chart_warnings.append(
                         {
                             "code": "chart_reference_anchor_missing",
@@ -1041,6 +1087,7 @@ def assemble_report_markdown(
             rendered_chart_ids.update(block_figures)
             units = _block_units(anchored_markdown) if block_figures else []
             placements = (
+                {len(units) - 1: block_figures} if units and block.chart_placement == "explicit" else
                 _place_charts_in_units(
                     units, [normalized_charts[chart_id][0] for chart_id in block_figures]
                 )

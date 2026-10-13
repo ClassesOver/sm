@@ -16,6 +16,7 @@ from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
 from loguru import logger
 
+from ..models import reporting_failure
 from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
 from .controller import REPORT_PROCESS_LIFECYCLE_DEPENDENCY
 from .scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
@@ -367,6 +368,10 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
             if not isinstance(error, Exception):
                 _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
                 raise
+            if not hasattr(error, "_reporting_failed_step"):
+                error._reporting_failed_step = step_id
+            if run_context is not None and isinstance(run_context.metadata, dict):
+                run_context.metadata["reportingFailure"] = reporting_failure(error)
             failed_metrics = accumulator.snapshot()
             failed_additional = failed_metrics.additional_metrics or {}
             logger.bind(

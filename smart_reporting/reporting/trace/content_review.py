@@ -40,6 +40,7 @@ from .review_attribution import (
     _group_top_n_warnings,
     _group_value_attribution_warnings,
     _metric_value_attribution_warnings,
+    _monthly_budget_rate_warnings,
     _project_ratio_ranking_warnings,
     _project_ratio_value_warnings,
 )
@@ -158,13 +159,14 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
     warnings.extend(_project_ratio_value_warnings(text, documents))
+    warnings.extend(_monthly_budget_rate_warnings(text, documents, field_definitions))
     warnings.extend(_group_ranking_warnings(text, documents, field_definitions))
     warnings.extend(_group_top_n_warnings(text, documents, field_definitions))
     warnings.extend(_group_value_attribution_warnings(text, documents))
     warnings.extend(_metric_value_attribution_warnings(text, contents, documents, field_definitions or {}))
-    warnings.extend(_monthly_average_warnings(text, contents))
+    warnings.extend(_monthly_average_warnings(text, contents, documents, field_definitions or {}))
     warnings.extend(_comparison_amount_warnings(text, contents, documents))
-    warnings.extend(_full_year_warnings(text, contents, documents))
+    warnings.extend(_full_year_warnings(text, contents, documents, field_definitions or {}))
     warnings.extend(_non_additive_total_warnings(text, contents, documents))
     warnings.extend(_comparison_window_warnings(text, contents, documents))
     warnings.extend(_from_to_direction_warnings(text))

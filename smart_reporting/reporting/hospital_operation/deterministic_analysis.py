@@ -40,6 +40,8 @@ class DeterministicMetricFact(AnalysisModel):
     metric_codes: tuple[str, ...] = Field(default=(), alias="metricCodes", max_length=100)
     field: str = Field(min_length=1, max_length=128)
     field_ref: str = Field(alias="fieldRef", min_length=1, max_length=512)
+    display_name: str | None = Field(default=None, alias="displayName", max_length=2000)
+    aliases: tuple[str, ...] = Field(default=(), max_length=100)
     aggregation: Aggregation
     unit: str | None = Field(default=None, max_length=64)
     formula: str = Field(min_length=1, max_length=1000)
@@ -191,6 +193,11 @@ def build_deterministic_analysis_bundle(
         prepared.append(_Dataset(dataset_id, frame, context, period_roles))
 
     metric_codes_by_ref = _metric_codes_by_ref(profile_metrics)
+    kinds_by_ref: dict[str, set[str | None]] = {}
+    for metric in profile_metrics:
+        if metric.get("fieldRef"):
+            kinds_by_ref.setdefault(str(metric["fieldRef"]).casefold(), set()).add(metric.get("kind"))
+    money_fields = {ref for ref, kinds in kinds_by_ref.items() if kinds <= {"amount", "currency"}}
     facts: list[DeterministicMetricFact] = []
     semantics_by_dataset: dict[tuple[str, str], Mapping[str, Any]] = {}
     for dataset in prepared:
@@ -198,9 +205,25 @@ def build_deterministic_analysis_bundle(
             dataset,
             analysis,
             metric_codes_by_ref=metric_codes_by_ref,
+            money_fields=money_fields,
             profile_hash=profile_hash,
         )
-        facts.extend(dataset_facts)
+        # 显示名随同快照事实冻结，编辑时无需读取最新业务配置。
+        from ..trace.table_builder import _fact_label
+
+        descriptions = {str(item["code"]): str(item["description"])
+                        for item in profile_metrics if item.get("code") and item.get("description")}
+        snapshot = dataset.context.model_dump(mode="json", by_alias=True)
+        facts.extend(fact.model_copy(update={
+            "display_name": _fact_label(fact, (snapshot,), descriptions, legacy_fallback=False),
+            "aliases": tuple(dict.fromkeys(
+                str(alias).strip() for item in profile_metrics
+                if item.get("fieldRef") == fact.field_ref
+                and isinstance(item.get("aliases", ()), (list, tuple))
+                for alias in item.get("aliases", ())
+                if isinstance(alias, str) and alias.strip()
+            )),
+        }) for fact in dataset_facts)
         semantics_by_dataset.update(dataset_semantics)
         warnings.extend(dataset_warnings)
 
@@ -256,6 +279,7 @@ def _dataset_facts(
     analysis: DetailedAnalysisItem,
     *,
     metric_codes_by_ref: Mapping[str, tuple[str, ...]],
+    money_fields: set[str],
     profile_hash: str | None,
 ) -> tuple[
     list[DeterministicMetricFact],
@@ -338,7 +362,7 @@ def _dataset_facts(
                 field=field,
                 fieldRef=field_ref,
                 aggregation=aggregation,
-                unit=_metric_unit(semantic),
+                unit=_metric_unit(semantic, money_field=field_ref.casefold() in money_fields),
                 formula=_formula(field, aggregation, scope),
                 scope=scope,
                 periodField=period_field,
@@ -1223,8 +1247,13 @@ def _metric_codes_by_ref(
     return {key: tuple(values) for key, values in result.items()}
 
 
-def _metric_unit(semantic: Mapping[str, Any]) -> str | None:
+def _metric_unit(semantic: Mapping[str, Any], *, money_field: bool = False) -> str | None:
+    """金额默认使用 CNY 元；在签发事实 ID 前确定单位，读端不重解释旧事实。"""
     unit = semantic.get("unit")
+    if unit == "CNY":
+        return "元"
+    if unit in {None, ""} and money_field and semantic.get("aggregation") not in {"count", "count_distinct"}:
+        return "元"
     return str(unit) if unit not in {None, ""} else None
 
 

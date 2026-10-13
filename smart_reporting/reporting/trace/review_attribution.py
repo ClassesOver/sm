@@ -11,6 +11,7 @@ from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBun
 from .numeric_text import (
     _frozen_number_entries,
     _unit_scales,
+    budget_comparison_values,
     project_ratio_values,
     supplemental_number_values,
 )
@@ -22,25 +23,96 @@ _GROUP_HIGH_WORDS = ("最高", "最大", "最多", "居首", "排名第一", "�
 _GROUP_LOW_WORDS = ("最低", "最小", "最少", "垫底", "排名最后", "位列末位")
 
 
-def _project_ratio_value_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
-    """按同范围项目总额核对签约率、付款率，不把另一个比率当作数值依据。"""
+def _monthly_budget_rate_warnings(text: str, documents: list[dict[str, Any]],
+                                  field_definitions: Mapping[str, str] | None = None) -> list[str]:
+    """明确单月的预算执行率按指标身份校验，不从其他指标的百分数借依据。"""
+    labels: set[str] = set()
     candidates = []
-    chart_group_values: dict[str, set[Decimal]] = {}
+    for document in documents:
+        try:
+            bundle = DeterministicAnalysisBundle.model_validate(document)
+        except ValueError:
+            continue
+        current = {fact.fact_id: fact for fact in bundle.metrics if "current" in fact.period_roles}
+        for comparison in budget_comparison_values(bundle):
+            if (comparison["actualFactId"] in current and comparison["percentage"] is not None
+                    and ".." not in comparison["period"]):
+                fact = current[comparison["actualFactId"]]
+                names = {name for name in (fact.display_name, *fact.aliases,
+                         (field_definitions or {}).get(fact.field_ref),
+                         (field_definitions or {}).get(fact.field)) if name}
+                labels.update(names)
+                candidates.append((bundle.analysis_id, comparison, names))
+    if not labels:
+        return []
+    pattern = re.compile(
+        r"(?P<label>" + "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True)) + r")"
+        r"(?:预算)?(?:执行率|完成率)?\s*(?:约为|为|约|达到?|是|[：:=])?\s*"
+        r"(?P<number>[+-]?\d+(?:\.\d+)?)\s*%")
+    markers = list(re.finditer(r"(?:\[\[analysis:[^\]]+\]\]\s*)+", text))
+    warnings = []
+    for sentence in re.finditer(r"[^。！？\n]+", text):
+        source = sentence[0]
+        if not re.search(r"执行率|完成率", source) or re.search(r"\d月?\s*[–—~～至到-]\s*\d{1,2}月", source):
+            continue
+        months = list(re.finditer(r"(?<!\d)(?:(?P<year>\d{4})年)?(?P<month>\d{1,2})月", source))
+        # 并列月份、累计期间、分组范围不明确时不套全院单月分母。
+        if len(months) != 1:
+            continue
+        month = months[0]
+        leading = re.sub(r"\[\[analysis:[^\]]+\]\]", "", source[:month.start()])
+        if not re.fullmatch(r"\s*(?:全院)?\s*", leading):
+            continue
+        before = [marker for marker in markers if marker.start() < sentence.end()]
+        analyses = set(re.findall(r"\[\[analysis:([^\]]+)\]\]", before[-1][0])) if before else set()
+        previous_end = month.end()
+        for match in pattern.finditer(source, previous_end):
+            if not re.fullmatch(r"[\s，,；;]*(?:(?:全院|的|实际|同期|而|但)\s*)*", source[previous_end:match.start()]):
+                break
+            previous_end = match.end()
+            values = {comparison["percentage"] for analysis, comparison, names in candidates
+                      if (not analyses or analysis in analyses)
+                      and match["label"] in names
+                      and int(comparison["period"][5:7]) == int(month["month"])
+                      and (not month["year"] or comparison["period"][:4] == month["year"])}
+            if len(values) != 1:
+                continue
+            written = Decimal(match["number"])
+            expected = next(iter(values)).quantize(Decimal(1).scaleb(written.as_tuple().exponent), rounding=ROUND_HALF_UP)
+            if written != expected:
+                warnings.append(f"预算执行率归属需复核：{month[0]}{match['label']}写为{written}%，"
+                                f"同范围冻结实际值/预算值为{expected}%。")
+    return list(dict.fromkeys(warnings))
+
+
+def _project_ratio_value_warnings(text: str, documents: list[dict[str, Any]]) -> list[str]:
+    """按分析、项目分组及指标核对比率；未点名分组时才使用同范围总额。"""
+    candidates = []
+    chart_group_values: dict[tuple[str | None, str, str], set[Decimal]] = {}
+    ratio_fields = {"contract_rate": "contract_amount", "contract": "contract_amount",
+                    "payment_rate": "payment_amount", "payment": "payment_amount"}
     for document in documents:
         if document.get("schema") != "chart-input/v1":
             continue
         columns, rows = document.get("columns"), document.get("rows")
         metadata = document.get("columnMeta")
+        source = document.get("source")
+        analysis_id = source.get("analysisId") if isinstance(source, dict) else None
         if isinstance(columns, list) and columns and isinstance(rows, list) and isinstance(metadata, dict):
             for row in rows:
                 if not isinstance(row, list) or not row or not isinstance(row[0], str):
                     continue
-                values = {Decimal(str(value)) for index, column in enumerate(columns[1:], 1)
-                          if index < len(row) and isinstance(value := row[index], (int, float))
-                          and isinstance(metadata.get(column), dict)
-                          and metadata[column].get("unit") == "%"
-                          and metadata[column].get("isPercent") is True}
-                chart_group_values.setdefault(row[0], set()).update(values)
+                for index, column in enumerate(columns[1:], 1):
+                    if (column not in ratio_fields or index >= len(row)
+                            or not isinstance(row[index], (int, float)) or isinstance(row[index], bool)
+                            or not isinstance(metadata.get(column), dict)
+                            or metadata[column].get("unit") != "%"
+                            or metadata[column].get("isPercent") is not True):
+                        continue
+                    value = Decimal(str(row[index]))
+                    if value.is_finite():
+                        key = (analysis_id, row[0], ratio_fields[column])
+                        chart_group_values.setdefault(key, set()).add(value)
     for document in documents:
         try:
             bundle = DeterministicAnalysisBundle.model_validate(document)
@@ -52,7 +124,11 @@ def _project_ratio_value_warnings(text: str, documents: list[dict[str, Any]]) ->
     warnings = []
     # 同一标题可连续登记多个分析；以整组标记确定正文的分析范围。
     markers = list(re.finditer(r"(?:\[\[analysis:[^\]]+\]\]\s*)+", text))
-    for sentence in re.finditer(r"[^。；\n]+", text):
+    group_names = {group for _, group, _ in chart_group_values if group}
+    total_names = {"全院", "全部项目", "所有项目", "项目总体"}
+    group_pattern = "|".join(re.escape(group) for group in sorted(group_names | total_names, key=len, reverse=True))
+    # 分号连接的后半句可沿用主语；全院等显式主语会覆盖此前的项目组。
+    for sentence in re.finditer(r"[^。！？\n]+", text):
         before = [marker for marker in markers if marker.start() < sentence.end()]
         analyses = set(re.findall(r"\[\[analysis:([^\]]+)\]\]", before[-1][0])) if before else set()
         for field, label, amount in (("contract_amount", "签约率", "(?:已签合同|签约)金额"),
@@ -62,8 +138,22 @@ def _project_ratio_value_warnings(text: str, documents: list[dict[str, Any]]) ->
                        r"(?P<number>[+-]?\d+(?:\.\d+)?)\s*%")
             for match in re.finditer(pattern, sentence[0]):
                 written_number = Decimal(match["number"])
-                if any(group in sentence[0] and written_number in values
-                       for group, values in chart_group_values.items()):
+                quantum = Decimal(1).scaleb(written_number.as_tuple().exponent)
+                named = list(re.finditer(group_pattern, sentence[0][:match.start()])) if group_pattern else []
+                total_scope = bool(named and named[-1][0] in total_names)
+                if named and not total_scope:
+                    group = named[-1][0]
+                    values = {value for (analysis_id, name, metric), registered in chart_group_values.items()
+                              if name == group and metric == field
+                              and (not analyses or analysis_id is None or analysis_id in analyses)
+                              for value in registered}
+                    if len(values) == 1:
+                        expected = next(iter(values)).quantize(quantum, rounding=ROUND_HALF_UP)
+                        if written_number != expected:
+                            warnings.append(
+                                f"项目比率归属需复核：{group}{label}写为{written_number}%，"
+                                f"同范围冻结分组值为{expected}%。")
+                    # 分组值缺失或存在冲突时，不借用全院总额作判断。
                     continue
                 values = set()
                 for analysis_id, fact, value in candidates:
@@ -74,7 +164,7 @@ def _project_ratio_value_warnings(text: str, documents: list[dict[str, Any]]) ->
                     # 分组或局部月份的比率不能使用全期总额校验。
                     groups = [item.group for item in (*fact.top_groups, *fact.bottom_groups)]
                     # 分组正文的百分数由 chart-input/v1 逐行登记；全期总额不能覆盖具体项目类型。
-                    if any(group and group in sentence[0] for group in groups):
+                    if not total_scope and any(group and group in sentence[0] for group in groups):
                         continue
                     if re.search(r"\d{1,2}月", sentence[0]):
                         continue

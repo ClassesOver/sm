@@ -12,6 +12,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..hospital_operation.deterministic_analysis import _next_period, _parse_period, _ParsedPeriod
 from .contracts_v1 import (
     FactRefV1,
     SubjectBindingV1,
@@ -66,7 +67,39 @@ def build_claim_subject_bindings(
     used_ids: set[str] = set()
     for artifact in section_artifacts:
         section_code = str(artifact.section_code)
+        from .semantic_bindings import reference_fact_ids
+
+        structured_claims = set()
+        for block in getattr(artifact, "blocks", ()):
+            if getattr(block, "review_notices", None) is not None:
+                structured_claims.update(block.claim_ids)
+            for number in getattr(block, "number_references", ()):
+                ids = reference_fact_ids(number.token)
+                if not ids or any(fact_id not in fact_directory or
+                                  fact_directory[fact_id][0] not in fact_file_resources for fact_id in ids):
+                    continue
+                refs = []
+                for fact_id in ids:
+                    analysis_id, pointer = fact_directory[fact_id]
+                    refs.append(FactRefV1(
+                        analysisId=analysis_id, fileResourceId=fact_file_resources[analysis_id],
+                        jsonPointer=pointer, factKey=fact_id,
+                        factKind={"comparisons": "comparison", "derivedMetrics": "derived",
+                                  "reconciliations": "reconciliation", "correlationDetails": "correlation"}.get(pointer.split("/")[1], pointer_kind),
+                    ))
+                subject_id = _subject_id(section_code, number.claim_id)
+                if subject_id in used_ids:
+                    continue
+                used_ids.add(subject_id)
+                bindings.append(SubjectBindingV1(
+                    subjectId=subject_id, subjectKind="text_claim",
+                    locator=SubjectLocatorV1(sectionId=section_code),
+                    subjectSha256=number.statement_sha256, claimId=number.claim_id,
+                    factRefs=tuple(refs), numberReference=number,
+                ))
         for claim in artifact.claims:
+            if claim.claim_id in structured_claims:
+                continue
             refs: list[FactRefV1] = []
             for fact_id in claim.fact_ids:
                 located = fact_directory.get(fact_id)
@@ -307,6 +340,33 @@ def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
         elif key and entry.get("periodGranularity") == "year":
             period = str(key[0])
         periods.append(period)
+    if not periods:
+        # 比较和派生事实只登记连续窗口，补齐中间桶以免把窗口内月份误报为错期。
+        try:
+            start = _parse_period(str(entry.get("periodStart") or ""))
+            end = _parse_period(str(entry.get("periodEnd") or ""))
+        except ValueError:
+            return ()
+        if start is None or end is None or start.granularity != end.granularity:
+            return ()
+        grain = entry.get("periodGranularity") or start.granularity
+        # 比较/派生事实未重复登记粒度时，双方均为月初标签仍表示月份窗口。
+        if (not entry.get("periodGranularity") and start.granularity == end.granularity == "day"
+                and start.value.day == end.value.day == 1):
+            grain = "month"
+        width = {"year": 4, "month": 7, "day": 10}.get(grain)
+        if width is None:
+            return ()
+        first, last = start.value, end.value
+        if grain in {"month", "year"}:
+            first, last = first.replace(day=1), last.replace(day=1)
+        if grain == "year":
+            first, last = first.replace(month=1), last.replace(month=1)
+        while first <= last:
+            periods.append(first.isoformat()[:width])
+            if first == last:
+                break
+            first = _next_period(_ParsedPeriod("", first, grain))
     return tuple(dict.fromkeys(periods))
 
 

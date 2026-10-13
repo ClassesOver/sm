@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -378,79 +379,89 @@ async def prepare_chart_inputs(
     return materialized
 
 
-def _decode_bdata(values: Mapping[str, Any]) -> list[float]:
+def _decode_bdata(values: Mapping[str, Any]) -> list[float | None]:
     """解码 Plotly 6 write_json 的 typed array（{dtype, bdata, shape?}）。"""
 
     try:
         import numpy as np
 
         array = np.frombuffer(base64.b64decode(values["bdata"]), dtype=np.dtype(values["dtype"]))
-    except Exception:  # noqa: BLE001 - 无法解码时交由其余 trace 判定
-        return []
-    return [float(item) for item in array.ravel() if np.isfinite(item)]
+        return [None if np.isnan(item) else float(item) for item in array.ravel()]
+    except Exception:  # noqa: BLE001 - 无法解码时核对失败，由调用方软告警
+        return [math.nan]
 
 
-def _numbers(values: Any) -> list[float]:
+def _numbers(values: Any) -> list[float | None] | None:
+    """保留数值数组的位置；纯分类标签返回 None，混合非法值使核对失败。"""
     if isinstance(values, Mapping) and "bdata" in values and "dtype" in values:
         return _decode_bdata(values)
     if not isinstance(values, (list, tuple)):
-        return []
-    flat: list[float] = []
+        return None
+    flat: list[float | None] = []
+    numeric = False
     for value in values:
         if isinstance(value, (list, tuple)):
-            flat.extend(_numbers(value))
+            nested = _numbers(value)
+            numeric = numeric or nested is not None
+            flat.extend(nested if nested is not None else [math.nan] * len(value))
+        elif value is None:
+            numeric = True
+            flat.append(None)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            flat.append(float(value))
-    return flat
+            numeric = True
+            flat.append(None if math.isnan(value) else float(value))
+        else:
+            flat.append(math.nan)
+    return flat if numeric or not values else None
 
 
 def _close(left: float, right: float) -> bool:
-    return abs(left - right) <= max(1e-6, 0.006 * max(abs(left), abs(right)))
+    return (math.isfinite(left) and math.isfinite(right)
+            and abs(left - right) <= max(1e-6, 0.006 * max(abs(left), abs(right))))
 
 
 def plotly_trace_matches_chart_inputs(
     figure: Mapping[str, Any], chart_inputs: Sequence[Mapping[str, Any]]
 ) -> bool:
-    """任一 trace 数值数组与任一 chart-input 数值列一致即视为已核对。
+    """每个 trace 数值数组均须与完整的 chart-input 数值列按位置对应。
 
     允许显示舍入与 ×100 百分比换算；只做软告警依据，不改变交付。
     """
 
-    columns: list[list[float]] = []
+    columns: list[list[float | None]] = []
     for item in chart_inputs:
         names = item.get("columns")
         rows = item.get("rows")
         if not isinstance(names, list) or not isinstance(rows, list):
             continue
         for position in range(len(names)):
-            values = [
-                float(row[position])
-                for row in rows
-                if isinstance(row, list)
-                and position < len(row)
-                and isinstance(row[position], (int, float))
-                and not isinstance(row[position], bool)
-            ]
-            if values:
+            if any(not isinstance(row, list) or position >= len(row) for row in rows):
+                continue
+            values = _numbers([row[position] for row in rows])
+            if values and any(value is not None and math.isfinite(value) for value in values):
                 columns.append(values)
     if not columns:
-        return True
+        return False
+    matched = False
     for trace in figure.get("data") or ():
         if not isinstance(trace, Mapping):
             continue
         for key in ("y", "x", "values", "z", "r", "text"):
             trace_values = _numbers(trace.get(key))
-            if not trace_values:
+            if trace_values is None:
                 continue
-            for column in columns:
-                for scale in (1.0, 100.0, 0.01):
-                    scaled = [value * scale for value in column]
-                    if all(
-                        any(_close(value, candidate) for candidate in scaled)
-                        for value in trace_values
-                    ):
-                        return True
-    return False
+            if not any(
+                len(trace_values) == len(column) and all(
+                    value is candidate if value is None or candidate is None
+                    else _close(value, candidate * scale)
+                    for value, candidate in zip(trace_values, column)
+                )
+                for column in columns
+                for scale in (1.0, 100.0, 0.01)
+            ):
+                return False
+            matched = True
+    return matched
 
 
 async def verify_plotly_chart_inputs(
@@ -460,7 +471,7 @@ async def verify_plotly_chart_inputs(
     *,
     thread_id: str,
 ) -> None:
-    """Plotly 产物与 chart-input 数值核对；无一匹配时记软告警。"""
+    """Plotly 产物与 chart-input 数值核对；无法完整对应时记软告警。"""
 
     payloads: dict[str, list[dict[str, Any]]] = {}
     for item in materialized.files:

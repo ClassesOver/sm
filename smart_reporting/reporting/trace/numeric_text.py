@@ -173,6 +173,7 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
             ("comparisons", ("currentTotal", "baselineTotal", "change", "changeRate")),
             ("derivedMetrics", ("value", "percentage", "numerator", "denominator", "difference")),
             ("reconciliations", ("difference",)),
+            ("correlationDetails", ("value",)),
         ):
             for entry in document[array]:
                 fact_id = entry.get("factId")
@@ -211,12 +212,14 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     values.extend((("monthlyAverage", sum(amounts) / len(amounts)),
                                    ("monthlyMinimum", min(amounts)), ("monthlyMaximum", max(amounts))))
                     running = Decimal(0)
+                    months = [int(item["period"][5:7]) for item in periods]
                     for index, amount in enumerate(amounts):
                         running += amount
                         values.append((f"periodTotals.0-{index}", running))
+                        if months[:index + 1] == list(range(months[0], months[0] + index + 1)):
+                            values.append((f"periodAverages.0-{index}", running / (index + 1)))
                     # 相邻两月的变化额与变化率（“3月环比增长…”）由服务端按登记月度值计算：只在月份
                     # 连续时登记，基期为零时不给变化率；百分数指标的差值口径不同，不在此登记。
-                    months = [int(item["period"][5:7]) for item in periods]
                     for index in range(1, len(amounts)) if entry.get("unit") != "%" else ():
                         if months[index] != months[index - 1] + 1:
                             continue
@@ -374,7 +377,7 @@ def frozen_number_guide(
             item: dict[str, Any] = {
                 "factId": fact.fact_id, "analysisId": bundle.analysis_id,
                 "datasetId": fact.dataset_id,
-                "metric": (field_definitions or {}).get(fact.field, fact.field),
+                "metric": getattr(fact, "display_name", None) or (field_definitions or {}).get(fact.field, fact.field),
                 "metricCodes": list(fact.metric_codes), "scope": fact.scope,
                 "unit": fact.unit, "periodRoles": list(fact.period_roles),
                 "periodGranularity": fact.period_granularity,
@@ -399,6 +402,9 @@ def frozen_number_guide(
                     "prefixTotals": [{"start": periods[0], "end": period,
                                       "reference": reference(f"periodTotals.0-{index}")}
                                      for index, period in enumerate(periods)],
+                    "prefixAverages": [{"start": periods[0], "end": period, "monthCount": index + 1,
+                                        "reference": reference(f"periodAverages.0-{index}")}
+                                       for index, period in enumerate(periods) if reference(f"periodAverages.0-{index}")],
                     "monthOverMonth": [
                         {"period": period, "change": shown(f"periodChanges.{index}"),
                          "changeRate": shown(f"periodChangeRates.{index}", "%")}
@@ -461,7 +467,7 @@ def frozen_number_guide(
             guide.append({
                 "factId": fact.fact_id, "analysisId": bundle.analysis_id, "kind": "comparison",
                 "comparisonType": {"yoy": "同比", "mom": "环比"}[fact.comparison_type],
-                "metric": (field_definitions or {}).get(fact.field, fact.field), "unit": fact.unit,
+                "metric": getattr(fact, "display_name", None) or (field_definitions or {}).get(fact.field, fact.field), "unit": fact.unit,
                 "periodStart": fact.period_start, "periodEnd": fact.period_end,
                 "references": references,
                 "meaning": "本期与基期取同一连续窗口的合计后比较；periodStart 与 periodEnd 跨多个月时是累计窗口，"
@@ -484,14 +490,16 @@ def _unit_family(unit: str) -> tuple[str, ...] | None:
     return next((family for family in _UNIT_FAMILIES if unit in family), None)
 
 
-def render_frozen_numbers(markdown: str, catalog: dict[str, str]) -> str:
+def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=None) -> str:
     def replace(match: re.Match[str]) -> str:
         text = catalog.get(match["token"])
         written = match["unit"] or ""
         if text is None:
             logger.warning("report_number_reference_unavailable token={}", match["token"])
-            return "数值待核实" + written
+            return (annotate(match["token"], "数值待核实") if annotate else "数值待核实") + written
         shown = re.search(rf"(?:{_TRAILING_UNIT})$", text)
+        if annotate:
+            text = annotate(match["token"], text)
         if written and shown and _unit_family(shown[0]) == _unit_family(written.strip()):
             logger.warning("report_duplicate_unit_removed token={} unit={}", match["token"], written.strip())
             return text
@@ -818,7 +826,7 @@ def bounded_by_registered(number: Decimal, number_text: str, values: Iterable[De
     return False
 
 
-def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
+def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, missing=None) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
 
     contents = tuple(contents)
@@ -852,11 +860,13 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         logger.warning("report_unregistered_number_replaced value={}{}", number_text, unit)
         return "missing", number_text
 
+    missing = missing or (lambda: "待核实")
+
     # 模型自写表格把单位写在表头（“金额（万元）”），单元格只有数字：按表头单位同样核对。
     for start, end, number_text, unit in reversed(table_unit_cells(markdown)):
         verdict, written = verify(number_text, unit, "")
         cell = (written if verdict == "registered" else f"{written}{PERCENT_POINT}"
-                if verdict == "percent_point" else "待核实")
+                if verdict == "percent_point" else missing())
         markdown = markdown[:start] + cell + markdown[end:]
 
     def replace(match: re.Match[str]) -> str:
@@ -864,7 +874,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
                                   markdown[max(0, match.start() - 12):match.start()])
         if verdict == "registered":
             return written + match[0][len(match["number"]):]
-        return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else "待核实"
+        return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else missing()
 
     replaced = re.sub(
         r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>亿元|万元|元|万人次|人次|床日|%)",
@@ -885,7 +895,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         ]
         if not matched:
             logger.warning("report_unregistered_number_replaced value={}", match[0])
-            return "待核实"
+            return missing()
         written = _display_precision(match["number"]) + match["scale"]
         return written + matched[0][1:] if len(matched) == 1 else written
 
@@ -924,7 +934,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str]) -> str:
         if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in multiples):
             return _display_precision(match["number"]) + match[0][len(match["number"]):]
         logger.warning("report_unregistered_multiple_replaced value={}", match[0])
-        return "待核实"
+        return missing()
 
     return MULTIPLE_NUMBER.sub(replace_multiple, BARE_SCALED_NUMBER.sub(replace_bare, replaced))
 

@@ -1,3 +1,4 @@
+import { renderEvidenceNotes } from './evidence-notes'
 import { createEvidenceGraph, mergeEvidenceGraph, graphRelations, type EvidenceGraph } from './evidence-graph'
 import { graphlib } from '@dagrejs/dagre'
 import {
@@ -2332,23 +2333,8 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
 
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
-  let warningDetails: HTMLDetailsElement | undefined
-  if (detail.warnings.length) {
-    // 登记告警与计算页“适用局限”同为软提示：使用同一种提示框，不改变核对结论。
-    const warnings = document.createElement('details')
-    warnings.className = 'evidence-limitations evidence-fact-warnings'
-    const title = document.createElement('summary')
-    title.className = 'evidence-limitations-title'
-    title.textContent = `登记告警（${detail.warnings.length}）`
-    warnings.append(title)
-    for (const warning of detail.warnings) {
-      const p = document.createElement('p')
-      p.className = 'evidence-limitation'
-      p.textContent = warning
-      warnings.append(p)
-    }
-    warningDetails = warnings
-  }
+  const warningDetails = renderEvidenceNotes(detail.warnings)
+  warningDetails?.classList.add('evidence-fact-warnings')
   if (detail.inputFactRefs.length) {
     const heading = document.createElement('h2')
     heading.textContent = '输入事实'
@@ -2423,21 +2409,8 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
 
   const section = document.createElement('div')
   section.className = 'evidence-computation'
-  if (detail.limitations.length) {
-    const limitations = document.createElement('div')
-    limitations.className = 'evidence-limitations'
-    const title = document.createElement('p')
-    title.className = 'evidence-limitations-title'
-    title.textContent = '适用局限'
-    limitations.append(title)
-    for (const note of detail.limitations) {
-      const p = document.createElement('p')
-      p.className = 'evidence-limitation'
-      p.textContent = note
-      limitations.append(p)
-    }
-    section.append(limitations)
-  }
+  const notes = renderEvidenceNotes(detail.limitations)
+  if (notes) section.append(notes)
   // 参数以小标题 + 纯 JSON 呈现：标签不混进代码块，复制出的内容就是合法 JSON。
   const appendJsonBlock = (title: string, value: unknown) => {
     const heading = document.createElement('h2')

@@ -46,6 +46,49 @@ def fact_display_unit(entry: Mapping[str, Any]) -> str | None:
     return unit
 
 
+def read_fact_document(bundle_bytes: bytes) -> Mapping[str, Any]:
+    """校验事实文件的容器结构，兼容省略可选事实数组的旧文件。"""
+    try:
+        document = json.loads(bundle_bytes)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ReportingError(
+            "snapshot_integrity_failed", "事实文件无法解析。"
+        ) from error
+    if not isinstance(document, Mapping):
+        raise ReportingError("snapshot_integrity_failed", "事实文件结构无效。")
+    for key in ("metrics", "comparisons", "derivedMetrics", "reconciliations", "correlationDetails"):
+        if key not in document:
+            continue
+        entries = document[key]
+        if not isinstance(entries, list) or any(not isinstance(entry, Mapping) for entry in entries):
+            raise ReportingError("snapshot_integrity_failed", "事实文件结构无效。")
+    return document
+
+
+def _resolve_fact_entry(
+    document: Mapping[str, Any], fact_ref: FactRefV1
+) -> tuple[str, Mapping[str, Any]]:
+    if document.get("analysisId") != fact_ref.analysis_id:
+        raise ReportingError(
+            "fact_binding_unavailable", "事实引用与文件身份不一致。"
+        )
+    try:
+        kind, entry = fact_entry_from_pointer(document, fact_ref.json_pointer)
+    except KeyError as error:
+        raise ReportingError(
+            "fact_binding_unavailable", "事实引用指针无法解析。"
+        ) from error
+
+    if kind != fact_ref.fact_kind or (
+        fact_ref.fact_key is not None and fact_ref.fact_key != entry.get("factId")
+    ):
+        # 位置漂移防御：指针命中但身份键不符，说明文件在冻结后被重排。
+        raise ReportingError(
+            "fact_binding_unavailable", "事实引用与记录身份不匹配。"
+        )
+    return kind, entry
+
+
 def resolve_fact(
     bundle_bytes: bytes,
     fact_ref: FactRefV1,
@@ -58,36 +101,12 @@ def resolve_fact(
     analysisId 必须与 FactRef 一致（防御索引装配错位）。
     """
 
-    try:
-        document = json.loads(bundle_bytes)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise ReportingError(
-            "snapshot_integrity_failed", "事实文件无法解析。"
-        ) from error
-    if not isinstance(document, Mapping):
-        raise ReportingError("snapshot_integrity_failed", "事实文件结构无效。")
-    document_analysis_id = document.get("analysisId")
-    if document_analysis_id != fact_ref.analysis_id:
-        raise ReportingError(
-            "fact_binding_unavailable", "事实引用与文件身份不一致。"
-        )
-    try:
-        kind, entry = fact_entry_from_pointer(document, fact_ref.json_pointer)
-    except KeyError as error:
-        raise ReportingError(
-            "fact_binding_unavailable", "事实引用指针无法解析。"
-        ) from error
-
-    stored_fact_id = entry.get("factId")
-    if fact_ref.fact_key and stored_fact_id and fact_ref.fact_key != stored_fact_id:
-        # 位置漂移防御：指针命中但身份键不符，说明文件在冻结后被重排。
-        raise ReportingError(
-            "fact_binding_unavailable", "事实引用与记录身份不匹配。"
-        )
+    document = read_fact_document(bundle_bytes)
+    kind, entry = _resolve_fact_entry(document, fact_ref)
 
     payload: dict[str, Any] = {
         "analysisId": fact_ref.analysis_id,
-        "factId": stored_fact_id,
+        "factId": entry.get("factId"),
         "factKind": kind,
         "jsonPointer": fact_ref.json_pointer,
         "entry": entry,
@@ -177,10 +196,8 @@ def expand_fact_tree(
         raise ReportingError(
             "request_invalid", f"展开深度必须在 1~{max_depth} 之间。"
         )
-    try:
-        document = json.loads(bundle_bytes)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise ReportingError("snapshot_integrity_failed", "事实文件无法解析。") from error
+    document = read_fact_document(bundle_bytes)
+    _resolve_fact_entry(document, fact_ref)
     relations = fact_input_relations_from_document(document)
 
     node_count = 0
@@ -262,5 +279,6 @@ def fact_input_relations_from_document(
 __all__ = [
     "expand_fact_tree",
     "fact_input_relations_from_document",
+    "read_fact_document",
     "resolve_fact",
 ]

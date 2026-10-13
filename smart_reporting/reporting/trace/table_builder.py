@@ -230,12 +230,15 @@ def _fact_label(
     fact: Any,
     dataset_contexts: Sequence[Mapping[str, Any]],
     metric_descriptions: Mapping[str, str] | None = None,
+    *, legacy_fallback: bool = True,
 ) -> str:
     """仅使用与冻结事实快照身份一致的字段说明，避免把成本误称为收入。
 
     数据集字段无说明时，退回 Profile 中与该事实指标代码唯一对应的简短指标说明；
     仍无可靠名称才显示字段名。
     """
+    if label := getattr(fact, "display_name", None):
+        return label
     dataset_id = getattr(fact, "dataset_id", None) or getattr(fact, "current_dataset_id", None)
     sha256 = getattr(fact, "dataset_sha256", None) or getattr(fact, "current_dataset_sha256", None)
     for context in dataset_contexts:
@@ -259,7 +262,8 @@ def _fact_label(
     }
     if len(profile_labels) == 1:
         return next(iter(profile_labels))
-    return {"revenue": "收入", "indicator_value": "指标值"}.get(fact.field, fact.field)
+    return ({"revenue": "收入", "indicator_value": "指标值"}.get(fact.field, fact.field)
+            if legacy_fallback else fact.field)
 
 
 def build_analysis_table(
@@ -380,7 +384,9 @@ def build_analysis_table(
         "displayUnits": {
             code: unit for code, unit in display_units.items() if unit != facts_by_code[code].unit
         },
-        "caption": bundle.analysis_name or "分期间指标汇总",
+        "caption": f"{bundle.analysis_name}：{'分期间指标汇总' if periods else '指标合计'}" if bundle.analysis_name else (
+            "分期间指标汇总" if periods else "指标合计"
+        ),
     }
     return build_table_trace(bundle, spec, fact_file_resource_id=fact_file_resource_id)
 
