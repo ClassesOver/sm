@@ -1470,3 +1470,15 @@ def test_monthly_budget_does_not_invent_labels_without_metadata():
         fact.pop('displayName', None)
     assert not any('预算执行率归属' in warning for warning in review_content(
         '1月医疗收入执行率为90.21%。', [json.dumps(doc)]))
+
+
+@pytest.mark.parametrize("text", [
+    "占比100%。", "接诊100人次。", "金额7元。",
+    "| 指标 | 数值（%） |\n| --- | --- |\n| 占比 | 100 |",
+])
+def test_typed_fact_numbers_and_metadata_cannot_supply_untyped_evidence(text):
+    metric = {**_metric(values=(100,)), "unit": "元", "missingCount": 7}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [metric]})
+    assert any("冻结依据" in warning for warning in review_content(text, [content]))
+    assert review_content("金额100元。", [content]) == []
+    assert review_content("金额0.01万元。", [content]) == []

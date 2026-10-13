@@ -245,7 +245,7 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
         for comparison in budget_comparison_values(bundle):
             for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                 # 单位未知时不登记绝对差额；无量纲的预算完成率仍可引用。
-                if field == "difference" and unit is None:
+                if field == "difference" and not unit:
                     continue
                 if comparison[field] is None:
                     continue

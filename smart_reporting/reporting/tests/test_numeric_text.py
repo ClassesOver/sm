@@ -920,3 +920,24 @@ def test_group_gaps_are_registered_between_top_groups():
     assert not [token for token in prompt_number_catalog(catalog) if 'groupGaps' in token]
     text = '心内科门诊收入较骨科多140.00万元，骨科较儿科多240.00万元，较眼科多500.00万元。'
     assert replace_unregistered_numbers(text, [sample]) == '心内科门诊收入较骨科多140.00万元，骨科较儿科多240.00万元，较眼科多待核实。'
+
+
+@pytest.mark.parametrize(('unit', 'difference'), [
+    (None, None), ('', None), ('元', '-100,000元'), ('%', '-100,000.00个百分点'),
+])
+def test_budget_difference_catalog_and_guide_require_units(unit, difference):
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    document = json.loads(_budget_document())
+    for metric in document['metrics']:
+        metric['unit'] = unit
+    contents = [json.dumps(document)]
+    catalog = frozen_number_catalog(contents)
+    guide = frozen_number_guide(contents, catalog)
+    references = guide[0]['budgetComparisons'][0]['references']
+    assert catalog[references['percentage']] == '90.00%'
+    if difference is None:
+        assert references['difference'] is None
+        assert not any('budgetComparison.' in token and '.difference:' in token for token in catalog)
+    else:
+        assert catalog[references['difference']] == difference

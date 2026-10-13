@@ -839,3 +839,48 @@ def test_write_script_prefixes_exclude_bash_cell():
     # %%bash 只属于 run；write_script 的信封不得按协议正确输入解封。
     assert _normalize_provider_custom_input(envelope, "write_script") == (envelope, False)
     assert _normalize_provider_custom_input(envelope, "run") == ("%%bash\nls\n", True)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_reserved_budget_refreshes_delivery_tools_after_each_batch_call(asynchronous):
+    state = {"nextTools": ["write_script"]}
+    executed = []
+
+    def tool(name):
+        def entrypoint():
+            executed.append(name)
+            if name == "write_script":
+                state["nextTools"] = ["read_script", "edit_script", "run_script"]
+            return {"ok": True}
+
+        async def async_entrypoint():
+            await asyncio.sleep(0)
+            return entrypoint()
+
+        function = Function(name=name, entrypoint=async_entrypoint if asynchronous else entrypoint)
+        function.process_entrypoint()
+        return function
+
+    functions = [tool(name) for name in ("write_script", "read_script", "run_script")]
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    model.configure_code_run(
+        tuple(functions), max_model_requests=4, delivery_reserve=4,
+        delivery_state_reader=lambda: state,
+    )
+    # read/run were unavailable when the provider request was sent, but writing
+    # the script makes them valid within this same ordered batch.
+    model._code_stage_mismatch_names = frozenset({"read_script", "run_script"})
+    calls = [FunctionCall(function=function, call_id=f"call-{i}", arguments={})
+             for i, function in enumerate(functions)]
+    results = []
+    kwargs = dict(function_calls=calls, function_call_results=results,
+                  current_function_call_count=6, function_call_limit=10)
+    if asynchronous:
+        _ = [event async for event in model.arun_function_calls(**kwargs)]
+    else:
+        list(model.run_function_calls(**kwargs))
+    assert executed == ["write_script", "read_script", "run_script"]
+    assert [result.tool_call_id for result in results] == ["call-0", "call-1", "call-2"]
+    assert all(literal_eval(result.content)["ok"] for result in results)
+    assert model._code_budget.tool_calls == 3

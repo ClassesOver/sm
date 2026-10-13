@@ -230,10 +230,12 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         known.setdefault(unit, set()).update(values)
         if unit == "人次":
             known.setdefault("万人次", set()).update(value / 10000 for value in values)
-    # 原始证据中的数字同样是可核对来源；冻结目录之外的数字仍会在有目录时
-    # 触发告警，但不能把简化证据对象中的已给定事实误报为无依据数字。
+    # 仅为旧格式简化证据保留无单位回退。事实包必须使用上面的带单位目录，
+    # 否则金额、缺失行数等原始数字会被借作百分比或人次的依据。
     supplemental = set().union(*(_numeric_literals(document) for document in documents
-                                 if "findings" not in document and document.get("schema") != "chart-input/v1"))
+                                 if not {"metrics", "comparisons", "derivedMetrics", "reconciliations",
+                                         "correlations", "correlationDetails", "findings"}.intersection(document)
+                                 and document.get("schema") != "chart-input/v1"))
     reported_values: set[tuple[Decimal, str]] = set()
     for match in _VALUE.finditer(text):
         number = Decimal(match[1].replace(",", ""))
