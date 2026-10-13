@@ -198,3 +198,46 @@ def test_selected_daily_bucket_keeps_day_precision():
     token = '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}'
     selected = resolve_number_reference(token, [json.dumps(document)])
     assert selected['periods'] == ('2025-02-02',)
+
+
+@pytest.mark.parametrize('field', ['difference', 'percentage'])
+def test_cumulative_budget_reference_preserves_middle_month(field):
+    from smart_reporting.reporting.trace.subject_builder import unit_period_warnings
+
+    document = json.loads(contents()[0])
+    for metric in document['metrics']:
+        metric['periodValues'].append({'period': '2025-03-01', 'value': 30})
+        metric['total'] += 30
+    unit = '%' if field == 'percentage' else '元'
+    token = ('{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.'
+             '2025-01..2025-03.' + field + ':' + unit + '}}')
+    selected = resolve_number_reference(token, [json.dumps(document)])
+    assert selected['periods'] == ('2025-01', '2025-02', '2025-03')
+    assert unit_period_warnings('包含2025年2月', expected_periods=selected['periods']) == []
+    assert unit_period_warnings('包含2025年4月', expected_periods=selected['periods'])
+
+
+@pytest.mark.parametrize(('selector', 'scope', 'formula'), [
+    ('groupShares.topGroups.0:%', {'group': '内科'}, '(20) / (30) * 100'),
+    ('groupShares.bottomGroups.0:%', {'group': '外科'}, '(10) / (30) * 100'),
+    ('groupGaps.0-1:元', {'leftGroup': '内科', 'rightGroup': '外科'}, 'abs((20) - (10))'),
+])
+def test_group_derived_reference_keeps_operand_scope_and_formula(selector, scope, formula):
+    from smart_reporting.reporting.trace.subject_builder import claim_status
+
+    document = json.loads(contents()[0])
+    metric = document['metrics'][0]
+    metric['scope'] = {'院区': '东院'}
+    metric['topGroups'] = [{'group': '内科', 'value': 20}, {'group': '外科', 'value': 10}]
+    metric['bottomGroups'] = [{'group': '外科', 'value': 10}]
+    selected = resolve_number_reference('{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}',
+                                        [json.dumps(document)])
+    assert selected['scope'] == {'院区': '东院', **scope}
+    assert selected['formula'] == formula
+    # Missing group names must generate a scope warning even though the number matches.
+    from smart_reporting.reporting.trace.numeric_text import format_fact_value
+    displayed = format_fact_value(selected['value'], selected['unit'])
+    status = claim_status(f"东院{displayed}[[claim:c]]。", 'c',
+                          selected['value'], expected_unit=selected['unit'],
+                          expected_scope=selected['scope'])
+    assert any('业务范围' in warning for warning in status['warnings'])

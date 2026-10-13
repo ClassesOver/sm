@@ -129,7 +129,9 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
         selected_periods = primary['periodValues'][index - 1:index + 1]
     elif selector.startswith('budgetComparison.'):
         period = selector[len('budgetComparison.' + ids[1] + '.'):].rsplit('.', 1)[0]
-        periods = tuple(dict.fromkeys(period.split('..')))
+        window = period.split('..')
+        periods = fact_periods({'periodStart': window[0], 'periodEnd': window[-1],
+                                'periodGranularity': 'month'})
     if selected_periods is not None:
         # 复用事实粒度规范化，保留累计窗口的所有桶及环比的基期与本期。
         periods = fact_periods({**primary, 'periodValues': selected_periods})
@@ -138,7 +140,17 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
         group, index = selector.split('.')
         scope['group'] = primary[group][int(index)]['group']
     formula = primary.get('formula')
-    if selector.startswith(('budgetComparison.', 'projectRatio.')):
+    if selector.startswith('groupShares.'):
+        _, group, index = selector.split('.')
+        numerator = primary[group][int(index)]
+        scope['group'] = numerator['group']
+        formula = f"({numerator['value']}) / ({primary['total']}) * 100"
+    elif selector.startswith('groupGaps.'):
+        left, right = (int(index) for index in selector.split('.')[1].split('-'))
+        left_group, right_group = primary['topGroups'][left], primary['topGroups'][right]
+        scope.update(leftGroup=left_group['group'], rightGroup=right_group['group'])
+        formula = f"abs(({left_group['value']}) - ({right_group['value']}))"
+    elif selector.startswith(('budgetComparison.', 'projectRatio.')):
         operation = '/' if selector.endswith('.percentage') else '-'
         formula = f"({primary.get('formula')}) {operation} ({entries[ids[1]].get('formula')})"
         if operation == '/':

@@ -345,3 +345,37 @@ def test_projection_metrics_snapshot_with_summary_disabled_falls_back_to_rebase(
     assert snapshot["compaction_triggered"] is False
     assert snapshot["compacted_calls"] == 0
     assert snapshot["window_rebased"] is True
+
+
+@pytest.mark.parametrize('failure', ['missing', 'duplicate', 'wrong-name', 'result-before-call'])
+def test_function_replay_rejects_incomplete_or_mismatched_receipts(failure):
+    from smart_reporting.reporting.models import ReportingError
+
+    call = {'id': 'item-read', 'call_id': 'call-read', 'type': 'function',
+            'function': {'name': 'read_script', 'arguments': '{}'}}
+    assistant = Message(role='assistant', tool_calls=[call])
+    receipt = Message(role='tool', tool_call_id='call-read', tool_name='read_script', content='ok')
+    messages = {
+        'missing': [assistant],
+        'duplicate': [assistant, receipt, receipt.model_copy()],
+        'wrong-name': [assistant, receipt.model_copy(update={'tool_name': 'submit_script'})],
+        'result-before-call': [receipt, assistant],
+    }[failure]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    with pytest.raises(ReportingError) as caught:
+        model._format_messages(messages)
+    assert caught.value.code == 'report_code_custom_tool_protocol_error'
+    assert caught.value.details == {'retryable': False}
+
+
+@pytest.mark.parametrize('tool_name', [None, 'read_script'])
+def test_function_replay_retains_one_receipt_with_optional_legacy_name(tool_name):
+    call = {'id': 'item-read', 'call_id': 'call-read', 'type': 'function',
+            'function': {'name': 'read_script', 'arguments': '{}'}}
+    messages = [Message(role='assistant', tool_calls=[call]),
+                Message(role='tool', tool_call_id='call-read', tool_name=tool_name, content='ok')]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    wire = model._format_messages(messages)
+    assert [item['type'] for item in wire] == ['function_call', 'function_call_output']
+    assert wire[0]['call_id'] == wire[1]['call_id']
+    assert wire[1]['output'] == 'ok'

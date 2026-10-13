@@ -1933,7 +1933,6 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         known_call_ids: set[str] = set()
         identity_owners: dict[str, int] = {}
         custom_calls: dict[str, dict[str, Any]] = {}
-        custom_replays: list[dict[str, Any]] = []
         wire_rejected_ids: set[str] = set()
         for index, (original, normalized) in enumerate(
             zip(original_calls, normalized_calls, strict=True)
@@ -1974,32 +1973,45 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 if wire_rejected:
                     wire_rejected_ids.update(identities)
                 continue
-            custom_replays.append(custom)
             for identity in identities:
                 custom_calls[identity] = custom
 
-        custom_result_counts: dict[str, int] = {}
+        result_counts: dict[int, int] = {}
+        available_call_ids: set[str] = set()
         for message in normalized_messages:
+            available_call_ids.update(
+                identity
+                for call in message.tool_calls or ()
+                for identity in (_field(call, "id"), _field(call, "call_id"))
+                if isinstance(identity, str) and identity
+            )
             if message.role != "tool":
                 continue
             result_identity = message.tool_call_id
             if not isinstance(result_identity, str) or result_identity not in known_call_ids:
                 raise _custom_protocol_error("Coding Agent 工具结果缺少对应调用。")
+            if result_identity not in available_call_ids:
+                raise _custom_protocol_error("Coding Agent 工具结果早于对应调用。")
+            # custom/function 都要求一个调用恰好对应一个回执；别名归一到同一调用。
+            owner = identity_owners[result_identity]
+            result_counts[owner] = result_counts.get(owner, 0) + 1
+            if result_counts[owner] > 1:
+                raise _custom_protocol_error("Coding Agent 工具调用存在重复结果。")
+            expected_name = _field(_field(original_calls[owner], "function"), "name")
+            # 旧 function 历史可省略 tool_name，但显式名称不能与调用错配。
+            if message.tool_name is not None and message.tool_name != expected_name:
+                raise _custom_protocol_error("Coding Agent 工具结果与调用名称不匹配。")
             custom = custom_calls.get(result_identity)
             if custom is not None:
                 if message.tool_name != custom["name"]:
                     raise _custom_protocol_error("Coding Agent custom 工具结果与调用不匹配。")
-                call_id = custom["call_id"]
-                custom_result_counts[call_id] = custom_result_counts.get(call_id, 0) + 1
-                if custom_result_counts[call_id] > 1:
-                    raise _custom_protocol_error("Coding Agent custom 工具调用存在重复结果。")
             elif (
                 message.tool_name in FREEFORM_TOOL_ARGUMENTS
                 and result_identity not in wire_rejected_ids
             ):
                 raise _custom_protocol_error("Coding Agent custom 工具结果类型不匹配。")
-        if any(custom_result_counts.get(custom["call_id"], 0) != 1 for custom in custom_replays):
-            raise _custom_protocol_error("Coding Agent custom 工具调用缺少对应结果。")
+        if any(result_counts.get(index, 0) != 1 for index in range(len(normalized_calls))):
+            raise _custom_protocol_error("Coding Agent 工具调用缺少对应结果。")
 
         formatted = super()._format_messages(messages, compress_tool_results, tools)
         # Agno 已原生解析 reasoning_output，但 3.0.9 的工具调用分支未回放它。
