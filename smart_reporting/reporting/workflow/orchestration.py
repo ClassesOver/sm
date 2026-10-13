@@ -587,14 +587,16 @@ def create_reporting_workflow(
                 step_id="assemble-report",
                 name="汇编最终报告",
                 executor=_timed_step_executor(assemble_report, step_id="assemble-report"),
-                max_retries=0,
+                # 末端渲染可受模型网关或字体/转换器瞬时抖动影响；最多重试两次，
+                # 连续失败后才保留 ErrorRequirement 供恢复，不让一次抖动暂停整份报告。
+                max_retries=2,
                 human_review=HumanReview(on_error=OnError.pause),
             ),
             Step(
                 step_id="validate-report",
                 name="PDF/Word 双格式验收",
                 executor=_timed_step_executor(validate_report, step_id="validate-report"),
-                max_retries=0,
+                max_retries=2,
                 # 取数、分析和章节已经在前一步完成并持久化。末端渲染或验收失败时由
                 # Agno 保存 ErrorRequirement，恢复只重跑当前 Step，不能回到前序步骤。
                 human_review=HumanReview(on_error=OnError.pause),

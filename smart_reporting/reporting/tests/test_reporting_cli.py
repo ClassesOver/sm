@@ -833,16 +833,17 @@ def test_reporting_workflow_retries_transient_safe_steps_only() -> None:
         "prepare-analysis-context",
         "generate-detailed-analysis-plan",
         "generate-outline",
+        "assemble-report",
+        "validate-report",
     }
     for step_id in retryable:
-        assert steps[step_id].max_retries == 1
+        expected_retries = 2 if step_id in {"assemble-report", "validate-report"} else 1
+        assert steps[step_id].max_retries == expected_retries
     for step_id in {
         "normalize-report-request",
         "commit-measure-semantics",
         "materialize-datasets",
         "run-coding-analysis",
-        "assemble-report",
-        "validate-report",
         "finalize-publication",
     }:
         assert steps[step_id].max_retries == 0
@@ -898,7 +899,7 @@ async def test_outline直接流向coding节点而不暂停() -> None:
 
 
 @pytest.mark.anyio
-async def test_assemble_error_pause_retries_only_assembly_step() -> None:
+async def test_assemble_transient_error_retries_only_assembly_step() -> None:
     calls: list[str] = []
     assembly_attempts = 0
 
@@ -934,23 +935,15 @@ async def test_assemble_error_pause_retries_only_assembly_step() -> None:
         finalize_publication=executor("finalize-publication"),
     )
 
-    paused = await workflow.arun(
+    completed = await workflow.arun(
         "生成 2025 年运营报告",
         run_id="run-assembly-recovery",
         session_id="session-assembly-recovery",
         user_id="user-assembly-recovery",
     )
 
-    assert paused.status is RunStatus.paused
-    assert paused.error_requirements is not None
-    assert paused.error_requirements[0].step_id == "assemble-report"
-    assert calls.count("run-coding-analysis") == 1
-    assert calls.count("validate-report") == 0
-
-    paused.error_requirements[0].retry()
-    completed = await workflow.acontinue_run(run_response=paused, stream=False)
-
     assert completed.status is RunStatus.completed
+    assert calls.count("run-coding-analysis") == 1
     assert calls.count("run-coding-analysis") == 1
     assert calls.count("assemble-report") == 2
     assert calls.count("validate-report") == 1
