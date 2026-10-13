@@ -983,3 +983,30 @@ def test_supplement_visit_unit_conversion_is_bidirectional(chart, unit, value, t
     assert replace_unregistered_numbers(text, contents) == text
     assert review_content(text, contents) == []
     assert replace_unregistered_numbers('金额35,300元。', contents) == '金额待核实。'
+
+
+@pytest.mark.parametrize(('change', 'rate', 'text', 'expected'), [
+    (6500000, 5, '收入增长1.05倍。', '收入增长待核实。'),
+    (6500000, 5, '收入增长了约 1.05倍。', '收入增长了约 待核实。'),
+    (6500000, 5, '收入是同期的0.05倍。', '收入是同期的待核实。'),
+    (6500000, 5, '收入下降0.05倍。', '收入下降待核实。'),
+    (6500000, 5, '收入是同期的-1.05倍。', '收入是同期的待核实。'),
+    (6500000, 5, '收入增长至同期的1.05倍。', '收入增长至同期的1.05倍。'),
+    (6500000, 5, '收入增长了0.05倍。', '收入增长了0.05倍。'),
+    (-6500000, -5, '收入增长0.05倍。', '收入增长待核实。'),
+    (-6500000, -5, '收入减少了0.05倍。', '收入减少了0.05倍。'),
+    (-260000000, -200, '净收入是同期的1倍。', '净收入是同期的待核实。'),
+    (-260000000, -200, '净收入是同期的-1倍。', '净收入是同期的-1倍。'),
+])
+def test_multiple_basis_preserves_kind_and_sign(change, rate, text, expected):
+    assert replace_unregistered_numbers(text, [_comparison_document(change, rate)]) == expected
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_conflicting_totals_cannot_support_multiples(reverse):
+    contents = [_comparison_document(6500000, 5), _comparison_document(26000000, 20)]
+    if reverse:
+        contents.reverse()
+    assert replace_unregistered_numbers('本期是基期的1.05倍或1.2倍，增长0.2倍。', contents) == (
+        '本期是基期的待核实或待核实，增长待核实。'
+    )

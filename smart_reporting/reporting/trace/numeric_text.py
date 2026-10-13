@@ -683,7 +683,7 @@ PERSON_COUNT = re.compile(
 )
 # “是上年同期的1.05倍”“增长2倍”：倍数只能由已登记的比较或比率得出。
 # “3倍标准差”“1.5倍四分位距”是统计阈值，不是事实之间的倍数。
-MULTIPLE_NUMBER = re.compile(r"(?<![\d.,])(?P<number>\d+(?:\.\d+)?)\s*倍(?!数|标准差|四分位|方差|IQR)")
+MULTIPLE_NUMBER = re.compile(r"(?<![\d.,+-])(?P<number>[+-]?\d+(?:\.\d+)?)\s*倍(?!数|标准差|四分位|方差|IQR)")
 
 
 # “同比增长11.00个百分点”：变化率写成了百分点。占比、比重、比例或“率”的变化本来就以百分点计，
@@ -728,23 +728,45 @@ def percent_point_written_for_rate(
     ))
 
 
-def registered_multiples(contents: Iterable[str]) -> set[Decimal]:
-    """可作为“X倍”依据的登记值：本期÷基期合计、变化率÷100、比率百分数÷100。"""
-    totals: dict[str, dict[str, Decimal]] = {}
-    multiples: set[Decimal] = set()
+def registered_multiples(
+    contents: Iterable[str], catalog: dict[str, str],
+) -> dict[str, set[Decimal]]:
+    """分开登记水平倍数与增减幅度，保留符号并排除有冲突的操作数。"""
+    totals: dict[tuple[str, str | None], dict[str, Decimal]] = {}
+    multiples: dict[str, set[Decimal]] = {"ratio": set(), "increase": set(), "decrease": set()}
     for token, value, unit, target in _frozen_number_entries(contents):
-        if value is None or (target or unit) != unit:
+        if value is None or (target or unit) != unit or catalog.get(token) == "数值待核实":
             continue
         fact_id, field = token[2:-2].split(":")[1:3]
         number = Decimal(str(value))
         if field in {"currentTotal", "baselineTotal"}:
-            totals.setdefault(fact_id, {})[field] = number
-        elif field in {"changeRate", "percentage"} or field.endswith(".percentage"):
-            multiples.add(abs(number) / 100)
+            totals.setdefault((fact_id, unit), {})[field] = number
+        elif field == "changeRate":
+            if number >= 0:
+                multiples["increase"].add(number / 100)
+            if number <= 0:
+                multiples["decrease"].add(-number / 100)
+        elif field == "percentage" or field.endswith(".percentage"):
+            multiples["ratio"].add(number / 100)
     for pair in totals.values():
         if pair.get("baselineTotal") and "currentTotal" in pair:
-            multiples.add(abs(pair["currentTotal"] / pair["baselineTotal"]))
+            multiples["ratio"].add(pair["currentTotal"] / pair["baselineTotal"])
     return multiples
+
+
+_MULTIPLE_DIRECTION = re.compile(rf"(?P<verb>{DIRECTION_WORD_PATTERN})(?:了)?\s*(?:约|为|达)?\s*$")
+
+
+def registered_multiple_matches(match: re.Match[str], multiples: dict[str, set[Decimal]]) -> bool:
+    """“增长 X 倍”核对变化率；“增长至/是同期的 X 倍”核对水平比值。"""
+    direction = _MULTIPLE_DIRECTION.search(match.string[max(0, match.start() - 40):match.start()])
+    kind = "ratio"
+    if direction:
+        kind = "increase" if direction["verb"] in RISING_WORDS else "decrease"
+    number = Decimal(match["number"])
+    digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
+    quantum = Decimal(1).scaleb(-digits)
+    return any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in multiples[kind])
 
 
 _TABLE_SEPARATOR_ROW = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
@@ -930,13 +952,10 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         return f"{_display_precision(match['number'])}%"
 
     replaced = RATE_AS_PERCENT_POINT.sub(replace_rate_points, replaced) if rates else replaced
-    multiples = registered_multiples(contents)
+    multiples = registered_multiples(contents, catalog)
 
     def replace_multiple(match: re.Match[str]) -> str:
-        number = Decimal(match["number"])
-        digits = len(match["number"].split(".", 1)[1]) if "." in match["number"] else 0
-        quantum = Decimal(1).scaleb(-digits)
-        if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in multiples):
+        if registered_multiple_matches(match, multiples):
             return _display_precision(match["number"]) + match[0][len(match["number"]):]
         logger.warning("report_unregistered_multiple_replaced value={}", match[0])
         return missing()

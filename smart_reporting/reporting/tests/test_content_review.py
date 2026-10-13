@@ -1482,3 +1482,29 @@ def test_typed_fact_numbers_and_metadata_cannot_supply_untyped_evidence(text):
     assert any("冻结依据" in warning for warning in review_content(text, [content]))
     assert review_content("金额100元。", [content]) == []
     assert review_content("金额0.01万元。", [content]) == []
+
+
+@pytest.mark.parametrize(('change', 'text', 'unsupported'), [
+    (6500000, '收入增长1.05倍。', True),
+    (6500000, '收入增长了约 1.05倍。', True),
+    (6500000, '收入是同期的0.05倍。', True),
+    (6500000, '收入下降0.05倍。', True),
+    (6500000, '收入是同期的-1.05倍。', True),
+    (6500000, '收入增长至同期的1.05倍。', False),
+    (6500000, '收入增长了0.05倍。', False),
+    (-6500000, '收入增长0.05倍。', True),
+    (-6500000, '收入减少了0.05倍。', False),
+    (-260000000, '净收入是同期的1倍。', True),
+    (-260000000, '净收入是同期的-1倍。', False),
+])
+def test_multiple_review_preserves_kind_and_sign(change, text, unsupported):
+    assert bool([w for w in review_content(text, [_comparison_content(change)]) if '倍数' in w]) is unsupported
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_multiple_review_rejects_conflicting_operands(reverse):
+    contents = [_comparison_content(6500000), _comparison_content(26000000)]
+    if reverse:
+        contents.reverse()
+    warnings = [w for w in review_content('本期是基期的1.05倍或1.2倍，增长0.2倍。', contents) if '倍数' in w]
+    assert len(warnings) == 3
