@@ -1,3 +1,4 @@
+import { renderEvidenceNotes } from './evidence-notes'
 import { ReportEditorApiError, type ReportEditorClient } from './api'
 import type {
   TraceChartInfo,
@@ -442,8 +443,7 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
       : (detail.displayUnit ?? '')
     section.innerHTML = `<div class="trace-fact-value"></div>
       ${formula ? `<div class="trace-fact-formula"></div>` : ''}
-      ${detail.inputFactRefs.length ? '<ul class="trace-fact-inputs"></ul>' : ''}
-      ${detail.warnings.length ? '<ul class="trace-fact-warnings"></ul>' : ''}`
+      ${detail.inputFactRefs.length ? '<ul class="trace-fact-inputs"></ul>' : ''}`
     const valueLine = `${detail.factKind} · ${text(detail.displayValue)}${unit ? ` ${unit}` : ''}`
     section.querySelector<HTMLElement>('.trace-fact-value')!.textContent = valueLine
     if (formula) section.querySelector<HTMLElement>('.trace-fact-formula')!.textContent = `公式：${formula}`
@@ -463,14 +463,8 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
         inputs.append(li)
       }
     }
-    const warnings = section.querySelector<HTMLUListElement>('.trace-fact-warnings')
-    if (warnings) {
-      for (const warning of detail.warnings) {
-        const li = document.createElement('li')
-        li.textContent = warning
-        warnings.append(li)
-      }
-    }
+    const notes = renderEvidenceNotes(detail.warnings)
+    if (notes) section.append(notes)
     detailBox.append(section)
   }
 
@@ -806,12 +800,8 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
         p.textContent = `${label}：${value}`
         section.append(p)
       }
-      for (const note of detail.limitations) {
-        const p = document.createElement('p')
-        p.className = 'trace-limitation'
-        p.textContent = note
-        section.append(p)
-      }
+      const notes = renderEvidenceNotes(detail.limitations)
+      if (notes) section.append(notes)
       const heading = document.createElement('h3')
       heading.textContent = '输出事实'
       section.append(heading)

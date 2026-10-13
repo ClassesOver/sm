@@ -497,6 +497,21 @@ class SubjectLocatorV1(StrictModel):
     chart_id: str | None = Field(default=None, alias="chartId", max_length=128)
 
 
+class NumberReferenceV1(StrictModel):
+    """服务端渲染的具体数值选择器；offset 仅用于首次装配插入稳定锚点。"""
+    offset: int = Field(default=0, ge=0)
+    claim_id: str = Field(alias="claimId", max_length=128)
+    token: str = Field(min_length=1, max_length=1000)
+    statement_sha256: str = Field(alias="statementSha256", pattern=SHA256_PATTERN)
+
+
+class ReviewNoticeV1(StrictModel):
+    offset: int = Field(default=0, ge=0)
+    claim_id: str = Field(alias="claimId", max_length=128)
+    section_id: str | None = Field(default=None, alias="sectionId", max_length=128)
+    kind: Literal["numeric_unverified", "source_review"]
+
+
 class SubjectBindingV1(StrictModel):
     """正文/单元格/图表 subject 绑定（计划 3.2）。
 
@@ -518,6 +533,7 @@ class SubjectBindingV1(StrictModel):
     computation_id: str | None = Field(
         default=None, alias="computationId", pattern=TRACE_COMPUTATION_ID_PATTERN
     )
+    number_reference: NumberReferenceV1 | None = Field(default=None, alias="numberReference")
     #: 证据性质：数值事实与解释性推断分开（计划 3.3/F05）。
     evidence_kind: EvidenceKindV1 = Field(alias="evidenceKind", default="computed")
 
@@ -539,6 +555,10 @@ class SubjectBindingV1(StrictModel):
                 raise ValueError("text_claim 只能定位章节，不能定位表格或图表")
         if self.subject_kind != "text_claim" and self.claim_id is not None:
             raise ValueError("只有 text_claim 可以引用 claim")
+        if self.number_reference is not None and (
+            self.subject_kind != "text_claim" or self.number_reference.claim_id != self.claim_id
+        ):
+            raise ValueError("具体数值引用必须属于同一个正文 claim")
         if not self.fact_refs and self.computation_id is None:
             raise ValueError("subject 必须至少绑定 fact 或计算记录")
         return self
@@ -588,6 +608,7 @@ class RevisionTraceIndexV1(StrictModel):
     subject_bindings: tuple[SubjectBindingV1, ...] = Field(
         default=(), alias="subjectBindings", max_length=2000
     )
+    review_notices: tuple[ReviewNoticeV1, ...] | None = Field(default=None, alias="reviewNotices", max_length=2000)
     drilldown_metrics: tuple[DrilldownMetricV1, ...] = Field(
         default=(), alias="drilldownMetrics", max_length=1000
     )

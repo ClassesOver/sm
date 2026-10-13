@@ -38,7 +38,7 @@ from ..reporting.trace.dataset_service import (
     verified_dataset_snapshot,
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
-from ..reporting.trace.fact_service import fact_display_unit, fact_display_value
+from ..reporting.trace.fact_service import fact_display_unit, fact_display_value, read_fact_document
 from ..reporting.trace.index_builder import TRACE_INDEX_FILENAME
 from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field
 from ..reporting.workflow.checkpoint import FileIdentity
@@ -218,7 +218,7 @@ class ReportEditorTraceService:
                 raw = await self._read_registered_file(
                     context, files[entry.file_resource_id], max_bytes=16 * 1024 * 1024
                 )
-                document = json.loads(raw)
+                document = read_fact_document(raw)
             except (ReportingError, ValueError) as error:
                 # 事实目录只是概览：保留期回收或文件损坏时不拖垮整个来源页，
                 # 数据集元数据照常返回；事实明细接口仍按登记身份严格校验。
@@ -665,14 +665,7 @@ class ReportEditorTraceService:
 
     @staticmethod
     def _locate_fact_pointer(bundle_bytes: bytes, fact_id: str) -> str:
-        try:
-            import json as _json
-
-            document = _json.loads(bundle_bytes)
-        except (ValueError, UnicodeDecodeError):
-            raise ReportingError(
-                "snapshot_integrity_failed", "事实文件无法解析。"
-            ) from None
+        document = read_fact_document(bundle_bytes)
         # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
         for array_name, prefix in (
             ("metrics", "/metrics/"),
@@ -754,6 +747,15 @@ class ReportEditorTraceService:
                 return None
             if kind != ref.fact_kind or (ref.fact_key and entry.get("factId") != ref.fact_key):
                 return None
+            if kind in {"comparison", "derived"} and not entry.get("periodGranularity"):
+                from ..reporting.trace.fact_service import _input_fact_refs
+
+                # 比较窗口沿用输入指标的粒度；月初日期标签不能被误当作单日窗口。
+                inputs = {item["factId"] for item in _input_fact_refs(document, kind, entry) if item.get("factId")}
+                grains = {metric.get("periodGranularity") for metric in document.get("metrics") or ()
+                          if isinstance(metric, dict) and metric.get("factId") in inputs}
+                if len(grains) == 1 and (grain := next(iter(grains))) in {"day", "month", "year"}:
+                    return {**entry, "periodGranularity": grain}
             return entry
 
         def _entry_value(entry: dict[str, Any] | None) -> Any:
@@ -829,6 +831,30 @@ class ReportEditorTraceService:
             fact_value = _entry_value(entry)
             expected_unit = fact_display_unit(entry) if entry else None
             expected_periods = fact_periods(entry) if entry else ()
+            number = binding.number_reference
+            selected = None
+            if number is not None:
+                from ..reporting.trace.semantic_bindings import (
+                    reference_fact_ids,
+                    resolve_number_reference,
+                )
+
+                # 每个操作数先通过文件 hash、analysis、pointer 和 factKey 校验，不能借同分析其它值。
+                entries = [await _fact_entry_of(ref) for ref in binding.fact_refs]
+                ids = reference_fact_ids(number.token)
+                if (all(item is not None for item in entries)
+                        and set(ids) == {ref.fact_key for ref in binding.fact_refs}
+                        and number.claim_id == binding.claim_id):
+                    selected = resolve_number_reference(number.token, (
+                        _json.dumps(bundle_cache[path]) for path in dict.fromkeys(
+                            files[ref.file_resource_id].path for ref in binding.fact_refs
+                        )
+                    ))
+                fact_value = selected["value"] if selected else None
+                expected_unit = selected["unit"] if selected else None
+                expected_periods = selected["periods"] if selected else ()
+                if selected:
+                    entry = {**selected["entry"], "formula": selected["formula"], "scope": selected["scope"]}
             detail = claim_status(
                 markdown,
                 binding.claim_id,
@@ -838,6 +864,16 @@ class ReportEditorTraceService:
                 expected_scope=_entry_scope(entry),
                 section_id=binding.locator.section_id,
             )
+            if number is not None:
+                from ..reporting.trace.semantic_bindings import statement_fingerprint
+
+                if selected is None:
+                    detail = {"status": "unbound", "warnings": ["具体数值引用无法从登记事实重算。"]}
+                elif (detail["status"] == "valid" and
+                      statement_fingerprint(markdown, binding.claim_id) != number.statement_sha256):
+                    detail["status"] = "stale"
+                    detail["warnings"].append("引用所在陈述已修改，请复核指标、期间和范围。")
+                    detail["comparable"] = False
             status = detail["status"]
             summary[status] += 1
             subjects.append(
@@ -900,15 +936,40 @@ class ReportEditorTraceService:
             if identity.path not in bundle_cache:
                 raw = await self._read_registered_file(context, identity, max_bytes=16 * 1024 * 1024)
                 bundle_cache[identity.path] = _json.loads(raw)
+        plot_contents: list[str] = []
+        plot_ids = {
+            resource_id
+            for chart in index.chart_traces
+            for resource_id in chart.plot_data_file_resource_ids
+        }
+        for resource_id in sorted(plot_ids):
+            try:
+                raw = await self._read_registered_file(context, files[resource_id], max_bytes=8 * 1024 * 1024)
+                plot_contents.append(raw.decode("utf-8"))
+            except (ReportingError, UnicodeDecodeError) as error:
+                logger.warning("report_editor_plot_validation_source_unavailable resource_id={} reason={}",
+                               resource_id, type(error).__name__)
 
+        from ..reporting.trace.markdown_body import trace_body
+
+        review_markdown = trace_body(markdown)
         return {
             "draftSha256": draft_sha256,
-            "warnings": review_content(markdown, (_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values())),
+            "warnings": review_content(markdown, (
+                *(_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values()),
+                *plot_contents,
+            )),
             "subjects": subjects,
             "summary": summary,
             "tables": tables_payload,
             "tableSummary": table_summary,
             "charts": charts_payload,
+            **({"reviewNotices": [
+                {**notice.model_dump(mode="json", by_alias=True),
+                 "occurrences": len(re.findall(r"待核实[\s*_~]*" + re.escape(f"[[claim:{notice.claim_id}]]"), review_markdown)),
+                 "bound": review_markdown.count(f"[[claim:{notice.claim_id}]]") == 1}
+                for notice in index.review_notices
+            ]} if index.review_notices is not None else {}),
         }
 
     @staticmethod
@@ -919,6 +980,7 @@ class ReportEditorTraceService:
         charts: list[dict[str, Any]] = []
         files = {item.resource_id: item for item in index.files}
         presentations = chart_presentations(draft_markdown)
+        registered_paths: set[str] = set()
         for trace in index.chart_traces:
             image = files.get(trace.image_file_resource_id)
             unique_name = image is not None and sum(
@@ -926,6 +988,10 @@ class ReportEditorTraceService:
                 for item in index.chart_traces
             ) == 1
             fingerprints = chart_fingerprints(presentations, image.path, allow_filename=unique_name) if image else []
+            if image is not None:
+                registered_paths.add(image.path)
+                if unique_name:
+                    registered_paths.add(PurePosixPath(image.path).name)
             status = "unbound" if len(fingerprints) != 1 else (
                 "valid" if fingerprints[0] == trace.presentation_sha256 else "stale"
             )
@@ -941,6 +1007,17 @@ class ReportEditorTraceService:
                     "locationSource": location_source,
                 }
             )
+        # 正文中新出现或未登记来源的图也必须进入覆盖率分母；不赋予冻结来源身份。
+        chart_ids = {chart["chartId"] for chart in charts}
+        for path in presentations:
+            if path in registered_paths:
+                continue
+            chart_id = "unbound-" + hashlib.sha256(path.encode()).hexdigest()
+            while chart_id in chart_ids:
+                chart_id = "unbound-" + chart_id
+            chart_ids.add(chart_id)
+            charts.append({"chartId": chart_id, "imagePath": path,
+                           "status": "unbound", "locationSource": path})
         return charts
 
     async def _evaluate_tables(
@@ -1244,6 +1321,12 @@ class ReportEditorTraceService:
             raise ReportingError("source_missing", "计算记录不在当前修订的来源索引中。")
         files = {item.resource_id: item for item in index.files}
         chain = expand_computation_chain(index.computations, computation_id, depth=depth)
+        limitations = list(record.limitations)
+        pending = [chain]
+        while pending:
+            node = pending.pop()
+            limitations.extend(node.get("warnings", ()))
+            pending.extend(node.get("inputs", ()))
         environment = (
             dict(record.environment) if isinstance(record.environment, Mapping) else None
         )
@@ -1258,7 +1341,7 @@ class ReportEditorTraceService:
             "environment": environment,
             "verification": record.verification,
             "reproducibility": record.reproducibility,
-            "limitations": list(record.limitations),
+            "limitations": list(dict.fromkeys(limitations)),
             "inputDatasetIds": list(record.input_dataset_ids),
             "inputFactRefs": [
                 {
@@ -1387,6 +1470,10 @@ class ReportEditorTraceService:
             raise ReportingError(
                 "snapshot_integrity_failed", "作图数据文件无法解析。"
             ) from None
+        if not isinstance(document, Mapping):
+            raise ReportingError(
+                "snapshot_integrity_failed", "作图数据文件结构无效。"
+            )
         rows = document.get("rows")
         columns = document.get("columns")
         if not isinstance(rows, list) or not isinstance(columns, list):

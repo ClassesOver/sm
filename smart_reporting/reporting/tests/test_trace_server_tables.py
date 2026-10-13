@@ -55,6 +55,7 @@ def _bundle():
             {
                 "code": "income_total",
                 "fieldRef": "dynamic_source.dynamic_db.dynamic_table.revenue",
+                "description": "收入",
             },
         ),
         profile_hash="c" * 64,
@@ -480,7 +481,7 @@ def test_analysis_table_uses_frozen_schema_business_label(field, label, unit) ->
     bundle = _bundle()
     original = bundle.metrics[0]
     ref = "dynamic_source.dynamic_db.dynamic_table." + field
-    fact = original.model_copy(update={"field": field, "field_ref": ref, "unit": unit})
+    fact = original.model_copy(update={"field": field, "field_ref": ref, "unit": unit, "display_name": None})
     bundle = bundle.model_copy(update={"metrics": (fact,)})
     contexts = ({"datasetId": fact.dataset_id, "sha256": fact.dataset_sha256,
                  "schema": {"tables": [{"sourceId": "dynamic_source", "database": "dynamic_db",
@@ -517,6 +518,7 @@ def test_analysis_table_uses_readable_period_labels_and_profile_metric_names():
     bundle = _bundle()
     budget = bundle.metrics[0].model_copy(update={"metric_codes": ("budget",),
         "field": "budget_person_time", "unit": "人次", "fact_id": "fact-" + "a" * 16,
+        "display_name": None,
         "period_granularity": "month",
         "period_values": (PeriodValue(period="2025-09-01", value=1200), PeriodValue(period="2025-10-01", value=1200))})
     actual = budget.model_copy(update={"metric_codes": ("actual",), "field": "actual_person_time",
@@ -606,3 +608,10 @@ async def test_chart_caption_numbers_are_verified_against_registered_facts() -> 
 
     missing = _Harness({fact_file.path: facts})
     assert await RuntimeSectionsMixin._registered_number_contents(missing, "thread-1", checkpoint) == ()
+
+
+def test_period_table_caption_names_actual_grain_instead_of_analysis_dimension():
+    bundle = _bundle().model_copy(update={'analysis_name': '医疗收入院区分布分析'})
+    _trace, markdown = build_analysis_table(bundle, fact_file_resource_id=FACT_RESOURCE)
+    caption = markdown.splitlines()[0]
+    assert caption == '医疗收入院区分布分析：分期间指标汇总'

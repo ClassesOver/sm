@@ -187,8 +187,8 @@ def _build_export_trace_sources(
         }
         for dataset in trace_index.datasets
     }
-    subjects_by_claim: dict[str, Mapping[str, Any]] = {
-        item["claimId"]: item
+    subjects_by_claim: dict[tuple[str | None, str], Mapping[str, Any]] = {
+        (item.get("sectionId"), item["claimId"]): item
         for item in validation.get("subjects", ())
         if isinstance(item, Mapping) and isinstance(item.get("claimId"), str)
     }
@@ -197,7 +197,8 @@ def _build_export_trace_sources(
     for binding in trace_index.subject_bindings:
         if not binding.claim_id or not binding.fact_refs:
             continue
-        state = subjects_by_claim.get(binding.claim_id)
+        section_id = getattr(binding.locator, "section_id", None)
+        state = subjects_by_claim.get((section_id, binding.claim_id))
         if state is None:
             continue
         reference = binding.fact_refs[0]
@@ -218,6 +219,7 @@ def _build_export_trace_sources(
             }
             claims_payload[key] = entry
             fact_dataset_ids[key] = entry["datasetIds"]
+            entry["_sectionId"] = section_id
         else:
             claim_ids = entry.setdefault("claimIds", [entry["claimId"]])
             if binding.claim_id not in claim_ids:
@@ -226,6 +228,13 @@ def _build_export_trace_sources(
                 (entry["status"], "stale" if state.get("warnings") else state.get("status", "unbound")),
                 key=lambda item: _SOURCE_STATUS_PRIORITY.get(item, 3),
             )
+            if entry.get("_sectionId") != section_id:
+                locators = entry.setdefault("claimLocators", [
+                    {"sectionId": entry.pop("_sectionId"), "claimId": entry["claimId"]}
+                ])
+                locator = {"sectionId": section_id, "claimId": binding.claim_id}
+                if locator not in locators:
+                    locators.append(locator)
         if (
             binding.subject_id not in entry["subjectIds"]
         ):
@@ -327,6 +336,15 @@ def _build_export_trace_sources(
                 "links": [link_of(subject_id) for subject_id in chart_subjects],
             }
         )
+    grouped_claims: dict[str, list[dict[str, Any]]] = {}
+    for entry in claims_payload.values():
+        grouped_claims.setdefault(entry["claimId"], []).append(entry)
+    for claim_id, entries in grouped_claims.items():
+        if len(entries) > 1:
+            for entry in entries:
+                entry["claimLocators"] = [{"sectionId": entry.get("_sectionId"), "claimId": claim_id}]
+        for entry in entries:
+            entry.pop("_sectionId", None)
     payload = {
         "claims": [summarize(item) for item in claims_payload.values()],
         "tables": [summarize(item) for item in tables_payload],

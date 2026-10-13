@@ -254,7 +254,7 @@ Schema 表超集；未进入本次 Snapshot 的表不会扩大运行范围。已
 ```
 
 - `aggregation` 支持 `sum`、`average`、`min`、`max`、`count`、`count_distinct`。
-- `unit` 可选；只记录已经确认的展示单位，不根据字段名或数值范围猜测。
+- `unit` 可选；明确单位优先保留。已确认 `kind=amount/currency` 的金额指标缺少单位时，服务端在冻结事实前按默认 CNY（元）登记；`CNY` 规范为 `元`。计数聚合及其他量纲不套用默认货币，不根据字段名或数值范围猜测。
 - `additiveAcross` 只允许同一张受信表中的真实维度字段。
 - `exclusiveScope` 只允许同一张表中的真实字段和值，表示统计该指标必须同时满足的固定口径。
 - `reconcileWith` 和 `tolerance` 必须同时提供；对账字段必须属于受信 Snapshot。

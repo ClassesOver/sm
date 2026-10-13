@@ -988,6 +988,7 @@ class RuntimePublicationMixin:
         computation_files: tuple[FileIdentity, ...] = (),
         computations: tuple = (),
         subject_bindings: tuple = (),
+        review_notices: tuple | None = None,
         interactive_charts: Mapping[str, str] | None = None,
         markdown_path: str,
         lineage: tuple[DatasetLineage, ...],
@@ -1075,6 +1076,7 @@ class RuntimePublicationMixin:
                     computation_files=computation_files,
                     computations=computations,
                     subject_bindings=subject_bindings,
+                    review_notices=review_notices,
                     markdown=markdown_bytes.decode("utf-8"),
                     revision=revision,
                     run_context=run_context,
@@ -1140,6 +1142,7 @@ class RuntimePublicationMixin:
         computation_files: tuple[FileIdentity, ...] = (),
         computations: tuple = (),
         subject_bindings: tuple = (),
+        review_notices: tuple | None = None,
         markdown: str | None = None,
     ) -> ArtifactFile:
         """构建并写入 revision 追溯索引，返回供权威清单登记的产物身份。
@@ -1169,6 +1172,7 @@ class RuntimePublicationMixin:
                 computation_files=computation_files,
                 computations=computations,
                 subject_bindings=subject_bindings,
+                review_notices=review_notices,
                 drilldown_metrics=drilldown_metrics,
             )
 

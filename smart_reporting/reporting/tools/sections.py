@@ -335,6 +335,11 @@ class RuntimeSectionsMixin:
         for anchor in anchors:
             ordered = [blocks[index] for index in sorted(groups[anchor])]
             anchor_block = blocks[anchor]
+            offsets = []
+            start = 0
+            for block in ordered:
+                offsets.append(start - (len(block.markdown) - len(block.markdown.lstrip("\n"))))
+                start += len(block.markdown.strip("\n")) + 2
             merged.append(
                 ReportDraftBlock.model_validate(
                     {
@@ -347,6 +352,14 @@ class RuntimeSectionsMixin:
                             dict.fromkeys(item for block in ordered for item in block.chart_ids)
                         ),
                         "claimIds": list(anchor_block.claim_ids),
+                        "chartPlacement": anchor_block.chart_placement,
+                        "numberReferences": [item.model_copy(update={"offset": item.offset + offset})
+                                             for block, offset in zip(ordered, offsets, strict=True)
+                                             for item in block.number_references],
+                        "reviewNotices": ([item.model_copy(update={"offset": item.offset + offset})
+                                           for block, offset in zip(ordered, offsets, strict=True)
+                                           for item in block.review_notices or ()]
+                                          if all(block.review_notices is not None for block in ordered) else None),
                     }
                 )
             )
@@ -933,7 +946,7 @@ class RuntimeSectionsMixin:
                     if citation_id in known_citations and citation_id not in bound_citations:
                         bound_citations.append(citation_id)
             normalized_blocks.append(
-                block.model_copy(update={"citation_ids": tuple(bound_citations)})
+                block.model_copy(update={"citation_ids": tuple(bound_citations), "chart_placement": "explicit"})
             )
         artifact = artifact.model_copy(update={"blocks": tuple(normalized_blocks)})
         referenced_citations = {

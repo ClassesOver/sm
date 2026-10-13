@@ -240,6 +240,43 @@ def test_resolve_fact_returns_entry_display_value_and_inputs() -> None:
     assert payload["inputFactRefs"] == ()  # metric 是叶子
 
 
+@pytest.mark.parametrize("reader", [resolve_fact, expand_fact_tree])
+@pytest.mark.parametrize("document", [None, [], "text", {"metrics": 1}, {"metrics": [1]}])
+def test_fact_readers_report_invalid_structure(reader, document):
+    ref = _metric_ref(_bundle())
+    with pytest.raises(ReportingError) as exc:
+        reader(json.dumps(document).encode(), ref)
+    assert exc.value.code == "snapshot_integrity_failed"
+
+
+@pytest.mark.parametrize("reader", [resolve_fact, expand_fact_tree])
+@pytest.mark.parametrize("updates", [
+    {"analysis_id": "analysis_999"},
+    {"fact_kind": "derived"},
+    {"fact_key": "fact-" + "f" * 16},
+    {"json_pointer": "/metrics/999"},
+])
+def test_fact_readers_check_the_complete_reference(reader, updates):
+    ref = _metric_ref(_bundle()).model_copy(update=updates)
+    with pytest.raises(ReportingError) as exc:
+        reader(_bundle_bytes(), ref)
+    assert exc.value.code == "fact_binding_unavailable"
+
+
+@pytest.mark.parametrize("reader", [resolve_fact, expand_fact_tree])
+def test_fact_key_requires_a_stored_identity_but_legacy_pointer_still_works(reader):
+    bundle = _bundle()
+    document = json.loads(_bundle_bytes())
+    document["metrics"][0].pop("factId")
+    content = json.dumps(document).encode()
+    ref = _metric_ref(bundle)
+    with pytest.raises(ReportingError) as exc:
+        reader(content, ref)
+    assert exc.value.code == "fact_binding_unavailable"
+    legacy = reader(content, ref.model_copy(update={"fact_key": None}))
+    assert legacy["displayValue"] == 90.0
+
+
 def test_resolve_fact_rejects_mismatched_analysis_and_drifted_pointer() -> None:
     bundle = _bundle()
     ref = _metric_ref(bundle)

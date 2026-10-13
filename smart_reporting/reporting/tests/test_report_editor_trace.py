@@ -1368,6 +1368,52 @@ async def test_http_facts_routes(tmp_path: Path) -> None:
         assert missing.json()["detail"]["code"] == "fact_binding_unavailable"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind,document", [
+    ("fact", []), ("fact", None), ("fact", "text"),
+    ("fact", {"metrics": 1}), ("fact", {"metrics": [1]}),
+    ("chart", []), ("chart", None), ("chart", "text"),
+])
+async def test_invalid_registered_json_returns_409_and_preserves_source_overview(tmp_path, kind, document):
+    from .lineage_fixtures.manifest import register_trace_manifest
+
+    editor, grants, workspace = await _make_editor(tmp_path, with_fact_file=True, with_chart_trace=True)
+    context = _context()
+    workspace.registry.resolve(_scope())
+    index = await editor.trace.require_index(context)
+    resource_id = (index.fact_files[0].file_resource_id if kind == "fact"
+                   else index.chart_traces[0].plot_data_file_resource_ids[0])
+    content = json.dumps(document).encode()
+    files = []
+    for file in index.files:
+        if file.resource_id == resource_id:
+            await workspace.awrite_bytes(_scope().workspace_key, file.path, content, overwrite=True)
+            file = file.model_copy(update={"size": len(content), "sha256": hashlib.sha256(content).hexdigest()})
+        files.append(file)
+    index = index.model_copy(update={"files": tuple(files)})
+    await workspace.awrite_bytes(_scope().workspace_key, "reports/revision-1/trace-index-v1.json",
+                                 encode_trace_index(index), overwrite=True)
+    manifest = await register_trace_manifest(workspace, _scope().workspace_key, index, overwrite=True)
+    workspace.registry.release(_scope().workspace_key)
+    context = _context(manifest=manifest)
+    state = await editor.state_repository.get(context.workflow_run_id)
+    state.payload["reportEditorContexts"]["1"] = context.model_dump(mode="json", by_alias=True)
+    raw, _ = await grants.issue(context)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        path = ("facts/analysis_001/fact-" + "a" * 16 if kind == "fact" else "charts/chart_001/source")
+        detail = await client.get(f"/reports/v1/editor/report-1/1/api/{path}")
+        assert detail.status_code == 409
+        assert detail.json()["detail"]["code"] == "snapshot_integrity_failed"
+        overview = await client.get("/reports/v1/editor/report-1/1/api/sources")
+        assert overview.status_code == 200
+        assert overview.json()["datasets"][0]["datasetId"] == DATASET_ID
+        if kind == "fact":
+            assert overview.json()["facts"] == []
+
+
 # ---------------------------------------------------------------------------
 # B7：subject → 登记指标 → 冻结快照单维度下钻
 # ---------------------------------------------------------------------------
@@ -1968,6 +2014,41 @@ async def test_computations_listing_and_detail(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_computation_detail_shows_ambiguous_source_warning(tmp_path: Path) -> None:
+    from smart_reporting.reporting.trace.contracts_v1 import FactRefV1
+
+    from .lineage_fixtures.manifest import register_trace_manifest
+
+    editor, grants, workspace = await _make_editor(tmp_path, with_computation=True, with_fact_file=True)
+    workspace.registry.resolve(_scope())
+    index = await editor.trace.require_index(_context())
+    fact_file = next(item for item in index.fact_files if item.analysis_id == "analysis_001")
+    first = index.computations[0]
+    duplicate = first.model_copy(update={"computation_id": "comp-" + "d" * 16})
+    consumer = first.model_copy(update={
+        "computation_id": "comp-" + "e" * 16,
+        "input_fact_refs": first.output_fact_refs,
+        "output_fact_refs": (FactRefV1(analysisId="analysis_001", fileResourceId=fact_file.file_resource_id,
+                                       jsonPointer="/metrics/0", factKind="metric"),),
+    })
+    index = index.model_copy(update={"computations": (first, duplicate, consumer)})
+    await workspace.awrite_bytes(_scope().workspace_key, "reports/revision-1/trace-index-v1.json",
+                                 encode_trace_index(index), overwrite=True)
+    manifest = await register_trace_manifest(workspace, _scope().workspace_key, index, overwrite=True)
+    workspace.registry.release(_scope().workspace_key)
+    context = _context(manifest=manifest)
+    state = await editor.state_repository.get(context.workflow_run_id)
+    state.payload["reportEditorContexts"]["1"] = context.model_dump(mode="json", by_alias=True)
+    raw, _ = await grants.issue(context)
+    _, session = await grants.exchange(raw)
+    detail = await editor.trace_computation_detail(context, session, consumer.computation_id)
+    assert detail["available"] is True
+    assert not detail["chain"].get("inputs")
+    assert any("来源不唯一" in item for item in detail["limitations"])
+    assert all(item in detail["limitations"] for item in consumer.limitations)
+
+
+@pytest.mark.anyio
 async def test_http_computation_routes(tmp_path: Path) -> None:
     editor, grants, _ = await _make_editor(tmp_path, with_computation=True)
     raw, _ = await grants.issue(_context())
@@ -2040,3 +2121,30 @@ async def test_drilldown_reads_verified_request_snapshot(tmp_path, monkeypatch, 
         assert result["snapshot"]["sha256"] == hashlib.sha256(CSV_BYTES).hexdigest()
         assert read_paths[0] != source_paths[0]
         assert not read_paths[0].exists()
+
+
+@pytest.mark.anyio
+async def test_validate_includes_unregistered_body_charts(tmp_path: Path) -> None:
+    editor, grants, _ = await _make_editor(tmp_path, with_chart_trace=True, with_fact_file=True)
+    raw, _ = await grants.issue(_context())
+    _token, session = await grants.exchange(raw)
+    markdown = ('![趋势](chart-001.png)\n\n*图表：收入趋势*\n\n'
+                '![预算](chart-013.png)\n\n![偏差](chart-014.png)\n\n'
+                '![其他目录](other/chart-001.png)')
+    result = await editor.trace_validate(
+        _context(), session, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    charts = result['charts']
+    assert len(charts) == 4
+    assert charts[0]['status'] == 'valid'
+    assert {chart['locationSource'] for chart in charts[1:]} == {
+        'chart-013.png', 'chart-014.png', 'other/chart-001.png'}
+    assert all(chart['status'] == 'unbound' for chart in charts[1:])
+    assert len({chart['chartId'] for chart in charts}) == 4
+    repeated = await editor.trace_validate(
+        _context(), session, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert repeated['charts'] == charts
+    duplicate = '![趋势](chart-001.png)\n\n![趋势](chart-001.png)'
+    result = await editor.trace_validate(
+        _context(), session, duplicate, hashlib.sha256(duplicate.encode()).hexdigest())
+    assert len(result['charts']) == 1
+    assert result['charts'][0]['status'] == 'unbound'

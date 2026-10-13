@@ -2796,7 +2796,7 @@ def test_planner_validation_is_exposed_to_structured_executor() -> None:
     assert stage.retries == 0
     assert stage.exponential_backoff is False
     assert stage.telemetry is False
-    assert stage.model.retries == 0
+    assert stage.model.retries == 2
     assert stage.model.extra_body == {"enable_thinking": False}
     assert stage.model.reasoning_effort is None
     validator = getattr(stage.model, "_report_response_validator")

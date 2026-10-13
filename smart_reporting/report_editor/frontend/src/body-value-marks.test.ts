@@ -395,13 +395,11 @@ describe('unverified placeholders', () => {
     expect(view.state.doc.textContent).toBe('营收12,450万元。[[analysis:a]][[citation:sub-1]]')
   })
 
-  it.each(['原因待核实', '金额单位待核实', '统计口径待核实'])('preserves the explanatory caveat %s instead of filling in a number', (caveat) => {
+  it.each(['原因待核实', '金额单位待核实', '统计口径待核实', '是否涉及跨期结算或集中入账待核实', '数据完整性待核实', '入账状态待核实'])('preserves the explanatory caveat %s instead of filling in a number', (caveat) => {
     const text = `营收12,450万元，${caveat}[[citation:sub-1]]`
     const view = fakeView(text)
     const marks = findValueMarks(text, stale())
-    const note = marks.find(mark => mark.state === 'unverified')!
-    expect(note.subjectId).toBeUndefined()
-    expect(note.card.join('')).not.toContain('已替换')
+    expect(marks.filter(mark => mark.state === 'unverified')).toEqual([])
     expect(restoreRegisteredValue(view, 'sub-1', stale())).toBe(false)
     expect(view.state.doc.textContent).toBe(text)
   })
@@ -411,4 +409,18 @@ describe('unverified placeholders', () => {
     expect(restoreRegisteredValue(view, 'sub-2', stale())).toBe(false)
     expect(view.state.doc.textContent).toContain('待核实')
   })
+})
+
+it('uses typed notices regardless of business wording and never offers a guessed restore', () => {
+  const result = validation('valid')
+  result.reviewNotices = [
+    { claimId: 'note', sectionId: null, kind: 'source_review', occurrences: 1, bound: true },
+    { claimId: 'number', sectionId: null, kind: 'numeric_unverified', occurrences: 1, bound: true },
+  ]
+  const text = '供应商回复待核实[[claim:note]]。任意指标待核实[[claim:number]]。'
+  const marks = findValueMarks(text, result, sources)
+  expect(marks).toHaveLength(1)
+  expect(marks[0].start).toBe(text.lastIndexOf('待核实'))
+  expect(marks[0].subjectId).toBeUndefined()
+  expect(findValueMarks('供应商回复待核实。', { ...result, reviewNotices: [] }, sources)).toHaveLength(0)
 })

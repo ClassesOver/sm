@@ -193,6 +193,35 @@ def test_chain_does_not_link_unproduced_fact() -> None:
     assert "inputs" not in tree
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_chain_warns_and_skips_ambiguous_providers_but_keeps_unique_inputs(reverse):
+    first = _record(finding_count=1)
+    duplicate = _record(finding_count=1, execution={"runId": "duplicate"})
+    unique = _record(analysis_id="analysis_003", finding_count=1)
+    consumer = _record(
+        analysis_id="analysis_002",
+        input_fact_refs=(*first.output_fact_refs, *unique.output_fact_refs),
+    )
+    # 其中一个候选依赖消费者，歧义边不能被当成确定的循环。
+    first = first.model_copy(update={"input_fact_refs": consumer.output_fact_refs})
+    records = (first, duplicate, unique, consumer)
+    if reverse:
+        records = tuple(reversed(records))
+    tree = expand_computation_chain(records, consumer.computation_id)
+    assert [node["computationId"] for node in tree["inputs"]] == [unique.computation_id]
+    assert any("来源不唯一" in warning for warning in tree["warnings"])
+    assert detect_computation_cycles(records) == []
+
+
+def test_repeated_output_in_one_record_does_not_create_ambiguity():
+    provider = _record(finding_count=1)
+    provider = provider.model_copy(update={"output_fact_refs": provider.output_fact_refs * 2})
+    consumer = _record(analysis_id="analysis_002", input_fact_refs=provider.output_fact_refs)
+    tree = expand_computation_chain((provider, consumer), consumer.computation_id)
+    assert [node["computationId"] for node in tree["inputs"]] == [provider.computation_id]
+    assert not tree.get("warnings")
+
+
 def test_self_cycle_is_detected_and_chain_stops() -> None:
     record = _record(finding_count=1)
     record = record.model_copy(update={"input_fact_refs": record.output_fact_refs})

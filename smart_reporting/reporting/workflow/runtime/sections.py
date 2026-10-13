@@ -32,7 +32,11 @@ from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
 from ...trace.computation_service import detect_computation_cycles
-from ...trace.content_review import readability_warnings, repeated_sentence_warnings, review_content_result
+from ...trace.content_review import (
+    readability_warnings,
+    repeated_sentence_warnings,
+    review_content_result,
+)
 from ...trace.contracts_v1 import (
     ChartTraceV1,
     ComputationRecordV1,
@@ -42,11 +46,8 @@ from ...trace.contracts_v1 import (
 from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
 from ...trace.numeric_text import (
-    align_placeholder_direction,
-    correct_period_extrema,
     frozen_number_catalog,
     frozen_number_guide,
-    normalize_signed_wording,
     prompt_number_catalog,
     render_frozen_numbers,
     replace_unregistered_numbers,
@@ -220,6 +221,7 @@ _MAX_BLOCK_REVIEW_NOTICES = 20
 
 def _block_review_notices(
     section_code: str, block_id: str, warnings: Sequence[str], generated: str, published: str,
+    *, number_notices: Sequence[Any] | None = None,
 ) -> list[dict[str, Any]]:
     """纠错后仍残留的复核告警与“待核实”替换，作为不阻断发布的块级质量告警返回用户。"""
 
@@ -228,8 +230,9 @@ def _block_review_notices(
         {"code": "report_section_block_content_review", "message": warning[:300], "details": details}
         for warning in list(dict.fromkeys(warnings))[:_MAX_BLOCK_REVIEW_NOTICES]
     ]
-    # 服务端只会新增“待核实”（替换无依据数值或无法解析的占位），差值即替换处数。
-    replaced = published.count("待核实") - generated.count("待核实")
+    # 新流程使用实际替换事件；旧章节保留文本差值兼容。
+    replaced = (sum(item.kind == "numeric_unverified" for item in number_notices)
+                if number_notices is not None else published.count("待核实") - generated.count("待核实"))
     if replaced > 0:
         notices.append({
             "code": "report_section_block_unverified_numbers",
@@ -860,7 +863,7 @@ def _section_stage_agent(
                 "先判断证据是否足够；足够时返回 render 规划，缺少必要数据或计算结果时才返回 rework。"
                 "单位待确认、业务名称或可比性争议、对账告警及图表口径/视觉回执冲突均为软告警，"
                 "不能单独成为 rework 理由，也不得要求补证脚本确认源数据未提供的单位或业务定义。"
-                "这些情形返回 render：金额保留原始值并注明单位待核实，名称沿用源字段说明，"
+                "这些情形返回 render：金额沿用冻结单位，默认人民币元已由服务端登记，名称沿用源字段说明，"
                 "省略存在冲突的图表及无证据结论，在正文披露限制；不得标记验收通过。"
             )
         instructions.extend(
@@ -894,12 +897,13 @@ def _section_stage_agent(
             "每个 block 必须完成 objective 对应的事实陈述，不得以‘整体呈’‘分别为’等半句结尾；没有证据的结论应明确写明待核实。",
             "不得输出 H1/H2、图片语法、协议标记或无证据数字；内部 ID 仅可用于 frozenNumbers 提供的数值占位符。",
             "月度日期是月度桶标签，不是数据截止时点；其他模型摘要或图表标题中的推测不构成直接证据。不得补写目录中不存在的月均值或派生金额。",
+            "月均值必须与正文月份范围一致；完整12个月的均值不得用于1—10月。多个指标各取前N名后并集展示时，分类数量可以超过N，不能据此认定图表超范围。声称各月方向一致前须逐月核对；存在反向月份时明确例外，不写全部一致。",
             "异常或偏低只描述事实与待核实事项；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
             "frozenNumbers 中的数值必须使用对应 {{value:...}} 占位符，不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。需要元值和亿元同时展示时分别选择两个占位符；大额人次可选择万人次占位。",
             "占位符渲染后已带单位，其后不得再写单位（不写“{{value:…:亿元}}亿元”）；每个数值写在其所属指标、科室或期间的名下，不得把一个科室或指标的引用写到另一个名下。数字与百分号用半角，百分点写“个百分点”，不写 pp、pct。",
             "reportGoal要求精确原始元值时，已登记元单位的关键金额必须选择元值占位符展示；"
             "可另附亿元或万元显示，但不得只写舍入后的大单位金额。",
-            "冻结事实 unit 为空时，仍可用其占位符展示原始金额并注明‘金额单位待核实’，不得追加元、万元或亿元、不得换算；图表标题和其他模型摘要里的单位不能补作单位证据。",
+            "金额默认币种为 CNY（人民币），单位在事实冻结时确定；正文只选择 frozenNumbers 已登记的元、万元、亿元引用。明确的其他币种或展示单位优先保留；非金额字段或旧事实 unit 为空时，不自行补单位或换算。",
             "已签发补证表同一列的 columnMeta.isPercent=true 时，该列是已计算的百分数，可按对应行直接引用并四舍五入；不得因 frozenNumbers 缺少补证占位符就称其未登记或待核实，不得重新计算或累加出新比例。",
             "先按 numberGuide 确认指标、期间、粒度和完整分组再选数值引用。rowStatistics 是原始行统计；monthlyStatistics 才是月度统计。已登记零值月份保留；局部最高/最低必须明确子期间。目录未提供的比率不能根据图注或模型摘要推算；只写已登记分子分母，或说明该比率待核实。",
             "budgetComparisons 是服务端按同口径事实计算的差额与百分数。表格有对应引用时必须填写，包括零分子的0%；只有百分数引用为空时才写不可计算。负差额写‘差额为负’或‘实际减预算为……’，不得写‘少-……’；零值月份仅称‘记录为零’，不称‘尚无数据’或‘未执行月份’。",
@@ -998,10 +1002,13 @@ async def _run_section_stage(
             thinking_request=thinking_request,
         )
     except ModelProviderError as error:
+        from ...models import reporting_failure
+
+        failure = reporting_failure(error)
         raise ReportingError(
             "report_model_provider_unavailable",
-            "模型提供方暂时不可用，已停止重复请求。",
-            details={"retryable": False, "stage": stage},
+            f"模型请求失败（HTTP {error.status_code}）：{failure['message']}",
+            details={**failure, "retryable": False, "stage": stage},
         ) from error
     return result.content
 
@@ -1720,22 +1727,18 @@ async def _generate_section_in_blocks(
                 continue
             for warning in review_warnings:
                 loguru_logger.warning("report_content_review_warning section={} message={}", work_item.section_code, warning)
+            from ...trace.semantic_bindings import render_bound_numbers
+
+            bound_markdown, number_references, number_notices = render_bound_numbers(
+                content.markdown, (item.content for item in selected_files),
+                key=f"{work_item.section_code}:{block_plan.block_id}",
+            )
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
-                # 纠错后仍残留的方向措辞按冻结符号确定性改写（正值配下降词在渲染前、
-                # 负值配增长词在渲染后），再核对未登记数字。
-                markdown=replace_unregistered_numbers(
-                    normalize_signed_wording(correct_period_extrema(
-                        render_frozen_numbers(
-                            align_placeholder_direction(
-                                content.markdown, (item.content for item in selected_files)
-                            ),
-                            block_number_catalog,
-                        ),
-                        (item.content for item in selected_files),
-                    )),
-                    (item.content for item in selected_files),
-                ),
+                markdown=bound_markdown,
+                numberReferences=number_references,
+                reviewNotices=number_notices,
+                chartPlacement="explicit",
                 citationIds=citation_ids,
                 chartIds=chart_ids,
                 claimIds=block_plan.claim_ids,
@@ -1743,7 +1746,7 @@ async def _generate_section_in_blocks(
             if review_notices is not None:
                 review_notices[block_plan.block_id] = _block_review_notices(
                     work_item.section_code, block_plan.block_id, review_warnings,
-                    content.markdown, candidate.markdown,
+                    content.markdown, candidate.markdown, number_notices=candidate.review_notices,
                 )
             try:
                 validate_report_draft_blocks(
@@ -1961,21 +1964,18 @@ async def _generate_whole_section_content(
     blocks: list[ReportDraftBlock] = []
     for block_plan in plan.blocks:
         claims = tuple(claims_by_id[item] for item in block_plan.claim_ids)
+        from ...trace.semantic_bindings import render_bound_numbers
+
+        bound_markdown, number_references, number_notices = render_bound_numbers(
+            content_by_id[block_plan.block_id].markdown, (item.content for item in evidence.files),
+            key=f"{work_item.section_code}:{block_plan.block_id}",
+        )
         block = ReportDraftBlock(
             blockId=block_plan.block_id,
-            markdown=replace_unregistered_numbers(
-                normalize_signed_wording(correct_period_extrema(
-                    render_frozen_numbers(
-                        align_placeholder_direction(
-                            content_by_id[block_plan.block_id].markdown,
-                            (item.content for item in evidence.files),
-                        ),
-                        section_number_catalog,
-                    ),
-                    (item.content for item in evidence.files),
-                )),
-                (item.content for item in evidence.files),
-            ),
+            markdown=bound_markdown,
+            numberReferences=number_references,
+            reviewNotices=number_notices,
+            chartPlacement="explicit",
             claimIds=block_plan.claim_ids,
             citationIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.citation_ids)),
             chartIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.chart_ids)),
@@ -1983,7 +1983,7 @@ async def _generate_whole_section_content(
         if review_notices is not None:
             review_notices[block_plan.block_id] = _block_review_notices(
                 work_item.section_code, block_plan.block_id, review_warnings.get(block_plan.block_id, ()),
-                content_by_id[block_plan.block_id].markdown, block.markdown,
+                content_by_id[block_plan.block_id].markdown, block.markdown, number_notices=block.review_notices,
             )
         try:
             validate_report_draft_blocks((*blocks, block), expected_section_title=work_item.title)
@@ -2008,19 +2008,21 @@ def _promoted_heading_block(
 
     if error.code != "report_draft_heading_parent_missing":
         return None
+    from ...trace.semantic_bindings import anchor_bound_numbers, strip_bound_anchors
+
     markdown = promote_orphan_h4_headings(
-        candidate.markdown,
+        anchor_bound_numbers(candidate.markdown, candidate.number_references, candidate.review_notices),
         expected_section_title=None if blocks else work_item.title,
     )
     if markdown is None:
         return None
-    promoted = ReportDraftBlock(
-        blockId=candidate.block_id,
-        markdown=markdown,
-        citationIds=candidate.citation_ids,
-        chartIds=candidate.chart_ids,
-        claimIds=candidate.claim_ids,
+    markdown, references, notices = strip_bound_anchors(
+        markdown, candidate.number_references, candidate.review_notices or (),
     )
+    promoted = candidate.model_copy(update={
+        "markdown": markdown, "number_references": references,
+        "review_notices": notices if candidate.review_notices is not None else None,
+    })
     try:
         validate_report_draft_blocks((*blocks, promoted), expected_section_title=work_item.title)
     except ReportingError:
@@ -3181,6 +3183,12 @@ class RuntimeSectionsMixin:
             computation_files=tuple(computation_files),
             computations=tuple(computation_records),
             subject_bindings=subject_bindings,
+            review_notices=(tuple(
+                notice.model_copy(update={"section_id": artifact.section_code})
+                for artifact in section_artifacts for block in artifact.blocks
+                for notice in block.review_notices or ()
+            ) if all(block.review_notices is not None
+                     for artifact in section_artifacts for block in artifact.blocks) else None),
             interactive_charts=interactive_charts,
             markdown_path=markdown_path,
             lineage=lineage,

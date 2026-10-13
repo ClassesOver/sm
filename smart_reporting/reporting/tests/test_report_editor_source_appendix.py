@@ -36,6 +36,31 @@ def test_shared_fact_claims_keep_all_markers_and_one_first_appearance_number() -
     assert len(trace["entries"][0]["links"]) == 2
 
 
+@pytest.mark.parametrize("shared_fact", [False, True])
+def test_same_claim_id_in_different_sections_keeps_values_and_source_numbers(shared_fact) -> None:
+    from smart_reporting.report_editor.service import _build_export_trace_sources
+    from smart_reporting.reporting.delivery.report_runtime.pdf import _pdf_markdown
+
+    bindings = tuple(SimpleNamespace(
+        claim_id="claim_001", subject_id=f"sub-{i:016x}", subject_kind="text_claim",
+        locator=SimpleNamespace(section_id=f"section_{i}", table_id=None),
+        fact_refs=(SimpleNamespace(file_resource_id=f"file-{1 if shared_fact else i}", json_pointer="/metrics/0"),),
+    ) for i in (1, 2))
+    index = SimpleNamespace(datasets=(), tables=(), chart_traces=(), files=(), computations=(), subject_bindings=bindings)
+    payload = _build_export_trace_sources(index, {"subjects": [
+        {"sectionId": "section_1", "claimId": "claim_001", "status": "valid", "factValue": 100},
+        {"sectionId": "section_2", "claimId": "claim_001", "status": "stale", "factValue": 100 if shared_fact else 200},
+    ]}, public_base_url="https://reports.example.com", report_id="report-1", revision=2)
+    assert [item["factValue"] for item in payload["claims"]] == ([100] if shared_fact else [100, 200])
+    markdown = "[[section:section_2]]200[[claim:claim_001]]\n\n[[section:section_1]]100[[claim:claim_001]]"
+    visible, _, trace = _pdf_markdown(markdown, [], trace_sources=payload)
+    assert "200[数据来源 001]" in visible
+    assert f"100[数据来源 {'001' if shared_fact else '002'}]" in visible
+    assert [item["factValue"] for item in trace["entries"]] == ([100] if shared_fact else [200, 100])
+    assert trace["entries"][0]["status"] == "stale"
+    assert "[[section:" not in visible
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_table_only_fact_sources_and_claim_warnings_survive_export(tmp_path) -> None:

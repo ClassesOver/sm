@@ -487,15 +487,35 @@ describe('事实页', () => {
     const { container, ctx } = setupPage(fetcher, FACT_REF)
     await renderEvidencePage(container, ctx)
     const callout = container.querySelector('.evidence-fact-warnings')!
-    expect(callout.classList.contains('evidence-limitations')).toBe(true)
-    expect(callout.querySelector('.evidence-limitations-title')?.textContent).toBe('登记告警（1）')
-    expect(callout.tagName).toBe('DETAILS')
-    expect(callout.hasAttribute('open')).toBe(false)
+    const warningGroup = callout.querySelector('[data-note-kind="warnings"]')!
+    expect(warningGroup.classList.contains('evidence-limitations')).toBe(true)
+    expect(warningGroup.querySelector('.evidence-limitations-title')?.textContent).toBe('数据限制（1）')
+    expect(warningGroup.tagName).toBe('DETAILS')
+    expect(warningGroup.hasAttribute('open')).toBe(true)
     expect(container.querySelector('.evidence-fact-inputs')?.compareDocumentPosition(callout)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     expect(callout.textContent).toContain('口径与上期不一致')
     const missing = container.querySelector('.evidence-fact-input-missing')
     expect(missing?.textContent).toBe('分析 analysis_002 的输入未登记事实 ID，无法打开')
     expect(container.querySelectorAll('.evidence-fact-inputs button')).toHaveLength(0)
+  })
+
+  it('separates historical profile diagnostics from fact warnings', async () => {
+    const detail = { ...FACT_DETAIL, warnings: [
+      '[company] has a constant value',
+      '[rdlevel_analytic_unit] 23646 (78.7%) missing values',
+      '固定范围 income_nature=开单收入 已由受审核 SQL 应用，CSV 未投影该范围字段。',
+    ] }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/facts/')) return json(detail)
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, FACT_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('[data-note-kind="warnings"]')?.textContent).toContain('数据限制（1）')
+    expect(container.querySelector('[data-note-kind="context"]')?.textContent).toContain('收入性质=开单收入')
+    expect(container.querySelector('[data-note-kind="raw"]')?.textContent).toContain('[company] has a constant value')
   })
 
   it('navigates to an input fact via its icon link', async () => {

@@ -12,7 +12,7 @@ from smart_reporting.reporting.trace.contracts_v1 import (
     RevisionTraceIndexV1,
     derive_resource_id,
 )
-from smart_reporting.reporting.trace.table_builder import build_table_trace
+from smart_reporting.reporting.trace.table_builder import build_analysis_table, build_table_trace
 
 from .test_deterministic_analysis import analysis, context
 
@@ -183,3 +183,40 @@ def test_table_builder_requires_period_match_for_period_rows() -> None:
     spec["rows"] = [{"key": "period:2024-01", "label": "旧期间", "period": "2024-01"}]
     with pytest.raises(ReportingError, match="期间"):
         build_table_trace(bundle, spec, fact_file_resource_id=FACT_FILE_RESOURCE)
+
+
+def test_analysis_table_uses_default_cny_for_untyped_amount_columns() -> None:
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("revenue",)),
+        ((
+            "current",
+            b"month,department,revenue\n2025-09,A,1200\n",
+            context(
+                "current",
+                fields=("month", "department", "revenue"),
+                semantics=({
+                    "fieldRef": "dynamic_source.dynamic_db.dynamic_table.revenue",
+                    "aggregation": "sum",
+                    "additiveAcross": ["month", "department"],
+                    "exclusiveScope": {},
+                },),
+            ),
+            ("current",),
+        ),),
+        profile_metrics=({
+            "code": "revenue_total",
+            "description": "收入",
+            "kind": "amount",
+            "aggregation": "sum",
+            "fieldRef": "dynamic_source.dynamic_db.dynamic_table.revenue",
+        },),
+    )
+    trace, markdown = build_analysis_table(bundle, fact_file_resource_id=FACT_FILE_RESOURCE)
+
+    assert trace is not None
+    assert "收入（元）" in markdown
+    assert "1,200" in markdown
+    assert trace.column_keys == ("收入（元）",)
+    assert trace.row_keys == ("period:2025-09",)
+    assert trace.cells[0].fact_refs[0].fact_key == bundle.metrics[0].fact_id
+    assert trace.cells[0].fact_refs[0].file_resource_id == FACT_FILE_RESOURCE

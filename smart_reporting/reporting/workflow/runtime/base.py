@@ -683,10 +683,9 @@ class _ReportWorkflowRuntimeBase:
                 "candidateFieldRefs 中每个字段必须且只能在 decisions 中出现一次，不得增加、遗漏或替换字段",
                 "金额、数量等可聚合事实分类为 measure；年份、期间码、主外键、排序码、状态码和分类编码应分类为 dimension",
                 "measureSemantic.fieldRef 必须与当前 decision.fieldRef 完全一致",
-                "unit 只能来自当前字段说明、已提供的指标语义或明确适用于该字段的术语。"
-                "仅写金额、收入、成本、支出或kind=currency不证明单位是元；"
-                "DECIMAL/DOUBLE及数值大小也不证明单位。不具备单位依据时返回unit=null，"
-                "并在reason说明单位待确认；不得将预算单位自动套到实际金额字段。",
+                "金额默认币种为 CNY；已确认属于金额且字段说明未声明单位时，unit 填元，并在reason说明采用默认人民币元。"
+                "明确声明的万元、亿元或其他币种必须保留，不得覆盖。人数、人次、床日、百分比和数量等非金额"
+                "字段沿用各自单位；无法确定量纲时保留unit=null，不能仅凭报告主题或数值大小当作金额。",
                 (
                     "additiveAcross 每项只能从当前 candidateFieldContexts.sameTableColumnNames "
                     "复制裸列名，不得使用完整 fieldRef、table.column 或重复值；不确定时返回空数组"
@@ -784,8 +783,8 @@ class _ReportWorkflowRuntimeBase:
         if not planner_enable_thinking:
             apply_reporting_thinking_profile(analysis_code_model, planner_off)
         analysis_code_model.top_p = 0.95
-        analysis_code_model.retries = 0
-        analysis_code_model.exponential_backoff = False
+        analysis_code_model.retries = 2
+        analysis_code_model.exponential_backoff = True
         analysis_code_model.__dict__.pop("_report_escalation_thinking_profile", None)
         analysis_code_model.__dict__.pop("_report_thinking_escalation_fields", None)
         self._analysis_script_agent_factory = create_reporting_code_agent_factory(
@@ -857,8 +856,9 @@ class _ReportWorkflowRuntimeBase:
         planner_model = copy(planner.model)
         apply_reporting_thinking_profile(planner_model, ReportingThinkingProfile.off())
         planner_model.top_p = 1.0
-        planner_model.retries = 0
-        planner_model.exponential_backoff = False
+        # 使用 Agno 的请求层重试；不会重新执行已完成工具或整个章节。
+        planner_model.retries = 2
+        planner_model.exponential_backoff = True
         planner_model.__dict__.pop("_report_escalation_thinking_profile", None)
         planner_model.__dict__.pop("_report_thinking_escalation_fields", None)
 

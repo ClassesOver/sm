@@ -132,11 +132,11 @@ def _fact_identity(ref: FactRefV1) -> tuple[str, str, str, str]:
 
 def _output_providers(
     records: Sequence[ComputationRecordV1],
-) -> dict[tuple[str, str, str, str], list[str]]:
-    providers: dict[tuple[str, str, str, str], list[str]] = {}
+) -> dict[tuple[str, str, str, str], set[str]]:
+    providers: dict[tuple[str, str, str, str], set[str]] = {}
     for record in records:
         for ref in record.output_fact_refs:
-            providers.setdefault(_fact_identity(ref), []).append(record.computation_id)
+            providers.setdefault(_fact_identity(ref), set()).add(record.computation_id)
     return providers
 
 
@@ -152,8 +152,9 @@ def detect_computation_cycles(records: Sequence[ComputationRecordV1]) -> list[li
     for record in records:
         dependencies: set[str] = set()
         for ref in record.input_fact_refs:
-            for provider in output_providers.get(_fact_identity(ref), ()):
-                dependencies.add(provider)
+            providers = output_providers.get(_fact_identity(ref), ())
+            if len(providers) == 1:
+                dependencies.update(providers)
         graph[record.computation_id] = dependencies
 
     cycles: list[list[str]] = []
@@ -227,19 +228,29 @@ def expand_computation_chain(
             "verification": record.verification,
             "reproducibility": record.reproducibility,
         }
-        if remaining <= 0:
-            return node
         ancestors = ancestors | {record.computation_id}
         inputs: list[dict[str, Any]] = []
+        warnings: list[str] = []
         seen: set[str] = set()
         for ref in record.input_fact_refs:
-            for provider_id in output_providers.get(_fact_identity(ref), ()):
+            providers = output_providers.get(_fact_identity(ref), ())
+            if len(providers) > 1:
+                warnings.append(
+                    f"事实 {ref.analysis_id} {ref.json_pointer} 的计算来源不唯一，"
+                    "无法确认该输入的计算链。"
+                )
+                continue
+            if remaining <= 0:
+                continue
+            for provider_id in providers:
                 if provider_id in seen or provider_id in ancestors:
                     continue
                 seen.add(provider_id)
                 inputs.append(_node(by_id[provider_id], remaining - 1, ancestors))
         if inputs:
             node["inputs"] = inputs
+        if warnings:
+            node["warnings"] = list(dict.fromkeys(warnings))
         return node
 
     return _node(by_id[entry_computation_id], depth - 1, frozenset())

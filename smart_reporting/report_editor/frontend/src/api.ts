@@ -217,6 +217,7 @@ export interface TraceChartSource {
 }
 
 export interface TraceValidation {
+  reviewNotices?: { claimId: string; sectionId: string | null; kind: 'numeric_unverified' | 'source_review'; occurrences: number; bound: boolean }[]
   draftSha256: string
   warnings?: string[]
   subjects: {

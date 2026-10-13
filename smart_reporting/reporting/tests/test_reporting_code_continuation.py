@@ -30,6 +30,42 @@ from smart_reporting.reporting.workflow.runtime.code_generation import Reporting
 
 
 @pytest.mark.anyio
+async def test_502_after_script_execution_retries_only_submission_request(workspace):  # noqa: F811
+    from smart_reporting.reporting.tests.test_reporting_provider_recovery import provider_error
+
+    class RecoveringClient(_ResponsesClient):
+        async def create(self, **kwargs):
+            self.requests.append(kwargs)
+            result = self.pending.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    client = RecoveringClient([
+        _custom_response('write_script', SOURCE, index=1),
+        _function_response(2, 'run_script', {}),
+        provider_error(),
+        _function_response(3, 'submit_script', {}),
+    ])
+    factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id='test', api_key='test', retries=2, delay_between_retries=0),
+        name='provider-recovery-test',
+    )
+    def make_agent(tools):
+        agent = factory(tools)
+        agent.model.async_client = client
+        return agent
+
+    runtime = ToolkitRuntime()
+    runner = ReportingCodeGenerationRunner(make_agent, runtime, ReportingLspProcessManager())
+    result = await runner.run(_task_context(workspace), workspace, {}, run_context=_run_context())
+    assert result.execution_receipt.source_file.path == 'analysis/a.py'
+    assert len(client.requests) == 4
+    assert client.requests[2]['input'] == client.requests[3]['input']
+    assert runtime.shutdowns == ['code-task-1']
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
 async def test_seed_runs_before_provider_without_fabricated_tool_messages(workspace, outcome):  # noqa: F811
     await workspace.awrite_text("task-1", "analysis/a.py", SOURCE)

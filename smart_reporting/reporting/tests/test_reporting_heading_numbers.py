@@ -1170,3 +1170,44 @@ def test_chart_caption_and_alt_text_follow_body_typography() -> None:
     assert '"门诊收入（万元）2025年1月至6月")' in rendered.markdown
     assert "*图表：门诊收入（万元）2025年1月至6月*" in rendered.markdown
     assert "![门诊收入（万元）2025年1月至6月图]" in rendered.markdown
+
+
+def test_chart_placement_prefers_matching_subheading_over_shared_intro_terms():
+    from smart_reporting.reporting.delivery.draft_v1 import _block_units, _place_charts_in_units
+
+    units = _block_units(
+        '### 收入与门诊人次方向一致性分析\n\n'
+        '收入与出院人次月度趋势对比采用双轴折线图，收入与工作量方向一致率和月度变化需要分别分析。\n\n'
+        '### 收入与出院人次方向一致性分析\n\n出院走势如下。\n\n'
+        '### 收入与床日方向一致性分析\n\n床日走势如下。'
+    )
+    chart = _chart('chart_001', '收入与出院人次月度趋势对比', 'citation_001')
+    placements = _place_charts_in_units(units, [chart])
+    target = next(index for index, ids in placements.items() if 'chart_001' in ids)
+    assert '### 收入与出院人次' in units[target]
+
+
+def test_shared_citation_does_not_move_project_chart_out_of_its_matching_section():
+    rendered = _assemble_charts(
+        (ReportDraftBlock(blockId='overview', markdown='### 项目预算整体执行状况\n\n全院项目总额说明。',
+                          citationIds=('citation_001',)),
+         ReportDraftBlock(blockId='rates', markdown='### 分项目类型签约率与付款率对比\n\n各项目类型预算签约率与付款率对比展示各类型比率。',
+                          citationIds=('citation_001',), chartIds=('chart_001',)),
+         ReportDraftBlock(blockId='amounts', markdown='### 分项目类型预算与执行金额规模\n\n各项目类型预算、签约与付款金额规模展示绝对金额。',
+                          citationIds=('citation_001',), chartIds=('chart_002',))),
+        (_chart('chart_001', '各项目类型预算签约率与付款率对比', 'citation_001'),
+         _chart('chart_002', '各项目类型预算、签约与付款金额规模', 'citation_001')),
+    )
+    markdown = rendered.markdown
+    assert markdown.index('### 1.2') < markdown.index('chart_001.png') < markdown.index('### 1.3')
+    assert markdown.index('### 1.3') < markdown.index('chart_002.png')
+
+
+def test_explicit_chart_block_survives_arbitrary_titles_and_shared_citations():
+    rendered = _assemble_charts(
+        (ReportDraftBlock(blockId='intro', markdown='### 甲\n\n图的全部标题与关键词。', citationIds=('citation_001',)),
+         ReportDraftBlock(blockId='target', markdown='### 乙\n\n正文。', citationIds=('citation_001',),
+                          chartIds=('chart_001',), chartPlacement='explicit')),
+        (_chart('chart_001', '图的全部标题与关键词', 'citation_001'),),
+    )
+    assert rendered.markdown.index('### 1.2') < rendered.markdown.index('chart_001.png')

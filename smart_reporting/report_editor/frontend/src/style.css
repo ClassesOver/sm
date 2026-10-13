@@ -2061,6 +2061,13 @@ button {
   color: #30435a;
   font-size: 14px;
   font-weight: 700;
+  min-width: 8rem;
+  max-width: 16rem;
+  white-space: normal;
+}
+
+#report-editor .ProseMirror .table-wrapper {
+  overflow-x: auto;
 }
 
 #report-editor .ProseMirror table {
@@ -2068,6 +2075,10 @@ button {
   border: 1px solid #d4e0e9;
   border-radius: 6px;
   box-shadow: 0 2px 8px rgb(27 42 65 / 4%);
+  border-collapse: separate;
+  border-spacing: 0;
+  background: #fff;
+  table-layout: auto;
 }
 
 #report-editor .ProseMirror td,
@@ -2083,6 +2094,30 @@ button {
 
 #report-editor .ProseMirror tbody tr:hover {
   background: #f1f7fb;
+}
+
+#report-editor .ProseMirror td[align="right"],
+#report-editor .ProseMirror th[align="right"],
+#report-editor .ProseMirror td[style*="text-align: right"],
+#report-editor .ProseMirror th[style*="text-align: right"] {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+#report-editor .ProseMirror td[align="right"],
+#report-editor .ProseMirror td[style*="text-align: right"] {
+  white-space: nowrap;
+}
+
+#report-editor .ProseMirror tbody td:first-child {
+  color: #40556b;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#report-editor .ProseMirror table p {
+  margin: 0;
+  line-height: 1.65;
 }
 
 #report-editor .ProseMirror code {
@@ -4318,6 +4353,10 @@ button {
 .evidence-limitations { margin: 0 0 14px; padding: 10px 14px; }
 .evidence-limitations-title { margin: 0 0 4px; color: #7a4f0a; font-size: 12px; font-weight: 600; }
 .evidence-limitations .evidence-limitation { margin: 0; line-height: 1.6; }
+.evidence-notes summary { cursor: pointer; }
+.evidence-note-info { margin: 0 0 12px; padding: 10px 14px; border: 1px solid #dbe4eb; border-radius: 6px; background: #f7f9fb; }
+.evidence-note-info .evidence-limitations-title { color: #52677a; }
+.evidence-note-info .evidence-limitation { margin: 4px 0 0; line-height: 1.6; overflow-wrap: anywhere; }
 .evidence-output-name { color: #1b2a41; font-weight: 600; }
 .evidence-chart-info { margin-bottom: 4px; }
 .evidence-transform-note { margin: 0; }

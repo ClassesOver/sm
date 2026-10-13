@@ -102,15 +102,55 @@ _MONTHLY_AVERAGE_CLAIM = re.compile(
 )
 
 
-def _monthly_average_warnings(text: str, contents: Iterable[str]) -> list[str]:
+def _period_claim_facts(
+    text: str, documents: list[dict[str, Any]], field_definitions: Mapping[str, str],
+) -> Iterable[tuple[str, str]]:
+    """按分析标记和指标名定位分句；来源仍有歧义时不按同额猜测归属。"""
+    markers = list(re.finditer(r"(?:\[\[analysis:[^\]]+\]\]\s*)+", text))
+    labels = sorted({label for label in field_definitions.values() if label},
+                    key=lambda label: (-len(label), label))
+    pattern = re.compile("|".join(re.escape(label) for label in labels)) if labels else None
+    boundaries = [0, *(match.end() for match in _CLAUSE_BREAK.finditer(text)), len(text)]
+    for start, end in zip(boundaries, boundaries[1:]):
+        clause = text[start:end]
+        if not re.search(r"全年|月均|月平均|平均每月|每月平均", clause):
+            continue
+        preceding = [marker for marker in markers if marker.start() < end]
+        analyses = set(re.findall(r"\[\[analysis:([^\]]+)\]\]", preceding[-1][0])) if preceding else set()
+        named = {match[0] for match in pattern.finditer(clause)} if pattern else set()
+        years = set(re.findall(r"(?<!\d)(\d{4})年", clause))
+        candidates = {}
+        for document in documents:
+            if analyses and document.get("analysisId") not in analyses:
+                continue
+            for entry in document.get("metrics") or ():
+                if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
+                    continue
+                if named and field_definitions.get(entry.get("field", "")) not in named:
+                    continue
+                period_years = {str(item.get("period", ""))[:4] for item in entry.get("periodValues") or ()
+                                if isinstance(item, dict)}
+                if years and not years.issubset(period_years):
+                    continue
+                candidates[json.dumps(entry, sort_keys=True, ensure_ascii=False)] = entry
+        if not years and not re.search(r"去年|上年|同期|上期|上月", clause):
+            current = {key: entry for key, entry in candidates.items() if "current" in (entry.get("periodRoles") or ())}
+            if current:
+                candidates = current
+        if len(candidates) == 1:
+            yield clause, next(iter(candidates.values()))["factId"]
+
+
+def _monthly_average_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]],
+                              field_definitions: Mapping[str, str]) -> list[str]:
     """“月均X”中的 X 不是登记月均值、却等于原始行平均或合计/单月值时提示复核（软告警）。
 
     原始行统计的 average 按数据行求平均，行数不等于月数时不是月均值；合计或单月值
     写成月均同样是口径错误。对不上任何登记值的数字由无依据数值检查处理。
     """
-    monthly: dict[str, set[Decimal]] = {}
-    row_average: dict[str, set[Decimal]] = {}
-    others: dict[str, set[Decimal]] = {}
+    monthly: dict[tuple[str, str], set[Decimal]] = {}
+    row_average: dict[tuple[str, str], set[Decimal]] = {}
+    others: dict[tuple[str, str], set[Decimal]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
         display_unit = target or unit
         if not display_unit or value is None:
@@ -118,21 +158,26 @@ def _monthly_average_warnings(text: str, contents: Iterable[str]) -> list[str]:
         number = Decimal(str(value))
         if display_unit != unit and (scales := _unit_scales(unit)) is not None:
             number = number * scales[unit] / scales[display_unit]
-        field = token[2:-2].split(":")[2]
+        _, fact_id, field, *_rest = token[2:-2].split(":")
+        if field.startswith('periodAverages.'):
+            continue  # 局部窗口均值由期间复核处理，不当作合计或单月值。
         bucket = monthly if field == "monthlyAverage" else row_average if field == "average" else others
-        bucket.setdefault(display_unit, set()).add(number)
-    warnings: list[str] = []
-    for match in _MONTHLY_AVERAGE_CLAIM.finditer(text):
+        bucket.setdefault((fact_id, display_unit), set()).add(number)
+    warnings, remaining_text = _monthly_window_review(text, documents, field_definitions)
+    claims = ((match, fact_id) for clause, fact_id in _period_claim_facts(remaining_text, documents, field_definitions)
+              for match in _MONTHLY_AVERAGE_CLAIM.finditer(clause))
+    for match, fact_id in claims:
         number = Decimal(match["number"].replace(",", ""))
         quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+        key = (fact_id, match["unit"])
 
-        def matches(values: dict[str, set[Decimal]]) -> bool:
+        def matches(values: dict[tuple[str, str], set[Decimal]]) -> bool:
             return any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number
-                       for value in values.get(match["unit"], ()))
+                       for value in values.get(key, ()))
 
         if matches(monthly):
             continue
-        expected = sorted(monthly.get(match["unit"], ()))
+        expected = sorted(monthly.get(key, ()))
         hint = (f"冻结月均值为{expected[0].quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}{match['unit']}。"
                 if len(expected) == 1 else "请改用月度统计中的月均值引用。")
         if matches(row_average):
@@ -142,7 +187,67 @@ def _monthly_average_warnings(text: str, contents: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(warnings))
 
 
-def _full_year_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]]) -> list[str]:
+def _monthly_window_review(text: str, documents: list[dict[str, Any]],
+                           field_definitions: Mapping[str, str]) -> tuple[list[str], str]:
+    """完整期间月均值不能用于正文明确限定的较短窗口。无唯一指标时仅在所有候选均不符时提示。"""
+    warnings = []
+    reviewed_spans = []
+    markers = list(re.finditer(r"(?:\[\[analysis:[^\]]+\]\]\s*)+", text))
+    for sentence in re.finditer(r"[^。；\n]+", text):
+        windows = list(re.finditer(r"(?<!\d)(?:(\d{4})年)?(\d{1,2})月?[—–~～至到-](\d{1,2})月", sentence[0]))
+        if len(windows) != 1:
+            continue
+        window = windows[0]
+        start, stop = int(window[2]), int(window[3])
+        if not 1 <= start <= stop <= 12:
+            continue
+        preceding = [marker for marker in markers if marker.start() < sentence.end()]
+        analyses = set(re.findall(r"\[\[analysis:([^\]]+)\]\]", preceding[-1][0])) if preceding else set()
+        named = {field for field, label in field_definitions.items() if label and label in sentence[0]}
+        for match in _MONTHLY_AVERAGE_CLAIM.finditer(sentence[0]):
+            if match.start() < window.end():
+                continue
+            written = Decimal(match['number'].replace(',', ''))
+            quantum = Decimal(1).scaleb(written.as_tuple().exponent)
+            candidates = []
+            for document in documents:
+                if analyses and document.get('analysisId') not in analyses:
+                    continue
+                for entry in document.get('metrics') or ():
+                    if entry.get('aggregation') != 'sum' or entry.get('periodGranularity') != 'month':
+                        continue
+                    if named and entry.get('field') not in named:
+                        continue
+                    unit = entry.get('unit')
+                    scales = _unit_scales(unit)
+                    if unit != match['unit'] and (not scales or match['unit'] not in scales):
+                        continue
+                    periods = entry.get('periodValues') or ()
+                    if not periods or any(not re.fullmatch(r'\d{4}-\d{2}(?:-\d{2})?', str(p.get('period', ''))) for p in periods):
+                        continue
+                    years = {p['period'][:4] for p in periods}
+                    if len(years) != 1 or (window[1] and years != {window[1]}):
+                        continue
+                    monthly = {int(p['period'][5:7]): Decimal(str(p['value'])) for p in periods}
+                    if len(monthly) != len(periods) or not all(m in monthly for m in range(start, stop + 1)):
+                        continue
+                    factor = Decimal(1) if unit == match['unit'] else scales[unit] / scales[match['unit']]
+                    expected = sum(monthly[m] for m in range(start, stop + 1)) / (stop - start + 1) * factor
+                    full = sum(monthly.values()) / len(monthly) * factor
+                    candidates.append((expected.quantize(quantum, rounding=ROUND_HALF_UP), full.quantize(quantum, rounding=ROUND_HALF_UP)))
+            if any(written in (expected, full) for expected, full in candidates):
+                reviewed_spans.append((sentence.start() + match.start(), sentence.start() + match.end()))
+            if candidates and all(written != expected for expected, _ in candidates) and any(written == full for _, full in candidates):
+                expected_values = {expected for expected, _ in candidates}
+                hint = f'应为{next(iter(expected_values)):,f}{match["unit"]}。' if len(expected_values) == 1 else '请按该指标限定窗口重新计算。'
+                warnings.append(f'月均期间需复核：{match[0]}使用了完整期间均值，与{start}—{stop}月范围不符；{hint}')
+    for start, end in reversed(reviewed_spans):
+        text = text[:start] + ' ' * (end - start) + text[end:]
+    return warnings, text
+
+
+def _full_year_warnings(text: str, contents: Iterable[str], documents: list[dict[str, Any]],
+                        field_definitions: Mapping[str, str]) -> list[str]:
     """“全年”配不足 12 个月的完整期间合计时提示复核（软告警）。
 
     冻结数据只覆盖 1—10 月时，10 个月合计写成“2025年全年收入…”会被读成全年实际；
@@ -178,14 +283,14 @@ def _full_year_warnings(text: str, contents: Iterable[str], documents: list[dict
             number = number * scales[unit] / scales[display_unit]
         totals.setdefault(display_unit, []).append((fact_id, number))
     warnings: list[str] = []
-    for sentence in re.split(r"[。；\n]", text):
+    for sentence, selected_fact_id in _period_claim_facts(text, documents, field_definitions):
         if "全年" not in sentence or re.search(r"全年(?:预算|目标|计划)", sentence):
             continue
         for match in _VALUE.finditer(sentence):
             number = Decimal(match[1].replace(",", ""))
             quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
             for fact_id, value in totals.get(match[2], ()):
-                if value.quantize(quantum, rounding=ROUND_HALF_UP) == number:
+                if fact_id == selected_fact_id and value.quantize(quantum, rounding=ROUND_HALF_UP) == number:
                     warnings.append(
                         f"期间口径需复核：{match[0]}是{partial[fact_id]}的{labels.get(fact_id, '合计')}，"
                         "不能称为全年；请写明实际覆盖月份。"

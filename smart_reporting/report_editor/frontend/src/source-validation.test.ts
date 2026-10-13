@@ -17,10 +17,11 @@ const deferred = <T>() => {
 }
 
 describe('source validation', () => {
-  it('counts amount conversion warnings even without a nearby claim binding', () => {
+  it('separates content warnings from source binding issues', () => {
     const result = validation('draft')
     result.warnings = ['金额单位换算不一致']
-    expect(sourceValidationIssueCount(result)).toBe(1)
+    expect(sourceValidationIssueCount(result)).toBe(0)
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '当前内容无精确来源绑定 · 内容提示 1', state: 'stale' })
   })
   it('counts deleted or stale charts alongside claim and table issues', () => {
     const result = validation('draft')
@@ -130,9 +131,17 @@ describe('source coverage summary', () => {
       tableSummary: { valid: 3, stale: 0, unbound: 0, insertedRows: 0, copiedCells: 0 },
       charts: [{ chartId: 'c', imagePath: null, status: 'valid' }],
     }
-    expect(sourceCoverageSummary(result, '收入待核实，利润待核实')).toEqual({ text: '可溯源 5/6 · 待复核 1 · 待核实 2', state: 'stale' })
+    expect(sourceCoverageSummary(result, '收入待核实，利润待核实')).toEqual({ text: '可溯源 5/6 · 待复核 1 · 待核实数值 2', state: 'stale' })
     expect(sourceCoverageSummary({ ...result, subjects: [], summary: { valid: 0, stale: 0, unbound: 0 }, tableSummary: undefined, charts: [] }, ''))
       .toEqual({ text: '当前内容无精确来源绑定', state: 'unknown' })
+  })
+
+  it('counts only visible numerical placeholders', () => {
+    const result = validation('draft')
+    const visible = '执行率约待核实。金额单位待核实，零值原因待核实。'
+    expect(sourceCoverageSummary(result, visible)).toEqual({
+      text: '当前内容无精确来源绑定 · 待核实数值 1', state: 'stale',
+    })
   })
 
   it('cycles through issue positions in document order', () => {
@@ -186,4 +195,41 @@ describe('source coverage summary', () => {
     expect(nextSourceIssue(root, 0, position, result)?.id).toBe('other')
     expect(nextSourceIssue(root, 2, position, result)?.id).toBe('value')
   })
+})
+
+it('excludes explanatory uncertainty from numeric counts and navigation', () => {
+  const text = '是否涉及跨期结算或集中入账待核实。零值原因待核实。数据完整性待核实。执行率约待核实。'
+  expect(sourceCoverageSummary(validation('x'), text).text).toBe('当前内容无精确来源绑定 · 待核实数值 1')
+  expect(findValueMarks(text, validation('x')).map(mark => text.slice(mark.start, mark.end))).toEqual(['待核实'])
+})
+
+it('locates present unbound charts in order without inventing source links', () => {
+  const root = document.createElement('div')
+  root.innerHTML = '<p id="first"><img src="chart-013.png"></p>' +
+    '<p><span id="stale" class="report-object-source-marker" data-marker-state="stale"></span></p>' +
+    '<p id="last"><img src="chart-014.png"></p>'
+  const result = validation('x')
+  result.charts = [
+    { chartId: 'missing-2', imagePath: 'chart-014.png', locationSource: 'chart-014.png', status: 'unbound' },
+    { chartId: 'missing-1', imagePath: 'chart-013.png', locationSource: 'chart-013.png', status: 'unbound' },
+    { chartId: 'deleted', imagePath: 'chart-015.png', locationSource: null, status: 'unbound' },
+  ]
+  const order = ['first', 'stale', 'last']
+  const position = (element: HTMLElement) => order.indexOf(element.id)
+  expect(nextSourceIssue(root, null, position, result)?.id).toBe('first')
+  expect(nextSourceIssue(root, 0, position, result)?.id).toBe('stale')
+  expect(nextSourceIssue(root, 1, position, result)?.id).toBe('last')
+  expect(nextSourceIssue(root, 2, position, result)?.id).toBe('first')
+})
+
+it('counts typed numeric placeholders independently of visible wording', () => {
+  const result = validation('draft')
+  result.reviewNotices = [
+    { claimId: 'note', sectionId: null, kind: 'source_review', occurrences: 1, bound: true },
+    { claimId: 'number', sectionId: null, kind: 'numeric_unverified', occurrences: 2, bound: false },
+  ]
+  expect(sourceCoverageSummary(result, '任意业务描述待核实').text).toContain('待核实数值 2')
+  expect(sourceCoverageSummary(result, '任意业务描述待核实').text).toContain('文字待确认 1')
+  result.reviewNotices = []
+  expect(sourceCoverageSummary(result, '任意业务描述待核实').text).not.toContain('待核实数值')
 })

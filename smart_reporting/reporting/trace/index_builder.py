@@ -43,6 +43,7 @@ def build_csv_trace_index(
     computation_files: Sequence[Any] = (),
     computations: Sequence[Any] = (),
     subject_bindings: Sequence[Any] = (),
+    review_notices: Sequence[Any] | None = None,
     drilldown_metrics: Sequence[Any] = (),
 ) -> RevisionTraceIndexV1:
     """从发布门禁已验收的句柄与血缘构建 revision 索引（全部追溯层）。
@@ -207,6 +208,7 @@ def build_csv_trace_index(
         chartTraces=tuple(chart_traces),
         computations=tuple(computations),
         subjectBindings=tuple(subject_bindings),
+        reviewNotices=None if review_notices is None else tuple(review_notices),
         drilldownMetrics=tuple(drilldown_metrics),
     )
     return bind_table_subjects(index)

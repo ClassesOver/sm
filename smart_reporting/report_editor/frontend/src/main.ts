@@ -215,7 +215,7 @@ const sourceValidation = createSourceValidationController(
     } else {
       // 表格与 claim 同为软语义：排序不失效，改值/插删行计入待复核；
       // 复制出的新格（与冻结值重复）同样提示复核，不自动赋予绑定。
-      const coverage = sourceCoverageSummary(result, getEditorMarkdown())
+      const coverage = sourceCoverageSummary(result, shell.editor.textContent ?? '')
       sourceStatusLabel.textContent = coverage.text
       sourceStatusLabel.dataset.state = coverage.state
     }

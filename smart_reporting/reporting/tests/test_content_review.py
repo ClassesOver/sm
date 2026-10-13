@@ -34,6 +34,52 @@ def test_review_keeps_registered_values_and_flags_invented_units():
     assert review_content("补充科室金额123.45元", [content, '{"departmentAmount":123.45}']) == []
 
 
+@pytest.mark.parametrize("text", [
+    "项目签约率为25.00%，付款率为45.00%。",
+    "已签合同金额合计为90，占同快照项目预算总额的25.00%；已付款金额合计为50，占同快照项目预算总额的45.00%。",
+])
+def test_project_ratio_values_cannot_be_swapped_between_contract_and_payment(text):
+    metrics = [{**_metric(field), "factId": "fact-" + letter * 16, "unit": None,
+                "total": total, "periodValues": []}
+               for letter, field, total in (("a", "budget_project_amount", 200),
+                                            ("b", "contract_amount", 90), ("c", "payment_amount", 50))]
+    content = json.dumps({"analysisId": "analysis_001", "metrics": metrics})
+    assert review_content("项目签约率为45.00%，付款率为25.00%。", [content]) == []
+    warnings = review_content(text, [content])
+    assert any("签约率" in warning and "45" in warning for warning in warnings)
+    assert any("付款率" in warning and "25" in warning for warning in warnings)
+
+
+def test_project_total_rates_do_not_override_named_project_groups():
+    metrics = [{**_metric(field), "factId": "fact-" + letter * 16, "unit": None,
+                "total": total, "periodValues": []}
+               for letter, field, total in (("a", "budget_project_amount", 200),
+                                            ("b", "contract_amount", 90), ("c", "payment_amount", 50))]
+    content = json.dumps({"analysisId": "analysis_001", "metrics": metrics})
+    chart = json.dumps({"schema": "chart-input/v1", "columns": ["group", "contract", "payment"],
+                       "rows": [["专用设备", 51.9, 41.39]],
+                       "columnMeta": {key: {"unit": "%", "isPercent": True} for key in ("contract", "payment")}})
+    assert review_content("专用设备签约率为51.90%，付款率为41.39%。", [content, chart]) == []
+
+
+@pytest.mark.parametrize("unit", ["%", "元"])
+def test_unbound_table_values_keep_the_registered_sign(unit):
+    chart = json.dumps({"schema": "chart-input/v1", "columns": ["name", "value"],
+                       "rows": [["收入", 25]], "columnMeta": {"value": {"unit": unit, "isPercent": True}}})
+    table = f"| 指标 | 数值（{unit}） |\n| --- | --- |\n| 收入 | {{value}} |"
+    assert review_content(table.replace("{value}", "25.00"), [chart]) == []
+    assert any("表格数值" in warning for warning in review_content(table.replace("{value}", "-25.00"), [chart]))
+
+
+@pytest.mark.parametrize("meta", [{"unit": "%", "isPercent": False}, {"unit": "%"}, {"unit": "元"}])
+def test_chart_numbers_cannot_bypass_percent_column_metadata(meta):
+    chart = {"schema": "chart-input/v1", "columns": ["name", "value"], "rows": [["药品", 0.5]],
+             "columnMeta": {"value": meta}}
+    assert review_content("药品占比0.50%。", [json.dumps(chart)])
+    chart["columnMeta"]["value"] = {"unit": "%", "isPercent": True}
+    assert review_content("药品占比0.50%。", [json.dumps(chart)]) == []
+
+
 def test_amount_extrema_does_not_apply_to_type_share_extrema():
     fact = {**_metric(values=(100, 70, 80)), 'unit': '元'}
     content = json.dumps({'analysisId': 'analysis_001', 'metrics': [fact]})
@@ -803,6 +849,61 @@ def test_monthly_average_claims_use_the_monthly_statistic(text, expected):
     assert [w for w in review_content(text, [content]) if "月均值" in w] == expected
 
 
+@pytest.mark.parametrize(("same_analysis", "prefix", "fields"), [
+    (False, "[[analysis:analysis_001]]", {}),
+    (True, "[[analysis:analysis_001]]", {"revenue": "收入", "cost": "成本"}),
+    (False, "", {"revenue": "收入", "cost": "成本"}),
+    (False, "[[analysis:analysis_001]]\n[[analysis:analysis_002]]\n", {"revenue": "收入", "cost": "成本"}),
+])
+@pytest.mark.parametrize("reverse_sources", [False, True])
+def test_period_claims_do_not_borrow_values_from_other_metrics(same_analysis, prefix, fields, reverse_sources):
+    def contents(income_values, cost_values):
+        income = {**_metric("revenue", income_values), "unit": "元", "average": 100}
+        cost = {**_metric("cost", cost_values), "unit": "元", "factId": "fact-" + "b" * 16}
+        documents = ([{"analysisId": "analysis_001", "metrics": [income, cost]}] if same_analysis else [
+            {"analysisId": "analysis_001", "metrics": [income]},
+            {"analysisId": "analysis_002", "metrics": [cost]},
+        ])
+        return [json.dumps(document) for document in (documents[::-1] if reverse_sources else documents)]
+
+    # 同额的两个月成本不能使完整年度收入被误报。
+    warnings = review_content(prefix + "2025年全年收入1,200元。", contents((100,) * 12, (600, 600)),
+                              field_definitions=fields)
+    assert not [w for w in warnings if "期间口径" in w]
+    # 成本月均恰好等于收入的行平均，不能掩盖收入的口径错误。
+    sources = contents((100, 300), (100, 100))
+    warnings = review_content(prefix + "收入月均100元。", sources, field_definitions=fields)
+    assert [w for w in warnings if "月均值" in w] == [
+        "月均值需复核：月均100元使用的是原始行平均值，不是月均值；冻结月均值为200.00元。"
+    ]
+    assert not [w for w in review_content(prefix + "收入月均200元。", sources, field_definitions=fields) if "月均值" in w]
+
+
+def test_period_claims_keep_each_named_metric_and_skip_ambiguous_claims():
+    income = {**_metric("revenue", (100,) * 12), "unit": "元"}
+    cost = {**_metric("cost", (600, 600)), "unit": "元", "factId": "fact-" + "b" * 16}
+    sources = [json.dumps({"analysisId": "analysis_001", "metrics": [income, cost]})]
+    fields = {"revenue": "收入", "cost": "成本"}
+    warnings = review_content("全年收入1,200元，全年成本1,200元。", sources, field_definitions=fields)
+    assert [w for w in warnings if "期间口径" in w] == [
+        "期间口径需复核：1,200元是2025年1—2月（2个月）的合计，不能称为全年；请写明实际覆盖月份。"
+    ]
+    assert not [w for w in review_content("全年金额1,200元。", sources) if "期间口径" in w]
+
+
+@pytest.mark.parametrize("prefix", ["", "2025年"])
+def test_period_claims_select_the_current_or_named_year(prefix):
+    income = {**_metric("revenue", (100, 300)), "unit": "元", "average": 100}
+    baseline = {**_metric("revenue", (100, 100)), "unit": "元", "factId": "fact-" + "b" * 16,
+                "periodRoles": ["yoy"], "periodValues": [
+                    {"period": "2024-01", "value": 100}, {"period": "2024-02", "value": 100}]}
+    sources = [json.dumps({"analysisId": "analysis_001", "metrics": [income, baseline]})]
+    fields = {"revenue": "收入"}
+    warnings = review_content(prefix + "收入月均100元。", sources, field_definitions=fields)
+    assert any("原始行平均值" in w and "200.00元" in w for w in warnings)
+    assert not [w for w in review_content("2024年收入月均100元。", sources, field_definitions=fields) if "月均值" in w]
+
+
 def _comparison_content(change=6543211):
     return json.dumps({
         "analysisId": "analysis_001",
@@ -873,6 +974,12 @@ def test_full_width_numbers_are_checked_like_half_width():
     warnings = [w for w in review_content("本期收入达１３，６５４．３２万元，同比增长５．０３％，较预算增长７．７７％。",
                                           [_comparison_content()]) if "冻结依据" in w]
     assert warnings == ["数值缺少可核对的冻结依据：7.77%。请使用对应数值引用，或删去未登记的计算结果。"]
+
+
+def test_unknown_money_unit_conflicts_with_yuan_conversion_claim():
+    text = "金额单位待核实。正文引用的冻结数值为原始元值，图表按亿元换算展示。"
+    warnings = review_content(text, [])
+    assert any("金额单位断言矛盾" in warning for warning in warnings)
 
 
 def test_percent_point_abbreviations_are_checked_like_percent_points():
@@ -973,6 +1080,39 @@ def test_window_comparisons_are_not_called_single_month_changes(window, text, ex
 def test_approximate_rate_wording_is_checked_against_registered_change_rates(change, text, expected):
     warnings = [w for w in review_content(text, [_comparison_content(change=change)]) if "约数" in w]
     assert warnings == expected
+
+
+@pytest.mark.parametrize("kind", ["yoy", "mom"])
+@pytest.mark.parametrize(("rate", "wording", "warns"), [
+    (-30, "增长三成", True), (-30, "下降三成", False),
+    (30, "下降约三成", True), (30, "增长约三成", False),
+    (-30, "增幅为三成", True), (-30, "降幅为三成", False),
+    (30, "跌幅达三成", True), (30, "涨幅达三成", False),
+    (-100, "翻了一番", True), (100, "翻了一番", False),
+    (-100, "增长近一倍", True), (100, "增长近一倍", False),
+    (50, "腰斩", True), (-50, "腰斩", False),
+    (50, "减半", True), (-50, "减半", False),
+])
+def test_approximate_rate_claims_keep_the_registered_direction(kind, rate, wording, warns):
+    document = json.loads(_comparison_content(change=rate * 1300000))
+    # 单独核对本条比较，避免样例月序列另外派生出 +100% 的环比。
+    document["metrics"] = []
+    document["comparisons"][0]["comparisonType"] = kind
+    label = "同比" if kind == "yoy" else "环比"
+    warnings = [w for w in review_content(f"收入{label}{wording}。", [json.dumps(document)]) if "约数" in w]
+    assert bool(warnings) is warns
+    if warns:
+        assert f"{rate:.2f}%" in warnings[0]
+
+
+@pytest.mark.parametrize(("values", "wording", "warns"), [
+    ((100, 70), "增长三成", True), ((100, 70), "下降三成", False),
+    ((100, 130), "下降三成", True), ((100, 130), "增长三成", False),
+])
+def test_approximate_monthly_rate_keeps_the_direction_of_adjacent_values(values, wording, warns):
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [{**_metric(values=values), "unit": "元"}]})
+    warnings = [w for w in review_content(f"2月收入环比{wording}。", [content]) if "约数" in w]
+    assert bool(warnings) is warns
 
 
 def test_adjacent_month_rates_count_as_month_over_month_not_other_percents():
@@ -1115,7 +1255,10 @@ def test_repetition_preserves_the_sign_of_numeric_facts():
     "    {text}\n",
 ])
 def test_readability_harness_excludes_markdown_code_with_real_fence_rules(template):
-    from smart_reporting.reporting.trace.content_review import readability_warnings, repeated_sentence_warnings
+    from smart_reporting.reporting.trace.content_review import (
+        readability_warnings,
+        repeated_sentence_warnings,
+    )
 
     text = "这里是代码示例中的解释文字" * 40 + "。"
     code = template.format(text=text)
@@ -1153,3 +1296,177 @@ def test_fact_review_checks_visible_link_labels(label, expected):
     warnings = review_content(f"[{label}](https://example.test/reference)", [])
     assert any(expected in warning for warning in warnings)
     assert review_content(f"[收入明细](https://example.test/{label})", []) == []
+
+
+@pytest.mark.parametrize(('span', 'value', 'expected'), [
+    ('1—10', '100', False), ('1—10', '83.33', True),
+    ('1—12', '83.33', False), ('1—10', '0.01万', False),
+])
+def test_monthly_average_respects_explicit_window(span, value, expected):
+    metric = _metric('visits', (100,) * 10 + (0, 0))
+    content = json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]})
+    warnings = review_content(f'[[analysis:analysis_001]]2025年{span}月，门诊月均{value}人次。', [content])
+    assert any('月均期间' in warning for warning in warnings) is expected
+    if not expected:
+        assert not any('月均' in warning for warning in warnings)
+
+
+def test_monthly_average_window_does_not_borrow_other_analysis_or_guess_missing_months():
+    metric = _metric('visits', (100,) * 10 + (0, 0))
+    other = {**metric, 'factId': 'fact-' + 'c' * 16, 'periodValues': metric['periodValues'][:9]}
+    documents = [json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]}),
+                 json.dumps({'analysisId': 'analysis_002', 'metrics': [other]})]
+    assert not any('月均期间' in w for w in review_content(
+        '[[analysis:analysis_002]]2025年1—10月，门诊月均83.33人次。', documents))
+
+
+def test_contiguous_prefix_averages_are_registered_without_dropping_zero_months():
+    metric = _metric('visits', (100,) * 10 + (0, 0))
+    content = json.dumps({'analysisId': 'analysis_001', 'metrics': [metric]})
+    catalog = frozen_number_catalog([content])
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodAverages.0-9:人次}}'] == '100人次'
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodAverages.0-11:人次}}'] == '83.33人次'
+    broken = {**metric, 'periodValues': metric['periodValues'][:2] + metric['periodValues'][3:]}
+    catalog = frozen_number_catalog([json.dumps({'analysisId': 'analysis_001', 'metrics': [broken]})])
+    assert '{{value:fact-aaaaaaaaaaaaaaaa:periodAverages.0-2:人次}}' not in catalog
+
+
+def test_rounded_registered_project_group_rate_is_not_compared_to_whole_hospital_rate():
+    metrics = [{**_metric(field), 'factId': 'fact-' + letter * 16, 'unit': None,
+                'total': total, 'periodValues': []}
+               for letter, field, total in (('a', 'budget_project_amount', 200),
+                                            ('b', 'contract_amount', 90), ('c', 'payment_amount', 50))]
+    content = json.dumps({'analysisId': 'analysis_001', 'metrics': metrics})
+    plot = json.dumps({'schema': 'chart-input/v1', 'columns': ['budget_type', 'contract_rate'],
+                       'rows': [['信息化建设', 84.01338479882133]],
+                       'columnMeta': {'contract_rate': {'unit': '%', 'isPercent': True}}})
+    assert not any('项目比率归属' in warning for warning in review_content(
+        '信息化建设签约率为84.01%。', [content, plot]))
+    assert any('项目比率归属' in warning for warning in review_content(
+        '信息化建设签约率为80.01%。', [content, plot]))
+
+
+def test_explicit_window_still_rejects_total_as_monthly_average():
+    content = json.dumps({'analysisId': 'analysis_001', 'metrics': [_metric('visits', (100,) * 10 + (0, 0))]})
+    assert any('月均值需复核' in w for w in review_content('2025年1—10月，门诊月均1,000人次。', [content]))
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('信息化建设签约率为84.01%，付款率为19.65%。', 0),
+    ('信息化建设签约率为19.65%，付款率为84.01%。', 2),
+    ('信息化建设签约率为41.39%，专用设备付款率为84.01%。', 2),
+    ('信息化建设签约率为84.01%，专用设备付款率为41.39%。', 0),
+])
+def test_project_group_rates_match_metric_and_nearest_group(text, expected):
+    plot = {'schema': 'chart-input/v1', 'source': {'analysisId': 'analysis_013'},
+            'columns': ['budget_type', 'contract_rate', 'payment_rate'],
+            'rows': [['信息化建设', 84.01338479882133, 19.645839603918546],
+                     ['专用设备', 51.90075978191015, 41.391234790940054]],
+            'columnMeta': {key: {'unit': '%', 'isPercent': True}
+                           for key in ('contract_rate', 'payment_rate')}}
+    warnings = review_content('[[analysis:analysis_013]]' + text, [json.dumps(plot)])
+    assert sum('项目比率归属' in warning for warning in warnings) == expected
+
+
+def test_project_group_rates_do_not_borrow_another_analysis():
+    plot = {'schema': 'chart-input/v1', 'columns': ['group', 'contract_rate'],
+            'columnMeta': {'contract_rate': {'unit': '%', 'isPercent': True}}}
+    contents = [json.dumps({**plot, 'source': {'analysisId': analysis},
+                            'rows': [['信息化建设', rate]]})
+                for analysis, rate in [('analysis_013', 84.01), ('analysis_014', 19.65)]]
+    warnings = review_content('[[analysis:analysis_013]]信息化建设签约率为19.65%。', contents)
+    assert any('项目比率归属' in warning and '84.01' in warning for warning in warnings)
+    assert not any('项目比率归属' in warning for warning in review_content(
+        '[[analysis:analysis_015]]信息化建设签约率为10%。', contents))
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('信息化建设签约率为84.01%；付款率为19.65%。', 0),
+    ('信息化建设签约率为84.01%；付款率为84.01%。', 1),
+    ('信息化建设签约率为84.01%，全院付款率为31.29%。', 0),
+    ('信息化建设签约率为84.01%，全院付款率为19.65%。', 1),
+    ('全院付款率为31.29%；信息化建设付款率为19.65%。', 0),
+])
+def test_project_rate_subject_survives_semicolon_and_resets_for_hospital(text, expected):
+    metrics = [{**_metric(field), 'factId': 'fact-' + letter * 16, 'unit': None,
+                'total': total, 'periodValues': []}
+               for letter, field, total in [('a', 'budget_project_amount', 10000),
+                                            ('b', 'contract_amount', 4664), ('c', 'payment_amount', 3129)]]
+    plot = {'schema': 'chart-input/v1', 'source': {'analysisId': 'analysis_013'},
+            'columns': ['group', 'contract_rate', 'payment_rate'],
+            'rows': [['信息化建设', 84.01, 19.65]],
+            'columnMeta': {key: {'unit': '%', 'isPercent': True}
+                           for key in ('contract_rate', 'payment_rate')}}
+    documents = [json.dumps({'analysisId': 'analysis_013', 'metrics': metrics}), json.dumps(plot)]
+    warnings = review_content('[[analysis:analysis_013]]' + text, documents)
+    assert sum('项目比率归属' in warning for warning in warnings) == expected
+
+
+def _monthly_income_budget_document(analysis='analysis_005', year='2025'):
+    metrics = []
+    for letter, field, values in [('a', 'actual_medical_income', (81.05, 88)),
+                                  ('b', 'budget_medical_income', (100, 100)),
+                                  ('c', 'actual_medicine_income', (90.21, 92)),
+                                  ('d', 'budget_medicine_income', (100, 100))]:
+        metric = {**_metric(field, values), 'factId': 'fact-' + letter * 16, 'unit': '元'}
+        metric['displayName'] = '医疗收入' if 'medical' in field else '药品收入'
+        metric['periodValues'] = [{**p, 'period': year + p['period'][4:]} for p in metric['periodValues']]
+        metrics.append(metric)
+    return {'analysisId': analysis, 'metrics': metrics}
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('1月医疗收入执行率约81.05%，药品收入约90.21%。', 0),
+    ('1月医疗收入执行率约90.21%，药品收入约81.05%。', 2),
+    ('2月医疗收入执行率约81.05%。', 1),
+    ('1月医疗收入执行率约81.1%。', 0),
+    ('2024年1月医疗收入执行率约90.21%。', 0),
+    ('1—2月医疗收入执行率约90.21%。', 0),
+    ('1月和2月医疗收入执行率分别为81.05%、88%。', 0),
+    ('1月普通外科医疗收入执行率约90.21%。', 0),
+])
+def test_monthly_budget_rates_are_bound_to_metric_and_period(text, expected):
+    warnings = review_content('[[analysis:analysis_005]]' + text,
+                              [json.dumps(_monthly_income_budget_document())])
+    assert sum('预算执行率归属' in warning for warning in warnings) == expected
+
+
+def test_monthly_budget_rates_do_not_borrow_other_analysis_or_zero_denominator():
+    doc = _monthly_income_budget_document()
+    text = '[[analysis:analysis_006]]1月医疗收入执行率约90.21%。'
+    assert not any('预算执行率归属' in w for w in review_content(text, [json.dumps(doc)]))
+    doc['metrics'][1]['periodValues'][0]['value'] = 0
+    assert not any('预算执行率归属' in w for w in review_content(
+        text.replace('analysis_006', 'analysis_005'), [json.dumps(doc)]))
+
+
+def test_budget_check_and_lab_total_does_not_stand_for_lab_income_alone():
+    doc = _monthly_income_budget_document()
+    for metric in doc['metrics']:
+        if 'medicine' in metric['field']:
+            metric['displayName'] = '检查化验收入'
+        metric['field'] = metric['field'].replace('medicine_income', 'test_income')
+        metric['fieldRef'] = metric['fieldRef'].replace('medicine_income', 'test_income')
+    documents = [json.dumps(doc)]
+    assert any('预算执行率归属' in w for w in review_content(
+        '1月检查化验收入执行率为81.05%。', documents))
+    assert not any('预算执行率归属' in w for w in review_content(
+        '1月检验收入执行率为81.05%。', documents))
+
+
+def test_monthly_budget_uses_frozen_business_names_without_medical_dictionary():
+    doc = _monthly_income_budget_document()
+    for fact in doc['metrics']:
+        fact['displayName'] = '设备租赁回款' if 'medical' in fact['field'] else '场地租赁回款'
+        fact['field'] = fact['field'].replace('medical_income', 'equipment').replace('medicine_income', 'venue')
+        fact['fieldRef'] = 'source.db.table.' + fact['field']
+    warnings = review_content('1月设备租赁回款执行率为90.21%。', [json.dumps(doc)])
+    assert any('预算执行率归属' in warning for warning in warnings)
+
+
+def test_monthly_budget_does_not_invent_labels_without_metadata():
+    doc = _monthly_income_budget_document()
+    for fact in doc['metrics']:
+        fact.pop('displayName', None)
+    assert not any('预算执行率归属' in warning for warning in review_content(
+        '1月医疗收入执行率为90.21%。', [json.dumps(doc)]))
