@@ -158,3 +158,43 @@ def test_heading_promotion_retains_exact_number_binding():
     assert len(promoted.number_references) == 1
     anchored = anchor_bound_numbers(promoted.markdown, promoted.number_references, promoted.review_notices)
     assert statement_fingerprint(anchored, refs[0].claim_id) == refs[0].statement_sha256
+
+
+@pytest.mark.parametrize(('selector', 'periods', 'statement'), [
+    ('periodValues.1:元', ('2025-02',), '2025年2月收入'),
+    ('periodTotals.0-2:元', ('2025-01', '2025-02', '2025-03'), '截至2025年3月，含2025年2月的累计收入'),
+    ('periodAverages.0-2:元', ('2025-01', '2025-02', '2025-03'), '含2025年2月的期间月均收入'),
+    ('periodChanges.2:元', ('2025-02', '2025-03'), '2025年3月较2025年2月增加'),
+    ('periodChangeRates.2:%', ('2025-02', '2025-03'), '2025年3月较2025年2月增长'),
+])
+def test_selected_periods_preserve_month_grain_and_all_input_buckets(selector, periods, statement):
+    from smart_reporting.reporting.trace.subject_builder import claim_status
+
+    document = json.loads(contents()[0])
+    for metric in document['metrics']:
+        metric['periodEnd'] = '2025-03'
+        metric['periodValues'].append({'period': '2025-03', 'value': 30})
+        metric['total'] += 30
+        for bucket in metric['periodValues']:
+            bucket['period'] += '-01'
+    frozen = [json.dumps(document)]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}'
+    selected = resolve_number_reference(token, frozen)
+    assert selected['periods'] == periods
+    markdown, refs, notices = render_bound_numbers(statement + token + '。', frozen, key='periods')
+    assert len(refs) == 1 and not notices
+    anchored = anchor_bound_numbers(markdown, refs, notices)
+    status = claim_status(anchored, refs[0].claim_id, selected['value'],
+                          expected_unit=selected['unit'], expected_periods=selected['periods'])
+    assert status == {'status': 'valid', 'warnings': []}
+
+
+def test_selected_daily_bucket_keeps_day_precision():
+    document = json.loads(contents()[0])
+    metric = document['metrics'][0]
+    metric['periodGranularity'] = 'day'
+    metric['periodValues'] = [{'period': '2025-02-01', 'value': 10},
+                              {'period': '2025-02-02', 'value': 20}]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}'
+    selected = resolve_number_reference(token, [json.dumps(document)])
+    assert selected['periods'] == ('2025-02-02',)

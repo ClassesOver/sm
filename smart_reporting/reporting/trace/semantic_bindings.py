@@ -118,17 +118,21 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
     selector = token[2:-2].split(':')[2]
     from .subject_builder import fact_periods
     periods = fact_periods(primary)
+    selected_periods = None
     if selector.startswith('periodValues.'):
-        periods = (primary['periodValues'][int(selector.split('.')[1])]['period'],)
+        selected_periods = [primary['periodValues'][int(selector.split('.')[1])]]
     elif selector.startswith(('periodTotals.', 'periodAverages.')):
         start, end = (int(index) for index in selector.split('.')[1].split('-'))
         selected_periods = primary['periodValues'][start:end + 1]
-        periods = tuple(dict.fromkeys((selected_periods[0]['period'], selected_periods[-1]['period'])))
     elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
-        periods = (primary['periodValues'][int(selector.split('.')[1])]['period'],)
+        index = int(selector.split('.')[1])
+        selected_periods = primary['periodValues'][index - 1:index + 1]
     elif selector.startswith('budgetComparison.'):
         period = selector[len('budgetComparison.' + ids[1] + '.'):].rsplit('.', 1)[0]
         periods = tuple(dict.fromkeys(period.split('..')))
+    if selected_periods is not None:
+        # 复用事实粒度规范化，保留累计窗口的所有桶及环比的基期与本期。
+        periods = fact_periods({**primary, 'periodValues': selected_periods})
     scope = dict(primary.get('scope') or {})
     if selector.startswith(('topGroups.', 'bottomGroups.')):
         group, index = selector.split('.')

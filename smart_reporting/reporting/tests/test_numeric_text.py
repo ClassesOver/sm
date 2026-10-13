@@ -941,3 +941,45 @@ def test_budget_difference_catalog_and_guide_require_units(unit, difference):
         assert not any('budgetComparison.' in token and '.difference:' in token for token in catalog)
     else:
         assert catalog[references['difference']] == difference
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_same_display_does_not_hide_conflicting_unrounded_values(reverse):
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_values
+    from smart_reporting.reporting.trace.semantic_bindings import render_bound_numbers
+
+    first = json.loads(_comparison_document(5, 5, total=30.001))
+    second = json.loads(json.dumps(first))
+    second['metrics'][0]['total'] = 30.002
+    documents = [second, first, second] if reverse else [first, second, first]
+    contents = [json.dumps(document) for document in documents]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:total:元}}'
+    catalog = frozen_number_catalog(contents)
+    assert catalog[token] == '数值待核实'
+    assert Decimal('30.001') not in frozen_number_values(contents, catalog).get('元', ())
+    markdown, references, notices = render_bound_numbers('收入' + token + '。', contents, key='conflict')
+    assert markdown == '收入数值待核实。'
+    assert not references
+    assert len(notices) == 1 and notices[0].kind == 'numeric_unverified'
+    identical = [json.dumps(first), json.dumps(first)]
+    assert frozen_number_catalog(identical)[token] == '30.00元'
+
+
+@pytest.mark.parametrize('chart', [False, True])
+@pytest.mark.parametrize(('unit', 'value', 'text'), [
+    ('万人次', 3.53, '接诊35,300人次。'),
+    ('人次', 35300, '接诊3.53万人次。'),
+])
+def test_supplement_visit_unit_conversion_is_bidirectional(chart, unit, value, text):
+    from smart_reporting.reporting.trace.content_review import review_content
+    from smart_reporting.reporting.trace.numeric_text import supplemental_number_values
+
+    table = {'columns': ['visits'], 'rows': [[value]], 'columnMeta': {'visits': {'unit': unit}}}
+    document = {**table, 'schema': 'chart-input/v1'} if chart else {'findings': [table]}
+    contents = [json.dumps(document)]
+    numbers = supplemental_number_values(contents)
+    assert numbers['人次'] == {Decimal('35300')}
+    assert numbers['万人次'] == {Decimal('3.53')}
+    assert replace_unregistered_numbers(text, contents) == text
+    assert review_content(text, contents) == []
+    assert replace_unregistered_numbers('金额35,300元。', contents) == '金额待核实。'

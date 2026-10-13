@@ -293,13 +293,17 @@ def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
 
 def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
     catalog: dict[str, str] = {}
+    originals: dict[str, tuple[Decimal, str | None, str | None]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
-        text = format_fact_value(value, unit, _readable_display_unit(value, unit, target))
-        if token in catalog and catalog[token] != text:
-            # 同一事实身份在不同证据中出现冲突时，不选择任意一个值。
-            catalog[token] = "数值待核实"
-        else:
-            catalog[token] = text
+        original = (Decimal(str(value)), unit, target)
+        if token in originals:
+            # 必须比较未舍入原值；显示均为 30.00 不能证明 30.001 与 30.002 一致。
+            # 一旦冲突就保留待核实，后续重复证据不能将其恢复为可信数值。
+            if originals[token] != original:
+                catalog[token] = "数值待核实"
+            continue
+        originals[token] = original
+        catalog[token] = format_fact_value(value, unit, _readable_display_unit(value, unit, target))
     return catalog
 
 
@@ -562,11 +566,9 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
                     if not number.is_finite():
                         continue
                     known.setdefault(unit, set()).add(number)
-                    if unit in _MONEY_UNITS:
-                        for target, scale in _MONEY_UNITS.items():
-                            known.setdefault(target, set()).add(number * _MONEY_UNITS[unit] / scale)
-                    elif unit == "人次":
-                        known.setdefault("万人次", set()).add(number / 10000)
+                    if (scales := _unit_scales(unit)) is not None:
+                        for target, scale in scales.items():
+                            known.setdefault(target, set()).add(number * scales[unit] / scale)
     return known
 
 
