@@ -481,11 +481,26 @@ def test_budget_ratio_is_available_when_both_amount_units_are_unknown():
     from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
         DeterministicAnalysisBundle,
     )
-    from smart_reporting.reporting.trace.numeric_text import budget_comparison_values
+    from smart_reporting.reporting.trace.numeric_text import (
+        budget_comparison_values,
+        frozen_number_guide,
+    )
 
     comparisons = budget_comparison_values(DeterministicAnalysisBundle.model_validate(document))
     assert comparisons[-1]['percentage'] == Decimal('103.3333333333333333333333333')
-    assert '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.2025-01..2025-03.percentage:%}}' in frozen_number_catalog([content])
+    catalog = frozen_number_catalog([content])
+    guide = frozen_number_guide([content], catalog)
+    assert not any('.difference:' in token for token in catalog)
+    assert '.difference:' not in json.dumps(guide)
+    actual = next(item for item in guide if item['factId'] == 'fact-' + 'a' * 16)
+    assert len(actual['budgetComparisons']) == len(comparisons) == 6
+    # 单月及累计窗口的负数、零、正数差额均不登记，但每个窗口的百分比仍可引用。
+    for comparison in actual['budgetComparisons']:
+        token = ('{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.'
+                 + comparison['period'] + '.percentage:%}}')
+        assert comparison['references'] == {'difference': None, 'percentage': token}
+        assert token in catalog
+    assert catalog[token] == '103.33%'
 
 
 def test_registered_chart_percent_is_accepted_without_treating_fraction_as_percent():
