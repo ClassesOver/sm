@@ -3559,6 +3559,40 @@ async def test_initial_section_context_failure_is_not_reported_as_generated_cont
 
 
 @pytest.mark.anyio
+async def test_whole_section_context_hard_limit_falls_back_to_blocks(monkeypatch):
+    from smart_reporting.context_management import TaskExecutionContextHardLimitError
+
+    async def fail_whole(*_args, **_kwargs):
+        raise TaskExecutionContextHardLimitError("整章上下文超限", metrics={})
+
+    async def render_stage(_agent, _schema, stage, _payload, **_kwargs):
+        if stage == "plan":
+            return SectionPlanOutput.model_validate({
+                "kind": "render",
+                "sectionCode": "section_001",
+                "blocks": [{"blockId": "block_1", "objective": "收入", "claimIds": ["claim_1"]}],
+                "claims": [_plan_claim("claim_1")],
+            })
+        return SectionBlockContent(markdown="分块生成的收入结论。")
+
+    monkeypatch.setattr(reporting_sections, "_generate_whole_section_content", fail_whole)
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", render_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0], content="{}"),), factSummaries=())
+
+    result = await reporting_sections._generate_section_in_blocks(
+        object(), {}, evidence, work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+        whole_section=True,
+    )
+
+    assert result.blocks[0].markdown == "分块生成的收入结论。"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("collection", ["topGroups", "bottomGroups"])
 @pytest.mark.parametrize("repair_succeeds", [True, False])
 async def test_visualization_repairs_ranked_detail_used_as_complete_distribution(

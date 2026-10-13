@@ -1560,12 +1560,16 @@ async def _generate_section_in_blocks(
                 thinking_request=thinking_request,
                 review_notices=review_notices,
             )
-        except ReportingError as error:
-            if error.code != "report_section_context_too_large":
+        except (ReportingError, TaskExecutionContextHardLimitError) as error:
+            if (
+                not isinstance(error, TaskExecutionContextHardLimitError)
+                and error.code != "report_section_context_too_large"
+            ):
                 raise
             loguru_logger.warning(
                 "report_section_content_split section={} reason={}",
-                work_item.section_code, error.code,
+                work_item.section_code,
+                getattr(error, "code", "task_execution_context_hard_limit_exceeded"),
             )
 
     claims_by_id = {item.claim_id: item for item in decision.claims}

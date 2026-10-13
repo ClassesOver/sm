@@ -24,9 +24,9 @@ ReportingTaskKind = Literal[
 # 受信文件与 outputHandle 按需读取。章节需要直接消费冻结证据正文，使用 Reporting
 # 已配置的统一输入预算，避免复杂报表在模型调用前被额外的固定 cap 拒绝。
 # 输出仍由模型级 reserve 单独预留，完整 Profile、工具原文和历史继续留在 checkpoint/handle。
-# 单项分析的任务 JSON 可能包含跨 Dataset 的冻结 facts；上限需要覆盖真实的
-# 不可压缩首轮前缀，同时仍低于默认 Reporting 输入预算，给工具回执和重试留余量。
-REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 160 * 1024
+# 单项分析的任务 JSON 可能包含跨 Dataset 的冻结 facts；使用已验证模型窗口扣除
+# 最小输出预留后的输入预算，避免复杂冻结事实在首轮请求前被过早拒绝。
+REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 256 * 1024
 
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
 REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"
