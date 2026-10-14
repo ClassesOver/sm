@@ -27,8 +27,11 @@ def project_analysis_findings(
     metric_definitions: Sequence[Mapping[str, Any]] = (),
     *,
     snapshot_hash: str,
+    citation_ids: tuple[str, ...],
     fact_file_path: str = "deterministic-facts.json",
     fact_file_sha256: str | None = None,
+    supplemental_file_path: str | None = None,
+    supplemental_file_sha256: str | None = None,
 ) -> tuple[FindingCard, ...]:
     """只从已验证事实生成发现；缺失事实不会被改成零。"""
 
@@ -54,7 +57,7 @@ def project_analysis_findings(
             periodStart=source_fact.get("periodStart"), periodEnd=source_fact.get("periodEnd"),
             scope=dict(source_fact.get("scope") or {}),
             grain=tuple(source_fact.get("grain") or grain), priority=priority, evidenceLevel=evidence, impactValue=impact,
-            impactUnit=display_unit, actionability="unknown", citationIds=(f"{analysis_id}:{path}",),
+            impactUnit=display_unit, actionability="unknown", citationIds=citation_ids,
             sourceRefs=(_source(analysis_id, fact_file_path, file_sha256, path),), limitations=limitations,
         ))
 
@@ -76,18 +79,42 @@ def project_analysis_findings(
     for index, relation in enumerate(payload.get("reconciliations") or ()):
         if not isinstance(relation, Mapping):
             continue
-        if relation.get("passed") is True and (
-            str(relation.get("code", "")).casefold().find("contrib") >= 0
-            or str(relation.get("code", "")).casefold().find("归因") >= 0
-        ):
-            add("attribution", f"/reconciliations/{index}", "贡献分解已闭合", f"{relation.get('code', '贡献分解')}已通过对账。", priority="high", evidence="direct_decomposition", metrics=(str(relation.get("leftMetric") or "指标"),), limitations=())
+        if relation.get("passed") is True:
+            add("data_quality", f"/reconciliations/{index}", "指标对账通过", f"{relation.get('code', '指标')}已通过对账。", priority="low", metrics=(str(relation.get("leftMetric") or "指标"),))
         else:
-            add("data_quality", f"/reconciliations/{index}", "贡献分解待核对", f"{relation.get('code', '贡献分解')}未通过对账，不能形成确定归因。", priority="medium", evidence="evidence_missing", metrics=(str(relation.get("leftMetric") or "指标"),), limitations=("归因对账未通过",))
+            add("data_quality", f"/reconciliations/{index}", "指标对账待核对", f"{relation.get('code', '指标')}未通过对账。", priority="medium", evidence="evidence_missing", metrics=(str(relation.get("leftMetric") or "指标"),), limitations=("指标对账未通过",))
 
     for index, detail in enumerate(payload.get("correlationDetails") or ()):
         if isinstance(detail, Mapping):
             add("impact", f"/correlationDetails/{index}", "指标存在统计关系", f"{detail.get('leftField', '指标')}与{detail.get('rightField', '指标')}存在统计关系，不能据此确认因果。", evidence="statistical_relation", metrics=(str(detail.get("leftField") or "指标"), str(detail.get("rightField") or "指标")), limitations=("仅有统计关系证据",))
 
+    if supplemental_evidence is not None:
+        if not supplemental_file_path or not supplemental_file_sha256:
+            raise ValueError("补证发现必须绑定冻结文件身份")
+        if supplemental_evidence.get("analysisId") != analysis_id:
+            raise ValueError("补证文件的分析身份不一致")
+        for index, item in enumerate(supplemental_evidence.get("findings") or ()):
+            if not isinstance(item, Mapping):
+                continue
+            pointer = f"/findings/{index}"
+            name = str(item.get("name") or "补充分析发现")
+            # 只登记证据的存在及原始位置，不从表格重新计算指标或因标题升级归因。
+            kind = item.get("kind")
+            if kind not in {"scale", "trend", "comparison", "anomaly", "impact", "data_quality"}:
+                kind = "impact"
+            findings.append(FindingCard(
+                findingId=_stable_id(analysis_id, f"{supplemental_file_path}:{pointer}", snapshot_hash),
+                analysisIds=(analysis_id,), kind=kind, title=name[:200],
+                summary=f"已登记补充证据：{name}"[:4000],
+                metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
+                periodRoles=tuple(item.get("periodRoles") or ("current",)),
+                periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
+                grain=tuple(item.get("grain") or ()), scope=dict(item.get("scope") or {}),
+                priority="medium", evidenceLevel="verified_fact", actionability="unknown",
+                citationIds=citation_ids,
+                sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
+                limitations=tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning),
+            ))
     if not findings:
         add("data_quality", "/warnings", "当前分析缺少可编排发现", "当前分析没有形成可用于正文的确定性发现。", priority="low", evidence="evidence_missing", limitations=tuple(str(item) for item in payload.get("warnings", ()) if item))
     return tuple(findings)
@@ -99,28 +126,33 @@ def build_finding_graph(
     metric_definitions: Sequence[Mapping[str, Any]],
     *,
     snapshot_hash: str,
+    citation_ids_by_analysis: Mapping[str, tuple[str, ...]],
     fact_file_paths: Mapping[str, str] | None = None,
     fact_file_sha256s: Mapping[str, str] | None = None,
+    supplemental_file_paths: Mapping[str, str] | None = None,
+    supplemental_file_sha256s: Mapping[str, str] | None = None,
+    supplemental_sources: Mapping[str, Sequence[tuple[Mapping[str, Any], str, str]]] | None = None,
 ) -> FindingGraph:
-    cards = [
-        card
-        for bundle in fact_bundles
-        for card in project_analysis_findings(
-            str(bundle.analysis_id if isinstance(bundle, DeterministicAnalysisBundle) else bundle.get("analysisId")),
-            bundle,
-            (supplemental_evidence or {}).get(str(bundle.analysis_id if isinstance(bundle, DeterministicAnalysisBundle) else bundle.get("analysisId"))),
-            metric_definitions,
-            snapshot_hash=snapshot_hash,
-            fact_file_path=(fact_file_paths or {}).get(
-                str(bundle.analysis_id if isinstance(bundle, DeterministicAnalysisBundle) else bundle.get("analysisId")),
-                "deterministic-facts.json",
-            ),
-            fact_file_sha256=(fact_file_sha256s or {}).get(
-                str(bundle.analysis_id if isinstance(bundle, DeterministicAnalysisBundle) else bundle.get("analysisId"))
-            ),
-        )
-    ]
-    return FindingGraph(snapshotHash=snapshot_hash, findings=tuple(cards))
+    cards: dict[str, FindingCard] = {}
+    for bundle in fact_bundles:
+        analysis_id = str(bundle.analysis_id if isinstance(bundle, DeterministicAnalysisBundle) else bundle.get("analysisId"))
+        sources = (supplemental_sources or {}).get(analysis_id) or ((
+            (supplemental_evidence or {}).get(analysis_id),
+            (supplemental_file_paths or {}).get(analysis_id),
+            (supplemental_file_sha256s or {}).get(analysis_id),
+        ),)
+        for evidence, path, sha256 in sources:
+            projected = project_analysis_findings(
+                analysis_id, bundle, evidence, metric_definitions, snapshot_hash=snapshot_hash,
+                citation_ids=citation_ids_by_analysis[analysis_id],
+                supplemental_file_path=path, supplemental_file_sha256=sha256,
+                fact_file_path=(fact_file_paths or {}).get(analysis_id, "deterministic-facts.json"),
+                fact_file_sha256=(fact_file_sha256s or {}).get(analysis_id),
+            )
+            for card in projected:
+                # 多个补证文件共享原子 facts；同一事实只登记一次，补证身份各自保留。
+                cards.setdefault(card.finding_id, card)
+    return FindingGraph(snapshotHash=snapshot_hash, findings=tuple(cards.values()))
 
 
 __all__ = ["build_finding_graph", "project_analysis_findings"]

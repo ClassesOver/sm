@@ -1988,21 +1988,6 @@ class RuntimeAnalysisMixin:
             detailed_plan=detailed_plan,
             dataset_handles=dataset_handles,
         )
-        checkpoint = await self._restore_or_create_finding_graph(
-            run_context=run_context,
-            checkpoint=checkpoint,
-            thread_id=scope["threadId"],
-            report_run_id=str(run_context.run_id or scope["externalRunId"]),
-            revision=revision,
-            fact_files=fact_files,
-        )
-        graph = (
-            await self._read_identity_model(
-                scope["threadId"], checkpoint.finding_graph_file, FindingGraph
-            )
-            if checkpoint.finding_graph_file is not None
-            else None
-        )
         checkpoint = self._update_reporting_checkpoint(
             checkpoint,
             phase="analysis",
@@ -2035,7 +2020,14 @@ class RuntimeAnalysisMixin:
                     feedback=feedback,
                     rework_request=None,
                 )
-            await self._persist_reporting_checkpoint(run_context, evidence_checkpoint)
+            durable_evidence = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+            evidence_checkpoint = await self._restore_or_create_finding_graph(
+                run_context=run_context, checkpoint=evidence_checkpoint,
+                thread_id=scope["threadId"], report_run_id=str(run_context.run_id or scope["externalRunId"]),
+                revision=revision, fact_files=fact_files,
+                analysis_items=durable_evidence.payload.get("analysisItems", {}) if durable_evidence else {},
+                citation_bindings=citation_bindings,
+            )
             await self._apply_durable_command(
                 run_context,
                 ReportingCommand(
@@ -2046,10 +2038,21 @@ class RuntimeAnalysisMixin:
             return StepOutput(
                 content={
                     "status": "evidence_frozen",
-                    "findingGraphHash": checkpoint.finding_graph_hash,
+                    "findingGraphHash": evidence_checkpoint.finding_graph_hash,
                     "analysisCount": len(fact_files),
                 }
             )
+        graph = None
+        if checkpoint.finding_graph_file is not None:
+            durable_evidence = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+            checkpoint = await self._restore_or_create_finding_graph(
+                run_context=run_context, checkpoint=checkpoint, thread_id=scope["threadId"],
+                report_run_id=str(run_context.run_id or scope["externalRunId"]), revision=revision,
+                fact_files=fact_files,
+                analysis_items=durable_evidence.payload.get("analysisItems", {}) if durable_evidence else {},
+                citation_bindings=citation_bindings,
+            )
+            graph = await self._read_identity_model(scope["threadId"], checkpoint.finding_graph_file, FindingGraph)
         checkpoint_state: dict[str, Any] = checkpoint.model_dump(mode="python")
         # Reporting 阶段统一由 Agno Workflow 驱动。checkpoint 持久化层自身提供 CAS 锁，
         # 回调不持有跨模型调用的外层锁，从而允许 Parallel 模式真正并发执行分析项和章节。
@@ -3980,64 +3983,85 @@ class RuntimeAnalysisMixin:
         report_run_id: str,
         revision: int,
         fact_files: Mapping[str, FileIdentity],
+        analysis_items: Mapping[str, Any] | None = None,
+        citation_bindings: tuple[Citation, ...] = (),
     ) -> ReportingCheckpoint:
-        """从冻结 facts 构建并持久化 FindingGraph，恢复时只复用同一文件身份。"""
+        """分析与补证完成后冻结图谱；恢复同时核对补证和引用身份。"""
+
+        items = analysis_items or {}
+        snapshot_payload = {
+            "revision": revision,
+            "profileCoverage": checkpoint.profile_coverage.model_dump(mode="json", by_alias=True),
+            "factFiles": [
+                {"analysisId": aid, "sha256": fact_files[aid].sha256}
+                for aid in sorted(fact_files)
+            ],
+            "analysisEvidence": [
+                {"analysisId": aid, "evidenceFiles": items[aid].get("evidenceFiles", ()),
+                 "datasetIds": items[aid].get("datasetIds", ())}
+                for aid in sorted(fact_files) if aid in items
+            ],
+            "citationBindings": [item.model_dump(mode="json", by_alias=True) for item in citation_bindings],
+        }
+        snapshot_hash = hashlib.sha256(
+            json.dumps(snapshot_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
         if checkpoint.finding_graph_file is not None:
             graph_file = checkpoint.finding_graph_file
             graph = await self._read_identity_model(thread_id, graph_file, FindingGraph)
-            snapshot_payload = {
-                "revision": revision,
-                "profileCoverage": checkpoint.profile_coverage.model_dump(mode="json", by_alias=True),
-                "factFiles": [
-                    {"analysisId": analysis_id, "sha256": fact_files[analysis_id].sha256}
-                    for analysis_id in sorted(fact_files)
-                ],
-            }
-            expected_snapshot_hash = hashlib.sha256(
-                json.dumps(
-                    snapshot_payload,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest()
             if (
                 checkpoint.finding_graph_hash != graph.snapshot_hash
-                or graph.snapshot_hash != expected_snapshot_hash
+                or graph.snapshot_hash != snapshot_hash
             ):
                 raise ReportingError(
                     "report_finding_graph_changed", "发现图谱快照哈希与 checkpoint 不一致。"
                 )
+            for aid in fact_files:
+                for raw_file in items.get(aid, {}).get("evidenceFiles", ()):
+                    identity = FileIdentity.model_validate(raw_file)
+                    if identity.path != fact_files[aid].path:
+                        await self._read_identity_bytes(thread_id, identity)
             return checkpoint
 
         facts: list[DeterministicAnalysisBundle] = []
+        supplements: dict[str, list[tuple[Mapping[str, Any], str, str]]] = {}
+        citations: dict[str, tuple[str, ...]] = {}
         for analysis_id, identity in fact_files.items():
+            item = items.get(analysis_id)
+            if not isinstance(item, Mapping) or item.get("analysisId") != analysis_id:
+                raise ReportingError("report_analysis_evidence_incomplete", "发现图谱只能在全部分析补证完成后冻结。")
+            dataset_ids = set(item.get("datasetIds", ()))
+            citations[analysis_id] = tuple(
+                binding.citation_id for binding in citation_bindings if binding.dataset_id in dataset_ids
+            )
+            if not citations[analysis_id]:
+                raise ReportingError("report_analysis_evidence_invalid", "管理发现缺少已登记数据集引用。")
             fact = await self._read_identity_model(thread_id, identity, DeterministicAnalysisBundle)
             if fact.analysis_id != analysis_id:
                 raise ReportingError(
                     "report_analysis_facts_invalid", "确定性 facts 文件与 analysisId 映射不一致。"
                 )
             facts.append(fact)
-        snapshot_payload = {
-            "revision": revision,
-            "profileCoverage": checkpoint.profile_coverage.model_dump(mode="json", by_alias=True),
-            "factFiles": [
-                {"analysisId": analysis_id, "sha256": fact_files[analysis_id].sha256}
-                for analysis_id in sorted(fact_files)
-            ],
-        }
-        snapshot_hash = hashlib.sha256(
-            json.dumps(snapshot_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+            for raw_file in item.get("evidenceFiles", ()):
+                evidence_file = FileIdentity.model_validate(raw_file)
+                if evidence_file.path == identity.path:
+                    continue
+                content = await self._read_identity_bytes(thread_id, evidence_file)
+                evidence = validate_supplemental_evidence(content, item)
+                supplements.setdefault(analysis_id, []).append((
+                    evidence.model_dump(mode="json", by_alias=True), evidence_file.path, evidence_file.sha256,
+                ))
         profile = self._profile(run_context)
         graph = build_finding_graph(
             facts,
             None,
             tuple(item.model_dump(mode="json", by_alias=True) for item in profile.metrics),
             snapshot_hash=snapshot_hash,
+            citation_ids_by_analysis=citations,
             fact_file_paths={analysis_id: identity.path for analysis_id, identity in fact_files.items()},
             fact_file_sha256s={analysis_id: identity.sha256 for analysis_id, identity in fact_files.items()},
+            supplemental_sources=supplements,
         )
         content = json.dumps(
             graph.model_dump(mode="json", by_alias=True),

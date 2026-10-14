@@ -74,7 +74,8 @@ async def test_restore_rejects_graph_from_another_fact_snapshot(anyio_backend):
     from smart_reporting.reporting.workflow.runtime.analysis import RuntimeAnalysisMixin
 
     graph = build_finding_graph(
-        [{"analysisId": "analysis_001"}], None, (), snapshot_hash="f" * 64
+        [{"analysisId": "analysis_001"}], None, (), snapshot_hash="f" * 64,
+        citation_ids_by_analysis={"analysis_001": ("citation_001",)},
     )
     checkpoint = ReportingCheckpoint(
         revision=1, phase="analysis", outlineHash="a" * 64,
@@ -125,3 +126,73 @@ def test_checkpoint_rejects_outline_change_after_narrative_freeze():
     incoming = current.model_copy(update={"outline_hash": "b" * 64})
     with pytest.raises(ReportingError):
         RuntimeAnalysisMixin._merge_reporting_checkpoints(current, incoming)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("source_count", [1, 2])
+async def test_finding_graph_freezes_supplement_identity_and_registered_citations(anyio_backend, source_count):
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.delivery.artifacts_v1 import Citation
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
+    from smart_reporting.reporting.hospital_operation.findings import FindingGraph
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.reporting.workflow.runtime.analysis import RuntimeAnalysisMixin
+
+    fact_file = FileIdentity(path="facts/001.json", size=10, sha256="a" * 64)
+    supplement_file = FileIdentity(path="evidence/001.json", size=10, sha256="b" * 64)
+    item = {
+        "analysisId": "analysis_001", "datasetIds": ["dataset-url-abc0001"],
+        "citationIds": ["citation_007"],
+        "evidenceFiles": [fact_file.model_dump(by_alias=True), supplement_file.model_dump(by_alias=True)],
+    }
+    if source_count == 2:
+        item["evidenceFiles"].append({"path": "evidence/002.json", "size": 10, "sha256": "f" * 64})
+    binding = Citation(citationId="citation_007", datasetId="dataset-url-abc0001",
+                       requirementId="requirement_001", snapshotHash="c" * 64)
+    saved = {}
+
+    async def read(thread_id, identity, model):
+        if model is FindingGraph:
+            return saved["graph"]
+        return DeterministicAnalysisBundle(analysisId="analysis_001")
+
+    async def read_bytes(thread_id, identity):
+        return json.dumps({
+            "findings": [{"name": "院区差额", "columns": ["院区", "差额"], "rows": [["东", 10]]}],
+            "reconciliations": [{"name": "总额", "passed": True}], "warnings": [],
+        }).encode()
+
+    async def write(thread_id, path, content):
+        saved["graph"] = FindingGraph.model_validate_json(content)
+        return FileIdentity(path=path, size=len(content), sha256=hashlib.sha256(content).hexdigest())
+
+    async def persist(context, checkpoint):
+        return checkpoint
+
+    runtime = SimpleNamespace(
+        _read_identity_model=read, _read_identity_bytes=read_bytes, _write_immutable_artifact=write,
+        _profile=lambda context: SimpleNamespace(metrics=()), _persist_reporting_checkpoint=persist,
+        _update_reporting_checkpoint=RuntimeAnalysisMixin._update_reporting_checkpoint,
+        _merge_checkpoint_files=RuntimeAnalysisMixin._merge_checkpoint_files,
+    )
+    checkpoint = ReportingCheckpoint(revision=1, phase="analysis", outlineHash="d" * 64, profileCoverage=_coverage())
+    kwargs = dict(
+        run_context=None, thread_id="thread-1", report_run_id="run-1", revision=1,
+        fact_files={"analysis_001": fact_file}, analysis_items={"analysis_001": item},
+        citation_bindings=(binding,),
+    )
+    frozen = await RuntimeAnalysisMixin._restore_or_create_finding_graph(runtime, checkpoint=checkpoint, **kwargs)
+    assert saved["graph"].findings[0].source_refs[0].path == supplement_file.path
+    assert saved["graph"].findings[0].citation_ids == (binding.citation_id,)
+    assert {ref.path for card in saved["graph"].findings for ref in card.source_refs} == {
+        value["path"] for value in item["evidenceFiles"][1:]
+    }
+    item["evidenceFiles"][1]["sha256"] = "e" * 64
+    with pytest.raises(ReportingError, match="快照"):
+        await RuntimeAnalysisMixin._restore_or_create_finding_graph(runtime, checkpoint=frozen, **kwargs)

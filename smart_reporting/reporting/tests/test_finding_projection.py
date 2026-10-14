@@ -1,3 +1,5 @@
+import pytest
+
 from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
     DeterministicAnalysisBundle,
 )
@@ -20,11 +22,11 @@ def test_projection_creates_trend_finding_from_period_values():
         "field": "income", "fieldRef": "income", "aggregation": "sum", "formula": "sum(income)",
         "total": 20, "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
         "periodValues": [{"period": "2025-01", "value": 10}, {"period": "2025-02", "value": 20}],
-    }]), None, snapshot_hash="b" * 64)
+    }]), None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
     assert any(item.kind == "trend" for item in result)
 
 
-def test_projection_marks_closed_reconciliation_as_direct_attribution():
+def test_reconciliation_name_does_not_establish_direct_attribution():
     result = project_analysis_findings("analysis_001", facts(reconciliations=[{
         "code": "contribution", "periodRole": "current", "leftMetric": "income",
         "rightMetric": "groups", "grain": ["院区"], "leftTotal": 10, "rightTotal": 10,
@@ -32,8 +34,10 @@ def test_projection_marks_closed_reconciliation_as_direct_attribution():
         "checkedGroupCount": 1, "failedGroupCount": 0, "passed": True,
         "formula": "sum(groups)=income", "datasetIds": ["dataset-abc123"],
         "datasetSha256s": ["a" * 64],
-    }]), None, snapshot_hash="b" * 64)
-    assert next(item for item in result if item.kind == "attribution").evidence_level == "direct_decomposition"
+    }]), None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
+    assert all(item.evidence_level != "direct_decomposition" for item in result)
+    assert result[0].title == "指标对账通过"
+    assert not result[0].limitations
 
 
 def test_projection_marks_correlation_as_statistical_relation():
@@ -41,19 +45,19 @@ def test_projection_marks_correlation_as_statistical_relation():
         "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
         "leftField": "income", "rightField": "workload", "method": "pearson",
         "sampleCount": 12, "value": 0.8,
-    }]), None, snapshot_hash="b" * 64)
+    }]), None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
     assert next(item for item in result if item.kind == "impact").evidence_level == "statistical_relation"
 
 
 def test_projection_has_missing_evidence_when_bundle_is_empty():
-    result = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64)
+    result = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
     assert result[0].impact_value is None
     assert result[0].evidence_level == "evidence_missing"
 
 
 def test_projection_ids_are_stable():
-    first = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64)
-    second = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64)
+    first = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
+    second = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
     assert [item.finding_id for item in first] == [item.finding_id for item in second]
 
 
@@ -67,10 +71,46 @@ def test_trend_finding_preserves_fact_scope_period_and_pointer():
         "periodStart": "2025-01-01", "periodEnd": "2025-02-28",
         "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
         "periodValues": [{"period": "2025-01", "value": 10}, {"period": "2025-02", "value": 20}],
-    }]), None, snapshot_hash="b" * 64)
+    }]), None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
     trend = next(item for item in result if item.kind == "trend")
     assert trend.metric_codes == ("income_total",)
     assert trend.scope == {"income_nature": "开单收入"}
     assert trend.period_start == "2025-01-01"
     assert trend.period_end == "2025-02-28"
     assert trend.source_refs[0].pointer == "/metrics/0/periodValues"
+
+
+def test_projection_uses_registered_citations_instead_of_inventing_ids():
+    result = project_analysis_findings(
+        "analysis_001", facts(), None, snapshot_hash="b" * 64,
+        citation_ids=("citation_007",),
+    )
+    assert result[0].citation_ids == ("citation_007",)
+
+
+def test_supplemental_finding_retains_its_file_identity_and_pointer():
+    evidence = {
+        "analysisId": "analysis_001", "datasetIds": ["dataset-abc123"],
+        "findings": [{"name": "院区收入变化", "kind": "comparison",
+                      "columns": ["院区", "差额"], "rows": [["东院区", 10]]}],
+        "reconciliations": [{"name": "收入对账", "passed": True}], "warnings": [],
+    }
+    result = project_analysis_findings(
+        "analysis_001", facts(), evidence, snapshot_hash="b" * 64,
+        citation_ids=("citation_007",),
+        supplemental_file_path="evidence/001.json", supplemental_file_sha256="c" * 64,
+    )
+    selected = next(item for item in result if item.title == "院区收入变化")
+    assert selected.source_refs[0].path == "evidence/001.json"
+    assert selected.source_refs[0].file_sha256 == "c" * 64
+    assert selected.source_refs[0].pointer == "/findings/0"
+    assert selected.citation_ids == ("citation_007",)
+    assert selected.impact_value is None
+
+
+def test_supplemental_projection_requires_frozen_file_identity():
+    with pytest.raises(ValueError, match="身份"):
+        project_analysis_findings(
+            "analysis_001", facts(), {"findings": [{"name": "收入变化"}]},
+            snapshot_hash="b" * 64, citation_ids=("citation_007",),
+        )
