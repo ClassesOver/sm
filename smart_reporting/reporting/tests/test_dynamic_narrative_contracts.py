@@ -1,0 +1,95 @@
+"""发现身份、范围及章节覆盖契约。"""
+
+import pytest
+from pydantic import ValidationError
+
+from smart_reporting.reporting.hospital_operation.findings import FindingCard, FindingGraph
+from smart_reporting.reporting.hospital_operation.narrative_outline import (
+    NarrativeOutlineCandidate,
+    freeze_narrative_outline,
+)
+
+
+def finding(number=1, **changes):
+    return FindingCard.model_validate({
+        "findingId": f"finding_{number:016x}",
+        "analysisIds": [f"analysis_{number:03d}"],
+        "kind": "comparison", "title": "收入同比变化", "summary": "收入发生变化",
+        "metricCodes": ["income"], "periodRoles": ["current", "yoy"],
+        "periodStart": "2025-01-01", "periodEnd": "2025-12-31",
+        "grain": ["院区"], "scope": {}, "priority": "high",
+        "evidenceLevel": "verified_fact", "actionability": "unknown",
+        "citationIds": ["citation_001"], "sourceRefs": [{
+            "analysisId": f"analysis_{number:03d}", "fileSha256": "a" * 64,
+            "path": "facts.json", "pointer": "/comparisons/0",
+        }], **changes,
+    })
+
+
+def graph(*cards):
+    return FindingGraph(snapshotHash="b" * 64, findings=cards)
+
+
+def candidate(*groups, **changes):
+    return NarrativeOutlineCandidate(title="医院运营分析", snapshotHash="b" * 64,
+        sections=[{"title": f"经营变化{index}", "findingIds": ids,
+                   "objective": "解释经营变化", "groupingReason": "共同管理问题"}
+                  for index, ids in enumerate(groups)], **changes)
+
+
+def freeze(value, cards):
+    return freeze_narrative_outline(value, graph=graph(*cards),
+        analyses=[{"analysisId": aid} for card in cards for aid in card.analysis_ids])
+
+
+def test_sections_derive_analysis_identity_and_number_from_findings():
+    cards = [finding(1), finding(2)]
+    result = freeze(candidate([card.finding_id for card in cards]), cards)
+    assert result.sections[0].code == "section_001"
+    assert result.sections[0].section_number == "1"
+    assert result.sections[0].analysis_ids == ("analysis_001", "analysis_002")
+
+
+@pytest.mark.parametrize("groups", [(["finding_0000000000000001"], ["finding_0000000000000001"]),
+                                     (["finding_ffffffffffffffff"],)])
+def test_unknown_or_repeated_finding_is_rejected(groups):
+    with pytest.raises(ValueError):
+        freeze(candidate(*groups), [finding()])
+
+
+def test_high_priority_finding_cannot_be_silently_omitted():
+    with pytest.raises(ValueError, match="遗漏"):
+        freeze(candidate([finding().finding_id]), [finding(), finding(2)])
+
+
+def test_low_priority_appendix_has_explicit_destination():
+    cards = [finding(), finding(2, priority="low")]
+    result = freeze(candidate([cards[0].finding_id], appendixFindingIds=[cards[1].finding_id]), cards)
+    assert result.appendix_finding_ids == (cards[1].finding_id,)
+
+
+@pytest.mark.parametrize("changes", [
+    {"periodEnd": "2025-10-31"}, {"grain": ["科室"]}, {"scope": {"income_nature": "开单"}},
+])
+def test_incompatible_fact_scopes_cannot_be_merged(changes):
+    cards = [finding(), finding(2, **changes)]
+    with pytest.raises(ValueError, match="口径"):
+        freeze(candidate([card.finding_id for card in cards]), cards)
+
+
+def test_graph_rejects_unregistered_relationship():
+    with pytest.raises(ValueError):
+        graph(finding(relatedFindingIds=["finding_ffffffffffffffff"]))
+
+
+def test_identity_requires_source_and_rejects_nonfinite_value():
+    with pytest.raises(ValidationError):
+        finding(sourceRefs=[])
+    with pytest.raises(ValidationError):
+        finding(impactValue=float("nan"))
+
+
+def test_outline_cannot_change_snapshot():
+    value = candidate([finding().finding_id]).model_copy(update={"snapshot_hash": "c" * 64})
+    with pytest.raises(ValueError, match="快照"):
+        freeze(value, [finding()])

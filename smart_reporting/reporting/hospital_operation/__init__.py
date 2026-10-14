@@ -26,6 +26,14 @@ from .outline import (
     ReportOutlineSection,
     freeze_outline,
 )
+from .findings import FindingCard, FindingGraph, FindingRelation, FindingSourceRef
+from .narrative_outline import (
+    NarrativeOutline,
+    NarrativeOutlineCandidate,
+    NarrativeSection,
+    NarrativeSectionCandidate,
+    freeze_narrative_outline,
+)
 
 __all__ = [
     "DOMAIN_CODES",
@@ -46,4 +54,13 @@ __all__ = [
     "freeze_outline",
     "profile_csv_dataset",
     "resolve_domain_mentions",
+    "FindingCard",
+    "FindingGraph",
+    "FindingRelation",
+    "FindingSourceRef",
+    "NarrativeOutline",
+    "NarrativeOutlineCandidate",
+    "NarrativeSection",
+    "NarrativeSectionCandidate",
+    "freeze_narrative_outline",
 ]
