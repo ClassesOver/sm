@@ -1031,3 +1031,24 @@ def test_editor_match_does_not_turn_nonzero_values_into_zero(value, unit, text, 
     assert formatted_value_matches(text, value, unit) is supported
     result = claim_status(text + '[[claim:test-zero]]。', 'test-zero', value, expected_unit=unit)
     assert (result['status'] == 'valid') is supported
+
+
+@pytest.mark.parametrize('metrics', [
+    42,
+    'not-a-fact-list',
+    [None],
+    [{'periodRoles': None}],
+    [{'periodRoles': ['current'], 'periodGranularity': 'month',
+      'periodValues': [{'period': '2025-01'}]}],
+    [{'periodRoles': ['current'], 'periodGranularity': 'month',
+      'periodValues': [{'period': '2025-01', 'value': 'not-a-number'}]}],
+    [{'periodRoles': ['current'], 'periodGranularity': 'month',
+      'periodValues': [{'period': '2025-01', 'value': float('nan')}]}],
+])
+def test_extrema_review_skips_malformed_supplementary_metrics(metrics):
+    from smart_reporting.reporting.trace.numeric_text import period_extrema_warnings
+
+    bundle = {'analysisId': 'analysis_bad', 'metrics': metrics}
+    text = '[[analysis:analysis_bad]]1月为收入最高。'
+    assert period_extrema_warnings(text, [bundle]) == []
+    assert correct_period_extrema(text, [json.dumps(bundle)]) == text

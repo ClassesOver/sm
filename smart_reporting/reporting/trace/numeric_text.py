@@ -10,7 +10,7 @@ from typing import Any
 
 from loguru import logger
 
-from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle, PeriodValue
 
 _MONEY_UNITS = {"元": Decimal(1), "万元": Decimal(10_000), "亿元": Decimal(100_000_000)}
 # 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
@@ -1100,12 +1100,22 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
     warnings: list[str] = []
     markers = list(re.finditer(r"\[\[analysis:([^\]]+)\]\]", markdown))
     for bundle in bundles:
-        metrics = [entry for entry in (bundle.get("metrics") or ())
-                   if "current" in entry.get("periodRoles", ())]
+        raw_metrics = bundle.get("metrics")
+        if not isinstance(raw_metrics, (list, tuple)):
+            continue
+        metrics = [entry for entry in raw_metrics if isinstance(entry, Mapping)
+                   and isinstance(entry.get("periodRoles"), (list, tuple))
+                   and "current" in entry["periodRoles"]]
         if len(metrics) != 1 or metrics[0].get("periodGranularity") != "month":
             continue
-        periods = metrics[0].get("periodValues", ())
-        if not periods:
+        raw_periods = metrics[0].get("periodValues")
+        if not isinstance(raw_periods, (list, tuple)) or not raw_periods:
+            continue
+        try:
+            periods = [PeriodValue.model_validate(item).model_dump(mode="json") for item in raw_periods]
+        except ValueError:
+            continue
+        if any(not Decimal(str(item["value"])).is_finite() for item in periods):
             continue
         labels = [str(item["period"]) for item in periods]
         if any(not re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", label) for label in labels):

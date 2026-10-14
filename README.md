@@ -89,3 +89,19 @@ AgentOS 的 agent、team 和 workflow 新建 run 请求总大小上限为 32 MiB
 超过边界的请求会在模型调用或文件读取前被拒绝。
 
 Daytona 的端口、镜像和运维说明见 [docker/README.md](docker/README.md)。
+
+## 报告准确性与工具协议
+
+- 数值引用绑定具体事实、期间、分组和公式；金额、人次换算与十进制舍入由服务端统一处理。
+- 冲突值、无依据的倍数和被大单位舍入成零的非零值需复核；日期数字不会作为事实值。
+- Coding harness 校验调用身份与一对一回执，按顺序执行多工具调用；失败或提交后停止后续执行，并保留 custom 输入与 reasoning 回放。
+- 业务复核为软告警。已生成且身份可读取的 PDF/Word 即使验收失败，也返回下载链接与失败原因。
+
+相关回归测试（不调用真实模型服务）：
+
+```bash
+uv sync --frozen --group dev
+.venv/bin/pytest -q smart_reporting/reporting/tests/{test_numeric_text,test_semantic_bindings,test_trace_subject_validate,test_reporting_code_reasoning_replay}.py
+```
+
+接口与配置见 [smart_reporting/README.md](smart_reporting/README.md)。
