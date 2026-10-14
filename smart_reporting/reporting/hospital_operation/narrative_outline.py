@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -53,6 +53,57 @@ class NarrativeOutline(HospitalOperationSchema):
     appendix_finding_ids: tuple[str, ...] = Field(default=(), alias="appendixFindingIds", max_length=2000)
     omitted_findings: tuple[dict[str, str], ...] = Field(default=(), alias="omittedFindings", max_length=200)
     snapshot_hash: str = Field(alias="snapshotHash", pattern=r"^[0-9a-f]{64}$")
+
+
+class NarrativeQualityMetrics(HospitalOperationSchema):
+    finding_count: int = Field(alias="findingCount", ge=0)
+    assigned_finding_count: int = Field(alias="assignedFindingCount", ge=0)
+    coverage_rate: float = Field(alias="coverageRate", ge=0, le=1)
+    duplicate_finding_ids: tuple[str, ...] = Field(default=(), alias="duplicateFindingIds")
+    unassigned_finding_ids: tuple[str, ...] = Field(default=(), alias="unassignedFindingIds")
+    empty_section_codes: tuple[str, ...] = Field(default=(), alias="emptySectionCodes")
+    issues: tuple[dict[str, Any], ...] = Field(default=(), max_length=500)
+
+
+def evaluate_narrative_quality(
+    graph: FindingGraph,
+    outline: NarrativeOutline,
+    *,
+    rendered_section_codes: tuple[str, ...] = (),
+) -> NarrativeQualityMetrics:
+    """计算动态提纲质量指标；所有结果都是软告警，不改变发布决策。"""
+    known = {item.finding_id for item in graph.findings}
+    occurrences: dict[str, int] = {}
+    for section in outline.sections:
+        for finding_id in section.finding_ids:
+            occurrences[finding_id] = occurrences.get(finding_id, 0) + 1
+    duplicate = tuple(sorted(item for item, count in occurrences.items() if count > 1))
+    assigned = set(occurrences) | set(outline.appendix_finding_ids)
+    unassigned = tuple(sorted(known - assigned - {
+        item.get("findingId") for item in outline.omitted_findings if item.get("findingId")
+    }))
+    empty = tuple(section.code for section in outline.sections if not section.finding_ids)
+    issues: list[dict[str, Any]] = []
+    if duplicate:
+        issues.append({"code": "report_narrative_duplicate_finding", "findingIds": list(duplicate)})
+    if unassigned:
+        issues.append({"code": "report_narrative_unassigned_finding", "findingIds": list(unassigned)})
+    if empty:
+        issues.append({"code": "report_narrative_empty_section", "sectionCodes": list(empty)})
+    rendered = set(rendered_section_codes)
+    unrendered = tuple(section.code for section in outline.sections if section.code not in rendered)
+    if unrendered:
+        issues.append({"code": "report_narrative_section_unrendered", "sectionCodes": list(unrendered)})
+    count = len(graph.findings)
+    return NarrativeQualityMetrics(
+        findingCount=count,
+        assignedFindingCount=len(assigned & known),
+        coverageRate=(len(assigned & known) / count if count else 1.0),
+        duplicateFindingIds=duplicate,
+        unassignedFindingIds=unassigned,
+        emptySectionCodes=empty,
+        issues=tuple(issues),
+    )
 
 
 def freeze_narrative_outline(
@@ -113,4 +164,4 @@ def freeze_narrative_outline(
                             omittedFindings=candidate.omitted_findings, snapshotHash=graph.snapshot_hash)
 
 
-__all__ = ["NarrativeOutline", "NarrativeOutlineCandidate", "NarrativeSection", "NarrativeSectionCandidate", "freeze_narrative_outline"]
+__all__ = ["NarrativeOutline", "NarrativeOutlineCandidate", "NarrativeSection", "NarrativeSectionCandidate", "NarrativeQualityMetrics", "evaluate_narrative_quality", "freeze_narrative_outline"]
