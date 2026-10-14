@@ -462,6 +462,14 @@ def test_review_flags_internal_ids_and_raw_field_names_in_visible_prose():
     assert not [w for w in review_content("actually 稳定。", [content], field_definitions=fields) if "内部" in w]
 
 
+def test_review_flags_harness_and_implementation_terms_in_management_prose():
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(10, 20, 0))]})
+    text = "本 block 使用 Markdown 和 CSV，服务端字段经 ACF/PACF 检验，详见 x轴。"
+    warnings = review_content(text, [content])
+    assert sum("技术实现术语" in warning for warning in warnings) == 7
+    assert any("block" in warning and "段落" in warning for warning in warnings)
+
+
 @pytest.mark.parametrize(("text", "kind"), [
     ("收入同比下降-5.20%。", "重复"),
     ("门诊量减少了 -1,200人次。", "重复"),

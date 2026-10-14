@@ -94,6 +94,21 @@ _CONTRACT_FIELD_PATTERN = re.compile(
     r"|maximum|change|numerator|denominator|difference|percentage|(?i:yoy|mom))(?![A-Za-z0-9_])"
 )
 
+# 管理层正文不得泄漏生成/验收实现术语。协议标记会在此之前移除；这些词即使
+# 数值和口径正确，也会让成品读起来像 harness 日志而不是经营报告。
+_TECHNICAL_PRESENTATION_TERMS = {
+    "block": "段落",
+    "Markdown": "正文",
+    "CSV": "明细数据",
+    "SQL": "查询口径",
+    "ACF/PACF": "时序相关性检验",
+    "服务端": "登记结果",
+    "数据集": "统计口径",
+    "字段": "指标",
+    "x轴": "横轴",
+    "y轴": "纵轴",
+}
+
 # 冻结数据只覆盖本期与对比期：“创历史新高”“首次突破1亿元”“历年最高”需要更长历史才能判断。
 _HISTORICAL_CLAIM = re.compile(
     r"历史(?:新高|新低|最高|最低|同期最高|同期最低)|历年(?:最高|最低)|史上|"
@@ -447,6 +462,13 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         warnings.append(
             f"正文出现数据字段名：{field}。读者可见内容改用中文业务表述（如合计、同比、环比、月均、变化额）。"
         )
+    for term, replacement in _TECHNICAL_PRESENTATION_TERMS.items():
+        flags = re.IGNORECASE if term.isascii() else 0
+        if re.search(rf"(?<![A-Za-z]){re.escape(term)}(?![A-Za-z])", visible, flags):
+            warnings.append(
+                f"正文出现技术实现术语：{term}。面向管理层请改为业务表达“{replacement}”，"
+                "不要描述生成、验收或文件处理过程。"
+            )
     for field, description in (field_definitions or {}).items():
         # 紧跟登记说明的写法（如“字段（三级科室）”）用于数据质量说明，保持既有口径不告警。
         if (re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,}", field)
