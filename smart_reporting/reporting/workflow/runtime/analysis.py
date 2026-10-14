@@ -17,6 +17,14 @@ from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...code_agent.failure_policy import fresh_attempt_futile
 from ...hospital_operation.finding_projection import build_finding_graph
 from ...hospital_operation.findings import FindingGraph
+from ...hospital_operation.narrative_outline import (
+    NarrativeOutlineCandidate,
+    freeze_narrative_outline,
+)
+from ...hospital_operation.narrative_planner import (
+    build_compatible_report_outline,
+    cluster_findings,
+)
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
@@ -2270,6 +2278,82 @@ class RuntimeAnalysisMixin:
         )
         await self._persist_reporting_checkpoint(run_context, final_checkpoint)
         return StepOutput(content={**content, "jobId": result["jobId"]})
+
+    async def generate_narrative_outline(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        """在 FindingGraph 冻结后生成最终章节提纲并保存其身份。"""
+
+        scope = self._scope(run_context)
+        run_id = str(run_context.run_id or scope["externalRunId"])
+        durable = await self.state_repository.get(run_id)
+        stored = durable.payload.get("workflowCheckpoint") if durable is not None else None
+        if not isinstance(stored, Mapping):
+            raise ReportingError("report_finding_graph_unavailable", "动态章节缺少 checkpoint。")
+        checkpoint = ReportingCheckpoint.model_validate(stored)
+        if checkpoint.finding_graph_file is None or checkpoint.finding_graph_hash is None:
+            raise ReportingError("report_finding_graph_unavailable", "动态章节缺少已冻结发现图谱。")
+        await self._apply_durable_command(
+            run_context,
+            ReportingCommand(
+                name="start_narrative_planning",
+                commandId=f"narrative-planning-start:{checkpoint.revision}",
+            ),
+        )
+        graph = await self._read_identity_model(scope["threadId"], checkpoint.finding_graph_file, FindingGraph)
+        state = self._state(run_context)
+        legacy_outline = _frozen_outline(state)
+        detailed_plan = DetailedAnalysisPlan.model_validate(
+            state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]
+        )
+        analyses = [{"analysisId": item.analysis_id} for item in detailed_plan.analyses]
+        cards = {item.finding_id: item for item in graph.findings}
+        candidate = NarrativeOutlineCandidate(
+            title=legacy_outline.title,
+            sections=tuple(
+                {
+                    "title": "；".join(cards[finding_id].title for finding_id in group)[:200],
+                    "findingIds": group,
+                    "objective": "解释已核验发现并提出管理动作",
+                    "groupingReason": "依据共享指标、期间、粒度和已登记发现关系分组",
+                }
+                for group in cluster_findings(graph)
+            ),
+            snapshotHash=graph.snapshot_hash,
+        )
+        narrative = freeze_narrative_outline(candidate, graph=graph, analyses=analyses)
+        compatible = build_compatible_report_outline(
+            graph, report_type=legacy_outline.report_type, title=narrative.title
+        )
+        outline_payload = compatible.model_dump(mode="json", by_alias=True)
+        state[REPORT_OUTLINE_STATE_KEY] = outline_payload
+        state[REPORT_OUTLINE_HASH_STATE_KEY] = payload_sha256(outline_payload)
+        narrative_content = json.dumps(
+            narrative.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        narrative_file = await self._write_immutable_artifact(
+            scope["threadId"],
+            f"报表/智能分析/{run_id}/narrative/revision-{checkpoint.revision}/outline.json",
+            narrative_content,
+        )
+        checkpoint = self._update_reporting_checkpoint(
+            checkpoint,
+            narrative_outline_file=narrative_file,
+            narrative_outline_hash=hashlib.sha256(narrative_content).hexdigest(),
+            files=self._merge_checkpoint_files(checkpoint.files, narrative_file),
+        )
+        await self._persist_reporting_checkpoint(run_context, checkpoint)
+        await self._apply_durable_command(
+            run_context,
+            ReportingCommand(
+                name="complete_narrative_planning",
+                commandId=f"narrative-planning-complete:{checkpoint.revision}",
+            ),
+        )
+        return StepOutput(content={"status": "completed", "sectionCount": len(narrative.sections)})
 
     async def assemble_report(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
         state = self._state(run_context)

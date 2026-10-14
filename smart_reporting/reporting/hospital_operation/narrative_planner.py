@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .findings import FindingCard, FindingGraph
 from .narrative_outline import NarrativeOutline, NarrativeOutlineCandidate, freeze_narrative_outline
+from .outline import ReportOutline
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,55 @@ def freeze_planned_sections(
     return freeze_narrative_outline(candidate, graph=graph, analyses=analyses)
 
 
+def build_compatible_report_outline(
+    graph: FindingGraph,
+    *,
+    report_type: str,
+    title: str,
+) -> ReportOutline:
+    """将确定性发现分组投影为旧渲染器可消费的服务端提纲。"""
+
+    cards = {item.finding_id: item for item in graph.findings}
+    sections: list[dict[str, object]] = []
+    for index, group in enumerate(cluster_findings(graph), 1):
+        analysis_ids = tuple(
+            dict.fromkeys(
+                analysis_id
+                for finding_id in group
+                for analysis_id in cards[finding_id].analysis_ids
+            )
+        )
+        if not analysis_ids:
+            continue
+        sections.append(
+            {
+                "code": f"section_{index:03d}",
+                "sectionNumber": str(index),
+                "title": "；".join(cards[finding_id].title for finding_id in group)[:300],
+                "focus": tuple(
+                    dict.fromkeys(
+                        metric
+                        for finding_id in group
+                        for metric in cards[finding_id].metric_codes
+                    )
+                ),
+                "analysisIds": analysis_ids,
+            }
+        )
+    if not sections:
+        raise ValueError("发现图谱没有可用于章节的原子分析")
+    return ReportOutline.model_validate(
+        {
+            "reportType": report_type if report_type in {"comprehensive", "topic"} else "comprehensive",
+            "title": title,
+            "sections": sections,
+            "assumptions": (),
+        }
+    )
+
+
 __all__ = [
     "NarrativeContentBudget", "build_narrative_planning_context", "cluster_findings",
     "freeze_planned_sections", "rank_finding", "score_finding_relation",
+    "build_compatible_report_outline",
 ]

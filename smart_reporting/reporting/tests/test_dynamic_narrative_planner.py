@@ -1,5 +1,6 @@
 from smart_reporting.reporting.hospital_operation.narrative_planner import (
     NarrativeContentBudget,
+    build_compatible_report_outline,
     cluster_findings,
     score_finding_relation,
 )
@@ -38,3 +39,15 @@ def test_section_budget_does_not_drop_findings():
     assert {item for group in groups for item in group} == {
         card.finding_id for card in cards
     }
+
+
+def test_compatible_outline_uses_finding_groups_instead_of_analysis_count():
+    cards = [
+        finding(1, metricCodes=("income",), relatedFindingIds=("finding_0000000000000002",)),
+        finding(2, metricCodes=("workload",), relatedFindingIds=("finding_0000000000000001",)),
+    ]
+    outline = build_compatible_report_outline(
+        graph(*cards), report_type="comprehensive", title="医院运营分析"
+    )
+    assert len(outline.sections) == 1
+    assert outline.sections[0].analysis_ids == ("analysis_001", "analysis_002")

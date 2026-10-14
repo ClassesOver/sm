@@ -17,8 +17,8 @@ from agno.workflow.workflow import Workflow
 from loguru import logger
 
 from ..models import reporting_failure
-from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
 from .controller import REPORT_PROCESS_LIFECYCLE_DEPENDENCY
+from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
 from .scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 
 StepExecutor = Any
@@ -451,6 +451,7 @@ def create_reporting_workflow(
     assemble_report: StepExecutor,
     validate_report: StepExecutor,
     finalize_publication: StepExecutor,
+    generate_narrative_outline: StepExecutor | None = None,
 ) -> Workflow:
     """创建可注册到现有 AgentOS 的报表 Workflow，不建立第二条传输链路。"""
 
@@ -568,7 +569,7 @@ def create_reporting_workflow(
             ),
             Step(
                 step_id="generate-outline",
-                name="生成动态报告提纲",
+                name="生成初始分析提纲",
                 executor=_timed_step_executor(generate_outline, step_id="generate-outline"),
                 max_retries=1,
                 # 当前产品入口暂不启用提纲审核交互。这里是直接流向下一节点，不是
@@ -583,6 +584,16 @@ def create_reporting_workflow(
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             create_reporting_analysis_step(run_reporting_analysis),
+            *([Step(
+                step_id="generate-narrative-outline",
+                name="根据核验发现生成动态章节",
+                executor=_timed_step_executor(
+                    generate_narrative_outline,
+                    step_id="generate-narrative-outline",
+                ),
+                max_retries=1,
+                human_review=HumanReview(on_error=OnError.fail),
+            )] if generate_narrative_outline is not None else []),
             Step(
                 step_id="assemble-report",
                 name="汇编最终报告",
