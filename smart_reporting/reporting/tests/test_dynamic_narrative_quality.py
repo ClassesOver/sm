@@ -53,3 +53,11 @@ def test_quality_reports_duplicate_and_empty_sections():
     codes = {issue["code"] for issue in result.issues}
     assert "report_narrative_empty_section" in codes
     assert "report_narrative_duplicate_finding" in codes
+
+
+def test_publication_quality_warnings_are_soft_and_include_coverage():
+    from smart_reporting.reporting.workflow.runtime.publication import narrative_quality_warnings
+
+    warnings = narrative_quality_warnings(_graph(), _outline(), rendered_section_codes=())
+    assert any(item["code"] == "report_narrative_section_unrendered" for item in warnings)
+    assert all("coverageRate" in item["details"] for item in warnings)
