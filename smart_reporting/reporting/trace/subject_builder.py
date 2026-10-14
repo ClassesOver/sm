@@ -173,6 +173,17 @@ def claim_marker(claim_id: str) -> str:
 # 紧跟“月”的数字是日期（2025年12月），不是事实值；“8.5日”“本月35.3万人次”不受影响。
 _VALUE_BOUNDARY_TAIL = r"(?![\d.,eE])(?!\s*月)"
 
+# 只遮蔽明确日历写法，保留“8.5日”等时长和 2025.09 元这样的金额。
+_DATE_VALUE = re.compile(
+    r"(?<![\dA-Za-z_.,])(?:\d{4}\s*年(?:\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?)?"
+    r"|\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|\d{1,2}\s*月\s*\d{1,2}\s*日)(?!\d)"
+)
+
+
+def _mask_calendar_values(text: str) -> str:
+    # 等长替换保留锚点插入位置，不能因为删掉日期而移动来源标记。
+    return _DATE_VALUE.sub(lambda match: ' ' * len(match[0]), text)
+
 
 # 负的冻结值推荐写成“下降/减少… + 正幅度”，绑定与锚定须把该写法视为同一数值。
 def _decline_prefix() -> str:
@@ -209,7 +220,7 @@ def _value_patterns(fact_value: Any) -> list[str]:
 def value_matches(cell_text: str, fact_value: Any) -> bool:
     """判定单个文本片段是否呈现该事实值（带数字边界，供 claim 窗口与表格单元格共用）。"""
 
-    cell_text = cell_text.replace("−", "-").replace("－", "-")
+    cell_text = _mask_calendar_values(cell_text.replace("−", "-").replace("－", "-"))
     return any(re.search(pattern, cell_text) for pattern in _value_patterns(fact_value))
 
 
@@ -287,7 +298,8 @@ def anchor_claims(markdown: str, values: Mapping[str, tuple[Any, str | None] | N
                         targets = _display_units(unit)
                         patterns = _formatted_patterns(value, unit, targets) if targets else []
                         patterns.extend(_value_patterns(value))
-                        matches = [match for pattern in patterns if (match := re.search(pattern, statement))]
+                        searchable = _mask_calendar_values(statement)
+                        matches = [match for pattern in patterns if (match := re.search(pattern, searchable))]
                         if not matches:
                             continue
                         match = matches[0]

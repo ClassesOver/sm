@@ -1381,3 +1381,28 @@ def test_trace_value_rounding_matches_frozen_decimal_rule(value, text, supported
     assert value_matches(text, value) is supported
     result = claim_status(text + '[[claim:rounding]]。', 'rounding', value, expected_unit='床日')
     assert (result['status'] == 'valid') is supported
+
+
+@pytest.mark.parametrize(('text', 'value', 'supported'), [
+    ('2025年收入尚待核实', 2025, False),
+    ('2025-09-12收入尚待核实', 2025, False),
+    ('2025/09/12收入尚待核实', 12, False),
+    ('2025年9月12日收入尚待核实', 12, False),
+    ('9月12日收入尚待核实', 12, False),
+    ('平均住院8.5日', 8.5, True),
+    ('本月收入2025.09元', 2025.09, True),
+    ('2025年床位为2025张', 2025, True),
+])
+def test_calendar_numbers_are_not_fact_values(text, value, supported):
+    from smart_reporting.reporting.trace.subject_builder import claim_status, value_matches
+
+    assert value_matches(text, value) is supported
+    assert (claim_status(text + '[[claim:calendar]]。', 'calendar', value)['status'] == 'valid') is supported
+
+
+def test_claim_anchor_skips_calendar_year_when_value_repeats():
+    from smart_reporting.reporting.trace.subject_builder import anchor_claims
+
+    assert anchor_claims('2025年床位为2025张。', {'calendar': (2025, '张')}) == (
+        '2025年床位为2025[[claim:calendar]]张。'
+    )
