@@ -1997,6 +1997,21 @@ class RuntimeAnalysisMixin:
             files=self._merge_checkpoint_files(checkpoint.files, validation_context_file),
         )
         await self._persist_reporting_checkpoint(run_context, checkpoint)
+        if state.pop("_narrative_evidence_only", False):
+            await self._apply_durable_command(
+                run_context,
+                ReportingCommand(
+                    name="start_narrative_planning",
+                    commandId=f"narrative-evidence-frozen:{checkpoint.revision}",
+                ),
+            )
+            return StepOutput(
+                content={
+                    "status": "evidence_frozen",
+                    "findingGraphHash": checkpoint.finding_graph_hash,
+                    "analysisCount": len(fact_files),
+                }
+            )
         checkpoint_state: dict[str, Any] = checkpoint.model_dump(mode="python")
         # Reporting 阶段统一由 Agno Workflow 驱动。checkpoint 持久化层自身提供 CAS 锁，
         # 回调不持有跨模型调用的外层锁，从而允许 Parallel 模式真正并发执行分析项和章节。
@@ -2278,6 +2293,17 @@ class RuntimeAnalysisMixin:
         )
         await self._persist_reporting_checkpoint(run_context, final_checkpoint)
         return StepOutput(content={**content, "jobId": result["jobId"]})
+
+    async def run_analysis_evidence(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        self._state(run_context)["_narrative_evidence_only"] = True
+        return await self.run_reporting_analysis(_step_input, run_context)
+
+    async def run_report_draft(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        return await self.run_reporting_analysis(_step_input, run_context)
 
     async def generate_narrative_outline(
         self, _step_input: StepInput, run_context: RunContext

@@ -1013,6 +1013,8 @@ class _ReportWorkflowRuntimeBase:
             prepare_analysis_context=self.prepare_analysis_context,
             generate_detailed_analysis_plan=self.generate_detailed_analysis_plan,
             run_reporting_analysis=self.run_reporting_analysis,
+            run_analysis_evidence=self.run_analysis_evidence,
+            run_report_draft=self.run_report_draft,
             generate_narrative_outline=self.generate_narrative_outline,
             assemble_report=self.assemble_report,
             validate_report=self.validate_report,

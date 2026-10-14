@@ -205,6 +205,7 @@ _TRANSITIONS: dict[ReportingPhase, frozenset[ReportingPhase]] = {
     ReportingPhase.ANALYSIS_RUNNING: frozenset(
         {
             ReportingPhase.VISUALIZATION,
+            ReportingPhase.NARRATIVE_PLANNING,
             ReportingPhase.ANALYSIS_REWORK,
             ReportingPhase.FINALIZE,
             # 保留旧 run 的直接完成路径；新 run 由 finalize checkpoint 原子进入
