@@ -117,11 +117,18 @@ def test_supplemental_projection_requires_frozen_file_identity():
 
 
 def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_scope():
+    authoritative = facts(metrics=[{
+        "factId": "fact-1111111111111111", "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
+        "periodRoles": ["current"], "metricCodes": ["income"], "field": "income",
+        "fieldRef": "income", "aggregation": "sum", "formula": "sum(income)", "total": 100,
+        "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+    }])
     evidence = {
         "analysisId": "analysis_001", "datasetIds": ["dataset-abc123"],
         "findings": [{
             "name": "科室收入分解", "kind": "attribution", "directDecomposition": True,
             "reconciliationCode": "income_by_department", "metricCodes": ["income"],
+            "sourceFactIds": ["fact-1111111111111111"],
             "periodRoles": ["current"], "grain": ["科室"], "scope": {"性质": "开单收入"},
             "total": 100, "components": [{"name": "A", "value": 60}, {"name": "B", "value": 40}],
         }],
@@ -133,7 +140,7 @@ def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_s
         "warnings": [],
     }
     result = project_analysis_findings(
-        "analysis_001", facts(), evidence, snapshot_hash="b" * 64,
+        "analysis_001", authoritative, evidence, snapshot_hash="b" * 64,
         citation_ids=("citation_007",), supplemental_file_path="evidence/001.json",
         supplemental_file_sha256="c" * 64,
     )
@@ -160,4 +167,23 @@ def test_supplemental_attribution_with_failed_or_nonclosing_reconciliation_is_no
         supplemental_file_sha256="c" * 64,
     )
     attribution = next(item for item in result if item.title == "疑似收入分解")
+    assert attribution.evidence_level != "direct_decomposition"
+
+
+def test_supplemental_attribution_without_authoritative_source_fact_is_not_direct():
+    evidence = {
+        "analysisId": "analysis_001", "datasetIds": ["dataset-abc123"],
+        "findings": [{"name": "伪造分解", "kind": "attribution", "directDecomposition": True,
+                      "reconciliationCode": "ok", "total": 100,
+                      "components": [{"name": "A", "value": 100}]}],
+        "reconciliations": [{"name": "自报对账", "code": "ok", "passed": True,
+                             "leftTotal": 100, "rightTotal": 100, "difference": 0}],
+        "warnings": [],
+    }
+    result = project_analysis_findings(
+        "analysis_001", facts(), evidence, snapshot_hash="b" * 64,
+        citation_ids=("citation_007",), supplemental_file_path="evidence/001.json",
+        supplemental_file_sha256="c" * 64,
+    )
+    attribution = next(item for item in result if item.title == "伪造分解")
     assert attribution.evidence_level != "direct_decomposition"

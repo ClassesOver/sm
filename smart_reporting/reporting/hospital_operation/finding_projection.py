@@ -37,6 +37,12 @@ def project_analysis_findings(
     """只从已验证事实生成发现；缺失事实不会被改成零。"""
 
     payload = deterministic_facts.model_dump(mode="json", by_alias=True) if isinstance(deterministic_facts, DeterministicAnalysisBundle) else dict(deterministic_facts)
+    authoritative_facts = {
+        str(item.get("factId")): item
+        for collection in ("metrics", "derivedMetrics", "comparisons", "reconciliations", "correlationDetails")
+        for item in payload.get(collection, ())
+        if isinstance(item, Mapping) and isinstance(item.get("factId"), str)
+    }
     file_sha256 = fact_file_sha256 or hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     definitions = {str(item.get("code")): item for item in metric_definitions if item.get("code")}
     findings: list[FindingCard] = []
@@ -132,6 +138,13 @@ def project_analysis_findings(
                 and isinstance(reconciliation.get("rightTotal"), (int, float))
                 and math.isclose(float(reconciliation["leftTotal"]), float(total), rel_tol=1e-12, abs_tol=1e-9)
                 and math.isclose(float(reconciliation["rightTotal"]), float(total), rel_tol=1e-12, abs_tol=1e-9)
+                and bool(item.get("sourceFactIds"))
+                and all(str(fact_id) in authoritative_facts for fact_id in item.get("sourceFactIds", ()))
+                and any(
+                    math.isclose(float(authoritative_facts[str(fact_id)].get("total")), float(total), rel_tol=1e-12, abs_tol=1e-9)
+                    for fact_id in item.get("sourceFactIds", ())
+                    if isinstance(authoritative_facts[str(fact_id)].get("total"), (int, float))
+                )
             )
             if direct_decomposition:
                 findings.append(FindingCard(
