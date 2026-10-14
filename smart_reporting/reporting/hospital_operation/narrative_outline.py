@@ -160,6 +160,27 @@ def freeze_narrative_outline(
     high_missing = [item.finding_id for item in graph.findings if item.priority == "high" and item.finding_id not in assigned]
     if high_missing:
         raise ValueError(f"遗漏高优先级发现：{', '.join(high_missing)}")
+    if appendix:
+        appendix_cards = [findings[finding_id] for finding_id in appendix]
+        appendix_analysis_ids = tuple(dict.fromkeys(
+            analysis_id for card in appendix_cards for analysis_id in card.analysis_ids
+        ))
+        if any(analysis_id not in analysis_map for analysis_id in appendix_analysis_ids):
+            raise ValueError("附录发现引用未知分析项")
+        appendix_priority = "medium" if any(card.priority == "medium" for card in appendix_cards) else "low"
+        sections.append(NarrativeSection(
+            code=f"section_{len(sections) + 1:03d}",
+            sectionNumber=str(len(sections) + 1),
+            title="附录：补充管理发现",
+            findingIds=appendix,
+            analysisIds=appendix_analysis_ids,
+            objective="列示正文未展开的补充管理发现及其限制",
+            groupingReason="依据章节规划明确的附录去向保留补充发现",
+            narrativeRole="appendix",
+            priority=appendix_priority,
+            maxCharts=0,
+            maxBlocks=2,
+        ))
     return NarrativeOutline(title=candidate.title, sections=tuple(sections), appendixFindingIds=appendix,
                             omittedFindings=candidate.omitted_findings, snapshotHash=graph.snapshot_hash)
 

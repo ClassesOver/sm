@@ -48,6 +48,15 @@ def test_low_priority_appendix_has_explicit_destination():
     assert result.appendix_finding_ids == (cards[1].finding_id,)
 
 
+def test_low_priority_appendix_is_materialized_as_visible_appendix_section():
+    cards = [finding(), finding(2, priority="low")]
+    result = freeze(candidate([cards[0].finding_id], appendixFindingIds=[cards[1].finding_id]), cards)
+    appendix = result.sections[-1]
+    assert appendix.narrative_role == "appendix"
+    assert appendix.finding_ids == (cards[1].finding_id,)
+    assert appendix.title.startswith("附录")
+
+
 @pytest.mark.parametrize("changes", [
     {"periodEnd": "2025-10-31"}, {"grain": ["科室"]}, {"scope": {"income_nature": "开单"}},
 ])
