@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
+from decimal import Decimal
 from typing import Any
 
 from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1
@@ -11,6 +11,7 @@ from .numeric_text import (
     _frozen_number_entries,
     align_placeholder_direction,
     correct_period_extrema,
+    frozen_fact_bundles,
     frozen_number_catalog,
     normalize_signed_wording,
     render_frozen_numbers,
@@ -103,8 +104,8 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
         return None
     ids = reference_fact_ids(token)
     entries = {}
-    for content in contents:
-        document = json.loads(content)
+    for bundle in frozen_fact_bundles(contents):
+        document = bundle.model_dump(mode="json", by_alias=True)
         for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
             for fact in document.get(array, ()):
                 if fact.get('factId') in ids:
@@ -118,23 +119,67 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
     selector = token[2:-2].split(':')[2]
     from .subject_builder import fact_periods
     periods = fact_periods(primary)
+    selected_periods = None
     if selector.startswith('periodValues.'):
-        periods = (primary['periodValues'][int(selector.split('.')[1])]['period'],)
+        selected_periods = [primary['periodValues'][int(selector.split('.')[1])]]
     elif selector.startswith(('periodTotals.', 'periodAverages.')):
         start, end = (int(index) for index in selector.split('.')[1].split('-'))
         selected_periods = primary['periodValues'][start:end + 1]
-        periods = tuple(dict.fromkeys((selected_periods[0]['period'], selected_periods[-1]['period'])))
     elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
-        periods = (primary['periodValues'][int(selector.split('.')[1])]['period'],)
+        index = int(selector.split('.')[1])
+        selected_periods = primary['periodValues'][index - 1:index + 1]
     elif selector.startswith('budgetComparison.'):
         period = selector[len('budgetComparison.' + ids[1] + '.'):].rsplit('.', 1)[0]
-        periods = tuple(dict.fromkeys(period.split('..')))
+        window = period.split('..')
+        periods = fact_periods({'periodStart': window[0], 'periodEnd': window[-1],
+                                'periodGranularity': 'month'})
+    if selected_periods is not None:
+        # 复用事实粒度规范化，保留累计窗口的所有桶及环比的基期与本期。
+        periods = fact_periods({**primary, 'periodValues': selected_periods})
     scope = dict(primary.get('scope') or {})
     if selector.startswith(('topGroups.', 'bottomGroups.')):
         group, index = selector.split('.')
         scope['group'] = primary[group][int(index)]['group']
+
+    def operand(value) -> str:
+        return format(Decimal(str(value)).normalize(), 'f')
+
     formula = primary.get('formula')
-    if selector.startswith(('budgetComparison.', 'projectRatio.')):
+    if selector in {'monthlyAverage', 'monthlyMinimum', 'monthlyMaximum'}:
+        amounts = [operand(item['value']) for item in primary['periodValues']]
+        if selector == 'monthlyAverage':
+            formula = '(' + ' + '.join(f'({amount})' for amount in amounts) + f') / {len(amounts)}'
+        else:
+            operation = 'min' if selector == 'monthlyMinimum' else 'max'
+            formula = operation + '(' + ', '.join(amounts) + ')'
+    elif selector.startswith(('periodTotals.', 'periodAverages.')):
+        formula = ' + '.join(f"({operand(item['value'])})" for item in selected_periods)
+        if selector.startswith('periodAverages.'):
+            formula = f'({formula}) / {len(selected_periods)}'
+    elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
+        baseline, current = (operand(item['value']) for item in selected_periods)
+        formula = f'({current}) - ({baseline})'
+        if selector.startswith('periodChangeRates.'):
+            formula = f'({formula}) / ({baseline}) * 100'
+    elif selector.startswith('groupShares.'):
+        _, group, index = selector.split('.')
+        numerator = primary[group][int(index)]
+        scope['group'] = numerator['group']
+        formula = f"({operand(numerator['value'])}) / ({operand(primary['total'])}) * 100"
+    elif selector.startswith('groupGaps.'):
+        left, right = (int(index) for index in selector.split('.')[1].split('-'))
+        left_group, right_group = primary['topGroups'][left], primary['topGroups'][right]
+        scope.update(leftGroup=left_group['group'], rightGroup=right_group['group'])
+        formula = f"abs(({operand(left_group['value'])}) - ({operand(right_group['value'])}))"
+    elif selector.startswith('budgetComparison.'):
+        operands = [sum((Decimal(str(item['value'])) for item in entry['periodValues']
+                         if window[0] <= item['period'][:7] <= window[-1]), Decimal(0))
+                    for entry in (primary, entries[ids[1]])]
+        operation = '/' if selector.endswith('.percentage') else '-'
+        formula = f'({operand(operands[0])}) {operation} ({operand(operands[1])})'
+        if operation == '/':
+            formula += ' * 100'
+    elif selector.startswith('projectRatio.'):
         operation = '/' if selector.endswith('.percentage') else '-'
         formula = f"({primary.get('formula')}) {operation} ({entries[ids[1]].get('formula')})"
         if operation == '/':

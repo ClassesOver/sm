@@ -158,3 +158,153 @@ def test_heading_promotion_retains_exact_number_binding():
     assert len(promoted.number_references) == 1
     anchored = anchor_bound_numbers(promoted.markdown, promoted.number_references, promoted.review_notices)
     assert statement_fingerprint(anchored, refs[0].claim_id) == refs[0].statement_sha256
+
+
+@pytest.mark.parametrize(('selector', 'periods', 'statement'), [
+    ('periodValues.1:元', ('2025-02',), '2025年2月收入'),
+    ('periodTotals.0-2:元', ('2025-01', '2025-02', '2025-03'), '截至2025年3月，含2025年2月的累计收入'),
+    ('periodAverages.0-2:元', ('2025-01', '2025-02', '2025-03'), '含2025年2月的期间月均收入'),
+    ('periodChanges.2:元', ('2025-02', '2025-03'), '2025年3月较2025年2月增加'),
+    ('periodChangeRates.2:%', ('2025-02', '2025-03'), '2025年3月较2025年2月增长'),
+])
+def test_selected_periods_preserve_month_grain_and_all_input_buckets(selector, periods, statement):
+    from smart_reporting.reporting.trace.subject_builder import claim_status
+
+    document = json.loads(contents()[0])
+    for metric in document['metrics']:
+        metric['periodEnd'] = '2025-03'
+        metric['periodValues'].append({'period': '2025-03', 'value': 30})
+        metric['total'] += 30
+        for bucket in metric['periodValues']:
+            bucket['period'] += '-01'
+    frozen = [json.dumps(document)]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}'
+    selected = resolve_number_reference(token, frozen)
+    assert selected['periods'] == periods
+    markdown, refs, notices = render_bound_numbers(statement + token + '。', frozen, key='periods')
+    assert len(refs) == 1 and not notices
+    anchored = anchor_bound_numbers(markdown, refs, notices)
+    status = claim_status(anchored, refs[0].claim_id, selected['value'],
+                          expected_unit=selected['unit'], expected_periods=selected['periods'])
+    assert status == {'status': 'valid', 'warnings': []}
+
+
+def test_selected_daily_bucket_keeps_day_precision():
+    document = json.loads(contents()[0])
+    metric = document['metrics'][0]
+    metric['periodGranularity'] = 'day'
+    metric['periodValues'] = [{'period': '2025-02-01', 'value': 10},
+                              {'period': '2025-02-02', 'value': 20}]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}'
+    selected = resolve_number_reference(token, [json.dumps(document)])
+    assert selected['periods'] == ('2025-02-02',)
+
+
+@pytest.mark.parametrize('field', ['difference', 'percentage'])
+def test_cumulative_budget_reference_preserves_middle_month(field):
+    from smart_reporting.reporting.trace.subject_builder import unit_period_warnings
+
+    document = json.loads(contents()[0])
+    for metric in document['metrics']:
+        metric['periodValues'].append({'period': '2025-03-01', 'value': 30})
+        metric['total'] += 30
+    unit = '%' if field == 'percentage' else '元'
+    token = ('{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.'
+             '2025-01..2025-03.' + field + ':' + unit + '}}')
+    selected = resolve_number_reference(token, [json.dumps(document)])
+    assert selected['periods'] == ('2025-01', '2025-02', '2025-03')
+    assert unit_period_warnings('包含2025年2月', expected_periods=selected['periods']) == []
+    assert unit_period_warnings('包含2025年4月', expected_periods=selected['periods'])
+
+
+@pytest.mark.parametrize(('selector', 'scope', 'formula'), [
+    ('groupShares.topGroups.0:%', {'group': '内科'}, '(20) / (30) * 100'),
+    ('groupShares.bottomGroups.0:%', {'group': '外科'}, '(10) / (30) * 100'),
+    ('groupGaps.0-1:元', {'leftGroup': '内科', 'rightGroup': '外科'}, 'abs((20) - (10))'),
+])
+def test_group_derived_reference_keeps_operand_scope_and_formula(selector, scope, formula):
+    from smart_reporting.reporting.trace.subject_builder import claim_status
+
+    document = json.loads(contents()[0])
+    metric = document['metrics'][0]
+    metric['scope'] = {'院区': '东院'}
+    metric['topGroups'] = [{'group': '内科', 'value': 20}, {'group': '外科', 'value': 10}]
+    metric['bottomGroups'] = [{'group': '外科', 'value': 10}]
+    selected = resolve_number_reference('{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}',
+                                        [json.dumps(document)])
+    assert selected['scope'] == {'院区': '东院', **scope}
+    assert selected['formula'] == formula
+    # Missing group names must generate a scope warning even though the number matches.
+    from smart_reporting.reporting.trace.numeric_text import format_fact_value
+    displayed = format_fact_value(selected['value'], selected['unit'])
+    status = claim_status(f"东院{displayed}[[claim:c]]。", 'c',
+                          selected['value'], expected_unit=selected['unit'],
+                          expected_scope=selected['scope'])
+    assert any('业务范围' in warning for warning in status['warnings'])
+
+
+@pytest.mark.parametrize(('selector', 'value', 'formula'), [
+    ('monthlyAverage:元', 15, '((10) + (20)) / 2'),
+    ('monthlyMinimum:元', 10, 'min(10, 20)'),
+    ('monthlyMaximum:元', 20, 'max(10, 20)'),
+    ('periodTotals.0-0:元', 10, '(10)'),
+    ('periodTotals.0-1:元', 30, '(10) + (20)'),
+    ('periodAverages.0-1:元', 15, '((10) + (20)) / 2'),
+    ('periodChanges.1:元', 10, '(20) - (10)'),
+    ('periodChangeRates.1:%', 100, '((20) - (10)) / (10) * 100'),
+])
+def test_period_derived_formula_matches_selected_calculation(selector, value, formula):
+    result = resolve_number_reference('{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}', contents())
+    assert result['value'] == value
+    assert result['formula'] == formula
+
+
+def test_period_average_uses_available_bucket_count_not_calendar_span():
+    document = json.loads(contents()[0])
+    metric = document['metrics'][0]
+    metric['periodValues'][1]['period'] = '2025-03'
+    metric['periodEnd'] = '2025-03'
+    result = resolve_number_reference('{{value:fact-aaaaaaaaaaaaaaaa:monthlyAverage:元}}', [json.dumps(document)])
+    assert result['value'] == 15
+    assert result['formula'] == '((10) + (20)) / 2'
+    assert result['periods'] == ('2025-01', '2025-03')
+
+
+@pytest.mark.parametrize(('window', 'field', 'value', 'formula'), [
+    ('2025-02', 'percentage', 20, '(20) / (100) * 100'),
+    ('2025-02', 'difference', -80, '(20) - (100)'),
+    ('2025-01..2025-02', 'percentage', 25, '(30) / (120) * 100'),
+    ('2025-01..2025-02', 'difference', -90, '(30) - (120)'),
+])
+def test_budget_formula_uses_selected_monthly_operands(window, field, value, formula):
+    unit = '%' if field == 'percentage' else '元'
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.' + window + '.' + field + ':' + unit + '}}'
+    selected = resolve_number_reference(token, contents())
+    assert selected['value'] == value
+    assert selected['formula'] == formula
+
+
+@pytest.mark.parametrize('extra', ['not-json', '[]', 'null', '{"metrics": null}'])
+def test_reference_resolution_ignores_non_bundle_content_like_catalog(extra):
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:total:元}}'
+    markdown, refs, notices = render_bound_numbers('收入' + token + '。', [*contents(), extra], key='mixed')
+    assert len(refs) == 1 and not notices
+    selected = resolve_number_reference(token, [*contents(), extra])
+    assert selected is not None and selected['value'] == 30
+
+
+@pytest.mark.parametrize('include_alias_copy', [False, True])
+def test_reference_resolution_accepts_schema_field_names_and_equivalent_defaults(include_alias_copy):
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
+
+    bundle = DeterministicAnalysisBundle.model_validate_json(contents()[0])
+    documents = [bundle.model_dump_json(by_alias=False)]
+    if include_alias_copy:
+        documents.extend(contents())
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}'
+    selected = resolve_number_reference(token, documents)
+    assert selected is not None
+    assert selected['value'] == 20
+    assert selected['periods'] == ('2025-02',)

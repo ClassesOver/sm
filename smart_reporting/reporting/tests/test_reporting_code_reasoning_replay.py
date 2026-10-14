@@ -345,3 +345,108 @@ def test_projection_metrics_snapshot_with_summary_disabled_falls_back_to_rebase(
     assert snapshot["compaction_triggered"] is False
     assert snapshot["compacted_calls"] == 0
     assert snapshot["window_rebased"] is True
+
+
+@pytest.mark.parametrize('failure', ['missing', 'duplicate', 'wrong-name', 'result-before-call'])
+def test_function_replay_rejects_incomplete_or_mismatched_receipts(failure):
+    from smart_reporting.reporting.models import ReportingError
+
+    call = {'id': 'item-read', 'call_id': 'call-read', 'type': 'function',
+            'function': {'name': 'read_script', 'arguments': '{}'}}
+    assistant = Message(role='assistant', tool_calls=[call])
+    receipt = Message(role='tool', tool_call_id='call-read', tool_name='read_script', content='ok')
+    messages = {
+        'missing': [assistant],
+        'duplicate': [assistant, receipt, receipt.model_copy()],
+        'wrong-name': [assistant, receipt.model_copy(update={'tool_name': 'submit_script'})],
+        'result-before-call': [receipt, assistant],
+    }[failure]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    with pytest.raises(ReportingError) as caught:
+        model._format_messages(messages)
+    assert caught.value.code == 'report_code_custom_tool_protocol_error'
+    assert caught.value.details == {'retryable': False}
+
+
+@pytest.mark.parametrize('tool_name', [None, 'read_script'])
+def test_function_replay_retains_one_receipt_with_optional_legacy_name(tool_name):
+    call = {'id': 'item-read', 'call_id': 'call-read', 'type': 'function',
+            'function': {'name': 'read_script', 'arguments': '{}'}}
+    messages = [Message(role='assistant', tool_calls=[call]),
+                Message(role='tool', tool_call_id='call-read', tool_name=tool_name, content='ok')]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    wire = model._format_messages(messages)
+    assert [item['type'] for item in wire] == ['function_call', 'function_call_output']
+    assert wire[0]['call_id'] == wire[1]['call_id']
+    assert wire[1]['output'] == 'ok'
+
+
+@pytest.mark.parametrize('count', [1, 2])
+def test_replay_accepts_legacy_combined_function_receipts(count):
+    calls = [{'id': f'call-{index}', 'type': 'function',
+              'function': {'name': 'read_script', 'arguments': '{}'}} for index in range(count)]
+    messages = [Message(role='assistant', tool_calls=calls),
+                Message(role='tool', tool_calls=[{'tool_call_id': call['id'], 'tool_name': 'read_script',
+                                                  'content': f'result-{index}'}
+                                                 for index, call in enumerate(calls)])]
+    original = [message.model_dump() for message in messages]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    wire = model._format_messages(messages)
+    requests = [item for item in wire if item.get('type') == 'function_call']
+    results = [item for item in wire if item.get('type') == 'function_call_output']
+    assert len(requests) == len(results) == count
+    assert [item['call_id'] for item in requests] == [item['call_id'] for item in results]
+    assert [item['output'] for item in results] == [f'result-{index}' for index in range(count)]
+    assert [message.model_dump() for message in messages] == original
+
+
+@pytest.mark.parametrize('role', ['user', 'system'])
+def test_replay_rejects_tool_calls_attached_to_non_assistant_messages(role):
+    from smart_reporting.reporting.models import ReportingError
+
+    call = {'id': 'call-read', 'type': 'function',
+            'function': {'name': 'read_script', 'arguments': '{}'}}
+    messages = [Message(role=role, content='text', tool_calls=[call]),
+                Message(role='tool', tool_call_id='call-read', tool_name='read_script', content='ok')]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    with pytest.raises(ReportingError) as caught:
+        model._format_messages(messages)
+    assert caught.value.code == 'report_code_custom_tool_protocol_error'
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('custom', [False, True])
+@pytest.mark.parametrize('collision_field', ['id', 'call_id'])
+def test_replay_id_normalization_avoids_native_item_id_collision(reverse, custom, collision_field):
+    foreign = (_custom_call('foreign', 'run', 'print(1)') if custom else
+               {'id': 'foreign-item', 'call_id': 'foreign-call', 'type': 'function',
+                'function': {'name': 'read_script', 'arguments': '{}'}})
+    native = {'id': 'fc_00000000', 'call_id': 'call_native', 'type': 'function',
+              'function': {'name': 'read_script', 'arguments': '{}'}}
+    if collision_field == 'call_id':
+        native.update(id='fc_native', call_id='call_00000000')
+    calls = [foreign, native]
+    if reverse:
+        calls.reverse()
+    reasoning = {'id': 'rs-collision', 'type': 'reasoning', 'summary': []}
+    messages = [Message(role='assistant', tool_calls=calls,
+                        provider_data={'reasoning_output': reasoning})] + [
+        Message(role='tool', tool_call_id=call['call_id'], tool_name=call['function']['name'],
+                content='result-' + call['call_id']) for call in calls
+    ]
+    before = [message.model_dump() for message in messages]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    wire = [item if isinstance(item, dict) else item.model_dump(exclude_none=True)
+            for item in model._format_messages(messages)]
+    assert wire[0] == reasoning
+    requests = [item for item in wire if item.get('type') in {'function_call', 'custom_tool_call'}]
+    results = [item for item in wire if item.get('type') in {'function_call_output', 'custom_tool_call_output'}]
+    assert len(requests) == len(results) == 2
+    assert len({item['id'] for item in requests}) == len({item['call_id'] for item in requests}) == 2
+    assert [item['call_id'] for item in requests] == [item['call_id'] for item in results]
+    assert [item['output'] for item in results] == ['result-' + call['call_id'] for call in calls]
+    if custom:
+        replay = next(item for item in requests if item['type'] == 'custom_tool_call')
+        assert replay['input'] == 'print(1)'
+        assert replay['id'] == foreign['id'] and replay['call_id'] == foreign['call_id']
+    assert [message.model_dump() for message in messages] == before

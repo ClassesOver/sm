@@ -30,6 +30,7 @@ from .numeric_text import (
     registered_change_rates,
     registered_decline_magnitude,
     registered_group_shares,
+    registered_multiple_matches,
     registered_multiples,
     render_frozen_numbers,
     supplemental_number_values,
@@ -265,11 +266,9 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
     # “是上年同期的1.05倍”：倍数只能由登记的本期与基期合计、变化率或比率得出。
     if catalog:
-        multiples = registered_multiples(contents)
+        multiples = registered_multiples(contents, catalog)
         for match in MULTIPLE_NUMBER.finditer(text):
-            number = Decimal(match["number"])
-            quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
-            if not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in multiples):
+            if not registered_multiple_matches(match, multiples):
                 warnings.append(
                     f"倍数缺少可核对的冻结依据：{match[0]}。须由已登记的本期与基期合计或比率得出，"
                     "请改用变化率表述或删去该倍数。"

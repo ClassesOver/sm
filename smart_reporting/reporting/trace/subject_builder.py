@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping, Sequence
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
 from ..hospital_operation.deterministic_analysis import _next_period, _parse_period, _ParsedPeriod
@@ -157,7 +158,11 @@ def value_text_variants(value: Any) -> tuple[str, ...]:
     if float(integer) == number:
         variants.extend((f"{integer}", f"{integer:,}"))
     variants.append(f"{number:g}")
-    variants.append(f"{number:,.2f}")
+    # 与冻结目录保持十进制 ROUND_HALF_UP；float 的 .2f 会将 1.005 写为 1.00。
+    with localcontext() as context:
+        context.prec = max(28, len(str(abs(integer))) + 2)
+        rounded = Decimal(str(number)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        variants.append(f"{abs(rounded) if rounded == 0 else rounded:,f}")
     return tuple(dict.fromkeys(variants))
 
 
@@ -167,6 +172,17 @@ def claim_marker(claim_id: str) -> str:
 
 # 紧跟“月”的数字是日期（2025年12月），不是事实值；“8.5日”“本月35.3万人次”不受影响。
 _VALUE_BOUNDARY_TAIL = r"(?![\d.,eE])(?!\s*月)"
+
+# 只遮蔽明确日历写法，保留“8.5日”等时长和 2025.09 元这样的金额。
+_DATE_VALUE = re.compile(
+    r"(?<![\dA-Za-z_.,])(?:\d{4}\s*年(?:\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?)?"
+    r"|\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|\d{1,2}\s*月\s*\d{1,2}\s*日)(?!\d)"
+)
+
+
+def _mask_calendar_values(text: str) -> str:
+    # 等长替换保留锚点插入位置，不能因为删掉日期而移动来源标记。
+    return _DATE_VALUE.sub(lambda match: ' ' * len(match[0]), text)
 
 
 # 负的冻结值推荐写成“下降/减少… + 正幅度”，绑定与锚定须把该写法视为同一数值。
@@ -204,7 +220,7 @@ def _value_patterns(fact_value: Any) -> list[str]:
 def value_matches(cell_text: str, fact_value: Any) -> bool:
     """判定单个文本片段是否呈现该事实值（带数字边界，供 claim 窗口与表格单元格共用）。"""
 
-    cell_text = cell_text.replace("−", "-").replace("－", "-")
+    cell_text = _mask_calendar_values(cell_text.replace("−", "-").replace("－", "-"))
     return any(re.search(pattern, cell_text) for pattern in _value_patterns(fact_value))
 
 
@@ -229,17 +245,17 @@ def formatted_value_matches(text: str, value: Any, unit: str | None) -> bool:
 
 
 def _formatted_patterns(value: Any, unit: str | None, units: Sequence[str]) -> list[str]:
-    from .numeric_text import format_fact_value
+    from .numeric_text import _hidden_by_rounding, format_fact_value
 
     patterns = [
         r"(?<![\d.,+\-])" + re.escape(format_fact_value(value, unit, target)) + r"(?![\d.])"
-        for target in units
+        for target in units if not _hidden_by_rounding(value, unit, target)
     ]
     magnitude = _negative_magnitude(value)
     if magnitude is not None:
         patterns.extend(
             _DECLINE_PREFIX + re.escape(format_fact_value(magnitude, unit, target)) + r"(?![\d.])"
-            for target in units
+            for target in units if not _hidden_by_rounding(value, unit, target)
         )
     return patterns
 
@@ -282,7 +298,8 @@ def anchor_claims(markdown: str, values: Mapping[str, tuple[Any, str | None] | N
                         targets = _display_units(unit)
                         patterns = _formatted_patterns(value, unit, targets) if targets else []
                         patterns.extend(_value_patterns(value))
-                        matches = [match for pattern in patterns if (match := re.search(pattern, statement))]
+                        searchable = _mask_calendar_values(statement)
+                        matches = [match for pattern in patterns if (match := re.search(pattern, searchable))]
                         if not matches:
                             continue
                         match = matches[0]
