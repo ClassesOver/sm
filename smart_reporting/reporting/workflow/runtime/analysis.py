@@ -1803,6 +1803,51 @@ class RuntimeAnalysisMixin:
             "supplementalEvidenceSources": supplemental_sources,
         }
 
+    async def _bind_report_document_context(
+        self, run_context: RunContext, *, outline: ReportOutline, job_id: str
+    ) -> None:
+        state = self._state(run_context)
+        if state.get("_narrative_evidence_only"):
+            return
+        profile = self._profile(run_context)
+        period = self._envelope(run_context).period
+        generated_date = state.get(REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY)
+        if generated_date is None:
+            generated_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+            state[REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY] = generated_date
+        try:
+            if (
+                not isinstance(generated_date, str)
+                or date.fromisoformat(generated_date).isoformat() != generated_date
+            ):
+                raise ValueError
+        except ValueError as error:
+            raise ReportingError(
+                "report_document_context_invalid", "报告服务端生成日期状态无效。"
+            ) from error
+        # 仅最终目录绑定文档契约，日期在首次绑定后保持稳定。
+        await self.report_tools.bind_document_context(
+            job_id,
+            {
+                "title": outline.title,
+                "periodLabel": f"{period.start.isoformat()} 至 {period.end.isoformat()}",
+                "organizationName": profile.document_branding.organization_name,
+                "generatedByLabel": profile.document_branding.generated_by_label,
+                "watermarkText": profile.document_branding.watermark_text,
+                "generatedDate": generated_date,
+                "sectionNumbers": [section.section_number for section in outline.sections],
+                "sections": [
+                    {
+                        "code": section.code,
+                        "sectionNumber": section.section_number,
+                        "title": section.title,
+                    }
+                    for section in outline.sections
+                ],
+            },
+            run_context=self._tool_context(run_context),
+        )
+
     async def run_reporting_analysis(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
@@ -1862,46 +1907,9 @@ class RuntimeAnalysisMixin:
             except ReportingStateError as error:
                 raise ReportingError(error.code, error.message) from error
         result = self._workflow_result(state)
-        profile = self._profile(run_context)
         outline = _frozen_outline(state)
-        period = self._envelope(run_context).period
-        generated_date = state.get(REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY)
-        if generated_date is None:
-            generated_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-            state[REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY] = generated_date
-        try:
-            if (
-                not isinstance(generated_date, str)
-                or date.fromisoformat(generated_date).isoformat() != generated_date
-            ):
-                raise ValueError
-        except ValueError as error:
-            raise ReportingError(
-                "report_document_context_invalid", "报告服务端生成日期状态无效。"
-            ) from error
-        # 文档事实只能在提纲审核通过后的下一步骤绑定；提前绑定会读取不存在的提纲，
-        # 或把用户已拒绝的提纲固化进封面、目录和双格式 manifest。生成日期首次绑定后
-        # 写入 Workflow state，跨午夜恢复也必须复用，不能让重入改变同一报告事实。
-        await self.report_tools.bind_document_context(
-            str(result["jobId"]),
-            {
-                "title": outline.title,
-                "periodLabel": f"{period.start.isoformat()} 至 {period.end.isoformat()}",
-                "organizationName": profile.document_branding.organization_name,
-                "generatedByLabel": profile.document_branding.generated_by_label,
-                "watermarkText": profile.document_branding.watermark_text,
-                "generatedDate": generated_date,
-                "sectionNumbers": [section.section_number for section in outline.sections],
-                "sections": [
-                    {
-                        "code": section.code,
-                        "sectionNumber": section.section_number,
-                        "title": section.title,
-                    }
-                    for section in outline.sections
-                ],
-            },
-            run_context=self._tool_context(run_context),
+        await self._bind_report_document_context(
+            run_context, outline=outline, job_id=str(result["jobId"])
         )
         revision = int(result.get("revision", 0)) + 1
         # TaskExecutionScope 暂时保留 sandbox_id 字段名；宿主机模式写入稳定 workspace key。
@@ -2361,8 +2369,24 @@ class RuntimeAnalysisMixin:
     async def run_analysis_evidence(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
-        self._state(run_context)["_narrative_evidence_only"] = True
-        return await self.run_reporting_analysis(_step_input, run_context)
+        state = self._state(run_context)
+        if REPORT_OUTLINE_STATE_KEY not in state:
+            plan = DetailedAnalysisPlan.model_validate(state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY])
+            outline = ReportOutline(
+                reportType=self._envelope(run_context).report_type, title="运营分析报告",
+                sections=[{
+                    "code": "section_001", "sectionNumber": "1",
+                    "title": "分析任务执行分区",
+                    "analysisIds": tuple(item.analysis_id for item in plan.analyses),
+                }],
+            )
+            state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
+            state[REPORT_OUTLINE_HASH_STATE_KEY] = payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
+        state["_narrative_evidence_only"] = True
+        try:
+            return await self.run_reporting_analysis(_step_input, run_context)
+        finally:
+            state.pop("_narrative_evidence_only", None)
 
     async def run_report_draft(
         self, _step_input: StepInput, run_context: RunContext

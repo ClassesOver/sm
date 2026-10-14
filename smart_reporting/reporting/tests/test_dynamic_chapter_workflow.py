@@ -2,9 +2,12 @@
 
 import pytest
 from agno.run import RunContext
-from agno.workflow.types import StepOutput
+from agno.workflow.types import StepInput, StepOutput
 
-from smart_reporting.reporting.workflow.orchestration import create_reporting_analysis_step
+from smart_reporting.reporting.workflow.orchestration import (
+    create_reporting_analysis_step,
+    create_reporting_workflow,
+)
 from smart_reporting.reporting.workflow.runtime.reporting_draft_workflow import (
     ReportingAnalysisAndDraftWorkflow,
 )
@@ -53,3 +56,36 @@ async def test_frozen_evidence_can_support_two_sections_without_reanalysis(anyio
         ("chart", "section_001"), ("draft", "section_001"),
         ("chart", "section_002"), ("draft", "section_002"),
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_dynamic_production_steps_do_not_plan_outline_before_evidence(anyio_backend):
+    calls = []
+
+    def executor(name):
+        async def run(step_input, run_context):
+            calls.append(name)
+            return StepOutput(content={"status": "completed"})
+        return run
+
+    workflow = create_reporting_workflow(
+        db=object(), lifecycle=object(),
+        **{name: executor(name) for name in (
+            "normalize_report_request", "confirm_source", "prepare_data_profile",
+            "propose_measure_semantics", "commit_measure_semantics", "generate_outline",
+            "generate_analysis_plan", "generate_query_candidates", "materialize_datasets",
+            "prepare_analysis_context", "generate_detailed_analysis_plan", "run_reporting_analysis",
+            "assemble_report", "validate_report", "finalize_publication",
+            "run_analysis_evidence", "generate_narrative_outline", "run_report_draft",
+        )},
+    )
+    ids = [step.step_id for step in workflow.steps]
+    assert "generate-outline" not in ids
+    index = ids.index("generate-detailed-analysis-plan")
+    assert ids[index + 1:index + 4] == [
+        "run-analysis-evidence", "generate-narrative-outline", "run-report-draft",
+    ]
+    for step in workflow.steps[index + 1:index + 4]:
+        await step.executor(StepInput(input="运营分析"), RunContext(run_id="run-1", session_id="session-1"))
+    assert calls == ["run_analysis_evidence", "generate_narrative_outline", "run_report_draft"]
