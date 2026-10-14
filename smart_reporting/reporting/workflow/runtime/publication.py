@@ -1041,6 +1041,8 @@ class RuntimePublicationMixin:
         heading_numbers: tuple[HeadingNumber, ...],
         run_context: RunContext,
         source_warnings: tuple[SourceWarning, ...] = (),
+        section_finding_ids: Mapping[str, tuple[str, ...]] | None = None,
+        section_grouping_reasons: Mapping[str, str] | None = None,
     ) -> ReportArtifactManifest:
         scope = self._scope(run_context)
         accepted_by_path: dict[str, dict[str, Any]] = {}
@@ -1137,6 +1139,8 @@ class RuntimePublicationMixin:
                 sections=tuple(
                     section.code for section in _frozen_outline(self._state(run_context)).sections
                 ),
+                section_finding_ids=section_finding_ids,
+                section_grouping_reasons=section_grouping_reasons,
                 section_numbers=section_numbers,
                 heading_numbers=heading_numbers,
                 source_warnings=source_warnings,

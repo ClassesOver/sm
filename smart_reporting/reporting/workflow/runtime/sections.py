@@ -23,6 +23,7 @@ from ...delivery.draft_v1 import (
 )
 from ...delivery.report_runtime.markdown import normalize_number_notation
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ...hospital_operation.narrative_outline import NarrativeOutline
 from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
@@ -3022,6 +3023,21 @@ class RuntimeSectionsMixin:
             raise ReportingError("report_analysis_artifact_missing", "Finalize 缺少冻结分析产物。")
         outline = _frozen_outline(self._state(run_context))
         scope = self._scope(run_context)
+        narrative_section_finding_ids: dict[str, tuple[str, ...]] = {}
+        narrative_section_grouping_reasons: dict[str, str] = {}
+        if checkpoint.narrative_outline_file is not None:
+            try:
+                narrative = await self._read_identity_model(
+                    scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline
+                )
+                narrative_section_finding_ids = {
+                    item.code: item.finding_ids for item in narrative.sections
+                }
+                narrative_section_grouping_reasons = {
+                    item.code: item.grouping_reason for item in narrative.sections
+                }
+            except (ReportingError, ValidationError) as error:
+                loguru_logger.warning("report_narrative_manifest_mapping_unavailable error={}", error)
         completed = {item.section_code: item for item in checkpoint.completed_sections}
         if set(completed) != {item.code for item in outline.sections}:
             raise ReportingError("report_section_artifact_missing", "Finalize 缺少完整章节产物。")
@@ -3288,6 +3304,8 @@ class RuntimeSectionsMixin:
             task_key=analysis_task_id,
             section_numbers=rendered.section_numbers,
             heading_numbers=rendered.heading_numbers,
+            section_finding_ids=narrative_section_finding_ids,
+            section_grouping_reasons=narrative_section_grouping_reasons,
             run_context=run_context,
         )
         if not _accepted_artifacts_match_manifest(manifest, manifest_path, accepted_artifacts):

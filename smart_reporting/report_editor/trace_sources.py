@@ -50,6 +50,36 @@ _DRILLDOWN_TIMEOUT_SECONDS = 10.0
 _DRILLDOWN_LARGE_FILE_BYTES = 64 * 1024 * 1024
 
 
+def narrative_section_projection(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return revision-bound finding assignments for the editor.
+
+    Older manifests have no narrative mapping; expose the stable section list
+    with empty optional fields rather than inferring findings from Markdown.
+    """
+    sections = manifest.get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return []
+    finding_ids = manifest.get("sectionFindingIds")
+    grouping_reasons = manifest.get("sectionGroupingReasons")
+    finding_ids = finding_ids if isinstance(finding_ids, Mapping) else {}
+    grouping_reasons = grouping_reasons if isinstance(grouping_reasons, Mapping) else {}
+    result: list[dict[str, Any]] = []
+    for section_code in sections:
+        if not isinstance(section_code, str):
+            continue
+        values = finding_ids.get(section_code, ())
+        result.append({
+            "sectionCode": section_code,
+            "findingIds": list(values) if isinstance(values, (list, tuple)) else [],
+            "groupingReason": (
+                grouping_reasons.get(section_code)
+                if isinstance(grouping_reasons.get(section_code), str)
+                else None
+            ),
+        })
+    return result
+
+
 
 # 服务端表格大额列的表头单位（“门诊收入（万元）”）；单元格只写换算后的数字。
 _TABLE_HEADER_UNIT = re.compile(r"（(万元|亿元|万人次)）$")
@@ -161,6 +191,7 @@ class ReportEditorTraceService:
                 "available": False,
                 "reason": "source_index_missing",
                 "datasets": [],
+                "narrativeSections": [],
             }
         manifest = await self.load_manifest(context)
         files = {item.resource_id: item for item in index.files}
@@ -315,6 +346,9 @@ class ReportEditorTraceService:
                 if citation.dataset_id in registered_dataset_ids
             ],
             "facts": facts,
+            "narrativeSections": narrative_section_projection(
+                manifest.model_dump(mode="json", by_alias=True) if manifest is not None else {}
+            ),
             "subjects": [
                 {
                     "subjectId": subject.subject_id,
