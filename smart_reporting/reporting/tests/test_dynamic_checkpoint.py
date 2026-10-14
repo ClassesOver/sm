@@ -89,3 +89,39 @@ async def test_restore_rejects_graph_from_another_fact_snapshot(anyio_backend):
             report_run_id="run-1", revision=1,
             fact_files={"analysis_001": FileIdentity(path="facts/001.json", size=10, sha256="e" * 64)},
         )
+
+
+def test_checkpoint_accepts_first_frozen_narrative_outline():
+    from smart_reporting.reporting.workflow.runtime.analysis import RuntimeAnalysisMixin
+
+    current = ReportingCheckpoint(
+        revision=1, phase="analysis", outlineHash="a" * 64,
+        profileCoverage=_coverage(),
+        pendingSections=("section_001", "section_002"),
+    )
+    incoming = ReportingCheckpoint.model_validate({
+        **current.model_dump(mode="json", by_alias=True),
+        "outlineHash": "b" * 64,
+        "narrativeOutlineFile": {"path": "narrative/outline.json", "size": 10, "sha256": "c" * 64},
+        "narrativeOutlineHash": "c" * 64,
+        "pendingSections": ["section_001"],
+    })
+    merged = RuntimeAnalysisMixin._merge_reporting_checkpoints(current, incoming)
+    assert merged.outline_hash == "b" * 64
+    assert merged.narrative_outline_file.path == "narrative/outline.json"
+    assert merged.pending_sections == ("section_001",)
+
+
+def test_checkpoint_rejects_outline_change_after_narrative_freeze():
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.reporting.workflow.runtime.analysis import RuntimeAnalysisMixin
+
+    current = ReportingCheckpoint(
+        revision=1, phase="analysis", outlineHash="a" * 64,
+        profileCoverage=_coverage(),
+        narrativeOutlineFile=FileIdentity(path="narrative/outline.json", size=10, sha256="c" * 64),
+        narrativeOutlineHash="c" * 64,
+    )
+    incoming = current.model_copy(update={"outline_hash": "b" * 64})
+    with pytest.raises(ReportingError):
+        RuntimeAnalysisMixin._merge_reporting_checkpoints(current, incoming)

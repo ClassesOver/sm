@@ -39,3 +39,21 @@ def test_analysis_freezing_enters_narrative_planning_before_sections():
     assert freezing.phase is ReportingPhase.ANALYSIS_FREEZING
     assert planning.phase is ReportingPhase.NARRATIVE_PLANNING
     assert sections.phase is ReportingPhase.SECTIONS
+
+
+def test_evidence_completion_can_enter_narrative_planning_directly():
+    state = ReportingRunState.initial(
+        report_run_id="run-2",
+        external_run_id="external-2",
+        thread_id="thread-2",
+        owner_user_id="user-2",
+    )
+    running = apply(
+        state,
+        ReportingCommand(name="start_analysis", commandId="start-2"),
+    ).state
+    planning = apply(
+        running,
+        ReportingCommand(name="start_narrative_planning", commandId="plan-3"),
+    ).state
+    assert planning.phase is ReportingPhase.NARRATIVE_PLANNING

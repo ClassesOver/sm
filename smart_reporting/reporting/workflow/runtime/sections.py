@@ -2106,6 +2106,10 @@ class RuntimeSectionsMixin:
         detailed_plan: DetailedAnalysisPlan,
         analysis_artifact: AnalysisArtifact,
         citation_bindings: tuple[Citation, ...],
+        finding_ids: tuple[str, ...] = (),
+        finding_summaries: tuple[dict[str, Any], ...] = (),
+        narrative_role: str | None = None,
+        grouping_reason: str | None = None,
     ) -> SectionWorkItem:
         analyses = {item.analysis_id: item for item in detailed_plan.analyses}
         evidence = {item.analysis_id: item for item in analysis_artifact.evidence_manifest.evidence}
@@ -2167,6 +2171,10 @@ class RuntimeSectionsMixin:
                 *(f"warning: {item}" for item in section_warnings),
             ),
             analysisIds=tuple(section.analysis_ids),
+            findingIds=finding_ids,
+            findingSummaries=finding_summaries,
+            narrativeRole=narrative_role,
+            groupingReason=grouping_reason,
             evidence=selected_evidence,
             metricDefinitions=tuple(
                 item

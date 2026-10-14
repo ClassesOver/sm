@@ -438,6 +438,12 @@ class SectionWorkItem(StrictModel):
         alias="completionConditions", min_length=1, max_length=100
     )
     analysis_ids: tuple[str, ...] = Field(alias="analysisIds", min_length=1, max_length=2000)
+    finding_ids: tuple[str, ...] = Field(default=(), alias="findingIds", max_length=2000)
+    finding_summaries: tuple[dict[str, Any], ...] = Field(
+        default=(), alias="findingSummaries", max_length=2000
+    )
+    narrative_role: str | None = Field(default=None, alias="narrativeRole", max_length=64)
+    grouping_reason: str | None = Field(default=None, alias="groupingReason", max_length=1000)
     evidence: tuple[AnalysisEvidence, ...] = Field(default=(), max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500
@@ -461,6 +467,17 @@ class SectionWorkItem(StrictModel):
 
     @model_validator(mode="after")
     def validate_projection(self) -> SectionWorkItem:
+        summary_ids = tuple(
+            str(item.get("findingId"))
+            for item in self.finding_summaries
+            if isinstance(item, dict) and item.get("findingId")
+        )
+        if len(self.finding_ids) != len(set(self.finding_ids)):
+            raise ValueError("SectionWorkItem findingIds 不能重复")
+        if len(summary_ids) != len(set(summary_ids)) or set(summary_ids) - set(self.finding_ids):
+            raise ValueError("SectionWorkItem findingSummaries 必须精确属于当前章节")
+        if self.finding_ids and set(self.finding_ids) - set(summary_ids):
+            raise ValueError("SectionWorkItem findingIds 必须都有对应摘要")
         evidence_ids = tuple(item.analysis_id for item in self.evidence)
         expected_evidence_ids = tuple(
             analysis_id for analysis_id in self.analysis_ids if analysis_id in evidence_ids

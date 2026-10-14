@@ -18,6 +18,7 @@ from ...code_agent.failure_policy import fresh_attempt_futile
 from ...hospital_operation.finding_projection import build_finding_graph
 from ...hospital_operation.findings import FindingGraph
 from ...hospital_operation.narrative_outline import (
+    NarrativeOutline,
     NarrativeOutlineCandidate,
     freeze_narrative_outline,
 )
@@ -1963,7 +1964,10 @@ class RuntimeAnalysisMixin:
         validation_context_file = FileIdentity.model_validate(
             await self._write_artifact_validation_context(
                 scope["threadId"],
-                f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.validation-context.json",
+                (
+                    f"报表/智能分析/{run_context.run_id}/report-revision-{revision}"
+                    f"-{payload_sha256(validation_context)}.validation-context.json"
+                ),
                 validation_context,
             )
         )
@@ -1991,6 +1995,13 @@ class RuntimeAnalysisMixin:
             revision=revision,
             fact_files=fact_files,
         )
+        graph = (
+            await self._read_identity_model(
+                scope["threadId"], checkpoint.finding_graph_file, FindingGraph
+            )
+            if checkpoint.finding_graph_file is not None
+            else None
+        )
         checkpoint = self._update_reporting_checkpoint(
             checkpoint,
             phase="analysis",
@@ -1998,6 +2009,32 @@ class RuntimeAnalysisMixin:
         )
         await self._persist_reporting_checkpoint(run_context, checkpoint)
         if state.pop("_narrative_evidence_only", False):
+            evidence_checkpoint = checkpoint
+            for analysis in detailed_plan.analyses:
+                evidence_checkpoint = await self._run_analysis_item_task(
+                    run_context,
+                    checkpoint=evidence_checkpoint,
+                    revision=revision,
+                    sandbox_id=sandbox_id,
+                    validation_context_file=validation_context_file,
+                    detailed_plan=detailed_plan,
+                    dataset_handles=dataset_handles,
+                    lineage=lineage,
+                    citation_bindings=citation_bindings,
+                    analysis_context_file=analysis_context_file,
+                    fact_files=fact_files,
+                    analysis_id=analysis.analysis_id,
+                    section_goal={
+                        "sectionCode": "evidence",
+                        "title": analysis.analysis_name or analysis.management_question,
+                        "sectionNumber": "1",
+                        "focus": (analysis.management_question,),
+                    },
+                    retry_reason=("report_revision_feedback" if feedback else None),
+                    feedback=feedback,
+                    rework_request=None,
+                )
+            await self._persist_reporting_checkpoint(run_context, evidence_checkpoint)
             await self._apply_durable_command(
                 run_context,
                 ReportingCommand(
@@ -2190,6 +2227,15 @@ class RuntimeAnalysisMixin:
             checkpoint = await self._current_reporting_checkpoint(
                 run_context, ReportingCheckpoint.model_validate(checkpoint_state)
             )
+            narrative_section = None
+            if checkpoint.narrative_outline_file is not None:
+                narrative_outline = await self._read_identity_model(
+                    scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline
+                )
+                narrative_section = next(
+                    (item for item in narrative_outline.sections if item.code == section_code),
+                    None,
+                )
             artifact = await self._build_reporting_artifact(
                 run_context,
                 analysis_ids=section.analysis_ids,
@@ -2203,6 +2249,19 @@ class RuntimeAnalysisMixin:
                 detailed_plan=detailed_plan,
                 analysis_artifact=artifact,
                 citation_bindings=citation_bindings,
+                finding_ids=(narrative_section.finding_ids if narrative_section else ()),
+                finding_summaries=tuple(
+                    {
+                        "findingId": card.finding_id,
+                        "title": card.title,
+                        "summary": card.summary,
+                        "evidenceLevel": card.evidence_level,
+                    }
+                    for card in (graph.findings if graph is not None else ())
+                    if narrative_section and card.finding_id in narrative_section.finding_ids
+                ),
+                narrative_role=(narrative_section.narrative_role if narrative_section else None),
+                grouping_reason=(narrative_section.grouping_reason if narrative_section else None),
             )
             updated, _section_artifact, rework = await self._run_section_phase(
                 run_context,
@@ -2367,6 +2426,8 @@ class RuntimeAnalysisMixin:
         )
         checkpoint = self._update_reporting_checkpoint(
             checkpoint,
+            outline_hash=state[REPORT_OUTLINE_HASH_STATE_KEY],
+            pending_sections=tuple(section.code for section in compatible.sections),
             narrative_outline_file=narrative_file,
             narrative_outline_hash=hashlib.sha256(narrative_content).hexdigest(),
             files=self._merge_checkpoint_files(checkpoint.files, narrative_file),
@@ -2590,9 +2651,21 @@ class RuntimeAnalysisMixin:
             and current_frozen == (None, None, None)
             and all(item is not None for item in incoming_frozen)
         )
+        freezes_narrative_outline = (
+            current.phase == "analysis"
+            and incoming.phase == "analysis"
+            and not current.completed_sections
+            and not incoming.completed_sections
+            and current.narrative_outline_file is None
+            and incoming.narrative_outline_file is not None
+            and current.narrative_outline_hash is None
+        )
         if (
             current.revision != incoming.revision
-            or current.outline_hash != incoming.outline_hash
+            or (
+                current.outline_hash != incoming.outline_hash
+                and not freezes_narrative_outline
+            )
             or current.profile_coverage != incoming.profile_coverage
             or (current_frozen != incoming_frozen and not freezes_analysis)
         ):
@@ -2667,7 +2740,11 @@ class RuntimeAnalysisMixin:
         completed_codes = set(completed_by_code)
         pending = tuple(
             code
-            for code in dict.fromkeys((*current.pending_sections, *incoming.pending_sections))
+            for code in dict.fromkeys(
+                incoming.pending_sections
+                if freezes_narrative_outline
+                else (*current.pending_sections, *incoming.pending_sections)
+            )
             if code not in completed_codes
         )
         trace_by_task = {item.task_id: item for item in current.trace if item.task_id}
