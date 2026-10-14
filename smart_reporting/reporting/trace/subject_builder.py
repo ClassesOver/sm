@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping, Sequence
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
 from ..hospital_operation.deterministic_analysis import _next_period, _parse_period, _ParsedPeriod
@@ -157,7 +158,11 @@ def value_text_variants(value: Any) -> tuple[str, ...]:
     if float(integer) == number:
         variants.extend((f"{integer}", f"{integer:,}"))
     variants.append(f"{number:g}")
-    variants.append(f"{number:,.2f}")
+    # 与冻结目录保持十进制 ROUND_HALF_UP；float 的 .2f 会将 1.005 写为 1.00。
+    with localcontext() as context:
+        context.prec = max(28, len(str(abs(integer))) + 2)
+        rounded = Decimal(str(number)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        variants.append(f"{abs(rounded) if rounded == 0 else rounded:,f}")
     return tuple(dict.fromkeys(variants))
 
 

@@ -487,7 +487,10 @@ async def _make_editor_with_subject(
     )
     review_notices = None
     if number_reference:
-        from smart_reporting.reporting.trace.semantic_bindings import anchor_bound_numbers, render_bound_numbers
+        from smart_reporting.reporting.trace.semantic_bindings import (
+            anchor_bound_numbers,
+            render_bound_numbers,
+        )
 
         markdown, references, review_notices = render_bound_numbers(
             "10月收入{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:万元}}。供应商回复待核实。金额999999元。",
@@ -1338,8 +1341,9 @@ async def test_exact_number_reference_validates_month_and_detects_changed_subjec
     editor, grants, context = await _make_editor_with_subject(tmp_path, period_table=True, number_reference=True)
     raw, _ = await grants.issue(context)
     _token, session = await grants.exchange(raw)
-    from smart_reporting.reporting.trace.semantic_bindings import statement_fingerprint
     from hashlib import sha256
+
+    from smart_reporting.reporting.trace.semantic_bindings import statement_fingerprint
 
     claim_id = "number-" + sha256(b"section_002:block:2").hexdigest()[:20]
     # 原文的来源复核先登记，因此数值引用使用序号 2。
@@ -1359,3 +1363,21 @@ async def test_exact_number_reference_validates_month_and_detects_changed_subjec
     result = await editor.trace_validate(context, session, changed, sha256(changed.encode()).hexdigest())
     assert result['subjects'][0]['status'] == 'stale'
     assert result['subjects'][0]['comparable'] is False
+
+
+@pytest.mark.parametrize(('value', 'text', 'supported'), [
+    (1.005, '1.00床日', False),
+    (1.005, '1.01床日', True),
+    (2.675, '2.67床日', False),
+    (2.675, '2.68床日', True),
+    (-1.005, '-1.00床日', False),
+    (-1.005, '-1.01床日', True),
+    (-2.675, '减少2.67床日', False),
+    (-2.675, '减少2.68床日', True),
+])
+def test_trace_value_rounding_matches_frozen_decimal_rule(value, text, supported):
+    from smart_reporting.reporting.trace.subject_builder import claim_status, value_matches
+
+    assert value_matches(text, value) is supported
+    result = claim_status(text + '[[claim:rounding]]。', 'rounding', value, expected_unit='床日')
+    assert (result['status'] == 'valid') is supported
