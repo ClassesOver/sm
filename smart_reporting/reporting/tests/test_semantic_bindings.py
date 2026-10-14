@@ -282,3 +282,29 @@ def test_budget_formula_uses_selected_monthly_operands(window, field, value, for
     selected = resolve_number_reference(token, contents())
     assert selected['value'] == value
     assert selected['formula'] == formula
+
+
+@pytest.mark.parametrize('extra', ['not-json', '[]', 'null', '{"metrics": null}'])
+def test_reference_resolution_ignores_non_bundle_content_like_catalog(extra):
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:total:元}}'
+    markdown, refs, notices = render_bound_numbers('收入' + token + '。', [*contents(), extra], key='mixed')
+    assert len(refs) == 1 and not notices
+    selected = resolve_number_reference(token, [*contents(), extra])
+    assert selected is not None and selected['value'] == 30
+
+
+@pytest.mark.parametrize('include_alias_copy', [False, True])
+def test_reference_resolution_accepts_schema_field_names_and_equivalent_defaults(include_alias_copy):
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
+
+    bundle = DeterministicAnalysisBundle.model_validate_json(contents()[0])
+    documents = [bundle.model_dump_json(by_alias=False)]
+    if include_alias_copy:
+        documents.extend(contents())
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}'
+    selected = resolve_number_reference(token, documents)
+    assert selected is not None
+    assert selected['value'] == 20
+    assert selected['periods'] == ('2025-02',)

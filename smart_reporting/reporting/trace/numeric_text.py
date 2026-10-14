@@ -160,13 +160,19 @@ def project_ratio_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, 
     return ratios
 
 
-def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
-    """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
+def frozen_fact_bundles(contents: Iterable[str]) -> Iterator[DeterministicAnalysisBundle]:
+    """目录与引用解析共用模型校验和字段规范化，忽略非事实文档。"""
     for content in contents:
         try:
             bundle = DeterministicAnalysisBundle.model_validate_json(content)
         except ValueError:
             continue
+        yield bundle
+
+
+def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
+    """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
+    for bundle in frozen_fact_bundles(contents):
         document = bundle.model_dump(mode="json", by_alias=True)
         for array, fields in (
             ("metrics", ("total", "average", "minimum", "maximum")),
@@ -1094,7 +1100,7 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
     warnings: list[str] = []
     markers = list(re.finditer(r"\[\[analysis:([^\]]+)\]\]", markdown))
     for bundle in bundles:
-        metrics = [entry for entry in bundle.get("metrics", ())
+        metrics = [entry for entry in (bundle.get("metrics") or ())
                    if "current" in entry.get("periodRoles", ())]
         if len(metrics) != 1 or metrics[0].get("periodGranularity") != "month":
             continue
