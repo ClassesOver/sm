@@ -268,3 +268,17 @@ def test_period_average_uses_available_bucket_count_not_calendar_span():
     assert result['value'] == 15
     assert result['formula'] == '((10) + (20)) / 2'
     assert result['periods'] == ('2025-01', '2025-03')
+
+
+@pytest.mark.parametrize(('window', 'field', 'value', 'formula'), [
+    ('2025-02', 'percentage', 20, '(20) / (100) * 100'),
+    ('2025-02', 'difference', -80, '(20) - (100)'),
+    ('2025-01..2025-02', 'percentage', 25, '(30) / (120) * 100'),
+    ('2025-01..2025-02', 'difference', -90, '(30) - (120)'),
+])
+def test_budget_formula_uses_selected_monthly_operands(window, field, value, formula):
+    unit = '%' if field == 'percentage' else '元'
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.' + window + '.' + field + ':' + unit + '}}'
+    selected = resolve_number_reference(token, contents())
+    assert selected['value'] == value
+    assert selected['formula'] == formula

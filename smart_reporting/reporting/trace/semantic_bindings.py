@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from decimal import Decimal
 from typing import Any
 
 from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1
@@ -166,7 +167,15 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
         left_group, right_group = primary['topGroups'][left], primary['topGroups'][right]
         scope.update(leftGroup=left_group['group'], rightGroup=right_group['group'])
         formula = f"abs(({left_group['value']}) - ({right_group['value']}))"
-    elif selector.startswith(('budgetComparison.', 'projectRatio.')):
+    elif selector.startswith('budgetComparison.'):
+        operands = [sum((Decimal(str(item['value'])) for item in entry['periodValues']
+                         if window[0] <= item['period'][:7] <= window[-1]), Decimal(0))
+                    for entry in (primary, entries[ids[1]])]
+        operation = '/' if selector.endswith('.percentage') else '-'
+        formula = f'({operands[0]}) {operation} ({operands[1]})'
+        if operation == '/':
+            formula += ' * 100'
+    elif selector.startswith('projectRatio.'):
         operation = '/' if selector.endswith('.percentage') else '-'
         formula = f"({primary.get('formula')}) {operation} ({entries[ids[1]].get('formula')})"
         if operation == '/':
