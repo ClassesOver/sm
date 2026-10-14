@@ -3,7 +3,7 @@ from smart_reporting.reporting.hospital_operation.narrative_planner import (
     cluster_findings,
     score_finding_relation,
 )
-from smart_reporting.reporting.tests.test_dynamic_narrative_contracts import finding, graph
+from smart_reporting.reporting.tests.narrative_helpers import finding, graph
 
 
 def test_related_income_and_workload_findings_share_group():

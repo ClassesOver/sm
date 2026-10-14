@@ -3,31 +3,11 @@
 import pytest
 from pydantic import ValidationError
 
-from smart_reporting.reporting.hospital_operation.findings import FindingCard, FindingGraph
 from smart_reporting.reporting.hospital_operation.narrative_outline import (
     NarrativeOutlineCandidate,
     freeze_narrative_outline,
 )
-
-
-def finding(number=1, **changes):
-    return FindingCard.model_validate({
-        "findingId": f"finding_{number:016x}",
-        "analysisIds": [f"analysis_{number:03d}"],
-        "kind": "comparison", "title": "收入同比变化", "summary": "收入发生变化",
-        "metricCodes": ["income"], "periodRoles": ["current", "yoy"],
-        "periodStart": "2025-01-01", "periodEnd": "2025-12-31",
-        "grain": ["院区"], "scope": {}, "priority": "high",
-        "evidenceLevel": "verified_fact", "actionability": "unknown",
-        "citationIds": ["citation_001"], "sourceRefs": [{
-            "analysisId": f"analysis_{number:03d}", "fileSha256": "a" * 64,
-            "path": "facts.json", "pointer": "/comparisons/0",
-        }], **changes,
-    })
-
-
-def graph(*cards):
-    return FindingGraph(snapshotHash="b" * 64, findings=cards)
+from smart_reporting.reporting.tests.narrative_helpers import finding, graph
 
 
 def candidate(*groups, **changes):

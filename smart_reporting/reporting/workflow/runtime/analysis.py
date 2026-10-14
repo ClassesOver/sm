@@ -3725,7 +3725,26 @@ class RuntimeAnalysisMixin:
         if checkpoint.finding_graph_file is not None:
             graph_file = checkpoint.finding_graph_file
             graph = await self._read_identity_model(thread_id, graph_file, FindingGraph)
-            if checkpoint.finding_graph_hash != graph.snapshot_hash:
+            snapshot_payload = {
+                "revision": revision,
+                "profileCoverage": checkpoint.profile_coverage.model_dump(mode="json", by_alias=True),
+                "factFiles": [
+                    {"analysisId": analysis_id, "sha256": fact_files[analysis_id].sha256}
+                    for analysis_id in sorted(fact_files)
+                ],
+            }
+            expected_snapshot_hash = hashlib.sha256(
+                json.dumps(
+                    snapshot_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            if (
+                checkpoint.finding_graph_hash != graph.snapshot_hash
+                or graph.snapshot_hash != expected_snapshot_hash
+            ):
                 raise ReportingError(
                     "report_finding_graph_changed", "发现图谱快照哈希与 checkpoint 不一致。"
                 )
