@@ -1706,9 +1706,19 @@ async def test_section_plan_supplies_frozen_fact_catalog_and_corrects_alias(monk
         "metrics": [
             {
                 "factId": fact_id,
+                "datasetId": "current",
+                "datasetSha256": "a" * 64,
+                "periodRoles": ["current"],
+                "field": "amount",
+                "fieldRef": "hospital.revenue.amount",
+                "aggregation": "sum",
                 "total": 100,
                 "unit": "元",
+                "formula": "sum(amount)",
                 "periodStart": "2025-01-01",
+                "missingCount": 0,
+                "zeroCount": 0,
+                "negativeCount": 0,
             }
         ],
     }
@@ -1731,9 +1741,12 @@ async def test_section_plan_supplies_frozen_fact_catalog_and_corrects_alias(monk
                     "analysisId": "analysis_001",
                     "kind": "metrics",
                     "factId": fact_id,
+                    "field": "amount",
                     "total": 100,
                     "unit": "元",
+                    "formula": "sum(amount)",
                     "periodStart": "2025-01-01",
+                    "periodRoles": ["current"],
                 }
             ]
             if stages.count("plan") == 2:
