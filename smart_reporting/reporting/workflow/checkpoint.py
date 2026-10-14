@@ -757,6 +757,17 @@ class ReportingCheckpoint(StrictModel):
         default=None, alias="evidenceManifest"
     )
     analysis_manifest_file: FileIdentity | None = Field(default=None, alias="analysisManifestFile")
+    # 发现图谱与最终叙事提纲均以不可变文件保存；身份字段可选以兼容旧 revision。
+    finding_graph_file: FileIdentity | None = Field(default=None, alias="findingGraphFile")
+    finding_graph_hash: str | None = Field(
+        default=None, alias="findingGraphHash", pattern=SHA256_PATTERN
+    )
+    narrative_outline_file: FileIdentity | None = Field(
+        default=None, alias="narrativeOutlineFile"
+    )
+    narrative_outline_hash: str | None = Field(
+        default=None, alias="narrativeOutlineHash", pattern=SHA256_PATTERN
+    )
     completed_sections: tuple[CompletedSection, ...] = Field(
         default=(), alias="completedSections", max_length=100
     )
@@ -787,6 +798,10 @@ class ReportingCheckpoint(StrictModel):
             raise ValueError("checkpoint pendingSections 不能重复")
         if set(completed) & set(self.pending_sections):
             raise ValueError("checkpoint 章节不能同时处于完成和待生成状态")
+        if (self.finding_graph_file is None) != (self.finding_graph_hash is None):
+            raise ValueError("findingGraphFile 与 findingGraphHash 必须同时存在")
+        if (self.narrative_outline_file is None) != (self.narrative_outline_hash is None):
+            raise ValueError("narrativeOutlineFile 与 narrativeOutlineHash 必须同时存在")
         if self.phase != "analysis" and (
             self.report_brief is None
             or self.evidence_manifest is None

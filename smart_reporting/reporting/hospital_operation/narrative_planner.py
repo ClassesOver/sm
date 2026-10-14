@@ -63,8 +63,9 @@ def cluster_findings(
             if scores and min(scores) >= 0 and sum(scores) / len(scores) > best_score and len(group) < budget.max_findings_per_section:
                 best, best_score = group, sum(scores) / len(scores)
         if best is None:
-            if len(groups) < budget.max_sections:
-                groups.append([finding.finding_id])
+            # Keep every finding. Callers may use max_sections to select body
+            # groups and place the remaining groups in an appendix.
+            groups.append([finding.finding_id])
         else:
             best.append(finding.finding_id)
     return tuple(tuple(group) for group in groups)
@@ -77,11 +78,15 @@ def build_narrative_planning_context(
 ) -> dict[str, object]:
     budget = content_budget or NarrativeContentBudget()
     cards = sorted(graph.findings, key=rank_finding, reverse=True)
+    groups = cluster_findings(graph, budget)
+    body_groups = groups[: budget.max_sections]
+    overflow = [finding_id for group in groups[budget.max_sections:] for finding_id in group]
     return {
         "reportGoal": report_goal,
         "snapshotHash": graph.snapshot_hash,
         "contentBudget": {"maxFindingsPerSection": budget.max_findings_per_section, "maxSections": budget.max_sections},
-        "candidateGroups": [list(group) for group in cluster_findings(graph, budget)],
+        "candidateGroups": [list(group) for group in body_groups],
+        "overflowFindingIds": overflow,
         "findings": [card.model_dump(mode="json", by_alias=True) for card in cards],
     }
 

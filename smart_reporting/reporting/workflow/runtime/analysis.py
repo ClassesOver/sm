@@ -15,6 +15,8 @@ from ....task_execution import (
 )
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...code_agent.failure_policy import fresh_attempt_futile
+from ...hospital_operation.finding_projection import build_finding_graph
+from ...hospital_operation.findings import FindingGraph
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
@@ -1972,6 +1974,14 @@ class RuntimeAnalysisMixin:
             detailed_plan=detailed_plan,
             dataset_handles=dataset_handles,
         )
+        checkpoint = await self._restore_or_create_finding_graph(
+            run_context=run_context,
+            checkpoint=checkpoint,
+            thread_id=scope["threadId"],
+            report_run_id=str(run_context.run_id or scope["externalRunId"]),
+            revision=revision,
+            fact_files=fact_files,
+        )
         checkpoint = self._update_reporting_checkpoint(
             checkpoint,
             phase="analysis",
@@ -2479,6 +2489,30 @@ class RuntimeAnalysisMixin:
                 "report_checkpoint_conflict",
                 "并发任务 checkpoint 与当前冻结分析身份不一致。",
             )
+        if (
+            current.finding_graph_file is not None
+            and incoming.finding_graph_file is not None
+            and (
+                current.finding_graph_file != incoming.finding_graph_file
+                or current.finding_graph_hash != incoming.finding_graph_hash
+            )
+        ):
+            raise ReportingError(
+                "report_checkpoint_conflict",
+                "并发任务 checkpoint 与当前发现图谱身份不一致。",
+            )
+        if (
+            current.narrative_outline_file is not None
+            and incoming.narrative_outline_file is not None
+            and (
+                current.narrative_outline_file != incoming.narrative_outline_file
+                or current.narrative_outline_hash != incoming.narrative_outline_hash
+            )
+        ):
+            raise ReportingError(
+                "report_checkpoint_conflict",
+                "并发任务 checkpoint 与当前叙事提纲身份不一致。",
+            )
         current_fact_files = current.deterministic_fact_files
         incoming_fact_files = incoming.deterministic_fact_files
         if current_fact_files and incoming_fact_files and current_fact_files != incoming_fact_files:
@@ -2487,16 +2521,28 @@ class RuntimeAnalysisMixin:
                 "并发任务 checkpoint 与当前确定性 facts 身份不一致。",
             )
         deterministic_fact_files = current_fact_files or incoming_fact_files
+        finding_graph_file = current.finding_graph_file or incoming.finding_graph_file
+        finding_graph_hash = current.finding_graph_hash or incoming.finding_graph_hash
+        narrative_outline_file = (
+            current.narrative_outline_file or incoming.narrative_outline_file
+        )
+        narrative_outline_hash = (
+            current.narrative_outline_hash or incoming.narrative_outline_hash
+        )
         merged_files = RuntimeAnalysisMixin._merge_checkpoint_files(current.files, *incoming.files)
         merged_files_by_path = {item.path: item for item in merged_files}
         if any(
             identity.path in merged_files_by_path
             and merged_files_by_path[identity.path] != identity
-            for identity in deterministic_fact_files.values()
+            for identity in (
+                *deterministic_fact_files.values(),
+                *((finding_graph_file,) if finding_graph_file is not None else ()),
+                *((narrative_outline_file,) if narrative_outline_file is not None else ()),
+            )
         ):
             raise ReportingError(
                 "report_checkpoint_conflict",
-                "并发任务 files 账本试图覆盖已冻结的确定性 facts 身份。",
+                "并发任务 files 账本试图覆盖已冻结的阶段产物身份。",
             )
         completed_by_code = {item.section_code: item for item in current.completed_sections}
         for item in incoming.completed_sections:
@@ -2562,6 +2608,10 @@ class RuntimeAnalysisMixin:
             warnings=tuple((*current.warnings, *incoming.warnings)[-500:]),
             last_error=incoming.last_error or current.last_error,
             deterministic_fact_files=dict(deterministic_fact_files),
+            finding_graph_file=finding_graph_file,
+            finding_graph_hash=finding_graph_hash,
+            narrative_outline_file=narrative_outline_file,
+            narrative_outline_hash=narrative_outline_hash,
             visualization_section_errors=section_errors,
             files=merged_files,
             trace=tuple((*anonymous_trace, *trace_by_task.values())),
@@ -3658,6 +3708,73 @@ class RuntimeAnalysisMixin:
             )
             checkpoint = await self._persist_reporting_checkpoint(run_context, checkpoint)
         return checkpoint, fact_files
+
+    async def _restore_or_create_finding_graph(
+        self,
+        *,
+        run_context: RunContext,
+        checkpoint: ReportingCheckpoint,
+        thread_id: str,
+        report_run_id: str,
+        revision: int,
+        fact_files: Mapping[str, FileIdentity],
+    ) -> ReportingCheckpoint:
+        """从冻结 facts 构建并持久化 FindingGraph，恢复时只复用同一文件身份。"""
+
+        if checkpoint.finding_graph_file is not None:
+            graph_file = checkpoint.finding_graph_file
+            graph = await self._read_identity_model(thread_id, graph_file, FindingGraph)
+            if checkpoint.finding_graph_hash != graph.snapshot_hash:
+                raise ReportingError(
+                    "report_finding_graph_changed", "发现图谱快照哈希与 checkpoint 不一致。"
+                )
+            return checkpoint
+
+        facts: list[DeterministicAnalysisBundle] = []
+        for analysis_id, identity in fact_files.items():
+            fact = await self._read_identity_model(thread_id, identity, DeterministicAnalysisBundle)
+            if fact.analysis_id != analysis_id:
+                raise ReportingError(
+                    "report_analysis_facts_invalid", "确定性 facts 文件与 analysisId 映射不一致。"
+                )
+            facts.append(fact)
+        snapshot_payload = {
+            "revision": revision,
+            "profileCoverage": checkpoint.profile_coverage.model_dump(mode="json", by_alias=True),
+            "factFiles": [
+                {"analysisId": analysis_id, "sha256": fact_files[analysis_id].sha256}
+                for analysis_id in sorted(fact_files)
+            ],
+        }
+        snapshot_hash = hashlib.sha256(
+            json.dumps(snapshot_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        profile = self._profile(run_context)
+        graph = build_finding_graph(
+            facts,
+            None,
+            tuple(item.model_dump(mode="json", by_alias=True) for item in profile.metrics),
+            snapshot_hash=snapshot_hash,
+            fact_file_paths={analysis_id: identity.path for analysis_id, identity in fact_files.items()},
+            fact_file_sha256s={analysis_id: identity.sha256 for analysis_id, identity in fact_files.items()},
+        )
+        content = json.dumps(
+            graph.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        graph_path = (
+            f"报表/智能分析/{report_run_id}/findings/revision-{revision}/finding-graph.json"
+        )
+        graph_file = await self._write_immutable_artifact(thread_id, graph_path, content)
+        checkpoint = self._update_reporting_checkpoint(
+            checkpoint,
+            finding_graph_file=graph_file,
+            finding_graph_hash=graph.snapshot_hash,
+            files=self._merge_checkpoint_files(checkpoint.files, graph_file),
+        )
+        return await self._persist_reporting_checkpoint(run_context, checkpoint)
 
     async def _prepare_deterministic_analysis_facts(
         self,

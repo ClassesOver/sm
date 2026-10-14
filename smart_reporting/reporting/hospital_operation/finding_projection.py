@@ -88,6 +88,8 @@ def build_finding_graph(
     metric_definitions: Sequence[Mapping[str, Any]],
     *,
     snapshot_hash: str,
+    fact_file_paths: Mapping[str, str] | None = None,
+    fact_file_sha256s: Mapping[str, str] | None = None,
 ) -> FindingGraph:
     cards = [
         card
@@ -98,6 +100,13 @@ def build_finding_graph(
             (supplemental_evidence or {}).get(str(bundle.analysis_id if isinstance(bundle, DeterministicAnalysisBundle) else bundle.get("analysisId"))),
             metric_definitions,
             snapshot_hash=snapshot_hash,
+            fact_file_path=(fact_file_paths or {}).get(
+                str(bundle.analysis_id if isinstance(bundle, DeterministicAnalysisBundle) else bundle.get("analysisId")),
+                "deterministic-facts.json",
+            ),
+            fact_file_sha256=(fact_file_sha256s or {}).get(
+                str(bundle.analysis_id if isinstance(bundle, DeterministicAnalysisBundle) else bundle.get("analysisId"))
+            ),
         )
     ]
     return FindingGraph(snapshotHash=snapshot_hash, findings=tuple(cards))

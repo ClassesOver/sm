@@ -30,3 +30,11 @@ def test_unrelated_domains_are_not_forced_into_same_section():
     left = finding(1, metricCodes=("income",))
     right = finding(2, metricCodes=("funds",))
     assert score_finding_relation(left, right) == 0
+
+
+def test_section_budget_does_not_drop_findings():
+    cards = [finding(i, priority="low") for i in range(1, 4)]
+    groups = cluster_findings(graph(*cards), NarrativeContentBudget(max_sections=1))
+    assert {item for group in groups for item in group} == {
+        card.finding_id for card in cards
+    }
