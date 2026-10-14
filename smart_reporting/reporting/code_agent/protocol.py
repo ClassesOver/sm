@@ -478,6 +478,53 @@ def _synthetic_custom_call(item: Any) -> dict[str, Any]:
     }
 
 
+
+def _normalize_replay_ids(messages: list[Message]) -> list[Message]:
+    """优先使用 Agno；生成 ID 碰撞时保留原 call_id，仅重编 item ID。"""
+    calls = [call for message in messages for call in message.tool_calls or ()]
+    owners: dict[str, int] = {}
+    for index, call in enumerate(calls):
+        for identity in (_field(call, "id"), _field(call, "call_id")):
+            if not isinstance(identity, str) or not identity:
+                continue
+            if identity in owners and owners[identity] != index:
+                raise _custom_protocol_error("Coding Agent 工具调用身份重复。")
+            owners[identity] = index
+    normalized = reformat_tool_call_ids(messages, provider="openai_responses")
+    normalized_calls = [call for message in normalized for call in message.tool_calls or ()]
+    reserved = set(owners)
+    collision = False
+    for index, call in enumerate(normalized_calls):
+        for identity in (_field(call, "id"), _field(call, "call_id")):
+            if not isinstance(identity, str) or not identity:
+                continue
+            collision |= identity in owners and owners[identity] != index
+            owners[identity] = index
+    if not collision:
+        return normalized
+
+    # 从原始身份重建回执映射，不能用已发生碰撞的归一化 ID 猜测结果归属。
+    repaired = [message.model_copy(deep=True) for message in messages]
+    result_ids: dict[str, str] = {}
+    for message in repaired:
+        for call in message.tool_calls or ():
+            item_id = _required_id(call, "id")
+            call_id = _required_id(call, "call_id") if _field(call, "call_id") is not None else item_id
+            nonce = 0
+            while True:
+                new_id = "fc_" + hashlib.sha256(f"{item_id}:{nonce}".encode()).hexdigest()[:24]
+                if new_id not in reserved:
+                    break
+                nonce += 1
+            reserved.add(new_id)
+            result_ids[item_id] = result_ids[call_id] = call_id
+            call.update(id=new_id, call_id=call_id)
+    for message in repaired:
+        if message.role == "tool" and message.tool_call_id in result_ids:
+            message.tool_call_id = result_ids[message.tool_call_id]
+    return repaired
+
+
 def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
     # 回放还原 custom input；同时校验内部参数与原文一致，防止历史被篡改。
     provider_data = _field(call, "provider_data")
@@ -1924,9 +1971,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         canonical_messages = normalize_tool_messages(messages)
         if any(message.tool_calls and message.role != "assistant" for message in canonical_messages):
             raise _custom_protocol_error("Coding Agent 工具调用必须属于 assistant 消息。")
-        normalized_messages = reformat_tool_call_ids(
-            canonical_messages, provider="openai_responses"
-        )
+        normalized_messages = _normalize_replay_ids(canonical_messages)
         original_calls = [call for message in canonical_messages for call in message.tool_calls or ()]
         normalized_calls = [
             call for message in normalized_messages for call in message.tool_calls or ()
@@ -2017,7 +2062,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         if any(result_counts.get(index, 0) != 1 for index in range(len(normalized_calls))):
             raise _custom_protocol_error("Coding Agent 工具调用缺少对应结果。")
 
-        formatted = super()._format_messages(messages, compress_tool_results, tools)
+        formatted = super()._format_messages(normalized_messages, compress_tool_results, tools)
         # Agno 已原生解析 reasoning_output，但 3.0.9 的工具调用分支未回放它。
         # 按第一条调用身份插回原始 item，同一批多个调用只插入一次。
         if self.store is False:
