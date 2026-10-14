@@ -121,6 +121,7 @@ def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_s
         "factId": "fact-1111111111111111", "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
         "periodRoles": ["current"], "metricCodes": ["income"], "field": "income",
         "fieldRef": "income", "aggregation": "sum", "formula": "sum(income)", "total": 100,
+        "topGroups": [{"group": "A", "value": 60}, {"group": "B", "value": 40}],
         "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
     }])
     evidence = {

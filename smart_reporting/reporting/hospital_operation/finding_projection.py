@@ -145,6 +145,12 @@ def project_analysis_findings(
                     for fact_id in item.get("sourceFactIds", ())
                     if isinstance(authoritative_facts[str(fact_id)].get("total"), (int, float))
                 )
+                and any(
+                    tuple((str(component.get("name")), float(component.get("value"))) for component in components)
+                    == tuple((str(group.get("group")), float(group.get("value"))) for group in authoritative_facts[str(fact_id)].get("topGroups", ()))
+                    for fact_id in item.get("sourceFactIds", ())
+                    if isinstance(authoritative_facts[str(fact_id)], Mapping)
+                )
             )
             if direct_decomposition:
                 findings.append(FindingCard(
