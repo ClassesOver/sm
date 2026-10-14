@@ -51,3 +51,34 @@ def test_compatible_outline_uses_finding_groups_instead_of_analysis_count():
     )
     assert len(outline.sections) == 1
     assert outline.sections[0].analysis_ids == ("analysis_001", "analysis_002")
+
+
+def test_compatible_outline_preserves_frozen_narrative_sections():
+    from smart_reporting.reporting.hospital_operation.narrative_outline import (
+        NarrativeOutlineCandidate,
+        freeze_narrative_outline,
+    )
+    cards = [finding(1), finding(2)]
+    source_graph = graph(*cards)
+    candidate = NarrativeOutlineCandidate(
+        title="经营变化与结构风险", snapshotHash=source_graph.snapshot_hash,
+        sections=[
+            {"title": "收入变化", "findingIds": [cards[0].finding_id],
+             "objective": "解释收入变化", "groupingReason": "收入管理问题"},
+            {"title": "结构风险", "findingIds": [cards[1].finding_id],
+             "objective": "识别结构风险", "groupingReason": "风险管理问题"},
+        ],
+    )
+    narrative = freeze_narrative_outline(
+        candidate, graph=source_graph,
+        analyses=[{"analysisId": "analysis_001"}, {"analysisId": "analysis_002"}],
+    )
+    result = build_compatible_report_outline(
+        source_graph, report_type="comprehensive", title=narrative.title,
+        narrative_outline=narrative,
+    )
+    assert [section.title for section in result.sections] == ["收入变化", "结构风险"]
+    assert [section.analysis_ids for section in result.sections] == [
+        ("analysis_001",), ("analysis_002",),
+    ]
+    assert result.sections[0].focus == ("解释收入变化",)

@@ -24,6 +24,7 @@ from ...hospital_operation.narrative_outline import (
 )
 from ...hospital_operation.narrative_planner import (
     build_compatible_report_outline,
+    build_narrative_planning_context,
     cluster_findings,
 )
 from ...knowledge import ReportingKnowledgeIndex
@@ -39,7 +40,7 @@ from ...phase import (
     _nonnegative_int,
     reporting_model_route_from_run_context,
 )
-from ...structured_output import ReportingStructuredOutputExecutor
+from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
 from ..benchmark_variants import (
     BenchmarkProjection,
@@ -2365,6 +2366,56 @@ class RuntimeAnalysisMixin:
     ) -> StepOutput:
         return await self.run_reporting_analysis(_step_input, run_context)
 
+    async def _plan_narrative_outline(
+        self, *, graph: FindingGraph, title: str, report_goal: str,
+        analyses: list[dict[str, str]], run_context: RunContext,
+    ) -> tuple[NarrativeOutline, tuple[dict[str, Any], ...]]:
+        """模型提出章节候选；服务端冻结，纠错失败后保留确定性发现归属。"""
+
+        context = build_narrative_planning_context(graph, report_goal)
+        payload: dict[str, Any] = {"title": title, "planningContext": context}
+        reason = ""
+        call_budget = StructuredOutputCallBudget()
+        for attempt in range(3):
+            if call_budget.exhausted:
+                break
+            try:
+                candidate = await self._run_planner(
+                    self._narrative_outline_agent, payload, run_context,
+                    call_budget=call_budget,
+                    attempt=min(attempt, 1),
+                    failure_kind="schema_failure" if attempt else None,
+                )
+                candidate = NarrativeOutlineCandidate.model_validate(candidate)
+                return freeze_narrative_outline(
+                    candidate, graph=graph, analyses=analyses
+                ), ()
+            except (ValueError, ReportingError) as error:
+                reason = str(error)[:2000]
+                payload = {
+                    "title": title, "planningContext": context,
+                    "correction": {
+                        "attempt": attempt + 1,
+                        "reason": reason,
+                        "allowedPaths": ["sections", "appendixFindingIds", "omittedFindings", "snapshotHash"],
+                        "instruction": "修正引用、覆盖、范围和快照问题，返回完整 NarrativeOutlineCandidate。",
+                    },
+                }
+        cards = {item.finding_id: item for item in graph.findings}
+        fallback = NarrativeOutlineCandidate(
+            title=title, snapshotHash=graph.snapshot_hash,
+            sections=tuple({
+                "title": "；".join(cards[item].title for item in group)[:200],
+                "findingIds": group,
+                "objective": "解释已核验发现并提出管理动作",
+                "groupingReason": "依据共享指标、期间、粒度和已登记关系确定性分组",
+            } for group in cluster_findings(graph)),
+        )
+        return freeze_narrative_outline(fallback, graph=graph, analyses=analyses), ({
+            "code": "report_narrative_planning_degraded",
+            "message": f"章节规划纠错未通过，已使用确定性发现分组：{reason}",
+        },)
+
     async def generate_narrative_outline(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
@@ -2379,6 +2430,39 @@ class RuntimeAnalysisMixin:
         checkpoint = ReportingCheckpoint.model_validate(stored)
         if checkpoint.finding_graph_file is None or checkpoint.finding_graph_hash is None:
             raise ReportingError("report_finding_graph_unavailable", "动态章节缺少已冻结发现图谱。")
+        graph = await self._read_identity_model(scope["threadId"], checkpoint.finding_graph_file, FindingGraph)
+        if graph.snapshot_hash != checkpoint.finding_graph_hash:
+            raise ReportingError("report_checkpoint_conflict", "发现图谱快照与 checkpoint 不一致。")
+        state = self._state(run_context)
+        legacy_outline = _frozen_outline(state)
+        if checkpoint.narrative_outline_file is not None:
+            if checkpoint.narrative_outline_hash != checkpoint.narrative_outline_file.sha256:
+                raise ReportingError("report_checkpoint_conflict", "冻结章节提纲文件身份不一致。")
+            narrative = await self._read_identity_model(
+                scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline
+            )
+            if narrative.snapshot_hash != graph.snapshot_hash:
+                raise ReportingError("report_checkpoint_conflict", "冻结章节提纲与发现图谱快照不一致。")
+            compatible = build_compatible_report_outline(
+                graph, report_type=legacy_outline.report_type, title=narrative.title,
+                narrative_outline=narrative,
+            )
+            outline_payload = compatible.model_dump(mode="json", by_alias=True)
+            outline_hash = payload_sha256(outline_payload)
+            if outline_hash != checkpoint.outline_hash:
+                raise ReportingError("report_checkpoint_conflict", "冻结章节提纲与 checkpoint 内容不一致。")
+            state[REPORT_OUTLINE_STATE_KEY] = outline_payload
+            state[REPORT_OUTLINE_HASH_STATE_KEY] = outline_hash
+            # checkpoint 已持久化但 durable 迁移尚未完成时，只补齐迁移。
+            if durable.phase is DurableReportingPhase.NARRATIVE_PLANNING:
+                await self._apply_durable_command(
+                    run_context,
+                    ReportingCommand(
+                        name="complete_narrative_planning",
+                        commandId=f"narrative-planning-complete:{checkpoint.revision}",
+                    ),
+                )
+            return StepOutput(content={"status": "completed", "sectionCount": len(narrative.sections)})
         await self._apply_durable_command(
             run_context,
             ReportingCommand(
@@ -2386,30 +2470,18 @@ class RuntimeAnalysisMixin:
                 commandId=f"narrative-planning-start:{checkpoint.revision}",
             ),
         )
-        graph = await self._read_identity_model(scope["threadId"], checkpoint.finding_graph_file, FindingGraph)
-        state = self._state(run_context)
-        legacy_outline = _frozen_outline(state)
         detailed_plan = DetailedAnalysisPlan.model_validate(
             state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]
         )
         analyses = [{"analysisId": item.analysis_id} for item in detailed_plan.analyses]
-        cards = {item.finding_id: item for item in graph.findings}
-        candidate = NarrativeOutlineCandidate(
-            title=legacy_outline.title,
-            sections=tuple(
-                {
-                    "title": "；".join(cards[finding_id].title for finding_id in group)[:200],
-                    "findingIds": group,
-                    "objective": "解释已核验发现并提出管理动作",
-                    "groupingReason": "依据共享指标、期间、粒度和已登记发现关系分组",
-                }
-                for group in cluster_findings(graph)
-            ),
-            snapshotHash=graph.snapshot_hash,
+        narrative, planning_issues = await self._plan_narrative_outline(
+            graph=graph, title=legacy_outline.title,
+            report_goal=self._envelope(run_context).report_goal,
+            analyses=analyses, run_context=run_context,
         )
-        narrative = freeze_narrative_outline(candidate, graph=graph, analyses=analyses)
         compatible = build_compatible_report_outline(
-            graph, report_type=legacy_outline.report_type, title=narrative.title
+            graph, report_type=legacy_outline.report_type, title=narrative.title,
+            narrative_outline=narrative,
         )
         outline_payload = compatible.model_dump(mode="json", by_alias=True)
         state[REPORT_OUTLINE_STATE_KEY] = outline_payload
@@ -2429,6 +2501,7 @@ class RuntimeAnalysisMixin:
             checkpoint,
             outline_hash=state[REPORT_OUTLINE_HASH_STATE_KEY],
             pending_sections=tuple(section.code for section in compatible.sections),
+            warnings=tuple((*checkpoint.warnings, *planning_issues)),
             narrative_outline_file=narrative_file,
             narrative_outline_hash=hashlib.sha256(narrative_content).hexdigest(),
             files=self._merge_checkpoint_files(checkpoint.files, narrative_file),

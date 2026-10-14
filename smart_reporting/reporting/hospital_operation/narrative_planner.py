@@ -105,9 +105,28 @@ def build_compatible_report_outline(
     *,
     report_type: str,
     title: str,
+    narrative_outline: NarrativeOutline | None = None,
 ) -> ReportOutline:
     """将确定性发现分组投影为旧渲染器可消费的服务端提纲。"""
 
+    if narrative_outline is not None:
+        if narrative_outline.snapshot_hash != graph.snapshot_hash:
+            raise ValueError("最终提纲与发现图谱快照不一致")
+        return ReportOutline.model_validate({
+            "reportType": report_type,
+            "title": narrative_outline.title,
+            "sections": [
+                {
+                    "code": section.code,
+                    "sectionNumber": section.section_number,
+                    "title": section.title,
+                    "focus": (section.objective,),
+                    "analysisIds": section.analysis_ids,
+                }
+                for section in narrative_outline.sections
+            ],
+            "assumptions": (),
+        })
     cards = {item.finding_id: item for item in graph.findings}
     sections: list[dict[str, object]] = []
     for index, group in enumerate(cluster_findings(graph), 1):
