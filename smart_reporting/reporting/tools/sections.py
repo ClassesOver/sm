@@ -90,6 +90,21 @@ class RuntimeSectionsMixin:
         normalized: list[SectionClaim] = []
 
         for submission in submissions:
+            finding_ids = tuple(item for item in submission.finding_ids if item in work_item.finding_ids)
+            unknown_findings = set(submission.finding_ids) - set(work_item.finding_ids)
+            if unknown_findings:
+                warnings.append({
+                    "code": "report_section_claim_finding_unknown",
+                    "message": "章节结论引用了其他章节或未知发现，已移除该发现绑定并保留正文。",
+                    "details": {"sectionCode": section_code, "claimId": submission.claim_id,
+                                "unknownFindingIds": sorted(unknown_findings)},
+                })
+            if work_item.finding_ids and not finding_ids:
+                warnings.append({
+                    "code": "report_section_claim_finding_missing",
+                    "message": "章节结论未绑定当前章节管理发现，已保留正文并记录覆盖告警。",
+                    "details": {"sectionCode": section_code, "claimId": submission.claim_id},
+                })
             metric = metrics_by_code.get(submission.metric_code)
             if metric is None:
                 warnings.append(
@@ -256,6 +271,7 @@ class RuntimeSectionsMixin:
             try:
                 normalized_claim = SectionClaim(
                     claimId=submission.claim_id,
+                    findingIds=finding_ids,
                     metricCode=submission.metric_code,
                     value=submission.value,
                     periodBasis=(

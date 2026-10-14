@@ -1058,6 +1058,20 @@ def _section_plan_reference_issues(
     known_charts = {item.chart_id for item in work_item.charts}
     issues: list[dict[str, Any]] = []
     for index, claim in enumerate(decision.claims):
+        if set(claim.finding_ids) - set(work_item.finding_ids):
+            issues.append({
+                "path": f"$.claims[{index}].findingIds",
+                "type": "unknown_finding_id",
+                "message": "findingIds 只能引用当前章节分配的管理发现。",
+                "allowedValues": list(work_item.finding_ids),
+            })
+        elif work_item.finding_ids and not claim.finding_ids:
+            issues.append({
+                "path": f"$.claims[{index}].findingIds",
+                "type": "missing_finding_id",
+                "message": "动态章节结论必须绑定所解释的已分配管理发现。",
+                "allowedValues": list(work_item.finding_ids),
+            })
         if claim.metric_code not in known_metrics:
             issues.append(
                 {
@@ -1416,6 +1430,7 @@ async def _generate_section_in_blocks(
             "block 只包含 blockId、objective、claimIds，不生成 Markdown 正文。"
             "claim.factIds 必须原样复制 factCatalog 中支持结论的 factId，"
             "不得自行编造 fact_001 等编号；没有支持该结论的登记事实时不填 factIds。"
+            "动态章节的 claim.findingIds 必须从当前分配的发现中选择，不得引用其他章节发现。"
         ),
         "requiredOutputShape": {
             "kind": "render",
@@ -1430,6 +1445,7 @@ async def _generate_section_in_blocks(
             "claims": [
                 {
                     "claimId": "claim_001",
+                    "findingIds": list(work_item.finding_ids[:1]),
                     "metricCode": "必须来自 allowedMetricCodes",
                     "value": "必须来自证据",
                     "managementQuestionRef": "必须来自 managementQuestionRefs",
@@ -2043,6 +2059,11 @@ def _section_claim_authoring_contract(work_item: SectionWorkItem) -> dict[str, A
     """从当前冻结 WorkItem 生成章节 claim 的动态约束，避免模型猜测业务指标代码。"""
 
     return {
+        "allowedFindingIds": list(work_item.finding_ids),
+        "findingRule": (
+            "动态章节的每个结论通过 findingIds 绑定当前章节发现；仅解释分配的发现，"
+            "不得把同一分析的其他发现重复写成独立结论。旧章节没有 findingIds 时不填该字段。"
+        ),
         "allowedMetricCodes": [item.code for item in work_item.metric_definitions],
         "managementQuestionRefs": [
             item.model_dump(mode="json", by_alias=True)
@@ -2164,7 +2185,8 @@ class RuntimeSectionsMixin:
             title=section.title,
             objective="；".join(objective_parts),
             completionConditions=(
-                "完整呈现当前章节全部冻结事实及其管理结论",
+                ("仅呈现当前章节分配的管理发现及其证据、经营影响和管理动作" if finding_ids
+                 else "完整呈现当前章节全部冻结事实及其管理结论"),
                 "保持期间、单位和共享指标口径一致",
                 "覆盖当前章节 evidence 提供的 citation",
                 "仅使用当前 SectionWorkItem 提供的 chart",

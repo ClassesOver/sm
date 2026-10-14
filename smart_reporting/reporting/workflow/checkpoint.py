@@ -520,6 +520,7 @@ class SectionWorkItem(StrictModel):
 
 class SectionClaim(StrictModel):
     claim_id: str = Field(alias="claimId", min_length=1, max_length=128)
+    finding_ids: tuple[str, ...] = Field(default=(), alias="findingIds", max_length=200)
     metric_code: str = Field(alias="metricCode", min_length=1, max_length=128)
     value: Any
     period_basis: str = Field(alias="periodBasis", min_length=1, max_length=200)
@@ -556,6 +557,8 @@ class SectionClaim(StrictModel):
             raise ValueError("实体级比例必须同时声明 aggregationGrain 与 entityGrain")
         if len(self.fact_ids) != len(set(self.fact_ids)):
             raise ValueError("claim 的 factIds 不能重复")
+        if len(self.finding_ids) != len(set(self.finding_ids)):
+            raise ValueError("claim 的 findingIds 不能重复")
         return self
 
 
@@ -563,6 +566,7 @@ class SectionClaimSubmission(StrictModel):
     """模型提交的 claim；冻结字段由服务端在写入 SectionArtifact 前补齐。"""
 
     claim_id: str = Field(alias="claimId", min_length=1, max_length=128)
+    finding_ids: tuple[str, ...] = Field(default=(), alias="findingIds", max_length=200)
     metric_code: str = Field(alias="metricCode", min_length=1, max_length=128)
     value: Any
     comparison: str | None = Field(default=None, max_length=200)
@@ -607,6 +611,8 @@ class SectionClaimSubmission(StrictModel):
 
     @model_validator(mode="after")
     def validate_submission(self) -> SectionClaimSubmission:
+        if len(self.finding_ids) != len(set(self.finding_ids)):
+            raise ValueError("章节 claim findingIds 不能重复")
         if len(self.citation_ids) != len(set(self.citation_ids)):
             raise ValueError("章节 claim citationIds 不能重复")
         if len(self.chart_ids) != len(set(self.chart_ids)):

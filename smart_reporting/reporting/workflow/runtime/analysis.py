@@ -2256,6 +2256,7 @@ class RuntimeAnalysisMixin:
                 citation_bindings=citation_bindings,
                 section_codes=(section_code,),
             )
+            finding_cards = {card.finding_id: card for card in graph.findings} if graph else {}
             work_item = self._build_section_work_item(
                 section,
                 detailed_plan=detailed_plan,
@@ -2263,14 +2264,9 @@ class RuntimeAnalysisMixin:
                 citation_bindings=citation_bindings,
                 finding_ids=(narrative_section.finding_ids if narrative_section else ()),
                 finding_summaries=tuple(
-                    {
-                        "findingId": card.finding_id,
-                        "title": card.title,
-                        "summary": card.summary,
-                        "evidenceLevel": card.evidence_level,
-                    }
-                    for card in (graph.findings if graph is not None else ())
-                    if narrative_section and card.finding_id in narrative_section.finding_ids
+                    finding_cards[finding_id].model_dump(mode="json", by_alias=True)
+                    for finding_id in (narrative_section.finding_ids if narrative_section else ())
+                    if finding_id in finding_cards
                 ),
                 narrative_role=(narrative_section.narrative_role if narrative_section else None),
                 grouping_reason=(narrative_section.grouping_reason if narrative_section else None),
