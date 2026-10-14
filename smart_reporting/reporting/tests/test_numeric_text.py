@@ -1052,3 +1052,56 @@ def test_extrema_review_skips_malformed_supplementary_metrics(metrics):
     text = '[[analysis:analysis_bad]]1月为收入最高。'
     assert period_extrema_warnings(text, [bundle]) == []
     assert correct_period_extrema(text, [json.dumps(bundle)]) == text
+
+
+@pytest.mark.parametrize(('period', 'valid'), [
+    ('2025-00', False), ('2025-13', False), ('2025-02-30', False), ('2025-02-15', False),
+    ('2025-02', True), ('2025-02-01', True),
+])
+def test_monthly_derivations_require_real_month_start_labels(period, valid):
+    from smart_reporting.reporting.trace.numeric_text import (
+        _month_coverage,
+        period_extrema_warnings,
+    )
+
+    document = json.loads(_monthly_document(values=(10,)))
+    document['metrics'][0]['periodValues'][0]['period'] = period
+    catalog = frozen_number_catalog([json.dumps(document)])
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:monthlyAverage:元}}'
+    assert (token in catalog) is valid
+    assert (_month_coverage([period]) is not None) is valid
+    warnings = period_extrema_warnings('[[analysis:analysis_001]]1月收入最高。', [document])
+    assert bool(warnings) is valid
+
+
+@pytest.mark.parametrize('period', ['2025-00', '2025-13', '2025-02-30', '2025-02-15'])
+def test_budget_derivations_skip_invalid_month_labels(period):
+    document = json.loads(_monthly_document(values=(10,)))
+    actual = document['metrics'][0]
+    actual.update(field='actual_amount', fieldRef='hospital.actual_amount')
+    actual['periodValues'][0]['period'] = period
+    budget = {**actual, 'factId': 'fact-' + 'b' * 16, 'field': 'budget_amount',
+              'fieldRef': 'hospital.budget_amount'}
+    document['metrics'].append(budget)
+    catalog = frozen_number_catalog([json.dumps(document)])
+    assert not any('budgetComparison.' in token for token in catalog)
+
+
+@pytest.mark.parametrize('months', [(1, 3, 2), (3, 1, 2)])
+def test_prefix_totals_do_not_assign_later_months_to_an_earlier_end(months):
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+    from smart_reporting.reporting.trace.semantic_bindings import resolve_number_reference
+
+    document = json.loads(_monthly_document(values=(10, 20, 30)))
+    for bucket, month in zip(document['metrics'][0]['periodValues'], months, strict=True):
+        bucket['period'] = f'2025-{month:02d}'
+    contents = [json.dumps(document)]
+    catalog = frozen_number_catalog(contents)
+    invalid = '{{value:fact-aaaaaaaaaaaaaaaa:periodTotals.0-2:元}}'
+    assert invalid not in catalog
+    assert resolve_number_reference(invalid, contents) is None
+    guide = frozen_number_guide(contents, catalog)[0]['monthlyStatistics']
+    assert all(row['reference'] is not None for row in guide['prefixTotals'])
+    # 月均与极值不依赖月桶排列；原始序列和 token 索引保持不变。
+    assert '{{value:fact-aaaaaaaaaaaaaaaa:monthlyAverage:元}}' in catalog
+    assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodValues.2:元}}'] == '30元'

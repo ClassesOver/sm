@@ -10,7 +10,11 @@ from typing import Any
 
 from loguru import logger
 
-from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle, PeriodValue
+from ..hospital_operation.deterministic_analysis import (
+    DeterministicAnalysisBundle,
+    PeriodValue,
+    _parse_period,
+)
 
 _MONEY_UNITS = {"元": Decimal(1), "万元": Decimal(10_000), "亿元": Decimal(100_000_000)}
 # 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
@@ -88,6 +92,13 @@ def _hidden_by_rounding(value: Any, unit: str | None, target: str | None) -> boo
     return converted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == 0
 
 
+def _valid_month_labels(periods: Iterable[str]) -> bool:
+    """沿用事实日期解析；月桶只接受有效年月或有效月初标签。"""
+    return all(re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", label)
+               and (parsed := _parse_period(label)) is not None and parsed.value.day == 1
+               for label in periods)
+
+
 def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, Any]]:
     """仅对唯一、同快照、同范围的 budget_/actual_ 月度事实提供数学比较。"""
     comparisons = []
@@ -106,7 +117,7 @@ def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[s
         for fact in (actual, budget):
             if fact.aggregation != "sum" or fact.period_granularity != "month" or not 0 < len(fact.period_values) <= 12:
                 break
-            if any(not re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", value.period) for value in fact.period_values):
+            if not _valid_month_labels(value.period for value in fact.period_values):
                 break
             values = {value.period[:7]: Decimal(str(value.value)) for value in fact.period_values}
             if len(values) != len(fact.period_values) or len({period[:4] for period in values}) != 1:
@@ -210,7 +221,7 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                 if (array == "metrics" and entry.get("aggregation") == "sum"
                         and entry.get("periodGranularity") == "month" and periods
                         and len(periods) <= 12
-                        and all(re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", item["period"]) for item in periods)
+                        and _valid_month_labels(item["period"] for item in periods)
                         and len({item["period"][:7] for item in periods}) == len(periods)
                         and len({item["period"][:4] for item in periods}) == 1):
                     # 均值分母使用实际月桶数，前缀累计从原值相加，禁止先舍入再累加。
@@ -219,8 +230,12 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                                    ("monthlyMinimum", min(amounts)), ("monthlyMaximum", max(amounts))))
                     running = Decimal(0)
                     months = [int(item["period"][5:7]) for item in periods]
+                    chronological = True
                     for index, amount in enumerate(amounts):
                         running += amount
+                        chronological = chronological and (index == 0 or months[index] > months[index - 1])
+                        if not chronological:
+                            continue
                         values.append((f"periodTotals.0-{index}", running))
                         if months[:index + 1] == list(range(months[0], months[0] + index + 1)):
                             values.append((f"periodAverages.0-{index}", running / (index + 1)))
@@ -335,7 +350,7 @@ def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> di
 
 def _month_coverage(periods: list[str]) -> str | None:
     """单一年度月度期间的覆盖说明（“2025年1—10月（10个月），不是全年”），供模型直接引用。"""
-    if not periods or not all(re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", period) for period in periods):
+    if not periods or not _valid_month_labels(periods):
         return None
     years = {period[:4] for period in periods}
     months = sorted({int(period[5:7]) for period in periods})
@@ -414,7 +429,7 @@ def frozen_number_guide(
                     "zeroPeriods": [value.period for value in fact.period_values if value.value == 0],
                     "prefixTotals": [{"start": periods[0], "end": period,
                                       "reference": reference(f"periodTotals.0-{index}")}
-                                     for index, period in enumerate(periods)],
+                                     for index, period in enumerate(periods) if reference(f"periodTotals.0-{index}")],
                     "prefixAverages": [{"start": periods[0], "end": period, "monthCount": index + 1,
                                         "reference": reference(f"periodAverages.0-{index}")}
                                        for index, period in enumerate(periods) if reference(f"periodAverages.0-{index}")],
@@ -1118,7 +1133,7 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
         if any(not Decimal(str(item["value"])).is_finite() for item in periods):
             continue
         labels = [str(item["period"]) for item in periods]
-        if any(not re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", label) for label in labels):
+        if not _valid_month_labels(labels):
             continue
         if len({label[:4] for label in labels}) != 1:
             continue
