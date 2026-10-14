@@ -379,3 +379,36 @@ def test_function_replay_retains_one_receipt_with_optional_legacy_name(tool_name
     assert [item['type'] for item in wire] == ['function_call', 'function_call_output']
     assert wire[0]['call_id'] == wire[1]['call_id']
     assert wire[1]['output'] == 'ok'
+
+
+@pytest.mark.parametrize('count', [1, 2])
+def test_replay_accepts_legacy_combined_function_receipts(count):
+    calls = [{'id': f'call-{index}', 'type': 'function',
+              'function': {'name': 'read_script', 'arguments': '{}'}} for index in range(count)]
+    messages = [Message(role='assistant', tool_calls=calls),
+                Message(role='tool', tool_calls=[{'tool_call_id': call['id'], 'tool_name': 'read_script',
+                                                  'content': f'result-{index}'}
+                                                 for index, call in enumerate(calls)])]
+    original = [message.model_dump() for message in messages]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    wire = model._format_messages(messages)
+    requests = [item for item in wire if item.get('type') == 'function_call']
+    results = [item for item in wire if item.get('type') == 'function_call_output']
+    assert len(requests) == len(results) == count
+    assert [item['call_id'] for item in requests] == [item['call_id'] for item in results]
+    assert [item['output'] for item in results] == [f'result-{index}' for index in range(count)]
+    assert [message.model_dump() for message in messages] == original
+
+
+@pytest.mark.parametrize('role', ['user', 'system'])
+def test_replay_rejects_tool_calls_attached_to_non_assistant_messages(role):
+    from smart_reporting.reporting.models import ReportingError
+
+    call = {'id': 'call-read', 'type': 'function',
+            'function': {'name': 'read_script', 'arguments': '{}'}}
+    messages = [Message(role=role, content='text', tool_calls=[call]),
+                Message(role='tool', tool_call_id='call-read', tool_name='read_script', content='ok')]
+    model = ReportingCodeOpenAIResponses(id='test', api_key='test', store=False)
+    with pytest.raises(ReportingError) as caught:
+        model._format_messages(messages)
+    assert caught.value.code == 'report_code_custom_tool_protocol_error'

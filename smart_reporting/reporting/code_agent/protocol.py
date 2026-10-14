@@ -1920,10 +1920,14 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         compress_tool_results: bool = False,
         tools: Any = None,
     ) -> list[Any]:
+        # 先展开旧版合并回执；其中的 tool_calls 是结果容器，不能计入 assistant 调用。
+        canonical_messages = normalize_tool_messages(messages)
+        if any(message.tool_calls and message.role != "assistant" for message in canonical_messages):
+            raise _custom_protocol_error("Coding Agent 工具调用必须属于 assistant 消息。")
         normalized_messages = reformat_tool_call_ids(
-            normalize_tool_messages(messages), provider="openai_responses"
+            canonical_messages, provider="openai_responses"
         )
-        original_calls = [call for message in messages for call in message.tool_calls or ()]
+        original_calls = [call for message in canonical_messages for call in message.tool_calls or ()]
         normalized_calls = [
             call for message in normalized_messages for call in message.tool_calls or ()
         ]
