@@ -73,3 +73,33 @@ def test_outline_cannot_change_snapshot():
     value = candidate([finding().finding_id]).model_copy(update={"snapshot_hash": "c" * 64})
     with pytest.raises(ValueError, match="快照"):
         freeze(value, [finding()])
+
+
+@pytest.mark.parametrize("omitted", [
+    [{"findingId": "finding_ffffffffffffffff", "reason": "影响较小"}],
+    [{"findingId": "finding_0000000000000001", "reason": "影响较小"}],
+    [{"findingId": "finding_0000000000000002"}],
+    [{"findingId": "finding_0000000000000002", "reason": "   "}],
+    [{"reason": "影响较小"}],
+    [{"findingId": "finding_0000000000000002", "reason": "影响较小"}] * 2,
+])
+def test_omissions_require_unique_known_findings_and_explicit_reason(omitted):
+    cards = [finding(), finding(2, priority="low")]
+    with pytest.raises(ValueError, match="忽略"):
+        freeze(candidate([cards[0].finding_id], omittedFindings=omitted), cards)
+
+
+def test_low_priority_finding_can_be_omitted_with_reason():
+    cards = [finding(), finding(2, priority="low")]
+    omitted = [{"findingId": cards[1].finding_id, "reason": "对经营影响较小，正文已覆盖主要发现"}]
+    result = freeze(candidate([cards[0].finding_id], omittedFindings=omitted), cards)
+    assert result.omitted_findings == tuple(omitted)
+
+
+def test_high_priority_finding_cannot_be_hidden_in_appendix_section():
+    value = candidate([finding().finding_id])
+    value = value.model_copy(update={"sections": (
+        value.sections[0].model_copy(update={"narrative_role": "appendix"}),
+    )})
+    with pytest.raises(ValueError, match="高优先级"):
+        freeze(value, [finding()])

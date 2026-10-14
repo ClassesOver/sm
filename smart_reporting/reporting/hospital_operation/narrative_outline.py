@@ -77,6 +77,8 @@ def freeze_narrative_outline(
             raise ValueError("同一发现不能重复归属章节")
         assigned.extend(item.finding_ids)
         selected = [findings[finding_id] for finding_id in item.finding_ids]
+        if item.narrative_role == "appendix" and any(card.priority == "high" for card in selected):
+            raise ValueError("高优先级发现必须进入正文，不能归入附录章节")
         if any(selected[0].period_start != card.period_start or selected[0].period_end != card.period_end or selected[0].grain != card.grain or selected[0].scope != card.scope for card in selected[1:]):
             raise ValueError("章节发现的期间、粒度或口径不一致")
         analysis_ids = tuple(dict.fromkeys(aid for card in selected for aid in card.analysis_ids))
@@ -91,7 +93,16 @@ def freeze_narrative_outline(
     appendix = tuple(dict.fromkeys(candidate.appendix_finding_ids))
     if set(appendix) - set(findings) or set(appendix) & set(assigned):
         raise ValueError("附录发现引用无效或已重复归属")
-    omitted = {item["findingId"] for item in candidate.omitted_findings if "findingId" in item}
+    omitted: set[str] = set()
+    for item in candidate.omitted_findings:
+        finding_id = item.get("findingId")
+        if not finding_id or finding_id not in findings:
+            raise ValueError("忽略项必须引用已登记发现")
+        if finding_id in omitted or finding_id in assigned or finding_id in appendix:
+            raise ValueError("忽略项不能重复归属发现")
+        if not item.get("reason", "").strip():
+            raise ValueError("忽略发现必须说明具体理由")
+        omitted.add(finding_id)
     missing = set(findings) - set(assigned) - set(appendix) - omitted
     if missing:
         raise ValueError(f"遗漏发现：{', '.join(sorted(missing))}")
