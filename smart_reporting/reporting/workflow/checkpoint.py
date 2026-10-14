@@ -444,6 +444,8 @@ class SectionWorkItem(StrictModel):
     )
     narrative_role: str | None = Field(default=None, alias="narrativeRole", max_length=64)
     grouping_reason: str | None = Field(default=None, alias="groupingReason", max_length=1000)
+    max_blocks: int | None = Field(default=None, alias="maxBlocks", ge=1, le=20)
+    max_charts: int | None = Field(default=None, alias="maxCharts", ge=0, le=20)
     evidence: tuple[AnalysisEvidence, ...] = Field(default=(), max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500

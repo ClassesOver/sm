@@ -488,13 +488,17 @@ def _requested_chart_limit(report_goal: str, analysis_count: int) -> int | None:
     return 1
 
 
-def _limit_requested_charts(plan: VisualizationPlanDraft, report_goal: str, analysis_count: int) -> VisualizationPlanDraft:
+def _limit_requested_charts(
+    plan: VisualizationPlanDraft, report_goal: str, analysis_count: int, *, max_charts: int | None = None
+) -> VisualizationPlanDraft:
     limit = _requested_chart_limit(report_goal, analysis_count)
+    if max_charts is not None:
+        limit = min(limit, max_charts) if limit is not None else max_charts
     if limit is None or len(plan.charts) <= limit:
         return plan
     loguru_logger.warning("report_requested_chart_count_applied requested={} generated={}", limit, len(plan.charts))
     return plan.model_copy(update={"charts": plan.charts[:limit],
-        "warnings": (*plan.warnings, f"用户限定 {limit} 张图表，额外图表计划已省略。")})
+        "warnings": (*plan.warnings, f"{'用户要求与章节预算限制' if max_charts is not None else '用户限定'} {limit} 张图表，额外图表计划已省略。")})
 
 
 def visualization_coding_plan(
@@ -1038,12 +1042,15 @@ class RuntimeAnalysisMixin:
             except ReportingError:
                 report_goal = ""
                 visualization_mode = "static"
+            requested_chart_limit = _requested_chart_limit(report_goal, len(section.analysis_ids))
+            if context.get("max_charts") is not None:
+                requested_chart_limit = min(requested_chart_limit, context["max_charts"]) if requested_chart_limit is not None else context["max_charts"]
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization_section",
                 "reportGoal": report_goal,
                 "visualizationMode": visualization_mode,
-                "requestedChartLimit": _requested_chart_limit(report_goal, len(section.analysis_ids)),
+                "requestedChartLimit": requested_chart_limit,
                 "sectionCode": section_code,
                 "section": section.model_dump(mode="json", by_alias=True),
                 "sectionGoal": {
@@ -1188,7 +1195,7 @@ class RuntimeAnalysisMixin:
                         if visualization_plan_adapter is not None:
                             return _section_scoped_chart_ids(
                                 _limit_requested_charts(visualization_plan_adapter(output, request),
-                                                        report_goal, len(section.analysis_ids)), section_code
+                                                        report_goal, len(section.analysis_ids), max_charts=context.get("max_charts")), section_code
                             )
                         if not isinstance(output, VisualizationPlanDraft):
                             raise ReportingError(
@@ -1196,7 +1203,7 @@ class RuntimeAnalysisMixin:
                                 "可视化 planner 返回了错误的结构化结果类型。",
                             )
                         return _section_scoped_chart_ids(
-                            _limit_requested_charts(output, report_goal, len(section.analysis_ids)), section_code
+                            _limit_requested_charts(output, report_goal, len(section.analysis_ids), max_charts=context.get("max_charts")), section_code
                         )
 
                     def code_runner() -> ReportingCodeGenerationRunner:
@@ -2111,6 +2118,10 @@ class RuntimeAnalysisMixin:
                 run_context, ReportingCheckpoint.model_validate(checkpoint_state)
             )
             visual_inspection_mode = "vision" if self._vision_enabled else "deterministic"
+            max_charts = None
+            if checkpoint.narrative_outline_file is not None:
+                narrative = await self._read_identity_model(scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline)
+                max_charts = next(item.max_charts for item in narrative.sections if item.code == section_code)
             visualization_context = {
                 "run_context": run_context,
                 "checkpoint": checkpoint,
@@ -2122,6 +2133,7 @@ class RuntimeAnalysisMixin:
                 "fact_files": fact_files,
                 "visual_inspection_mode": visual_inspection_mode,
                 "visualization_deadline": visualization_deadline,
+                "max_charts": max_charts,
             }
             await self._run_visualization_section_task(section_code, context=visualization_context)
             updated = await self._current_reporting_checkpoint(run_context, checkpoint)
@@ -2270,6 +2282,8 @@ class RuntimeAnalysisMixin:
                 ),
                 narrative_role=(narrative_section.narrative_role if narrative_section else None),
                 grouping_reason=(narrative_section.grouping_reason if narrative_section else None),
+                max_blocks=(narrative_section.max_blocks if narrative_section else None),
+                max_charts=(narrative_section.max_charts if narrative_section else None),
             )
             updated, _section_artifact, rework = await self._run_section_phase(
                 run_context,

@@ -1046,6 +1046,22 @@ def _section_recovery_failure_kind(
     return "schema_failure" if diagnostic.get("code") == "report_phase_output_invalid" else None
 
 
+def _fit_section_plan_budget(plan: RenderSectionPlan, work_item: SectionWorkItem) -> RenderSectionPlan:
+    """按冻结预算合并正文规划块，保留全部结论引用；结构容量不足时留给软告警。"""
+    limit = work_item.max_blocks
+    if limit is None or len(plan.blocks) <= limit:
+        return plan
+    tail = plan.blocks[limit - 1:]
+    claim_ids = tuple(dict.fromkeys(item for block in tail for item in block.claim_ids))
+    if len(claim_ids) > 100:
+        return plan
+    objective = "；".join(block.objective for block in tail)
+    if len(objective) > 2000:
+        objective = tail[0].objective[:1900] + "；同时解释其余已绑定结论"
+    merged = tail[0].model_copy(update={"objective": objective, "claim_ids": claim_ids})
+    return plan.model_copy(update={"blocks": (*plan.blocks[:limit - 1], merged)})
+
+
 def _section_plan_reference_issues(
     decision: RenderSectionPlan,
     work_item: SectionWorkItem,
@@ -1426,7 +1442,7 @@ async def _generate_section_in_blocks(
             number_contents, instruction_payload.get("fieldDefinitions", {})
         )[1],
         "requiredAction": (
-            "证据充足时返回 1 到 12 个必要 block 的结构规划及完整 claims；"
+            f"证据充足时返回 1 到 {min(work_item.max_blocks or 12, 12)} 个必要 block 的结构规划及完整 claims；"
             "block 只包含 blockId、objective、claimIds，不生成 Markdown 正文。"
             "claim.factIds 必须原样复制 factCatalog 中支持结论的 factId，"
             "不得自行编造 fact_001 等编号；没有支持该结论的登记事实时不填 factIds。"
@@ -1445,7 +1461,7 @@ async def _generate_section_in_blocks(
             "claims": [
                 {
                     "claimId": "claim_001",
-                    "findingIds": list(work_item.finding_ids[:1]),
+                    **({"findingIds": list(work_item.finding_ids[:1])} if work_item.finding_ids else {}),
                     "metricCode": "必须来自 allowedMetricCodes",
                     "value": "必须来自证据",
                     "managementQuestionRef": "必须来自 managementQuestionRefs",
@@ -1564,6 +1580,7 @@ async def _generate_section_in_blocks(
     else:
         raise AssertionError("章节规划纠错循环未终止。")
 
+    decision = _fit_section_plan_budget(decision, work_item)
     if whole_section:
         try:
             return await _generate_whole_section_content(
@@ -2060,6 +2077,7 @@ def _section_claim_authoring_contract(work_item: SectionWorkItem) -> dict[str, A
 
     return {
         "allowedFindingIds": list(work_item.finding_ids),
+        "contentBudget": {"maxBlocks": work_item.max_blocks, "maxCharts": work_item.max_charts},
         "findingRule": (
             "动态章节的每个结论通过 findingIds 绑定当前章节发现；仅解释分配的发现，"
             "不得把同一分析的其他发现重复写成独立结论。旧章节没有 findingIds 时不填该字段。"
@@ -2131,6 +2149,8 @@ class RuntimeSectionsMixin:
         finding_summaries: tuple[dict[str, Any], ...] = (),
         narrative_role: str | None = None,
         grouping_reason: str | None = None,
+        max_blocks: int | None = None,
+        max_charts: int | None = None,
     ) -> SectionWorkItem:
         analyses = {item.analysis_id: item for item in detailed_plan.analyses}
         evidence = {item.analysis_id: item for item in analysis_artifact.evidence_manifest.evidence}
@@ -2197,6 +2217,8 @@ class RuntimeSectionsMixin:
             findingSummaries=finding_summaries,
             narrativeRole=narrative_role,
             groupingReason=grouping_reason,
+            maxBlocks=max_blocks,
+            maxCharts=max_charts,
             evidence=selected_evidence,
             metricDefinitions=tuple(
                 item

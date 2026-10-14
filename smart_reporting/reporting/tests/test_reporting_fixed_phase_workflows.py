@@ -1347,8 +1347,9 @@ def test_section_plan_patch_with_non_string_claim_id_stays_validation_error() ->
 @pytest.mark.anyio
 @pytest.mark.parametrize("whole_section", [False, True, "oversized"])
 @pytest.mark.parametrize("recovery", [None, {"code": "report_phase_output_invalid"}])
+@pytest.mark.parametrize("max_blocks", [None, 1])
 async def test_section_generation_switch_preserves_blocks_and_references(
-    monkeypatch, whole_section, recovery
+    monkeypatch, whole_section, recovery, max_blocks
 ):
     stages = []
     plan = {
@@ -1367,23 +1368,28 @@ async def test_section_generation_switch_preserves_blocks_and_references(
         )
         assert payload["numberGuide"][0]["datasetId"] == "current"
         decision = select_reporting_thinking(kwargs["thinking_request"])
-        assert decision.thinking_budget == (4096 if stage == "content" else 2048)
+        assert decision.thinking_budget == (4096 if stage == "content" and not max_blocks else 2048)
         if stage == "plan":
             return SectionPlanOutput.model_validate({"kind": "render", **plan})
         token = "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
         assert payload["frozenNumbers"][token] == "100元"
         if stage == "content":
             assert stage == "content"
-            assert payload["sectionPlan"]["blocks"] == plan["blocks"]
+            assert len(payload["sectionPlan"]["blocks"]) == (max_blocks or 2)
+            assert payload["sectionPlan"]["claims"] == RenderSectionPlan.model_validate(plan).model_dump(
+                mode="json", by_alias=True
+            )["claims"]
             assert len(payload["evidence"]["files"]) == 1
             return schema.model_validate(
                 {
                     "blocks": [
                         {"blockId": f"block_{index}", "markdown": f"收入为{token}。"}
-                        for index in (2, 1)
+                        for index in ((1,) if max_blocks else (2, 1))
                     ]
                 }
             )
+        if max_blocks:
+            assert payload["blockPlan"]["claimIds"] == ["claim_1", "claim_2"]
         return SectionBlockContent(markdown=f"收入为{token}。")
 
     monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
@@ -1392,7 +1398,7 @@ async def test_section_generation_switch_preserves_blocks_and_references(
             raise ReportingError("report_section_context_too_large", "整章输入过大")
 
         monkeypatch.setattr(reporting_sections, "_generate_whole_section_content", oversized_content)
-    work_item = _revenue_work_item()
+    work_item = _revenue_work_item().model_copy(update={"max_blocks": max_blocks})
     evidence = SectionEvidenceBundle(
         sectionCode="section_001",
         files=(
@@ -1421,10 +1427,13 @@ async def test_section_generation_switch_preserves_blocks_and_references(
         recovery=recovery,
     )
     assert stages == (
-        ["plan", "content"] if whole_section is True else ["plan", "block-1", "block-2"]
+        ["plan", "content"] if whole_section is True
+        else (["plan", "block-1"] if max_blocks else ["plan", "block-1", "block-2"])
     )
-    assert [block.block_id for block in result.blocks] == ["block_1", "block_2"]
-    assert [block.claim_ids for block in result.blocks] == [("claim_1",), ("claim_2",)]
+    assert [block.block_id for block in result.blocks] == (["block_1"] if max_blocks else ["block_1", "block_2"])
+    assert [block.claim_ids for block in result.blocks] == (
+        [("claim_1", "claim_2")] if max_blocks else [("claim_1",), ("claim_2",)]
+    )
     assert all(block.citation_ids == ("citation_001",) for block in result.blocks)
     assert all(block.markdown == "收入为100元。" for block in result.blocks)
 
@@ -3241,6 +3250,21 @@ def test_explicit_chart_count_follows_user_request(goal, count, expected):
     result = _limit_requested_charts(plan, goal, count)
     assert len(result.charts) == (3 if expected is None else expected)
     assert result.charts[0].data_bindings == charts[0].data_bindings
+    assert len(plan.charts) == 3
+
+
+@pytest.mark.parametrize(("goal", "budget", "expected"), [
+    ("分析趋势", 0, 0), ("分析趋势", 2, 2),
+    ("使用一张图表", 2, 1), ("每项分析包含一张图表", 1, 1),
+])
+def test_narrative_chart_budget_limits_plan_before_coding(goal, budget, expected):
+    from smart_reporting.reporting.workflow.runtime.analysis import _limit_requested_charts
+
+    charts = tuple(_chart().model_copy(update={"chart_id": f"chart_{index:03d}", "source_path": f"charts/{index}.png"}) for index in range(3))
+    plan = _visualization_plan(charts=charts)
+    result = _limit_requested_charts(plan, goal, 2, max_charts=budget)
+    assert len(result.charts) == expected
+    assert result.warnings
     assert len(plan.charts) == 3
 
 

@@ -39,6 +39,25 @@ def accepted_review_warnings(items: Sequence[Any]) -> list[dict[str, Any]]:
     ]
 
 
+def section_content_budget_issues(
+    work_item: SectionWorkItem, blocks: Sequence[ReportDraftBlock]
+) -> list[dict[str, Any]]:
+    """实际正文超过冻结预算时告警，不能因此阻断章节或下载签发。"""
+    issues = []
+    counts = (
+        ("block", work_item.max_blocks, len(blocks)),
+        ("chart", work_item.max_charts, len({item for block in blocks for item in block.chart_ids})),
+    )
+    for kind, limit, actual in counts:
+        if limit is not None and actual > limit:
+            issues.append({
+                "code": f"report_section_{kind}_budget_exceeded",
+                "message": f"章节实际{'正文块' if kind == 'block' else '图表'}数量 {actual} 超过冻结预算 {limit}，已保留内容并记录质量告警。",
+                "details": {"sectionCode": work_item.section_code, "maxCount": limit, "actualCount": actual},
+            })
+    return issues
+
+
 class RuntimeSectionsMixin:
     @staticmethod
     def _normalize_section_claims(
@@ -743,6 +762,7 @@ class RuntimeSectionsMixin:
                 tuple(normalized_blocks),
                 expected_section_title=work_item.title,
             )
+        warning_items.extend(section_content_budget_issues(work_item, normalized_blocks))
         # 未知引用可以局部丢弃，但整章必须仍保留至少一个冻结 citation 作为事实锚点。
         # 这里在 SectionArtifact 结构校验前判断，避免 claims 全部因未知 citation 被省略
         # 时落成泛化的 Pydantic 错误，向模型返回稳定且可重试的领域错误码。
