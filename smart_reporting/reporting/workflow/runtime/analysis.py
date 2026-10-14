@@ -2292,6 +2292,7 @@ class RuntimeAnalysisMixin:
 
         reporting_workflow = ReportingAnalysisAndDraftWorkflow(
             report_goal=self._envelope(run_context).report_goal,
+            evidence_frozen=checkpoint.narrative_outline_file is not None,
             sections=[
                 {
                     "sectionCode": section.code,

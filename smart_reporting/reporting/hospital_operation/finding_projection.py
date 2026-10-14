@@ -16,8 +16,8 @@ def _stable_id(analysis_id: str, path: str, snapshot_hash: str) -> str:
     return f"finding_{digest}"
 
 
-def _source(analysis_id: str, path: str, file_sha256: str) -> FindingSourceRef:
-    return FindingSourceRef(analysisId=analysis_id, path=path, fileSha256=file_sha256, pointer="/")
+def _source(analysis_id: str, path: str, file_sha256: str, pointer: str) -> FindingSourceRef:
+    return FindingSourceRef(analysisId=analysis_id, path=path, fileSha256=file_sha256, pointer=pointer)
 
 
 def project_analysis_findings(
@@ -38,13 +38,24 @@ def project_analysis_findings(
     findings: list[FindingCard] = []
 
     def add(kind: str, path: str, title: str, summary: str, *, priority: str = "medium", evidence: str = "verified_fact", impact: float | None = None, unit: str | None = None, metrics: tuple[str, ...] = (), periods: tuple[str, ...] = ("current",), grain: tuple[str, ...] = (), limitations: tuple[str, ...] = ()) -> None:
+        locator = path.strip("/").split("/")
+        source_fact = {}
+        if len(locator) >= 2 and locator[1].isdigit():
+            collection = payload.get(locator[0]) or ()
+            index = int(locator[1])
+            if index < len(collection) and isinstance(collection[index], Mapping):
+                source_fact = collection[index]
+        metrics = tuple(source_fact.get("metricCodes") or metrics)
+        periods = tuple(source_fact.get("periodRoles") or periods)
         display_unit = unit or next((str(definitions[code].get("unit")) for code in metrics if definitions.get(code, {}).get("unit")), None)
         findings.append(FindingCard(
             findingId=_stable_id(analysis_id, path, snapshot_hash), analysisIds=(analysis_id,), kind=kind,
             title=title, summary=summary, metricCodes=metrics or (analysis_id,), periodRoles=periods,
-            grain=grain, priority=priority, evidenceLevel=evidence, impactValue=impact,
+            periodStart=source_fact.get("periodStart"), periodEnd=source_fact.get("periodEnd"),
+            scope=dict(source_fact.get("scope") or {}),
+            grain=tuple(source_fact.get("grain") or grain), priority=priority, evidenceLevel=evidence, impactValue=impact,
             impactUnit=display_unit, actionability="unknown", citationIds=(f"{analysis_id}:{path}",),
-            sourceRefs=(_source(analysis_id, fact_file_path, file_sha256),), limitations=limitations,
+            sourceRefs=(_source(analysis_id, fact_file_path, file_sha256, path),), limitations=limitations,
         ))
 
     for index, comparison in enumerate(payload.get("comparisons") or ()):

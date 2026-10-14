@@ -51,6 +51,7 @@ class ReportingDraftWorkflow(Workflow):
         rework_analysis: ReworkRunner | None = None,
         execution_mode: ReportingExecutionMode = "sequential",
         analysis_limiter: asyncio.Semaphore | None = None,
+        evidence_frozen: bool = False,
     ) -> None:
         if execution_mode not in {"sequential", "parallel"}:
             raise ValueError("execution_mode 必须是 sequential 或 parallel")
@@ -65,6 +66,7 @@ class ReportingDraftWorkflow(Workflow):
         self.rework_analysis = rework_analysis
         self.execution_mode = execution_mode
         self.analysis_limiter = analysis_limiter
+        self.evidence_frozen = evidence_frozen
         self._analysis_outputs: dict[str, StepOutput] | None = None
         # Agno Steps/Parallel 会把子步骤异常转成 success=False；保留原始异常，
         # 让稳定错误码（如 report_semantic_contract_upgrade_required）继续上抛。
@@ -132,33 +134,35 @@ class ReportingDraftWorkflow(Workflow):
                 separators=(",", ":"),
             ),
         )
-        self._analysis_outputs = {}
-        self._analysis_errors = {}
-        try:
-            analysis_plan = build_reporting_draft_steps(self, run_context)
-            await analysis_plan.aexecute(
-                StepInput(input=self._instruction()),
-                run_context=run_context,
-                session_id=run_context.session_id,
-                user_id=run_context.user_id,
-                add_workflow_history_to_steps=False,
-            )
-            analysis_outputs = [
-                self._analysis_outputs.get(analysis_id) for analysis_id in self.analysis_ids
-            ]
-            analysis_errors = dict(self._analysis_errors)
-        finally:
-            self._analysis_outputs = None
-            self._analysis_errors = None
-        for analysis_id in self.analysis_ids:
-            if analysis_id in analysis_errors:
-                raise analysis_errors[analysis_id]
-        if any(output is None for output in analysis_outputs):
-            raise RuntimeError("章节分析项未全部执行")
-        for analysis_id, output in zip(self.analysis_ids, analysis_outputs, strict=True):
-            assert output is not None
-            if output.success is False:
-                raise RuntimeError(f"分析项 {analysis_id} 执行失败")
+        analysis_outputs: list[StepOutput | None] = []
+        if not self.evidence_frozen:
+            self._analysis_outputs = {}
+            self._analysis_errors = {}
+            try:
+                analysis_plan = build_reporting_draft_steps(self, run_context)
+                await analysis_plan.aexecute(
+                    StepInput(input=self._instruction()),
+                    run_context=run_context,
+                    session_id=run_context.session_id,
+                    user_id=run_context.user_id,
+                    add_workflow_history_to_steps=False,
+                )
+                analysis_outputs = [
+                    self._analysis_outputs.get(analysis_id) for analysis_id in self.analysis_ids
+                ]
+                analysis_errors = dict(self._analysis_errors)
+            finally:
+                self._analysis_outputs = None
+                self._analysis_errors = None
+            for analysis_id in self.analysis_ids:
+                if analysis_id in analysis_errors:
+                    raise analysis_errors[analysis_id]
+            if any(output is None for output in analysis_outputs):
+                raise RuntimeError("章节分析项未全部执行")
+            for analysis_id, output in zip(self.analysis_ids, analysis_outputs, strict=True):
+                assert output is not None
+                if output.success is False:
+                    raise RuntimeError(f"分析项 {analysis_id} 执行失败")
 
         visualization_input = self._instruction()
         visualization_input["analysisIds"] = list(self.analysis_ids)
@@ -238,6 +242,7 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
         execution_mode: ReportingExecutionMode = "sequential",
         section_concurrency: int = 1,
         analysis_concurrency: int = 1,
+        evidence_frozen: bool = False,
     ) -> None:
         if section_concurrency < 1 or analysis_concurrency < 1:
             raise ValueError("并发度必须大于 0")
@@ -249,7 +254,7 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
         for section in sections:
             analysis_ids = tuple(section.get("analysisIds", ()))
             duplicate_ids = assigned_analysis_ids.intersection(analysis_ids)
-            if duplicate_ids:
+            if duplicate_ids and not evidence_frozen:
                 duplicate = sorted(duplicate_ids)[0]
                 raise ValueError(f"analysisId {duplicate} 不能归属于多个章节")
             assigned_analysis_ids.update(analysis_ids)
@@ -264,6 +269,7 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
                     rework_analysis=rework_analysis,
                     execution_mode=execution_mode,
                     analysis_limiter=limiter,
+                    evidence_frozen=evidence_frozen,
                 )
             )
         self.sections = tuple(built_sections)

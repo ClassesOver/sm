@@ -55,3 +55,22 @@ def test_projection_ids_are_stable():
     first = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64)
     second = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64)
     assert [item.finding_id for item in first] == [item.finding_id for item in second]
+
+
+def test_trend_finding_preserves_fact_scope_period_and_pointer():
+    result = project_analysis_findings("analysis_001", facts(metrics=[{
+        "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
+        "periodRoles": ["current"], "metricCodes": ["income_total"],
+        "field": "income", "fieldRef": "income", "aggregation": "sum",
+        "formula": "sum(income)", "total": 30,
+        "scope": {"income_nature": "开单收入"},
+        "periodStart": "2025-01-01", "periodEnd": "2025-02-28",
+        "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+        "periodValues": [{"period": "2025-01", "value": 10}, {"period": "2025-02", "value": 20}],
+    }]), None, snapshot_hash="b" * 64)
+    trend = next(item for item in result if item.kind == "trend")
+    assert trend.metric_codes == ("income_total",)
+    assert trend.scope == {"income_nature": "开单收入"}
+    assert trend.period_start == "2025-01-01"
+    assert trend.period_end == "2025-02-28"
+    assert trend.source_refs[0].pointer == "/metrics/0/periodValues"
