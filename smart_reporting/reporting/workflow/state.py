@@ -16,8 +16,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..delivery.draft_v1 import ReportChartRegistration
 from .checkpoint import ChartVisualInspectionReceipt, FileIdentity
@@ -48,6 +48,7 @@ class ReportingPhase(StrEnum):
     ANALYSIS_RUNNING = "analysis_running"
     VISUALIZATION = "visualization"
     ANALYSIS_FREEZING = "analysis_freezing"
+    NARRATIVE_PLANNING = "narrative_planning"
     SECTIONS = "sections"
     ANALYSIS_REWORK = "analysis_rework"
     FINALIZE = "finalize"
@@ -215,7 +216,12 @@ _TRANSITIONS: dict[ReportingPhase, frozenset[ReportingPhase]] = {
     ReportingPhase.VISUALIZATION: frozenset(
         {ReportingPhase.ANALYSIS_FREEZING, ReportingPhase.FAILED}
     ),
-    ReportingPhase.ANALYSIS_FREEZING: frozenset({ReportingPhase.SECTIONS, ReportingPhase.FAILED}),
+    ReportingPhase.ANALYSIS_FREEZING: frozenset(
+        {ReportingPhase.NARRATIVE_PLANNING, ReportingPhase.SECTIONS, ReportingPhase.FAILED}
+    ),
+    ReportingPhase.NARRATIVE_PLANNING: frozenset(
+        {ReportingPhase.SECTIONS, ReportingPhase.FAILED}
+    ),
     ReportingPhase.SECTIONS: frozenset(
         {ReportingPhase.ANALYSIS_REWORK, ReportingPhase.FINALIZE, ReportingPhase.FAILED}
     ),
@@ -292,6 +298,9 @@ def apply(
         "start_analysis": ReportingPhase.ANALYSIS_RUNNING,
         "start_visualization": ReportingPhase.VISUALIZATION,
         "freeze_analysis": ReportingPhase.ANALYSIS_FREEZING,
+        "start_narrative_planning": ReportingPhase.NARRATIVE_PLANNING,
+        "enter_narrative_planning": ReportingPhase.NARRATIVE_PLANNING,
+        "complete_narrative_planning": ReportingPhase.SECTIONS,
         "enter_sections": ReportingPhase.SECTIONS,
         "start_sections": ReportingPhase.SECTIONS,
         "request_analysis_rework": ReportingPhase.ANALYSIS_REWORK,

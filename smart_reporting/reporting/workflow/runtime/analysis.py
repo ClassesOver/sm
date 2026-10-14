@@ -1831,6 +1831,7 @@ class RuntimeAnalysisMixin:
             DurableReportingPhase.ANALYSIS_RUNNING,
             DurableReportingPhase.VISUALIZATION,
             DurableReportingPhase.ANALYSIS_FREEZING,
+            DurableReportingPhase.NARRATIVE_PLANNING,
             DurableReportingPhase.SECTIONS,
             DurableReportingPhase.ANALYSIS_REWORK,
         }:
