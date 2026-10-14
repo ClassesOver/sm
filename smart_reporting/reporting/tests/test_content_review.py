@@ -290,7 +290,10 @@ def test_review_annual_budget_allocation_is_not_a_subperiod_total():
     '不可因零值推断疑似未入账。',
 ])
 def test_negated_business_inference_does_not_warn(text):
-    assert review_content(text, []) == []
+    # 否定业务推断不产生原因告警；技术术语规则仍独立生效。
+    expected = (["正文出现技术实现术语：字段。面向管理层请改为业务表达“指标”，"
+                 "不要描述生成、验收或文件处理过程。"] if '字段' in text else [])
+    assert review_content(text, []) == expected
 
 
 def test_negation_does_not_hide_an_assertion_in_another_clause():

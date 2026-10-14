@@ -317,10 +317,15 @@ def _unresolved_failure_call_ids(state: Mapping[str, Any]) -> frozenset[str]:
 
 
 def _read_script_result_stale(message: Message, current_sha: str) -> bool:
+    content = str(message.content or "")
     try:
-        payload = json.loads(str(message.content or ""))
-    except (TypeError, ValueError):
-        return False
+        payload = json.loads(content)
+    except (TypeError, ValueError, RecursionError, MemoryError):
+        # Agno 的普通 dict 工具返回值是 Python repr；与附加 budget 的格式兼容。
+        try:
+            payload = ast.literal_eval(content)
+        except (SyntaxError, TypeError, ValueError, RecursionError, MemoryError):
+            return False
     if not isinstance(payload, dict):
         return False
     sha = payload.get("sha256")

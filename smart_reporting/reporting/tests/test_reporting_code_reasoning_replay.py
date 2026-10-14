@@ -180,7 +180,8 @@ def test_custom_history_compaction_preserves_freeform_wire_identities():
 
 
 @pytest.mark.parametrize("read_sha,keep_read", [("current", True), ("stale", False)])
-def test_rebase_preserves_current_read_and_unresolved_failure_identity(read_sha, keep_read):
+@pytest.mark.parametrize("receipt_format", ["json", "repr"])
+def test_rebase_preserves_current_read_and_unresolved_failure_identity(read_sha, keep_read, receipt_format):
     model = ReportingCodeOpenAIResponses(id="test", api_key="test", store=False)
     model._code_delivery_state_reader = lambda: {
         "script": {"sha256": "current"},
@@ -213,7 +214,7 @@ def test_rebase_preserves_current_read_and_unresolved_failure_identity(read_sha,
                     ],
                 ),
                 Message(
-                    role="tool", tool_name=name, tool_call_id=call_id, content=json.dumps(result)
+                    role="tool", tool_name=name, tool_call_id=call_id, content=json.dumps(result) if receipt_format == "json" else repr(result)
                 ),
             ]
         )
@@ -450,3 +451,15 @@ def test_replay_id_normalization_avoids_native_item_id_collision(reverse, custom
         assert replay['input'] == 'print(1)'
         assert replay['id'] == foreign['id'] and replay['call_id'] == foreign['call_id']
     assert [message.model_dump() for message in messages] == before
+
+
+@pytest.mark.parametrize('content', ['{broken', '[' * 1500 + '0' + ']' * 1500])
+def test_read_history_with_malformed_payload_remains_available(content):
+    from smart_reporting.reporting.code_agent.protocol import _filter_read_script_rounds
+
+    messages = [Message(role='assistant', tool_calls=[{
+        'id': 'item-read', 'call_id': 'call-read', 'type': 'function',
+        'function': {'name': 'read_script', 'arguments': '{}'},
+    }]), Message(role='tool', tool_call_id='call-read', tool_name='read_script', content=content)]
+    filtered, _protected = _filter_read_script_rounds(messages, {'script': {'sha256': 'current'}})
+    assert filtered == messages
