@@ -241,3 +241,30 @@ def test_group_derived_reference_keeps_operand_scope_and_formula(selector, scope
                           selected['value'], expected_unit=selected['unit'],
                           expected_scope=selected['scope'])
     assert any('业务范围' in warning for warning in status['warnings'])
+
+
+@pytest.mark.parametrize(('selector', 'value', 'formula'), [
+    ('monthlyAverage:元', 15, '((10) + (20)) / 2'),
+    ('monthlyMinimum:元', 10, 'min(10, 20)'),
+    ('monthlyMaximum:元', 20, 'max(10, 20)'),
+    ('periodTotals.0-0:元', 10, '(10)'),
+    ('periodTotals.0-1:元', 30, '(10) + (20)'),
+    ('periodAverages.0-1:元', 15, '((10) + (20)) / 2'),
+    ('periodChanges.1:元', 10, '(20) - (10)'),
+    ('periodChangeRates.1:%', 100, '((20) - (10)) / (10) * 100'),
+])
+def test_period_derived_formula_matches_selected_calculation(selector, value, formula):
+    result = resolve_number_reference('{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}', contents())
+    assert result['value'] == value
+    assert result['formula'] == formula
+
+
+def test_period_average_uses_available_bucket_count_not_calendar_span():
+    document = json.loads(contents()[0])
+    metric = document['metrics'][0]
+    metric['periodValues'][1]['period'] = '2025-03'
+    metric['periodEnd'] = '2025-03'
+    result = resolve_number_reference('{{value:fact-aaaaaaaaaaaaaaaa:monthlyAverage:元}}', [json.dumps(document)])
+    assert result['value'] == 15
+    assert result['formula'] == '((10) + (20)) / 2'
+    assert result['periods'] == ('2025-01', '2025-03')

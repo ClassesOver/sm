@@ -140,7 +140,23 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
         group, index = selector.split('.')
         scope['group'] = primary[group][int(index)]['group']
     formula = primary.get('formula')
-    if selector.startswith('groupShares.'):
+    if selector in {'monthlyAverage', 'monthlyMinimum', 'monthlyMaximum'}:
+        amounts = [str(item['value']) for item in primary['periodValues']]
+        if selector == 'monthlyAverage':
+            formula = '(' + ' + '.join(f'({amount})' for amount in amounts) + f') / {len(amounts)}'
+        else:
+            operation = 'min' if selector == 'monthlyMinimum' else 'max'
+            formula = operation + '(' + ', '.join(amounts) + ')'
+    elif selector.startswith(('periodTotals.', 'periodAverages.')):
+        formula = ' + '.join(f"({item['value']})" for item in selected_periods)
+        if selector.startswith('periodAverages.'):
+            formula = f'({formula}) / {len(selected_periods)}'
+    elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
+        baseline, current = (item['value'] for item in selected_periods)
+        formula = f'({current}) - ({baseline})'
+        if selector.startswith('periodChangeRates.'):
+            formula = f'({formula}) / ({baseline}) * 100'
+    elif selector.startswith('groupShares.'):
         _, group, index = selector.split('.')
         numerator = primary[group][int(index)]
         scope['group'] = numerator['group']
