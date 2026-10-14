@@ -114,3 +114,50 @@ def test_supplemental_projection_requires_frozen_file_identity():
             "analysis_001", facts(), {"findings": [{"name": "收入变化"}]},
             snapshot_hash="b" * 64, citation_ids=("citation_007",),
         )
+
+
+def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_scope():
+    evidence = {
+        "analysisId": "analysis_001", "datasetIds": ["dataset-abc123"],
+        "findings": [{
+            "name": "科室收入分解", "kind": "attribution", "directDecomposition": True,
+            "reconciliationCode": "income_by_department", "metricCodes": ["income"],
+            "periodRoles": ["current"], "grain": ["科室"], "scope": {"性质": "开单收入"},
+            "total": 100, "components": [{"name": "A", "value": 60}, {"name": "B", "value": 40}],
+        }],
+        "reconciliations": [{
+            "name": "科室收入合计对账", "code": "income_by_department", "passed": True,
+            "leftTotal": 100, "rightTotal": 100, "difference": 0,
+            "grain": ["科室"], "scope": {"性质": "开单收入"},
+        }],
+        "warnings": [],
+    }
+    result = project_analysis_findings(
+        "analysis_001", facts(), evidence, snapshot_hash="b" * 64,
+        citation_ids=("citation_007",), supplemental_file_path="evidence/001.json",
+        supplemental_file_sha256="c" * 64,
+    )
+    attribution = next(item for item in result if item.title == "科室收入分解")
+    assert attribution.kind == "attribution"
+    assert attribution.evidence_level == "direct_decomposition"
+    assert attribution.grain == ("科室",)
+    assert attribution.scope == {"性质": "开单收入"}
+
+
+def test_supplemental_attribution_with_failed_or_nonclosing_reconciliation_is_not_direct():
+    evidence = {
+        "analysisId": "analysis_001", "datasetIds": ["dataset-abc123"],
+        "findings": [{"name": "疑似收入分解", "kind": "attribution", "directDecomposition": True,
+                      "reconciliationCode": "bad", "total": 100,
+                      "components": [{"name": "A", "value": 90}]}],
+        "reconciliations": [{"name": "对账失败", "code": "bad", "passed": False,
+                             "leftTotal": 100, "rightTotal": 90, "difference": 10}],
+        "warnings": [],
+    }
+    result = project_analysis_findings(
+        "analysis_001", facts(), evidence, snapshot_hash="b" * 64,
+        citation_ids=("citation_007",), supplemental_file_path="evidence/001.json",
+        supplemental_file_sha256="c" * 64,
+    )
+    attribution = next(item for item in result if item.title == "疑似收入分解")
+    assert attribution.evidence_level != "direct_decomposition"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -98,6 +99,54 @@ def project_analysis_findings(
                 continue
             pointer = f"/findings/{index}"
             name = str(item.get("name") or "补充分析发现")
+            reconciliation_code = item.get("reconciliationCode")
+            reconciliation = next(
+                (
+                    candidate for candidate in supplemental_evidence.get("reconciliations", ())
+                    if isinstance(candidate, Mapping)
+                    and candidate.get("code") == reconciliation_code
+                ),
+                None,
+            )
+            components = item.get("components")
+            total = item.get("total")
+            component_total = (
+                sum(float(component.get("value")) for component in components)
+                if isinstance(components, Sequence)
+                and not isinstance(components, (str, bytes))
+                and all(isinstance(component, Mapping) and isinstance(component.get("value"), (int, float))
+                        for component in components)
+                else None
+            )
+            direct_decomposition = (
+                item.get("kind") == "attribution"
+                and item.get("directDecomposition") is True
+                and isinstance(total, (int, float))
+                and component_total is not None
+                and math.isclose(component_total, float(total), rel_tol=1e-12, abs_tol=1e-9)
+                and isinstance(reconciliation, Mapping)
+                and reconciliation.get("passed") is True
+                and reconciliation.get("grain") == item.get("grain")
+                and reconciliation.get("scope") == item.get("scope")
+                and isinstance(reconciliation.get("leftTotal"), (int, float))
+                and isinstance(reconciliation.get("rightTotal"), (int, float))
+                and math.isclose(float(reconciliation["leftTotal"]), float(total), rel_tol=1e-12, abs_tol=1e-9)
+                and math.isclose(float(reconciliation["rightTotal"]), float(total), rel_tol=1e-12, abs_tol=1e-9)
+            )
+            if direct_decomposition:
+                findings.append(FindingCard(
+                    findingId=_stable_id(analysis_id, f"{supplemental_file_path}:{pointer}", snapshot_hash),
+                    analysisIds=(analysis_id,), kind="attribution", title=name[:200],
+                    summary=f"{name}已按登记分项完成闭合对账。"[:4000],
+                    metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
+                    periodRoles=tuple(item.get("periodRoles") or ("current",)),
+                    periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
+                    grain=tuple(item.get("grain") or ()), scope=dict(item.get("scope") or {}),
+                    priority="high", evidenceLevel="direct_decomposition", actionability="high",
+                    citationIds=citation_ids,
+                    sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
+                ))
+                continue
             # 只登记证据的存在及原始位置，不从表格重新计算指标或因标题升级归因。
             kind = item.get("kind")
             if kind not in {"scale", "trend", "comparison", "anomaly", "impact", "data_quality"}:
