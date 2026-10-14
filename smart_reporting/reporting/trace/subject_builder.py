@@ -229,17 +229,17 @@ def formatted_value_matches(text: str, value: Any, unit: str | None) -> bool:
 
 
 def _formatted_patterns(value: Any, unit: str | None, units: Sequence[str]) -> list[str]:
-    from .numeric_text import format_fact_value
+    from .numeric_text import _hidden_by_rounding, format_fact_value
 
     patterns = [
         r"(?<![\d.,+\-])" + re.escape(format_fact_value(value, unit, target)) + r"(?![\d.])"
-        for target in units
+        for target in units if not _hidden_by_rounding(value, unit, target)
     ]
     magnitude = _negative_magnitude(value)
     if magnitude is not None:
         patterns.extend(
             _DECLINE_PREFIX + re.escape(format_fact_value(magnitude, unit, target)) + r"(?![\d.])"
-            for target in units
+            for target in units if not _hidden_by_rounding(value, unit, target)
         )
     return patterns
 
