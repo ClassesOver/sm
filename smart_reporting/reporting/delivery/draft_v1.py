@@ -23,6 +23,7 @@ from .report_runtime.markdown import (
     normalize_number_notation,
     normalize_report_markdown_strong_spacing,
     separate_enumerated_lines,
+    visible_heading_title,
 )
 
 _LEADING_SECTION_HEADING = re.compile(
@@ -67,7 +68,7 @@ REPORT_HEADING_TITLE_MAX_LENGTH = 300
 
 
 def _inline_heading_text(markdown: str) -> str:
-    tokens = MarkdownIt("commonmark").parseInline(markdown)
+    tokens = MarkdownIt("commonmark").parseInline(visible_heading_title(markdown))
     children = tokens[0].children if tokens else ()
     return "".join(
         str(item.content or "")

@@ -1211,3 +1211,38 @@ def test_explicit_chart_block_survives_arbitrary_titles_and_shared_citations():
         (_chart('chart_001', '图的全部标题与关键词', 'citation_001'),),
     )
     assert rendered.markdown.index('### 1.2') < rendered.markdown.index('chart_001.png')
+
+
+def test_heading_contract_records_visible_text_without_claim_marker() -> None:
+    from smart_reporting.reporting.trace.semantic_bindings import render_bound_numbers
+
+    markdown, references, notices = render_bound_numbers("### 口径与待核实事项", (), key="heading")
+    rendered = assemble_report_markdown(
+        ReportDraft(sections=(ReportDraftSection(sectionCode="section_001", blocks=(
+            ReportDraftBlock(blockId="block_1", markdown=markdown,
+                             numberReferences=references, reviewNotices=notices),
+        )),)),
+        expected_title="运营报告", markdown_path="reports/report.md",
+        sections=(ReportSectionDefinition(code="section_001", sectionNumber="1", title="经营分析",
+                                          analysisIds=("analysis_001",)),), citation_ids=(),
+    )
+    assert rendered.heading_numbers[1].title == "口径与待核实事项"
+    assert f"[[claim:{notices[0].claim_id}]]" in rendered.markdown
+
+
+def test_saved_heading_claim_marker_does_not_break_render_contract() -> None:
+    from markdown_it import MarkdownIt
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        _bind_heading_anchors, format_heading_label,
+    )
+
+    heading = dict(level=3, number="1.1", title="待核实[[claim:review-123]]事项",
+                   sectionCode="section_001", anchor="report-heading-section_001-1-1")
+    tokens = MarkdownIt().parse("### 1.1 待核实事项")
+    _bind_heading_anchors(tokens, [heading])
+    assert tokens[0].attrGet("id") == heading["anchor"]
+    assert format_heading_label(level=3, number="1.1", title=heading["title"]) == "1.1 待核实事项"
+    from smart_reporting.reporting.delivery.report_runtime.validation import ReportFailure
+
+    with pytest.raises(ReportFailure, match="标题顺序"):
+        _bind_heading_anchors(MarkdownIt().parse("### 1.1 其他事项"), [heading])

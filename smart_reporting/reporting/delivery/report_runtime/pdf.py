@@ -11,7 +11,7 @@ from string import Formatter
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .markdown import REPORT_VISUAL_THEME
+from .markdown import REPORT_VISUAL_THEME, _subject_id
 from .validation import MAX_PDF_BYTES, ReportFailure
 
 MAX_PDF_PAGES = 200
@@ -476,6 +476,19 @@ def _pdf_markdown(
     trace_sources: Any = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """citation 与 B8 数据来源共用"首次出现顺序编号"管线，互不伪造脚注。"""
+    # 数值锚点附带的 subject citation 供编辑器定位；PDF/Word 使用紧随其后的
+    # claim 标记展示受信来源。仅移除与当前章节、claim 身份匹配的伴随标记。
+    def subject_citation(match: re.Match[str]) -> str:
+        sections = list(_SECTION_MARKER.finditer(markdown, 0, match.start()))
+        if sections and match[1] == _subject_id(sections[-1][1], match[2]):
+            return f"[[claim:{match[2]}]]"
+        return match[0]
+
+    markdown = re.sub(
+        r"\[\[citation:(sub-[0-9a-f]{16})\]\]\[\[claim:([^\]\r\n]+)\]\]",
+        subject_citation,
+        markdown,
+    )
     trace = _normalize_trace_sources(trace_sources)
     chart_alias_by_src = _assign_trace_aliases(markdown, trace)
     marker_ids = tuple(dict.fromkeys(_CITATION_MARKER.findall(markdown)))

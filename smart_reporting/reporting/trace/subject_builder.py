@@ -7,12 +7,12 @@ claim 数值事实的规范化指纹，用于判定"正文仍在陈述生成时�
 
 from __future__ import annotations
 
-import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
+from ..delivery.report_runtime.markdown import _subject_id
 from ..hospital_operation.deterministic_analysis import _next_period, _parse_period, _ParsedPeriod
 from .contracts_v1 import (
     FactRefV1,
@@ -138,10 +138,6 @@ def build_claim_subject_bindings(
                 )
             )
     return tuple(bindings)
-
-
-def _subject_id(section_code: str, claim_id: str) -> str:
-    return "sub-" + hashlib.sha256(f"{section_code}:{claim_id}".encode()).hexdigest()[:16]
 
 
 def value_text_variants(value: Any) -> tuple[str, ...]:

@@ -1,5 +1,6 @@
 """Reporting Markdown 规范化与语义文档能力。"""
 
+import hashlib
 import html
 import re
 from collections.abc import Callable, Mapping
@@ -14,6 +15,12 @@ from typing import Any
 from .theme import REPORT_VISUAL_THEME
 from .validation import ReportFailure
 
+
+def _subject_id(section_code: str, claim_id: str) -> str:
+    """装配器、追溯与独立渲染器共用的正文主体身份。"""
+    return "sub-" + hashlib.sha256(f"{section_code}:{claim_id}".encode()).hexdigest()[:16]
+
+
 _WORD_MARKERS = {
     "cover_end": "__REPORT_COVER_END__",
     "toc_field_start": "__REPORT_TOC_FIELD_START__",
@@ -23,9 +30,15 @@ _WORD_MARKERS = {
 }
 
 
+def visible_heading_title(title: str) -> str:
+    """追溯锚点不属于标题可见文字；兼容已保存的标题契约。"""
+    return re.sub(r"\[\[claim:[^\]\r\n]+\]\]", "", title)
+
+
 def format_heading_label(*, level: int, number: str, title: str) -> str:
     """返回报告正文和目录共用的标题显示文本。"""
 
+    title = visible_heading_title(title)
     return f"{number}. {title}" if level == 2 else f"{number} {title}"
 
 

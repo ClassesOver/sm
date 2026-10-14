@@ -8,6 +8,7 @@ from smart_reporting.report_editor.service import _export_citation_presentations
 def test_shared_fact_claims_keep_all_markers_and_one_first_appearance_number() -> None:
     from smart_reporting.report_editor.service import _build_export_trace_sources
     from smart_reporting.reporting.delivery.report_runtime.pdf import _pdf_markdown
+    from smart_reporting.reporting.trace.subject_builder import _subject_id
 
     reference = SimpleNamespace(file_resource_id="file-1", json_pointer="/metrics/0")
     index = SimpleNamespace(
@@ -27,7 +28,9 @@ def test_shared_fact_claims_keep_all_markers_and_one_first_appearance_number() -
     assert len(payload["claims"]) == 1
     assert payload["claims"][0]["claimIds"] == ["claim-first", "claim-second"]
     visible, _, trace = _pdf_markdown(
-        "先出现3800[[claim:claim-second]]，再出现3600[[claim:claim-first]]。",
+        "[[section:section_001]]先出现3800"
+        f"[[citation:{_subject_id('section_001', 'claim-second')}]]"
+        "[[claim:claim-second]]，再出现3600[[claim:claim-first]]。",
         [], trace_sources=payload,
     )
     assert visible.count("[数据来源 001]") == 2
@@ -300,3 +303,65 @@ def test_citation_appendix_projects_soft_warning_and_inserted_row_as_stale() -> 
             report_id="report-1", revision=2,
         )
         assert rebound[0]["status"] == "stale"
+
+@pytest.mark.parametrize('include_sources', [True, False])
+def test_numeric_subject_citation_uses_claim_marker_without_dataset_lookup(include_sources):
+    from smart_reporting.reporting.delivery.report_runtime.pdf import _pdf_markdown
+    from smart_reporting.reporting.trace.subject_builder import _subject_id
+
+    subject = _subject_id('section_001', 'number_001')
+    markdown = f'[[section:section_001]]收入100[[citation:{subject}]][[claim:number_001]][[citation:citation_001]]'
+    visible, citations, trace = _pdf_markdown(markdown, [
+        {'citationId': 'citation_001', 'label': '收入数据', 'coverageItems': []}
+    ], include_sources=include_sources)
+    assert '收入100' in visible
+    assert '[[citation:' not in visible
+    assert '[[claim:' not in visible
+    assert [item['citationId'] for item in citations] == ['citation_001']
+    assert trace['entries'] == []  # 未提供受信追溯登记时不伪造来源。
+
+
+def test_unknown_dataset_citation_still_rejected():
+    from smart_reporting.reporting.delivery.report_runtime.pdf import _pdf_markdown
+    from smart_reporting.reporting.delivery.report_runtime.validation import ReportFailure
+
+    with pytest.raises(ReportFailure):
+        _pdf_markdown('收入[[citation:unknown]]', [])
+
+
+def test_mismatched_subject_citation_is_not_silently_removed():
+    from smart_reporting.reporting.delivery.report_runtime.pdf import _pdf_markdown
+    from smart_reporting.reporting.delivery.report_runtime.validation import ReportFailure
+    from smart_reporting.reporting.trace.subject_builder import _subject_id
+
+    subject = _subject_id('other_section', 'number_001')
+    with pytest.raises(ReportFailure):
+        _pdf_markdown(
+            f'[[section:section_001]]100[[citation:{subject}]][[claim:number_001]]', []
+        )
+
+
+def test_subject_citation_renders_in_standalone_runtime_package(tmp_path) -> None:
+    import subprocess
+    import sys
+
+    from smart_reporting.reporting.trace.subject_builder import _subject_id
+    from smart_reporting.reporting.workspace import _report_runtime_package
+
+    archive = tmp_path / "runtime.zip"
+    archive.write_bytes(_report_runtime_package()[0])
+    markdown = (
+        "[[section:section_001]]金额10"
+        f"[[citation:{_subject_id('section_001', 'claim-1')}]]"
+        "[[claim:claim-1]]"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); "
+         "from report_runtime.pdf import _pdf_markdown; "
+         "text, _, _ = _pdf_markdown(sys.argv[2], []); "
+         "assert '金额10' in text and '[[citation:' not in text",
+         str(archive), markdown],
+        capture_output=True, text=True, cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
