@@ -1,0 +1,253 @@
+{
+  "cases": [
+    {
+      "name": "income_and_workload",
+      "graph": {
+        "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "findings": [
+          {
+            "findingId": "finding_0000000000000001",
+            "analysisIds": ["analysis_001"],
+            "kind": "trend",
+            "title": "收入增长",
+            "summary": "本期收入较上期增长。",
+            "metricCodes": ["income"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "high",
+            "evidenceLevel": "verified_fact",
+            "impactValue": 1200,
+            "impactUnit": "万元",
+            "actionability": "high",
+            "citationIds": ["citation_001"],
+            "sourceRefs": [{"analysisId": "analysis_001", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/income.json", "pointer": "/metrics/0"}],
+            "relatedFindingIds": ["finding_0000000000000002"]
+          },
+          {
+            "findingId": "finding_0000000000000002",
+            "analysisIds": ["analysis_002"],
+            "kind": "trend",
+            "title": "工作量增长",
+            "summary": "同期工作量同步增长。",
+            "metricCodes": ["workload"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "medium",
+            "evidenceLevel": "verified_fact",
+            "impactValue": 800,
+            "impactUnit": "人次",
+            "actionability": "medium",
+            "citationIds": ["citation_002"],
+            "sourceRefs": [{"analysisId": "analysis_002", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/workload.json", "pointer": "/metrics/0"}],
+            "relatedFindingIds": ["finding_0000000000000001"]
+          }
+        ]
+      }
+    },
+    {
+      "name": "income_and_cost",
+      "graph": {
+        "snapshotHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "findings": [
+          {
+            "findingId": "finding_0000000000000011",
+            "analysisIds": ["analysis_011"],
+            "kind": "trend",
+            "title": "收入增长",
+            "summary": "收入较上期增长。",
+            "metricCodes": ["income"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "high",
+            "evidenceLevel": "verified_fact",
+            "impactValue": 100,
+            "impactUnit": "万元",
+            "actionability": "high",
+            "citationIds": ["citation_011"],
+            "sourceRefs": [{"analysisId": "analysis_011", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/income-cost.json", "pointer": "/metrics/0"}]
+          },
+          {
+            "findingId": "finding_0000000000000012",
+            "analysisIds": ["analysis_012"],
+            "kind": "impact",
+            "title": "成本增速更高",
+            "summary": "成本增速高于收入增速，形成经营压力。",
+            "metricCodes": ["cost"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["科室"],
+            "scope": {},
+            "priority": "high",
+            "evidenceLevel": "rule_based",
+            "impactValue": 30,
+            "impactUnit": "万元",
+            "actionability": "high",
+            "citationIds": ["citation_012"],
+            "sourceRefs": [{"analysisId": "analysis_012", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/income-cost.json", "pointer": "/metrics/1"}]
+          }
+        ]
+      }
+    },
+    {
+      "name": "funds_risk",
+      "graph": {
+        "snapshotHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "findings": [
+          {
+            "findingId": "finding_0000000000000021",
+            "analysisIds": ["analysis_021"],
+            "kind": "anomaly",
+            "title": "回款放缓",
+            "summary": "回款增速低于收入增速。",
+            "metricCodes": ["collection"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "high",
+            "evidenceLevel": "verified_fact",
+            "impactValue": 50,
+            "impactUnit": "万元",
+            "actionability": "high",
+            "citationIds": ["citation_021"],
+            "sourceRefs": [{"analysisId": "analysis_021", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/funds.json", "pointer": "/metrics/0"}],
+            "relatedFindingIds": ["finding_0000000000000022"]
+          },
+          {
+            "findingId": "finding_0000000000000022",
+            "analysisIds": ["analysis_022"],
+            "kind": "anomaly",
+            "title": "应收上升",
+            "summary": "应收余额上升。",
+            "metricCodes": ["receivable"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "high",
+            "evidenceLevel": "verified_fact",
+            "impactValue": 70,
+            "impactUnit": "万元",
+            "actionability": "high",
+            "citationIds": ["citation_022"],
+            "sourceRefs": [{"analysisId": "analysis_022", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/funds.json", "pointer": "/metrics/1"}],
+            "relatedFindingIds": ["finding_0000000000000021", "finding_0000000000000023"]
+          },
+          {
+            "findingId": "finding_0000000000000023",
+            "analysisIds": ["analysis_023"],
+            "kind": "anomaly",
+            "title": "现金余额承压",
+            "summary": "现金余额下降。",
+            "metricCodes": ["cash_balance"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "high",
+            "evidenceLevel": "verified_fact",
+            "impactValue": 40,
+            "impactUnit": "万元",
+            "actionability": "high",
+            "citationIds": ["citation_023"],
+            "sourceRefs": [{"analysisId": "analysis_023", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/funds.json", "pointer": "/metrics/2"}],
+            "relatedFindingIds": ["finding_0000000000000022"]
+          }
+        ]
+      }
+    },
+    {
+      "name": "without_budget",
+      "graph": {
+        "snapshotHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "findings": [
+          {
+            "findingId": "finding_0000000000000031",
+            "analysisIds": ["analysis_031"],
+            "kind": "trend",
+            "title": "工作量变化",
+            "summary": "工作量较上期变化。",
+            "metricCodes": ["workload"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "medium",
+            "evidenceLevel": "verified_fact",
+            "actionability": "medium",
+            "citationIds": ["citation_031"],
+            "sourceRefs": [{"analysisId": "analysis_031", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/workload-only.json", "pointer": "/metrics/0"}]
+          }
+        ]
+      }
+    },
+    {
+      "name": "statistical_relation",
+      "graph": {
+        "snapshotHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "findings": [
+          {
+            "findingId": "finding_0000000000000041",
+            "analysisIds": ["analysis_041"],
+            "kind": "impact",
+            "title": "指标存在统计关系",
+            "summary": "两个指标呈统计相关，不能据此确定原因。",
+            "metricCodes": ["income", "workload"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "medium",
+            "evidenceLevel": "statistical_relation",
+            "actionability": "unknown",
+            "citationIds": ["citation_041"],
+            "sourceRefs": [{"analysisId": "analysis_041", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/correlation.json", "pointer": "/comparisons/0"}],
+            "limitations": ["仅为统计关系，不构成因果证明。"]
+          }
+        ]
+      }
+    },
+    {
+      "name": "data_quality_limit",
+      "graph": {
+        "snapshotHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "findings": [
+          {
+            "findingId": "finding_0000000000000051",
+            "analysisIds": ["analysis_051"],
+            "kind": "data_quality",
+            "title": "组织字段缺失",
+            "summary": "组织粒度字段缺失，结论范围受限。",
+            "metricCodes": ["organization"],
+            "periodRoles": ["current"],
+            "periodStart": "2025-01",
+            "periodEnd": "2025-12",
+            "grain": ["医院"],
+            "scope": {},
+            "priority": "high",
+            "evidenceLevel": "evidence_missing",
+            "actionability": "high",
+            "citationIds": ["citation_051"],
+            "sourceRefs": [{"analysisId": "analysis_051", "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000", "path": "fixture/quality.json", "pointer": "/dataQuality/0"}],
+            "limitations": ["无法下钻到组织粒度。"]
+          }
+        ]
+      }
+    }
+  ]
+}

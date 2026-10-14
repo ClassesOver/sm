@@ -119,6 +119,7 @@ from .base import (
     reporting_phase_task_key,
     validate_report_draft_blocks,
 )
+from .finding_evidence import finding_evidence_view
 from .phase_models import (
     AnalysisReworkDecision,
     RenderSectionDecision,
@@ -324,11 +325,16 @@ def _section_number_context(
     field_definitions: dict[str, str],
     *,
     claims: Sequence[Any] | None = None,
+    allowed_fact_ids: set[str] | None = None,
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """模型只消费当前结论的数值视图，完整目录仍用于服务端校验。"""
 
     catalog = frozen_number_catalog(contents)
     guide = frozen_number_guide(contents, catalog, field_definitions=field_definitions)
+    if allowed_fact_ids is not None:
+        guide = [item for item in guide if item.get("factId") in allowed_fact_ids]
+        catalog = {token: value for token, value in catalog.items()
+                   if token.split(":", 2)[1] in allowed_fact_ids}
     if claims is None:
         # 规划不生成数值占位符；直接展示已格式化数值，避免每个期间/分组反复携带
         # 长引用。factId 仍保留，用于下一阶段绑定结论。
@@ -1385,10 +1391,23 @@ async def _generate_section_in_blocks(
     review_notices 按 blockId 收集纠错后仍残留的复核告警，供章节提交时并入质量告警。
     """
 
+    original_evidence_files = evidence.files
+    scoped_fact_ids: set[str] | None = None
+    if work_item.finding_ids:
+        scoped_files, scoped_fact_ids, source_warnings = finding_evidence_view(
+            evidence.files, work_item
+        )
+        evidence = evidence.model_copy(update={
+            "files": scoped_files,
+            "factSummaries": (*evidence.fact_summaries, *(
+                f"warning: {item['message']}" for item in source_warnings
+            )),
+        })
+
     # 规划阶段只收到文件身份，不能要求模型从摘要猜测内容寻址的事实 ID。
     # 目录仅从本轮已验证 SHA 的证据正文提取，不接受模型提交的编号别名。
     fact_catalog: list[dict[str, Any]] = []
-    for evidence_file in evidence.files:
+    for evidence_file in original_evidence_files:
         try:
             document = json.loads(evidence_file.content)
         except ValueError:
@@ -1429,8 +1448,10 @@ async def _generate_section_in_blocks(
                         },
                     }
                 )
+    if scoped_fact_ids is not None:
+        fact_catalog = [item for item in fact_catalog if item["factId"] in scoped_fact_ids]
     known_fact_ids = {item["factId"] for item in fact_catalog}
-    number_contents = tuple(item.content for item in evidence.files)
+    number_contents = tuple(item.content for item in original_evidence_files)
     plan_payload = {
         **instruction_payload,
         "generationStage": "plan",
@@ -1439,7 +1460,8 @@ async def _generate_section_in_blocks(
         ],
         "factCatalog": fact_catalog,
         "numberGuide": _section_number_context(
-            number_contents, instruction_payload.get("fieldDefinitions", {})
+            number_contents, instruction_payload.get("fieldDefinitions", {}),
+            allowed_fact_ids=scoped_fact_ids,
         )[1],
         "requiredAction": (
             f"证据充足时返回 1 到 {min(work_item.max_blocks or 12, 12)} 个必要 block 的结构规划及完整 claims；"
@@ -1593,6 +1615,8 @@ async def _generate_section_in_blocks(
                 run_context=run_context,
                 thinking_request=thinking_request,
                 review_notices=review_notices,
+                number_contents=number_contents,
+                allowed_fact_ids=scoped_fact_ids,
             )
         except (ReportingError, TaskExecutionContextHardLimitError) as error:
             if (
@@ -1662,7 +1686,10 @@ async def _generate_section_in_blocks(
             "sectionGoal": instruction_payload.get("sectionGoal", {}),
             "blockPlan": block_plan.model_dump(mode="json", by_alias=True),
             "claims": [item.model_dump(mode="json", by_alias=True) for item in block_claims],
-            "frozenNumbers": frozen_number_catalog(item.content for item in selected_files),
+            "frozenNumbers": frozen_number_catalog(
+                number_contents if scoped_fact_ids is not None
+                else tuple(item.content for item in selected_files)
+            ),
             "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
             "facts": block_facts,
             "metricDefinitions": block_metrics,
@@ -1679,8 +1706,11 @@ async def _generate_section_in_blocks(
         # 完整证据只驻留在当前固定 Workflow 内存中；模型按 block 消费带身份的相关视图。
         block_number_catalog = block_payload["frozenNumbers"]
         block_payload["frozenNumbers"], block_payload["numberGuide"] = _section_number_context(
-            tuple(item.content for item in selected_files), block_payload["fieldDefinitions"],
+            number_contents if scoped_fact_ids is not None
+            else tuple(item.content for item in selected_files),
+            block_payload["fieldDefinitions"],
             claims=block_claims,
+            allowed_fact_ids=scoped_fact_ids,
         )
         # claims、冻结摘要和引用对象始终完整保留，切片只移除与当前 block 无关的文件正文。
         block_payload["evidence"] = _project_section_evidence_files(
@@ -1731,7 +1761,7 @@ async def _generate_section_in_blocks(
                 loguru_logger.warning("report_content_review_correction_unavailable section={} code={}", work_item.section_code, getattr(error, "code", type(error).__name__))
                 # 不让无效纠错响应覆盖已验证的首轮正文。
                 content = first_block_content
-            content_review = review_content_result(content.markdown, (item.content for item in selected_files),
+            content_review = review_content_result(content.markdown, number_contents,
                                              field_definitions=block_payload["fieldDefinitions"],
                                              fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids))
             review_warnings = list(content_review.warnings)
@@ -1768,7 +1798,7 @@ async def _generate_section_in_blocks(
             from ...trace.semantic_bindings import render_bound_numbers
 
             bound_markdown, number_references, number_notices = render_bound_numbers(
-                content.markdown, (item.content for item in selected_files),
+                content.markdown, number_contents,
                 key=f"{work_item.section_code}:{block_plan.block_id}",
             )
             candidate = ReportDraftBlock(
@@ -1832,13 +1862,16 @@ async def _generate_whole_section_content(
     run_context: RunContext,
     thinking_request: ThinkingRequest,
     review_notices: dict[str, list[dict[str, Any]]] | None = None,
+    number_contents: Sequence[str] | None = None,
+    allowed_fact_ids: set[str] | None = None,
 ) -> RenderSectionDecision:
     """一次生成整章正文；引用与顺序始终由已校验规划决定。"""
 
+    number_contents = tuple(number_contents or (item.content for item in evidence.files))
     payload = {
         "phase": "section",
         "generationStage": "content",
-        "frozenNumbers": prompt_number_catalog(frozen_number_catalog(item.content for item in evidence.files)),
+        "frozenNumbers": prompt_number_catalog(frozen_number_catalog(number_contents)),
         "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
         "reportGoal": instruction_payload.get("reportGoal", ""),
         "sectionGoal": instruction_payload.get("sectionGoal", {}),
@@ -1867,8 +1900,9 @@ async def _generate_whole_section_content(
         for block in plan.blocks
     }
     payload["frozenNumbers"], payload["numberGuide"] = _section_number_context(
-        tuple(item.content for item in evidence.files), payload["fieldDefinitions"],
+        number_contents, payload["fieldDefinitions"],
         claims=plan.claims,
+        allowed_fact_ids=allowed_fact_ids,
     )
     payload["evidence"] = _project_section_evidence_files(
         agent,
@@ -1884,7 +1918,7 @@ async def _generate_whole_section_content(
     ) -> tuple[dict[str, tuple[int, int]], dict[str, list[str]]]:
         # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
         content_reviews = {
-            block.block_id: review_content_result(block.markdown, (item.content for item in evidence.files),
+            block.block_id: review_content_result(block.markdown, number_contents,
                                            field_definitions=payload["fieldDefinitions"],
                                            fact_ids=block_fact_ids[block.block_id])
             for block in candidate.blocks
@@ -2005,7 +2039,7 @@ async def _generate_whole_section_content(
         from ...trace.semantic_bindings import render_bound_numbers
 
         bound_markdown, number_references, number_notices = render_bound_numbers(
-            content_by_id[block_plan.block_id].markdown, (item.content for item in evidence.files),
+            content_by_id[block_plan.block_id].markdown, number_contents,
             key=f"{work_item.section_code}:{block_plan.block_id}",
         )
         block = ReportDraftBlock(

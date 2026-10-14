@@ -1415,6 +1415,7 @@ async def test_section_generation_switch_preserves_blocks_and_references(
         ),
         factSummaries=("收入为100元",),
     )
+
     result = await reporting_sections._generate_section_in_blocks(
         object(),
         {"reportGoal": "分析收入", "sectionGoal": {}},
@@ -1681,6 +1682,68 @@ async def _generate_with_plan(
         thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
     )
 
+
+@pytest.mark.anyio
+async def test_dynamic_section_generation_filters_unassigned_facts_from_model_view(monkeypatch):
+    selected_id = "fact-aaaaaaaaaaaaaaaa"
+    other_id = "fact-bbbbbbbbbbbbbbbb"
+    document = {
+        "analysisId": "analysis_001",
+        "metrics": [
+            {"factId": selected_id, "datasetId": "current", "datasetSha256": "a" * 64,
+             "periodRoles": ["current"], "metricCodes": ["revenue"], "field": "revenue",
+             "fieldRef": "hospital.revenue", "aggregation": "sum", "unit": "元",
+             "formula": "sum(revenue)", "total": 100, "missingCount": 0,
+             "zeroCount": 0, "negativeCount": 0},
+            {"factId": other_id, "datasetId": "current", "datasetSha256": "a" * 64,
+             "periodRoles": ["current"], "metricCodes": ["cost"], "field": "cost",
+             "fieldRef": "hospital.cost", "aggregation": "sum", "unit": "元",
+             "formula": "sum(cost)", "total": 80, "missingCount": 0,
+             "zeroCount": 0, "negativeCount": 0},
+        ],
+    }
+    content = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+    identity = FileIdentity(
+        path="evidence/dynamic.json", size=len(content.encode()),
+        sha256=hashlib.sha256(content.encode()).hexdigest(),
+    )
+    work_item = _revenue_work_item().model_copy(update={
+        "finding_ids": ("finding_0000000000000001",),
+        "finding_summaries": ({
+            "findingId": "finding_0000000000000001", "summary": "收入",
+            "sourceRefs": [{"analysisId": "analysis_001", "path": identity.path,
+                            "fileSha256": identity.sha256, "pointer": "/metrics/0"}],
+        },),
+        "evidence": (_revenue_work_item().evidence[0].model_copy(update={"evidence_files": (identity,)}),),
+    })
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001", files=(SectionEvidenceFile(identity=identity, content=content),),
+        factSummaries=("收入为100元",),
+    )
+    plan = {"kind": "render", "sectionCode": "section_001",
+            "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+            "claims": [_plan_claim("claim_001", factIds=[selected_id], findingIds=["finding_0000000000000001"])]}
+    observed = {}
+
+    async def fake_run_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == "plan":
+            observed["catalog"] = payload["factCatalog"]
+            observed["evidence"] = payload.get("evidence")
+            observed["numbers"] = payload["numberGuide"]
+            return SectionPlanOutput.model_validate(plan)
+        return SectionBlockContent(markdown="收入为{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。")
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+    result = await reporting_sections._generate_section_in_blocks(
+        object(), {"reportGoal": "分析收入", "sectionGoal": {}}, evidence, work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+    )
+    assert [item["factId"] for item in observed["catalog"]] == [selected_id]
+    assert all(other_id not in json.dumps(value) for value in observed["numbers"])
+    assert result.blocks[0].markdown
+    assert selected_id in result.blocks[0].number_references[0].token
 
 @pytest.mark.anyio
 async def test_section_plan_rejects_invented_fact_ids_before_body_generation(monkeypatch):
