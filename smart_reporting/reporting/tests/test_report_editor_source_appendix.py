@@ -365,3 +365,23 @@ def test_subject_citation_renders_in_standalone_runtime_package(tmp_path) -> Non
         capture_output=True, text=True, cwd=tmp_path,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_shared_fact_in_three_sections_keeps_every_locator():
+    from smart_reporting.report_editor.service import _build_export_trace_sources
+
+    reference = SimpleNamespace(file_resource_id='file-1', json_pointer='/metrics/0')
+    locations = [('section_1', 'claim-a'), ('section_2', 'claim-b'),
+                 ('section_3', 'claim-c'), ('section_1', 'claim-d')]
+    index = SimpleNamespace(datasets=(), tables=(), chart_traces=(), files=(), computations=(),
+        subject_bindings=tuple(SimpleNamespace(
+            claim_id=claim, subject_id=f'sub-{i:016x}', fact_refs=(reference,),
+            subject_kind='text_claim', locator=SimpleNamespace(section_id=section, table_id=None),
+        ) for i, (section, claim) in enumerate(locations)))
+    payload = _build_export_trace_sources(index, {'subjects': [
+        {'sectionId': section, 'claimId': claim, 'status': 'valid', 'factValue': 100}
+        for section, claim in locations
+    ]}, public_base_url='https://reports.example.com', report_id='report-1', revision=2)
+    assert payload['claims'][0]['claimLocators'] == [
+        {'sectionId': section, 'claimId': claim} for section, claim in locations
+    ]

@@ -308,3 +308,47 @@ def test_reference_resolution_accepts_schema_field_names_and_equivalent_defaults
     assert selected is not None
     assert selected['value'] == 20
     assert selected['periods'] == ('2025-02',)
+
+
+def test_prepared_number_resolver_reuses_catalog_without_cross_snapshot_cache(monkeypatch):
+    import smart_reporting.reporting.trace.semantic_bindings as bindings
+
+    tokens = ['{{value:fact-aaaaaaaaaaaaaaaa:total:元}}',
+              '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.0:元}}']
+    expected = [resolve_number_reference(token, contents()) for token in tokens]
+    calls = 0
+    original = bindings._frozen_number_entries
+
+    def counted(values):
+        nonlocal calls
+        calls += 1
+        return original(values)
+
+    monkeypatch.setattr(bindings, '_frozen_number_entries', counted)
+    resolver = bindings.NumberReferenceResolver(contents())
+    assert [resolver.resolve(token) for token in tokens] == expected
+    assert resolver.resolve('{{value:fact-cccccccccccccccc:total:元}}') is None
+    assert calls == 1
+    assert bindings.NumberReferenceResolver(()).resolve(tokens[0]) is None
+
+
+def test_prepared_claim_check_preserves_hidden_and_duplicate_markers():
+    from smart_reporting.reporting.trace.subject_builder import ClaimStatusChecker, claim_status
+
+    markdown = ('[[section:s]]\n收入10元[[claim:a]]。\n\n'
+                '`收入10元[[claim:hidden]]`\n\n'
+                '收入10元[[claim:duplicate]][[claim:duplicate]]')
+    checker = ClaimStatusChecker(markdown)
+    for claim in ('a', 'hidden', 'duplicate', 'missing'):
+        assert checker.check(claim, 10, expected_unit='元', section_id='s') == claim_status(
+            markdown, claim, 10, expected_unit='元', section_id='s')
+
+
+def test_batch_statement_fingerprints_preserve_normalization_and_duplicates():
+    from smart_reporting.reporting.trace.semantic_bindings import statement_fingerprints
+
+    markdown = '收入: 10元[[claim:a]]。\n\n2025-02成本20元[[claim:b]]。[[claim:dup]][[claim:dup]]'
+    claims = ['a', 'b', 'dup', 'missing']
+    assert statement_fingerprints(markdown, claims) == {
+        key: statement_fingerprint(markdown, key) for key in claims
+    }

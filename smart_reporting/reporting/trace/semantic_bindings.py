@@ -24,9 +24,18 @@ def reference_fact_ids(token: str) -> tuple[str, ...]:
 
 
 def statement_fingerprint(markdown: str, claim_id: str) -> str | None:
+    return statement_fingerprints(markdown, (claim_id,))[claim_id]
+
+
+def statement_fingerprints(markdown: str, claim_ids) -> dict[str, str | None]:
+    """同一草稿只做一次显示规范化，不跨请求缓存可编辑正文。"""
     from ..delivery.report_runtime.markdown import normalize_cjk_punctuation, normalize_cjk_wording
 
     markdown = normalize_cjk_punctuation(normalize_cjk_wording(markdown))
+    return {claim_id: _statement_fingerprint(markdown, claim_id) for claim_id in claim_ids}
+
+
+def _statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     marker = f"[[claim:{claim_id}]]"
     if markdown.count(marker) != 1:
         return None
@@ -95,27 +104,43 @@ def anchor_bound_numbers(markdown: str, references, notices=()) -> str:
     return markdown
 
 
+class NumberReferenceResolver:
+    """仅在一次校验请求内复用同组已核验文件的数值目录。"""
+
+    def __init__(self, contents):
+        contents = tuple(contents)
+        self.numbers = {}
+        for token, value, unit, target in _frozen_number_entries(contents):
+            self.numbers.setdefault(token, []).append((value, unit, target))
+        self.entries = {}
+        self.conflicts = set()
+        for bundle in frozen_fact_bundles(contents):
+            document = bundle.model_dump(mode="json", by_alias=True)
+            for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
+                for fact in document.get(array, ()):
+                    key = fact.get('factId')
+                    if key in self.entries and self.entries[key] != fact:
+                        self.conflicts.add(key)
+                    self.entries[key] = fact
+
+    def resolve(self, token: str) -> dict[str, Any] | None:
+        matches = self.numbers.get(token, ())
+        if not matches or len({(str(value), unit, target) for value, unit, target in matches}) != 1:
+            return None
+        ids = reference_fact_ids(token)
+        if not ids or any(key not in self.entries or key in self.conflicts for key in ids):
+            return None
+        return _resolved_number_reference(token, ids, self.entries, matches[0])
+
+
 def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
     """仅从调用者已经核验文件身份的内容重算完整 token；缺失或冲突不回退 total。"""
-    contents = tuple(contents)
-    matches = [(value, unit, target) for candidate, value, unit, target in _frozen_number_entries(contents)
-               if candidate == token]
-    if not matches or len({(str(value), unit, target) for value, unit, target in matches}) != 1:
-        return None
-    ids = reference_fact_ids(token)
-    entries = {}
-    for bundle in frozen_fact_bundles(contents):
-        document = bundle.model_dump(mode="json", by_alias=True)
-        for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
-            for fact in document.get(array, ()):
-                if fact.get('factId') in ids:
-                    if fact['factId'] in entries and entries[fact['factId']] != fact:
-                        return None
-                    entries[fact['factId']] = fact
-    if not ids or set(ids) != entries.keys():
-        return None
+    return NumberReferenceResolver(contents).resolve(token)
+
+
+def _resolved_number_reference(token, ids, entries, selected_value):
     primary = entries[ids[0]]
-    value, unit, target = matches[0]
+    value, unit, target = selected_value
     selector = token[2:-2].split(':')[2]
     from .subject_builder import fact_periods
     periods = fact_periods(primary)

@@ -199,55 +199,60 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             assert artifact_manifest["charts"][0]["chartId"] == "chart_001"
             assert artifact_manifest["analysisIds"] == ["analysis_001"]
             render_job = run_context.session_state[REPORT_JOBS_STATE_KEY][context.job_id]
-            trace_sources = render_job.pop("_traceSourcePresentations")
+            trace_sources = render_job.pop("_traceSourcePresentations", None)
             if failure is None:
                 assert render_job.pop("_editorExportSettings") == {"sources": False}
+            else:
+                assert render_job.pop("_editorExportSettings") == {"sources": True}
             assert render_job == job
             # B8：数据来源附录载荷与渲染同一次快照装配——claim 摘要来自冻结事实，
             # 状态来自草稿校验（3800 改值 → stale），在线定位指向 N+1 revision。
             subject_id = "sub-" + "0" * 16
-            assert trace_sources["claims"] == [
-                {
-                    "claimId": "claim-1",
-                    "subjectIds": [subject_id],
-                    "links": [
-                        {
-                            "subjectId": subject_id,
-                            "url": (
-                                "https://reports.example.com/reports/v1/editor/"
-                                f"report-1/2?subject={subject_id}"
-                            ),
-                        }
-                    ],
-                    "status": "stale",
-                    "factValue": 3600.0,
-                    "unit": "万元",
-                    "periods": ["2025-09"],
-                    "formula": "sum(revenue)",
-                    "scope": {},
-                    "datasetIds": ["dataset-url-abc0001"],
+            if failure is None:
+                assert trace_sources is None
+            else:
+                assert trace_sources["claims"] == [
+                    {
+                        "claimId": "claim-1",
+                        "subjectIds": [subject_id],
+                        "links": [
+                            {
+                                "subjectId": subject_id,
+                                "url": (
+                                    "https://reports.example.com/reports/v1/editor/"
+                                    f"report-1/2?subject={subject_id}"
+                                ),
+                            }
+                        ],
+                        "status": "stale",
+                        "factValue": 3600.0,
+                        "unit": "万元",
+                        "periods": ["2025-09"],
+                        "formula": "sum(revenue)",
+                        "scope": {},
+                        "datasetIds": ["dataset-url-abc0001"],
+                    }
+                ]
+                assert trace_sources["charts"] == [
+                    {
+                        "chartId": "chart_001",
+                        "subjectIds": [],
+                        "status": "valid",
+                        "imagePath": chart_path,
+                        "datasetIds": ["dataset-url-abc0001"],
+                        "methods": [],
+                        "transformNotes": [],
+                        "unit": None,
+                        "links": [],
+                    }
+                ]
+                assert trace_sources["tables"][0]["tableId"] == "tbl-1"
+                assert trace_sources["tables"][0]["datasetIds"] == ["dataset-url-abc0001"]
+                assert trace_sources["datasets"]["dataset-url-abc0001"] == {
+                    "filename": "收入明细.csv",
+                    "businessLabel": None,
+                    "periodRoles": ["current"],
                 }
-            ]
-            assert trace_sources["charts"] == [
-                {
-                    "chartId": "chart_001",
-                    "subjectIds": [],
-                    "status": "valid",
-                    "imagePath": chart_path,
-                    "datasetIds": ["dataset-url-abc0001"],
-                    "methods": [],
-                    "transformNotes": [],
-                    "unit": None,
-                    "links": [],
-                }
-            ]
-            assert trace_sources["tables"][0]["tableId"] == "tbl-1"
-            assert trace_sources["tables"][0]["datasetIds"] == ["dataset-url-abc0001"]
-            assert trace_sources["datasets"]["dataset-url-abc0001"] == {
-                "filename": "收入明细.csv",
-                "businessLabel": None,
-                "periodRoles": ["current"],
-            }
             # Autosave after the validated snapshot must not change the exported revision.
             await workspace.awrite_text(thread_id, draft_path, "Concurrent edit\n", overwrite=True)
             await workspace.awrite_bytes(thread_id, output_path, b"new-pdf")
@@ -300,9 +305,9 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             "editor_grant": "editor grant store unavailable",
         }[failure]
         with pytest.raises(RuntimeError, match=message):
-            await editor.export_revision(context, expected_sha256=expected_sha)
+            await editor.export_revision(context, expected_sha256=expected_sha, settings={"sources": True})
     else:
-        result = await editor.export_revision(context, expected_sha256=expected_sha)
+        result = await editor.export_revision(context, expected_sha256=expected_sha, settings={"sources": True})
         assert result["revision"] == 2
         assert result["pdf"]["downloadUrl"].endswith("/reports/v1/download/download-raw")
     assert snapshot_paths
@@ -384,14 +389,14 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-@pytest.mark.parametrize("fault", ["missing_source", "snapshot"])
+@pytest.mark.parametrize("fault", ["missing_source", "snapshot", "appendix", "appendix_disabled"])
 async def test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing(
     tmp_path: Path, fault: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """故障注入：导出期间来源 CSV 被删除，或渲染后随迁追溯快照失败。
+    """故障注入：来源缺失、快照失败、附录失败及关闭附录。
 
-    AGENTS：追溯数据不可用只拒绝使用该数据；PDF/Word 照常生成并签发，验收不通过且
-    明确返回原因，新 revision 不登记追溯清单。
+    AGENTS：追溯数据不可用只拒绝使用该数据，PDF/Word 照常签发并返回原因。
+    附录构建失败只降级展示，仍登记有效追溯；关闭附录不应调用构建器。
     """
     editor, grants, original = await _make_editor_with_subject(tmp_path)
     thread_id = original.scope["threadId"]
@@ -411,14 +416,31 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
     await workspace.awrite_text(thread_id, "reports/revision-1/draft/report.md", edited_markdown)
     if fault == "missing_source":
         await workspace.adelete_file(thread_id, csv_path)
-    else:
+    elif fault == "snapshot":
         from smart_reporting.report_editor import service as service_module
 
         async def broken_snapshot(*_args, **_kwargs):
             raise OSError("disk full")
 
         monkeypatch.setattr(service_module, "snapshot_revision_lineage", broken_snapshot)
+    else:
+        from smart_reporting.report_editor import service as service_module
 
+        def oversized_appendix(*_args, **_kwargs):
+            assert fault != "appendix_disabled", "关闭附录时不应构建附录"
+            raise ValueError("appendix too large")
+
+        monkeypatch.setattr(service_module, "_build_export_trace_sources", oversized_appendix)
+
+    if fault in {"appendix", "appendix_disabled"}:
+        # 本用例的冻结正文就是当前文本，避免夹具原文身份变更干扰附录故障。
+        index = index.model_copy(update={"files": tuple(
+            item.model_copy(update={"size": len(edited_markdown.encode()), "sha256": _sha(edited_markdown.encode())})
+            if item.resource_id == index.markdown_file_resource_id else item for item in index.files
+        )})
+        from smart_reporting.reporting.trace.contracts_v1 import canonical_json_bytes
+        await workspace.awrite_bytes(thread_id, "reports/revision-1/trace-index-v1.json",
+                                     canonical_json_bytes(index.model_dump(mode="json", by_alias=True)), overwrite=True)
     await workspace.adelete_file(thread_id, original.artifact_manifest.path)
     manifest_identity = await register_trace_manifest(workspace, thread_id, index)
     for suffix, content in (("pdf", b"old-pdf"), ("docx", b"old-word")):
@@ -482,7 +504,8 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
     editor.editor_grants = EditorGrants()
     editor.public_base_url = "https://reports.example.com"
 
-    result = await editor.export_revision(context, expected_sha256=_sha(edited_markdown.encode()))
+    result = await editor.export_revision(context, expected_sha256=_sha(edited_markdown.encode()),
+                                          settings={"sources": fault != "appendix_disabled"})
 
     if fault == "missing_source":
         # 渲染前即发现来源文件缺失：放弃追溯后渲染，成品不带指向无索引 revision 的附录。
@@ -491,6 +514,16 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
         assert rendered_manifests[0] is not None
     assert result["revision"] == 2
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+    if fault in {"appendix", "appendix_disabled"}:
+        assert result["validation"]["ok"] is (fault == "appendix_disabled")
+        if fault == "appendix":
+            assert result["validation"]["issues"][0]["code"] == "report_editor_source_appendix_unavailable"
+        committed = ReportEditorContext.model_validate(
+            repository.durable.payload["reportEditorContexts"]["2"]
+        )
+        assert committed.artifact_manifest is not None
+        assert await editor.trace.load_index(committed) is not None
+        return
     assert result["validation"]["ok"] is False
     assert [issue["code"] for issue in result["validation"]["issues"]] == [
         "report_editor_lineage_unavailable"

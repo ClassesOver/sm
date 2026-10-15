@@ -518,18 +518,36 @@ def claim_status(
     expected_scope: Mapping[str, str] | None = None,
     section_id: str | None = None,
 ) -> dict[str, Any]:
-    """标记被删除或重复 → unbound；唯一标记所属句子的有界窗口内找不到
-    完整事实值形态 → stale。排除协议标记文字和数字子串；此处仍属于
-    语义软校验，stale 提示复核，不拒绝保存。
+    """单个引用校验；整篇多引用校验使用 ClaimStatusChecker 复用正文解析。"""
+    return ClaimStatusChecker(markdown).check(
+        claim_id, fact_value, window_chars=window_chars, expected_unit=expected_unit,
+        expected_periods=expected_periods, expected_scope=expected_scope, section_id=section_id,
+    )
 
-    值命中（valid）后若提供了生成时单位/期间，再核对邻近文本：明确写了
-    不同单位/期间 → 附带软告警，状态仍为 valid（AGENTS：软告警不阻断）。
-    已登记业务范围未在引用句中体现时，同样提示复核，不推断替代范围。
-    """
 
-    from .markdown_body import trace_body
+class ClaimStatusChecker:
+    """按请求解析一次 Markdown，仍逐个校验唯一锚点和所属章节。"""
 
-    markdown = trace_body(markdown)
+    def __init__(self, markdown: str):
+        from .markdown_body import trace_body
+
+        self.markdown = trace_body(markdown)
+
+    def check(self, claim_id: str, fact_value: Any, **kwargs) -> dict[str, Any]:
+        return _claim_status_from_body(self.markdown, claim_id, fact_value, **kwargs)
+
+
+def _claim_status_from_body(
+    markdown: str,
+    claim_id: str,
+    fact_value: Any,
+    *,
+    window_chars: int = 200,
+    expected_unit: str | None = None,
+    expected_periods: tuple[str, ...] = (),
+    expected_scope: Mapping[str, str] | None = None,
+    section_id: str | None = None,
+) -> dict[str, Any]:
     sections = list(re.finditer(r"\[\[section:([^\]\r\n]+)\]\]", markdown))
     if section_id and sections:
         matching = [index for index, section in enumerate(sections) if section[1] == section_id]

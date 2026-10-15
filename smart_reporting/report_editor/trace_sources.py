@@ -701,7 +701,7 @@ class ReportEditorTraceService:
 
         from ..reporting.delivery.artifacts_v1 import _TABLE_BLOCK
         from ..reporting.trace.subject_builder import (
-            claim_status,
+            ClaimStatusChecker,
             fact_periods,
             value_matches,
         )
@@ -818,6 +818,14 @@ class ReportEditorTraceService:
                 return PERCENT_POINT if percent_point_field(field, entry.get("unit")) else entry.get("unit")
             return fact_display_unit(entry)
 
+        from ..reporting.trace.semantic_bindings import statement_fingerprints
+
+        fingerprints = statement_fingerprints(markdown, (
+            binding.claim_id for binding in index.subject_bindings
+            if binding.claim_id and binding.number_reference is not None
+        ))
+        claim_checker = ClaimStatusChecker(markdown)
+        number_resolvers = {}
         subjects: list[dict[str, Any]] = []
         summary = {"valid": 0, "stale": 0, "unbound": 0}
         for binding in index.subject_bindings:
@@ -835,8 +843,8 @@ class ReportEditorTraceService:
             selected = None
             if number is not None:
                 from ..reporting.trace.semantic_bindings import (
+                    NumberReferenceResolver,
                     reference_fact_ids,
-                    resolve_number_reference,
                 )
 
                 # 每个操作数先通过文件 hash、analysis、pointer 和 factKey 校验，不能借同分析其它值。
@@ -845,18 +853,18 @@ class ReportEditorTraceService:
                 if (all(item is not None for item in entries)
                         and set(ids) == {ref.fact_key for ref in binding.fact_refs}
                         and number.claim_id == binding.claim_id):
-                    selected = resolve_number_reference(number.token, (
-                        _json.dumps(bundle_cache[path]) for path in dict.fromkeys(
-                            files[ref.file_resource_id].path for ref in binding.fact_refs
+                    paths = tuple(dict.fromkeys(files[ref.file_resource_id].path for ref in binding.fact_refs))
+                    if paths not in number_resolvers:
+                        number_resolvers[paths] = NumberReferenceResolver(
+                            _json.dumps(bundle_cache[path]) for path in paths
                         )
-                    ))
+                    selected = number_resolvers[paths].resolve(number.token)
                 fact_value = selected["value"] if selected else None
                 expected_unit = selected["unit"] if selected else None
                 expected_periods = selected["periods"] if selected else ()
                 if selected:
                     entry = {**selected["entry"], "formula": selected["formula"], "scope": selected["scope"]}
-            detail = claim_status(
-                markdown,
+            detail = claim_checker.check(
                 binding.claim_id,
                 fact_value,
                 expected_unit=expected_unit,
@@ -865,12 +873,10 @@ class ReportEditorTraceService:
                 section_id=binding.locator.section_id,
             )
             if number is not None:
-                from ..reporting.trace.semantic_bindings import statement_fingerprint
-
                 if selected is None:
                     detail = {"status": "unbound", "warnings": ["具体数值引用无法从登记事实重算。"]}
                 elif (detail["status"] == "valid" and
-                      statement_fingerprint(markdown, binding.claim_id) != number.statement_sha256):
+                      fingerprints[binding.claim_id] != number.statement_sha256):
                     detail["status"] = "stale"
                     detail["warnings"].append("引用所在陈述已修改，请复核指标、期间和范围。")
                     detail["comparable"] = False
