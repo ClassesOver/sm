@@ -304,6 +304,7 @@ async def _make_editor_with_subject(
     comparison_rate: float | None = 20, correlation_claim: bool = False, large_amounts: bool = False,
     percentage_point_claim: bool = False, window_claim: str | None = None, window_date_labels: bool = False,
     number_reference: bool = False,
+    number_statement: str | None = None,
 ) -> tuple:
     # large_amounts：元为单位的大额分期间表，服务端按“收入（万元）”表头写换算后的数字。
     column_key = "收入（万元）" if large_amounts else "income_total"
@@ -493,6 +494,7 @@ async def _make_editor_with_subject(
         )
 
         markdown, references, review_notices = render_bound_numbers(
+            number_statement or
             "10月收入{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:万元}}。供应商回复待核实。金额999999元。",
             [bundle_bytes.decode()], key="section_002:block",
         )
@@ -1363,6 +1365,32 @@ async def test_exact_number_reference_validates_month_and_detects_changed_subjec
     result = await editor.trace_validate(context, session, changed, sha256(changed.encode()).hexdigest())
     assert result['subjects'][0]['status'] == 'stale'
     assert result['subjects'][0]['comparable'] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('selector', 'statement', 'warns'), [
+    ('periodTotals.0-1:万元', '截至2025年9月累计收入', True),
+    ('periodTotals.0-1:万元', '截至2025年10月，含2025年9月的累计收入', False),
+    ('periodChanges.1:万元', '2025年9月增加', True),
+    ('periodChanges.1:万元', '2025年10月较2025年9月增加', False),
+    ('periodChangeRates.1:%', '2025年9月增长', True),
+    ('periodChangeRates.1:%', '以2025年9月为基期，2025年10月增长', False),
+])
+async def test_editor_number_reference_checks_period_roles_without_blocking(tmp_path, selector, statement, warns):
+    editor, grants, context = await _make_editor_with_subject(
+        tmp_path, period_table=True, number_reference=True,
+        number_statement=statement + '{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}。',
+    )
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    markdown = next(tmp_path.rglob('report.md')).read_text()
+    result = await editor.trace_validate(context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    subject = result['subjects'][0]
+    assert subject['periods'] == ['2025-09', '2025-10']
+    assert subject['status'] == 'valid'
+    assert bool(subject['warnings']) is warns
+    if warns:
+        assert '期间角色' in subject['warnings'][0]
 
 
 @pytest.mark.parametrize(('value', 'text', 'supported'), [

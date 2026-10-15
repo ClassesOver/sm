@@ -383,11 +383,46 @@ def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(periods))
 
 
+def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> list[str]:
+    """按明确语法区分截止期、本期、基期与上下文；不要求正文补写期间。"""
+    window = _point_plain_text(window)
+    written = [match for match in _PERIOD_TOKEN.finditer(window) if _period_key(match[0])]
+    labels = {'endpoint': '累计终点', 'current': '当前期', 'baseline': '基期'}
+    for index, match in enumerate(written):
+        prefix = window[:match.start()]
+        suffix = re.sub(r'^\s*[月日]?', '', window[match.end():])
+        cutoff = re.search(r'(?:截至|截止|截止到|截至到)\s*$', prefix)
+        role = 'current' if roles.get('current') else 'endpoint'
+        if not cutoff:
+            # “含二月”只解释操作数范围；“一月至三月”首项是窗口起点。
+            if re.search(r'(?:包含|包括|含|其中|例如|覆盖)\s*$', prefix):
+                continue
+            baseline = re.search(r'(?:较于|相较于|相较|较|相比于|对比|比|基期(?:为)?)\s*$', prefix)
+            baseline = baseline or re.match(r'(?:作为|为)(?:环比)?(?:基期|基准)', suffix)
+            baseline = baseline or (re.search(r'与\s*$', prefix) and re.match(r'相?比', suffix))
+            if index + 1 < len(written):
+                between = window[match.end():written[index + 1].start()]
+                if re.fullmatch(r'\s*[月日]?\s*(?:至|到|[-~～–—]|、|和|及)\s*', between):
+                    if not roles.get('baseline'):
+                        continue
+                    baseline = True
+            if baseline:
+                # 累计窗口中的比较背景只受完整期间集合约束。
+                if not roles.get('baseline'):
+                    continue
+                role = 'baseline'
+        expected = roles.get(role, ())
+        if expected and _period_key(match[0]) not in {_period_key(period) for period in expected}:
+            return [f"期间角色与生成时不一致（{labels[role]} {'、'.join(expected)}）"]
+    return []
+
+
 def unit_period_warnings(
     window: str,
     *,
     expected_unit: str | None = None,
     expected_periods: tuple[str, ...] = (),
+    expected_period_roles: Mapping[str, tuple[str, ...]] | None = None,
     fact_value: Any = None,
 ) -> list[str]:
     """值已命中时，核对邻近单位/期间文本与生成时是否一致（软告警）。
@@ -423,6 +458,8 @@ def unit_period_warnings(
             warnings.append(
                 f"期间文本与生成时不一致（生成时 {'、'.join(expected_periods)}）"
             )
+        elif expected_period_roles:
+            warnings.extend(_period_role_warnings(window, expected_period_roles))
     return warnings
 
 
@@ -515,6 +552,7 @@ def claim_status(
     window_chars: int = 200,
     expected_unit: str | None = None,
     expected_periods: tuple[str, ...] = (),
+    expected_period_roles: Mapping[str, tuple[str, ...]] | None = None,
     expected_scope: Mapping[str, str] | None = None,
     section_id: str | None = None,
 ) -> dict[str, Any]:
@@ -593,6 +631,7 @@ def _claim_status_from_body(
             warning_window,
             expected_unit=expected_unit,
             expected_periods=expected_periods,
+            expected_period_roles=expected_period_roles,
             fact_value=fact_value,
         )
         for key, value in (expected_scope or {}).items():

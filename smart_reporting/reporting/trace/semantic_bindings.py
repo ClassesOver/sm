@@ -154,6 +154,7 @@ def _resolved_number_reference(token, ids, entries, selected_value):
     selector = token[2:-2].split(':')[2]
     from .subject_builder import fact_periods
     periods = fact_periods(primary)
+    period_roles = {}
     selected_periods = None
     if selector.startswith('periodValues.'):
         selected_periods = [primary['periodValues'][int(selector.split('.')[1])]]
@@ -168,9 +169,15 @@ def _resolved_number_reference(token, ids, entries, selected_value):
         window = period.split('..')
         periods = fact_periods({'periodStart': window[0], 'periodEnd': window[-1],
                                 'periodGranularity': 'month'})
+        period_roles['endpoint'] = (periods[-1],)
     if selected_periods is not None:
         # 复用事实粒度规范化，保留累计窗口的所有桶及环比的基期与本期。
         periods = fact_periods({**primary, 'periodValues': selected_periods})
+        if selector.startswith(('periodTotals.', 'periodAverages.')):
+            period_roles['endpoint'] = fact_periods({**primary, 'periodValues': selected_periods[-1:]})
+        elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
+            period_roles['baseline'] = fact_periods({**primary, 'periodValues': selected_periods[:1]})
+            period_roles['current'] = fact_periods({**primary, 'periodValues': selected_periods[-1:]})
     scope = dict(primary.get('scope') or {})
     if selector.startswith(('topGroups.', 'bottomGroups.')):
         group, index = selector.split('.')
@@ -220,4 +227,5 @@ def _resolved_number_reference(token, ids, entries, selected_value):
         if operation == '/':
             formula += ' * 100'
     return {'value': float(value), 'unit': target if target == '个百分点' else unit,
-            'periods': periods, 'scope': scope, 'formula': formula, 'entry': primary}
+            'periods': periods, 'period_roles': period_roles,
+            'scope': scope, 'formula': formula, 'entry': primary}

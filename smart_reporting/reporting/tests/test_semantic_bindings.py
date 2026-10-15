@@ -217,6 +217,71 @@ def test_cumulative_budget_reference_preserves_middle_month(field):
     assert unit_period_warnings('包含2025年4月', expected_periods=selected['periods'])
 
 
+@pytest.mark.parametrize('selector', [
+    'periodTotals.0-2:元', 'periodAverages.0-2:元',
+    'budgetComparison.fact-bbbbbbbbbbbbbbbb.2025-01..2025-03.difference:元',
+    'budgetComparison.fact-bbbbbbbbbbbbbbbb.2025-01..2025-03.percentage:%',
+])
+@pytest.mark.parametrize(('statement', 'warns'), [
+    ('截至2025年2月累计', True),
+    ('2025年2月累计', True),
+    ('截至2025年2月，包含2025年3月的累计', True),
+    ('截至2025年3月，含2025年2月的累计', False),
+    ('包含2025年2月的累计', False),
+    ('2025年1月至2025年3月累计', False),
+    ('截至2025-03，含2025/02的累计', False),
+    ('本期累计', False),
+])
+def test_cumulative_period_roles_distinguish_endpoint_from_context(selector, statement, warns):
+    _assert_period_role_warning(selector, statement, warns, {'endpoint': ('2025-03',)})
+
+
+@pytest.mark.parametrize('selector', ['periodChanges.2:元', 'periodChangeRates.2:%'])
+@pytest.mark.parametrize(('statement', 'warns'), [
+    ('2025年2月增长', True),
+    ('2025年2月较2025年3月增长', True),
+    ('较2025年3月增长', True),
+    ('2025年3月较2025年2月增长', False),
+    ('较2025年2月，2025年3月增长', False),
+    ('以2025年2月为基期，2025年3月增长', False),
+    ('基期2025年2月，2025年3月增长', False),
+    ('以2025年3月为本期，较2025年2月增长', False),
+    ('以2025年2月为本期，较2025年2月增长', True),
+    ('2025年2月为基期，2025年3月增长', False),
+    ('与2025年2月相比，2025年3月增长', False),
+    ('2025年2月至2025年3月增长', False),
+    ('2025-03较2025/02增长', False),
+    ('环比增长', False),
+])
+def test_change_period_roles_distinguish_current_from_baseline(selector, statement, warns):
+    _assert_period_role_warning(selector, statement, warns,
+                                {'current': ('2025-03',), 'baseline': ('2025-02',)})
+
+
+def _assert_period_role_warning(selector, statement, warns, roles):
+    from smart_reporting.reporting.trace.subject_builder import claim_status, unit_period_warnings
+
+    document = json.loads(contents()[0])
+    for metric in document['metrics']:
+        metric['periodEnd'] = '2025-03'
+        metric['periodValues'].append({'period': '2025-03-01', 'value': 30})
+        metric['total'] += 30
+    frozen = [json.dumps(document)]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}'
+    selected = resolve_number_reference(token, frozen)
+    # 使用与编辑器相同的调用链，值仍有效，错期只产生软告警。
+    markdown, refs, notices = render_bound_numbers(statement + token + '。', frozen, key='roles')
+    assert len(refs) == 1 and not notices
+    options = dict(expected_unit=selected['unit'], expected_periods=selected['periods'],
+                   expected_period_roles=selected.get('period_roles'))
+    result = claim_status(anchor_bound_numbers(markdown, refs), refs[0].claim_id,
+                          selected['value'], **options)
+    assert result['status'] == 'valid'
+    assert bool(result['warnings']) is warns
+    assert bool(unit_period_warnings(statement, **options)) is warns
+    assert selected['period_roles'] == roles
+
+
 @pytest.mark.parametrize(('selector', 'scope', 'formula'), [
     ('groupShares.topGroups.0:%', {'group': '内科'}, '(20) / (30) * 100'),
     ('groupShares.bottomGroups.0:%', {'group': '外科'}, '(10) / (30) * 100'),

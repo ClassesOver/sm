@@ -913,6 +913,7 @@ class ReportEditorTraceService:
                 fact_value,
                 expected_unit=expected_unit,
                 expected_periods=expected_periods,
+                expected_period_roles=selected['period_roles'] if selected else None,
                 expected_scope=_entry_scope(entry),
                 section_id=binding.locator.section_id,
             )
