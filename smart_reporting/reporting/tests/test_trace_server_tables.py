@@ -109,6 +109,26 @@ def test_build_analysis_table_generates_period_rows_from_bundle() -> None:
     assert "| 2025年9月 | 3,600 |" in markdown
 
 
+def test_wide_server_tables_split_without_changing_fact_pointers():
+    from smart_reporting.reporting.trace.table_builder import build_analysis_tables
+
+    base = _bundle()
+    metrics = tuple(base.metrics[0].model_copy(update={
+        'fact_id': 'fact-' + f'{index:016x}', 'field': f'metric_{index}',
+        'field_ref': f'metric_{index}', 'metric_codes': (f'metric_{index}',),
+        'display_name': f'指标{index}',
+    }) for index in range(13))
+    bundle = base.model_copy(update={'metrics': metrics})
+    tables = build_analysis_tables(bundle, fact_file_resource_id=FACT_RESOURCE)
+    assert len(tables) == 3
+    assert len({trace.table_id for trace, _ in tables}) == 3
+    assert all(len(trace.column_keys) <= 5 for trace, _ in tables)
+    refs = [ref for trace, _ in tables for cell in trace.cells for ref in cell.fact_refs]
+    assert {ref.fact_key for ref in refs} == {fact.fact_id for fact in metrics}
+    for ref in refs:
+        assert metrics[int(ref.json_pointer.rsplit('/', 1)[1])].fact_id == ref.fact_key
+
+
 def test_build_analysis_table_binds_unique_current_fact_with_same_code_yoy() -> None:
     from smart_reporting.reporting.hospital_operation.deterministic_analysis import PeriodValue
 
@@ -348,6 +368,36 @@ async def test_finalize_skips_table_when_analysis_unassigned() -> None:
     )
     assert tables == () and traces == ()
     assert fact_directory, "目录仍应产出（subject 绑定不依赖章节引用）"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_server_tables_deduplicate_exact_facts_but_keep_different_snapshots():
+    import hashlib
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+    from smart_reporting.reporting.workflow.runtime.sections import RuntimeSectionsMixin
+
+    base = _bundle()
+    duplicate = base.model_copy(update={'analysis_id': 'analysis_002', 'analysis_name': '另一个分析问题'})
+    other = base.model_copy(update={'analysis_id': 'analysis_003', 'metrics': (
+        base.metrics[0].model_copy(update={'dataset_sha256': 'd' * 64, 'fact_id': 'fact-' + 'd' * 16}),
+    )})
+    files, identities = {}, {}
+    for bundle in (base, duplicate, other):
+        path = f'facts/{bundle.analysis_id}.json'
+        raw = bundle.model_dump_json(by_alias=True).encode()
+        files[path] = raw
+        identities[bundle.analysis_id] = FileIdentity(path=path, size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    tables, traces, directory, values = await RuntimeSectionsMixin._build_server_tables(
+        _Harness(files), SimpleNamespace(),
+        checkpoint=SimpleNamespace(deterministic_fact_files=identities),
+        outline=SimpleNamespace(sections=(SimpleNamespace(code='section_001', analysis_ids=tuple(identities)),)),
+    )
+    assert len(tables) == len(traces) == 2
+    assert {trace.cells[0].fact_refs[0].analysis_id for trace in traces} == {'analysis_001', 'analysis_003'}
+    assert set(directory) == set(values) == {base.metrics[0].fact_id, other.metrics[0].fact_id}
 
 
 def test_comparison_table_uses_aligned_totals_and_readable_labels() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
@@ -27,7 +28,7 @@ def statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     return statement_fingerprints(markdown, (claim_id,))[claim_id]
 
 
-def statement_fingerprints(markdown: str, claim_ids) -> dict[str, str | None]:
+def statement_fingerprints(markdown: str, claim_ids: Iterable[str]) -> dict[str, str | None]:
     """同一草稿只做一次显示规范化，不跨请求缓存可编辑正文。"""
     from ..delivery.report_runtime.markdown import normalize_cjk_punctuation, normalize_cjk_wording
 
@@ -45,8 +46,11 @@ def _statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     return hashlib.sha256(re.sub(r"[\s*]", "", statement).encode()).hexdigest()
 
 
-def render_bound_numbers(markdown: str, contents, *, key: str):
+def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions=None):
     contents = tuple(contents)
+    from .number_selection import align_number_selections
+
+    markdown, _ = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     references: list[tuple[str, str]] = []
     notices: list[ReviewNoticeV1] = []
@@ -136,6 +140,12 @@ class NumberReferenceResolver:
 def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
     """仅从调用者已经核验文件身份的内容重算完整 token；缺失或冲突不回退 total。"""
     return NumberReferenceResolver(contents).resolve(token)
+
+
+def resolve_number_references(tokens: Iterable[str], contents) -> dict[str, dict[str, Any] | None]:
+    """同一组已核验来源只展开一次，不跨文件组或请求缓存。"""
+    resolver = NumberReferenceResolver(contents)
+    return {token: resolver.resolve(token) for token in tokens}
 
 
 def _resolved_number_reference(token, ids, entries, selected_value):

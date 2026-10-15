@@ -700,6 +700,22 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     const summary = workspace.querySelector<HTMLElement>('.evidence-start-summary')
     if (!summary) return
     summary.replaceChildren()
+    for (const section of registeredSources?.narrativeSections ?? []) {
+      if (!section.findingIds.length && !section.groupingReason) continue
+      const card = document.createElement('section')
+      card.className = 'evidence-start-card evidence-narrative-section'
+      const head = document.createElement('h2')
+      head.className = 'evidence-start-card-head'
+      head.textContent = `${section.sectionCode} · ${section.findingIds.length} 个管理发现`
+      card.append(head)
+      if (section.groupingReason) {
+        const reason = document.createElement('p')
+        reason.className = 'evidence-start-more'
+        reason.textContent = section.groupingReason
+        card.append(reason)
+      }
+      summary.append(card)
+    }
     const order: EvidenceObjectKind[] = ['dataset', 'computation', 'chart', 'fact', 'subject']
     for (const kind of order) {
       const refs = directoryRefs.filter((ref) => ref.kind === kind)

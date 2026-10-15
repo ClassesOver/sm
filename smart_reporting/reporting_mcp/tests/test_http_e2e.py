@@ -14,7 +14,7 @@ import pytest
 import uvicorn
 from agno.agent import Agent
 from agno.os import AgentOS
-from agno.os.config import MCPServerConfig
+from agno.os.config import MCPConfig
 from fastmcp import Client
 
 from smart_reporting.reporting_mcp.adapter import ReportingMcpAdapter
@@ -175,7 +175,7 @@ async def test_reporting_tools_work_over_authenticated_streamable_http() -> None
         agents=[Agent(id="reporting-http-test-agent")],
         teams=[],
         workflows=[],
-        mcp_server=MCPServerConfig(
+        mcp=MCPConfig(
             tools=create_reporting_mcp_tools(adapter),
             default_tools=False,
         ),

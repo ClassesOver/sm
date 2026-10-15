@@ -117,6 +117,7 @@ from ...hospital_operation.deterministic_analysis import (
     validate_metric_code_bindings,
 )
 from ...hospital_operation.domains import DOMAIN_CODES
+from ...hospital_operation.narrative_outline import NarrativeOutlineCandidate
 from ...hospital_operation.outline import (
     ReportOutline,
     ReportOutlineProposal,
@@ -719,6 +720,26 @@ class _ReportWorkflowRuntimeBase:
                 "section code 由服务端在批准后生成，模型不得提交或猜测 section_NNN",
             ),
         )
+        self._narrative_outline_agent = self._planning_agent(
+            reporting_agent_template,
+            "report-narrative-outline-planner",
+            NarrativeOutlineCandidate,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="outline_planning",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
+            ),
+            stage_instructions=(
+                "依据 planningContext.findings 的已核验发现动态组织章节，不按领域固定生成空章。",
+                "只提交中文标题、findingIds、章节目标、分组理由、叙事角色和内容预算。",
+                "findingIds 必须逐字复制已登记身份；所有发现必须归属章节、附录或有具体理由的遗漏项。",
+                "高优先级发现必须进入正文；期间、粒度、scope 不一致的发现不得合并。",
+                "不得提交 analysisIds、section code、编号、数值事实或 citation。",
+                "snapshotHash 逐字复制 planningContext.snapshotHash。",
+                "章节目标围绕结论、证据、经营影响和管理动作；相关性不得改写为因果。",
+            ),
+        )
         self._analysis_agent = self._planning_agent(
             reporting_agent_template,
             "report-analysis-planner",
@@ -1013,6 +1034,9 @@ class _ReportWorkflowRuntimeBase:
             prepare_analysis_context=self.prepare_analysis_context,
             generate_detailed_analysis_plan=self.generate_detailed_analysis_plan,
             run_reporting_analysis=self.run_reporting_analysis,
+            run_analysis_evidence=self.run_analysis_evidence,
+            run_report_draft=self.run_report_draft,
+            generate_narrative_outline=self.generate_narrative_outline,
             assemble_report=self.assemble_report,
             validate_report=self.validate_report,
             finalize_publication=finalize_publication,

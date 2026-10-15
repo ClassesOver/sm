@@ -102,7 +102,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["workflows"] == [first_context.report_workflow]
     assert created[0].values["interfaces"] == []
     assert created[0].values["telemetry"] is False
-    assert created[0].values["mcp_server"] is False
+    assert created[0].values["mcp"] is False
     assert created[0].values["mcp_auth"] is None
 
 
@@ -370,7 +370,10 @@ async def test_reporting_runtime_identity_log_contains_deployment_boundary(monke
     ]
 
 
-def test_default_application_exposes_explicit_context():
+@pytest.mark.anyio
+async def test_default_application_exposes_explicit_context():
+    from agno.os.mcp import build_mcp_server
+
     from smart_reporting import app as app_module
 
     context = app_module.base_app.state.agentos_context
@@ -387,6 +390,12 @@ def test_default_application_exposes_explicit_context():
     assert str(app_module.base_app.url_path_for("reporting_dependency_diagnostics")) == (
         "/diagnostics/reporting-dependencies"
     )
+    tools = await build_mcp_server(app_module.agent_os).list_tools()
+    assert {tool.name for tool in tools} == {
+        "run_reporting_workflow",
+        "continue_run",
+        "cancel_run",
+    }
 
 
 @pytest.mark.anyio

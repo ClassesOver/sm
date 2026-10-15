@@ -2,7 +2,7 @@ from typing import get_type_hints
 
 import pytest
 from agno.os import AgentOS
-from agno.os.config import MCPServerConfig
+from agno.os.config import MCPConfig
 from agno.os.mcp import build_mcp_server
 from agno.workflow import Workflow
 from fastmcp import FastMCP
@@ -153,9 +153,10 @@ async def test_agentos_embedded_mcp_exposes_only_reporting_tools() -> None:
         agents=[],
         teams=[],
         workflows=[workflow],
-        mcp_server=MCPServerConfig(
+        mcp=MCPConfig(
             tools=[workflow.as_tool(name="run_reporting_workflow")],
             default_tools=False,
+            lifecycle_tools=True,
         ),
         telemetry=False,
     )

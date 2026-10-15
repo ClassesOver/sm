@@ -4,7 +4,7 @@ import warnings
 import pytest
 from agno.agent import Agent
 from agno.os import AgentOS
-from agno.os.config import MCPServerConfig
+from agno.os.config import MCPConfig
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -33,7 +33,7 @@ def test_process_router_survives_agentos_without_duplicate_mounts(tmp_path, defe
 
     os = AgentOS(agents=[Agent(id="test-agent")], base_app=base,
                  on_route_conflict="preserve_base_app", telemetry=False,
-                 mcp_server=MCPServerConfig(default_tools=False, tools=[ping], allowed_hosts=[
+                 mcp=MCPConfig(default_tools=False, tools=[ping], allowed_hosts=[
                      "localhost", "127.0.0.1", "host.docker.internal",
                  ]))
     app = os.get_app()

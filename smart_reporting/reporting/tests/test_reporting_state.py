@@ -27,7 +27,6 @@ from smart_reporting.reporting.workflow.state import (
     ReportingStateError,
     ReportingStateReducer,
     ReportingStateVersionUnsupported,
-    normalize_analysis_warnings,
 )
 from smart_reporting.runtime.database import create_agent_database
 
@@ -715,6 +714,24 @@ def test_submit_visualization_charts_persists_section_submission() -> None:
         make_file_identity("charts/section_001/attempt-1/chart_a.png")
     ]
     assert "section_001" in payload["completedVisualizationSections"]
+
+
+def test_submit_visualization_charts_allows_dynamic_narrative_sections_phase() -> None:
+    state = initial_state().model_copy(update={"phase": ReportingPhase.SECTIONS})
+    result = ReportingStateReducer.apply(
+        state,
+        {
+            "name": "submit_visualization_charts",
+            "commandId": "viz-section:sections:section_001",
+            "payload": {
+                "sectionCode": "section_001",
+                "charts": [],
+                "files": [],
+            },
+        },
+    )
+
+    assert "section_001" in result.state.payload["completedVisualizationSections"]
 
 
 def test_submit_visualization_charts_keeps_plot_data_and_rejects_changed_replay() -> None:

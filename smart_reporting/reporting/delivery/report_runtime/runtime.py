@@ -65,6 +65,14 @@ PDF_VALIDATION_TIMEOUT_SECONDS = 540
 _SECTION_MARKER = re.compile(r"\[\[section:([^\]\r\n]+)\]\]")
 
 
+def _toc_headings_present(text: str, headings) -> bool:
+    compact = ''.join(text.split())
+    return '目录' in compact and all(
+        ''.join(format_heading_label(level=item['level'], number=item['number'], title=item['title']).split()) in compact
+        for item in headings
+    )
+
+
 class ReportRuntime:
     def __init__(self, workspace: str | Path):
         self.workspace = Path(workspace).resolve()
@@ -714,13 +722,7 @@ class ReportRuntime:
                     else "".join(title.split())
                     in "".join(extracted_pages[body_start_page - 1].split())
                 )
-                toc_ok = "目录" in toc_text and all(
-                    format_heading_label(
-                        level=item["level"], number=item["number"], title=item["title"]
-                    )
-                    in toc_text
-                    for item in context["headingNumbers"]
-                )
+                toc_ok = _toc_headings_present(toc_text, context["headingNumbers"])
                 signature_ok = (
                     context["organizationName"] in final_text
                     and context["generatedDate"] in final_text
@@ -770,6 +772,22 @@ class ReportRuntime:
             )
             validation = {
                 "ok": ok,
+                "issues": [
+                    {"code": code, "message": message}
+                    for passed, code, message in (
+                        (bool(pages), 'pdf_pages_missing', 'PDF 无可读取页面。'),
+                        (not blank_pages, 'pdf_blank_pages', 'PDF 存在空白页。'),
+                        (missing_images == 0, 'pdf_images_missing', 'PDF 缺少登记图表。'),
+                        (not word_rendering['blankPages'], 'word_blank_pages', 'Word 转换后存在空白页。'),
+                        (word_structure['embeddedImageCount'] >= markdown_image_count, 'word_images_missing', 'Word 缺少登记图表。'),
+                        (title_ok, 'report_title_missing', '报告标题或封面内容不完整。'),
+                        (signature_ok, 'report_signature_missing', '报告落款不完整。'),
+                        (word_structure['tocEntryCount'] == len(context['headingNumbers']), 'word_heading_count_mismatch', 'Word 标题数量与提纲不一致。'),
+                        (not include_toc or toc_ok, 'pdf_toc_heading_missing', 'PDF 目录未完整覆盖批准标题。'),
+                        (not include_toc or toc_link_count >= len(context['headingNumbers']), 'pdf_toc_links_missing', 'PDF 目录链接不完整。'),
+                        (not include_toc or word_structure['nativeTocPresent'], 'word_toc_missing', 'Word 原生目录缺失。'),
+                    ) if not passed
+                ],
                 "status": "validated" if ok else "validation_failed",
                 "pdfPath": pdf_path,
                 "pdfSha256": current["sha256"],

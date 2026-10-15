@@ -11,7 +11,9 @@ from ..reporting.models import ReportReviewSnapshot
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, populate_by_name=True, serialize_by_alias=True
+    )
 
 
 class ReportingUrlAttachment(StrictModel):

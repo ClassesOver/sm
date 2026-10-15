@@ -7,6 +7,8 @@ from collections.abc import Callable
 from copy import copy
 
 from agno.exceptions import ModelProviderError
+from agno.models.message import Message
+from agno.session.agent import AgentSession
 from loguru import logger as loguru_logger
 
 from ....context_management import TaskExecutionContextHardLimitError
@@ -23,6 +25,7 @@ from ...delivery.draft_v1 import (
 )
 from ...delivery.report_runtime.markdown import normalize_number_notation
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ...hospital_operation.narrative_outline import NarrativeOutline
 from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
@@ -53,7 +56,7 @@ from ...trace.numeric_text import (
     replace_unregistered_numbers,
 )
 from ...trace.subject_builder import bind_local_claim_values, build_claim_subject_bindings
-from ...trace.table_builder import build_analysis_table
+from ...trace.table_builder import build_analysis_tables
 from ..checkpoint import (
     ChartVisualInspectionReceipt,
     CheckpointError,
@@ -119,6 +122,7 @@ from .base import (
     reporting_phase_task_key,
     validate_report_draft_blocks,
 )
+from .finding_evidence import finding_evidence_view
 from .phase_models import (
     AnalysisReworkDecision,
     RenderSectionDecision,
@@ -305,10 +309,14 @@ def _section_block_input_token_budget(agent: Any, run_context: RunContext) -> in
             break
     route = reporting_model_route_from_run_context(run_context)
     model_id = route[1] if route is not None else getattr(getattr(agent, "model", None), "id", None)
+    output_reserve = getattr(getattr(agent, "model", None), "max_tokens", None)
     return resolve_reporting_input_token_hard_cap(
         configured_input_token_cap=configured_cap,
         model_id=model_id if isinstance(model_id, str) else None,
-        output_token_reserve=TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+        output_token_reserve=max(
+            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+            output_reserve if isinstance(output_reserve, int) and not isinstance(output_reserve, bool) else 0,
+        ),
         absolute_input_token_cap=(
             TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
         ),
@@ -319,16 +327,62 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+def _section_request_tokens(agent: Any, payload: Mapping[str, Any], run_context: RunContext) -> int:
+    """按最终路由计入系统约束和输出 schema；tokenizer 不可用时保守估算。"""
+
+    stage_agent = _section_stage_agent(agent, SectionContent, "content") if callable(getattr(agent, "deep_copy", None)) else agent
+    model = getattr(stage_agent, "model", None)
+    counting_model = copy(model) if model is not None else None
+    route = reporting_model_route_from_run_context(run_context)
+    if counting_model is not None and route is not None:
+        counting_model.id = route[1]
+    serialized = _json_text(payload)
+    messages = []
+    get_system_message = getattr(stage_agent, "get_system_message", None)
+    if callable(get_system_message):
+        system_message = get_system_message(
+            session=AgentSession(session_id="section-content-budget", agent_id=getattr(stage_agent, "id", None)),
+            run_context=None, tools=[], add_session_state_to_context=False, input=serialized,
+        )
+        if system_message is not None:
+            messages.append(system_message)
+    messages.append(Message(role="user", content=serialized))
+    try:
+        count = counting_model.count_tokens(messages, output_schema=SectionContent)
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            return count
+    except Exception:
+        pass
+    return sum(len(str(message.content).encode("utf-8")) for message in messages) + len(
+        _json_text(SectionContent.model_json_schema()).encode("utf-8")
+    )
+
+
 def _section_number_context(
     contents: Sequence[str],
     field_definitions: dict[str, str],
     *,
     claims: Sequence[Any] | None = None,
+    allowed_fact_ids: set[str] | None = None,
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """模型只消费当前结论的数值视图，完整目录仍用于服务端校验。"""
 
     catalog = frozen_number_catalog(contents)
     guide = frozen_number_guide(contents, catalog, field_definitions=field_definitions)
+    dependencies = {
+        item["factId"]: {entry["budgetFactId"] for key in ("budgetComparisons", "projectRatios")
+                         for entry in item.get(key, ())}
+        for item in guide
+    }
+
+    def with_dependencies(ids: set[str]) -> set[str]:
+        return ids | {dependency for fact_id in ids for dependency in dependencies.get(fact_id, ())}
+
+    if allowed_fact_ids is not None:
+        allowed_fact_ids = with_dependencies(allowed_fact_ids)
+        guide = [item for item in guide if item.get("factId") in allowed_fact_ids]
+        catalog = {token: value for token, value in catalog.items()
+                   if token.split(":", 2)[1] in allowed_fact_ids}
     if claims is None:
         # 规划不生成数值占位符；直接展示已格式化数值，避免每个期间/分组反复携带
         # 长引用。factId 仍保留，用于下一阶段绑定结论。
@@ -345,20 +399,20 @@ def _section_number_context(
                 }
             planning_guide.append(projected)
         return prompt_number_catalog(catalog), json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
-    fact_ids = {fact_id for claim in claims for fact_id in claim.fact_ids}
+    fact_ids = with_dependencies({fact_id for claim in claims for fact_id in claim.fact_ids})
     unbound_metrics = {claim.metric_code for claim in claims if not claim.fact_ids}
-    guide = [
-        item for item in guide
+    selected_ids = with_dependencies(fact_ids | {
+        item["factId"] for item in guide
         if item["factId"] in fact_ids
         or set(item.get("metricCodes", ())).intersection(unbound_metrics)
         or item.get("metric") in unbound_metrics
-    ]
+    })
+    guide = [item for item in guide if item["factId"] in selected_ids]
     if not guide and not fact_ids:
         # 旧证据可能没有 factId/metricCodes，沿用完整目录，不能猜测绑定。
         return prompt_number_catalog(catalog), frozen_number_guide(contents, catalog, field_definitions=field_definitions)
     # 同比/对账事实也有数值目录，但不在 metric 的 numberGuide 中；显式绑定
     # 的 factId 必须仍保留，不能因此回退到整份无关目录。
-    selected_ids = fact_ids | {item["factId"] for item in guide}
     catalog = {
         token: value for token, value in prompt_number_catalog(catalog).items()
         if token.split(":", 2)[1] in selected_ids
@@ -374,7 +428,11 @@ def _section_block_evidence_token_budget(
     run_context: RunContext,
 ) -> int:
     input_budget = _section_block_input_token_budget(agent, run_context)
-    base_tokens = _estimated_section_tokens(_json_text(base_payload))
+    base_tokens = (
+        _section_request_tokens(agent, base_payload, run_context)
+        if base_payload.get("generationStage") == "content"
+        else _estimated_section_tokens(_json_text(base_payload))
+    )
     payload_budget = (
         input_budget
         * _SECTION_BLOCK_PAYLOAD_TOKEN_NUMERATOR
@@ -1046,6 +1104,22 @@ def _section_recovery_failure_kind(
     return "schema_failure" if diagnostic.get("code") == "report_phase_output_invalid" else None
 
 
+def _fit_section_plan_budget(plan: RenderSectionPlan, work_item: SectionWorkItem) -> RenderSectionPlan:
+    """按冻结预算合并正文规划块，保留全部结论引用；结构容量不足时留给软告警。"""
+    limit = work_item.max_blocks
+    if limit is None or len(plan.blocks) <= limit:
+        return plan
+    tail = plan.blocks[limit - 1:]
+    claim_ids = tuple(dict.fromkeys(item for block in tail for item in block.claim_ids))
+    if len(claim_ids) > 100:
+        return plan
+    objective = "；".join(block.objective for block in tail)
+    if len(objective) > 2000:
+        objective = tail[0].objective[:1900] + "；同时解释其余已绑定结论"
+    merged = tail[0].model_copy(update={"objective": objective, "claim_ids": claim_ids})
+    return plan.model_copy(update={"blocks": (*plan.blocks[:limit - 1], merged)})
+
+
 def _section_plan_reference_issues(
     decision: RenderSectionPlan,
     work_item: SectionWorkItem,
@@ -1058,6 +1132,20 @@ def _section_plan_reference_issues(
     known_charts = {item.chart_id for item in work_item.charts}
     issues: list[dict[str, Any]] = []
     for index, claim in enumerate(decision.claims):
+        if set(claim.finding_ids) - set(work_item.finding_ids):
+            issues.append({
+                "path": f"$.claims[{index}].findingIds",
+                "type": "unknown_finding_id",
+                "message": "findingIds 只能引用当前章节分配的管理发现。",
+                "allowedValues": list(work_item.finding_ids),
+            })
+        elif work_item.finding_ids and not claim.finding_ids:
+            issues.append({
+                "path": f"$.claims[{index}].findingIds",
+                "type": "missing_finding_id",
+                "message": "动态章节结论必须绑定所解释的已分配管理发现。",
+                "allowedValues": list(work_item.finding_ids),
+            })
         if claim.metric_code not in known_metrics:
             issues.append(
                 {
@@ -1355,10 +1443,33 @@ async def _generate_section_in_blocks(
     review_notices 按 blockId 收集纠错后仍残留的复核告警，供章节提交时并入质量告警。
     """
 
+    original_evidence_files = evidence.files
+    scoped_fact_ids: set[str] | None = None
+    if work_item.finding_ids:
+        scoped_files, scoped_fact_ids, source_warnings = finding_evidence_view(
+            evidence.files, work_item
+        )
+        evidence = evidence.model_copy(update={
+            "files": scoped_files,
+            "factSummaries": (*evidence.fact_summaries, *(
+                f"warning: {item['message']}" for item in source_warnings
+            )),
+        })
+
+    if work_item.narrative_role == "appendix":
+        # 文件已由 SectionWorkflow 校验；这里只精简模型写作视图，提交仍核对原始 WorkItem。
+        evidence = evidence.model_copy(update={"fact_summaries": ()})
+        work_item = work_item.model_copy(update={"evidence": tuple(
+            item.model_copy(update={
+                "summary": "本节只呈现 findingSummaries 分配的冻结发现。",
+                "computation_record": None, "computation_script_file": None,
+            }) for item in work_item.evidence
+        )})
+
     # 规划阶段只收到文件身份，不能要求模型从摘要猜测内容寻址的事实 ID。
     # 目录仅从本轮已验证 SHA 的证据正文提取，不接受模型提交的编号别名。
     fact_catalog: list[dict[str, Any]] = []
-    for evidence_file in evidence.files:
+    for evidence_file in original_evidence_files:
         try:
             document = json.loads(evidence_file.content)
         except ValueError:
@@ -1399,8 +1510,10 @@ async def _generate_section_in_blocks(
                         },
                     }
                 )
+    if scoped_fact_ids is not None:
+        fact_catalog = [item for item in fact_catalog if item["factId"] in scoped_fact_ids]
     known_fact_ids = {item["factId"] for item in fact_catalog}
-    number_contents = tuple(item.content for item in evidence.files)
+    number_contents = tuple(item.content for item in original_evidence_files)
     plan_payload = {
         **instruction_payload,
         "generationStage": "plan",
@@ -1409,13 +1522,15 @@ async def _generate_section_in_blocks(
         ],
         "factCatalog": fact_catalog,
         "numberGuide": _section_number_context(
-            number_contents, instruction_payload.get("fieldDefinitions", {})
+            number_contents, instruction_payload.get("fieldDefinitions", {}),
+            allowed_fact_ids=scoped_fact_ids,
         )[1],
         "requiredAction": (
-            "证据充足时返回 1 到 12 个必要 block 的结构规划及完整 claims；"
+            f"证据充足时返回 1 到 {min(work_item.max_blocks or 12, 12)} 个必要 block 的结构规划及完整 claims；"
             "block 只包含 blockId、objective、claimIds，不生成 Markdown 正文。"
             "claim.factIds 必须原样复制 factCatalog 中支持结论的 factId，"
             "不得自行编造 fact_001 等编号；没有支持该结论的登记事实时不填 factIds。"
+            "动态章节的 claim.findingIds 必须从当前分配的发现中选择，不得引用其他章节发现。"
         ),
         "requiredOutputShape": {
             "kind": "render",
@@ -1430,6 +1545,7 @@ async def _generate_section_in_blocks(
             "claims": [
                 {
                     "claimId": "claim_001",
+                    **({"findingIds": list(work_item.finding_ids[:1])} if work_item.finding_ids else {}),
                     "metricCode": "必须来自 allowedMetricCodes",
                     "value": "必须来自证据",
                     "managementQuestionRef": "必须来自 managementQuestionRefs",
@@ -1548,30 +1664,28 @@ async def _generate_section_in_blocks(
     else:
         raise AssertionError("章节规划纠错循环未终止。")
 
+    decision = _fit_section_plan_budget(decision, work_item)
     if whole_section:
-        try:
-            return await _generate_whole_section_content(
-                agent,
-                instruction_payload,
-                evidence,
-                work_item,
-                decision,
-                scope=scope,
-                run_context=run_context,
-                thinking_request=thinking_request,
-                review_notices=review_notices,
-            )
-        except (ReportingError, TaskExecutionContextHardLimitError) as error:
-            if (
-                not isinstance(error, TaskExecutionContextHardLimitError)
-                and error.code != "report_section_context_too_large"
-            ):
-                raise
-            loguru_logger.warning(
-                "report_section_content_split section={} reason={}",
-                work_item.section_code,
-                getattr(error, "code", "task_execution_context_hard_limit_exceeded"),
-            )
+        for compact in (False, True):
+            try:
+                return await _generate_whole_section_content(
+                    agent, instruction_payload, evidence, work_item, decision,
+                    scope=scope, run_context=run_context, thinking_request=thinking_request,
+                    review_notices=review_notices, number_contents=number_contents,
+                    allowed_fact_ids=scoped_fact_ids, compact=compact,
+                )
+            except (ReportingError, TaskExecutionContextHardLimitError) as error:
+                if (
+                    not isinstance(error, TaskExecutionContextHardLimitError)
+                    and error.code != "report_section_context_too_large"
+                ):
+                    raise
+                loguru_logger.warning(
+                    "{} section={} reason={}",
+                    "report_section_content_split" if compact else "report_section_content_compact_retry",
+                    work_item.section_code,
+                    getattr(error, "code", "task_execution_context_hard_limit_exceeded"),
+                )
 
     claims_by_id = {item.claim_id: item for item in decision.claims}
     files_by_path = {item.identity.path: item for item in evidence.files}
@@ -1629,7 +1743,10 @@ async def _generate_section_in_blocks(
             "sectionGoal": instruction_payload.get("sectionGoal", {}),
             "blockPlan": block_plan.model_dump(mode="json", by_alias=True),
             "claims": [item.model_dump(mode="json", by_alias=True) for item in block_claims],
-            "frozenNumbers": frozen_number_catalog(item.content for item in selected_files),
+            "frozenNumbers": frozen_number_catalog(
+                number_contents if scoped_fact_ids is not None
+                else tuple(item.content for item in selected_files)
+            ),
             "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
             "facts": block_facts,
             "metricDefinitions": block_metrics,
@@ -1646,8 +1763,11 @@ async def _generate_section_in_blocks(
         # 完整证据只驻留在当前固定 Workflow 内存中；模型按 block 消费带身份的相关视图。
         block_number_catalog = block_payload["frozenNumbers"]
         block_payload["frozenNumbers"], block_payload["numberGuide"] = _section_number_context(
-            tuple(item.content for item in selected_files), block_payload["fieldDefinitions"],
+            number_contents if scoped_fact_ids is not None
+            else tuple(item.content for item in selected_files),
+            block_payload["fieldDefinitions"],
             claims=block_claims,
+            allowed_fact_ids=scoped_fact_ids,
         )
         # claims、冻结摘要和引用对象始终完整保留，切片只移除与当前 block 无关的文件正文。
         block_payload["evidence"] = _project_section_evidence_files(
@@ -1698,7 +1818,7 @@ async def _generate_section_in_blocks(
                 loguru_logger.warning("report_content_review_correction_unavailable section={} code={}", work_item.section_code, getattr(error, "code", type(error).__name__))
                 # 不让无效纠错响应覆盖已验证的首轮正文。
                 content = first_block_content
-            content_review = review_content_result(content.markdown, (item.content for item in selected_files),
+            content_review = review_content_result(content.markdown, number_contents,
                                              field_definitions=block_payload["fieldDefinitions"],
                                              fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids),
                                              bound_chart_ids=chart_ids)
@@ -1736,8 +1856,9 @@ async def _generate_section_in_blocks(
             from ...trace.semantic_bindings import render_bound_numbers
 
             bound_markdown, number_references, number_notices = render_bound_numbers(
-                content.markdown, (item.content for item in selected_files),
+                content.markdown, number_contents,
                 key=f"{work_item.section_code}:{block_plan.block_id}",
+                field_definitions=block_payload["fieldDefinitions"],
             )
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
@@ -1800,13 +1921,17 @@ async def _generate_whole_section_content(
     run_context: RunContext,
     thinking_request: ThinkingRequest,
     review_notices: dict[str, list[dict[str, Any]]] | None = None,
+    number_contents: Sequence[str] | None = None,
+    allowed_fact_ids: set[str] | None = None,
+    compact: bool = False,
 ) -> RenderSectionDecision:
     """一次生成整章正文；引用与顺序始终由已校验规划决定。"""
 
+    number_contents = tuple(number_contents or (item.content for item in evidence.files))
     payload = {
         "phase": "section",
         "generationStage": "content",
-        "frozenNumbers": prompt_number_catalog(frozen_number_catalog(item.content for item in evidence.files)),
+        "frozenNumbers": prompt_number_catalog(frozen_number_catalog(number_contents)),
         "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
         "reportGoal": instruction_payload.get("reportGoal", ""),
         "sectionGoal": instruction_payload.get("sectionGoal", {}),
@@ -1840,13 +1965,25 @@ async def _generate_whole_section_content(
         for block in plan.blocks
     }
     payload["frozenNumbers"], payload["numberGuide"] = _section_number_context(
-        tuple(item.content for item in evidence.files), payload["fieldDefinitions"],
+        number_contents, payload["fieldDefinitions"],
         claims=plan.claims,
+        allowed_fact_ids=allowed_fact_ids,
     )
+    # 摘要和计算审计不再与已核验的原子事实重复发送；原 WorkItem 留供提交验收。
+    if evidence.files:
+        payload["facts"] = [
+            {key: value for key, value in item.items()
+             if key not in {"summary", "computationRecord", "computationScriptFile"}}
+            for item in payload["facts"]
+        ]
+    fact_summaries = tuple(dict.fromkeys(evidence.fact_summaries))
+    if compact and evidence.files:
+        # 压缩重试只省略非权威的分析摘要，不删预算、基期、分解或对账原子记录。
+        fact_summaries = tuple(item for item in fact_summaries if item.startswith("warning:"))
     payload["evidence"] = _project_section_evidence_files(
         agent,
         tuple({item.identity.path: item for item in evidence.files}.values()),
-        fact_summaries=tuple(dict.fromkeys(evidence.fact_summaries)),
+        fact_summaries=fact_summaries,
         relevance_values=tuple(payload.values()),
         base_payload=payload,
         run_context=run_context,
@@ -1857,7 +1994,7 @@ async def _generate_whole_section_content(
     ) -> tuple[dict[str, tuple[int, int]], dict[str, list[str]]]:
         # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
         content_reviews = {
-            block.block_id: review_content_result(block.markdown, (item.content for item in evidence.files),
+            block.block_id: review_content_result(block.markdown, number_contents,
                                            field_definitions=payload["fieldDefinitions"],
                                            fact_ids=block_fact_ids[block.block_id],
                                            bound_chart_ids=block_chart_ids[block.block_id])
@@ -1888,6 +2025,16 @@ async def _generate_whole_section_content(
     flagged_ids: set[str] = set()
     for review_attempt in range(2):
         try:
+            request_tokens = _section_request_tokens(agent, payload, run_context)
+            input_budget = _section_block_input_token_budget(agent, run_context)
+            loguru_logger.info(
+                "report_section_content_budget section={} attempt={} compact={} input_tokens={} input_budget={} payload_bytes={}",
+                work_item.section_code, review_attempt, compact, request_tokens, input_budget,
+                len(_json_text(payload).encode("utf-8")),
+            )
+            if request_tokens > input_budget:
+                raise ReportingError("report_section_context_too_large", "整章请求超过当前模型输入预算。",
+                                     details={"requestTokens": request_tokens, "inputTokenBudget": input_budget})
             content = await _run_section_stage(
                 agent,
                 SectionContent,
@@ -1904,15 +2051,17 @@ async def _generate_whole_section_content(
             if not isinstance(content, SectionContent):
                 raise ReportingError("report_phase_output_invalid", "整章正文 Agent 未返回声明的结果。")
             content_by_id = {item.block_id: item for item in content.blocks}
-            expected_ids = {item.block_id for item in plan.blocks}
-            if len(content_by_id) != len(content.blocks) or set(content_by_id) != expected_ids:
+            expected_ids = flagged_ids if review_attempt else {item.block_id for item in plan.blocks}
+            duplicate_ids = len(content_by_id) != len(content.blocks)
+            # 兼容仍返回整章的旧模型，只接收登记的问题段落，其他内容继续使用首轮原文。
+            if review_attempt and set(content_by_id) == {item.block_id for item in plan.blocks}:
+                content_by_id = {key: value for key, value in content_by_id.items() if key in flagged_ids}
+            if duplicate_ids or set(content_by_id) != expected_ids:
                 raise ReportingError(
                     "report_section_content_blocks_invalid",
-                    "整章正文 blockId 必须与规划一一对应，不得遗漏、重复或新增。",
-                    details={
-                        "expectedBlockIds": [item.block_id for item in plan.blocks],
-                        "actualBlockIds": [item.block_id for item in content.blocks],
-                    },
+                    "正文 blockId 必须与本轮规划一一对应，不得遗漏、重复或新增。",
+                    details={"expectedBlockIds": sorted(expected_ids),
+                             "actualBlockIds": [item.block_id for item in content.blocks]},
                 )
         except (ReportingError, ModelProviderError, TaskExecutionContextHardLimitError) as error:
             if review_attempt == 0:
@@ -1921,16 +2070,11 @@ async def _generate_whole_section_content(
             content_by_id, review_warnings = first_by_id, first_warnings
             break
         # 模型响应可乱序；复核与最终装配必须使用同一规划顺序。
+        if review_attempt:
+            content_by_id = {**first_by_id, **content_by_id}
         content = content.model_copy(update={"blocks": tuple(
             content_by_id[block.block_id] for block in plan.blocks
         )})
-        if review_attempt == 1:
-            # 纠错只针对有问题的 block；首轮无问题的 block 保留原文，避免整章重写把已通过的内容改坏。
-            content = content.model_copy(update={"blocks": tuple(
-                block if block.block_id in flagged_ids else first_by_id[block.block_id]
-                for block in content.blocks
-            )})
-            content_by_id = {item.block_id: item for item in content.blocks}
         review_scores, review_warnings = review_blocks(content)
         if review_attempt == 1:
             # 纠错后问题反而更严重的 block 回退到首轮版本，纠错不能让正文变差。
@@ -1956,15 +2100,30 @@ async def _generate_whole_section_content(
             first_warnings = review_warnings
             first_scores = review_scores
             flagged_ids = set(review_warnings)
+            correction_plan = plan.model_copy(update={
+                "blocks": tuple(block for block in plan.blocks if block.block_id in flagged_ids),
+                "claims": tuple(claim for claim in plan.claims if any(
+                    claim.claim_id in block.claim_ids for block in plan.blocks if block.block_id in flagged_ids
+                )),
+            })
+            payload["sectionPlan"] = correction_plan.model_dump(mode="json", by_alias=True)
+            payload["requiredAction"] = "仅返回 sectionPlan 中本轮待修正的 block；其他段落由服务端保留。"
+            payload["preservedContext"] = [
+                {"blockId": block.block_id, "objective": block.objective,
+                 "markdown": first_by_id[block.block_id].markdown}
+                for block in plan.blocks if block.block_id not in flagged_ids
+            ]
             payload["correction"] = {
-                "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
+                "issues": review_warnings,
+                "previousOutput": {"blocks": [block.model_dump(mode="json", by_alias=True)
+                                              for block in content.blocks if block.block_id in flagged_ids]},
                 "requiredAction": (
                     "逐条处理 issues：修正数字与字段口径并使用冻结数值引用；内部 ID 和英文字段名改用业务名称；"
                     "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
                     "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子。"
                     + _LATER_CORRECTION_ACTIONS
-                    + "删去无直接证据的推测，仍不确定时写待核实。返回全部 block 完整正文，保留 blockId；"
-                    "issues 未列出的 block 原样返回（服务端保留其首轮原文）。"
+                    + "删去无直接证据的推测，仍不确定时写待核实。只返回 issues 列出的 block 完整正文，保留 blockId；"
+                    "preservedContext 仅供衔接和去重，不得返回或改写。"
                 ),
             }
         else:
@@ -1979,8 +2138,9 @@ async def _generate_whole_section_content(
         from ...trace.semantic_bindings import render_bound_numbers
 
         bound_markdown, number_references, number_notices = render_bound_numbers(
-            content_by_id[block_plan.block_id].markdown, (item.content for item in evidence.files),
+            content_by_id[block_plan.block_id].markdown, number_contents,
             key=f"{work_item.section_code}:{block_plan.block_id}",
+            field_definitions=payload["fieldDefinitions"],
         )
         block = ReportDraftBlock(
             blockId=block_plan.block_id,
@@ -2046,10 +2206,32 @@ def _promoted_heading_block(
     return promoted
 
 
+def _section_model_work_item_payload(work_item: SectionWorkItem) -> dict[str, Any]:
+    payload = work_item.model_dump(mode="json", by_alias=True)
+    payload.pop("factFiles", None)
+    if work_item.finding_ids or work_item.narrative_role == "appendix":
+        # 动态章节已有发现摘要；整项分析摘要和计算审计仍保留在冻结 WorkItem。
+        payload.pop("factSummaries", None)
+        for finding in payload["findingSummaries"]:
+            finding.pop("sourceRefs", None)
+            if work_item.narrative_role == "appendix":
+                finding.pop("relatedFindingIds", None)
+        for evidence in payload["evidence"]:
+            for field in ("summary", "computationRecord", "computationScriptFile"):
+                evidence.pop(field, None)
+    return payload
+
+
 def _section_claim_authoring_contract(work_item: SectionWorkItem) -> dict[str, Any]:
     """从当前冻结 WorkItem 生成章节 claim 的动态约束，避免模型猜测业务指标代码。"""
 
     return {
+        "allowedFindingIds": list(work_item.finding_ids),
+        "contentBudget": {"maxBlocks": work_item.max_blocks, "maxCharts": work_item.max_charts},
+        "findingRule": (
+            "动态章节的每个结论通过 findingIds 绑定当前章节发现；仅解释分配的发现，"
+            "不得把同一分析的其他发现重复写成独立结论。旧章节没有 findingIds 时不填该字段。"
+        ),
         "allowedMetricCodes": [item.code for item in work_item.metric_definitions],
         "managementQuestionRefs": [
             item.model_dump(mode="json", by_alias=True)
@@ -2113,6 +2295,12 @@ class RuntimeSectionsMixin:
         detailed_plan: DetailedAnalysisPlan,
         analysis_artifact: AnalysisArtifact,
         citation_bindings: tuple[Citation, ...],
+        finding_ids: tuple[str, ...] = (),
+        finding_summaries: tuple[dict[str, Any], ...] = (),
+        narrative_role: str | None = None,
+        grouping_reason: str | None = None,
+        max_blocks: int | None = None,
+        max_charts: int | None = None,
     ) -> SectionWorkItem:
         analyses = {item.analysis_id: item for item in detailed_plan.analyses}
         evidence = {item.analysis_id: item for item in analysis_artifact.evidence_manifest.evidence}
@@ -2167,13 +2355,20 @@ class RuntimeSectionsMixin:
             title=section.title,
             objective="；".join(objective_parts),
             completionConditions=(
-                "完整呈现当前章节全部冻结事实及其管理结论",
+                ("仅呈现当前章节分配的管理发现及其证据、经营影响和管理动作" if finding_ids
+                 else "完整呈现当前章节全部冻结事实及其管理结论"),
                 "保持期间、单位和共享指标口径一致",
                 "覆盖当前章节 evidence 提供的 citation",
                 "仅使用当前 SectionWorkItem 提供的 chart",
                 *(f"warning: {item}" for item in section_warnings),
             ),
             analysisIds=tuple(section.analysis_ids),
+            findingIds=finding_ids,
+            findingSummaries=finding_summaries,
+            narrativeRole=narrative_role,
+            groupingReason=grouping_reason,
+            maxBlocks=max_blocks,
+            maxCharts=max_charts,
             evidence=selected_evidence,
             metricDefinitions=tuple(
                 item
@@ -2291,7 +2486,9 @@ class RuntimeSectionsMixin:
         SectionArtifact | None,
         AnalysisReworkRequest | None,
     ]:
-        if work_item.serialized_bytes() > MAX_SECTION_WORK_ITEM_BYTES:
+        model_work_item_payload = _section_model_work_item_payload(work_item)
+        context_bytes = len(_json_text(model_work_item_payload).encode("utf-8"))
+        if context_bytes > MAX_SECTION_WORK_ITEM_BYTES:
             raise ReportingError(
                 "report_section_context_too_large",
                 "章节紧凑事实投影超过输入软上限；请减少单章绑定的 analysis 数量。",
@@ -2299,10 +2496,6 @@ class RuntimeSectionsMixin:
         scope = self._scope(run_context)
         work_item_payload = work_item.model_dump(mode="json", by_alias=True)
         work_item_hash = payload_sha256(work_item_payload)
-        model_work_item_payload = dict(work_item_payload)
-        # factFiles 仍进入 durable work item 与身份 hash，保证恢复和追溯语义不变；章节
-        # Agent 没有读取这些文件的授权，因此模型输入只暴露可直接使用的 factSummaries。
-        model_work_item_payload.pop("factFiles", None)
         restored = await self._durable_completed_section(
             run_context,
             revision=revision,
@@ -2352,9 +2545,18 @@ class RuntimeSectionsMixin:
                 scope["threadId"], work_item_path, work_item_payload
             )
         )
+        constraints_hash = payload_sha256(dict(analysis_rework_constraints))
+        constraints_file = FileIdentity.model_validate(
+            await self._write_artifact_validation_context(
+                scope["threadId"],
+                f"报表/智能分析/{run_context.run_id}/phases/revision-{revision}/"
+                f"{work_item.section_code}-rework-constraints-{constraints_hash[:16]}.json",
+                dict(analysis_rework_constraints),
+            )
+        )
         checkpoint = self._update_reporting_checkpoint(
             checkpoint,
-            files=self._merge_checkpoint_files(checkpoint.files, work_item_file),
+            files=self._merge_checkpoint_files(checkpoint.files, work_item_file, constraints_file),
         )
         await self._persist_reporting_checkpoint(run_context, checkpoint)
         checkpoint_error = checkpoint.last_error
@@ -2460,7 +2662,9 @@ class RuntimeSectionsMixin:
                     "taskKind": "section",
                     "thinkingEffort": "off",
                     "sectionWorkItemFile": work_item_file.model_dump(mode="json", by_alias=True),
-                    "analysisReworkConstraints": dict(analysis_rework_constraints),
+                    "analysisReworkConstraintsFile": constraints_file.model_dump(
+                        mode="json", by_alias=True
+                    ),
                 },
                 section_output_path=section_output_path,
                 rework_request_path=rework_request_path,
@@ -2852,7 +3056,7 @@ class RuntimeSectionsMixin:
     ) -> tuple[tuple[ReportServerTable, ...], tuple[TableTraceV1, ...], dict[str, tuple[str, str]], dict[str, tuple[Any, str | None]]]:
         """从冻结确定性 facts 生成服务端结构化表格（B2，计划 4.2）。
 
-        规则：每个 analysis 至多一张"分期间指标表"（build_analysis_table）；
+        规则：宽表按最多五个数值列拆分；
         表格追加到第一个引用该 analysis 的批准章节尾部。bundle 不可读或
         生成失败按软告警跳过（语义缺失软告警，不阻断发布），但已生成的
         表格与其 trace 严格同源。
@@ -2861,7 +3065,7 @@ class RuntimeSectionsMixin:
         目录供 B6 正文 subject 绑定构造复用（不重复读 bundle）。
         """
 
-        from ...trace.fact_index import fact_pointer
+        from ...trace.fact_index import fact_entry_from_pointer, fact_pointer
 
         scope = self._scope(run_context)
         thread_id = scope["threadId"]
@@ -2871,6 +3075,7 @@ class RuntimeSectionsMixin:
                 section_by_analysis.setdefault(analysis_id, section.code)
         tables: list[ReportServerTable] = []
         traces: list[TableTraceV1] = []
+        table_signatures: set[str] = set()
         fact_directory: dict[str, tuple[str, str]] = {}
         fact_values: dict[str, tuple[Any, str | None]] = {}
         try:
@@ -2888,6 +3093,7 @@ class RuntimeSectionsMixin:
                     thread_id, identity, max_bytes=16 * 1024 * 1024
                 )
                 bundle = DeterministicAnalysisBundle.model_validate_json(raw)
+                document = bundle.model_dump(mode="json", by_alias=True)
                 for fact in (
                     *bundle.metrics,
                     *bundle.comparisons,
@@ -2907,18 +3113,28 @@ class RuntimeSectionsMixin:
                 if section_code is None:
                     continue
                 fact_resource = derive_resource_id(identity.path)
-                built = build_analysis_table(
+                built = build_analysis_tables(
                     bundle, fact_file_resource_id=fact_resource,
                     dataset_contexts=self._state(run_context).get("report_analysis_data_context", ()),
                     metric_descriptions=metric_descriptions,
                 )
-                if built is None:
-                    continue
-                trace, markdown = built
-                tables.append(
-                    ReportServerTable(sectionCode=section_code, markdown=markdown)
-                )
-                traces.append(trace)
+                for trace, markdown in built:
+                    # 仅折叠行列及完整冻结事实均一致的表；金额相等不足以认定重复。
+                    signature = json.dumps({
+                        "rows": trace.row_keys,
+                        "columns": trace.column_keys,
+                        "facts": [
+                            fact_entry_from_pointer(document, ref.json_pointer)[1]
+                            for cell in trace.cells for ref in cell.fact_refs
+                        ],
+                    }, sort_keys=True, ensure_ascii=False)
+                    if signature in table_signatures:
+                        continue
+                    table_signatures.add(signature)
+                    tables.append(
+                        ReportServerTable(sectionCode=section_code, markdown=markdown)
+                    )
+                    traces.append(trace)
             except (ReportingError, ValidationError, ValueError) as error:
                 loguru_logger.warning(
                     "report_server_table_skipped analysis_id={} error={}",
@@ -2943,6 +3159,21 @@ class RuntimeSectionsMixin:
             raise ReportingError("report_analysis_artifact_missing", "Finalize 缺少冻结分析产物。")
         outline = _frozen_outline(self._state(run_context))
         scope = self._scope(run_context)
+        narrative_section_finding_ids: dict[str, tuple[str, ...]] = {}
+        narrative_section_grouping_reasons: dict[str, str] = {}
+        if checkpoint.narrative_outline_file is not None:
+            try:
+                narrative = await self._read_identity_model(
+                    scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline
+                )
+                narrative_section_finding_ids = {
+                    item.code: item.finding_ids for item in narrative.sections
+                }
+                narrative_section_grouping_reasons = {
+                    item.code: item.grouping_reason for item in narrative.sections
+                }
+            except (ReportingError, ValidationError) as error:
+                loguru_logger.warning("report_narrative_manifest_mapping_unavailable error={}", error)
         completed = {item.section_code: item for item in checkpoint.completed_sections}
         if set(completed) != {item.code for item in outline.sections}:
             raise ReportingError("report_section_artifact_missing", "Finalize 缺少完整章节产物。")
@@ -3209,6 +3440,8 @@ class RuntimeSectionsMixin:
             task_key=analysis_task_id,
             section_numbers=rendered.section_numbers,
             heading_numbers=rendered.heading_numbers,
+            section_finding_ids=narrative_section_finding_ids,
+            section_grouping_reasons=narrative_section_grouping_reasons,
             run_context=run_context,
         )
         if not _accepted_artifacts_match_manifest(manifest, manifest_path, accepted_artifacts):

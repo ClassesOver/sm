@@ -38,7 +38,7 @@
 - `NarrativeSection` 在冻结后增加 `code`、`sectionNumber` 和服务端派生的 `analysisIds`；`NarrativeOutline` 使用字段 `version`、`title`、`sections`、`appendixFindingIds`、`omittedFindings`、`snapshotHash`。
 - `freeze_narrative_outline(candidate, graph, analyses)` 服务端生成连续 `section_001` 等身份，检查引用、覆盖和快照哈希。
 
-- [ ] **Step 1: 写契约失败测试**
+- [x] **Step 1: 写契约失败测试**
 
   在 `test_dynamic_narrative_contracts.py` 覆盖：
 
@@ -63,13 +63,13 @@
       assert outline.sections[0].finding_ids == ("finding_001",)
   ```
 
-- [ ] **Step 2: 运行定向测试确认失败**
+- [x] **Step 2: 运行定向测试确认失败**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_narrative_contracts.py -q`
 
   Expected: FAIL because the new models and freeze function do not exist。
 
-- [ ] **Step 3: 实现最小契约**
+- [x] **Step 3: 实现最小契约**
 
   在两个新模块中使用现有 `HospitalOperationSchema`、`StrictModel` 和 Pydantic validator：
 
@@ -81,13 +81,13 @@
   - 低优先级发现可以出现在 `appendixFindingIds`，但不能无理由丢失；
   - 服务端生成章节 code、编号和最终 `analysisIds`，模型不提交这些派生字段。
 
-- [ ] **Step 4: 运行定向测试确认通过**
+- [x] **Step 4: 运行定向测试确认通过**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_narrative_contracts.py -q`
 
   Expected: PASS。
 
-- [ ] **Step 5: 提交契约变更**
+- [x] **Step 5: 提交契约变更**
 
   ```bash
   git add smart_reporting/reporting/hospital_operation/findings.py \
@@ -110,7 +110,7 @@
 - `project_analysis_findings(analysis_id, deterministic_facts, supplemental_evidence, metric_definitions) -> tuple[FindingCard, ...]` 只读取已验证事实。
 - `FindingGraph.snapshotHash` 必须绑定本轮事实快照，供后续章节冻结校验。
 
-- [ ] **Step 1: 写投影失败测试**
+- [x] **Step 1: 写投影失败测试**
 
   在测试文件顶部定义 `_fact_bundle()`、`_supplemental_evidence()` 和 `_metric_definitions()` fixture factory，分别返回现有 `DeterministicAnalysisBundle`、补证模型和指标定义模型。覆盖以下事实：
 
@@ -150,13 +150,13 @@
 
   断言归因对账失败时不得生成 `evidenceLevel="direct_decomposition"`，缺失金额不得变成零。
 
-- [ ] **Step 2: 运行定向测试确认失败**
+- [x] **Step 2: 运行定向测试确认失败**
 
   Run: `pytest smart_reporting/reporting/tests/test_finding_projection.py -q`
 
   Expected: FAIL because projection functions do not exist。
 
-- [ ] **Step 3: 实现确定性发现投影**
+- [x] **Step 3: 实现确定性发现投影**
 
   - 读取 `metrics`、`derivedMetrics`、`comparisons`、`reconciliations`、`periodValues`、`topGroups`、`bottomGroups` 和补证表；
   - 为趋势、异常、贡献、经营影响和数据限制生成发现；
@@ -166,17 +166,17 @@
   - 按影响金额、变化率、异常严重度和数据质量影响计算优先级；
   - 将来源引用和限制原样绑定，不在投影阶段改写数值。
 
-- [ ] **Step 4: 在分析阶段持久化 FindingGraph**
+- [x] **Step 4: 在分析阶段持久化 FindingGraph**
 
   在 `run_reporting_analysis` 的分析事实完成、章节成稿开始之前调用 `build_finding_graph()`，把图谱写入受信 workspace 文件，并通过 durable command 保存文件身份和 `snapshotHash`。不要把完整图谱直接塞进 Workflow session state。
 
-- [ ] **Step 5: 运行定向测试确认通过**
+- [x] **Step 5: 运行定向测试确认通过**
 
   Run: `pytest smart_reporting/reporting/tests/test_finding_projection.py -q`
 
   Expected: PASS。
 
-- [ ] **Step 6: 提交发现投影变更**
+- [x] **Step 6: 提交发现投影变更**
 
   ```bash
   git add smart_reporting/reporting/hospital_operation/finding_projection.py \
@@ -203,7 +203,7 @@
 - Produces `run_report_draft()`：读取最终 NarrativeOutline，复用现有可视化和章节正文流程。
 - Durable phase 在 `ANALYSIS_FREEZING` 与 `SECTIONS` 之间增加 `NARRATIVE_PLANNING`，旧状态可通过确定性迁移或兼容读取恢复。
 
-- [ ] **Step 1: 写工作流顺序失败测试**
+- [x] **Step 1: 写工作流顺序失败测试**
 
   ```python
   async def test_analysis_finishes_before_narrative_outline(monkeypatch):
@@ -228,13 +228,13 @@
       assert runtime.run_analysis_evidence.await_count == 0
   ```
 
-- [ ] **Step 2: 运行定向测试确认失败**
+- [x] **Step 2: 运行定向测试确认失败**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_chapter_workflow.py smart_reporting/reporting/tests/test_reporting_cli.py -q`
 
   Expected: FAIL because the current workflow still calls `generate-outline` before analysis and has no narrative planning phase。
 
-- [ ] **Step 3: 提取分析证据阶段**
+- [x] **Step 3: 提取分析证据阶段**
 
   从现有 `run_reporting_analysis()` 中抽出分析项、补证、facts 和 checkpoint 收口逻辑，形成 `run_analysis_evidence()`。该阶段的每个分析任务使用自己的 `managementQuestion` 作为执行目标，不依赖最终章节的 `sectionGoal`。
 
@@ -246,14 +246,14 @@
   - citation 和 dataset lineage；
   - 现有 retry、rework 和 durable command。
 
-- [ ] **Step 4: 增加 Narrative Planning 状态和步骤**
+- [x] **Step 4: 增加 Narrative Planning 状态和步骤**
 
   - 在 `ReportingPhase`、状态迁移表和 checkpoint reducer 中加入 `NARRATIVE_PLANNING`；
   - 将 FindingGraph 文件身份、图谱哈希和最终 NarrativeOutline 哈希写入 durable state；
   - 恢复时校验 FindingGraph 与 Profile coverage、revision 和事实快照一致；
   - 章节规划失败只记录结构化 issue，不删除已生成 facts 或下载产物。
 
-- [ ] **Step 5: 修改 Workflow 顺序**
+- [x] **Step 5: 修改 Workflow 顺序**
 
   将生产 Workflow 调整为：
 
@@ -267,13 +267,13 @@
 
   旧的 `ReportOutline` 在过渡期只作为兼容输入，不得再用于生成用户可见目录。
 
-- [ ] **Step 6: 运行定向测试确认通过**
+- [x] **Step 6: 运行定向测试确认通过**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_chapter_workflow.py smart_reporting/reporting/tests/test_reporting_cli.py -q`
 
   Expected: PASS。
 
-- [ ] **Step 7: 提交工作流拆分**
+- [x] **Step 7: 提交工作流拆分**
 
   ```bash
   git add smart_reporting/reporting/workflow/orchestration.py \
@@ -303,7 +303,7 @@
 - `cluster_findings(graph, content_budget) -> tuple[tuple[str, ...], ...]`：确定性分组，保证不可兼容发现不合并。
 - `plan_narrative_sections(candidate, graph, analyses) -> NarrativeOutline`：模型提出候选，服务端冻结和校验。
 
-- [ ] **Step 1: 写动态分组失败测试**
+- [x] **Step 1: 写动态分组失败测试**
 
   ```python
   def test_income_and_workload_findings_can_share_management_question():
@@ -338,13 +338,13 @@
       assert rank_finding(direct) > rank_finding(statistical)
   ```
 
-- [ ] **Step 2: 运行定向测试确认失败**
+- [x] **Step 2: 运行定向测试确认失败**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_narrative_planner.py -q`
 
   Expected: FAIL because relation scoring and clustering do not exist。
 
-- [ ] **Step 3: 实现确定性候选分组**
+- [x] **Step 3: 实现确定性候选分组**
 
   - 先选择高优先级且可行动的发现作为章节锚点；
   - 按共享管理问题、指标、期间、粒度、已登记关系和行动责任计算关系分数；
@@ -353,7 +353,7 @@
   - 低影响发现合并进相关章节或附录，不按领域强制创建章节；
   - 记录每次合并、拆分、附录和忽略的理由。
 
-- [ ] **Step 4: 改造 Outline Planner 输入和输出**
+- [x] **Step 4: 改造 Outline Planner 输入和输出**
 
   `generate_narrative_outline()` 的模型输入必须包含：
 
@@ -365,17 +365,17 @@
 
   模型只返回动态标题、发现分组、章节目标和管理动作，不返回数值、事实、citation、section code 或领域空章。
 
-- [ ] **Step 5: 增加服务端纠错和冻结**
+- [x] **Step 5: 增加服务端纠错和冻结**
 
   复用现有 planner correction 机制，但将错误路径扩展到 `findingIds`、`sections` 和 `appendixFindingIds`。连续纠错失败后，采用最后一次结构有效候选的确定性分组，并把具体 issue 写入软告警。
 
-- [ ] **Step 6: 运行定向测试确认通过**
+- [x] **Step 6: 运行定向测试确认通过**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_narrative_planner.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py -q`
 
   Expected: PASS。
 
-- [ ] **Step 7: 提交动态章节规划**
+- [x] **Step 7: 提交动态章节规划**
 
   ```bash
   git add smart_reporting/reporting/hospital_operation/narrative_planner.py \
@@ -403,7 +403,7 @@
 - `_build_section_work_item()` 改为先读取 finding IDs，再投影对应分析项和事实文件。
 - `_section_claim_authoring_contract()` 将允许的 finding 引用和管理问题绑定到当前章节。
 
-- [ ] **Step 1: 写章节输入失败测试**
+- [x] **Step 1: 写章节输入失败测试**
 
   ```python
   def test_section_work_item_contains_only_assigned_findings():
@@ -427,13 +427,13 @@
       assert draft.appendix_finding_ids == ("finding_002",)
   ```
 
-- [ ] **Step 2: 运行定向测试确认失败**
+- [x] **Step 2: 运行定向测试确认失败**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_section_rendering.py smart_reporting/reporting/tests/test_trace_server_tables.py -q`
 
   Expected: FAIL because SectionWorkItem has no finding projection。
 
-- [ ] **Step 3: 扩展 SectionWorkItem 并实现发现投影**
+- [x] **Step 3: 扩展 SectionWorkItem 并实现发现投影**
 
   - 按 NarrativeOutline 的 finding 顺序构造章节输入；
   - 只加载章节分配的 facts、evidence、charts 和 citations；
@@ -441,20 +441,20 @@
   - finding 缺失时生成软告警并保留章节其他有效内容；
   - 章节正文提示明确要求“结论 → 证据 → 影响 → 动作”，不得新增事实或因果。
 
-- [ ] **Step 4: 修改报告目录、图表和编辑器映射**
+- [x] **Step 4: 修改报告目录、图表和编辑器映射**
 
   - 封面和目录使用 NarrativeOutline 的最终标题和编号；
   - 图表按 finding 的指标、期间和章节预算选择；
   - 编辑器章节详情同时显示章节发现和原子分析追溯；
   - 旧 revision 没有 finding graph 时继续使用旧 `analysisIds` 兼容路径。
 
-- [ ] **Step 5: 运行定向测试确认通过**
+- [x] **Step 5: 运行定向测试确认通过**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_section_rendering.py smart_reporting/reporting/tests/test_trace_server_tables.py -q`
 
   Expected: PASS。
 
-- [ ] **Step 6: 提交章节成稿改造**
+- [x] **Step 6: 提交章节成稿改造**
 
   ```bash
   git add smart_reporting/reporting/workflow/checkpoint.py \
@@ -483,7 +483,7 @@
 - Produces `NarrativeQualityMetrics`，字段包括 `findingCoverageRate`、`highPriorityCoverageRate`、`duplicateFindingCount`、`unassignedFindingCount`、`sectionCount`、`emptySectionCount`、`evidenceCoverageRate` 和 `groupingConflictCount`。
 - `validate_narrative_quality(outline, graph, draft) -> tuple[dict[str, Any], ...]` 返回结构化软告警，不抛出发布门禁异常。
 
-- [ ] **Step 1: 写质量和非阻断失败测试**
+- [x] **Step 1: 写质量和非阻断失败测试**
 
   ```python
   def test_quality_reports_unassigned_high_priority_finding():
@@ -505,26 +505,26 @@
       assert result["wordDownloadUrl"]
   ```
 
-- [ ] **Step 2: 运行定向测试确认失败**
+- [x] **Step 2: 运行定向测试确认失败**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_narrative_quality.py smart_reporting/reporting/tests/test_publication_nonblocking.py -q`
 
   Expected: FAIL because narrative quality metrics and checks do not exist。
 
-- [ ] **Step 3: 实现质量计算和软告警**
+- [x] **Step 3: 实现质量计算和软告警**
 
   - 计算发现覆盖、证据覆盖、重复、遗漏、空章节和合并冲突；
   - 质量问题写入 `validation.issues` 或 `publicationGate.issues`；
   - 不得用 `raise` 阻断已经生成且身份可读取的 PDF/Word 下载；
   - 完成消息给出具体章节、发现 ID、原因和建议动作。
 
-- [ ] **Step 4: 保留旧状态和旧导出兼容**
+- [x] **Step 4: 保留旧状态和旧导出兼容**
 
   - 旧报告没有 FindingGraph 时回退到旧提纲和 analysisId 校验；
   - 新报告发布清单登记 FindingGraph 和 NarrativeOutline 文件身份；
   - 编辑器导出验收失败、追溯缺失和溯源故障继续按现有非阻断契约签发链接。
 
-- [ ] **Step 5: 运行定向回归测试确认通过**
+- [x] **Step 5: 运行定向回归测试确认通过**
 
   Run:
 
@@ -537,7 +537,7 @@
 
   Expected: PASS。
 
-- [ ] **Step 6: 提交质量与降级路径**
+- [x] **Step 6: 提交质量与降级路径**
 
   ```bash
   git add smart_reporting/reporting/workflow/runtime/validation.py \
@@ -561,7 +561,7 @@
 - 使用固定测试 fixture 描述收入、工作量、预算、全成本、费控和资金的事实卡片，不读取真实运行产物。
 - 端到端断言只检查章节结构、发现覆盖、证据等级、追溯身份和发布结果，不把具体运行时文件加入 Git。
 
-- [ ] **Step 1: 写六类业务场景测试**
+- [x] **Step 1: 写六类业务场景测试**
 
   覆盖：
 
@@ -572,13 +572,13 @@
   5. 只有相关性时显示统计关系，不显示确定原因；
   6. 数据质量限制影响结论时提升为风险或限制发现。
 
-- [ ] **Step 2: 运行场景测试**
+- [x] **Step 2: 运行场景测试**
 
   Run: `pytest smart_reporting/reporting/tests/test_dynamic_narrative_hospital_cases.py -q`
 
   Expected: PASS；章节数量由 fixture 中的发现关系决定，不能通过固定六域目录得到相同结果。
 
-- [ ] **Step 3: 做一次必要的报告级回归**
+- [x] **Step 3: 做一次必要的报告级回归**
 
   Run:
 
@@ -590,7 +590,7 @@
 
   Expected: PASS；PDF/Word 下载、编辑器导出、追溯和发布失败保留产物契约不变。
 
-- [ ] **Step 4: 提交验收 fixture 与文档**
+- [x] **Step 4: 提交验收 fixture 与文档**
 
   ```bash
   git add smart_reporting/reporting/tests/fixtures/dynamic_narrative_hospital_cases.json \

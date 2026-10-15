@@ -68,6 +68,11 @@ export interface TraceDatasetInfo {
 }
 
 export interface TraceSources {
+  narrativeSections?: {
+    sectionCode: string
+    findingIds: string[]
+    groupingReason: string | null
+  }[]
   citations?: { citationId: string; datasetId: string }[]
   facts?: {
     analysisId: string; factId: string; factKind: string; label: string; datasetIds: string[]

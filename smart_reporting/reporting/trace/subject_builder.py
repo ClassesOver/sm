@@ -8,7 +8,7 @@ claim 数值事实的规范化指纹，用于判定"正文仍在陈述生成时�
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
@@ -523,6 +523,11 @@ def claim_status(
         claim_id, fact_value, window_chars=window_chars, expected_unit=expected_unit,
         expected_periods=expected_periods, expected_scope=expected_scope, section_id=section_id,
     )
+
+
+def prepare_claim_status(markdown: str) -> Callable[..., dict[str, Any]]:
+    """供同一草稿的全部引用复用正文解析。"""
+    return ClaimStatusChecker(markdown).check
 
 
 class ClaimStatusChecker:

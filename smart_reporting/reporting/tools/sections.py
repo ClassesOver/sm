@@ -39,6 +39,25 @@ def accepted_review_warnings(items: Sequence[Any]) -> list[dict[str, Any]]:
     ]
 
 
+def section_content_budget_issues(
+    work_item: SectionWorkItem, blocks: Sequence[ReportDraftBlock]
+) -> list[dict[str, Any]]:
+    """实际正文超过冻结预算时告警，不能因此阻断章节或下载签发。"""
+    issues = []
+    counts = (
+        ("block", work_item.max_blocks, len(blocks)),
+        ("chart", work_item.max_charts, len({item for block in blocks for item in block.chart_ids})),
+    )
+    for kind, limit, actual in counts:
+        if limit is not None and actual > limit:
+            issues.append({
+                "code": f"report_section_{kind}_budget_exceeded",
+                "message": f"章节实际{'正文块' if kind == 'block' else '图表'}数量 {actual} 超过冻结预算 {limit}，已保留内容并记录质量告警。",
+                "details": {"sectionCode": work_item.section_code, "maxCount": limit, "actualCount": actual},
+            })
+    return issues
+
+
 class RuntimeSectionsMixin:
     @staticmethod
     def _normalize_section_claims(
@@ -90,6 +109,21 @@ class RuntimeSectionsMixin:
         normalized: list[SectionClaim] = []
 
         for submission in submissions:
+            finding_ids = tuple(item for item in submission.finding_ids if item in work_item.finding_ids)
+            unknown_findings = set(submission.finding_ids) - set(work_item.finding_ids)
+            if unknown_findings:
+                warnings.append({
+                    "code": "report_section_claim_finding_unknown",
+                    "message": "章节结论引用了其他章节或未知发现，已移除该发现绑定并保留正文。",
+                    "details": {"sectionCode": section_code, "claimId": submission.claim_id,
+                                "unknownFindingIds": sorted(unknown_findings)},
+                })
+            if work_item.finding_ids and not finding_ids:
+                warnings.append({
+                    "code": "report_section_claim_finding_missing",
+                    "message": "章节结论未绑定当前章节管理发现，已保留正文并记录覆盖告警。",
+                    "details": {"sectionCode": section_code, "claimId": submission.claim_id},
+                })
             metric = metrics_by_code.get(submission.metric_code)
             if metric is None:
                 warnings.append(
@@ -256,6 +290,7 @@ class RuntimeSectionsMixin:
             try:
                 normalized_claim = SectionClaim(
                     claimId=submission.claim_id,
+                    findingIds=finding_ids,
                     metricCode=submission.metric_code,
                     value=submission.value,
                     periodBasis=(
@@ -364,6 +399,19 @@ class RuntimeSectionsMixin:
                 )
             )
         return merged, warnings
+
+    async def _analysis_rework_contract(
+        self, *, scope: Any, contract: dict[str, Any]
+    ) -> dict[str, Any]:
+        if "analysisReworkConstraintsFile" not in contract:
+            return contract
+        constraints = await self._read_trusted_json(
+            thread_id=scope.thread_id,
+            identity=contract["analysisReworkConstraintsFile"],
+            identity_code="report_analysis_rework_constraints_changed",
+            structure_code="report_analysis_rework_invalid",
+        )
+        return {**contract, "analysisReworkConstraints": constraints}
 
     @staticmethod
     def _require_analysis_rework_constraints(
@@ -727,6 +775,7 @@ class RuntimeSectionsMixin:
                 tuple(normalized_blocks),
                 expected_section_title=work_item.title,
             )
+        warning_items.extend(section_content_budget_issues(work_item, normalized_blocks))
         # 未知引用可以局部丢弃，但整章必须仍保留至少一个冻结 citation 作为事实锚点。
         # 这里在 SectionArtifact 结构校验前判断，避免 claims 全部因未知 citation 被省略
         # 时落成泛化的 Pydantic 错误，向模型返回稳定且可重试的领域错误码。
@@ -1028,7 +1077,7 @@ class RuntimeSectionsMixin:
                     "返工请求只能引用当前 SectionWorkItem 的 analysisIds。",
                 )
             self._require_analysis_rework_constraints(
-                contract=contract,
+                contract=await self._analysis_rework_contract(scope=scope, contract=contract),
                 work_item=work_item,
                 analysis_ids=requested_analysis_ids,
             )

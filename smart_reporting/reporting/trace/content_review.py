@@ -144,6 +144,9 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
                           fact_ids: Iterable[str] | None = None,
                           bound_chart_ids: Iterable[str] = ()) -> ContentReviewResult:
     contents = tuple(contents)
+    from .number_selection import align_number_selections
+
+    _, selection_warnings = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     # 编辑器复核的是用户可能手输的正文：全角数字与百分点缩写同样要识别。
     markdown = normalize_number_notation(trace_body(markdown, mask_inline_code=False))
@@ -151,7 +154,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     # 数值锚点可能插在数字与单位之间；复核时只移除非分析协议标记。
     text = re.sub(r"\[\[(?:claim|citation|section|table|/table):[^\]]+\]\]", "", text)
     documents = _documents(contents)
-    warnings = money_text_warnings(text)
+    warnings = [*selection_warnings, *money_text_warnings(text)]
     warnings.extend(supplemental_attribution_warnings(text, documents, field_definitions or {}))
     for paragraph in re.split(r"\n\s*\n", text):
         if (re.search(r"相关系数|相关性|高度相关", paragraph)

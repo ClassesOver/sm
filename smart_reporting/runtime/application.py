@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from agno.agent import Agent
 from agno.os import AgentOS
-from agno.os.config import MCPServerConfig
+from agno.os.config import MCPConfig
 from agno.workflow import Workflow
 from fastapi import FastAPI
 from fastmcp.server.auth import AuthProvider
@@ -30,7 +30,7 @@ class ApplicationContext:
     report_workflow: Workflow
     database: AgentDatabase | None = None
     quality_warning_service: QualityWarningService | None = None
-    mcp_config: MCPServerConfig | None = None
+    mcp_config: MCPConfig | None = None
     mcp_auth: AuthProvider | None = None
     reporting_code_mode_runtime: ReportingCodeModeRuntime | None = None
     reporting_lsp_process_manager: ReportingLspProcessManager | None = None
@@ -93,7 +93,7 @@ def create_agentos_app(
         cors_allowed_origins=list(context.settings.cors_allowed_origins),
         lifespan=lifespan,
         telemetry=False,
-        mcp_server=context.mcp_config or False,
+        mcp=context.mcp_config or False,
         mcp_auth=context.mcp_auth,
     )
     application = agent_os.get_app()
