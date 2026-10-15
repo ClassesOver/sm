@@ -400,6 +400,19 @@ class RuntimeSectionsMixin:
             )
         return merged, warnings
 
+    async def _analysis_rework_contract(
+        self, *, scope: Any, contract: dict[str, Any]
+    ) -> dict[str, Any]:
+        if "analysisReworkConstraintsFile" not in contract:
+            return contract
+        constraints = await self._read_trusted_json(
+            thread_id=scope.thread_id,
+            identity=contract["analysisReworkConstraintsFile"],
+            identity_code="report_analysis_rework_constraints_changed",
+            structure_code="report_analysis_rework_invalid",
+        )
+        return {**contract, "analysisReworkConstraints": constraints}
+
     @staticmethod
     def _require_analysis_rework_constraints(
         *,
@@ -1064,7 +1077,7 @@ class RuntimeSectionsMixin:
                     "返工请求只能引用当前 SectionWorkItem 的 analysisIds。",
                 )
             self._require_analysis_rework_constraints(
-                contract=contract,
+                contract=await self._analysis_rework_contract(scope=scope, contract=contract),
                 work_item=work_item,
                 analysis_ids=requested_analysis_ids,
             )

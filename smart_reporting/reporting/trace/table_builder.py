@@ -272,6 +272,8 @@ def build_analysis_table(
     fact_file_resource_id: str,
     dataset_contexts: Sequence[Mapping[str, Any]] = (),
     metric_descriptions: Mapping[str, str] | None = None,
+    column_offset: int = 0,
+    column_limit: int | None = None,
 ) -> tuple[TableTraceV1, str] | None:
     """按 B0 冻结规则从一个分析 bundle 自动生成服务端指标期间表。
 
@@ -282,8 +284,9 @@ def build_analysis_table(
     """
 
     if bundle.comparisons:
-        table_id = f"table-{bundle.analysis_id}"
+        table_id = f"table-{bundle.analysis_id}" + (f"-part-{column_offset // column_limit + 1}" if column_limit else "")
         comparisons = [fact for fact in bundle.comparisons if fact.fact_id]
+        comparisons = comparisons[column_offset:column_offset + column_limit if column_limit else None]
         if not comparisons:
             return None
         types = {fact.comparison_type for fact in comparisons}
@@ -341,7 +344,7 @@ def build_analysis_table(
             facts_by_code[code] = facts[0]
         elif len(current) == 1:
             facts_by_code[code] = current[0]
-    codes = list(facts_by_code)
+    codes = list(facts_by_code)[column_offset:column_offset + column_limit if column_limit else None]
     if not codes:
         return None
     selected = [facts_by_code[code] for code in codes]
@@ -375,7 +378,7 @@ def build_analysis_table(
     if len(set(labels.values())) != len(labels):
         labels = {code: f"{labels[code]} · {code}" for code in codes}
     spec: dict[str, Any] = {
-        "tableId": f"table-{bundle.analysis_id}",
+        "tableId": f"table-{bundle.analysis_id}" + (f"-part-{column_offset // column_limit + 1}" if column_limit else ""),
         "metricCodes": codes,
         "columnLabels": labels,
         "factIds": {code: fact.fact_id for code, fact in facts_by_code.items() if fact.fact_id},
@@ -389,6 +392,30 @@ def build_analysis_table(
         ),
     }
     return build_table_trace(bundle, spec, fact_file_resource_id=fact_file_resource_id)
+
+
+def build_analysis_tables(
+    bundle: DeterministicAnalysisBundle,
+    *,
+    fact_file_resource_id: str,
+    dataset_contexts: Sequence[Mapping[str, Any]] = (),
+    metric_descriptions: Mapping[str, str] | None = None,
+) -> tuple[tuple[TableTraceV1, str], ...]:
+    """每张表最多五个数值列；始终在完整 bundle 中解析原始事实指针。"""
+    options = dict(fact_file_resource_id=fact_file_resource_id,
+                   dataset_contexts=dataset_contexts, metric_descriptions=metric_descriptions)
+    table = build_analysis_table(bundle, **options)
+    if table is None:
+        return ()
+    count = len(table[0].column_keys)
+    if count <= 5:
+        return (table,)
+    tables = []
+    for offset in range(0, count, 5):
+        part = build_analysis_table(bundle, **options, column_offset=offset, column_limit=5)
+        if part is not None:
+            tables.append(part)
+    return tuple(tables)
 
 
 def fill_table_trace_file_refs(

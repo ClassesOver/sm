@@ -3,7 +3,7 @@ from os import getenv
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
-from agno.os.config import MCPServerConfig
+from agno.os.config import MCPConfig
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from loguru import logger as loguru_logger
@@ -522,7 +522,7 @@ application_context = ApplicationContext(
     report_workflow,
     database=agent_database,
     quality_warning_service=quality_warning_service,
-    mcp_config=MCPServerConfig(
+    mcp_config=MCPConfig(
         tools=[
             report_workflow.as_tool(
                 name="run_reporting_workflow",
@@ -530,6 +530,7 @@ application_context = ApplicationContext(
             )
         ],
         default_tools=False,
+        lifecycle_tools=True,
         allowed_hosts=list(settings.reporting_mcp_allowed_hosts),
     ),
     mcp_auth=CapabilityTokenVerifier(settings.workspace_hmac_secret),

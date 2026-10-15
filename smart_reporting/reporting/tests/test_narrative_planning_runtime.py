@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from agno.exceptions import ModelProviderError
 
 from smart_reporting.reporting.hospital_operation.narrative_outline import NarrativeOutlineCandidate
 from smart_reporting.reporting.tests.narrative_helpers import finding, graph
@@ -56,6 +57,60 @@ async def test_runtime_preserves_findings_and_warns_after_invalid_candidates(any
     assert result.sections[0].finding_ids == (source.findings[0].finding_id,)
     assert issues[0]["code"] == "report_narrative_planning_degraded"
     assert "未知" in issues[0]["message"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_fallback_reserves_appendix_capacity_without_losing_findings(anyio_backend):
+    from smart_reporting.reporting.hospital_operation.narrative_planner import (
+        build_compatible_report_outline,
+    )
+
+    cards = [finding(i, metricCodes=(f"metric_{i}",),
+                     priority="high" if i <= 14 else "medium")
+             for i in range(1, 583)]
+    source = graph(*cards)
+
+    async def planner(agent, payload, context, **kwargs):
+        return candidate(source.snapshot_hash, ["finding_ffffffffffffffff"])
+
+    runtime = SimpleNamespace(_narrative_outline_agent=object(), _run_planner=planner)
+    result, issues = await RuntimeAnalysisMixin._plan_narrative_outline(
+        runtime, graph=source, title="医院运营分析", report_goal="识别经营风险",
+        analyses=[{"analysisId": f"analysis_{i:03d}"} for i in range(1, 583)],
+        run_context=None,
+    )
+    assigned = [item for section in result.sections for item in section.finding_ids]
+    assert len(assigned) == len(set(assigned)) == len(cards)
+    assert set(assigned) == {card.finding_id for card in cards}
+    assert all(card.finding_id not in result.appendix_finding_ids
+               for card in cards if card.priority == "high")
+    assert len(result.sections) <= 30
+    assert all(len(section.finding_ids) <= 200 for section in result.sections)
+    compatible = build_compatible_report_outline(
+        source, report_type="comprehensive", title=result.title, narrative_outline=result,
+    )
+    assert len(compatible.sections) == len(result.sections)
+    assert issues[0]["code"] == "report_narrative_planning_degraded"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_provider_failure_degrades_to_deterministic_outline(anyio_backend):
+    source = graph(finding())
+
+    async def planner(agent, payload, context, **kwargs):
+        raise ModelProviderError("Invalid request parameters", status_code=400)
+
+    runtime = SimpleNamespace(_narrative_outline_agent=object(), _run_planner=planner)
+    result, issues = await RuntimeAnalysisMixin._plan_narrative_outline(
+        runtime, graph=source, title="医院运营分析", report_goal="识别经营风险",
+        analyses=[{"analysisId": "analysis_001"}], run_context=None,
+    )
+
+    assert result.sections[0].finding_ids == (source.findings[0].finding_id,)
+    assert issues[0]["code"] == "report_narrative_planning_degraded"
+    assert "Invalid request parameters" in issues[0]["message"]
 
 
 @pytest.mark.anyio

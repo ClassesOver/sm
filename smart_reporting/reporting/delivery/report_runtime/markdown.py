@@ -579,8 +579,7 @@ def _document_context(value: Any) -> dict[str, Any]:
             {"code": code, "sectionNumber": section_number, "title": title.strip()}
         )
     codes = [item["code"] for item in normalized_sections]
-    titles = [item["title"] for item in normalized_sections]
-    if len(codes) != len(set(codes)) or len(titles) != len(set(titles)):
+    if len(codes) != len(set(codes)):
         raise ReportFailure("服务端正式章节契约包含重复项")
     section_numbers = value.get("sectionNumbers")
     expected_section_numbers = [str(index) for index in range(1, len(sections) + 1)]
@@ -801,11 +800,11 @@ def _semantic_documents(
         "}h4{font-size:11pt;color:"
         f"{theme['ink']}"
         "}h2,h3,h4{page-break-after:avoid;break-after:avoid;orphans:3;widows:3}"
-        "p,li{orphans:3;widows:3}table{width:100%;border-collapse:collapse;margin:10px 0}"
+        "p,li{orphans:3;widows:3}table{width:100%;table-layout:fixed;border-collapse:collapse;margin:10px 0}"
         "thead{display:table-header-group}tr{break-inside:avoid}"
         "th,td{border:0.6pt solid "
         f"{theme['grid']}"
-        ";padding:5px 7px;text-align:left}"
+        ";padding:5px 7px;text-align:left;overflow-wrap:anywhere;word-break:break-all}"
         "td{font-variant-numeric:tabular-nums}"
         "th{background:"
         f"{theme['surface']}"

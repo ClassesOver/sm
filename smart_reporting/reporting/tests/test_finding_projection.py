@@ -26,6 +26,22 @@ def test_projection_creates_trend_finding_from_period_values():
     assert any(item.kind == "trend" for item in result)
 
 
+@pytest.mark.parametrize('values', [(0, 0), (10, 10)])
+def test_constant_metric_is_low_priority_and_uses_display_name(values):
+    result = project_analysis_findings('analysis_001', facts(metrics=[{
+        'datasetId': 'dataset-abc123', 'datasetSha256': 'a' * 64,
+        'periodRoles': ['current'],
+        'field': 'income', 'fieldRef': 'income', 'displayName': '医疗收入',
+        'aggregation': 'sum', 'formula': 'sum(income)', 'total': sum(values),
+        'missingCount': 0, 'zeroCount': 2 if values[0] == 0 else 0, 'negativeCount': 0,
+        'periodValues': [{'period': '2025-01', 'value': values[0]},
+                         {'period': '2025-02', 'value': values[1]}],
+    }]), None, snapshot_hash='b' * 64, citation_ids=('citation_001',))
+    assert result[0].kind == 'data_quality'
+    assert result[0].priority == 'low'
+    assert result[0].title == '医疗收入期间值一致'
+
+
 def test_reconciliation_name_does_not_establish_direct_attribution():
     result = project_analysis_findings("analysis_001", facts(reconciliations=[{
         "code": "contribution", "periodRole": "current", "leftMetric": "income",

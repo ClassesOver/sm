@@ -47,6 +47,21 @@ def project_analysis_findings(
     definitions = {str(item.get("code")): item for item in metric_definitions if item.get("code")}
     findings: list[FindingCard] = []
 
+    def metric_label(fact: Mapping[str, Any]) -> str:
+        if fact.get('displayName'):
+            return str(fact['displayName'])
+        labels = {str(definitions[code]['description']) for code in fact.get('metricCodes', ())
+                  if definitions.get(code, {}).get('description')}
+        if not labels and fact.get('fieldRef'):
+            labels = {
+                str(item['displayName']) for item in payload.get('metrics', ())
+                if isinstance(item, Mapping) and item.get('displayName')
+                and item.get('fieldRef') == fact['fieldRef']
+                and (not fact.get('currentDatasetId')
+                     or item.get('datasetId') == fact['currentDatasetId'])
+            }
+        return next(iter(labels)) if len(labels) == 1 else str(fact.get('field') or '指标')
+
     def add(kind: str, path: str, title: str, summary: str, *, priority: str = "medium", evidence: str = "verified_fact", impact: float | None = None, unit: str | None = None, metrics: tuple[str, ...] = (), periods: tuple[str, ...] = ("current",), grain: tuple[str, ...] = (), limitations: tuple[str, ...] = ()) -> None:
         locator = path.strip("/").split("/")
         source_fact = {}
@@ -72,7 +87,7 @@ def project_analysis_findings(
         if not isinstance(comparison, Mapping):
             continue
         change = comparison.get("change")
-        metric = str(comparison.get("field") or "指标")
+        metric = metric_label(comparison)
         unit = comparison.get("unit") if isinstance(comparison.get("unit"), str) else None
         add("comparison", f"/comparisons/{index}", f"{metric}比较变化", f"{metric}比较变化为 {change}。", priority="high" if isinstance(change, (int, float)) and abs(change) > 0 else "medium", impact=change if isinstance(change, (int, float)) else None, unit=unit, metrics=(metric,), periods=("current", "yoy" if comparison.get("comparisonType") == "yoy" else "mom"))
 
@@ -81,7 +96,13 @@ def project_analysis_findings(
             continue
         periods = metric.get("periodValues")
         if isinstance(periods, Sequence) and not isinstance(periods, (str, bytes)) and len(periods) >= 2:
-            add("trend", f"/metrics/{index}/periodValues", f"{metric.get('field', '指标')}趋势", f"已登记 {len(periods)} 个期间值，可用于趋势分析。", metrics=(str(metric.get("field") or "指标"),), unit=metric.get("unit") if isinstance(metric.get("unit"), str) else None)
+            constant = len({item.get('value') for item in periods if isinstance(item, Mapping)}) == 1
+            label = metric_label(metric)
+            add("data_quality" if constant else "trend", f"/metrics/{index}/periodValues",
+                f"{label}期间值一致" if constant else f"{label}趋势",
+                f"已登记 {len(periods)} 个期间值，期间值一致。" if constant else f"已登记 {len(periods)} 个期间值，可用于趋势分析。",
+                priority="low" if constant else "medium", metrics=(str(metric.get("field") or "指标"),),
+                unit=metric.get("unit") if isinstance(metric.get("unit"), str) else None)
 
     for index, relation in enumerate(payload.get("reconciliations") or ()):
         if not isinstance(relation, Mapping):

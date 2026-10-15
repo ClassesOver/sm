@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from .findings import FindingCard, FindingGraph
 from .narrative_outline import NarrativeOutline, NarrativeOutlineCandidate, freeze_narrative_outline
@@ -35,8 +38,11 @@ def score_finding_relation(left: FindingCard, right: FindingCard) -> float:
     score = 0.0
     shared_metric = bool(set(left.metric_codes) & set(right.metric_codes))
     related = right.finding_id in left.related_finding_ids or left.finding_id in right.related_finding_ids
-    if not shared_metric and not related:
+    shared_analysis = bool(set(left.analysis_ids) & set(right.analysis_ids))
+    if not shared_metric and not related and not shared_analysis:
         return 0.0
+    if shared_analysis:
+        score += 0.2
     if shared_metric:
         score += 0.25
     if set(left.period_roles) & set(right.period_roles):
@@ -76,7 +82,7 @@ def build_narrative_planning_context(
     graph: FindingGraph,
     report_goal: str,
     content_budget: NarrativeContentBudget | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     budget = content_budget or NarrativeContentBudget()
     cards = sorted(graph.findings, key=rank_finding, reverse=True)
     groups = cluster_findings(graph, budget)
@@ -88,8 +94,46 @@ def build_narrative_planning_context(
         "contentBudget": {"maxFindingsPerSection": budget.max_findings_per_section, "maxSections": budget.max_sections},
         "candidateGroups": [list(group) for group in body_groups],
         "overflowFindingIds": overflow,
-        "findings": [card.model_dump(mode="json", by_alias=True) for card in cards],
+        # 文件溯源身份留在服务端图谱；提纲只消费管理语义和分组边界。
+        "findings": [card.model_dump(mode="json", by_alias=True, exclude={
+            "source_refs", "citation_ids",
+        }) for card in cards],
     }
+
+
+def build_narrative_planning_batches(
+    graph: FindingGraph, report_goal: str, *, max_bytes: int,
+) -> tuple[dict[str, Any], ...]:
+    """按调用预算分批，不截断发现内容；最终仍对完整图谱冻结归属。"""
+
+    context = build_narrative_planning_context(graph, report_goal)
+
+    def project(cards: list[dict[str, Any]]) -> dict[str, Any]:
+        ids = {card["findingId"] for card in cards}
+        return {
+            **context,
+            "findings": cards,
+            "candidateGroups": [selected for group in context["candidateGroups"]
+                                if (selected := [item for item in group if item in ids])],
+            "overflowFindingIds": [item for item in context["overflowFindingIds"] if item in ids],
+        }
+
+    batches = []
+    current = []
+    for card in context["findings"]:
+        proposed = project([*current, card])
+        if len(json.dumps(proposed, ensure_ascii=False, separators=(",", ":")).encode()) > max_bytes:
+            if not current:
+                raise ValueError("单个发现与报告目标已超过提纲规划输入预算")
+            batches.append(project(current))
+            current = []
+            proposed = project([card])
+            if len(json.dumps(proposed, ensure_ascii=False, separators=(",", ":")).encode()) > max_bytes:
+                raise ValueError("单个发现与报告目标已超过提纲规划输入预算")
+        current.append(card)
+    if current:
+        batches.append(project(current))
+    return tuple(batches)
 
 
 def freeze_planned_sections(
@@ -98,6 +142,50 @@ def freeze_planned_sections(
     analyses: list[dict[str, str]] | tuple[dict[str, str], ...],
 ) -> NarrativeOutline:
     return freeze_narrative_outline(candidate, graph=graph, analyses=analyses)
+
+
+def build_fallback_narrative_candidate(
+    graph: FindingGraph, title: str,
+    *, analyses: Sequence[Mapping[str, str]] = (),
+) -> NarrativeOutlineCandidate:
+    """为附录预留容量，不截断发现或将高优先级发现移出正文。"""
+
+    cards = {item.finding_id: item for item in graph.findings}
+    names = {item["analysisId"]: item["analysisName"] for item in analyses
+             if item.get("analysisId") and item.get("analysisName")}
+
+    def display_title(card: FindingCard) -> str:
+        if any("\u4e00" <= char <= "\u9fff" for char in card.title):
+            return card.title
+        return "；".join(dict.fromkeys(names[aid] for aid in card.analysis_ids if aid in names)) or card.title
+    # 统计关系和常量等限制保留在附录，不占用经营主题的正文容量。
+    body = tuple(card for card in graph.findings
+                 if card.priority == 'high' or (card.priority != 'low'
+                     and card.evidence_level != 'statistical_relation'))
+    if not body:
+        body = (max(graph.findings, key=rank_finding),)
+    body_ids = {card.finding_id for card in body}
+    appendix_ids = tuple(card.finding_id for card in graph.findings if card.finding_id not in body_ids)
+    groups = cluster_findings(graph.model_copy(update={'findings': body}),
+                              NarrativeContentBudget(max_findings_per_section=200))
+    for body_count in range(min(len(groups), NarrativeContentBudget().max_sections), 0, -1):
+        appendix = (*appendix_ids, *(item for group in groups[body_count:] for item in group))
+        if body_count + (len(appendix) + 199) // 200 > NarrativeContentBudget().max_sections:
+            continue
+        if any(cards[item].priority == "high" for item in appendix):
+            continue
+        return NarrativeOutlineCandidate(
+            title=title, snapshotHash=graph.snapshot_hash,
+            sections=tuple({
+                "title": "；".join(dict.fromkeys(display_title(cards[item]) for item in group))[:200],
+                "findingIds": group,
+                "objective": "解释已核验发现并提出管理动作",
+                "groupingReason": "依据共享指标、期间、粒度和已登记关系确定性分组",
+                "priority": max((cards[item] for item in group), key=rank_finding).priority,
+            } for group in groups[:body_count]),
+            appendixFindingIds=appendix,
+        )
+    raise ValueError("高优先级发现分组超出章节容量，无法在保留全部发现的同时冻结提纲")
 
 
 def build_compatible_report_outline(
@@ -167,7 +255,8 @@ def build_compatible_report_outline(
 
 
 __all__ = [
-    "NarrativeContentBudget", "build_narrative_planning_context", "cluster_findings",
+    "NarrativeContentBudget", "build_narrative_planning_context", "build_narrative_planning_batches", "cluster_findings",
     "freeze_planned_sections", "rank_finding", "score_finding_relation",
     "build_compatible_report_outline",
+    "build_fallback_narrative_candidate",
 ]

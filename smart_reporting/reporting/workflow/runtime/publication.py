@@ -89,6 +89,24 @@ def _editor_interactive_charts(manifest: ReportArtifactManifest) -> dict[str, di
     }
 
 
+def _matches_narrative_analysis_bindings(graph, narrative, outline, snapshot_hash: str) -> bool:
+    """仅已核验快照和逐章节发现映射可解释跨章节复用同一分析。"""
+    if graph.snapshot_hash != snapshot_hash or narrative.snapshot_hash != snapshot_hash:
+        return False
+    expected = {section.code: tuple(section.analysis_ids) for section in outline.sections}
+    if expected != {section.code: tuple(section.analysis_ids) for section in narrative.sections}:
+        return False
+    cards = {card.finding_id: card for card in graph.findings}
+    for section in narrative.sections:
+        if not section.finding_ids or any(finding_id not in cards for finding_id in section.finding_ids):
+            return False
+        analysis_ids = {analysis_id for finding_id in section.finding_ids
+                        for analysis_id in cards[finding_id].analysis_ids}
+        if analysis_ids != set(section.analysis_ids):
+            return False
+    return True
+
+
 def narrative_quality_warnings(
     graph: FindingGraph,
     outline: NarrativeOutline,
@@ -745,6 +763,10 @@ class RuntimePublicationMixin:
                 narrative = await self._read_identity_model(
                     thread_id, checkpoint.narrative_outline_file, NarrativeOutline
                 )
+                if outline is not None and _matches_narrative_analysis_bindings(
+                    graph, narrative, outline, dataset_snapshot_hash(lineage)
+                ):
+                    issues[:] = [item for item in issues if item.get("code") != "outline_analysis_duplicate"]
                 warnings.extend(
                     narrative_quality_warnings(
                         graph,

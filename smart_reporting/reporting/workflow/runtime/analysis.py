@@ -6,6 +6,7 @@ from collections.abc import Callable
 from copy import copy
 from typing import Literal
 
+from agno.exceptions import ModelProviderError
 from agno.models.message import Message
 from agno.session.agent import AgentSession
 
@@ -24,8 +25,8 @@ from ...hospital_operation.narrative_outline import (
 )
 from ...hospital_operation.narrative_planner import (
     build_compatible_report_outline,
-    build_narrative_planning_context,
-    cluster_findings,
+    build_fallback_narrative_candidate,
+    build_narrative_planning_batches,
 )
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
@@ -2269,6 +2270,8 @@ class RuntimeAnalysisMixin:
                 section_codes=(section_code,),
             )
             finding_cards = {card.finding_id: card for card in graph.findings} if graph else {}
+            if narrative_section is not None and narrative_section.narrative_role == "appendix":
+                analysis_rework_allowed = False
             work_item = self._build_section_work_item(
                 section,
                 detailed_plan=detailed_plan,
@@ -2296,7 +2299,7 @@ class RuntimeAnalysisMixin:
                     detailed_plan=detailed_plan,
                     profile_coverage=profile_coverage,
                     analysis_ids=work_item.analysis_ids,
-                ),
+                ) if analysis_rework_allowed else {},
                 analysis_rework_allowed=analysis_rework_allowed,
                 degraded_rework=degraded_rework,
             )
@@ -2409,45 +2412,122 @@ class RuntimeAnalysisMixin:
     ) -> tuple[NarrativeOutline, tuple[dict[str, Any], ...]]:
         """模型提出章节候选；服务端冻结，纠错失败后保留确定性发现归属。"""
 
-        context = build_narrative_planning_context(graph, report_goal)
-        payload: dict[str, Any] = {"title": title, "planningContext": context}
         reason = ""
-        call_budget = StructuredOutputCallBudget()
-        for attempt in range(3):
-            if call_budget.exhausted:
-                break
-            try:
-                candidate = await self._run_planner(
-                    self._narrative_outline_agent, payload, run_context,
-                    call_budget=call_budget,
-                    attempt=min(attempt, 1),
-                    failure_kind="schema_failure" if attempt else None,
+        try:
+            # UTF-8 字节数作为 token 数的保守上界，另外预留外层标题与纠错信息。
+            budget = _analysis_summary_input_token_budget(self._narrative_outline_agent, run_context)
+            batches = build_narrative_planning_batches(
+                graph, report_goal, max_bytes=max(1, budget - 4096 - len(title.encode("utf-8"))),
+            )
+            planned = []
+            for index, context in enumerate(batches):
+                ids = {item["findingId"] for item in context["findings"]}
+                batch_graph = graph.model_copy(update={
+                    "findings": tuple(card for card in graph.findings if card.finding_id in ids),
+                })
+                if len(batches) > 1 and all(
+                    card.priority != "high" and (card.priority == "low" or card.evidence_level == "statistical_relation")
+                    for card in batch_graph.findings
+                ):
+                    # 纯统计限制批次不强制规划经营章节，统一交给全局规划安排附录。
+                    ordered_ids = tuple(card.finding_id for card in batch_graph.findings)
+                    planned.append(NarrativeOutlineCandidate(
+                        title=title, snapshotHash=graph.snapshot_hash,
+                        sections=({"title": "补充统计与数据限制", "findingIds": ordered_ids[:200],
+                                   "objective": "保留统计关系与数据质量限制", "groupingReason": "补充证据统一安排附录",
+                                   "narrativeRole": "appendix", "priority": "low", "maxCharts": 0},),
+                        appendixFindingIds=ordered_ids[200:],
+                    ))
+                    continue
+                payload = {"title": title, "planningContext": context}
+                call_budget = StructuredOutputCallBudget()
+                accepted = None
+                for attempt in range(3):
+                    if call_budget.exhausted:
+                        break
+                    try:
+                        candidate = await self._run_planner(
+                            self._narrative_outline_agent, payload, run_context,
+                            call_budget=call_budget,
+                            attempt=min(attempt, 1),
+                            failure_kind="schema_failure" if attempt else None,
+                        )
+                        candidate = NarrativeOutlineCandidate.model_validate(candidate)
+                        freeze_narrative_outline(candidate, graph=batch_graph, analyses=analyses)
+                        accepted = candidate
+                        break
+                    except (ValueError, ReportingError, ModelProviderError) as error:
+                        reason = str(error)[:2000]
+                        if isinstance(error, ReportingError) and error.code == "report_planner_context_budget_exceeded":
+                            break
+                        payload = {
+                            "title": title, "planningContext": context,
+                            "correction": {
+                                "attempt": attempt + 1,
+                                "reason": reason,
+                                "allowedPaths": ["sections", "appendixFindingIds", "omittedFindings", "snapshotHash"],
+                                "instruction": "修正当前批次引用、覆盖、范围和快照问题，返回完整 NarrativeOutlineCandidate。",
+                            },
+                        }
+                if accepted is None:
+                    raise ValueError(reason or "当前批次提纲规划未通过")
+                planned.append(accepted)
+                loguru_logger.info(
+                    "report_narrative_batch_completed batch={} total={} findings={}",
+                    index + 1, len(batches), len(ids),
                 )
-                candidate = NarrativeOutlineCandidate.model_validate(candidate)
-                return freeze_narrative_outline(
-                    candidate, graph=graph, analyses=analyses
-                ), ()
-            except (ValueError, ReportingError) as error:
-                reason = str(error)[:2000]
-                payload = {
-                    "title": title, "planningContext": context,
-                    "correction": {
-                        "attempt": attempt + 1,
-                        "reason": reason,
-                        "allowedPaths": ["sections", "appendixFindingIds", "omittedFindings", "snapshotHash"],
-                        "instruction": "修正引用、覆盖、范围和快照问题，返回完整 NarrativeOutlineCandidate。",
-                    },
-                }
-        cards = {item.finding_id: item for item in graph.findings}
-        fallback = NarrativeOutlineCandidate(
-            title=title, snapshotHash=graph.snapshot_hash,
-            sections=tuple({
-                "title": "；".join(cards[item].title for item in group)[:200],
-                "findingIds": group,
-                "objective": "解释已核验发现并提出管理动作",
-                "groupingReason": "依据共享指标、期间、粒度和已登记关系确定性分组",
-            } for group in cluster_findings(graph)),
-        )
+            if len(planned) == 1:
+                return freeze_narrative_outline(planned[0], graph=graph, analyses=analyses), ()
+            # 批次只是主题候选，不能直接拼接成最终章节。共同范围按候选描述，
+            # 完整 findingId 目录留给全局规划重新分配，冻结仍逐一核对原始图谱。
+            cards = {card.finding_id: card for card in graph.findings}
+            topics = []
+            for candidate in planned:
+                for section in candidate.sections:
+                    first = cards[section.finding_ids[0]]
+                    topics.append({**section.model_dump(mode="json", by_alias=True),
+                                   "periodStart": first.period_start, "periodEnd": first.period_end,
+                                   "grain": first.grain, "scope": first.scope})
+            global_context = {
+                "reportGoal": report_goal, "snapshotHash": graph.snapshot_hash,
+                "findings": [{"findingId": card.finding_id} for card in graph.findings],
+                "proposedSections": topics,
+                "appendixFindingIds": [item for candidate in planned for item in candidate.appendix_finding_ids],
+                "omittedFindings": [item for candidate in planned for item in candidate.omitted_findings],
+                "highPriorityFindingIds": [card.finding_id for card in graph.findings if card.priority == "high"],
+                "contentBudget": {"maxSections": 30, "maxFindingsPerSection": 200},
+                "requiredAction": (
+                    "统筹各批次主题，合并跨批次重复主题，按管理问题重新分配所有发现。"
+                    "保持候选主题的期间、范围和粒度边界；高优先级发现必须进入正文。"
+                    "纯统计限制放入附录，不为每个批次增加正文。附录每200条也占一个章节，总章节不超过30。"
+                    "每个 findingId 必须且只能归属一次；返回完整 NarrativeOutlineCandidate。"
+                ),
+            }
+            payload = {"title": title, "planningStage": "consolidate", "planningContext": global_context}
+            if len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()) > budget:
+                raise ValueError("全局主题候选超出提纲规划预算")
+            call_budget = StructuredOutputCallBudget()
+            for attempt in range(3):
+                if call_budget.exhausted:
+                    break
+                try:
+                    candidate = await self._run_planner(
+                        self._narrative_outline_agent, payload, run_context,
+                        call_budget=call_budget, attempt=min(attempt, 1),
+                        failure_kind="schema_failure" if attempt else None,
+                    )
+                    combined = NarrativeOutlineCandidate.model_validate(candidate)
+                    return freeze_narrative_outline(combined, graph=graph, analyses=analyses), ()
+                except (ValueError, ReportingError, ModelProviderError) as error:
+                    reason = str(error)[:2000]
+                    if isinstance(error, ReportingError) and error.code == "report_planner_context_budget_exceeded":
+                        break
+                    payload = {**payload, "correction": {"reason": reason,
+                               "instruction": "修正全局章节归属与容量问题，返回完整提纲。"}}
+            raise ValueError(reason or "全局章节统筹未通过")
+        except (ValueError, ReportingError, ModelProviderError) as error:
+            reason = str(error)[:2000]
+        fallback = build_fallback_narrative_candidate(graph, title, analyses=analyses)
         return freeze_narrative_outline(fallback, graph=graph, analyses=analyses), ({
             "code": "report_narrative_planning_degraded",
             "message": f"章节规划纠错未通过，已使用确定性发现分组：{reason}",
@@ -2510,7 +2590,8 @@ class RuntimeAnalysisMixin:
         detailed_plan = DetailedAnalysisPlan.model_validate(
             state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]
         )
-        analyses = [{"analysisId": item.analysis_id} for item in detailed_plan.analyses]
+        analyses = [{"analysisId": item.analysis_id, "analysisName": item.analysis_name}
+                    for item in detailed_plan.analyses]
         narrative, planning_issues = await self._plan_narrative_outline(
             graph=graph, title=legacy_outline.title,
             report_goal=self._envelope(run_context).report_goal,
@@ -2842,12 +2923,17 @@ class RuntimeAnalysisMixin:
         completed_by_code = {item.section_code: item for item in current.completed_sections}
         for item in incoming.completed_sections:
             existing = completed_by_code.get(item.section_code)
-            if existing is not None and existing != item:
+            if existing is not None and (
+                existing.work_item_hash != item.work_item_hash
+                or existing.artifact_file != item.artifact_file
+            ):
                 raise ReportingError(
                     "report_section_completion_conflict",
                     f"章节 {item.section_code} 已绑定其他完成产物。",
                 )
-            completed_by_code[item.section_code] = item
+            completed_by_code[item.section_code] = item.model_copy(update={
+                "retry_count": max(existing.retry_count if existing is not None else 0, item.retry_count),
+            })
         completed_codes = set(completed_by_code)
         pending = tuple(
             code
@@ -3303,6 +3389,8 @@ class RuntimeAnalysisMixin:
                 "datasets": planner_payload.get("datasets"),
                 "analysisBlock": {"blockId": f"{analysis_id}:evidence:decision"},
             }
+            if "correction" in planner_payload:
+                decision_request["correction"] = planner_payload["correction"]
             return cast(
                 EvidenceDecision,
                 await run_structured_agent(

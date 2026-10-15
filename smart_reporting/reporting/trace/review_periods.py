@@ -111,6 +111,7 @@ def _period_claim_facts(
                     key=lambda label: (-len(label), label))
     pattern = re.compile("|".join(re.escape(label) for label in labels)) if labels else None
     boundaries = [0, *(match.end() for match in _CLAUSE_BREAK.finditer(text)), len(text)]
+    serialized_entries: dict[int, str] = {}
     for start, end in zip(boundaries, boundaries[1:]):
         clause = text[start:end]
         if not re.search(r"全年|月均|月平均|平均每月|每月平均", clause):
@@ -132,7 +133,9 @@ def _period_claim_facts(
                                 if isinstance(item, dict)}
                 if years and not years.issubset(period_years):
                     continue
-                candidates[json.dumps(entry, sort_keys=True, ensure_ascii=False)] = entry
+                if id(entry) not in serialized_entries:
+                    serialized_entries[id(entry)] = json.dumps(entry, sort_keys=True, ensure_ascii=False)
+                candidates[serialized_entries[id(entry)]] = entry
         if not years and not re.search(r"去年|上年|同期|上期|上月", clause):
             current = {key: entry for key, entry in candidates.items() if "current" in (entry.get("periodRoles") or ())}
             if current:
@@ -492,7 +495,10 @@ def _registered_value_years(contents: Iterable[str]) -> list[tuple[str, Decimal,
 
 def _year_label_warnings(text: str, contents: Iterable[str]) -> list[str]:
     """只写一个年份的句子里，数值仅对应其他年份的登记期间时，提示年份标注需复核。"""
-    registered = _registered_value_years(contents)
+    registered: dict[str, list[tuple[Decimal, frozenset[int] | None]]] = {}
+    for unit, value, years in _registered_value_years(contents):
+        registered.setdefault(unit, []).append((value, years))
+    rounded: dict[tuple[str, int], dict[Decimal, list[frozenset[int] | None]]] = {}
     warnings: list[str] = []
     for sentence in re.split(r"[。；\n]", text):
         years = {int(year) for year in re.findall(r"(?<!\d)(20\d{2})年", sentence)}
@@ -501,9 +507,15 @@ def _year_label_warnings(text: str, contents: Iterable[str]) -> list[str]:
         year = years.pop()
         for match in _VALUE.finditer(sentence):
             number = Decimal(match[1].replace(",", ""))
-            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
-            candidates = [years for unit, value, years in registered
-                          if unit == match[2] and value.quantize(quantum, rounding=ROUND_HALF_UP) == number]
+            precision = len(match[1].split(".")[1]) if "." in match[1] else 0
+            key = (match[2], precision)
+            if key not in rounded:
+                quantum = Decimal(1).scaleb(-precision)
+                lookup: dict[Decimal, list[frozenset[int] | None]] = {}
+                for value, value_years in registered.get(match[2], ()):
+                    lookup.setdefault(value.quantize(quantum, rounding=ROUND_HALF_UP), []).append(value_years)
+                rounded[key] = lookup
+            candidates = rounded[key].get(number, ())
             if candidates and all(item is not None and year not in item for item in candidates):
                 spans = sorted({value for item in candidates if item for value in item})
                 warnings.append(

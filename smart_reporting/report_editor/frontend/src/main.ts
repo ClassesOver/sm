@@ -206,6 +206,7 @@ const sourceValidation = createSourceValidationController(
   () => getEditorMarkdown(),
   (result) => {
     currentBodyValidation = result
+    sourceStatusLabel.setAttribute('aria-busy', 'false')
     currentBodyValidationMarkdown = getEditorMarkdown()
     if (!lineagePanelEnabled) return
     sourceStatusLabel.title = result?.warnings?.join('\n') || ''
@@ -230,6 +231,7 @@ const sourceValidation = createSourceValidationController(
     if (!lineagePanelEnabled) return
     sourceStatusLabel.textContent = '来源校验中'
     sourceStatusLabel.dataset.state = 'checking'
+    sourceStatusLabel.setAttribute('aria-busy', 'true')
     sourceStatusLabel.disabled = true
     sourceStatusLabel.hidden = false
   },
@@ -621,6 +623,7 @@ try {
         refreshBodySourceLinks(null)
         sourceStatusLabel.textContent = '候选内容尚未核验'
         sourceStatusLabel.dataset.state = 'unknown'
+        sourceStatusLabel.setAttribute('aria-busy', 'false')
         sourceStatusLabel.disabled = true
         sourceStatusLabel.title = ''
         status(reviewMessage(), 'dirty')

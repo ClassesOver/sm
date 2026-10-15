@@ -61,3 +61,22 @@ def test_publication_quality_warnings_are_soft_and_include_coverage():
     warnings = narrative_quality_warnings(_graph(), _outline(), rendered_section_codes=())
     assert any(item["code"] == "report_narrative_section_unrendered" for item in warnings)
     assert all("coverageRate" in item["details"] for item in warnings)
+
+
+def test_dynamic_analysis_reuse_requires_exact_finding_and_section_bindings():
+    from smart_reporting.reporting.workflow.runtime.publication import (
+        _matches_narrative_analysis_bindings,
+    )
+
+    graph = _graph()
+    first = _outline().sections[0]
+    second = first.model_copy(update={'code': 'section_002', 'section_number': '2',
+        'finding_ids': (graph.findings[1].finding_id,)})
+    narrative = _outline().model_copy(update={'sections': (first, second), 'appendix_finding_ids': ()})
+    assert _matches_narrative_analysis_bindings(graph, narrative, narrative, 'a' * 64)
+    assert not _matches_narrative_analysis_bindings(graph, narrative, narrative, 'c' * 64)
+    foreign = second.model_copy(update={'analysis_ids': ('analysis_999',)})
+    assert not _matches_narrative_analysis_bindings(graph, narrative, narrative.model_copy(update={'sections': (first, foreign)}), 'a' * 64)
+    unknown = second.model_copy(update={'finding_ids': ('finding_9999999999999999',)})
+    altered = narrative.model_copy(update={'sections': (first, unknown)})
+    assert not _matches_narrative_analysis_bindings(graph, altered, altered, 'a' * 64)

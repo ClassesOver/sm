@@ -142,6 +142,9 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
 def review_content_result(markdown: str, contents: Iterable[str], *, field_definitions: Mapping[str, str] | None = None,
                           fact_ids: Iterable[str] | None = None) -> ContentReviewResult:
     contents = tuple(contents)
+    from .number_selection import align_number_selections
+
+    _, selection_warnings = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     # 编辑器复核的是用户可能手输的正文：全角数字与百分点缩写同样要识别。
     markdown = normalize_number_notation(trace_body(markdown, mask_inline_code=False))
@@ -149,7 +152,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     # 数值锚点可能插在数字与单位之间；复核时只移除非分析协议标记。
     text = re.sub(r"\[\[(?:claim|citation|section|table|/table):[^\]]+\]\]", "", text)
     documents = _documents(contents)
-    warnings = money_text_warnings(text)
+    warnings = [*selection_warnings, *money_text_warnings(text)]
     if any("金额单位待核实" in paragraph and re.search(r"(?:原始元值|按(?:万元|亿元)换算)", paragraph)
            for paragraph in re.split(r"\n\s*\n", text)):
         warnings.append("金额单位断言矛盾：已标注金额单位待核实，不能断言原始值为元或按万元、亿元换算。")

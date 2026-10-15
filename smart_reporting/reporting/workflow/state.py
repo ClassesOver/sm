@@ -521,7 +521,11 @@ def apply(
     elif name == "submit_visualization_charts":
         # 章节图表草案提交允许零图，但 sectionCode 一旦写入就代表该章节已完成；
         # chartId/sourcePath 必须在所有章节中全局唯一，且登记关闭后不得再改变提交事实。
-        if state.phase not in {ReportingPhase.ANALYSIS_RUNNING, ReportingPhase.VISUALIZATION}:
+        if state.phase not in {
+            ReportingPhase.ANALYSIS_RUNNING,
+            ReportingPhase.VISUALIZATION,
+            ReportingPhase.SECTIONS,
+        }:
             raise ReportingStateError(
                 "report_visualization_section_phase_invalid", "章节图表只能在分析运行阶段提交。"
             )

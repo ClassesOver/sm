@@ -21,6 +21,7 @@ from smart_reporting.reporting.delivery.report_runtime.docx import (
 )
 from smart_reporting.reporting.delivery.report_runtime.markdown import (
     _bind_heading_anchors,
+    _document_context,
     _normalize_cjk_strong_markers,
     _strip_strong_boundaries,
     normalize_report_markdown_strong_spacing,
@@ -37,6 +38,26 @@ from smart_reporting.reporting.delivery.report_runtime.validation import (
 )
 from smart_reporting.reporting.workspace import WorkspaceReportService, _report_runtime_digest
 from smart_reporting.workspace import WorkspaceError
+
+
+@pytest.mark.parametrize("duplicate_code", [False, True])
+def test_document_context_allows_repeated_titles_with_distinct_section_identity(duplicate_code):
+    codes = ["appendix_a", "appendix_a" if duplicate_code else "appendix_b"]
+    context = {
+        "title": "运营报告", "periodLabel": "2025年", "organizationName": "医院",
+        "generatedByLabel": "智能报告", "watermarkText": "内部资料", "generatedDate": "2026-10-15",
+        "sections": [{"code": code, "sectionNumber": str(i), "title": "补充管理发现"}
+                     for i, code in enumerate(codes, 1)],
+        "sectionNumbers": ["1", "2"],
+        "headingNumbers": [{"level": 2, "number": str(i), "title": "补充管理发现",
+                            "sectionCode": code, "anchor": f"report-section-{i}"}
+                           for i, code in enumerate(codes, 1)],
+    }
+    if duplicate_code:
+        with pytest.raises(ReportFailure, match="重复项"):
+            _document_context(context)
+    else:
+        assert _document_context(context)["sections"] == context["sections"]
 
 
 def test_render_docx_uses_libreoffice_when_pandoc_is_unavailable(

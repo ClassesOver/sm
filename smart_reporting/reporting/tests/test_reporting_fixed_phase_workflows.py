@@ -48,6 +48,7 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisEvidenceDecision,
     AnalysisItemWorkflow,
+    AnalysisSummaryDraft,
     _AnalysisItemState,
 )
 from smart_reporting.reporting.workflow.runtime.base import (
@@ -425,6 +426,74 @@ async def test_analysis_evidence_planner_receives_authorized_dataset_fields() ->
     await workflow._decide_evidence(state)
 
     assert requests[0]["datasets"] == state.instruction["datasets"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("invalid_reference", ["dataset", "field", "outside_analysis"])
+@pytest.mark.parametrize("corrected", [False, True])
+async def test_invalid_evidence_dataset_degrades_to_frozen_facts(
+    invalid_reference: str, corrected: bool,
+) -> None:
+    """补证规划器错引数据集时跳过补证，不能阻断固定事实分析。"""
+
+    state = _analysis_state_with_requirement(
+        dataset_id="dataset_other" if invalid_reference != "field" else "dataset_001",
+        fields=("unknown_field",) if invalid_reference == "field" else ("income",),
+    )
+    instruction = state.instruction
+    if invalid_reference == "outside_analysis":
+        instruction["datasets"].append({
+            "datasetId": "dataset_other", "columns": ["income"], "path": "other.csv",
+        })
+    facts = DeterministicAnalysisBundle(analysisId="analysis_001").model_dump_json()
+    digest = hashlib.sha256(facts.encode()).hexdigest()
+    instruction.update({
+        "currentAnalysisId": "analysis_001",
+        "deterministicFacts": {"analysisId": "analysis_001", "metrics": []},
+        "deterministicFactFile": {"path": "facts.json", "size": len(facts.encode()),
+                                  "sha256": digest},
+    })
+    requests = []
+    completions = []
+
+    async def decide(payload):
+        requests.append(dict(payload))
+        if corrected and len(requests) > 1:
+            return AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=False, reason="固定事实足够",
+                missingFacts=(), codingRequirements=(),
+            )
+        return state.decision
+
+    async def read_file(**kwargs):
+        return {"content": facts, "sha256": digest, "totalBytes": len(facts.encode()),
+                "nextOffset": len(facts.encode())}
+
+    async def summarize(payload):
+        assert payload["supplementalEvidence"] is None
+        return AnalysisSummaryDraft(summary="仅依据已冻结事实分析。", warnings=())
+
+    async def complete(**kwargs):
+        completions.append(kwargs)
+        return {"status": "accepted", "taskFinished": True}
+
+    run_code = AsyncMock(side_effect=AssertionError("非法补证不得执行"))
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=decide, run_code=run_code, summarize=summarize,
+        read_file=read_file, complete=complete,
+    )
+    result = await workflow.run(instruction, _context())
+
+    assert dict(result.stage_statuses)["complete-analysis"] == "completed"
+    assert dict(result.stage_statuses)["execute-script"] == "skipped"
+    assert completions[0]["evidencePaths"] == []
+    assert bool(completions[0]["warnings"]) is not corrected
+    if not corrected:
+        assert "未签发的 Dataset 或字段" in completions[0]["warnings"][0]
+    assert requests[1]["correction"]["details"]["datasetId"] == (
+        "dataset_001" if invalid_reference == "field" else "dataset_other"
+    )
+    run_code.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1974,11 +2043,16 @@ def test_section_plan_validator_keeps_unknown_claim_patch_failing() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("narrative_role", [None, "appendix"])
+@pytest.mark.parametrize("whole_section", [False, True])
 async def test_section_generation_attaches_response_validator_to_plan_stage(
     monkeypatch: pytest.MonkeyPatch,
+    narrative_role: str | None,
+    whole_section: bool,
 ) -> None:
     work_item = _section_work_item().model_copy(
         update={
+            "narrative_role": narrative_role,
             "metric_definitions": (
                 MetricDefinition(
                     code="revenue",
@@ -2027,6 +2101,21 @@ async def test_section_generation_attaches_response_validator_to_plan_stage(
                     ],
                 }
             )
+        assert payload["facts"][0]["evidenceFiles"] == [
+            work_item.evidence[0].evidence_files[0].model_dump(mode="json", by_alias=True)
+        ]
+        if whole_section:
+            assert "summary" not in payload["facts"][0]
+        elif narrative_role == "appendix":
+            assert payload["facts"][0]["summary"] != "summary"
+        else:
+            assert payload["facts"][0]["summary"] == "summary"
+        if narrative_role == "appendix":
+            assert "收入为100元" not in payload["evidence"]["factSummaries"]
+        if whole_section:
+            return SectionContent(blocks=[{
+                "blockId": "block_001", "markdown": "### 说明收入\n\n收入为100元。",
+            }])
         return SectionBlockContent(
             markdown=f"### {payload['blockPlan']['objective']}\n\n收入为100元。"
         )
@@ -2051,10 +2140,12 @@ async def test_section_generation_attaches_response_validator_to_plan_stage(
             configured_budget_cap=8192,
             thinking_enabled=True,
         ),
+        whole_section=whole_section,
     )
 
     assert callable(captured["plan"])
-    assert captured["block-1"] is None
+    assert captured["content" if whole_section else "block-1"] is None
+    assert work_item.evidence[0].summary == "summary"
 
 
 @pytest.mark.anyio
@@ -3425,7 +3516,7 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
     outputs = iter([
         # 默认整章生成：第二个 block 重复第一个 block 的句子并泄漏内部 ID。
         {"block_1": first, "block_2": first + "另见 analysis_001 的明细。"},
-        {"block_1": first, "block_2": second_clean},
+        {"block_2": second_clean},
     ])
 
     async def fake_stage(*args, **kwargs):
@@ -3450,6 +3541,8 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
     assert len(calls) == 2
     correction = calls[1]["correction"]
     assert set(correction["issues"]) == {"block_2"}
+    assert [block["blockId"] for block in calls[1]["sectionPlan"]["blocks"]] == ["block_2"]
+    assert [block["blockId"] for block in correction["previousOutput"]["blocks"]] == ["block_2"]
     issues = "\n".join(correction["issues"]["block_2"])
     assert "与本章前文重复" in issues and "analysis_001" in issues
     # 纠错指令须覆盖可读性类问题，而不只是数字与口径。
@@ -3693,6 +3786,78 @@ async def test_whole_section_context_hard_limit_falls_back_to_blocks(monkeypatch
 
 
 @pytest.mark.anyio
+async def test_whole_section_retries_compact_input_before_splitting(monkeypatch):
+    from smart_reporting.context_management import TaskExecutionContextHardLimitError
+    from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+    from smart_reporting.reporting.workflow.runtime.phase_models import RenderSectionDecision
+
+    attempts = []
+
+    async def whole(*args, **kwargs):
+        attempts.append(kwargs.get("compact", False))
+        if not kwargs.get("compact"):
+            raise TaskExecutionContextHardLimitError("上下文超限", metrics={})
+        return RenderSectionDecision(sectionCode="section_001", blocks=(ReportDraftBlock(
+            blockId="block_1", markdown="整章生成的收入结论。", claimIds=("claim_1",),
+        ),), claims=args[4].claims)
+
+    async def stage(_agent, _schema, stage, _payload, **kwargs):
+        assert stage == "plan", "压缩整章成功后不应进入分块撰写"
+        return SectionPlanOutput.model_validate({
+            "kind": "render", "sectionCode": "section_001",
+            "blocks": [{"blockId": "block_1", "objective": "收入", "claimIds": ["claim_1"]}],
+            "claims": [_plan_claim("claim_1")],
+        })
+
+    monkeypatch.setattr(reporting_sections, "_generate_whole_section_content", whole)
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", stage)
+    item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=item.evidence[0].evidence_files[0], content="{}"),), factSummaries=())
+    await reporting_sections._generate_section_in_blocks(
+        object(), {}, evidence, item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(), thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+        whole_section=True,
+    )
+    assert attempts == [False, True]
+
+
+@pytest.mark.anyio
+async def test_compact_whole_section_drops_duplicate_summaries_but_keeps_atomic_evidence(monkeypatch):
+    from .test_content_review import _metric
+
+    requests = []
+
+    async def stage(_agent, _schema, _stage, payload, **kwargs):
+        requests.append(payload)
+        return SectionContent(blocks=({"blockId": "block_1", "markdown": "收入整体保持稳定。"},))
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", stage)
+    item = _revenue_work_item()
+    metric = _metric()
+    evidence = SectionEvidenceBundle(sectionCode="section_001", files=(SectionEvidenceFile(
+        identity=item.evidence[0].evidence_files[0],
+        content=json.dumps({"analysisId": "analysis_001", "metrics": [metric]}),
+    ),), factSummaries=("重复分析摘要" * 20_000, "warning:来源限制必须保留"))
+    plan = RenderSectionPlan.model_validate({"sectionCode": "section_001",
+        "blocks": [{"blockId": "block_1", "objective": "收入", "claimIds": ["claim_1"]}],
+        "claims": [_plan_claim("claim_1")]})
+    kwargs = dict(scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+                  run_context=_context(), thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"))
+    with pytest.raises(ReportingError) as failure:
+        await reporting_sections._generate_whole_section_content(object(), {}, evidence, item, plan, **kwargs)
+    assert failure.value.code == "report_section_context_too_large"
+    await reporting_sections._generate_whole_section_content(object(), {}, evidence, item, plan, compact=True, **kwargs)
+    assert len(requests) == 1
+    payload = requests[0]
+    assert payload["evidence"]["factSummaries"] == ["warning:来源限制必须保留"]
+    assert "summary" not in payload["facts"][0]
+    assert payload["facts"][0]["evidenceFiles"] == [item.evidence[0].evidence_files[0].model_dump(mode="json", by_alias=True)]
+    assert metric["factId"] in json.dumps(payload["evidence"])
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("collection", ["topGroups", "bottomGroups"])
 @pytest.mark.parametrize("repair_succeeds", [True, False])
 async def test_visualization_repairs_ranked_detail_used_as_complete_distribution(
@@ -3824,7 +3989,7 @@ async def _run_correction_harness(monkeypatch, outputs):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("correction", [
-    [("block_1", "更正正文。")],
+    [("block_2", "只返回无问题段落，遗漏待纠错段落。")],
     [("block_1", "更正正文。"), ("block_1", "重复编号。")],
     [("block_1", "更正正文。"), ("block_2", "其他正文。"), ("block_3", "额外正文。")],
     "not a SectionContent",

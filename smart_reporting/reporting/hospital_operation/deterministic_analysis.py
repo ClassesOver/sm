@@ -367,10 +367,10 @@ def _dataset_facts(
                 scope=scope,
                 periodField=period_field,
                 periodGranularity=(
-                    analysis.series_granularity or (
-                        "day" if dataset.context.period_granularities.get(period_field or "") == "date"
+                    (
+                        analysis.series_granularity or "day" if dataset.context.period_granularities.get(period_field or "") == "date"
                         else dataset.context.period_granularities.get(period_field or "")
-                    )
+                    ) or analysis.series_granularity
                 ),
                 periodStart=period_labels[0] if period_labels else None,
                 periodEnd=period_labels[-1] if period_labels else None,

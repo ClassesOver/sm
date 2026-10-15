@@ -128,6 +128,38 @@ def test_checkpoint_rejects_outline_change_after_narrative_freeze():
         RuntimeAnalysisMixin._merge_reporting_checkpoints(current, incoming)
 
 
+@pytest.mark.parametrize("changed", [None, "work_item_hash", "artifact_file"])
+@pytest.mark.parametrize("retry_counts", [(2, 0), (0, 2)])
+def test_completed_section_restore_preserves_retry_history_and_checks_identity(changed, retry_counts):
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.reporting.workflow.checkpoint import CompletedSection
+    from smart_reporting.reporting.workflow.runtime.analysis import RuntimeAnalysisMixin
+
+    section = CompletedSection(
+        sectionCode="section_001", workItemHash="b" * 64,
+        artifactFile=FileIdentity(path="section.json", size=10, sha256="c" * 64),
+        retryCount=retry_counts[0],
+    )
+    current = ReportingCheckpoint(
+        revision=1, phase="analysis", outlineHash="a" * 64,
+        profileCoverage=_coverage(), completedSections=(section,),
+    )
+    updates = {"retry_count": retry_counts[1]}
+    if changed == "work_item_hash":
+        updates[changed] = "d" * 64
+    elif changed == "artifact_file":
+        updates[changed] = section.artifact_file.model_copy(update={"sha256": "d" * 64})
+    incoming = current.model_copy(update={"completed_sections": (section.model_copy(update=updates),)})
+
+    if changed is not None:
+        with pytest.raises(ReportingError, match="其他完成产物"):
+            RuntimeAnalysisMixin._merge_reporting_checkpoints(current, incoming)
+    else:
+        merged = RuntimeAnalysisMixin._merge_reporting_checkpoints(current, incoming)
+        assert merged.completed_sections[0].retry_count == 2
+        assert merged.completed_sections[0].artifact_file == section.artifact_file
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("source_count", [1, 2])

@@ -8,8 +8,9 @@ claim 数值事实的规范化指纹，用于判定"正文仍在陈述生成时�
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal, localcontext
+from functools import partial
 from typing import Any
 
 from ..delivery.report_runtime.markdown import _subject_id
@@ -527,9 +528,31 @@ def claim_status(
     已登记业务范围未在引用句中体现时，同样提示复核，不推断替代范围。
     """
 
+    return prepare_claim_status(markdown)(
+        claim_id, fact_value, window_chars=window_chars,
+        expected_unit=expected_unit, expected_periods=expected_periods,
+        expected_scope=expected_scope, section_id=section_id,
+    )
+
+
+def prepare_claim_status(markdown: str) -> Callable[..., dict[str, Any]]:
+    """一次屏蔽代码及注释，供同一草稿内的全部引用复用；不跨请求缓存。"""
     from .markdown_body import trace_body
 
-    markdown = trace_body(markdown)
+    return partial(_claim_status, trace_body(markdown))
+
+
+def _claim_status(
+    markdown: str,
+    claim_id: str,
+    fact_value: Any,
+    *,
+    window_chars: int = 200,
+    expected_unit: str | None = None,
+    expected_periods: tuple[str, ...] = (),
+    expected_scope: Mapping[str, str] | None = None,
+    section_id: str | None = None,
+) -> dict[str, Any]:
     sections = list(re.finditer(r"\[\[section:([^\]\r\n]+)\]\]", markdown))
     if section_id and sections:
         matching = [index for index, section in enumerate(sections) if section[1] == section_id]

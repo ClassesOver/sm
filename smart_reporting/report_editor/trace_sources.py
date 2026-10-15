@@ -16,6 +16,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
+from time import perf_counter
 from typing import Any, Protocol
 
 import anyio
@@ -109,6 +110,7 @@ class ReportEditorTraceService:
         self._drilldown = TraceDrilldownService(secret=cursor_secret)
         self._drilldown_limiter = anyio.CapacityLimiter(4)
         self._drilldown_large_limiter = anyio.CapacityLimiter(1)
+        self._validation_limiter = anyio.CapacityLimiter(2)
         self.exports = TraceDerivedExportService(workspace)
 
     # ------------------------------------------------------------------
@@ -734,12 +736,18 @@ class ReportEditorTraceService:
         import json as _json
 
         from ..reporting.delivery.artifacts_v1 import _TABLE_BLOCK
+        from ..reporting.trace.semantic_bindings import (
+            reference_fact_ids,
+            resolve_number_references,
+            statement_fingerprints,
+        )
         from ..reporting.trace.subject_builder import (
-            claim_status,
             fact_periods,
+            prepare_claim_status,
             value_matches,
         )
 
+        started = perf_counter()
         actual_draft_sha256 = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
         if actual_draft_sha256 != draft_sha256:
             raise ReportingError(
@@ -854,6 +862,19 @@ class ReportEditorTraceService:
 
         subjects: list[dict[str, Any]] = []
         summary = {"valid": 0, "stale": 0, "unbound": 0}
+        check_claim = await anyio.to_thread.run_sync(
+            prepare_claim_status, markdown, limiter=self._validation_limiter
+        )
+        fingerprints = await anyio.to_thread.run_sync(statement_fingerprints, markdown, tuple(
+            binding.claim_id for binding in index.subject_bindings
+            if binding.number_reference and binding.claim_id and binding.fact_refs
+        ), limiter=self._validation_limiter)
+        number_tokens: dict[tuple[str, ...], set[str]] = {}
+        for binding in index.subject_bindings:
+            if binding.number_reference and binding.claim_id and binding.fact_refs:
+                source_ids = tuple(sorted({ref.file_resource_id for ref in binding.fact_refs}))
+                number_tokens.setdefault(source_ids, set()).add(binding.number_reference.token)
+        number_results: dict[tuple[str, ...], dict[str, Any]] = {}
         for binding in index.subject_bindings:
             if not binding.claim_id or not binding.fact_refs:
                 continue
@@ -868,29 +889,26 @@ class ReportEditorTraceService:
             number = binding.number_reference
             selected = None
             if number is not None:
-                from ..reporting.trace.semantic_bindings import (
-                    reference_fact_ids,
-                    resolve_number_reference,
-                )
-
                 # 每个操作数先通过文件 hash、analysis、pointer 和 factKey 校验，不能借同分析其它值。
                 entries = [await _fact_entry_of(ref) for ref in binding.fact_refs]
                 ids = reference_fact_ids(number.token)
                 if (all(item is not None for item in entries)
                         and set(ids) == {ref.fact_key for ref in binding.fact_refs}
                         and number.claim_id == binding.claim_id):
-                    selected = resolve_number_reference(number.token, (
-                        _json.dumps(bundle_cache[path]) for path in dict.fromkeys(
-                            files[ref.file_resource_id].path for ref in binding.fact_refs
+                    source_ids = tuple(sorted({ref.file_resource_id for ref in binding.fact_refs}))
+                    if source_ids not in number_results:
+                        number_results[source_ids] = await anyio.to_thread.run_sync(
+                            resolve_number_references, number_tokens[source_ids], tuple(
+                                _json.dumps(bundle_cache[files[resource_id].path]) for resource_id in source_ids
+                            ), limiter=self._validation_limiter,
                         )
-                    ))
+                    selected = number_results[source_ids].get(number.token)
                 fact_value = selected["value"] if selected else None
                 expected_unit = selected["unit"] if selected else None
                 expected_periods = selected["periods"] if selected else ()
                 if selected:
                     entry = {**selected["entry"], "formula": selected["formula"], "scope": selected["scope"]}
-            detail = claim_status(
-                markdown,
+            detail = check_claim(
                 binding.claim_id,
                 fact_value,
                 expected_unit=expected_unit,
@@ -899,12 +917,10 @@ class ReportEditorTraceService:
                 section_id=binding.locator.section_id,
             )
             if number is not None:
-                from ..reporting.trace.semantic_bindings import statement_fingerprint
-
                 if selected is None:
                     detail = {"status": "unbound", "warnings": ["具体数值引用无法从登记事实重算。"]}
                 elif (detail["status"] == "valid" and
-                      statement_fingerprint(markdown, binding.claim_id) != number.statement_sha256):
+                      fingerprints[binding.claim_id] != number.statement_sha256):
                     detail["status"] = "stale"
                     detail["warnings"].append("引用所在陈述已修改，请复核指标、期间和范围。")
                     detail["comparable"] = False
@@ -987,12 +1003,18 @@ class ReportEditorTraceService:
         from ..reporting.trace.markdown_body import trace_body
 
         review_markdown = trace_body(markdown)
+        warnings = await anyio.to_thread.run_sync(review_content, markdown, (
+            *(_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values()),
+            *plot_contents,
+        ), limiter=self._validation_limiter)
+        logger.info(
+            "report_source_validation_completed report_id={} revision={} subjects={} tables={} duration_ms={}",
+            context.report_id, context.revision, len(subjects), len(tables_payload),
+            round((perf_counter() - started) * 1000),
+        )
         return {
             "draftSha256": draft_sha256,
-            "warnings": review_content(markdown, (
-                *(_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values()),
-                *plot_contents,
-            )),
+            "warnings": warnings,
             "subjects": subjects,
             "summary": summary,
             "tables": tables_payload,

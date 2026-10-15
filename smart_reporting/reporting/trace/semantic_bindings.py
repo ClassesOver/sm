@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
@@ -24,9 +25,18 @@ def reference_fact_ids(token: str) -> tuple[str, ...]:
 
 
 def statement_fingerprint(markdown: str, claim_id: str) -> str | None:
+    return statement_fingerprints(markdown, (claim_id,))[claim_id]
+
+
+def statement_fingerprints(markdown: str, claim_ids: Iterable[str]) -> dict[str, str | None]:
+    """同一正文只规范化一次，重复或缺失锚点仍不签发陈述指纹。"""
     from ..delivery.report_runtime.markdown import normalize_cjk_punctuation, normalize_cjk_wording
 
     markdown = normalize_cjk_punctuation(normalize_cjk_wording(markdown))
+    return {claim_id: _normalized_statement_fingerprint(markdown, claim_id) for claim_id in claim_ids}
+
+
+def _normalized_statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     marker = f"[[claim:{claim_id}]]"
     if markdown.count(marker) != 1:
         return None
@@ -36,8 +46,11 @@ def statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     return hashlib.sha256(re.sub(r"[\s*]", "", statement).encode()).hexdigest()
 
 
-def render_bound_numbers(markdown: str, contents, *, key: str):
+def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions=None):
     contents = tuple(contents)
+    from .number_selection import align_number_selections
+
+    markdown, _ = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     references: list[tuple[str, str]] = []
     notices: list[ReviewNoticeV1] = []
@@ -97,12 +110,17 @@ def anchor_bound_numbers(markdown: str, references, notices=()) -> str:
 
 def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
     """仅从调用者已经核验文件身份的内容重算完整 token；缺失或冲突不回退 total。"""
+    return resolve_number_references((token,), contents)[token]
+
+
+def resolve_number_references(tokens: Iterable[str], contents) -> dict[str, dict[str, Any] | None]:
+    """同一组已核验来源一次展开数值目录，只保留请求的引用；不跨文件组或请求复用。"""
     contents = tuple(contents)
-    matches = [(value, unit, target) for candidate, value, unit, target in _frozen_number_entries(contents)
-               if candidate == token]
-    if not matches or len({(str(value), unit, target) for value, unit, target in matches}) != 1:
-        return None
-    ids = reference_fact_ids(token)
+    matches: dict[str, list[tuple[Any, str | None, str | None]]] = {token: [] for token in tokens}
+    for candidate, value, unit, target in _frozen_number_entries(contents):
+        if candidate in matches:
+            matches[candidate].append((value, unit, target))
+    ids = {fact_id for token in matches for fact_id in reference_fact_ids(token)}
     entries = {}
     for bundle in frozen_fact_bundles(contents):
         document = bundle.model_dump(mode="json", by_alias=True)
@@ -110,9 +128,18 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
             for fact in document.get(array, ()):
                 if fact.get('factId') in ids:
                     if fact['factId'] in entries and entries[fact['factId']] != fact:
-                        return None
-                    entries[fact['factId']] = fact
-    if not ids or set(ids) != entries.keys():
+                        entries[fact['factId']] = None
+                    else:
+                        entries[fact['factId']] = fact
+    return {token: _resolve_number_reference(token, values, entries) for token, values in matches.items()}
+
+
+def _resolve_number_reference(token: str, matches, facts) -> dict[str, Any] | None:
+    if not matches or len({(str(value), unit, target) for value, unit, target in matches}) != 1:
+        return None
+    ids = reference_fact_ids(token)
+    entries = {fact_id: facts.get(fact_id) for fact_id in ids}
+    if not ids or any(entry is None for entry in entries.values()):
         return None
     primary = entries[ids[0]]
     value, unit, target = matches[0]

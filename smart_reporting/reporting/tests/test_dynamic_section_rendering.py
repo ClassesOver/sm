@@ -26,6 +26,57 @@ def test_section_work_item_keeps_assigned_finding_ids():
     assert item.finding_ids == ("finding_0000000000000001",)
 
 
+def test_appendix_model_projection_fits_without_changing_frozen_work_item():
+    from smart_reporting.reporting.workflow.runtime.base import MAX_SECTION_WORK_ITEM_BYTES
+    from smart_reporting.reporting.workflow.runtime.sections import _section_model_work_item_payload
+
+    analysis_ids = [f"analysis_{index:03d}" for index in range(12)]
+    summary = "冻结分析摘要" * 1000
+    item = _item(
+        narrativeRole="appendix", analysisIds=analysis_ids,
+        findingSummaries=[{
+            "findingId": "finding_0000000000000001", "summary": "收入变化",
+            "sourceRefs": [{"analysisId": "analysis_001", "path": "facts.json", "fileSha256": "b" * 64}],
+            "relatedFindingIds": [],
+        }],
+        evidence=[{
+            "analysisId": analysis_id, "summary": summary,
+            "datasetIds": ["dataset_001"], "citationIds": ["citation_001"],
+            "evidenceFiles": [{"path": f"{analysis_id}.json", "size": 1, "sha256": "a" * 64}],
+            "warnings": ["期间不可直接比较"],
+        } for analysis_id in analysis_ids],
+        citations=[{"citationId": "citation_001", "datasetId": "dataset_001",
+                    "requirementId": "requirement_001", "snapshotHash": "a" * 64}],
+        factSummaries=[summary] * len(analysis_ids),
+    )
+    frozen = item.model_dump(mode="json", by_alias=True)
+    assert item.serialized_bytes() > MAX_SECTION_WORK_ITEM_BYTES
+
+    projected = _section_model_work_item_payload(item)
+
+    import json
+
+    assert len(json.dumps(projected, ensure_ascii=False).encode()) < MAX_SECTION_WORK_ITEM_BYTES
+    assert projected["findingIds"] == list(item.finding_ids)
+    assert projected["findingSummaries"] == [{
+        "findingId": "finding_0000000000000001", "summary": "收入变化",
+    }]
+    assert projected["evidence"][0]["evidenceFiles"] == frozen["evidence"][0]["evidenceFiles"]
+    assert projected["evidence"][0]["warnings"] == ["期间不可直接比较"]
+    assert item.model_dump(mode="json", by_alias=True) == frozen
+
+
+def test_body_model_projection_uses_assigned_findings_without_duplicate_analysis_summaries():
+    from smart_reporting.reporting.workflow.runtime.sections import _section_model_work_item_payload
+
+    item = _item(narrativeRole="management_finding", factSummaries=["收入上升"])
+    projected = _section_model_work_item_payload(item)
+    assert "factSummaries" not in projected
+    assert projected["findingSummaries"] == list(item.finding_summaries)
+    assert item.fact_summaries == ("收入上升",)
+    assert "factFiles" not in projected
+
+
 def test_section_work_item_rejects_summary_from_another_section():
     with pytest.raises(ValueError, match="当前章节"):
         _item(findingSummaries=[{"findingId": "finding_0000000000000002", "summary": "其他"}])

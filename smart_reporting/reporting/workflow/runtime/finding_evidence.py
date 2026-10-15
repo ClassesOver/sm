@@ -7,6 +7,11 @@ from collections.abc import Sequence
 from typing import Any
 
 from ...trace.fact_index import resolve_pointer_value
+from ...trace.numeric_text import (
+    budget_comparison_values,
+    frozen_fact_bundles,
+    project_ratio_values,
+)
 from ..checkpoint import SectionWorkItem
 from .phase_models import SectionEvidenceFile
 
@@ -68,6 +73,21 @@ def finding_evidence_view(
         values = selected.get(source.identity.path)
         if not values:
             continue
+        # 复用同数据集、快照、范围、单位和期间的配对规则；只沿已核验文件补齐预算依赖。
+        local_ids = {value["factId"] for value in values.values()
+                     if isinstance(value, dict) and isinstance(value.get("factId"), str)}
+        for bundle in frozen_fact_bundles((source.content,)):
+            dependencies = {
+                entry["budgetFactId"] for entry in budget_comparison_values(bundle)
+                if entry["actualFactId"] in local_ids
+            } | {
+                entry["budgetFactId"] for entry in project_ratio_values(bundle)
+                if entry["numeratorFactId"] in local_ids
+            }
+            for index, metric in enumerate(documents[source.identity.path].get("metrics", ())):
+                if isinstance(metric, dict) and metric.get("factId") in dependencies:
+                    values[f"/metrics/{index}"] = metric
+                    fact_ids.add(metric["factId"])
         content = {"analysisId": documents[source.identity.path].get("analysisId")}
         content["selected"] = [
             {"pointer": pointer, "value": value} for pointer, value in values.items()

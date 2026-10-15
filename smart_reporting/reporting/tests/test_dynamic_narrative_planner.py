@@ -82,3 +82,26 @@ def test_compatible_outline_preserves_frozen_narrative_sections():
         ("analysis_001",), ("analysis_002",),
     ]
     assert result.sections[0].focus == ("解释收入变化",)
+
+
+def test_fallback_merges_duplicate_trends_without_filling_section_cap():
+    from smart_reporting.reporting.hospital_operation.narrative_planner import (
+        build_fallback_narrative_candidate,
+    )
+    cards = [finding(i, title='收入趋势', kind='trend', priority='medium') for i in range(1, 19)]
+    candidate = build_fallback_narrative_candidate(graph(*cards), '运营报告')
+    assert len(candidate.sections) == 1
+    assert candidate.sections[0].title == '收入趋势'
+    assert set(candidate.sections[0].finding_ids) == {card.finding_id for card in cards}
+
+
+def test_fallback_keeps_operating_topics_ahead_of_statistical_appendix():
+    from smart_reporting.reporting.hospital_operation.narrative_planner import (
+        build_fallback_narrative_candidate,
+    )
+    cards = [finding(i, title='收入统计关系', metricCodes=(f'field_{i}',),
+                     evidenceLevel='statistical_relation', priority='medium') for i in range(1, 80)]
+    cost = finding(80, title='成本异常', kind='anomaly', metricCodes=('cost',), priority='medium')
+    candidate = build_fallback_narrative_candidate(graph(*cards, cost), '运营报告')
+    assert any(cost.finding_id in section.finding_ids for section in candidate.sections)
+    assert all(card.finding_id in candidate.appendix_finding_ids for card in cards)
