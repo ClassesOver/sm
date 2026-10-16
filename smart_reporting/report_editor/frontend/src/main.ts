@@ -829,10 +829,12 @@ try {
               base: lastSavedMarkdown,
               remote: remote.markdown,
             }
-            conflictPanel?.show(lastSavedMarkdown, savingMarkdown, remote.markdown)
+            // 请求及远端载入期间可能继续输入；合并面板必须保留当前正文。
+            conflictPanel?.show(lastSavedMarkdown, getEditorMarkdown(), remote.markdown)
             showConflictStatus()
           } catch {
-            status('保存冲突 · 点击重试载入远端', 'error', () => void recoverFromConflict())
+            // 重试仍走 CAS 保存和冲突选择，不能把网络恢复当作采用远端的授权。
+            status('保存冲突 · 点击重试处理', 'error', saveInBackground)
           }
         } else {
           status(errorLabel(error), 'error', saveInBackground)

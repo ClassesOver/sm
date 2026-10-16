@@ -26,12 +26,14 @@ function setup() {
     pendingConflict: null, savePromise: null,
     currentMarkdown: 'B', lastSavedMarkdown: 'A', sha256: 'hash-A',
     status: vi.fn(), saveState: null, draftController: null,
+    conflictPanel: { show: vi.fn() }, showConflictStatus: vi.fn(), recoverFromConflict: vi.fn(),
     performance: { now: () => (tick += 1000) }, savedEditorDoc: {},
     historyController: { record: vi.fn() }, telemetry: { record: vi.fn() },
     reviewMode: 'idle', savedLabel: () => 'saved',
     getEditorMarkdown: () => context.currentMarkdown,
     errorLabel: () => 'save failed', saveInBackground: vi.fn(), ReportEditorApiError,
-    client: { save: vi.fn((_markdown: string, _sha: string) => new Promise<{ sha256: string }>((resolve, reject) => {
+    client: { load: vi.fn(async () => ({ markdown: 'remote', sha256: 'hash-remote' })),
+      save: vi.fn((_markdown: string, _sha: string) => new Promise<{ sha256: string }>((resolve, reject) => {
       requests.push({ resolve, reject })
     })) },
   }
@@ -41,6 +43,49 @@ function setup() {
 }
 
 describe('saveNow before export', () => {
+  it('offers the latest edits for merging after a save conflict and remote reload', async () => {
+    const { context, requests, save } = setup()
+    let resolveRemote!: (value: { markdown: string; sha256: string }) => void
+    context.client.load.mockImplementation(() => new Promise((resolve) => { resolveRemote = resolve }))
+    const conflict = new ReportEditorApiError(409, 'report_editor_conflict')
+    const failed = expect(save()).rejects.toBe(conflict)
+    context.currentMarkdown = 'C'
+    requests[0]!.reject(conflict)
+    await vi.waitFor(() => expect(context.client.load).toHaveBeenCalledOnce())
+    context.currentMarkdown = 'D'
+    resolveRemote({ markdown: 'remote', sha256: 'hash-remote' })
+    await failed
+    expect(context.conflictPanel.show).toHaveBeenCalledWith('A', 'D', 'remote')
+    expect(context.currentMarkdown).toBe('D')
+    expect(context.lastSavedMarkdown).toBe('A')
+    expect(context.sha256).toBe('hash-A')
+    expect(context.client.save).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries a failed conflict lookup without choosing the remote version', async () => {
+    const { context, requests, save } = setup()
+    const conflict = new ReportEditorApiError(409, 'report_editor_conflict')
+    context.client.load.mockRejectedValueOnce(new Error('offline'))
+    const failed = expect(save()).rejects.toBe(conflict)
+    context.currentMarkdown = 'C'
+    requests[0]!.reject(conflict)
+    await failed
+    const retry = context.status.mock.calls.at(-1)![2] as () => void
+    let retried!: Promise<void>
+    context.saveInBackground.mockImplementation(() => {
+      retried = save().catch(() => undefined)
+    })
+    retry()
+    expect(context.recoverFromConflict).not.toHaveBeenCalled()
+    expect(context.client.save).toHaveBeenLastCalledWith('C', 'hash-A')
+    requests[1]!.reject(conflict)
+    await retried
+    expect(context.client.load).toHaveBeenCalledTimes(2)
+    expect(context.conflictPanel.show).toHaveBeenCalledWith('A', 'C', 'remote')
+    expect(context.currentMarkdown).toBe('C')
+    expect(context.sha256).toBe('hash-A')
+  })
+
   it.each([false, true])('waits for edits during a save (another waiting caller: %s)', async (anotherCaller) => {
     const { context, requests, save } = setup()
     let finished = false
