@@ -257,8 +257,8 @@ async def test_sql_session_round_trip_keeps_share_capabilities_and_legacy_null(
     from smart_reporting.report_editor.trace_sources import ReportEditorTraceService
     from smart_reporting.reporting.models import ReportingError
     from smart_reporting.reporting.trace.dataset_service import (
+        TraceCsvPreviewService,
         TraceDatasetFile,
-        TraceDatasetService,
     )
 
     repository = SqlAlchemyReportEditorRepository(_SessionStoreEngine())  # type: ignore[arg-type]
@@ -290,7 +290,7 @@ async def test_sql_session_round_trip_keeps_share_capabilities_and_legacy_null(
         row_count=1,
     )
     with pytest.raises(ReportingError, match="无权下载"):
-        TraceDatasetService().download_target(dataset, permissions)
+        TraceCsvPreviewService(secret=b"k" * 32).download_target(dataset, permissions)
     assert permissions.can_download_derived is False
     assert ReportEditorTraceService._drilldown_enabled(session.capabilities) is False
     index = SimpleNamespace(
@@ -1191,11 +1191,10 @@ async def test_finished_exports_do_not_consume_the_running_job_limit() -> None:
         await service.start_export(
             _context(), expected_sha256="a" * 64, request_id=f"done-{index}"
         )
-    await asyncio.sleep(0)
-    for index in range(64):
+        await asyncio.sleep(0)
         assert service.export_status(_context(), f"done-{index}")["status"] == "succeeded"
 
-    service._export_jobs  # finished jobs remain until retention elapses
+    assert len(service._export_jobs) == 64
     started = await service.start_export(
         _context().model_copy(update={"revision": 2}),
         expected_sha256="a" * 64,
