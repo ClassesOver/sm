@@ -62,6 +62,10 @@
   --motion-ease-out: cubic-bezier(0.2, 0.9, 0.25, 1);
   --motion-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --motion-spring: cubic-bezier(0.2, 0.9, 0.3, 1.1);
+  /* ---- Shadow scale（阴影三档：浮起/弹窗/模态） ---- */
+  --shadow-sm: 0 1px 4px rgb(11 79 138 / 12%);
+  --shadow-md: 0 8px 24px rgb(27 42 65 / 14%);
+  --shadow-lg: 0 24px 64px rgb(15 28 46 / 26%), 0 2px 8px rgb(15 28 46 / 8%);
   /* ---- Breakpoints（语义断点约定）----
      640px  小屏：单列布局、底部抽屉        (max-width: 640px / min-width: 641px)
      768px  平板：工具栏/面板折叠           (max-width: 768px / min-width: 769px)
@@ -161,7 +165,7 @@ button {
   border: 1px solid var(--color-border-strong);
   border-radius: 50%;
   background: rgb(255 255 255 / 96%);
-  box-shadow: 0 8px 24px rgb(27 42 65 / 14%);
+  box-shadow: var(--shadow-md);
   color: var(--color-primary);
   cursor: pointer;
   font-size: var(--font-size-xl);
@@ -714,7 +718,7 @@ button {
 .search-match-active { animation: search-match-pulse 1.6s ease-in-out infinite; }
 
 .editor-onboarding { position: fixed; z-index: var(--z-modal-top); inset: 0; display: grid; place-items: center; padding: 20px; background: rgb(27 42 65 / 24%); }
-.editor-onboarding-card { width: min(440px, 100%); padding: 26px; border: 1px solid var(--color-border-soft); border-radius: var(--radius-2xl); background: var(--color-surface); box-shadow: 0 24px 64px rgb(15 28 46 / 26%), 0 2px 8px rgb(15 28 46 / 8%); }
+.editor-onboarding-card { width: min(440px, 100%); padding: 26px; border: 1px solid var(--color-border-soft); border-radius: var(--radius-2xl); background: var(--color-surface); box-shadow: var(--shadow-lg); }
 .editor-onboarding-steps { display: grid; gap: 0; margin: 16px 0 0; padding: 6px 16px; border: 1px solid var(--color-border-soft); border-radius: var(--radius-xl); background: #f6fafc; list-style: none; }
 .editor-onboarding-steps li { display: flex; align-items: center; gap: 12px; padding: 12px 0; color: var(--color-ink-2); font-size: var(--font-size-base); }
 .editor-onboarding-steps li + li { border-top: 1px solid var(--color-border-soft); }
@@ -728,7 +732,7 @@ button {
 .editor-onboarding-actions [data-onboarding="hide"]:hover { background: #f1f4f6; color: var(--color-ink); }
 
 .preflight-panel { position: fixed; z-index: 88; inset: 0; display: grid; place-items: center; padding: 20px; background: rgb(27 42 65 / 24%); }
-.preflight-card { position: relative; width: min(520px, 100%); padding: 24px; border: 1px solid #ead39a; border-radius: var(--radius-2xl); background: var(--color-surface); box-shadow: 0 24px 64px rgb(15 28 46 / 26%), 0 2px 8px rgb(15 28 46 / 8%); }
+.preflight-card { position: relative; width: min(520px, 100%); padding: 24px; border: 1px solid #ead39a; border-radius: var(--radius-2xl); background: var(--color-surface); box-shadow: var(--shadow-lg); }
 .preflight-list { display: grid; gap: 8px; margin: 16px 0 0; padding: 16px; list-style: none; }
 .preflight-list li { display: flex; }
 .preflight-list [data-preflight-target] {
@@ -824,7 +828,7 @@ button {
   border: 1px solid var(--color-border-soft);
   border-radius: var(--radius-2xl);
   background: var(--color-surface);
-  box-shadow: 0 24px 64px rgb(15 28 46 / 26%), 0 2px 8px rgb(15 28 46 / 8%);
+  box-shadow: var(--shadow-lg);
   animation: motion-pop-in var(--motion-base) var(--motion-spring) backwards;
 }
 
@@ -2618,7 +2622,7 @@ button {
 
 .export-settings-panel { position: fixed; z-index: 85; inset: 0; display: grid; padding: 20px; background: rgb(27 42 65 / 28%); place-items: center; }
 .export-settings-panel[hidden] { display: none; }
-.export-settings-card { position: relative; display: grid; gap: 12px; width: min(440px, 100%); padding: 28px; border: 1px solid var(--color-border-soft); border-radius: var(--radius-2xl); background: var(--color-surface); box-shadow: 0 24px 64px rgb(15 28 46 / 26%), 0 2px 8px rgb(15 28 46 / 8%); }
+.export-settings-card { position: relative; display: grid; gap: 12px; width: min(440px, 100%); padding: 28px; border: 1px solid var(--color-border-soft); border-radius: var(--radius-2xl); background: var(--color-surface); box-shadow: var(--shadow-lg); }
 .export-settings-card .panel-body { margin-top: 0; }
 .export-settings-body { display: grid; gap: 10px; }
 .export-settings-body > label:not(.export-note-field) { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border: 1px solid #e0e9f0; border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-ink-2); font-size: var(--font-size-base); cursor: pointer; }
@@ -2984,7 +2988,7 @@ button {
     padding: 3px;
     border: 1px solid #ccd8e0;
     border-radius: var(--radius-sm);
-    box-shadow: 0 8px 24px rgb(27 42 65 / 12%);
+    box-shadow: var(--shadow-md);
   }
 
   #report-editor .milkdown-toolbar .toolbar-item {
@@ -3071,7 +3075,7 @@ button {
   #report-editor .milkdown-link-edit > .link-edit {
     border: 1px solid #ccd8e0;
     border-radius: var(--radius-sm);
-    box-shadow: 0 8px 24px rgb(27 42 65 / 12%);
+    box-shadow: var(--shadow-md);
   }
 
   #report-editor .milkdown-link-edit > .link-edit {
@@ -3389,7 +3393,7 @@ button {
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-lg);
     background: var(--color-surface);
-    box-shadow: 0 8px 24px rgb(27 42 65 / 15%);
+    box-shadow: var(--shadow-md);
   }
 
   .secondary-actions::before {
@@ -4212,7 +4216,7 @@ button {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
-  box-shadow: 0 8px 24px rgb(27 42 65 / 15%);
+  box-shadow: var(--shadow-md);
 }
 .evidence-task-items { top: calc(var(--app-bar-height, 58px) + 49px); }
 .evidence-path-items { top: calc(var(--app-bar-height, 58px) + 95px); }
