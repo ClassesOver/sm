@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
@@ -24,9 +25,18 @@ def reference_fact_ids(token: str) -> tuple[str, ...]:
 
 
 def statement_fingerprint(markdown: str, claim_id: str) -> str | None:
+    return statement_fingerprints(markdown, (claim_id,))[claim_id]
+
+
+def statement_fingerprints(markdown: str, claim_ids: Iterable[str]) -> dict[str, str | None]:
+    """同一草稿只做一次显示规范化，不跨请求缓存可编辑正文。"""
     from ..delivery.report_runtime.markdown import normalize_cjk_punctuation, normalize_cjk_wording
 
     markdown = normalize_cjk_punctuation(normalize_cjk_wording(markdown))
+    return {claim_id: _statement_fingerprint(markdown, claim_id) for claim_id in claim_ids}
+
+
+def _statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     marker = f"[[claim:{claim_id}]]"
     if markdown.count(marker) != 1:
         return None
@@ -36,8 +46,11 @@ def statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     return hashlib.sha256(re.sub(r"[\s*]", "", statement).encode()).hexdigest()
 
 
-def render_bound_numbers(markdown: str, contents, *, key: str):
+def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions=None):
     contents = tuple(contents)
+    from .number_selection import align_number_selections
+
+    markdown, _ = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     references: list[tuple[str, str]] = []
     notices: list[ReviewNoticeV1] = []
@@ -95,30 +108,53 @@ def anchor_bound_numbers(markdown: str, references, notices=()) -> str:
     return markdown
 
 
+class NumberReferenceResolver:
+    """仅在一次校验请求内复用同组已核验文件的数值目录。"""
+
+    def __init__(self, contents):
+        contents = tuple(contents)
+        self.numbers = {}
+        for token, value, unit, target in _frozen_number_entries(contents):
+            self.numbers.setdefault(token, []).append((value, unit, target))
+        self.entries = {}
+        self.conflicts = set()
+        for bundle in frozen_fact_bundles(contents):
+            document = bundle.model_dump(mode="json", by_alias=True)
+            for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
+                for fact in document.get(array, ()):
+                    key = fact.get('factId')
+                    if key in self.entries and self.entries[key] != fact:
+                        self.conflicts.add(key)
+                    self.entries[key] = fact
+
+    def resolve(self, token: str) -> dict[str, Any] | None:
+        matches = self.numbers.get(token, ())
+        if not matches or len({(str(value), unit, target) for value, unit, target in matches}) != 1:
+            return None
+        ids = reference_fact_ids(token)
+        if not ids or any(key not in self.entries or key in self.conflicts for key in ids):
+            return None
+        return _resolved_number_reference(token, ids, self.entries, matches[0])
+
+
 def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
     """仅从调用者已经核验文件身份的内容重算完整 token；缺失或冲突不回退 total。"""
-    contents = tuple(contents)
-    matches = [(value, unit, target) for candidate, value, unit, target in _frozen_number_entries(contents)
-               if candidate == token]
-    if not matches or len({(str(value), unit, target) for value, unit, target in matches}) != 1:
-        return None
-    ids = reference_fact_ids(token)
-    entries = {}
-    for bundle in frozen_fact_bundles(contents):
-        document = bundle.model_dump(mode="json", by_alias=True)
-        for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
-            for fact in document.get(array, ()):
-                if fact.get('factId') in ids:
-                    if fact['factId'] in entries and entries[fact['factId']] != fact:
-                        return None
-                    entries[fact['factId']] = fact
-    if not ids or set(ids) != entries.keys():
-        return None
+    return NumberReferenceResolver(contents).resolve(token)
+
+
+def resolve_number_references(tokens: Iterable[str], contents) -> dict[str, dict[str, Any] | None]:
+    """同一组已核验来源只展开一次，不跨文件组或请求缓存。"""
+    resolver = NumberReferenceResolver(contents)
+    return {token: resolver.resolve(token) for token in tokens}
+
+
+def _resolved_number_reference(token, ids, entries, selected_value):
     primary = entries[ids[0]]
-    value, unit, target = matches[0]
+    value, unit, target = selected_value
     selector = token[2:-2].split(':')[2]
     from .subject_builder import fact_periods
     periods = fact_periods(primary)
+    period_roles = {}
     selected_periods = None
     if selector.startswith('periodValues.'):
         selected_periods = [primary['periodValues'][int(selector.split('.')[1])]]
@@ -133,9 +169,15 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
         window = period.split('..')
         periods = fact_periods({'periodStart': window[0], 'periodEnd': window[-1],
                                 'periodGranularity': 'month'})
+        period_roles['endpoint'] = (periods[-1],)
     if selected_periods is not None:
         # 复用事实粒度规范化，保留累计窗口的所有桶及环比的基期与本期。
         periods = fact_periods({**primary, 'periodValues': selected_periods})
+        if selector.startswith(('periodTotals.', 'periodAverages.')):
+            period_roles['endpoint'] = fact_periods({**primary, 'periodValues': selected_periods[-1:]})
+        elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
+            period_roles['baseline'] = fact_periods({**primary, 'periodValues': selected_periods[:1]})
+            period_roles['current'] = fact_periods({**primary, 'periodValues': selected_periods[-1:]})
     scope = dict(primary.get('scope') or {})
     if selector.startswith(('topGroups.', 'bottomGroups.')):
         group, index = selector.split('.')
@@ -185,4 +227,5 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
         if operation == '/':
             formula += ' * 100'
     return {'value': float(value), 'unit': target if target == '个百分点' else unit,
-            'periods': periods, 'scope': scope, 'formula': formula, 'entry': primary}
+            'periods': periods, 'period_roles': period_roles,
+            'scope': scope, 'formula': formula, 'entry': primary}

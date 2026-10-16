@@ -12,6 +12,11 @@ from ....quality_warnings import (
     TenantScope,
     WarningAdapter,
 )
+from ...hospital_operation.findings import FindingGraph
+from ...hospital_operation.narrative_outline import (
+    NarrativeOutline,
+    evaluate_narrative_quality,
+)
 from ...trace.contracts_v1 import RevisionTraceIndexV1
 from ...trace.drilldown_builder import build_drilldown_metrics
 from ...trace.fact_service import resolve_fact
@@ -82,6 +87,48 @@ def _editor_interactive_charts(manifest: ReportArtifactManifest) -> dict[str, di
         for chart in manifest.charts
         if chart.interactive_spec is not None
     }
+
+
+def _matches_narrative_analysis_bindings(graph, narrative, outline, snapshot_hash: str) -> bool:
+    """仅已核验快照和逐章节发现映射可解释跨章节复用同一分析。"""
+    if graph.snapshot_hash != snapshot_hash or narrative.snapshot_hash != snapshot_hash:
+        return False
+    expected = {section.code: tuple(section.analysis_ids) for section in outline.sections}
+    if expected != {section.code: tuple(section.analysis_ids) for section in narrative.sections}:
+        return False
+    cards = {card.finding_id: card for card in graph.findings}
+    for section in narrative.sections:
+        if not section.finding_ids or any(finding_id not in cards for finding_id in section.finding_ids):
+            return False
+        analysis_ids = {analysis_id for finding_id in section.finding_ids
+                        for analysis_id in cards[finding_id].analysis_ids}
+        if analysis_ids != set(section.analysis_ids):
+            return False
+    return True
+
+
+def narrative_quality_warnings(
+    graph: FindingGraph,
+    outline: NarrativeOutline,
+    rendered_section_codes: tuple[str, ...],
+) -> tuple[dict[str, Any], ...]:
+    """将章节覆盖和重复指标转换为发布质量软告警。"""
+    quality = evaluate_narrative_quality(
+        graph, outline, rendered_section_codes=rendered_section_codes
+    )
+    return tuple(
+        {
+            **issue,
+            "message": {
+                "report_narrative_duplicate_finding": "同一管理发现被多个章节重复呈现。",
+                "report_narrative_unassigned_finding": "存在未分配到正文或附录的管理发现。",
+                "report_narrative_empty_section": "存在没有管理发现的空章节。",
+                "report_narrative_section_unrendered": "批准提纲中有章节尚未生成正文。",
+            }.get(str(issue.get("code")), "动态章节质量需要复核。"),
+            "details": {"coverageRate": quality.coverage_rate},
+        }
+        for issue in quality.issues
+    )
 
 
 def evaluate_publication_semantics(
@@ -709,6 +756,24 @@ class RuntimePublicationMixin:
                     )
                 )
             section_artifacts = tuple(parsed_section_artifacts)
+            if checkpoint.finding_graph_file is not None and checkpoint.narrative_outline_file is not None:
+                graph = await self._read_identity_model(
+                    thread_id, checkpoint.finding_graph_file, FindingGraph
+                )
+                narrative = await self._read_identity_model(
+                    thread_id, checkpoint.narrative_outline_file, NarrativeOutline
+                )
+                if outline is not None and _matches_narrative_analysis_bindings(
+                    graph, narrative, outline, dataset_snapshot_hash(lineage)
+                ):
+                    issues[:] = [item for item in issues if item.get("code") != "outline_analysis_duplicate"]
+                warnings.extend(
+                    narrative_quality_warnings(
+                        graph,
+                        narrative,
+                        tuple(item.section_code for item in checkpoint.completed_sections),
+                    )
+                )
             claim_fact_issues, claim_fact_warnings = await self._verify_claim_fact_bindings(
                 thread_id, checkpoint, section_artifacts
             )
@@ -998,6 +1063,8 @@ class RuntimePublicationMixin:
         heading_numbers: tuple[HeadingNumber, ...],
         run_context: RunContext,
         source_warnings: tuple[SourceWarning, ...] = (),
+        section_finding_ids: Mapping[str, tuple[str, ...]] | None = None,
+        section_grouping_reasons: Mapping[str, str] | None = None,
     ) -> ReportArtifactManifest:
         scope = self._scope(run_context)
         accepted_by_path: dict[str, dict[str, Any]] = {}
@@ -1094,6 +1161,8 @@ class RuntimePublicationMixin:
                 sections=tuple(
                     section.code for section in _frozen_outline(self._state(run_context)).sections
                 ),
+                section_finding_ids=section_finding_ids,
+                section_grouping_reasons=section_grouping_reasons,
                 section_numbers=section_numbers,
                 heading_numbers=heading_numbers,
                 source_warnings=source_warnings,

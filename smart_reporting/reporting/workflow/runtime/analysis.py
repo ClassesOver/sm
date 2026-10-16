@@ -6,6 +6,7 @@ from collections.abc import Callable
 from copy import copy
 from typing import Literal
 
+from agno.exceptions import ModelProviderError
 from agno.models.message import Message
 from agno.session.agent import AgentSession
 
@@ -15,6 +16,18 @@ from ....task_execution import (
 )
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...code_agent.failure_policy import fresh_attempt_futile
+from ...hospital_operation.finding_projection import build_finding_graph
+from ...hospital_operation.findings import FindingGraph
+from ...hospital_operation.narrative_outline import (
+    NarrativeOutline,
+    NarrativeOutlineCandidate,
+    freeze_narrative_outline,
+)
+from ...hospital_operation.narrative_planner import (
+    build_compatible_report_outline,
+    build_fallback_narrative_candidate,
+    build_narrative_planning_batches,
+)
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
@@ -28,7 +41,7 @@ from ...phase import (
     _nonnegative_int,
     reporting_model_route_from_run_context,
 )
-from ...structured_output import ReportingStructuredOutputExecutor
+from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
 from ..benchmark_variants import (
     BenchmarkProjection,
@@ -476,13 +489,17 @@ def _requested_chart_limit(report_goal: str, analysis_count: int) -> int | None:
     return 1
 
 
-def _limit_requested_charts(plan: VisualizationPlanDraft, report_goal: str, analysis_count: int) -> VisualizationPlanDraft:
+def _limit_requested_charts(
+    plan: VisualizationPlanDraft, report_goal: str, analysis_count: int, *, max_charts: int | None = None
+) -> VisualizationPlanDraft:
     limit = _requested_chart_limit(report_goal, analysis_count)
+    if max_charts is not None:
+        limit = min(limit, max_charts) if limit is not None else max_charts
     if limit is None or len(plan.charts) <= limit:
         return plan
     loguru_logger.warning("report_requested_chart_count_applied requested={} generated={}", limit, len(plan.charts))
     return plan.model_copy(update={"charts": plan.charts[:limit],
-        "warnings": (*plan.warnings, f"用户限定 {limit} 张图表，额外图表计划已省略。")})
+        "warnings": (*plan.warnings, f"{'用户要求与章节预算限制' if max_charts is not None else '用户限定'} {limit} 张图表，额外图表计划已省略。")})
 
 
 def visualization_coding_plan(
@@ -1026,12 +1043,15 @@ class RuntimeAnalysisMixin:
             except ReportingError:
                 report_goal = ""
                 visualization_mode = "static"
+            requested_chart_limit = _requested_chart_limit(report_goal, len(section.analysis_ids))
+            if context.get("max_charts") is not None:
+                requested_chart_limit = min(requested_chart_limit, context["max_charts"]) if requested_chart_limit is not None else context["max_charts"]
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization_section",
                 "reportGoal": report_goal,
                 "visualizationMode": visualization_mode,
-                "requestedChartLimit": _requested_chart_limit(report_goal, len(section.analysis_ids)),
+                "requestedChartLimit": requested_chart_limit,
                 "sectionCode": section_code,
                 "section": section.model_dump(mode="json", by_alias=True),
                 "sectionGoal": {
@@ -1176,7 +1196,7 @@ class RuntimeAnalysisMixin:
                         if visualization_plan_adapter is not None:
                             return _section_scoped_chart_ids(
                                 _limit_requested_charts(visualization_plan_adapter(output, request),
-                                                        report_goal, len(section.analysis_ids)), section_code
+                                                        report_goal, len(section.analysis_ids), max_charts=context.get("max_charts")), section_code
                             )
                         if not isinstance(output, VisualizationPlanDraft):
                             raise ReportingError(
@@ -1184,7 +1204,7 @@ class RuntimeAnalysisMixin:
                                 "可视化 planner 返回了错误的结构化结果类型。",
                             )
                         return _section_scoped_chart_ids(
-                            _limit_requested_charts(output, report_goal, len(section.analysis_ids)), section_code
+                            _limit_requested_charts(output, report_goal, len(section.analysis_ids), max_charts=context.get("max_charts")), section_code
                         )
 
                     def code_runner() -> ReportingCodeGenerationRunner:
@@ -1791,6 +1811,51 @@ class RuntimeAnalysisMixin:
             "supplementalEvidenceSources": supplemental_sources,
         }
 
+    async def _bind_report_document_context(
+        self, run_context: RunContext, *, outline: ReportOutline, job_id: str
+    ) -> None:
+        state = self._state(run_context)
+        if state.get("_narrative_evidence_only"):
+            return
+        profile = self._profile(run_context)
+        period = self._envelope(run_context).period
+        generated_date = state.get(REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY)
+        if generated_date is None:
+            generated_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+            state[REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY] = generated_date
+        try:
+            if (
+                not isinstance(generated_date, str)
+                or date.fromisoformat(generated_date).isoformat() != generated_date
+            ):
+                raise ValueError
+        except ValueError as error:
+            raise ReportingError(
+                "report_document_context_invalid", "报告服务端生成日期状态无效。"
+            ) from error
+        # 仅最终目录绑定文档契约，日期在首次绑定后保持稳定。
+        await self.report_tools.bind_document_context(
+            job_id,
+            {
+                "title": outline.title,
+                "periodLabel": f"{period.start.isoformat()} 至 {period.end.isoformat()}",
+                "organizationName": profile.document_branding.organization_name,
+                "generatedByLabel": profile.document_branding.generated_by_label,
+                "watermarkText": profile.document_branding.watermark_text,
+                "generatedDate": generated_date,
+                "sectionNumbers": [section.section_number for section in outline.sections],
+                "sections": [
+                    {
+                        "code": section.code,
+                        "sectionNumber": section.section_number,
+                        "title": section.title,
+                    }
+                    for section in outline.sections
+                ],
+            },
+            run_context=self._tool_context(run_context),
+        )
+
     async def run_reporting_analysis(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
@@ -1829,6 +1894,7 @@ class RuntimeAnalysisMixin:
             DurableReportingPhase.ANALYSIS_RUNNING,
             DurableReportingPhase.VISUALIZATION,
             DurableReportingPhase.ANALYSIS_FREEZING,
+            DurableReportingPhase.NARRATIVE_PLANNING,
             DurableReportingPhase.SECTIONS,
             DurableReportingPhase.ANALYSIS_REWORK,
         }:
@@ -1849,46 +1915,9 @@ class RuntimeAnalysisMixin:
             except ReportingStateError as error:
                 raise ReportingError(error.code, error.message) from error
         result = self._workflow_result(state)
-        profile = self._profile(run_context)
         outline = _frozen_outline(state)
-        period = self._envelope(run_context).period
-        generated_date = state.get(REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY)
-        if generated_date is None:
-            generated_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-            state[REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY] = generated_date
-        try:
-            if (
-                not isinstance(generated_date, str)
-                or date.fromisoformat(generated_date).isoformat() != generated_date
-            ):
-                raise ValueError
-        except ValueError as error:
-            raise ReportingError(
-                "report_document_context_invalid", "报告服务端生成日期状态无效。"
-            ) from error
-        # 文档事实只能在提纲审核通过后的下一步骤绑定；提前绑定会读取不存在的提纲，
-        # 或把用户已拒绝的提纲固化进封面、目录和双格式 manifest。生成日期首次绑定后
-        # 写入 Workflow state，跨午夜恢复也必须复用，不能让重入改变同一报告事实。
-        await self.report_tools.bind_document_context(
-            str(result["jobId"]),
-            {
-                "title": outline.title,
-                "periodLabel": f"{period.start.isoformat()} 至 {period.end.isoformat()}",
-                "organizationName": profile.document_branding.organization_name,
-                "generatedByLabel": profile.document_branding.generated_by_label,
-                "watermarkText": profile.document_branding.watermark_text,
-                "generatedDate": generated_date,
-                "sectionNumbers": [section.section_number for section in outline.sections],
-                "sections": [
-                    {
-                        "code": section.code,
-                        "sectionNumber": section.section_number,
-                        "title": section.title,
-                    }
-                    for section in outline.sections
-                ],
-            },
-            run_context=self._tool_context(run_context),
+        await self._bind_report_document_context(
+            run_context, outline=outline, job_id=str(result["jobId"])
         )
         revision = int(result.get("revision", 0)) + 1
         # TaskExecutionScope 暂时保留 sandbox_id 字段名；宿主机模式写入稳定 workspace key。
@@ -1952,7 +1981,10 @@ class RuntimeAnalysisMixin:
         validation_context_file = FileIdentity.model_validate(
             await self._write_artifact_validation_context(
                 scope["threadId"],
-                f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.validation-context.json",
+                (
+                    f"报表/智能分析/{run_context.run_id}/report-revision-{revision}"
+                    f"-{payload_sha256(validation_context)}.validation-context.json"
+                ),
                 validation_context,
             )
         )
@@ -1978,6 +2010,65 @@ class RuntimeAnalysisMixin:
             files=self._merge_checkpoint_files(checkpoint.files, validation_context_file),
         )
         await self._persist_reporting_checkpoint(run_context, checkpoint)
+        if state.pop("_narrative_evidence_only", False):
+            evidence_checkpoint = checkpoint
+            for analysis in detailed_plan.analyses:
+                evidence_checkpoint = await self._run_analysis_item_task(
+                    run_context,
+                    checkpoint=evidence_checkpoint,
+                    revision=revision,
+                    sandbox_id=sandbox_id,
+                    validation_context_file=validation_context_file,
+                    detailed_plan=detailed_plan,
+                    dataset_handles=dataset_handles,
+                    lineage=lineage,
+                    citation_bindings=citation_bindings,
+                    analysis_context_file=analysis_context_file,
+                    fact_files=fact_files,
+                    analysis_id=analysis.analysis_id,
+                    section_goal={
+                        "sectionCode": "evidence",
+                        "title": analysis.analysis_name or analysis.management_question,
+                        "sectionNumber": "1",
+                        "focus": (analysis.management_question,),
+                    },
+                    retry_reason=("report_revision_feedback" if feedback else None),
+                    feedback=feedback,
+                    rework_request=None,
+                )
+            durable_evidence = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+            evidence_checkpoint = await self._restore_or_create_finding_graph(
+                run_context=run_context, checkpoint=evidence_checkpoint,
+                thread_id=scope["threadId"], report_run_id=str(run_context.run_id or scope["externalRunId"]),
+                revision=revision, fact_files=fact_files,
+                analysis_items=durable_evidence.payload.get("analysisItems", {}) if durable_evidence else {},
+                citation_bindings=citation_bindings,
+            )
+            await self._apply_durable_command(
+                run_context,
+                ReportingCommand(
+                    name="start_narrative_planning",
+                    commandId=f"narrative-evidence-frozen:{checkpoint.revision}",
+                ),
+            )
+            return StepOutput(
+                content={
+                    "status": "evidence_frozen",
+                    "findingGraphHash": evidence_checkpoint.finding_graph_hash,
+                    "analysisCount": len(fact_files),
+                }
+            )
+        graph = None
+        if checkpoint.finding_graph_file is not None:
+            durable_evidence = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+            checkpoint = await self._restore_or_create_finding_graph(
+                run_context=run_context, checkpoint=checkpoint, thread_id=scope["threadId"],
+                report_run_id=str(run_context.run_id or scope["externalRunId"]), revision=revision,
+                fact_files=fact_files,
+                analysis_items=durable_evidence.payload.get("analysisItems", {}) if durable_evidence else {},
+                citation_bindings=citation_bindings,
+            )
+            graph = await self._read_identity_model(scope["threadId"], checkpoint.finding_graph_file, FindingGraph)
         checkpoint_state: dict[str, Any] = checkpoint.model_dump(mode="python")
         # Reporting 阶段统一由 Agno Workflow 驱动。checkpoint 持久化层自身提供 CAS 锁，
         # 回调不持有跨模型调用的外层锁，从而允许 Parallel 模式真正并发执行分析项和章节。
@@ -2028,6 +2119,10 @@ class RuntimeAnalysisMixin:
                 run_context, ReportingCheckpoint.model_validate(checkpoint_state)
             )
             visual_inspection_mode = "vision" if self._vision_enabled else "deterministic"
+            max_charts = None
+            if checkpoint.narrative_outline_file is not None:
+                narrative = await self._read_identity_model(scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline)
+                max_charts = next(item.max_charts for item in narrative.sections if item.code == section_code)
             visualization_context = {
                 "run_context": run_context,
                 "checkpoint": checkpoint,
@@ -2039,6 +2134,7 @@ class RuntimeAnalysisMixin:
                 "fact_files": fact_files,
                 "visual_inspection_mode": visual_inspection_mode,
                 "visualization_deadline": visualization_deadline,
+                "max_charts": max_charts,
             }
             await self._run_visualization_section_task(section_code, context=visualization_context)
             updated = await self._current_reporting_checkpoint(run_context, checkpoint)
@@ -2156,6 +2252,15 @@ class RuntimeAnalysisMixin:
             checkpoint = await self._current_reporting_checkpoint(
                 run_context, ReportingCheckpoint.model_validate(checkpoint_state)
             )
+            narrative_section = None
+            if checkpoint.narrative_outline_file is not None:
+                narrative_outline = await self._read_identity_model(
+                    scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline
+                )
+                narrative_section = next(
+                    (item for item in narrative_outline.sections if item.code == section_code),
+                    None,
+                )
             artifact = await self._build_reporting_artifact(
                 run_context,
                 analysis_ids=section.analysis_ids,
@@ -2164,11 +2269,24 @@ class RuntimeAnalysisMixin:
                 citation_bindings=citation_bindings,
                 section_codes=(section_code,),
             )
+            finding_cards = {card.finding_id: card for card in graph.findings} if graph else {}
+            if narrative_section is not None and narrative_section.narrative_role == "appendix":
+                analysis_rework_allowed = False
             work_item = self._build_section_work_item(
                 section,
                 detailed_plan=detailed_plan,
                 analysis_artifact=artifact,
                 citation_bindings=citation_bindings,
+                finding_ids=(narrative_section.finding_ids if narrative_section else ()),
+                finding_summaries=tuple(
+                    finding_cards[finding_id].model_dump(mode="json", by_alias=True)
+                    for finding_id in (narrative_section.finding_ids if narrative_section else ())
+                    if finding_id in finding_cards
+                ),
+                narrative_role=(narrative_section.narrative_role if narrative_section else None),
+                grouping_reason=(narrative_section.grouping_reason if narrative_section else None),
+                max_blocks=(narrative_section.max_blocks if narrative_section else None),
+                max_charts=(narrative_section.max_charts if narrative_section else None),
             )
             updated, _section_artifact, rework = await self._run_section_phase(
                 run_context,
@@ -2181,7 +2299,7 @@ class RuntimeAnalysisMixin:
                     detailed_plan=detailed_plan,
                     profile_coverage=profile_coverage,
                     analysis_ids=work_item.analysis_ids,
-                ),
+                ) if analysis_rework_allowed else {},
                 analysis_rework_allowed=analysis_rework_allowed,
                 degraded_rework=degraded_rework,
             )
@@ -2199,6 +2317,7 @@ class RuntimeAnalysisMixin:
 
         reporting_workflow = ReportingAnalysisAndDraftWorkflow(
             report_goal=self._envelope(run_context).report_goal,
+            evidence_frozen=checkpoint.narrative_outline_file is not None,
             sections=[
                 {
                     "sectionCode": section.code,
@@ -2259,6 +2378,261 @@ class RuntimeAnalysisMixin:
         )
         await self._persist_reporting_checkpoint(run_context, final_checkpoint)
         return StepOutput(content={**content, "jobId": result["jobId"]})
+
+    async def run_analysis_evidence(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        state = self._state(run_context)
+        if REPORT_OUTLINE_STATE_KEY not in state:
+            plan = DetailedAnalysisPlan.model_validate(state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY])
+            outline = ReportOutline(
+                reportType=self._envelope(run_context).report_type, title="运营分析报告",
+                sections=[{
+                    "code": "section_001", "sectionNumber": "1",
+                    "title": "分析任务执行分区",
+                    "analysisIds": tuple(item.analysis_id for item in plan.analyses),
+                }],
+            )
+            state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
+            state[REPORT_OUTLINE_HASH_STATE_KEY] = payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
+        state["_narrative_evidence_only"] = True
+        try:
+            return await self.run_reporting_analysis(_step_input, run_context)
+        finally:
+            state.pop("_narrative_evidence_only", None)
+
+    async def run_report_draft(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        return await self.run_reporting_analysis(_step_input, run_context)
+
+    async def _plan_narrative_outline(
+        self, *, graph: FindingGraph, title: str, report_goal: str,
+        analyses: list[dict[str, str]], run_context: RunContext,
+    ) -> tuple[NarrativeOutline, tuple[dict[str, Any], ...]]:
+        """模型提出章节候选；服务端冻结，纠错失败后保留确定性发现归属。"""
+
+        reason = ""
+        try:
+            # UTF-8 字节数作为 token 数的保守上界，另外预留外层标题与纠错信息。
+            budget = _analysis_summary_input_token_budget(self._narrative_outline_agent, run_context)
+            batches = build_narrative_planning_batches(
+                graph, report_goal, max_bytes=max(1, budget - 4096 - len(title.encode("utf-8"))),
+            )
+            planned = []
+            for index, context in enumerate(batches):
+                ids = {item["findingId"] for item in context["findings"]}
+                batch_graph = graph.model_copy(update={
+                    "findings": tuple(card for card in graph.findings if card.finding_id in ids),
+                })
+                if len(batches) > 1 and all(
+                    card.priority != "high" and (card.priority == "low" or card.evidence_level == "statistical_relation")
+                    for card in batch_graph.findings
+                ):
+                    # 纯统计限制批次不强制规划经营章节，统一交给全局规划安排附录。
+                    ordered_ids = tuple(card.finding_id for card in batch_graph.findings)
+                    planned.append(NarrativeOutlineCandidate(
+                        title=title, snapshotHash=graph.snapshot_hash,
+                        sections=({"title": "补充统计与数据限制", "findingIds": ordered_ids[:200],
+                                   "objective": "保留统计关系与数据质量限制", "groupingReason": "补充证据统一安排附录",
+                                   "narrativeRole": "appendix", "priority": "low", "maxCharts": 0},),
+                        appendixFindingIds=ordered_ids[200:],
+                    ))
+                    continue
+                payload = {"title": title, "planningContext": context}
+                call_budget = StructuredOutputCallBudget()
+                accepted = None
+                for attempt in range(3):
+                    if call_budget.exhausted:
+                        break
+                    try:
+                        candidate = await self._run_planner(
+                            self._narrative_outline_agent, payload, run_context,
+                            call_budget=call_budget,
+                            attempt=min(attempt, 1),
+                            failure_kind="schema_failure" if attempt else None,
+                        )
+                        candidate = NarrativeOutlineCandidate.model_validate(candidate)
+                        freeze_narrative_outline(candidate, graph=batch_graph, analyses=analyses)
+                        accepted = candidate
+                        break
+                    except (ValueError, ReportingError, ModelProviderError) as error:
+                        reason = str(error)[:2000]
+                        if isinstance(error, ReportingError) and error.code == "report_planner_context_budget_exceeded":
+                            break
+                        payload = {
+                            "title": title, "planningContext": context,
+                            "correction": {
+                                "attempt": attempt + 1,
+                                "reason": reason,
+                                "allowedPaths": ["sections", "appendixFindingIds", "omittedFindings", "snapshotHash"],
+                                "instruction": "修正当前批次引用、覆盖、范围和快照问题，返回完整 NarrativeOutlineCandidate。",
+                            },
+                        }
+                if accepted is None:
+                    raise ValueError(reason or "当前批次提纲规划未通过")
+                planned.append(accepted)
+                loguru_logger.info(
+                    "report_narrative_batch_completed batch={} total={} findings={}",
+                    index + 1, len(batches), len(ids),
+                )
+            if len(planned) == 1:
+                return freeze_narrative_outline(planned[0], graph=graph, analyses=analyses), ()
+            # 批次只是主题候选，不能直接拼接成最终章节。共同范围按候选描述，
+            # 完整 findingId 目录留给全局规划重新分配，冻结仍逐一核对原始图谱。
+            cards = {card.finding_id: card for card in graph.findings}
+            topics = []
+            for candidate in planned:
+                for section in candidate.sections:
+                    first = cards[section.finding_ids[0]]
+                    topics.append({**section.model_dump(mode="json", by_alias=True),
+                                   "periodStart": first.period_start, "periodEnd": first.period_end,
+                                   "grain": first.grain, "scope": first.scope})
+            global_context = {
+                "reportGoal": report_goal, "snapshotHash": graph.snapshot_hash,
+                "findings": [{"findingId": card.finding_id} for card in graph.findings],
+                "proposedSections": topics,
+                "appendixFindingIds": [item for candidate in planned for item in candidate.appendix_finding_ids],
+                "omittedFindings": [item for candidate in planned for item in candidate.omitted_findings],
+                "highPriorityFindingIds": [card.finding_id for card in graph.findings if card.priority == "high"],
+                "contentBudget": {"maxSections": 30, "maxFindingsPerSection": 200},
+                "requiredAction": (
+                    "统筹各批次主题，合并跨批次重复主题，按管理问题重新分配所有发现。"
+                    "保持候选主题的期间、范围和粒度边界；高优先级发现必须进入正文。"
+                    "纯统计限制放入附录，不为每个批次增加正文。附录每200条也占一个章节，总章节不超过30。"
+                    "每个 findingId 必须且只能归属一次；返回完整 NarrativeOutlineCandidate。"
+                ),
+            }
+            payload = {"title": title, "planningStage": "consolidate", "planningContext": global_context}
+            if len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()) > budget:
+                raise ValueError("全局主题候选超出提纲规划预算")
+            call_budget = StructuredOutputCallBudget()
+            for attempt in range(3):
+                if call_budget.exhausted:
+                    break
+                try:
+                    candidate = await self._run_planner(
+                        self._narrative_outline_agent, payload, run_context,
+                        call_budget=call_budget, attempt=min(attempt, 1),
+                        failure_kind="schema_failure" if attempt else None,
+                    )
+                    combined = NarrativeOutlineCandidate.model_validate(candidate)
+                    return freeze_narrative_outline(combined, graph=graph, analyses=analyses), ()
+                except (ValueError, ReportingError, ModelProviderError) as error:
+                    reason = str(error)[:2000]
+                    if isinstance(error, ReportingError) and error.code == "report_planner_context_budget_exceeded":
+                        break
+                    payload = {**payload, "correction": {"reason": reason,
+                               "instruction": "修正全局章节归属与容量问题，返回完整提纲。"}}
+            raise ValueError(reason or "全局章节统筹未通过")
+        except (ValueError, ReportingError, ModelProviderError) as error:
+            reason = str(error)[:2000]
+        fallback = build_fallback_narrative_candidate(graph, title, analyses=analyses)
+        return freeze_narrative_outline(fallback, graph=graph, analyses=analyses), ({
+            "code": "report_narrative_planning_degraded",
+            "message": f"章节规划纠错未通过，已使用确定性发现分组：{reason}",
+        },)
+
+    async def generate_narrative_outline(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        """在 FindingGraph 冻结后生成最终章节提纲并保存其身份。"""
+
+        scope = self._scope(run_context)
+        run_id = str(run_context.run_id or scope["externalRunId"])
+        durable = await self.state_repository.get(run_id)
+        stored = durable.payload.get("workflowCheckpoint") if durable is not None else None
+        if not isinstance(stored, Mapping):
+            raise ReportingError("report_finding_graph_unavailable", "动态章节缺少 checkpoint。")
+        checkpoint = ReportingCheckpoint.model_validate(stored)
+        if checkpoint.finding_graph_file is None or checkpoint.finding_graph_hash is None:
+            raise ReportingError("report_finding_graph_unavailable", "动态章节缺少已冻结发现图谱。")
+        graph = await self._read_identity_model(scope["threadId"], checkpoint.finding_graph_file, FindingGraph)
+        if graph.snapshot_hash != checkpoint.finding_graph_hash:
+            raise ReportingError("report_checkpoint_conflict", "发现图谱快照与 checkpoint 不一致。")
+        state = self._state(run_context)
+        legacy_outline = _frozen_outline(state)
+        if checkpoint.narrative_outline_file is not None:
+            if checkpoint.narrative_outline_hash != checkpoint.narrative_outline_file.sha256:
+                raise ReportingError("report_checkpoint_conflict", "冻结章节提纲文件身份不一致。")
+            narrative = await self._read_identity_model(
+                scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline
+            )
+            if narrative.snapshot_hash != graph.snapshot_hash:
+                raise ReportingError("report_checkpoint_conflict", "冻结章节提纲与发现图谱快照不一致。")
+            compatible = build_compatible_report_outline(
+                graph, report_type=legacy_outline.report_type, title=narrative.title,
+                narrative_outline=narrative,
+            )
+            outline_payload = compatible.model_dump(mode="json", by_alias=True)
+            outline_hash = payload_sha256(outline_payload)
+            if outline_hash != checkpoint.outline_hash:
+                raise ReportingError("report_checkpoint_conflict", "冻结章节提纲与 checkpoint 内容不一致。")
+            state[REPORT_OUTLINE_STATE_KEY] = outline_payload
+            state[REPORT_OUTLINE_HASH_STATE_KEY] = outline_hash
+            # checkpoint 已持久化但 durable 迁移尚未完成时，只补齐迁移。
+            if durable.phase is DurableReportingPhase.NARRATIVE_PLANNING:
+                await self._apply_durable_command(
+                    run_context,
+                    ReportingCommand(
+                        name="complete_narrative_planning",
+                        commandId=f"narrative-planning-complete:{checkpoint.revision}",
+                    ),
+                )
+            return StepOutput(content={"status": "completed", "sectionCount": len(narrative.sections)})
+        await self._apply_durable_command(
+            run_context,
+            ReportingCommand(
+                name="start_narrative_planning",
+                commandId=f"narrative-planning-start:{checkpoint.revision}",
+            ),
+        )
+        detailed_plan = DetailedAnalysisPlan.model_validate(
+            state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]
+        )
+        analyses = [{"analysisId": item.analysis_id, "analysisName": item.analysis_name}
+                    for item in detailed_plan.analyses]
+        narrative, planning_issues = await self._plan_narrative_outline(
+            graph=graph, title=legacy_outline.title,
+            report_goal=self._envelope(run_context).report_goal,
+            analyses=analyses, run_context=run_context,
+        )
+        compatible = build_compatible_report_outline(
+            graph, report_type=legacy_outline.report_type, title=narrative.title,
+            narrative_outline=narrative,
+        )
+        outline_payload = compatible.model_dump(mode="json", by_alias=True)
+        state[REPORT_OUTLINE_STATE_KEY] = outline_payload
+        state[REPORT_OUTLINE_HASH_STATE_KEY] = payload_sha256(outline_payload)
+        narrative_content = json.dumps(
+            narrative.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        narrative_file = await self._write_immutable_artifact(
+            scope["threadId"],
+            f"报表/智能分析/{run_id}/narrative/revision-{checkpoint.revision}/outline.json",
+            narrative_content,
+        )
+        checkpoint = self._update_reporting_checkpoint(
+            checkpoint,
+            outline_hash=state[REPORT_OUTLINE_HASH_STATE_KEY],
+            pending_sections=tuple(section.code for section in compatible.sections),
+            warnings=tuple((*checkpoint.warnings, *planning_issues)),
+            narrative_outline_file=narrative_file,
+            narrative_outline_hash=hashlib.sha256(narrative_content).hexdigest(),
+            files=self._merge_checkpoint_files(checkpoint.files, narrative_file),
+        )
+        await self._persist_reporting_checkpoint(run_context, checkpoint)
+        await self._apply_durable_command(
+            run_context,
+            ReportingCommand(
+                name="complete_narrative_planning",
+                commandId=f"narrative-planning-complete:{checkpoint.revision}",
+            ),
+        )
+        return StepOutput(content={"status": "completed", "sectionCount": len(narrative.sections)})
 
     async def assemble_report(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
         state = self._state(run_context)
@@ -2469,15 +2843,51 @@ class RuntimeAnalysisMixin:
             and current_frozen == (None, None, None)
             and all(item is not None for item in incoming_frozen)
         )
+        freezes_narrative_outline = (
+            current.phase == "analysis"
+            and incoming.phase == "analysis"
+            and not current.completed_sections
+            and not incoming.completed_sections
+            and current.narrative_outline_file is None
+            and incoming.narrative_outline_file is not None
+            and current.narrative_outline_hash is None
+        )
         if (
             current.revision != incoming.revision
-            or current.outline_hash != incoming.outline_hash
+            or (
+                current.outline_hash != incoming.outline_hash
+                and not freezes_narrative_outline
+            )
             or current.profile_coverage != incoming.profile_coverage
             or (current_frozen != incoming_frozen and not freezes_analysis)
         ):
             raise ReportingError(
                 "report_checkpoint_conflict",
                 "并发任务 checkpoint 与当前冻结分析身份不一致。",
+            )
+        if (
+            current.finding_graph_file is not None
+            and incoming.finding_graph_file is not None
+            and (
+                current.finding_graph_file != incoming.finding_graph_file
+                or current.finding_graph_hash != incoming.finding_graph_hash
+            )
+        ):
+            raise ReportingError(
+                "report_checkpoint_conflict",
+                "并发任务 checkpoint 与当前发现图谱身份不一致。",
+            )
+        if (
+            current.narrative_outline_file is not None
+            and incoming.narrative_outline_file is not None
+            and (
+                current.narrative_outline_file != incoming.narrative_outline_file
+                or current.narrative_outline_hash != incoming.narrative_outline_hash
+            )
+        ):
+            raise ReportingError(
+                "report_checkpoint_conflict",
+                "并发任务 checkpoint 与当前叙事提纲身份不一致。",
             )
         current_fact_files = current.deterministic_fact_files
         incoming_fact_files = incoming.deterministic_fact_files
@@ -2487,30 +2897,51 @@ class RuntimeAnalysisMixin:
                 "并发任务 checkpoint 与当前确定性 facts 身份不一致。",
             )
         deterministic_fact_files = current_fact_files or incoming_fact_files
+        finding_graph_file = current.finding_graph_file or incoming.finding_graph_file
+        finding_graph_hash = current.finding_graph_hash or incoming.finding_graph_hash
+        narrative_outline_file = (
+            current.narrative_outline_file or incoming.narrative_outline_file
+        )
+        narrative_outline_hash = (
+            current.narrative_outline_hash or incoming.narrative_outline_hash
+        )
         merged_files = RuntimeAnalysisMixin._merge_checkpoint_files(current.files, *incoming.files)
         merged_files_by_path = {item.path: item for item in merged_files}
         if any(
             identity.path in merged_files_by_path
             and merged_files_by_path[identity.path] != identity
-            for identity in deterministic_fact_files.values()
+            for identity in (
+                *deterministic_fact_files.values(),
+                *((finding_graph_file,) if finding_graph_file is not None else ()),
+                *((narrative_outline_file,) if narrative_outline_file is not None else ()),
+            )
         ):
             raise ReportingError(
                 "report_checkpoint_conflict",
-                "并发任务 files 账本试图覆盖已冻结的确定性 facts 身份。",
+                "并发任务 files 账本试图覆盖已冻结的阶段产物身份。",
             )
         completed_by_code = {item.section_code: item for item in current.completed_sections}
         for item in incoming.completed_sections:
             existing = completed_by_code.get(item.section_code)
-            if existing is not None and existing != item:
+            if existing is not None and (
+                existing.work_item_hash != item.work_item_hash
+                or existing.artifact_file != item.artifact_file
+            ):
                 raise ReportingError(
                     "report_section_completion_conflict",
                     f"章节 {item.section_code} 已绑定其他完成产物。",
                 )
-            completed_by_code[item.section_code] = item
+            completed_by_code[item.section_code] = item.model_copy(update={
+                "retry_count": max(existing.retry_count if existing is not None else 0, item.retry_count),
+            })
         completed_codes = set(completed_by_code)
         pending = tuple(
             code
-            for code in dict.fromkeys((*current.pending_sections, *incoming.pending_sections))
+            for code in dict.fromkeys(
+                incoming.pending_sections
+                if freezes_narrative_outline
+                else (*current.pending_sections, *incoming.pending_sections)
+            )
             if code not in completed_codes
         )
         trace_by_task = {item.task_id: item for item in current.trace if item.task_id}
@@ -2562,6 +2993,10 @@ class RuntimeAnalysisMixin:
             warnings=tuple((*current.warnings, *incoming.warnings)[-500:]),
             last_error=incoming.last_error or current.last_error,
             deterministic_fact_files=dict(deterministic_fact_files),
+            finding_graph_file=finding_graph_file,
+            finding_graph_hash=finding_graph_hash,
+            narrative_outline_file=narrative_outline_file,
+            narrative_outline_hash=narrative_outline_hash,
             visualization_section_errors=section_errors,
             files=merged_files,
             trace=tuple((*anonymous_trace, *trace_by_task.values())),
@@ -2954,6 +3389,8 @@ class RuntimeAnalysisMixin:
                 "datasets": planner_payload.get("datasets"),
                 "analysisBlock": {"blockId": f"{analysis_id}:evidence:decision"},
             }
+            if "correction" in planner_payload:
+                decision_request["correction"] = planner_payload["correction"]
             return cast(
                 EvidenceDecision,
                 await run_structured_agent(
@@ -3658,6 +4095,113 @@ class RuntimeAnalysisMixin:
             )
             checkpoint = await self._persist_reporting_checkpoint(run_context, checkpoint)
         return checkpoint, fact_files
+
+    async def _restore_or_create_finding_graph(
+        self,
+        *,
+        run_context: RunContext,
+        checkpoint: ReportingCheckpoint,
+        thread_id: str,
+        report_run_id: str,
+        revision: int,
+        fact_files: Mapping[str, FileIdentity],
+        analysis_items: Mapping[str, Any] | None = None,
+        citation_bindings: tuple[Citation, ...] = (),
+    ) -> ReportingCheckpoint:
+        """分析与补证完成后冻结图谱；恢复同时核对补证和引用身份。"""
+
+        items = analysis_items or {}
+        snapshot_payload = {
+            "revision": revision,
+            "profileCoverage": checkpoint.profile_coverage.model_dump(mode="json", by_alias=True),
+            "factFiles": [
+                {"analysisId": aid, "sha256": fact_files[aid].sha256}
+                for aid in sorted(fact_files)
+            ],
+            "analysisEvidence": [
+                {"analysisId": aid, "evidenceFiles": items[aid].get("evidenceFiles", ()),
+                 "datasetIds": items[aid].get("datasetIds", ())}
+                for aid in sorted(fact_files) if aid in items
+            ],
+            "citationBindings": [item.model_dump(mode="json", by_alias=True) for item in citation_bindings],
+        }
+        snapshot_hash = hashlib.sha256(
+            json.dumps(snapshot_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+        if checkpoint.finding_graph_file is not None:
+            graph_file = checkpoint.finding_graph_file
+            graph = await self._read_identity_model(thread_id, graph_file, FindingGraph)
+            if (
+                checkpoint.finding_graph_hash != graph.snapshot_hash
+                or graph.snapshot_hash != snapshot_hash
+            ):
+                raise ReportingError(
+                    "report_finding_graph_changed", "发现图谱快照哈希与 checkpoint 不一致。"
+                )
+            for aid in fact_files:
+                for raw_file in items.get(aid, {}).get("evidenceFiles", ()):
+                    identity = FileIdentity.model_validate(raw_file)
+                    if identity.path != fact_files[aid].path:
+                        await self._read_identity_bytes(thread_id, identity)
+            return checkpoint
+
+        facts: list[DeterministicAnalysisBundle] = []
+        supplements: dict[str, list[tuple[Mapping[str, Any], str, str]]] = {}
+        citations: dict[str, tuple[str, ...]] = {}
+        for analysis_id, identity in fact_files.items():
+            item = items.get(analysis_id)
+            if not isinstance(item, Mapping) or item.get("analysisId") != analysis_id:
+                raise ReportingError("report_analysis_evidence_incomplete", "发现图谱只能在全部分析补证完成后冻结。")
+            dataset_ids = set(item.get("datasetIds", ()))
+            citations[analysis_id] = tuple(
+                binding.citation_id for binding in citation_bindings if binding.dataset_id in dataset_ids
+            )
+            if not citations[analysis_id]:
+                raise ReportingError("report_analysis_evidence_invalid", "管理发现缺少已登记数据集引用。")
+            fact = await self._read_identity_model(thread_id, identity, DeterministicAnalysisBundle)
+            if fact.analysis_id != analysis_id:
+                raise ReportingError(
+                    "report_analysis_facts_invalid", "确定性 facts 文件与 analysisId 映射不一致。"
+                )
+            facts.append(fact)
+            for raw_file in item.get("evidenceFiles", ()):
+                evidence_file = FileIdentity.model_validate(raw_file)
+                if evidence_file.path == identity.path:
+                    continue
+                content = await self._read_identity_bytes(thread_id, evidence_file)
+                evidence = validate_supplemental_evidence(content, item)
+                supplements.setdefault(analysis_id, []).append((
+                    evidence.model_dump(mode="json", by_alias=True), evidence_file.path, evidence_file.sha256,
+                ))
+        profile = self._profile(run_context)
+        graph = build_finding_graph(
+            facts,
+            None,
+            tuple(item.model_dump(mode="json", by_alias=True) for item in profile.metrics),
+            snapshot_hash=snapshot_hash,
+            citation_ids_by_analysis=citations,
+            fact_file_paths={analysis_id: identity.path for analysis_id, identity in fact_files.items()},
+            fact_file_sha256s={analysis_id: identity.sha256 for analysis_id, identity in fact_files.items()},
+            supplemental_sources=supplements,
+        )
+        content = json.dumps(
+            graph.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        graph_path = (
+            f"报表/智能分析/{report_run_id}/findings/revision-{revision}/finding-graph.json"
+        )
+        graph_file = await self._write_immutable_artifact(thread_id, graph_path, content)
+        checkpoint = self._update_reporting_checkpoint(
+            checkpoint,
+            finding_graph_file=graph_file,
+            finding_graph_hash=graph.snapshot_hash,
+            files=self._merge_checkpoint_files(checkpoint.files, graph_file),
+        )
+        return await self._persist_reporting_checkpoint(run_context, checkpoint)
 
     async def _prepare_deterministic_analysis_facts(
         self,

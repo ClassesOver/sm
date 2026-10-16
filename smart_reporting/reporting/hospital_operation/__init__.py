@@ -19,6 +19,14 @@ from .domains import (
     domain_guidance,
     resolve_domain_mentions,
 )
+from .findings import FindingCard, FindingGraph, FindingRelation, FindingSourceRef
+from .narrative_outline import (
+    NarrativeOutline,
+    NarrativeOutlineCandidate,
+    NarrativeSection,
+    NarrativeSectionCandidate,
+    freeze_narrative_outline,
+)
 from .outline import (
     OutlineSectionProposal,
     ReportOutline,
@@ -46,4 +54,13 @@ __all__ = [
     "freeze_outline",
     "profile_csv_dataset",
     "resolve_domain_mentions",
+    "FindingCard",
+    "FindingGraph",
+    "FindingRelation",
+    "FindingSourceRef",
+    "NarrativeOutline",
+    "NarrativeOutlineCandidate",
+    "NarrativeSection",
+    "NarrativeSectionCandidate",
+    "freeze_narrative_outline",
 ]

@@ -930,12 +930,42 @@ class AnalysisItemWorkflow:
             "deterministicFacts": self._model_facts(state),
             "datasets": state.instruction.get("datasets", []),
         }
-        decision = await self.decide_evidence(payload)
-        _validate_coding_requirements(
-            decision,
-            state.instruction.get("datasets"),
-            state.instruction.get("currentAnalysis"),
-        )
+        for attempt in range(2):
+            decision = await self.decide_evidence(payload)
+            try:
+                _validate_coding_requirements(
+                    decision,
+                    state.instruction.get("datasets"),
+                    state.instruction.get("currentAnalysis"),
+                )
+                break
+            except ReportingError as error:
+                logger.bind(
+                    analysis_id=state.instruction.get("currentAnalysisId"),
+                    details=error.details,
+                    attempt=attempt,
+                ).warning("report_analysis_evidence_decision_rejected")
+                if attempt == 0:
+                    payload["correction"] = {
+                        "previousDecision": decision.model_dump(mode="json", by_alias=True),
+                        "code": error.code,
+                        "message": error.message,
+                        "details": error.details,
+                        "instruction": "只使用当前分析 datasets 中同一项的 datasetId 和 columns；"
+                        "无法补证的缺口如实说明，不得引用未授权数据。返回完整补证决策。",
+                    }
+                    continue
+                state.warnings.append(
+                    f"report_analysis_supplement_abandoned: 补证决策纠错后仍引用"
+                    f"未签发的 Dataset 或字段，仅使用确定性事实完成分析（{error.details}）。"
+                )
+                state.supplement_abandoned = True
+                decision = AnalysisEvidenceDecision(
+                    requiresSupplementalEvidence=False,
+                    reason="invalid_coding_requirements",
+                    missingFacts=(),
+                    codingRequirements=(),
+                )
         state.decision = decision
         state.failure = None
         state.statuses["plan-evidence"] = "completed"

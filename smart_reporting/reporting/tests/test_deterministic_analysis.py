@@ -87,6 +87,16 @@ def test_measure_semantic_accepts_confirmed_unit() -> None:
     assert value.unit == "元"
 
 
+def test_fact_granularity_uses_dataset_buckets_instead_of_planned_summary():
+    item = analysis().model_copy(update={'series_granularity': 'year'})
+    dataset = context('current').model_copy(update={'period_granularities': {'month': 'month'}})
+    bundle = build_deterministic_analysis_bundle(item, (
+        ('current', b'month,department,amount\n2025-01,A,10\n2025-02,A,20\n', dataset, ('current',)),
+    ), profile_hash='c' * 64)
+    assert bundle.metrics[0].period_granularity == 'month'
+    assert len(bundle.metrics[0].period_values) == 2
+
+
 def test_untyped_income_fact_defaults_to_cny_yuan() -> None:
     dataset_context = context(
         "current",

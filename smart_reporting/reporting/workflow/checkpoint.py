@@ -438,6 +438,14 @@ class SectionWorkItem(StrictModel):
         alias="completionConditions", min_length=1, max_length=100
     )
     analysis_ids: tuple[str, ...] = Field(alias="analysisIds", min_length=1, max_length=2000)
+    finding_ids: tuple[str, ...] = Field(default=(), alias="findingIds", max_length=2000)
+    finding_summaries: tuple[dict[str, Any], ...] = Field(
+        default=(), alias="findingSummaries", max_length=2000
+    )
+    narrative_role: str | None = Field(default=None, alias="narrativeRole", max_length=64)
+    grouping_reason: str | None = Field(default=None, alias="groupingReason", max_length=1000)
+    max_blocks: int | None = Field(default=None, alias="maxBlocks", ge=1, le=20)
+    max_charts: int | None = Field(default=None, alias="maxCharts", ge=0, le=20)
     evidence: tuple[AnalysisEvidence, ...] = Field(default=(), max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500
@@ -461,6 +469,17 @@ class SectionWorkItem(StrictModel):
 
     @model_validator(mode="after")
     def validate_projection(self) -> SectionWorkItem:
+        summary_ids = tuple(
+            str(item.get("findingId"))
+            for item in self.finding_summaries
+            if isinstance(item, dict) and item.get("findingId")
+        )
+        if len(self.finding_ids) != len(set(self.finding_ids)):
+            raise ValueError("SectionWorkItem findingIds 不能重复")
+        if len(summary_ids) != len(set(summary_ids)) or set(summary_ids) - set(self.finding_ids):
+            raise ValueError("SectionWorkItem findingSummaries 必须精确属于当前章节")
+        if self.finding_ids and set(self.finding_ids) - set(summary_ids):
+            raise ValueError("SectionWorkItem findingIds 必须都有对应摘要")
         evidence_ids = tuple(item.analysis_id for item in self.evidence)
         expected_evidence_ids = tuple(
             analysis_id for analysis_id in self.analysis_ids if analysis_id in evidence_ids
@@ -503,6 +522,7 @@ class SectionWorkItem(StrictModel):
 
 class SectionClaim(StrictModel):
     claim_id: str = Field(alias="claimId", min_length=1, max_length=128)
+    finding_ids: tuple[str, ...] = Field(default=(), alias="findingIds", max_length=200)
     metric_code: str = Field(alias="metricCode", min_length=1, max_length=128)
     value: Any
     period_basis: str = Field(alias="periodBasis", min_length=1, max_length=200)
@@ -539,6 +559,8 @@ class SectionClaim(StrictModel):
             raise ValueError("实体级比例必须同时声明 aggregationGrain 与 entityGrain")
         if len(self.fact_ids) != len(set(self.fact_ids)):
             raise ValueError("claim 的 factIds 不能重复")
+        if len(self.finding_ids) != len(set(self.finding_ids)):
+            raise ValueError("claim 的 findingIds 不能重复")
         return self
 
 
@@ -546,6 +568,7 @@ class SectionClaimSubmission(StrictModel):
     """模型提交的 claim；冻结字段由服务端在写入 SectionArtifact 前补齐。"""
 
     claim_id: str = Field(alias="claimId", min_length=1, max_length=128)
+    finding_ids: tuple[str, ...] = Field(default=(), alias="findingIds", max_length=200)
     metric_code: str = Field(alias="metricCode", min_length=1, max_length=128)
     value: Any
     comparison: str | None = Field(default=None, max_length=200)
@@ -590,6 +613,8 @@ class SectionClaimSubmission(StrictModel):
 
     @model_validator(mode="after")
     def validate_submission(self) -> SectionClaimSubmission:
+        if len(self.finding_ids) != len(set(self.finding_ids)):
+            raise ValueError("章节 claim findingIds 不能重复")
         if len(self.citation_ids) != len(set(self.citation_ids)):
             raise ValueError("章节 claim citationIds 不能重复")
         if len(self.chart_ids) != len(set(self.chart_ids)):
@@ -757,6 +782,17 @@ class ReportingCheckpoint(StrictModel):
         default=None, alias="evidenceManifest"
     )
     analysis_manifest_file: FileIdentity | None = Field(default=None, alias="analysisManifestFile")
+    # 发现图谱与最终叙事提纲均以不可变文件保存；身份字段可选以兼容旧 revision。
+    finding_graph_file: FileIdentity | None = Field(default=None, alias="findingGraphFile")
+    finding_graph_hash: str | None = Field(
+        default=None, alias="findingGraphHash", pattern=SHA256_PATTERN
+    )
+    narrative_outline_file: FileIdentity | None = Field(
+        default=None, alias="narrativeOutlineFile"
+    )
+    narrative_outline_hash: str | None = Field(
+        default=None, alias="narrativeOutlineHash", pattern=SHA256_PATTERN
+    )
     completed_sections: tuple[CompletedSection, ...] = Field(
         default=(), alias="completedSections", max_length=100
     )
@@ -787,6 +823,10 @@ class ReportingCheckpoint(StrictModel):
             raise ValueError("checkpoint pendingSections 不能重复")
         if set(completed) & set(self.pending_sections):
             raise ValueError("checkpoint 章节不能同时处于完成和待生成状态")
+        if (self.finding_graph_file is None) != (self.finding_graph_hash is None):
+            raise ValueError("findingGraphFile 与 findingGraphHash 必须同时存在")
+        if (self.narrative_outline_file is None) != (self.narrative_outline_hash is None):
+            raise ValueError("narrativeOutlineFile 与 narrativeOutlineHash 必须同时存在")
         if self.phase != "analysis" and (
             self.report_brief is None
             or self.evidence_manifest is None

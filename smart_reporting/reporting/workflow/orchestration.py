@@ -17,8 +17,8 @@ from agno.workflow.workflow import Workflow
 from loguru import logger
 
 from ..models import reporting_failure
-from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
 from .controller import REPORT_PROCESS_LIFECYCLE_DEPENDENCY
+from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
 from .scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 
 StepExecutor = Any
@@ -451,6 +451,9 @@ def create_reporting_workflow(
     assemble_report: StepExecutor,
     validate_report: StepExecutor,
     finalize_publication: StepExecutor,
+    generate_narrative_outline: StepExecutor | None = None,
+    run_analysis_evidence: StepExecutor | None = None,
+    run_report_draft: StepExecutor | None = None,
 ) -> Workflow:
     """创建可注册到现有 AgentOS 的报表 Workflow，不建立第二条传输链路。"""
 
@@ -566,23 +569,52 @@ def create_reporting_workflow(
                 max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
-            Step(
-                step_id="generate-outline",
-                name="生成动态报告提纲",
-                executor=_timed_step_executor(generate_outline, step_id="generate-outline"),
-                max_retries=1,
-                # 当前产品入口暂不启用提纲审核交互。这里是直接流向下一节点，不是
-                # 自动批准；保留配置供审核能力上线时恢复，启用前必须补回端到端验收。
-                # human_review=HumanReview(
-                #     requires_output_review=True,
-                #     output_review_message="审核动态报告提纲；拒绝时请填写修改意见。",
-                #     on_reject=OnReject.retry,
-                #     on_error=OnError.fail,
-                #     max_retries=5,
-                # ),
-                human_review=HumanReview(on_error=OnError.fail),
+            *(
+                [
+                    create_reporting_analysis_step(
+                        run_analysis_evidence,
+                        step_id="run-analysis-evidence",
+                        name="完成原子分析与证据冻结",
+                    ),
+                    Step(
+                        step_id="generate-narrative-outline",
+                        name="根据核验发现生成动态章节",
+                        executor=_timed_step_executor(
+                            generate_narrative_outline,
+                            step_id="generate-narrative-outline",
+                        ),
+                        max_retries=1,
+                        human_review=HumanReview(on_error=OnError.fail),
+                    ),
+                    create_reporting_analysis_step(
+                        run_report_draft,
+                        step_id="run-report-draft",
+                        name="按动态章节生成报告正文",
+                    ),
+                ]
+                if run_analysis_evidence is not None
+                and run_report_draft is not None
+                and generate_narrative_outline is not None
+                else [
+                    Step(
+                        step_id="generate-outline",
+                        name="生成初始分析提纲",
+                        executor=_timed_step_executor(generate_outline, step_id="generate-outline"),
+                        max_retries=1,
+                        # 当前产品入口暂不启用提纲审核交互。这里是直接流向下一节点，不是
+                        # 自动批准；保留配置供审核能力上线时恢复，启用前必须补回端到端验收。
+                        # human_review=HumanReview(
+                        #     requires_output_review=True,
+                        #     output_review_message="审核动态报告提纲；拒绝时请填写修改意见。",
+                        #     on_reject=OnReject.retry,
+                        #     on_error=OnError.fail,
+                        #     max_retries=5,
+                        # ),
+                        human_review=HumanReview(on_error=OnError.fail),
+                    ),
+                    create_reporting_analysis_step(run_reporting_analysis),
+                ]
             ),
-            create_reporting_analysis_step(run_reporting_analysis),
             Step(
                 step_id="assemble-report",
                 name="汇编最终报告",
@@ -614,13 +646,18 @@ def create_reporting_workflow(
     return workflow
 
 
-def create_reporting_analysis_step(executor: StepExecutor) -> Step:
+def create_reporting_analysis_step(
+    executor: StepExecutor,
+    *,
+    step_id: str = "run-coding-analysis",
+    name: str = "Reporting 分析与成稿",
+) -> Step:
     """构造生产与历史回放共用的 Reporting 分析步骤契约。"""
 
     return Step(
-        step_id="run-coding-analysis",
-        name="Reporting 分析与成稿",
-        executor=_timed_step_executor(executor, step_id="run-coding-analysis"),
+        step_id=step_id,
+        name=name,
+        executor=_timed_step_executor(executor, step_id=step_id),
         max_retries=0,
         human_review=HumanReview(on_error=OnError.fail),
     )

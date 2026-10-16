@@ -229,9 +229,11 @@ def _build_export_trace_sources(
                 key=lambda item: _SOURCE_STATUS_PRIORITY.get(item, 3),
             )
             if entry.get("_sectionId") != section_id:
-                locators = entry.setdefault("claimLocators", [
-                    {"sectionId": entry.pop("_sectionId"), "claimId": entry["claimId"]}
-                ])
+                # setdefault 的默认表达式也会执行，不能在其中反复 pop 已消费的章节。
+                locators = entry.get("claimLocators")
+                if locators is None:
+                    locators = [{"sectionId": entry.pop("_sectionId"), "claimId": entry["claimId"]}]
+                    entry["claimLocators"] = locators
                 locator = {"sectionId": section_id, "claimId": binding.claim_id}
                 if locator not in locators:
                     locators.append(locator)
@@ -1731,12 +1733,12 @@ class ReportEditorService:
                     f"当前编辑的是第 {context.revision} 版，已有更新的第 {latest_revision} 版，"
                     "请打开最新版本的编辑链接后再导出。",
                 )
-        # 当前文稿可来自旧版本，但新版本身份必须越过所有已登记版本，包括文件丢失的版本。
+        # 新身份越过全部已登记版本；重定基后应用本次设置，并清除历史设置。
         next_revision = max(context.revision, latest_revision) + 1
         if export_settings:
-            session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = {
-                **export_settings,
-            }
+            session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = export_settings
+        else:
+            session_state[REPORT_JOBS_STATE_KEY][context.job_id].pop("_editorExportSettings", None)
         output_path = _next_pdf_path(context, revision=next_revision)
         revision_path = PurePosixPath(output_path).parent.as_posix()
         if await self.workspace.apath_exists(scope.workspace_key, revision_path):
@@ -1805,13 +1807,24 @@ class ReportEditorService:
                         )
                     # B8：数据来源附录与引用展示同一次快照联合渲染，编号由渲染器
                     # 按正文首次出现顺序分配；无追溯索引的旧报告保持无附录导出。
-                    target_job["_traceSourcePresentations"] = _build_export_trace_sources(
-                        trace_index,
-                        validation,
-                        public_base_url=public_base_url,
-                        report_id=context.report_id,
-                        revision=next_revision,
-                    )
+                    target_job.pop("_traceSourcePresentations", None)
+                    if export_settings.get("sources") is True:
+                        try:
+                            target_job["_traceSourcePresentations"] = _build_export_trace_sources(
+                                trace_index, validation, public_base_url=public_base_url,
+                                report_id=context.report_id, revision=next_revision,
+                            )
+                        except Exception as error:
+                            # 附录是展示载荷；失败不能丢弃已核验的追溯索引。
+                            lineage_issues.append({
+                                "code": "report_editor_source_appendix_unavailable",
+                                "message": "来源附录未能生成，在线数据来源仍保留。"
+                                           + (error.message if isinstance(error, ReportingError) else "附录构建异常。"),
+                            })
+                            logger.opt(exception=error).warning(
+                                "report_editor_source_appendix_unavailable report_id={} revision={}",
+                                context.report_id, next_revision,
+                            )
             except Exception as error:  # noqa: BLE001 - 追溯降级，导出继续
                 lineage_issues.append(_lineage_unavailable_issue(error, rendered=False))
                 artifact_manifest = trace_index = render_manifest = rebuilt = None

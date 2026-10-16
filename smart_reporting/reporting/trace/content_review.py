@@ -69,6 +69,7 @@ from .review_rates import (
     _from_to_direction_warnings,
 )
 from .review_readability import readability_warnings, repeated_sentence_warnings
+from .review_supplemental import supplemental_attribution_warnings
 
 # 读者可见文本中不应出现的内部标识（正文复核与图表图注清理共用）。
 INTERNAL_ID_PATTERN = re.compile(
@@ -140,8 +141,12 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
 
 
 def review_content_result(markdown: str, contents: Iterable[str], *, field_definitions: Mapping[str, str] | None = None,
-                          fact_ids: Iterable[str] | None = None) -> ContentReviewResult:
+                          fact_ids: Iterable[str] | None = None,
+                          bound_chart_ids: Iterable[str] = ()) -> ContentReviewResult:
     contents = tuple(contents)
+    from .number_selection import align_number_selections
+
+    _, selection_warnings = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     # 编辑器复核的是用户可能手输的正文：全角数字与百分点缩写同样要识别。
     markdown = normalize_number_notation(trace_body(markdown, mask_inline_code=False))
@@ -149,7 +154,15 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     # 数值锚点可能插在数字与单位之间；复核时只移除非分析协议标记。
     text = re.sub(r"\[\[(?:claim|citation|section|table|/table):[^\]]+\]\]", "", text)
     documents = _documents(contents)
-    warnings = money_text_warnings(text)
+    warnings = [*selection_warnings, *money_text_warnings(text)]
+    warnings.extend(supplemental_attribution_warnings(text, documents, field_definitions or {}))
+    for paragraph in re.split(r"\n\s*\n", text):
+        if (re.search(r"相关系数|相关性|高度相关", paragraph)
+                and re.search(r"(?:反映|代表)同一工作量|(?:因此|说明|证明|故).{0,12}口径等价", paragraph)
+                and not re.search(r"不能|不足以|不代表|无法|并非", paragraph)):
+            warnings.append("相关性不能证明口径等价：统计范围不同的指标须分别说明，不得据此认定可互换或择一使用。")
+    if tuple(bound_chart_ids) and re.search(r"图[^。\n]{0,40}(?:未纳入引用|不予展示|已剔除|不再引用)", text):
+        warnings.append("图表引用状态矛盾：当前段落仍绑定成品图表，不能声称已剔除或未引用；须核对结构化引用并客观说明口径限制。")
     if any("金额单位待核实" in paragraph and re.search(r"(?:原始元值|按(?:万元|亿元)换算)", paragraph)
            for paragraph in re.split(r"\n\s*\n", text)):
         warnings.append("金额单位断言矛盾：已标注金额单位待核实，不能断言原始值为元或按万元、亿元换算。")

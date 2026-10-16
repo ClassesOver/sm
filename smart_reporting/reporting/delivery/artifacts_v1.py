@@ -105,6 +105,8 @@ class ReportArtifactManifest(StrictModel):
     # 章节内容和顺序由 Workflow 批准提纲冻结，并通过 expectedSections 精确验收。
     # 交付模型只约束通用结构，不能再维护一份会与综合十章或专题子集冲突的业务清单。
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    section_finding_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict, alias="sectionFindingIds")
+    section_grouping_reasons: dict[str, str] = Field(default_factory=dict, alias="sectionGroupingReasons")
     section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1, max_length=100)
     heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers", min_length=1)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
@@ -143,6 +145,10 @@ class ReportArtifactManifest(StrictModel):
             raise ValueError("产物路径不能重复")
         if len(self.sections) != len(set(self.sections)):
             raise ValueError("报告章节不能重复")
+        if set(self.section_finding_ids) - set(self.sections) or set(self.section_grouping_reasons) - set(self.sections):
+            raise ValueError("章节发现映射不能引用未登记章节")
+        if any(len(ids) != len(set(ids)) for ids in self.section_finding_ids.values()):
+            raise ValueError("章节发现映射不能重复")
         _validate_heading_numbers(self.sections, self.section_numbers, self.heading_numbers)
         return self
 
@@ -213,6 +219,8 @@ def build_authoritative_manifest(
     interactive_charts: Mapping[str, str] | None = None,
     lineage: tuple[DatasetLineage, ...],
     sections: tuple[str, ...],
+    section_finding_ids: Mapping[str, tuple[str, ...]] | None = None,
+    section_grouping_reasons: Mapping[str, str] | None = None,
     section_numbers: tuple[str, ...],
     heading_numbers: tuple[HeadingNumber, ...],
     source_warnings: tuple[SourceWarning, ...] = (),
@@ -305,6 +313,8 @@ def build_authoritative_manifest(
         citations=citations,
         analysisIds=analysis_ids,
         sections=sections,
+        sectionFindingIds=section_finding_ids or {},
+        sectionGroupingReasons=section_grouping_reasons or {},
         sectionNumbers=section_numbers,
         headingNumbers=heading_numbers,
         sourceWarnings=source_warnings,
