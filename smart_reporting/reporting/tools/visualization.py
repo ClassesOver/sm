@@ -13,7 +13,7 @@ from agno.run import RunContext
 from loguru import logger as loguru_logger
 from pydantic import ValidationError
 
-from ...workspace import WorkspaceError, WorkspaceService
+from ...workspace import normalize_workspace_path, WorkspaceError
 from ..delivery.draft_v1 import ReportChartRegistration
 from ..models import ReportingError
 from ..workflow.checkpoint import ChartVisualInspectionReceipt, FileIdentity
@@ -58,7 +58,7 @@ class RuntimeVisualizationMixin:
         workspace = contract.get("visualizationWorkspace")
         raw_root = workspace.get("chartOutputRoot") if isinstance(workspace, Mapping) else None
         try:
-            return WorkspaceService.normalize_path(raw_root, allow_root=False)[0]
+            return normalize_workspace_path(raw_root, allow_root=False)
         except (TypeError, WorkspaceError) as error:
             raise ReportingError(
                 "report_phase_contract_invalid",
@@ -68,7 +68,7 @@ class RuntimeVisualizationMixin:
     @staticmethod
     def _require_chart_output_path(path: str, output_root: str) -> str:
         try:
-            normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            normalized = normalize_workspace_path(path, allow_root=False)
         except (TypeError, WorkspaceError) as error:
             raise ReportingError("report_chart_source_invalid", "图表源路径无效。") from error
         if not normalized.startswith(f"{output_root}/"):
@@ -206,7 +206,6 @@ class RuntimeVisualizationMixin:
                     "report_visualization_section_invalid",
                     "sectionCode 与当前章节 Task 契约不匹配。",
                 )
-            await self._ensure_visualization_script_settled(scope)
             output_root = self._chart_output_root(phase_contract)
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
             if phase_contract.get("visualizationMode") == "static" and any(

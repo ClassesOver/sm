@@ -1,6 +1,5 @@
 import builtins
 import os
-from contextlib import contextmanager
 
 import pytest
 
@@ -9,7 +8,6 @@ from smart_reporting.runtime.observability import (
     configure_tracing,
     duration_ms,
     flush_tracing,
-    suppress_expected_probe_tracing,
 )
 
 
@@ -26,25 +24,6 @@ def test_duration_ms_rounds_and_clamps_elapsed_time(
     monkeypatch.setattr("smart_reporting.runtime.observability.perf_counter", lambda: now)
 
     assert duration_ms(started_at) == expected
-
-
-def test_expected_probe_uses_opentelemetry_suppression(monkeypatch):
-    calls = []
-
-    @contextmanager
-    def suppress():
-        calls.append("enter")
-        try:
-            yield
-        finally:
-            calls.append("exit")
-
-    monkeypatch.setattr("opentelemetry.instrumentation.utils.suppress_instrumentation", suppress)
-
-    with suppress_expected_probe_tracing():
-        calls.append("probe")
-
-    assert calls == ["enter", "probe", "exit"]
 
 
 def test_configure_tracing_is_noop_when_disabled(monkeypatch):

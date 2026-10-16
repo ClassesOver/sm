@@ -64,17 +64,6 @@ class FakeMetadataClient:
             raise self.error
 
 
-class FakeSandboxCheck:
-    def __init__(self, error: Exception | None = None):
-        self.error = error
-        self.calls = 0
-
-    async def __call__(self) -> None:
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-
-
 def _app(diagnostics: ReportingDependencyDiagnostics) -> FastAPI:
     application = FastAPI()
     application.include_router(create_reporting_dependency_diagnostics_router(diagnostics))
@@ -85,7 +74,6 @@ def _app(diagnostics: ReportingDependencyDiagnostics) -> FastAPI:
 async def test_reporting_dependency_diagnostics_checks_configured_services() -> None:
     adapters: list[FakeAdapter] = []
     metadata = FakeMetadataClient()
-    sandbox = FakeSandboxCheck()
 
     def adapter_factory(source: Any) -> FakeAdapter:
         adapter = FakeAdapter(source)
@@ -95,7 +83,6 @@ async def test_reporting_dependency_diagnostics_checks_configured_services() -> 
     diagnostics = ReportingDependencyDiagnostics(
         sources=(_source(),),
         metadata_client=metadata,
-        sandbox_check=sandbox,
         starrocks_adapter_factory=adapter_factory,
     )
 
@@ -106,11 +93,9 @@ async def test_reporting_dependency_diagnostics_checks_configured_services() -> 
     assert result.checks.starrocks.sources[0].source_id == "rj"
     assert result.checks.starrocks.sources[0].code == "ok"
     assert result.checks.metadata.ok is True
-    assert result.checks.sandbox.ok is True
     assert adapters[0].queries == ["SELECT 1 AS connection_test"]
     assert adapters[0].closed is True
     assert metadata.calls == 1
-    assert sandbox.calls == 1
 
 
 @pytest.mark.anyio
@@ -128,7 +113,6 @@ async def test_reporting_dependency_diagnostics_returns_safe_failure_codes() -> 
                 details={"httpStatus": 404},
             )
         ),
-        sandbox_check=FakeSandboxCheck(RuntimeError("包含 daytona-secret")),
         starrocks_adapter_factory=lambda _source: adapter,
     )
 
@@ -145,19 +129,16 @@ async def test_reporting_dependency_diagnostics_returns_safe_failure_codes() -> 
     assert result.checks.starrocks.sources[0].code == "source_query_failed"
     assert result.checks.metadata.code == "report_metadata_rejected"
     assert result.checks.metadata.http_status == 404
-    assert result.checks.sandbox.code == "sandbox_unavailable"
     assert adapter.closed is True
     serialized = str(payload)
     assert "diagnostic-password" not in serialized
     assert "metadata-secret" not in serialized
-    assert "daytona-secret" not in serialized
+    assert "checks" in payload and "sandbox" not in payload["checks"]
     assert "dependency=starrocks" in log_text
     assert "dependency=metadata" in log_text
     assert "http_status=404" in log_text
-    assert "dependency=sandbox" in log_text
     assert "diagnostic-password" not in log_text
     assert "metadata-secret" not in log_text
-    assert "daytona-secret" not in log_text
 
 
 def test_reporting_dependency_diagnostics_extracts_safe_nested_error_facts() -> None:
@@ -175,7 +156,6 @@ async def test_reporting_dependency_diagnostics_reports_missing_configuration() 
     diagnostics = ReportingDependencyDiagnostics(
         sources=(),
         metadata_client=None,
-        sandbox_check=None,
     )
 
     result = await diagnostics.check()
@@ -183,26 +163,6 @@ async def test_reporting_dependency_diagnostics_reports_missing_configuration() 
     assert result.status == "failed"
     assert result.checks.starrocks.code == "starrocks_not_configured"
     assert result.checks.metadata.code == "report_metadata_not_configured"
-    assert result.checks.sandbox.code == "sandbox_not_configured"
-
-
-@pytest.mark.anyio
-async def test_reporting_dependency_diagnostics_times_out_sandbox_probe(monkeypatch) -> None:
-    async def blocked_sandbox_check() -> None:
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(diagnostics_module, "SANDBOX_CHECK_TIMEOUT_SECONDS", 0.001)
-    diagnostics = ReportingDependencyDiagnostics(
-        sources=(_source(),),
-        metadata_client=FakeMetadataClient(),
-        sandbox_check=blocked_sandbox_check,
-        starrocks_adapter_factory=lambda source: FakeAdapter(source),
-    )
-
-    result = await diagnostics.check()
-
-    assert result.status == "failed"
-    assert result.checks.sandbox.code == "sandbox_timeout"
 
 
 @pytest.mark.anyio
@@ -217,7 +177,6 @@ async def test_reporting_dependency_diagnostics_times_out_starrocks_source(monke
     diagnostics = ReportingDependencyDiagnostics(
         sources=(_source(),),
         metadata_client=FakeMetadataClient(),
-        sandbox_check=FakeSandboxCheck(),
         starrocks_adapter_factory=lambda _source: adapter,
     )
 
@@ -247,7 +206,6 @@ async def test_reporting_dependency_diagnostics_limits_starrocks_concurrency(mon
     diagnostics = ReportingDependencyDiagnostics(
         sources=sources,
         metadata_client=FakeMetadataClient(),
-        sandbox_check=FakeSandboxCheck(),
         starrocks_adapter_factory=CountingAdapter,
     )
 
@@ -262,7 +220,6 @@ async def test_reporting_dependency_diagnostics_route_returns_failed_status() ->
     diagnostics = ReportingDependencyDiagnostics(
         sources=(),
         metadata_client=None,
-        sandbox_check=None,
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app(diagnostics)),
@@ -279,7 +236,6 @@ async def test_reporting_dependency_diagnostics_route_returns_success() -> None:
     diagnostics = ReportingDependencyDiagnostics(
         sources=(_source(),),
         metadata_client=FakeMetadataClient(),
-        sandbox_check=FakeSandboxCheck(),
         starrocks_adapter_factory=lambda source: FakeAdapter(source),
     )
     async with httpx.AsyncClient(

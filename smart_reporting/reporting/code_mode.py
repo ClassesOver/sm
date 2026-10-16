@@ -64,7 +64,7 @@ def _script_process_cell(
         package_import_root = str(Path(__file__).resolve().parents[2])
         runner = (
             f"import sys;sys.path.insert(0, {package_import_root!r});"
-            "from smart_reporting.sandbox.matplotlib_defaults import run_reporting_script;"
+            "from smart_reporting.reporting.matplotlib_defaults import run_reporting_script;"
             f"run_reporting_script({script_path!r}, {matplotlib_root!r})"
         )
         command_parts.extend(("-c", runner))

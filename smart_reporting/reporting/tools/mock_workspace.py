@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ...workspace import WorkspaceError, WorkspaceService
+from ...workspace import normalize_workspace_path, WorkspaceError
 from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
 
@@ -31,7 +31,7 @@ class MockReportingWorkspace:
     @staticmethod
     def _normalize(path: str) -> str:
         try:
-            return WorkspaceService.normalize_path(path, allow_root=False)[0]
+            return normalize_workspace_path(path, allow_root=False)
         except WorkspaceError as error:
             raise ReportingWorkspaceError("Reporting 路径无效。") from error
 
@@ -88,20 +88,6 @@ class MockReportingWorkspace:
         self._outputs[normalized] = raw
         self.calls.append({"operation": "write_text", "path": normalized, "overwrite": overwrite})
         return self._identity(normalized, raw)
-
-    async def execute_script(
-        self,
-        script_path: str,
-        *,
-        timeout: int,
-    ) -> Mapping[str, Any]:
-        if timeout < 1:
-            raise ReportingWorkspaceError("Reporting 脚本执行超时。")
-        self.calls.append(
-            {"operation": "execute_script", "script_path": script_path, "timeout": timeout}
-        )
-        return {"ok": True, "status": "completed", "exitCode": 0, "exit_code": 0}
-
 
 class MockReportingToolRuntime:
     """为单个测试 case 绑定不可变 context 与独立内存工作区。"""

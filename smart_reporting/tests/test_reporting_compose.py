@@ -1,4 +1,3 @@
-import os
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -41,7 +40,7 @@ def test_reporting_runtime_image_owns_directory_defaults() -> None:
     assert "REPORTING_HOST_WORKSPACE_ROOT=/tmp/smart-reporting-workspaces" in runtime_environment
 
 
-def test_reporting_compose_only_exposes_daytona_sdk_url():
+def test_reporting_deploy_configuration_has_no_sandbox_settings():
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(
         (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
@@ -49,14 +48,14 @@ def test_reporting_compose_only_exposes_daytona_sdk_url():
     )
     environment = compose["services"]["reporting-os"]["environment"]
 
-    assert "AGENT_DAYTONA_API_URL" not in environment
-    assert environment["DAYTONA_API_URL"] == "http://host.docker.internal:33043/api"
-    assert "AGENT_DAYTONA_API_URL" not in (repository_root / ".env.example").read_text(
-        encoding="utf-8"
-    )
-    assert "AGENT_DAYTONA_API_URL" not in (
-        repository_root / "smart_reporting" / "README.md"
-    ).read_text(encoding="utf-8")
+    assert not [name for name in environment if "DAYTONA" in name or "SANDBOX" in name]
+    for path in (
+        repository_root / ".env.example",
+        repository_root / "smart_reporting" / ".env.example",
+        repository_root / "smart_reporting" / "README.md",
+    ):
+        assert "DAYTONA" not in path.read_text(encoding="utf-8").upper(), path
+    assert not (repository_root / "scripts" / "configure_daytona_env.sh").exists()
 
 
 def test_reporting_compose_disables_fg_data_profiling_analytics():
@@ -229,99 +228,3 @@ def test_agentos_env_update_adds_required_public_url_without_overwriting_existin
     assert values["AGENT_WORKSPACE_HMAC_SECRET"] == "01234567890123456789012345678901"
     assert values["CUSTOM_SETTING"] == "keep"
     assert "AGENT_REPORT_CONTEXT_TOKEN_BUDGET" not in values
-
-
-def test_daytona_runner_waits_for_api_health_without_reverse_dependency() -> None:
-    repository_root = Path(__file__).parents[2]
-    compose = yaml.load(
-        (repository_root / "docker/docker-compose.yaml").read_text(encoding="utf-8"),
-        Loader=yaml.BaseLoader,
-    )
-    api = compose["services"]["api"]
-    runner = compose["services"]["runner"]
-
-    assert "/api/health" in " ".join(api["healthcheck"]["test"])
-    assert "runner" not in api["depends_on"]
-    assert runner["depends_on"]["api"]["condition"] == "service_healthy"
-
-
-def test_daytona_compose_uses_named_volumes_for_selected_persistent_services() -> None:
-    repository_root = Path(__file__).parents[2]
-    compose = yaml.load(
-        (repository_root / "docker/docker-compose.yaml").read_text(encoding="utf-8"),
-        Loader=yaml.BaseLoader,
-    )
-
-    assert {volume_name: volume["name"] for volume_name, volume in compose["volumes"].items()} == {
-        "db": "${DAYTONA_VOLUME_PREFIX:-daytona_}db",
-        "redis": "${DAYTONA_VOLUME_PREFIX:-daytona_}redis",
-        "minio": "${DAYTONA_VOLUME_PREFIX:-daytona_}minio",
-        "dex": "${DAYTONA_VOLUME_PREFIX:-daytona_}dex",
-    }
-    for service_name, volume_name in {
-        "db": "db",
-        "redis": "redis",
-        "minio": "minio",
-        "dex": "dex",
-    }.items():
-        assert any(
-            mount.startswith(f"{volume_name}:")
-            for mount in compose["services"][service_name]["volumes"]
-        )
-
-    assert "./data/runner:/home/daytona/runner" in compose["services"]["runner"]["volumes"]
-    assert "./data/registry:/var/lib/registry" in compose["services"]["registry"]["volumes"]
-    assert all(
-        f"./data/{service_name}" not in mount
-        for service_name in ("db", "redis", "minio", "dex")
-        for service in compose["services"].values()
-        for mount in service.get("volumes", [])
-        if isinstance(mount, str)
-    )
-    assert "dex:/var/dex" in compose["services"]["env-init"]["volumes"]
-
-
-def test_daytona_env_init_prepares_dex_named_volume_for_image_user(tmp_path: Path) -> None:
-    repository_root = Path(__file__).parents[2]
-    scripts_dir = tmp_path / "scripts"
-    docker_dir = tmp_path / "docker"
-    fake_bin = tmp_path / "bin"
-    scripts_dir.mkdir()
-    docker_dir.mkdir()
-    fake_bin.mkdir()
-    script = scripts_dir / "configure_daytona_env.sh"
-    script.write_bytes((repository_root / "scripts/configure_daytona_env.sh").read_bytes())
-    (docker_dir / ".env.example").write_bytes(
-        (repository_root / "docker/.env.example").read_bytes()
-    )
-    dex_volume = tmp_path / "dex-volume"
-    chown_log = tmp_path / "chown.log"
-    commands = {
-        "id": '#!/bin/sh\nprintf "0\\n"\n',
-        "chown": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CHOWN_LOG"\n',
-        "openssl": '#!/bin/sh\nprintf "abcdefghijklmnop\\n"\n',
-        "htpasswd": "#!/bin/sh\nprintf 'admin:$2b$10$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n'\n",
-    }
-    for name, content in commands.items():
-        command = fake_bin / name
-        command.write_text(content, encoding="utf-8")
-        command.chmod(0o755)
-
-    subprocess.run(
-        ["bash", str(script), str(docker_dir / ".env")],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{fake_bin}:/usr/bin:/bin",
-            "HOST_UID": "1000",
-            "HOST_GID": "1000",
-            "CHOWN_LOG": str(chown_log),
-            "DEX_DATA_DIR": str(dex_volume),
-        },
-    )
-
-    assert dex_volume.is_dir()
-    assert {path.name for path in (docker_dir / "data").iterdir()} == {"runner", "registry"}
-    assert f"-R 1001:1001 {dex_volume}" in chown_log.read_text(encoding="utf-8")

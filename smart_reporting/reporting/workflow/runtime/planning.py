@@ -241,8 +241,8 @@ class RuntimePlanningMixin:
         task_ids: tuple[str, ...] = ()
         if stored_checkpoint is not None:
             # 无法解析的旧 checkpoint 仍由业务恢复路径失败关闭；终态清理不能因此
-            # 跳过已启动任务。这里只验证并读取 taskId，任何结构损坏都会阻止销毁
-            # sandbox，避免遗漏仍在运行的 phase task。
+            # 跳过已启动任务。这里只验证并读取 taskId，任何结构损坏都会阻止释放
+            # 工作区，避免遗漏仍在运行的 phase task。
             checkpoint = _TerminalCleanupCheckpoint.model_validate(stored_checkpoint)
             task_ids = tuple(
                 dict.fromkeys(item.task_id for item in checkpoint.trace if item.task_id)
@@ -250,7 +250,7 @@ class RuntimePlanningMixin:
 
         # phase task 的 ID 包含 revision、work item 和 attempt，不能由 Workflow run ID
         # 反推。必须以启动任务前持久化的 trace 为事实来源，并在全部活动任务关闭后
-        # 才删除共享 sandbox；任一查询或取消失败都保留现场供后续重试清理。
+        # 才释放共享工作区；任一查询或取消失败都保留现场供后续重试清理。
         task_cleanup_error: Exception | None = None
         for task_id in task_ids:
             try:
@@ -267,47 +267,15 @@ class RuntimePlanningMixin:
                 task_cleanup_error = task_cleanup_error or error
         if task_cleanup_error is not None:
             raise task_cleanup_error
-        await self._release_or_destroy_workspace(
-            scope["thread_id"],
-            message="报表工作流已结束，但运行环境删除失败，已隔离并转入后台清理。",
-        )
+        self._release_workspace(scope["thread_id"])
 
-    async def _release_or_destroy_workspace(self, thread_id: str, *, message: str) -> None:
-        if getattr(self, "workspace_registry", None) is not None:
-            # 宿主机模式只释放进程内 Workspace 身份，保留会话目录和全部产物供审计/恢复
-            # 与报告编辑器续写；宿主机路由不提供 sandbox 删除/隔离能力。
-            self.workspace_registry.release(thread_id)
-            getattr(self, "_host_workspaces", {}).pop(thread_id, None)
-            loguru_logger.info("report_host_workspace_released workspace_key={}", thread_id)
+    def _release_workspace(self, thread_id: str) -> None:
+        # 只释放进程内 Workspace 身份，保留会话目录和全部产物供审计/恢复与报告编辑器续写。
+        if getattr(self, "workspace_registry", None) is None:
             return
-        await self._destroy_or_quarantine_workspace(thread_id, message=message)
-
-    async def _destroy_or_quarantine_workspace(self, thread_id: str, *, message: str) -> None:
-        """删除失败时先轮换持久化 generation，再允许控制器释放 owner。"""
-
-        try:
-            await complete_cleanup(self.workspace_service.adestroy(thread_id))
-            return
-        except Exception as cleanup_error:
-            try:
-                workspace_label = await complete_cleanup(
-                    self.workspace_service.aquarantine(thread_id)
-                )
-            except Exception as quarantine_error:
-                # 只有 generation 已持久化轮换，旧 sandbox 才对新请求不可达。隔离本身
-                # 失败时必须使用不同错误码，让 Controller 保留 owner，不能为了可用性
-                # 绕过运行环境隔离不变量。
-                raise ReportingError(
-                    "report_sandbox_quarantine_failed",
-                    "报表工作流已结束，但失败运行环境无法隔离，请稍后重试。",
-                ) from quarantine_error
-            loguru_logger.warning(
-                "report_sandbox_cleanup_deferred thread_id={} workspace_label={} error_type={}",
-                thread_id,
-                workspace_label,
-                type(cleanup_error).__name__,
-            )
-            raise ReportingError("report_sandbox_cleanup_failed", message) from cleanup_error
+        self.workspace_registry.release(thread_id)
+        getattr(self, "_host_workspaces", {}).pop(thread_id, None)
+        loguru_logger.info("report_host_workspace_released workspace_key={}", thread_id)
 
     async def issue_http_publication(
         self,
@@ -602,13 +570,8 @@ class RuntimePlanningMixin:
             ),
             expected_version=durable.state_version,
         )
-        await self._release_or_destroy_workspace(
-            thread_id,
-            message="报告已持久化，但运行环境删除失败，已隔离并转入后台清理。",
-        )
-        # bearer 只能在所有可能失败的外部清理完成后签发；否则 Workflow 重试前
-        # 调用方拿不到 token，但 token 已经有效。产物已经落库，签发失败后的重试
-        # 可以在 sandbox 已删除的情况下直接复用持久化身份。
+        self._release_workspace(thread_id)
+        # 产物已经落库，签发失败后的重试可以直接复用持久化身份。
         raw, grant = await download_grants.issue(
             scope=download_scope,
             report_id=content["reportId"],

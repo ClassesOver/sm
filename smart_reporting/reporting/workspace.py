@@ -67,7 +67,7 @@ async def inspect_report_chart_file(
     path: str,
 ) -> dict[str, Any]:
     """对报表图表文件执行确定性身份和图片内容检查。"""
-    source_path = service.normalize_path(path, allow_root=False)[0]
+    source_path = service.normalize_path(path, allow_root=False)
     try:
         content = await service.read_limited_regular_file(
             thread_id, source_path, max_bytes=MAX_REPORT_CHART_BYTES
@@ -139,7 +139,7 @@ async def inspect_report_plotly_file(
     thread_id: str,
     path: str,
 ) -> dict[str, Any]:
-    source_path = service.normalize_path(path, allow_root=False)[0]
+    source_path = service.normalize_path(path, allow_root=False)
     if not source_path.endswith(".plotly.json"):
         raise ReportingError(
             "report_plotly_source_invalid", "Plotly 规格必须使用 .plotly.json 扩展名。"
@@ -582,10 +582,10 @@ class WorkspaceReportService:
         """从同一 Markdown 生成并验收 PDF/Word，再原子发布整个 revision。"""
         job = self._load_job(job_id, run_context)
         await self._job_status(job, run_context)
-        relative_output, _remote_output = self.service.normalize_path(output_path, allow_root=False)
+        relative_output = self.service.normalize_path(output_path, allow_root=False)
         output = PurePosixPath(relative_output)
         requested_word = str(output.with_suffix(".docx"))
-        relative_word, _remote_word = self.service.normalize_path(requested_word, allow_root=False)
+        relative_word = self.service.normalize_path(requested_word, allow_root=False)
         word_output = PurePosixPath(relative_word)
         if (
             output.suffix.lower() != ".pdf"
@@ -600,13 +600,13 @@ class WorkspaceReportService:
         temporary_pdf = f"{temporary_root}/render.pdf"
         staging_directory = output.parent.with_name(f".{output.parent.name}.{invocation}.tmp")
         staging_relative = staging_directory.as_posix()
-        _normalized_staging, _staging_host_path = self.service.normalize_path(
+        _normalized_staging = self.service.normalize_path(
             staging_relative, allow_root=False
         )
         staged_pdf_relative = str(staging_directory / output.name)
         staged_word_relative = str(staging_directory / word_output.name)
         final_directory_relative = output.parent.as_posix()
-        _normalized_final, _final_host_path = self.service.normalize_path(
+        _normalized_final = self.service.normalize_path(
             final_directory_relative, allow_root=False
         )
         validation_directory = f".reporting-tmp/workspace-report-{uuid.uuid4().hex}-validate"
@@ -751,8 +751,8 @@ class WorkspaceReportService:
         run_context: RunContext | None = None,
     ) -> None:
         """联合门禁失败后删除本轮整个 revision，并清除对应 job 产物状态。"""
-        pdf_relative, _pdf_remote = self.service.normalize_path(pdf_path, allow_root=False)
-        word_relative, _word_remote = self.service.normalize_path(word_path, allow_root=False)
+        pdf_relative = self.service.normalize_path(pdf_path, allow_root=False)
+        word_relative = self.service.normalize_path(word_path, allow_root=False)
         pdf = PurePosixPath(pdf_relative)
         word = PurePosixPath(word_relative)
         if (
@@ -770,7 +770,7 @@ class WorkspaceReportService:
             or render.get("word", {}).get("path") != word_relative
         ):
             raise WorkspaceError("待清理的双格式 revision 不属于当前报表 job。")
-        revision_relative, _revision_host_path = self.service.normalize_path(
+        revision_relative = self.service.normalize_path(
             pdf.parent.as_posix(), allow_root=False
         )
         await self.service.adelete_file(_thread(run_context), revision_relative, recursive=True)

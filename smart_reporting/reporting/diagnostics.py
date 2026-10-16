@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from time import perf_counter
 from typing import Literal
 
@@ -19,9 +19,7 @@ STARROCKS_CONNECTION_TEST_SQL = "SELECT 1 AS connection_test"
 STARROCKS_CHECK_TIMEOUT_SECONDS = 15
 STARROCKS_CLEANUP_TIMEOUT_SECONDS = 5
 STARROCKS_CHECK_CONCURRENCY = 4
-SANDBOX_CHECK_TIMEOUT_SECONDS = 10
 StarRocksAdapterFactory = Callable[[StarRocksSourceConfig], StarRocksDataSourceAdapter]
-SandboxCheck = Callable[[], Awaitable[None]]
 
 
 class DependencyCheckResult(BaseModel):
@@ -46,7 +44,6 @@ class ReportingDependencyChecks(BaseModel):
 
     starrocks: StarRocksCheckResult
     metadata: DependencyCheckResult
-    sandbox: DependencyCheckResult
 
 
 class ReportingDependencyCheckResponse(BaseModel):
@@ -64,38 +61,33 @@ class ReportingDependencyDiagnostics:
         *,
         sources: tuple[StarRocksSourceConfig, ...],
         metadata_client: ReportingMetadataClient | None,
-        sandbox_check: SandboxCheck | None,
         starrocks_adapter_factory: StarRocksAdapterFactory = StarRocksDataSourceAdapter,
     ):
         self.sources = sources
         self.metadata_client = metadata_client
-        self.sandbox_check = sandbox_check
         self.starrocks_adapter_factory = starrocks_adapter_factory
 
     async def check(self) -> ReportingDependencyCheckResponse:
         started_at = perf_counter()
-        starrocks, metadata, sandbox = await asyncio.gather(
+        starrocks, metadata = await asyncio.gather(
             self._check_starrocks(),
             self._check_metadata(),
-            self._check_sandbox(),
         )
         checks = ReportingDependencyChecks(
             starrocks=starrocks,
             metadata=metadata,
-            sandbox=sandbox,
         )
         response = ReportingDependencyCheckResponse(
-            status="ok" if starrocks.ok and metadata.ok and sandbox.ok else "failed",
+            status="ok" if starrocks.ok and metadata.ok else "failed",
             checks=checks,
         )
         logger.info(
             "report_dependency_diagnostics_completed status={} duration_ms={} "
-            "starrocks_code={} metadata_code={} sandbox_code={}",
+            "starrocks_code={} metadata_code={}",
             response.status,
             duration_ms(started_at),
             starrocks.code,
             metadata.code,
-            sandbox.code,
         )
         return response
 
@@ -263,50 +255,6 @@ class ReportingDependencyDiagnostics:
             duration_ms(started_at),
         )
         return DependencyCheckResult(ok=True, code="ok", durationMs=duration_ms(started_at))
-
-    async def _check_sandbox(self) -> DependencyCheckResult:
-        started_at = perf_counter()
-        if self.sandbox_check is None:
-            return DependencyCheckResult(
-                ok=False,
-                code="sandbox_not_configured",
-                durationMs=duration_ms(started_at),
-            )
-        try:
-            await asyncio.wait_for(
-                self.sandbox_check(),
-                timeout=SANDBOX_CHECK_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            logger.warning(
-                "report_dependency_check_failed dependency=sandbox code=sandbox_timeout "
-                "duration_ms={}",
-                duration_ms(started_at),
-            )
-            return DependencyCheckResult(
-                ok=False,
-                code="sandbox_timeout",
-                durationMs=duration_ms(started_at),
-            )
-        except Exception as error:
-            _log_dependency_failure(
-                dependency="sandbox",
-                operation="list_sandboxes",
-                code="sandbox_unavailable",
-                started_at=started_at,
-                error=error,
-            )
-            return DependencyCheckResult(
-                ok=False,
-                code="sandbox_unavailable",
-                durationMs=duration_ms(started_at),
-            )
-        logger.debug(
-            "report_dependency_check_completed dependency=sandbox code=ok duration_ms={}",
-            duration_ms(started_at),
-        )
-        return DependencyCheckResult(ok=True, code="ok", durationMs=duration_ms(started_at))
-
 
 def create_reporting_dependency_diagnostics_router(
     diagnostics: ReportingDependencyDiagnostics,

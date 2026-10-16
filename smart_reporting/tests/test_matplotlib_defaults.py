@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from smart_reporting.sandbox.matplotlib_defaults import matplotlib_bootstrap
+from smart_reporting.reporting.matplotlib_defaults import matplotlib_bootstrap
 
 
 def test_matplotlib_bootstrap_keeps_chinese_font_after_script_overrides(tmp_path: Path) -> None:
@@ -71,7 +71,7 @@ def test_reporting_script_runner_bootstraps_font_inside_child_process(tmp_path: 
         encoding="utf-8",
     )
     command = (
-        "from smart_reporting.sandbox.matplotlib_defaults import run_reporting_script;"
+        "from smart_reporting.reporting.matplotlib_defaults import run_reporting_script;"
         f"run_reporting_script({str(script_path)!r}, {str(tmp_path / 'runtime')!r})"
     )
 

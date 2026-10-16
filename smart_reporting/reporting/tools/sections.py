@@ -11,7 +11,7 @@ from typing import Any
 from agno.run import RunContext
 from pydantic import ValidationError
 
-from ...workspace import WorkspaceError, WorkspaceService
+from ...workspace import normalize_workspace_path, WorkspaceError
 from ..delivery.draft_v1 import ReportDraftBlock, validate_report_draft_blocks
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -525,7 +525,7 @@ class RuntimeSectionsMixin:
                 return None
             _parameters, contract = self._phase_parameters(scope, "section")
             work_item = await self._section_work_item(scope=scope, contract=contract)
-            normalized_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            normalized_path = normalize_workspace_path(path, allow_root=False)
             allowed_paths = {
                 evidence_file.path
                 for evidence in work_item.evidence

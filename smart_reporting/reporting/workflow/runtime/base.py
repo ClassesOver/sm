@@ -38,7 +38,7 @@ from ....context_management import TaskExecutionContextHardLimitError
 from ....model_routing import TaskComplexity
 from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskExecutionScope, TaskState
-from ....workspace import WorkspaceService
+from ....workspace import normalize_workspace_path
 from ...code_agent.context import ReportingCodingTaskRegistry
 from ...contract import (
     FIELD_REF_PATTERN,

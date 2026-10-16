@@ -51,7 +51,7 @@ from ..runtime.settings import AgentSettings
 from ..skills import (
     create_skill_script_hook,
     is_skill_script_hook,
-    load_sandbox_execution_skills,
+    load_task_skills,
 )
 from ..task_execution import (
     TASK_EXECUTION_TOOL_PROGRESS_STATE_KEY,
@@ -959,7 +959,7 @@ def _stop_rejected_analysis_patch(
 
     patch 拒绝说明模型持有的文件上下文、SHA 或 diff 结构已经不能继续使用；在同一
     上下文里让模型修补会把错误 hunk 和过期事实继续累积，容易形成长尾死循环。这里只
-    处理稳定的 Reporting 业务拒绝码；Daytona、网络和其他基础设施异常仍沿用原异常
+    处理稳定的 Reporting 业务拒绝码；工作区、网络和其他基础设施异常仍沿用原异常
     路径，交给既有工作流重试策略，不被伪装成可 fresh retry 的模型错误。
     """
 
@@ -2612,7 +2612,7 @@ def create_reporting_phase_agent(
     # 同一组 Reporting 预算，不能静默退回普通 Reporting Agent 的 256K/32K 默认值。
     context_token_budget = settings.report_context_token_budget
     output_token_reserve = settings.report_output_token_reserve
-    phase_skills = load_sandbox_execution_skills(settings.skills_dir)
+    phase_skills = load_task_skills(settings.skills_dir)
     vision_reviewer = (
         ReportVisionReviewer(settings, workspace_service) if settings.report_enable_vision else None
     )
@@ -2724,7 +2724,7 @@ def create_reporting_phase_agent(
             propagate_reporting_tool_errors,
             normalize_reporting_tool_arguments,
             create_task_tool_scheduler_hook(task_repository),
-            create_skill_script_hook(workspace_service),
+            create_skill_script_hook(),
         ],
         telemetry=False,
         debug_mode=settings.debug,

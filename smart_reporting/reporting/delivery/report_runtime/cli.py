@@ -1,4 +1,4 @@
-"""Reporting Runtime 的 Daytona CLI 入口。"""
+"""Reporting Runtime 的命令行入口。"""
 
 from __future__ import annotations
 

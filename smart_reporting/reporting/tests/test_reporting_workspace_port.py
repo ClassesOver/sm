@@ -28,14 +28,13 @@ from smart_reporting.reporting.tools.mock_workspace import (
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
 from smart_reporting.reporting.tools.workspace_adapter import (
     ReportingWorkspaceAdapter,
-    WorkspaceServiceReportingPort,
-    WorkspaceServiceReportingRuntime,
+    ReportingTaskWorkspacePort,
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
 from smart_reporting.reporting.workspace import MAX_REPORT_PLOTLY_BYTES
 from smart_reporting.task_execution import abuild_workspace_changes
-from smart_reporting.workspace import WorkspaceError, WorkspaceService
+from smart_reporting.workspace import WorkspaceError, normalize_workspace_path
 
 
 def test_reporting_toolkit_owns_agno_toolkit_boundary() -> None:
@@ -140,14 +139,6 @@ async def test_mock_workspace_rejects_missing_stale_and_invalid_output_paths() -
 
 
 @pytest.mark.anyio
-async def test_mock_workspace_rejects_invalid_script_timeout() -> None:
-    workspace = MockReportingWorkspace(output_policy=ReportingOutputPolicy(roots=("output",)))
-
-    with pytest.raises(ReportingWorkspaceError, match="超时"):
-        await workspace.execute_script("analysis.py", timeout=0)
-
-
-@pytest.mark.anyio
 async def test_production_port_treats_data_as_readonly() -> None:
     content = b"source"
     data_ref = ReportingFileRef(
@@ -163,7 +154,7 @@ async def test_production_port_treats_data_as_readonly() -> None:
         input_snapshot={},
         data=(data_ref,),
     )
-    port = WorkspaceServiceReportingPort(
+    port = ReportingTaskWorkspacePort(
         SimpleNamespace(),  # type: ignore[arg-type]
         SimpleNamespace(),  # type: ignore[arg-type]
         context,
@@ -191,7 +182,7 @@ async def test_production_port_reads_through_async_workspace_api() -> None:
         output_policy=ReportingOutputPolicy(roots=("output",)),
         input_snapshot={},
     )
-    port = WorkspaceServiceReportingPort(
+    port = ReportingTaskWorkspacePort(
         AsyncReadService(),  # type: ignore[arg-type]
         SimpleNamespace(),  # type: ignore[arg-type]
         context,
@@ -252,7 +243,7 @@ async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -
 
 def _plotly_file_service(content: bytes) -> SimpleNamespace:
     return SimpleNamespace(
-        normalize_path=WorkspaceService.normalize_path,
+        normalize_path=normalize_workspace_path,
         read_limited_regular_file=AsyncMock(return_value=content),
     )
 
@@ -283,7 +274,7 @@ async def test_reporting_workspace_adapter_inspects_plotly_file_identity() -> No
 @pytest.mark.anyio
 async def test_reporting_workspace_adapter_keeps_plotly_missing_failure_code() -> None:
     service = SimpleNamespace(
-        normalize_path=WorkspaceService.normalize_path,
+        normalize_path=normalize_workspace_path,
         read_limited_regular_file=AsyncMock(
             side_effect=WorkspaceError("工作区路径不存在，请检查名称后重试。")
         ),
@@ -305,21 +296,6 @@ async def test_reporting_workspace_adapter_keeps_plotly_invalid_failure_code() -
         await adapter.inspect_plotly_file("thread-1", "analysis/charts/s1/income.plotly.json")
 
     assert caught.value.code == "report_plotly_source_invalid"
-
-
-@pytest.mark.anyio
-async def test_reporting_runtime_executes_script_with_resolved_scope() -> None:
-    scope = SimpleNamespace(thread_id="thread-1")
-    kernel = SimpleNamespace(run_python_script=AsyncMock(return_value={"exitCode": 0}))
-    runtime = object.__new__(WorkspaceServiceReportingRuntime)
-    runtime._kernel = kernel
-
-    result = await runtime.execute_script("analysis/script.py", timeout=30, _scope=scope)
-
-    assert result == {"exitCode": 0}
-    kernel.run_python_script.assert_awaited_once_with(
-        "analysis/script.py", timeout=30, _scope=scope
-    )
 
 
 @pytest.mark.anyio
@@ -380,7 +356,7 @@ async def test_production_port_rejects_missing_hash_target() -> None:
         output_policy=ReportingOutputPolicy(roots=("output",)),
         input_snapshot={},
     )
-    port = WorkspaceServiceReportingPort(
+    port = ReportingTaskWorkspacePort(
         MissingService(),  # type: ignore[arg-type]
         SimpleNamespace(),  # type: ignore[arg-type]
         context,
@@ -523,7 +499,7 @@ async def test_invalid_python_source_does_not_record_intent_or_mutate_workspace(
 
     scope = SimpleNamespace(thread_id="thread-1")
     workspace = SimpleNamespace(
-        normalize_path=WorkspaceService.normalize_path,
+        normalize_path=normalize_workspace_path,
         aapply_changes=AsyncMock(),
     )
     runtime = SimpleNamespace(
@@ -598,7 +574,7 @@ async def test_analysis_patch_rejects_non_single_signed_script_before_intent_or_
     scope = SimpleNamespace(thread_id="thread-1")
     runtime = SimpleNamespace(
         workspace=SimpleNamespace(
-            normalize_path=WorkspaceService.normalize_path,
+            normalize_path=normalize_workspace_path,
             aread_text=AsyncMock(return_value="value = 1\nprint(value)\n"),
         ),
         scope=AsyncMock(return_value=scope),
@@ -965,7 +941,7 @@ async def test_analysis_patch_rejects_create_for_existing_script_before_intent_o
     path = "analysis/evidence/a1/supplement.py"
     scope = SimpleNamespace(thread_id="thread-1")
     workspace = SimpleNamespace(
-        normalize_path=WorkspaceService.normalize_path,
+        normalize_path=normalize_workspace_path,
         batch_hash_files=AsyncMock(return_value=[{"path": path, "size": 10, "sha256": "a" * 64}]),
     )
     runtime = SimpleNamespace(
@@ -1013,7 +989,7 @@ async def test_analysis_patch_passes_intent_operations_to_kernel_unchanged() -> 
     identity = {"path": path, "size": len(source.encode()), "sha256": "a" * 64}
     scope = SimpleNamespace(thread_id="thread-1")
     workspace = SimpleNamespace(
-        normalize_path=WorkspaceService.normalize_path,
+        normalize_path=normalize_workspace_path,
         batch_hash_files=AsyncMock(side_effect=[[{"path": path, "missing": True}], [identity]]),
     )
     runtime = SimpleNamespace(

@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agno.run import RunContext
 from agno.tools import Function
 
 from ...task_execution import (
-    DEFAULT_TERMINAL_TIMEOUT,
     MAX_READ_FILE_BYTES,
     MAX_TOOL_OUTPUT_READ_BYTES,
     normalize_task_function_call_arguments,
-)
-from ...workspace import (
-    MAX_BACKGROUND_EXECUTION_TIMEOUT,
-    WorkspaceService,
 )
 from ..delivery.draft_v1 import ReportChartRegistration, ReportDraftBlock
 from ..models import ReportingError
@@ -30,6 +25,9 @@ from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
 from .validation import analysis_patch_parameters
 from .visualization import RuntimeVisualizationMixin
+
+if TYPE_CHECKING:
+    from ..host_workspace import ReportingWorkspaceRouter
 
 REPORTING_TOOLKIT_INSTRUCTIONS = (
     "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\\n"
@@ -83,11 +81,10 @@ class ReportingToolkit(
 
     def __init__(
         self,
-        workspace_service: WorkspaceService,
+        workspace_service: ReportingWorkspaceRouter,
         task_repository: Any,
         *,
         state_repository: ReportingStateRepository,
-        validator_registry: Any = None,
         vision_reviewer: ReportVisionReviewer | None = None,
         phase: ReportingPhase | None = None,
         task_kind: ReportingTaskKind | None = None,
@@ -99,7 +96,6 @@ class ReportingToolkit(
         self.runtime = ReportingToolRuntime(
             workspace_service,
             task_repository,
-            validator_registry=validator_registry,
         )
         finish_function = Function(
             name="finish_task",
@@ -144,33 +140,6 @@ class ReportingToolkit(
             self,
             name="report_workspace_task",
             tools=[
-                Function(
-                    name="run_python_script",
-                    description=(
-                        "执行已提交到当前工作区的 Python 脚本。参数必须直接位于顶层，"
-                        "不要包 arguments，也不能与其他工具并发。"
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "script_path": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 1024,
-                                "pattern": "^[^\\x00]+\\.py$",
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": MAX_BACKGROUND_EXECUTION_TIMEOUT,
-                                "default": DEFAULT_TERMINAL_TIMEOUT,
-                            },
-                        },
-                        "required": ["script_path"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.run_python_script,
-                ),
                 Function(
                     name="read_file",
                     description='读取文件字节片段。示例：{"path":"src/app.py","offset":0}',

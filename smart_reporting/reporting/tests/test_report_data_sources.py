@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,7 +14,7 @@ from smart_reporting.reporting.data_source import MaterializedQueryResult, Query
 from smart_reporting.reporting.data_sources import ReportDatasetStore
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.query_pipeline import ApprovedQuery, normalized_sql_hash
-from smart_reporting.workspace import WorkspaceError, WorkspaceHashResultError, WorkspaceService
+from smart_reporting.workspace import WorkspaceError, WorkspaceHashResultError
 
 
 @pytest.fixture
@@ -67,16 +66,6 @@ class _FakeDatasetService:
         self.reads.append((thread, path))
         _relative, remote = self.normalize_path(path)
         return self.fs.files[remote], "text/csv"
-
-    @asynccontextmanager
-    async def _async_client(self):
-        yield object()
-
-    async def _asandbox_for(self, _client: object, _thread: str):
-        return self.sandbox
-
-    async def _aensure_directory(self, _sandbox: object, _remote: str) -> None:
-        return None
 
     async def aensure_directory(self, _thread: str, _path: str) -> None:
         return None
@@ -335,17 +324,3 @@ async def test_数据集物化取消时清理暂存和目标目录() -> None:
     assert len(service.fs.deletes) == 2
     assert any("/.staging-" in path for path in service.fs.deletes)
     assert any("/batch-" in path for path in service.fs.deletes)
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("output", ["invalid\x001\x00", "abc", f"{'0' * 64}\x00x\x00"])
-async def test_工作区哈希协议异常使用可重试专用错误(output: str) -> None:
-    service = WorkspaceService("0123456789abcdef0123456789abcdef")
-
-    async def run_command(*_args: object, **_kwargs: object) -> tuple[str, bool]:
-        return output, False
-
-    service._arun_workspace_command = run_command  # type: ignore[method-assign]
-
-    with pytest.raises(WorkspaceHashResultError):
-        await service.ahash_file("thread-1", "dataset.csv")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -12,11 +11,9 @@ from fastapi import FastAPI
 from fastmcp.server.auth import AuthProvider
 from loguru import logger
 
-from ..async_utils import complete_cleanup
 from ..quality_warnings.service import QualityWarningService
 from ..reporting.code_agent.lsp_process import ReportingLspProcessManager
 from ..reporting.code_mode import ReportingCodeModeRuntime
-from ..workspace import WorkspaceService
 from .database import AgentDatabase
 from .reporting_runs import enable_reporting_background_streams
 from .settings import AgentSettings
@@ -25,7 +22,6 @@ from .settings import AgentSettings
 @dataclass(frozen=True)
 class ApplicationContext:
     settings: AgentSettings
-    workspace_service: WorkspaceService
     report_agent: Agent
     report_workflow: Workflow
     database: AgentDatabase | None = None
@@ -47,28 +43,13 @@ def create_agentos_app(
             # 结构不兼容或建表失败时直接终止启动，避免报告执行后才发现历史未保存。
             await context.database.async_db._create_all_tables()
             logger.info("agent_database_initialized")
-        tasks = [asyncio.create_task(context.workspace_service.run_quarantine_cleanup_loop())]
-        reconcile = getattr(context.workspace_service, "run_provider_reconcile_loop", None)
-        if callable(reconcile):
-            tasks.append(asyncio.create_task(reconcile()))
         try:
             yield
         finally:
             first_error: BaseException | None = None
-            for task in tasks:
-                task.cancel()
-            for task in tasks:
-                try:
-                    await complete_cleanup(task)
-                except asyncio.CancelledError:
-                    pass
-                except BaseException as error:
-                    if first_error is None:
-                        first_error = error
             for resource in (
                 context.reporting_code_mode_runtime,
                 context.reporting_lsp_process_manager,
-                context.workspace_service,
             ):
                 if resource is None:
                     continue

@@ -1,6 +1,6 @@
 # AgentOS Coding 与 Reporting 服务
 
-本包提供 Coding Agent、Reporting Workflow、PostgreSQL 持久化和按 thread 隔离的 Daytona 工作区。应用不安装浏览器聊天 interface。
+本包提供 Coding Agent、Reporting Workflow、PostgreSQL 持久化和按 thread 隔离的本地工作区。应用不安装浏览器聊天 interface。
 
 ## 启动
 
@@ -137,15 +137,14 @@ sudo apt-get install -y fontconfig fonts-liberation fonts-noto-cjk \
 ```
 
 `pypandoc` 不附带 Pandoc 可执行文件。启动前确认 `pandoc`、`soffice`、`pdftoppm` 和 `pdfinfo`
-均在 PATH 中。宿主与 sandbox 共用的图表、文档依赖已在 `pyproject.toml` 和
-`docker/sandbox-tools/requirements-*.in` 中约束；更新时同时重建对应锁文件。
-当前 profiling 依赖仍要求 pandas `<3`，因此两侧保持 pandas 2.3.3、NumPy 2.3.5。
+均在 PATH 中。图表、文档依赖在 `pyproject.toml` 中约束，更新时同时重建 `uv.lock`。
+当前 profiling 依赖仍要求 pandas `<3`，因此保持 pandas 2.3.3、NumPy 2.3.5。
 项目还预装统计分析、绘图和格式处理库，包括 SciPy、statsmodels、SymPy、Seaborn、
 adjustText、Altair、Bokeh、Plotnine、PyArrow、DuckDB、XlsxWriter、python-pptx、
 ReportLab、pdfplumber、PyMuPDF、pikepdf 和 CairoSVG；宿主与应用镜像使用同一 `uv.lock`。
 Coding Agent 收到预装环境说明后直接使用任务允许的库，仅在实际执行出错时诊断依赖，
 避免每个分析任务重复查询包版本或字体。分析并发度和 thinking 策略不因此改变。
-宿主绘图可设置 `MATPLOTLIBRC="$PWD/docker/sandbox-tools/matplotlibrc"`，复用镜像的 Agg
+宿主绘图可设置 `MATPLOTLIBRC="$PWD/docker/matplotlibrc"`，复用镜像的 Agg
 后端与 Noto CJK 默认字体。`MPLCONFIGDIR` 默认使用 `/tmp/reporting-matplotlib`，
 `REPORTING_HOST_WORKSPACE_ROOT` 默认使用 `/tmp/smart-reporting-workspaces`；两者均可由环境变量覆盖。
 
@@ -172,18 +171,9 @@ Coding Agent 收到预装环境说明后直接使用任务允许的库，仅在�
 | `AGENT_MODEL_STRUCTURED_STRICT` | 是否对 JSON Schema 启用 strict；默认 `true`，兼容端点不支持时可设为 `false` |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
-| `SANDBOX_PROVIDER` | `daytona`（默认、企业 HA 优先）或 `local`（内网离线、当前仅 node-scoped） |
-| `SANDBOX_LOCAL_PROFILE` | Local 固定发行版 profile：`ubuntu` 或 `openeuler` |
-| `SANDBOX_LOCAL_ENDPOINT` | Local 绝对 UDS 地址或内网 HTTPS+mTLS 地址 |
-| `SANDBOX_ROOTFS_DIGEST` | Local 管理员签名 catalog 中固定 rootfs 的 `sha256:` 摘要 |
-| `SANDBOX_LOCAL_CA_CERT` | Local HTTPS 服务端 CA；HTTPS 模式必填 |
-| `SANDBOX_LOCAL_CLIENT_CERT` | Local mTLS 客户端证书；HTTPS 模式必填 |
-| `SANDBOX_LOCAL_CLIENT_KEY` | Local mTLS 客户端私钥；HTTPS 模式必填 |
 | `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
 | `AGENT_REPORT_PUBLIC_BASE_URL` | PDF/Word 下载和 `editor.openUrl` 使用的公开同源基地址；生产环境使用 HTTPS |
 | `AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS` | 编辑器导出（渲染 + 验收）后台任务的服务端超时，默认 1200 秒，最大 3600；导出以后台任务运行、编辑器轮询结果，不受网关读超时影响，超时或服务关闭时整组终止渲染进程 |
-| `DAYTONA_API_URL` | Daytona API 地址 |
-| `DAYTONA_API_KEY` | Daytona API Key |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting 阶段 Agent thinking 开关（兼容配置名） |
 | `AGENT_REPORT_ENABLE_THINKING` | Reporting planner thinking 开关 |
 | `AGENT_REPORT_ENABLE_VISION` | 图表视觉审查开关 |
@@ -191,14 +181,14 @@ Coding Agent 收到预装环境说明后直接使用任务允许的库，仅在�
 
 ## Reporting 依赖诊断
 
-诊断接口检查服务端配置的 `REPORT_STARROCKS_DSN`、`AGENT_REPORT_METADATA_URL` 和当前 Sandbox Provider，不接受调用方传入连接参数，也不返回连接信息、凭据或上游响应正文：
+诊断接口检查服务端配置的 `REPORT_STARROCKS_DSN`、`AGENT_REPORT_METADATA_URL`，不接受调用方传入连接参数，也不返回连接信息、凭据或上游响应正文：
 
 ```bash
 curl -X POST \
   http://127.0.0.1:33046/diagnostics/reporting-dependencies
 ```
 
-三个依赖均正常时返回 HTTP 200；任一依赖未配置或检查失败时返回 HTTP 503，并在 `checks` 中返回稳定错误码和耗时。
+两个依赖均正常时返回 HTTP 200；任一依赖未配置或检查失败时返回 HTTP 503，并在 `checks` 中返回稳定错误码和耗时。
 元数据服务返回非成功响应时还会提供纯数字 `httpStatus`，但不会透传响应正文。
 该接口不要求 Token；生产环境应通过防火墙或反向代理限制访问来源。
 
@@ -209,4 +199,4 @@ UV_PROJECT_ENVIRONMENT=.venv uv sync --python 3.12 --no-install-project
 bash scripts/check_agentos.sh
 ```
 
-PostgreSQL 和 Daytona 集成用例按测试标记单独运行。
+PostgreSQL 集成用例按测试标记单独运行。

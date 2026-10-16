@@ -64,7 +64,7 @@ RUN for tool in pandoc soffice pdftoppm pdfinfo dot rsvg-convert qpdf; do comman
     && /app/.venv/bin/python -c "import plotly.graph_objects as go; go.Figure(go.Scatter(x=[1], y=[1])).write_image('/tmp/kaleido-smoke.png')"
 
 COPY smart_reporting ./smart_reporting
-COPY docker/sandbox-tools/matplotlibrc /etc/reporting/matplotlibrc
+COPY docker/matplotlibrc /etc/reporting/matplotlibrc
 # 前端产物放在源码目录之外：Compose 以只读 bind mount 覆盖 /app/smart_reporting，
 # 若放在源码树内会被宿主空目录遮蔽；命名卷又只在首次创建时播种，升级镜像后仍是旧前端。
 COPY --from=report-editor-frontend /build/static /opt/report-editor-static

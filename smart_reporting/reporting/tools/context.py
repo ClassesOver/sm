@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from ...workspace import WorkspaceError, WorkspaceService
+from ...workspace import normalize_workspace_path, WorkspaceError
 
 
 def _freeze(value: Any) -> Any:
@@ -29,7 +29,7 @@ class ReportingFileRef:
 
     def __post_init__(self) -> None:
         try:
-            normalized = WorkspaceService.normalize_path(self.path, allow_root=False)[0]
+            normalized = normalize_workspace_path(self.path, allow_root=False)
         except WorkspaceError as error:
             raise ValueError("Reporting 文件路径无效。") from error
         if normalized != self.path:
@@ -49,7 +49,7 @@ class ReportingOutputPolicy:
     def __post_init__(self) -> None:
         normalized: list[str] = []
         for root in self.roots:
-            value = WorkspaceService.normalize_path(root, allow_root=False)[0].rstrip("/")
+            value = normalize_workspace_path(root, allow_root=False).rstrip("/")
             if value not in normalized:
                 normalized.append(value)
         if not normalized:
@@ -57,7 +57,7 @@ class ReportingOutputPolicy:
         object.__setattr__(self, "roots", tuple(normalized))
 
     def allows(self, path: str) -> bool:
-        normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
+        normalized = normalize_workspace_path(path, allow_root=False)
         return any(normalized == root or normalized.startswith(f"{root}/") for root in self.roots)
 
 

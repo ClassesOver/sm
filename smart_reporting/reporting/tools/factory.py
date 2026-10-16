@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agno.run import RunContext
 from agno.tools import Toolkit
 
-from ...workspace import WorkspaceService
 from ..phase import reporting_phase_from_run_context, reporting_task_kind_from_run_context
 from ..vision import ReportVisionReviewer
 from ..workflow.repository import ReportingStateRepository
 from .toolkit import REPORTING_TOOLKIT_INSTRUCTIONS, ReportingToolkit
+
+if TYPE_CHECKING:
+    from ..host_workspace import ReportingWorkspaceRouter
 
 FILE_TOOL_NAMES = frozenset(
     {
@@ -27,9 +29,8 @@ FILE_TOOL_NAMES = frozenset(
 
 
 def build_reporting_tools(
-    workspace_service: WorkspaceService,
+    workspace_service: ReportingWorkspaceRouter,
     task_repository: Any,
-    validator_registry: Any = None,
     *,
     state_repository: ReportingStateRepository,
     run_context: RunContext | None = None,
@@ -42,7 +43,6 @@ def build_reporting_tools(
         workspace_service,
         task_repository,
         state_repository=state_repository,
-        validator_registry=validator_registry,
         vision_reviewer=vision_reviewer,
         phase=reporting_phase_from_run_context(run_context),
         task_kind=reporting_task_kind_from_run_context(run_context),
@@ -55,7 +55,7 @@ def build_reporting_tools(
             functions.pop("view_image", None)
     if exclude_file_tools:
         for functions in (toolkit.functions, toolkit.async_functions):
-            for name in (*FILE_TOOL_NAMES, "run_python_script"):
+            for name in FILE_TOOL_NAMES:
                 functions.pop(name, None)
     phase = reporting_phase_from_run_context(run_context)
     if phase is not None:

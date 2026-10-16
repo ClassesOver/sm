@@ -6,8 +6,7 @@
 !smart_reporting/
 !smart_reporting/**
 !docker/
-!docker/sandbox-tools/
-!docker/sandbox-tools/**
+!docker/matplotlibrc
 
 **/.env
 **/.env.*
