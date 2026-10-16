@@ -97,8 +97,7 @@ def build_drilldown_metrics(
                 continue
             declaration = _ratio_declaration(
                 code=code,
-                expected=fact.get("value"),
-                fact_key=fact.get("factId"),
+                ratio_fact=fact,
                 numerator=numerator[0],
                 denominator=denominator[0],
                 columns=columns_by_dataset.get(dataset_id, ()),
@@ -176,15 +175,14 @@ def _base_declaration(
 def _ratio_declaration(
     *,
     code: str,
-    expected: object,
-    fact_key: object,
+    ratio_fact: Mapping[str, Any],
     numerator: Mapping[str, Any],
     denominator: Mapping[str, Any],
     columns: Sequence[str],
     profile_dimensions: Sequence[Mapping[str, Any]],
     semantics_by_ref: Mapping[str, Mapping[str, Any]],
 ) -> DrilldownMetricV1 | None:
-    value = _finite(expected)
+    value = _finite(ratio_fact.get("value"))
     # 当前 ratio 声明只表达求和后相除，不支持计数、平均或跨期间时点值。
     for fact in (numerator, denominator):
         if fact.get("aggregation") != "sum":
@@ -231,6 +229,14 @@ def _ratio_declaration(
     period_field = _optional_column(numerator.get("periodField"), columns)
     if numerator.get("periodField") and period_field is None:
         return None
+    # 比率事实可能只采用共同连续窗口；基础指标的完整期间不能代替该窗口。
+    # 兼容旧事实未登记期间的情况，同时拒绝无法表达的单侧期间约束。
+    period_start = ratio_fact.get("periodStart", numerator.get("periodStart"))
+    period_end = ratio_fact.get("periodEnd", numerator.get("periodEnd"))
+    if (period_start is None) != (period_end is None):
+        return None
+    if period_start is not None and period_field is None:
+        return None
     if not dimensions or scope is None:
         return None
     return DrilldownMetricV1(
@@ -240,14 +246,14 @@ def _ratio_declaration(
         numeratorField=numerator_field,
         denominatorField=denominator_field,
         periodField=period_field,
-        periodStart=numerator.get("periodStart") if period_field else None,
-        periodEnd=numerator.get("periodEnd") if period_field else None,
+        periodStart=period_start,
+        periodEnd=period_end,
         dimensions=dimensions,
         fixedScope=scope,
         expectedValue=value,
         tolerance=max(0.01, abs(value) * 1e-9),
         unit=None,  # 原始比值不能继承分子、分母的金额单位。
-        factKeys=(str(fact_key),) if fact_key else (),
+        factKeys=(str(ratio_fact["factId"]),) if ratio_fact.get("factId") else (),
     )
 
 

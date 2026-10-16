@@ -1653,15 +1653,9 @@ class ReportEditorService:
         """应用关闭时取消仍在运行的导出，由取消链路终止渲染进程组并清理临时 revision。"""
 
         running = [job.task for job in self._export_jobs.values() if not job.task.done()]
-        derived = [
-            job.task
-            for job in getattr(self.trace.exports, "_jobs", {}).values()
-            if job.task is not None and not job.task.done()
-        ]
-        for task in (*running, *derived):
+        for task in running:
             task.cancel()
-        if running or derived:
-            await asyncio.gather(*running, *derived, return_exceptions=True)
+        await asyncio.gather(*running, self.trace.exports.aclose(), return_exceptions=True)
 
     @staticmethod
     def _log_export_failure(
