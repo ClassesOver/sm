@@ -169,7 +169,8 @@ export function createImagePreview(editor: HTMLElement) {
   const show = (target: HTMLImageElement) => {
     opener = target
     image.src = target.getAttribute('src') ?? ''
-    image.alt = target.alt
+    // figcaption 承载说明文字时 img 置空 alt，避免读屏器重复朗读同一文本
+    image.alt = ''
     caption.textContent = target.alt
     caption.hidden = !target.alt
     modal.open(close)
