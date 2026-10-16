@@ -1457,6 +1457,44 @@ async def test_subject_drilldown_lists_capability_and_reconciles(
 
 
 @pytest.mark.anyio
+async def test_history_revision_hides_sql_and_facts_for_share_and_expired(tmp_path: Path) -> None:
+    editor, grants, _ = await _make_editor(tmp_path, with_fact_file=True)
+    context = _context()
+    owner_raw, _ = await grants.issue(context)
+    _token, owner = await grants.exchange(owner_raw)
+    full = await editor.read_history_revision(context, 1, session=owner)
+    assert full["sources"]["datasets"][0]["querySql"].startswith("SELECT branch, revenue")
+    assert full["sources"]["facts"]
+    sql_hash = full["sources"]["datasets"][0]["sqlHash"]
+
+    share_raw, _ = await grants.issue(context, capabilities={
+        "download_original": False, "download_derived": False, "drilldown": False,
+    })
+    _token, share = await grants.exchange(share_raw)
+    shared = await editor.read_history_revision(context, 1, session=share)
+    assert shared["markdown"] == full["markdown"]
+    assert shared["sources"]["datasets"][0]["querySql"] is None
+    assert shared["sources"]["datasets"][0]["sqlHash"] == sql_hash
+    assert shared["sources"]["facts"] == []
+
+    original_get = editor.state_repository.get
+
+    async def retiring(run_id):
+        state = await original_get(run_id)
+        state.payload["reportEditorRetiredSources"] = {str(context.revision): context.digest()}
+        return state
+
+    editor.state_repository.get = retiring
+    expired = await editor.read_history_revision(context, 1, session=owner)
+    assert expired["markdown"] == full["markdown"]
+    assert expired["sources"]["available"] is False
+    assert expired["sources"]["reason"] == "snapshot_expired"
+    assert expired["sources"]["datasets"][0]["querySql"] is None
+    assert expired["sources"]["datasets"][0]["sqlHash"] == sql_hash
+    assert expired["sources"]["facts"] == []
+
+
+@pytest.mark.anyio
 async def test_share_sessions_do_not_receive_raw_query_sql(tmp_path: Path) -> None:
     editor, grants, _ = await _make_editor(tmp_path)
     full = await editor.trace_sources(_context(), SimpleNamespace(capabilities=None))

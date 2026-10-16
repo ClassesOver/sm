@@ -279,11 +279,13 @@ def create_report_editor_router(
             history_revision: int,
             request: Request,
         ) -> dict[str, object]:
-            _raw_session, context = await _read_context(
+            session, context = await _read_session_context(
                 grants, editor, request, report_id=report_id, revision=revision
             )
             try:
-                return await editor.read_history_revision(context, history_revision)
+                return await editor.read_history_revision(
+                    context, history_revision, session=session
+                )
             except ReportingError as error:
                 _editor_http_error(error)
 

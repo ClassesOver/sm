@@ -259,7 +259,9 @@ def test_change_period_roles_distinguish_current_from_baseline(selector, stateme
 
 
 def _assert_period_role_warning(selector, statement, warns, roles):
-    from smart_reporting.reporting.trace.subject_builder import claim_status, unit_period_warnings
+    from smart_reporting.reporting.trace.subject_builder import (
+        claim_status, prepare_claim_status, unit_period_warnings,
+    )
 
     document = json.loads(contents()[0])
     for metric in document['metrics']:
@@ -274,8 +276,11 @@ def _assert_period_role_warning(selector, statement, warns, roles):
     assert len(refs) == 1 and not notices
     options = dict(expected_unit=selected['unit'], expected_periods=selected['periods'],
                    expected_period_roles=selected.get('period_roles'))
-    result = claim_status(anchor_bound_numbers(markdown, refs), refs[0].claim_id,
-                          selected['value'], **options)
+    anchored = anchor_bound_numbers(markdown, refs)
+    result = claim_status(anchored, refs[0].claim_id, selected['value'], **options)
+    # prepare_claim_status 是编辑器校验入口，必须同样接收期间角色。
+    prepared = prepare_claim_status(anchored)(refs[0].claim_id, selected['value'], **options)
+    assert prepared == result
     assert result['status'] == 'valid'
     assert bool(result['warnings']) is warns
     assert bool(unit_period_warnings(statement, **options)) is warns
