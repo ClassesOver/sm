@@ -1929,6 +1929,66 @@ async def test_validate_marks_deleted_chart_unbound_and_keeps_present_chart(
     assert deleted_result["charts"][0]["status"] == "unbound"
 
 
+def test_column_definitions_skip_dataset_whose_file_is_not_registered() -> None:
+    from smart_reporting.report_editor.trace_sources import (
+        _column_field_definitions,
+        _registered_dataset_file,
+    )
+
+    present = SimpleNamespace(sha256="a" * 64)
+    files = {"file-1": present}
+    missing = SimpleNamespace(dataset_id="ds-1", file_resource_id="file-missing")
+    assert _registered_dataset_file(files, missing) is None
+    assert _registered_dataset_file(files, None) is None
+    assert _registered_dataset_file(
+        files, SimpleNamespace(dataset_id="ds-1", file_resource_id="file-1")
+    ) is present
+    context = {"datasetContexts": [{
+        "datasetId": "ds-1",
+        "sha256": "a" * 64,
+        "schema": {"tables": [{"columns": [{"name": "open_beds", "description": "实际开放床日"}]}]},
+    }]}
+    assert _column_field_definitions(context, files, (missing,)) == {}
+    matched = SimpleNamespace(dataset_id="ds-1", file_resource_id="file-1")
+    assert _column_field_definitions(context, files, (matched,)) == {"open_beds": "实际开放床日"}
+
+
+@pytest.mark.anyio
+async def test_editor_review_passes_field_definitions_and_bound_charts(tmp_path: Path) -> None:
+    editor, grants, workspace = await _make_editor(tmp_path, with_chart_trace=True)
+    scope = _scope()
+    document = {"datasetContexts": [{
+        "datasetId": DATASET_ID,
+        "sha256": hashlib.sha256(CSV_BYTES).hexdigest(),
+        "schema": {"tables": [{"columns": [{"name": "open_beds", "description": "实际开放床日"}]}]},
+    }]}
+    content = json.dumps(document, ensure_ascii=False).encode()
+    path = "reports/detailed-analysis-context.json"
+    workspace.registry.resolve(scope)
+    await workspace.awrite_bytes(scope.workspace_key, path, content)
+    workspace.registry.release(scope.workspace_key)
+    state = await editor.state_repository.get(_context().workflow_run_id)
+    state.payload["workflowCheckpoint"] = {"files": [{
+        "path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+    }]}
+    raw, _ = await grants.issue(_context())
+    _, session = await grants.exchange(raw)
+    present = "![趋势](chart-001.png)\n\n*图表：收入趋势*\n\n支出偏差图未纳入引用。open_beds 需要改成业务名称。"
+    result = await editor.trace_validate(
+        _context(), session, present, hashlib.sha256(present.encode()).hexdigest()
+    )
+    assert any("图表引用状态矛盾" in warning for warning in result["warnings"])
+    assert any("内部字段名：open_beds" in warning for warning in result["warnings"])
+    assert any("实际开放床日" in warning for warning in result["warnings"])
+
+    omitted = "支出偏差图未纳入引用。open_beds 需要改成业务名称。"
+    omitted_result = await editor.trace_validate(
+        _context(), session, omitted, hashlib.sha256(omitted.encode()).hexdigest()
+    )
+    assert not any("图表引用状态矛盾" in warning for warning in omitted_result["warnings"])
+    assert any("内部字段名：open_beds" in warning for warning in omitted_result["warnings"])
+
+
 @pytest.mark.anyio
 async def test_chart_source_unknown_chart_is_404_like(tmp_path: Path) -> None:
     editor, grants, _ = await _make_editor(tmp_path, with_chart_trace=True)

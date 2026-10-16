@@ -7,6 +7,9 @@
 Daytona 核心栈，不包含 SSH Gateway、MailDev、Jaeger、OpenTelemetry Collector、PgAdmin 和
 Registry UI。它与根目录的 AgentOS Compose 相互独立，不共享容器网络、项目名或数据卷。
 
+两套 Compose 都在文件内声明自己的网络，由 `docker compose up` 创建。不再依赖、也不再创建
+名为 `hrp_network` 的外部网络；AgentOS 使用自己的 bridge，Daytona 服务只接入 `daytona-network`。
+
 外层 `daytona-network` 固定使用 `172.31.0.0/16`，避免与 Runner 创建 sandbox 时使用的
 `172.20.0.0/16` bridge 路由重叠。部署前仍须确认宿主机及其上游网络未占用该网段。
 

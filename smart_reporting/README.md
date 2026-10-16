@@ -10,6 +10,9 @@ UV_PROJECT_ENVIRONMENT=.venv uv sync --python 3.12 --no-install-project
 AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.app
 ```
 
+`reporting-db` 向宿主机发布 `127.0.0.1:55432`，与默认 `AGENT_DB_URL` 一致。容器内的
+AgentOS 仍通过服务名 `reporting-db:5432` 连接。
+
 主应用保留：
 
 - AgentOS 原生 Agent API 仅公开 `smart-reporting`，同时支持普通对话和智能报表。

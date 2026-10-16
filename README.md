@@ -6,8 +6,10 @@
 
 部署分为两个独立项目：
 
-- 根目录 `docker-compose.yml`：AgentOS 和专用 PostgreSQL。
+- 根目录 `docker-compose.yml`：AgentOS 和专用 PostgreSQL。`reporting-db` 向宿主机发布 `127.0.0.1:55432`。
 - `docker/docker-compose.yaml`：Daytona OSS 核心栈。
+
+两套 Compose 各自在文件内声明网络，由 `docker compose up` 创建，不共享容器网络，也不使用外部网络 `hrp_network`。Daytona 侧说明见 [docker/README.md](docker/README.md)。
 
 生产环境默认使用 `SANDBOX_PROVIDER=daytona`。DaytonaProvider 负责外部工作区生命周期，适合
 AgentOS 多副本和企业高可用部署。完全离线的内网可改用 `SANDBOX_PROVIDER=local`，由独立
@@ -81,7 +83,7 @@ UV_PROJECT_ENVIRONMENT=.venv uv sync --python 3.12 --no-install-project
 AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.app
 ```
 
-当前服务使用 Agno 3.0，部署时必须连接全新数据库。不要复用 Agno 2.x 的 PostgreSQL
+当前服务使用 Agno 3.1.2，部署时必须连接全新数据库。不要复用 Agno 2.x 的 PostgreSQL
 数据库或 `data/postgres` 数据目录；本项目不执行 2.x 历史数据迁移或兼容读取。
 
 AgentOS 的 agent、team 和 workflow 新建 run 请求总大小上限为 32 MiB；multipart

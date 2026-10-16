@@ -79,11 +79,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    ports:
+      - "127.0.0.1:55432:5432"
     volumes:
       - ./data/reporting-db:/var/lib/postgresql
     restart: unless-stopped
 
 networks:
   default:
-    external: true
-    name: hrp_network
+    driver: bridge

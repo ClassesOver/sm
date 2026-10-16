@@ -2,7 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from copy import copy
 from typing import Literal
 
@@ -478,6 +478,11 @@ def _visualization_attempts(traces: Sequence[ContextTrace]) -> range:
     used = sum(item.attempt > last_completed for item in traces)
     remaining = max(0, MAX_REPORT_SECTION_PHASE_ATTEMPTS - used)
     return range(next_attempt, next_attempt + remaining)
+
+
+def narrative_section_max_charts(sections: Sequence[Any], section_code: str) -> int | None:
+    """叙事大纲没有该章节时不套用图表上限，与成稿路径的 ``next(..., None)`` 一致。"""
+    return next((item.max_charts for item in sections if item.code == section_code), None)
 
 
 def _requested_chart_limit(report_goal: str, analysis_count: int) -> int | None:
@@ -2121,8 +2126,10 @@ class RuntimeAnalysisMixin:
             visual_inspection_mode = "vision" if self._vision_enabled else "deterministic"
             max_charts = None
             if checkpoint.narrative_outline_file is not None:
-                narrative = await self._read_identity_model(scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline)
-                max_charts = next(item.max_charts for item in narrative.sections if item.code == section_code)
+                narrative = await self._read_identity_model(
+                    scope["threadId"], checkpoint.narrative_outline_file, NarrativeOutline
+                )
+                max_charts = narrative_section_max_charts(narrative.sections, section_code)
             visualization_context = {
                 "run_context": run_context,
                 "checkpoint": checkpoint,

@@ -256,8 +256,10 @@ services:
 
 networks:
   daytona-network:
-    external: true
-    name: hrp_network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/16
 
 volumes:
   db:
