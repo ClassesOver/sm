@@ -14,7 +14,8 @@ from .outline import ReportOutline
 
 @dataclass(frozen=True)
 class NarrativeContentBudget:
-    max_findings_per_section: int = 2000
+    # 章节数量由管理主题决定；发现摘要仍需留在单次章节模型输入预算内。
+    max_findings_per_section: int = 500
 
 
 def rank_finding(finding: FindingCard) -> tuple[int, int, int]:
@@ -174,7 +175,7 @@ def build_fallback_narrative_candidate(
                 "title": "；".join(dict.fromkeys(display_title(cards[item]) for item in group))[:200],
                 "findingIds": group,
                 "objective": "解释已核验发现并提出管理动作",
-                "groupingReason": "依据共享指标、期间、粒度和已登记关系确定性分组",
+                "groupingReason": "依据共享指标、管理主题和已登记关系确定性分组",
                 "priority": max((cards[item] for item in group), key=rank_finding).priority,
             } for group in groups[:body_count]),
             appendixFindingIds=appendix,

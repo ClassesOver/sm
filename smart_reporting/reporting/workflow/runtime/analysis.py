@@ -24,6 +24,7 @@ from ...hospital_operation.narrative_outline import (
     freeze_narrative_outline,
 )
 from ...hospital_operation.narrative_planner import (
+    NarrativeContentBudget,
     build_compatible_report_outline,
     build_fallback_narrative_candidate,
     build_narrative_planning_batches,
@@ -2502,10 +2503,12 @@ class RuntimeAnalysisMixin:
                 "appendixFindingIds": [item for candidate in planned for item in candidate.appendix_finding_ids],
                 "omittedFindings": [item for candidate in planned for item in candidate.omitted_findings],
                 "highPriorityFindingIds": [card.finding_id for card in graph.findings if card.priority == "high"],
-                "contentBudget": {"maxFindingsPerSection": 2000},
+                "contentBudget": {
+                    "maxFindingsPerSection": NarrativeContentBudget().max_findings_per_section,
+                },
                 "requiredAction": (
                     "统筹各批次主题，合并跨批次重复主题，按管理问题重新分配所有发现。"
-                    "保持候选主题的期间、范围和粒度边界；高优先级发现必须进入正文。"
+                    "允许按管理问题合并候选主题，但必须保留每个发现自身的期间、范围和粒度口径；高优先级发现必须进入正文。"
                     "纯统计限制放入一个附录章节，不为每个批次增加正文。"
                     "每个 findingId 必须且只能归属一次；返回完整 NarrativeOutlineCandidate。"
                 ),

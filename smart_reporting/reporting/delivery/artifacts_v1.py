@@ -104,10 +104,10 @@ class ReportArtifactManifest(StrictModel):
     analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=2_000)
     # 章节内容和顺序由 Workflow 批准提纲冻结，并通过 expectedSections 精确验收。
     # 交付模型只约束通用结构，不能再维护一份会与综合十章或专题子集冲突的业务清单。
-    sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    sections: tuple[str, ...] = Field(min_length=1)
     section_finding_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict, alias="sectionFindingIds")
     section_grouping_reasons: dict[str, str] = Field(default_factory=dict, alias="sectionGroupingReasons")
-    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1, max_length=100)
+    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1)
     heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers", min_length=1)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
     # B1 起：revision 追溯索引 sidecar（application/json）。旧清单无此字段，
@@ -446,8 +446,8 @@ class PdfArtifactManifest(StrictModel):
     page_count: int = Field(alias="pageCount", ge=1, le=1_000)
     rendered_chart_ids: tuple[str, ...] = Field(default=(), alias="renderedChartIds")
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
-    sections: tuple[str, ...] = Field(min_length=1, max_length=100)
-    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1, max_length=100)
+    sections: tuple[str, ...] = Field(min_length=1)
+    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1)
     heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers", min_length=1)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
@@ -471,12 +471,12 @@ class DocxArtifactManifest(StrictModel):
     source_chart_sha256s: tuple[str, ...] = Field(default=(), alias="sourceChartSha256s")
     docx: ArtifactFile
     converted_page_count: int = Field(alias="convertedPageCount", ge=1, le=1_000)
-    section_count: int = Field(alias="sectionCount", ge=1, le=100)
+    section_count: int = Field(alias="sectionCount", ge=1)
     toc_entry_count: int = Field(alias="tocEntryCount", ge=0)
     rendered_chart_ids: tuple[str, ...] = Field(default=(), alias="renderedChartIds")
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
-    sections: tuple[str, ...] = Field(min_length=1, max_length=100)
-    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1, max_length=100)
+    sections: tuple[str, ...] = Field(min_length=1)
+    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1)
     heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers", min_length=1)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 

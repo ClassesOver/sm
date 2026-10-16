@@ -740,7 +740,7 @@ class _ReportWorkflowRuntimeBase:
                 "新提纲按管理问题自然形成章节，合并同主题发现并保留全部已登记发现的去向。",
                 "只提交中文标题、findingIds、章节目标、分组理由、叙事角色和内容预算。",
                 "findingIds 必须逐字复制已登记身份；所有发现必须归属章节、附录或有具体理由的遗漏项。",
-                "高优先级发现必须进入正文；期间、粒度、scope 不一致的发现不得合并。",
+                "高优先级发现必须进入正文；可按管理主题合并不同期间、粒度或 scope 的发现，正文必须保留各自口径。",
                 "不得提交 analysisIds、section code、编号、数值事实或 citation。",
                 "snapshotHash 逐字复制 planningContext.snapshotHash。",
                 "章节目标围绕结论、证据、经营影响和管理动作；相关性不得改写为因果。",
