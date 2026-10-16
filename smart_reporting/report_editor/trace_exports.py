@@ -61,6 +61,7 @@ class TraceExportJob:
     finished_at: float | None = None
     cancel_requested: bool = False
     task: asyncio.Task[None] | None = field(default=None, repr=False)
+    execution_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -146,7 +147,11 @@ class TraceDerivedExportService:
                 "request_invalid", f"未登记的导出策略代码: {policy}"
             )
         target_columns, mask = _validate_masked_columns_policy(file, params, blocked_columns)
-        running = sum(1 for job in self._jobs.values() if job.status == "running")
+        running = sum(
+            1 for job in self._jobs.values()
+            if job.status == "running"
+            or (job.execution_task is not None and not job.execution_task.done())
+        )
         if running >= _MAX_DERIVED_EXPORT_JOBS:
             raise ReportingError(
                 "report_editor_export_busy", "派生导出任务已达并发上限，请稍后重试。"
@@ -183,6 +188,23 @@ class TraceDerivedExportService:
     async def status(self, context: Any, export_id: str) -> dict[str, Any]:
         job = self._owned_job(context, export_id)
         return job.to_payload()
+
+    async def aclose(self) -> None:
+        """停止接收导出结果，并等待实际生成和取消产物清理结束。"""
+        jobs = list(self._jobs.values())
+        for job in jobs:
+            if any(task is not None and not task.done() for task in (job.task, job.execution_task)):
+                job.cancel_requested = True
+                if job.status == "running":
+                    job.status = "failed"
+                    job.error = "派生导出已取消。"
+                if job.task is not None and not job.task.done():
+                    job.task.cancel()
+        tasks = [job.task for job in jobs if job.task is not None]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        executions = [job.execution_task for job in jobs if job.execution_task is not None]
+        await asyncio.gather(*executions, return_exceptions=True)
+        await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
 
     async def download(
         self, context: Any, export_id: str, *, blocked_columns: frozenset[str] = frozenset()
@@ -240,17 +262,34 @@ class TraceDerivedExportService:
         return parent.joinpath(f".trace-exports/{export_id}.csv").as_posix()
 
     async def _run_guarded(self, context, job, file, target_columns, mask, blocked_columns):
+        # asyncio 取消不能终止同步写线程。独立任务继续持有来源锁和并发名额，
+        # 完成回调负责在实际生成结束后清理被取消的产物。
+        execution = asyncio.create_task(
+            self._run_with_guard(context, job, file, target_columns, mask, blocked_columns)
+        )
+        job.execution_task = execution
+        execution.add_done_callback(lambda task: self._execution_finished(job, task))
         try:
             await asyncio.wait_for(
-                self._run_with_guard(context, job, file, target_columns, mask, blocked_columns),
+                asyncio.shield(execution),
                 timeout=_DERIVED_EXPORT_TIMEOUT_SECONDS,
             )
         except TimeoutError:
+            job.cancel_requested = True
             if job.status == "running":
                 job.status = "failed"
                 job.error = "派生导出超时。"
-                job.finished_at = job.finished_at or time.time()
+            if execution.done():
+                self._best_effort_delete(job)
             logger.warning("trace_derived_export_timeout export_id={}", job.export_id)
+        except asyncio.CancelledError:
+            job.cancel_requested = True
+            if job.status == "running":
+                job.status = "failed"
+                job.error = "派生导出已取消。"
+            if execution.done():
+                self._best_effort_delete(job)
+            raise
         except Exception as error:  # noqa: BLE001 - 守卫失败同样必须落到任务状态
             # 非 ReportingError（如状态库读取失败、锁文件打开失败）若逃出任务，状态会停在
             # running：轮询永远“生成中”、过期清理跳过 running，且持续占用并发名额。
@@ -266,6 +305,17 @@ class TraceDerivedExportService:
                     job.export_id,
                     error,
                 )
+
+    def _execution_finished(self, job: TraceExportJob, task: asyncio.Task[None]) -> None:
+        # 直接取消执行任务通常意味着事件循环正在关闭，不能证明底层线程已退出，
+        # 也不能在此时新建清理任务。正常关闭应通过 aclose 等待实际生成结束。
+        if task.cancelled():
+            return
+        # 外层超时后仍需获取异常，避免失去等待方的任务产生未处理异常。
+        task.exception()
+        job.finished_at = job.finished_at or time.time()
+        if job.cancel_requested:
+            self._best_effort_delete(job)
 
     async def _run_with_guard(self, context, job, file, target_columns, mask, blocked_columns):
         if self.source_guard is None:
@@ -305,21 +355,22 @@ class TraceDerivedExportService:
                     size += len(chunk)
             if job.cancel_requested:
                 job.status = "failed"
-                job.error = "派生导出已取消。"
+                job.error = job.error or "派生导出已取消。"
             else:
                 job.size = size
                 job.sha256 = content_hash.hexdigest()
                 job.status = "completed"
         except asyncio.CancelledError:
-            # 超时由外层 wait_for 取消任务；只有显式取消才在这里落“已取消”，
-            # 否则外层无法再写成超时失败。
+            # 常规取消由外层处理；保留直接取消执行任务时的终态防御。
             if job.cancel_requested and job.status == "running":
                 job.status = "failed"
                 job.error = "派生导出已取消。"
             raise
         except Exception as error:  # noqa: BLE001 - 任务失败必须落到状态里
             job.status = "failed"
-            job.error = str(error) if isinstance(error, ReportingError) else "派生导出生成失败。"
+            job.error = job.error or (
+                str(error) if isinstance(error, ReportingError) else "派生导出生成失败。"
+            )
             logger.warning(
                 "trace_derived_export_failed export_id={} error={}", job.export_id, error
             )
@@ -348,10 +399,15 @@ class TraceDerivedExportService:
             return
         current = time.time() if now is None else now
         overdue = self._job_overdue(job, current)
-        if job.status == "running" and job.task is not None and not job.task.done():
-            if overdue:
+        active = any(
+            task is not None and not task.done()
+            for task in (job.task, job.execution_task)
+        )
+        if active:
+            if overdue and not job.cancel_requested:
                 job.cancel_requested = True
-                job.task.cancel()
+                if job.task is not None and not job.task.done():
+                    job.task.cancel()
             return
         if job.status == "running":
             job.status = "failed"

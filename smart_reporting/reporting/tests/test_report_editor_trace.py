@@ -1008,10 +1008,11 @@ async def test_derived_export_times_out_instead_of_staying_running(
     from smart_reporting.report_editor.trace_exports import TraceDerivedExportService
     from smart_reporting.reporting.trace.dataset_service import TraceDatasetFile
 
+    release = asyncio.Event()
+
     async def hang(self, job, file, target_columns, mask, blocked_columns):  # noqa: ANN001
         del self, file, target_columns, mask, blocked_columns
-        await asyncio.sleep(30)
-        job.status = "completed"
+        await release.wait()
 
     monkeypatch.setattr(trace_exports, "_DERIVED_EXPORT_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(TraceDerivedExportService, "_run", hang)
@@ -1036,6 +1037,8 @@ async def test_derived_export_times_out_instead_of_staying_running(
     status = await service.status(context, started["exportId"])
     assert status["status"] == "failed"
     assert status["error"]["message"] == "派生导出超时。"
+    release.set()
+    await service._jobs[started["exportId"]].execution_task
 
 
 @pytest.mark.anyio

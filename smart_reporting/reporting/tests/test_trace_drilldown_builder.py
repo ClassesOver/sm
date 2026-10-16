@@ -134,6 +134,59 @@ def test_builder_freezes_base_ratio_and_semi_additive_capabilities() -> None:
     assert by_code["revenue_per_visit"].denominator_field == "visits"
 
 
+def test_ratio_drilldown_uses_the_frozen_contiguous_fact_window(tmp_path: Path) -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        build_deterministic_analysis_bundle,
+    )
+
+    from .test_deterministic_analysis import analysis, context, semantic
+
+    dataset_id = "dataset-current01"
+    prefix = "dynamic_source.dynamic_db.dynamic_table."
+    content = b"month,department,actual,budget\n2025-01,A,80,100\n2025-03,A,90,300\n"
+    fields = ("month", "department", "actual", "budget")
+    semantics = (semantic("actual"), semantic("budget"))
+    metrics = (
+        {"code": "actual", "aggregation": "sum", "fieldRef": prefix + "actual"},
+        {"code": "budget", "aggregation": "sum", "fieldRef": prefix + "budget"},
+        {
+            "code": "ratio", "aggregation": "ratio",
+            "numeratorMetric": "actual", "denominatorMetric": "budget",
+        },
+    )
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("actual", "budget")),
+        ((
+            dataset_id, content,
+            context(dataset_id, fields=fields, semantics=semantics), ("current",),
+        ),),
+        profile_metrics=metrics,
+    )
+    fact = bundle.derived_metrics[0]
+    assert (fact.value, fact.period_start, fact.period_end) == (0.3, "2025-03", "2025-03")
+    declarations = build_drilldown_metrics(
+        bundles=[bundle.model_dump(mode="json", by_alias=True)],
+        dataset_columns={dataset_id: fields},
+        profile_metrics=metrics,
+        profile_dimensions=({"code": "department", "fieldRefs": [prefix + "department"]},),
+        measure_semantics=semantics,
+    )
+    declaration = next(item for item in declarations if item.metric_code == "ratio")
+    path = tmp_path / "data.csv"
+    path.write_bytes(content)
+    file = TraceDatasetFile(
+        dataset_id=dataset_id, local_path=path, size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(), row_count=2,
+    )
+    page = TraceDrilldownService(secret=b"test-ratio").drilldown(
+        file, declaration, dimension_code="department", report_id="report-1", revision=1,
+    )
+    assert page.observed_value == fact.value
+    assert page.reconciled is True
+    assert page.rows == (("A", 0.3),)
+    assert (page.period_start, page.period_end) == (fact.period_start, fact.period_end)
+
+
 def test_builder_skips_missing_dimensions_and_conflicting_facts() -> None:
     first = metric("revenue", "revenue", 750)
     conflicting = {**first, "total": 999}
