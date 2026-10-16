@@ -231,8 +231,8 @@ describe('report editor visual hierarchy', () => {
     )!.style
 
     expect(style('body').background).toBe('rgb(243, 246, 248)')
-    expect(style('.report-meta').borderBottom).toBe('1px solid rgb(220, 229, 236)')
-    expect(style('.report-outline').borderRight).toBe('1px solid rgb(220, 229, 236)')
+    expect(style('.report-meta').borderBottom).toBe('1px solid var(--color-border)')
+    expect(style('.report-outline').borderRight).toBe('1px solid var(--color-border)')
     expect(style('.outline-heading').letterSpacing).toBe('0')
   })
 
