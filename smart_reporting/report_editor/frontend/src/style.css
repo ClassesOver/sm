@@ -331,10 +331,17 @@ button {
   touch-action: manipulation;
   white-space: nowrap;
   transition:
-    border-color 150ms ease,
-    background 150ms ease,
-    box-shadow 150ms ease,
-    color 150ms ease;
+    border-color var(--motion-fast) ease,
+    background var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+.report-actions button:hover:not(.is-primary):not(:disabled) {
+  background: var(--color-primary-soft);
+}
+.report-actions button:active:not(.is-primary):not(:disabled) {
+  transform: scale(0.96);
 }
 .report-actions button[hidden] { display: none; }
 
@@ -360,15 +367,15 @@ button {
 }
 
 .report-actions button:not(.is-primary):active {
-  border-color: #b8cfdf;
-  background: #e8f1f6;
+  border-color: var(--color-border-strong);
+  background: var(--color-primary-soft);
   box-shadow: inset 0 1px 2px rgb(27 42 65 / 10%);
 }
 
 .report-actions button[aria-pressed="true"]:not(.is-primary),
 .report-actions button[aria-expanded="true"]:not(.is-primary) {
-  border-color: #b8cfdf;
-  background: #eaf0f4;
+  border-color: var(--color-border-strong);
+  background: var(--color-primary-soft);
   color: var(--color-ink-2);
 }
 
