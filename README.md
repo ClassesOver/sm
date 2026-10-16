@@ -9,8 +9,6 @@
 - 根目录 `docker-compose.yml`：AgentOS 和专用 PostgreSQL。`reporting-db` 向宿主机发布 `127.0.0.1:55432`。
 - `docker/docker-compose.yaml`：Daytona OSS 核心栈。
 
-两套 Compose 各自在文件内声明网络，由 `docker compose up` 创建，不共享容器网络，也不使用外部网络 `hrp_network`。Daytona 侧说明见 [docker/README.md](docker/README.md)。
-
 生产环境默认使用 `SANDBOX_PROVIDER=daytona`。DaytonaProvider 负责外部工作区生命周期，适合
 AgentOS 多副本和企业高可用部署。完全离线的内网可改用 `SANDBOX_PROVIDER=local`，由独立
 `local-sandboxd` 在 Ubuntu 或 openEuler 节点通过 namespace、cgroup v2、seccomp 和只读离线

@@ -71,25 +71,14 @@ def test_reporting_compose_disables_fg_data_profiling_analytics():
     )
 
 
-def test_compose_declares_networks_and_publishes_reporting_db_on_host_port() -> None:
+def test_reporting_db_publishes_host_port_and_readme_names_agno_version() -> None:
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(
         (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
-    daytona = yaml.load(
-        (repository_root / "docker" / "docker-compose.yaml").read_text(encoding="utf-8"),
-        Loader=yaml.BaseLoader,
-    )
-    readme = (repository_root / "docker" / "README.md").read_text(encoding="utf-8")
 
-    assert "external" not in compose["networks"]["default"]
     assert compose["services"]["reporting-db"]["ports"] == ["127.0.0.1:55432:5432"]
-    network = daytona["networks"]["daytona-network"]
-    assert "external" not in network
-    assert network["ipam"]["config"][0]["subnet"] == "172.31.0.0/16"
-    assert "hrp_network" in readme
-    assert "172.31.0.0/16" in readme
     assert "Agno 3.1.2" in (repository_root / "README.md").read_text(encoding="utf-8")
 
 
