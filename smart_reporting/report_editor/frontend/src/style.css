@@ -4540,9 +4540,12 @@ input:disabled, textarea:disabled, select:disabled {
 .evidence-start-card[data-kind="fact"] { --kind-color: #2563eb; --kind-soft: #e8f0fe; }
 .evidence-start-card[data-kind="subject"] { --kind-color: #475569; --kind-soft: #eef1f4; }
 .evidence-start-card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-3px);
   border-color: var(--color-border-strong);
-  box-shadow: 0 10px 28px rgb(27 42 65 / 10%);
+  box-shadow: var(--shadow-md);
+}
+.evidence-start-card:hover .evidence-start-icon {
+  transform: scale(1.08);
 }
 /* 入场：卡片依次浮现 */
 .evidence-start-card { animation: motion-rise-in var(--motion-slow) var(--motion-ease-out) backwards; }
@@ -4559,6 +4562,7 @@ input:disabled, textarea:disabled, select:disabled {
   height: 28px;
   border-radius: var(--radius-md);
   background: var(--kind-soft, #e8f0fe);
+  transition: transform var(--motion-fast) var(--motion-spring);
 }
 .evidence-start-card-head { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; color: var(--color-ink); font-size: var(--font-size-base); font-weight: 600; }
 .evidence-start-count { margin-left: auto; color: var(--color-text-muted); font-size: var(--font-size-sm); font-weight: 400; }
