@@ -618,13 +618,13 @@ class ReportEditorTraceService:
         context: Any,
         session_capabilities: Mapping[str, Any] | None,
         dataset_id: str,
-    ) -> tuple[Path, str, int]:
+    ) -> tuple[Path, str, int, str]:
         index = await self.require_index(context)
         file = await self._resolve_dataset_file(context, index, dataset_id)
         path, filename = self._preview.download_target(
             file, self._permissions(session_capabilities)
         )
-        return path, filename, file.size
+        return path, filename, file.size, file.sha256
 
     async def create_derived_export(
         self,
@@ -659,16 +659,15 @@ class ReportEditorTraceService:
         context: Any,
         session_capabilities: Mapping[str, Any] | None,
         export_id: str,
-    ) -> tuple[Path, str, int]:
+    ) -> tuple[Path, str, int, str]:
         permissions = self._permissions(session_capabilities)
         if not permissions.can_download_derived:
             raise ReportingError(
                 "dataset_access_denied", "当前会话无权下载派生导出。"
             )
-        path, filename, size, _sha256 = await self.exports.download(
+        return await self.exports.download(
             context, export_id, blocked_columns=permissions.blocked_columns
         )
-        return path, filename, size
 
     async def require_index(self, context: Any) -> RevisionTraceIndexV1:
         index = await self.load_index(context)

@@ -8,15 +8,18 @@ import os
 import stat
 from contextlib import asynccontextmanager
 from functools import wraps
+from pathlib import Path
 
+from fastapi.concurrency import contextmanager_in_threadpool
 from starlette.responses import FileResponse, JSONResponse
 
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
+from ..reporting.trace.dataset_service import TraceDatasetFile, verified_dataset_snapshot
 
 
 class SourceFileResponse(FileResponse):
-    """下载响应发送完毕前持有来源锁，并在真正打开文件前重新校验。"""
+    """持有来源锁，从同一份已核验快照发送全部下载字节。"""
 
     def __init__(self, path, *, service, context, validate, **kwargs):
         super().__init__(path, **kwargs)
@@ -25,16 +28,40 @@ class SourceFileResponse(FileResponse):
         self.validate = validate
 
     async def __call__(self, scope, receive, send):
+        started = False
+
+        async def send_download(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
         try:
             async with source_lifecycle_lock(self.service, self.context):
-                path, _, _ = await self.validate()
+                path, filename, size, sha256 = await self.validate()
                 if str(path) != str(self.path):
                     raise ReportingError("source_missing", "下载来源已变化，请重新下载。")
                 # 不委托服务器延后按路径打开文件，否则锁会早于实际发送释放。
                 extensions = {key: value for key, value in scope.get("extensions", {}).items()
                     if key != "http.response.pathsend"}
-                await super().__call__({**scope, "extensions": extensions}, receive, send)
+                file = TraceDatasetFile(
+                    dataset_id="download", local_path=Path(path), size=size,
+                    sha256=sha256, row_count=0,
+                )
+                async with contextmanager_in_threadpool(verified_dataset_snapshot(file)) as snapshot:
+                    headers = dict(self.headers)
+                    # 临时文件的时间戳每次不同；Range 的 If-Range 应绑定内容身份。
+                    headers["etag"] = f'"{sha256}"'
+                    response = FileResponse(
+                        snapshot.local_path, status_code=self.status_code,
+                        media_type=self.media_type, filename=filename,
+                        headers=headers, background=self.background,
+                    )
+                    response.chunk_size = self.chunk_size
+                    await response({**scope, "extensions": extensions}, receive, send_download)
         except ReportingError as error:
+            if started:
+                raise
             response = JSONResponse({"detail": {"code": error.code, "message": error.message}},
                 status_code=TRACE_ERROR_HTTP_STATUS.get(error.code, 404))
             await response(scope, receive, send)

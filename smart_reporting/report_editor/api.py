@@ -729,7 +729,9 @@ def create_report_editor_router(
             )
             return SourceFileResponse(
                 path, service=editor, context=context,
-                validate=lambda: editor.trace_dataset_download(context, session, dataset_id),
+                validate=lambda: editor.trace_dataset_download(
+                    context, session, dataset_id, include_identity=True
+                ),
                 filename=filename,
                 media_type="text/csv",
                 headers={"Cache-Control": "no-store"},
@@ -815,7 +817,9 @@ def create_report_editor_router(
             )
             return SourceFileResponse(
                 path, service=editor, context=context,
-                validate=lambda: editor.trace_derived_export_download(context, session, export_id),
+                validate=lambda: editor.trace_derived_export_download(
+                    context, session, export_id, include_identity=True
+                ),
                 filename=filename,
                 media_type="text/csv",
                 headers={"Cache-Control": "no-store"},

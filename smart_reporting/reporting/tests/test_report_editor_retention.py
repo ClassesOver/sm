@@ -355,7 +355,7 @@ async def test_file_response_holds_source_lock_through_body_and_revalidates(tmp_
 
     async def validate():
         await editor._ensure_sources_retained(first)
-        return path, "intermediate.json", path.stat().st_size
+        return path, "intermediate.json", path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()
 
     response = SourceFileResponse(path, service=editor, context=first, validate=validate)
     sending = asyncio.Event()
