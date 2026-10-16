@@ -561,6 +561,21 @@ class _ExportJob:
     finished_at: float | None = None
 
 
+def _analysis_context_file_from_state(state: Any) -> Mapping[str, Any] | None:
+    """工作流检查点里的分析上下文；没有登记时正文复核不使用列说明。"""
+    checkpoint = state.payload.get("workflowCheckpoint", {}) if state else {}
+    files = checkpoint.get("files", ()) if isinstance(checkpoint, Mapping) else ()
+    return next(
+        (
+            item
+            for item in files
+            if isinstance(item, Mapping)
+            and str(item.get("path", "")).endswith("/detailed-analysis-context.json")
+        ),
+        None,
+    )
+
+
 class ReportEditorService:
     def __init__(
         self,
@@ -1096,6 +1111,12 @@ class ReportEditorService:
             and isinstance(item.get("path"), str)
         }
 
+    async def _registered_analysis_context_file(
+        self, context: ReportEditorContext
+    ) -> Mapping[str, Any] | None:
+        state = await self.state_repository.get(context.workflow_run_id)
+        return _analysis_context_file_from_state(state)
+
     @source_lifecycle
     async def trace_sources(
         self, expected: ReportEditorContext, session: ReportEditorSession
@@ -1110,10 +1131,7 @@ class ReportEditorService:
             }
         context = await self._source_context(expected, allow_retired=True)
         state = await self.state_repository.get(context.workflow_run_id)
-        checkpoint = state.payload.get("workflowCheckpoint", {}) if state else {}
-        files = checkpoint.get("files", ()) if isinstance(checkpoint, Mapping) else ()
-        analysis_context_file = next((item for item in files if isinstance(item, Mapping)
-            and str(item.get("path", "")).endswith("/detailed-analysis-context.json")), None)
+        analysis_context_file = _analysis_context_file_from_state(state)
         result = await self.trace.sources(context, session.capabilities, analysis_context_file=analysis_context_file)
         # 历史事实文件没有名称时，用同一工作流中登记的分析计划补充展示名称。
         plans = state.payload.get("analysisPlans", {}) if state else {}
@@ -1361,7 +1379,12 @@ class ReportEditorService:
     ) -> dict[str, Any]:
         self._require_lineage_feature("panel")
         context = await self._source_context(expected)
-        return await self.trace.validate(context, markdown, draft_sha256)
+        return await self.trace.validate(
+            context,
+            markdown,
+            draft_sha256,
+            analysis_context_file=await self._registered_analysis_context_file(context),
+        )
 
     @source_lifecycle
     async def save_draft(
@@ -1783,7 +1806,12 @@ class ReportEditorService:
                     render_manifest = rebuilt.model_dump(mode="json", by_alias=True)
                 if trace_index is not None:
                     validation = await self.trace.validate(
-                        source_context, document.markdown, document.sha256
+                        source_context,
+                        document.markdown,
+                        document.sha256,
+                        analysis_context_file=await self._registered_analysis_context_file(
+                            source_context
+                        ),
                     )
                     if isinstance(target_job.get("_citationPresentations"), list):
                         target_job["_citationPresentations"] = _export_citation_presentations(

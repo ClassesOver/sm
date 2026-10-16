@@ -134,10 +134,13 @@ class ContentReviewResult:
 
 
 def review_content(markdown: str, contents: Iterable[str], *, field_definitions: Mapping[str, str] | None = None,
-                   fact_ids: Iterable[str] | None = None) -> list[str]:
+                   fact_ids: Iterable[str] | None = None,
+                   bound_chart_ids: Iterable[str] = ()) -> list[str]:
     """兼容既有调用方，继续返回完整软告警列表。"""
-    return list(review_content_result(markdown, contents, field_definitions=field_definitions,
-                                      fact_ids=fact_ids).warnings)
+    return list(review_content_result(
+        markdown, contents, field_definitions=field_definitions, fact_ids=fact_ids,
+        bound_chart_ids=bound_chart_ids,
+    ).warnings)
 
 
 def review_content_result(markdown: str, contents: Iterable[str], *, field_definitions: Mapping[str, str] | None = None,

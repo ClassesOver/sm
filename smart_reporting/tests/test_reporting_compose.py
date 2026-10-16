@@ -71,6 +71,17 @@ def test_reporting_compose_disables_fg_data_profiling_analytics():
     )
 
 
+def test_reporting_db_publishes_host_port_and_readme_names_agno_version() -> None:
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+
+    assert compose["services"]["reporting-db"]["ports"] == ["127.0.0.1:55432:5432"]
+    assert "Agno 3.1.2" in (repository_root / "README.md").read_text(encoding="utf-8")
+
+
 def test_smart_reporting_readme_uses_existing_database_service() -> None:
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(

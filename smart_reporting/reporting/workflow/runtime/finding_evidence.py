@@ -73,16 +73,21 @@ def finding_evidence_view(
         values = selected.get(source.identity.path)
         if not values:
             continue
-        # 复用同数据集、快照、范围、单位和期间的配对规则；只沿已核验文件补齐预算依赖。
+        # 复用同数据集、快照、范围、单位和期间的配对规则。
+        # 预算比较仍由实际值补分母；项目比例在分子或分母已入选时补齐另一侧。
         local_ids = {value["factId"] for value in values.values()
                      if isinstance(value, dict) and isinstance(value.get("factId"), str)}
         for bundle in frozen_fact_bundles((source.content,)):
+            ratio_entries = tuple(project_ratio_values(bundle))
             dependencies = {
                 entry["budgetFactId"] for entry in budget_comparison_values(bundle)
                 if entry["actualFactId"] in local_ids
             } | {
-                entry["budgetFactId"] for entry in project_ratio_values(bundle)
+                entry["budgetFactId"] for entry in ratio_entries
                 if entry["numeratorFactId"] in local_ids
+            } | {
+                entry["numeratorFactId"] for entry in ratio_entries
+                if entry["budgetFactId"] in local_ids
             }
             for index, metric in enumerate(documents[source.identity.path].get("metrics", ())):
                 if isinstance(metric, dict) and metric.get("factId") in dependencies:
