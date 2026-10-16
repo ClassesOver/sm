@@ -1618,7 +1618,7 @@ class ReportEditorTraceService:
             )
             if item is not None
         )
-        return not bool(required & blocked)
+        return not any(is_blocked_column(field, blocked) for field in required)
 
     @staticmethod
     def _drilldown_declaration_payload(declaration: Any) -> dict[str, Any]:

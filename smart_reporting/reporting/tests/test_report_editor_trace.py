@@ -860,6 +860,54 @@ async def test_derived_export_masks_columns_with_independent_identity(
     assert "derived" in filename
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("replace_before_snapshot", [True, False])
+async def test_derived_export_uses_verified_source_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace_before_snapshot: bool,
+) -> None:
+    editor, grants, _ = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(_context())
+    _, session = await grants.exchange(raw)
+    context = await editor._source_context(_context())
+    index = await editor.trace.require_index(context)
+    file = await editor.trace._resolve_dataset_file(context, index, DATASET_ID)
+    original = file.local_path.read_bytes()
+    replacement = original.replace(b"2025-08", b"1999-01")
+    exports = editor.trace.exports
+    generate = exports._generate
+
+    def replace_then_generate(source, target, columns, mask):
+        # 在校验结束后替换原路径：生成必须继续读取已校验的快照。
+        file.local_path.write_bytes(replacement)
+        generate(source, target, columns, mask)
+
+    if not replace_before_snapshot:
+        monkeypatch.setattr(exports, "_generate", replace_then_generate)
+    started = await editor.trace_create_derived_export(
+        _context(), session, DATASET_ID, policy="masked_columns",
+        params={"columns": ["revenue"]},
+    )
+    if replace_before_snapshot:
+        file.local_path.write_bytes(replacement)
+    job = exports._jobs[started["exportId"]]
+    await job.task
+    status = await editor.trace_derived_export_status(_context(), session, job.export_id)
+    if replace_before_snapshot:
+        assert status["status"] == "failed"
+        with pytest.raises(ReportingError, match="派生导出已失败"):
+            await editor.trace_derived_export_download(_context(), session, job.export_id)
+    else:
+        assert status["status"] == "completed"
+        path, _, _ = await editor.trace_derived_export_download(
+            _context(), session, job.export_id
+        )
+        content = Path(path).read_text(encoding="utf-8")
+        assert "2025-08" in content
+        assert "1999-01" not in content
+        assert ",***," in content
+        assert status["sourceSha256"] == hashlib.sha256(original).hexdigest()
+
+
 def test_derived_export_keeps_unmasked_cells_verbatim(tmp_path: Path) -> None:
     """派生导出只替换掩码列；其余列按原文写出，不因类型推断改写。"""
     from smart_reporting.report_editor.trace_exports import TraceDerivedExportService
@@ -1489,6 +1537,63 @@ async def test_blocked_drilldown_input_is_hidden_and_rejected(tmp_path: Path) ->
             "income_total",
             dataset_id=DATASET_ID,
             dimension_code="branch",
+        )
+    assert denied.value.code == "dataset_access_denied"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("blocked_column", ["revenue", "branch"])
+async def test_drilldown_rejects_duplicated_blocked_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked_column: str,
+) -> None:
+    # Polars 为重复列分配别名；冻结声明可引用别名，但权限仍属于原列。
+    monkeypatch.setattr(
+        __name__ + ".CSV_BYTES",
+        ("period,branch,branch,revenue,revenue,visits\n"
+         "2025-09,A院区,A院区,1200,1200,10\n"
+         "2025-09,B院区,B院区,2400,2400,20\n").encode(),
+    )
+    build_index = build_csv_trace_index
+
+    def with_duplicate_fields(**kwargs):
+        kwargs["drilldown_metrics"] = tuple(
+            item.model_copy(update={
+                "value_field": "revenue_duplicated_0",
+                "dimensions": tuple(
+                    dimension.model_copy(update={"field": "branch_duplicated_0"})
+                    for dimension in item.dimensions
+                ),
+            })
+            for item in kwargs["drilldown_metrics"]
+        )
+        return build_index(**kwargs)
+
+    monkeypatch.setattr(__name__ + ".build_csv_trace_index", with_duplicate_fields)
+    editor, grants, _ = await _make_editor(
+        tmp_path, with_fact_file=True, with_drilldown=True
+    )
+    full = SimpleNamespace(capabilities=None)
+    page = await editor.trace_drilldown_metric(
+        _context(), full, "income_total", dataset_id=DATASET_ID, dimension_code="branch"
+    )
+    assert page["rows"] == [
+        {"group": "A院区", "value": 1200.0}, {"group": "B院区", "value": 2400.0},
+    ]
+    raw, _ = await grants.issue(
+        _context(), capabilities={"drilldown": True, "blocked_columns": [blocked_column]}
+    )
+    _, session = await grants.exchange(raw)
+    sources = await editor.trace_sources(_context(), session)
+    assert sources["drilldown"] == {"enabled": True, "metrics": [], "subjects": []}
+    with pytest.raises(ReportingError) as denied:
+        await editor.trace_drilldown_metric(
+            _context(), session, "income_total", dataset_id=DATASET_ID, dimension_code="branch"
+        )
+    assert denied.value.code == "dataset_access_denied"
+    with pytest.raises(ReportingError) as denied:
+        await editor.trace_drilldown(
+            _context(), session, "sub-" + "c" * 16,
+            metric_code="income_total", dataset_id=DATASET_ID, dimension_code="branch",
         )
     assert denied.value.code == "dataset_access_denied"
 

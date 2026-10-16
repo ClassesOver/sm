@@ -31,6 +31,7 @@ from ..reporting.trace.dataset_service import (
     is_blocked_column,
     read_csv_header,
     safe_download_filename,
+    verified_dataset_snapshot,
 )
 
 _MAX_DERIVED_EXPORT_JOBS = 4
@@ -164,7 +165,9 @@ class TraceDerivedExportService:
             thread_id=str(context.scope["threadId"]),
             created_at=time.time(),
         )
-        job.task = asyncio.create_task(self._run_guarded(context, job, file, target_columns, mask))
+        job.task = asyncio.create_task(
+            self._run_guarded(context, job, file, target_columns, mask, blocked_columns)
+        )
         self._jobs[export_id] = job
         logger.info(
             "trace_derived_export_created export_id={} dataset={} policy={} columns={}",
@@ -245,13 +248,13 @@ class TraceDerivedExportService:
         parent = PurePosixPath(context.markdown_path).parent
         return parent.joinpath(f".trace-exports/{export_id}.csv").as_posix()
 
-    async def _run_guarded(self, context, job, file, target_columns, mask):
+    async def _run_guarded(self, context, job, file, target_columns, mask, blocked_columns):
         if self.source_guard is None:
-            await self._run(job, file, target_columns, mask)
+            await self._run(job, file, target_columns, mask, blocked_columns)
             return
         try:
             async with self.source_guard(context):
-                await self._run(job, file, target_columns, mask)
+                await self._run(job, file, target_columns, mask, blocked_columns)
         except Exception as error:  # noqa: BLE001 - 守卫失败同样必须落到任务状态
             # 非 ReportingError（如状态库读取失败、锁文件打开失败）若逃出任务，状态会停在
             # running：轮询永远“生成中”、过期清理跳过 running，且持续占用并发名额。
@@ -273,15 +276,23 @@ class TraceDerivedExportService:
         file: TraceDatasetFile,
         target_columns: list[str],
         mask: str,
+        blocked_columns: frozenset[str],
     ) -> None:
         try:
             workspace = self._workspace.workspace(job.thread_id)
             relative = workspace.paths.normalize(job.workspace_path, allow_root=False)
             host_path = workspace.paths.to_host_path(relative, allow_root=False)
             host_path.parent.mkdir(parents=True, exist_ok=True)
-            await anyio.to_thread.run_sync(
-                self._generate, file.local_path, host_path, target_columns, mask
-            )
+            def generate_verified() -> None:
+                # 校验、权限列解析和生成使用同一份字节，避免后台任务读取被替换的源路径。
+                with verified_dataset_snapshot(file) as snapshot:
+                    columns, verified_mask = _validate_masked_columns_policy(
+                        snapshot, {"columns": target_columns, "mask": mask}, blocked_columns
+                    )
+                    self._generate(snapshot.local_path, host_path, columns, verified_mask)
+                    job.params["columns"] = columns
+
+            await anyio.to_thread.run_sync(generate_verified)
             content_hash = hashlib.sha256()
             size = 0
             with host_path.open("rb") as handle:
