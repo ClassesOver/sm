@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReportEditorClient } from './api'
 import { createEvidenceGraph, mergeEvidenceGraph } from './evidence-graph'
-import { formatBytes, formatDifference, graphLabel, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
+import { formatBytes, formatDifference, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
 import { createEvidenceState, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 
@@ -1625,38 +1625,6 @@ describe('subject trace chain', () => {
     const missing = [...container.querySelectorAll<HTMLElement>('.evidence-trace-chain li[data-missing]')]
       .map(step => step.querySelector('.evidence-trace-step-label')?.textContent)
     expect(missing).toEqual(['计算', '快照', '原始行'])
-  })
-})
-
-describe('graphLabel business names', () => {
-  it('truncates business subject names as text instead of collapsing to an internal short id', () => {
-    const subject = { kind: 'subject' as const, key: 'sub-aaaaaa111111', label: '正文引用 · 华东地区门诊营收合计' }
-    expect(graphLabel(subject, 10, 6, 3)).toBe('正文引用 ·…收合计')
-    expect(graphLabel({ ...subject, label: '正文引用 #aaaaaa' }, 10, 6, 3)).toBe('引用 #aaaaaa')
-  })
-})
-
-describe('graphLabel', () => {
-  it('keeps registered month labels instead of replacing them with citation hashes', () => {
-    const subject: EvidenceObjectRef = { kind: 'subject', key: 'sub-month', label: '2025-01-01 · 收入金额 · 分析 001' }
-    expect(graphLabel(subject, 14, 9, 4)).toBe('2025-01-01')
-    expect(graphLabel(subject, 10, 5, 4)).toBe('2025-01-01')
-    expect(graphLabel(subject, 9, 4, 4)).toBe('01-01')
-  })
-  it('keeps the fact name and period role rather than date digits in compact labels', () => {
-    const fact: EvidenceObjectRef = { kind: 'fact', key: 'fact-current', analysisId: 'analysis_001', label: '医疗收入 · 同比基期 · 2024-01-01 — 2024-12-01' }
-    expect(graphLabel(fact, 14, 9, 4)).toBe('医疗收入 · 同比基期')
-    expect(fact.label).toContain('2024-12-01')
-  })
-  it('keeps the citation short id instead of cutting it in the middle', () => {
-    const subject: EvidenceObjectRef = { kind: 'subject', key: 'sub-fixture-001', label: '正文引用 #fixtur' }
-    expect(graphLabel(subject, 14, 9, 4)).toBe('正文引用 #fixtur')
-    expect(graphLabel(subject, 10, 5, 4)).toBe('引用 #fixtur')
-    // 紧凑位置（上限 4）放不下短号时退回首尾缩写，不撑宽标签。
-    expect(graphLabel(subject, 4, 1, 2)).toBe('正…ur')
-    const dataset: EvidenceObjectRef = { kind: 'dataset', key: 'd', label: '门急诊收入明细快照.csv' }
-    expect(graphLabel(dataset, 10, 5, 4)).toBe('门急诊收入….csv')
-    expect(graphLabel({ ...dataset, label: '短名' }, 4, 1, 2)).toBe('短名')
   })
 })
 

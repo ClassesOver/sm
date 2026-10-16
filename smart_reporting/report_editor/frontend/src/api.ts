@@ -584,22 +584,16 @@ export class ReportEditorClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    let response: Response
-    try {
-      response = await this.fetcher.call(window, `${this.basePath}${path}`, {
-        ...init,
-        credentials: 'same-origin',
-        headers: {
-          Accept: 'application/json',
-          ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-          ...(this.csrfToken ? { 'X-CSRF-Token': this.csrfToken } : {}),
-          ...init.headers,
-        },
-      })
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') throw error
-      throw error
-    }
+    const response = await this.fetcher.call(window, `${this.basePath}${path}`, {
+      ...init,
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(this.csrfToken ? { 'X-CSRF-Token': this.csrfToken } : {}),
+        ...init.headers,
+      },
+    })
     const parsed: unknown = await response.json().catch(() => undefined)
     // 成功状态却不是 JSON 对象（网关/登录页 HTML、截断响应）：按上游异常处理，
     // 不把空对象当作合法数据交给页面渲染。
