@@ -85,7 +85,7 @@ async def test_fallback_reserves_appendix_capacity_without_losing_findings(anyio
     assert set(assigned) == {card.finding_id for card in cards}
     assert all(card.finding_id not in result.appendix_finding_ids
                for card in cards if card.priority == "high")
-    assert len(result.sections) <= 30
+    assert len(result.sections) <= 10
     assert all(len(section.finding_ids) <= 200 for section in result.sections)
     compatible = build_compatible_report_outline(
         source, report_type="comprehensive", title=result.title, narrative_outline=result,

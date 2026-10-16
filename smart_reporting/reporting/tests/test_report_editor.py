@@ -708,7 +708,7 @@ async def test_editor_lists_persisted_report_revision_history(tmp_path: Path) ->
         "revision": 1,
         "markdown": "# 第一版\n",
         "sha256": hashlib.sha256("# 第一版\n".encode()).hexdigest(),
-        "sources": {"available": False, "reason": "source_index_missing", "datasets": []},
+        "sources": {"available": False, "reason": "source_index_missing", "datasets": [], "narrativeSections": []},
     }
 
 

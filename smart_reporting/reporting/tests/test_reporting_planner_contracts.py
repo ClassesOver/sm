@@ -3813,17 +3813,17 @@ def test_shared_phase_model_accepts_low_reasoning_effort() -> None:
 
 
 @pytest.mark.parametrize(
-    "base_url",
+    "provider_url",
     [
         "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "https://maas.qianwenaiapi.com/compatible-mode/v1",
     ],
 )
-def test_dashscope_qwen_request_does_not_send_two_thinking_controls(base_url) -> None:
+def test_dashscope_qwen_request_does_not_send_two_thinking_controls(provider_url) -> None:
     model = ReportingPhaseOpenAIChat(
         id="qwen3.8-flash",
         api_key="test",
-        base_url=base_url,
+        base_url=provider_url,
     )
     apply_reporting_thinking_profile(
         model,
