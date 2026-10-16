@@ -208,7 +208,7 @@ describe('assembleComputationRelations', () => {
         reproducibility: 'reproducible',
         limitations: [],
         inputDatasetIds: ['dataset-url-abc0001', 'dataset-missing'],
-        inputFactRefs: [{ analysisId: 'analysis_001', factId: 'fact-input' }],
+        inputFactRefs: [{ analysisId: 'analysis_001', factKey: 'fact-input', factKind: 'metric' }],
         outputFactRefs: [
           { analysisId: 'analysis_001', factKey: 'fact-out', factKind: 'metric', jsonPointer: '/a/b' },
           { analysisId: 'analysis_001', factKey: null, factKind: 'metric', jsonPointer: '/metrics/revenue' },
@@ -230,14 +230,14 @@ describe('assembleComputationRelations', () => {
     const relations = assembleComputationRelations(ref, {
       computationId: 'comp-001', method: 'sum', parameters: {}, executionId: null, environment: null,
       verification: 'verified', reproducibility: 'reproducible', limitations: [], inputDatasetIds: [],
-      inputFactRefs: [{ analysisId: 'analysis_001', factId: null }],
+      inputFactRefs: [{ analysisId: 'analysis_001', factKey: null, factKind: 'metric' }],
       outputFactRefs: [
         { analysisId: 'analysis_001', factKey: null, factKind: 'metric', jsonPointer: '/metrics/revenue' },
         { analysisId: 'analysis_001', factKey: null, factKind: 'metric', jsonPointer: '/metrics/cost' },
       ],
       scriptFile: null, chain: { computationId: 'comp-001', method: 'sum' },
     }, SOURCES)
-    // 两个无键输出各自成为节点；缺 factId 的输入不造节点。
+    // 两个无键输出各自成为节点；缺 factKey 的输入不造节点。
     expect(relations.nodes.map((node) => node.label)).toEqual(['revenue', 'cost'])
     expect(relations.edges.filter((edge) => edge.label === '输入')).toHaveLength(0)
   })

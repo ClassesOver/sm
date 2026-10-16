@@ -293,7 +293,7 @@ export interface TraceComputationDetail {
   reproducibility: string
   limitations: string[]
   inputDatasetIds: string[]
-  inputFactRefs?: TraceFactRefLite[]
+  inputFactRefs?: { analysisId: string; factKey: string | null; factKind: string }[]
   preprocessing?: unknown
   outputFactRefs: { analysisId: string; factKey: string | null; factKind: string; jsonPointer: string }[]
   scriptFile: { size: number; sha256: string } | null
