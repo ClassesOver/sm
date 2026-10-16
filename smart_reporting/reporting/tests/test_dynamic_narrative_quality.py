@@ -80,3 +80,41 @@ def test_dynamic_analysis_reuse_requires_exact_finding_and_section_bindings():
     unknown = second.model_copy(update={'finding_ids': ('finding_9999999999999999',)})
     altered = narrative.model_copy(update={'sections': (first, unknown)})
     assert not _matches_narrative_analysis_bindings(graph, altered, altered, 'a' * 64)
+
+
+def test_analysis_reuse_exemption_uses_finding_graph_hash():
+    from smart_reporting.reporting.workflow.runtime.publication import (
+        _narrative_reuse_snapshot_hash,
+        _without_verified_analysis_reuse,
+    )
+
+    graph = _graph()
+    first = _outline().sections[0]
+    second = first.model_copy(update={
+        'code': 'section_002', 'section_number': '2',
+        'finding_ids': (graph.findings[1].finding_id,),
+    })
+    narrative = _outline().model_copy(update={'sections': (first, second), 'appendix_finding_ids': ()})
+    issues = [
+        {'code': 'outline_analysis_duplicate', 'message': '批准提纲重复引用 analysisId。'},
+        {'code': 'other', 'message': '保留'},
+    ]
+    dataset_hash = 'd' * 64
+    assert dataset_hash != graph.snapshot_hash
+    assert _narrative_reuse_snapshot_hash(graph, graph.snapshot_hash) == graph.snapshot_hash
+    assert _narrative_reuse_snapshot_hash(graph, dataset_hash) is None
+    assert _narrative_reuse_snapshot_hash(graph, None) is None
+    cleared = _without_verified_analysis_reuse(
+        issues, graph=graph, narrative=narrative, outline=narrative,
+        finding_graph_hash=graph.snapshot_hash,
+    )
+    assert [item['code'] for item in cleared] == ['other']
+    kept = _without_verified_analysis_reuse(
+        issues, graph=graph, narrative=narrative, outline=narrative,
+        finding_graph_hash=dataset_hash,
+    )
+    assert kept == issues
+    assert _without_verified_analysis_reuse(
+        issues, graph=graph, narrative=narrative, outline=None,
+        finding_graph_hash=graph.snapshot_hash,
+    ) == issues

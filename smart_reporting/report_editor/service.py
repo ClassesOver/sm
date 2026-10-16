@@ -1012,20 +1012,35 @@ class ReportEditorService:
             "hasMore": offset + len(items) < total,
         }
 
+    @source_lifecycle
     async def read_history_revision(
-        self, expected: ReportEditorContext, revision: int
+        self,
+        expected: ReportEditorContext,
+        revision: int,
+        *,
+        session: ReportEditorSession | None = None,
     ) -> dict[str, object]:
         candidates = await self._candidate_revisions(expected)
         for candidate in candidates:
             if candidate.revision == revision:
                 candidate = await self._restore(candidate)
                 _path, markdown, sha256 = await self._read_frozen_markdown(candidate)
-                sources = await self.trace.sources(candidate)
+                capabilities = session.capabilities if session is not None else None
+                sources = await self.trace.sources(candidate, capabilities)
+                expired = False
+                try:
+                    await self._ensure_sources_retained(candidate)
+                except ReportingError as error:
+                    if error.code != "snapshot_expired":
+                        raise
+                    expired = True
                 return {
                     "revision": candidate.revision,
                     "markdown": markdown,
                     "sha256": sha256,
-                    "sources": sources,
+                    "sources": _history_sources_for_session(
+                        sources, restricted=capabilities is not None, expired=expired
+                    ),
                 }
         raise ReportingError("report_editor_history_missing", "历史版本不存在。")
 
@@ -2165,6 +2180,23 @@ class ReportEditorService:
         )
         self.workspace_registry.resolve(scope)
         return context
+
+
+def _history_sources_for_session(
+    sources: dict[str, Any], *, restricted: bool, expired: bool
+) -> dict[str, Any]:
+    """分享会话和已回收修订不返回原始 SQL 与事实明细。"""
+    if not restricted and not expired:
+        return sources
+    datasets = [
+        {**item, "querySql": None} if isinstance(item, dict) else item
+        for item in sources.get("datasets", ())
+    ]
+    redacted = {**sources, "datasets": datasets, "facts": []}
+    if expired:
+        redacted["available"] = False
+        redacted["reason"] = "snapshot_expired"
+    return redacted
 
 
 def _draft_path(markdown_path: str) -> str:

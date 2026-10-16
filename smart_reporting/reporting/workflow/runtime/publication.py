@@ -89,6 +89,32 @@ def _editor_interactive_charts(manifest: ReportArtifactManifest) -> dict[str, di
     }
 
 
+def _narrative_reuse_snapshot_hash(graph, finding_graph_hash: str | None) -> str | None:
+    """跨章节复用 analysisId 只承认发现图谱哈希，不使用数据集快照哈希。"""
+    if not isinstance(finding_graph_hash, str) or finding_graph_hash != graph.snapshot_hash:
+        return None
+    return graph.snapshot_hash
+
+
+def _without_verified_analysis_reuse(
+    issues: list[dict[str, Any]],
+    *,
+    graph,
+    narrative,
+    outline,
+    finding_graph_hash: str | None,
+) -> list[dict[str, Any]]:
+    """发现映射与图谱哈希一致时，去掉跨章节复用同一分析的门禁。"""
+    snapshot_hash = _narrative_reuse_snapshot_hash(graph, finding_graph_hash)
+    if (
+        outline is None
+        or snapshot_hash is None
+        or not _matches_narrative_analysis_bindings(graph, narrative, outline, snapshot_hash)
+    ):
+        return issues
+    return [item for item in issues if item.get("code") != "outline_analysis_duplicate"]
+
+
 def _matches_narrative_analysis_bindings(graph, narrative, outline, snapshot_hash: str) -> bool:
     """仅已核验快照和逐章节发现映射可解释跨章节复用同一分析。"""
     if graph.snapshot_hash != snapshot_hash or narrative.snapshot_hash != snapshot_hash:
@@ -763,10 +789,13 @@ class RuntimePublicationMixin:
                 narrative = await self._read_identity_model(
                     thread_id, checkpoint.narrative_outline_file, NarrativeOutline
                 )
-                if outline is not None and _matches_narrative_analysis_bindings(
-                    graph, narrative, outline, dataset_snapshot_hash(lineage)
-                ):
-                    issues[:] = [item for item in issues if item.get("code") != "outline_analysis_duplicate"]
+                issues[:] = _without_verified_analysis_reuse(
+                    issues,
+                    graph=graph,
+                    narrative=narrative,
+                    outline=outline,
+                    finding_graph_hash=checkpoint.finding_graph_hash,
+                )
                 warnings.extend(
                     narrative_quality_warnings(
                         graph,
