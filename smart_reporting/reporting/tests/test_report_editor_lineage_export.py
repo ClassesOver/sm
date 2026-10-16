@@ -253,6 +253,10 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             await workspace.awrite_bytes(thread_id, output_path, b"new-pdf")
             await workspace.awrite_bytes(thread_id, "reports/revision-2/report.docx", b"new-word")
             if failure == "render":
+                # 真实渲染器负责清理本次发布的产物；外层尚未接管目录所有权。
+                await editor._cleanup_export_revision(
+                    workspace, thread_id, "reports/revision-2"
+                )
                 raise RuntimeError("renderer failed")
             run_context.session_state[REPORT_JOBS_STATE_KEY][context.job_id]["render"] = {
                 "pdf": _identity(output_path, b"new-pdf"),

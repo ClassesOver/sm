@@ -450,7 +450,7 @@ def test_planner_trace_names_use_human_display_labels_without_changing_ids() -> 
 
 def test_outline_prompt_prioritizes_user_section_count_over_analysis_split() -> None:
     assert "reportGoal 中明确的章节数量约束" in OUTLINE_SECTION_COUNT_INSTRUCTION
-    assert "高于按 analysisId 拆分章节" in OUTLINE_SECTION_COUNT_INSTRUCTION
+    assert "用户明确指定的数量优先于默认目标" in OUTLINE_SECTION_COUNT_INSTRUCTION
     assert "不超过用户指定数量的章节" in OUTLINE_SECTION_COUNT_INSTRUCTION
 
 
@@ -1469,6 +1469,42 @@ def test_outline_schema_exposes_analysis_id_pattern() -> None:
     ]
 
     assert analysis_id_items["pattern"] == "^analysis_[0-9]{3,6}$"
+    assert schema["properties"]["sections"]["maxItems"] == 10
+
+
+def test_outline_limits_chapters_without_dropping_analysis_coverage() -> None:
+    analyses = [
+        {"analysisId": f"analysis_{index:03d}", "managementQuestion": f"经营问题{index}"}
+        for index in range(1, 21)
+    ]
+    proposal = {
+        "reportType": "comprehensive",
+        "title": "年度运营分析报告",
+        "sections": [
+            {
+                "title": f"经营主题{index + 1}",
+                "analysisIds": [item["analysisId"] for item in analyses[index * 2:index * 2 + 2]],
+            }
+            for index in range(10)
+        ],
+    }
+
+    outline = freeze_outline(proposal, analyses=analyses)
+
+    assert len(outline.sections) == 10
+    assert [item for section in outline.sections for item in section.analysis_ids] == [
+        item["analysisId"] for item in analyses
+    ]
+
+    # 同一批分析仅拆章、不增加内容，也必须受上限约束。
+    proposal["sections"][-1]["analysisIds"] = ["analysis_019"]
+    proposal["sections"].append({"title": "额外主题", "analysisIds": ["analysis_020"]})
+    with pytest.raises(ValidationError) as caught:
+        ReportOutlineProposal.model_validate(proposal)
+    assert any(
+        issue["loc"] == ("sections",) and issue["type"] == "too_long"
+        for issue in caught.value.errors()
+    )
 
 
 def test_freeze_outline_derives_focus_from_signed_management_questions() -> None:

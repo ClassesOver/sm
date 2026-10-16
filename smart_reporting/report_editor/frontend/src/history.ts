@@ -9,6 +9,7 @@ interface Snapshot {
   label: string
   markdown: string
   revision?: number
+  sourceRevision?: number
   source?: string
   createdAt?: string | null
   note?: string
@@ -143,7 +144,7 @@ function renderDiff(container: HTMLElement, previous: string, current: string) {
 
 export function createHistoryController(
   root: HTMLElement,
-  restore?: (markdown: string, revision?: number) => void | Promise<void>,
+  restore?: (markdown: string, revision?: number, sourceRevision?: number) => void | Promise<void>,
   loadRevision?: (revision: number) => Promise<string>,
   loadPage?: (offset: number, filters: HistoryFilters) => Promise<HistorySnapshotPage>,
 ) {
@@ -310,7 +311,19 @@ export function createHistoryController(
       : sessionSnapshots.filter(
           (snapshot) => !dateFilter.value || localDateKey(snapshot.createdAt) === dateFilter.value,
         )
+    const previousBase = baseIndex === null ? undefined : snapshots[baseIndex]
+    const previousCompare = compareIndex === null ? undefined : snapshots[compareIndex]
     snapshots = [...serverSnapshots, ...visibleSessionSnapshots]
+    // 自动保存淘汰旧快照、分页追加历史时，按快照身份保持选择，而非沿用旧索引。
+    if (previousCompare) {
+      const nextCompare = snapshots.indexOf(previousCompare)
+      const nextBase = previousBase ? snapshots.indexOf(previousBase) : -1
+      if (nextCompare < 0 || (previousBase && nextBase < 0)) resetComparison()
+      else {
+        baseIndex = nextBase
+        compareIndex = nextCompare
+      }
+    }
     list.innerHTML = ''
     snapshots.forEach((snapshot, index) => {
       const button = document.createElement('button')
@@ -401,9 +414,11 @@ export function createHistoryController(
       restoreError.hidden = false
     }
     try {
-      const result = snapshot.revision === undefined
-        ? restore(snapshot.markdown)
-        : restore(snapshot.markdown, snapshot.revision)
+      const result = snapshot.sourceRevision !== undefined
+        ? restore(snapshot.markdown, snapshot.revision, snapshot.sourceRevision)
+        : snapshot.revision === undefined
+          ? restore(snapshot.markdown)
+          : restore(snapshot.markdown, snapshot.revision)
       if (result instanceof Promise) {
         restoring = true
         restoreButton.disabled = true
@@ -418,12 +433,14 @@ export function createHistoryController(
   })
   return {
     dialog,
-    record(label: string, markdown: string) {
-      if (sessionSnapshots.at(-1)?.markdown === markdown) return
+    record(label: string, markdown: string, sourceRevision?: number) {
+      const latest = sessionSnapshots.at(-1)
+      if (latest?.markdown === markdown && latest.sourceRevision === sourceRevision) return
       sessionSnapshots.push({
         label,
         markdown,
         source: 'session',
+        sourceRevision,
         createdAt: new Date().toISOString(),
       })
       if (sessionSnapshots.length > SESSION_SNAPSHOT_LIMIT) {

@@ -2148,3 +2148,98 @@ async def test_validate_includes_unregistered_body_charts(tmp_path: Path) -> Non
         _context(), session, duplicate, hashlib.sha256(duplicate.encode()).hexdigest())
     assert len(result['charts']) == 1
     assert result['charts'][0]['status'] == 'unbound'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capabilities", [
+    None,
+    {},
+    {"download_original": False, "download_derived": False, "drilldown": False},
+    {"blocked_columns": ["revenue"]},
+])
+async def test_history_detail_respects_session_source_permissions(tmp_path: Path, capabilities) -> None:
+    editor, grants, _ = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(_context(), capabilities=capabilities)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        base = "/reports/v1/editor/report-1/1/api"
+        sources = await client.get(base + "/sources")
+        history = await client.get(base + "/history/1")
+    assert sources.status_code == history.status_code == 200
+    assert history.json()["markdown"]
+    dataset = history.json()["sources"]["datasets"][0]
+    assert dataset["sqlHash"] == sources.json()["datasets"][0]["sqlHash"]
+    if capabilities is None:
+        assert dataset["querySql"].startswith("SELECT branch, revenue")
+    else:
+        assert dataset["querySql"] is None
+        assert "patient_id" not in history.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capabilities", [None, {}, {"blocked_columns": ["revenue"]}])
+async def test_http_reshare_preserves_column_restrictions(tmp_path: Path, capabilities) -> None:
+    editor, grants, _ = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(_context(), capabilities=capabilities)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    base = "/reports/v1/editor/report-1/1/api"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        # 连续两次转发不能丢失上游会话的列限制，也不能提升下载或下钻权限。
+        for _ in range(2):
+            document = await client.get(base + "/document")
+            shared = await client.post(base + "/share", headers={
+                "Origin": "http://reports.test",
+                "X-CSRF-Token": document.json()["csrfToken"],
+            })
+            assert shared.status_code == 200
+            await client.get(shared.json()["openUrl"], follow_redirects=False)
+            preview = await client.get(base + f"/datasets/{DATASET_ID}/preview")
+            columns = await client.get(base + f"/datasets/{DATASET_ID}/columns")
+            if capabilities and capabilities.get("blocked_columns"):
+                assert preview.status_code == 403
+                assert "revenue" not in columns.json()["columns"]
+            else:
+                assert preview.status_code == 200
+                assert "revenue" in columns.json()["columns"]
+            download = await client.get(base + f"/datasets/{DATASET_ID}/download")
+            assert download.status_code == 403
+            sources = await client.get(base + "/sources")
+            assert sources.json()["drilldown"]["enabled"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capabilities,allowed", [
+    (None, True),
+    ({}, True),
+    ({"blocked_columns": ["visits"]}, True),
+    ({"blocked_columns": ["revenue"]}, False),
+    ({"blocked_columns": ["period"]}, False),
+])
+async def test_http_chart_preview_respects_column_restrictions(
+    tmp_path: Path, capabilities, allowed: bool,
+) -> None:
+    editor, grants, _ = await _make_editor(tmp_path, with_chart_trace=True)
+    raw, _ = await grants.issue(_context(), capabilities=capabilities)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        for offset in (0, 1, 100):
+            response = await client.get(
+                "/reports/v1/editor/report-1/1/api/charts/chart_001/source",
+                params={"offset": offset, "limit": 1},
+            )
+            if allowed:
+                assert response.status_code == 200
+                plot = response.json()["plotData"][0]
+                assert plot["columns"] == ["period", "revenue"]
+                assert len(plot["rows"]) == (0 if offset == 100 else 1)
+            else:
+                assert response.status_code == 403
+                assert response.json()["detail"]["code"] == "dataset_access_denied"
+                assert "plotData" not in response.text
+                assert "3600" not in response.text
