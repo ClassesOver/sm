@@ -164,8 +164,7 @@ class ReportOutlineProposal(HospitalOperationSchema):
     title: str = Field(min_length=1, max_length=300)
     sections: tuple[OutlineSectionProposal, ...] = Field(
         min_length=1,
-        max_length=10,
-        description="最多 10 个一级章节；按管理主题合并相关分析，保留全部 analysisId。",
+        description="按管理主题组织一级章节；相关分析合并，保留全部 analysisId。",
     )
     assumptions: tuple[str, ...] = Field(default=(), max_length=30)
 
@@ -183,7 +182,7 @@ class ReportOutlineProposal(HospitalOperationSchema):
 class ReportOutline(HospitalOperationSchema):
     report_type: ReportType = Field(alias="reportType")
     title: str = Field(min_length=1, max_length=300)
-    sections: tuple[ReportOutlineSection, ...] = Field(min_length=1, max_length=30)
+    sections: tuple[ReportOutlineSection, ...] = Field(min_length=1)
     assumptions: tuple[str, ...] = Field(default=(), max_length=30)
 
     @field_validator("title")

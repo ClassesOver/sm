@@ -12,7 +12,7 @@ from .schema import HospitalOperationSchema
 
 class NarrativeSectionCandidate(HospitalOperationSchema):
     title: str = Field(min_length=1, max_length=200)
-    finding_ids: tuple[str, ...] = Field(alias="findingIds", min_length=1, max_length=200)
+    finding_ids: tuple[str, ...] = Field(alias="findingIds", min_length=1, max_length=2000)
     objective: str = Field(min_length=1, max_length=1000)
     grouping_reason: str = Field(alias="groupingReason", min_length=1, max_length=1000)
     narrative_role: Literal["management_finding", "risk", "limitation", "appendix"] = Field(
@@ -26,7 +26,7 @@ class NarrativeSectionCandidate(HospitalOperationSchema):
 class NarrativeOutlineCandidate(HospitalOperationSchema):
     version: Literal["1"] = "1"
     title: str = Field(min_length=1, max_length=200)
-    sections: tuple[NarrativeSectionCandidate, ...] = Field(min_length=1, max_length=10)
+    sections: tuple[NarrativeSectionCandidate, ...] = Field(min_length=1)
     appendix_finding_ids: tuple[str, ...] = Field(default=(), alias="appendixFindingIds", max_length=2000)
     omitted_findings: tuple[dict[str, str], ...] = Field(default=(), alias="omittedFindings", max_length=200)
     snapshot_hash: str = Field(alias="snapshotHash", pattern=r"^[0-9a-f]{64}$")
@@ -36,8 +36,8 @@ class NarrativeSection(HospitalOperationSchema):
     code: str = Field(pattern=r"^section_[0-9]{3,6}$")
     section_number: str = Field(alias="sectionNumber", pattern=r"^[1-9][0-9]*$")
     title: str = Field(min_length=1, max_length=200)
-    finding_ids: tuple[str, ...] = Field(alias="findingIds", min_length=1, max_length=200)
-    analysis_ids: tuple[str, ...] = Field(alias="analysisIds", min_length=1, max_length=200)
+    finding_ids: tuple[str, ...] = Field(alias="findingIds", min_length=1, max_length=2000)
+    analysis_ids: tuple[str, ...] = Field(alias="analysisIds", min_length=1, max_length=2000)
     objective: str = Field(min_length=1, max_length=1000)
     grouping_reason: str = Field(alias="groupingReason", min_length=1, max_length=1000)
     narrative_role: str = Field(alias="narrativeRole", min_length=1, max_length=64)
@@ -49,7 +49,7 @@ class NarrativeSection(HospitalOperationSchema):
 class NarrativeOutline(HospitalOperationSchema):
     version: Literal["1"] = "1"
     title: str = Field(min_length=1, max_length=200)
-    sections: tuple[NarrativeSection, ...] = Field(min_length=1, max_length=30)
+    sections: tuple[NarrativeSection, ...] = Field(min_length=1)
     appendix_finding_ids: tuple[str, ...] = Field(default=(), alias="appendixFindingIds", max_length=2000)
     omitted_findings: tuple[dict[str, str], ...] = Field(default=(), alias="omittedFindings", max_length=200)
     snapshot_hash: str = Field(alias="snapshotHash", pattern=r"^[0-9a-f]{64}$")
@@ -130,8 +130,6 @@ def freeze_narrative_outline(
         selected = [findings[finding_id] for finding_id in item.finding_ids]
         if item.narrative_role == "appendix" and any(card.priority == "high" for card in selected):
             raise ValueError("高优先级发现必须进入正文，不能归入附录章节")
-        if any(selected[0].period_start != card.period_start or selected[0].period_end != card.period_end or selected[0].grain != card.grain or selected[0].scope != card.scope for card in selected[1:]):
-            raise ValueError("章节发现的期间、粒度或口径不一致")
         analysis_ids = tuple(dict.fromkeys(aid for card in selected for aid in card.analysis_ids))
         if any(aid not in analysis_map for aid in analysis_ids):
             raise ValueError("章节发现引用未知分析项")
@@ -160,10 +158,7 @@ def freeze_narrative_outline(
     high_missing = [item.finding_id for item in graph.findings if item.priority == "high" and item.finding_id not in assigned]
     if high_missing:
         raise ValueError(f"遗漏高优先级发现：{', '.join(high_missing)}")
-    if appendix:
-        appendix_groups = [appendix[start:start + 200] for start in range(0, len(appendix), 200)]
-    else:
-        appendix_groups = []
+    appendix_groups = [appendix] if appendix else []
     for appendix_group in appendix_groups:
         appendix_cards = [findings[finding_id] for finding_id in appendix_group]
         appendix_analysis_ids = tuple(dict.fromkeys(
@@ -185,8 +180,6 @@ def freeze_narrative_outline(
             maxCharts=0,
             maxBlocks=2,
         ))
-    if len(sections) > 10:
-        raise ValueError("新提纲含附录最多 10 个一级章节")
     return NarrativeOutline(title=candidate.title, sections=tuple(sections), appendixFindingIds=appendix,
                             omittedFindings=candidate.omitted_findings, snapshotHash=graph.snapshot_hash)
 

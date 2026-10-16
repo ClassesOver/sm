@@ -60,10 +60,17 @@ def test_low_priority_appendix_is_materialized_as_visible_appendix_section():
 @pytest.mark.parametrize("changes", [
     {"periodEnd": "2025-10-31"}, {"grain": ["科室"]}, {"scope": {"income_nature": "开单"}},
 ])
-def test_incompatible_fact_scopes_cannot_be_merged(changes):
+def test_topic_can_include_different_scopes_without_changing_facts(changes):
     cards = [finding(), finding(2, **changes)]
-    with pytest.raises(ValueError, match="口径"):
-        freeze(candidate([card.finding_id for card in cards]), cards)
+    source = graph(*cards)
+    before = source.model_dump()
+    result = freeze_narrative_outline(
+        candidate([card.finding_id for card in cards]), graph=source,
+        analyses=[{"analysisId": aid} for card in cards for aid in card.analysis_ids],
+    )
+    assert result.sections[0].finding_ids == tuple(card.finding_id for card in cards)
+    assert result.sections[0].analysis_ids == ("analysis_001", "analysis_002")
+    assert source.model_dump() == before
 
 
 def test_graph_rejects_unregistered_relationship():
@@ -114,13 +121,23 @@ def test_high_priority_finding_cannot_be_hidden_in_appendix_section():
         freeze(value, [finding()])
 
 
-def test_new_narrative_outline_is_limited_to_ten_sections_including_appendix():
-    cards = [finding(index) for index in range(1, 12)]
-    ten = candidate(*[[card.finding_id] for card in cards[:10]])
-    assert len(freeze(ten, cards[:10]).sections) == 10
-    with pytest.raises(ValidationError):
-        candidate(*[[card.finding_id] for card in cards])
-    cards[-1] = finding(11, priority="low")
-    with pytest.raises(ValueError, match="最多 10"):
-        freeze(candidate(*[[card.finding_id] for card in cards[:10]],
-                         appendixFindingIds=[cards[-1].finding_id]), cards)
+def test_distinct_management_questions_have_no_fixed_section_quota():
+    from smart_reporting.reporting.hospital_operation.narrative_planner import build_compatible_report_outline
+
+    cards = [finding(index, metricCodes=(f"metric_{index}",)) for index in range(1, 32)]
+    result = freeze(candidate(*[[card.finding_id] for card in cards]), cards)
+    compatible = build_compatible_report_outline(
+        graph(*cards), report_type="comprehensive", title=result.title, narrative_outline=result,
+    )
+    assert len(result.sections) == len(compatible.sections) == len(cards)
+    assert [section.finding_ids for section in result.sections] == [(card.finding_id,) for card in cards]
+
+
+def test_appendix_keeps_all_findings_in_one_logical_chapter():
+    cards = [finding(), *(finding(i, priority="low") for i in range(2, 430))]
+    appendix_ids = [card.finding_id for card in cards[1:]]
+    result = freeze(candidate([cards[0].finding_id], appendixFindingIds=appendix_ids), cards)
+    assert len(result.sections) == 2
+    assert result.sections[-1].narrative_role == "appendix"
+    assert result.sections[-1].finding_ids == tuple(appendix_ids)
+    assert len(result.sections[-1].analysis_ids) == 428

@@ -2357,7 +2357,7 @@ class RuntimeSectionsMixin:
             completionConditions=(
                 ("仅呈现当前章节分配的管理发现及其证据、经营影响和管理动作" if finding_ids
                  else "完整呈现当前章节全部冻结事实及其管理结论"),
-                "保持期间、单位和共享指标口径一致",
+                "分别标注各发现的期间、单位和共享指标口径，不把不同口径改写成同一事实",
                 "覆盖当前章节 evidence 提供的 citation",
                 "仅使用当前 SectionWorkItem 提供的 chart",
                 *(f"warning: {item}" for item in section_warnings),

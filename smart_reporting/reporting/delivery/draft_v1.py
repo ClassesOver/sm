@@ -227,7 +227,7 @@ class ReportDraftSection(StrictModel):
 class ReportDraft(StrictModel):
     # 标题由 Workflow 冻结，模型省略或回传不同文本都不改变最终渲染标题。
     title: str | None = Field(default=None, min_length=1, max_length=300)
-    sections: tuple[ReportDraftSection, ...] = Field(min_length=1, max_length=100)
+    sections: tuple[ReportDraftSection, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_unique_sections(self) -> ReportDraft:

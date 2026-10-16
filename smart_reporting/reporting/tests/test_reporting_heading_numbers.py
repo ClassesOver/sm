@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from smart_reporting.reporting.delivery.artifacts_v1 import (
     ArtifactFile,
     Citation,
+    PdfArtifactManifest,
     DocxArtifactManifest,
     ReportArtifactManifest,
 )
@@ -732,6 +733,42 @@ def test_docx_manifest_accepts_more_than_one_hundred_complete_toc_entries() -> N
 def test_docx_manifest_rejects_toc_count_different_from_heading_count() -> None:
     with pytest.raises(ValidationError, match="Word 目录项必须完整覆盖标题编号映射"):
         _docx_manifest_with_heading_count(110, toc_entry_count=109)
+
+
+def test_dynamic_report_contracts_accept_more_than_one_hundred_sections() -> None:
+    sections = tuple(
+        ReportDraftSection(
+            sectionCode=f"section_{index:03d}",
+            blocks=(ReportDraftBlock(blockId=f"block_{index:03d}", markdown="正文"),),
+        )
+        for index in range(1, 102)
+    )
+    draft = ReportDraft(sections=sections)
+    headings = tuple(
+        HeadingNumber(
+            level=2,
+            number=str(index),
+            title=f"主题 {index}",
+            sectionCode=f"section_{index:03d}",
+            anchor=f"report-section-section_{index:03d}",
+        )
+        for index in range(1, 102)
+    )
+    common = dict(
+        reportId="report-1",
+        revision=1,
+        effectiveProfileHash="a" * 64,
+        sourceMarkdownSha256="b" * 64,
+        sections=tuple(f"section_{index:03d}" for index in range(1, 102)),
+        sectionNumbers=tuple(str(index) for index in range(1, 102)),
+        headingNumbers=headings,
+    )
+    pdf = PdfArtifactManifest(
+        **common,
+        pageCount=1,
+        pdf=ArtifactFile(path="reports/report.pdf", mediaType="application/pdf", size=1, sha256="c" * 64),
+    )
+    assert len(draft.sections) == len(pdf.sections) == 101
 
 
 @pytest.mark.parametrize(

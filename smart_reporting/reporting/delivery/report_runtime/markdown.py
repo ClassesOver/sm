@@ -555,7 +555,7 @@ def _document_context(value: Any) -> dict[str, Any]:
     except ValueError as error:
         raise ReportFailure("服务端生成日期无效") from error
     sections = value.get("sections")
-    if not isinstance(sections, list) or not 1 <= len(sections) <= 100:
+    if not isinstance(sections, list) or len(sections) < 1:
         raise ReportFailure("服务端正式章节契约无效")
     normalized_sections: list[dict[str, str]] = []
     for item in sections:
