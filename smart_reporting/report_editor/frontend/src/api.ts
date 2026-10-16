@@ -182,6 +182,7 @@ export interface TraceFactDetail {
   analysisName?: string | null
   factId: string | null
   factKind: string
+  jsonPointer?: string
   displayValue: number | string | null
   displayUnit?: string | null
   entry: Record<string, unknown>

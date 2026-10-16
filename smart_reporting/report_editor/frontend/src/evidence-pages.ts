@@ -1729,7 +1729,9 @@ async function loadNodeRelations(ref: EvidenceObjectRef, ctx: EvidencePageContex
       // 与事实页一致：未登记 factKey 的计算输出只有“分析#指针”身份，不发必然失败的请求。
       if (ref.key.startsWith(`${ref.analysisId}#`)) throw new ReportEditorApiError(404, 'fact_binding_unavailable')
       const detail = await ctx.client.factDetail(ref.analysisId, ref.key, ctx.signal)
-      return assembleFactRelations(ref, detail, await ctx.loadSources())
+      const sources = await ctx.loadSources()
+      const producers = await factProducers(ctx, detail, sources)
+      return assembleFactRelations(ref, detail, sources, producers.map(item => item.computationId))
     }
     case 'computation': {
       const detail = await ctx.client.computationDetail(ref.key, 2, ctx.signal)
@@ -2146,6 +2148,33 @@ interface FactPageData extends DraftValidation {
   citingSubjects: TraceSubjectInfo[]
 }
 
+async function factProducers(
+  ctx: EvidencePageContext, detail: TraceFactDetail, sources: TraceSources,
+): Promise<TraceComputationDetail[]> {
+  const candidates = new Set((sources.subjects ?? [])
+    .filter(subject => subject.factRefs.some(ref =>
+      ref.analysisId === detail.analysisId && ref.factId === detail.factId))
+    .flatMap(subject => subject.computationId ? [subject.computationId] : []))
+  const producers: TraceComputationDetail[] = []
+  for (const id of candidates) {
+    if (ctx.isStale()) break
+    try {
+      const record = await ctx.client.computationDetail(id, 2, ctx.signal)
+      if (record.computationId !== id) continue
+      const matches = record.outputFactRefs.some(output =>
+        output.analysisId === detail.analysisId && output.factKind === detail.factKind
+        && (detail.jsonPointer
+          ? output.jsonPointer === detail.jsonPointer
+            && (output.factKey === null || output.factKey === detail.factId)
+          : detail.factId !== null && output.factKey === detail.factId))
+      if (matches) producers.push(record)
+    } catch {
+      // 无法核验的计算不作为生产者，也不借用其核对结论。
+    }
+  }
+  return producers
+}
+
 async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext): Promise<void> {
   const cached = ctx.pageData<FactPageData>()
   let data = cached
@@ -2170,20 +2199,14 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
           (item) => item.factId === ctx.page.ref.key && item.analysisId === ctx.page.ref.analysisId,
         ),
       )
-      const computationId = citingSubjects.find((subject) => subject.computationId)?.computationId
-      let computation: TraceComputationDetail | null = null
-      if (computationId) {
-        try {
-          computation = await ctx.client.computationDetail(computationId, 2, ctx.signal)
-        } catch {
-          computation = null
-        }
-        if (ctx.isStale()) return
-      }
+      const producers = await factProducers(ctx, detail, sources)
+      if (ctx.isStale()) return
+      // 多个生产者可能具有不同核对状态，不能按正文引用顺序任取一个。
+      const computation = producers.length === 1 ? producers[0]! : null
       data = {
         detail,
         name: sources.facts?.find(item => item.analysisId === detail.analysisId && item.factId === detail.factId)?.name,
-        relations: assembleFactRelations(ctx.page.ref, detail, sources),
+        relations: assembleFactRelations(ctx.page.ref, detail, sources, producers.map(item => item.computationId)),
         validation: null,
         computation,
         citingSubjects,
