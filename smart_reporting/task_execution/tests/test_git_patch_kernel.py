@@ -17,11 +17,11 @@ class _Workspace:
         self.files = files
 
     @staticmethod
-    def normalize_path(path: str, *, allow_root: bool) -> tuple[str, str]:
+    def normalize_path(path: str, *, allow_root: bool) -> str:
         assert allow_root is False
         if not path or path.startswith("/") or ".." in Path(path).parts:
             raise WorkspaceError("路径无效。")
-        return path, path
+        return path
 
     def read_text(self, thread: str, path: str) -> str:
         assert thread == "thread"

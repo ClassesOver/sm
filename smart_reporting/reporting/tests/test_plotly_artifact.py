@@ -14,7 +14,7 @@ from smart_reporting.reporting.workspace import inspect_report_plotly_file
 def _service(payload: object) -> SimpleNamespace:
     content = json.dumps(payload, ensure_ascii=False).encode()
     return SimpleNamespace(
-        normalize_path=lambda path, **_kwargs: (path, None),
+        normalize_path=lambda path, **_kwargs: path,
         read_limited_regular_file=AsyncMock(return_value=content),
     )
 
@@ -45,7 +45,7 @@ async def test_plotly_artifact_accepts_bounded_figure_json() -> None:
 async def test_plotly_python_to_json_output_is_accepted() -> None:
     figure = go.Figure(data=[go.Bar(x=["一月", "二月"], y=[10, 12])])
     service = SimpleNamespace(
-        normalize_path=lambda path, **_kwargs: (path, None),
+        normalize_path=lambda path, **_kwargs: path,
         read_limited_regular_file=AsyncMock(return_value=figure.to_json().encode()),
     )
 

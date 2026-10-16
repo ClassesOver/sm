@@ -111,7 +111,6 @@ def test_fixed_workflows_keep_their_internal_tool_capabilities(phase: str, task_
     assert tools
     assert "apply_analysis_patch" in tools
     assert "run_command" in tools
-    assert "run_python_script" in tools
 
 
 def test_model_route_is_projected_from_run_context() -> None:
@@ -390,7 +389,6 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
             "read_file",
             "read_tool_output",
             "run_command",
-            "run_python_script",
             "search_content",
             "submit_visualization_charts",
             "write_file",
