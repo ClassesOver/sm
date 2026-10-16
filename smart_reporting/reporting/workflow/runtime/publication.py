@@ -1136,10 +1136,10 @@ class RuntimePublicationMixin:
                 "report_artifact_acceptance_missing",
                 "正式产物验收回执缺少报告 Markdown。",
             )
-        _relative, _markdown_host_path = self.workspace_service.normalize_path(
+        _relative = self.workspace_service.normalize_path(
             markdown_path, allow_root=False
         )
-        manifest_relative, _manifest_host_path = self.workspace_service.normalize_path(
+        manifest_relative = self.workspace_service.normalize_path(
             manifest_path, allow_root=False
         )
         try:

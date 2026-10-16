@@ -8,7 +8,7 @@ from smart_reporting.reporting.delivery.report_runtime.theme import (
     REPORT_VISUAL_THEME,
     plotly_theme_layout,
 )
-from smart_reporting.sandbox.matplotlib_defaults import (
+from smart_reporting.reporting.matplotlib_defaults import (
     MATPLOTLIBRC_CONTENT,
     _apply_plotly_layout_defaults,
     matplotlib_bootstrap,

@@ -1,14 +1,10 @@
-import asyncio
-import json
 import os
-from io import BytesIO
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI
 from loguru import logger as loguru_logger
-from starlette.requests import Request
 
 from smart_reporting.runtime.application import ApplicationContext, create_agentos_app
 from smart_reporting.runtime.database import SerializedAsyncPostgresDb
@@ -21,27 +17,6 @@ class FakeAgent:
 
 class FakeWorkflow:
     id = "enterprise-reporting-workflow-v1"
-
-
-class FakeWorkspace:
-    def __init__(self, name):
-        self.name = name
-        self.close_calls = 0
-        self.cleanup_started = asyncio.Event()
-        self.cleanup_stopped = asyncio.Event()
-
-    def list_files(self, _thread_id, _path):
-        return [{"name": self.name}]
-
-    async def aclose(self):
-        self.close_calls += 1
-
-    async def run_quarantine_cleanup_loop(self):
-        self.cleanup_started.set()
-        try:
-            await asyncio.Future()
-        finally:
-            self.cleanup_stopped.set()
 
 
 class FakeCloseable:
@@ -77,13 +52,11 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     second_base = FastAPI()
     first_context = ApplicationContext(
         settings,
-        object(),
         FakeAgent(),
         FakeWorkflow(),
     )
     second_context = ApplicationContext(
         settings,
-        object(),
         FakeAgent(),
         FakeWorkflow(),
     )
@@ -121,7 +94,6 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
     settings = AgentSettings.from_environment({}, load_env_file=False)
     context = ApplicationContext(
         settings,
-        object(),
         FakeAgent(),
         FakeWorkflow(),
         database=database,
@@ -137,12 +109,10 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
 async def test_application_initializes_database_before_serving(monkeypatch, initialization_fails):
     captured = {}
     initialized = False
-    workspace = FakeWorkspace("database-startup")
 
     class FakeDatabase:
         async def _create_all_tables(self):
             nonlocal initialized
-            assert not workspace.cleanup_started.is_set()
             if initialization_fails:
                 raise RuntimeError("database initialization failed")
             initialized = True
@@ -157,7 +127,6 @@ async def test_application_initializes_database_before_serving(monkeypatch, init
     monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
     context = ApplicationContext(
         AgentSettings.from_environment({}, load_env_file=False),
-        workspace,
         FakeAgent(),
         FakeWorkflow(),
         database=SimpleNamespace(async_db=FakeDatabase()),
@@ -168,7 +137,6 @@ async def test_application_initializes_database_before_serving(monkeypatch, init
         with pytest.raises(RuntimeError, match="database initialization failed"):
             async with captured["lifespan"](FastAPI()):
                 pass
-        assert not workspace.cleanup_started.is_set()
     else:
         async with captured["lifespan"](FastAPI()):
             assert initialized
@@ -199,7 +167,6 @@ async def test_application_new_database_persists_sessions_and_runs(monkeypatch):
     monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
     context = ApplicationContext(
         AgentSettings.from_environment({}, load_env_file=False),
-        FakeWorkspace("new-database"),
         FakeAgent(),
         FakeWorkflow(),
         database=SimpleNamespace(async_db=database),
@@ -236,35 +203,6 @@ async def test_application_new_database_persists_sessions_and_runs(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_application_lifespan_closes_workspace_service(monkeypatch):
-    captured = {}
-
-    class FakeAgentOS:
-        def __init__(self, **values):
-            captured.update(values)
-
-        def get_app(self):
-            return captured["base_app"]
-
-    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
-    settings = AgentSettings.from_environment({}, load_env_file=False)
-    workspace = FakeWorkspace("lifespan")
-    context = ApplicationContext(
-        settings,
-        workspace,
-        FakeAgent(),
-        FakeWorkflow(),
-    )
-
-    create_agentos_app(context, FastAPI())
-    async with captured["lifespan"](FastAPI()):
-        await asyncio.wait_for(workspace.cleanup_started.wait(), timeout=0.1)
-        assert workspace.close_calls == 0
-    assert workspace.close_calls == 1
-    assert workspace.cleanup_stopped.is_set()
-
-
-@pytest.mark.anyio
 async def test_application_lifespan_closes_all_reporting_resources_after_error(monkeypatch):
     captured = {}
 
@@ -276,13 +214,11 @@ async def test_application_lifespan_closes_all_reporting_resources_after_error(m
             return captured["base_app"]
 
     monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
-    workspace = FakeWorkspace("lifespan")
     runtime_error = RuntimeError("runtime close failed")
     runtime = FakeCloseable(runtime_error)
     lsp_manager = FakeCloseable()
     context = ApplicationContext(
         AgentSettings.from_environment({}, load_env_file=False),
-        workspace,
         FakeAgent(),
         FakeWorkflow(),
         reporting_code_mode_runtime=runtime,
@@ -292,53 +228,11 @@ async def test_application_lifespan_closes_all_reporting_resources_after_error(m
     create_agentos_app(context, FastAPI())
     with pytest.raises(RuntimeError, match="runtime close failed") as raised:
         async with captured["lifespan"](FastAPI()):
-            await asyncio.wait_for(workspace.cleanup_started.wait(), timeout=0.1)
+            pass
 
     assert raised.value is runtime_error
-    assert workspace.cleanup_stopped.is_set()
     assert runtime.close_calls == 1
     assert lsp_manager.close_calls == 1
-    assert workspace.close_calls == 1
-
-
-@pytest.mark.anyio
-async def test_application_lifespan_stops_optional_sandbox_reconciler(monkeypatch):
-    captured = {}
-
-    class FakeAgentOS:
-        def __init__(self, **values):
-            captured.update(values)
-
-        def get_app(self):
-            return captured["base_app"]
-
-    class ReconcilingWorkspace(FakeWorkspace):
-        def __init__(self):
-            super().__init__("reconcile")
-            self.reconcile_started = asyncio.Event()
-            self.reconcile_stopped = asyncio.Event()
-
-        async def run_provider_reconcile_loop(self):
-            self.reconcile_started.set()
-            try:
-                await asyncio.Future()
-            finally:
-                self.reconcile_stopped.set()
-
-    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
-    workspace = ReconcilingWorkspace()
-    context = ApplicationContext(
-        AgentSettings.from_environment({}, load_env_file=False),
-        workspace,
-        FakeAgent(),
-        FakeWorkflow(),
-    )
-
-    create_agentos_app(context, FastAPI())
-    async with captured["lifespan"](FastAPI()):
-        await asyncio.wait_for(workspace.reconcile_started.wait(), timeout=0.1)
-
-    assert workspace.reconcile_stopped.is_set()
 
 
 @pytest.mark.anyio
@@ -378,7 +272,7 @@ async def test_default_application_exposes_explicit_context():
 
     context = app_module.base_app.state.agentos_context
     assert context.settings is app_module.settings
-    assert context.workspace_service is app_module.workspace_service
+    assert not hasattr(context, "workspace_service")
     assert context.report_agent is app_module.report_agent
     assert context.report_workflow is app_module.report_workflow
     assert app_module.agent_os.db is app_module.agent_database.async_db
@@ -396,39 +290,3 @@ async def test_default_application_exposes_explicit_context():
         "continue_run",
         "cancel_run",
     }
-
-
-@pytest.mark.anyio
-async def test_legacy_workspace_upload_returns_413_before_workspace_write(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from smart_reporting import app as app_module
-
-    class Workspace:
-        def upload(self, *_args, **_kwargs):
-            raise AssertionError("超限文件不应进入 Workspace")
-
-    application = SimpleNamespace(
-        state=SimpleNamespace(agentos_context=SimpleNamespace(workspace_service=Workspace()))
-    )
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/workspace/upload",
-            "headers": [(b"x-workspace-thread", b"thread-1")],
-            "app": application,
-        }
-    )
-    request.state.capability = SimpleNamespace(thread="thread-1")
-    monkeypatch.setattr(app_module, "WORKSPACE_FILE_BYTES", 4)
-
-    response = await app_module.workspace_upload(
-        request,
-        threadId="thread-1",
-        path="oversized.bin",
-        file=UploadFile(file=BytesIO(b"12345"), filename="oversized.bin"),
-    )
-
-    assert response.status_code == 413
-    assert json.loads(response.body) == {"error": "export_file_too_large"}

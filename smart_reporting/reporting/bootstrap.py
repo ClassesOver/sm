@@ -194,7 +194,7 @@ def create_report_runtime(
     coding_task_registry = ReportingCodingTaskRegistry()
     task_runner = ReportingTaskCoordinator(
         task_repository,
-        TaskExecutionKernel(context.workspace_service, task_repository),
+        TaskExecutionKernel(reporting_workspace, task_repository),
         model_profiles=build_model_profiles(
             fast_model_id=settings.model_fast_id,
             standard_model_id=settings.model_standard_id,

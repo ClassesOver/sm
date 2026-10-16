@@ -174,7 +174,7 @@ class ReportVisionReviewer:
         if detail not in {"high", "original"}:
             raise WorkspaceError("图片 detail 必须是 high 或 original。")
 
-        # WorkspaceService 是图片路径、格式、签名和大小的安全读取边界。模型只接收
+        # 本地工作区是图片路径、格式、签名和大小的安全读取边界。模型只接收
         # 已通过该边界返回的内存字节，不获得工作区路径或通用文件权限。
         loaded = await self._workspace_service.aview_image(thread_id, path)
         if not loaded.images or loaded.images[0].content is None:

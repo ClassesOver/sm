@@ -2403,40 +2403,6 @@ async def test_controller_rejects_concurrent_runs_for_same_thread() -> None:
 
 
 @pytest.mark.anyio
-async def test_controller_keeps_pending_when_sandbox_cleanup_is_deferred() -> None:
-    run_calls = 0
-
-    class Workflow:
-        id = "enterprise-reporting-workflow-v1"
-
-        async def arun(self, *_args, **_kwargs):
-            nonlocal run_calls
-            run_calls += 1
-            return SimpleNamespace(status=RunStatus.cancelled)
-
-    async def cleanup(*_args, **_kwargs) -> None:
-        raise ReportingError(
-            "report_sandbox_cleanup_failed",
-            "报表工作流已结束，但运行环境删除失败。",
-        )
-
-    ownership = _ThreadOwnership()
-    controller = ReportWorkflowController(
-        lambda: Workflow(),
-        thread_ownership=ownership,
-        terminal_cleanup=cleanup,
-    )
-    context = _context()
-    first = await controller.start(ReportingWorkflowInput(prompt="生成第一份报表"), context)
-
-    assert first["status"] == "cancelled"
-    assert ownership.owners == {"thread": ("external-run", "user")}
-    assert ownership.status_updates[-1][1:] == ("cancelled", True)
-    assert context.session_state[REPORT_WORKFLOW_CONTROL_STATE_KEY]["finalizationPending"] is True
-    assert run_calls == 1
-
-
-@pytest.mark.anyio
 async def test_controller_keeps_thread_owned_when_sandbox_quarantine_fails() -> None:
     class Workflow:
         id = "enterprise-reporting-workflow-v1"
@@ -2462,44 +2428,6 @@ async def test_controller_keeps_thread_owned_when_sandbox_quarantine_fails() -> 
 
     assert raised.value.code == "report_sandbox_quarantine_failed"
     assert ownership.owners == {"thread": ("external-run", "user")}
-
-
-@pytest.mark.anyio
-async def test_controller_preserves_run_error_and_owner_after_sandbox_cleanup_failure() -> None:
-    run_calls = 0
-
-    class Workflow:
-        id = "enterprise-reporting-workflow-v1"
-
-        async def arun(self, *_args, **_kwargs):
-            nonlocal run_calls
-            run_calls += 1
-            if run_calls == 1:
-                raise RuntimeError("materialize failed")
-            return SimpleNamespace(status=RunStatus.completed)
-
-    async def cleanup(*_args, **_kwargs) -> None:
-        raise ReportingError(
-            "report_sandbox_cleanup_failed",
-            "报表工作流已结束，但运行环境删除失败。",
-        )
-
-    ownership = _ThreadOwnership()
-    controller = ReportWorkflowController(
-        lambda: Workflow(),
-        thread_ownership=ownership,
-        terminal_cleanup=cleanup,
-    )
-
-    context = _context()
-    with pytest.raises(RuntimeError, match="materialize failed"):
-        await controller.start(ReportingWorkflowInput(prompt="生成第一份报表"), context)
-
-    assert ownership.owners == {"thread": ("external-run", "user")}
-    assert ownership.status_updates[-1][1:] == ("failed", True)
-    retried = await controller.start(ReportingWorkflowInput(prompt="重试清理"), context)
-    assert retried["status"] == "failed"
-    assert run_calls == 1
 
 
 @pytest.mark.anyio
@@ -2753,51 +2681,6 @@ async def test_controller_restarts_same_run_when_persisted_running_owner_is_orph
     assert restarted["status"] == "completed"
     assert run_calls == 2
     assert ownership.owners == {}
-
-
-@pytest.mark.anyio
-async def test_controller_keeps_orphan_owned_when_sandbox_cleanup_is_deferred(
-    monkeypatch,
-) -> None:
-    cleanup_calls = 0
-    run_calls = 0
-
-    class Workflow:
-        id = "enterprise-reporting-workflow-v1"
-
-        async def arun(self, *_args, **_kwargs):
-            nonlocal run_calls
-            run_calls += 1
-            return SimpleNamespace(status=RunStatus.completed)
-
-        async def aget_run(self, *_args, **_kwargs):
-            return None
-
-    async def cleanup(*_args, **_kwargs) -> None:
-        nonlocal cleanup_calls
-        cleanup_calls += 1
-        raise ReportingError(
-            "report_sandbox_cleanup_failed",
-            "报表工作流已结束，但运行环境删除失败，请重试清理。",
-        )
-
-    ownership = _ThreadOwnership()
-    ownership.owners["thread"] = ("external-run", "user")
-    controller = ReportWorkflowController(
-        lambda: Workflow(),
-        thread_ownership=ownership,
-        terminal_cleanup=cleanup,
-    )
-
-    monkeypatch.setattr(controller_module, "_THREAD_CLAIM_WAIT_SECONDS", 0)
-
-    with pytest.raises(ReportingError) as raised:
-        await controller.start(ReportingWorkflowInput(prompt="恢复遗留运行"), _context())
-
-    assert raised.value.code == "report_workflow_run_conflict"
-    assert cleanup_calls >= 1
-    assert run_calls == 0
-    assert ownership.owners == {"thread": ("external-run", "user")}
 
 
 @pytest.mark.anyio

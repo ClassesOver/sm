@@ -468,7 +468,7 @@ def create_reporting_workflow(
         # Console 的 Workflow WebSocket 只发送自然语言 message；首步骤继续使用
         # Reporting 自己的严格输入契约完成解析和校验，避免要求通用前端了解领域 Schema。
         input_schema=None,
-        # 主进度只公开 Workflow/Step 事件。Agent、模型和 Daytona 工具调用仍保留在
+        # 主进度只公开 Workflow/Step 事件。Agent、模型和工具调用仍保留在
         # Trace 中，不能混入面向用户的 14 个业务步骤列表。
         stream_executor_events=False,
         steps=[

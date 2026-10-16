@@ -38,7 +38,7 @@ from ....context_management import TaskExecutionContextHardLimitError
 from ....model_routing import TaskComplexity
 from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskExecutionScope, TaskState
-from ....workspace import WorkspaceService
+from ....workspace import normalize_workspace_path
 from ...code_agent.context import ReportingCodingTaskRegistry
 from ...contract import (
     FIELD_REF_PATTERN,
@@ -283,7 +283,6 @@ _VISUALIZATION_RECOVERY_ERROR_CODES = frozenset(
         "report_worker_terminal_tool_missing",
         "report_visualization_tool_budget_exhausted",
         "report_visualization_exploration_budget_exhausted",
-        "report_visualization_script_failure_limit_exhausted",
     }
 )
 
@@ -1467,20 +1466,11 @@ class _ReportWorkflowRuntimeBase:
             run_id=run_id,
         )
         async with self.state_repository.workflow_thread_lifecycle_lock(keys.thread_lease_key):
-            try:
-                await self.cleanup_terminal(
-                    {"thread_id": keys.workspace_key},
-                    str(run["agno_session_id"]),
-                    run_id,
-                )
-            except ReportingError as error:
-                if error.code != "report_sandbox_cleanup_failed":
-                    raise
-                loguru_logger.warning(
-                    "report_workflow_workspace_cleanup_deferred run_id={} workspace_key={}",
-                    run_id,
-                    keys.workspace_key,
-                )
+            await self.cleanup_terminal(
+                {"thread_id": keys.workspace_key},
+                str(run["agno_session_id"]),
+                run_id,
+            )
             released = await self.state_repository.release_workflow_thread(
                 thread_id=keys.thread_lease_key,
                 external_run_id=str(run["external_run_id"]),

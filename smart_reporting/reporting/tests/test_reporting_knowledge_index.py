@@ -173,20 +173,11 @@ def test_execution_context_creates_shared_knowledge_index_under_host_root(
         load_env_file=False,
     )
     database = type("Database", (), {"async_db": object(), "sync_db": object()})()
-    monkeypatch.setattr(
-        "smart_reporting.runtime.execution.AsyncSandboxRegistry",
-        lambda _database: object(),
-    )
-    monkeypatch.setattr(
-        "smart_reporting.runtime.execution.create_sandbox_provider",
-        lambda *_args, **_kwargs: object(),
-    )
 
     context = create_execution_context(
         settings,
         database_factory=lambda _url: database,
         tracing_configurer=lambda *_args, **_kwargs: None,
-        workspace_factory=lambda **_kwargs: object(),
     )
 
     assert isinstance(context.reporting_knowledge_index, ReportingKnowledgeIndex)
@@ -208,7 +199,6 @@ async def test_execution_resource_close_closes_shared_knowledge_index() -> None:
     context = ExecutionContext(
         settings=object(),  # type: ignore[arg-type]
         database=object(),
-        workspace_service=object(),  # type: ignore[arg-type]
         reporting_knowledge_index=knowledge,  # type: ignore[arg-type]
     )
 

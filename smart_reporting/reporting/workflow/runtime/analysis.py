@@ -113,9 +113,9 @@ from .base import (
     TaskExecutionScope,
     TaskState,
     ValidationError,
-    WorkspaceService,
     ZoneInfo,
     _frozen_outline,
+    normalize_workspace_path,
     _payload_sha256,
     _report_machine_terms,
     _reporting_observed_data_facts,
@@ -2746,7 +2746,7 @@ class RuntimeAnalysisMixin:
             allow_nan=False,
         ).encode("utf-8")
         self.workspace_service.validate_content(content)
-        relative, _host_path = self.workspace_service.normalize_path(path, allow_root=False)
+        relative = self.workspace_service.normalize_path(path, allow_root=False)
         await self.workspace_service.awrite_bytes(thread_id, relative, content, overwrite=True)
         stored = await self.workspace_service.read_limited_regular_file(
             thread_id, relative, max_bytes=len(content)
@@ -3070,7 +3070,7 @@ class RuntimeAnalysisMixin:
             raise ReportingError(
                 "report_artifact_file_changed", "当前 revision 的服务端产物已存在但身份不同。"
             )
-        relative, _host_path = self.workspace_service.normalize_path(path, allow_root=False)
+        relative = self.workspace_service.normalize_path(path, allow_root=False)
         await self.workspace_service.awrite_bytes(thread_id, relative, content)
         stored = await self.workspace_service.read_limited_regular_file(
             thread_id, relative, max_bytes=len(content)
@@ -4819,7 +4819,7 @@ def _visualization_dynamic_budget(
                 "visualization 文件身份缺失或无效。",
             )
         try:
-            normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            normalized = normalize_workspace_path(path, allow_root=False)
         except Exception as error:
             raise ReportingError(
                 "report_visualization_evidence_identity_invalid",

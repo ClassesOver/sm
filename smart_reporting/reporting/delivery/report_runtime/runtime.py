@@ -1,4 +1,4 @@
-"""受限 Markdown 报表运行时；由 Reporting Workflow 在 Daytona 中执行。"""
+"""受限 Markdown 报表运行时；由 Reporting Workflow 在本地工作区中执行。"""
 
 from __future__ import annotations
 

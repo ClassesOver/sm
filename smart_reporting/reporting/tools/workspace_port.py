@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from collections.abc import Sequence
+from typing import Protocol
 
 from .context import ReportingFileRef
 
@@ -27,10 +27,3 @@ class ReportingWorkspacePort(Protocol):
         overwrite: bool = False,
         expected_sha256: str | None = None,
     ) -> ReportingFileRef: ...
-
-    async def execute_script(
-        self,
-        script_path: str,
-        *,
-        timeout: int,
-    ) -> Mapping[str, Any]: ...

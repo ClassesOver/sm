@@ -12,9 +12,7 @@ from ..reporting.code_agent.lsp_process import ReportingLspProcessManager
 from ..reporting.code_mode import create_reporting_code_mode_runtime
 from ..reporting.host_workspace import ReportingWorkspaceRegistry
 from ..reporting.knowledge import ReportingKnowledgeIndex
-from ..sandbox.factory import create_sandbox_provider
 from ..task_execution import DEFAULT_TERMINAL_TIMEOUT
-from ..workspace import AsyncSandboxRegistry, WorkspaceService
 from .database import AgentDatabase, create_agent_database
 from .observability import configure_tracing, flush_tracing
 from .settings import AgentSettings
@@ -24,7 +22,6 @@ from .settings import AgentSettings
 class ExecutionContext:
     settings: AgentSettings
     database: AsyncBaseDb
-    workspace_service: WorkspaceService
     trace_database: BaseDb | None = None
     reporting_workspace_registry: ReportingWorkspaceRegistry | None = None
     reporting_code_mode_runtime: Any | None = None
@@ -50,7 +47,6 @@ def create_execution_context(
     *,
     database_factory: Any = create_agent_database,
     tracing_configurer: Any = configure_tracing,
-    workspace_factory: Any = WorkspaceService,
 ) -> ExecutionContext:
     install_agno_function_argument_decoder()
     current_settings = settings or AgentSettings.from_environment()
@@ -59,16 +55,6 @@ def create_execution_context(
         database,
         current_settings,
         tracing_configurer=tracing_configurer,
-    )
-    async_registry = AsyncSandboxRegistry(database.async_db)
-    provider = create_sandbox_provider(current_settings, registry=async_registry)
-    workspace_service = workspace_factory(
-        secret=current_settings.workspace_hmac_secret,
-        database=database,
-        snapshot=current_settings.workspace_snapshot,
-        network_allow_list=current_settings.daytona_network_allow_list,
-        async_registry=async_registry,
-        provider=provider,
     )
     reporting_workspace_registry = ReportingWorkspaceRegistry(
         current_settings.reporting_host_workspace_root,
@@ -85,7 +71,6 @@ def create_execution_context(
     return ExecutionContext(
         settings=current_settings,
         database=database.async_db,
-        workspace_service=workspace_service,
         trace_database=database.sync_db,
         reporting_workspace_registry=reporting_workspace_registry,
         reporting_code_mode_runtime=reporting_code_mode_runtime,
@@ -111,7 +96,7 @@ async def close_execution_resources(
             if client is not None and id(client) not in seen:
                 seen.add(id(client))
                 clients.append(client)
-    clients.extend((context.workspace_service, context.database))
+    clients.append(context.database)
     reporting_registry = getattr(context, "reporting_workspace_registry", None)
     code_mode_runtime = getattr(context, "reporting_code_mode_runtime", None)
     knowledge_index = getattr(context, "reporting_knowledge_index", None)

@@ -337,7 +337,6 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
                 "query_profile",
                 "read_file",
                 "read_tool_output",
-                "run_python_script",
             ),
         ),
         (
@@ -346,7 +345,6 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
                 "apply_analysis_patch",
                 "read_file",
                 "read_tool_output",
-                "run_python_script",
                 "submit_visualization_charts",
             ),
         ),
@@ -397,19 +395,8 @@ def test_mock_runtime_isolated_for_each_cli_case() -> None:
 
 
 @pytest.mark.anyio
-async def test_mock_workspace_script_and_sha_recovery_boundaries() -> None:
+async def test_mock_workspace_sha_recovery_boundaries() -> None:
     runtime = _mock_tool_runtime()
-    completed = await runtime.workspace.execute_script("reports/script.py", timeout=30)
-    assert completed == {
-        "ok": True,
-        "status": "completed",
-        "exitCode": 0,
-        "exit_code": 0,
-    }
-    assert runtime.workspace.calls == [
-        {"operation": "execute_script", "script_path": "reports/script.py", "timeout": 30}
-    ]
-
     identity = await runtime.workspace.write_text("reports/script.py", "print('v1')")
     runtime.workspace._outputs["reports/script.py"] = b"print('v2')"
     with pytest.raises(Exception, match="哈希已变化"):

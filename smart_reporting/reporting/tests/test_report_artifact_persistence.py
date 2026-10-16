@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import os
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -49,7 +48,7 @@ from smart_reporting.reporting.workflow.scope import (
 )
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution import TaskState
-from smart_reporting.workspace import WorkspacePathConflict, WorkspaceService
+from smart_reporting.workspace import WorkspacePathConflict, normalize_workspace_path
 
 
 async def _chunks(*values: bytes):
@@ -171,29 +170,13 @@ def _checkpoint_with_traces(*traces: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class _WorkspaceFs:
+class _Workspace:
+    """按工作区相对路径保存文件的最小本地工作区替身。"""
+
     def __init__(self, files: dict[str, bytes]) -> None:
         self.files = files
 
-    async def download_file_stream(self, path: str, timeout: int):
-        del timeout
-        return _chunks(self.files[path][:2], self.files[path][2:])
-
-
-class _Workspace:
-    def __init__(self, files: dict[str, bytes]) -> None:
-        self.sandbox = SimpleNamespace(fs=_WorkspaceFs(files))
-        self.destroyed: list[str] = []
-
-    normalize_path = staticmethod(WorkspaceService.normalize_path)
-
-    @asynccontextmanager
-    async def _async_client(self):
-        yield object()
-
-    async def _asandbox_for(self, _client: object, _thread: str, create: bool = True):
-        del create
-        return self.sandbox
+    normalize_path = staticmethod(normalize_workspace_path)
 
     async def read_limited_regular_file(
         self,
@@ -202,15 +185,13 @@ class _Workspace:
         *,
         max_bytes: int,
     ) -> bytes:
-        content = self.sandbox.fs.files[f"/home/daytona/workspace/{path}"]
+        content = self.files[path]
         if len(content) > max_bytes:
             raise ValueError("file too large")
         return content
 
-    async def adestroy(self, thread_id: str) -> bool:
-        self.destroyed.append(thread_id)
-        self.sandbox = None
-        return True
+    def remove_files(self) -> None:
+        self.files.clear()
 
 
 @pytest.mark.anyio
@@ -246,12 +227,12 @@ async def test_sql_artifact_repository_streams_chunks_and_rolls_back_invalid_rep
 
 
 @pytest.mark.anyio
-async def test_persisted_report_download_survives_sandbox_deletion() -> None:
+async def test_persisted_report_download_survives_workspace_file_removal() -> None:
     pdf = b"pdf-content"
     word = b"word-content"
     files = {
-        "/home/daytona/workspace/reports/report.pdf": pdf,
-        "/home/daytona/workspace/reports/report.docx": word,
+        "reports/report.pdf": pdf,
+        "reports/report.docx": word,
     }
     workspace = _Workspace(files)
     artifacts = InMemoryReportArtifactRepository()
@@ -285,12 +266,12 @@ async def test_persisted_report_download_survives_sandbox_deletion() -> None:
         word_size=specs[1].size,
         word_sha256=specs[1].sha256,
     )
-    await workspace.adestroy(scope.thread_id)
+    workspace.remove_files()
     downloads = ReportDownloadHttpService(grants, artifacts)
     _pdf_grant, pdf_stream = await downloads.stream(raw_grant)
     _word_grant, word_stream = await downloads.stream(raw_grant, artifact="word")
 
-    assert workspace.sandbox is None
+    assert workspace.files == {}
     assert await _content(pdf_stream) == pdf
     assert await _content(word_stream) == word
 
@@ -368,8 +349,8 @@ async def test_persistence_requires_pdf_and_word() -> None:
     content = b"report"
     workspace = _Workspace(
         {
-            "/home/daytona/workspace/reports/report.pdf": content,
-            "/home/daytona/workspace/reports/report.docx": content,
+            "reports/report.pdf": content,
+            "reports/report.docx": content,
         }
     )
     persistence = ReportArtifactPersistenceService(
@@ -594,7 +575,7 @@ def test_runtime_requires_public_base_url_for_http_publication() -> None:
 
 
 @pytest.mark.anyio
-async def test_http_publication_persists_and_destroys_sandbox_before_issuing_grant() -> None:
+async def test_http_publication_persists_before_issuing_grant() -> None:
     events: list[str] = []
     markdown_snapshots: list[tuple[str, str]] = []
     persisted_artifacts: tuple[object, ...] = ()
@@ -662,11 +643,6 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
             assert thread_id == "thread"
             markdown_snapshots.append((path, content))
 
-        async def adestroy(self, thread_id: str) -> bool:
-            assert thread_id == "thread"
-            events.append("destroy")
-            return True
-
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
@@ -699,7 +675,7 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
         output=content,
     )
 
-    assert events == ["persist", "editor-context", "destroy", "grant", "editor-grant"]
+    assert events == ["persist", "editor-context", "grant", "editor-grant"]
     assert markdown_snapshots == [("reports/revision-1/report.md", "# 报告\n")]
     assert {item.artifact for item in persisted_artifacts} == {"pdf", "word"}
     assert result["pdf"]["downloadUrl"] == ("http://10.233.32.64:27018/reports/v1/download/raw")
@@ -782,10 +758,6 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
         async def awrite_text(self, thread_id: str, path: str, content: str) -> None:
             assert thread_id == "reporting-run-workspace-key"
 
-        async def adestroy(self, thread_id: str) -> bool:
-            events.append("destroy")
-            return True
-
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
@@ -824,7 +796,7 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
         output=content,
     )
 
-    assert events == ["persist", "editor-context", "destroy", "grant", "editor-grant"]
+    assert events == ["persist", "editor-context", "grant", "editor-grant"]
     # 产物与授权作用域取解析后的租户，与编辑器导出一致，修订撤销才能跨入口生效。
     assert (scopes[0].database, scopes[0].company_id) == ("database-1", "company-1")
     assert result["editor"]["openUrl"] == (
@@ -844,11 +816,11 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
 
 
 @pytest.mark.anyio
-async def test_http_publication_keeps_host_workspace_instead_of_destroying(tmp_path) -> None:
+async def test_http_publication_releases_identity_but_keeps_host_workspace_files(tmp_path) -> None:
     registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_registry = registry
-    # 生产装配的宿主机路由没有 adestroy/aquarantine；发布后必须保留会话目录供编辑器续写。
+    # 发布后只释放进程内身份，必须保留会话目录供编辑器续写。
     runtime.workspace_service = ReportingWorkspaceRouter(registry)
     keys = reporting_scope_keys(
         database="database-1",
@@ -872,67 +844,14 @@ async def test_http_publication_keeps_host_workspace_instead_of_destroying(tmp_p
     marker = identity.root / "keep.txt"
     marker.write_text("stay", encoding="utf-8")
 
-    await runtime._release_or_destroy_workspace(scope.workspace_key, message="m")
+    runtime._release_workspace(scope.workspace_key)
 
     assert registry.get(scope.workspace_key) is None
     assert marker.is_file()
-    assert not hasattr(runtime.workspace_service, "adestroy")
 
 
 @pytest.mark.anyio
-async def test_terminal_cleanup_destroys_reporting_sandbox() -> None:
-    workspace = SimpleNamespace(adestroy=AsyncMock(return_value=True))
-    repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None))
-    runtime = object.__new__(ReportWorkflowRuntime)
-    runtime.workspace_service = workspace
-    runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
-    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
-
-    await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
-
-    workspace.adestroy.assert_awaited_once_with("thread")
-
-
-@pytest.mark.anyio
-async def test_terminal_cleanup_fails_closed_when_sandbox_destroy_fails() -> None:
-    workspace = SimpleNamespace(
-        adestroy=AsyncMock(side_effect=RuntimeError("delete failed")),
-        aquarantine=AsyncMock(return_value="old-workspace-label"),
-    )
-    repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None))
-    runtime = object.__new__(ReportWorkflowRuntime)
-    runtime.workspace_service = workspace
-    runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
-    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
-
-    with pytest.raises(ReportingError) as raised:
-        await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
-
-    assert raised.value.code == "report_sandbox_cleanup_failed"
-    workspace.aquarantine.assert_awaited_once_with("thread")
-
-
-@pytest.mark.anyio
-async def test_terminal_cleanup_fails_closed_when_sandbox_quarantine_fails() -> None:
-    workspace = SimpleNamespace(
-        adestroy=AsyncMock(side_effect=RuntimeError("delete failed")),
-        aquarantine=AsyncMock(side_effect=RuntimeError("quarantine failed")),
-    )
-    repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None))
-    runtime = object.__new__(ReportWorkflowRuntime)
-    runtime.workspace_service = workspace
-    runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
-    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
-
-    with pytest.raises(ReportingError) as raised:
-        await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
-
-    assert raised.value.code == "report_sandbox_quarantine_failed"
-    workspace.aquarantine.assert_awaited_once_with("thread")
-
-
-@pytest.mark.anyio
-async def test_terminal_cleanup_cancels_phase_tasks_before_destroying_sandbox() -> None:
+async def test_terminal_cleanup_cancels_phase_tasks_before_releasing_workspace() -> None:
     events: list[str] = []
     task_ids = ("analysis-task", "visualization-task", "section-task")
     scopes = {task_id: SimpleNamespace(external_run_id=task_id) for task_id in task_ids}
@@ -943,9 +862,9 @@ async def test_terminal_cleanup_cancels_phase_tasks_before_destroying_sandbox() 
     async def cancel(scope: Any) -> None:
         events.append(f"cancel:{scope.external_run_id}")
 
-    async def destroy(thread_id: str) -> bool:
-        assert thread_id == "thread"
-        events.append("destroy")
+    def release(workspace_key: str) -> bool:
+        assert workspace_key == "thread"
+        events.append("release")
         return True
 
     checkpoint = _checkpoint_with_traces(
@@ -969,7 +888,7 @@ async def test_terminal_cleanup_cancels_phase_tasks_before_destroying_sandbox() 
         },
     )
     runtime = object.__new__(ReportWorkflowRuntime)
-    runtime.workspace_service = SimpleNamespace(adestroy=destroy)
+    runtime.workspace_registry = SimpleNamespace(release=release)
     runtime.task_runner = SimpleNamespace(
         repository=SimpleNamespace(get_task_snapshot=get_task_snapshot),
         cancel=cancel,
@@ -981,12 +900,12 @@ async def test_terminal_cleanup_cancels_phase_tasks_before_destroying_sandbox() 
     await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
 
     runtime.state_repository.get.assert_awaited_once_with("workflow-run")
-    assert events == [*(f"cancel:{task_id}" for task_id in task_ids), "destroy"]
+    assert events == [*(f"cancel:{task_id}" for task_id in task_ids), "release"]
 
 
 @pytest.mark.anyio
-async def test_terminal_cleanup_keeps_sandbox_when_phase_task_cleanup_fails() -> None:
-    workspace = SimpleNamespace(adestroy=AsyncMock(return_value=True))
+async def test_terminal_cleanup_keeps_workspace_when_phase_task_cleanup_fails() -> None:
+    registry = SimpleNamespace(release=Mock(return_value=True))
     task_ids = ("analysis-task", "section-task")
     task_scopes = {task_id: SimpleNamespace(external_run_id=task_id) for task_id in task_ids}
     repository = SimpleNamespace(
@@ -1002,7 +921,7 @@ async def test_terminal_cleanup_keeps_sandbox_when_phase_task_cleanup_fails() ->
             raise RuntimeError("task cleanup failed")
 
     runtime = object.__new__(ReportWorkflowRuntime)
-    runtime.workspace_service = workspace
+    runtime.workspace_registry = registry
     runtime.task_runner = SimpleNamespace(
         repository=repository,
         cancel=AsyncMock(side_effect=cancel),
@@ -1036,11 +955,11 @@ async def test_terminal_cleanup_keeps_sandbox_when_phase_task_cleanup_fails() ->
     assert [
         call.args[0].external_run_id for call in runtime.task_runner.cancel.await_args_list
     ] == list(task_ids)
-    workspace.adestroy.assert_not_awaited()
+    registry.release.assert_not_called()
 
 
 @pytest.mark.anyio
-async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() -> None:
+async def test_http_publication_keeps_workspace_when_artifact_persistence_fails() -> None:
     events: list[str] = []
 
     class Persistence:
@@ -1054,15 +973,18 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
             raise AssertionError("持久化失败后不得签发 grant")
 
     class Workspace:
-        async def adestroy(self, _thread_id: str) -> bool:
-            events.append("destroy")
-            raise AssertionError("持久化失败后不得删除 sandbox")
+        pass
+
+    def release(_workspace_key: str) -> bool:
+        events.append("release")
+        raise AssertionError("持久化失败后不得释放工作区")
 
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
     runtime.editor_grants = Grants()
     runtime.workspace_service = Workspace()
+    runtime.workspace_registry = SimpleNamespace(release=release)
     runtime.report_public_base_url = "http://10.233.32.64:27018"
     durable = SimpleNamespace(
         state_version=3,
@@ -1103,74 +1025,6 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
 
     assert raised.value.code == "report_artifact_changed"
     assert events == ["persist"]
-
-
-@pytest.mark.anyio
-async def test_http_publication_does_not_issue_grant_when_sandbox_cleanup_fails() -> None:
-    events: list[str] = []
-
-    class Persistence:
-        async def persist(self, **_values: Any) -> None:
-            events.append("persist")
-
-    class Grants:
-        async def issue(self, **_values: Any):
-            events.append("grant")
-            raise AssertionError("sandbox 删除失败后不得签发 grant")
-
-    class Workspace:
-        async def adestroy(self, _thread_id: str) -> bool:
-            events.append("destroy")
-            raise RuntimeError("cleanup failed")
-
-        async def aquarantine(self, _thread_id: str) -> str:
-            events.append("quarantine")
-            return "old-workspace-label"
-
-    runtime = object.__new__(ReportWorkflowRuntime)
-    runtime.artifact_persistence = Persistence()
-    runtime.download_grants = Grants()
-    runtime.editor_grants = Grants()
-    runtime.workspace_service = Workspace()
-    runtime.report_public_base_url = "http://127.0.0.1:33046"
-    runtime.state_repository = SimpleNamespace(
-        get=AsyncMock(
-            return_value=SimpleNamespace(
-                state_version=1,
-                payload={"report_workflow_scope": _scope_state_for_publication()},
-            )
-        ),
-        apply=AsyncMock(),
-    )
-    content = b"report"
-    output = {
-        "reportId": "report-1",
-        "revision": 1,
-        "jobId": "job-1",
-        "editorJob": {"jobId": "job-1", "status": "validated"},
-        "markdownPath": "reports/revision-1/report.md",
-        "pdfPath": "reports/report.pdf",
-        "pdfSize": len(content),
-        "pdfSha256": hashlib.sha256(content).hexdigest(),
-        "wordPath": "reports/report.docx",
-        "wordSize": len(content),
-        "wordSha256": hashlib.sha256(content).hexdigest(),
-        "sourceWarnings": [],
-        "codingReceipts": [],
-    }
-
-    with pytest.raises(ReportingError) as raised:
-        await runtime.issue_http_publication(
-            thread_id="thread",
-            caller_thread_id="thread",
-            user_id="7",
-            workflow_session_id="workflow-session",
-            workflow_run_id="workflow-run",
-            output=output,
-        )
-
-    assert raised.value.code == "report_sandbox_cleanup_failed"
-    assert events == ["persist", "destroy", "quarantine"]
 
 
 @pytest.mark.anyio
@@ -1505,9 +1359,6 @@ async def test_http_publication_replay_reuses_identical_revision_assets() -> Non
             if path in files:
                 raise WorkspacePathConflict("exists")
             files[path] = data
-
-        async def adestroy(self, thread_id: str) -> bool:
-            return True
 
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()

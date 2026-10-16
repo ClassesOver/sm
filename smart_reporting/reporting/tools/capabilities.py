@@ -30,7 +30,6 @@ REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
         *REPORTING_WORKSPACE_TOOL_NAMES,
         "read_tool_output",
         "apply_analysis_patch",
-        "run_python_script",
     }
 )
 # 可视化按章节归属：固定 Workflow 提交本章图表，服务端在提交时完成身份校验；
@@ -40,7 +39,6 @@ REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
         *REPORTING_WORKSPACE_TOOL_NAMES,
         "read_tool_output",
         "submit_visualization_charts",
-        "run_python_script",
         "apply_analysis_patch",
     }
 )

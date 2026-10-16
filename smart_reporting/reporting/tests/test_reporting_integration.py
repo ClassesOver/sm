@@ -148,9 +148,9 @@ class _ReportPairService:
         self.process = _ReportPairProcess()
         self.fs = _ReportPairFs()
 
-    def normalize_path(self, path: str, *, allow_root: bool) -> tuple[str, str]:
+    def normalize_path(self, path: str, *, allow_root: bool) -> str:
         assert not allow_root
-        return path, f"/home/daytona/workspace/{path}"
+        return path
 
     def _shell_command(self, command: str) -> str:
         return command

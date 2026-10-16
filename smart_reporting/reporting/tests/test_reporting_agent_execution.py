@@ -32,7 +32,6 @@ def test_visualization_agent_exposes_only_its_section_toolset() -> None:
             "read_file",
             "read_tool_output",
             "run_command",
-            "run_python_script",
             "search_content",
             "submit_visualization_charts",
             "write_file",

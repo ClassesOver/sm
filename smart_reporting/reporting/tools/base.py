@@ -17,15 +17,10 @@ from pydantic import ValidationError
 
 from ...agent_control import AGENT_PLAN_STATE_KEY, validated_agent_plan
 from ...task_execution import (
-    DEFAULT_TERMINAL_TIMEOUT,
     MAX_READ_FILE_BYTES,
     MAX_TOOL_OUTPUT_READ_BYTES,
-    TERMINAL_EXECUTION_STATUSES,
 )
-from ...workspace import (
-    WorkspaceError,
-    WorkspaceService,
-)
+from ...workspace import normalize_workspace_path, WorkspaceError
 from ..models import ReportingError
 from ..phase import ReportingPhase, ReportingTaskKind, reporting_phase_allows_tool
 from ..workflow.checkpoint import FileIdentity
@@ -36,7 +31,7 @@ from ..workflow.state import (
     ReportingStateError,
 )
 from .visualization import MAX_VISUALIZATION_SCRIPT_BYTES
-from .workspace_adapter import WorkspaceServiceReportingRuntime
+from .workspace_adapter import ReportingTaskRuntime
 
 SUPPLEMENTAL_EVIDENCE_READ_BYTES = 128 * 1024
 
@@ -63,7 +58,7 @@ def _decode_utf8_page(content: bytes, *, offset: int, end: int) -> str:
         ) from error
 
 
-class ReportingToolRuntime(WorkspaceServiceReportingRuntime):
+class ReportingToolRuntime(ReportingTaskRuntime):
     """将中立任务内核和 Reporting 工作区端口组合为工具运行时。"""
 
 
@@ -83,23 +78,6 @@ class ReportingToolkitBase(Toolkit):
             "details": details if isinstance(details, dict) else {},
             "retryable": retryable,
         }
-
-    async def run_python_script(
-        self,
-        script_path: str,
-        timeout: int = DEFAULT_TERMINAL_TIMEOUT,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "run_python_script",
-            {"script_path": script_path, "timeout": timeout},
-            lambda scope: self.runtime.execute_script(
-                script_path,
-                timeout=timeout,
-                _scope=scope,
-            ),
-            run_context,
-        )
 
     async def read_file(
         self,
@@ -129,7 +107,7 @@ class ReportingToolkitBase(Toolkit):
             if not selected and offset < len(content):
                 raise WorkspaceError("read_file max_bytes 不足以读取下一个 UTF-8 字符。")
             return {
-                "path": WorkspaceService.normalize_path(path, allow_root=False)[0],
+                "path": normalize_workspace_path(path, allow_root=False),
                 "offset": offset,
                 "nextOffset": end,
                 "totalBytes": len(content),
@@ -257,7 +235,7 @@ class ReportingToolkitBase(Toolkit):
             return None
         task_kind = self._active_reporting_task_kind(scope)
         try:
-            requested = WorkspaceService.normalize_path(arguments.get("path"), allow_root=False)[0]
+            requested = normalize_workspace_path(arguments.get("path"), allow_root=False)
             _parameters, contract = self._phase_parameters(scope, "analysis")
             if task_kind == "analysis_item":
                 analysis_id = contract.get("currentAnalysisId")
@@ -267,26 +245,26 @@ class ReportingToolkitBase(Toolkit):
                     if isinstance(analysis_id, str) and isinstance(fact_files, Mapping)
                     else None
                 )
-                signed = WorkspaceService.normalize_path(
+                signed = normalize_workspace_path(
                     fact_file.get("path") if isinstance(fact_file, Mapping) else None,
                     allow_root=False,
-                )[0]
+                )
                 # 五阶段子流程会直接校验完整固定 facts；仅该签发文件可避开
                 # 通用模型回显截断。预算必须覆盖 64 KiB 正文外的结构化游标、
                 # size 和 SHA 元数据，否则压缩器会把整份回执改写成 output 字符串。
                 if requested == signed:
                     return MAX_READ_FILE_BYTES
                 evidence_root = contract.get("analysisOutputRoot")
-                evidence_path = WorkspaceService.normalize_path(
+                evidence_path = normalize_workspace_path(
                     f"{str(evidence_root or '').rstrip('/')}/supplement.json",
                     allow_root=False,
-                )[0]
+                )
                 return SUPPLEMENTAL_EVIDENCE_READ_BYTES if requested == evidence_path else None
             if task_kind != "visualization_section":
                 return None
             workspace = contract.get("visualizationWorkspace")
             script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
-            signed = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+            signed = normalize_workspace_path(script_path, allow_root=False)
         except WorkspaceError:
             return None
         return MAX_VISUALIZATION_SCRIPT_BYTES if requested == signed else None
@@ -486,52 +464,6 @@ class ReportingToolkitBase(Toolkit):
             raise ReportingError("report_state_not_found", "Reporting 运行状态不存在。")
         return state
 
-    async def _ensure_visualization_script_settled(self, scope: Any) -> None:
-        """拒绝在签发脚本的受控 execution 仍运行时推进生产阶段。
-
-        Agno 可能并发执行同一批工具，模型随后可能在脚本尚未结束时提交图表。文件尚未写完
-        时，登记会得到 Daytona NotFound。执行记录是服务端唯一受信的完成状态，因此这里按
-        当前 externalRunId、internalRunId 和底层 terminal kind 精确筛选未终态执行；该 kind
-        只是执行账本分类，不是对模型暴露旧 terminal(command) 工具。
-        """
-
-        repository = getattr(self.runtime, "repository", None)
-        list_executions = getattr(repository, "list_executions", None)
-        external_run_id = getattr(scope, "external_run_id", None)
-        internal_run_id = getattr(scope, "internal_run_id", None)
-        if (
-            not callable(list_executions)
-            or not isinstance(external_run_id, str)
-            or not external_run_id
-            or not isinstance(internal_run_id, str)
-            or not internal_run_id
-        ):
-            return
-        executions = await list_executions(external_run_id)
-        pending = [
-            execution
-            for execution in executions
-            if getattr(execution, "internal_run_id", None) == internal_run_id
-            and getattr(execution, "kind", None) == "terminal"
-            and isinstance(getattr(execution, "operation_receipt", None), Mapping)
-            and execution.operation_receipt.get("runner") == "python"
-            and getattr(execution, "status", None) not in TERMINAL_EXECUTION_STATUSES
-        ]
-        if pending:
-            raise ReportingError(
-                "report_visualization_script_running",
-                "可视化脚本仍在执行，请等待当前 run_python_script 完成后再登记或完成。",
-                details={
-                    "executions": [
-                        {
-                            "executionId": str(getattr(item, "execution_id", "")),
-                            "status": str(getattr(item, "status", "")),
-                        }
-                        for item in pending[:10]
-                    ]
-                },
-            )
-
     @staticmethod
     def _analysis_output_root(contract: Mapping[str, Any]) -> str:
         value = contract.get("analysisOutputRoot")
@@ -540,7 +472,7 @@ class ReportingToolkitBase(Toolkit):
                 "report_phase_contract_invalid", "analysis item 缺少专属输出目录。"
             )
         try:
-            return WorkspaceService.normalize_path(value, allow_root=False)[0]
+            return normalize_workspace_path(value, allow_root=False)
         except WorkspaceError as error:
             raise ReportingError(
                 "report_phase_contract_invalid", "analysis item 专属输出目录无效。"
@@ -556,7 +488,7 @@ class ReportingToolkitBase(Toolkit):
         prefix = f"{root}/"
         for value in paths:
             try:
-                path = WorkspaceService.normalize_path(value, allow_root=False)[0]
+                path = normalize_workspace_path(value, allow_root=False)
             except (TypeError, WorkspaceError) as error:
                 raise ReportingError(
                     "report_analysis_output_path_invalid", "analysis 输出路径无效。"
@@ -581,15 +513,13 @@ class ReportingToolkitBase(Toolkit):
             workspace = contract.get("visualizationWorkspace")
             script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
             try:
-                normalized_script = WorkspaceService.normalize_path(script_path, allow_root=False)[
-                    0
-                ]
+                normalized_script = normalize_workspace_path(script_path, allow_root=False)
             except WorkspaceError as error:
                 raise ReportingError(
                     "report_phase_contract_invalid", "visualization scriptPath 无效。"
                 ) from error
             normalized_paths = tuple(
-                WorkspaceService.normalize_path(path, allow_root=False)[0] for path in paths
+                normalize_workspace_path(path, allow_root=False) for path in paths
             )
             if normalized_paths != (normalized_script,):
                 raise ReportingError(
@@ -647,7 +577,7 @@ class ReportingToolkitBase(Toolkit):
         ):
             return None
         try:
-            normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            normalized = normalize_workspace_path(path, allow_root=False)
             durable = await self._durable_state(scope)
             expected = None
             committed_script = self._latest_committed_write_identity(durable.payload, normalized)
@@ -657,9 +587,7 @@ class ReportingToolkitBase(Toolkit):
                 script_path = (
                     workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
                 )
-                normalized_script = WorkspaceService.normalize_path(script_path, allow_root=False)[
-                    0
-                ]
+                normalized_script = normalize_workspace_path(script_path, allow_root=False)
                 if normalized == normalized_script:
                     expected = committed_script
             if expected is None:
@@ -682,82 +610,6 @@ class ReportingToolkitBase(Toolkit):
                 )
             return None
         except (ReportingError, WorkspaceError) as error:
-            return self._failure(error, retryable=False)
-
-    async def _visualization_script_rejection(
-        self, *, scope: Any, script_path: Any
-    ) -> dict[str, Any] | None:
-        if self._active_reporting_task_kind(scope) != "visualization_section":
-            return None
-        try:
-            _parameters, contract = self._phase_parameters(scope, "analysis")
-            workspace = contract.get("visualizationWorkspace")
-            signed_script_path = (
-                workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
-            )
-            normalized_script = WorkspaceService.normalize_path(
-                signed_script_path, allow_root=False
-            )[0]
-            requested_script = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
-            if requested_script != normalized_script:
-                raise ReportingError(
-                    "report_visualization_script_path_forbidden",
-                    "visualization 只允许执行签发的 Python 脚本。",
-                    details={"scriptPath": normalized_script},
-                )
-            durable = await self._durable_state(scope)
-            latest_committed = self._latest_committed_write_identity(
-                durable.payload, normalized_script
-            )
-            current = (
-                await self.runtime.workspace.batch_hash_files(scope.thread_id, [normalized_script])
-            )[0]
-            if (
-                current.get("missing") is True
-                or latest_committed is None
-                or latest_committed.get("size") != current.get("size")
-                or latest_committed.get("sha256") != current.get("sha256")
-            ):
-                raise ReportingError(
-                    "report_visualization_script_identity_changed",
-                    "签发脚本身份未提交或已发生变化。",
-                )
-            return None
-        except (ReportingError, WorkspaceError, ValueError) as error:
-            return self._failure(error, retryable=False)
-
-    async def _analysis_item_script_rejection(
-        self, *, scope: Any, script_path: Any
-    ) -> dict[str, Any] | None:
-        if self._active_reporting_task_kind(scope) != "analysis_item":
-            return None
-        try:
-            _parameters, contract = self._phase_parameters(scope, "analysis")
-            signed_script = f"{self._analysis_output_root(contract)}/supplement.py"
-            requested_script = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
-            if requested_script != signed_script:
-                raise ReportingError(
-                    "report_analysis_script_path_forbidden",
-                    "analysis item 只允许执行签发的补充分析脚本。",
-                    details={"scriptPath": signed_script},
-                )
-            durable = await self._durable_state(scope)
-            latest_committed = self._latest_committed_write_identity(durable.payload, signed_script)
-            current = (
-                await self.runtime.workspace.batch_hash_files(scope.thread_id, [signed_script])
-            )[0]
-            if (
-                current.get("missing") is True
-                or latest_committed is None
-                or latest_committed.get("size") != current.get("size")
-                or latest_committed.get("sha256") != current.get("sha256")
-            ):
-                raise ReportingError(
-                    "report_analysis_script_identity_changed",
-                    "签发的补充分析脚本身份未提交或已发生变化。",
-                )
-            return None
-        except (ReportingError, WorkspaceError, ValueError) as error:
             return self._failure(error, retryable=False)
 
     async def _apply_durable_command(
@@ -838,26 +690,6 @@ class ReportingToolkitBase(Toolkit):
                 )
                 if rejection is not None:
                     return rejection
-            if phase == "analysis" and tool_name == "run_python_script":
-                # 受控 runner 的公开边界只有签发路径；不得把路径重新拼成 shell 命令，
-                # 否则会重新引入解释器选择、workdir 和参数解析两套不一致的授权语义。
-                script_path = arguments.get("script_path")
-                analysis_rejection = await self._analysis_item_script_rejection(
-                    scope=scope, script_path=script_path
-                )
-                if analysis_rejection is not None:
-                    return analysis_rejection
-                visualization_rejection = await self._visualization_script_rejection(
-                    scope=scope, script_path=script_path
-                )
-                if visualization_rejection is not None:
-                    return visualization_rejection
-                dependency_rejection = await self._analysis_python_dependency_rejection(
-                    scope=scope,
-                    script_path=script_path,
-                )
-                if dependency_rejection is not None:
-                    return dependency_rejection
             result = await call(scope)
             return result
 
@@ -932,7 +764,7 @@ class ReportingToolkitBase(Toolkit):
     def _failure(error: Exception, *, retryable: bool = True) -> dict[str, Any]:
         if not isinstance(error, (ReportingError, ValidationError)):
             # 只有稳定的业务拒绝和严格 schema 错误可以进入模型上下文。Workspace、
-            # Daytona、文件解码、图片解析及其他运行时异常必须保留原对象，交给外层
+            # 工作区、文件解码、图片解析及其他运行时异常必须保留原对象，交给外层
             # tool hook 和 Agno Agent retry；否则包装回执会把基础设施故障误判成模型错误。
             raise error
         validation_errors: list[dict[str, str]] = []
@@ -1155,22 +987,6 @@ class ReportingToolkitBase(Toolkit):
             ]
         elif code == "report_chart_registration_closed":
             result["requiredActions"] = ["图表已完成不可变登记；不要改图或重复提交。"]
-        elif (
-            code
-            in {
-                "report_analysis_script_path_forbidden",
-                "report_visualization_script_path_forbidden",
-            }
-            and isinstance(error, ReportingError)
-            and isinstance(error.details, Mapping)
-        ):
-            script_path = error.details.get("scriptPath")
-            if isinstance(script_path, str) and script_path:
-                result["details"] = {"scriptPath": script_path}
-            result["requiredActions"] = [
-                "仅将 details.scriptPath 原样作为 run_python_script.script_path；"
-                "不要传入解释器、workdir 或 shell 命令。"
-            ]
         elif (
             code == "report_chart_file_missing"
             and isinstance(error, ReportingError)

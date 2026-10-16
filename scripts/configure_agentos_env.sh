@@ -104,14 +104,6 @@ else
     unset password
 fi
 
-if ask_yes_no '现在写入已创建的 Daytona API Key？' n; then
-    read -r -s -p 'Daytona API Key: ' daytona_api_key
-    printf '\n'
-    [[ -n "$daytona_api_key" ]] || die "Daytona API Key 不能为空。"
-    set_env DAYTONA_API_KEY "$daytona_api_key"
-    unset daytona_api_key
-fi
-
 chmod 600 "$WORK_FILE"
 mv "$WORK_FILE" "$ENV_FILE"
 WORK_FILE=

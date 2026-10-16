@@ -28,9 +28,11 @@ from ..async_utils import complete_cleanup
 from ..workspace import (
     MAX_DOWNLOAD_BYTES,
     MAX_PATCH_FILES,
+    normalize_workspace_path,
+    validate_patch_hash,
+    validate_workspace_content,
     WorkspaceError,
     WorkspacePathConflict,
-    WorkspaceService,
 )
 from .models import ReportingError
 from .workflow.scope import ReportingWorkflowScope
@@ -74,7 +76,7 @@ class ReportingPathMapper:
 
     @staticmethod
     def normalize(path: str, *, allow_root: bool = False) -> str:
-        return WorkspaceService.normalize_path(path, allow_root=allow_root)[0]
+        return normalize_workspace_path(path, allow_root=allow_root)
 
     def to_host_path(self, path: str, *, allow_root: bool = False) -> Path:
         relative = self.normalize(path, allow_root=allow_root)
@@ -140,7 +142,7 @@ def _write_regular_file(
     overwrite: bool,
     expected_sha256: str | None,
 ) -> None:
-    WorkspaceService._validate_content(content)
+    validate_workspace_content(content)
     _ensure_directory(path.parent, root)
     if path.is_symlink():
         raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
@@ -192,11 +194,11 @@ class HostReportingWorkspace:
         self._write_locks: dict[str, tuple[asyncio.Lock, int]] = {}
         self._changes_lock = asyncio.Lock()
 
-    normalize_path = staticmethod(WorkspaceService.normalize_path)
+    normalize_path = staticmethod(normalize_workspace_path)
 
     @staticmethod
     def validate_content(content: bytes) -> None:
-        WorkspaceService._validate_content(content)
+        validate_workspace_content(content)
 
     @contextlib.asynccontextmanager
     async def _path_write_lock(self, relative: str) -> AsyncIterator[None]:
@@ -493,7 +495,7 @@ class HostReportingWorkspace:
                 if not await self.apath_exists(thread_id, relative):
                     raise WorkspaceError("工作区路径不存在，请检查名称后重试。")
                 original, _mime = await self.afile_bytes(thread_id, relative)
-                expected_sha256 = WorkspaceService._validate_patch_hash(change["expected_sha256"])
+                expected_sha256 = validate_patch_hash(change["expected_sha256"])
                 if hashlib.sha256(original).hexdigest() != expected_sha256:
                     raise WorkspacePathConflict(
                         "文件内容已变化，请重新读取全部目标文件和哈希后再应用变更集。"
@@ -680,7 +682,7 @@ class ReportingWorkspaceRegistry:
 class ReportingWorkspaceRouter:
     """按 Reporting workspace key 路由程序化文件访问。"""
 
-    normalize_path = staticmethod(WorkspaceService.normalize_path)
+    normalize_path = staticmethod(normalize_workspace_path)
 
     def __init__(self, registry: ReportingWorkspaceRegistry) -> None:
         self.registry = registry
@@ -688,7 +690,7 @@ class ReportingWorkspaceRouter:
 
     @staticmethod
     def validate_content(content: bytes) -> None:
-        WorkspaceService._validate_content(content)
+        validate_workspace_content(content)
 
     def workspace(self, workspace_key: str) -> HostReportingWorkspace:
         identity = self.registry.get(workspace_key)

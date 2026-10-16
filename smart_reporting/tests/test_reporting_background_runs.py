@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -118,7 +117,7 @@ async def test_disconnect_keeps_report_running_until_completion_or_explicit_canc
 
     monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", RouterOS)
     _, app = create_agentos_app(ApplicationContext(
-        AgentSettings.from_environment({}, load_env_file=False), SimpleNamespace(), agent, workflow,
+        AgentSettings.from_environment({}, load_env_file=False), agent, workflow,
     ), FastAPI())
     session_id = str(uuid4())
     path = "/agents/smart-reporting/runs"

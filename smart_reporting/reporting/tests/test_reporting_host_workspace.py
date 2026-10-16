@@ -18,7 +18,7 @@ from smart_reporting.reporting.host_workspace import (
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tools.factory import build_reporting_tools
-from smart_reporting.reporting.tools.workspace_adapter import WorkspaceServiceReportingRuntime
+from smart_reporting.reporting.tools.workspace_adapter import ReportingTaskRuntime
 from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
 from smart_reporting.reporting.workflow.scope import (
     REPORT_WORKFLOW_SCOPE_DEPENDENCY,
@@ -372,9 +372,7 @@ async def test_host_workspace_rejects_blank_png(tmp_path: Path) -> None:
     assert raised.value.code == "report_chart_blank"
 
 
-def test_execution_context_builds_reporting_workspace_registry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_execution_context_builds_reporting_workspace_registry(tmp_path: Path) -> None:
     settings = AgentSettings.from_environment(
         {
             "REPORTING_HOST_WORKSPACE_ROOT": str(tmp_path),
@@ -387,20 +385,10 @@ def test_execution_context_builds_reporting_workspace_registry(
         (),
         {"async_db": object(), "sync_db": object()},
     )()
-    monkeypatch.setattr(
-        "smart_reporting.runtime.execution.AsyncSandboxRegistry",
-        lambda _database: object(),
-    )
-    monkeypatch.setattr(
-        "smart_reporting.runtime.execution.create_sandbox_provider",
-        lambda *_args, **_kwargs: object(),
-    )
-
     context = create_execution_context(
         settings,
         database_factory=lambda _url: database,
         tracing_configurer=lambda *_args, **_kwargs: None,
-        workspace_factory=lambda **_kwargs: object(),
     )
 
     assert isinstance(context.reporting_workspace_registry, ReportingWorkspaceRegistry)
@@ -589,7 +577,7 @@ async def test_reporting_runtime_retains_tool_output_on_host_workspace(tmp_path:
     registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
     registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
     router = ReportingWorkspaceRouter(registry)
-    runtime = WorkspaceServiceReportingRuntime(router, object())
+    runtime = ReportingTaskRuntime(router, object())
     scope = SimpleNamespace(
         external_run_id="report-coding-analysis-1",
         attempt_no=1,
@@ -609,8 +597,8 @@ async def test_reporting_runtime_retains_tool_output_on_host_workspace(tmp_path:
     assert retained["outputTruncated"] is True
     handles = context.session_state[TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY]["handles"]
     stored_path = handles[retained["outputHandle"]]["path"]
-    relative = stored_path.removeprefix("/home/daytona/")
-    assert (registry.get("workspace-1").root / relative).is_file()
+    assert stored_path.startswith(".agentos/tool-output/")
+    assert (registry.get("workspace-1").root / stored_path).is_file()
     raw, metadata = await runtime.read_tool_output_resource(
         retained["outputHandle"],
         context,
@@ -619,13 +607,22 @@ async def test_reporting_runtime_retains_tool_output_on_host_workspace(tmp_path:
     assert raw.decode("utf-8") == "医疗收入"
     assert metadata["bytes"] == len("医疗收入".encode())
 
+    # 旧版本会话状态记录的是带沙箱 home 前缀的绝对路径，升级后仍可读取同一份输出。
+    handles[retained["outputHandle"]]["path"] = f"/home/daytona/{stored_path}"
+    legacy_raw, _metadata = await runtime.read_tool_output_resource(
+        retained["outputHandle"],
+        context,
+        _scope=scope,
+    )
+    assert legacy_raw == raw
+
 
 @pytest.mark.anyio
 async def test_reporting_runtime_workspace_adapter_inspects_plotly_file(tmp_path: Path) -> None:
     registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
     registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
     router = ReportingWorkspaceRouter(registry)
-    runtime = WorkspaceServiceReportingRuntime(router, object())
+    runtime = ReportingTaskRuntime(router, object())
     content = json.dumps(
         {"data": [{"type": "bar", "x": ["一月", "二月"], "y": [10, 12]}]},
         ensure_ascii=False,

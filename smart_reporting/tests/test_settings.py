@@ -7,7 +7,6 @@ from smart_reporting.runtime.settings import (
     DEFAULT_AGENT_DB_URL,
     DEFAULT_MPLCONFIGDIR,
     DEFAULT_REPORTING_HOST_WORKSPACE_ROOT,
-    DEFAULT_WORKSPACE_SNAPSHOT,
     AgentSettings,
 )
 
@@ -32,12 +31,9 @@ def test_settings_defaults():
     assert current.log_file_max_bytes == 50 * 1024 * 1024
     assert current.log_file_backup_count == 5
     assert current.database_url == DEFAULT_AGENT_DB_URL
-    assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
-    assert current.daytona_network_allow_list is None
-    assert current.sandbox_provider == "daytona"
-    assert current.sandbox_local_profile is None
-    assert current.sandbox_local_endpoint is None
-    assert current.sandbox_rootfs_digest is None
+    # 报告只在本地工作区执行，不再有沙箱 provider 配置。
+    assert not hasattr(current, "sandbox_provider")
+    assert not hasattr(current, "workspace_snapshot")
     assert current.cors_allowed_origins == (
         "http://127.0.0.1:18069",
         "http://localhost:18069",
@@ -312,111 +308,6 @@ def test_agent_tracing_can_be_enabled():
     assert current.tracing_enabled is True
 
 
-def test_workspace_snapshot_comes_from_environment():
-    assert settings(DAYTONA_DEFAULT_SNAPSHOT=" custom-snapshot ").workspace_snapshot == (
-        "custom-snapshot"
-    )
-    assert settings(DAYTONA_DEFAULT_SNAPSHOT=" ").workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
-
-
-def test_daytona_network_allow_list_is_validated_and_normalized():
-    current = settings(DAYTONA_NETWORK_ALLOW_LIST=" 203.0.113.10/32, 192.168.1.0/24 ")
-
-    assert current.daytona_network_allow_list == "203.0.113.10/32,192.168.1.0/24"
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "203.0.113.10",
-        "203.0.113.10/24",
-        "2001:db8::/32",
-        ",".join(f"10.0.0.{index}/32" for index in range(11)),
-    ],
-)
-def test_daytona_network_allow_list_rejects_invalid_values(value):
-    with pytest.raises(ValueError, match="DAYTONA_NETWORK_ALLOW_LIST"):
-        settings(DAYTONA_NETWORK_ALLOW_LIST=value)
-
-
-def test_local_sandbox_configuration_is_validated_and_normalized() -> None:
-    current = settings(
-        SANDBOX_PROVIDER=" LOCAL ",
-        SANDBOX_LOCAL_PROFILE=" OPENEULER ",
-        SANDBOX_LOCAL_ENDPOINT=" unix:///run/local-sandboxd.sock ",
-        SANDBOX_ROOTFS_DIGEST="sha256:" + "a" * 64,
-    )
-
-    assert current.sandbox_provider == "local"
-    assert current.sandbox_local_profile == "openeuler"
-    assert current.sandbox_local_endpoint == "unix:///run/local-sandboxd.sock"
-    assert current.sandbox_rootfs_digest == "sha256:" + "a" * 64
-
-
-@pytest.mark.parametrize(
-    "missing",
-    ["SANDBOX_LOCAL_PROFILE", "SANDBOX_LOCAL_ENDPOINT", "SANDBOX_ROOTFS_DIGEST"],
-)
-def test_local_sandbox_requires_complete_configuration(missing: str) -> None:
-    values = {
-        "SANDBOX_PROVIDER": "local",
-        "SANDBOX_LOCAL_PROFILE": "ubuntu",
-        "SANDBOX_LOCAL_ENDPOINT": "unix:///run/local-sandboxd.sock",
-        "SANDBOX_ROOTFS_DIGEST": "sha256:" + "a" * 64,
-    }
-    values.pop(missing)
-
-    with pytest.raises(ValueError, match=missing):
-        settings(values)
-
-
-@pytest.mark.parametrize(
-    "name,value",
-    [
-        ("SANDBOX_PROVIDER", "docker"),
-        ("SANDBOX_LOCAL_PROFILE", "centos"),
-        ("SANDBOX_LOCAL_ENDPOINT", "http://sandbox.internal"),
-        ("SANDBOX_LOCAL_ENDPOINT", "unix://relative.sock"),
-        ("SANDBOX_ROOTFS_DIGEST", "latest"),
-    ],
-)
-def test_local_sandbox_rejects_unsafe_configuration(name: str, value: str) -> None:
-    values = {
-        "SANDBOX_PROVIDER": "local",
-        "SANDBOX_LOCAL_PROFILE": "ubuntu",
-        "SANDBOX_LOCAL_ENDPOINT": "unix:///run/local-sandboxd.sock",
-        "SANDBOX_ROOTFS_DIGEST": "sha256:" + "a" * 64,
-    }
-    values[name] = value
-
-    with pytest.raises(ValueError, match=name):
-        settings(values)
-
-
-def test_local_https_endpoint_requires_complete_mtls_configuration() -> None:
-    values = {
-        "SANDBOX_PROVIDER": "local",
-        "SANDBOX_LOCAL_PROFILE": "ubuntu",
-        "SANDBOX_LOCAL_ENDPOINT": "https://sandbox.internal:8443",
-        "SANDBOX_ROOTFS_DIGEST": "sha256:" + "a" * 64,
-    }
-
-    with pytest.raises(ValueError, match="SANDBOX_LOCAL_CA_CERT"):
-        settings(values)
-
-
-def test_daytona_provider_does_not_validate_unused_local_fields() -> None:
-    current = settings(
-        SANDBOX_PROVIDER="daytona",
-        SANDBOX_LOCAL_PROFILE="invalid",
-        SANDBOX_LOCAL_ENDPOINT="http://unsafe.internal",
-        SANDBOX_ROOTFS_DIGEST="latest",
-    )
-
-    assert current.sandbox_provider == "daytona"
-    assert current.sandbox_local_profile is None
-
-
 def test_report_data_sources_dir_is_trimmed():
     assert settings(
         AGENT_REPORT_DATA_SOURCES_DIR=" /run/agentos/reporting "
@@ -615,3 +506,12 @@ def test_blank_numeric_settings_fall_back_to_defaults():
 
     assert blank.port == defaults.port
     assert blank.model_timeout_seconds == defaults.model_timeout_seconds
+
+
+def test_leftover_sandbox_environment_is_ignored() -> None:
+    current = settings(
+        SANDBOX_PROVIDER="daytona",
+        DAYTONA_NETWORK_ALLOW_LIST="not-a-cidr",
+        SANDBOX_ROOTFS_DIGEST="latest",
+    )
+    assert not hasattr(current, "sandbox_provider")

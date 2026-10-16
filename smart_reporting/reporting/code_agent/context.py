@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from ...workspace import WorkspaceService
+from ...workspace import normalize_workspace_path
 from ..contract import StrictModel
 from ..host_workspace import HostReportingWorkspace
 from ..models import ReportingError
@@ -20,7 +20,7 @@ from ..workflow.checkpoint import ChartVisualInspectionReceipt, FileIdentity
 
 def _normalized_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(
-        sorted({WorkspaceService.normalize_path(path, allow_root=False)[0] for path in paths})
+        sorted({normalize_workspace_path(path, allow_root=False) for path in paths})
     )
 
 
@@ -38,7 +38,7 @@ class ReportingCodingTaskContext:
     max_source_bytes: int
 
     def __post_init__(self) -> None:
-        script_path = WorkspaceService.normalize_path(self.script_path, allow_root=False)[0]
+        script_path = normalize_workspace_path(self.script_path, allow_root=False)
         read_paths = _normalized_paths(self.authorized_read_paths)
         write_paths = _normalized_paths(self.authorized_write_paths)
         output_paths = _normalized_paths(self.declared_output_paths)

@@ -1,8 +1,6 @@
 import os
-import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
-from ipaddress import IPv4Network, ip_network
 from typing import Literal, cast
 from urllib.parse import quote, urlsplit
 
@@ -15,7 +13,6 @@ DEFAULT_MODEL_STANDARD_ID = "deepseek-v4-flash-0731"
 DEFAULT_MODEL_STRONG_ID = "deepseek-v4-flash-0731"
 DEFAULT_REPORT_VISION_MODEL_ID = "qwen3.6-flash"
 DEFAULT_MODEL_TIMEOUT_SECONDS = 900
-DEFAULT_WORKSPACE_SNAPSHOT = "sandbox-tools"
 DEFAULT_MPLCONFIGDIR = "/tmp/reporting-matplotlib"
 DEFAULT_REPORTING_HOST_WORKSPACE_ROOT = "/tmp/smart-reporting-workspaces"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -24,7 +21,6 @@ DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:18069",
     "http://localhost:18069",
 )
-_SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def _flag(value: str | None, default: bool = False) -> bool:
@@ -116,97 +112,6 @@ def database_url_from_environment(
     return _database_url(values)
 
 
-def _daytona_network_allow_list(values: MutableMapping[str, str]) -> str | None:
-    raw = values.get("DAYTONA_NETWORK_ALLOW_LIST", "").strip()
-    if not raw:
-        return None
-    entries = [entry.strip() for entry in raw.split(",")]
-    if any(not entry for entry in entries) or len(entries) > 10:
-        raise ValueError("DAYTONA_NETWORK_ALLOW_LIST 必须包含 1 到 10 个 IPv4 CIDR")
-    networks: list[str] = []
-    for entry in entries:
-        if "/" not in entry:
-            raise ValueError("DAYTONA_NETWORK_ALLOW_LIST 必须使用 IPv4 CIDR")
-        try:
-            network = ip_network(entry, strict=True)
-        except ValueError as error:
-            raise ValueError("DAYTONA_NETWORK_ALLOW_LIST 包含无效 IPv4 CIDR") from error
-        if not isinstance(network, IPv4Network):
-            raise ValueError("DAYTONA_NETWORK_ALLOW_LIST 仅支持 IPv4 CIDR")
-        networks.append(str(network))
-    return ",".join(networks)
-
-
-@dataclass(frozen=True)
-class _SandboxConfiguration:
-    provider: str
-    local_profile: str | None = None
-    local_endpoint: str | None = None
-    rootfs_digest: str | None = None
-    local_ca_cert: str | None = None
-    local_client_cert: str | None = None
-    local_client_key: str | None = None
-
-
-def _sandbox_configuration(values: MutableMapping[str, str]) -> _SandboxConfiguration:
-    provider = values.get("SANDBOX_PROVIDER", "daytona").strip().lower()
-    if provider not in {"daytona", "local"}:
-        raise ValueError("SANDBOX_PROVIDER 必须是 daytona 或 local")
-    if provider == "daytona":
-        return _SandboxConfiguration(provider=provider)
-
-    profile = values.get("SANDBOX_LOCAL_PROFILE", "").strip().lower()
-    if not profile:
-        raise ValueError("SANDBOX_LOCAL_PROFILE 在 local 模式下不能为空")
-    if profile not in {"ubuntu", "openeuler"}:
-        raise ValueError("SANDBOX_LOCAL_PROFILE 必须是 ubuntu 或 openeuler")
-
-    endpoint = values.get("SANDBOX_LOCAL_ENDPOINT", "").strip()
-    if not endpoint:
-        raise ValueError("SANDBOX_LOCAL_ENDPOINT 在 local 模式下不能为空")
-    parsed = urlsplit(endpoint)
-    if parsed.scheme == "unix":
-        if parsed.netloc or not parsed.path.startswith("/") or parsed.query or parsed.fragment:
-            raise ValueError("SANDBOX_LOCAL_ENDPOINT 必须使用绝对 Unix socket 路径")
-        ca_cert = client_cert = client_key = None
-    elif parsed.scheme == "https":
-        if (
-            not parsed.netloc
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("SANDBOX_LOCAL_ENDPOINT 必须是无凭据、query 和 fragment 的 HTTPS 地址")
-        tls_names = (
-            "SANDBOX_LOCAL_CA_CERT",
-            "SANDBOX_LOCAL_CLIENT_CERT",
-            "SANDBOX_LOCAL_CLIENT_KEY",
-        )
-        tls_values = tuple(values.get(name, "").strip() for name in tls_names)
-        for name, path in zip(tls_names, tls_values, strict=True):
-            if not path or not os.path.isabs(path):
-                raise ValueError(f"{name} 在 HTTPS local 模式下必须是绝对路径")
-        ca_cert, client_cert, client_key = tls_values
-    else:
-        raise ValueError("SANDBOX_LOCAL_ENDPOINT 只支持 unix:// 或 https://")
-
-    rootfs_digest = values.get("SANDBOX_ROOTFS_DIGEST", "").strip()
-    if not rootfs_digest:
-        raise ValueError("SANDBOX_ROOTFS_DIGEST 在 local 模式下不能为空")
-    if _SHA256_DIGEST.fullmatch(rootfs_digest) is None:
-        raise ValueError("SANDBOX_ROOTFS_DIGEST 必须是规范的 sha256 digest")
-    return _SandboxConfiguration(
-        provider=provider,
-        local_profile=profile,
-        local_endpoint=endpoint,
-        rootfs_digest=rootfs_digest,
-        local_ca_cert=ca_cert,
-        local_client_cert=client_cert,
-        local_client_key=client_key,
-    )
-
-
 def _report_metadata_url(values: MutableMapping[str, str]) -> str | None:
     raw = values.get("AGENT_REPORT_METADATA_URL", "").strip()
     if not raw:
@@ -276,15 +181,6 @@ class AgentSettings:
     report_public_base_url: str | None
     workspace_hmac_secret: str
     reporting_host_workspace_root: str
-    workspace_snapshot: str
-    daytona_network_allow_list: str | None
-    sandbox_provider: str
-    sandbox_local_profile: str | None
-    sandbox_local_endpoint: str | None
-    sandbox_rootfs_digest: str | None
-    sandbox_local_ca_cert: str | None
-    sandbox_local_client_cert: str | None
-    sandbox_local_client_key: str | None
     enable_tool_result_compression: bool
     enable_session_summaries: bool
     report_phase_enable_thinking: bool
@@ -389,7 +285,6 @@ class AgentSettings:
         reporting_host_workspace_root = str(
             validate_host_workspace_root(values["REPORTING_HOST_WORKSPACE_ROOT"])
         )
-        sandbox = _sandbox_configuration(values)
         model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))
         platform_settings = (
             PlatformSettings.from_env(values)
@@ -449,18 +344,6 @@ class AgentSettings:
             report_public_base_url=_report_public_base_url(values),
             workspace_hmac_secret=values.get("AGENT_WORKSPACE_HMAC_SECRET", ""),
             reporting_host_workspace_root=reporting_host_workspace_root,
-            workspace_snapshot=(
-                values.get("DAYTONA_DEFAULT_SNAPSHOT") or DEFAULT_WORKSPACE_SNAPSHOT
-            ).strip()
-            or DEFAULT_WORKSPACE_SNAPSHOT,
-            daytona_network_allow_list=_daytona_network_allow_list(values),
-            sandbox_provider=sandbox.provider,
-            sandbox_local_profile=sandbox.local_profile,
-            sandbox_local_endpoint=sandbox.local_endpoint,
-            sandbox_rootfs_digest=sandbox.rootfs_digest,
-            sandbox_local_ca_cert=sandbox.local_ca_cert,
-            sandbox_local_client_cert=sandbox.local_client_cert,
-            sandbox_local_client_key=sandbox.local_client_key,
             enable_tool_result_compression=_flag(
                 values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True
             ),

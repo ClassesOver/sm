@@ -7,7 +7,7 @@ import importlib.util
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agno.run import RunContext
 
@@ -26,70 +26,15 @@ from ...task_execution import (
 )
 from ...workspace import (
     MAX_UPLOAD_BYTES,
+    normalize_workspace_path,
     WorkspaceError,
     WorkspacePathConflict,
-    WorkspaceService,
 )
 from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
 
-_DAYTONA_WORKSPACE_PREFIX = "/home/daytona/workspace/"
-_DAYTONA_HOME_PREFIX = "/home/daytona/"
-
-
-class _HostSandboxProcess:
-    async def exec(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-
-class _HostSandboxFS:
-    def __init__(self, service: Any, thread_id: str) -> None:
-        self._service = service
-        self._thread_id = thread_id
-
-    @staticmethod
-    def _relative(path: str) -> str:
-        if path.startswith(_DAYTONA_WORKSPACE_PREFIX):
-            return path[len(_DAYTONA_WORKSPACE_PREFIX) :]
-        if path.startswith(_DAYTONA_HOME_PREFIX):
-            return path[len(_DAYTONA_HOME_PREFIX) :]
-        return WorkspaceService.normalize_path(path, allow_root=False)[0]
-
-    async def create_folder(self, directory: str, _mode: str | None = None) -> None:
-        relative = self._relative(directory)
-        if relative:
-            await self._service.aensure_directory(self._thread_id, relative)
-
-    async def upload_file(self, content: bytes, path: str) -> None:
-        await self._service.awrite_bytes(
-            self._thread_id,
-            self._relative(path),
-            content,
-            overwrite=True,
-        )
-
-    async def download_file(self, path: str) -> bytes:
-        content, _mime = await self._service.afile_bytes(self._thread_id, self._relative(path))
-        return content
-
-    async def delete_file(self, path: str, recursive: bool = False) -> None:
-        await self._service.adelete_file(self._thread_id, self._relative(path), recursive=recursive)
-
-    async def move_files(self, source: str, destination: str) -> None:
-        await self._service.amove_files(
-            self._thread_id,
-            self._relative(source),
-            self._relative(destination),
-        )
-
-
-class _HostSandbox:
-    def __init__(self, service: Any, thread_id: str) -> None:
-        self.fs = _HostSandboxFS(service, thread_id)
-        self.process = _HostSandboxProcess()
-        self.id = thread_id
-        self.ref = None
-
+if TYPE_CHECKING:
+    from ..host_workspace import ReportingWorkspaceRouter
 
 def _validate_reporting_content(content: bytes) -> None:
     if not isinstance(content, bytes):
@@ -98,12 +43,12 @@ def _validate_reporting_content(content: bytes) -> None:
         raise WorkspaceError("文件内容超过 200 MiB，请缩小文件后重试。")
 
 
-class WorkspaceServiceReportingPort:
+class ReportingTaskWorkspacePort:
     """按单个已解析 Task scope 绑定的最小工作区端口。"""
 
     def __init__(
         self,
-        service: WorkspaceService,
+        service: ReportingWorkspaceRouter,
         kernel: TaskExecutionKernel,
         context: ReportingToolContext,
         scope: Any,
@@ -116,7 +61,7 @@ class WorkspaceServiceReportingPort:
     @staticmethod
     def _normalize(path: str) -> str:
         try:
-            return WorkspaceService.normalize_path(path, allow_root=False)[0]
+            return normalize_workspace_path(path, allow_root=False)
         except WorkspaceError as error:
             raise ReportingWorkspaceError("Reporting 路径无效。") from error
 
@@ -178,24 +123,15 @@ class WorkspaceServiceReportingPort:
             path=identity["path"], size=identity["size"], sha256=identity["sha256"]
         )
 
-    async def execute_script(
-        self,
-        script_path: str,
-        *,
-        timeout: int,
-    ) -> Mapping[str, Any]:
-        return await self._kernel.run_python_script(
-            script_path, timeout=timeout, _scope=self._scope
-        )
 
 
 class ReportingWorkspaceAdapter:
-    """封装 Reporting 已有读写原语，不向领域工具暴露 Daytona client。"""
+    """封装 Reporting 宿主机工作区已有的读写原语。"""
 
-    def __init__(self, service: WorkspaceService) -> None:
+    def __init__(self, service: ReportingWorkspaceRouter) -> None:
         self._service = service
 
-    normalize_path = staticmethod(WorkspaceService.normalize_path)
+    normalize_path = staticmethod(normalize_workspace_path)
 
     def file_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
         return self._service.file_bytes(thread_id, path)
@@ -239,7 +175,7 @@ class ReportingWorkspaceAdapter:
         *,
         max_bytes: int,
     ) -> bytes:
-        # 有界读取只由 Reporting 宿主机工作区提供；普通 WorkspaceService 不具备该原语。
+        # 有界读取由 Reporting 宿主机工作区提供。
         reader = getattr(self._service, "read_limited_regular_file", None)
         if not callable(reader):
             raise WorkspaceError("当前工作区不支持有界文件读取。")
@@ -256,52 +192,20 @@ class ReportingWorkspaceAdapter:
         return await inspect_report_plotly_file(self._service, thread_id=thread_id, path=path)
 
 
-class WorkspaceServiceReportingRuntime:
+class ReportingTaskRuntime:
     """Reporting 工具的运行时边界；RunContext 只在此处解析。"""
 
-    def __init__(
-        self,
-        service: WorkspaceService,
-        repository: Any,
-        *,
-        validator_registry: Any = None,
-    ) -> None:
-        self._kernel = TaskExecutionKernel(
-            service,
-            repository,
-            validator_registry=validator_registry,
-        )
-        self._kernel.require_finish_verification = False
-        self._kernel.evaluate_finish_acceptance = False
+    def __init__(self, service: ReportingWorkspaceRouter, repository: Any) -> None:
+        self._kernel = TaskExecutionKernel(service, repository)
         self.workspace = ReportingWorkspaceAdapter(service)
         self._service = service
         self.repository = repository
-        if not hasattr(service, "_async_client"):
-
-            async def host_sandbox(scope: Any):
-                yield _HostSandbox(service, scope.thread_id)
-
-            self._kernel._sandbox = host_sandbox
 
     def __getattr__(self, name: str) -> Any:
         """迁移期间只转发 TaskExecutionKernel 公共执行原语。"""
 
         return getattr(self._kernel, name)
 
-    async def execute_script(
-        self,
-        script_path: str,
-        *,
-        timeout: int,
-        _scope: TaskExecutionRuntime,
-    ) -> dict[str, Any]:
-        """将 Reporting 脚本端口映射到执行内核的受限 Python runner。"""
-
-        return await self._kernel.run_python_script(
-            script_path,
-            timeout=timeout,
-            _scope=_scope,
-        )
 
     async def invoke(
         self,
@@ -544,7 +448,7 @@ class WorkspaceServiceReportingRuntime:
         inputs: Sequence[ReportingFileRef] = (),
         data: Sequence[ReportingFileRef] = (),
         output_policy: ReportingOutputPolicy,
-    ) -> WorkspaceServiceReportingPort:
+    ) -> ReportingTaskWorkspacePort:
         scope = await self.scope(run_context)
         context = ReportingToolContext(
             external_run_id=scope.external_run_id,
@@ -555,4 +459,4 @@ class WorkspaceServiceReportingRuntime:
             inputs=tuple(inputs),
             data=tuple(data),
         )
-        return WorkspaceServiceReportingPort(self._service, self._kernel, context, scope)
+        return ReportingTaskWorkspacePort(self._service, self._kernel, context, scope)

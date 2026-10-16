@@ -11,7 +11,6 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from pathlib import PurePosixPath
 from typing import Any
 
 from agno.run import RunContext
@@ -20,7 +19,7 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
 from ...task_execution import abuild_workspace_changes, parse_unified_diff
-from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
+from ...workspace import normalize_workspace_path, WorkspaceError, WorkspacePathConflict
 from ..models import ReportingError
 from ..workflow.checkpoint import FileIdentity
 from ..workflow.state import ReportingRunState
@@ -164,7 +163,7 @@ class RuntimeAnalysisMixin:
         script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
         task_kind = contract.get("taskKind")
         if task_kind == "visualization_section":
-            normalized = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+            normalized = normalize_workspace_path(script_path, allow_root=False)
             return normalized, MAX_VISUALIZATION_SCRIPT_BYTES, True
         if task_kind == "analysis_item":
             return (
@@ -210,7 +209,7 @@ class RuntimeAnalysisMixin:
 
         def add_path(value: str, state: str) -> None:
             try:
-                path = WorkspaceService.normalize_path(value, allow_root=False)[0]
+                path = normalize_workspace_path(value, allow_root=False)
             except WorkspaceError as error:
                 raise ReportingError(
                     "report_analysis_write_intent_invalid", "写入目标路径无效。"
@@ -247,8 +246,8 @@ class RuntimeAnalysisMixin:
                     if isinstance(content, str):
                         contents[operation["path"]] = content
         return {
-            WorkspaceService.normalize_path(path, allow_root=False)[0]: {
-                "path": WorkspaceService.normalize_path(path, allow_root=False)[0],
+            normalize_workspace_path(path, allow_root=False): {
+                "path": normalize_workspace_path(path, allow_root=False),
                 "size": len(content.encode("utf-8")),
                 "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             }
@@ -735,137 +734,6 @@ class RuntimeAnalysisMixin:
             path,
             max_bytes=MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
         )
-
-    async def _analysis_python_dependency_rejection(
-        self,
-        *,
-        scope: Any,
-        script_path: Any,
-    ) -> dict[str, Any] | None:
-        try:
-            script_path = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
-            pending = [script_path]
-            visited: set[str] = set()
-            unresolved: dict[str, tuple[str, ...]] = {}
-            while pending:
-                current_path = pending.pop()
-                if current_path in visited:
-                    continue
-                if len(visited) >= MAX_ANALYSIS_PYTHON_DEPENDENCIES:
-                    raise ReportingError(
-                        "report_analysis_dependency_limit",
-                        "分析脚本本地依赖超过服务端预检上限，已拒绝执行。",
-                    )
-                visited.add(current_path)
-                try:
-                    content = await self._analysis_python_source(
-                        thread_id=scope.thread_id,
-                        path=current_path,
-                    )
-                except WorkspaceError as error:
-                    raise ReportingError(
-                        "report_analysis_script_missing",
-                        f"待执行 Python 脚本不存在：{current_path}",
-                    ) from error
-                source = content.decode("utf-8")
-                tree = ast.parse(source, filename=current_path)
-                compile(tree, current_path, "exec")
-                current_dir = PurePosixPath(current_path).parent
-                imports: set[tuple[str, int]] = set()
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        imports.update((alias.name, 0) for alias in node.names)
-                    elif isinstance(node, ast.ImportFrom):
-                        if node.module:
-                            imports.add((node.module, node.level))
-                        elif node.level:
-                            imports.update(
-                                (alias.name, node.level)
-                                for alias in node.names
-                                if alias.name != "*"
-                            )
-                for module_name, level in imports:
-                    module_parts = module_name.split(".")
-                    base = current_dir
-                    roots: tuple[PurePosixPath, ...]
-                    if level:
-                        for _index in range(level - 1):
-                            base = base.parent
-                        roots = (base,)
-                    else:
-                        roots = tuple(dict.fromkeys((current_dir, PurePosixPath("."))))
-                    candidates: list[str] = []
-                    for root in roots:
-                        module_path = root.joinpath(*module_parts)
-                        candidates.extend(
-                            (
-                                f"{module_path.as_posix()}.py",
-                                (module_path / "__init__.py").as_posix(),
-                            )
-                        )
-                    normalized = tuple(
-                        WorkspaceService.normalize_path(path, allow_root=False)[0]
-                        for path in dict.fromkeys(candidates)
-                    )
-                    identities = await self.runtime.workspace.batch_hash_files(
-                        scope.thread_id, list(normalized)
-                    )
-                    local_path = next(
-                        (
-                            str(item.get("path"))
-                            for item in identities
-                            if isinstance(item, Mapping) and item.get("missing") is not True
-                        ),
-                        None,
-                    )
-                    if local_path is not None:
-                        pending.append(local_path)
-                    elif level:
-                        unresolved[module_name] = normalized
-                    else:
-                        unresolved.setdefault(module_name.split(".", 1)[0], normalized)
-            installed = (
-                await self._installed_python_modules(
-                    thread_id=scope.thread_id,
-                    module_names=set(unresolved),
-                )
-                if unresolved
-                else set()
-            )
-            missing = {
-                module_name: candidates
-                for module_name, candidates in unresolved.items()
-                if module_name not in installed
-            }
-            if not missing:
-                return None
-            missing_paths = sorted({paths[0] for paths in missing.values()})
-            return self._failure(
-                ReportingError(
-                    "report_analysis_dependency_missing",
-                    "分析脚本存在缺失的工作区本地 Python 依赖，已拒绝执行。",
-                    details={
-                        "scriptPath": script_path,
-                        "missingModules": sorted(missing),
-                        "missingPaths": missing_paths,
-                    },
-                ),
-                retryable=False,
-            )
-        except SyntaxError as error:
-            return self._failure(
-                ReportingError(
-                    "report_analysis_python_syntax_invalid",
-                    "待执行分析 Python 脚本语法无效，已拒绝执行。",
-                    details={
-                        "path": script_path,
-                        "line": error.lineno,
-                        "offset": error.offset,
-                    },
-                )
-            )
-        except (ReportingError, WorkspaceError) as error:
-            return self._failure(error, retryable=False)
 
     async def complete_analysis_item(
         self,

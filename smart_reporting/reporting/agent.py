@@ -51,7 +51,7 @@ from ..runtime.settings import AgentSettings
 from ..skills import (
     create_skill_script_hook,
     is_skill_script_hook,
-    load_sandbox_execution_skills,
+    load_task_skills,
 )
 from ..task_execution import (
     TASK_EXECUTION_TOOL_PROGRESS_STATE_KEY,
@@ -107,7 +107,6 @@ from .phase import (
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
@@ -120,7 +119,6 @@ from .phase import (
     reporting_model_route_from_run_context,
     reporting_phase_allows_tool,
     reporting_phase_from_run_context,
-    reporting_python_script_failed,
     reporting_task_kind_from_run_context,
     reporting_thinking_budget_from_run_context,
     reporting_thinking_effort_from_run_context,
@@ -660,22 +658,6 @@ def _reporting_visualization_tool_budget(
             attempt_limit=attempt_limit,
             total_limit=total_limit,
         )
-    if (
-        function_name == "run_python_script"
-        and cumulative_script_failures >= _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT
-    ):
-        _stop_exhausted_visualization_budget(
-            run_context,
-            code="report_visualization_script_failure_limit_exhausted",
-            message="当前可视化 Task 已达到脚本执行失败上限，已停止本次 run。",
-            attempted_count=attempted_count,
-            successful_count=successful_count,
-            in_flight_count=in_flight_count,
-            total_tool_calls=cumulative_total,
-            script_failure_count=cumulative_script_failures,
-            attempt_limit=attempt_limit,
-            total_limit=total_limit,
-        )
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
     in_flight_read_units = _nonnegative_int(stored.get("inFlightReadUnits"))
     in_flight_fact_queries = _nonnegative_int(stored.get("inFlightFactQueries"))
@@ -761,39 +743,6 @@ def _finish_visualization_tool_budget(
     in_flight_tools[counted_tool_name] = max(
         _nonnegative_int(in_flight_tools.get(counted_tool_name)) - 1, 0
     )
-    script_failed = function_name == "run_python_script" and reporting_python_script_failed(result)
-    script_failure_count += int(script_failed)
-    if function_name == "run_python_script" and isinstance(result, Mapping):
-        pending = state.get(REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY)
-        pending = dict(pending) if isinstance(pending, Mapping) else {}
-        dependencies = (
-            run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-        )
-        binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-        external_run_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
-        if script_failed:
-            diagnostics = [
-                line.strip()
-                for line in str(result.get("output", "")).splitlines()
-                if ": ERROR " in line.strip() or line.strip().startswith("[FAIL]")
-            ][:20]
-            pending[identity] = {
-                "lastScriptFailed": True,
-                "diagnostics": diagnostics,
-            }
-        elif not script_failed and any(
-            isinstance(result.get(key), int)
-            and not isinstance(result.get(key), bool)
-            and result.get(key) == 0
-            for key in ("exitCode", "exit_code")
-        ):
-            pending.pop(identity, None)
-            if isinstance(external_run_id, str) and external_run_id:
-                prefix = f"{external_run_id}:"
-                for key in tuple(pending):
-                    if key == external_run_id or key.startswith(prefix):
-                        pending.pop(key, None)
-        state[REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY] = pending
     read_segment_confirmed = (
         counted_tool_name == "read_file"
         and succeeded
@@ -825,37 +774,6 @@ def _finish_visualization_tool_budget(
         "toolCounts": tool_counts,
         "inFlightToolCounts": in_flight_tools,
     }
-    cumulative_total = _nonnegative_int(stored.get("baseTotal")) + attempted_count
-    cumulative_script_failures = (
-        _nonnegative_int(stored.get("baseScriptFailures")) + script_failure_count
-    )
-    if script_failed and cumulative_script_failures >= _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT:
-        _stop_exhausted_visualization_budget(
-            run_context,
-            code="report_visualization_script_failure_limit_exhausted",
-            message="当前可视化 Task 已达到脚本执行失败上限，已停止本次 run。",
-            attempted_count=attempted_count,
-            successful_count=successful_count,
-            in_flight_count=in_flight_count,
-            total_tool_calls=cumulative_total,
-            script_failure_count=cumulative_script_failures,
-            attempt_limit=_nonnegative_int(
-                (
-                    run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
-                    if isinstance(run_context.dependencies, Mapping)
-                    else {}
-                ).get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY)
-            )
-            or _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT,
-            total_limit=_nonnegative_int(
-                (
-                    run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
-                    if isinstance(run_context.dependencies, Mapping)
-                    else {}
-                ).get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)
-            )
-            or _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT,
-        )
 
 
 def _stop_exhausted_visualization_budget(
@@ -959,7 +877,7 @@ def _stop_rejected_analysis_patch(
 
     patch 拒绝说明模型持有的文件上下文、SHA 或 diff 结构已经不能继续使用；在同一
     上下文里让模型修补会把错误 hunk 和过期事实继续累积，容易形成长尾死循环。这里只
-    处理稳定的 Reporting 业务拒绝码；Daytona、网络和其他基础设施异常仍沿用原异常
+    处理稳定的 Reporting 业务拒绝码；工作区、网络和其他基础设施异常仍沿用原异常
     路径，交给既有工作流重试策略，不被伪装成可 fresh retry 的模型错误。
     """
 
@@ -2612,7 +2530,7 @@ def create_reporting_phase_agent(
     # 同一组 Reporting 预算，不能静默退回普通 Reporting Agent 的 256K/32K 默认值。
     context_token_budget = settings.report_context_token_budget
     output_token_reserve = settings.report_output_token_reserve
-    phase_skills = load_sandbox_execution_skills(settings.skills_dir)
+    phase_skills = load_task_skills(settings.skills_dir)
     vision_reviewer = (
         ReportVisionReviewer(settings, workspace_service) if settings.report_enable_vision else None
     )
@@ -2724,7 +2642,7 @@ def create_reporting_phase_agent(
             propagate_reporting_tool_errors,
             normalize_reporting_tool_arguments,
             create_task_tool_scheduler_hook(task_repository),
-            create_skill_script_hook(workspace_service),
+            create_skill_script_hook(),
         ],
         telemetry=False,
         debug_mode=settings.debug,

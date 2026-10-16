@@ -9,11 +9,7 @@ from typing import Any
 
 from unidiff import PatchSet, UnidiffParseError
 
-from ..workspace import (
-    MAX_PATCH_FILES,
-    WorkspaceError,
-    WorkspaceService,
-)
+from ..workspace import MAX_PATCH_FILES, WorkspaceError
 
 
 @dataclass(frozen=True)
@@ -143,7 +139,7 @@ def _build_changes_from_originals(
     originals: dict[str, str],
 ) -> list[dict[str, Any]]:
     # Git 是唯一的 hunk 应用器；临时树不包含真实 workspace，也不会使用 index 或
-    # 真实仓库状态。先完整校验再应用，保证任何非法 diff 都不会越过 Daytona 的原子提交。
+    # 真实仓库状态。先完整校验再应用，保证任何非法 diff 都不会越过工作区的原子提交。
     with tempfile.TemporaryDirectory(prefix="reporting-patch-") as temporary:
         root = Path(temporary, "tree")
         root.mkdir()
@@ -195,19 +191,19 @@ def _build_changes_from_originals(
 
 
 def _normalized_patch_inputs(
-    service: WorkspaceService,
+    service: Any,
     patch: str,
 ) -> tuple[str, list[tuple[_PatchOperation, str]]]:
     normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
     paths = [
-        (operation, service.normalize_path(operation.path, allow_root=False)[0])
+        (operation, service.normalize_path(operation.path, allow_root=False))
         for operation in parse_unified_diff(normalized)
     ]
     return normalized, paths
 
 
 def build_workspace_changes(
-    service: WorkspaceService,
+    service: Any,
     thread: str,
     patch: str,
 ) -> list[dict[str, Any]]:
@@ -222,7 +218,7 @@ def build_workspace_changes(
 
 
 async def abuild_workspace_changes(
-    service: WorkspaceService,
+    service: Any,
     thread: str,
     patch: str,
 ) -> list[dict[str, Any]]:

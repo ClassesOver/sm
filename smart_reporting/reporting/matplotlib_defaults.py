@@ -6,7 +6,7 @@ import warnings
 from collections.abc import Callable
 from typing import Any
 
-from ..reporting.delivery.report_runtime.theme import (
+from .delivery.report_runtime.theme import (
     REPORT_CHART_FONTS,
     matplotlib_theme_rc,
     plotly_theme_layout,
@@ -19,10 +19,6 @@ MATPLOTLIBRC_CONTENT = (
     f"font.sans-serif: {', '.join(REPORT_CHART_FONTS)}\n"
     "axes.unicode_minus: False\n"
 ) + matplotlib_theme_rc()
-
-LOCAL_MATPLOTLIB_ROOT = "/workspace/.sandbox-matplotlib"
-LOCAL_MATPLOTLIBRC_PATH = f"{LOCAL_MATPLOTLIB_ROOT}/matplotlibrc"
-
 
 def matplotlib_bootstrap(runtime_root: str) -> str:
     config_path = f"{runtime_root}/matplotlibrc"

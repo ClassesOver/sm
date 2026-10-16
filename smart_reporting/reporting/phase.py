@@ -45,9 +45,6 @@ REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "visualizationFactQuer
 REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY = "visualizationAttemptToolLimit"
 REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY = "visualizationTotalToolLimit"
 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY = "reportingVisualizationRecovery"
-REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY = (
-    "agentos_reporting_visualization_script_failure_pending"
-)
 REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY = "reportingVisualInspectionMode"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
@@ -178,28 +175,6 @@ def record_reporting_projection_metrics(
         current["inputTokenHardCap"] = (
             input_token_hard_cap if current_cap == 0 else min(current_cap, input_token_hard_cap)
         )
-
-
-def reporting_python_script_failed(result: Any) -> bool:
-    """统一判定受控 Python runner 回执是否表示执行失败。"""
-
-    if not isinstance(result, Mapping):
-        return False
-    if result.get("ok") is False and result.get("code") == "execution_output_error":
-        return True
-    for key in ("exitCode", "exit_code"):
-        exit_code = result.get(key)
-        if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
-            return True
-    output = result.get("output")
-    if not isinstance(output, str):
-        return False
-    # 图表脚本会逐项自检并在保持进程 exit code 为 0 时输出明确失败标记；
-    # 这里只识别协议化行，避免普通业务日志中的 ERROR 单词造成误判。
-    return any(
-        ": ERROR " in line.strip() or line.strip().startswith("[FAIL]")
-        for line in output.splitlines()
-    )
 
 
 def bounded_python_script_diagnostic(output: str, max_length: int) -> tuple[str, bool]:

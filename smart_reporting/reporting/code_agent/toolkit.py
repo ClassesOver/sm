@@ -21,7 +21,7 @@ from agno.tools import Function, Toolkit
 from loguru import logger
 
 from ...code_monitor.tools import log_tool_event
-from ...workspace import WorkspaceError, WorkspaceService
+from ...workspace import normalize_workspace_path, WorkspaceError
 from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult
 from ..contract import interactive_spec_path
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
@@ -2630,7 +2630,7 @@ class ReportingCodeModeToolkit(Toolkit):
     def has_current_visual_review(self, path: str) -> bool:
         """供协议预算门禁判断指定图片是否已经完成当前内容审查。"""
         try:
-            path = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            path = normalize_workspace_path(path, allow_root=False)
         except WorkspaceError:
             return False
         execution = self.binding.execution_receipt
@@ -3258,7 +3258,7 @@ class ReportingCodeModeToolkit(Toolkit):
         ]
         for raw_path in target_paths:
             try:
-                source_path = WorkspaceService.normalize_path(raw_path, allow_root=False)[0]
+                source_path = normalize_workspace_path(raw_path, allow_root=False)
             except WorkspaceError:
                 source_path = None
             if source_path is None or source_path not in self.context.declared_output_paths:

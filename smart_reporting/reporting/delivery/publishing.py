@@ -663,7 +663,7 @@ class ReportDownloadGrantService:
 
 
 class ReportArtifactPersistenceService:
-    """将正式产物从 Daytona 流式固化到 PostgreSQL，完成后才允许删除 sandbox。"""
+    """将正式产物从本地工作区流式固化到 PostgreSQL。"""
 
     def __init__(
         self,
@@ -693,7 +693,7 @@ class ReportArtifactPersistenceService:
                 or re.fullmatch(r"[0-9a-f]{64}", spec.sha256) is None
             ):
                 raise ReportingError("report_artifact_invalid", "报告产物身份无效。")
-            relative, _host_path = self.workspace_service.normalize_path(
+            relative = self.workspace_service.normalize_path(
                 spec.path, allow_root=False
             )
             if relative != spec.path:
