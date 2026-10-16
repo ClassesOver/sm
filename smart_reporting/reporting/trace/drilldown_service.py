@@ -314,7 +314,19 @@ class TraceDrilldownService:
             .cast(pl.String)
             .alias("__group")
         )
-        frame = lazy.with_columns(group)
+        # 源列允许任意名称；先投影到独立输入别名，避免 __group/__period 等
+        # 计算临时列覆盖原值。范围过滤已在调用前完成，无需保留其余源列。
+        input_fields = {
+            name: getattr(declaration, name)
+            for name in ("value_field", "numerator_field", "denominator_field", "period_field")
+            if getattr(declaration, name) is not None
+        }
+        aliases = {name: f"__input_{index}" for index, name in enumerate(input_fields)}
+        frame = lazy.select(
+            group,
+            *(pl.col(field).alias(aliases[name]) for name, field in input_fields.items()),
+        )
+        declaration = declaration.model_copy(update=aliases)
         if declaration.aggregation == "semi_additive_last":
             period = declaration.period_field
             assert period is not None and declaration.value_field is not None

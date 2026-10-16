@@ -409,6 +409,53 @@ describe('createHistoryController', () => {
     expect(document.querySelector('.history-item:last-child strong')?.textContent).toBe('保存 24')
   })
 
+  it('keeps the selected snapshot when automatic saves shift its index', () => {
+    const restore = vi.fn()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const controller = createHistoryController(document.body, restore)
+    for (let index = 0; index < 20; index += 1) controller.record(`保存 ${index}`, `# v${index}`)
+    controller.open()
+    document.querySelectorAll<HTMLButtonElement>('.history-item')[5]!.click()
+    controller.record('保存 20', '# v20')
+
+    expect(document.querySelector('.history-item[aria-pressed="true"] strong')?.textContent).toBe('保存 5')
+    expect(document.querySelector<HTMLSelectElement>('.history-compare-select')!.value).toBe('4')
+    expect(document.querySelector<HTMLSelectElement>('.history-base-select')!.value).toBe('3')
+    expect(document.querySelector('.history-preview-label')?.textContent).toBe('保存 5')
+    document.querySelector<HTMLButtonElement>('.history-restore')!.click()
+    expect(restore).toHaveBeenCalledExactlyOnceWith('# v5')
+  })
+
+  it.each([0, 1])('clears comparison when snapshot %i or its base is evicted', (index) => {
+    const restore = vi.fn()
+    const controller = createHistoryController(document.body, restore)
+    for (let item = 0; item < 20; item += 1) controller.record(`保存 ${item}`, `# v${item}`)
+    controller.open()
+    document.querySelectorAll<HTMLButtonElement>('.history-item')[index]!.click()
+    controller.record('保存 20', '# v20')
+
+    expect(document.querySelector('.history-item[aria-pressed="true"]')).toBeNull()
+    expect(document.querySelector<HTMLSelectElement>('.history-compare-select')!.value).toBe('')
+    expect(document.querySelector<HTMLElement>('.history-preview-content')!.hidden).toBe(true)
+    const button = document.querySelector<HTMLButtonElement>('.history-restore')!
+    expect(button.hidden).toBe(true)
+    button.click()
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  it('retains source revisions in session snapshots and restores edited text with its source', () => {
+    const restore = vi.fn()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const controller = createHistoryController(document.body, restore)
+    controller.record('来自第一版', '# edited', 1)
+    controller.record('来自第二版', '# edited', 2)
+    controller.open()
+    expect(document.querySelectorAll('.history-item')).toHaveLength(2)
+    document.querySelector<HTMLButtonElement>('.history-item')!.click()
+    document.querySelector<HTMLButtonElement>('.history-restore')!.click()
+    expect(restore).toHaveBeenCalledExactlyOnceWith('# edited', undefined, 1)
+  })
+
   it('closes the history panel with Escape', async () => {
     const loadPage = vi.fn().mockResolvedValue({ items: [], total: 0, hasMore: false })
     const controller = createHistoryController(document.body, undefined, undefined, loadPage)

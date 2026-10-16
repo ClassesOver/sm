@@ -373,3 +373,35 @@ async def test_cancelled_cross_service_lock_wait_does_not_block_next_save(tmp_pa
     ), timeout=5)
     assert saved.markdown == "# next save\n"
     assert (await editor.read_document(current)).sha256 == saved.sha256
+
+
+@pytest.mark.anyio
+async def test_http_session_snapshot_restores_edited_text_and_source_atomically(tmp_path: Path):
+    editor, grants, historical, current, old = await _setup(tmp_path)
+    before = await editor.read_document(current)
+    first = await editor.restore_history(current, 1, expected_sha256=before.sha256)
+    snapshot_text = old + "\nEdited session snapshot\n"
+    snapshot = await editor.save_draft(current, markdown=snapshot_text, expected_sha256=first.sha256)
+    second = await editor.restore_history(current, 2, expected_sha256=snapshot.sha256)
+    raw, _ = await grants.issue(current)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    base = "/reports/v1/editor/report-1/2/api"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        loaded = (await client.get(base + "/document")).json()
+        headers = {"Origin": "http://reports.test", "X-CSRF-Token": loaded["csrfToken"]}
+        payload = {"expectedSha256": snapshot.sha256, "markdown": snapshot_text}
+        conflict = await client.post(base + "/history/1/restore", json=payload, headers=headers)
+        assert conflict.status_code == 409
+        assert (await editor.read_document(current)).markdown == second.markdown
+        assert (await editor.read_document(current)).source_revision == 2
+        payload["expectedSha256"] = second.sha256
+        restored = await client.post(base + "/history/1/restore", json=payload, headers=headers)
+        assert restored.status_code == 200
+        assert restored.json()["markdown"] == snapshot_text
+        assert restored.json()["sourceRevision"] == 1
+        sources = await client.get(base + "/sources")
+        assert sources.json()["available"] is True
+        assert sources.json()["revision"] == 1
+    assert await editor.workspace.aread_text(current.scope["threadId"], historical.markdown_path) == old

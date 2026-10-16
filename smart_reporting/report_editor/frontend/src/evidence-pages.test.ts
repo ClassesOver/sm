@@ -1723,6 +1723,27 @@ describe('无事实标识的输出', () => {
 })
 
 describe('计算页', () => {
+  it('links input facts using the computation API factKey contract', async () => {
+    const inputFact = { analysisId: 'analysis_002', factKey: 'fact-bbbbbbbbbbbbbbbb', factKind: 'metric' }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/computations/')) return json({
+        ...COMPUTATION_DETAIL, inputFactRefs: [inputFact],
+      })
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, { kind: 'computation', key: 'comp-001', label: 'sum' })
+    await renderEvidencePage(container, ctx)
+    const link = [...container.querySelectorAll<HTMLButtonElement>('.evidence-relation-row')]
+      .find((button) => button.textContent?.includes(inputFact.factKey))
+    expect(link).toBeDefined()
+    link!.click()
+    expect(ctx.navigate).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'fact', key: inputFact.factKey, analysisId: inputFact.analysisId,
+    }))
+  })
+
   it('says how many outputs are hidden and keeps nested environment values readable', async () => {
     const detail = {
       ...COMPUTATION_DETAIL,

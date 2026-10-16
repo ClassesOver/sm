@@ -1052,10 +1052,38 @@ _DISPLAYED_VALUE = (
 )
 
 
+def _validated_monthly_periods(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """极值复核与改写共用相同的月度事实校验，忽略异常补充记录。"""
+    raw_metrics = bundle.get("metrics")
+    if not isinstance(raw_metrics, (list, tuple)):
+        return []
+    metrics = [entry for entry in raw_metrics if isinstance(entry, Mapping)
+               and isinstance(entry.get("periodRoles"), (list, tuple))
+               and "current" in entry["periodRoles"]]
+    if len(metrics) != 1 or metrics[0].get("periodGranularity") != "month":
+        return []
+    raw_periods = metrics[0].get("periodValues")
+    if not isinstance(raw_periods, (list, tuple)) or not raw_periods:
+        return []
+    try:
+        periods = [PeriodValue.model_validate(item).model_dump(mode="json") for item in raw_periods]
+    except ValueError:
+        return []
+    if any(not Decimal(str(item["value"])).is_finite() for item in periods):
+        return []
+    labels = [str(item["period"]) for item in periods]
+    if not _valid_month_labels(labels):
+        return []
+    if len({label[:4] for label in labels}) != 1:
+        return []
+    if len({label[:7] for label in labels}) != len(periods):
+        return []
+    return periods
+
+
 def _series_year(bundle: dict[str, Any]) -> str | None:
-    metrics = [entry for entry in bundle.get("metrics", ()) if "current" in entry.get("periodRoles", ())]
-    periods = metrics[0].get("periodValues", ()) if len(metrics) == 1 else ()
-    return str(periods[0]["period"])[:4] if periods else None
+    periods = _validated_monthly_periods(bundle)
+    return periods[0]["period"][:4] if periods else None
 
 
 def _rewrite_extrema_sentence(
@@ -1115,31 +1143,11 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
     warnings: list[str] = []
     markers = list(re.finditer(r"\[\[analysis:([^\]]+)\]\]", markdown))
     for bundle in bundles:
-        raw_metrics = bundle.get("metrics")
-        if not isinstance(raw_metrics, (list, tuple)):
+        periods = _validated_monthly_periods(bundle)
+        if not periods:
             continue
-        metrics = [entry for entry in raw_metrics if isinstance(entry, Mapping)
-                   and isinstance(entry.get("periodRoles"), (list, tuple))
-                   and "current" in entry["periodRoles"]]
-        if len(metrics) != 1 or metrics[0].get("periodGranularity") != "month":
-            continue
-        raw_periods = metrics[0].get("periodValues")
-        if not isinstance(raw_periods, (list, tuple)) or not raw_periods:
-            continue
-        try:
-            periods = [PeriodValue.model_validate(item).model_dump(mode="json") for item in raw_periods]
-        except ValueError:
-            continue
-        if any(not Decimal(str(item["value"])).is_finite() for item in periods):
-            continue
-        labels = [str(item["period"]) for item in periods]
-        if not _valid_month_labels(labels):
-            continue
-        if len({label[:4] for label in labels}) != 1:
-            continue
+        labels = [item["period"] for item in periods]
         monthly = {int(item["period"][5:7]): Decimal(str(item["value"])) for item in periods}
-        if len(monthly) != len(periods):
-            continue
         for index, marker in enumerate(markers):
             if marker[1] != bundle.get("analysisId"):
                 continue

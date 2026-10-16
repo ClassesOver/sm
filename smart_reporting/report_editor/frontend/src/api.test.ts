@@ -18,6 +18,16 @@ describe('ReportEditorClient', () => {
     })
   })
 
+  it('restores session text together with the selected source revision', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      markdown: '# edited snapshot', sha256: 'b'.repeat(64), sourceRevision: 1,
+    })))
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/2', fetcher)
+    await client.restoreHistory(1, 'a'.repeat(64), '# edited snapshot')
+    expect(fetcher).toHaveBeenCalledWith('/reports/v1/editor/report-1/2/api/history/1/restore',
+      expect.objectContaining({ body: JSON.stringify({ expectedSha256: 'a'.repeat(64), markdown: '# edited snapshot' }) }))
+  })
+
   it('restores a published history revision through the current editor CAS endpoint', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
       new Response(JSON.stringify({

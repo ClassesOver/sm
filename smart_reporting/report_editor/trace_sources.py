@@ -36,6 +36,7 @@ from ..reporting.trace.dataset_service import (
     TraceDatasetFile,
     TracePreviewPage,
     TracePreviewPermissions,
+    is_blocked_column,
     verified_dataset_snapshot,
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
@@ -1553,6 +1554,7 @@ class ReportEditorTraceService:
         context: Any,
         chart_id: str,
         *,
+        session_capabilities: Mapping[str, Any] | None = None,
         preview_limit: int = 20,
         preview_offset: int = 0,
     ) -> dict[str, Any]:
@@ -1592,6 +1594,7 @@ class ReportEditorTraceService:
                     file_ref=file_ref,
                     limit=preview_limit,
                     offset=preview_offset,
+                    blocked_columns=self._permissions(session_capabilities).blocked_columns,
                 )
             )
         return {
@@ -1611,6 +1614,7 @@ class ReportEditorTraceService:
         file_ref: Any,
         limit: int,
         offset: int,
+        blocked_columns: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """chart-input/v1 JSON → 有界预览（不暴露工作区路径）。"""
 
@@ -1628,10 +1632,17 @@ class ReportEditorTraceService:
             )
         rows = document.get("rows")
         columns = document.get("columns")
-        if not isinstance(rows, list) or not isinstance(columns, list):
+        if (
+            not isinstance(rows, list)
+            or not isinstance(columns, list)
+            or any(not isinstance(column, str) for column in columns)
+        ):
             raise ReportingError(
                 "snapshot_integrity_failed", "作图数据文件结构无效。"
             )
+        # 与数据集整表预览一致：包含受限列时拒绝整份预览，分页也不能绕过。
+        if any(is_blocked_column(column, blocked_columns) for column in columns):
+            raise ReportingError("dataset_access_denied", "该图表来源包含当前会话的受限列。")
         window = rows[offset : offset + limit]
         return {
             "fileResourceId": file_ref.resource_id,
@@ -1702,7 +1713,7 @@ class ReportEditorTraceService:
             )
             if item is not None
         )
-        return not bool(required & blocked)
+        return not any(is_blocked_column(field, blocked) for field in required)
 
     @staticmethod
     def _drilldown_declaration_payload(declaration: Any) -> dict[str, Any]:

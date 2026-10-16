@@ -162,7 +162,11 @@ class OutlineSectionProposal(HospitalOperationSchema):
 class ReportOutlineProposal(HospitalOperationSchema):
     report_type: ReportType = Field(alias="reportType")
     title: str = Field(min_length=1, max_length=300)
-    sections: tuple[OutlineSectionProposal, ...] = Field(min_length=1, max_length=30)
+    sections: tuple[OutlineSectionProposal, ...] = Field(
+        min_length=1,
+        max_length=10,
+        description="最多 10 个一级章节；按管理主题合并相关分析，保留全部 analysisId。",
+    )
     assumptions: tuple[str, ...] = Field(default=(), max_length=30)
 
     @model_validator(mode="after")

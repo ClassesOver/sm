@@ -15,7 +15,7 @@ from .outline import ReportOutline
 @dataclass(frozen=True)
 class NarrativeContentBudget:
     max_findings_per_section: int = 6
-    max_sections: int = 30
+    max_sections: int = 10
 
 
 def rank_finding(finding: FindingCard) -> tuple[int, int, int]:
@@ -168,6 +168,22 @@ def build_fallback_narrative_candidate(
     appendix_ids = tuple(card.finding_id for card in graph.findings if card.finding_id not in body_ids)
     groups = cluster_findings(graph.model_copy(update={'findings': body}),
                               NarrativeContentBudget(max_findings_per_section=200))
+    if len(groups) > NarrativeContentBudget().max_sections:
+        # 容量不足时，将同期间、同粒度、同口径的高优先级发现合并为经营概况，
+        # 不能为了章数上限把它们移入附录或丢弃。低优先级分组仍保留原主题。
+        compacted: list[list[str]] = []
+        for group in groups:
+            if any(cards[item].priority == "high" for item in group):
+                target = next((existing for existing in compacted
+                    if any(cards[item].priority == "high" for item in existing)
+                    and len(existing) + len(group) <= 200
+                    and all(score_finding_relation(cards[left], cards[right]) >= 0
+                            for left in existing for right in group)), None)
+                if target is not None:
+                    target.extend(group)
+                    continue
+            compacted.append(list(group))
+        groups = tuple(tuple(group) for group in compacted)
     for body_count in range(min(len(groups), NarrativeContentBudget().max_sections), 0, -1):
         appendix = (*appendix_ids, *(item for group in groups[body_count:] for item in group))
         if body_count + (len(appendix) + 199) // 200 > NarrativeContentBudget().max_sections:

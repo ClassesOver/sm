@@ -276,8 +276,8 @@ export function assembleComputationRelations(
   }
   for (const input of detail.inputFactRefs ?? []) {
     // 没有事实标识的登记无法定位，也没有可显示的名称：缺失不造节点与边。
-    if (!input.factId) continue
-    const node = factRef(input.analysisId, input.factId)
+    if (!input.factKey) continue
+    const node = factRef(input.analysisId, input.factKey)
     add(node)
     relations.edges.push({ from: node, to: ref, label: '输入' })
   }
