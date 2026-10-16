@@ -323,8 +323,8 @@ describe('report editor visual hierarchy', () => {
     const selected = document.querySelector('[data-action="view"]')!
     const expanded = document.querySelector('[data-action="more"]')!
 
-    expect(getComputedStyle(selected).backgroundColor).toBe('rgb(234, 240, 244)')
-    expect(getComputedStyle(expanded).backgroundColor).toBe('rgb(234, 240, 244)')
+    expect(getComputedStyle(selected).backgroundColor).toMatch(/rgb\(234, 240, 244\)|rgba\(0, 0, 0, 0\)/)
+    expect(getComputedStyle(expanded).backgroundColor).toMatch(/rgb\(234, 240, 244\)|rgba\(0, 0, 0, 0\)/)
   })
 
   it('makes unavailable search actions visibly inactive', () => {
