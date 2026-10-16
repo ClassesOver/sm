@@ -1105,3 +1105,24 @@ def test_prefix_totals_do_not_assign_later_months_to_an_earlier_end(months):
     # 月均与极值不依赖月桶排列；原始序列和 token 索引保持不变。
     assert '{{value:fact-aaaaaaaaaaaaaaaa:monthlyAverage:元}}' in catalog
     assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodValues.2:元}}'] == '30元'
+
+
+@pytest.mark.parametrize("malformed", [None, 42, "invalid", {}, {"periodRoles": None}])
+def test_extrema_rewrite_uses_valid_monthly_fact_amid_malformed_records(malformed):
+    from smart_reporting.reporting.trace.semantic_bindings import render_bound_numbers
+
+    bundle = {
+        "analysisId": "analysis_001",
+        "metrics": [malformed, {
+            "periodRoles": ["current"], "periodGranularity": "month",
+            "periodValues": [
+                {"period": "2025-01", "value": 10},
+                {"period": "2025-02", "value": 20},
+            ],
+        }],
+    }
+    text = "1月收入最高。"
+    contents = [json.dumps(bundle)]
+    assert correct_period_extrema(text, contents) == "收入最高月份为2月。"
+    markdown, _references, _notices = render_bound_numbers(text, contents, key="mixed-metrics")
+    assert markdown == "收入最高月份为2月。"

@@ -112,3 +112,15 @@ def test_high_priority_finding_cannot_be_hidden_in_appendix_section():
     )})
     with pytest.raises(ValueError, match="高优先级"):
         freeze(value, [finding()])
+
+
+def test_new_narrative_outline_is_limited_to_ten_sections_including_appendix():
+    cards = [finding(index) for index in range(1, 12)]
+    ten = candidate(*[[card.finding_id] for card in cards[:10]])
+    assert len(freeze(ten, cards[:10]).sections) == 10
+    with pytest.raises(ValidationError):
+        candidate(*[[card.finding_id] for card in cards])
+    cards[-1] = finding(11, priority="low")
+    with pytest.raises(ValueError, match="最多 10"):
+        freeze(candidate(*[[card.finding_id] for card in cards[:10]],
+                         appendixFindingIds=[cards[-1].finding_id]), cards)

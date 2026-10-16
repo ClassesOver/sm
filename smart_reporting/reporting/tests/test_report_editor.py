@@ -966,15 +966,21 @@ async def test_editor_lists_persisted_report_revision_history(tmp_path: Path) ->
         "revision": 1,
         "markdown": "# 第一版\n",
         "sha256": hashlib.sha256("# 第一版\n".encode()).hexdigest(),
-        "sources": {"available": False, "reason": "source_index_missing", "datasets": []},
+        "sources": {
+            "available": False,
+            "reason": "source_index_missing",
+            "datasets": [],
+            "narrativeSections": [],
+        },
     }
 
 
 @pytest.mark.anyio
-async def test_editor_write_api_requires_same_origin_and_csrf() -> None:
+@pytest.mark.parametrize("capabilities", [None, {}, {"blocked_columns": ["revenue"]}])
+async def test_editor_write_api_requires_same_origin_and_csrf(capabilities) -> None:
     repository = InMemoryReportEditorRepository()
     grants = ReportEditorGrantService(repository, secret="s" * 32)
-    raw, _expires_at = await grants.issue(_context())
+    raw, _expires_at = await grants.issue(_context(), capabilities=capabilities)
     saved: list[str] = []
 
     class Editor:
@@ -997,9 +1003,10 @@ async def test_editor_write_api_requires_same_origin_and_csrf() -> None:
                 sha256="b" * 64,
             )
 
-        async def start_export(self, _context, *, expected_sha256: str, request_id: str):
+        async def start_export(self, _context, *, expected_sha256: str, request_id: str, session_capabilities=None):
             assert expected_sha256 == "b" * 64
             assert request_id
+            assert session_capabilities == capabilities
             return {"exportId": request_id, "status": "running", "requestId": request_id}
 
         def export_status(self, _context, export_id: str):
@@ -1097,6 +1104,37 @@ async def test_background_export_reports_running_then_result() -> None:
     finished = service.export_status(_context(), "e-1")
     assert finished["status"] == "succeeded"
     assert finished["result"] == {"revision": 2, "requestId": "e-1"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
+async def test_background_exports_expire_without_client_polling(monkeypatch, outcome) -> None:
+    import smart_reporting.report_editor.service as service_module
+
+    now = 0.0
+    monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: now))
+
+    async def export_revision(_context, **_options):
+        if outcome == "failure":
+            raise RuntimeError("render failed")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError()
+        return {"revision": 2}
+
+    service = _export_service(export_revision)
+    for index in range(service_module._MAX_EXPORT_JOBS):
+        context = _context().model_copy(update={"report_id": f"report-{index}"})
+        await service.start_export(context, expected_sha256="a" * 64)
+    await asyncio.gather(
+        *(job.task for job in service._export_jobs.values()), return_exceptions=True
+    )
+    # 保留期内仍可读取结果，超期后即使客户端从未轮询也应释放全部名额。
+    assert len(service._export_jobs) == service_module._MAX_EXPORT_JOBS
+    now = service_module._EXPORT_JOB_RETENTION_SECONDS + 1
+    started = await service.start_export(_context(), expected_sha256="a" * 64)
+    assert started["status"] == "running"
+    assert len(service._export_jobs) == 1
+    await service.aclose()
 
 
 @pytest.mark.anyio
@@ -1364,10 +1402,12 @@ async def test_editor_save_records_manual_revision_soft_warning(tmp_path: Path) 
     # AGENTS：验收失败不阻止签发；产物身份可读时保留并签发，同时返回失败原因。
     (False, True),
 ])
+@pytest.mark.parametrize("session_capabilities", [None, {}, {"blocked_columns": ["revenue"], "download_original": False, "drilldown": False}])
 async def test_editor_export_creates_new_revision_without_overwriting_published_markdown(
     tmp_path: Path,
     editor_grant_fails: bool,
     validation_fails: bool,
+    session_capabilities,
 ) -> None:
     scope = _scope()
     registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
@@ -1536,15 +1576,18 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
                 expires_at=datetime(2026, 10, 15, tzinfo=UTC),
             )
 
+    real_editor_grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret="s" * 32)
+
     class EditorGrants:
-        async def issue(self, issued_context):
+        async def issue(self, issued_context, *, capabilities=None):
+            assert capabilities == session_capabilities
             if editor_grant_fails:
                 raise RuntimeError("editor grant store unavailable")
             assert issued_context.revision == 2
             assert issued_context.source == "manual"
             assert issued_context.note == "运营数据复核后发布"
             assert issued_context.created_at is not None
-            return "editor-raw", datetime(2026, 9, 15, 9, tzinfo=UTC)
+            return await real_editor_grants.issue(issued_context, capabilities=capabilities)
 
     service = ReportEditorService(
         state_repository=StateRepository(),
@@ -1560,7 +1603,8 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     if editor_grant_fails:
         with pytest.raises(RuntimeError, match="editor grant store unavailable"):
             await service.export_revision(
-                context, expected_sha256=draft_sha, note="运营数据复核后发布"
+                context, expected_sha256=draft_sha, note="运营数据复核后发布",
+                session_capabilities=session_capabilities
             )
         # 编辑上下文已提交后签发失败：revision-2 必须完整保留，与已提交状态一致。
         assert "2" in durable.payload["reportEditorContexts"]
@@ -1571,15 +1615,20 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
         assert await workspace.apath_exists(scope.workspace_key, "reports/revision-2/chart-001.png")
         return
 
-    result = await service.export_revision(
+    started = await service.start_export(
         context,
         expected_sha256=draft_sha,
         note="运营数据复核后发布",
+        session_capabilities=session_capabilities,
     )
+    await asyncio.gather(*(job.task for job in service._export_jobs.values()))
+    result = service.export_status(context, started["exportId"])["result"]
 
     assert result["revision"] == 2
     assert result["pdf"]["downloadUrl"].endswith("/reports/v1/download/download-raw")
-    assert result["editor"]["openUrl"].endswith("/reports/v1/editor/open/editor-raw")
+    editor_token = result["editor"]["openUrl"].rsplit("/", 1)[-1]
+    _, next_session = await real_editor_grants.exchange(editor_token)
+    assert next_session.capabilities == session_capabilities
     if validation_fails:
         assert result["validation"] == {"ok": False, "issues": [
             {"code": "page_layout_mismatch", "message": "PDF 与 Word 页数不一致。"},
@@ -1875,8 +1924,9 @@ async def test_editor_export_from_older_revision_link_reports_stale_revision(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("include_layout", [False, True])
 async def test_editor_export_rebases_when_latest_revision_content_unchanged(
-    tmp_path: Path,
+    tmp_path: Path, include_layout: bool,
 ) -> None:
     """重复导出：最新 revision 内容与当前草稿一致时，自动以最新 revision 为基准，
     不再报 report_editor_revision_stale。"""
@@ -1920,6 +1970,10 @@ async def test_editor_export_rebases_when_latest_revision_content_unchanged(
             self, job_id, markdown_path, output_path, *, artifact_manifest, run_context
         ):
             rendered.append(output_path)
+            settings = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]["_editorExportSettings"]
+            assert all(settings[key] is include_layout for key in (
+                "cover", "toc", "headerFooter", "pageNumbers"
+            ))
             await workspace.awrite_bytes(scope.workspace_key, output_path, b"new-pdf")
             word_path = str(Path(output_path).with_suffix(".docx"))
             await workspace.awrite_bytes(scope.workspace_key, word_path, b"new-word")
@@ -1979,6 +2033,7 @@ async def test_editor_export_rebases_when_latest_revision_content_unchanged(
     result = await service.export_revision(
         revision_context(1),
         expected_sha256=markdown_sha,
+        settings={key: include_layout for key in ("cover", "toc", "headerFooter", "pageNumbers")},
     )
 
     assert result["revision"] == 4
@@ -1986,8 +2041,9 @@ async def test_editor_export_rebases_when_latest_revision_content_unchanged(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("latest_revision", [2, 4])
 async def test_editor_export_continues_when_latest_revision_markdown_missing(
-    tmp_path: Path,
+    tmp_path: Path, latest_revision: int,
 ) -> None:
     """最新 revision 的工作区文件缺失（如历史部署未持久化工作区目录）时，
     导出不再死锁地报 report_editor_revision_stale，而是以当前修订为基准继续导出。"""
@@ -2013,13 +2069,13 @@ async def test_editor_export_continues_when_latest_revision_markdown_missing(
             scope=scope.as_state(),
         )
 
-    # revision 2 的上下文仍在状态中，但工作区文件已丢失。
+    # 已登记的后续版本文件丢失，必须保留其上下文并分配全新版本号。
     state = SimpleNamespace(
         state_version=2,
         payload={
             "reportEditorContexts": {
                 str(revision): revision_context(revision).model_dump(mode="json", by_alias=True)
-                for revision in (1, 2)
+                for revision in range(1, latest_revision + 1)
             }
         },
     )
@@ -2050,10 +2106,13 @@ async def test_editor_export_continues_when_latest_revision_markdown_missing(
             return state
 
         async def apply(self, _run_id: str, command, *, expected_version: int):
-            applied = ReportEditorContext.model_validate(command.payload["context"])
-            state.payload.setdefault("reportEditorContexts", {})[str(applied.revision)] = (
-                command.payload["context"]
+            assert expected_version == state.state_version
+            actual = ReportingRunState.initial(
+                report_run_id="report-1", external_run_id="external-1",
+                thread_id=scope.workspace_key, owner_user_id=scope.user_id, payload=state.payload,
             )
+            state.payload = apply(actual, command).state.payload
+            state.state_version += 1
 
     class Persistence:
         async def persist(self, **values):
@@ -2095,13 +2154,19 @@ async def test_editor_export_continues_when_latest_revision_markdown_missing(
         expected_sha256=markdown_sha,
     )
 
-    assert result["revision"] == 2
-    assert rendered == ["reports/revision-2/report.pdf"]
-    next_context = ReportEditorContext.model_validate(state.payload["reportEditorContexts"]["2"])
-    assert next_context.markdown_path == "reports/revision-2/report.md"
+    next_revision = latest_revision + 1
+    assert result["revision"] == next_revision
+    assert rendered == [f"reports/revision-{next_revision}/report.pdf"]
+    next_context = ReportEditorContext.model_validate(state.payload["reportEditorContexts"][str(next_revision)])
+    assert next_context.markdown_path == f"reports/revision-{next_revision}/report.md"
     assert (
-        await workspace.aread_text(scope.workspace_key, "reports/revision-2/report.md") == markdown
+        await workspace.aread_text(scope.workspace_key, f"reports/revision-{next_revision}/report.md") == markdown
     )
+
+    for revision in range(1, latest_revision + 1):
+        assert state.payload["reportEditorContexts"][str(revision)] == (
+            revision_context(revision).model_dump(mode="json", by_alias=True)
+        )
 
 
 @pytest.mark.anyio
@@ -2189,8 +2254,9 @@ async def test_editor_list_history_skips_revision_with_missing_markdown(tmp_path
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("render_error", [WorkspacePathConflict, RuntimeError, asyncio.CancelledError])
 async def test_editor_export_maps_atomic_publish_race_to_revision_conflict(
-    tmp_path: Path,
+    tmp_path: Path, render_error,
 ) -> None:
     scope = _scope()
     registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
@@ -2216,7 +2282,14 @@ async def test_editor_export_maps_atomic_publish_race_to_revision_conflict(
 
     class ReportTools:
         async def _render_report_pair(self, *_args, **_kwargs):
-            raise WorkspacePathConflict("移动目标已经存在，请更换路径。")
+            # 模拟另一任务在预检后、原子发布前抢先发布了同一版本。
+            await workspace.awrite_bytes(
+                scope.workspace_key, "reports/revision-2/report.pdf", b"other-pdf"
+            )
+            await workspace.awrite_text(
+                scope.workspace_key, "reports/revision-2/report.md", "# other export"
+            )
+            raise render_error("另一个任务已发布目标版本。")
 
     service = ReportEditorService(
         state_repository=SimpleNamespace(get=AsyncMock(return_value=state)),
@@ -2229,13 +2302,20 @@ async def test_editor_export_maps_atomic_publish_race_to_revision_conflict(
         public_base_url="https://reports.example.com",
     )
 
-    with pytest.raises(ReportingError) as raised:
+    expected_error = ReportingError if render_error is WorkspacePathConflict else render_error
+    with pytest.raises(expected_error) as raised:
         await service.export_revision(
             context,
             expected_sha256=hashlib.sha256(markdown.encode()).hexdigest(),
         )
 
-    assert raised.value.code == "report_editor_revision_conflict"
+    if render_error is WorkspacePathConflict:
+        assert raised.value.code == "report_editor_revision_conflict"
+    assert await workspace.aread_text(
+        scope.workspace_key, "reports/revision-2/report.md"
+    ) == "# other export"
+    identity = await workspace.ahash_file(scope.workspace_key, "reports/revision-2/report.pdf")
+    assert identity["sha256"] == hashlib.sha256(b"other-pdf").hexdigest()
 
 
 @pytest.mark.anyio
@@ -2292,7 +2372,13 @@ async def test_editor_export_timeout_cleans_partial_revision_and_logs_request_id
                 "reports/revision-2/report.pdf",
                 b"partial",
             )
-            await asyncio.sleep(60)
+            try:
+                await asyncio.sleep(60)
+            finally:
+                # 与真实渲染器一致：取消时清理自己创建的暂存/发布产物。
+                await ReportEditorService._cleanup_export_revision(
+                    workspace, scope.workspace_key, "reports/revision-2"
+                )
 
     service = ReportEditorService(
         state_repository=SimpleNamespace(get=AsyncMock(return_value=state)),

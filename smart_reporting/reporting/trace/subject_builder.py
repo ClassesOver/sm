@@ -558,8 +558,14 @@ def claim_status(
 ) -> dict[str, Any]:
     """单个引用校验；整篇多引用校验使用 ClaimStatusChecker 复用正文解析。"""
     return ClaimStatusChecker(markdown).check(
-        claim_id, fact_value, window_chars=window_chars, expected_unit=expected_unit,
-        expected_periods=expected_periods, expected_scope=expected_scope, section_id=section_id,
+        claim_id,
+        fact_value,
+        window_chars=window_chars,
+        expected_unit=expected_unit,
+        expected_periods=expected_periods,
+        expected_period_roles=expected_period_roles,
+        expected_scope=expected_scope,
+        section_id=section_id,
     )
 
 
@@ -588,6 +594,7 @@ def _claim_status_from_body(
     window_chars: int = 200,
     expected_unit: str | None = None,
     expected_periods: tuple[str, ...] = (),
+    expected_period_roles: Mapping[str, tuple[str, ...]] | None = None,
     expected_scope: Mapping[str, str] | None = None,
     section_id: str | None = None,
 ) -> dict[str, Any]:

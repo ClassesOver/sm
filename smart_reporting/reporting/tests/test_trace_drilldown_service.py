@@ -88,6 +88,37 @@ def test_sum_uses_registered_scope_and_reconciles(snapshot: TraceDatasetFile) ->
     }
 
 
+@pytest.mark.parametrize("aggregation,fields,source_name,renamed", [
+    ("sum", {"valueField": "revenue"}, "revenue", "__group"),
+    ("average", {"valueField": "visits"}, "visits", "__group"),
+    ("count", {"valueField": "patient_id"}, "patient_id", "__group"),
+    ("count_distinct", {"valueField": "patient_id"}, "patient_id", "__group"),
+    ("ratio", {"numeratorField": "revenue", "denominatorField": "visits"}, "revenue", "__group"),
+    ("semi_additive_last", {"valueField": "balance", "periodField": "month"}, "balance", "__period"),
+    ("semi_additive_last", {"valueField": "balance", "periodField": "month"}, "month", "__latest"),
+    ("semi_additive_last", {"valueField": "balance", "periodField": "month"}, "patient_id", "__latest"),
+])
+def test_source_column_names_do_not_collide_with_aggregation_state(
+    snapshot: TraceDatasetFile, aggregation, fields, source_name, renamed,
+) -> None:
+    from dataclasses import replace
+
+    expected = run(snapshot, declaration(aggregation, **fields))
+    header, body = snapshot.local_path.read_text().split("\n", 1)
+    content = (",".join(renamed if name == source_name else name for name in header.split(","))
+               + "\n" + body).encode()
+    snapshot.local_path.write_bytes(content)
+    renamed_file = replace(snapshot, size=len(content), sha256=hashlib.sha256(content).hexdigest())
+    renamed_fields = {key: renamed if value == source_name else value for key, value in fields.items()}
+    actual = run(renamed_file, declaration(aggregation, **renamed_fields))
+    assert actual.rows == expected.rows
+    assert actual.observed_value == expected.observed_value
+    # 对账总数走独立计算路径时也应与正常分页一致。
+    first = run(renamed_file, declaration(aggregation, **renamed_fields), limit=1)
+    assert first.rows == expected.rows[:1]
+    assert first.observed_value == expected.observed_value
+
+
 def test_average_is_recomputed_not_average_of_group_averages(
     snapshot: TraceDatasetFile,
 ) -> None:

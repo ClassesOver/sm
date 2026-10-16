@@ -26,7 +26,7 @@ class NarrativeSectionCandidate(HospitalOperationSchema):
 class NarrativeOutlineCandidate(HospitalOperationSchema):
     version: Literal["1"] = "1"
     title: str = Field(min_length=1, max_length=200)
-    sections: tuple[NarrativeSectionCandidate, ...] = Field(min_length=1, max_length=30)
+    sections: tuple[NarrativeSectionCandidate, ...] = Field(min_length=1, max_length=10)
     appendix_finding_ids: tuple[str, ...] = Field(default=(), alias="appendixFindingIds", max_length=2000)
     omitted_findings: tuple[dict[str, str], ...] = Field(default=(), alias="omittedFindings", max_length=200)
     snapshot_hash: str = Field(alias="snapshotHash", pattern=r"^[0-9a-f]{64}$")
@@ -185,6 +185,8 @@ def freeze_narrative_outline(
             maxCharts=0,
             maxBlocks=2,
         ))
+    if len(sections) > 10:
+        raise ValueError("新提纲含附录最多 10 个一级章节")
     return NarrativeOutline(title=candidate.title, sections=tuple(sections), appendixFindingIds=appendix,
                             omittedFindings=candidate.omitted_findings, snapshotHash=graph.snapshot_hash)
 

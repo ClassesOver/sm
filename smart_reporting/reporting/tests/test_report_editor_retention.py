@@ -9,8 +9,15 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
-from smart_reporting.report_editor import ReportEditorService
+from smart_reporting.report_editor import (
+    InMemoryReportEditorRepository,
+    ReportEditorGrantService,
+    ReportEditorService,
+    create_report_editor_router,
+)
 from smart_reporting.report_editor.trace_retention import SourceFileResponse, source_lifecycle_lock
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.models import ReportingError
@@ -536,3 +543,49 @@ async def test_download_revalidation_preserves_trace_http_error_contract(tmp_pat
     await response({"type": "http", "method": "GET", "headers": []}, receive, send)
     assert messages[0]["status"] == status
     assert code.encode() in messages[1]["body"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("with_interactive_chart", [False, True])
+async def test_http_document_remains_readable_after_source_cleanup(tmp_path, with_interactive_chart):
+    editor, repository, first, second, _ = await _make_shared_revisions(tmp_path)
+    image = "reports/revision-1/chart.png"
+    plot = "reports/revision-1/chart.plotly.json"
+    if with_interactive_chart:
+        first = first.model_copy(update={"job": {
+            **first.job, "interactiveCharts": {image: {"path": plot}},
+        }})
+        repository.durable.payload["reportEditorContexts"]["1"] = first.model_dump(mode="json", by_alias=True)
+    assert await editor.interactive_charts(first) == ({image: plot} if with_interactive_chart else {})
+    before = await editor.read_document(first)
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    await editor.set_revision_retention(first, expires_at=now)
+    repository.durable = repository.durable.model_copy(update={"phase": ReportingPhase.COMPLETED})
+    await editor.cleanup_revision_sources(second, now=now)
+
+    grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret="s" * 32)
+    raw, _ = await grants.issue(first)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://reports.test"
+    ) as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        base = "/reports/v1/editor/report-1/1/api"
+        document = await client.get(base + "/document")
+        assert document.status_code == 200
+        assert document.json()["markdown"] == before.markdown
+        assert document.json()["sha256"] == before.sha256
+        assert not document.json().get("interactiveCharts")
+        sources = await client.get(base + "/sources")
+        assert sources.status_code == 200
+        assert sources.json()["available"] is False
+        assert sources.json()["reason"] == "snapshot_expired"
+    with pytest.raises(ReportingError) as expired:
+        await editor.read_asset(first, plot)
+    assert expired.value.code == "snapshot_expired"
+    # 仅允许正常过期降级，登记身份损坏仍应报错。
+    repository.durable.payload["reportEditorRetiredSources"]["1"] = "0" * 64
+    with pytest.raises(ReportingError) as damaged:
+        await editor.interactive_charts(first)
+    assert damaged.value.code == "snapshot_integrity_failed"

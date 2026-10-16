@@ -67,6 +67,7 @@ const FACT_DETAIL = {
   analysisId: 'analysis_001',
   factId: 'fact-aaaaaaaaaaaaaaaa',
   factKind: 'metric',
+  jsonPointer: '/metrics/revenue',
   displayValue: 12450,
   entry: { unit: '万元', formula: 'sum(revenue)' },
   inputFactRefs: [{ analysisId: 'analysis_001', factId: 'fact-input' }],
@@ -470,6 +471,50 @@ describe('事实页', () => {
     await renderEvidencePage(container, ctx)
     expect(container.querySelector('[data-status-row="verification"]')?.textContent).toContain('未核对')
     expect(container.querySelector('[data-status-row="reproducibility"]')?.textContent).toContain('不适用')
+  })
+
+  it.each([
+    { analysisId: 'analysis_other' },
+    { factKey: 'fact-bbbbbbbbbbbbbbbb' },
+    { factKind: 'comparison' },
+    { jsonPointer: '/metrics/other' },
+  ])('does not borrow verification from a computation producing another fact: %j', async (mismatch) => {
+    const fetcher = factFetcher()
+    const { container, ctx } = setupPage(async (input, init) => String(input).includes('/api/computations/')
+      ? json({ ...COMPUTATION_DETAIL, outputFactRefs: [{ ...COMPUTATION_DETAIL.outputFactRefs[0], ...mismatch }] })
+      : fetcher(input, init), FACT_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('[data-status-row="verification"]')?.textContent).toContain('未核对')
+    expect(container.querySelector('[data-status-row="reproducibility"]')?.textContent).toContain('不适用')
+    expect(container.querySelector('[data-evidence-node="computation:comp-001"]')).toBeNull()
+    expect(container.querySelector('[data-evidence-node="subject:sub-cccccccccccccccc"]')).not.toBeNull()
+  })
+
+  it.each([false, true])('checks all candidate producers and leaves ambiguous verification unknown: %s', async (ambiguous) => {
+    const fetcher = factFetcher()
+    const { container, ctx } = setupPage(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/sources')) return json({
+        ...SOURCES_PAYLOAD,
+        subjects: [SOURCES_PAYLOAD.subjects[0], {
+          ...SOURCES_PAYLOAD.subjects[0], subjectId: 'sub-dddddddddddddddd', computationId: 'comp-002',
+        }],
+      })
+      if (url.includes('/api/computations/comp-001')) return json({
+        ...COMPUTATION_DETAIL, outputFactRefs: ambiguous ? COMPUTATION_DETAIL.outputFactRefs : [],
+        verification: 'not_checked',
+      })
+      if (url.includes('/api/computations/comp-002')) return json({
+        ...COMPUTATION_DETAIL, computationId: 'comp-002',
+        outputFactRefs: [{ ...COMPUTATION_DETAIL.outputFactRefs[0], factKey: null }],
+      })
+      return fetcher(input, init)
+    }, FACT_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('[data-status-row="verification"]')?.textContent)
+      .toContain(ambiguous ? '未核对' : '数值已核对')
+    expect(container.querySelector('[data-evidence-node="computation:comp-002"]')).not.toBeNull()
+    expect(!!container.querySelector('[data-evidence-node="computation:comp-001"]')).toBe(ambiguous)
   })
 
   it('shows registration warnings as a callout and explains inputs without a fact id', async () => {
@@ -1723,6 +1768,27 @@ describe('无事实标识的输出', () => {
 })
 
 describe('计算页', () => {
+  it('links input facts using the computation API factKey contract', async () => {
+    const inputFact = { analysisId: 'analysis_002', factKey: 'fact-bbbbbbbbbbbbbbbb', factKind: 'metric' }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/computations/')) return json({
+        ...COMPUTATION_DETAIL, inputFactRefs: [inputFact],
+      })
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, { kind: 'computation', key: 'comp-001', label: 'sum' })
+    await renderEvidencePage(container, ctx)
+    const link = [...container.querySelectorAll<HTMLButtonElement>('.evidence-relation-row')]
+      .find((button) => button.textContent?.includes(inputFact.factKey))
+    expect(link).toBeDefined()
+    link!.click()
+    expect(ctx.navigate).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'fact', key: inputFact.factKey, analysisId: inputFact.analysisId,
+    }))
+  })
+
   it('says how many outputs are hidden and keeps nested environment values readable', async () => {
     const detail = {
       ...COMPUTATION_DETAIL,

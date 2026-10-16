@@ -62,6 +62,7 @@ class EditorWritePayload(BaseModel):
 class EditorRestorePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    markdown: str | None = Field(default=None, max_length=10 * 1024 * 1024)
     expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
 
 
@@ -279,11 +280,13 @@ def create_report_editor_router(
             history_revision: int,
             request: Request,
         ) -> dict[str, object]:
-            _raw_session, context = await _read_context(
+            session, context = await _read_session_context(
                 grants, editor, request, report_id=report_id, revision=revision
             )
             try:
-                return await editor.read_history_revision(context, history_revision)
+                return await editor.read_history_revision(
+                    context, history_revision, session=session
+                )
             except ReportingError as error:
                 _editor_http_error(error)
 
@@ -304,7 +307,8 @@ def create_report_editor_router(
             )
             try:
                 document = await editor.restore_history(
-                    context, history_revision, expected_sha256=payload.expected_sha256
+                    context, history_revision, expected_sha256=payload.expected_sha256,
+                    markdown=payload.markdown
                 )
                 charts = await editor.interactive_charts(context)
             except ReportingError as error:
@@ -367,11 +371,16 @@ def create_report_editor_router(
                 grants, editor, request, report_id=report_id, revision=revision,
                 allowed_origin=allowed_origin,
             )
+            session, _ = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            # 再次分享必须继承原会话的列限制，不能通过重签链接放宽权限。
             # 分享链接按 B0 权限矩阵携带受限能力：可预览，默认不可下载原始/派生文件。
             raw_grant, expires_at = await grants.issue(
                 context,
                 ttl=EDITOR_SHARE_TTL,
                 capabilities={
+                    **(session.capabilities or {}),
                     "download_original": False,
                     "download_derived": False,
                     "drilldown": False,
@@ -832,10 +841,15 @@ def create_report_editor_router(
             )
             request_id = _request_id(request.headers.get("x-request-id"))
             try:
+                session, _ = await _read_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
                 export_options: dict[str, object] = {
                     "expected_sha256": payload.expected_sha256,
                     "request_id": request_id,
                 }
+                if session.capabilities is not None:
+                    export_options["session_capabilities"] = session.capabilities
                 if payload.settings is not None:
                     export_options["settings"] = payload.settings.model_dump(by_alias=True)
                 if payload.note is not None:

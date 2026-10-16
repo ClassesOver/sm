@@ -36,6 +36,7 @@ from ..reporting.trace.dataset_service import (
     TraceDatasetFile,
     TracePreviewPage,
     TracePreviewPermissions,
+    is_blocked_column,
     verified_dataset_snapshot,
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
@@ -49,6 +50,50 @@ from .trace_exports import TraceDerivedExportService
 _MAX_INDEX_BYTES = 4 * 1024 * 1024
 _DRILLDOWN_TIMEOUT_SECONDS = 10.0
 _DRILLDOWN_LARGE_FILE_BYTES = 64 * 1024 * 1024
+
+
+def _registered_dataset_file(files: Mapping[str, Any], dataset: Any) -> Any | None:
+    """数据集文件未登记时返回 None，字段说明跳过该快照而不是抛出 KeyError。"""
+    if dataset is None:
+        return None
+    resource_id = getattr(dataset, "file_resource_id", None)
+    if not isinstance(resource_id, str):
+        return None
+    return files.get(resource_id)
+
+
+def _column_field_definitions(
+    analysis_context: Mapping[str, Any],
+    files: Mapping[str, Any],
+    datasets: Sequence[Any],
+) -> dict[str, str]:
+    """列名到中文说明；只采用与已登记数据集快照字节一致的分析上下文。"""
+    definitions: dict[str, str] = {}
+    for dataset_context in analysis_context.get("datasetContexts", ()):
+        if not isinstance(dataset_context, Mapping):
+            continue
+        dataset_id = dataset_context.get("datasetId")
+        dataset = next((item for item in datasets if item.dataset_id == dataset_id), None)
+        file_ref = _registered_dataset_file(files, dataset)
+        if file_ref is None or dataset_context.get("sha256") != file_ref.sha256:
+            continue
+        schema = dataset_context.get("schema") or {}
+        if not isinstance(schema, Mapping):
+            continue
+        for table in schema.get("tables", ()):
+            if not isinstance(table, Mapping):
+                continue
+            for column in table.get("columns", ()):
+                if not isinstance(column, Mapping):
+                    continue
+                name = column.get("name")
+                description = column.get("description")
+                if (
+                    isinstance(name, str) and name.strip()
+                    and isinstance(description, str) and description.strip()
+                ):
+                    definitions.setdefault(name.strip(), description.strip())
+    return definitions
 
 
 def narrative_section_projection(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -208,7 +253,8 @@ class ReportEditorTraceService:
                     dataset_id = dataset_context.get("datasetId")
                     dataset = next((item for item in index.datasets if item.dataset_id == dataset_id), None)
                     # 字段说明只用于相同字节身份的已登记快照，不能拿新数据的口径给旧事实命名。
-                    if dataset is None or dataset_context.get("sha256") != files[dataset.file_resource_id].sha256:
+                    file_ref = _registered_dataset_file(files, dataset)
+                    if file_ref is None or dataset_context.get("sha256") != file_ref.sha256:
                         continue
                     schema = dataset_context.get("schema", {})
                     for table in schema.get("tables", ()):
@@ -715,6 +761,34 @@ class ReportEditorTraceService:
                     return f"{prefix}{index}"
         raise ReportingError("fact_binding_unavailable", "事实 ID 不在该分析中。")
 
+    async def _column_definitions_for_review(
+        self,
+        context: Any,
+        files: Mapping[str, Any],
+        datasets: Sequence[Any],
+        analysis_context_file: Mapping[str, Any] | None,
+    ) -> dict[str, str]:
+        """编辑器复核使用与生成阶段相同的列名说明；上下文缺失时不阻断校验。"""
+        if analysis_context_file is None:
+            return {}
+        try:
+            raw_context = await self._read_registered_file(
+                context,
+                FileIdentity.model_validate(analysis_context_file),
+                max_bytes=_MAX_INDEX_BYTES,
+            )
+            analysis_context = json.loads(raw_context)
+        except (ReportingError, ValueError, TypeError, AttributeError):
+            logger.warning(
+                "report_editor_review_context_unavailable report={} revision={}",
+                context.report_id,
+                context.revision,
+            )
+            return {}
+        if not isinstance(analysis_context, dict):
+            return {}
+        return _column_field_definitions(analysis_context, files, datasets)
+
     # ------------------------------------------------------------------
     # 正文 subject 校验（B6）
     # ------------------------------------------------------------------
@@ -724,6 +798,8 @@ class ReportEditorTraceService:
         context: Any,
         markdown: str,
         draft_sha256: str,
+        *,
+        analysis_context_file: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """按 ``[[claim:id]]`` 协议标记判定正文 subject 状态（计划 6.1）。
 
@@ -1001,13 +1077,33 @@ class ReportEditorTraceService:
                 logger.warning("report_editor_plot_validation_source_unavailable resource_id={} reason={}",
                                resource_id, type(error).__name__)
 
+        from functools import partial
+
         from ..reporting.trace.markdown_body import trace_body
 
         review_markdown = trace_body(markdown)
-        warnings = await anyio.to_thread.run_sync(review_content, markdown, (
-            *(_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values()),
-            *plot_contents,
-        ), limiter=self._validation_limiter)
+        # 与生成阶段同一组输入：列中文名用于补证归因，仍留在正文中的成品图不能被说成已剔除。
+        bound_chart_ids = tuple(
+            chart["chartId"]
+            for chart in charts_payload
+            if chart.get("status") in {"valid", "stale"}
+        )
+        field_definitions = await self._column_definitions_for_review(
+            context, files, index.datasets, analysis_context_file
+        )
+        warnings = await anyio.to_thread.run_sync(
+            partial(
+                review_content,
+                field_definitions=field_definitions,
+                bound_chart_ids=bound_chart_ids,
+            ),
+            markdown,
+            (
+                *(_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values()),
+                *plot_contents,
+            ),
+            limiter=self._validation_limiter,
+        )
         logger.info(
             "report_source_validation_completed report_id={} revision={} subjects={} tables={} duration_ms={}",
             context.report_id, context.revision, len(subjects), len(tables_payload),
@@ -1458,6 +1554,7 @@ class ReportEditorTraceService:
         context: Any,
         chart_id: str,
         *,
+        session_capabilities: Mapping[str, Any] | None = None,
         preview_limit: int = 20,
         preview_offset: int = 0,
     ) -> dict[str, Any]:
@@ -1497,6 +1594,7 @@ class ReportEditorTraceService:
                     file_ref=file_ref,
                     limit=preview_limit,
                     offset=preview_offset,
+                    blocked_columns=self._permissions(session_capabilities).blocked_columns,
                 )
             )
         return {
@@ -1516,6 +1614,7 @@ class ReportEditorTraceService:
         file_ref: Any,
         limit: int,
         offset: int,
+        blocked_columns: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """chart-input/v1 JSON → 有界预览（不暴露工作区路径）。"""
 
@@ -1533,10 +1632,17 @@ class ReportEditorTraceService:
             )
         rows = document.get("rows")
         columns = document.get("columns")
-        if not isinstance(rows, list) or not isinstance(columns, list):
+        if (
+            not isinstance(rows, list)
+            or not isinstance(columns, list)
+            or any(not isinstance(column, str) for column in columns)
+        ):
             raise ReportingError(
                 "snapshot_integrity_failed", "作图数据文件结构无效。"
             )
+        # 与数据集整表预览一致：包含受限列时拒绝整份预览，分页也不能绕过。
+        if any(is_blocked_column(column, blocked_columns) for column in columns):
+            raise ReportingError("dataset_access_denied", "该图表来源包含当前会话的受限列。")
         window = rows[offset : offset + limit]
         return {
             "fileResourceId": file_ref.resource_id,
@@ -1607,7 +1713,7 @@ class ReportEditorTraceService:
             )
             if item is not None
         )
-        return not bool(required & blocked)
+        return not any(is_blocked_column(field, blocked) for field in required)
 
     @staticmethod
     def _drilldown_declaration_payload(declaration: Any) -> dict[str, Any]:

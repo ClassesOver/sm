@@ -561,6 +561,21 @@ class _ExportJob:
     finished_at: float | None = None
 
 
+def _analysis_context_file_from_state(state: Any) -> Mapping[str, Any] | None:
+    """工作流检查点里的分析上下文；没有登记时正文复核不使用列说明。"""
+    checkpoint = state.payload.get("workflowCheckpoint", {}) if state else {}
+    files = checkpoint.get("files", ()) if isinstance(checkpoint, Mapping) else ()
+    return next(
+        (
+            item
+            for item in files
+            if isinstance(item, Mapping)
+            and str(item.get("path", "")).endswith("/detailed-analysis-context.json")
+        ),
+        None,
+    )
+
+
 class ReportEditorService:
     def __init__(
         self,
@@ -947,7 +962,8 @@ class ReportEditorService:
 
     @source_lifecycle
     async def restore_history(
-        self, expected: ReportEditorContext, revision: int, *, expected_sha256: str
+        self, expected: ReportEditorContext, revision: int, *, expected_sha256: str,
+        markdown: str | None = None,
     ) -> ReportEditorDocument:
         context = await self._restore(expected)
         source = next(
@@ -957,7 +973,9 @@ class ReportEditorService:
         if source is None:
             raise ReportingError("report_editor_history_missing", "Historical revision does not exist.")
         await self._ensure_sources_retained(source)
-        _, markdown, _ = await self._read_frozen_markdown(source)
+        _, frozen_markdown, _ = await self._read_frozen_markdown(source)
+        if markdown is None:
+            markdown = frozen_markdown
         # Verify the registered index before publishing provenance, when available.
         await self.trace.load_index(source)
         async with self._draft_lock(context):
@@ -1012,20 +1030,35 @@ class ReportEditorService:
             "hasMore": offset + len(items) < total,
         }
 
+    @source_lifecycle
     async def read_history_revision(
-        self, expected: ReportEditorContext, revision: int
+        self,
+        expected: ReportEditorContext,
+        revision: int,
+        *,
+        session: ReportEditorSession | None = None,
     ) -> dict[str, object]:
         candidates = await self._candidate_revisions(expected)
         for candidate in candidates:
             if candidate.revision == revision:
                 candidate = await self._restore(candidate)
                 _path, markdown, sha256 = await self._read_frozen_markdown(candidate)
-                sources = await self.trace.sources(candidate)
+                capabilities = session.capabilities if session is not None else None
+                sources = await self.trace.sources(candidate, capabilities)
+                expired = False
+                try:
+                    await self._ensure_sources_retained(candidate)
+                except ReportingError as error:
+                    if error.code != "snapshot_expired":
+                        raise
+                    expired = True
                 return {
                     "revision": candidate.revision,
                     "markdown": markdown,
                     "sha256": sha256,
-                    "sources": sources,
+                    "sources": _history_sources_for_session(
+                        sources, restricted=capabilities is not None, expired=expired
+                    ),
                 }
         raise ReportingError("report_editor_history_missing", "历史版本不存在。")
 
@@ -1069,7 +1102,13 @@ class ReportEditorService:
 
     @source_lifecycle
     async def interactive_charts(self, expected: ReportEditorContext) -> dict[str, str]:
-        context = await self._source_context(expected)
+        try:
+            context = await self._source_context(expected)
+        except ReportingError as error:
+            if error.code != "snapshot_expired":
+                raise
+            # 来源过期只禁用交互图表；保留的正文仍可读取，来源面板单独提示过期。
+            return {}
         interactive = context.job.get("interactiveCharts")
         if not isinstance(interactive, dict):
             return {}
@@ -1080,6 +1119,12 @@ class ReportEditorService:
             and isinstance(item, dict)
             and isinstance(item.get("path"), str)
         }
+
+    async def _registered_analysis_context_file(
+        self, context: ReportEditorContext
+    ) -> Mapping[str, Any] | None:
+        state = await self.state_repository.get(context.workflow_run_id)
+        return _analysis_context_file_from_state(state)
 
     @source_lifecycle
     async def trace_sources(
@@ -1095,10 +1140,7 @@ class ReportEditorService:
             }
         context = await self._source_context(expected, allow_retired=True)
         state = await self.state_repository.get(context.workflow_run_id)
-        checkpoint = state.payload.get("workflowCheckpoint", {}) if state else {}
-        files = checkpoint.get("files", ()) if isinstance(checkpoint, Mapping) else ()
-        analysis_context_file = next((item for item in files if isinstance(item, Mapping)
-            and str(item.get("path", "")).endswith("/detailed-analysis-context.json")), None)
+        analysis_context_file = _analysis_context_file_from_state(state)
         result = await self.trace.sources(context, session.capabilities, analysis_context_file=analysis_context_file)
         # 历史事实文件没有名称时，用同一工作流中登记的分析计划补充展示名称。
         plans = state.payload.get("analysisPlans", {}) if state else {}
@@ -1311,6 +1353,7 @@ class ReportEditorService:
         return await self.trace.chart_source(
             context,
             chart_id,
+            session_capabilities=session.capabilities,
             preview_limit=preview_limit,
             preview_offset=preview_offset,
         )
@@ -1346,7 +1389,12 @@ class ReportEditorService:
     ) -> dict[str, Any]:
         self._require_lineage_feature("panel")
         context = await self._source_context(expected)
-        return await self.trace.validate(context, markdown, draft_sha256)
+        return await self.trace.validate(
+            context,
+            markdown,
+            draft_sha256,
+            analysis_context_file=await self._registered_analysis_context_file(context),
+        )
 
     @source_lifecycle
     async def save_draft(
@@ -1433,6 +1481,7 @@ class ReportEditorService:
         expected: ReportEditorContext,
         *,
         expected_sha256: str,
+        session_capabilities: Mapping[str, Any] | None = None,
         settings: dict[str, bool] | None = None,
         note: str = "",
         request_id: str | None = None,
@@ -1453,6 +1502,7 @@ class ReportEditorService:
                 self._export_revision(
                     expected,
                     expected_sha256=expected_sha256,
+                    session_capabilities=session_capabilities,
                     settings=settings,
                     note=note,
                 ),
@@ -1497,6 +1547,7 @@ class ReportEditorService:
         expected: ReportEditorContext,
         *,
         expected_sha256: str,
+        session_capabilities: Mapping[str, Any] | None = None,
         settings: dict[str, bool] | None = None,
         note: str = "",
         request_id: str | None = None,
@@ -1524,20 +1575,30 @@ class ReportEditorService:
             self.export_revision(
                 expected,
                 expected_sha256=expected_sha256,
+                session_capabilities=copy.deepcopy(session_capabilities),
                 settings=settings,
                 note=note,
                 request_id=export_id,
             ),
             name=f"report-editor-export:{export_id}",
         )
-        # 结果由轮询读取；预先取走异常，避免任务结束后无人等待时产生未处理异常告警。
-        task.add_done_callback(lambda done: done.cancelled() or done.exception())
-        self._export_jobs[export_id] = _ExportJob(
+        job = _ExportJob(
             report_id=expected.report_id,
             revision=expected.revision,
             task=task,
             started_at=time.monotonic(),
         )
+        self._export_jobs[export_id] = job
+
+        def completed(done: asyncio.Task[dict[str, object]]) -> None:
+            # 即使客户端关闭、不再轮询，也从任务完成时开始计算保留期。
+            if job.finished_at is None:
+                job.finished_at = time.monotonic()
+            # 预先取走异常，避免无人轮询时产生未处理异常告警。
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(completed)
         return {"exportId": export_id, "status": "running", "requestId": export_id}
 
     def export_status(self, expected: ReportEditorContext, export_id: str) -> dict[str, object]:
@@ -1626,6 +1687,7 @@ class ReportEditorService:
         expected: ReportEditorContext,
         *,
         expected_sha256: str,
+        session_capabilities: Mapping[str, Any] | None = None,
         settings: dict[str, bool] | None = None,
         note: str = "",
     ) -> dict[str, object]:
@@ -1676,10 +1738,6 @@ class ReportEditorService:
         }
         if not self._lineage_features["exportSources"]:
             export_settings["sources"] = False
-        if export_settings:
-            session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = {
-                **export_settings,
-            }
         # 编辑链接长期有效，用户可能从旧修订的链接进入。导出过一次会产生更新的
         # revision；若最新 revision 的 Markdown 与当前草稿一致（用户未再改动），
         # 自动以最新 revision 为基准再次导出，实现重复导出的幂等。只有内容确实
@@ -1716,17 +1774,21 @@ class ReportEditorService:
                     f"当前编辑的是第 {context.revision} 版，已有更新的第 {latest_revision} 版，"
                     "请打开最新版本的编辑链接后再导出。",
                 )
+        # 新身份越过全部已登记版本；重定基后应用本次设置，并清除历史设置。
+        next_revision = max(context.revision, latest_revision) + 1
         if export_settings:
             session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = export_settings
         else:
             session_state[REPORT_JOBS_STATE_KEY][context.job_id].pop("_editorExportSettings", None)
-        output_path = _next_pdf_path(context)
+        output_path = _next_pdf_path(context, revision=next_revision)
         revision_path = PurePosixPath(output_path).parent.as_posix()
         if await self.workspace.apath_exists(scope.workspace_key, revision_path):
             raise ReportingError(
                 "report_editor_revision_conflict", "新的报告 revision 已存在，请重新载入。"
             )
-        cleanup_revision = True
+        # 渲染器负责发布前及渲染失败时的清理；仅在成功发布后接管目录。
+        # 预检通过不代表拥有目标目录，另一任务可能在渲染期间发布同一版本。
+        cleanup_revision = False
         # 导出在后台运行期间编辑器仍会自动保存草稿；渲染必须基于已校验 SHA 的内容快照，
         # 否则 PDF 可能来自更新后的草稿，而新 revision 保存的仍是导出开始时的 Markdown。
         # 快照与草稿同目录，保证图片等相对资源的解析不变。
@@ -1767,12 +1829,17 @@ class ReportEditorService:
                         index=trace_index,
                         markdown_path=snapshot_path,
                         markdown=document.markdown,
-                        target_revision=context.revision + 1,
+                        target_revision=next_revision,
                     )
                     render_manifest = rebuilt.model_dump(mode="json", by_alias=True)
                 if trace_index is not None:
                     validation = await self.trace.validate(
-                        source_context, document.markdown, document.sha256
+                        source_context,
+                        document.markdown,
+                        document.sha256,
+                        analysis_context_file=await self._registered_analysis_context_file(
+                            source_context
+                        ),
                     )
                     if isinstance(target_job.get("_citationPresentations"), list):
                         target_job["_citationPresentations"] = _export_citation_presentations(
@@ -1781,7 +1848,7 @@ class ReportEditorService:
                             trace_index,
                             public_base_url=public_base_url,
                             report_id=context.report_id,
-                            revision=context.revision + 1,
+                            revision=next_revision,
                             citations=artifact_manifest.citations,
                         )
                     # B8：数据来源附录与引用展示同一次快照联合渲染，编号由渲染器
@@ -1791,7 +1858,7 @@ class ReportEditorService:
                         try:
                             target_job["_traceSourcePresentations"] = _build_export_trace_sources(
                                 trace_index, validation, public_base_url=public_base_url,
-                                report_id=context.report_id, revision=context.revision + 1,
+                                report_id=context.report_id, revision=next_revision,
                             )
                         except Exception as error:
                             # 附录是展示载荷；失败不能丢弃已核验的追溯索引。
@@ -1802,7 +1869,7 @@ class ReportEditorService:
                             })
                             logger.opt(exception=error).warning(
                                 "report_editor_source_appendix_unavailable report_id={} revision={}",
-                                context.report_id, context.revision + 1,
+                                context.report_id, next_revision,
                             )
             except Exception as error:  # noqa: BLE001 - 追溯降级，导出继续
                 lineage_issues.append(_lineage_unavailable_issue(error, rendered=False))
@@ -1823,6 +1890,7 @@ class ReportEditorService:
                     artifact_manifest=render_manifest,
                     run_context=run_context,
                 )
+                cleanup_revision = True
             except WorkspacePathConflict as error:
                 raise ReportingError(
                     "report_editor_revision_conflict", "新的报告 revision 已存在，请重新载入。"
@@ -1849,7 +1917,6 @@ class ReportEditorService:
                     context.report_id, context.revision,
                     ",".join(item.get("code", "") for item in validation_issues),
                 )
-            next_revision = context.revision + 1
             word_path = str(PurePosixPath(output_path).with_suffix(".docx"))
             pdf_identity = await self.workspace.ahash_file(scope.workspace_key, output_path)
             word_identity = await self.workspace.ahash_file(scope.workspace_key, word_path)
@@ -1996,7 +2063,11 @@ class ReportEditorService:
                 word_size=int(word_identity["size"]),
                 word_sha256=str(word_identity["sha256"]),
             )
-            raw_editor, editor_expires_at = await editor_grants.issue(next_context)
+            grant_options = (
+                {"capabilities": dict(session_capabilities)}
+                if session_capabilities is not None else {}
+            )
+            raw_editor, editor_expires_at = await editor_grants.issue(next_context, **grant_options)
         except BaseException:
             await self._delete_export_snapshot(scope.workspace_key, snapshot_path)
             if cleanup_revision:
@@ -2171,6 +2242,23 @@ class ReportEditorService:
         return context
 
 
+def _history_sources_for_session(
+    sources: dict[str, Any], *, restricted: bool, expired: bool
+) -> dict[str, Any]:
+    """分享会话和已回收修订不返回原始 SQL 与事实明细。"""
+    if not restricted and not expired:
+        return sources
+    datasets = [
+        {**item, "querySql": None} if isinstance(item, dict) else item
+        for item in sources.get("datasets", ())
+    ]
+    redacted = {**sources, "datasets": datasets, "facts": []}
+    if expired:
+        redacted["available"] = False
+        redacted["reason"] = "snapshot_expired"
+    return redacted
+
+
 def _draft_path(markdown_path: str) -> str:
     source = PurePosixPath(markdown_path)
     return str(source.parent / "draft" / source.name)
@@ -2202,7 +2290,7 @@ def _lineage_unavailable_issue(error: BaseException, *, rendered: bool) -> dict[
     }
 
 
-def _next_pdf_path(context: ReportEditorContext) -> str:
+def _next_pdf_path(context: ReportEditorContext, *, revision: int | None = None) -> str:
     render = context.job.get("render")
     pdf = render.get("pdf") if isinstance(render, dict) else None
     if not isinstance(pdf, dict) or "path" not in pdf:
@@ -2210,7 +2298,8 @@ def _next_pdf_path(context: ReportEditorContext) -> str:
     path = PurePosixPath(str(pdf["path"]))
     if path.suffix.lower() != ".pdf" or path.parent.name != f"revision-{context.revision}":
         raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前 PDF revision。")
-    return str(path.parent.with_name(f"revision-{context.revision + 1}") / path.name)
+    target_revision = context.revision + 1 if revision is None else revision
+    return str(path.parent.with_name(f"revision-{target_revision}") / path.name)
 
 
 def _token_hash(value: str) -> str:

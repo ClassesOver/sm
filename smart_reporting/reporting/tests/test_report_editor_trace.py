@@ -860,6 +860,54 @@ async def test_derived_export_masks_columns_with_independent_identity(
     assert "derived" in filename
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("replace_before_snapshot", [True, False])
+async def test_derived_export_uses_verified_source_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace_before_snapshot: bool,
+) -> None:
+    editor, grants, _ = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(_context())
+    _, session = await grants.exchange(raw)
+    context = await editor._source_context(_context())
+    index = await editor.trace.require_index(context)
+    file = await editor.trace._resolve_dataset_file(context, index, DATASET_ID)
+    original = file.local_path.read_bytes()
+    replacement = original.replace(b"2025-08", b"1999-01")
+    exports = editor.trace.exports
+    generate = exports._generate
+
+    def replace_then_generate(source, target, columns, mask):
+        # 在校验结束后替换原路径：生成必须继续读取已校验的快照。
+        file.local_path.write_bytes(replacement)
+        generate(source, target, columns, mask)
+
+    if not replace_before_snapshot:
+        monkeypatch.setattr(exports, "_generate", replace_then_generate)
+    started = await editor.trace_create_derived_export(
+        _context(), session, DATASET_ID, policy="masked_columns",
+        params={"columns": ["revenue"]},
+    )
+    if replace_before_snapshot:
+        file.local_path.write_bytes(replacement)
+    job = exports._jobs[started["exportId"]]
+    await job.task
+    status = await editor.trace_derived_export_status(_context(), session, job.export_id)
+    if replace_before_snapshot:
+        assert status["status"] == "failed"
+        with pytest.raises(ReportingError, match="派生导出已失败"):
+            await editor.trace_derived_export_download(_context(), session, job.export_id)
+    else:
+        assert status["status"] == "completed"
+        path, _, _ = await editor.trace_derived_export_download(
+            _context(), session, job.export_id
+        )
+        content = Path(path).read_text(encoding="utf-8")
+        assert "2025-08" in content
+        assert "1999-01" not in content
+        assert ",***," in content
+        assert status["sourceSha256"] == hashlib.sha256(original).hexdigest()
+
+
 def test_derived_export_keeps_unmasked_cells_verbatim(tmp_path: Path) -> None:
     """派生导出只替换掩码列；其余列按原文写出，不因类型推断改写。"""
     from smart_reporting.report_editor.trace_exports import TraceDerivedExportService
@@ -960,8 +1008,8 @@ async def test_derived_export_times_out_instead_of_staying_running(
     from smart_reporting.report_editor.trace_exports import TraceDerivedExportService
     from smart_reporting.reporting.trace.dataset_service import TraceDatasetFile
 
-    async def hang(self, job, file, target_columns, mask):  # noqa: ANN001
-        del self, file, target_columns, mask
+    async def hang(self, job, file, target_columns, mask, blocked_columns):  # noqa: ANN001
+        del self, file, target_columns, mask, blocked_columns
         await asyncio.sleep(30)
         job.status = "completed"
 
@@ -1538,6 +1586,44 @@ async def test_subject_drilldown_lists_capability_and_reconciles(
 
 
 @pytest.mark.anyio
+async def test_history_revision_hides_sql_and_facts_for_share_and_expired(tmp_path: Path) -> None:
+    editor, grants, _ = await _make_editor(tmp_path, with_fact_file=True)
+    context = _context()
+    owner_raw, _ = await grants.issue(context)
+    _token, owner = await grants.exchange(owner_raw)
+    full = await editor.read_history_revision(context, 1, session=owner)
+    assert full["sources"]["datasets"][0]["querySql"].startswith("SELECT branch, revenue")
+    assert full["sources"]["facts"]
+    sql_hash = full["sources"]["datasets"][0]["sqlHash"]
+
+    share_raw, _ = await grants.issue(context, capabilities={
+        "download_original": False, "download_derived": False, "drilldown": False,
+    })
+    _token, share = await grants.exchange(share_raw)
+    shared = await editor.read_history_revision(context, 1, session=share)
+    assert shared["markdown"] == full["markdown"]
+    assert shared["sources"]["datasets"][0]["querySql"] is None
+    assert shared["sources"]["datasets"][0]["sqlHash"] == sql_hash
+    assert shared["sources"]["facts"] == []
+
+    original_get = editor.state_repository.get
+
+    async def retiring(run_id):
+        state = await original_get(run_id)
+        state.payload["reportEditorRetiredSources"] = {str(context.revision): context.digest()}
+        return state
+
+    editor.state_repository.get = retiring
+    expired = await editor.read_history_revision(context, 1, session=owner)
+    assert expired["markdown"] == full["markdown"]
+    assert expired["sources"]["available"] is False
+    assert expired["sources"]["reason"] == "snapshot_expired"
+    assert expired["sources"]["datasets"][0]["querySql"] is None
+    assert expired["sources"]["datasets"][0]["sqlHash"] == sql_hash
+    assert expired["sources"]["facts"] == []
+
+
+@pytest.mark.anyio
 async def test_share_sessions_do_not_receive_raw_query_sql(tmp_path: Path) -> None:
     editor, grants, _ = await _make_editor(tmp_path)
     full = await editor.trace_sources(_context(), SimpleNamespace(capabilities=None))
@@ -1570,6 +1656,63 @@ async def test_blocked_drilldown_input_is_hidden_and_rejected(tmp_path: Path) ->
             "income_total",
             dataset_id=DATASET_ID,
             dimension_code="branch",
+        )
+    assert denied.value.code == "dataset_access_denied"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("blocked_column", ["revenue", "branch"])
+async def test_drilldown_rejects_duplicated_blocked_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked_column: str,
+) -> None:
+    # Polars 为重复列分配别名；冻结声明可引用别名，但权限仍属于原列。
+    monkeypatch.setattr(
+        __name__ + ".CSV_BYTES",
+        ("period,branch,branch,revenue,revenue,visits\n"
+         "2025-09,A院区,A院区,1200,1200,10\n"
+         "2025-09,B院区,B院区,2400,2400,20\n").encode(),
+    )
+    build_index = build_csv_trace_index
+
+    def with_duplicate_fields(**kwargs):
+        kwargs["drilldown_metrics"] = tuple(
+            item.model_copy(update={
+                "value_field": "revenue_duplicated_0",
+                "dimensions": tuple(
+                    dimension.model_copy(update={"field": "branch_duplicated_0"})
+                    for dimension in item.dimensions
+                ),
+            })
+            for item in kwargs["drilldown_metrics"]
+        )
+        return build_index(**kwargs)
+
+    monkeypatch.setattr(__name__ + ".build_csv_trace_index", with_duplicate_fields)
+    editor, grants, _ = await _make_editor(
+        tmp_path, with_fact_file=True, with_drilldown=True
+    )
+    full = SimpleNamespace(capabilities=None)
+    page = await editor.trace_drilldown_metric(
+        _context(), full, "income_total", dataset_id=DATASET_ID, dimension_code="branch"
+    )
+    assert page["rows"] == [
+        {"group": "A院区", "value": 1200.0}, {"group": "B院区", "value": 2400.0},
+    ]
+    raw, _ = await grants.issue(
+        _context(), capabilities={"drilldown": True, "blocked_columns": [blocked_column]}
+    )
+    _, session = await grants.exchange(raw)
+    sources = await editor.trace_sources(_context(), session)
+    assert sources["drilldown"] == {"enabled": True, "metrics": [], "subjects": []}
+    with pytest.raises(ReportingError) as denied:
+        await editor.trace_drilldown_metric(
+            _context(), session, "income_total", dataset_id=DATASET_ID, dimension_code="branch"
+        )
+    assert denied.value.code == "dataset_access_denied"
+    with pytest.raises(ReportingError) as denied:
+        await editor.trace_drilldown(
+            _context(), session, "sub-" + "c" * 16,
+            metric_code="income_total", dataset_id=DATASET_ID, dimension_code="branch",
         )
     assert denied.value.code == "dataset_access_denied"
 
@@ -2010,6 +2153,66 @@ async def test_validate_marks_deleted_chart_unbound_and_keeps_present_chart(
     assert deleted_result["charts"][0]["status"] == "unbound"
 
 
+def test_column_definitions_skip_dataset_whose_file_is_not_registered() -> None:
+    from smart_reporting.report_editor.trace_sources import (
+        _column_field_definitions,
+        _registered_dataset_file,
+    )
+
+    present = SimpleNamespace(sha256="a" * 64)
+    files = {"file-1": present}
+    missing = SimpleNamespace(dataset_id="ds-1", file_resource_id="file-missing")
+    assert _registered_dataset_file(files, missing) is None
+    assert _registered_dataset_file(files, None) is None
+    assert _registered_dataset_file(
+        files, SimpleNamespace(dataset_id="ds-1", file_resource_id="file-1")
+    ) is present
+    context = {"datasetContexts": [{
+        "datasetId": "ds-1",
+        "sha256": "a" * 64,
+        "schema": {"tables": [{"columns": [{"name": "open_beds", "description": "实际开放床日"}]}]},
+    }]}
+    assert _column_field_definitions(context, files, (missing,)) == {}
+    matched = SimpleNamespace(dataset_id="ds-1", file_resource_id="file-1")
+    assert _column_field_definitions(context, files, (matched,)) == {"open_beds": "实际开放床日"}
+
+
+@pytest.mark.anyio
+async def test_editor_review_passes_field_definitions_and_bound_charts(tmp_path: Path) -> None:
+    editor, grants, workspace = await _make_editor(tmp_path, with_chart_trace=True)
+    scope = _scope()
+    document = {"datasetContexts": [{
+        "datasetId": DATASET_ID,
+        "sha256": hashlib.sha256(CSV_BYTES).hexdigest(),
+        "schema": {"tables": [{"columns": [{"name": "open_beds", "description": "实际开放床日"}]}]},
+    }]}
+    content = json.dumps(document, ensure_ascii=False).encode()
+    path = "reports/detailed-analysis-context.json"
+    workspace.registry.resolve(scope)
+    await workspace.awrite_bytes(scope.workspace_key, path, content)
+    workspace.registry.release(scope.workspace_key)
+    state = await editor.state_repository.get(_context().workflow_run_id)
+    state.payload["workflowCheckpoint"] = {"files": [{
+        "path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+    }]}
+    raw, _ = await grants.issue(_context())
+    _, session = await grants.exchange(raw)
+    present = "![趋势](chart-001.png)\n\n*图表：收入趋势*\n\n支出偏差图未纳入引用。open_beds 需要改成业务名称。"
+    result = await editor.trace_validate(
+        _context(), session, present, hashlib.sha256(present.encode()).hexdigest()
+    )
+    assert any("图表引用状态矛盾" in warning for warning in result["warnings"])
+    assert any("内部字段名：open_beds" in warning for warning in result["warnings"])
+    assert any("实际开放床日" in warning for warning in result["warnings"])
+
+    omitted = "支出偏差图未纳入引用。open_beds 需要改成业务名称。"
+    omitted_result = await editor.trace_validate(
+        _context(), session, omitted, hashlib.sha256(omitted.encode()).hexdigest()
+    )
+    assert not any("图表引用状态矛盾" in warning for warning in omitted_result["warnings"])
+    assert any("内部字段名：open_beds" in warning for warning in omitted_result["warnings"])
+
+
 @pytest.mark.anyio
 async def test_chart_source_unknown_chart_is_404_like(tmp_path: Path) -> None:
     editor, grants, _ = await _make_editor(tmp_path, with_chart_trace=True)
@@ -2229,3 +2432,98 @@ async def test_validate_includes_unregistered_body_charts(tmp_path: Path) -> Non
         _context(), session, duplicate, hashlib.sha256(duplicate.encode()).hexdigest())
     assert len(result['charts']) == 1
     assert result['charts'][0]['status'] == 'unbound'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capabilities", [
+    None,
+    {},
+    {"download_original": False, "download_derived": False, "drilldown": False},
+    {"blocked_columns": ["revenue"]},
+])
+async def test_history_detail_respects_session_source_permissions(tmp_path: Path, capabilities) -> None:
+    editor, grants, _ = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(_context(), capabilities=capabilities)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        base = "/reports/v1/editor/report-1/1/api"
+        sources = await client.get(base + "/sources")
+        history = await client.get(base + "/history/1")
+    assert sources.status_code == history.status_code == 200
+    assert history.json()["markdown"]
+    dataset = history.json()["sources"]["datasets"][0]
+    assert dataset["sqlHash"] == sources.json()["datasets"][0]["sqlHash"]
+    if capabilities is None:
+        assert dataset["querySql"].startswith("SELECT branch, revenue")
+    else:
+        assert dataset["querySql"] is None
+        assert "patient_id" not in history.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capabilities", [None, {}, {"blocked_columns": ["revenue"]}])
+async def test_http_reshare_preserves_column_restrictions(tmp_path: Path, capabilities) -> None:
+    editor, grants, _ = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(_context(), capabilities=capabilities)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    base = "/reports/v1/editor/report-1/1/api"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        # 连续两次转发不能丢失上游会话的列限制，也不能提升下载或下钻权限。
+        for _ in range(2):
+            document = await client.get(base + "/document")
+            shared = await client.post(base + "/share", headers={
+                "Origin": "http://reports.test",
+                "X-CSRF-Token": document.json()["csrfToken"],
+            })
+            assert shared.status_code == 200
+            await client.get(shared.json()["openUrl"], follow_redirects=False)
+            preview = await client.get(base + f"/datasets/{DATASET_ID}/preview")
+            columns = await client.get(base + f"/datasets/{DATASET_ID}/columns")
+            if capabilities and capabilities.get("blocked_columns"):
+                assert preview.status_code == 403
+                assert "revenue" not in columns.json()["columns"]
+            else:
+                assert preview.status_code == 200
+                assert "revenue" in columns.json()["columns"]
+            download = await client.get(base + f"/datasets/{DATASET_ID}/download")
+            assert download.status_code == 403
+            sources = await client.get(base + "/sources")
+            assert sources.json()["drilldown"]["enabled"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capabilities,allowed", [
+    (None, True),
+    ({}, True),
+    ({"blocked_columns": ["visits"]}, True),
+    ({"blocked_columns": ["revenue"]}, False),
+    ({"blocked_columns": ["period"]}, False),
+])
+async def test_http_chart_preview_respects_column_restrictions(
+    tmp_path: Path, capabilities, allowed: bool,
+) -> None:
+    editor, grants, _ = await _make_editor(tmp_path, with_chart_trace=True)
+    raw, _ = await grants.issue(_context(), capabilities=capabilities)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        for offset in (0, 1, 100):
+            response = await client.get(
+                "/reports/v1/editor/report-1/1/api/charts/chart_001/source",
+                params={"offset": offset, "limit": 1},
+            )
+            if allowed:
+                assert response.status_code == 200
+                plot = response.json()["plotData"][0]
+                assert plot["columns"] == ["period", "revenue"]
+                assert len(plot["rows"]) == (0 if offset == 100 else 1)
+            else:
+                assert response.status_code == 403
+                assert response.json()["detail"]["code"] == "dataset_access_denied"
+                assert "plotData" not in response.text
+                assert "3600" not in response.text

@@ -3420,6 +3420,16 @@ def test_explicit_chart_count_follows_user_request(goal, count, expected):
     assert len(plan.charts) == 3
 
 
+def test_missing_narrative_section_has_no_chart_budget() -> None:
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.workflow.runtime.analysis import narrative_section_max_charts
+
+    sections = (SimpleNamespace(code="section_001", max_charts=2),)
+    assert narrative_section_max_charts(sections, "section_001") == 2
+    assert narrative_section_max_charts(sections, "section_404") is None
+
+
 @pytest.mark.parametrize(("goal", "budget", "expected"), [
     ("分析趋势", 0, 0), ("分析趋势", 2, 2),
     ("使用一张图表", 2, 1), ("每项分析包含一张图表", 1, 1),

@@ -182,6 +182,7 @@ export interface TraceFactDetail {
   analysisName?: string | null
   factId: string | null
   factKind: string
+  jsonPointer?: string
   displayValue: number | string | null
   displayUnit?: string | null
   entry: Record<string, unknown>
@@ -293,7 +294,7 @@ export interface TraceComputationDetail {
   reproducibility: string
   limitations: string[]
   inputDatasetIds: string[]
-  inputFactRefs?: TraceFactRefLite[]
+  inputFactRefs?: { analysisId: string; factKey: string | null; factKind: string }[]
   preprocessing?: unknown
   outputFactRefs: { analysisId: string; factKey: string | null; factKind: string; jsonPointer: string }[]
   scriptFile: { size: number; sha256: string } | null
@@ -344,10 +345,10 @@ export class ReportEditorClient {
     return this.request<ReportHistoryItem & { markdown: string }>(`/api/history/${revision}`)
   }
 
-  async restoreHistory(revision: number, expectedSha256: string): Promise<ReportDocument> {
+  async restoreHistory(revision: number, expectedSha256: string, markdown?: string): Promise<ReportDocument> {
     const document = await this.request<ReportDocument>(`/api/history/${revision}/restore`, {
       method: 'POST',
-      body: JSON.stringify({ expectedSha256 }),
+      body: JSON.stringify({ expectedSha256, ...(markdown === undefined ? {} : { markdown }) }),
     })
     this.csrfToken = document.csrfToken ?? this.csrfToken
     return document
