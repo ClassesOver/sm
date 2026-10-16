@@ -1356,3 +1356,9 @@ PR #14 合并后找 bug（2026-10-09）：
 - 依赖移除 `3d-force-graph`、`three-spritetext`、`@types/three`，以及仅供 3D 使用的 `@d3fc/d3fc-label-layout`；`patches/` 里的三份补丁均针对 3D 组件，已删除，`patch-package` 与 `postinstall` 随之移除（否则全新安装会因补丁目标缺失而失败）。构建预算去掉 3D 分包限额。
 - 冒烟：删除 10 个 3D 脚本；`evidence-fact-preview`、`evidence-chart`、`evidence-complex-graph` 改为直接操作 2D 节点；其他脚本去掉视差设置行；冒烟 README 删除 3D 段落。
 - 验证：tsc、前端单测（47 文件全部通过，删除 1 个已无对应场景的“显式 2D 不自动适应”用例）、构建与预算通过，构建产物不再包含 three/3d-force-graph；fact-preview、complex-graph 冒烟通过。chart、branch、navigation、restore 冒烟在本次改动前已失效（等待“展开”按钮或旧目录名“收入明细.csv”），与删除 3D 无关，未在本次修复。
+
+冒烟脚本修复（2026-10-16）：
+
+- `evidence-chart`、`evidence-branch`、`evidence-restore` 通过：详情默认已展开（2026-10-07 起 `collapsed` 默认 false），去掉过时的“展开”点击；数据集对象现显示登记名“季度收入快照”而非文件名，断言同步更新；无 3D 后一并去掉“切换到 2D”点击。
+- `evidence-navigation` 的图滚动、列宽调整（改为相对增量断言）、返回/后退恢复等图相关步骤已通过；仍失败于后面的编辑器正文选区保留检查（`window.getSelection()` 为空，期望“现场草稿”），与关系图无关，未在本次处理。
+- 首屏溢出的图会整体缩小到可见，因此窄屏滚动检查需先放大后再滚动。

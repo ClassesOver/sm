@@ -38,7 +38,6 @@ try {
   await page.locator('.evidence-directory-item', { hasText: 'chart-fixture' }).click()
   const mainTable = page.locator('.evidence-table').first()
   await mainTable.getByText('图表记录1', { exact: true }).waitFor()
-  await page.getByRole('button', { name: '展开', exact: true }).click()
   await page.locator('.evidence-node[data-evidence-node="chart:chart-fixture"]').waitFor()
   const graphIds = await page.locator('.evidence-node').evaluateAll(nodes => nodes.map(node => node.dataset.evidenceNode).sort())
   assert.deepEqual(graphIds, ['chart:chart-fixture', 'computation:comp-fixture-001', 'dataset:dataset-fixture-001'], '图表关系图保留图表、数据集、计算节点')
