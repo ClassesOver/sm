@@ -221,6 +221,7 @@ export function assembleFactRelations(
   ref: EvidenceObjectRef,
   detail: TraceFactDetail,
   sources: TraceSources,
+  producingComputationIds: readonly string[] = [],
 ): EvidenceRelations {
   const { relations, add } = makeRelations(ref)
   const registered = sources.facts?.find(item => item.factId === ref.key && item.analysisId === ref.analysisId)
@@ -243,14 +244,13 @@ export function assembleFactRelations(
       (item) => item.factId === ref.key && (!ref.analysisId || item.analysisId === ref.analysisId),
     ),
   )
-  const computationIds = new Set<string>()
   for (const subject of subjects) {
     const node = subjectRef(subject.subjectId)
     add(node)
     relations.edges.push({ from: ref, to: node, label: '引用' })
-    if (subject.computationId) computationIds.add(subject.computationId)
   }
-  for (const computationId of computationIds) {
+  // 正文关联某计算并不证明该计算产出此事实；调用者须核对输出身份。
+  for (const computationId of new Set(producingComputationIds)) {
     const node: EvidenceObjectRef = { kind: 'computation', key: computationId, label: computationId }
     add(node)
     relations.edges.push({ from: node, to: ref, label: '产出' })

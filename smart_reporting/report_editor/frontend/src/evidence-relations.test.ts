@@ -168,6 +168,7 @@ describe('assembleFactRelations', () => {
         warnings: [],
       },
       SOURCES,
+      ['comp-001'],
     )
     expect(relations.center).toBe(FACT_REF)
     expect(relations.loadedNote).toBe('已加载 4 个节点 · 局部关系')
@@ -310,6 +311,7 @@ describe('renderRelationList', () => {
         warnings: [],
       },
       SOURCES,
+      ['comp-001'],
     )
     renderRelationList(container, relations, { navigate, openBackground })
     const groups = Array.from(container.querySelectorAll('.evidence-relation-group-name')).map(
