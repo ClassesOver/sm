@@ -14,8 +14,7 @@ from .outline import ReportOutline
 
 @dataclass(frozen=True)
 class NarrativeContentBudget:
-    max_findings_per_section: int = 6
-    max_sections: int = 10
+    max_findings_per_section: int = 2000
 
 
 def rank_finding(finding: FindingCard) -> tuple[int, int, int]:
@@ -31,10 +30,6 @@ def rank_finding(finding: FindingCard) -> tuple[int, int, int]:
 def score_finding_relation(left: FindingCard, right: FindingCard) -> float:
     """计算发现是否适合放在同一管理主题中；硬冲突返回负值。"""
 
-    if left.period_start != right.period_start or left.period_end != right.period_end:
-        return -1.0
-    if left.grain != right.grain or left.scope != right.scope:
-        return -1.0
     score = 0.0
     shared_metric = bool(set(left.metric_codes) & set(right.metric_codes))
     related = right.finding_id in left.related_finding_ids or left.finding_id in right.related_finding_ids
@@ -70,8 +65,7 @@ def cluster_findings(
             if scores and min(scores) >= 0 and sum(scores) / len(scores) > best_score and len(group) < budget.max_findings_per_section:
                 best, best_score = group, sum(scores) / len(scores)
         if best is None:
-            # Keep every finding. Callers may use max_sections to select body
-            # groups and place the remaining groups in an appendix.
+            # Keep every finding; chapter selection remains a management decision.
             groups.append([finding.finding_id])
         else:
             best.append(finding.finding_id)
@@ -86,12 +80,12 @@ def build_narrative_planning_context(
     budget = content_budget or NarrativeContentBudget()
     cards = sorted(graph.findings, key=rank_finding, reverse=True)
     groups = cluster_findings(graph, budget)
-    body_groups = groups[: budget.max_sections]
-    overflow = [finding_id for group in groups[budget.max_sections:] for finding_id in group]
+    body_groups = groups
+    overflow: list[str] = []
     return {
         "reportGoal": report_goal,
         "snapshotHash": graph.snapshot_hash,
-        "contentBudget": {"maxFindingsPerSection": budget.max_findings_per_section, "maxSections": budget.max_sections},
+        "contentBudget": {"maxFindingsPerSection": budget.max_findings_per_section},
         "candidateGroups": [list(group) for group in body_groups],
         "overflowFindingIds": overflow,
         # 文件溯源身份留在服务端图谱；提纲只消费管理语义和分组边界。
@@ -166,28 +160,12 @@ def build_fallback_narrative_candidate(
         body = (max(graph.findings, key=rank_finding),)
     body_ids = {card.finding_id for card in body}
     appendix_ids = tuple(card.finding_id for card in graph.findings if card.finding_id not in body_ids)
-    groups = cluster_findings(graph.model_copy(update={'findings': body}),
-                              NarrativeContentBudget(max_findings_per_section=200))
-    if len(groups) > NarrativeContentBudget().max_sections:
-        # 容量不足时，将同期间、同粒度、同口径的高优先级发现合并为经营概况，
-        # 不能为了章数上限把它们移入附录或丢弃。低优先级分组仍保留原主题。
-        compacted: list[list[str]] = []
-        for group in groups:
-            if any(cards[item].priority == "high" for item in group):
-                target = next((existing for existing in compacted
-                    if any(cards[item].priority == "high" for item in existing)
-                    and len(existing) + len(group) <= 200
-                    and all(score_finding_relation(cards[left], cards[right]) >= 0
-                            for left in existing for right in group)), None)
-                if target is not None:
-                    target.extend(group)
-                    continue
-            compacted.append(list(group))
-        groups = tuple(tuple(group) for group in compacted)
-    for body_count in range(min(len(groups), NarrativeContentBudget().max_sections), 0, -1):
+    groups = cluster_findings(
+        graph.model_copy(update={"findings": body}),
+        NarrativeContentBudget(max_findings_per_section=max(1, len(body))),
+    )
+    for body_count in range(len(groups), 0, -1):
         appendix = (*appendix_ids, *(item for group in groups[body_count:] for item in group))
-        if body_count + (len(appendix) + 199) // 200 > NarrativeContentBudget().max_sections:
-            continue
         if any(cards[item].priority == "high" for item in appendix):
             continue
         return NarrativeOutlineCandidate(

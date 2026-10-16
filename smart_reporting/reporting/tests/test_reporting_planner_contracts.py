@@ -1469,10 +1469,10 @@ def test_outline_schema_exposes_analysis_id_pattern() -> None:
     ]
 
     assert analysis_id_items["pattern"] == "^analysis_[0-9]{3,6}$"
-    assert schema["properties"]["sections"]["maxItems"] == 10
+    assert "maxItems" not in schema["properties"]["sections"]
 
 
-def test_outline_limits_chapters_without_dropping_analysis_coverage() -> None:
+def test_outline_preserves_analysis_coverage_without_fixed_chapter_limit() -> None:
     analyses = [
         {"analysisId": f"analysis_{index:03d}", "managementQuestion": f"经营问题{index}"}
         for index in range(1, 21)
@@ -1496,15 +1496,14 @@ def test_outline_limits_chapters_without_dropping_analysis_coverage() -> None:
         item["analysisId"] for item in analyses
     ]
 
-    # 同一批分析仅拆章、不增加内容，也必须受上限约束。
+    # 章节数量由管理主题决定，不因数量超过十章而拒绝完整提纲。
     proposal["sections"][-1]["analysisIds"] = ["analysis_019"]
     proposal["sections"].append({"title": "额外主题", "analysisIds": ["analysis_020"]})
-    with pytest.raises(ValidationError) as caught:
-        ReportOutlineProposal.model_validate(proposal)
-    assert any(
-        issue["loc"] == ("sections",) and issue["type"] == "too_long"
-        for issue in caught.value.errors()
-    )
+    expanded = freeze_outline(proposal, analyses=analyses)
+    assert len(expanded.sections) == 11
+    assert [item for section in expanded.sections for item in section.analysis_ids] == [
+        item["analysisId"] for item in analyses
+    ]
 
 
 def test_freeze_outline_derives_focus_from_signed_management_questions() -> None:

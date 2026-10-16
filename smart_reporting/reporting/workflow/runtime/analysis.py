@@ -2502,11 +2502,11 @@ class RuntimeAnalysisMixin:
                 "appendixFindingIds": [item for candidate in planned for item in candidate.appendix_finding_ids],
                 "omittedFindings": [item for candidate in planned for item in candidate.omitted_findings],
                 "highPriorityFindingIds": [card.finding_id for card in graph.findings if card.priority == "high"],
-                "contentBudget": {"maxSections": 30, "maxFindingsPerSection": 200},
+                "contentBudget": {"maxFindingsPerSection": 2000},
                 "requiredAction": (
                     "统筹各批次主题，合并跨批次重复主题，按管理问题重新分配所有发现。"
                     "保持候选主题的期间、范围和粒度边界；高优先级发现必须进入正文。"
-                    "纯统计限制放入附录，不为每个批次增加正文。附录每200条也占一个章节，总章节不超过30。"
+                    "纯统计限制放入一个附录章节，不为每个批次增加正文。"
                     "每个 findingId 必须且只能归属一次；返回完整 NarrativeOutlineCandidate。"
                 ),
             }

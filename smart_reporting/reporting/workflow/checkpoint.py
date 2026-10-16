@@ -793,10 +793,8 @@ class ReportingCheckpoint(StrictModel):
     narrative_outline_hash: str | None = Field(
         default=None, alias="narrativeOutlineHash", pattern=SHA256_PATTERN
     )
-    completed_sections: tuple[CompletedSection, ...] = Field(
-        default=(), alias="completedSections", max_length=100
-    )
-    pending_sections: tuple[str, ...] = Field(default=(), alias="pendingSections", max_length=100)
+    completed_sections: tuple[CompletedSection, ...] = Field(default=(), alias="completedSections")
+    pending_sections: tuple[str, ...] = Field(default=(), alias="pendingSections")
     warnings: tuple[dict[str, Any], ...] = Field(default=(), max_length=500)
     last_error: CheckpointError | None = Field(default=None, alias="lastError")
     # 按章保存 visualization_section 失败与预算账本;并发合并时按键合并,

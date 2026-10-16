@@ -1,6 +1,7 @@
 from smart_reporting.reporting.hospital_operation.narrative_planner import (
     NarrativeContentBudget,
     build_compatible_report_outline,
+    build_narrative_planning_context,
     cluster_findings,
     score_finding_relation,
 )
@@ -14,11 +15,11 @@ def test_related_income_and_workload_findings_share_group():
     assert {left.finding_id, right.finding_id} in [set(group) for group in groups]
 
 
-def test_period_or_grain_conflict_does_not_merge():
+def test_same_topic_can_include_hospital_trend_and_department_contribution():
     left = finding(1, grain=("院区",))
-    right = finding(2, grain=("科室",))
+    right = finding(2, kind="attribution", grain=("科室",), periodEnd="2025-10-31")
     groups = cluster_findings(graph(left, right))
-    assert all(set(group) != {left.finding_id, right.finding_id} for group in groups)
+    assert groups == ((left.finding_id, right.finding_id),)
 
 
 def test_cluster_has_content_budget():
@@ -33,12 +34,24 @@ def test_unrelated_domains_are_not_forced_into_same_section():
     assert score_finding_relation(left, right) == 0
 
 
-def test_section_budget_does_not_drop_findings():
-    cards = [finding(i, priority="low") for i in range(1, 4)]
-    groups = cluster_findings(graph(*cards), NarrativeContentBudget(max_sections=1))
-    assert {item for group in groups for item in group} == {
+def test_planning_context_does_not_hide_themes_as_section_overflow():
+    cards = [finding(i, metricCodes=(f"metric_{i}",)) for i in range(1, 15)]
+    context = build_narrative_planning_context(graph(*cards), "识别经营问题")
+    assert {item for group in context["candidateGroups"] for item in group} == {
         card.finding_id for card in cards
     }
+    assert "maxSections" not in context.get("contentBudget", {})
+
+
+def test_default_grouping_does_not_split_theme_by_finding_count():
+    cards = [finding(i, title="收入变化", priority="medium") for i in range(1, 241)]
+    source = graph(*cards)
+    assert cluster_findings(source) == (tuple(card.finding_id for card in cards),)
+    from smart_reporting.reporting.hospital_operation.narrative_planner import build_fallback_narrative_candidate
+
+    candidate = build_fallback_narrative_candidate(source, "经营报告")
+    assert len(candidate.sections) == 1
+    assert candidate.sections[0].finding_ids == tuple(card.finding_id for card in cards)
 
 
 def test_compatible_outline_uses_finding_groups_instead_of_analysis_count():
