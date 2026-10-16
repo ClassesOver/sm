@@ -296,10 +296,7 @@ class RuntimeVisualizationMixin:
                 if isinstance(visualization_sections, dict)
                 else None
             )
-            if isinstance(existing, dict) and (
-                existing.get("charts") != serialized_charts
-                or existing.get("plotDataFiles", []) != list(verified_plot_data)
-            ):
+            if isinstance(existing, dict) and existing.get("charts") != serialized_charts:
                 raise ReportingError(
                     "report_visualization_section_conflict",
                     "当前章节已提交不同的图表事实。",
@@ -423,6 +420,7 @@ class RuntimeVisualizationMixin:
                 if (
                     existing.get("files") != files
                     or existing.get("interactiveFiles", []) != interactive_files
+                    or existing.get("plotDataFiles", []) != verified_plot_data
                 ):
                     raise ReportingError(
                         "report_visualization_section_conflict",

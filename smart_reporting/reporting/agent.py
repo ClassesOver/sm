@@ -107,7 +107,6 @@ from .phase import (
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
@@ -120,7 +119,6 @@ from .phase import (
     reporting_model_route_from_run_context,
     reporting_phase_allows_tool,
     reporting_phase_from_run_context,
-    reporting_python_script_failed,
     reporting_task_kind_from_run_context,
     reporting_thinking_budget_from_run_context,
     reporting_thinking_effort_from_run_context,
@@ -660,22 +658,6 @@ def _reporting_visualization_tool_budget(
             attempt_limit=attempt_limit,
             total_limit=total_limit,
         )
-    if (
-        function_name == "run_python_script"
-        and cumulative_script_failures >= _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT
-    ):
-        _stop_exhausted_visualization_budget(
-            run_context,
-            code="report_visualization_script_failure_limit_exhausted",
-            message="当前可视化 Task 已达到脚本执行失败上限，已停止本次 run。",
-            attempted_count=attempted_count,
-            successful_count=successful_count,
-            in_flight_count=in_flight_count,
-            total_tool_calls=cumulative_total,
-            script_failure_count=cumulative_script_failures,
-            attempt_limit=attempt_limit,
-            total_limit=total_limit,
-        )
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
     in_flight_read_units = _nonnegative_int(stored.get("inFlightReadUnits"))
     in_flight_fact_queries = _nonnegative_int(stored.get("inFlightFactQueries"))
@@ -761,39 +743,6 @@ def _finish_visualization_tool_budget(
     in_flight_tools[counted_tool_name] = max(
         _nonnegative_int(in_flight_tools.get(counted_tool_name)) - 1, 0
     )
-    script_failed = function_name == "run_python_script" and reporting_python_script_failed(result)
-    script_failure_count += int(script_failed)
-    if function_name == "run_python_script" and isinstance(result, Mapping):
-        pending = state.get(REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY)
-        pending = dict(pending) if isinstance(pending, Mapping) else {}
-        dependencies = (
-            run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-        )
-        binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-        external_run_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
-        if script_failed:
-            diagnostics = [
-                line.strip()
-                for line in str(result.get("output", "")).splitlines()
-                if ": ERROR " in line.strip() or line.strip().startswith("[FAIL]")
-            ][:20]
-            pending[identity] = {
-                "lastScriptFailed": True,
-                "diagnostics": diagnostics,
-            }
-        elif not script_failed and any(
-            isinstance(result.get(key), int)
-            and not isinstance(result.get(key), bool)
-            and result.get(key) == 0
-            for key in ("exitCode", "exit_code")
-        ):
-            pending.pop(identity, None)
-            if isinstance(external_run_id, str) and external_run_id:
-                prefix = f"{external_run_id}:"
-                for key in tuple(pending):
-                    if key == external_run_id or key.startswith(prefix):
-                        pending.pop(key, None)
-        state[REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY] = pending
     read_segment_confirmed = (
         counted_tool_name == "read_file"
         and succeeded
@@ -825,37 +774,6 @@ def _finish_visualization_tool_budget(
         "toolCounts": tool_counts,
         "inFlightToolCounts": in_flight_tools,
     }
-    cumulative_total = _nonnegative_int(stored.get("baseTotal")) + attempted_count
-    cumulative_script_failures = (
-        _nonnegative_int(stored.get("baseScriptFailures")) + script_failure_count
-    )
-    if script_failed and cumulative_script_failures >= _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT:
-        _stop_exhausted_visualization_budget(
-            run_context,
-            code="report_visualization_script_failure_limit_exhausted",
-            message="当前可视化 Task 已达到脚本执行失败上限，已停止本次 run。",
-            attempted_count=attempted_count,
-            successful_count=successful_count,
-            in_flight_count=in_flight_count,
-            total_tool_calls=cumulative_total,
-            script_failure_count=cumulative_script_failures,
-            attempt_limit=_nonnegative_int(
-                (
-                    run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
-                    if isinstance(run_context.dependencies, Mapping)
-                    else {}
-                ).get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY)
-            )
-            or _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT,
-            total_limit=_nonnegative_int(
-                (
-                    run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
-                    if isinstance(run_context.dependencies, Mapping)
-                    else {}
-                ).get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)
-            )
-            or _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT,
-        )
 
 
 def _stop_exhausted_visualization_budget(

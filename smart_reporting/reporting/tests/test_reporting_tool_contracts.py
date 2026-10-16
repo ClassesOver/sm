@@ -33,7 +33,6 @@ def _toolkit(*, durable_payload: dict | None = None) -> ReportingToolkit:
             "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
         },
     )
-    toolkit._ensure_visualization_script_settled = AsyncMock()
     toolkit._durable_state = AsyncMock(
         return_value=SimpleNamespace(revision=7, payload=durable_payload or {})
     )
@@ -173,6 +172,27 @@ async def test_section_visualization_allows_zero_chart_submission() -> None:
         "files": [],
         "visualReceipts": [],
     }
+
+
+@pytest.mark.anyio
+async def test_section_visualization_resubmission_of_same_charts_is_idempotent() -> None:
+    toolkit = _toolkit(
+        durable_payload={
+            "visualizationSections": {
+                "section_001": {"charts": [], "files": [], "visualReceipts": []}
+            }
+        }
+    )
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "already_committed"
+    toolkit._apply_durable_command.assert_not_awaited()
 
 
 @pytest.mark.anyio
