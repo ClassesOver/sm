@@ -1,4 +1,6 @@
 import { Schema } from '@milkdown/kit/prose/model'
+import { EditorState } from '@milkdown/kit/prose/state'
+import { EditorView } from '@milkdown/kit/prose/view'
 import { describe, expect, it } from 'vitest'
 
 import { markerDecorations, PROTOCOL_CARET_ANCHOR } from './protocol-plugin'
@@ -35,5 +37,22 @@ describe('protocol marker caret anchors', () => {
     const second = '成本[[analysis:a-1]][[citation:sub-2]]'
     const doc = schema.node('doc', null, [paragraph(schema.text(first)), paragraph(schema.text(second))])
     expect(caretAnchors(doc)).toEqual([1 + first.length, first.length + 2 + 1 + second.length])
+  })
+
+  it('正在预览来源的标记由装饰带上高亮类，其他标记不带', () => {
+    const first = '营收[[citation:sub-1]]'
+    const second = '成本[[citation:sub-2]]'
+    const doc = schema.node('doc', null, [paragraph(schema.text(first)), paragraph(schema.text(second))])
+    const secondStart = first.length + 2 + 1 + '成本'.length
+    const activeTexts = (active: number | null) => {
+      const view = new EditorView(document.createElement('div'), {
+        state: EditorState.create({ doc }), decorations: () => markerDecorations(doc, undefined, active),
+      })
+      const texts = [...view.dom.querySelectorAll('.source-marker-active')].map(node => node.textContent)
+      view.destroy()
+      return texts
+    }
+    expect(activeTexts(secondStart)).toEqual(['[[citation:sub-2]]'])
+    expect(activeTexts(null)).toEqual([])
   })
 })

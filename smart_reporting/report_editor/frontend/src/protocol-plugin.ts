@@ -8,6 +8,9 @@ import type { TraceSources } from './api'
 import { analysisLabel, citationLabel } from './evidence-relations'
 
 const protocolMarkerPluginKey = new PluginKey<DecorationSet>('SMART_REPORT_PROTOCOL_MARKERS')
+/** 正在预览来源的标记（标记组起点的文档位置）。高亮必须经由装饰绘制：直接改标记 DOM 的 class 会被
+ * ProseMirror 视为外部改动并重绘该段，高亮随即丢失、原元素也被替换。 */
+const ACTIVE_MARKER_META = 'smartReportActiveProtocolMarker'
 
 /** 来源标记后的光标落点：标记是不可编辑的内联装饰，紧随其后的文档位置会被映射进标记文字内部，
  * 浏览器随即把光标或选区收拢（段末输入被吞掉，键盘选中标记后的文字得到空选区）。每组标记后加一个空部件，
@@ -20,7 +23,7 @@ function caretAnchor(): HTMLElement {
   return anchor
 }
 
-export function markerDecorations(doc: ProseNode, sources?: TraceSources): DecorationSet {
+export function markerDecorations(doc: ProseNode, sources?: TraceSources, active: number | null = null): DecorationSet {
   const decorations: Decoration[] = []
   doc.descendants((node, position) => {
     if (!node.isText || !node.text) return
@@ -32,7 +35,7 @@ export function markerDecorations(doc: ProseNode, sources?: TraceSources): Decor
         : marker.kind === 'analysis' ? `查看${analysisLabel(marker.value, sources)}的来源` : `查看${citationLabel(marker.value, sources)}`
       decorations.push(
         Decoration.inline(position + marker.start, position + group.at(-1)!.end, {
-          class: `report-protocol-marker ${[...new Set(group.map(item => `report-${item.kind}-marker`))].join(' ')}`,
+          class: `report-protocol-marker ${[...new Set(group.map(item => `report-${item.kind}-marker`))].join(' ')}${position + marker.start === active ? ' source-marker-active' : ''}`,
           'data-marker-kind': marker.kind,
           'data-marker-value': marker.value,
           ...(['analysis', 'citation'].includes(marker.kind) ? {
@@ -69,6 +72,7 @@ function stripCopiedMarkers(fragment: Fragment): Fragment {
 
 export const protocolMarkerPlugin = $prose(() => {
   let sources: TraceSources | undefined
+  let active: number | null = null
   return new Plugin<DecorationSet>({
     key: protocolMarkerPluginKey,
     state: {
@@ -76,7 +80,10 @@ export const protocolMarkerPlugin = $prose(() => {
       apply: (transaction, previous) => {
         const registered = transaction.getMeta(protocolMarkerPluginKey) as TraceSources | undefined
         if (registered) sources = registered
-        return transaction.docChanged || registered ? markerDecorations(transaction.doc, sources) : previous
+        const activeMeta = transaction.getMeta(ACTIVE_MARKER_META) as { position: number | null } | undefined
+        if (activeMeta) active = activeMeta.position
+        else if (active !== null && transaction.docChanged) active = transaction.mapping.map(active)
+        return transaction.docChanged || registered || activeMeta ? markerDecorations(transaction.doc, sources, active) : previous
       },
     },
     filterTransaction: (transaction, state) =>
@@ -91,4 +98,25 @@ export const protocolMarkerPlugin = $prose(() => {
 
 export function updateProtocolSourceLabels(view: EditorView, sources: TraceSources): void {
   view.dispatch(view.state.tr.setMeta(protocolMarkerPluginKey, sources).setMeta('addToHistory', false))
+}
+
+/** 高亮正在预览来源的标记；返回其文档位置，供关闭预览后重新找到标记（高亮重绘会替换标记元素）。 */
+export function activateProtocolMarker(view: EditorView, marker: HTMLElement): number | null {
+  if (!view.dom.contains(marker)) return null
+  const position = view.posAtDOM(marker, 0)
+  view.dispatch(view.state.tr.setMeta(ACTIVE_MARKER_META, { position }).setMeta('addToHistory', false))
+  return position
+}
+
+export function deactivateProtocolMarker(view: EditorView): void {
+  view.dispatch(view.state.tr.setMeta(ACTIVE_MARKER_META, { position: null }).setMeta('addToHistory', false))
+}
+
+/** 按文档位置找到当前渲染的标记元素。 */
+export function protocolMarkerElement(view: EditorView, position: number): HTMLElement | null {
+  if (position < 0 || position >= view.state.doc.content.size) return null
+  const { node, offset } = view.domAtPos(position + 1)
+  const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element).childNodes[offset] ?? node : node
+  const found = (element instanceof Element ? element : element.parentElement)?.closest<HTMLElement>('.report-protocol-marker')
+  return found && view.dom.contains(found) ? found : null
 }

@@ -72,6 +72,31 @@ it('keeps the marker highlighted when the same marker reopens its preview', asyn
   expect(marker.classList.contains('source-marker-active')).toBe(true)
 })
 
+it('highlights through the editor and returns focus to the re-rendered marker after closing', async () => {
+  asyncDialogs()
+  const client = new ReportEditorClient('/test')
+  document.body.innerHTML = '<p>收入<span id="marker" class="report-protocol-marker" tabindex="0"></span></p>'
+  const original = document.getElementById('marker')!
+  // 编辑器绘制高亮时会重绘标记：模拟原元素被同位置的新元素替换。
+  const redrawn = document.createElement('span')
+  redrawn.className = 'report-protocol-marker'
+  redrawn.tabIndex = 0
+  const markers = {
+    activate: vi.fn(() => { original.replaceWith(redrawn); return 7 }),
+    deactivate: vi.fn(),
+    find: vi.fn((position: number) => position === 7 ? redrawn : null),
+  }
+  const preview = createBodySourcePreview({ client, sources: async () => baseSources(), validation: () => null, open: vi.fn(), markers })
+  await preview(original, [{ kind: 'citation', value: 'cite-a' }])
+  expect(markers.activate).toHaveBeenCalledWith(original)
+  expect(original.classList.contains('source-marker-active')).toBe(false)
+  document.querySelector<HTMLDialogElement>('dialog')!.close()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(markers.deactivate).toHaveBeenCalledTimes(1)
+  expect(markers.find).toHaveBeenCalledWith(7)
+  expect(document.activeElement).toBe(redrawn)
+})
+
 it('falls back per reference instead of duplicating every link after a partial failure', async () => {
   asyncDialogs()
   const client = new ReportEditorClient('/test')

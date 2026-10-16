@@ -16,6 +16,7 @@ import '@milkdown/crepe/theme/frame.css'
 import './style.css'
 
 import { editorViewCtx } from '@milkdown/kit/core'
+import type { EditorView } from '@milkdown/kit/prose/view'
 import { indent } from '@milkdown/kit/plugin/indent'
 import { trailing } from '@milkdown/kit/plugin/trailing'
 import { outline } from '@milkdown/kit/utils'
@@ -50,7 +51,7 @@ import {
   createEditorPreferenceController,
   installEditorShortcuts,
 } from './enhancements'
-import { protocolMarkerPlugin, updateProtocolSourceLabels } from './protocol-plugin'
+import { activateProtocolMarker, deactivateProtocolMarker, protocolMarkerElement, protocolMarkerPlugin, updateProtocolSourceLabels } from './protocol-plugin'
 import { createBodySourcePreview } from './body-source-preview'
 import { editReviewMode, editReviewObserver, type EditReviewMode } from './edit-review'
 import { evidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
@@ -354,8 +355,15 @@ shell.sources.addEventListener('click', () => {
   document.querySelector<HTMLDialogElement>('.report-source-preview')?.close('selected')
   evidenceBrowser.open()
 })
+// 编辑器视图在异步创建后登记；来源预览经由它绘制标记高亮、找回标记。
+let bodyMarkerView: EditorView | undefined
 const previewBodySource = createBodySourcePreview({
   client,
+  markers: {
+    activate: marker => bodyMarkerView ? activateProtocolMarker(bodyMarkerView, marker) : null,
+    deactivate: () => { if (bodyMarkerView) deactivateProtocolMarker(bodyMarkerView) },
+    find: position => bodyMarkerView ? protocolMarkerElement(bodyMarkerView, position) : null,
+  },
   sources: loadBodyCatalog,
   validation: () => currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null,
   restore: subjectId => restoreBodyValue(subjectId),
@@ -516,6 +524,7 @@ try {
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
   const evidenceView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+  bodyMarkerView = evidenceView
   const reviewBanner = document.createElement('div')
   reviewBanner.className = 'report-ai-review-status'
   reviewBanner.setAttribute('role', 'status')
