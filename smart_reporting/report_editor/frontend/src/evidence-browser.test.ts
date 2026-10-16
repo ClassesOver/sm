@@ -437,7 +437,7 @@ describe('evidence browser shell', () => {
     await flush()
     await flush()
     expect(sources).toHaveBeenCalledTimes(2)
-    expect(shell.querySelector('.evidence-directory-empty')?.textContent).toBe('来源目录加载失败')
+    expect(shell.querySelector('.evidence-directory-empty p')?.textContent).toBe('来源目录加载失败，请检查网络后重试')
     expect(shell.querySelectorAll('.evidence-directory-notice')).toHaveLength(0)
     // 起始页同样不再沿用上一次加载（旧修订）的原因说明。
     expect(shell.querySelectorAll('.evidence-start-notice')).toHaveLength(0)
@@ -492,6 +492,82 @@ describe('evidence browser shell', () => {
     expect(items.map((item) => item.querySelector('.evidence-directory-label')?.textContent)).toEqual(['渠道收入汇总'])
     expect(items[0]!.querySelector('.evidence-directory-id .evidence-match')?.textContent).toBe('comp-1')
     expect(shell.querySelectorAll('.evidence-tab')).toHaveLength(1)
+  })
+
+  it('directory search shows match count and kind-colored groups, Escape clears', async () => {
+    const { shell, browser } = setup()
+    browser.open()
+    await flush()
+    await flush()
+    const search = shell.querySelector<HTMLInputElement>('.evidence-directory-search')!
+    const match = shell.querySelector<HTMLElement>('.evidence-directory-match')!
+    // 未搜索时不显示计数
+    expect(match.hidden).toBe(true)
+    search.value = '渠道'
+    search.dispatchEvent(new Event('input'))
+    expect(match.hidden).toBe(false)
+    expect(match.textContent).toBe('找到 1 项匹配')
+    // 分组标题带类型色
+    const group = shell.querySelector<HTMLElement>('.evidence-directory-group')!
+    expect(group.style.getPropertyValue('--kind-color')).toBeTruthy()
+    // Esc 清空搜索并恢复全部条目
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(search.value).toBe('')
+    expect(match.hidden).toBe(true)
+    expect(shell.querySelectorAll('.evidence-directory-item').length).toBeGreaterThan(1)
+  })
+
+  it('directory groups expand and collapse, filter forces expansion', async () => {
+    const { shell, browser } = setup()
+    browser.open()
+    await flush()
+    await flush()
+    const groups = [...shell.querySelectorAll<HTMLButtonElement>('.evidence-directory-group')]
+    expect(groups.length).toBeGreaterThan(1)
+    const first = groups[0]!
+    expect(first.getAttribute('aria-expanded')).toBe('true')
+    const itemsBefore = shell.querySelectorAll('.evidence-directory-item').length
+    first.click()
+    const collapsed = shell.querySelectorAll<HTMLButtonElement>('.evidence-directory-group')[0]!
+    expect(collapsed.getAttribute('aria-expanded')).toBe('false')
+    const list = collapsed.nextElementSibling as HTMLElement
+    expect(list.className).toBe('evidence-directory-items')
+    expect(list.hidden).toBe(true)
+    const visible = [...shell.querySelectorAll('.evidence-directory-item')]
+      .filter((item) => !item.closest('.evidence-directory-items[hidden]'))
+    expect(visible.length).toBeLessThan(itemsBefore)
+    // 搜索时强制展开，保证匹配项可见
+    const search = shell.querySelector<HTMLInputElement>('.evidence-directory-search')!
+    search.value = '渠道'
+    search.dispatchEvent(new Event('input'))
+    const reopened = shell.querySelector<HTMLButtonElement>('.evidence-directory-group')!
+    expect(reopened.getAttribute('aria-expanded')).toBe('true')
+    expect(shell.querySelector('.evidence-directory-item')).not.toBeNull()
+  })
+
+  it('directory toggle-all collapses and expands every group', async () => {
+    const { shell, browser } = setup()
+    browser.open()
+    await flush()
+    await flush()
+    const toggleAll = shell.querySelector<HTMLButtonElement>('.evidence-directory-toggle-all')!
+    // 多分组时可见
+    expect(toggleAll.hidden).toBe(false)
+    expect(toggleAll.textContent).toBe('全部收起')
+    toggleAll.click()
+    const groups = [...shell.querySelectorAll<HTMLButtonElement>('.evidence-directory-group')]
+    expect(groups.length).toBeGreaterThan(1)
+    for (const group of groups) expect(group.getAttribute('aria-expanded')).toBe('false')
+    expect(toggleAll.textContent).toBe('全部展开')
+    toggleAll.click()
+    for (const group of shell.querySelectorAll<HTMLButtonElement>('.evidence-directory-group')) {
+      expect(group.getAttribute('aria-expanded')).toBe('true')
+    }
+    // 搜索时隐藏，避免与强制展开冲突
+    const search = shell.querySelector<HTMLInputElement>('.evidence-directory-search')!
+    search.value = '渠道'
+    search.dispatchEvent(new Event('input'))
+    expect(shell.querySelector<HTMLButtonElement>('.evidence-directory-toggle-all')!.hidden).toBe(true)
   })
 
   it('report tab hides the shell and keeps task state for reopening', async () => {
