@@ -16,6 +16,7 @@ import '@milkdown/crepe/theme/frame.css'
 import './style.css'
 
 import { editorViewCtx } from '@milkdown/kit/core'
+import type { EditorView } from '@milkdown/kit/prose/view'
 import { indent } from '@milkdown/kit/plugin/indent'
 import { trailing } from '@milkdown/kit/plugin/trailing'
 import { outline } from '@milkdown/kit/utils'
@@ -50,7 +51,7 @@ import {
   createEditorPreferenceController,
   installEditorShortcuts,
 } from './enhancements'
-import { protocolMarkerPlugin, updateProtocolSourceLabels } from './protocol-plugin'
+import { activateProtocolMarker, deactivateProtocolMarker, protocolMarkerElement, protocolMarkerPlugin, updateProtocolSourceLabels } from './protocol-plugin'
 import { createBodySourcePreview } from './body-source-preview'
 import { editReviewMode, editReviewObserver, type EditReviewMode } from './edit-review'
 import { evidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
@@ -361,8 +362,15 @@ shell.sources.addEventListener('click', () => {
   document.querySelector<HTMLDialogElement>('.report-source-preview')?.close('selected')
   evidenceBrowser.open()
 })
+// 编辑器视图在异步创建后登记；来源预览经由它绘制标记高亮、找回标记。
+let bodyMarkerView: EditorView | undefined
 const previewBodySource = createBodySourcePreview({
   client,
+  markers: {
+    activate: marker => bodyMarkerView ? activateProtocolMarker(bodyMarkerView, marker) : null,
+    deactivate: () => { if (bodyMarkerView) deactivateProtocolMarker(bodyMarkerView) },
+    find: position => bodyMarkerView ? protocolMarkerElement(bodyMarkerView, position) : null,
+  },
   sources: loadBodyCatalog,
   validation: () => currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null,
   restore: subjectId => restoreBodyValue(subjectId),
@@ -523,6 +531,7 @@ try {
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
   const evidenceView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+  bodyMarkerView = evidenceView
   const reviewBanner = document.createElement('div')
   reviewBanner.className = 'report-ai-review-status'
   reviewBanner.setAttribute('role', 'status')
@@ -701,8 +710,8 @@ try {
   shell.search.addEventListener('click', () => searchController.open())
   const historyController = createHistoryController(
     root,
-    async (markdown, historyRevision) => {
-      if (historyRevision === undefined) {
+    async (markdown, historyRevision, sourceRevision) => {
+      if (historyRevision === undefined && sourceRevision === undefined) {
         // 会话快照可能包含当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
         crepe.editor.action(replaceAll(markdown, true))
         status('会话快照已恢复为草稿', 'dirty')
@@ -713,7 +722,10 @@ try {
       try {
         await saveNow()
         sourceValidation.cancel()
-        const restored = await client.restoreHistory(historyRevision, sha256)
+        const restored = await client.restoreHistory(
+          (historyRevision ?? sourceRevision)!, sha256,
+          historyRevision === undefined ? markdown : undefined,
+        )
         sha256 = restored.sha256
         lastSavedMarkdown = restored.markdown
         currentMarkdown = restored.markdown
@@ -749,7 +761,10 @@ try {
   draftController.offer(documentState.markdown)
   initialFormalHeadings = formalHeadings(documentState.markdown)
   if (metricsLabel) metricsLabel.textContent = documentMetrics(documentState.markdown)
-  historyController.record(`${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown)
+  historyController.record(
+    `${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown,
+    documentState.sourceRevision ?? Number(revision),
+  )
   createImagePreview(shell.editor)
   updateOutline(crepe.editor.action(outline()))
   scheduleSourceValidation()
@@ -781,7 +796,7 @@ try {
     }
     if (savePromise) {
       await savePromise
-      if (currentMarkdown !== lastSavedMarkdown) return saveNow()
+      if (getEditorMarkdown() !== lastSavedMarkdown) return saveNow()
       return
     }
     const markdown = getEditorMarkdown()
@@ -804,7 +819,7 @@ try {
         savedEditorDoc = savingEditorDoc
         saveState?.saved(savingMarkdown)
         if (currentMarkdown === savingMarkdown) draftController?.clear()
-        historyController.record(savedLabel(), savingMarkdown)
+        historyController.record(savedLabel(), savingMarkdown, saved.sourceRevision)
         void telemetry.record({
           event: 'save_succeeded',
           durationMs: Math.round(performance.now() - saveStartedAt),
@@ -830,10 +845,12 @@ try {
               base: lastSavedMarkdown,
               remote: remote.markdown,
             }
-            conflictPanel?.show(lastSavedMarkdown, savingMarkdown, remote.markdown)
+            // 请求及远端载入期间可能继续输入；合并面板必须保留当前正文。
+            conflictPanel?.show(lastSavedMarkdown, getEditorMarkdown(), remote.markdown)
             showConflictStatus()
           } catch {
-            status('保存冲突 · 点击重试载入远端', 'error', () => void recoverFromConflict())
+            // 重试仍走 CAS 保存和冲突选择，不能把网络恢复当作采用远端的授权。
+            status('保存冲突 · 点击重试处理', 'error', saveInBackground)
           }
         } else {
           status(errorLabel(error), 'error', saveInBackground)
@@ -844,6 +861,8 @@ try {
         savePromise = null
       })
     await savePromise
+    // 保存期间仍可能输入；导出等调用者必须等最新正文保存后才能继续。
+    if (getEditorMarkdown() !== lastSavedMarkdown) return saveNow()
   }
 
   const networkLabel = root.querySelector<HTMLElement>('.network-status')

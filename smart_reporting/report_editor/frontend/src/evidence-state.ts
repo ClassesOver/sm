@@ -277,5 +277,3 @@ export function createEvidenceState(store: EvidenceStore = { tasks: [], active: 
     updatePage,
   }
 }
-
-export type EvidenceState = ReturnType<typeof createEvidenceState>
