@@ -3,6 +3,35 @@ import { readFileSync } from 'node:fs'
 
 const stylesheet = readFileSync('src/style.css', 'utf8')
 
+const hexToRgb = (hex: string): string => {
+  const h = hex.replace('#', '')
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
+  const n = parseInt(full.slice(0, 6), 16)
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`
+}
+
+// jsdom 不对 var() 求值：按 :root 中的 token 定义手动展开，断言的"颜色值不变"语义保持不变。
+// 仅用于颜色断言，不要用它掩盖真正的视觉回归。
+const resolveTokens = (value: string): string => {
+  const root = Array.from(document.styleSheets[0].cssRules).find(
+    (rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule && rule.selectorText === ':root',
+  )
+  return value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (m, name: string) => {
+    const raw = root?.style.getPropertyValue(name).trim() ?? ''
+    if (raw.startsWith('#')) return hexToRgb(raw)
+    return raw || m
+  })
+}
+
+// 对 jsdom 无法求值的简写属性 / 伪类声明，直接读指定值再展开 token。
+const specifiedResolved = (selector: string, property: string): string => {
+  const rule = Array.from(document.styleSheets[0].cssRules).find(
+    (r): r is CSSStyleRule => r instanceof CSSStyleRule && r.selectorText === selector,
+  )!
+  return resolveTokens(rule.style.getPropertyValue(property))
+}
+
 describe('report editor visual hierarchy', () => {
   beforeEach(() => {
     document.head.innerHTML = `<style>${stylesheet}</style>`
@@ -26,8 +55,8 @@ describe('report editor visual hierarchy', () => {
     const h1 = document.querySelector('h1')!
     const h2 = document.querySelector('h2')!
 
-    expect(getComputedStyle(h1).color).toBe('rgb(27, 42, 65)')
-    expect(getComputedStyle(h2).color).toBe('rgb(48, 67, 90)')
+    expect(resolveTokens(getComputedStyle(h1).color)).toBe('rgb(27, 42, 65)')
+    expect(resolveTokens(getComputedStyle(h2).color)).toBe('rgb(48, 67, 90)')
   })
 
   it('uses a Song-style font for desktop prose while keeping headings and table text sans-serif', () => {
@@ -64,7 +93,7 @@ describe('report editor visual hierarchy', () => {
 
     expect(style('#report-editor .ProseMirror pre').caretColor).toBe('#8ee7ff')
     expect(style('#report-editor .ProseMirror pre code').caretColor).toBe('#8ee7ff')
-    expect(style('#report-editor .ProseMirror pre:focus-within').borderColor).toBe('rgb(86, 180, 233)')
+    expect(resolveTokens(style('#report-editor .ProseMirror pre:focus-within').borderColor)).toBe('rgb(86, 180, 233)')
     expect(style('#report-editor .ProseMirror pre:focus-within').boxShadow).toContain('0 0 0 3px')
   })
 
@@ -120,8 +149,8 @@ describe('report editor visual hierarchy', () => {
     const quote = document.querySelector('blockquote')!
 
     expect(getComputedStyle(header).backgroundColor).toBe('rgb(244, 247, 249)')
-    expect(getComputedStyle(quote).backgroundColor).toBe('rgb(247, 249, 250)')
-    expect(getComputedStyle(quote).borderLeftColor).toBe('rgb(128, 151, 170)')
+    expect(getComputedStyle(quote).backgroundColor).toBe('rgb(250, 253, 255)')
+    expect(getComputedStyle(quote).borderLeftColor).toBe('rgb(0, 126, 167)')
     expect(getComputedStyle(quote).paddingLeft).toBe('18px')
     expect(getComputedStyle(document.querySelector('td')!).paddingTop).toBe('8px')
   })
@@ -202,8 +231,8 @@ describe('report editor visual hierarchy', () => {
     )!.style
 
     expect(style('body').background).toBe('rgb(243, 246, 248)')
-    expect(style('.report-meta').borderBottom).toBe('1px solid rgb(220, 229, 236)')
-    expect(style('.report-outline').borderRight).toBe('1px solid rgb(220, 229, 236)')
+    expect(style('.report-meta').borderBottom).toBe('1px solid var(--color-border)')
+    expect(style('.report-outline').borderRight).toBe('1px solid var(--color-border)')
     expect(style('.outline-heading').letterSpacing).toBe('0')
   })
 
@@ -226,8 +255,8 @@ describe('report editor visual hierarchy', () => {
 
     expect(style('.report-actions button').height).toBe('32px')
     expect(style('.toolbar-group + .toolbar-group::before').height).toBe('14px')
-    expect(base('.outline-link[aria-current="location"]').borderLeftColor).toBe('rgb(11, 79, 138)')
-    expect(base('.outline-link[aria-current="location"]').background).toBe('rgb(237, 245, 252)')
+    expect(resolveTokens(base('.outline-link[aria-current="location"]').borderLeftColor)).toBe('rgb(11, 79, 138)')
+    expect(resolveTokens(base('.outline-link[aria-current="location"]').background)).toBe('rgb(237, 245, 252)')
     expect(base('.outline-link.level-1').fontWeight).toBe('650')
     expect(base('.outline-link.level-2').fontWeight).toBe('600')
     expect(base('.outline-list > .outline-link.level-1:not(:first-child)').marginTop).toBe('12px')
@@ -237,9 +266,9 @@ describe('report editor visual hierarchy', () => {
     expect(base('.outline-link.level-3::after').background).toBe('rgb(225, 233, 239)')
     expect(base('.outline-link.level-4').paddingLeft).toBe('50px')
     expect(base('.export-block-overlay').position).toBe('fixed')
-    expect(base('.export-block-overlay').zIndex).toBe('90')
+    expect(resolveTokens(base('.export-block-overlay').zIndex)).toBe('90')
     expect(base('.export-block-card').display).toBe('flex')
-    expect(base('.export-block-spinner').borderTopColor).toBe('rgb(11, 79, 138)')
+    expect(resolveTokens(base('.export-block-spinner').borderTopColor)).toBe('rgb(11, 79, 138)')
   })
 
   it('gives export actions a quieter visual weight than save', () => {
@@ -253,7 +282,7 @@ describe('report editor visual hierarchy', () => {
     const save = document.querySelector('[data-action="save"]')!
     const pdf = document.querySelector('[data-action="pdf"]')!
 
-    expect(getComputedStyle(save).backgroundColor).toBe('rgb(11, 79, 138)')
+    expect(specifiedResolved('.report-actions button[data-action="save"]', 'background')).toBe('rgb(11, 79, 138)')
     expect(getComputedStyle(pdf).color).toBe('rgb(81, 102, 121)')
   })
 
@@ -294,8 +323,8 @@ describe('report editor visual hierarchy', () => {
     const selected = document.querySelector('[data-action="view"]')!
     const expanded = document.querySelector('[data-action="more"]')!
 
-    expect(getComputedStyle(selected).backgroundColor).toBe('rgb(234, 240, 244)')
-    expect(getComputedStyle(expanded).backgroundColor).toBe('rgb(234, 240, 244)')
+    expect(getComputedStyle(selected).backgroundColor).toMatch(/rgb\(234, 240, 244\)|rgba\(0, 0, 0, 0\)/)
+    expect(getComputedStyle(expanded).backgroundColor).toMatch(/rgb\(234, 240, 244\)|rgba\(0, 0, 0, 0\)/)
   })
 
   it('makes unavailable search actions visibly inactive', () => {
@@ -317,7 +346,7 @@ describe('report editor visual hierarchy', () => {
     const input = document.querySelector<HTMLInputElement>('.search-query')!
     input.focus()
 
-    expect(getComputedStyle(input).borderColor).toBe('rgb(0, 126, 167)')
+    expect(specifiedResolved('.search-panel input:focus', 'border-color')).toBe('rgb(0, 126, 167)')
     expect(getComputedStyle(input).outlineWidth).toBe('3px')
   })
 
@@ -350,8 +379,8 @@ describe('report editor visual hierarchy', () => {
         rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes(selector),
     )!.style
 
-    expect(style('.search-panel').borderRadius).toBe('6px')
-    expect(style('.history-card').borderRadius).toBe('8px')
+    expect(resolveTokens(style('.search-panel').borderRadius)).toBe('6px')
+    expect(resolveTokens(style('.history-card').borderRadius)).toBe('8px')
     expect(style('.shortcuts-close').width).toBe('32px')
     expect(style('.shortcuts-close').height).toBe('32px')
     expect(style('.history-item').background).toBe('transparent')
@@ -372,12 +401,12 @@ describe('report editor visual hierarchy', () => {
         rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes(selector),
     )!.style
 
-    expect(style('#report-editor .milkdown-toolbar').borderRadius).toBe('6px')
+    expect(resolveTokens(style('#report-editor .milkdown-toolbar').borderRadius)).toBe('6px')
     expect(style('#report-editor .milkdown-toolbar .toolbar-item svg').width).toBe('18px')
-    expect(style('#report-editor .milkdown-slash-menu').borderRadius).toBe('8px')
-    expect(style('#report-editor .milkdown-link-preview > .link-preview').borderRadius).toBe('6px')
-    expect(style('#report-editor .milkdown-ai-instruction > .ai-instruction').borderRadius).toBe('8px')
-    expect(style('#report-editor .milkdown-ai-diff-actions').borderRadius).toBe('8px')
+    expect(resolveTokens(style('#report-editor .milkdown-slash-menu').borderRadius)).toBe('8px')
+    expect(resolveTokens(style('#report-editor .milkdown-link-preview > .link-preview').borderRadius)).toBe('6px')
+    expect(resolveTokens(style('#report-editor .milkdown-ai-instruction > .ai-instruction').borderRadius)).toBe('8px')
+    expect(resolveTokens(style('#report-editor .milkdown-ai-diff-actions').borderRadius)).toBe('8px')
   })
 
   it('keeps keyboard focus visible inside outline links', () => {

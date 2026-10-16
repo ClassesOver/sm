@@ -33,10 +33,29 @@ import {
   subjectShortId,
   type EvidenceRelations,
 } from './evidence-relations'
+import { buildDiorama } from './evidence-3d-diorama'
+import { extendStageLayout } from './evidence-3d-layout'
+import { CARD_WORLD, drawEvidenceCard, EVIDENCE_3D_THEME, laneCanvas, type EvidenceCardState } from './evidence-3d-theme'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 import { sourceSubjectStatus } from './source-status'
-import { ArrowRight, CircleAlert, createElement, Expand, ExternalLink, LocateFixed, Network, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide'
+import { ArrowRight, CircleAlert, createElement, Expand, ExternalLink, LocateFixed, Network, Rotate3d, RotateCcw, Tags, X, ZoomIn, ZoomOut } from 'lucide'
+
+type GraphPoint3d = { x: number; y: number; z: number }
+// 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
+const graph3dViews = new WeakMap<EvidencePage, { position: GraphPoint3d; target: GraphPoint3d; up: GraphPoint3d; baseDistance: number; width: number; height: number; focusPicker: boolean }>()
+const PARALLAX_STORAGE_KEY = 'smart-reporting-evidence-3d-parallax'
+
+/** 视差偏好按浏览器记住；存储不可用时默认开启。 */
+function readParallaxPreference(): boolean {
+  try { return window.localStorage.getItem(PARALLAX_STORAGE_KEY) !== 'off' } catch { return true }
+}
+
+function writeParallaxPreference(enabled: boolean): void {
+  try { window.localStorage.setItem(PARALLAX_STORAGE_KEY, enabled ? 'on' : 'off') } catch { /* 存储不可用时只在本页生效 */ }
+}
+
+const graph3dPositions = new WeakMap<EvidenceGraph, Map<string, GraphPoint3d>>()
 
 /**
  * 证据浏览器对象页渲染契约（证据浏览器 v6）。
@@ -94,6 +113,9 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
 }
 
 const KIND_COLORS = EVIDENCE_KIND_COLORS
+const THEME = EVIDENCE_3D_THEME
+const STAGE_NUMERALS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨']
+const STAGE_KIND_NAMES: Record<EvidenceObjectKind, string> = { dataset: '数据快照', computation: '计算', fact: '事实', chart: '图表', subject: '正文引用' }
 
 const TRACE_ERROR_LABELS: Record<string, string> = {
   source_missing: '来源不存在或不在当前修订中',
@@ -352,7 +374,20 @@ async function labelsSettled(ctx: EvidencePageContext): Promise<boolean> {
 function showLoading(container: HTMLElement): void {
   const loading = document.createElement('p')
   loading.className = 'evidence-placeholder'
-  loading.textContent = '对象详情加载中…'
+  loading.setAttribute('aria-label', '对象详情加载中')
+  const label = document.createElement('span')
+  label.className = 'visually-hidden'
+  label.textContent = '对象详情加载中…'
+  loading.append(label)
+  const sk = document.createElement('div')
+  sk.className = 'evidence-detail-skeleton'
+  sk.setAttribute('aria-hidden', 'true')
+  for (let i = 0; i < 4; i++) {
+    const row = document.createElement('div')
+    row.className = 'evidence-detail-skeleton-row'
+    sk.append(row)
+  }
+  loading.append(sk)
   container.append(loading)
 }
 
@@ -425,6 +460,16 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   controls.setAttribute('role', 'toolbar')
   controls.setAttribute('aria-label', '关系图工具')
   const allNodes = [relations.center, ...relations.nodes.filter((node) => !sameEvidenceRef(node, relations.center))]
+  // 未手动切换时，小图（≤15 个节点）用 2D 平面图更易读，较大的图用 3D。
+  const graphMode = effectiveGraphMode(ctx.page.graphMode, allNodes.length)
+  const modeToggle = makeButton(graphMode === '3d' ? '2D' : '3D', 'evidence-icon-button evidence-graph-mode-toggle')
+  modeToggle.setAttribute('aria-label', graphMode === '3d' ? '切换到 2D 关系图' : '切换到 3D 关系图')
+  modeToggle.title = graphMode === '3d' ? '当前为 3D，切换到 2D' : '当前为 2D，切换到 3D'
+  modeToggle.addEventListener('click', () => {
+    ctx.updatePage({ graphMode: graphMode === '3d' ? '2d' : '3d' })
+    rerender()
+  })
+  controls.append(modeToggle)
   const zoomOut = makeButton('', 'evidence-icon-button')
   const zoomIn = makeButton('', 'evidence-icon-button')
   const fit = makeButton('', 'evidence-icon-button')
@@ -449,6 +494,775 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   host.append(controls)
   const graph = ctx.graph!
 
+  // 3D 只在真实浏览器 WebGL 环境启用；无 WebGL（例如单测 DOM）继续使用同一套 2D 关系图。
+  const canRender3d = graphMode === '3d' && (() => {
+    if (typeof WebGLRenderingContext === 'undefined') return false
+    try {
+      const canvas = document.createElement('canvas')
+      const context = canvas.getContext('webgl')
+      // 能力探针不参与渲染，检查后主动释放其临时上下文。
+      context?.getExtension('WEBGL_lose_context')?.loseContext()
+      return Boolean(context)
+    } catch { return false }
+  })()
+  if (canRender3d) {
+    for (const button of [fit, zoomOut, zoomIn, reset, locate]) button.disabled = true
+    const viewport = document.createElement('div')
+    viewport.className = 'evidence-graph-3d'
+    viewport.setAttribute('role', 'img')
+    viewport.setAttribute('aria-label', `3D 关系图；实线箭头表示登记关系${allNodes.length <= 15 ? '，虚线仅连接节点与名称' : ''}；请使用关系列表中的文字入口`)
+    viewport.addEventListener('auxclick', event => {
+      if (event.button === 1) event.preventDefault()
+    })
+    host.append(viewport)
+    const cameraReadout = document.createElement('div')
+    cameraReadout.className = 'evidence-camera-readout'
+    cameraReadout.setAttribute('role', 'group')
+    cameraReadout.setAttribute('aria-label', '3D 视角刻度')
+    cameraReadout.title = '缩放以初始适应视图为100%；旋转单位为度'
+    cameraReadout.textContent = '缩放 —\n旋转 —'
+    const nodeData = allNodes.map(node => ({ id: evidenceRefId(node), ref: node, label: node.label }))
+    const linkData = [...graph.edges].map(([id, edge]) => ({
+      id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
+    }))
+    const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, three]) => {
+    const { AmbientLight, BufferAttribute, CanvasTexture, Color, CubicBezierCurve3, DoubleSide, FogExp2, Group, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, TubeGeometry, Vector3 } = three
+    if (ctx.isStale() || !viewport.isConnected) return
+    const icons = EVIDENCE_KIND_ICONS
+    // 类型图标先解码为位图，再绘入卡片贴图；加载失败的图标留空，不影响卡片其余信息。
+    const iconImages = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
+      const svg = createElement(icons[kind], { width: 48, height: 48, color: THEME.kinds[kind], 'stroke-width': 2 })
+      const image = new Image()
+      image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`
+      // 解码失败的图片交给 drawImage 会抛 InvalidStateError，整张卡片无法创建；失败时不画图标。
+      const decoded = await image.decode().then(() => image.naturalWidth > 0, () => false)
+      return [kind, decoded ? image : null] as const
+    })))
+    if (ctx.isStale() || !viewport.isConnected) return
+    const relationCounts = new Map<string, number>()
+    for (const edge of graph.edges.values()) {
+      for (const id of new Set([evidenceRefId(edge.from), evidenceRefId(edge.to)])) relationCounts.set(id, (relationCounts.get(id) ?? 0) + 1)
+    }
+    const nodeInfo = (ref: EvidenceObjectRef) => {
+      const id = evidenceRefId(ref)
+      const branch = graph.branches.get(id)
+      return branch?.status === 'loading' ? '关系加载中…' : branch?.status === 'error' ? '关系加载失败' : `已加载 ${relationCounts.get(id) ?? 0} 条关系`
+    }
+    const rememberedView = graph3dViews.get(ctx.page)
+    let baseDistance = rememberedView?.baseDistance ?? 0
+    let initialFitPending = !rememberedView
+    let layoutReady = false
+    let fitInitialView = () => {}
+    let fitResizedView = () => {}
+    let viewWidth = rememberedView?.width ?? 0
+    let viewHeight = rememberedView?.height ?? 0
+    let resizeFitFrame: number | undefined
+    // 分层流水布局：溯源阶段从左到右，坐标由登记关系决定，模式往返与重新打开位置一致。
+    // 展开分支时保留已布局节点坐标，新节点就近放在相连节点旁。
+    const stagePlan = extendStageLayout(graph3dPositions.get(graph),
+      nodeData.map(node => ({ id: node.id, kind: node.ref.kind, label: node.label })),
+      linkData.map(link => ({ source: link.source, target: link.target })),
+    )
+    const restoredNodes = nodeData.map(node => {
+      const position = stagePlan.positions.get(node.id)!
+      return { ...node, ...position, fx: position.x, fy: position.y, fz: position.z }
+    })
+    const neighbours = new Set<string>()
+    for (const edge of graph.edges.values()) {
+      const from = evidenceRefId(edge.from)
+      const to = evidenceRefId(edge.to)
+      if (from === selectedId) neighbours.add(to)
+      if (to === selectedId) neighbours.add(from)
+    }
+    neighbours.delete(selectedId ?? '')
+    let hoveredId: string | null = null
+    const rememberedTrace = ctx.page.graph3dTrace?.previewId === selectedId ? ctx.page.graph3dTrace.value : ''
+    let pinnedId: string | null = neighbours.has(rememberedTrace) ? rememberedTrace : null
+    let previewOnly = Boolean(selectedId && neighbours.size && rememberedTrace === 'preview-relations')
+    const nodeVisible = (id: string) => pinnedId ? id === pinnedId || id === selectedId
+      : !previewOnly || id === selectedId || neighbours.has(id)
+    let refreshTrace = () => {}
+    const tracedId = () => pinnedId ?? hoveredId
+    const highlightedLink = (link: { id: string }) => {
+      const edge = graph.edges.get(link.id)!
+      const from = evidenceRefId(edge.from)
+      const to = evidenceRefId(edge.to)
+      const nodeId = tracedId()
+      if (nodeId) return (from === nodeId || to === nodeId) && (!selectedId || from === selectedId || to === selectedId)
+      return selectedId !== null && (from === selectedId || to === selectedId)
+    }
+    const nodeColor = (node: { ref: EvidenceObjectRef }) => {
+      const id = evidenceRefId(node.ref)
+      if (id === selectedId || sameEvidenceRef(node.ref, ctx.page.ref)) return THEME.kinds[node.ref.kind]
+      const traced = tracedId()
+      const connected = !selectedId && [...graph.edges.values()].some(edge => {
+        const from = evidenceRefId(edge.from)
+        const to = evidenceRefId(edge.to)
+        return from === traced && to === id || to === traced && from === id
+      })
+      return traced && id !== traced && !connected ? THEME.dimmedNode : THEME.kinds[node.ref.kind]
+    }
+    let lastNodeClick: { id: string; at: number } | null = null
+    let pendingPreview: number | null = null
+    const cancelPreview = () => {
+      if (pendingPreview !== null) window.clearTimeout(pendingPreview)
+      pendingPreview = null
+    }
+    // 重名事实仍保留期间信息，独有业务名不在每个图内标签重复日期。
+    const factNameCounts = new Map<string, number>()
+    for (const node of nodeData) {
+      const name = node.ref.kind === 'fact' ? ctx.factFor?.(node.ref)?.name : undefined
+      if (name) factNameCounts.set(name, (factNameCounts.get(name) ?? 0) + 1)
+    }
+    // 节点信息卡：每个节点一张贴图卡片（类型色条、图标、业务名称、类型与状态），立在空间中，
+    // 后排卡片随透视自然变小，取代“小球 + 分离名称 + 引导线”。悬停、预览、追踪时重绘状态。
+    type Card3d = { mesh: InstanceType<typeof Mesh>; canvas: HTMLCanvasElement; texture: InstanceType<typeof CanvasTexture>; ref: EvidenceObjectRef; name: string; state: EvidenceCardState | '' }
+    const cards = new Map<string, Card3d>()
+    const cardGeometry = new PlaneGeometry(CARD_WORLD.width, CARD_WORLD.height)
+    const cardName = (ref: EvidenceObjectRef) => {
+      // 图内名称复用登记业务名；同名事实保留期间信息以便区分。
+      const businessName = ref.kind === 'fact' ? ctx.factFor?.(ref)?.name : undefined
+      return businessName && factNameCounts.get(businessName) === 1 ? businessName : ref.label
+    }
+    const cardState = (ref: EvidenceObjectRef): EvidenceCardState => {
+      const id = evidenceRefId(ref)
+      if (sameEvidenceRef(ref, ctx.page.ref)) return 'current'
+      if (id === selectedId || id === pinnedId) return 'selected'
+      return nodeColor({ ref }) === THEME.dimmedNode ? 'dimmed' : 'normal'
+    }
+    const drawCard = (card: Card3d) => {
+      const state = cardState(card.ref)
+      if (state === card.state) return
+      card.state = state
+      const status = state === 'current' ? ' · 当前页' : state === 'selected' ? evidenceRefId(card.ref) === pinnedId ? ' · 追踪' : ' · 预览' : ''
+      const detail = `${KIND_LABELS[card.ref.kind]}${status}`
+      drawEvidenceCard(card.canvas, { kind: card.ref.kind, name: card.name, detail, state, icon: iconImages.get(card.ref.kind) })
+      // 卡片文字只存在于贴图中；同步记录在对象上，供读屏之外的自动化检查读取实际绘制内容。
+      card.mesh.userData.evidenceCard = { name: card.name, detail, state }
+      card.texture.needsUpdate = true
+      // 当前页明显向前凸出（出屏感），预览项略微前移；在节点原有纵深上叠加，后排卡片不会被拉到前排。
+      const baseZ = stagePlan.positions.get(evidenceRefId(card.ref))?.z ?? 0
+      card.mesh.position.z = baseZ + (state === 'current' ? THEME.popOut.current : state === 'selected' ? THEME.popOut.selected : 0)
+      card.mesh.renderOrder = state === 'current' || state === 'selected' ? 12 : 11
+    }
+    const updateCards = () => { for (const card of cards.values()) drawCard(card) }
+    type Flow3d = { mesh: InstanceType<typeof Mesh>; key: string }
+    const flows = new Map<string, Flow3d>()
+    const flowColor = (id: string, end: 'from' | 'to') => new Color(THEME.kinds[graph.edges.get(id)![end].kind])
+    const placeFlow = (id: string, start: GraphPoint3d, end: GraphPoint3d) => {
+      const flow = flows.get(id)
+      if (!flow || ![start.x, start.y, start.z, end.x, end.y, end.z].every(Number.isFinite)) return
+      const key = [start.x, start.y, start.z, end.x, end.y, end.z].map(value => value.toFixed(2)).join(',')
+      if (key === flow.key) return
+      flow.key = key
+      const half = CARD_WORLD.width / 2
+      const forward = end.x >= start.x
+      const from = new Vector3(start.x + (forward ? half : -half), start.y, start.z)
+      const to = new Vector3(end.x + (forward ? -half : half), end.y, end.z)
+      const reach = Math.max(24, Math.abs(to.x - from.x) * 0.5) * (forward ? 1 : -1)
+      const curve = new CubicBezierCurve3(from, from.clone().add(new Vector3(reach, 0, 0)), to.clone().sub(new Vector3(reach, 0, 0)), to)
+      const geometry = new TubeGeometry(curve, 40, THEME.flow.radius, 6, false)
+      // 沿管体长度方向由源类型色渐变到目标类型色。
+      const source = flowColor(id, 'from')
+      const target = flowColor(id, 'to')
+      const uv = geometry.getAttribute('uv')
+      const colors = new Float32Array(uv.count * 3)
+      for (let index = 0; index < uv.count; index++) {
+        const color = source.clone().lerp(target, uv.getX(index))
+        colors.set([color.r, color.g, color.b], index * 3)
+      }
+      geometry.setAttribute('color', new BufferAttribute(colors, 3))
+      flow.mesh.geometry.dispose()
+      flow.mesh.geometry = geometry
+    }
+    const styleFlow = (id: string) => {
+      const flow = flows.get(id)
+      if (!flow) return
+      const highlighted = highlightedLink({ id })
+      const material = flow.mesh.material as InstanceType<typeof MeshBasicMaterial>
+      material.opacity = highlighted ? THEME.flow.highlight : selectedId || tracedId() ? THEME.flow.dimmed : THEME.flow.normal
+      flow.mesh.renderOrder = highlighted ? 11 : 10
+    }
+    const instance: any = new (ForceGraph3D as any)(viewport)
+      // 画布透明，底色由容器的暗角渐变提供（边缘为纯底色）。
+      .backgroundColor(THEME.transparentBackground)
+      .lights([new AmbientLight(0xffffff, Math.PI)])
+      .showNavInfo(false)
+      // 关系浏览只改变视角，节点位置由布局/缓存维护，避免节点起点捏合误拖动。
+      .enableNodeDrag(false)
+      .nodeLabel((node: { ref: EvidenceObjectRef }) => {
+        const label = document.createElement('span')
+        label.textContent = `${KIND_LABELS[node.ref.kind]}：${node.ref.label} · ${nodeInfo(node.ref)}`
+        return label
+      })
+      .nodeThreeObject((node: { ref: EvidenceObjectRef }) => {
+        const id = evidenceRefId(node.ref)
+        const canvas = document.createElement('canvas')
+        const texture = new CanvasTexture(canvas)
+        texture.colorSpace = SRGBColorSpace
+        texture.anisotropy = 4
+        const material = new MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.02, side: DoubleSide, toneMapped: false })
+        const mesh = new Mesh(cardGeometry, material)
+        // 卡片始终正对镜头，旋转视角时文字不变形；空间层次由位置、透视大小与遮挡体现。
+        mesh.onBeforeRender = (_renderer: unknown, _scene: unknown, camera: { quaternion: unknown }) => { mesh.quaternion.copy(camera.quaternion as never) }
+        const card: Card3d = { mesh, canvas, texture, ref: node.ref, name: cardName(node.ref), state: '' }
+        // 组件重建节点对象时释放上一张卡片的贴图与材质。
+        const previous = cards.get(id)
+        if (previous) {
+          previous.texture.dispose()
+          ;(previous.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
+        }
+        cards.set(id, card)
+        drawCard(card)
+        return mesh
+      })
+      .nodeThreeObjectExtend(false)
+      .nodeResolution(24)
+      .nodeRelSize(5)
+      .nodeOpacity(1)
+      .nodeColor(nodeColor)
+      // 关系线：从源卡片右缘到目标卡片左缘的 S 形流线（细管体），颜色由源类型渐变到目标类型，
+      // 方向随颜色与左→右布局一目了然。坐标固定，几何只在端点变化时重建。
+      .linkThreeObject((link: { id: string }) => {
+        const material = new MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, toneMapped: false })
+        const mesh = new Mesh(new TubeGeometry(new CubicBezierCurve3(new Vector3(), new Vector3(), new Vector3(), new Vector3(1, 0, 0)), 2, 0.1, 3), material)
+        mesh.renderOrder = 10
+        flows.set(link.id, { mesh, key: '' })
+        styleFlow(link.id)
+        return mesh
+      })
+      .linkThreeObjectExtend(false)
+      .linkPositionUpdate((object: unknown, ends: { start: GraphPoint3d; end: GraphPoint3d }, link: { id: string }) => {
+        placeFlow(link.id, ends.start, ends.end)
+        return true
+      })
+
+      .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
+        const id = evidenceRefId(node.ref)
+        const now = Date.now()
+        cancelPreview()
+        if (event.button === 1 || event.ctrlKey || event.metaKey) {
+          event.preventDefault()
+          lastNodeClick = null
+          ctx.openBackground(node.ref, event.button !== 1 && event.shiftKey)
+        } else if (lastNodeClick?.id === id && now - lastNodeClick.at < 350) {
+          lastNodeClick = null
+          ctx.navigate(node.ref)
+        } else {
+          // 预览会重建画布；等待双击窗口，避免第二次点击失去命中对象。
+          lastNodeClick = { id, at: now }
+          pendingPreview = window.setTimeout(() => {
+            pendingPreview = null
+            if (!ctx.isStale() && viewport.isConnected) ctx.setPreview(node.ref)
+          }, 350)
+        }
+      })
+      .onNodeRightClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
+        event.preventDefault()
+        cancelPreview()
+        lastNodeClick = null
+        ctx.openBackground(node.ref, false)
+      })
+      .onNodeHover((node: { ref: EvidenceObjectRef } | null) => {
+        const id = node ? evidenceRefId(node.ref) : null
+        viewport.dataset.hovered = id ?? ''
+        hoveredId = !selectedId || id === selectedId || (id !== null && neighbours.has(id)) ? id : null
+        refreshTrace()
+      })
+    // 节点全部固定在分层坐标上，不做力学模拟；一次预热即触发布局完成回调。
+    instance.dagMode(null).warmupTicks(1).cooldownTicks(0).graphData({ nodes: restoredNodes, links: linkData })
+    // 阶段标题：每列顶部写阶段序号、名称与数量，一眼看清“快照 → 计算 → 事实 → 正文”的流向。
+    const stageObjects = new Group()
+    stageObjects.name = 'evidence-stages'
+    const laneObjects = new Group()
+    laneObjects.name = 'evidence-lanes'
+    const laneTexture = new CanvasTexture(laneCanvas())
+    laneTexture.colorSpace = SRGBColorSpace
+    const laneGeometry = new PlaneGeometry(1, 1)
+    const laneMaterial = new MeshBasicMaterial({ map: laneTexture, transparent: true, depthWrite: false, side: DoubleSide, toneMapped: false })
+    for (const stage of stagePlan.stages) {
+      const title = new SpriteText(`${STAGE_NUMERALS[stage.index] ?? stage.index + 1} ${stage.kinds.map(kind => STAGE_KIND_NAMES[kind]).join('、')} · ${stage.count}`, 3, THEME.stage.title)
+      title.fontWeight = '700'
+      // 无边框的轻量标题，深色描边保证压在流线上时仍可读。
+      title.strokeWidth = 0.6
+      title.strokeColor = THEME.stage.outline
+      // 阶段标题固定 15 CSS px，缩放视图时始终可读。
+      title.material.sizeAttenuation = false
+      const titleScale = 15 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3
+      title.scale.multiplyScalar(titleScale)
+      title.center.set(0.5, 0)
+      title.material.depthTest = false
+      title.material.depthWrite = false
+      title.material.fog = false
+      title.material.toneMapped = false
+      title.position.set(stage.centerX, stage.top + 14, stage.front)
+      title.renderOrder = 14
+      title.userData.members = stage.members
+      title.raycast = () => {}
+      stageObjects.add(title)
+      // 泳道：每列背后一条四周渐隐的柔光带，区分阶段又不形成硬边。
+      const laneWidth = (stage.centerX - stage.x) * 2 + CARD_WORLD.width + 70
+      const laneHeight = stage.top - stage.bottom + 60
+      const lane = new Mesh(laneGeometry, laneMaterial)
+      lane.scale.set(laneWidth, laneHeight, 1)
+      lane.position.set(stage.centerX, (stage.top + stage.bottom) / 2 + 10, stage.back - 30)
+      lane.renderOrder = 1
+      lane.raycast = () => {}
+      laneObjects.add(lane)
+    }
+    // 裸眼 3D 展台：线框盒子、背墙与地板网格、卡片投在背墙上的阴影。
+    const diorama = buildDiorama(three, stagePlan.positions)
+    instance.scene().add(stageObjects, laneObjects, diorama.group)
+    viewport.append(cameraReadout)
+    const cameraControls = instance.controls()
+    cameraControls.rotateSpeed = 0.45
+    cameraControls.zoomSpeed = 0.65
+    cameraControls.panSpeed = 0.18
+    cameraControls.dynamicDampingFactor = 0.35
+    const cameraDistance = () => instance.camera().position.distanceTo(cameraControls.target)
+    const updateCameraReadout = () => {
+      const distance = cameraDistance()
+      if (!baseDistance && rememberedView) baseDistance = distance
+      const rotation = instance.camera().rotation.clone().reorder('YXZ')
+      const degrees = (radians: number) => Math.round(radians * 180 / Math.PI)
+      const zoom = baseDistance && distance ? `${Math.round(baseDistance / distance * 100)}%` : '—'
+      cameraReadout.textContent = `缩放 ${zoom}\n水平 ${degrees(rotation.y)}° · 俯仰 ${degrees(-rotation.x)}° · 倾斜 ${degrees(rotation.z)}°`
+    }
+    // 原生地面网格只提供空间参照，不参与节点、关系计数或拾取。
+    // 指数雾：远处网格、连线与节点逐渐隐入底色，形成纵深。
+    instance.scene().fog = new FogExp2(THEME.background, THEME.fogDensity)
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const cameraDuration = () => reducedMotion.matches ? 0 : 180
+    const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
+    applyMotionPreference()
+    reducedMotion.addEventListener('change', applyMotionPreference)
+    const onCameraChange = () => updateCameraReadout()
+    instance.controls().addEventListener('change', onCameraChange)
+    let userMovedCamera = false
+    let draggingCamera = false
+    instance.controls().addEventListener('start', () => { userMovedCamera = true; draggingCamera = true })
+    instance.controls().addEventListener('end', () => { draggingCamera = false })
+    // 裸眼 3D 视差：指针在画布上移动时视角随之轻微偏转（约 ±6°/±4°），离开画布回正；
+    // 拖动相机、关闭开关或系统要求减少动态效果时不生效。以增量方式旋转，不覆盖用户已有的视角。
+    let parallaxEnabled = readParallaxPreference()
+    const parallaxTarget = { yaw: 0, pitch: 0 }
+    const parallaxCurrent = { yaw: 0, pitch: 0 }
+    let parallaxFrame: number | undefined
+    const stepParallax = () => {
+      parallaxFrame = undefined
+      if (ctx.isStale() || !viewport.isConnected) return
+      const yaw = (parallaxTarget.yaw - parallaxCurrent.yaw) * 0.14
+      const pitch = (parallaxTarget.pitch - parallaxCurrent.pitch) * 0.14
+      if (Math.abs(yaw) < 1e-5 && Math.abs(pitch) < 1e-5) return
+      parallaxCurrent.yaw += yaw
+      parallaxCurrent.pitch += pitch
+      const camera = instance.camera()
+      const target = instance.controls().target
+      const offset = camera.position.clone().sub(target)
+      offset.applyAxisAngle(camera.up, -yaw)
+      const right = new Vector3().crossVectors(camera.up, offset).normalize()
+      offset.applyAxisAngle(right, pitch)
+      camera.position.copy(target).add(offset)
+      camera.lookAt(target)
+      updateCameraReadout()
+      parallaxFrame = requestAnimationFrame(stepParallax)
+    }
+    const aimParallax = (yaw: number, pitch: number) => {
+      parallaxTarget.yaw = yaw
+      parallaxTarget.pitch = pitch
+      if (parallaxFrame === undefined) parallaxFrame = requestAnimationFrame(stepParallax)
+    }
+    const onParallaxMove = (event: PointerEvent) => {
+      if (!parallaxEnabled || reducedMotion.matches || draggingCamera || event.pointerType === 'touch') return
+      const rect = viewport.getBoundingClientRect()
+      const nx = Math.max(-1, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width) * 2 - 1))
+      const ny = Math.max(-1, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height) * 2 - 1))
+      aimParallax(nx * THEME.parallax.yaw, ny * THEME.parallax.pitch)
+    }
+    const onParallaxLeave = () => aimParallax(0, 0)
+    viewport.addEventListener('pointermove', onParallaxMove)
+    viewport.addEventListener('pointerleave', onParallaxLeave)
+    const parallaxToggle = makeButton('', 'evidence-icon-button evidence-3d-parallax-toggle')
+    parallaxToggle.append(createElement(Rotate3d, { width: 16, height: 16, 'aria-hidden': 'true' }))
+    const updateParallaxToggle = () => {
+      parallaxToggle.setAttribute('aria-pressed', String(parallaxEnabled))
+      parallaxToggle.setAttribute('aria-label', parallaxEnabled ? '关闭视差' : '开启视差')
+      parallaxToggle.title = parallaxEnabled ? '视差已开启：视角随指针轻微偏转' : '视差已关闭'
+    }
+    updateParallaxToggle()
+    parallaxToggle.addEventListener('click', () => {
+      parallaxEnabled = !parallaxEnabled
+      writeParallaxPreference(parallaxEnabled)
+      if (!parallaxEnabled) aimParallax(0, 0)
+      updateParallaxToggle()
+    })
+    controls.append(parallaxToggle)
+    if (rememberedView) {
+      instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
+      instance.camera().up.set(rememberedView.up.x, rememberedView.up.y, rememberedView.up.z)
+      instance.controls().update()
+    }
+    const resize = new ResizeObserver(() => {
+      if (viewport.clientWidth && viewport.clientHeight) {
+        instance.width(viewport.clientWidth).height(viewport.clientHeight)
+        fitResizedView()
+        instance.resumeAnimation()
+        fitInitialView()
+      } else instance.pauseAnimation()
+    })
+    resize.observe(viewport)
+    let disposed = false
+    const dispose = () => {
+      if (disposed) return
+      disposed = true
+      cancelPreview()
+      reducedMotion.removeEventListener('change', applyMotionPreference)
+      instance.controls().removeEventListener('change', onCameraChange)
+      if (resizeFitFrame !== undefined) cancelAnimationFrame(resizeFitFrame)
+      if (parallaxFrame !== undefined) cancelAnimationFrame(parallaxFrame)
+      viewport.removeEventListener('pointermove', onParallaxMove)
+      viewport.removeEventListener('pointerleave', onParallaxLeave)
+      const point = (value: GraphPoint3d): GraphPoint3d => ({ x: value.x, y: value.y, z: value.z })
+      graph3dViews.set(ctx.page, {
+        position: point(instance.camera().position), target: point(instance.controls().target), up: point(instance.camera().up),
+        baseDistance, width: viewWidth, height: viewHeight,
+        focusPicker: host.contains(document.activeElement) && Boolean(document.activeElement?.closest('.evidence-3d-node-picker, .evidence-preview')),
+      })
+      graph3dPositions.set(graph, new Map(instance.graphData().nodes
+        .filter((node: GraphPoint3d) => [node.x, node.y, node.z].every(Number.isFinite))
+        .map((node: GraphPoint3d & { id: string }) => [node.id, point(node)])))
+      resize.disconnect()
+      removal.disconnect()
+      ctx.signal.removeEventListener('abort', dispose)
+      const renderer = instance.renderer()
+      instance.scene().remove(stageObjects, laneObjects, diorama.group)
+      diorama.dispose()
+      laneTexture.dispose()
+      laneGeometry.dispose()
+      laneMaterial.dispose()
+      for (const title of stageObjects.children) (title as InstanceType<typeof SpriteText>).material.dispose()
+      for (const card of cards.values()) {
+        card.texture.dispose()
+        ;(card.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
+      }
+      cardGeometry.dispose()
+      for (const flow of flows.values()) {
+        flow.mesh.geometry.dispose()
+        ;(flow.mesh.material as InstanceType<typeof MeshBasicMaterial>).dispose()
+      }
+      instance._destructor()
+      // 组件已dispose GPU对象；Three原生接口同步释放移除画布的上下文。
+      renderer.forceContextLoss()
+    }
+    const removal = new MutationObserver(() => {
+      if (!viewport.isConnected) dispose()
+    })
+    removal.observe(document.body, { childList: true, subtree: true })
+    ctx.signal.addEventListener('abort', dispose, { once: true })
+    const fit3d = fit
+    fit3d.classList.add('evidence-3d-fit')
+    fit3d.disabled = true
+    // 卡片尺寸已计入组件包围盒；留白再为顶部固定字号的阶段标题留出空间。
+    const fitPadding = () => Math.min(60, Math.max(0, viewport.clientHeight / 2 - 8))
+    // 小画布上完整展示展台盒子会把相机推远、卡片缩到难以辨认；此时隐藏展台，只保留卡片与流线。
+    const dioramaCorners = () => {
+      diorama.group.visible = viewport.clientWidth >= 640 && viewport.clientHeight >= 320
+      return diorama.group.visible ? diorama.corners : []
+    }
+    fitResizedView = () => {
+      if (resizeFitFrame !== undefined) cancelAnimationFrame(resizeFitFrame)
+      resizeFitFrame = requestAnimationFrame(() => {
+        resizeFitFrame = undefined
+        if (ctx.isStale() || !viewport.isConnected || !layoutReady) return
+        const width = viewport.clientWidth
+        const height = viewport.clientHeight
+        if (!width || !height || width === viewWidth && height === viewHeight) return
+        // 组件尺寸更新在异步digest中生效，等原生相机投影更新后再适应。
+        if (instance.camera().aspect !== width / height) { fitResizedView(); return }
+        if (viewWidth && viewHeight && baseDistance && instance.getGraphBbox()) {
+          const target = instance.controls().target.clone()
+          const offset = instance.camera().position.clone().sub(target)
+          const up = instance.camera().up.clone()
+          const zoom = baseDistance / offset.length()
+          instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
+          fitContentToView()
+          baseDistance = cameraDistance()
+          // 沿原视线调整距离，保留用户缩放比例、旋转及平移目标。
+          const position = offset.normalize().multiplyScalar(baseDistance / zoom).add(target)
+          instance.camera().up.copy(up)
+          instance.cameraPosition(position, target, 0)
+          instance.controls().update()
+          updateCameraReadout()
+        }
+        viewWidth = width
+        viewHeight = height
+      })
+    }
+    // 斜视初始视角：相机位于正前方略偏右、略俯视（约 20°），阶段从左到右展开，纵深折排可见。直接设置位置、目标与朝向后再适应——
+    // 组件 fitToBbox 沿相机当前视线计算距离，若朝向尚未随 cameraPosition 更新，会沿旧视线
+    // 贴近图心，导致节点溢出画布、边缘球体透视变形。
+    const fitFromObliqueView = () => {
+      const filter = (node: { id: string }) => nodeVisible(node.id)
+      const bounds = instance.getGraphBbox(filter)
+      const center = bounds
+        ? { x: (bounds.x[0] + bounds.x[1]) / 2, y: (bounds.y[0] + bounds.y[1]) / 2, z: (bounds.z[0] + bounds.z[1]) / 2 }
+        : { x: 0, y: 0, z: 0 }
+      const camera = instance.camera()
+      camera.up.set(0, 1, 0)
+      camera.position.set(center.x + 70, center.y + 110, center.z + 300)
+      instance.controls().target.set(center.x, center.y, center.z)
+      camera.lookAt(center.x, center.y, center.z)
+      camera.updateMatrixWorld()
+      instance.zoomToFit(0, fitPadding(), filter)
+      instance.controls().update()
+      fitContentToView()
+      baseDistance = cameraDistance()
+      updateCameraReadout()
+    }
+    // 组件 zoomToFit 按包围盒最长边估算距离，宽而矮的画布上内容只占一小块、卡片挤成几像素。
+    // 这里沿当前视线二分求出最近距离：可见卡片四角、所属阶段标题（固定像素高度）与展台盒子都落在画布留白内。
+    const fitContentToView = () => {
+      const camera = instance.camera()
+      const target = instance.controls().target
+      const width = viewport.clientWidth
+      const height = viewport.clientHeight
+      const points: GraphPoint3d[] = []
+      const visibleIds = new Set<string>()
+      for (const [id, card] of cards) {
+        if (!card.mesh.visible || !nodeVisible(id)) continue
+        visibleIds.add(id)
+        const center = card.mesh.position
+        for (const dx of [-1, 1]) for (const dy of [-1, 1])
+          points.push({ x: center.x + dx * CARD_WORLD.width / 2, y: center.y + dy * CARD_WORLD.height / 2, z: center.z })
+      }
+      const titles = stageObjects.children
+        .filter(title => (title.userData.members as string[]).some(id => visibleIds.has(id)))
+        .map(title => title.position)
+      points.push(...dioramaCorners())
+      if (!points.length || !width || !height) return
+      const pad = Math.min(24, height / 10)
+      const titleHeight = 20
+      const offset = camera.position.clone().sub(target)
+      const base = offset.length()
+      if (!base) return
+      const direction = offset.clone().multiplyScalar(-1 / base)
+      const place = (distance: number) => {
+        camera.position.copy(target).addScaledVector(offset, distance / base)
+        camera.updateMatrixWorld()
+      }
+      const visible = (point: GraphPoint3d, top: number) => {
+        // 位于相机身后的点投影会翻转到画布内，先排除。
+        if ((point.x - camera.position.x) * direction.x + (point.y - camera.position.y) * direction.y + (point.z - camera.position.z) * direction.z <= camera.near) return false
+        const screen = instance.graph2ScreenCoords(point.x, point.y, point.z)
+        return screen.x >= pad && screen.x <= width - pad && screen.y >= top && screen.y <= height - pad
+      }
+      const fits = () => points.every(point => visible(point, pad)) && titles.every(point => visible(point, pad + titleHeight))
+      let near = base * 0.02
+      let far = base * 40
+      place(far)
+      if (!fits()) { place(base); return }
+      for (let step = 0; step < 28; step++) {
+        const middle = (near + far) / 2
+        place(middle)
+        if (fits()) far = middle
+        else near = middle
+      }
+      place(far)
+    }
+    fitInitialView = () => {
+      if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
+      initialFitPending = false
+      requestAnimationFrame(() => {
+        if (ctx.isStale() || !viewport.isConnected) return
+        if (!viewport.clientWidth || !viewport.clientHeight) {
+          initialFitPending = true
+          return
+        }
+        // 仅初始化无历史视角的新页面，用户操作与后退恢复不自动改相机。
+        fitFromObliqueView()
+        viewWidth = viewport.clientWidth
+        viewHeight = viewport.clientHeight
+        // 首帧标签与节点对象尺寸仍在更新；用户未操作时下一帧按最终范围再适应一次。
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (ctx.isStale() || !viewport.isConnected || userMovedCamera) return
+          fitFromObliqueView()
+        }))
+      })
+    }
+    fit3d.addEventListener('click', () => requestAnimationFrame(() => {
+      if (ctx.isStale() || !viewport.isConnected) return
+      // 先在当前帧同步求出“适应节点且展台完整可见”的最终机位，再从原机位平滑过渡过去；
+      // 避免先动画再检查时，慢帧下动画晚于检查结束、把镜头重新拉近。
+      const camera = instance.camera()
+      const controlsTarget = instance.controls().target
+      const startPosition = camera.position.clone()
+      const startTarget = controlsTarget.clone()
+      instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
+      fitContentToView()
+      const endPosition = camera.position.clone()
+      const endTarget = controlsTarget.clone()
+      camera.position.copy(startPosition)
+      controlsTarget.copy(startTarget)
+      camera.lookAt(startTarget)
+      instance.cameraPosition(endPosition, endTarget, cameraDuration())
+    }))
+    viewport.setAttribute('aria-label', '3D 关系图；卡片从左到右按溯源阶段排列，连线表示登记关系；请使用关系列表中的文字入口')
+    const zoom3d = (factor: number) => {
+      const position = instance.cameraPosition()
+      const target = instance.controls().target
+      instance.cameraPosition({
+        x: target.x + (position.x - target.x) * factor,
+        y: target.y + (position.y - target.y) * factor,
+        z: target.z + (position.z - target.z) * factor,
+      }, target, cameraDuration())
+    }
+    zoomOut.addEventListener('click', () => zoom3d(1.25))
+    zoomIn.addEventListener('click', () => zoom3d(0.8))
+    // 重置以当前可见关系的原生适应距离为100%，不沿用概览的旧基准。
+    reset.addEventListener('click', () => fitFromObliqueView())
+    locate.addEventListener('click', () => {
+      const node = instance.graphData().nodes.find((item: { id: string }) => item.id === evidenceRefId(ctx.page.ref))
+      if (!node || ![node.x, node.y, node.z].every(Number.isFinite)) return
+      const position = instance.cameraPosition()
+      const target = instance.controls().target
+      const distance = Math.hypot(position.x - target.x, position.y - target.y, position.z - target.z) || 1
+      instance.cameraPosition({
+        x: node.x + (position.x - target.x) * 80 / distance,
+        y: node.y + (position.y - target.y) * 80 / distance,
+        z: node.z + (position.z - target.z) * 80 / distance,
+      }, { x: node.x, y: node.y, z: node.z }, cameraDuration())
+    })
+    // canvas 出现早于图对象就绪；过早适应会取得空包围盒而无声失效。
+    const ready = () => {
+      layoutReady = true
+      fitResizedView()
+      updateCameraReadout()
+      for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
+      fitInitialView()
+      let finalFitDone = false
+      instance.onEngineTick(() => {}).onEngineStop(() => {
+        // 首次布局停止时卡片已按最终状态绘制：用户未操作且无历史视角才按最终范围重新适应；
+        // 之后悬停、高亮触发的重新布局不再移动相机。
+        if (!finalFitDone && !userMovedCamera && !rememberedView && !initialFitPending) fitFromObliqueView()
+        finalFitDone = true
+      })
+    }
+    instance.onEngineTick(ready).onEngineStop(ready)
+    const legend = document.createElement('div')
+    legend.className = 'evidence-graph-legend'
+    legend.title = `${relations.loadedNote}；节点颜色表示类型，浅蓝名称底色表示当前页，青色名称框表示预览；名称可切换，悬停可查看全名；实线箭头表示登记关系${allNodes.length <= 15 ? '，虚线仅连接节点与名称' : ''}`
+    const scope = document.createElement('span')
+    scope.textContent = `已加载 ${allNodes.length} 个节点 · 局部关系`
+    legend.append(scope)
+    for (const kind of [...new Set(allNodes.map(node => node.kind))]) {
+      const item = document.createElement('span')
+      item.className = 'evidence-3d-kind-key'
+      item.dataset.kind = kind
+      const key = document.createElement('i')
+      key.className = 'key'
+      key.style.backgroundColor = THEME.kinds[kind]
+      key.style.borderColor = THEME.kinds[kind]
+      key.setAttribute('aria-hidden', 'true')
+      item.append(key, KIND_LABELS[kind])
+      legend.append(item)
+    }
+    const states = document.createElement('span')
+    states.textContent = selectedId ? '浅蓝名称底：当前页 · 青色名称框：预览' : '浅蓝名称底：当前页'
+    legend.append(states)
+    const relationKey = document.createElement('span')
+    relationKey.className = 'evidence-3d-line-key'
+    relationKey.textContent = '实线箭头：登记关系'
+    legend.append(relationKey)
+    host.append(legend)
+    const nodePicker = document.createElement('select')
+    nodePicker.className = 'evidence-trace-picker evidence-3d-node-picker'
+    nodePicker.setAttribute('aria-label', '选择 3D 节点预览')
+    const placeholder = document.createElement('option')
+    placeholder.value = ''
+    placeholder.textContent = '选择节点预览'
+    nodePicker.append(placeholder)
+    for (const node of allNodes) {
+      const option = document.createElement('option')
+      option.value = evidenceRefId(node)
+      option.textContent = `${KIND_LABELS[node.kind]} · ${node.label}`
+      nodePicker.append(option)
+    }
+    nodePicker.value = selectedId ?? ''
+    nodePicker.addEventListener('change', () => {
+      ctx.setPreview(allNodes.find(node => evidenceRefId(node) === nodePicker.value) ?? null)
+    })
+    nodePicker.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && ctx.page.selected) {
+        event.preventDefault()
+        ctx.navigate(ctx.page.selected)
+      } else if (event.key === 'Escape' && ctx.page.selected) {
+        event.preventDefault()
+        event.stopPropagation()
+        ctx.setPreview(null)
+      }
+    })
+    controls.append(nodePicker)
+    const tracePicker = document.createElement('select')
+    tracePicker.className = 'evidence-trace-picker evidence-3d-trace-picker'
+    tracePicker.setAttribute('aria-label', '追踪预览关系端点')
+    tracePicker.disabled = !selectedId || !neighbours.size
+    const allEdges = document.createElement('option')
+    allEdges.value = ''
+    allEdges.textContent = selectedId ? '追踪：全部预览关系' : '追踪：先预览节点'
+    tracePicker.append(allEdges)
+    if (selectedId && neighbours.size) {
+      const previewEdges = document.createElement('option')
+      previewEdges.value = 'preview-relations'
+      previewEdges.textContent = '只看预览对象的直接关系'
+      tracePicker.append(previewEdges)
+    }
+    for (const node of allNodes.filter(node => neighbours.has(evidenceRefId(node)) && evidenceRefId(node) !== selectedId)) {
+      const option = document.createElement('option')
+      option.value = evidenceRefId(node)
+      option.textContent = `追踪：${KIND_LABELS[node.kind]} · ${node.label}`
+      tracePicker.append(option)
+    }
+    tracePicker.value = previewOnly ? 'preview-relations' : pinnedId ?? ''
+    const traceStatus = document.createElement('span')
+    traceStatus.className = 'evidence-3d-trace-status'
+    traceStatus.setAttribute('role', 'status')
+    legend.append(traceStatus)
+    refreshTrace = () => {
+      for (const id of flows.keys()) styleFlow(id)
+      instance.nodeVisibility((node: { id: string }) => nodeVisible(node.id))
+        .linkVisibility((link: { id: string }) => {
+          if (pinnedId) return highlightedLink(link)
+          const edge = graph.edges.get(link.id)!
+          return !previewOnly || evidenceRefId(edge.from) === selectedId || evidenceRefId(edge.to) === selectedId
+        })
+      updateCards()
+      const count = linkData.filter(highlightedLink).length
+      traceStatus.textContent = selectedId || tracedId()
+        ? `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : previewOnly ? ' · 仅显示预览直接关系' : ''}` : ''
+      viewport.dataset.scope = pinnedId ? 'pair' : previewOnly ? 'preview' : 'all'
+      const fitLabel = pinnedId ? '适应追踪关系' : previewOnly ? '适应预览' : '适应 3D'
+      fit3d.setAttribute('aria-label', fitLabel)
+      fit3d.title = previewOnly ? '适应预览对象的直接关系' : fitLabel
+    }
+    tracePicker.addEventListener('change', () => {
+      previewOnly = tracePicker.value === 'preview-relations'
+      pinnedId = previewOnly ? null : tracePicker.value || null
+      if (selectedId) ctx.updatePage({ graph3dTrace: { previewId: selectedId, value: tracePicker.value } })
+      refreshTrace()
+    })
+    controls.append(tracePicker)
+    refreshTrace()
+    renderGraphPreview(host, ctx, expand)
+    if (rememberedView?.focusPicker) nodePicker.focus({ preventScroll: true })
+    }).catch(() => {
+      if (ctx.isStale() || !viewport.isConnected) return
+      viewport.remove()
+      ctx.updatePage({ graphMode: '2d' })
+      rerender()
+    })
+    return
+  }
   const mapHeight = graph.height
   const mapWidth = graph.width
   const scroll = document.createElement('div')
@@ -469,10 +1283,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   scroll.scrollTop = ctx.page.graphScroll.top
   requestAnimationFrame(() => {
     if (ctx.isStale() || !scroll.isConnected) return
-    // 未调整过视角且图宽超出视口时，首屏整体适应；否则只保证当前节点可见。
+    // 自动模式下未调整过视角且图宽超出视口时，首屏整体适应；否则只保证当前节点可见。
     const untouched = ctx.page.graphScale === 1 && ctx.page.graphPan.x === 0 && ctx.page.graphPan.y === 0 &&
       ctx.page.graphScroll.left === 0 && ctx.page.graphScroll.top === 0
-    if (untouched && scroll.clientWidth > 0 && mapWidth > scroll.clientWidth - 32) fit.click()
+    if (ctx.page.graphMode === 'auto' && untouched && scroll.clientWidth > 0 && mapWidth > scroll.clientWidth - 32) fit.click()
     else revealCurrentNode(scroll, ctx)
   })
   scroll.addEventListener('scroll', () => {
@@ -559,7 +1373,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
 
   let hoveredId: string | null = null
   let focusedId: string | null = null
-  const rememberedTrace = ctx.page.graphTrace?.previewId === selectedId ? ctx.page.graphTrace.value : ''
+  const rememberedTrace = ctx.page.graph3dTrace?.previewId === selectedId ? ctx.page.graph3dTrace.value : ''
   let pinnedId: string | null = relatedIds.has(rememberedTrace) && rememberedTrace !== selectedId ? rememberedTrace : null
   let previewOnly = Boolean(selectedId && relatedIds.size && rememberedTrace === 'preview-relations')
   tracePicker.value = previewOnly ? 'preview-relations' : pinnedId ?? ''
@@ -603,7 +1417,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   tracePicker.addEventListener('change', () => {
     previewOnly = tracePicker.value === 'preview-relations'
     pinnedId = previewOnly ? null : tracePicker.value || null
-    if (selectedId) ctx.updatePage({ graphTrace: { previewId: selectedId, value: tracePicker.value } })
+    if (selectedId) ctx.updatePage({ graph3dTrace: { previewId: selectedId, value: tracePicker.value } })
     traceRelations()
   })
 
@@ -928,9 +1742,7 @@ async function loadNodeRelations(ref: EvidenceObjectRef, ctx: EvidencePageContex
       // 与事实页一致：未登记 factKey 的计算输出只有“分析#指针”身份，不发必然失败的请求。
       if (ref.key.startsWith(`${ref.analysisId}#`)) throw new ReportEditorApiError(404, 'fact_binding_unavailable')
       const detail = await ctx.client.factDetail(ref.analysisId, ref.key, ctx.signal)
-      const sources = await ctx.loadSources()
-      const producers = await factProducers(ctx, detail, sources)
-      return assembleFactRelations(ref, detail, sources, producers.map(item => item.computationId))
+      return assembleFactRelations(ref, detail, await ctx.loadSources())
     }
     case 'computation': {
       const detail = await ctx.client.computationDetail(ref.key, 2, ctx.signal)
@@ -1088,6 +1900,11 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rawR
  * 2D 关系图尚无用户视角（未滚动、平移、缩放）时，窄屏下当前节点可能落在可视区右侧之外：
  * 只做最小横向滚动让当前节点完整可见，不改变缩放与布局。视口不可见（宽度为 0）时不处理。
  */
+export function effectiveGraphMode(mode: EvidencePage['graphMode'] | undefined, nodeCount: number): '2d' | '3d' {
+  if (mode === '2d' || mode === '3d') return mode
+  return nodeCount <= 15 ? '2d' : '3d'
+}
+
 function revealCurrentNode(viewport: HTMLElement, ctx: EvidencePageContext): void {
   const page = ctx.page
   const untouched = page.graphScale === 1 && page.graphPan.x === 0 && page.graphPan.y === 0 &&
@@ -1342,33 +2159,6 @@ interface FactPageData extends DraftValidation {
   citingSubjects: TraceSubjectInfo[]
 }
 
-async function factProducers(
-  ctx: EvidencePageContext, detail: TraceFactDetail, sources: TraceSources,
-): Promise<TraceComputationDetail[]> {
-  const candidates = new Set((sources.subjects ?? [])
-    .filter(subject => subject.factRefs.some(ref =>
-      ref.analysisId === detail.analysisId && ref.factId === detail.factId))
-    .flatMap(subject => subject.computationId ? [subject.computationId] : []))
-  const producers: TraceComputationDetail[] = []
-  for (const id of candidates) {
-    if (ctx.isStale()) break
-    try {
-      const record = await ctx.client.computationDetail(id, 2, ctx.signal)
-      if (record.computationId !== id) continue
-      const matches = record.outputFactRefs.some(output =>
-        output.analysisId === detail.analysisId && output.factKind === detail.factKind
-        && (detail.jsonPointer
-          ? output.jsonPointer === detail.jsonPointer
-            && (output.factKey === null || output.factKey === detail.factId)
-          : detail.factId !== null && output.factKey === detail.factId))
-      if (matches) producers.push(record)
-    } catch {
-      // 无法核验的计算不作为生产者，也不借用其核对结论。
-    }
-  }
-  return producers
-}
-
 async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext): Promise<void> {
   const cached = ctx.pageData<FactPageData>()
   let data = cached
@@ -1393,14 +2183,20 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
           (item) => item.factId === ctx.page.ref.key && item.analysisId === ctx.page.ref.analysisId,
         ),
       )
-      const producers = await factProducers(ctx, detail, sources)
-      if (ctx.isStale()) return
-      // 多个生产者可能具有不同核对状态，不能按正文引用顺序任取一个。
-      const computation = producers.length === 1 ? producers[0]! : null
+      const computationId = citingSubjects.find((subject) => subject.computationId)?.computationId
+      let computation: TraceComputationDetail | null = null
+      if (computationId) {
+        try {
+          computation = await ctx.client.computationDetail(computationId, 2, ctx.signal)
+        } catch {
+          computation = null
+        }
+        if (ctx.isStale()) return
+      }
       data = {
         detail,
         name: sources.facts?.find(item => item.analysisId === detail.analysisId && item.factId === detail.factId)?.name,
-        relations: assembleFactRelations(ctx.page.ref, detail, sources, producers.map(item => item.computationId)),
+        relations: assembleFactRelations(ctx.page.ref, detail, sources),
         validation: null,
         computation,
         citingSubjects,

@@ -12,7 +12,7 @@ import {
 import { appendHighlighted, groupDigits, renderEvidencePage } from './evidence-pages'
 import { analysisLabel, citationLabel, datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectBusinessLabel } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
-import { ArrowLeft, ArrowRight, createElement, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
+import { ArrowLeft, ArrowRight, createElement, ChevronDown, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
 function sourceSubjectLabel(subject: NonNullable<TraceSources['subjects']>[number], sources: TraceSources): string {
   if (subject.subjectKind === 'table_cell') {
@@ -148,6 +148,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   /** 目录说明：来源不可用的原因，或部分目录加载失败（可重试）。 */
   let directoryNotes: { text: string; retry?: boolean }[] = []
   let directoryFilter = ''
+  const collapsedGroups = new Set<EvidenceObjectKind>()
   const pageDataCache = new WeakMap<EvidencePage, unknown>()
   const taskGraphs = new WeakMap<EvidenceTask, EvidenceGraph>()
 
@@ -179,9 +180,15 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     <p class="evidence-notice" role="status" hidden></p>
     <div class="evidence-body">
       <aside class="evidence-directory" id="evidence-directory" aria-label="来源目录">
-        <div class="evidence-directory-head"></div>
-        <input type="search" class="evidence-directory-search" placeholder="搜索来源目录"
-          aria-label="搜索来源目录" />
+        <div class="evidence-directory-head">
+          <span class="evidence-directory-title"></span>
+          <button type="button" class="evidence-directory-toggle-all" hidden>全部收起</button>
+        </div>
+        <div class="evidence-directory-search-wrap">
+          <input type="search" class="evidence-directory-search" placeholder="搜索来源目录"
+            aria-label="搜索来源目录" />
+          <p class="evidence-directory-match" role="status" hidden></p>
+        </div>
         <div class="evidence-directory-items"></div>
         <button type="button" class="ui-button evidence-trace-list-download" hidden>下载溯源清单（CSV）</button>
         <p class="evidence-directory-note">目录与搜索会开启独立核对任务，不覆盖当前任务的导航历史。</p>
@@ -213,7 +220,23 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   const directoryToggle = shell.querySelector<HTMLButtonElement>('.evidence-directory-toggle')!
   const directory = shell.querySelector<HTMLElement>('.evidence-directory')!
   const directoryHead = shell.querySelector<HTMLElement>('.evidence-directory-head')!
+  const directoryTitle = shell.querySelector<HTMLElement>('.evidence-directory-title')!
+  const directoryToggleAll = shell.querySelector<HTMLButtonElement>('.evidence-directory-toggle-all')!
+  const allGroupKinds = (): EvidenceObjectKind[] => [...new Set(directoryRefs.map((ref) => ref.kind))]
+  const updateToggleAll = (filterActive: boolean, groupCount: number): void => {
+    const kinds = allGroupKinds()
+    directoryToggleAll.hidden = filterActive || groupCount < 2
+    const allCollapsed = kinds.length > 0 && kinds.every((kind) => collapsedGroups.has(kind))
+    directoryToggleAll.textContent = allCollapsed ? '全部展开' : '全部收起'
+  }
+  directoryToggleAll.addEventListener('click', () => {
+    const kinds = allGroupKinds()
+    if (kinds.every((kind) => collapsedGroups.has(kind))) collapsedGroups.clear()
+    else kinds.forEach((kind) => collapsedGroups.add(kind))
+    renderDirectoryItems()
+  })
   const directorySearch = shell.querySelector<HTMLInputElement>('.evidence-directory-search')!
+  const directoryMatch = shell.querySelector<HTMLElement>('.evidence-directory-match')!
   const directoryItems = shell.querySelector<HTMLElement>('.evidence-directory-items')!
   const workspace = shell.querySelector<HTMLElement>('.evidence-workspace')!
   workspace.id = 'evidence-workspace'
@@ -236,7 +259,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         .finally(() => { traceListButton.disabled = false })
     })
   }
-  directoryHead.textContent = `来源目录 · ${options.revisionLabel}`
+  directoryTitle.textContent = `来源目录 · ${options.revisionLabel}`
 
   const announce = (message: string) => {
     announcer.textContent = ''
@@ -619,7 +642,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     renderDirectoryNotes()
     const current = state.currentPage()
     const filter = directoryFilter.trim().toLowerCase()
-    const groups: { label: string; items: EvidenceObjectRef[] }[] = []
+    const groups: { kind: EvidenceObjectKind; label: string; items: EvidenceObjectRef[] }[] = []
     // 搜索登记名、对象 ID，以及事实目录中展示的分析归属。
     const idOnlyHits = new Set<EvidenceObjectRef>()
     for (const ref of directoryRefs) {
@@ -629,10 +652,14 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         if (!ref.key.toLowerCase().includes(filter)) continue
         idOnlyHits.add(ref)
       }
-      const group = groups.find((item) => item.label === EVIDENCE_KIND_LABELS[ref.kind])
+      const group = groups.find((item) => item.kind === ref.kind)
       if (group) group.items.push(ref)
-      else groups.push({ label: EVIDENCE_KIND_LABELS[ref.kind], items: [ref] })
+      else groups.push({ kind: ref.kind, label: EVIDENCE_KIND_LABELS[ref.kind], items: [ref] })
     }
+    const matched = groups.reduce((n, group) => n + group.items.length, 0)
+    directoryMatch.hidden = !filter
+    directoryMatch.textContent = filter ? `找到 ${matched} 项匹配` : ''
+    updateToggleAll(Boolean(filter), groups.length)
     if (!groups.length) {
       const empty = document.createElement('p')
       empty.className = 'evidence-directory-empty'
@@ -642,15 +669,32 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       return
     }
     for (const group of groups) {
-      const label = document.createElement('p')
-      label.className = 'evidence-directory-group'
-      label.textContent = group.label
+      // 搜索时强制展开，保证匹配项可见；折叠态只在无过滤时生效。
+      const collapsed = !filter && collapsedGroups.has(group.kind)
+      const toggle = document.createElement('button')
+      toggle.type = 'button'
+      toggle.className = 'evidence-directory-group'
+      toggle.setAttribute('aria-expanded', String(!collapsed))
+      toggle.style.setProperty('--kind-color', EVIDENCE_KIND_COLORS[group.kind])
+      const chevron = createElement(ChevronDown, { width: 14, height: 14, 'aria-hidden': 'true' })
+      chevron.classList.add('evidence-directory-chevron')
+      const name = document.createElement('span')
+      name.textContent = group.label
       const count = document.createElement('span')
       count.className = 'evidence-directory-count'
       count.textContent = String(group.items.length)
       count.setAttribute('aria-label', `${group.items.length} 项`)
-      label.append(count)
-      directoryItems.append(label)
+      toggle.append(chevron, name, count)
+      toggle.addEventListener('click', () => {
+        if (collapsedGroups.has(group.kind)) collapsedGroups.delete(group.kind)
+        else collapsedGroups.add(group.kind)
+        renderDirectoryItems()
+      })
+      directoryItems.append(toggle)
+      const list = document.createElement('div')
+      list.className = 'evidence-directory-items'
+      if (collapsed) list.hidden = true
+      directoryItems.append(list)
       for (const ref of group.items) {
         const item = document.createElement('button')
         item.type = 'button'
@@ -688,7 +732,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         }
         item.title = `${group.label} · ${ref.label} · ${ref.key}`
         item.addEventListener('click', () => openTaskFromDirectory(ref))
-        directoryItems.append(item)
+        list.append(item)
       }
     }
   }
@@ -725,7 +769,9 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       card.dataset.kind = kind
       const head = document.createElement('h2')
       head.className = 'evidence-start-card-head'
-      head.append(createElement(EVIDENCE_KIND_ICONS[kind], {
+      const iconChip = document.createElement('span')
+      iconChip.className = 'evidence-start-icon'
+      iconChip.append(createElement(EVIDENCE_KIND_ICONS[kind], {
         width: 16, height: 16, 'aria-hidden': 'true', color: EVIDENCE_KIND_COLORS[kind],
       }))
       const label = document.createElement('span')
@@ -733,7 +779,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const count = document.createElement('span')
       count.className = 'evidence-start-count'
       count.textContent = `${refs.length} 项`
-      head.append(label, count)
+      head.append(iconChip, label, count)
       const list = document.createElement('ul')
       for (const ref of refs.slice(0, START_SUMMARY_LIMIT)) {
         const item = document.createElement('li')
@@ -748,9 +794,14 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       }
       card.append(head, list)
       if (refs.length > START_SUMMARY_LIMIT) {
-        const more = document.createElement('p')
-        more.className = 'evidence-start-more'
-        more.textContent = `另有 ${refs.length - START_SUMMARY_LIMIT} 项，可在来源目录中查看`
+        const more = document.createElement('button')
+        more.type = 'button'
+        more.className = 'evidence-start-more evidence-start-more-btn'
+        more.textContent = `另有 ${refs.length - START_SUMMARY_LIMIT} 项，在来源目录中查看 →`
+        more.addEventListener('click', () => {
+          setDirectoryOpen(true)
+          directorySearch.focus()
+        })
         card.append(more)
       }
       summary.append(card)
@@ -792,6 +843,19 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     directoryController = controller
     const stale = () => !isOpen || controller.signal.aborted || directoryController !== controller
     try {
+      // R3: 加载中先画骨架屏，避免空白闪烁
+      if (!stale()) {
+        directoryItems.innerHTML = ''
+        const skeleton = document.createElement('div')
+        skeleton.className = 'evidence-directory-skeleton'
+        skeleton.setAttribute('aria-hidden', 'true')
+        for (let i = 0; i < 6; i++) {
+          const row = document.createElement('div')
+          row.className = 'evidence-directory-skeleton-row'
+          skeleton.append(row)
+        }
+        directoryItems.append(skeleton)
+      }
       // 计算/图表清单请求失败与“未登记”不同：失败时如实说明并可重试，不当作没有该类来源。
       const failed = { available: false, failed: true } as const
       // 修订已退休/无来源索引等“不可用”原因下两类清单本就不可用（不是加载失败），不提示重试。
@@ -862,21 +926,31 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       // 整体加载失败时不保留上一次加载的原因说明，只显示失败与重试。
       directoryNotes = []
       directoryItems.innerHTML = ''
-      const failure = document.createElement('p')
+      const failure = document.createElement('div')
       failure.className = 'evidence-directory-empty'
-      failure.textContent = '来源目录加载失败'
+      failure.setAttribute('role', 'alert')
+      const msg = document.createElement('p')
+      msg.textContent = '来源目录加载失败，请检查网络后重试'
       const retry = document.createElement('button')
       retry.type = 'button'
       retry.className = 'ui-button'
       retry.textContent = '重试'
       retry.addEventListener('click', retryDirectory)
-      directoryItems.append(failure, retry)
+      failure.append(msg, retry)
+      directoryItems.append(failure)
     }
   }
 
   directorySearch.addEventListener('input', () => {
     directoryFilter = directorySearch.value
     renderDirectoryItems()
+  })
+  directorySearch.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && directorySearch.value) {
+      directorySearch.value = ''
+      directoryFilter = ''
+      renderDirectoryItems()
+    }
   })
 
   // 窄屏目录是覆盖在工作区上的抽屉：遮罩提示层级，点遮罩或在目录内按 Esc 关闭并归还焦点。
