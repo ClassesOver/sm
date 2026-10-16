@@ -66,6 +66,7 @@
   --shadow-sm: 0 1px 4px rgb(11 79 138 / 12%);
   --shadow-md: 0 8px 24px rgb(27 42 65 / 14%);
   --shadow-lg: 0 24px 64px rgb(15 28 46 / 26%), 0 2px 8px rgb(15 28 46 / 8%);
+  --color-disabled: var(--color-disabled);
   /* ---- Breakpoints（语义断点约定）----
      640px  小屏：单列布局、底部抽屉        (max-width: 640px / min-width: 641px)
      768px  平板：工具栏/面板折叠           (max-width: 768px / min-width: 769px)
@@ -931,13 +932,13 @@ button {
   color: var(--color-surface);
 }
 .share-link-row button:hover { border-color: transparent; background: linear-gradient(135deg, #0f77c2 0%, #0d5fa3 100%); }
-.share-link-row button:disabled { border-color: transparent; background: #9db4c8; cursor: default; }
+.share-link-row button:disabled { border-color: transparent; background: var(--color-disabled); cursor: default; }
 .share-link-footer { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .share-link-meta { color: var(--color-text-muted); font-size: var(--font-size-sm); }
 .share-renew-note { margin: 0; color: #636f77; font-size: var(--font-size-sm); }
 
 .share-create { width: 100%; justify-content: center; }
-.share-create:disabled { border-color: #9db4c8; background: #9db4c8; cursor: default; }
+.share-create:disabled { border-color: var(--color-disabled); background: var(--color-disabled); cursor: default; }
 .share-link:not([hidden]) + .share-create {
   display: flex;
   width: fit-content;
@@ -951,7 +952,7 @@ button {
   font-size: var(--font-size-md);
 }
 .share-link:not([hidden]) + .share-create:hover { border-color: var(--color-border); background: var(--color-primary-soft); }
-.share-link:not([hidden]) + .share-create:disabled { border-color: transparent; background: transparent; color: #9db4c8; }
+.share-link:not([hidden]) + .share-create:disabled { border-color: transparent; background: transparent; color: var(--color-disabled); }
 
 .share-status {
   display: flex;
@@ -1028,7 +1029,7 @@ button {
   transform: translateY(-1px);
 }
 .ui-button--primary:active { transform: translateY(0); box-shadow: 0 1px 4px rgb(11 79 138 / 24%); }
-.ui-button--primary:disabled { border-color: transparent; background: #9db4c8; color: var(--color-ink); box-shadow: none; transform: none; }
+.ui-button--primary:disabled { border-color: transparent; background: var(--color-disabled); color: var(--color-ink); box-shadow: none; transform: none; }
 .ui-button--quiet { border-color: transparent; background: transparent; color: var(--color-text-muted-2); }
 .ui-button--quiet:hover { border-color: var(--color-border); background: #f1f4f6; color: var(--color-ink); box-shadow: none; transform: none; }
 .ui-button--icon { width: 32px; min-height: 32px; padding: 0; }
