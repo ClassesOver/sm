@@ -1,30 +1,16 @@
-密集事实预览定向检查：`node smoke/evidence-dense-fact-preview-fixture.mjs`。仅39节点/55关系、登记期间与数值、超长业务名、390px手机三个旋转角度；检查全部名称、图标遮挡、边界、预览操作滚动可见和关闭预览释放空间。
-
-事实预览可读性定向检查：`node smoke/evidence-fact-preview-fixture.mjs`。检查登记数值、单位、期间、零值和负变化额，跨分析同名事实不串值，缺失登记值不补造，单击预览不请求事实明细；390px按钮和摘要完整可见，2D/3D切换保留摘要。
-
-3D重置刻度定向检查：`node smoke/evidence-3d-reset-fixture.mjs`。七节点图选择两个追踪端点，验证重置适应范围、100%刻度、再放大125%、2D/3D恢复及节点坐标保留。
+事实预览可读性定向检查：`node smoke/evidence-fact-preview-fixture.mjs`。检查登记数值、单位、期间、零值和负变化额，跨分析同名事实不串值，缺失登记值不补造，单击预览不请求事实明细；390px按钮和摘要完整可见；预览通过单击 2D 关系图节点触发。
 
 指标与图表正文入口定向检查：`node smoke/evidence-object-source-links-fixture.mjs`。固定已登记表格、事实和图表，验证数据格组合引用、图表到绘图数据/数据集、分析到业务事实、键盘、原文保留和零写请求；改值/图表内容待复核时以橙色保留入口并查看原登记数据，深链准确打开对象且保留后退历史，位置失效后不显示入口。
 
 复制正文定向检查：`node smoke/evidence-source-copy-fixture.mjs`。真实系统复制事件验证普通文本和HTML不携带隐藏协议，标题、粗体、链接格式保留，原文不变。
 
-3D响应式视角定向检查：`node smoke/evidence-3d-resize-fixture.mjs`。验证桌面切手机后节点边界、横竖屏往返的125%缩放/平移/方向/up/节点坐标、模式恢复和关闭预览后的像素恢复；固定前端数据，不替代真机或全部密集图验收。
-
 正文来源组合定向检查：`node smoke/evidence-source-marker-fixture.mjs`。固定只读正文验证引用图标及右上角数量、组合来源选择、单来源直接进入、Enter/Space/Esc、取消与选择后的焦点、从组合引用反向定位到标题、正文保留和零写请求；默认使用fixture服务器，不验证真实后端会话。
 
 # Report Editor 生产冒烟
 
-`node smoke/evidence-3d-spatial-fixture.mjs` 使用固定的两输入/一产出数据，定向检查原生深度分层、输入位于产出后方、斜视初始/重置相机、缩放百分比及旋转角度、模式往返的坐标和刻度恢复，以及地面网格的几何/材质释放。使用构建后的4173 fixture服务；不替代密集名称避障或真机手势验收。
-
-密集 3D 标签性能可用 `REPORT_EDITOR_PROFILE_LAYOUT=1 node smoke/evidence-complex-3d-fixture.mjs` 定向检查。计时包装读取真实 Worker 请求与回执；分别报告首次显示名称与持续旋转的后台任务数、等待耗时、主线程动画帧间隔。旋转检查保留39个节点及全部名称，并要求至少10个动画帧、期间不提交后台排布任务。截图等待相机停止后的标签排布完成；计时结果不代表真实设备帧率。`node smoke/evidence-label-worker-fixture.mjs` 则延迟加载后台脚本，检查排布期间切换模式、线程终止、忙碌状态与节点身份。
-
-后台故障回放：`REPORT_EDITOR_WORKER_FAILURE=1 node smoke/evidence-label-worker-fixture.mjs` 注入线程脚本运行错误，`REPORT_EDITOR_WORKER_FAILURE=constructor` 注入浏览器拒绝创建线程。两者都检查恢复名称显示、清除忙碌状态、相机仍可操作、故障画布不重复创建线程，以及节点身份和页面脚本错误。
-
 上述线程回放支持 `REPORT_EDITOR_BROWSER=firefox`；默认使用 Chromium。`node smoke/evidence-facts-readability-fixture.mjs` 额外检查来源目录按 `analysis_001` 或显示名称 `分析 001` 筛选、以及未登记的分析不匹配其他事实。
 
 `REPORT_EDITOR_FACT_LONG_NAME=1 node smoke/evidence-facts-readability-fixture.mjs` 使用较长业务名称和契约允许的六位分析编号，在1280/390/320px检查目录抽屉、完整名称、筛选、期间、比较元数据与输入事实跳转。默认短名称与两视口范围保持原样。
-
-小图 3D 可按问题定向回放：`REPORT_EDITOR_SMALL_COUNT=15 REPORT_EDITOR_SMALL_STATE=hub-preview REPORT_EDITOR_SCREENSHOT_SUFFIX=-check node smoke/evidence-small-3d-fixture.mjs`。节点数只接受5/9/15，未指定时覆盖全部三种；报告 `nodes` 使用实际选择。默认27场景仍保留全部名称身份、零名称/图标碰撞、画布边界和导航断言。390px 未预览增加空摘要高度检查，避免空面板挤占画布；关注标签检查状态与名称两行，关系数量仍由悬停提示/图例提供。
 
 以下生产检查必须使用真实 reporting 后端和有效编辑会话。Vite API fixture 只能验证前端渲染，不能替代权限、会话和 renderer 链路。
 
@@ -76,60 +62,6 @@ npm run smoke
 - Safari/iOS：发布前使用真机验证 safe-area 与软键盘；桌面模拟不计为真机证据。
 
 ## v6 证据浏览器 fixture 定向回放
-
-小图可见名称在已有15节点阈值内固定12px，未指定追踪伙伴时按原生屏幕坐标的最近可见节点向外锚定。initial fixture现保存 `output/report-editor-v6-3d-initial-zoom-<宽度>.png` 与 `output/report-editor-v6-3d-initial-restored-<宽度>.png`，重建后仍严格逐像素一致；曾复现当前页标签锚点方向未恢复，应用补齐原生布局就绪及tick/stop更新后通过。指定三节点竖屏初始图名称已分开，仍需人工核对；不能据最近邻锚点声称所有5～15节点形态或完全重合投影均已避让。
-
-首次打开3D运行 `node smoke/evidence-3d-initial-fixture.mjs`。1280/390px新页面先在收起区域挂载再打开，初始不点击相机工具；保存 `output/report-editor-v6-3d-initial-<宽度>.png`，读取PNG检查上下边界及固定三节点图形高度占用至少45%/20%。该门槛是样例回归，不代表任意图可读性标准。然后预览/关闭缓存节点、手动适应/放大，核对列表往返和预览重建画布逐像素保持用户视角。初始力布局继续收敛，不要求首次截图与较晚手动适应完全相同；不能放宽已缓存现场的严格像素断言。移动目录通过实际目录展开按钮进入，不使用隐藏DOM强制点击。
-
-3D鼠标fixture追加类型图例断言：初始加载事实/计算/引用三个类型，计算分支成功追加快照后应有dataset图例。类型色不替代当前页/预览色或追踪淡化，节点名称及Lucide形状继续保留。最终四类型浏览器概览截图 `output/report-editor-v6-3d-type-colors.png` 已检查；图表及五类型全部状态视觉矩阵尚未完成。类型图例不证明整体复杂图可读性或色觉/读屏验收通过。
-
-3D名称使用600字重及Three原生depthWrite=false/toneMapped=false后，普通/长名称复杂回放继续核对两行/省略、全图与旋转追踪边界、名称/列表严格像素恢复。代表旧截图为 `output/report-editor-v6-complex-3d-label-before-390-long.png`（竖屏追踪）与 `output/report-editor-v6-complex-3d-label-before-1280-long.png`（桌面概览），当前对应trace-390-long和1280-long截图。字体效果需人工比较，不以边界检查证明所有名称可读或透明遮挡根因；three-spritetext本身已设置文字纹理sRGB，应用不重复赋值。
-
-复杂3Dfixture新增全图适应后四边内缩2px背景检查，与原追踪及直接关系边界检查并行保留。组件适应补丁使用各几何盒的角点，仍沿用原相机公式；代表长名称39/55旋转回放的节点投影高约197/63/32px→327/90/52px（1280/390/844页面视口），两次坐标略有差异，临时投影日志已移除，不把代表场景比例变成所有视角契约。最终概览截图仍为 `output/report-editor-v6-complex-3d-<宽度>[-long].png`；本次对照的旧长名称截图保留为 `output/report-editor-v6-complex-3d-fit-before-<宽度>-long.png`。需要人工检查全图密集投影与节点小字，边界通过不代表整体可读性通过。
-
-3D小图fixture新增原生CanvasRenderingContext2D.fillText记录（保留原方法），检查已加载关系信息实际绘入SpriteText纹理。类型图标复用Lucide与Three原生Sprite，关注名称截图应核对图标、两行信息及登记边数；图标不参与拾取，现有鼠标/触控回放核对原命中行为。生命周期回放仍验证上下文及隐藏绘制，不测量纹理内存峰值。全部五类型/状态及任意角度的视觉矩阵尚未完成，不据代表截图标记整体概览通过。
-
-复杂3Dfixture在390px追加工具栏空间断言：七个可见图操作按钮同一行、宽高均至少40px，长名称预览时画布至少270px。模式按钮可见目标为2D/3D，完整操作名仍在aria-label/title；3D适应按钮复用Expand图标，范围切换仍按原完整操作名定位。该尺寸证据不等于整体概览可读性通过。
-
-复杂3D普通/长名称fixture现覆盖390×844与844×390独立视图的关系列表入口：55条关系内部滚动、画布隐藏、返回详情按钮可见、无整页横向溢出，以及切回图后PNG逐像素一致。截图 `output/report-editor-v6-complex-3d-mobile-list-<390或844>[-long].png` 为滚动至末尾的列表画面。受影响单测覆盖返回详情恢复原收起状态与焦点；模拟视口回放不作为真机/读屏或复杂图整体可读性证据。
-
-复杂3Dfixture最终导航阶段现分别保存直接关系范围与shared-0固定端点，Enter进入、后退恢复原选择，2D/3D往返再次检查恢复；更换预览为first-1要求全图，避免旧端点污染另一对象。实现保存graph3dTrace预览身份/value，恢复只接受匹配身份及当前已加载邻居。普通/长名称变体均通过；这不等于累计图、相机和坐标跨刷新完整恢复，也不覆盖全部缺失邻居迁移矩阵。
-
-复杂3Dfixture检查端点选择器的“只看预览对象的直接关系”：first-0的15条登记直接关系（含自引用）、40个累计节点选择项保留，过滤实际改变画面，返回全图PNG完全一致；再主动“适应预览”检查三视口边界，切至单对端点再恢复全图，保持标题/预览/历史。截图 `output/report-editor-v6-complex-3d-preview-relations-<宽度>[-long].png`。使用组件原生可见性与zoomToFit，不删业务节点、不自动移动相机。旋转后恢复全图适应的观察窗口现650ms，再检查基线150ms稳定，像素断言仍严格；曾在250ms观察时基线失败，不能将后续通过解释为所有偶发差异根因已定。局部过滤不替代整体复杂图可读性验收。
-
-名称开关差异诊断可运行 `REPORT_EDITOR_LABEL_CYCLES=3 node smoke/evidence-complex-3d-fixture.mjs`，长名称再加REPORT_EDITOR_LONG_LABELS=1。默认1轮，参数必须为1至10的整数。每种视口按指定轮数切换，前后文件追加 `-cycle-<轮次>`；基线150ms稳定、悬停身份及原PNG严格一致必须通过。PNG比较失败后解码RGBA输出变化像素数、最大色差和范围，尺寸变化另报；不通过重试或容差掩盖差异。普通/超长并行三视口×3轮共18轮通过，原一次差异未复现，根因未知；已有证据足够后不例行重复该诊断，出现新症状再使用。
-
-生命周期fixture同时统计原生drawArrays/drawElements调用（保留原方法），在文字列表和关系收起后采样150ms两次要求绘制数不增，返回图/展开后要求绘制恢复；组件原生pauseAnimation/resumeAnimation负责暂停，不销毁仍可恢复的隐藏现场。复杂3D普通/长名称fixture新增55条文字关系有序端点多重集与2D累计图一致、3D/列表往返后预览/画布像素一致；角色选择器在返回图后检查，不能读取默认排除的隐藏角色。名称开关新增150ms基线稳定断言，before画布保存为 `output/report-editor-v6-complex-3d-focus-before-<宽度>[-long].png`。曾有并发长名称回放一次开关像素差异，单独重跑未复现，原因尚不确定；不要据一次通过推广为所有时序完成。
-
-3D生命周期运行 `node smoke/evidence-3d-lifecycle-fixture.mjs`，使用同一构建后fixture服务。Chromium在初始化时记录getContext的真实返回值并主动保留引用，验证6轮预览开关、2D/3D往返及进入/后退/任务关闭后：仅可见画布保留活跃上下文，能力探针和移除画布均context.isContextLost()，2D/关闭后为0；同时检查预览恢复、页面标题、脚本错误和上下文过多告警。应用复用WEBGL_lose_context与Three forceContextLoss，不自建销毁系统。44个累计上下文是本次回放的创建次数，不是同时活跃数或产品预算。此检查不测自然GC/系统内存/GPU性能，也不证明未支持原生扩展的设备释放行为；不要据人为保留引用的旧版失败宣称自然运行内存泄漏。
-
-3D鼠标fixture现先通过真实球体中键创建后台任务，再Control、Meta和右键重复打开同一对象，断言任务去重、原标题/预览/历史保持，统一清空悬停后画布逐像素一致；Control+Shift前台激活既有任务后切回原任务保留预览。修饰键用page.keyboard.down/up包围mouse.click，禁止把不支持的mouse.click modifiers参数当作实际按键证据。中键依赖同一ESM组件补丁的原生拾取转发，应用只处理后台任务与auxclick默认行为，不自研拾取器。此回放不覆盖macOS原生⌘、中键拖动或所有鼠标组合；后台重复打开证据不能推广为任意任务身份去重矩阵。
-
-复杂3D名称开关回放：超过15节点默认重点名称，小图默认全部；工具栏名称图标切换全部/重点，aria-pressed为true表示全部。普通/长名称fixture核对实际画面变化、40个选择器选项及预览不变，在每种视口清空鼠标悬停后要求开关往返画布逐像素一致；进入后退必须保留all非默认偏好。截图 `output/report-editor-v6-complex-3d-all-names-<宽度>[-long].png` 与 `output/report-editor-v6-complex-3d-focus-restored-<宽度>[-long].png`，原概览截图现为重点名称默认效果。组件Sprite可见性和Three拾取图层共同排除隐藏名称，业务节点/边不删减。该回放不证明真实大规模性能、密集投影节点可区分或全部名字同时可读；仍需人工核对横屏按钮布局及文字遮挡。
-
-复杂3D普通与长名称fixture现增加每种视口三个空白拖动旋转角度，随后主动适应追踪关系，并用四边内缩2px像素检查标签/图形没有触边；截图 `output/report-editor-v6-complex-3d-trace-angle-<1..3>-<宽度>[-long].png`。取消追踪后的概览也检查边界并实际缩小/放大，截图 `output/report-editor-v6-complex-3d-overview-zoom-<宽度>[-long].png`。当前页/预览/悬停对象复用SpriteText固定12px、多行和屏幕外侧锚点，适应/重置的原生zoomToFit留白纳入标签屏幕尺寸；全名仍在原生选择器/摘要/提示中。小图鼠标fixture新增真实悬停截图 `output/report-editor-v6-3d-hover-label.png`。代表性截图需人工检查标签相互遮挡；边界通过不证明整体概览、三个以上关注对象或所有角度可读性通过。
-
-同一3D触控fixture还从真实计算球体开始加入第二指，执行50→74px捏合、松开第二指后继续旋转。相同重置/适应视角前后要求截图完全一致，捕捉组件默认节点拖拽造成的位置改变；产品已禁用节点拖拽，保留组件相机控制。截图为 `output/report-editor-v6-3d-touch-node-{before,pinch,restored}.png`，需对照检查。最终四节点场景通过，不替代复杂图手势、触摸双击或真机验收。下方早期“不覆盖节点起点捏合”描述由本条指定场景补充，其他范围不扩展。
-
-3D模拟触控运行 `node smoke/evidence-3d-touch-fixture.mjs`，同样使用构建后的fixture服务。390×844 Chromium hasTouch/isMobile，真实CDP触摸输入验证空白旋转、适度双指缩放、松开一指后继续旋转；手势前要求画面稳定，手势不能误预览、导航或滚动窗口。鼠标扫描确定真实球体位置后清除悬停，再快速touchscreen.tap验证预览/进入/后退；大幅缩放后用“适应3D”恢复视野。截图为 `output/report-editor-v6-3d-touch-{rotate,pinch,preview,recovered}.png`。快速轻触回归依赖 [组件拾取时序补丁](../patches/README.md)，原50ms悬停节流会吞掉尚无悬停的轻触。模拟输入不替代iPhone/Android真机，不覆盖节点起点捏合或触摸双击；截图需人工检查，不能凭画面变化证明所有手势或复杂图可读性通过。
-
-3D 相机工具回放检查定位、放大、缩小和重置后预览/标题/历史不变，定位画布截图为 `output/report-editor-v6-3d-locate.png`；截图检查范围为当前节点居中，不代表邻居与长标签全部落入视口。
-
-3D 回放还检查节点选择与关闭后的选择器焦点、Escape 关闭预览和 Enter 导航；相机恢复的对照画布截图为 `output/report-editor-v6-3d-camera-{before,preview}.png`。截图提供指定三节点的视觉证据，不是全部图和全部动画时刻的坐标断言。
-
-默认 3D 挂载与容器尺寸回放：构建后启动 `node smoke/fixture-server.mjs`，运行 `node smoke/evidence-3d-fixture.mjs`；可设置 `REPORT_EDITOR_BROWSER=firefox|webkit` 选择引擎。核对 1280px/390px 画布与容器尺寸、无整页横向溢出、2D/3D 往返及无脚本异常；通过原生节点选择器核对预览不改历史、390px 操作按钮完整可见、分支加载失败/重试、关闭、进入与后退恢复。截图为 `output/report-editor-v6-3d-{1280,390}.png` 与 `output/report-editor-v6-3d-preview-390.png`。此用例不覆盖画布鼠标命中、全部键盘流程、实例资源释放或复杂图可读性，不能用 2D fixture 的结果替代这些 3D 验收项。
-
-3D 追踪回放新增原生端点固定/取消、适应两端、分支加载后的端点更新、关系计数与无预览禁用检查，保持预览身份/标题/历史；390px 控件不越界且画布高于100px。截图为 `output/report-editor-v6-3d-trace-390.png` 和 `output/report-editor-v6-3d-trace-branches.png`，需人工核对突出连线与背景边。关系计数断言本身不能证明渲染正确；小图截图仍存在标签重叠，不作为复杂图可读性证据。
-
-同一3D回放还通过真实鼠标扫描球体，以组件悬停输出的 `data-hovered` 身份确认命中，再验证悬停关系计数、画布单击预览且不导航、双击进入与后退恢复。未调用组件回调或直接修改图实例。3D单击有350ms双击判定等待；双击回放使用两次间隔100ms的点击。此检查不覆盖中键、修饰键、右键或触控手势。
-
-鼠标旋转/缩放回放从画布空白处拖动并滚轮放大，检查画面变化和随后节点命中/预览/双击导航；截图为 `output/report-editor-v6-3d-{rotated,wheel}.png`。相机偏好回放在运行中切换 `reduce` 与 `no-preference`，检查定位、放大、缩小、重置、适应五个动作：分别等40ms/240ms截图，再等300ms截图要求完全一致，并保持预览/标题/历史。该画面稳定性证据不证明动画进行中切换偏好、触控或任意复杂图。
-
-复杂3D回放：同一fixture服务运行 `node smoke/evidence-complex-3d-fixture.mjs`，可设置 `REPORT_EDITOR_BROWSER=firefox|webkit` 切换引擎。沿用2D复杂图的共享输入、反馈环、自引用及多批次追加，检查39个累计节点、切到2D后的55条登记边、1280×900/390×844/844×390布局、固定/取消追踪、预览/历史保持与进入/后退恢复。固定追踪通过组件可见性过滤仅显示两端与对应关系，取消恢复全图；自引用不列为独立端点选项。截图为 `output/report-editor-v6-complex-3d-{1280,390,844}.png` 与 `output/report-editor-v6-complex-3d-trace-{1280,390,844}.png`。自动断言不作为整体可读性判定；需人工检查自引用环、追踪边和名称，当前完整图名称仍偏小、远端标签受透视缩小。结果不替代真实后端权限/索引、规模性能、触控或读屏证据。
-
-追踪文字现使用组件固定屏幕尺寸能力，目标12px；取消追踪恢复原比例。复杂3D回放在每种视口追踪时缩小后截图 `output/report-editor-v6-complex-3d-trace-zoom-{1280,390,844}.png`，再放大检查端点选择与追踪关系保持。需人工对照原追踪截图确认远端名称可读、缩小时文字大小保持。指定first-0/shared-0已检查，不代表长名称、任意旋转角度或全图概览验收通过。
-
-长名称变体运行 `REPORT_EDITOR_LONG_LABELS=1 node smoke/evidence-complex-3d-fixture.mjs`，两端改为超长中文名称，关系形态与39/55规模不变；截图文件名追加 `-long`。验证选择器与预览摘要保留全名，追踪时类型/状态和最多14字的名称分两行。普通与长名称变体均在适应/缩小后读取真实截图像素，四边内缩2px要求为背景，失败报告像素位置与RGBA；该检查排除主题边框/截图舍入，不能代替标签间遮挡和整体可读性的人工检查。
 
 详情回放也验证空快照与筛选零匹配使用不同提示；点击“清除筛选”恢复本页行、隐藏空态，并把焦点返回搜索框。空态在表格之外，不计入复制行。
 
@@ -263,13 +195,7 @@ node smoke/evidence-complex-graph-fixture.mjs
 
 此回放还检查预览节点的直接关系突出、其他边淡化与绘制顺序：分支预览为 3 条突出/52 条淡化，窄屏另一预览为 1 条突出，定位当前对象后保持该选择。该检查不证明全图概览或所有共用通道关系的可读性。
 
-小型3D全图可读性回放：`node smoke/evidence-small-3d-fixture.mjs`。固定事实接口生成5/9/15个节点，分别保存1280×900、390×844、844×390三个视口的三个实际鼠标旋转角度，共27张截图 `output/report-editor-v6-small-3d-{节点数}-{宽度}-angle-{角度}.png`。仅自动检查身份数量、无整页横向溢出和无脚本错误；可读性须人工检查。2026-10-03回放通过这些运行检查，但人工审查发现5节点竖屏、9节点桌面及15节点横竖屏标签重叠，不能记为图可读性通过。与39/55复杂关系回放互补，不替代共享输入、环或分批加载契约。
-
-小图布局改善回放使用 `REPORT_EDITOR_SCREENSHOT_SUFFIX=-d3fc node smoke/evidence-small-3d-fixture.mjs`，避免覆盖上述反证截图。当前脚本增加每张画布四边内缩2px的真实像素检查；27张截图通过边界、身份、无页面横向溢出和无脚本错误检查，但15节点手机横竖屏仍有标签遮挡。使用 `@d3fc/d3fc-label-layout` 的greedy策略和Three原生文字锚点；不以这些运行检查代替人工可读性验收。触控脚本扫描候选坐标时增加原生拾取节流后的稳定复核，不把旧悬停回执视为当前位置命中；节点起点多指结束不误预览与逐像素现场恢复断言仍保留。
-
 后续排布稳定性回放使用后缀 `-stable`，每张全图截图前清除临时悬停。触控脚本新增旋转/捏合后静止悬停画布逐像素检查，再等待扫描悬停清空后真实点按原坐标；前者在亚像素布局评分导致标签上下跳位时失败。布局输入取整到CSS像素后上述检查通过，原多指手势不误预览与恢复断言保持；不以触控模拟替代真机验收。
-
-固定障碍回放使用后缀 `-ordered`。小图脚本包装原生Sprite.raycast并继续执行原方法，从实际矩阵、锚点和尺寸测量名称/14px图标区域，断言全部名称仍参与投影，输出每场景相交面积大于1px²的名称对与图标覆盖数；标签背景也计入区域。完整几何与对象对保存为 `output/report-editor-v6-small-3d-ordered-geometry.json`。当前5/9节点三视口与15节点桌面/竖屏名称间重叠为0，15节点横屏各1对，竖屏仍有图标覆盖；运行检查通过不等于整体可读性验收通过。组件固定区域/输入不变与边界回归使用 `npx vitest run src/evidence-label-layout.test.ts`，明确消费浏览器相同的ESM入口。
 
 真实共享依赖回放在项目根目录运行：
 

@@ -19,8 +19,6 @@ const inputs = new Map([
 const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
-  // 视差随指针偏转视角；像素与几何检查需要静止视角，先关闭。
-  await page.addInitScript(() => localStorage.setItem('smart-reporting-evidence-3d-parallax', 'off'))
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
   await page.route('**/api/facts/**', route => {
@@ -36,8 +34,6 @@ try {
   await page.locator('.evidence-subject-links button', { hasText: '事实' }).click()
   const positions = () => page.locator('.evidence-node').evaluateAll(nodes => Object.fromEntries(
     nodes.map(node => [node.dataset.evidenceNode, [node.style.left, node.style.top]])))
-  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).waitFor()
-  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   await page.waitForFunction(() => document.querySelectorAll('.evidence-node').length === 15)
   let previous = await positions()
   const title = await page.locator('.evidence-object-title').textContent()

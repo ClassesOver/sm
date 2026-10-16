@@ -4,8 +4,6 @@ import { chromium } from 'playwright'
 const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
-  // 视差随指针偏转视角；像素与几何检查需要静止视角，先关闭。
-  await page.addInitScript(() => localStorage.setItem('smart-reporting-evidence-3d-parallax', 'off'))
   const errors = [], requested = []
   page.on('pageerror', error => errors.push(error.message))
   await page.route('**/api/sources', route => route.fulfill({ json: {
@@ -25,11 +23,10 @@ try {
   await page.goto('http://127.0.0.1:4173/reports/v1/editor/fixture-report/1', { waitUntil: 'networkidle' })
   await page.locator('[data-action="sources"]').click()
   await page.locator('.evidence-directory-item').filter({ hasText: '事实产出' }).click()
-  // 15 个节点以内的小图默认 2D；本检查针对 3D，先显式切换。
-  await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
-  await page.locator('.evidence-graph-3d canvas').waitFor()
+  const node = id => page.locator(`.evidence-node[data-evidence-node="${id}"]`)
+  await node('fact:analysis_001/shared').waitFor()
   const choose = async (id, value, period) => {
-    await page.getByRole('combobox', { name: '选择 3D 节点预览' }).selectOption(id)
+    await node(id).click()
     await page.locator('.evidence-preview-value').waitFor()
     assert.equal(await page.locator('.evidence-preview-value').textContent(), value)
     assert.equal(await page.locator('.evidence-preview-period').textContent(), period)
@@ -49,10 +46,8 @@ try {
   assert.ok(geometry.width <= 390)
   assert.ok(geometry.scrollHeight <= geometry.clientHeight + 1, '手机事实摘要及操作完整可见')
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
-  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   assert.equal(await page.locator('.evidence-preview-value').textContent(), '登记变化额 -514,421,873 元')
-  await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
-  await page.getByRole('combobox', { name: '选择 3D 节点预览' }).selectOption('fact:analysis_001/unknown')
+  await node('fact:analysis_001/unknown').click()
   assert.equal(await page.locator('.evidence-preview-value').count(), 0, '未登记数值不推断')
   assert.equal(await page.locator('.evidence-preview-period').count(), 0)
   assert.deepEqual(requested, ['analysis_001/root'])

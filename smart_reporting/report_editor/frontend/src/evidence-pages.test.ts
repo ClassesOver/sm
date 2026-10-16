@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReportEditorClient } from './api'
 import { createEvidenceGraph, mergeEvidenceGraph } from './evidence-graph'
-import { effectiveGraphMode, formatBytes, formatDifference, graphLabel, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
+import { formatBytes, formatDifference, graphLabel, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
 import { createEvidenceState, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 
@@ -658,29 +658,15 @@ describe('事实页', () => {
     expect(list.querySelectorAll('.evidence-relation-row').length).toBeGreaterThan(0)
   })
 
-  it('defaults small graphs to 2D, switches modes explicitly, and preserves preview state', async () => {
+  it('renders only the 2D relation graph without a 3D mode switch, keeping preview state', async () => {
     const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
     page.selected = { ...FACT_REF, key: 'fact-input', label: '输入事实' }
     await renderEvidencePage(container, ctx)
-    expect(page.graphMode).toBe('auto')
-    const toggle = container.querySelector<HTMLButtonElement>('.evidence-graph-mode-toggle')!
-    expect(toggle.getAttribute('aria-label')).toBe('切换到 3D 关系图')
-    expect(toggle.title).toBe('当前为 2D，切换到 3D')
-    toggle.click()
-    expect(page.graphMode).toBe('3d')
-    expect(page.selected?.key).toBe('fact-input')
-    container.querySelector<HTMLButtonElement>('.evidence-graph-mode-toggle')!.click()
-    expect(page.graphMode).toBe('2d')
-    expect(page.selected?.key).toBe('fact-input')
+    expect(container.querySelector('.evidence-graph-mode-toggle')).toBeNull()
+    expect(container.querySelector('.evidence-graph-3d')).toBeNull()
+    expect(container.querySelector('[aria-label*="3D"]')).toBeNull()
     expect(container.querySelector('.evidence-node')).not.toBeNull()
-  })
-
-  it('chooses 3D automatically only for graphs with more than 15 nodes', () => {
-    expect(effectiveGraphMode('auto', 15)).toBe('2d')
-    expect(effectiveGraphMode('auto', 16)).toBe('3d')
-    expect(effectiveGraphMode(undefined, 3)).toBe('2d')
-    expect(effectiveGraphMode('3d', 3)).toBe('3d')
-    expect(effectiveGraphMode('2d', 40)).toBe('2d')
+    expect(page.selected?.key).toBe('fact-input')
   })
 
   it('opens a dedicated graph view from a collapsed detail and restores the detail on return', async () => {
@@ -807,7 +793,7 @@ describe('事实页', () => {
     const visibleIds = () => [...container.querySelectorAll<HTMLElement>('.evidence-node')]
       .filter(node => node.style.display !== 'none').map(node => node.dataset.evidenceNode)
     const before = visibleIds()
-    expect(page.graph3dTrace).toEqual({ previewId: `fact:${FACT_REF.analysisId}/${FACT_REF.key}`, value })
+    expect(page.graphTrace).toEqual({ previewId: `fact:${FACT_REF.analysisId}/${FACT_REF.key}`, value })
     await renderEvidencePage(container, ctx)
     expect(container.querySelector<HTMLSelectElement>('.evidence-trace-picker')!.value).toBe(value)
     expect(visibleIds()).toEqual(before)
@@ -915,7 +901,7 @@ describe('事实页', () => {
     expect(body.hidden).toBe(true)
   })
 
-  it('fits an automatic 2D graph that overflows a narrow first view', async () => {
+  it('fits a 2D graph that overflows a narrow first view', async () => {
     const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
     document.body.append(container)
     await renderEvidencePage(container, ctx)
@@ -923,26 +909,6 @@ describe('事实页', () => {
     Object.defineProperties(scroll, { clientWidth: { value: 200 }, clientHeight: { value: 200 } })
     await new Promise((resolve) => requestAnimationFrame(resolve))
     expect(page.graphScale).toBeLessThan(1)
-    expect(page.graphMode).toBe('auto')
-    container.remove()
-  })
-
-  it('reveals the current node on a narrow first view without changing scale or pan', async () => {
-    const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
-    // 用户已明确选择 2D 时不自动缩放，只滚动到当前节点。
-    page.graphMode = '2d'
-    document.body.append(container)
-    await renderEvidencePage(container, ctx)
-    const scroll = container.querySelector<HTMLElement>('.evidence-graph-scroll')!
-    Object.defineProperties(scroll, { clientWidth: { value: 200 }, clientHeight: { value: 200 } })
-    await new Promise((resolve) => requestAnimationFrame(resolve))
-    const current = container.querySelector<HTMLElement>('.evidence-node.is-current')!
-    const left = parseFloat(current.style.left)
-    expect(left + 170 + 16).toBeGreaterThan(200)
-    expect(scroll.scrollLeft).toBeGreaterThan(0)
-    expect(scroll.scrollLeft).toBeLessThanOrEqual(left)
-    expect(page.graphScale).toBe(1)
-    expect(page.graphPan).toEqual({ x: 0, y: 0 })
     container.remove()
   })
 
