@@ -9,11 +9,23 @@ import { analysisLabel, citationLabel } from './evidence-relations'
 
 const protocolMarkerPluginKey = new PluginKey<DecorationSet>('SMART_REPORT_PROTOCOL_MARKERS')
 
-function markerDecorations(doc: ProseNode, sources?: TraceSources): DecorationSet {
+/** 来源标记后的光标落点：标记是不可编辑的内联装饰，紧随其后的文档位置会被映射进标记文字内部，
+ * 浏览器随即把光标或选区收拢（段末输入被吞掉，键盘选中标记后的文字得到空选区）。每组标记后加一个空部件，
+ * 取 side: -1（位于该位置之前），该位置便落在部件之后的可编辑处；段落以标记结尾时，ProseMirror 还会因此补上原生段末光标占位。 */
+export const PROTOCOL_CARET_ANCHOR = 'protocol-caret-anchor'
+
+function caretAnchor(): HTMLElement {
+  const anchor = document.createElement('span')
+  anchor.className = 'report-protocol-caret-anchor'
+  return anchor
+}
+
+export function markerDecorations(doc: ProseNode, sources?: TraceSources): DecorationSet {
   const decorations: Decoration[] = []
   doc.descendants((node, position) => {
     if (!node.isText || !node.text) return
     for (const group of groupProtocolMarkers(node.text)) {
+      decorations.push(Decoration.widget(position + group.at(-1)!.end, caretAnchor, { side: -1, key: PROTOCOL_CARET_ANCHOR }))
       const marker = group[0]
       const references = [...new Map(group.map(item => [`${item.kind}:${item.value}`, { kind: item.kind, value: item.value }])).values()]
       const title = references.length > 1 ? `查看 ${references.length} 个来源`

@@ -1362,3 +1362,10 @@ PR #14 合并后找 bug（2026-10-09）：
 - `evidence-chart`、`evidence-branch`、`evidence-restore` 通过：详情默认已展开（2026-10-07 起 `collapsed` 默认 false），去掉过时的“展开”点击；数据集对象现显示登记名“季度收入快照”而非文件名，断言同步更新；无 3D 后一并去掉“切换到 2D”点击。
 - `evidence-navigation` 的图滚动、列宽调整（改为相对增量断言）、返回/后退恢复等图相关步骤已通过；仍失败于后面的编辑器正文选区保留检查（`window.getSelection()` 为空，期望“现场草稿”），与关系图无关，未在本次处理。
 - 首屏溢出的图会整体缩小到可见，因此窄屏滚动检查需先放大后再滚动。
+
+编辑器来源标记旁光标与选区（2026-10-16）：
+
+- 现象：段落以来源标记结尾（生成正文的常态）时，Ctrl+End 或点到段末后输入的文字被吞掉；标记后紧跟的文字用键盘（Shift+←）或脚本选中时得到空选区。`evidence-navigation` 冒烟的“现场草稿”检查正是因此失败。
+- 根因：标记是 `contenteditable=false` 的内联装饰，紧随其后的文档位置被 ProseMirror 映射到标记文字节点末尾（不可编辑处），浏览器不触发输入、并收拢选区；段末时 ProseMirror 也不会补原生的段末光标占位（最后一个子节点仍是文字）。
+- 修复：每组标记后加一个空部件装饰（`side: -1`），该位置落到部件之后的可编辑处；段末时 ProseMirror 随之补上 `ProseMirror-separator` 与 `trailingBreak`。标记仍不可编辑，Backspace 不会删入标记，点击标记照常打开来源。
+- 验证：新增 3 个单测（修复前失败）；浏览器实测段末输入、标记后键盘/脚本选区、标记前后输入、Backspace 边界、点击标记均正常；`evidence-navigation`、`evidence-source-copy` 冒烟通过。`evidence-source-marker`（等待 `.report-source-picker`）、`evidence-validation`（等待“需核对口径”）、`evidence-keyboard`（旧目录名“收入明细.csv”）在本修复前就失败，与本次无关，未处理。
