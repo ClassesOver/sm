@@ -99,6 +99,37 @@ def test_render_docx_uses_libreoffice_when_pandoc_is_unavailable(
     assert output.is_file()
 
 
+def test_render_docx_removes_temp_dir_when_libreoffice_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "render.docx"
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        docx_module.shutil,
+        "which",
+        lambda name: "/usr/bin/libreoffice" if name == "libreoffice" else None,
+    )
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return type("Completed", (), {"returncode": 1, "stderr": b"fail", "stdout": b""})()
+
+    monkeypatch.setattr(docx_module.subprocess, "run", fake_run)
+
+    with pytest.raises(docx_module.ReportFailure, match="Word 渲染失败"):
+        docx_module._render_docx(
+            "<html><body>报告</body></html>",
+            source_parent=tmp_path,
+            output=output,
+            context={"sections": [], "headingNumbers": []},
+            layout={},
+        )
+
+    outdir = Path(calls[0][calls[0].index("--outdir") + 1])
+    assert not outdir.exists()
+    assert not output.is_file()
+
+
 @pytest.mark.parametrize("kind", ["render", "validate"])
 def test_report_temporary_paths_are_private_workspace_directories(tmp_path: Path, kind: str):
     relative = f".reporting-tmp/workspace-report-test-{kind}"

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import (
     Column,
@@ -14,7 +15,9 @@ from sqlalchemy import (
     delete,
     insert,
     select,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .service import ReportEditorSession
@@ -37,6 +40,8 @@ report_editor_sessions_v1 = Table(
     Column("workflow_run_id", String(256), nullable=False),
     Column("context_sha256", String(64), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
+    # NULL 表示没有该列的历史全权限行；分享会话写入受限能力字典。
+    Column("capabilities", JSONB, nullable=True),
 )
 
 
@@ -49,6 +54,13 @@ class SqlAlchemyReportEditorRepository:
     async def create_schema(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(_metadata.create_all)
+            # create_all 不会给已有表补列。NULL 保持历史行的全权限语义。
+            await connection.execute(
+                text(
+                    "ALTER TABLE report_editor_sessions_v1 "
+                    "ADD COLUMN IF NOT EXISTS capabilities JSONB"
+                )
+            )
             now = datetime.now(UTC)
             await connection.execute(
                 delete(report_editor_grants_v1).where(report_editor_grants_v1.c.expires_at <= now)
@@ -96,6 +108,7 @@ class SqlAlchemyReportEditorRepository:
                     workflow_run_id=session.workflow_run_id,
                     context_sha256=session.context_sha256,
                     expires_at=session.expires_at,
+                    capabilities=session.capabilities,
                 )
             )
 
@@ -123,8 +136,24 @@ class SqlAlchemyReportEditorRepository:
             workflow_run_id=cast(str, row["workflow_run_id"]),
             context_sha256=cast(str, row["context_sha256"]),
             expires_at=expires_at,
+            capabilities=_session_capabilities(row.get("capabilities")),
         )
 
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _session_capabilities(value: Any) -> dict[str, Any] | None:
+    """NULL 是历史全权限；非对象的脏数据按空能力处理，避免被当成全权限。"""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {}

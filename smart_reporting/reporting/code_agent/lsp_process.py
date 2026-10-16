@@ -131,6 +131,9 @@ class ReportingLspProcessManager:
             ]
             for state in expired:
                 self._states.pop(state.root, None)
+                start_lock = self._start_locks.get(state.root)
+                if start_lock is not None and not start_lock.locked():
+                    self._start_locks.pop(state.root, None)
         for state in expired:
             await self._close_state(state)
 

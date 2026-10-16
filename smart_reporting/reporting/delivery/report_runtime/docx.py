@@ -113,12 +113,17 @@ def _render_docx(
             cwd=source_parent,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReportFailure("Word 渲染失败或超时") from error
+    else:
+        if (
+            conversion_root is not None
+            and process.returncode == 0
+            and converted_output.is_file()
+        ):
+            shutil.copyfile(converted_output, output)
+    finally:
         if conversion_root is not None:
             shutil.rmtree(conversion_root, ignore_errors=True)
-        raise ReportFailure("Word 渲染失败或超时") from error
-    if conversion_root is not None and process.returncode == 0 and converted_output.is_file():
-        shutil.copyfile(converted_output, output)
-        shutil.rmtree(conversion_root, ignore_errors=True)
     if process.returncode != 0 or not output.is_file():
         logger.warning(
             "report_docx_render_failed returncode={} output_exists={} stderr={} stdout={}",

@@ -45,6 +45,13 @@ def test_process_accepts_agentos_bearer_without_workspace_capability(client, pat
     response = client.get(PREFIX + path, headers={"Authorization": "Bearer console-test-key"})
 
     assert response.status_code == 200
+    body = response.json()
+    if path == "/capabilities":
+        assert body["protocol"] == "dingyi.process.v1"
+    elif path.endswith("/operations"):
+        assert [item["operationId"] for item in body["items"]] == ["report-op"]
+    else:
+        assert body["operation"]["operationId"] == "report-op"
 
 
 @pytest.mark.parametrize("authorization", [None, "Bearer incorrect"])

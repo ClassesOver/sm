@@ -1000,6 +1000,87 @@ async def test_derived_export_expiry_cleanup_task_is_retained_until_done() -> No
     assert not service._cleanup_tasks
 
 
+@pytest.mark.anyio
+async def test_derived_export_times_out_instead_of_staying_running(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import smart_reporting.report_editor.trace_exports as trace_exports
+    from smart_reporting.report_editor.trace_exports import TraceDerivedExportService
+    from smart_reporting.reporting.trace.dataset_service import TraceDatasetFile
+
+    async def hang(self, job, file, target_columns, mask, blocked_columns):  # noqa: ANN001
+        del self, file, target_columns, mask, blocked_columns
+        await asyncio.sleep(30)
+        job.status = "completed"
+
+    monkeypatch.setattr(trace_exports, "_DERIVED_EXPORT_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(TraceDerivedExportService, "_run", hang)
+    source = tmp_path / "derived-timeout.csv"
+    source.write_text("amount\n1\n", encoding="utf-8")
+    file = TraceDatasetFile(
+        dataset_id="dataset-timeout",
+        local_path=source,
+        size=source.stat().st_size,
+        sha256="0" * 64,
+        row_count=1,
+    )
+    context = SimpleNamespace(
+        report_id="report-1", revision=1, scope={"threadId": "thread-1"},
+        markdown_path="报表/report.md",
+    )
+    service = TraceDerivedExportService(workspace=None)
+    started = await service.create(
+        context=context, file=file, policy="masked_columns", params={"columns": ["amount"]}
+    )
+    await service._jobs[started["exportId"]].task
+    status = await service.status(context, started["exportId"])
+    assert status["status"] == "failed"
+    assert status["error"]["message"] == "派生导出超时。"
+
+
+@pytest.mark.anyio
+async def test_overdue_running_derived_export_is_cancelled_before_completion() -> None:
+    from smart_reporting.report_editor.trace_exports import (
+        TraceDerivedExportService,
+        TraceExportJob,
+        _RETENTION_SECONDS,
+    )
+
+    deleted: list[str] = []
+
+    class Workspace:
+        async def adelete_file(self, thread_id: str, path: str) -> None:
+            deleted.append(path)
+
+    service = TraceDerivedExportService(workspace=Workspace())
+    context = SimpleNamespace(report_id="report-1", revision=1)
+    job = TraceExportJob(
+        export_id="export-hung", report_id="report-1", revision=1, dataset_id="dataset-1",
+        policy="masked_columns", params={}, source_dataset_id="dataset-1",
+        source_sha256="0" * 64, workspace_path="报表/.exports/hung.csv", thread_id="thread-1",
+        created_at=time.time() - _RETENTION_SECONDS - 5, status="running",
+    )
+
+    async def finish_late() -> None:
+        await asyncio.sleep(30)
+        job.status = "completed"
+
+    job.task = asyncio.create_task(finish_late())
+    service._jobs[job.export_id] = job
+
+    status = await service.status(context, job.export_id)
+
+    assert status["status"] == "running"
+    assert deleted == []
+    with pytest.raises(asyncio.CancelledError):
+        await job.task
+    refreshed = await service.status(context, job.export_id)
+    assert refreshed["status"] == "expired"
+    assert job.status != "completed"
+    await asyncio.gather(*service._cleanup_tasks)
+    assert deleted == ["报表/.exports/hung.csv"]
+
+
 def test_derived_export_masks_duplicated_copies_of_blocked_columns(tmp_path: Path) -> None:
     """表头重复的受限列（polars 改名为 *_duplicated_n）同样强制掩码，不成为旁路。"""
     from smart_reporting.report_editor.trace_exports import _validate_masked_columns_policy

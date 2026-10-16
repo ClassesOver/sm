@@ -36,6 +36,7 @@ from ..reporting.trace.dataset_service import (
 
 _MAX_DERIVED_EXPORT_JOBS = 4
 _RETENTION_SECONDS = TRACE_BUDGETS_V1["export_derived_retention_seconds"]
+_DERIVED_EXPORT_TIMEOUT_SECONDS = 1200.0
 _MAX_POLICY_COLUMNS = 200
 _UNSAFE_FILENAME_PATTERN = re.compile(r"[^0-9A-Za-z_.\-\u4e00-\u9fff]+")
 
@@ -58,6 +59,7 @@ class TraceExportJob:
     sha256: str | None = None
     error: str | None = None
     finished_at: float | None = None
+    cancel_requested: bool = False
     task: asyncio.Task[None] | None = field(default=None, repr=False)
 
     def to_payload(self) -> dict[str, Any]:
@@ -228,18 +230,7 @@ class TraceDerivedExportService:
         ):
             # 不泄露其他报告的导出任务是否存在。
             raise ReportingError("source_missing", "派生导出任务不存在。")
-        if job.status != "expired" and (
-            (
-                job.finished_at is not None
-                and time.time() - job.finished_at > _RETENTION_SECONDS
-            )
-            or (
-                job.finished_at is None
-                and time.time() - job.created_at > _RETENTION_SECONDS
-            )
-        ):
-            job.status = "expired"
-            self._best_effort_delete(job)
+        self._retire_job(job)
         return job
 
     def _export_workspace_path(self, context: Any, export_id: str) -> str:
@@ -249,26 +240,39 @@ class TraceDerivedExportService:
         return parent.joinpath(f".trace-exports/{export_id}.csv").as_posix()
 
     async def _run_guarded(self, context, job, file, target_columns, mask, blocked_columns):
-        if self.source_guard is None:
-            await self._run(job, file, target_columns, mask, blocked_columns)
-            return
         try:
-            async with self.source_guard(context):
-                await self._run(job, file, target_columns, mask, blocked_columns)
+            await asyncio.wait_for(
+                self._run_with_guard(context, job, file, target_columns, mask, blocked_columns),
+                timeout=_DERIVED_EXPORT_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            if job.status == "running":
+                job.status = "failed"
+                job.error = "派生导出超时。"
+                job.finished_at = job.finished_at or time.time()
+            logger.warning("trace_derived_export_timeout export_id={}", job.export_id)
         except Exception as error:  # noqa: BLE001 - 守卫失败同样必须落到任务状态
             # 非 ReportingError（如状态库读取失败、锁文件打开失败）若逃出任务，状态会停在
             # running：轮询永远“生成中”、过期清理跳过 running，且持续占用并发名额。
-            job.status = "failed"
-            job.error = (
-                error.message if isinstance(error, ReportingError) else "派生导出生成失败。"
-            )
-            job.finished_at = time.time()
+            if job.status == "running":
+                job.status = "failed"
+                job.error = (
+                    error.message if isinstance(error, ReportingError) else "派生导出生成失败。"
+                )
+                job.finished_at = time.time()
             if not isinstance(error, ReportingError):
                 logger.warning(
                     "trace_derived_export_guard_failed export_id={} error={}",
                     job.export_id,
                     error,
                 )
+
+    async def _run_with_guard(self, context, job, file, target_columns, mask, blocked_columns):
+        if self.source_guard is None:
+            await self._run(job, file, target_columns, mask, blocked_columns)
+            return
+        async with self.source_guard(context):
+            await self._run(job, file, target_columns, mask, blocked_columns)
 
     async def _run(
         self,
@@ -299,9 +303,20 @@ class TraceDerivedExportService:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     content_hash.update(chunk)
                     size += len(chunk)
-            job.size = size
-            job.sha256 = content_hash.hexdigest()
-            job.status = "completed"
+            if job.cancel_requested:
+                job.status = "failed"
+                job.error = "派生导出已取消。"
+            else:
+                job.size = size
+                job.sha256 = content_hash.hexdigest()
+                job.status = "completed"
+        except asyncio.CancelledError:
+            # 超时由外层 wait_for 取消任务；只有显式取消才在这里落“已取消”，
+            # 否则外层无法再写成超时失败。
+            if job.cancel_requested and job.status == "running":
+                job.status = "failed"
+                job.error = "派生导出已取消。"
+            raise
         except Exception as error:  # noqa: BLE001 - 任务失败必须落到状态里
             job.status = "failed"
             job.error = str(error) if isinstance(error, ReportingError) else "派生导出生成失败。"
@@ -321,13 +336,38 @@ class TraceDerivedExportService:
         )
         frame.sink_csv(target)
 
+    def _job_overdue(self, job: TraceExportJob, now: float) -> bool:
+        if now - job.created_at > _RETENTION_SECONDS:
+            return True
+        return job.finished_at is not None and now - job.finished_at > _RETENTION_SECONDS
+
+    def _retire_job(self, job: TraceExportJob, *, now: float | None = None) -> None:
+        """超保留期的运行中任务先取消，终态确认后再删文件。"""
+
+        if job.status == "expired":
+            return
+        current = time.time() if now is None else now
+        overdue = self._job_overdue(job, current)
+        if job.status == "running" and job.task is not None and not job.task.done():
+            if overdue:
+                job.cancel_requested = True
+                job.task.cancel()
+            return
+        if job.status == "running":
+            job.status = "failed"
+            if not job.error:
+                job.error = "派生导出已取消。"
+            job.finished_at = job.finished_at or current
+        if not overdue:
+            return
+        job.status = "expired"
+        self._best_effort_delete(job)
+
     def _cleanup_expired(self) -> None:
         now = time.time()
         for job in list(self._jobs.values()):
-            age = now - (job.finished_at or job.created_at)
-            if job.status != "running" and age > _RETENTION_SECONDS:
-                job.status = "expired"
-                self._best_effort_delete(job)
+            self._retire_job(job, now=now)
+            if job.status == "expired":
                 self._jobs.pop(job.export_id, None)
 
     def _best_effort_delete(self, job: TraceExportJob) -> None:

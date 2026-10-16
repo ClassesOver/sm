@@ -209,3 +209,31 @@ async def test_manager_close_waits_for_reader_task(
     await manager.aclose()
 
     assert reader_task.done()
+
+
+async def test_reap_idle_drops_unlocked_start_lock(tmp_path: Path) -> None:
+    from smart_reporting.reporting.code_agent.lsp_process import _LspState
+
+    class Process:
+        returncode = None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    manager = ReportingLspProcessManager(command=("python3",), idle_ttl_seconds=0)
+    root = (tmp_path / "workspace").resolve()
+    root.mkdir()
+    manager._states[root] = _LspState(root=root, process=Process(), last_used=0)  # type: ignore[arg-type]
+    manager._start_locks[root] = asyncio.Lock()
+
+    await manager.reap_idle()
+
+    assert root not in manager._states
+    assert root not in manager._start_locks
