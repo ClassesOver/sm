@@ -4,8 +4,6 @@ import { chromium } from 'playwright'
 const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] })
-  // 视差随指针偏转视角；像素与几何检查需要静止视角，先关闭。
-  await page.addInitScript(() => localStorage.setItem('smart-reporting-evidence-3d-parallax', 'off'))
   let writes = 0
   const errors = []
   page.on('pageerror', error => errors.push(error.name))

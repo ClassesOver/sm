@@ -20,8 +20,6 @@ try {
   const widths = longName ? [1280, 390, 320] : [1280, 390]
   for (const width of widths) {
     const page = await browser.newPage({ viewport: { width, height: width <= 390 ? 844 : 900 } })
-    // 视差随指针偏转视角；像素与几何检查需要静止视角，先关闭。
-    await page.addInitScript(() => localStorage.setItem('smart-reporting-evidence-3d-parallax', 'off'))
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
     await page.route('**/api/document', async route => {

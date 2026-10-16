@@ -25,17 +25,6 @@ const dataset = (key: string, label = key): EvidenceObjectRef => ({
 })
 
 describe('evidence state', () => {
-  it('defaults new pages to automatic mode and carries an explicit mode through navigation', () => {
-    const state = createEvidenceState()
-    state.openTask(fact('fact-a'))
-    expect(state.currentPage()?.graphMode).toBe('auto')
-    state.updatePage({ graphMode: '2d' })
-    state.navigate(computation('comp-1'))
-    expect(state.currentPage()?.graphMode).toBe('2d')
-    state.back()
-    expect(state.currentPage()?.graphMode).toBe('2d')
-  })
-
   it('relabels open and closed tasks by identity without touching history', () => {
     const state = createEvidenceState()
     state.openTask(dataset('ds-1'))

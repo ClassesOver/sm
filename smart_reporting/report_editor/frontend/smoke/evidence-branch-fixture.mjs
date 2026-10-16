@@ -6,8 +6,6 @@ import { chromium } from 'playwright'
 const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
-  // 视差随指针偏转视角；像素与几何检查需要静止视角，先关闭。
-  await page.addInitScript(() => localStorage.setItem('smart-reporting-evidence-3d-parallax', 'off'))
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
   let attempts = 0
@@ -63,8 +61,6 @@ try {
   }
   await page.locator('[data-action="sources"]').click()
   await page.locator('.evidence-directory-item', { hasText: '正文引用' }).click()
-  await page.getByRole('button', { name: '展开', exact: true }).click()
-  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   const positions = () => page.locator('.evidence-node').evaluateAll(nodes => Object.fromEntries(
     nodes.map(node => [node.dataset.evidenceNode, [node.style.left, node.style.top]])))
   const original = await positions()

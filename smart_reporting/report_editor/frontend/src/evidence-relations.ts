@@ -9,7 +9,7 @@ import type {
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef } from './evidence-state'
 import { Calculator, ChartColumn, createElement, Database, FileDigit, FileText, type IconNode } from 'lucide'
 
-// 关系图节点、3D 贴图、来源目录与关系列表共用同一套类型图标与类型色。
+// 关系图节点、来源目录与关系列表共用同一套类型图标与类型色。
 export const EVIDENCE_KIND_ICONS: Record<EvidenceObjectKind, IconNode> = {
   fact: FileDigit, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText,
 }

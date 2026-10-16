@@ -33,10 +33,8 @@ export interface EvidencePage {
   collapsed: boolean
   showList: boolean
   graphView: boolean
-  /** 关系图渲染模式；auto 在未手动切换时按节点数选择（≤15 个节点用 2D，更多用 3D）。 */
-  graphMode: '2d' | '3d' | 'auto'
-  /** 当前预览对象的2D/3D共用关系范围/端点，按身份恢复历史现场。 */
-  graph3dTrace?: { previewId: string; value: string }
+  /** 当前预览对象的关系范围/端点，按身份恢复历史现场。 */
+  graphTrace?: { previewId: string; value: string }
   filter: string
   datasetCursors: (string | null)[]
   datasetPageIndex: number
@@ -74,7 +72,7 @@ function samePath(a: EvidenceObjectRef[], b: EvidenceObjectRef[]): boolean {
   return a.length === b.length && a.every((ref, index) => sameEvidenceRef(ref, b[index]))
 }
 
-function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[], graphMode: EvidencePage['graphMode'] = 'auto'): EvidencePage {
+function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[]): EvidencePage {
   return {
     ref,
     path,
@@ -82,7 +80,6 @@ function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[], graphMode: 
     collapsed: false,
     showList: false,
     graphView: false,
-    graphMode,
     filter: '',
     datasetCursors: [null],
     datasetPageIndex: 0,
@@ -102,10 +99,6 @@ export interface EvidenceStore {
 }
 
 export function createEvidenceState(store: EvidenceStore = { tasks: [], active: REPORT_TAB }) {
-  // 兼容旧版持久化页面：未记录模式的历史页按节点数自动选择。
-  for (const task of store.tasks) {
-    for (const page of task.history) page.graphMode ??= 'auto'
-  }
   const closedTasks: EvidenceTask[] = []
   let counter = store.tasks.reduce((max, task) => {
     const match = /^task-(\d+)$/.exec(task.key)
@@ -212,10 +205,9 @@ export function createEvidenceState(store: EvidenceStore = { tasks: [], active: 
     )
     const next = remembered ? {
       ...remembered, ref, path,
-      graphMode: remembered.graphMode ?? 'auto',
       graphScroll: { ...remembered.graphScroll }, graphPan: { ...remembered.graphPan },
       datasetCursors: [...remembered.datasetCursors], columnWidths: { ...remembered.columnWidths },
-    } : makePage(ref, path, page.graphMode ?? 'auto')
+    } : makePage(ref, path)
     task.history = [...task.history.slice(0, task.index + 1), next]
     task.index = task.history.length - 1
     return task.history[task.index]
