@@ -1256,14 +1256,17 @@ class ReportEditorService:
         expected: ReportEditorContext,
         session: ReportEditorSession,
         dataset_id: str,
-    ) -> tuple[str, str, int]:
-        """返回 (本地路径, 安全文件名, 大小)；HTTP 层负责流式响应。"""
+        *, include_identity: bool = False,
+    ) -> tuple[str, str, int] | tuple[str, str, int, str]:
+        """返回下载目标；HTTP 发送快照时同时取得登记哈希。"""
 
         self._require_lineage_feature("download")
         context = await self._source_context(expected)
-        path, filename, size = await self.trace.download(
+        path, filename, size, sha256 = await self.trace.download(
             context, session.capabilities, dataset_id
         )
+        if include_identity:
+            return str(path), filename, size, sha256
         return str(path), filename, size
 
     @source_lifecycle
@@ -1302,12 +1305,15 @@ class ReportEditorService:
         expected: ReportEditorContext,
         session: ReportEditorSession,
         export_id: str,
-    ) -> tuple[str, str, int]:
+        *, include_identity: bool = False,
+    ) -> tuple[str, str, int] | tuple[str, str, int, str]:
         self._require_lineage_feature("download")
         context = await self._source_context(expected)
-        path, filename, size = await self.trace.derived_export_download(
+        path, filename, size, sha256 = await self.trace.derived_export_download(
             context, session.capabilities, export_id
         )
+        if include_identity:
+            return str(path), filename, size, sha256
         return str(path), filename, size
 
     @source_lifecycle
