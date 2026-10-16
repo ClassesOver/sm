@@ -834,6 +834,8 @@ async def test_visualization_script_settlement_ignores_non_runner_terminal_execu
 
     await toolkit._ensure_visualization_script_settled(scope)
 
+    repository.list_executions.assert_awaited_once_with("external-1")
+
 
 @pytest.mark.anyio
 async def test_section_visualization_reports_low_resolution_as_soft_warning() -> None:

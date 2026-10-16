@@ -2398,3 +2398,70 @@ async def test_finish_task_rejects_changed_sandbox_with_stable_code(execution_ru
     assert result["code"] == "finish_sandbox_changed"
     task = await runtime.repository.get_task("external-run")
     assert task is not None and task.status != "completed"
+
+
+@pytest.mark.anyio
+async def test_patch_settles_completed_when_bookkeeping_fails_after_apply() -> None:
+    content = "done\n"
+    after = hashlib.sha256(content.encode()).hexdigest()
+    updates: list[str] = []
+    stored: dict[str, object] = {}
+
+    class Repository:
+        async def increment_mutation(self, *_args, **_kwargs):
+            return 1
+
+        async def reserve_execution(self, **kwargs):
+            stored["receipt"] = kwargs["operation_receipt"]
+            stored["id"] = kwargs["execution_id"]
+            return SimpleNamespace(status="reserved")
+
+        async def get_execution(self, execution_id):
+            return SimpleNamespace(
+                execution_id=execution_id,
+                thread_id="thread",
+                operation_receipt=stored["receipt"],
+                status="reserved",
+            )
+
+        async def update_execution(self, _execution_id, **kwargs):
+            if not updates:
+                updates.append("failed-attempt")
+                raise RuntimeError("db blip")
+            updates.append(kwargs["status"])
+            return SimpleNamespace(status=kwargs["status"])
+
+    class Service:
+        async def aapply_changes(self, _thread_id, _changes):
+            return {"changed": True}
+
+        async def ahash_file(self, _thread_id, _path):
+            return {"sha256": after}
+
+    kernel = TaskExecutionKernel(Service(), Repository())  # type: ignore[arg-type]
+    scope = TaskExecutionRuntime(
+        task=SimpleNamespace(mutation_sequence=0),
+        external_run_id="external-run",
+        internal_run_id="internal-run",
+        owner_user_id="user",
+        thread_id="thread",
+        sandbox_id="sandbox",
+        lease_owner="lease",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+
+    result = await kernel.patch(
+        "patch",
+        None,
+        None,
+        None,
+        False,
+        "diff",
+        None,
+        _changes=[{"operation": "update", "path": "result.txt", "content": content}],
+        _scope=scope,
+    )
+
+    assert result["ok"] is True
+    assert updates == ["failed-attempt", "completed"]

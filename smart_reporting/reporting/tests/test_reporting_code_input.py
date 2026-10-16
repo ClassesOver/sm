@@ -571,6 +571,7 @@ async def test_write_valid_source_reports_ready(toolkit, monkeypatch):
 
     assert result["ok"] is True
     assert result["readyForExecution"] is True
+    toolkit.workspace.awrite_text.assert_awaited_once()
 
 
 @pytest.mark.anyio

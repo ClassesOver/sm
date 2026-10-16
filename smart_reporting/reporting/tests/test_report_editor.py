@@ -134,6 +134,264 @@ async def test_sql_editor_repository_prunes_expired_sessions_on_insert() -> None
     assert [type(statement).__name__ for statement in executed] == ["Delete", "Insert"]
 
 
+def _sql_clause_filters(clause: object) -> list[tuple[str, str, object]]:
+    if clause is None:
+        return []
+    nested = getattr(clause, "clauses", None)
+    if nested is not None and not hasattr(clause, "left"):
+        filters: list[tuple[str, str, object]] = []
+        for part in nested:
+            filters.extend(_sql_clause_filters(part))
+        return filters
+    left = getattr(clause, "left", None)
+    right = getattr(clause, "right", None)
+    operator = getattr(getattr(clause, "operator", None), "__name__", "")
+    if left is None or right is None or not operator:
+        return []
+    value = getattr(right, "value", None)
+    if value is None and hasattr(right, "effective_value"):
+        value = right.effective_value
+    return [(str(left.key), operator, value)]
+
+
+class _RecordingRows:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def first(self) -> tuple[object, ...] | None:
+        if not self._rows:
+            return None
+        return tuple(self._rows[0].values())
+
+    def mappings(self) -> "_RecordingRows":
+        return self
+
+    def one_or_none(self) -> dict[str, object] | None:
+        if not self._rows:
+            return None
+        return self._rows[0]
+
+
+class _SessionStoreConnection:
+    def __init__(self, tables: dict[str, dict[str, dict[str, object]]]) -> None:
+        self.tables = tables
+
+    async def execute(self, statement: object) -> _RecordingRows:
+        name = type(statement).__name__
+        table = _statement_table_name(statement)
+        bucket = self.tables.setdefault(table, {})
+        if name == "Insert":
+            params = statement.compile().params  # type: ignore[attr-defined]
+            key = str(params.get("session_hash") or params.get("grant_hash"))
+            bucket[key] = dict(params)
+            return _RecordingRows([])
+        filters = _sql_clause_filters(getattr(statement, "whereclause", None))
+        if name == "Delete":
+            expired = [
+                key
+                for key, row in bucket.items()
+                if all(_row_matches(row, column, operator, value) for column, operator, value in filters)
+            ]
+            for key in expired:
+                del bucket[key]
+            return _RecordingRows([])
+        matched = [
+            row
+            for row in bucket.values()
+            if all(_row_matches(row, column, operator, value) for column, operator, value in filters)
+        ]
+        return _RecordingRows(matched)
+
+
+def _statement_table_name(statement: object) -> str:
+    table = getattr(statement, "table", None)
+    if table is not None and getattr(table, "name", None):
+        return str(table.name)
+    getter = getattr(statement, "get_final_froms", None)
+    if callable(getter):
+        froms = list(getter())
+        if froms and getattr(froms[0], "name", None):
+            return str(froms[0].name)
+    raise AssertionError(f"无法识别语句表名: {type(statement).__name__}")
+
+
+def _row_matches(row: dict[str, object], column: str, operator: str, value: object) -> bool:
+    current = row.get(column)
+    if operator == "eq":
+        return current == value
+    if operator in {"gt", "le"} and hasattr(current, "__lt__"):
+        if operator == "gt":
+            return bool(current > value)  # type: ignore[operator]
+        return bool(current <= value)  # type: ignore[operator]
+    return False
+
+
+class _SessionStoreEngine:
+    def __init__(self) -> None:
+        self.dialect = SimpleNamespace(name="postgresql")
+        self.tables: dict[str, dict[str, dict[str, object]]] = {}
+
+    def begin(self) -> "_SessionStoreConnectionContext":
+        return _SessionStoreConnectionContext(self.tables)
+
+    def connect(self) -> "_SessionStoreConnectionContext":
+        return _SessionStoreConnectionContext(self.tables)
+
+
+class _SessionStoreConnectionContext:
+    def __init__(self, tables: dict[str, dict[str, dict[str, object]]]) -> None:
+        self._connection = _SessionStoreConnection(tables)
+
+    async def __aenter__(self) -> _SessionStoreConnection:
+        return self._connection
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+@pytest.mark.anyio
+async def test_sql_session_round_trip_keeps_share_capabilities_and_legacy_null(
+    tmp_path: Path,
+) -> None:
+    """分享能力必须随 PostgreSQL 会话往返；capabilities 为 NULL 的历史行仍是全权限。"""
+    from smart_reporting.report_editor.trace_sources import ReportEditorTraceService
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.reporting.trace.dataset_service import (
+        TraceDatasetFile,
+        TraceDatasetService,
+    )
+
+    repository = SqlAlchemyReportEditorRepository(_SessionStoreEngine())  # type: ignore[arg-type]
+    grants = ReportEditorGrantService(repository, secret="s" * 32)
+    raw, _expires = await grants.issue(
+        _context(),
+        capabilities={
+            "download_original": False,
+            "download_derived": False,
+            "drilldown": False,
+        },
+    )
+    token, _exchanged = await grants.exchange(raw)
+    session = await grants.lookup_session(token)
+
+    assert session.capabilities == {
+        "download_original": False,
+        "download_derived": False,
+        "drilldown": False,
+    }
+    permissions = ReportEditorTraceService._permissions(object(), session.capabilities)  # type: ignore[arg-type]
+    source = tmp_path / "revenue.csv"
+    source.write_text("revenue\n1\n", encoding="utf-8")
+    dataset = TraceDatasetFile(
+        dataset_id="dataset-1",
+        local_path=source,
+        size=source.stat().st_size,
+        sha256="a" * 64,
+        row_count=1,
+    )
+    with pytest.raises(ReportingError, match="无权下载"):
+        TraceDatasetService().download_target(dataset, permissions)
+    assert permissions.can_download_derived is False
+    assert ReportEditorTraceService._drilldown_enabled(session.capabilities) is False
+    index = SimpleNamespace(
+        version=1,
+        report_id="report-1",
+        revision=1,
+        datasets=[
+            SimpleNamespace(
+                dataset_id="dataset-1",
+                source_type="sql",
+                requirement_id="req-1",
+                filename="revenue.csv",
+                business_label="收入",
+                sql_hash="b" * 64,
+                query_sql="SELECT branch, revenue FROM finance",
+                row_count=1,
+                materialized_at="2026-01-01T00:00:00Z",
+                period_roles=[],
+                query_window_id=None,
+                file_resource_id="file-1",
+            )
+        ],
+        files=[SimpleNamespace(resource_id="file-1", size=source.stat().st_size)],
+        fact_files=(),
+        subject_bindings=(),
+        drilldown_metrics=(),
+    )
+    trace = object.__new__(ReportEditorTraceService)
+
+    async def load_index(_context: object) -> object:
+        return index
+
+    async def load_manifest(_context: object) -> None:
+        return None
+
+    trace.load_index = load_index  # type: ignore[method-assign]
+    trace.load_manifest = load_manifest  # type: ignore[method-assign]
+    overview = await trace.sources(
+        SimpleNamespace(report_id="report-1", revision=1), session.capabilities
+    )
+    assert overview["datasets"][0]["querySql"] is None
+
+    legacy = ReportEditorSession(
+        report_id="report-1",
+        revision=1,
+        workflow_run_id="report-1",
+        context_sha256="c" * 64,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        capabilities=None,
+    )
+    await repository.put_session("f" * 64, legacy)
+    restored = await repository.get_session("f" * 64)
+    assert restored is not None
+    assert restored.capabilities is None
+    full = ReportEditorTraceService._permissions(object(), restored.capabilities)  # type: ignore[arg-type]
+    assert full.can_download_original is True
+    assert full.can_download_derived is True
+    assert ReportEditorTraceService._drilldown_enabled(restored.capabilities) is True
+    full_overview = await trace.sources(
+        SimpleNamespace(report_id="report-1", revision=1), restored.capabilities
+    )
+    assert full_overview["datasets"][0]["querySql"] == "SELECT branch, revenue FROM finance"
+
+    dirty_hash = "e" * 64
+    await repository.put_session(dirty_hash, legacy)
+    repository.engine.tables["report_editor_sessions_v1"][dirty_hash]["capabilities"] = ["nope"]  # type: ignore[attr-defined]
+    dirty = await repository.get_session(dirty_hash)
+    assert dirty is not None and dirty.capabilities == {}
+    denied = ReportEditorTraceService._permissions(object(), dirty.capabilities)  # type: ignore[arg-type]
+    assert denied.can_download_original is False
+    assert denied.can_download_derived is False
+
+
+@pytest.mark.anyio
+async def test_sql_editor_schema_adds_nullable_capabilities_column() -> None:
+    executed: list[str] = []
+
+    class _Connection:
+        async def execute(self, statement: object) -> None:
+            executed.append(str(getattr(statement, "text", "")))
+
+        async def run_sync(self, _fn: object) -> None:
+            return None
+
+    class _Begin:
+        async def __aenter__(self) -> _Connection:
+            return _Connection()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), begin=_Begin)
+    repository = SqlAlchemyReportEditorRepository(engine)  # type: ignore[arg-type]
+
+    await repository.create_schema()
+
+    assert any(
+        "ADD COLUMN IF NOT EXISTS capabilities JSONB" in statement for statement in executed
+    )
+
+
 def test_editor_context_digest_keeps_legacy_default_metadata_compatible() -> None:
     context = _context()
     legacy_payload = context.model_dump(mode="json", by_alias=True)
@@ -883,6 +1141,83 @@ async def test_closing_editor_service_cancels_running_exports() -> None:
     await service.aclose()
 
     assert cancelled.is_set()
+
+
+@pytest.mark.anyio
+async def test_closing_editor_service_cancels_derived_exports() -> None:
+    import asyncio
+
+    from smart_reporting.report_editor.trace_exports import TraceExportJob
+
+    cancelled = asyncio.Event()
+
+    async def hang() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    service = _export_service(AsyncMock())
+    job = TraceExportJob(
+        export_id="derived-1",
+        report_id="report-1",
+        revision=1,
+        dataset_id="dataset-1",
+        policy="masked_columns",
+        params={},
+        source_dataset_id="dataset-1",
+        source_sha256="a" * 64,
+        workspace_path="报表/.exports/derived-1.csv",
+        thread_id="thread-1",
+        created_at=0.0,
+    )
+    job.task = asyncio.create_task(hang())
+    service.trace.exports._jobs[job.export_id] = job
+    await asyncio.sleep(0)
+
+    await service.aclose()
+
+    assert cancelled.is_set()
+
+
+@pytest.mark.anyio
+async def test_finished_exports_do_not_consume_the_running_job_limit() -> None:
+    async def export_revision(_context, **options):
+        return {"revision": 2, "requestId": options["request_id"]}
+
+    service = _export_service(export_revision)
+    for index in range(64):
+        await service.start_export(
+            _context(), expected_sha256="a" * 64, request_id=f"done-{index}"
+        )
+    await asyncio.sleep(0)
+    for index in range(64):
+        assert service.export_status(_context(), f"done-{index}")["status"] == "succeeded"
+
+    service._export_jobs  # finished jobs remain until retention elapses
+    started = await service.start_export(
+        _context().model_copy(update={"revision": 2}),
+        expected_sha256="a" * 64,
+        request_id="still-open",
+    )
+    assert started["status"] == "running"
+
+
+@pytest.mark.anyio
+async def test_export_status_prunes_expired_finished_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def export_revision(_context, **options):
+        return {"revision": 2, "requestId": options["request_id"]}
+
+    service = _export_service(export_revision)
+    await service.start_export(_context(), expected_sha256="a" * 64, request_id="old")
+    await asyncio.sleep(0)
+    monkeypatch.setattr(
+        "smart_reporting.report_editor.service._EXPORT_JOB_RETENTION_SECONDS", -1
+    )
+
+    with pytest.raises(ReportingError, match="导出任务不存在"):
+        service.export_status(_context(), "old")
 
 
 @pytest.mark.anyio

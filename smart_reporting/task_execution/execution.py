@@ -984,6 +984,36 @@ class TaskExecutionKernel:
                 status = "lost"
             await self.repository.update_execution(execution.execution_id, status=status)
 
+    async def _settle_applied_patch(self, execution_id: str, receipt: dict[str, Any]) -> bool:
+        try:
+            execution = await self.repository.get_execution(execution_id)
+            if execution is None:
+                return False
+            coordinated = await self._coordinate_patch(execution)
+            if coordinated == "applied":
+                await self.repository.update_execution(
+                    execution_id,
+                    status="completed",
+                    exit_code=0,
+                    operation_receipt=receipt,
+                )
+                return True
+            if coordinated == "not_applied":
+                await self.repository.update_execution(
+                    execution_id,
+                    status="failed",
+                    exit_code=1,
+                    operation_receipt=receipt,
+                )
+                return True
+        except Exception as error:
+            logger.warning(
+                "task_patch_settle_deferred execution_id={} error_type={}",
+                execution_id,
+                type(error).__name__,
+            )
+        return False
+
     async def _coordinate_patch(self, execution: TaskExecution) -> str:
         receipt = execution.operation_receipt or {}
         files = receipt.get("files")
@@ -2178,7 +2208,7 @@ class TaskExecutionKernel:
                 exit_code=0,
                 operation_receipt=receipt,
             )
-        except Exception:
+        except Exception as error:
             if not applied:
                 await self.repository.update_execution(
                     execution_id,
@@ -2186,7 +2216,16 @@ class TaskExecutionKernel:
                     exit_code=1,
                     operation_receipt=receipt,
                 )
-            raise
+                raise
+            # 文件已经写入。能按回执确认结果时立刻落到终态，避免 reserved 挡住收尾；
+            # 确认不了则保持非终态，交给周期清理。
+            if not await self._settle_applied_patch(execution_id, receipt):
+                raise
+            logger.warning(
+                "task_patch_settled_after_bookkeeping_error execution_id={} error_type={}",
+                execution_id,
+                type(error).__name__,
+            )
         return {
             **result,
             "ok": True,

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import datetime
+import json
 import uuid
 
 import pytest
 from agno.run import RunContext
 
 from smart_reporting.reporting.workflow.runtime.publication import _coverage_period_bounds
-from smart_reporting.reporting.workspace import REPORT_JOBS_STATE_KEY, WorkspaceReportService
+from smart_reporting.reporting.workspace import (
+    MAX_REPORT_JOB_STATE_BYTES,
+    REPORT_JOBS_STATE_KEY,
+    WorkspaceReportService,
+)
 
 _DAILY = {
     (datetime.date(2025, 1, 1) + datetime.timedelta(days=offset)).isoformat()
@@ -49,9 +54,13 @@ async def test_daily_coverage_presentations_fit_job_state() -> None:
     service, run_context, job_id = _service_with_job()
 
     # 完整日粒度期间约 48 KB，超过绑定边界；保留首尾后可以正常绑定。
-    await service.bind_citation_presentations(
-        job_id, _presentations(_coverage_period_bounds(_DAILY)), run_context
-    )
+    bounded = _coverage_period_bounds(_DAILY)
+    await service.bind_citation_presentations(job_id, _presentations(bounded), run_context)
+
+    saved = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]["_citationPresentations"]
+    assert saved[0]["coverageItems"][0]["periods"] == bounded
+    encoded = json.dumps(saved, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    assert len(encoded) < MAX_REPORT_JOB_STATE_BYTES // 2
 
 
 @pytest.mark.anyio

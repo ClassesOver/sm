@@ -272,6 +272,9 @@ class LocalSandboxRuntime:
                         "workspace 幂等键与既有绑定冲突。", reason="idempotency_conflict"
                     )
                 return self._response(metadata)
+            # 上次创建在写完绑定文件前中断时，目录还在但没有元数据，直接 mkdir 会失败。
+            if directory.exists():
+                shutil.rmtree(directory)
             directory.mkdir(mode=0o700)
             metadata = {
                 "resource_id": resource_id,
@@ -326,6 +329,15 @@ class LocalSandboxRuntime:
         return current
 
     async def file_action(
+        self, resource_id: str, binding_digest: str, action: str, values: dict[str, Any]
+    ) -> Any:
+        if action in {"move", "mkdir", "delete"}:
+            execution_lock = self._execution_locks.setdefault(resource_id, asyncio.Lock())
+            async with execution_lock:
+                return await self._file_action(resource_id, binding_digest, action, values)
+        return await self._file_action(resource_id, binding_digest, action, values)
+
+    async def _file_action(
         self, resource_id: str, binding_digest: str, action: str, values: dict[str, Any]
     ) -> Any:
         directory, _metadata = self._require(resource_id, binding_digest)
@@ -391,7 +403,8 @@ class LocalSandboxRuntime:
         receipt_value = {"path": path, "sha256": hashlib.sha256(content).hexdigest()}
         receipts = directory / ".sandbox-upload-receipts"
         receipt = receipts / hashlib.sha256(idempotency_key.encode()).hexdigest()
-        async with self._lock:
+        execution_lock = self._execution_locks.setdefault(resource_id, asyncio.Lock())
+        async with execution_lock, self._lock:
             receipts.mkdir(mode=0o700, exist_ok=True)
             destination = self._path(directory, path)
             if receipt.exists():
@@ -418,12 +431,20 @@ class LocalSandboxRuntime:
                     output.write(content)
                     output.flush()
                     os.fsync(output.fileno())
-                os.replace(temporary, destination)
-                receipt.write_text(
-                    json.dumps(receipt_value, sort_keys=True, separators=(",", ":")),
-                    encoding="utf-8",
+                # 回执先落盘。替换失败时同一幂等键不能再换成另一份内容。
+                payload = json.dumps(
+                    receipt_value, sort_keys=True, separators=(",", ":")
+                ).encode()
+                receipt_fd = os.open(
+                    receipt, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
                 )
+                try:
+                    os.write(receipt_fd, payload)
+                    os.fsync(receipt_fd)
+                finally:
+                    os.close(receipt_fd)
                 os.chmod(receipt, 0o600)
+                os.replace(temporary, destination)
             finally:
                 os.close(descriptor)
                 temporary.unlink(missing_ok=True)

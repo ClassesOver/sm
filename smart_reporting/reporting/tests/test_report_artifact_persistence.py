@@ -850,8 +850,33 @@ async def test_http_publication_keeps_host_workspace_instead_of_destroying(tmp_p
     runtime.workspace_registry = registry
     # 生产装配的宿主机路由没有 adestroy/aquarantine；发布后必须保留会话目录供编辑器续写。
     runtime.workspace_service = ReportingWorkspaceRouter(registry)
+    keys = reporting_scope_keys(
+        database="database-1",
+        company_id="company-1",
+        user_id="7",
+        thread_id="thread-1",
+        run_id="workflow-run",
+    )
+    scope = ReportingWorkflowScope(
+        run_id="workflow-run",
+        external_run_id="external-1",
+        session_id="workflow-session",
+        caller_thread_id="thread-1",
+        user_id="7",
+        database="database-1",
+        company_id="company-1",
+        thread_lease_key=keys.thread_lease_key,
+        workspace_key=keys.workspace_key,
+    )
+    identity = registry.resolve(scope)
+    marker = identity.root / "keep.txt"
+    marker.write_text("stay", encoding="utf-8")
 
-    await runtime._release_or_destroy_workspace("thread-1", message="m")
+    await runtime._release_or_destroy_workspace(scope.workspace_key, message="m")
+
+    assert registry.get(scope.workspace_key) is None
+    assert marker.is_file()
+    assert not hasattr(runtime.workspace_service, "adestroy")
 
 
 @pytest.mark.anyio

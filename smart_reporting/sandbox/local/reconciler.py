@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -29,12 +30,17 @@ class LocalSandboxReconciler:
         self._save_binding = save_binding
         self._restore_workspace = restore_workspace
         self._quarantine_binding = quarantine_binding
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
 
     async def reconcile(
         self, record: SandboxBindingRecord, *, unavailable_node: str
     ) -> ReconcileResult:
-        lock = self._locks.setdefault(record.binding_digest, asyncio.Lock())
+        lock = self._locks.get(record.binding_digest)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[record.binding_digest] = lock
         async with lock:
             if record.node != unavailable_node:
                 return ReconcileResult(record=record)

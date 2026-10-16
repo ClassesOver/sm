@@ -1,3 +1,5 @@
+import gc
+
 import pytest
 
 from smart_reporting.sandbox.local.placement import LocalNode, PlacementService
@@ -33,6 +35,9 @@ async def test_reconciler_creates_new_generation_after_node_loss() -> None:
     assert result.record.node == "node-b"
     assert result.sessions_restored is False
     assert saved == [result.record]
+    del result
+    gc.collect()
+    assert list(reconciler._locks) == []
 
 
 async def _restore(generation: int) -> str:

@@ -1510,14 +1510,12 @@ class ReportEditorService:
 
         self._prune_export_jobs()
         key = (expected.report_id, expected.revision)
-        if any(
-            (job.report_id, job.revision) == key and not job.task.done()
-            for job in self._export_jobs.values()
-        ):
+        running = [job for job in self._export_jobs.values() if not job.task.done()]
+        if any((job.report_id, job.revision) == key for job in running):
             raise ReportingError(
                 "report_editor_export_running", "当前版本正在导出，请等待完成后再试。"
             )
-        if len(self._export_jobs) >= _MAX_EXPORT_JOBS:
+        if len(running) >= _MAX_EXPORT_JOBS:
             raise ReportingError("report_editor_export_busy", "导出任务过多，请稍后再试。")
         export_id = request_id or str(uuid4())
         if export_id in self._export_jobs:
@@ -1543,6 +1541,7 @@ class ReportEditorService:
         return {"exportId": export_id, "status": "running", "requestId": export_id}
 
     def export_status(self, expected: ReportEditorContext, export_id: str) -> dict[str, object]:
+        self._prune_export_jobs()
         job = self._export_jobs.get(export_id)
         if job is None or (job.report_id, job.revision) != (
             expected.report_id,
@@ -1587,10 +1586,15 @@ class ReportEditorService:
         """应用关闭时取消仍在运行的导出，由取消链路终止渲染进程组并清理临时 revision。"""
 
         running = [job.task for job in self._export_jobs.values() if not job.task.done()]
-        for task in running:
+        derived = [
+            job.task
+            for job in getattr(self.trace.exports, "_jobs", {}).values()
+            if job.task is not None and not job.task.done()
+        ]
+        for task in (*running, *derived):
             task.cancel()
-        if running:
-            await asyncio.gather(*running, return_exceptions=True)
+        if running or derived:
+            await asyncio.gather(*running, *derived, return_exceptions=True)
 
     @staticmethod
     def _log_export_failure(

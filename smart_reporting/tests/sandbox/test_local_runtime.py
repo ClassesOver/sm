@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from smart_reporting.sandbox import (
     RunPythonScriptRequest,
     RunPythonScriptResult,
 )
+from smart_reporting.sandbox.errors import SandboxPolicyDenied
 from smart_reporting.sandbox.local.runtime import (
     LaunchPolicy,
     LocalSandboxRuntime,
@@ -104,6 +106,127 @@ async def test_upload_idempotency_recreates_file_removed_after_prior_request(
     await runtime.upload_file(resource_id, binding, path, b"result", "upload-request-01")
 
     assert await runtime.file_action(resource_id, binding, "download", {"path": path}) == b"result"
+
+
+def _runtime(tmp_path: Path, executor_factory):
+    workspace_root = tmp_path / "workspaces"
+    workspace_root.mkdir()
+    return LocalSandboxRuntime(
+        node_id="node-a",
+        profile="ubuntu",
+        rootfs_digest="sha256:" + "a" * 64,
+        dependency_bundle_digest="sha256:" + "b" * 64,
+        workspace_root=workspace_root,
+        executor_factory=executor_factory,
+    )
+
+
+async def _bound_workspace(runtime: LocalSandboxRuntime) -> tuple[str, str]:
+    binding = "c" * 64
+    created = await runtime.ensure_workspace(
+        binding,
+        profile="ubuntu",
+        rootfs_digest="sha256:" + "a" * 64,
+        idempotency_key="workspace-request-1",
+    )
+    return created["ref"]["resource_id"], binding
+
+
+@pytest.mark.anyio
+async def test_ensure_workspace_recovers_directory_missing_metadata(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, lambda _workspace: None)  # type: ignore[arg-type,return-value]
+    binding = "d" * 64
+    resource_id = runtime._resource_id(binding)
+    directory = runtime._directory(resource_id)
+    directory.mkdir(parents=True)
+    (directory / "orphan").write_text("partial", encoding="utf-8")
+
+    created = await runtime.ensure_workspace(
+        binding,
+        profile="ubuntu",
+        rootfs_digest="sha256:" + "a" * 64,
+        idempotency_key="workspace-request-2",
+    )
+
+    assert created["ref"]["resource_id"] == resource_id
+    assert (directory / ".sandbox-binding.json").is_file()
+    assert not (directory / "orphan").exists()
+
+
+@pytest.mark.anyio
+async def test_upload_keeps_idempotency_when_replace_fails_after_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path, lambda _workspace: None)  # type: ignore[arg-type,return-value]
+    resource_id, binding = await _bound_workspace(runtime)
+    path = "/home/daytona/workspace/result.txt"
+    original_replace = os.replace
+    failed = False
+
+    def flaky_replace(source, destination):
+        nonlocal failed
+        if not failed and str(destination).endswith("result.txt"):
+            failed = True
+            raise OSError("replace failed")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        await runtime.upload_file(resource_id, binding, path, b"one", "upload-key")
+    with pytest.raises(SandboxPolicyDenied, match="不同请求"):
+        await runtime.upload_file(resource_id, binding, path, b"two", "upload-key")
+
+    await runtime.upload_file(resource_id, binding, path, b"one", "upload-key")
+
+    assert await runtime.file_action(resource_id, binding, "download", {"path": path}) == b"one"
+
+
+@pytest.mark.anyio
+async def test_upload_waits_until_workspace_script_finishes(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Executor:
+        async def run(
+            self, request: RunPythonScriptRequest, *, script_path: str
+        ) -> RunPythonScriptResult:
+            del script_path
+            entered.set()
+            await release.wait()
+            return RunPythonScriptResult(
+                status=ExecutionStatus.SUCCEEDED,
+                exit_code=0,
+                script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
+            )
+
+    runtime = _runtime(tmp_path, lambda _workspace: Executor())
+    resource_id, binding = await _bound_workspace(runtime)
+    script = asyncio.create_task(
+        runtime.run_python_script(
+            resource_id, binding, RunPythonScriptRequest(script="print('one')")
+        )
+    )
+    await entered.wait()
+    upload = asyncio.create_task(
+        runtime.upload_file(
+            resource_id,
+            binding,
+            "/home/daytona/workspace/result.txt",
+            b"later",
+            "upload-during-script",
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert not upload.done()
+    release.set()
+    await script
+    await upload
+    assert (
+        await runtime.file_action(
+            resource_id, binding, "download", {"path": "/home/daytona/workspace/result.txt"}
+        )
+        == b"later"
+    )
 
 
 @pytest.mark.anyio
