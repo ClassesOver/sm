@@ -78,6 +78,72 @@ def test_wrong_identity_or_missing_pointer_is_soft_and_never_exposes_full_file()
         assert warnings[0]["details"]["findingId"] == "finding_0000000000000001"
 
 
+def _ratio_source() -> SectionEvidenceFile:
+    sha = "c" * 64
+
+    def metric(fact_id: str, field: str, total: float) -> dict:
+        return {
+            "factId": fact_id,
+            "datasetId": "dataset-1",
+            "datasetSha256": sha,
+            "periodRoles": ["current"],
+            "field": field,
+            "fieldRef": f"src.db.table.{field}",
+            "aggregation": "sum",
+            "formula": f"sum({field})",
+            "scope": {"org": "全院"},
+            "periodStart": "2025-01-01",
+            "periodEnd": "2025-12-31",
+            "total": total,
+            "missingCount": 0,
+            "zeroCount": 0,
+            "negativeCount": 0,
+        }
+
+    content = json.dumps({
+        "version": "1",
+        "analysisId": "analysis_001",
+        "metrics": [
+            metric("fact-" + "a" * 16, "contract_amount", 40),
+            metric("fact-" + "b" * 16, "budget_project_amount", 100),
+        ],
+    }, ensure_ascii=False)
+    return SectionEvidenceFile(
+        identity=FileIdentity(path="facts.json", sha256="a" * 64, size=len(content.encode())),
+        content=content,
+    )
+
+
+def test_project_ratio_view_includes_numerator_when_only_denominator_is_selected():
+    from smart_reporting.reporting.workflow.runtime.finding_evidence import finding_evidence_view
+
+    source = _ratio_source()
+    files, fact_ids, warnings = finding_evidence_view(
+        (source,), _item([_ref(pointer="/metrics/1")])
+    )
+    assert not warnings
+    assert fact_ids == {"fact-" + "a" * 16, "fact-" + "b" * 16}
+    selected = {
+        item["pointer"]: item["value"]["field"]
+        for item in json.loads(files[0].content)["selected"]
+    }
+    assert selected["/metrics/1"] == "budget_project_amount"
+    assert "contract_amount" in selected.values()
+
+
+def test_project_ratio_view_still_includes_denominator_when_numerator_is_selected():
+    from smart_reporting.reporting.workflow.runtime.finding_evidence import finding_evidence_view
+
+    source = _ratio_source()
+    files, fact_ids, warnings = finding_evidence_view(
+        (source,), _item([_ref(pointer="/metrics/0")])
+    )
+    assert not warnings
+    assert fact_ids == {"fact-" + "a" * 16, "fact-" + "b" * 16}
+    fields = {item["value"]["field"] for item in json.loads(files[0].content)["selected"]}
+    assert fields == {"contract_amount", "budget_project_amount"}
+
+
 def test_legacy_evidence_remains_complete():
     from smart_reporting.reporting.tests.test_dynamic_section_rendering import _item
     from smart_reporting.reporting.workflow.runtime.finding_evidence import finding_evidence_view

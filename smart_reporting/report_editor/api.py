@@ -285,7 +285,7 @@ def create_report_editor_router(
             )
             try:
                 return await editor.read_history_revision(
-                    context, history_revision, session_capabilities=session.capabilities
+                    context, history_revision, session=session
                 )
             except ReportingError as error:
                 _editor_http_error(error)
