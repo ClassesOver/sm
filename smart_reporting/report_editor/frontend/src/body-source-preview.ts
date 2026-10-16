@@ -13,6 +13,13 @@ type Options = {
   open: (reference: OpenTarget) => void
   /** 把正文中该来源唯一的改动数值恢复为登记值；找不到唯一位置时返回 false。 */
   restore?: (subjectId: string) => boolean
+  /** 编辑器内的标记高亮与重新定位。标记属于编辑器渲染，直接改其 class 会触发重绘、元素被替换；
+   * 提供时由编辑器装饰绘制高亮，关闭后按位置找回标记以归还焦点。未提供时退回直接改 class。 */
+  markers?: {
+    activate: (marker: HTMLElement) => number | null
+    deactivate: () => void
+    find: (position: number) => HTMLElement | null
+  }
 }
 
 type ValidationSubject = TraceValidation['subjects'][number]
@@ -115,7 +122,8 @@ export function createBodySourcePreview(options: Options) {
     loading.textContent = '正在读取登记来源…'
     content.append(contextLabel, context, loading)
     dialog.append(heading, subtitle, content)
-    marker.classList.add('source-marker-active')
+    const markerPosition = options.markers ? options.markers.activate(marker) : null
+    if (!options.markers) marker.classList.add('source-marker-active')
     dialog.addEventListener('close', () => {
       controller.abort()
       if (current?.dialog === dialog) {
@@ -123,9 +131,13 @@ export function createBodySourcePreview(options: Options) {
         document.body.classList.remove('source-preview-is-open')
       }
       dialog.remove()
-      // close 事件异步派发：同一标记已打开新预览时，不能撤掉新预览的高亮。
-      if (current?.marker !== marker) marker.classList.remove('source-marker-active')
-      if (!['selected', 'edited', 'replaced'].includes(dialog.returnValue) && marker.isConnected) marker.focus({ preventScroll: true })
+      // close 事件异步派发：已打开新预览时，不能撤掉新预览的高亮。
+      if (options.markers) {
+        if (!current) options.markers.deactivate()
+      } else if (current?.marker !== marker) marker.classList.remove('source-marker-active')
+      // 高亮重绘会替换标记元素：按位置找回当前渲染的标记再归还焦点。
+      const target = markerPosition !== null && !marker.isConnected ? options.markers?.find(markerPosition) ?? marker : marker
+      if (!['selected', 'edited', 'replaced'].includes(dialog.returnValue) && target.isConnected) target.focus({ preventScroll: true })
     })
     document.body.append(dialog)
     document.addEventListener('input', event => {

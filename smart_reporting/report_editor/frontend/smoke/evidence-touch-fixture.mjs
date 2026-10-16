@@ -14,11 +14,22 @@ try {
   await page.locator('.evidence-directory-toggle').tap()
   await page.locator('.evidence-directory-item', { hasText: '正文引用' }).tap()
   await page.getByRole('button', { name: '查看关系图', exact: true }).tap()
-  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).tap()
   const map = page.locator('.evidence-graph-map')
-  const viewport = await page.locator('.evidence-graph-scroll').boundingBox()
-  const x = viewport.x + 25
-  const y = viewport.y + 220
+  // 首屏会把图整体缩小到可见，固定偏移可能落在图外；在图内找一个不压节点的空白点作为拖动起点。
+  const { x, y } = await page.evaluate(() => {
+    const scroll = document.querySelector('.evidence-graph-scroll').getBoundingClientRect()
+    const box = document.querySelector('.evidence-graph-map').getBoundingClientRect()
+    const left = Math.max(box.left, scroll.left), top = Math.max(box.top, scroll.top)
+    const right = Math.min(box.right, scroll.right), bottom = Math.min(box.bottom, scroll.bottom)
+    const nodes = [...document.querySelectorAll('.evidence-graph-map .evidence-node')].map(node => node.getBoundingClientRect())
+    const clear = (px, py) => nodes.every(rect => px < rect.left - 40 || px > rect.right + 40 || py < rect.top - 40 || py > rect.bottom + 40)
+    for (let py = top + 30; py < bottom - 30; py += 10) {
+      for (let px = left + 30; px < right - 30; px += 10) {
+        if (clear(px, py) && document.elementFromPoint(px, py)?.className === 'evidence-graph-map') return { x: Math.round(px), y: Math.round(py) }
+      }
+    }
+    return { x: left + 25, y: top + 25 }
+  })
   assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.className, { x, y }), 'evidence-graph-map')
   const session = await page.context().newCDPSession(page)
   const touch = (id, x, y) => ({ id, x, y })
@@ -29,6 +40,7 @@ try {
     return { scale: matrix.a, x: matrix.e, y: matrix.f }
   })
   const original = await pan()
+  const startTransform = await transform()
   await map.evaluate(node => {
     window.touchTrace = []
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'lostpointercapture']) {
@@ -37,13 +49,18 @@ try {
   })
   await send('touchStart', [touch(1, x, y)])
   await send('touchMove', [touch(1, x + 20, y - 20)])
-  await page.waitForFunction(() => document.querySelector('.evidence-graph-map').style.transform.includes('translate(20px, -20px)'))
+  // 首屏适应后平移不一定从 0 开始：按相对位移判断单指拖动 (+20, -20)。
+  await page.waitForFunction(start => {
+    const matrix = new DOMMatrix(getComputedStyle(document.querySelector('.evidence-graph-map')).transform)
+    return Math.abs(matrix.e - start.x - 20) < 0.5 && Math.abs(matrix.f - start.y + 20) < 0.5
+  }, startTransform)
   const first = await pan()
   assert.notEqual(first, original)
   await send('touchStart', [touch(1, x + 20, y - 20), touch(2, x + 80, y - 20)])
   await send('touchMove', [touch(1, x + 20, y - 20), touch(2, x + 100, y - 30)])
   const pinched = await transform()
-  assert.ok(Math.abs(pinched.scale - Math.hypot(80, 10) / 60) < 0.01)
+  // 双指缩放按指距比例作用于当前缩放（首屏适应后不一定为 1）。
+  assert.ok(Math.abs(pinched.scale - startTransform.scale * Math.hypot(80, 10) / 60) < 0.01)
   assert.notEqual(await pan(), first)
   await send('touchEnd', [touch(2, x + 100, y - 30)])
   await send('touchMove', [touch(1, x + 30, y - 30)])

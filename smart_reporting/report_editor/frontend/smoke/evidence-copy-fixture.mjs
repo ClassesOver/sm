@@ -20,13 +20,14 @@ try {
   }
   await page.goto(url, { waitUntil: 'networkidle' })
   await page.locator('[data-action="sources"]').click()
-  await page.locator('.evidence-directory-item', { hasText: '收入明细.csv' }).click()
+  await page.locator('.evidence-directory-item', { hasText: '季度收入快照' }).click()
   const table = page.locator('.evidence-table')
   await table.waitFor()
   const outcomes = []
   const copy = async (count) => {
     const expected = await table.evaluate(node => [...node.querySelectorAll('tr')].map(row =>
-      [...row.querySelectorAll('th, td')].map(cell => cell.textContent).join('\t')).join('\n'))
+      // “快照行序号”是界面辅助列（CSV 位置，不是业务主键），复制只含数据列。
+      [...row.querySelectorAll('th:not(.evidence-row-number), td:not(.evidence-row-number)')].map(cell => cell.textContent).join('\t')).join('\n'))
     await page.getByRole('button', { name: '复制本页', exact: true }).click()
     const success = page.getByText(`已复制本页可见 ${count} 行`, { exact: true })
     const unavailable = page.getByText('复制不可用，请手动选择表格内容复制', { exact: true })

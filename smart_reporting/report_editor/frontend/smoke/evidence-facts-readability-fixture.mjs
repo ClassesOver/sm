@@ -35,7 +35,9 @@ try {
       return route.fulfill({ json: { ...fact, entry: { ...entry, unit: fact.unit, periodRoles: fact.periodRoles, periodStart: fact.periodStart, periodEnd: fact.periodEnd }, inputFactRefs: fact.factKind === 'comparison' ? facts.slice(0, 2).map(item => ({ analysisId, factId: item.factId })) : [], warnings: [] } })
     })
     await page.goto(process.env.REPORT_EDITOR_URL ?? 'http://127.0.0.1:4173/reports/v1/editor/fixture-report/1', { waitUntil: 'networkidle' })
+    // 正文来源标记先打开来源预览，从预览进入完整溯源（2026-10-07 起）。
     await page.locator('[data-marker-kind="analysis"]').click()
+    await page.locator('.report-source-preview .source-preview-open').first().click()
     await page.locator('.evidence-analysis-overview').waitFor()
     assert.equal(await page.locator('.evidence-fact-name').count(), 3)
     assert.ok((await page.locator('.evidence-analysis-overview').textContent()).includes('登记值 12,450 万元'))

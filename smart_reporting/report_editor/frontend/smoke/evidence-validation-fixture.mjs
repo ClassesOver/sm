@@ -11,6 +11,14 @@ try {
   page.on('pageerror', error => errors.push(error.message))
   page.on('request', request => { if (request.url().includes('/api/facts/')) factRequests += 1 })
   await page.goto(editorUrl, { waitUntil: 'networkidle' })
+  // 共享 fixture 自 2026-10-11 起把改动后的值标为可比（供侧栏恢复登记值使用）；本检查针对“可比性未确认”，
+  // 在此去掉 comparable，验证不计算差额、只提示需核对口径。
+  await page.route('**/api/sources/validate', async route => {
+    const response = await route.fetch()
+    const payload = await response.json()
+    for (const subject of payload.subjects ?? []) delete subject.comparable
+    await route.fulfill({ response, json: payload })
+  })
   await page.route('**/api/document', route => route.request().method() === 'PUT'
     ? route.fulfill({ status: 503, json: { detail: { code: 'fixture-save-unavailable' } } }) : route.continue())
   await page.locator('[data-action="sources"]').click()
