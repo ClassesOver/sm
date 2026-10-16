@@ -91,8 +91,10 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
       <div class="panel-body trace-panel">
         <div class="trace-tabs" role="tablist" aria-label="来源类别"></div>
         <div class="trace-status" data-trace="status" role="status" aria-live="polite"></div>
-        <div class="trace-list" data-trace="list"></div>
-        <div class="trace-detail" data-trace="detail" hidden></div>
+        <div class="trace-tabpanel" id="trace-tabpanel" role="tabpanel" aria-labelledby="trace-tab-datasets">
+          <div class="trace-list" data-trace="list"></div>
+          <div class="trace-detail" data-trace="detail" hidden></div>
+        </div>
       </div>`,
   })
 
@@ -101,23 +103,59 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
   const listBox = overlay.querySelector<HTMLElement>('[data-trace="list"]')!
   const detailBox = overlay.querySelector<HTMLElement>('[data-trace="detail"]')!
   const tabList = overlay.querySelector<HTMLElement>('.trace-tabs')!
+  const tabPanel = overlay.querySelector<HTMLElement>('#trace-tabpanel')!
   const tabs: HTMLButtonElement[] = []
   const tabButtons = new Map<TraceTab, HTMLButtonElement>()
+  let activeTab: TraceTab = 'datasets'
   for (const tab of Object.keys(TAB_LABELS) as TraceTab[]) {
     const button = document.createElement('button')
     button.type = 'button'
     button.role = 'tab'
+    button.id = `trace-tab-${tab}`
     button.className = 'trace-tab'
     button.dataset.traceTab = tab
     button.textContent = TAB_LABELS[tab]
     button.setAttribute('aria-selected', 'false')
+    button.setAttribute('aria-controls', 'trace-tabpanel')
+    // roving tabindex：只有当前页签可被 Tab 到，其余用方向键到达
+    button.tabIndex = tab === activeTab ? 0 : -1
     button.addEventListener('click', () => showTab(tab))
     tabList.append(button)
     tabs.push(button)
     tabButtons.set(tab, button)
   }
 
-  let activeTab: TraceTab = 'datasets'
+  // 键盘导航（与 evidence-browser 的页签行为一致）：方向键/Home/End 只移动
+  // 焦点，Enter/Space 走按钮原生 click 激活页签。
+  tabList.addEventListener('keydown', (event) => {
+    // 带修饰键的按键（如 Alt+←/→ 后退/前进）交给外层快捷键处理
+    if (event.altKey || event.ctrlKey || event.metaKey) return
+    const focused = tabs.indexOf(document.activeElement as HTMLButtonElement)
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault()
+      const delta = event.key === 'ArrowLeft' ? -1 : 1
+      const next = tabs[(focused + delta + tabs.length) % tabs.length]
+      next?.focus()
+      return
+    }
+    if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault()
+      const next = event.key === 'Home' ? tabs[0] : tabs[tabs.length - 1]
+      next?.focus()
+    }
+  })
+
+  /** 只同步页签的视觉/语义状态，不触发数据加载（供 showTab 与 openSubject 共用） */
+  const syncTabState = (tab: TraceTab) => {
+    activeTab = tab
+    tabs.forEach((button) => {
+      const selected = button.dataset.traceTab === tab
+      button.setAttribute('aria-selected', selected ? 'true' : 'false')
+      button.classList.toggle('is-active', selected)
+      button.tabIndex = selected ? 0 : -1
+    })
+    tabPanel.setAttribute('aria-labelledby', `trace-tab-${tab}`)
+  }
   let controller: AbortController | null = null
   let generation = 0
   let isOpen = false
@@ -189,12 +227,7 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
   }
 
   const showTab = (tab: TraceTab) => {
-    activeTab = tab
-    tabs.forEach((button) => {
-      const selected = button.dataset.traceTab === tab
-      button.setAttribute('aria-selected', selected ? 'true' : 'false')
-      button.classList.toggle('is-active', selected)
-    })
+    syncTabState(tab)
     clearContent()
     setStatus('加载中…', 'loading')
     if (tab === 'datasets') void loadDatasets()
@@ -847,18 +880,18 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
         return
       }
       if (subject.locator.chartId) {
-        activeTab = 'charts'
+        syncTabState('charts')
         void openChartSource({ chartId: subject.locator.chartId })
         return
       }
       const fact = subject.factRefs.find((item) => item.factId)
       if (fact?.factId) {
-        activeTab = 'facts'
+        syncTabState('facts')
         void showFactDetail(fact.analysisId, fact.factId)
         return
       }
       if (subject.computationId) {
-        activeTab = 'computations'
+        syncTabState('computations')
         void openComputation({ computationId: subject.computationId })
         return
       }
@@ -883,7 +916,7 @@ export function createTracePanel(root: HTMLElement, client: ReportEditorClient) 
     },
     setDrilldownEnabled(enabled: boolean) {
       tabButtons.get('drilldowns')!.hidden = !enabled
-      if (!enabled && activeTab === 'drilldowns') activeTab = 'datasets'
+      if (!enabled && activeTab === 'drilldowns') syncTabState('datasets')
     },
     openSubject,
   }
