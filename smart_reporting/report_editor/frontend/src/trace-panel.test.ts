@@ -518,6 +518,50 @@ describe('createTracePanel', () => {
     expect(root.querySelector('.trace-chart-info img')).toBeNull()
     expect((window as unknown as Record<string, unknown>).__tracePwned).toBeUndefined()
   })
+
+  it('supports arrow-key tab navigation with roving tabindex', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify(SOURCES_PAYLOAD)))
+    const { root, panel } = setupPanel(fetcher as typeof fetch)
+    document.body.appendChild(root)
+    try {
+      panel.open()
+      const tabs = Array.from(root.querySelectorAll<HTMLButtonElement>('.trace-tab'))
+      const tablist = root.querySelector<HTMLElement>('.trace-tabs')!
+      expect(tabs.length).toBeGreaterThan(1)
+
+      // 初始：只有激活页签可被 Tab 到，且带 aria-controls 指向 tabpanel
+      expect(tabs[0]!.tabIndex).toBe(0)
+      expect(tabs[1]!.tabIndex).toBe(-1)
+      for (const tab of tabs) {
+        expect(tab.getAttribute('role')).toBe('tab')
+        expect(tab.getAttribute('aria-controls')).toBe('trace-tabpanel')
+      }
+      const tabpanel = root.querySelector<HTMLElement>('#trace-tabpanel')!
+      expect(tabpanel.getAttribute('role')).toBe('tabpanel')
+
+      // ArrowRight 只移动焦点，不切换页签
+      tabs[0]!.focus()
+      tablist.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+      expect(document.activeElement).toBe(tabs[1])
+      expect(tabs[1]!.getAttribute('aria-selected')).toBe('false')
+
+      // click 激活聚焦点所在的页签（原生按钮行为），roving tabindex 跟随
+      tabs[1]!.click()
+      await vi.waitFor(() => {
+        expect(tabs[1]!.getAttribute('aria-selected')).toBe('true')
+      })
+      expect(tabs[0]!.tabIndex).toBe(-1)
+      expect(tabs[1]!.tabIndex).toBe(0)
+      expect(tabpanel.getAttribute('aria-labelledby')).toBe(tabs[1]!.id)
+
+      // Home 回到首个页签
+      tablist.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+      expect(document.activeElement).toBe(tabs[0])
+    } finally {
+      root.remove()
+    }
+  })
 })
 
 it.each([['%', 'derived · 75 %'], [null, 'derived · 75']])('uses fact display unit %s instead of input amount unit', async (displayUnit, expected) => {
