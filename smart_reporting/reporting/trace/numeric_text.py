@@ -639,10 +639,10 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
             if not isinstance(finding, dict):
                 continue
             columns, rows, metadata = (finding.get(key) for key in ("columns", "rows", "columnMeta"))
+            # 明细表下可再挂汇总子表（finding.tables：按月合计、按科室合计），同样要登记。
+            pending.extend(value for key, value in finding.items()
+                           if key not in {"columns", "rows", "columnMeta"} and isinstance(value, (dict, list)))
             if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
-                pending.extend(value for key, value in finding.items()
-                               if key not in {"columns", "rows", "columnMeta"}
-                               and isinstance(value, (dict, list)))
                 continue
             for index, column in enumerate(columns):
                 meta = metadata.get(column) if isinstance(column, str) else None
@@ -791,6 +791,7 @@ class _DerivedValue:
     column: str | None
     peer_columns: tuple[str, ...]
     named_only: bool = False
+    window_required: bool = False
 
 
 def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: Decimal, claim: str) -> bool:
@@ -826,6 +827,14 @@ def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: 
     difference = entry.difference if a[0] < b[0] else -entry.difference
     directions = list(re.finditer(r'高于|低于|多于|少于|超过|不足|(?<![至最不多少])(?:多|少|高|低)',
                                   claim[max(a[1], b[1]):]))
+    if directions and not relations:
+        # “1月收入…、成本…，成本高3.02亿元”：没有比较词时，方向词的主语是紧邻其前的操作数，
+        # 不是先写出的一方。
+        position = max(a[1], b[1]) + directions[-1].start()
+        subjects = [(span[1], side) for side, found in ((1, left), (-1, right))
+                    for span in found if span[1] <= position]
+        if subjects:
+            difference = entry.difference * max(subjects)[1]
     directed = (directions[-1][0] if directions else relations[-1][0]
                 if relations and relations[-1][0] in {'高于', '低于', '多于', '少于', '超过', '不足'} else None)
     if directed:
@@ -861,7 +870,7 @@ class DerivedNumbers:
             *, periods: tuple[str, ...] | None = None,
             comparison: tuple[tuple[str, ...], ...] | None = None,
             column: str | None = None, peer_columns: tuple[str, ...] = (),
-            named_only: bool = False) -> None:
+            named_only: bool = False, window_required: bool = False) -> None:
         if not operands or any(not names for names in operands):
             return
         targets = [(unit, Decimal(1))]
@@ -875,7 +884,7 @@ class DerivedNumbers:
                 self._values.setdefault(target, []).append(_DerivedValue(
                     value * factor, operands, top, periods, number * factor if top is None else None,
                     comparison or operands[-2:],
-                    column, peer_columns, named_only,
+                    column, peer_columns, named_only, window_required,
                 ))
         self._sorted.clear()
 
@@ -915,6 +924,9 @@ class DerivedNumbers:
                 if columns != {entry.column}:
                     continue
             if entry.periods is not None and not _derived_period_matches(entry.periods, statement or local_claim):
+                continue
+            # 只在共同期间成立的累计差额，正文不写期间会被读成全年口径。
+            if entry.window_required and not re.search(r'\d{1,2}月', statement or local_claim):
                 continue
             named = all(any(name in local_claim for name in names) for names in entry.operands)
             if entry.difference is not None:
@@ -1012,8 +1024,9 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
             if not isinstance(finding, dict):
                 continue
             columns, rows, metadata = (finding.get(key) for key in ("columns", "rows", "columnMeta"))
+            pending.extend(value for key, value in finding.items()
+                           if key not in {"columns", "rows", "columnMeta"} and isinstance(value, (dict, list)))
             if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
-                pending.extend(value for value in finding.values() if isinstance(value, (dict, list)))
                 continue
             rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
             labels = [next((cell.strip() for cell in row if isinstance(cell, str) and cell.strip()), None)
@@ -1051,6 +1064,7 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                     derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands,
                                 periods=periods)
                 right_values = {item.period: item.value for item in right.period_values}
+                shared: list[tuple[str, Decimal]] = []
                 for a in left.period_values:
                     if a.period not in right_values:
                         continue
@@ -1066,8 +1080,14 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                         else:
                             key = f'{year:04d}'
                             aliases = (f'{year}年', key)
-                        derived.add(left.unit, Decimal(str(a.value)) - Decimal(str(right_values[a.period])),
-                                    (*operands, aliases), periods=(key,), comparison=operands)
+                        gap = Decimal(str(a.value)) - Decimal(str(right_values[a.period]))
+                        shared.append((key, gap))
+                        derived.add(left.unit, gap, (*operands, aliases), periods=(key,), comparison=operands)
+                # 统计窗口不同（收入到11月、成本到9月）时，“1—9月成本比收入多3.98亿元”按两边都有的
+                # 期间累计差额核对；正文须写出完整的共同窗口。
+                if len(shared) > 1 and (left.period_start, left.period_end) != (right.period_start, right.period_end):
+                    derived.add(left.unit, sum(gap for _key, gap in shared), operands,
+                                periods=tuple(key for key, _gap in shared), window_required=True)
     return derived
 
 

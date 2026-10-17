@@ -1230,6 +1230,38 @@ def test_top_share_sums_skip_total_rows_and_cover_long_two_sided_tables():
         '预算端人员经费、卫生材料费、药品费合计待核实。')
 
 
+def test_nested_summary_tables_and_income_cost_gaps_are_registered():
+    # 回放：按科室合计挂在明细表的 tables 下；收入到11月、成本到9月。
+    detail = {'name': '收入明细', 'columns': ['科室', 'amount'], 'columnMeta': {'amount': {'unit': '元'}},
+              'rows': [['普通外科', 1], ['手术室', 2]],
+              'tables': [{'name': '按科室合计', 'columns': ['科室', 'amount'], 'columnMeta': {'amount': {'unit': '元'}},
+                          'rows': [['普通外科', 1482873737], ['手术室', 151211]]}]}
+    def metric(fact, name, values):
+        return {'factId': 'fact-' + fact * 16, 'datasetId': name, 'datasetSha256': fact * 64,
+                'periodRoles': ['current'], 'field': 'amount', 'fieldRef': f'h.{name}.amount',
+                'displayName': name, 'aggregation': 'sum', 'unit': '元', 'formula': 'sum(amount)',
+                'total': sum(values), 'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+                'periodGranularity': 'month', 'periodField': 'data_date',
+                'periodStart': '2025-01-01', 'periodEnd': f'2025-{len(values):02d}-01',
+                'periodValues': [{'period': f'2025-{index + 1:02d}-01', 'value': value}
+                                 for index, value in enumerate(values)]}
+    bundle = {'analysisId': 'analysis_011', 'metrics': [
+        metric('a', '收入金额', [889688670, 899035187, 500000000]),
+        metric('b', '成本金额', [1191933469, 972805980]),
+    ]}
+    contents = [json.dumps({'findings': [detail]}), json.dumps(bundle)]
+    accepted = ('普通外科收入1,482,873,737元，手术室收入151,211元。',
+                # 没有比较词时，“高”的主语是紧邻其前的成本。
+                '1月收入889,688,670元、成本1,191,933,469元，成本高302,244,799元。',
+                # 窗口不同，按共同的1—2月累计差额核对，须写出期间。
+                '2025年1—2月成本比收入多376,015,592元。')
+    for text in accepted:
+        assert replace_unregistered_numbers(text, contents) == text
+    assert replace_unregistered_numbers('1月收入889,688,670元、成本1,191,933,469元，收入高302,244,799元。', contents) == (
+        '1月收入889,688,670元、成本1,191,933,469元，收入高待核实。')
+    assert replace_unregistered_numbers('成本比收入多376,015,592元。', contents) == '成本比收入多待核实。'
+
+
 def test_single_character_decline_words_accept_registered_negative_magnitudes():
     document = json.loads(_budget_document())
     document['comparisons'] = [{
