@@ -86,3 +86,34 @@ def test_reporting_script_runner_bootstraps_font_inside_child_process(tmp_path: 
     family, font_path = output_path.read_text(encoding="utf-8").splitlines()
     assert family == "Noto Sans CJK SC"
     assert font_path.endswith(("NotoSansCJKSC-Regular.otf", "NotoSansCJK-Regular.ttc"))
+
+
+def test_reporting_script_runner_writes_large_ticks_in_chinese_units(tmp_path: Path) -> None:
+    script_path = tmp_path / "chart.py"
+    output_path = tmp_path / "ticks.txt"
+    script_path.write_text(
+        "from pathlib import Path\n"
+        "import matplotlib.pyplot as plt\n"
+        "from matplotlib.ticker import FuncFormatter\n"
+        "fig, (ax, custom) = plt.subplots(1, 2)\n"
+        "ax.bar(['a', 'b'], [3046407434, 600000]); custom.bar(['a'], [3046407434])\n"
+        "custom.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f'{value:.0f}'))\n"
+        f"fig.savefig({str(tmp_path / 'chart.png')!r}); fig.canvas.draw()\n"
+        "labels = [tick.get_text() for tick in ax.get_yticklabels()]\n"
+        "custom_labels = [tick.get_text() for tick in custom.get_yticklabels()]\n"
+        f"Path({str(output_path)!r}).write_text('|'.join(labels) + '\\n' + ax.yaxis.get_offset_text().get_text()"
+        " + '\\n' + '|'.join(custom_labels), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = (
+        "from smart_reporting.reporting.matplotlib_defaults import run_reporting_script;"
+        f"run_reporting_script({str(script_path)!r}, {str(tmp_path / 'runtime')!r})"
+    )
+
+    result = subprocess.run([sys.executable, "-B", "-c", command], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    labels, offset, custom = output_path.read_text(encoding="utf-8").split("\n")
+    assert "5亿" in labels.split("|") and "0" in labels.split("|")
+    assert offset == "" and "e" not in labels
+    assert "500000000" in custom.split("|")

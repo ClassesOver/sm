@@ -63,6 +63,12 @@ def matplotlib_theme_rc() -> str:
         "figure.facecolor: white\n"
         "axes.facecolor: white\n"
         "savefig.facecolor: white\n"
+        # 领导阅读的图表不用科学计数或偏移量（坐标轴角落的“1e9”）；保存时按实际内容
+        # 外扩边界，避免居中的长脚注、图例被裁掉两端。
+        "axes.formatter.useoffset: False\n"
+        "axes.formatter.limits: -12, 12\n"
+        "savefig.bbox: tight\n"
+        "savefig.pad_inches: 0.2\n"
     )
 
 
@@ -72,6 +78,8 @@ def plotly_theme_layout() -> dict[str, Any]:
     theme = REPORT_VISUAL_THEME
     axis = {
         "automargin": True,
+        "exponentformat": "none",
+        "separatethousands": True,
         "linecolor": theme["grid"],
         "gridcolor": theme["gridline"],
         "zerolinecolor": theme["grid"],

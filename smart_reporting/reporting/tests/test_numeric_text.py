@@ -332,6 +332,9 @@ def test_extrema_correction_only_rewrites_the_analysis_that_produced_the_warning
     ("收入下滑-2.10%。", "收入下滑2.10%。"),
     ("收入变化率为-5.20%，增长率-1.00%。", "收入变化率为-5.20%，增长率-1.00%。"),
     ("2024-2025年收入增长5.20%。", "2024-2025年收入增长5.20%。"),
+    ("1月实际较预算少-4.34万人次，2月多-6.37万人次。", "1月实际较预算少4.34万人次，2月少6.37万人次。"),
+    ("实际比预算多-1,200人次。", "实际比预算少1,200人次。"),
+    ("至少-3天内无登记，最多-2次。", "至少-3天内无登记，最多-2次。"),
 ])
 def test_signed_direction_wording_is_normalized_from_frozen_sign(text, expected):
     from smart_reporting.reporting.trace.numeric_text import normalize_signed_wording
@@ -1126,3 +1129,27 @@ def test_extrema_rewrite_uses_valid_monthly_fact_amid_malformed_records(malforme
     assert correct_period_extrema(text, contents) == "收入最高月份为2月。"
     markdown, _references, _notices = render_bound_numbers(text, contents, key="mixed-metrics")
     assert markdown == "收入最高月份为2月。"
+
+
+def test_server_derives_gaps_and_top_share_sums_only_for_operands_named_in_the_paragraph():
+    from smart_reporting.reporting.trace.content_review import review_content
+
+    supplement = json.dumps({'findings': [{'name': '院区分布', 'columns': ['院区', '门诊人次', '不含急诊门诊人次', '占比'],
+        'columnMeta': {'门诊人次': {'unit': '人次'}, '不含急诊门诊人次': {'unit': '人次'},
+                       '占比': {'unit': '%', 'isPercent': True}},
+        'rows': [['总部', 5736882, 5312051, 76.68], ['北部', 1220000, 1100000, 16.37], ['远洋', 50000, 40000, 6.95]]}]})
+    budget = json.loads(_budget_document())
+    for metric, name in zip(budget['metrics'], ('实际收入', '预算收入'), strict=True):
+        metric['displayName'] = name
+    contents = [json.dumps(budget), supplement]
+    # 同表两列逐行差额、降序前两项合计占比、同一分析同期间两项事实的月度差额（实际减预算）。
+    derived = ('总部门诊人次与不含急诊门诊人次相差424,831人次。\n\n总部与北部合计占比93.05%。'
+               '\n\n1月实际收入较预算收入少10.00万元。')
+    assert replace_unregistered_numbers(derived, contents) == derived
+    assert not any('冻结依据' in warning for warning in review_content(derived, contents))
+    # 4,516,882 = 总部 − 北部，但正文写的是总部与远洋：操作数不符，仍替换。
+    wrong_pair = '总部门诊人次比远洋多4,516,882人次。'
+    assert replace_unregistered_numbers(wrong_pair, contents) == '总部门诊人次比远洋多待核实。'
+    # 百分数之差是百分点，不按百分数补算；无来源的数字仍替换。
+    unrelated = '总部较北部高60.31%，另有123,457人次。'
+    assert replace_unregistered_numbers(unrelated, contents) == '总部较北部高待核实，另有待核实。'

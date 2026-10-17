@@ -201,6 +201,17 @@ def _analysis_chart_from_registration(
     return AnalysisChart.model_validate(payload)
 
 
+# 写作模型只需图表的主题、口径与期间；视觉审查回执、文件身份等用于服务端门禁与溯源，
+# 交给模型会被写进正文（“视觉回执提示纵轴比例失真”“柱形顶部被截断”）。
+_WRITER_CHART_EXCLUDE = frozenset({
+    "visual_inspection_receipt", "source_file", "interactive_file", "plot_data_files", "plot_data_kind", "renderer",
+})
+
+
+def _writer_chart(chart: AnalysisChart) -> dict[str, Any]:
+    return chart.model_dump(mode="json", by_alias=True, exclude=set(_WRITER_CHART_EXCLUDE))
+
+
 _SECTION_BLOCK_DEFAULT_INPUT_TOKEN_BUDGET = 64 * 1024
 _SECTION_BLOCK_PAYLOAD_TOKEN_NUMERATOR = 3
 _SECTION_BLOCK_PAYLOAD_TOKEN_DENOMINATOR = 4
@@ -954,12 +965,13 @@ def _section_stage_agent(
                 if stage == "content"
                 else "只在 JSON 的 markdown 字段中撰写当前 block 的完整简体中文 Markdown 正文，不得生成其他 block。"
             ),
-            "每个 block 必须完成 objective 对应的事实陈述，不得以‘整体呈’‘分别为’等半句结尾；没有证据的结论应明确写明待核实。",
+            "每个 block 必须完成 objective 对应的事实陈述，不得以‘整体呈’‘分别为’等半句结尾；没有证据的结论直接删去，不逐句写待核实。",
             "不得输出 H1/H2、图片语法、协议标记或无证据数字；内部 ID 仅可用于 frozenNumbers 提供的数值占位符。",
-            "管理层正文禁止出现 block、Markdown、CSV、SQL、ACF/PACF、服务端、数据集、字段、x轴/y轴 等实现或验收术语；改写为段落、正文、明细数据、查询口径、统计相关性、登记结果、统计口径、指标、横轴/纵轴。不要解释 harness、生成流程、文件格式或验收过程。",
+            "管理层正文禁止出现 block、Markdown、CSV、SQL、ACF/PACF、服务端、数据集、字段、x轴/y轴 等实现或验收术语；改写为段落、正文、明细数据、统计相关性、指标、横轴/纵轴。不要解释 harness、生成流程、文件格式或验收过程。",
+            "读者是医院领导或财务、业务人员，不是数据技术人员：每段首句先写结论与管理含义，再给关键数字；财务口径（收入、成本、预算执行、差额、完成率）按财务习惯表述并写清期间与单位；用“1—11月”“11月”等日常说法，不写“月度桶”“登记值”“登记结果”“冻结”“补证”“净额口径”“数值引用”等技术用语；同一口径说明全章只写一次，不复述图表画法、标注位置或图表质量。",
             "月度日期是月度桶标签，不是数据截止时点；其他模型摘要或图表标题中的推测不构成直接证据。不得补写目录中不存在的月均值或派生金额。",
             "月均值必须与正文月份范围一致；完整12个月的均值不得用于1—10月。多个指标各取前N名后并集展示时，分类数量可以超过N，不能据此认定图表超范围。声称各月方向一致前须逐月核对；存在反向月份时明确例外，不写全部一致。",
-            "异常或偏低只描述事实与待核实事项；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
+            "异常或偏低只描述事实；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
             "frozenNumbers 中的数值必须使用对应 {{value:...}} 占位符，不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。需要元值和亿元同时展示时分别选择两个占位符；大额人次可选择万人次占位。",
             "占位符渲染后已带单位，其后不得再写单位（不写“{{value:…:亿元}}亿元”）；每个数值写在其所属指标、科室或期间的名下，不得把一个科室或指标的引用写到另一个名下。数字与百分号用半角，百分点写“个百分点”，不写 pp、pct。",
             "reportGoal要求精确原始元值时，已登记元单位的关键金额必须选择元值占位符展示；"
@@ -993,7 +1005,7 @@ def _section_stage_agent(
             (
                 "数据质量优先：facts 或 warnings 出现字段为零、预算为零、期间不一致或不可比声明时，"
                 "只能将其作为软告警写明影响；其他模型写的未入账或数据不完整不能证明数据状态。不得把缺失或不可比数据"
-                "写成确定的经营归因。证据不足时只写原因待核实，并列出需要补核的对象，不得自行添加可能原因。"
+                "写成确定的经营归因。证据不足时不写原因，也不得自行添加可能原因；需要补核的对象与口径限制在本章末合并为一段说明，不单设‘待核实事项’小节，同一限制只写一次，其他段落不重复‘待核实’‘口径不可混用’等提示。"
             ),
             (
                 "相关性高不证明两套口径等价或可互换；预算为零须逐项核对预算列；超支与差额贡献使用差额列，不能使用实际金额列。结构化绑定的图表会展示，正文不得声称它未引用或已剔除。强结论门槛：‘全院性’‘主要原因’‘核心驱动’等判断必须同时给出覆盖范围、贡献额、"
@@ -1719,11 +1731,7 @@ async def _generate_section_in_blocks(
             for item in work_item.citations
             if item.citation_id in citation_ids
         ]
-        block_charts = [
-            item.model_dump(mode="json", by_alias=True)
-            for item in work_item.charts
-            if item.chart_id in chart_ids
-        ]
+        block_charts = [_writer_chart(item) for item in work_item.charts if item.chart_id in chart_ids]
         block_metrics = [
             item.model_dump(mode="json", by_alias=True)
             for item in work_item.metric_definitions
@@ -1759,7 +1767,7 @@ async def _generate_section_in_blocks(
             "requiredAction": (
                 "只返回当前 block 的完整 Markdown；围绕 objective 解释 claims，"
                 "正文不展示任何内部 ID，每个数字必须来自给定事实。"
-                "只陈述可核对的数据质量事实；模型摘要中的未入账、月份不完整等猜测不能作为已验证原因。没有直接证据时只写原因待核实。"
+                "只陈述可核对的数据质量事实；模型摘要中的未入账、月份不完整等猜测不能作为已验证原因。没有直接证据时不写原因，限制只在本章数据限制段落说明一次。"
             ),
         }
         # 完整证据只驻留在当前固定 Workflow 内存中；模型按 block 消费带身份的相关视图。
@@ -1947,12 +1955,12 @@ async def _generate_whole_section_content(
             for item in work_item.management_question_catalog
         ],
         "citations": [item.model_dump(mode="json", by_alias=True) for item in work_item.citations],
-        "charts": [item.model_dump(mode="json", by_alias=True) for item in work_item.charts],
+        "charts": [_writer_chart(item) for item in work_item.charts],
         "markdownRequirements": list(work_item.markdown_requirements),
         "requiredAction": (
             "一次返回规划中所有 block 的 blockId 和完整 markdown，围绕各自 objective 与 claims"
             "组织整章正文。各 block 仅解读其 claim 绑定的图表；引用由服务端绑定，不要输出引用字段。"
-            "每个数字必须来自冻结事实；数据质量问题优先说明，业务归因必须有直接证据；证据不足时只写原因待核实。"
+            "每个数字必须来自冻结事实；数据质量问题优先说明，业务归因必须有直接证据；证据不足时不写原因；口径限制与需补核事项在章末合并说明一次，不逐段重复待核实提示。"
         ),
     }
     section_number_catalog = payload["frozenNumbers"]
@@ -2124,7 +2132,7 @@ async def _generate_whole_section_content(
                     "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
                     "大额金额与人次改用万元、亿元或万人次占位；补全未写完的句子。"
                     + _LATER_CORRECTION_ACTIONS
-                    + "删去无直接证据的推测，仍不确定时写待核实。只返回 issues 列出的 block 完整正文，保留 blockId；"
+                    + "删去无直接证据的推测与重复的待核实提示。只返回 issues 列出的 block 完整正文，保留 blockId；"
                     "preservedContext 仅供衔接和去重，不得返回或改写。"
                 ),
             }
@@ -3154,7 +3162,13 @@ class RuntimeSectionsMixin:
         目录供 B6 正文 subject 绑定构造复用（不重复读 bundle）。
         """
 
-        from ...trace.fact_index import fact_binding_records, fact_entry_from_pointer, fact_pointer
+        from ...trace.fact_index import (
+            fact_binding_records,
+            fact_entry_from_pointer,
+            fact_pointer,
+            frozen_fact_content,
+            merge_binding_records,
+        )
 
         scope = self._scope(run_context)
         thread_id = scope["threadId"]
@@ -3200,7 +3214,8 @@ class RuntimeSectionsMixin:
                             binding_record = binding_records[fact.fact_id]
                             if fact.fact_id in ambiguous_fact_ids:
                                 continue
-                            if fact.fact_id in fact_documents and fact_documents[fact.fact_id] != binding_record:
+                            if (fact.fact_id in fact_documents
+                                    and merge_binding_records(fact_documents[fact.fact_id], binding_record) is None):
                                 # 兼容旧快照：同 ID 不同内容不能按文件顺序选择来源。
                                 ambiguous_fact_ids.add(fact.fact_id)
                                 fact_directory.pop(fact.fact_id, None)
@@ -3231,7 +3246,7 @@ class RuntimeSectionsMixin:
                         "rows": trace.row_keys,
                         "columns": trace.column_keys,
                         "facts": [
-                            fact_entry_from_pointer(document, ref.json_pointer)[1]
+                            frozen_fact_content(fact_entry_from_pointer(document, ref.json_pointer)[1])
                             for cell in trace.cells for ref in cell.fact_refs
                         ],
                     }, sort_keys=True, ensure_ascii=False)

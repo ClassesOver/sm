@@ -33,6 +33,9 @@ from .numeric_text import PERCENT_POINT, format_fact_value, percent_point_field
 _TABLE_ID_PATTERN_RULES = "表格 ID 只允许字母数字与 _ . :-"
 
 
+_MONEY_UNITS = frozenset({"元", "万元", "亿元"})
+
+
 def _normalize_table_id(table_id: str) -> str:
     cleaned = table_id.strip()
     if not cleaned or len(cleaned) > 128 or any(ch in "\r\n" for ch in cleaned):
@@ -249,7 +252,8 @@ def _fact_label(
     仍无可靠名称才显示字段名。
     """
     if label := getattr(fact, "display_name", None):
-        return label
+        # 显示名常带别名（“收入金额，也称医疗收入金额”）；表头只取首个名称。
+        return re.split(r"[，,；;]", label, maxsplit=1)[0].strip() or label
     dataset_id = getattr(fact, "dataset_id", None) or getattr(fact, "current_dataset_id", None)
     sha256 = getattr(fact, "dataset_sha256", None) or getattr(fact, "current_dataset_sha256", None)
     for context in dataset_contexts:
@@ -356,6 +360,12 @@ def build_analysis_table(
             facts_by_code[code] = facts[0]
         elif len(current) == 1:
             facts_by_code[code] = current[0]
+    # 各期金额均为零的收支项（未启用的医疗服务收入等）只占版面，不进表；合计仍在正文与溯源中可查。
+    # 只省略金额指标：投诉、不良事件等计数为零本身就是结果。全部列都为零时保留原表。
+    active = {code: fact for code, fact in facts_by_code.items()
+              if fact.unit not in _MONEY_UNITS
+              or any(item.value for item in fact.period_values) or (not fact.period_values and fact.total)}
+    facts_by_code = active or facts_by_code
     codes = list(facts_by_code)[column_offset:column_offset + column_limit if column_limit else None]
     if not codes:
         return None
@@ -367,6 +377,13 @@ def build_analysis_table(
                 periods.append(period_value.period)
     granularities = {fact.period_granularity for fact in selected}
     granularity = next(iter(granularities)) if len(granularities) == 1 else None
+    # 未声明序列粒度的分析把月度数据记为日期（2025-01-01、2025-02-01…），按月显示，与声明按月的同一数据表一致。
+    # 只在至少两期、逐月连续时认定为月度数据，单个“2025-01-01”仍按日期显示。
+    months = [int(period[:4]) * 12 + int(period[5:7]) for period in periods
+              if re.fullmatch(r"\d{4}-\d{2}-01", period)]
+    if (granularity == "day" and len(periods) >= 2 and len(months) == len(periods)
+            and months == list(range(months[0], months[0] + len(months)))):
+        granularity = "month"
     labels_by_period = {period: _period_display_label(period, granularity) for period in periods}
     if len(set(labels_by_period.values())) != len(labels_by_period):
         # 不同冻结期间显示为同一标签时无法区分行，保留原始期间文本。

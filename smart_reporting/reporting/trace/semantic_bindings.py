@@ -12,7 +12,7 @@ from ..hospital_operation.deterministic_analysis import (
     _aligned_comparison_values,
 )
 from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1
-from .fact_index import fact_binding_records
+from .fact_index import fact_binding_records, merge_binding_records, merge_frozen_fact
 from .numeric_text import (
     _canonical_month_label,
     _frozen_number_entries,
@@ -127,15 +127,22 @@ class NumberReferenceResolver:
         records = {}
         for bundle in frozen_fact_bundles(contents):
             for key, record in fact_binding_records(bundle).items():
-                if key in records and records[key] != record:
-                    self.conflicts.add(key)
+                if key in records:
+                    merged = merge_binding_records(records[key], record)
+                    if merged is None:
+                        self.conflicts.add(key)
+                    record = merged or record
                 records[key] = record
             document = bundle.model_dump(mode="json", by_alias=True)
             for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
                 for fact in document.get(array, ()):
                     key = fact.get('factId')
-                    if key in self.entries and self.entries[key] != fact:
-                        self.conflicts.add(key)
+                    if key in self.entries:
+                        merged = merge_frozen_fact(self.entries[key], fact)
+                        if merged is None:
+                            self.conflicts.add(key)
+                        else:
+                            fact = merged
                     self.entries[key] = fact
 
     def resolve(self, token: str) -> dict[str, Any] | None:

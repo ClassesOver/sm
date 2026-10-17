@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import date, timedelta
 
 from ..hospital_operation.deterministic_analysis import _parse_fact_period
+from .fact_index import merge_frozen_fact
 from .numeric_text import frozen_fact_bundles, frozen_number_catalog
 
 _TOKEN = re.compile(r'\{\{value:([^:{}]+):([^:{}]+):([^:{}]*)\}\}')
@@ -31,7 +32,7 @@ def _daily_selector(fact, written):
                 if (period := _parse_fact_period(item.period, fact.period_granularity)) is not None
                 and period.granularity == 'day' and start <= period.value <= end]
     if [period for _, period in selected] != [start + timedelta(days=i) for i in range(length)]:
-        return None
+        return _labelled_window_selector(fact, start, end)
     if fact.period_aggregation == 'last':
         return f'periodValues.{selected[-1][0]}'
     if length == 1:
@@ -40,6 +41,16 @@ def _daily_selector(fact, written):
             and fact.aggregation in {'sum', 'count'}):
         return 'total'
     return None
+
+
+def _labelled_window_selector(fact, start, end):
+    """月度桶以月初标注：“2025年1月1日至12月1日”正好写出事实首末桶标签时即其完整统计窗口。"""
+    labels = [_parse_fact_period(label, fact.period_granularity) if label else None
+              for label in (fact.period_start, fact.period_end)]
+    if (None in labels or (labels[0].value, labels[1].value) != (start, end) or fact.period_aggregation == 'last'
+            or fact.aggregation not in {'sum', 'count'} or fact.period_missing_count):
+        return None
+    return 'total'
 
 
 def align_number_selections(markdown: str, contents, field_definitions: Mapping[str, str] | None = None):
@@ -53,8 +64,14 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
     for bundle in frozen_fact_bundles(contents):
         for fact in bundle.metrics:
             if fact.fact_id:
-                if fact.fact_id in facts and facts[fact.fact_id] != fact:
-                    conflicts.add(fact.fact_id)
+                if fact.fact_id in facts:
+                    existing = facts[fact.fact_id]
+                    merged = merge_frozen_fact(existing.model_dump(mode='json', by_alias=True),
+                                               fact.model_dump(mode='json', by_alias=True))
+                    if merged is None:
+                        conflicts.add(fact.fact_id)
+                    elif merged['periodGranularity'] == existing.period_granularity:
+                        fact = existing
                 facts[fact.fact_id] = fact
                 owners.setdefault(fact.fact_id, set()).add(bundle.analysis_id)
     labels = {}

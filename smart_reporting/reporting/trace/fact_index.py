@@ -281,6 +281,35 @@ def fact_binding_records(bundle: DeterministicAnalysisBundle) -> dict[str, dict[
     }
 
 
+# 事实身份按数据集、字段、口径、期间与冻结值签发；以下字段是各分析自己的描述
+# （未声明序列粒度的分析把月初标签记为 day，声明按月的分析记为 month），不改变冻结数值。
+_ANALYSIS_LOCAL_FACT_FIELDS = frozenset({"periodGranularity", "displayName", "aliases", "metricCodes", "warnings"})
+_GRANULARITY_RANK = {"day": 1, "month": 2, "year": 3}
+
+
+def frozen_fact_content(record: Mapping[str, Any]) -> dict[str, Any]:
+    """去掉分析级描述后的冻结内容，用于跨分析判断两条事实记录是否相同。"""
+    return {key: value for key, value in record.items() if key not in _ANALYSIS_LOCAL_FACT_FIELDS}
+
+
+def merge_frozen_fact(existing: Mapping[str, Any], candidate: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """同一事实身份的两条记录：只差分析级描述时返回保留的一条，冻结数值或口径不同返回 None。"""
+    if frozen_fact_content(existing) != frozen_fact_content(candidate):
+        return None
+    # 期间值相同而一方声明为月或年：标签已满足该粒度，采用声明的较粗粒度，与按月核对的分析一致。
+    rank = _GRANULARITY_RANK.get
+    return candidate if (rank(candidate.get("periodGranularity")) or 0) > (rank(existing.get("periodGranularity")) or 0) \
+        else existing
+
+
+def merge_binding_records(existing: Mapping[str, Any], candidate: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """跨文件合并同一事实的绑定记录：实际输入与冻结内容一致时返回保留的一条，否则返回 None。"""
+    if existing["inputs"] != candidate["inputs"]:
+        return None
+    entry = merge_frozen_fact(existing["entry"], candidate["entry"])
+    return None if entry is None else existing if entry is existing["entry"] else candidate
+
+
 def resolve_pointer_value(document: Any, pointer: str) -> Any:
     """在已解析的 bundle dict 上求值 RFC 6901 pointer；越界抛 KeyError。"""
 
