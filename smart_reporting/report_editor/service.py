@@ -38,6 +38,7 @@ from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from ..workspace import WorkspaceError, WorkspacePathConflict
+from .capabilities import EditorCapabilities
 from .trace_retention import source_lifecycle, source_lifecycle_lock
 from .trace_revisions import (
     rebuild_edited_manifest,
@@ -1057,7 +1058,9 @@ class ReportEditorService:
                     "markdown": markdown,
                     "sha256": sha256,
                     "sources": _history_sources_for_session(
-                        sources, restricted=capabilities is not None, expired=expired
+                        sources,
+                        restricted=EditorCapabilities.of(capabilities).restricted,
+                        expired=expired,
                     ),
                 }
         raise ReportingError("report_editor_history_missing", "历史版本不存在。")

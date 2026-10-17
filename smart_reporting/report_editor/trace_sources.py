@@ -46,11 +46,15 @@ from ..reporting.trace.fact_service import fact_display_unit, fact_display_value
 from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field
 from ..reporting.workflow.checkpoint import FileIdentity
 from ..workspace import WorkspaceError
+from .capabilities import EditorCapabilities
 from .trace_exports import TraceDerivedExportService
 
 _MAX_INDEX_BYTES = 4 * 1024 * 1024
 _DRILLDOWN_TIMEOUT_SECONDS = 10.0
 _DRILLDOWN_LARGE_FILE_BYTES = 64 * 1024 * 1024
+
+
+CapabilitiesInput = EditorCapabilities | Mapping[str, Any] | None
 
 
 def _registered_dataset_file(files: Mapping[str, Any], dataset: Any) -> Any | None:
@@ -224,7 +228,7 @@ class ReportEditorTraceService:
     async def sources(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None = None,
+        session_capabilities: CapabilitiesInput = None,
         *,
         analysis_context_file: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -276,7 +280,11 @@ class ReportEditorTraceService:
                     "businessLabel": dataset.business_label,
                     "sqlHash": dataset.sql_hash,
                     # 原始 SQL 含库表结构、过滤字面值与列名；分享会话（受限能力）只见哈希。
-                    "querySql": dataset.query_sql if session_capabilities is None else None,
+                    "querySql": (
+                        dataset.query_sql
+                        if EditorCapabilities.of(session_capabilities).full
+                        else None
+                    ),
                     "rowCount": dataset.row_count,
                     "size": file_ref.size,
                     "materializedAt": dataset.materialized_at,
@@ -424,7 +432,7 @@ class ReportEditorTraceService:
     async def drilldown_metric(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         metric_code: str,
         *,
         dataset_id: str,
@@ -462,7 +470,7 @@ class ReportEditorTraceService:
     async def drilldown(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         subject_id: str,
         *,
         metric_code: str,
@@ -512,7 +520,7 @@ class ReportEditorTraceService:
         context: Any,
         index: RevisionTraceIndexV1,
         declaration: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         *,
         dimension_code: str,
         limit: int,
@@ -564,7 +572,7 @@ class ReportEditorTraceService:
     async def preview(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         dataset_id: str,
         *,
         columns: Sequence[str] | None = None,
@@ -591,7 +599,7 @@ class ReportEditorTraceService:
     async def columns(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         dataset_id: str,
     ) -> dict[str, Any]:
         index = await self.require_index(context)
@@ -614,7 +622,7 @@ class ReportEditorTraceService:
     async def download(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         dataset_id: str,
     ) -> tuple[Path, str, int, str]:
         index = await self.require_index(context)
@@ -628,7 +636,7 @@ class ReportEditorTraceService:
     async def create_derived_export(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         dataset_id: str,
         policy: str,
         params: Mapping[str, Any],
@@ -656,7 +664,7 @@ class ReportEditorTraceService:
     async def derived_export_download(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         export_id: str,
     ) -> tuple[Path, str, int, str]:
         permissions = self._permissions(session_capabilities)
@@ -1554,7 +1562,7 @@ class ReportEditorTraceService:
         context: Any,
         chart_id: str,
         *,
-        session_capabilities: Mapping[str, Any] | None = None,
+        session_capabilities: CapabilitiesInput = None,
         preview_limit: int = 20,
         preview_offset: int = 0,
     ) -> dict[str, Any]:
@@ -1783,33 +1791,24 @@ class ReportEditorTraceService:
             return "correlation"
         return "metric"
 
-    def _permissions(
-        self, capabilities: Mapping[str, Any] | None
-    ) -> TracePreviewPermissions:
-        # capabilities 为 None 表示完整 editor 会话（向后兼容旧会话结构）；
-        # 分享会话在签发时写入受限能力字典。
-        if capabilities is None:
-            return TracePreviewPermissions(
-                can_download_original=True, can_download_derived=True
-            )
-        blocked = capabilities.get("blocked_columns") or ()
+    def _permissions(self, capabilities: CapabilitiesInput) -> TracePreviewPermissions:
+        resolved = EditorCapabilities.of(capabilities)
         return TracePreviewPermissions(
-            blocked_columns=frozenset(str(item) for item in blocked),
-            can_download_original=bool(capabilities.get("download_original", False)),
-            can_download_derived=bool(capabilities.get("download_derived", False)),
+            blocked_columns=resolved.blocked_columns,
+            can_download_original=resolved.download_original,
+            can_download_derived=resolved.download_derived,
         )
 
     @staticmethod
-    def _drilldown_enabled(capabilities: Mapping[str, Any] | None) -> bool:
-        return capabilities is None or bool(capabilities.get("drilldown", False))
+    def _drilldown_enabled(capabilities: CapabilitiesInput) -> bool:
+        return EditorCapabilities.of(capabilities).drilldown
 
     @staticmethod
-    def _drilldown_declaration_allowed(
-        declaration: Any, capabilities: Mapping[str, Any] | None
-    ) -> bool:
-        if capabilities is None:
+    def _drilldown_declaration_allowed(declaration: Any, capabilities: CapabilitiesInput) -> bool:
+        resolved = EditorCapabilities.of(capabilities)
+        if resolved.full:
             return True
-        blocked = {str(item) for item in capabilities.get("blocked_columns") or ()}
+        blocked = resolved.blocked_columns
         required = {
             *(item.field for item in declaration.dimensions),
             *declaration.fixed_scope,
