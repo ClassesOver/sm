@@ -10,6 +10,7 @@ from typing import Any
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from .numeric_text import (
     _frozen_number_entries,
+    _operand_names,
     _unit_scales,
     budget_comparison_values,
     project_ratio_values,
@@ -269,12 +270,23 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
             for entry in document.get(array) or ():
                 if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
                     continue
-                label = field_definitions.get(str(entry.get("field", "")))
+                # 不同数据集常共用字段名（收入、成本都叫 indicator_value）：先取完整字段引用或事实
+                # 显示名的定义，字段短名只作回退，否则两项指标会得到同一个名称而无法区分。
+                display = re.split(r"[，,；;]", str(entry.get("displayName") or ""), maxsplit=1)[0].strip()
+                label = (field_definitions.get(str(entry.get("fieldRef", ""))) or display
+                         or field_definitions.get(str(entry.get("field", ""))))
                 if isinstance(label, str) and len(label) >= 2 and re.search(r"[\u3400-\u9fff]", label):
                     labels_by_fact[entry["factId"]] = label
     labels = set(labels_by_fact.values())
     if len(labels) < 2:
         return []
+    # 正文常写区分部分（“收入金额”“成本金额”写作“收入”“成本”）：只登记唯一对应一项指标的简称。
+    names: dict[str, set[str]] = {label: {label} for label in labels}
+    for left in labels:
+        for right in labels - {left}:
+            for label, written in zip((left, right), _operand_names(left, right), strict=True):
+                names.setdefault(written[-1], set()).add(label)
+    names = {name: owners for name, owners in names.items() if len(owners) == 1}
     # (业务名称或 None, 单位, 原值)：None 表示派生、对账或补证数值，对上时不判定归属。
     values: list[tuple[str | None, str, Decimal]] = []
     for token, value, unit, _target in _frozen_number_entries(contents):
@@ -284,8 +296,9 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
         values.extend((None, unit, number) for number in numbers)
     warnings: list[str] = []
     for clause in _CLAUSE_BREAK.split(text):
-        named = [label for label in labels if label in clause]
-        named = [label for label in named if not any(label != other and label in other for other in named)]
+        written = [name for name in names if name in clause]
+        written = [name for name in written if not any(name != other and name in other for other in written)]
+        named = sorted({label for name in written for label in names[name]})
         if len(named) != 1:
             continue
         for match in _VALUE.finditer(clause):

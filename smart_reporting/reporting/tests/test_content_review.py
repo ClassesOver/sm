@@ -1519,3 +1519,19 @@ def test_multiple_review_rejects_conflicting_operands(reverse):
         contents.reverse()
     warnings = [w for w in review_content('本期是基期的1.05倍或1.2倍，增长0.2倍。', contents) if '倍数' in w]
     assert len(warnings) == 3
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # 两个数据集共用字段名 indicator_value：按显示名区分，正文简称“收入”“成本”同样识别。
+    ("1月收入11.92亿元。", ["指标数值归属需复核：收入金额名下的11.92亿元是成本金额的登记值。"
+                          "请改用收入金额对应的数值引用，或改写主语。"]),
+    ("1月收入8.90亿元，成本11.92亿元。", []),
+])
+def test_metric_attribution_distinguishes_metrics_sharing_a_field_name(text, expected):
+    def metric(letter, name, value):
+        return {**_metric("indicator_value"), "factId": "fact-" + letter * 16, "fieldRef": f"{letter}.indicator_value",
+                "displayName": name, "unit": "元", "total": value}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [
+        metric("a", "收入金额，也称医疗收入金额", 890000000), metric("b", "成本金额", 1192000000)]})
+    fields = {"indicator_value": "指标值"}
+    assert [w for w in review_content(text, [content], field_definitions=fields) if "数值归属" in w] == expected
