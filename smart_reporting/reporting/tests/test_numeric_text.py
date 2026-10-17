@@ -1288,6 +1288,9 @@ def test_profile_missing_and_zero_rates_are_accepted_only_in_matching_paragraphs
     assert replace_unregistered_numbers('预算医疗收入缺失68.7%。', contents) == '预算医疗收入缺失待核实。'
     assert not any('冻结依据' in warning for warning in review_content(text, contents))
     assert replace_unregistered_numbers('收入完成率为78.7%。', contents) == '收入完成率为待核实。'
+    # 含义词写在比例之后（回放：“预算支出有65.9%的行为零”）同样认可。
+    after = '预算医疗收入有68.7%的行为零。'
+    assert replace_unregistered_numbers(after, contents) == after
 
 
 @pytest.mark.parametrize(('text', 'expected'), [

@@ -1460,8 +1460,9 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
                 or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
                 or bounded_by_registered(number, number_text, candidates, prefix=prefix)
                 or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
+                # “预算支出有65.9%的行为零”：含义词写在比例之后，按整句判断。
                 or (unit == "%" and profile_rate_supported(profile_rates, number, quantum,
-                                                           claim or statement or context))):
+                                                           statement or claim or context))):
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
