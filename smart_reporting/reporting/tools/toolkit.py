@@ -30,8 +30,8 @@ if TYPE_CHECKING:
     from ..host_workspace import ReportingWorkspaceRouter
 
 REPORTING_TOOLKIT_INSTRUCTIONS = (
-    "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\\n"
-    "直接使用任务 JSON 中的受信工作区相对路径，不浏览根目录、不猜测路径。\\n"
+    "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
+    "直接使用任务 JSON 中的受信工作区相对路径，不浏览根目录、不猜测路径。\n"
     "严格按工具 schema 直接传参，并以每次服务端回执决定下一步。"
 )
 

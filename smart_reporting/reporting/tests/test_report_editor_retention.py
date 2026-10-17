@@ -242,13 +242,13 @@ async def test_cleanup_preview_fails_closed_on_incomplete_authority(tmp_path, da
 async def test_cleanup_preview_rejects_state_changed_during_scan(tmp_path, monkeypatch):
     editor, _, first, second, _ = await _make_shared_revisions(tmp_path)
     now = datetime(2026, 10, 1, tzinfo=UTC)
-    load_index = editor.trace.load_index
+    index_for_manifest = editor.trace.index_for_manifest
 
-    async def changing_load_index(context):
+    async def changing_index_for_manifest(context, manifest):
         await editor.set_revision_retention(first, expires_at=now)
-        return await load_index(context)
+        return await index_for_manifest(context, manifest)
 
-    monkeypatch.setattr(editor.trace, "load_index", changing_load_index)
+    monkeypatch.setattr(editor.trace, "index_for_manifest", changing_index_for_manifest)
     with pytest.raises(ReportingError, match="状态已变化"):
         await editor.preview_revision_source_cleanup(second, now=now)
 

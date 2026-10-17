@@ -89,6 +89,14 @@ def test_apply_analysis_patch_signature_hides_expected_sha256() -> None:
     assert "expected_sha256" not in signature.parameters
 
 
+def test_toolkit_instructions_use_real_line_breaks() -> None:
+    from smart_reporting.reporting.tools.toolkit import REPORTING_TOOLKIT_INSTRUCTIONS
+
+    # 指令按行交给模型；字面量 "\\n" 会让模型看到反斜杠而不是换行。
+    assert "\\n" not in REPORTING_TOOLKIT_INSTRUCTIONS
+    assert len(REPORTING_TOOLKIT_INSTRUCTIONS.splitlines()) == 3
+
+
 def test_legacy_visual_tools_are_absent_from_phase_toolkit() -> None:
     assert not hasattr(ReportingToolkit, "inspect_chart")
 
