@@ -344,12 +344,19 @@ def build_analysis_table(
         if not comparisons:
             return None
         types = {fact.comparison_type for fact in comparisons}
-        metric_labels = {_fact_label(fact, dataset_contexts, metric_descriptions) for fact in comparisons}
+        # 比较事实没有显示名：同一分析中字段引用相同的指标事实带有业务名称，优先借用。
+        metric_names = {metric.field_ref: _fact_label(metric, dataset_contexts, metric_descriptions)
+                        for metric in bundle.metrics}
+
+        def comparison_label(fact: Any) -> str:
+            return metric_names.get(fact.field_ref) or _fact_label(fact, dataset_contexts, metric_descriptions)
+
+        metric_labels = {comparison_label(fact) for fact in comparisons}
         metric_label = next(iter(metric_labels)) if len(metric_labels) == 1 else "数值"
         baseline_label = ("同期" if types == {"yoy"} else "上期" if types == {"mom"} else "基期") + metric_label
         rate_label = "同比增幅" if types == {"yoy"} else "环比增幅" if types == {"mom"} else "变化率"
         # 多项比较并列时列名用各自指标名称（“对比 1…对比 5”读者无法分辨）；同名时加序号。
-        names = [_fact_label(fact, dataset_contexts, metric_descriptions) for fact in comparisons]
+        names = [comparison_label(fact) for fact in comparisons]
         columns = ("数值",) if len(comparisons) == 1 else tuple(
             name if names.count(name) == 1 else f"{name}（{names[:index + 1].count(name)}）"
             for index, name in enumerate(names)

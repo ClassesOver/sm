@@ -544,6 +544,14 @@ def test_comparison_columns_use_metric_names_and_skip_all_zero_amounts() -> None
                                            fact_file_resource_id=FACT_RESOURCE)
     assert trace.column_keys == ('收入', '指标值')
     assert '对比' not in markdown
+    # 比较事实没有显示名时借用同一字段引用的指标显示名，不退回英文字段名。
+    named_metric = bundle.metrics[0].model_copy(update={'field_ref': 'h.service_income',
+                                                        'display_name': '医疗服务收入，服务收入'})
+    facts = (comparison('c', 'revenue', 3600, 3000), comparison('f', 'service_income', 120, 100))
+    trace, _markdown = build_analysis_table(
+        bundle.model_copy(update={'metrics': (*bundle.metrics, named_metric), 'comparisons': facts}),
+        fact_file_resource_id=FACT_RESOURCE)
+    assert trace.column_keys[1] == '医疗服务收入'
 
 
 @pytest.mark.parametrize(("field", "label", "unit"), (
