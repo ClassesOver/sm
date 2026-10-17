@@ -79,6 +79,8 @@ class DeterministicMetricFact(AnalysisModel):
 
 class DeterministicComparison(AnalysisModel):
     fact_id: str | None = Field(default=None, alias="factId", pattern=r"^fact-[0-9a-f]{16}$")
+    input_fact_ids: tuple[str, ...] = Field(default=(), alias="inputFactIds", max_length=200)
+    scope: dict[str, str] = Field(default_factory=dict, max_length=100)
     comparison_type: Literal["yoy", "mom"] = Field(alias="comparisonType")
     field: str = Field(min_length=1, max_length=128)
     field_ref: str = Field(alias="fieldRef", min_length=1, max_length=512)
@@ -129,6 +131,7 @@ class DeterministicDerivedMetricFact(AnalysisModel):
 
 class DeterministicReconciliationFact(AnalysisModel):
     fact_id: str | None = Field(default=None, alias="factId", pattern=r"^fact-[0-9a-f]{16}$")
+    input_fact_ids: tuple[str, ...] = Field(default=(), alias="inputFactIds", max_length=200)
     code: str = Field(min_length=1, max_length=128)
     period_role: PeriodRole = Field(alias="periodRole")
     period_granularity: Literal["day", "month", "year"] | None = Field(default=None, alias="periodGranularity")
@@ -139,6 +142,8 @@ class DeterministicReconciliationFact(AnalysisModel):
     grain: tuple[str, ...] = Field(min_length=1, max_length=20)
     left_total: float = Field(alias="leftTotal")
     right_total: float = Field(alias="rightTotal")
+    unit: str | None = Field(default=None, max_length=64)
+    right_scale: float = Field(default=1, alias="rightScale", gt=0, allow_inf_nan=False)
     difference: float
     absolute_tolerance: float = Field(alias="absoluteTolerance", ge=0)
     relative_tolerance: float = Field(alias="relativeTolerance", ge=0)
@@ -353,6 +358,14 @@ def _dataset_facts(
         field = str(semantic.get("datasetField") or field_ref.rsplit(".", 1)[-1])
         aggregation = _aggregation(semantic)
         scoped_frame, scope_warnings = _apply_scope(dataset, semantic)
+        if aggregation not in {"count", "count_distinct"}:
+            numeric_input = scoped_frame[field].cast(pl.Float64, strict=False)
+            nonfinite_count = int((numeric_input.is_not_null() & ~numeric_input.is_finite()).sum())
+            if nonfinite_count:
+                # 不能静默删除坏值后发布不完整合计，也不能中断其他正常指标。
+                warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 含 {nonfinite_count} 个非有限数值，"
+                                "未生成该指标事实，其他指标继续计算。")
+                continue
         additive = {str(item).casefold() for item in semantic.get("additiveAcross", ())}
         period_aggregation = (
             "last" if aggregation == "sum" and period_field and additive
@@ -364,28 +377,33 @@ def _dataset_facts(
             if value_frame is None:
                 warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 无法确定唯一期末口径，未生成时点事实。")
                 continue
-        period_values = _period_values(
-            scoped_frame, field, period_field, aggregation,
-            period_granularity=period_granularity,
-        )
-        scoped_frame, period_values, period_warnings = _warn_trailing_zero_periods(
-            scoped_frame,
-            period_field,
-            period_values,
-            enabled="current" in dataset.period_roles,
-        )
-        series = value_frame[field]
-        period_missing_count = (
-            scoped_frame[period_field].null_count() if period_field is not None else None
-        )
-        value = _aggregate(series, aggregation)
-        if value is None:
-            warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 没有可计算值。")
+        try:
+            period_values = _period_values(
+                scoped_frame, field, period_field, aggregation,
+                period_granularity=period_granularity,
+            )
+            scoped_frame, period_values, period_warnings = _warn_trailing_zero_periods(
+                scoped_frame,
+                period_field,
+                period_values,
+                enabled="current" in dataset.period_roles,
+            )
+            series = value_frame[field]
+            period_missing_count = (
+                scoped_frame[period_field].null_count() if period_field is not None else None
+            )
+            value = _aggregate(series, aggregation)
+            if value is None:
+                warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 没有可计算值。")
+                continue
+            numeric = series.cast(pl.Float64, strict=False)
+            valid_numeric = numeric.drop_nulls()
+            periods = period_values
+            top, bottom = _group_contributions(value_frame, field, group_fields, aggregation)
+        except _NonFiniteMetricError:
+            warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 聚合后出现非有限数值，"
+                            "未生成该指标事实，其他指标继续计算。")
             continue
-        numeric = series.cast(pl.Float64, strict=False)
-        valid_numeric = numeric.drop_nulls()
-        periods = period_values
-        top, bottom = _group_contributions(value_frame, field, group_fields, aggregation)
         period_labels = [item.period for item in periods]
         fact_warnings = tuple(
             dict.fromkeys(
@@ -561,7 +579,9 @@ def _period_values(
     values = tuple(
         PeriodValue(period=str(row[period_key]), value=_finite(row["__value"]))
         for row in grouped.iter_rows(named=True)
-        if row[period_key] is not None and row["__valid"] > 0 and row["__value"] is not None
+        if row[period_key] is not None
+        and (row["__valid"] > 0 or aggregation in {"count", "count_distinct"})
+        and row["__value"] is not None
     )
     # 字符串排序会把不补零的月份排成 2025-1, 2025-10, 2025-2；期末零值裁剪等依赖
     # 期间先后，能全部解析为日历期间时按日历顺序排列。
@@ -629,24 +649,22 @@ def _group_contributions(
     if not group_fields:
         return (), ()
     grouped, groups = _grouped_aggregation(frame, field, group_fields, aggregation)
-    values = [
-        GroupContribution(
-            group=" / ".join(str(row[column]) for column in groups),
-            value=_finite(row["__value"]),
-            groupValues={field: row[column] for field, column in zip(group_fields, groups, strict=True)},
-        )
+    rows = [
+        row
         for row in grouped.iter_rows(named=True)
-        if row["__valid"] > 0 and row["__value"] is not None
+        if (row["__valid"] > 0 or aggregation in {"count", "count_distinct"}) and row["__value"] is not None
     ]
+    labels = [" / ".join(str(row[column]) for column in groups) for row in rows]
     # 原始值可能含分隔符或字面量 None；重名时用完整字段和值区分显示身份。
-    if any(count > 1 for count in Counter(item.group for item in values).values()):
-        disambiguated = []
-        for item in values:
-            label = json.dumps(item.group_values, ensure_ascii=False, sort_keys=True)
-            if len(label) > 512:
-                label = label[:492] + "…" + hashlib.sha256(label.encode()).hexdigest()[:16]
-            disambiguated.append(item.model_copy(update={"group": label}))
-        values = disambiguated
+    disambiguate = any(count > 1 for count in Counter(labels).values())
+    values = []
+    for row, label in zip(rows, labels, strict=True):
+        group_values = {field: row[column] for field, column in zip(group_fields, groups, strict=True)}
+        if disambiguate:
+            label = json.dumps(group_values, ensure_ascii=False, sort_keys=True)
+        if len(label) > 512:
+            label = label[:492] + "…" + hashlib.sha256(label.encode()).hexdigest()[:16]
+        values.append(GroupContribution(group=label, value=_finite(row["__value"]), groupValues=group_values))
     # facts 文件是 revision 内的不可变产物；数值相同时必须用组名打破平局，
     # 不能继承 Polars 未承诺稳定的 group_by 输出顺序。
     top = sorted(values, key=lambda item: (-item.value, item.group))[:10]
@@ -933,6 +951,9 @@ def _comparisons(
                     if comparison_type in roles[item.dataset_id]
                     and item.dataset_id != current.dataset_id
                 ):
+                    if current.scope != baseline.scope or current.aggregation != baseline.aggregation:
+                        warnings.append(f"{current.field_ref} 的 {comparison_type} 固定范围或聚合口径不一致，未生成比较。")
+                        continue
                     aligned = _aligned_comparison_values(current, baseline, comparison_type)
                     if aligned is None:
                         warnings.append(
@@ -955,6 +976,7 @@ def _comparisons(
                     result.append(
                         DeterministicComparison(
                             comparisonType=comparison_type,
+                            scope=dict(current.scope),
                             field=current.field,
                             fieldRef=current.field_ref,
                             currentDatasetId=current.dataset_id,
@@ -1044,7 +1066,8 @@ def _derived_metrics(
                 ratio_warnings.append(f"Profile 比率指标 {code} 的分母为零。")
             else:
                 value = _finite(numerator / denominator)
-                percentage = _finite(value * 100)
+                # 只有同量纲的比值可以表示为百分比；金额/人次等保留原始商。
+                percentage = _finite(value * 100) if conversion is not None else None
             dataset_ids = tuple(
                 dict.fromkeys((numerator_fact.dataset_id, denominator_fact.dataset_id))
             )
@@ -1200,6 +1223,10 @@ def _reconciliations(
                 continue
             left_fact = left_candidates[0]
             right_fact = right_candidates[0]
+            right_scale = unit_conversion_scale(right_fact.unit, left_fact.unit)
+            if right_scale is None:
+                warnings.append(f"Profile 对账规则 {code} 的左右单位不兼容或缺少确认单位，未生成对账。")
+                continue
             left_total, right_total = left_fact.total, right_fact.total
             period_start = period_end = None
             at_period = None
@@ -1252,6 +1279,9 @@ def _reconciliations(
             if left_groups is None or right_groups is None:
                 warnings.append(f"Profile 对账规则 {code} 无法按声明粒度 {grain} 映射动态字段。")
                 continue
+            right_total = _finite(Decimal(str(right_total)) * right_scale)
+            right_groups = {key: _finite(Decimal(str(value)) * right_scale) if value is not None else None
+                            for key, value in right_groups.items()}
             absolute_tolerance = float(rule.get("absoluteTolerance", 0))
             relative_tolerance = float(rule.get("relativeTolerance", 0))
             keys = sorted(
@@ -1291,13 +1321,17 @@ def _reconciliations(
                     grain=grain,
                     leftTotal=left_total,
                     rightTotal=right_total,
+                    unit=left_fact.unit,
+                    rightScale=float(right_scale),
                     difference=_finite(left_total - right_total),
                     absoluteTolerance=absolute_tolerance,
                     relativeTolerance=relative_tolerance,
                     checkedGroupCount=len(keys),
                     failedGroupCount=failed,
                     passed=bool(keys) and failed == 0,
-                    formula="abs(left-right) <= max(absoluteTolerance, relativeTolerance*max(abs(left),abs(right)))",
+                    formula=("abs(left-right) <= max(absoluteTolerance, relativeTolerance*max(abs(left),abs(right)))"
+                             + (f"；right 按 {right_scale} 从 {right_fact.unit} 换算为 {left_fact.unit}"
+                                if right_scale != 1 else "")),
                     datasetIds=dataset_ids,
                     datasetSha256s=hashes,
                     profileHash=profile_hash,
@@ -1485,10 +1519,14 @@ def _formula(field: str, aggregation: Aggregation, scope: Mapping[str, str]) -> 
     return f"{aggregation}({field})" + (f" WHERE {predicate}" if predicate else "")
 
 
+class _NonFiniteMetricError(ValueError):
+    """有限输入在聚合或换算后溢出。"""
+
+
 def _finite(value: Any) -> float:
     number = float(value)
     if not math.isfinite(number):
-        raise ValueError("确定性指标出现非有限数值")
+        raise _NonFiniteMetricError("确定性指标出现非有限数值")
     return number
 
 

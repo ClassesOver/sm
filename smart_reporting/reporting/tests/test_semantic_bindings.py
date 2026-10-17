@@ -295,7 +295,9 @@ def test_change_period_roles_distinguish_current_from_baseline(selector, stateme
 
 def _assert_period_role_warning(selector, statement, warns, roles):
     from smart_reporting.reporting.trace.subject_builder import (
-        claim_status, prepare_claim_status, unit_period_warnings,
+        claim_status,
+        prepare_claim_status,
+        unit_period_warnings,
     )
 
     document = json.loads(contents()[0])
@@ -356,7 +358,7 @@ def test_group_derived_reference_keeps_operand_scope_and_formula(selector, scope
     ('periodTotals.0-1:元', 30, '(10) + (20)'),
     ('periodAverages.0-1:元', 15, '((10) + (20)) / 2'),
     ('periodChanges.1:元', 10, '(20) - (10)'),
-    ('periodChangeRates.1:%', 100, '((20) - (10)) / (10) * 100'),
+    ('periodChangeRates.1:%', 100, '((20) - (10)) / abs(10) * 100'),
 ])
 def test_period_derived_formula_matches_selected_calculation(selector, value, formula):
     result = resolve_number_reference('{{value:fact-aaaaaaaaaaaaaaaa:' + selector + '}}', contents())

@@ -18,6 +18,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from time import perf_counter
 from typing import Any, Protocol
@@ -134,7 +135,7 @@ def narrative_section_projection(manifest: Mapping[str, Any]) -> list[dict[str, 
 
 
 # 服务端表格大额列的表头单位（“门诊收入（万元）”）；单元格只写换算后的数字。
-_TABLE_HEADER_UNIT = re.compile(r"（(万元|亿元|万人次)）$")
+_TABLE_HEADER_UNIT = re.compile(r"[（(](元|万元|亿元|人次|万人次)[）)](?:\s*·\s*[\w.-]+)?$")
 
 class _RegisteredFile(Protocol):
     """已登记文件身份：清单产物与追溯索引文件引用都满足。"""
@@ -1192,8 +1193,9 @@ class ReportEditorTraceService:
             fingerprints = chart_fingerprints(presentations, image.path, allow_filename=unique_name) if image else []
             if image is not None:
                 registered_paths.add(image.path)
-                if unique_name:
-                    registered_paths.add(PurePosixPath(image.path).name)
+                # 重名裸文件名已由上述未绑定记录覆盖，不能再追加为新图片。
+                # 是否能绑定仍由 unique_name 控制；其他目录的路径仍须独立计数。
+                registered_paths.add(PurePosixPath(image.path).name)
             status = "unbound" if len(fingerprints) != 1 else (
                 "valid" if fingerprints[0] == trace.presentation_sha256 else "stale"
             )
@@ -1241,7 +1243,13 @@ class ReportEditorTraceService:
         """
 
         from ..reporting.trace.markdown_body import trace_body
-        from ..reporting.trace.subject_builder import formatted_value_matches, unit_period_warnings
+        from ..reporting.trace.subject_builder import (
+            _NUMBER_UNIT_RE,
+            _mask_calendar_values,
+            formatted_value_matches,
+            unit_period_warnings,
+        )
+        from ..reporting.units import unit_conversion_scale
 
         def matches_fact_value(
             text: str, value: Any, unit: str | None, column_key: str | None = None
@@ -1249,12 +1257,28 @@ class ReportEditorTraceService:
             # 等值换算优先；裸数命中不能掩盖显式单位不一致，stale 仅提示复核。
             # 大额列按表头单位（“收入（万元）”）显示，单元格只写数字：补上表头单位再核对。
             header_unit = _TABLE_HEADER_UNIT.search(column_key or "")
-            return formatted_value_matches(text, value, unit) or (
-                header_unit is not None
-                and formatted_value_matches(f"{text}{header_unit[1]}", value, unit)
-            ) or (
-                value_matches(text, value)
-                and not unit_period_warnings(text, expected_unit=unit, fact_value=value)
+            bare = text.replace("−", "-").replace("－", "-").strip()
+            numeric_text = re.sub(r'\[\^?\d+\]', lambda match: ' ' * len(match[0]), _mask_calendar_values(bare))
+            if header_unit is not None:
+                # 主数值后的备注不能使金额退回原单位；备注中的其他数字也不能代替主数值。
+                number = re.search(
+                    r'(?<![\d.,+\-a-zA-Z_])[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d.,eE])',
+                    numeric_text,
+                )
+                if number is None:
+                    return False
+                explicit = _NUMBER_UNIT_RE.match(numeric_text, number.start())
+                if explicit is None and re.match(r'[A-Za-z\u4e00-\u9fff%‰]', numeric_text[number.end():].lstrip()):
+                    return False  # 未识别的单位不能被当作没有单位。
+                display_unit = explicit['unit'] if explicit is not None else header_unit[1]
+                scale = unit_conversion_scale(unit, display_unit)
+                if scale is None:
+                    return False
+                converted = Decimal(str(value)) * scale
+                return value_matches(numeric_text[:number.end()], converted)
+            return formatted_value_matches(numeric_text, value, unit) or (
+                value_matches(numeric_text, value)
+                and not unit_period_warnings(numeric_text, expected_unit=unit, fact_value=value)
             )
 
         committed = None
