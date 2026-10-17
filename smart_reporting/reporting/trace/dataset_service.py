@@ -46,6 +46,10 @@ _UNSAFE_FILENAME_PATTERN = re.compile(r"[^0-9A-Za-z_.\-\u4e00-\u9fff]+")
 _DUPLICATED_COLUMN_PATTERN = re.compile(r"(?P<base>.+)_duplicated_\d+", re.DOTALL)
 
 
+def _json_size(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
 @dataclass(frozen=True)
 class TraceDatasetFile:
     """从授权索引解析的本地 CSV 快照（登记元数据 + 本地路径）。"""
@@ -242,9 +246,26 @@ class TraceCsvPreviewService:
             raise ReportingError("request_invalid", "每页行数无效。")
 
         selected = self._resolve_columns(header, columns, permissions)
-        rows, truncated_cells, truncated_by_budget = self._read_window(
+        rows, row_truncations, truncated_by_budget = self._read_window(
             file, selected, offset, limit
         )
+        while True:
+            page = self._preview_page(file, selected, rows, offset, limit, columns,
+                                      report_id, revision, sum(row_truncations), truncated_by_budget)
+            if _json_size(page.to_payload()) <= _MAX_RESPONSE_BYTES:
+                return page
+            if len(rows) <= 1:
+                raise ReportingError("resource_limit_exceeded", "预览单行或列名超过响应预算，请减少所选列。")
+            rows.pop()
+            row_truncations.pop()
+            truncated_by_budget = True
+
+    def _preview_page(
+        self, file: TraceDatasetFile, selected: list[str], rows: list[tuple[str | None, ...]],
+        offset: int, limit: int, columns: Sequence[str] | None, report_id: str, revision: int,
+        truncated_cells: int, truncated_by_budget: bool,
+    ) -> TracePreviewPage:
+        # 完整响应也计入列名、游标和截断说明，不能只限制单元格的原始字节。
         has_more = offset + len(rows) < file.row_count and rows
         next_cursor = None
         if has_more:
@@ -345,7 +366,7 @@ class TraceCsvPreviewService:
 
     def _read_window(
         self, file: TraceDatasetFile, columns: list[str], offset: int, limit: int
-    ) -> tuple[list[tuple[str | None, ...]], int, bool]:
+    ) -> tuple[list[tuple[str | None, ...]], list[int], bool]:
         try:
             # 按原文读取：类型推断会把 "0012" 变成 12、"1200.50" 变成 1200.5，核对时显示失真。
             frame = (
@@ -359,11 +380,12 @@ class TraceCsvPreviewService:
                 "snapshot_integrity_failed", "CSV 快照读取失败。"
             ) from error
         rows: list[tuple[str | None, ...]] = []
-        truncated_cells = 0
+        row_truncations: list[int] = []
         budget = _MAX_RESPONSE_BYTES
         truncated_by_budget = False
         for record in frame.iter_rows():
             rendered: list[str | None] = []
+            truncated_cells = 0
             for value in record:
                 if value is None:
                     rendered.append(None)
@@ -376,15 +398,18 @@ class TraceCsvPreviewService:
                     )
                     text = keep + "…[截断]"
                     truncated_cells += 1
-                    raw = text.encode("utf-8")
                 rendered.append(text)
-                budget -= len(raw) + 16
-            if budget <= 0 and rows:
+            row_size = _json_size(rendered) + 1
+            if row_size > budget:
+                if not rows:
+                    raise ReportingError("resource_limit_exceeded", "预览单行超过响应预算，请减少所选列。")
                 # 字节超限返回不足一页记录并如实标记，不伪造完整页（计划 4.1-3）。
                 truncated_by_budget = True
                 break
             rows.append(tuple(rendered))
-        return rows, truncated_cells, truncated_by_budget
+            row_truncations.append(truncated_cells)
+            budget -= row_size
+        return rows, row_truncations, truncated_by_budget
 
     # ------------------------------------------------------------------
     # 下载

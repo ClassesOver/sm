@@ -32,7 +32,8 @@ def _fact_id(identity: str) -> str:
 
 
 def _scope_identity(scope: Mapping[str, str]) -> str:
-    return ";".join(f"{key}={scope[key]}" for key in sorted(scope))
+    # 字段和值可含分隔符，必须编码结构，不能把单个值误读成另一个范围条件。
+    return json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _period_granularity_identity(fact: Any) -> str:
@@ -84,6 +85,9 @@ def comparison_fact_identity(fact: Any) -> str:
     start, end = getattr(fact, "baseline_period_start", None), getattr(fact, "baseline_period_end", None)
     if start or end:
         identity += f"|baselinePeriod={start or ''}:{end or ''}"
+    inputs = getattr(fact, "input_fact_ids", ())
+    if inputs:
+        identity += "|inputFactIds=" + json.dumps(inputs, separators=(",", ":"))
     scale = getattr(fact, "baseline_scale", 1)
     return identity + (f"|baselineScale={scale}" if scale != 1 else "")
 
@@ -117,6 +121,15 @@ def reconciliation_fact_identity(fact: Any) -> str:
             ";".join(fact.dataset_sha256s),
         )
     )
+    inputs = getattr(fact, "input_fact_ids", ())
+    if inputs:
+        identity += "|inputFactIds=" + json.dumps(inputs, separators=(",", ":"))
+    scale = getattr(fact, "right_scale", 1)
+    if scale != 1:
+        identity += f"|rightScale={scale}"
+    unit = getattr(fact, "unit", None)
+    if unit:
+        identity += "|unit=" + json.dumps(unit, ensure_ascii=False)
     start, end = getattr(fact, "period_start", None), getattr(fact, "period_end", None)
     return (identity + (f"|period={start or ''}:{end or ''}" if start or end else "")
             + _period_granularity_identity(fact))
@@ -158,10 +171,16 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
         fact.model_copy(update={"fact_id": _unique(metric_fact_identity(fact))})
         for fact in bundle.metrics
     )
-    comparisons = tuple(
-        fact.model_copy(update={"fact_id": _unique(comparison_fact_identity(fact))})
-        for fact in bundle.comparisons
-    )
+    comparisons = []
+    for fact in bundle.comparisons:
+        operands = [
+            [metric for metric in metrics
+             if metric.field_ref == fact.field_ref and metric.dataset_id == dataset_id]
+            for dataset_id in (fact.current_dataset_id, fact.baseline_dataset_id)
+        ]
+        input_ids = tuple(items[0].fact_id for items in operands) if all(len(items) == 1 for items in operands) else ()
+        frozen = fact.model_copy(update={"input_fact_ids": input_ids})
+        comparisons.append(frozen.model_copy(update={"fact_id": _unique(comparison_fact_identity(frozen))}))
     derived = []
     for fact in bundle.derived_metrics:
         # 在基础事实签发后冻结有序依赖；相同 CSV、代码和比值也可能来自不同固定范围。
@@ -174,10 +193,17 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
         input_ids = tuple(ids[0] for ids in operands) if all(len(ids) == 1 for ids in operands) else ()
         frozen = fact.model_copy(update={"input_fact_ids": input_ids})
         derived.append(frozen.model_copy(update={"fact_id": _unique(derived_fact_identity(frozen))}))
-    reconciliations = tuple(
-        fact.model_copy(update={"fact_id": _unique(reconciliation_fact_identity(fact))})
-        for fact in bundle.reconciliations
-    )
+    reconciliations = []
+    for fact in bundle.reconciliations:
+        operands = [
+            [metric.fact_id for metric in metrics
+             if code in metric.metric_codes and metric.dataset_id in fact.dataset_ids
+             and fact.period_role in metric.period_roles]
+            for code in (fact.left_metric, fact.right_metric)
+        ]
+        input_ids = tuple(ids[0] for ids in operands) if all(len(ids) == 1 for ids in operands) else ()
+        frozen = fact.model_copy(update={"input_fact_ids": input_ids})
+        reconciliations.append(frozen.model_copy(update={"fact_id": _unique(reconciliation_fact_identity(frozen))}))
     correlation_details = tuple(
         fact.model_copy(update={"fact_id": _unique(correlation_fact_identity(fact))})
         for fact in bundle.correlation_details
@@ -185,9 +211,9 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
     return bundle.model_copy(
         update={
             "metrics": metrics,
-            "comparisons": comparisons,
+            "comparisons": tuple(comparisons),
             "derived_metrics": tuple(derived),
-            "reconciliations": reconciliations,
+            "reconciliations": tuple(reconciliations),
             "correlation_details": correlation_details,
         }
     )
@@ -249,6 +275,12 @@ def fact_input_relations(
         ]
         relations[fact.fact_id] = tuple(dict.fromkeys(inputs))
     for fact in bundle.comparisons:
+        if fact.input_fact_ids:
+            known_ids = {metric.fact_id for metric in bundle.metrics}
+            relations[fact.fact_id] = tuple(dict.fromkeys(
+                fact_id for fact_id in fact.input_fact_ids if fact_id in known_ids
+            ))
+            continue
         inputs: list[str] = []
         for metric_fact in bundle.metrics:
             if (
@@ -258,6 +290,12 @@ def fact_input_relations(
                 inputs.append(metric_fact.fact_id)
         relations[fact.fact_id] = tuple(dict.fromkeys(inputs))
     for fact in bundle.reconciliations:
+        if fact.input_fact_ids:
+            known_ids = {metric.fact_id for metric in bundle.metrics}
+            relations[fact.fact_id] = tuple(dict.fromkeys(
+                fact_id for fact_id in fact.input_fact_ids if fact_id in known_ids
+            ))
+            continue
         inputs = [
             metric.fact_id
             for code in (fact.left_metric, fact.right_metric)
@@ -271,10 +309,15 @@ def fact_input_relations(
 def fact_binding_records(bundle: DeterministicAnalysisBundle) -> dict[str, dict[str, Any]]:
     """跨文件合并引用时连同实际输入身份比较，兼容尚未冻结 inputFactIds 的旧事实。"""
     inputs = fact_input_relations(bundle)
-    derived_ids = {fact.fact_id for fact in bundle.derived_metrics}
+    # 新比较、对账已冻结输入身份，文件缺少输入条目时也不能把依赖签名改成子集。
+    # 未冻结身份的旧记录仍从实际输入推导，以识别跨范围的旧 ID 冲突。
+    inputs.update({fact.fact_id: fact.input_fact_ids
+                   for fact in (*bundle.comparisons, *bundle.reconciliations) if fact.input_fact_ids})
+    dependent_ids = {fact.fact_id for fact in (*bundle.derived_metrics, *bundle.comparisons,
+                                              *bundle.reconciliations)}
     return {
         fact.fact_id: {"entry": fact.model_dump(mode="json", by_alias=True),
-                       "inputs": inputs.get(fact.fact_id, ()) if fact.fact_id in derived_ids else ()}
+                       "inputs": inputs.get(fact.fact_id, ()) if fact.fact_id in dependent_ids else ()}
         for fact in (*bundle.metrics, *bundle.comparisons, *bundle.derived_metrics,
                      *bundle.reconciliations, *bundle.correlation_details)
         if fact.fact_id

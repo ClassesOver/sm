@@ -18,7 +18,16 @@ ORIGINAL = "![趋势](chart-001.png)\n\n*图表：收入趋势*"
 
 
 @pytest.mark.anyio
-async def test_chart_duplicate_registered_filenames_do_not_bind_both_charts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("source,statuses,locations", [
+    ("chart-001.png", ["unbound", "unbound"], [None, None]),
+    ("./chart-001.png", ["unbound", "unbound"], [None, None]),
+    ("reports/revision-1/chart-001.png", ["valid", "unbound"], ["reports/revision-1/chart-001.png", None]),
+    ("other/chart-001.png", ["unbound", "valid"], [None, "other/chart-001.png"]),
+    ("unregistered/chart-001.png", ["unbound", "unbound", "unbound"], [None, None, "unregistered/chart-001.png"]),
+])
+async def test_chart_duplicate_registered_filenames_do_not_bind_both_charts(
+    tmp_path: Path, source: str, statuses: list[str], locations: list[str | None],
+) -> None:
     editor, _grants, _workspace = await _make_editor(tmp_path, with_chart_trace=True)
     await editor.read_document(_context())
     index = await editor.trace.load_index(_context())
@@ -30,8 +39,13 @@ async def test_chart_duplicate_registered_filenames_do_not_bind_both_charts(tmp_
     second_image = image.model_copy(update={"path": "other/chart-001.png", "resource_id": derive_resource_id("other/chart-001.png")})
     second_chart = trace.model_copy(update={"chart_id": "chart_002", "image_file_resource_id": second_image.resource_id})
     ambiguous = index.model_copy(update={"files": (*index.files, second_image), "chart_traces": (trace, second_chart)})
-    frozen = freeze_chart_presentations(ambiguous, ORIGINAL)
-    assert [chart["status"] for chart in editor.trace._evaluate_charts(frozen, ORIGINAL)] == ["unbound", "unbound"]
+    draft = ORIGINAL.replace("chart-001.png", source)
+    frozen = freeze_chart_presentations(ambiguous, draft)
+    charts = editor.trace._evaluate_charts(frozen, draft)
+    assert [chart["status"] for chart in charts] == statuses
+    assert [chart["locationSource"] for chart in charts] == locations
+    assert [chart["chartId"] for chart in charts[:2]] == [trace.chart_id, second_chart.chart_id]
+    assert len({chart["chartId"] for chart in charts}) == len(charts)
 
 
 @pytest.mark.anyio

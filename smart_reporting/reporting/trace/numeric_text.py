@@ -9,6 +9,8 @@ import os
 import re
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -17,6 +19,7 @@ from loguru import logger
 from ..hospital_operation.deterministic_analysis import (
     DeterministicAnalysisBundle,
     PeriodValue,
+    _parse_fact_period,
     _parse_period,
 )
 from ..units import MONEY_UNITS as _MONEY_UNITS
@@ -265,7 +268,7 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                         change = amounts[index] - amounts[index - 1]
                         values.append((f"periodChanges.{index}", change))
                         if amounts[index - 1]:
-                            values.append((f"periodChangeRates.{index}", change / amounts[index - 1] * 100))
+                            values.append((f"periodChangeRates.{index}", change / abs(amounts[index - 1]) * 100))
 
                 for field, value in values:
                     if value is None:
@@ -637,7 +640,101 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
 
 
 _DERIVED_ROW_LIMIT = 30
-_CHINESE_COUNTS = "一两二三四五六七八九十"
+_CHINESE_COUNTS = "一二三四五六七八九十"
+
+
+def _derived_period_matches(periods: tuple[str, ...], statement: str) -> bool:
+    """派生差额必须覆盖正文写出的完整期间，不能只因某月落在总窗口中就认可总差额。"""
+    from .number_selection import _DAY_PERIOD, _PERIOD
+
+    parsed = [_parse_period(period) for period in periods]
+    grains = {period.granularity for period in parsed if period is not None}
+    expected = {period.value for period in parsed if period is not None}
+    requests = []
+    occupied = []
+
+    def matches_span(match):
+        return any(start <= match.start() < end for start, end in occupied)
+
+    def day_window(match):
+        try:
+            start = date(int(match['year']), int(match['month']), int(match['day']))
+            end = date(int(match['end_year'] or match['year']), int(match['end_month'] or match['month']),
+                       int(match['end_day'] or match['day']))
+        except ValueError:
+            return None
+        length = (end - start).days + 1
+        if not 0 < length <= 1200:
+            return None
+        return ('day', {start + timedelta(days=i) for i in range(length)})
+
+    for match in _DAY_PERIOD.finditer(statement):
+        occupied.append(match.span())
+        request = day_window(match)
+        if request is None:
+            return False
+        requests.append(request)
+    bare_day = re.compile(r'(?<![\d年])\d{1,2}月\d{1,2}(?:[日号]?[—–至到~～-]'
+                          r'(?:\d{4}年)?(?:\d{1,2}月)?\d{1,2})?[日号]')
+    for match in bare_day.finditer(statement):
+        if matches_span(match):
+            continue
+        years = {period.year for period in expected}
+        if len(years) != 1:
+            return False
+        labelled = _DAY_PERIOD.fullmatch(f'{next(iter(years))}年{match[0]}')
+        request = day_window(labelled) if labelled else None
+        if request is None:
+            return False
+        occupied.append(match.span())
+        requests.append(request)
+    for match in _PERIOD.finditer(statement):
+        if matches_span(match):
+            continue
+        occupied.append(match.span())
+        year = int(match['year'])
+        if match['start'] is None:
+            requests.append(('year', {year}))
+            continue
+        else:
+            start, end = int(match['start']), int(match['end'] or match['start'])
+            if not 1 <= start <= 12 or not 1 <= end <= 12:
+                return False
+            first, last = year * 12 + start - 1, int(match['end_year'] or year) * 12 + end - 1
+            if not match['end'] and expected and re.search('截至|累计', statement):
+                first = min(period.year * 12 + period.month - 1 for period in expected)
+        if not 0 <= last - first < 1200:
+            return False
+        requests.append(('month', set(range(first, last + 1))))
+    for match in re.finditer(r'\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?', statement):
+        if matches_span(match):
+            continue
+        occupied.append(match.span())
+        period = _parse_period(match[0])
+        if period is None:
+            return False
+        key = period.value if period.granularity == 'day' else period.value.year * 12 + period.value.month - 1
+        requests.append((period.granularity, {key}))
+    for match in re.finditer(r'(?<![\d年])(?P<start>\d{1,2})月?(?:[—–至到~～-](?P<end>\d{1,2}))?月', statement):
+        if matches_span(match):
+            continue
+        years = {period.year for period in expected}
+        if len(years) != 1:
+            return False
+        year = next(iter(years))
+        start, end = int(match['start']), int(match['end'] or match['start'])
+        if not 1 <= start <= end <= 12:
+            return False
+        first, last = year * 12 + start - 1, year * 12 + end - 1
+        if not match['end'] and expected and re.search('截至|累计', statement):
+            first = min(period.year * 12 + period.month - 1 for period in expected)
+        requests.append(('month', set(range(first, last + 1))))
+    if not requests:
+        return not (len(periods) > 1 and re.search('本月|当月|当日|本日', statement))
+    keys = (expected if grains == {'day'} else {period.year for period in expected} if grains == {'year'}
+            else {period.year * 12 + period.month - 1 for period in expected})
+    return all(({period.year for period in expected} == requested if grain == 'year'
+                else grains == {grain} and keys == requested) for grain, requested in requests)
 
 
 def _operand_names(left: str, right: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -653,18 +750,77 @@ def _operand_names(left: str, right: str) -> tuple[tuple[str, ...], tuple[str, .
     return names(left), names(right)
 
 
+@dataclass(frozen=True)
+class _DerivedValue:
+    value: Decimal
+    operands: tuple[tuple[str, ...], ...]
+    top: int | None
+    periods: tuple[str, ...] | None
+    difference: Decimal | None
+    comparison: tuple[tuple[str, ...], ...]
+    column: str | None
+    peer_columns: tuple[str, ...]
+
+
+def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: Decimal, claim: str) -> bool:
+    """保留减法的左右顺序；方向词后的正数是幅度，不能把多与少或正负互换。"""
+    if entry.difference is None or len(entry.comparison) != 2:
+        return False
+    def spans(names):
+        found = {match.span() for name in names for match in re.finditer(re.escape(name), claim)}
+        return [span for span in found if not any(
+            other != span and other[0] <= span[0] and span[1] <= other[1] for other in found
+        )]
+
+    left, right = (spans(names) for names in entry.comparison)
+    pairs = [(a, b) for a in left for b in right if a[1] <= b[0] or b[1] <= a[0]]
+    if not pairs:
+        return False
+    relations = [match for match in re.finditer(r'(?<!相)(?:比|较)|高于|低于|多于|少于|超过|不足', claim)
+                 if not any(start <= match.start() < end for start, end in (*left, *right))]
+    if relations:
+        relation = relations[-1]
+        pairs = [(a, b) for a, b in pairs if (
+            a[1] <= relation.start() and b[0] >= relation.end()
+            or b[1] <= relation.start() and a[0] >= relation.end()
+        )]
+        if not pairs:
+            return False
+        # 明确比较词两侧选最近的操作数，不借用同句中更早的另一组对象。
+        a, b = min(pairs, key=lambda pair: abs(pair[0][1] - relation.start()) + abs(pair[1][0] - relation.end())
+                   if pair[0][0] < pair[1][0]
+                   else abs(pair[1][1] - relation.start()) + abs(pair[0][0] - relation.end()))
+    else:
+        a, b = min(pairs, key=lambda pair: abs(pair[0][0] - pair[1][0]))
+    difference = entry.difference if a[0] < b[0] else -entry.difference
+    directions = list(re.finditer(r'高于|低于|多于|少于|超过|不足|(?<![至最不多少])(?:多|少|高|低)',
+                                  claim[max(a[1], b[1]):]))
+    directed = (directions[-1][0] if directions else relations[-1][0]
+                if relations and relations[-1][0] in {'高于', '低于', '多于', '少于', '超过', '不足'} else None)
+    if directed:
+        direction = 1 if directed in {'高于', '多于', '超过', '多', '高'} else -1
+        return (number >= 0 and difference * direction >= 0
+                and abs(difference).quantize(quantum, rounding=ROUND_HALF_UP) == number)
+    if re.search('相差|差距|差异', claim):
+        return number >= 0 and abs(difference).quantize(quantum, rounding=ROUND_HALF_UP) == number
+    return difference.quantize(quantum, rounding=ROUND_HALF_UP) == number
+
+
 class DerivedNumbers:
-    """服务端补算的派生数值及其操作数名称：正文须在同一段写出参与计算的对象才认可。
+    """服务端补算的派生数值及其操作数名称：正文须在当前比较句写出参与计算的对象才认可。
 
     只登记数值会让“A比B多60元”因 60 恰好等于 A−C 而通过；因此每个差额、合计都带上
-    操作数的行名、列名或指标名，核对时要求这些名称出现在数字所在段落。
+    操作数的行名、列名或指标名，并保留运算方向与期间，核对时只使用数字所在句。
     """
 
     def __init__(self) -> None:
-        self._values: dict[str, list[tuple[Decimal, tuple[tuple[str, ...], ...], int | None]]] = {}
+        self._values: dict[str, list[_DerivedValue]] = {}
         self._sorted: dict[str, list[Decimal]] = {}
 
-    def add(self, unit: str, number: Decimal, operands: tuple[tuple[str, ...], ...], top: int | None = None) -> None:
+    def add(self, unit: str, number: Decimal, operands: tuple[tuple[str, ...], ...], top: int | None = None,
+            *, periods: tuple[str, ...] | None = None,
+            comparison: tuple[tuple[str, ...], ...] | None = None,
+            column: str | None = None, peer_columns: tuple[str, ...] = ()) -> None:
         if not operands or any(not names for names in operands):
             return
         targets = [(unit, Decimal(1))]
@@ -673,35 +829,71 @@ class DerivedNumbers:
         elif unit == "人次":
             targets.append(("万人次", Decimal("0.0001")))
         for target, factor in targets:
-            for value in {number, -number}:
-                self._values.setdefault(target, []).append((value * factor, operands, top))
+            # 前 N 项合计只登记真实符号；差额的两个显示符号仍须按左右操作数和方向复核。
+            for value in ({number} if top is not None else {number, -number}):
+                self._values.setdefault(target, []).append(_DerivedValue(
+                    value * factor, operands, top, periods, number * factor if top is None else None,
+                    comparison or operands[-2:],
+                    column, peer_columns,
+                ))
         self._sorted.clear()
 
-    def supports(self, number: Decimal, unit: str, quantum: Decimal, context: str) -> bool:
+    def supports(self, number: Decimal, unit: str, quantum: Decimal, context: str,
+                 *, statement: str | None = None, claim: str | None = None) -> bool:
         entries = self._values.get(unit)
         if not entries:
             return False
         if unit not in self._sorted:
-            entries.sort(key=lambda entry: entry[0])
-            self._sorted[unit] = [entry[0] for entry in entries]
+            entries.sort(key=lambda entry: entry.value)
+            self._sorted[unit] = [entry.value for entry in entries]
         keys = self._sorted[unit]
         index = bisect.bisect_left(keys, number - quantum)
         while index < len(keys) and keys[index] <= number + quantum:
-            value, operands, top = entries[index]
+            entry = entries[index]
             index += 1
-            if value.quantize(quantum, rounding=ROUND_HALF_UP) != number:
+            if entry.value.quantize(quantum, rounding=ROUND_HALF_UP) != number:
                 continue
-            if all(any(name in context for name in names) for names in operands):
-                return True
-            if top is not None and re.search(rf"前(?:{top}|{_CHINESE_COUNTS[top - 1] if top <= 10 else '_'})", context):
-                return True
+            local_claim = claim or statement or context
+            if entry.column and len(entry.peer_columns) > 1:
+                clauses = re.split(r'，|(?<!\d),|,(?!\d)', local_claim)
+                measure_claim = next((clause for clause in reversed(clauses)
+                                      if any(name in clause for name in entry.peer_columns)), local_claim)
+                mentions = [(match.start(), match.end(), name) for name in entry.peer_columns
+                            for match in re.finditer(re.escape(name), measure_claim)]
+                # 嵌套列名按最长匹配解释，“医疗收入”不能同时冒充“收入”列。
+                columns = {name for start, end, name in mentions if not any(
+                    (a, b) != (start, end) and a <= start and end <= b for a, b, _name in mentions
+                )}
+                if columns != {entry.column}:
+                    continue
+            if entry.periods is not None and not _derived_period_matches(entry.periods, statement or local_claim):
+                continue
+            named = all(any(name in local_claim for name in names) for names in entry.operands)
+            if entry.difference is not None:
+                if named and _derived_difference_matches(entry, number, quantum, local_claim):
+                    return True
+                continue
+            if entry.top is not None:
+                names = [str(entry.top)]
+                if entry.top <= 10:
+                    names.append(_CHINESE_COUNTS[entry.top - 1])
+                if entry.top == 2:
+                    names.append('两')
+                rankings = list(re.finditer(r'前(?:\d+|[一二两三四五六七八九十]+)', local_claim))
+                ranked = rankings and rankings[-1][0][1:] in names
+                if rankings and not ranked:
+                    continue
+                if (named or ranked) and not re.search('相差|差额|差值|高于|低于', local_claim):
+                    return True
         return False
 
 
 def _derive_from_table(derived: DerivedNumbers, labels: list[str | None],
                        columns: Mapping[str, tuple[str, list[Decimal]]]) -> None:
     """同一张表内补算：列内两行差额与降序前 N 项合计，同单位两列的逐行差额与合计差额。"""
-    for unit, numbers in columns.values():
+    for column, (unit, numbers) in columns.items():
+        peers = tuple(name for name, (other_unit, _values) in columns.items()
+                      if other_unit == unit or other_unit in (_unit_scales(unit) or {}))
         if not 1 < len(numbers) <= _DERIVED_ROW_LIMIT:
             continue
         # 两个百分数之差是百分点，不是百分数；占比列只补算降序前 N 项合计。
@@ -709,14 +901,15 @@ def _derive_from_table(derived: DerivedNumbers, labels: list[str | None],
             for position, (left_label, left) in enumerate(zip(labels, numbers, strict=True)):
                 for right_label, right in zip(labels[position + 1:], numbers[position + 1:], strict=True):
                     if left_label and right_label:
-                        derived.add(unit, left - right, _operand_names(left_label, right_label))
+                        derived.add(unit, left - right, _operand_names(left_label, right_label),
+                                    column=column, peer_columns=peers)
         ranked = sorted(zip(numbers, labels, strict=True), key=lambda item: item[0], reverse=True)
         running = Decimal(0)
         for count, (number, label) in enumerate(ranked[:-1], start=1):
             running += number
             members = tuple((item[1],) for item in ranked[:count] if item[1])
             if count > 1 and len(members) == count:
-                derived.add(unit, running, members, top=count)
+                derived.add(unit, running, members, top=count, column=column, peer_columns=peers)
     items = list(columns.items())
     for position, (left_name, (unit, left)) in enumerate(items):
         for right_name, (right_unit, right) in items[position + 1:]:
@@ -776,20 +969,38 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                     table[column] = (unit, numbers)
             _derive_from_table(derived, labels, table)
     for bundle in frozen_fact_bundles(contents):
+        from .subject_builder import fact_periods
+
         metrics = [fact for fact in bundle.metrics if fact.unit in {*_MONEY_UNITS, "人次", "床日"} and _short_name(fact)]
         for position, left in enumerate(metrics):
             for right in metrics[position + 1:]:
-                if (left.unit, left.period_start, left.period_end) != (right.unit, right.period_start, right.period_end):
+                if (left.unit, left.period_start, left.period_end, left.scope, left.aggregation,
+                    left.period_aggregation, left.period_granularity) != (
+                    right.unit, right.period_start, right.period_end, right.scope, right.aggregation,
+                    right.period_aggregation, right.period_granularity):
+                    continue
+                periods = fact_periods(left.model_dump(mode='json', by_alias=True))
+                if periods != fact_periods(right.model_dump(mode='json', by_alias=True)):
                     continue
                 operands = _operand_names(_short_name(left), _short_name(right))
-                derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands)
+                derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands, periods=periods)
                 if [item.period for item in left.period_values] != [item.period for item in right.period_values]:
                     continue
                 for a, b in zip(left.period_values, right.period_values, strict=True):
-                    month = _canonical_month_label(a.period)
-                    if month:
+                    period = _parse_fact_period(a.period, left.period_granularity)
+                    if period:
+                        year, month, day = period.value.year, period.value.month, period.value.day
+                        if period.granularity == 'day':
+                            key = period.value.isoformat()
+                            aliases = (f'{year}年{month}月{day}日', f'{month}月{day}日', key, key.replace('-', '/'))
+                        elif period.granularity == 'month':
+                            key = f'{year:04d}-{month:02d}'
+                            aliases = (f'{month}月', f'{month:02d}月', key, key.replace('-', '/'))
+                        else:
+                            key = f'{year:04d}'
+                            aliases = (f'{year}年', key)
                         derived.add(left.unit, Decimal(str(a.value)) - Decimal(str(b.value)),
-                                    (*operands, (f"{int(month[5:7])}月",)))
+                                    (*operands, aliases), periods=(key,), comparison=operands)
     return derived
 
 
@@ -797,6 +1008,11 @@ def _paragraph_at(markdown: str, index: int) -> str:
     start = markdown.rfind("\n\n", 0, index)
     end = markdown.find("\n\n", index)
     return markdown[start + 2 if start >= 0 else 0:end if end >= 0 else len(markdown)]
+
+
+def _statement_at(markdown: str, index: int) -> str:
+    return (re.split(r'[。！？；;\n]', markdown[:index])[-1]
+            + re.split(r'[。！？；;\n]', markdown[index:])[0])
 
 
 def registered_decline_magnitude(
@@ -1106,7 +1322,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
 
-    def verify(number_text: str, unit: str, prefix: str, context: str) -> tuple[str, str]:
+    def verify(number_text: str, unit: str, prefix: str, context: str,
+               statement: str, claim: str) -> tuple[str, str]:
         """返回 (结论, 数字)：registered 按显示精度保留，percent_point 改写为百分点，missing 替换。"""
         number = Decimal(number_text.replace(",", ""))
         digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
@@ -1115,7 +1332,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                 or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
                 or bounded_by_registered(number, number_text, candidates, prefix=prefix)
-                or derived.supports(number, unit, quantum, context)):
+                or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)):
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
@@ -1132,7 +1349,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
 
     # 模型自写表格把单位写在表头（“金额（万元）”），单元格只有数字：按表头单位同样核对。
     for start, end, number_text, unit in reversed(table_unit_cells(markdown)):
-        verdict, written = verify(number_text, unit, "", _paragraph_at(markdown, start))
+        verdict, written = verify(number_text, unit, "", _paragraph_at(markdown, start), _statement_at(markdown, start),
+                                  re.split(r'[。！？；;\n]', markdown[:end])[-1])
         cell = (written if verdict == "registered" else f"{written}{PERCENT_POINT}"
                 if verdict == "percent_point" else missing())
         markdown = markdown[:start] + cell + markdown[end:]
@@ -1140,7 +1358,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     def replace(match: re.Match[str]) -> str:
         verdict, written = verify(match["number"], match["unit"],
                                   markdown[max(0, match.start() - 12):match.start()],
-                                  _paragraph_at(markdown, match.start()))
+                                  _paragraph_at(markdown, match.start()), _statement_at(markdown, match.start()),
+                                  re.split(r'[。！？；;\n]', markdown[:match.end()])[-1])
         if verdict == "registered":
             return written + match[0][len(match["number"]):]
         return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else missing()

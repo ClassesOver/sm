@@ -9,7 +9,9 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..hospital_operation.deterministic_analysis import _parse_fact_period
 from .contracts_v1 import DrilldownDimensionV1, DrilldownMetricV1, canonical_sha256
+from .fact_index import frozen_fact_content
 
 _SUPPORTED_BASE = {"sum", "count", "count_distinct", "average"}
 
@@ -66,7 +68,9 @@ def build_drilldown_metrics(
                 for code in fact.get("metricCodes", ())
                 if str(code) in metrics_by_code
             )
-            fingerprint = canonical_sha256(fact)
+            # 展示描述和代码别名不增加操作数；粒度仍会影响期间过滤，必须保留。
+            fingerprint = canonical_sha256({**frozen_fact_content(fact),
+                                           "periodGranularity": fact.get("periodGranularity")})
             for code in dict.fromkeys(codes):
                 identity = (code, dataset_id, fingerprint)
                 if identity in seen_base_facts:
@@ -162,8 +166,14 @@ def _base_declaration(
     if not dimensions or scope is None or expected is None:
         return None
     # 基础指标 total 包含固定范围内的全部行。缺失期间或旧快照未登记完整性时，
-    # 趋势的起止日期不能变成总额下钻的过滤条件，否则会丢掉无期间的记录。
-    restrict_period = algorithm == "semi_additive_last" or fact.get("periodMissingCount") == 0
+    # 趋势的起止日期不能变成总额下钻的过滤条件；非空但无法解析的期间也不算完整。
+    periods = _items(fact.get("periodValues"))
+    complete_periods = (fact.get("periodMissingCount") == 0 and bool(periods)
+                        and all(_parse_fact_period(str(item.get("period", "")), fact.get("periodGranularity"))
+                                is not None for item in periods)
+                        and all(_parse_fact_period(str(fact.get(key) or ""), fact.get("periodGranularity"))
+                                is not None for key in ("periodStart", "periodEnd")))
+    restrict_period = algorithm == "semi_additive_last" or complete_periods
     return DrilldownMetricV1(
         metricCode=code,
         datasetId=str(fact["datasetId"]),

@@ -394,6 +394,8 @@ def test_g7_capability_and_algorithm_matrix_uses_one_frozen_snapshot(
     )
 
     def fact(code: str, field: str, aggregation: str, total: float) -> dict:
+        values = {"revenue": (280, 400), "visits": (25, 28), "average_visits": (25 / 3, 28 / 3),
+                  "patient_count": (3, 2), "row_count": (3, 3), "balance": (350, 380)}[code]
         return {
             "factId": f"fact-{code}",
             "datasetId": dataset_id,
@@ -406,6 +408,8 @@ def test_g7_capability_and_algorithm_matrix_uses_one_frozen_snapshot(
             "periodStart": "2025-01",
             "periodEnd": "2025-02",
             "periodMissingCount": 0,
+            "periodValues": [{"period": "2025-01", "value": values[0]},
+                             {"period": "2025-02", "value": values[1]}],
             "total": total,
         }
 
