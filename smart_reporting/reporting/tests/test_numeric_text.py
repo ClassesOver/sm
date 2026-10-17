@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from smart_reporting.reporting.trace.numeric_text import (
+    correct_constant_monthly_totals,
     correct_period_extrema,
     format_fact_value,
     frozen_number_catalog,
@@ -228,6 +229,28 @@ def test_extrema_correction_keeps_text_it_cannot_safely_rewrite(text):
 def test_extrema_correction_needs_a_unique_bundle_for_unmarked_text():
     documents = [_monthly_document(), _monthly_document('analysis_002')]
     assert correct_period_extrema('2月金额为最高值50元。', documents) == '2月金额为最高值50元。'
+
+
+_FLAT_BUDGET = (1097718506,) * 12
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 回放原文：全年合计 131.73 亿元被写成各月取值。
+    ('预算总医疗收入各月均为常量131.73亿元（13,172,622,072元）。',
+     '预算总医疗收入各月均为常量10.98亿元（1097718506元）。'),
+    ('每月预算为13172622072元。', '每月预算为1097718506元。'),
+])
+def test_constant_monthly_total_written_as_each_month_is_rewritten(text, expected):
+    assert correct_constant_monthly_totals(text, [_monthly_document(values=_FLAT_BUDGET)]) == expected
+
+
+@pytest.mark.parametrize(('text', 'values'), [
+    ('各月合计131.73亿元。', _FLAT_BUDGET),  # 明写合计
+    ('全年预算131.73亿元，各月均为10.98亿元。', _FLAT_BUDGET),  # 已是单月值
+    ('预算各月均为350元。', (100, 50, 80, 120)),  # 各月取值不同，合计不能均摊
+])
+def test_constant_monthly_total_keeps_text_it_cannot_safely_rewrite(text, values):
+    assert correct_constant_monthly_totals(text, [_monthly_document(values=values)]) == text
 
 
 def test_budget_ratio_catalog_preserves_amounts_and_dimensionless_value():

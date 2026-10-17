@@ -17,6 +17,7 @@ from .numeric_text import (
     _canonical_month_label,
     _frozen_number_entries,
     align_placeholder_direction,
+    correct_constant_monthly_totals,
     correct_period_extrema,
     frozen_fact_bundles,
     frozen_number_catalog,
@@ -85,7 +86,8 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
     markdown = re.sub('待核实', lambda _: notice('source_review'), markdown)
     markdown = render_frozen_numbers(align_placeholder_direction(markdown, contents), catalog, annotate=annotate)
     markdown = group_large_amounts(replace_unregistered_numbers(
-        normalize_signed_wording(correct_period_extrema(markdown, contents)), contents,
+        normalize_signed_wording(correct_period_extrema(
+            correct_constant_monthly_totals(markdown, contents), contents)), contents,
         missing=lambda: notice('numeric_unverified'),
     ))
     references = tuple(NumberReferenceV1(

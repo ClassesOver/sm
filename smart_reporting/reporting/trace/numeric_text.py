@@ -1541,6 +1541,62 @@ def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str
     return corrected[len(scope):]
 
 
+# “预算各月均为131.73亿元（13,172,622,072元）”把全年合计写成了单月值，领导会读成每月 131 亿。
+# 只在事实为逐月相加且各月取值相同、正文数值恰为其合计时改写为单月值；其余情形不猜。
+_EACH_MONTH_AMOUNT = re.compile(
+    rf"(?P<lead>(?:各月|每月|逐月|按月)[^。；;\n\d{{}}（(]{{0,12}}?)"
+    rf"(?P<number>{_NUMBER})\s*(?P<unit>亿元|万元|元|万人次|人次)"
+    rf"(?P<base>\s*[（(]\s*(?P<base_number>{_NUMBER})\s*(?P<base_unit>元|人次)\s*[）)])?"
+)
+
+
+def _scaled_value(value: Decimal, fact_unit: str, unit: str, number_text: str) -> Decimal | None:
+    scales = _unit_scales(fact_unit)
+    if scales is None or unit not in scales:
+        return None
+    digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
+    return (value * scales[fact_unit] / scales[unit]).quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)
+
+
+def correct_constant_monthly_totals(markdown: str, contents: Iterable[str]) -> str:
+    constants: list[tuple[str, Decimal, Decimal]] = []
+    for bundle in frozen_fact_bundles(contents):
+        for fact in bundle.metrics:
+            values = {Decimal(str(item.value)) for item in fact.period_values}
+            if (fact.period_granularity != "month" or len(fact.period_values) < 2 or len(values) != 1
+                    or fact.aggregation not in {"sum", "count"} or fact.period_aggregation == "last"
+                    or not fact.unit or _unit_scales(fact.unit) is None):
+                continue
+            month, total = next(iter(values)), Decimal(str(fact.total))
+            if month and total == month * len(fact.period_values):
+                constants.append((fact.unit, total, month))
+    if not constants:
+        return markdown
+
+    def replace(match: re.Match[str]) -> str:
+        if re.search(r"合计|累计|全年|总计|总额|年度", match["lead"]):
+            return match[0]
+        number = Decimal(match["number"].replace(",", ""))
+        months = {month for fact_unit, total, month in constants
+                  if _scaled_value(total, fact_unit, match["unit"], match["number"]) == number}
+        if len(months) != 1:
+            return match[0]
+        month = months.pop()
+        fact_unit = next(unit for unit, _, value in constants if value == month)
+        written = f"{_scaled_value(month, fact_unit, match['unit'], match['number'])}{match['unit']}"
+        base = match["base"] or ""
+        if base:
+            base_number = Decimal(match["base_number"].replace(",", ""))
+            total = next(total for _, total, value in constants if value == month)
+            if _scaled_value(total, fact_unit, match["base_unit"], match["base_number"]) == base_number:
+                monthly = _scaled_value(month, fact_unit, match["base_unit"], match["base_number"])
+                base = base.replace(match["base_number"], str(monthly), 1)
+        logger.warning("report_constant_monthly_total_corrected value={}{}", match["number"], match["unit"])
+        return match["lead"] + written + base
+
+    return _EACH_MONTH_AMOUNT.sub(replace, markdown)
+
+
 _EXTREMA_WORDS = {"最高": "最高|峰值", "最低": "最低|低点"}
 # 与 period_extrema_warnings 的豁免一致：分项比例、变化率和组织明细的极值不按全院月序列改写。
 _EXTREMA_EXEMPT = re.compile(r"占比|比重|比例|环比|同比|增长率|降幅|增幅|组织明细|明细分组|分组组合")
