@@ -1186,3 +1186,15 @@ def test_single_character_decline_words_accept_registered_negative_magnitudes():
     # “至少”不是下降：同样的数字仍按未登记替换；增长方向也不豁免。
     assert replace_unregistered_numbers('至少9.83%。', contents) == '至少待核实。'
     assert replace_unregistered_numbers('实际增9.83%。', contents) == '实际增待核实。'
+
+
+def test_profile_missing_rates_are_accepted_only_when_the_paragraph_is_about_missing_data():
+    from smart_reporting.reporting.trace.content_review import review_content
+
+    document = json.loads(_budget_document())
+    document['metrics'][0]['warnings'] = ['[rdlevel_analytic_unit] 23646 (78.7%) missing values']
+    contents = [json.dumps(document)]
+    text = '四级科室字段缺失比例为78.7%，下钻受限。'
+    assert replace_unregistered_numbers(text, contents) == text
+    assert not any('冻结依据' in warning for warning in review_content(text, contents))
+    assert replace_unregistered_numbers('收入完成率为78.7%。', contents) == '收入完成率为待核实。'
