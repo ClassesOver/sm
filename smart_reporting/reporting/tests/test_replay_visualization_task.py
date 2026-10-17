@@ -1424,7 +1424,7 @@ def test_benchmark_model_config_rejects_planner_effort_crossing_none_boundary() 
 
 
 @pytest.mark.parametrize(
-    ("base_url", "location", "enable_thinking"),
+    ("provider_base_url", "location", "enable_thinking"),
     [
         (
             "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -1435,12 +1435,12 @@ def test_benchmark_model_config_rejects_planner_effort_crossing_none_boundary() 
     ],
 )
 def test_benchmark_model_rejects_thinking_location_provider_mismatch(
-    base_url, location, enable_thinking
+    provider_base_url, location, enable_thinking
 ) -> None:
     settings = SimpleNamespace(
         model_standard_id="environment-model",
         openai_api_key="test-key",
-        openai_base_url=base_url,
+        openai_base_url=provider_base_url,
         report_output_token_reserve=8192,
         model_timeout_seconds=60,
     )

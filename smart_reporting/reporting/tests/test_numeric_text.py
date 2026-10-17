@@ -12,6 +12,7 @@ from smart_reporting.reporting.trace.numeric_text import (
     format_fact_value,
     frozen_number_catalog,
     money_text_warnings,
+    plain_period_wording,
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
@@ -1227,3 +1228,13 @@ def test_profile_missing_and_zero_rates_are_accepted_only_in_matching_paragraphs
     assert replace_unregistered_numbers('预算医疗收入缺失68.7%。', contents) == '预算医疗收入缺失待核实。'
     assert not any('冻结依据' in warning for warning in review_content(text, contents))
     assert replace_unregistered_numbers('收入完成率为78.7%。', contents) == '收入完成率为待核实。'
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('覆盖2025年1月至11月共11个月度桶。', '覆盖2025年1月至11月共11个月。'),
+    ('零值仅代表这两个月度桶的记录取值为零。', '零值仅代表这两个月的记录取值为零。'),
+    ('月度标签为月度桶标签，不代表数据截止时点。', '月度标签为月份，不代表数据截止时点。'),
+    ('均基于同一收入口径的月度桶数据。', '均基于同一收入口径的月度数据。'),
+])
+def test_plain_period_wording_drops_month_bucket_jargon(text, expected):
+    assert plain_period_wording(text) == expected

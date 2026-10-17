@@ -23,6 +23,7 @@ from .numeric_text import (
     frozen_number_catalog,
     group_large_amounts,
     normalize_signed_wording,
+    plain_period_wording,
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
@@ -85,11 +86,11 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
     markdown = re.sub(r'\[\[claim:[^\]\n]+\]\]', '', markdown)
     markdown = re.sub('待核实', lambda _: notice('source_review'), markdown)
     markdown = render_frozen_numbers(align_placeholder_direction(markdown, contents), catalog, annotate=annotate)
-    markdown = group_large_amounts(replace_unregistered_numbers(
+    markdown = plain_period_wording(group_large_amounts(replace_unregistered_numbers(
         normalize_signed_wording(correct_period_extrema(
             correct_constant_monthly_totals(markdown, contents), contents)), contents,
         missing=lambda: notice('numeric_unverified'),
-    ))
+    )))
     references = tuple(NumberReferenceV1(
         claimId=claim_id, token=token, statementSha256=statement_fingerprint(markdown, claim_id),
     ) for claim_id, token in references)

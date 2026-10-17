@@ -585,6 +585,15 @@ def group_large_amounts(markdown: str) -> str:
     return _UNGROUPED_AMOUNT.sub(lambda match: f"{int(match[1]):,}", markdown)
 
 
+# 读者是医院领导与财务人员，“月度桶”是数据处理用语，按日常说法改写。
+_MONTH_BUCKET_COUNT = re.compile(r"(\d+|[一两二三四五六七八九十]+)个月度桶")
+
+
+def plain_period_wording(markdown: str) -> str:
+    markdown = _MONTH_BUCKET_COUNT.sub(r"\1个月", markdown)
+    return markdown.replace("月度桶标签", "月份").replace("月度桶", "月度")
+
+
 def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=None) -> str:
     def replace(match: re.Match[str]) -> str:
         text = catalog.get(match["token"])

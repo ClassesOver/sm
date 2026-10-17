@@ -829,7 +829,7 @@ class _ReportWorkflowRuntimeBase:
             stage_instructions=(
                 "只回答 currentAnalysis 的原子管理问题，所有数字和结论必须来自 deterministicFacts 或 supplementalEvidence。",
                 "优先给出结论、关键数值、构成或变化驱动，再说明可比性和数据限制；不得输出分析过程或虚构因果。",
-                "periodGranularity=month 的日期是月度桶标签；末月标为月初不能证明数据只覆盖月初或月中。没有入账状态或数据截止时点的直接证据，不得断言末月不完整、截断或未入账。",
+                "periodGranularity=month 的日期只表示所属月份；末月标为月初不能证明数据只覆盖月初或月中。没有入账状态或数据截止时点的直接证据，不得断言末月不完整、截断或未入账。",
                 "不得补写事实中不存在的月均值或其他派生数字；月均分母必须是实际有数据的月份数，不能固定按12个月计算。",
                 "supplementalEvidence.findings[].view.truncated 为 true 时 rows 只是投影视图，不得当作完整明细；format=ranked_extremes 表示变化指标正负两端极值，format=head_tail 表示原始顺序首尾。",
                 "omittedNumericSums 只汇总未进入 rows 的有限数值，不是全量总值。",
