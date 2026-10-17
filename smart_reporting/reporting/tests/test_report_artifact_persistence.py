@@ -194,6 +194,13 @@ class _Workspace:
             raise ValueError("file too large")
         return content
 
+    async def aiter_regular_file_chunks(
+        self, thread: str, path: str, *, max_bytes: int, chunk_size: int
+    ):
+        content = await self.read_limited_regular_file(thread, path, max_bytes=max_bytes)
+        for offset in range(0, len(content), chunk_size):
+            yield content[offset : offset + chunk_size]
+
     def remove_files(self) -> None:
         self.files.clear()
 

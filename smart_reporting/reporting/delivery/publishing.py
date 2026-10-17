@@ -733,18 +733,21 @@ class ReportArtifactPersistenceService:
         *,
         expected_size: int,
     ) -> AsyncIterator[bytes]:
+        # 按块从工作区读取，避免把最大 200 MiB 的产物整份读入内存；
+        # 总长度与 sha256 仍由 repository.put 在同一事务提交前核对。
         try:
-            content = await self.workspace_service.read_limited_regular_file(
+            total = 0
+            async for chunk in self.workspace_service.aiter_regular_file_chunks(
                 thread_id,
                 path,
                 max_bytes=min(expected_size, MAX_DOWNLOAD_BYTES),
-            )
-            if len(content) != expected_size:
-                raise ReportingError("report_artifact_changed", "报告文件已变化。")
-            for offset in range(0, len(content), REPORT_ARTIFACT_CHUNK_BYTES):
-                chunk = content[offset : offset + REPORT_ARTIFACT_CHUNK_BYTES]
+                chunk_size=REPORT_ARTIFACT_CHUNK_BYTES,
+            ):
+                total += len(chunk)
                 _validate_artifact_chunk(chunk)
                 yield chunk
+            if total != expected_size:
+                raise ReportingError("report_artifact_changed", "报告文件已变化。")
         except ReportingError:
             raise
         except Exception as error:

@@ -645,6 +645,8 @@ class WorkspaceReportService:
                 or render.get("word", {}).get("path") != staged_word_relative
             ):
                 raise WorkspaceError("报表运行时返回无效产物。")
+            # 在昂贵的 PDF/Word 验收之前先核对暂存身份：不一致时直接失败，不移动、不发布；
+            # 移动后的复核覆盖的是另一段时间窗口，两者都需要。
             staged_pdf = await self.service.ahash_file(_thread(run_context), staged_pdf_relative)
             staged_word = await self.service.ahash_file(_thread(run_context), staged_word_relative)
             if any(
