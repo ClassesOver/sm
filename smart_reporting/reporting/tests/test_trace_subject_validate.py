@@ -935,6 +935,21 @@ async def test_validate_tables_flag_edited_value_but_keep_other_cells(tmp_path: 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("correct_last", [False, True])
+@pytest.mark.parametrize("copies", [2, 3])
+async def test_duplicate_table_identity_cannot_hide_modified_values(tmp_path, correct_last, copies):
+    correct = _table_markdown([["本期", "3,600"], ["上期", "3,600"]])
+    wrong = _table_markdown([["本期", "9,999"], ["上期", "9,999"]])
+    blocks = [correct] * (copies - 1)
+    blocks.insert(0 if correct_last else len(blocks), wrong)
+    result = await _validate_tables(tmp_path, "\n\n".join(blocks))
+    assert result["tableSummary"]["valid"] == 0
+    assert result["tableSummary"]["unbound"] == 2
+    assert result["tables"][0]["locations"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_table_locations_follow_current_rows_without_guessing_duplicates(tmp_path: Path) -> None:
     sorted_table = _table_markdown([["上期", "9,999"], ["本期", "3,600"]])
     result = await _validate_tables(tmp_path / "sorted", f"# 报告\n\n{sorted_table}\n")
@@ -952,10 +967,12 @@ async def test_table_locations_follow_current_rows_without_guessing_duplicates(t
     removed = _table_markdown([["本期", "3,600"]])
     result = await _validate_tables(tmp_path / "removed-location", f"# 报告\n\n{removed}\n")
     assert [item["rowKey"] for item in result["tables"][0]["locations"]] == ["row:cur"]
-    renamed_column = sorted_table.replace("income_total", "renamed")
+    renamed_column = sorted_table.replace(r"income\_total", "renamed")
+    assert renamed_column != sorted_table
     result = await _validate_tables(tmp_path / "renamed-column-location", renamed_column)
     assert result["tables"][0]["locations"] == []
-    duplicate_column = sorted_table.replace("| income_total |", "| income_total | income_total |")
+    duplicate_column = sorted_table.replace(r"| income\_total |", r"| income\_total | income\_total |")
+    assert duplicate_column != sorted_table
     result = await _validate_tables(tmp_path / "duplicate-column-location", duplicate_column)
     assert result["tables"][0]["locations"] == []
     result = await _validate_tables(tmp_path / "missing-table-location", "# 报告\n")

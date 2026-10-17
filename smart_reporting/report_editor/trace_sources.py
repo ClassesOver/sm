@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from time import perf_counter
@@ -298,6 +300,8 @@ class ReportEditorTraceService:
                     context, files[entry.file_resource_id], max_bytes=16 * 1024 * 1024
                 )
                 document = read_fact_document(raw)
+                if document.get("analysisId") != entry.analysis_id:
+                    raise ReportingError("fact_binding_unavailable", "事实文件与登记分析身份不匹配。")
             except (ReportingError, ValueError) as error:
                 # 事实目录只是概览：保留期回收或文件损坏时不拖垮整个来源页，
                 # 数据集元数据照常返回；事实明细接口仍按登记身份严格校验。
@@ -621,7 +625,8 @@ class ReportEditorTraceService:
     ) -> tuple[Path, str, int, str]:
         index = await self.require_index(context)
         file = await self._resolve_dataset_file(context, index, dataset_id)
-        path, filename = self._preview.download_target(
+        path, filename = await anyio.to_thread.run_sync(
+            self._preview.download_target,
             file, self._permissions(session_capabilities)
         )
         return path, filename, file.size, file.sha256
@@ -848,9 +853,11 @@ class ReportEditorTraceService:
                 if len(content) != file_ref.size or hashlib.sha256(content).hexdigest() != file_ref.sha256:
                     raise ReportingError("snapshot_integrity_failed", "事实文件与登记身份不一致。")
                 try:
-                    bundle_cache[file_ref.path] = _json.loads(content)
-                except (ValueError, UnicodeDecodeError) as exc:
-                    raise ReportingError("snapshot_integrity_failed", "事实文件无法解析。") from exc
+                    bundle_cache[file_ref.path] = read_fact_document(content)
+                except ReportingError as error:
+                    # 只拒绝有歧义/损坏的来源；正文与其余来源仍可进行软校验。
+                    bundle_cache[file_ref.path] = None
+                    logger.warning("source_validation_fact_unavailable resource={} error={}", file_ref.resource_id, error.code)
             document = bundle_cache[file_ref.path]
             if not isinstance(document, dict):
                 return None
@@ -1226,33 +1233,40 @@ class ReportEditorTraceService:
         def _blocks(source: str | None) -> dict[str, str]:
             if not source:
                 return {}
-            return {
-                match.group(1): match.group(2)
-                for match in table_block_pattern.finditer(source)
-            }
+            blocks: dict[str, str] = {}
+            duplicates: set[str] = set()
+            for match in table_block_pattern.finditer(source):
+                table_id, body = match.group(1), match.group(2)
+                if table_id in blocks:
+                    duplicates.add(table_id)
+                    blocks.pop(table_id)
+                elif table_id not in duplicates:
+                    blocks[table_id] = body
+            # 重复身份没有唯一来源，不能按出现顺序挑选其中一块冒充已验证。
+            return blocks
 
         def _rows(body: str) -> tuple[list[str], list[list[str]]]:
             from markdown_it import MarkdownIt
 
-            parser = MarkdownIt()
-
-            def cell_text(value: str) -> str:
-                # 编辑器的转义与强调只改变 Markdown 表达，不改变冻结行列标签。
-                tokens = parser.parseInline(value.strip())
-                return "".join(
-                    child.content for token in tokens for child in (token.children or ())
-                    if child.type in {"text", "code_inline"}
-                ).strip()
-
-            lines = [line for line in body.split("\n") if line.startswith("|")]
-            if len(lines) < 3:
+            # 使用表格语法分列，转义的管道符属于单元格内容，不能直接 split('|')。
+            tokens = MarkdownIt().enable("table").parse(body)
+            rows: list[list[str]] = []
+            in_table = False
+            for token in tokens:
+                if token.type == "table_open":
+                    in_table = True
+                elif token.type == "table_close":
+                    break
+                elif in_table and token.type == "tr_open":
+                    rows.append([])
+                elif in_table and token.type == "inline" and rows:
+                    rows[-1].append("".join(
+                        child.content for child in (token.children or ())
+                        if child.type in {"text", "code_inline"}
+                    ).strip())
+            if len(rows) < 2:
                 return [], []
-            header = [cell_text(cell) for cell in lines[0].strip().strip("|").split("|")]
-            data = [
-                [cell_text(cell) for cell in line.strip().strip("|").split("|")]
-                for line in lines[2:]
-            ]
-            return header[1:], data
+            return rows[0][1:], rows[1:]
 
         committed_blocks = _blocks(committed)
         draft_blocks = _blocks(draft_markdown)
@@ -1299,18 +1313,17 @@ class ReportEditorTraceService:
                 draft_header, draft_rows = _rows(draft_body)
                 # 定位比软校验更保守：重复标签/列名不能选择首个匹配冒充唯一身份。
                 # 无冻结表格且已提交正文不可读时，无法确认原始位置，不给定位。
-                unique_block = all(
-                    sum(match.group(1) == trace.table_id for match in table_block_pattern.finditer(markdown)) == 1
-                    for markdown in (origin_source or "", draft_markdown)
-                )
-                origin_labels = [row[0] for row in origin_rows if row]
-                draft_labels = [row[0] for row in draft_rows if row]
+                unique_block = origin_body is not None
+                origin_labels = Counter(row[0] for row in origin_rows if row)
+                draft_labels = Counter(row[0] for row in draft_rows if row)
+                header_counts = Counter(draft_header)
                 column_index = {
                     name: position + 1 for position, name in enumerate(draft_header)
                 }
                 row_by_key: dict[str, list[str]] = {}
+                row_positions: dict[str, int] = {}
                 copy_rows: list[list[str]] = []
-                for row in draft_rows:
+                for position, row in enumerate(draft_rows):
                     key = label_to_key.get(row[0]) if row else None
                     # 已知标签的首个出现按冻结行键映射；未知标签或重复标签
                     # （复制行）进入复制候选，逐格细分提示，不静默覆盖首行。
@@ -1321,6 +1334,7 @@ class ReportEditorTraceService:
                             inserted_rows += 1
                     else:
                         row_by_key[key] = row
+                        row_positions[key] = position
                 frozen_values: list[tuple[Any, Any, str | None]] = []
                 for cell in trace.cells:
                     value: Any = None
@@ -1332,7 +1346,7 @@ class ReportEditorTraceService:
                                 unit = await fact_unit_of(ref, cell.row_key)
                             break
                     frozen_values.append((cell, value, unit))
-                for cell in trace.cells:
+                for cell, fact_value, fact_unit in frozen_values:
                     row = row_by_key.get(cell.row_key)
                     if row is None:
                         counts["unbound"] += 1
@@ -1341,13 +1355,6 @@ class ReportEditorTraceService:
                     if column is None or column >= len(row):
                         counts["stale"] += 1
                         continue
-                    fact_value: Any = None
-                    fact_unit: str | None = None
-                    for frozen_cell, frozen_value, frozen_unit in frozen_values:
-                        if frozen_cell is cell:
-                            fact_value = frozen_value
-                            fact_unit = frozen_unit
-                            break
                     missing_unchanged = (
                         not cell.fact_refs and (cell.row_key, cell.column_key) in missing_cells
                         and row[column] == "—"
@@ -1360,13 +1367,13 @@ class ReportEditorTraceService:
                             )
                         ) else "stale"
                     )
-                    if (unique_block and origin_labels.count(row[0]) == 1
-                            and draft_labels.count(row[0]) == 1
-                            and draft_header.count(cell.column_key) == 1
+                    if (unique_block and origin_labels[row[0]] == 1
+                            and draft_labels[row[0]] == 1
+                            and header_counts[cell.column_key] == 1
                             and len(row) == len(draft_header) + 1):
                         locations.append({
                             "rowKey": cell.row_key, "columnKey": cell.column_key,
-                            "rowIndex": draft_rows.index(row), "columnIndex": column,
+                            "rowIndex": row_positions[cell.row_key], "columnIndex": column,
                             "rowLabel": row[0], "text": row[column], "status": cell_status,
                         })
                     counts[cell_status] += 1
@@ -1581,22 +1588,28 @@ class ReportEditorTraceService:
         # 负偏移在 Python 切片中会从尾部取行，返回与请求不符的预览。
         if preview_offset < 0:
             raise ReportingError("request_invalid", "预览起始行不能为负数。")
+        permissions = self._permissions(session_capabilities)
+        source_cache: dict[str, Mapping[str, Any]] = {}
         plot_tables: list[dict[str, Any]] = []
         for resource_id in trace.plot_data_file_resource_ids:
             file_ref = files[resource_id]
             content = await self._read_registered_file(
                 context, file_ref, max_bytes=8 * 1024 * 1024
             )
+            if permissions.blocked_columns:
+                source_columns = await self._chart_origin_columns(context, index, content, source_cache)
+                if any(is_blocked_column(column, permissions.blocked_columns) for column in source_columns):
+                    raise ReportingError("dataset_access_denied", "该图表来源使用当前会话的受限字段。")
             plot_tables.append(
                 self._chart_input_payload(
                     content,
                     file_ref=file_ref,
                     limit=preview_limit,
                     offset=preview_offset,
-                    blocked_columns=self._permissions(session_capabilities).blocked_columns,
+                    blocked_columns=permissions.blocked_columns,
                 )
             )
-        return {
+        result = {
             "available": True,
             "chartId": trace.chart_id,
             "datasetIds": list(trace.dataset_ids),
@@ -1605,6 +1618,88 @@ class ReportEditorTraceService:
             "image": {"size": image_ref.size, "sha256": image_ref.sha256},
             "plotData": plot_tables,
         }
+        encoded = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > TRACE_BUDGETS_V1["preview_max_response_bytes"]:
+            raise ReportingError("resource_limit_exceeded", "图表来源预览超过资源预算，请缩小每页行数。")
+        return result
+
+    async def _chart_origin_columns(
+        self, context: Any, index: RevisionTraceIndexV1, content: bytes,
+        cache: dict[str, Mapping[str, Any]],
+    ) -> frozenset[str]:
+        """通用作图列名不能代替权限依据；按已登记的事实哈希追踪原始字段。"""
+        from ..reporting.trace.fact_index import fact_entry_from_pointer
+        from ..reporting.trace.fact_service import _input_fact_refs
+        from ..reporting.workflow.runtime.chart_inputs import ChartInputError, parse_data_path
+
+        denied = "当前会话无法确认该图表的来源字段权限。"
+        try:
+            plot = json.loads(content)
+        except ValueError as error:
+            raise ReportingError("snapshot_integrity_failed", "作图数据文件无法解析。") from error
+        source = plot.get("source") if isinstance(plot, Mapping) else None
+        if not isinstance(source, Mapping) or not isinstance(source.get("dataPath"), str):
+            raise ReportingError("dataset_access_denied", denied)
+        files = {item.resource_id: item for item in index.files}
+        matches = [files[entry.file_resource_id] for entry in index.fact_files
+                   if entry.analysis_id == source.get("analysisId")
+                   and entry.content_kind == "deterministic_bundle"
+                   and files[entry.file_resource_id].sha256 == source.get("sha256")]
+        if len(matches) != 1:
+            raise ReportingError("dataset_access_denied", denied)
+        file_ref = matches[0]
+        if file_ref.resource_id not in cache:
+            raw = await self._read_registered_file(context, file_ref, max_bytes=16 * 1024 * 1024)
+            cache[file_ref.resource_id] = read_fact_document(raw)
+        document = cache[file_ref.resource_id]
+        if document.get("analysisId") != source.get("analysisId"):
+            raise ReportingError("snapshot_integrity_failed", "图表来源事实与登记分析身份不一致。")
+        try:
+            tokens = parse_data_path(source["dataPath"])
+            if len(tokens) < 2 or not isinstance(tokens[1], int):
+                raise ChartInputError("未定位到具体事实")
+            # 旧事实没有冻结分组字段名，不能凭 group/value 推断原始维度权限。
+            if "topGroups" in tokens or "bottomGroups" in tokens:
+                raise ChartInputError("分组字段未登记")
+            kind, fact = fact_entry_from_pointer(document, f"/{tokens[0]}/{tokens[1]}")
+        except (ChartInputError, KeyError) as error:
+            raise ReportingError("dataset_access_denied", denied) from error
+        required: set[str] = set()
+
+        def collect(entry: Mapping[str, Any]) -> None:
+            for key in ("field", "periodField", "leftField", "rightField"):
+                if isinstance(entry.get(key), str) and entry[key]:
+                    required.add(entry[key])
+            if isinstance(entry.get("fieldRef"), str):
+                required.add(entry["fieldRef"].rsplit(".", 1)[-1])
+            if isinstance(entry.get("scope"), Mapping):
+                required.update(entry["scope"])
+
+        collect(fact)
+        inputs = _input_fact_refs(document, kind, fact)
+        ids = {ref["factId"] for ref in inputs if isinstance(ref.get("factId"), str)}
+        metrics = [metric for metric in document.get("metrics", ()) if metric.get("factId") in ids]
+        if kind in {"derived", "comparison", "reconciliation"} and (not inputs or len(metrics) != len(inputs)):
+            raise ReportingError("dataset_access_denied", denied)
+        operand_keys = {
+            "derived": ("numeratorMetric", "denominatorMetric"),
+            "reconciliation": ("leftMetric", "rightMetric"),
+        }.get(kind, ())
+        if any(not isinstance(fact.get(key), str) or not any(
+            fact[key] in (metric.get("metricCodes") or ()) for metric in metrics
+        ) for key in operand_keys):
+            raise ReportingError("dataset_access_denied", denied)
+        if kind == "comparison" and any(
+            not isinstance(fact.get(key), str) or not any(
+                metric.get("datasetId") == fact[key] for metric in metrics
+            ) for key in ("currentDatasetId", "baselineDatasetId")
+        ):
+            raise ReportingError("dataset_access_denied", denied)
+        for metric in metrics:
+            collect(metric)
+        if not required:
+            raise ReportingError("dataset_access_denied", denied)
+        return frozenset(required)
 
     @staticmethod
     def _chart_input_payload(
@@ -1642,20 +1737,43 @@ class ReportEditorTraceService:
         # 与数据集整表预览一致：包含受限列时拒绝整份预览，分页也不能绕过。
         if any(is_blocked_column(column, blocked_columns) for column in columns):
             raise ReportingError("dataset_access_denied", "该图表来源包含当前会话的受限列。")
+        if len(columns) > TRACE_BUDGETS_V1["preview_max_columns"]:
+            raise ReportingError("resource_limit_exceeded", "作图数据列数超过预览上限。")
+        if any(len(column.encode("utf-8")) > TRACE_BUDGETS_V1["preview_max_cell_bytes"] for column in columns):
+            raise ReportingError("resource_limit_exceeded", "作图数据列名超过预览上限。")
         window = rows[offset : offset + limit]
-        return {
+        for row in window:
+            if not isinstance(row, list) or len(row) != len(columns):
+                raise ReportingError("snapshot_integrity_failed", "作图数据行与列结构不一致。")
+            for value in row:
+                if not (value is None or isinstance(value, (str, int, float, bool))) or (
+                    isinstance(value, float) and not math.isfinite(value)
+                ):
+                    raise ReportingError("snapshot_integrity_failed", "作图数据包含无效单元格。")
+                if isinstance(value, str) and len(value.encode("utf-8")) > TRACE_BUDGETS_V1["preview_max_cell_bytes"]:
+                    raise ReportingError("resource_limit_exceeded", "作图数据单元格超过预览上限。")
+        source = document.get("source")
+        public_source = {
+            key: source[key] for key in ("analysisId", "sha256", "dataPath")
+            if isinstance(source.get(key), str)
+        } if isinstance(source, Mapping) else None
+        result = {
             "fileResourceId": file_ref.resource_id,
             "sha256": file_ref.sha256,
             "size": file_ref.size,
-            "role": document.get("role"),
-            "source": document.get("source"),
+            "role": document.get("role") if isinstance(document.get("role"), str) else None,
+            "source": public_source,
             "columns": columns,
-            "rowCount": document.get("rowCount", len(rows)),
+            "rowCount": len(rows),
             "offset": offset,
             "limit": limit,
             "rows": window,
             "truncated": offset + len(window) < len(rows),
         }
+        encoded = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > TRACE_BUDGETS_V1["preview_max_response_bytes"]:
+            raise ReportingError("resource_limit_exceeded", "作图数据预览超过资源预算，请缩小每页行数。")
+        return result
 
     @staticmethod
     def _pointer_kind(pointer: str) -> str:

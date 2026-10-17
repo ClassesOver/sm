@@ -228,7 +228,15 @@ class TraceDerivedExportService:
                 or current.get("sha256") != job.sha256):
             raise ReportingError("snapshot_integrity_failed", "派生导出文件与登记身份不一致。")
         if blocked_columns:
-            header = await anyio.to_thread.run_sync(read_csv_header, host_path)
+            def read_verified_header():
+                file = TraceDatasetFile(
+                    dataset_id=job.dataset_id, local_path=host_path, size=current["size"],
+                    sha256=current["sha256"], row_count=0,
+                )
+                with verified_dataset_snapshot(file) as snapshot:
+                    return read_csv_header(snapshot.local_path)
+
+            header = await anyio.to_thread.run_sync(read_verified_header)
             masked = set(job.params["columns"])
             if any(is_blocked_column(name, blocked_columns) and name not in masked for name in header):
                 raise ReportingError("dataset_access_denied", "该派生导出未按当前会话的受限列要求脱敏。")

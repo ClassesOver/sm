@@ -416,11 +416,13 @@ class TraceCsvPreviewService:
 
         if not permissions.blocked_columns:
             return []
-        return [
-            name
-            for name in read_csv_header(file.local_path)
-            if is_blocked_column(name, permissions.blocked_columns)
-        ]
+        # 权限检查与下载均绑定登记身份，不能从可被替换的原路径读取表头。
+        with verified_dataset_snapshot(file) as snapshot:
+            return [
+                name
+                for name in read_csv_header(snapshot.local_path)
+                if is_blocked_column(name, permissions.blocked_columns)
+            ]
 
 
 def preview_default_rows() -> int:

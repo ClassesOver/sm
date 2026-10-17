@@ -2502,7 +2502,8 @@ async def test_http_reshare_preserves_column_restrictions(tmp_path: Path, capabi
 @pytest.mark.parametrize("capabilities,allowed", [
     (None, True),
     ({}, True),
-    ({"blocked_columns": ["visits"]}, True),
+    # 旧作图表没有登记源事实，受限会话不能仅凭可见列名推断安全。
+    ({"blocked_columns": ["visits"]}, False),
     ({"blocked_columns": ["revenue"]}, False),
     ({"blocked_columns": ["period"]}, False),
 ])

@@ -9,7 +9,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .contracts_v1 import DrilldownDimensionV1, DrilldownMetricV1
+from .contracts_v1 import DrilldownDimensionV1, DrilldownMetricV1, canonical_sha256
 
 _SUPPORTED_BASE = {"sum", "count", "count_distinct", "average"}
 
@@ -40,6 +40,7 @@ def build_drilldown_metrics(
     candidates: list[DrilldownMetricV1] = []
     row_preserving = set(row_preserving_dataset_ids)
     base_by_code_dataset: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    seen_base_facts: set[tuple[str, str, str]] = set()
     derived: list[Mapping[str, Any]] = []
 
     for bundle in bundles:
@@ -65,7 +66,12 @@ def build_drilldown_metrics(
                 for code in fact.get("metricCodes", ())
                 if str(code) in metrics_by_code
             )
+            fingerprint = canonical_sha256(fact)
             for code in dict.fromkeys(codes):
+                identity = (code, dataset_id, fingerprint)
+                if identity in seen_base_facts:
+                    continue
+                seen_base_facts.add(identity)
                 base_by_code_dataset.setdefault((code, dataset_id), []).append(fact)
                 declaration = _base_declaration(
                     code=code,

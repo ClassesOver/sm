@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 
@@ -47,6 +48,12 @@ def metric_fact_identity(fact: Any) -> str:
             fact.period_start or "",
             fact.period_end or "",
             fact.dataset_sha256,
+            # 同一 CSV 在不同分析中可按不同组织粒度生成分组选择器。
+            # topGroups.0 等 token 的含义取决于完整、有序的冻结分组结果。
+            json.dumps({
+                "topGroups": [(item.group, item.value) for item in fact.top_groups],
+                "bottomGroups": [(item.group, item.value) for item in fact.bottom_groups],
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False),
         )
     )
 
@@ -100,6 +107,7 @@ def correlation_fact_identity(fact: Any) -> str:
             fact.left_field,
             fact.right_field,
             fact.method,
+            _scope_identity(fact.scope),
         )
     )
 
