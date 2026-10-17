@@ -46,11 +46,6 @@ class DomainResolution:
     matched_aliases: tuple[str, ...] = ()
     ambiguous_aliases: tuple[str, ...] = ()
 
-    @property
-    def is_ambiguous(self) -> bool:
-        return bool(self.ambiguous_aliases)
-
-
 def domain_definitions() -> tuple[DomainDefinition, ...]:
     return (
         DomainDefinition(

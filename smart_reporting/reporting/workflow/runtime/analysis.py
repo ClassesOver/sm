@@ -107,7 +107,6 @@ from .base import (
     ReportingStateError,
     ReportOutline,
     RunContext,
-    Sequence,
     StepInput,
     StepOutput,
     TaskExecutionScope,
@@ -115,8 +114,6 @@ from .base import (
     ValidationError,
     ZoneInfo,
     _frozen_outline,
-    normalize_workspace_path,
-    _payload_sha256,
     _report_machine_terms,
     _reporting_observed_data_facts,
     _source_warnings_from_state,
@@ -131,6 +128,7 @@ from .base import (
     hashlib,
     json,
     loguru_logger,
+    normalize_workspace_path,
     partial,
     payload_sha256,
     re,
@@ -3091,7 +3089,7 @@ class RuntimeAnalysisMixin:
         state = self._state(run_context)
         outline_hash = str(
             state.get(REPORT_OUTLINE_HASH_STATE_KEY)
-            or _payload_sha256(outline.model_dump(mode="json", by_alias=True))
+            or payload_sha256(outline.model_dump(mode="json", by_alias=True))
         )
         # 用户反馈会推进 revision，但同一 revision 的进程中断不能再次清空 analysis 和已完成章节。
         # 只有旧 checkpoint revision 落后时才创建新状态；同 revision 必须同时核验 state、落盘文件、

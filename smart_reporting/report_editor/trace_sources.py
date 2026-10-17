@@ -43,7 +43,6 @@ from ..reporting.trace.dataset_service import (
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
 from ..reporting.trace.fact_service import fact_display_unit, fact_display_value, read_fact_document
-from ..reporting.trace.index_builder import TRACE_INDEX_FILENAME
 from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field
 from ..reporting.workflow.checkpoint import FileIdentity
 from ..workspace import WorkspaceError
@@ -143,11 +142,6 @@ class _RegisteredFile(Protocol):
 
     @property
     def sha256(self) -> str: ...
-
-
-def trace_index_path_for_context(markdown_path: str) -> str:
-    parent = PurePosixPath(markdown_path).parent
-    return parent.joinpath(TRACE_INDEX_FILENAME).as_posix()
 
 
 class ReportEditorTraceService:
@@ -716,7 +710,7 @@ class ReportEditorTraceService:
         """
 
         from ..reporting.trace.contracts_v1 import FactRefV1, derive_resource_id
-        from ..reporting.trace.fact_service import resolve_fact
+        from ..reporting.trace.fact_service import resolve_fact_from_document
 
         index = await self.require_index(context)
         entry = next(
@@ -737,7 +731,8 @@ class ReportEditorTraceService:
         bundle_bytes = await self._read_registered_file(
             context, file_ref, max_bytes=16 * 1024 * 1024
         )
-        pointer = self._locate_fact_pointer(bundle_bytes, fact_id)
+        document = read_fact_document(bundle_bytes)
+        pointer = self._locate_fact_pointer(document, fact_id)
         fact_ref = FactRefV1(
             analysisId=analysis_id,
             fileResourceId=derive_resource_id(file_ref.path),
@@ -745,13 +740,12 @@ class ReportEditorTraceService:
             factKind=self._pointer_kind(pointer),
             factKey=fact_id,
         )
-        result = resolve_fact(bundle_bytes, fact_ref, with_inputs=True)
-        result["analysisName"] = json.loads(bundle_bytes).get("analysisName")
+        result = resolve_fact_from_document(document, fact_ref, with_inputs=True)
+        result["analysisName"] = document.get("analysisName")
         return result
 
     @staticmethod
-    def _locate_fact_pointer(bundle_bytes: bytes, fact_id: str) -> str:
-        document = read_fact_document(bundle_bytes)
+    def _locate_fact_pointer(document: Mapping[str, Any], fact_id: str) -> str:
         # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
         for array_name, prefix in (
             ("metrics", "/metrics/"),

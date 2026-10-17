@@ -429,23 +429,6 @@ def _apply_scope(
     return frame, tuple(warnings)
 
 
-def scope_columns_for_query(
-    semantics: Mapping[str, Mapping[str, Any]],
-) -> tuple[str, ...]:
-    """返回固定口径字段，供取数 SQL 保留在冻结 CSV 中。"""
-
-    columns: list[str] = []
-    for semantic in semantics.values():
-        raw_scope = semantic.get("exclusiveScope")
-        if not isinstance(raw_scope, Mapping):
-            continue
-        for column in raw_scope:
-            name = str(column)
-            if name and name not in columns:
-                columns.append(name)
-    return tuple(columns)
-
-
 def _aggregate(series: pl.Series, aggregation: Aggregation) -> float | None:
     if aggregation == "count":
         return float(series.len() - series.null_count())

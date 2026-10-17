@@ -405,7 +405,7 @@ def _repair_task_facts(
             for chart in plan.charts
             if chart.source_path == path
         ]
-    elif code in {"execution_output_error", "report_visualization_script_failed"}:
+    elif code == "report_visualization_script_failed":
         data_contract = _visualization_data_contract(payload)
         if data_contract is not None:
             facts["visualizationDataContract"] = data_contract

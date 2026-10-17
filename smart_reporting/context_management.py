@@ -9,8 +9,10 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import fields
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from time import perf_counter
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,6 +25,8 @@ from agno.session.team import TeamSession
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .agent_control import is_parallel_safe_tool
+from .async_utils import safe_reset_context_var
 from .runtime.observability import duration_ms
 
 SKILL_CONTENT_WINDOW = 10
@@ -83,11 +87,10 @@ TASK_EXECUTION_TOOL_NAMES = frozenset(
         "view_image",
     }
 )
-_CODING_FREEFORM_TOOL_ARGUMENTS = {
-    "write_script": "source",
-    "run": "code",
-    "edit_script": "patch",
-}
+# free-form custom tool 名到其唯一参数名；Reporting code agent 协议层复用同一份。
+CODING_FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
+    {"write_script": "source", "run": "code", "edit_script": "patch"}
+)
 SUMMARY_METADATA_KEY = "agentos_rolling_summary"
 COMPRESSIBLE_HISTORY_TOOLS = frozenset(
     {
@@ -1069,7 +1072,7 @@ class TaskExecutionContextProjector:
                 if (
                     not isinstance(provider_data, dict)
                     or provider_data.get("reporting_wire_type") != "custom"
-                    or name not in _CODING_FREEFORM_TOOL_ARGUMENTS
+                    or name not in CODING_FREEFORM_TOOL_ARGUMENTS
                     or not isinstance(raw_input, str)
                     or not raw_input
                     or not isinstance(function, dict)
@@ -1252,7 +1255,7 @@ class TaskExecutionContextProjector:
             bytes_after += len(summary_json.encode("utf-8")) + len(receipt_json.encode("utf-8"))
             entry["call"]["provider_data"]["raw_input"] = summary_json
             entry["function"]["arguments"] = json.dumps(
-                {_CODING_FREEFORM_TOOL_ARGUMENTS[entry["name"]]: summary_json},
+                {CODING_FREEFORM_TOOL_ARGUMENTS[entry["name"]]: summary_json},
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
@@ -1838,40 +1841,13 @@ class TaskExecutionContextProjector:
         return projected
 
 
-_PARALLEL_SAFE_READ_TOOLS = frozenset(
-    {
-        "list_files",
-        "read_file",
-        "read_lines",
-        "search_text",
-        "tree",
-        "git_status",
-        "git_diff",
-        "read_tool_output",
-        "view_image",
-        "get_skill_instructions",
-        "get_skill_reference",
-        "inspect_profile_index",
-        "report_list_data_sources",
-        "report_describe_data_source",
-    }
-)
-
-
 def _parallel_safe_tool_call(function_call: Any) -> bool:
     name = str(getattr(getattr(function_call, "function", None), "name", "") or "")
     arguments = getattr(function_call, "arguments", None)
     return _parallel_safe_tool(name, arguments)
 
 
-def _parallel_safe_tool(name: str, arguments: Any) -> bool:
-    if name in _PARALLEL_SAFE_READ_TOOLS:
-        return True
-    return bool(
-        name == "get_skill_script"
-        and isinstance(arguments, dict)
-        and arguments.get("execute", False) is False
-    )
+_parallel_safe_tool = is_parallel_safe_tool
 
 
 def _tool_batch_attributes(size: int, admitted: bool, admission: str) -> dict[str, Any]:
@@ -1966,13 +1942,9 @@ _TASK_EXECUTION_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 
 
-def _safe_reset_context_var(variable: ContextVar[Any], token: Any) -> None:
-    """取消跨任务清理时忽略已不属于当前 Context 的 token。"""
-
-    try:
-        variable.reset(token)
-    except ValueError:
-        logger.debug("task_execution_contextvar_reset_skipped_cross_context")
+_safe_reset_context_var = partial(
+    safe_reset_context_var, event="task_execution_contextvar_reset_skipped_cross_context"
+)
 
 
 class ProjectedOpenAIChat(OpenAIChat):

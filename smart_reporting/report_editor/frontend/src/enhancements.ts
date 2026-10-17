@@ -160,14 +160,12 @@ export function createImagePreview(editor: HTMLElement) {
   const image = dialog.querySelector<HTMLImageElement>('img')!
   const caption = dialog.querySelector<HTMLElement>('figcaption')!
   const close = modal.closeButton!
-  let opener: HTMLElement | null = null
   const isPreviewable = (target: EventTarget | null): target is HTMLImageElement =>
     target instanceof HTMLImageElement && !target.classList.contains('interactive-chart-fallback')
   const prepareImage = (target: HTMLImageElement) => {
     if (isPreviewable(target)) target.tabIndex = 0
   }
   const show = (target: HTMLImageElement) => {
-    opener = target
     image.src = target.getAttribute('src') ?? ''
     // figcaption 承载说明文字时 img 置空 alt，避免读屏器重复朗读同一文本
     image.alt = ''
@@ -177,7 +175,6 @@ export function createImagePreview(editor: HTMLElement) {
   }
   const hide = () => {
     modal.close()
-    opener = null
   }
   close.addEventListener('click', hide)
   dialog.addEventListener('click', (event) => {

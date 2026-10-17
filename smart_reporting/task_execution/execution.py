@@ -15,7 +15,7 @@ from agno.run import RunContext
 from agno.tools import Function
 from loguru import logger
 
-from ..agent_control import AGENT_PLAN_STATE_KEY
+from ..agent_control import AGENT_PLAN_STATE_KEY, is_parallel_safe_tool
 from ..skills import TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY
 from ..workspace import (
     WorkspaceError,
@@ -194,15 +194,6 @@ MAX_TOOL_FAILURE_ENTRIES = 16
 # 模型偶尔以绝对路径引用工作区；以该根目录开头的路径可改写为工作区相对路径。
 ABSOLUTE_WORKSPACE_ROOT = "/workspace"
 ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.-])/(?:[\w.-]+/)*[\w.-]+")
-COMMAND_NOT_FOUND_RE = re.compile(
-    r"(?im)^(?:/bin/)?(?:ba)?sh:\s*\d+:\s*[^:\n]+:\s*(?:command\s+)?not found\s*$"
-)
-PYTHON_TRACEBACK_RE = re.compile(r"(?m)^Traceback \(most recent call last\):\s*$")
-PYTHON_EXCEPTION_RE = re.compile(
-    r"^(?:builtins\.)?(?:AssertionError|NameError|ModuleNotFoundError|ImportError|SyntaxError|"
-    r"TypeError|ValueError|KeyError|FileNotFoundError|PermissionError|OSError|RuntimeError)"
-    r"(?:\s*:\s*.*)?$"
-)
 VOLATILE_PROGRESS_RESULT_KEYS = frozenset(
     {"commandId", "command_id", "execution_id", "sessionId", "session_id"}
 )
@@ -250,18 +241,6 @@ def suggested_workspace_path(arguments: dict[str, Any]) -> str | None:
     return None
 
 
-def _deterministic_output_error(output: str) -> tuple[str, str] | None:
-    command_error = COMMAND_NOT_FOUND_RE.search(output)
-    if command_error is not None:
-        return "command_not_found", command_error.group(0)[:500]
-    if PYTHON_TRACEBACK_RE.search(output) is None:
-        return None
-    last_line = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), "")
-    if PYTHON_EXCEPTION_RE.fullmatch(last_line) is None:
-        return None
-    return "python_traceback", last_line[:500]
-
-
 def failed_result_resources(arguments: dict[str, Any], result: Any) -> list[str]:
     if not isinstance(result, dict):
         return []
@@ -287,23 +266,10 @@ def failed_result_resources(arguments: dict[str, Any], result: Any) -> list[str]
     return sorted(resources)[:4]
 
 
-_PARALLEL_SKILL_TOOLS = frozenset({"get_skill_instructions", "get_skill_reference"})
-_PARALLEL_REPORT_TOOLS = frozenset(
-    {
-        "report_list_data_sources",
-        "report_describe_data_source",
-        # 该工具只按受信身份读取 Profile 节点，不修改工作区或任务状态。
-        "inspect_profile_index",
-        "read_profile_pointer",
-    }
-)
 _TASK_TOOL_SCHEDULER_MARKER = "_agentos_task_execution_tool_scheduler"
 
 
-def _task_tool_parallel_safe(function_name: str, arguments: dict[str, Any]) -> bool:
-    if function_name in _PARALLEL_SKILL_TOOLS or function_name in _PARALLEL_REPORT_TOOLS:
-        return True
-    return function_name == "get_skill_script" and arguments.get("execute", False) is False
+_task_tool_parallel_safe = is_parallel_safe_tool
 
 
 class _AsyncRWLock:
@@ -947,42 +913,6 @@ class TaskExecutionKernel:
     async def _check_fence(self, scope: TaskExecutionRuntime, execution_id: str) -> None:
         if scope.lease is not None:
             await self.repository.validate_execution_fence(execution_id, scope.lease)
-
-    @staticmethod
-    def _public_execution(execution: TaskExecution, *, cached: bool = False) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "execution_id": execution.execution_id,
-            "status": execution.status,
-            "output": execution.terminal_output,
-            "exit_code": execution.exit_code,
-            "output_cursor": execution.output_cursor,
-            "mutation_sequence": execution.mutation_sequence,
-        }
-        if execution.status not in TERMINAL_EXECUTION_STATUSES:
-            result["session_id"] = execution.execution_id
-        if cached:
-            result["status_is_cached"] = True
-        output_error = (
-            _deterministic_output_error(execution.terminal_output)
-            if execution.status == "completed" and execution.exit_code == 0
-            else None
-        )
-        if output_error is not None:
-            failure_code, diagnostics = output_error
-            result.update(
-                {
-                    "ok": False,
-                    "code": "execution_output_error",
-                    "message": "命令输出包含确定性的执行错误。",
-                    "details": {
-                        "failureCode": failure_code,
-                        "diagnostics": diagnostics,
-                    },
-                    "requiredActions": ["修复输出中的执行错误后重新运行命令。"],
-                    "retryable": True,
-                }
-            )
-        return result
 
     @staticmethod
     def _reject_writable_skill_script_copy(

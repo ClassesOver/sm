@@ -72,20 +72,30 @@ from ..phase import (
     reporting_visualization_recovery_from_acceptance_contract,
     reporting_visualization_usage_from_run_context,
 )
+from .orchestration import MODEL_TOKEN_FIELDS as _MODEL_TOKEN_FIELDS
 from .orchestration import record_step_model_metrics
 
-ReportingEventSink = Callable[[TaskExecutionScope, str, Any], Awaitable[None]]
 ReportTaskExecutor = Callable[["ReportingTaskInvocation"], Awaitable[Any]]
 MAX_REPORT_INSTRUCTION_BYTES = 512 * 1024
 
-_MODEL_TOKEN_FIELDS = (
-    ("input_tokens", "inputTokens"),
-    ("output_tokens", "outputTokens"),
-    ("total_tokens", "totalTokens"),
-    ("reasoning_tokens", "reasoningTokens"),
-    ("cache_read_tokens", "cacheReadTokens"),
-    ("cache_write_tokens", "cacheWriteTokens"),
-)
+
+
+def _accumulate_token_metrics(target: dict[str, Any], source: Any) -> None:
+    """累加 Agno 事件或 RunMetrics 中明确提供的 token 计数与首 token 时延。"""
+
+    for field, alias in _MODEL_TOKEN_FIELDS:
+        value = getattr(source, field, None)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            target[alias] += value
+    time_to_first_token = getattr(source, "time_to_first_token", None)
+    if (
+        isinstance(time_to_first_token, int | float)
+        and not isinstance(time_to_first_token, bool)
+        and time_to_first_token >= 0
+    ):
+        target["timeToFirstTokenSeconds"] = (
+            target.get("timeToFirstTokenSeconds", 0) + time_to_first_token
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,27 +152,9 @@ class _TaskModelMetricsSettlement:
                 return
             self._seen.add(identity)
             self._metrics["requestCount"] += 1
-            for field, alias in _MODEL_TOKEN_FIELDS:
-                value = getattr(event, field, None)
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    self._metrics[alias] += value
             # Agno 3.0 的完成事件没有完整 request latency；这里只汇总它明确提供的 TTFT，
             # 步骤墙钟耗时仍由 Workflow executor 记录，不能把两者混为同一指标。
-            time_to_first_token = getattr(event, "time_to_first_token", None)
-            if (
-                isinstance(time_to_first_token, int | float)
-                and not isinstance(time_to_first_token, bool)
-                and time_to_first_token >= 0
-            ):
-                self._metrics["timeToFirstTokenSeconds"] = (
-                    self._metrics.get("timeToFirstTokenSeconds", 0) + time_to_first_token
-                )
-
-    def record_stream(self, events: list[Any]) -> None:
-        """将一次 Agno stream 映射到稳定的模型响应序号。"""
-
-        for event in events:
-            self.record(event)
+            _accumulate_token_metrics(self._metrics, event)
 
     def record_run_output(self, run_output: Any, request_count: int) -> None:
         """汇总 Agno 非流式 RunOutput，并使用协议层的真实请求计数。"""
@@ -177,19 +169,7 @@ class _TaskModelMetricsSettlement:
             self._metrics["requestCount"] += request_count
             if metrics is None:
                 return
-            for field, alias in _MODEL_TOKEN_FIELDS:
-                value = getattr(metrics, field, None)
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    self._metrics[alias] += value
-            time_to_first_token = getattr(metrics, "time_to_first_token", None)
-            if (
-                isinstance(time_to_first_token, int | float)
-                and not isinstance(time_to_first_token, bool)
-                and time_to_first_token >= 0
-            ):
-                self._metrics["timeToFirstTokenSeconds"] = (
-                    self._metrics.get("timeToFirstTokenSeconds", 0) + time_to_first_token
-                )
+            _accumulate_token_metrics(self._metrics, metrics)
 
     def stage_recorder(
         self, stage: str, *, agent_role: str | None = None

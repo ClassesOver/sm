@@ -219,7 +219,6 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   const tabListOwner = shell.querySelector<HTMLElement>('.evidence-tablist')!
   const directoryToggle = shell.querySelector<HTMLButtonElement>('.evidence-directory-toggle')!
   const directory = shell.querySelector<HTMLElement>('.evidence-directory')!
-  const directoryHead = shell.querySelector<HTMLElement>('.evidence-directory-head')!
   const directoryTitle = shell.querySelector<HTMLElement>('.evidence-directory-title')!
   const directoryToggleAll = shell.querySelector<HTMLButtonElement>('.evidence-directory-toggle-all')!
   const allGroupKinds = (): EvidenceObjectKind[] => [...new Set(directoryRefs.map((ref) => ref.kind))]

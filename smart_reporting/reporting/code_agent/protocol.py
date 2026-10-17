@@ -23,6 +23,7 @@ from loguru import logger
 from openai.types.responses import ResponseReasoningItem
 
 from ...context_management import (
+    CODING_FREEFORM_TOOL_ARGUMENTS,
     TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
     TaskExecutionContextProjector,
@@ -48,9 +49,7 @@ from .budget import CodeBudget
 from .edit_patch import EDIT_PATCH_GRAMMAR
 from .metrics import bounded_failure_diagnostics
 
-FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
-    {"write_script": "source", "run": "code", "edit_script": "patch"}
-)
+FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = CODING_FREEFORM_TOOL_ARGUMENTS
 
 _CUSTOM_TOOL_PROTOCOL_ERROR = "report_code_custom_tool_protocol_error"
 _VISUALIZATION_BUDGET_GATE_FORCED_SUBMIT = "report_code_visual_budget_gate_forced_submit"

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
-import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -26,9 +24,9 @@ from ...task_execution import (
 )
 from ...workspace import (
     MAX_UPLOAD_BYTES,
-    normalize_workspace_path,
     WorkspaceError,
     WorkspacePathConflict,
+    normalize_workspace_path,
 )
 from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
@@ -157,16 +155,6 @@ class ReportingWorkspaceAdapter:
 
     async def batch_hash_files(self, thread_id: str, paths: Sequence[str]) -> list[dict[str, Any]]:
         return await self._service.abatch_hash_files(thread_id, list(paths))
-
-    async def probe_python_modules(self, thread_id: str, names: set[str]) -> set[str]:
-        if (
-            not names
-            or len(names) > 100
-            or any(re.fullmatch(r"[A-Za-z_]\w*", name) is None for name in names)
-        ):
-            raise WorkspaceError("Python 依赖探测参数无效。")
-        del thread_id
-        return {name for name in names if importlib.util.find_spec(name) is not None}
 
     async def read_limited_regular_file(
         self,

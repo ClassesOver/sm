@@ -13,7 +13,7 @@ from loguru import logger
 from markdown_it import MarkdownIt
 from pydantic import ConfigDict, Field, RootModel, TypeAdapter, field_validator, model_validator
 
-from ...contract import StrictModel
+from ...contract import StrictModel, safe_relative_posix_path
 from ...delivery.draft_v1 import (
     _ATX_HEADING,
     _MANUAL_HEADING_NUMBER,
@@ -242,9 +242,7 @@ class ChartDataBinding(StrictModel):
     @field_validator("fact_path")
     @classmethod
     def validate_fact_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("图表事实路径必须是安全工作区相对路径")
+        path = safe_relative_posix_path(value, "图表事实路径必须是安全工作区相对路径")
         return path.as_posix()
 
     @field_validator("analysis_id", "data_path", "role")
@@ -325,9 +323,7 @@ class ChartDraft(StrictModel):
     @field_validator("source_path")
     @classmethod
     def validate_source_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("图表源路径必须是安全工作区相对路径")
+        path = safe_relative_posix_path(value, "图表源路径必须是安全工作区相对路径")
         if path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
             raise ValueError("图表源文件必须是 PNG 或 JPEG")
         return path.as_posix()

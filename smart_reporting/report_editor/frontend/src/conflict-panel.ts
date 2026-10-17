@@ -30,7 +30,6 @@ export function createConflictPanel(root: HTMLElement, actions: {
       <div class="conflict-actions"><button type="button" class="ui-button ui-button--primary" data-conflict="local">保留本地</button><button type="button" class="ui-button ui-button--secondary" data-conflict="remote">采用远端</button><button type="button" class="ui-button ui-button--secondary" data-conflict="merge-retry">合并后重试</button></div>`,
   })
   const panel = modal.overlay
-  let opener: HTMLElement | null = null
   const hide = modal.close
   panel.querySelector('[data-conflict="local"]')?.addEventListener('click', () => { actions.keepLocal(); hide() })
   panel.querySelector('[data-conflict="remote"]')?.addEventListener('click', () => { actions.useRemote(); hide() })
@@ -43,7 +42,6 @@ export function createConflictPanel(root: HTMLElement, actions: {
   return {
     panel,
     show(base: string, local: string, remote: string) {
-      opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
       const diff = panel.querySelector<HTMLElement>('.conflict-diff')!
       diff.replaceChildren(...conflictLines(base, local, remote).map((line) => {
         const element = document.createElement('div')

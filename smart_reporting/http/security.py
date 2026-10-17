@@ -97,6 +97,3 @@ def verify_capability(
         expires_at=expires_at,
     )
 
-
-def thread_label(thread: str, secret: str) -> str:
-    return hmac.new(secret.encode("utf-8"), thread.encode("utf-8"), hashlib.sha256).hexdigest()

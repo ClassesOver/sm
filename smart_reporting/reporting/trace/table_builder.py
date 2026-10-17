@@ -423,33 +423,3 @@ def build_analysis_tables(
             tables.append(part)
     return tuple(tables)
 
-
-def fill_table_trace_file_refs(
-    trace: TableTraceV1,
-    *,
-    analysis_id: str,
-    file_resource_id: str,
-) -> TableTraceV1:
-    """装配层把表格单元格 FactRef 的文件资源重写为真实登记 ID。
-
-    供 spec 变化后复用已生成的行键结构时修正引用；正常路径直接在
-    ``build_table_trace`` 传入 fact_file_resource_id，无需调用本函数。
-    """
-
-    cells = tuple(
-        cell.model_copy(
-            update={
-                "fact_refs": tuple(
-                    ref.model_copy(
-                        update={
-                            "analysis_id": analysis_id,
-                            "file_resource_id": file_resource_id,
-                        }
-                    )
-                    for ref in cell.fact_refs
-                )
-            }
-        )
-        for cell in trace.cells
-    )
-    return trace.model_copy(update={"cells": cells})
