@@ -883,9 +883,13 @@ class RuntimePublicationMixin:
                 complete=audit_complete,
             )
         except Exception as error:
-            raise ReportingError(
-                "report_quality_audit_failed", "发布质量告警审计写入失败。"
-            ) from error
+            # 审计写入失败与其他门禁问题一样记为 issue；保留已收集的问题和告警，
+            # 不用 raise 把整个门禁替换成一条笼统问题（AGENTS.md 非阻断要求）。
+            logger.warning(
+                "report_quality_audit_write_failed error_type={}", type(error).__name__
+            )
+            invalid_notice_count = 0
+            issue("report_quality_audit_failed", "发布质量告警审计写入失败，已有产物仍可下载。")
         audit_summary = audit.build().as_dict()
         if invalid_notice_count:
             audit_summary["invalidNoticeCount"] = invalid_notice_count

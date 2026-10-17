@@ -213,3 +213,38 @@ async def safe():
 '''
     assert _blocking_gate_raises(calls, ("publish",), calls=("publish", "_gate")) == ["publish:3 调用 _gate 未兜底"]
     assert _blocking_gate_raises(calls, ("safe",), calls=("safe", "_gate")) == []
+
+
+@pytest.mark.anyio
+async def test_publication_gate_keeps_collected_issues_when_audit_write_fails(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from agno.run import RunContext
+
+    from smart_reporting.reporting.workflow.runtime import publication
+
+    async def failing_audit(*_args, **_kwargs):
+        raise RuntimeError("audit service down")
+
+    monkeypatch.setattr(publication, "_record_publication_audit", failing_audit)
+    state: dict = {}
+    runtime = SimpleNamespace(
+        _state=lambda _context: state,
+        _workflow_result=lambda _state: {},
+        _scope=lambda _context: {
+            "threadId": "thread", "externalRunId": "external", "database": "db", "companyId": "c",
+        },
+        workspace_service=SimpleNamespace(ahash_file=AsyncMock(return_value={"missing": True})),
+        quality_warning_service=None,
+    )
+
+    gate = await publication.RuntimePublicationMixin._dataset_publication_gate(
+        runtime, RunContext(run_id="run", session_id="thread", session_state=state), {"revision": 0}
+    )
+
+    codes = [item["code"] for item in gate["issues"]]
+    assert gate["formalReleaseAllowed"] is False
+    # 审计失败只追加一条问题，之前收集的门禁问题不被替换。
+    assert codes[-1] == "report_quality_audit_failed"
+    assert len(codes) > 1
