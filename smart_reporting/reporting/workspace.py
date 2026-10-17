@@ -13,6 +13,7 @@ from collections.abc import MutableMapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+import anyio
 from agno.run import RunContext
 from loguru import logger as loguru_logger
 from PIL import Image, UnidentifiedImageError
@@ -24,7 +25,7 @@ from ..workspace import (
     WorkspacePathConflict,
     _thread,
 )
-from .data_sources import _best_effort_delete, _thread_binding
+from .data_sources import _best_effort_delete, thread_binding
 from .models import ReportingError
 
 REPORT_JOBS_STATE_KEY = "report_jobs"
@@ -95,7 +96,7 @@ async def inspect_report_chart_file(
         raise ReportingError("report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。")
     try:
         # 解码与 RGBA 转换是 CPU 密集操作，放到工作线程以免阻塞事件循环。
-        digest, image_format, width, height, colors = await asyncio.to_thread(
+        digest, image_format, width, height, colors = await anyio.to_thread.run_sync(
             _decode_chart_image, content
         )
     except (UnidentifiedImageError, OSError) as error:
@@ -249,7 +250,7 @@ class WorkspaceReportService:
             raise WorkspaceError("分析任务不存在，请重新准备数据集。")
         if raw.get("jobId") != normalized_job_id:
             raise WorkspaceError("分析任务状态无效，请重新准备数据集。")
-        if raw.get("_threadBinding") != _thread_binding(_thread(run_context)):
+        if raw.get("_threadBinding") != thread_binding(_thread(run_context)):
             raise WorkspaceError("分析任务不属于当前对话，请重新准备数据集。")
         return copy.deepcopy(raw)
 
@@ -466,7 +467,7 @@ class WorkspaceReportService:
         job_id = str(uuid.uuid4())
         job = {
             "jobId": job_id,
-            "_threadBinding": _thread_binding(_thread(run_context)),
+            "_threadBinding": thread_binding(_thread(run_context)),
             "sources": sources,
         }
         self._store_job(job, run_context)

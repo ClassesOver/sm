@@ -19,7 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from .service import ReportEditorSession, _token_hash
+from .service import ReportEditorSession, token_hash
 
 _metadata = MetaData()
 report_editor_grants_v1 = Table(
@@ -74,7 +74,7 @@ class SqlAlchemyReportEditorRepository:
         async with self.engine.begin() as connection:
             await connection.execute(
                 insert(report_editor_grants_v1).values(
-                    grant_hash=_token_hash(jti), expires_at=expires_at, consumed_at=None
+                    grant_hash=token_hash(jti), expires_at=expires_at, consumed_at=None
                 )
             )
 
@@ -83,7 +83,7 @@ class SqlAlchemyReportEditorRepository:
             row = (
                 await connection.execute(
                     select(report_editor_grants_v1.c.grant_hash).where(
-                        report_editor_grants_v1.c.grant_hash == _token_hash(jti),
+                        report_editor_grants_v1.c.grant_hash == token_hash(jti),
                         report_editor_grants_v1.c.expires_at > now,
                     )
                 )

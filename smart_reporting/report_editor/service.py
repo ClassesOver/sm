@@ -530,14 +530,14 @@ class ReportEditorGrantService:
         if not await self.repository.grant_active(jti, now=current):
             raise ReportingError("report_editor_grant_invalid", "报告编辑授权无效。")
         raw_session = secrets.token_urlsafe(32)
-        await self.repository.put_session(_token_hash(raw_session), session)
+        await self.repository.put_session(token_hash(raw_session), session)
         return raw_session, session
 
     async def lookup_session(
         self, raw_session: str, *, now: datetime | None = None
     ) -> ReportEditorSession:
         current = _utc(now or datetime.now(UTC))
-        session = await self.repository.get_session(_token_hash(raw_session))
+        session = await self.repository.get_session(token_hash(raw_session))
         if session is None:
             raise ReportingError("report_editor_session_invalid", "报告编辑会话无效。")
         if session.expires_at <= current:
@@ -991,31 +991,27 @@ class ReportEditorService:
         offset: int = 0,
         include_markdown: bool = True,
     ) -> list[dict[str, object]]:
-        candidates = (await self._candidate_revisions(expected))[offset : offset + limit]
-        if not include_markdown:
-            return [self._history_metadata(candidate) for candidate in candidates]
-
-        async def read(candidate: Any) -> dict[str, object] | None:
+        candidates = await self._candidate_revisions(expected)
+        history: list[dict[str, object]] = []
+        for candidate in candidates[offset : offset + limit]:
             item = self._history_metadata(candidate)
-            try:
-                _path, markdown, sha256 = await self._read_frozen_markdown(candidate)
-            except ReportingError as error:
-                # 单个历史修订的工作区文件缺失不应拖垮整个历史列表。
-                logger.warning(
-                    "report_editor_history_revision_unreadable report_id={} revision={} "
-                    "code={}",
-                    candidate.report_id,
-                    candidate.revision,
-                    error.code,
-                )
-                return None
-            item["markdown"] = markdown
-            item["sha256"] = sha256
-            return item
-
-        # 各修订的冻结文件互不依赖，并发读取；gather 保持原有顺序。
-        items = await asyncio.gather(*(read(candidate) for candidate in candidates))
-        return [item for item in items if item is not None]
+            if include_markdown:
+                try:
+                    _path, markdown, sha256 = await self._read_frozen_markdown(candidate)
+                except ReportingError as error:
+                    # 单个历史修订的工作区文件缺失不应拖垮整个历史列表。
+                    logger.warning(
+                        "report_editor_history_revision_unreadable report_id={} revision={} "
+                        "code={}",
+                        candidate.report_id,
+                        candidate.revision,
+                        error.code,
+                    )
+                    continue
+                item["markdown"] = markdown
+                item["sha256"] = sha256
+            history.append(item)
+        return history
 
     async def history_page(
         self,
@@ -2306,7 +2302,7 @@ def _next_pdf_path(context: ReportEditorContext, *, revision: int | None = None)
     return str(path.parent.with_name(f"revision-{target_revision}") / path.name)
 
 
-def _token_hash(value: str) -> str:
+def token_hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 

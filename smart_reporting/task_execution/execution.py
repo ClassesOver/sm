@@ -15,7 +15,7 @@ from agno.run import RunContext
 from agno.tools import Function
 from loguru import logger
 
-from ..agent_control import AGENT_PLAN_STATE_KEY, is_parallel_safe_tool
+from ..agent_control import AGENT_PLAN_STATE_KEY, is_scheduler_parallel_safe_tool
 from ..skills import TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY
 from ..workspace import (
     WorkspaceError,
@@ -269,7 +269,6 @@ def failed_result_resources(arguments: dict[str, Any], result: Any) -> list[str]
 _TASK_TOOL_SCHEDULER_MARKER = "_agentos_task_execution_tool_scheduler"
 
 
-_task_tool_parallel_safe = is_parallel_safe_tool
 
 
 class _AsyncRWLock:
@@ -393,7 +392,7 @@ def create_task_tool_scheduler_hook(
         async with _task_tool_scheduler(repository, external_run_id) as scheduler:
             lock = (
                 scheduler.read()
-                if _task_tool_parallel_safe(function_name, arguments)
+                if is_scheduler_parallel_safe_tool(function_name, arguments)
                 else scheduler.write()
             )
             async with lock:
