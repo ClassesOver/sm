@@ -437,6 +437,33 @@ def _strip_duplicate_section_heading(markdown: str, *, expected_title: str) -> t
     return markdown[match.end() :].lstrip("\r\n"), True
 
 
+_H3_LINE = re.compile(r"^###[ \t]+(?P<title>[^\r\n]*?)[ \t]*(?:#+[ \t]*)?(?:\r?\n|$)", re.MULTILINE)
+
+
+def _normalized_h3_title(title: str) -> str:
+    return _clean_heading_title(normalize_cjk_punctuation(normalize_cjk_wording(title)))
+
+
+def _repeated_h3_titles(blocks) -> set[str]:
+    """同章多个主题各自单设“管理动作”等同名小标题时，目录与正文出现成串重复标题。"""
+    counts: dict[str, int] = {}
+    for block in blocks:
+        for match in _H3_LINE.finditer(block.markdown):
+            title = _normalized_h3_title(match["title"])
+            counts[title] = counts.get(title, 0) + 1
+    return {title for title, count in counts.items() if count > 1 and title}
+
+
+def _strip_repeated_h3(markdown: str, titles: set[str]) -> tuple[str, bool]:
+    """去掉重复小标题行，其段落并入前一主题；含 H4 的块保留标题，避免 H4 失去上级。"""
+    if not titles or re.search(r"^####[ \t]", markdown, re.MULTILINE):
+        return markdown, False
+    stripped = _H3_LINE.sub(
+        lambda match: "" if _normalized_h3_title(match["title"]) in titles else match[0], markdown,
+    )
+    return stripped.lstrip("\r\n"), stripped != markdown
+
+
 def _validated_block_headings(
     markdown: str,
     *,
@@ -972,6 +999,7 @@ def assemble_report_markdown(
         )
         h3_count = 0
         h4_count = 0
+        repeated_titles = _repeated_h3_titles(section.blocks)
         for block_index, block in enumerate(section.blocks):
             from ..trace.semantic_bindings import anchor_bound_numbers
 
@@ -1004,6 +1032,10 @@ def assemble_report_markdown(
                             "title": definition.title,
                         }
                     )
+            block_markdown, repeated_removed = _strip_repeated_h3(block_markdown, repeated_titles)
+            if repeated_removed:
+                auto_fixes.append({"code": "repeated_subheading_removed",
+                                   "sectionCode": definition.code, "blockId": block.block_id})
             block_markdown, h3_count, h4_count, block_headings = _number_block_headings(
                 block_markdown,
                 definition=definition,

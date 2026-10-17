@@ -190,6 +190,31 @@ def test_assemble_drops_trailing_sentence_punctuation_from_headings() -> None:
     ]
 
 
+def test_assemble_merges_repeated_subheadings_into_preceding_topic() -> None:
+    """每个主题都单设“管理动作”小标题时，目录出现成串同名条目；去掉重复标题，段落并入前一主题。"""
+    rendered = _render(
+        "### 收入总量\n\n收入增长。\n\n### 管理动作\n\n建议跟踪收入。",
+        "### 成本结构\n\n成本上升。\n\n### 管理动作\n\n建议控制成本。",
+    )
+
+    assert "管理动作" not in rendered.markdown
+    assert "### 1.1 收入总量\n" in rendered.markdown
+    assert "### 1.2 成本结构\n" in rendered.markdown
+    assert rendered.markdown.index("建议跟踪收入") < rendered.markdown.index("### 1.2 成本结构")
+    assert [item.title for item in rendered.heading_numbers] == ["经营分析", "收入总量", "成本结构"]
+    assert any(item["code"] == "repeated_subheading_removed" for item in rendered.auto_fixes)
+
+
+def test_assemble_keeps_single_and_h4_parent_subheadings() -> None:
+    rendered = _render(
+        "### 管理动作\n\n建议跟踪。",
+        "### 管理动作\n\n#### 收入\n\n建议控制。",
+    )
+
+    # 含 H4 的块保留其上级标题，H4 不会失去上级。
+    assert "### 1.1 管理动作\n\n#### 1.1.1 收入" in rendered.markdown
+
+
 def test_assemble_removes_duplicate_section_heading_with_trailing_colon() -> None:
     rendered = _render("## 经营分析：\n\n### 结论")
 
