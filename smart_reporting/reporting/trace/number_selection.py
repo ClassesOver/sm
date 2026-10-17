@@ -16,6 +16,77 @@ _DAY_PERIOD = re.compile(
     r'(?:[日号]?[—–至到~～-](?:(?P<end_year>\d{4})年)?'
     r'(?:(?P<end_month>\d{1,2})月)?(?P<end_day>\d{1,2}))?[日号]'
 )
+_SHORT_PERIOD = re.compile(
+    r'(?<!\d)\d{1,2}月?(?:[—–至到~～-](?:\d{4}年)?\d{1,2})?月'
+)
+_SHORT_DAY_PERIOD = re.compile(
+    r'(?<![\d.])(?:(?P<month>\d{1,2})月)?\d{1,2}'
+    r'(?:[日号]?[—–至到~～-](?:\d{4}年)?(?:\d{1,2}月)?\d{1,2})?[日号]'
+)
+_RELATIVE_PERIOD = re.compile(r'(次年|翌年|来年|上年|去年|同年|当年|次月|翌月|下月|上月|当月|本月)\s*$')
+_YEAR_OFFSETS = {"次年": 1, "翌年": 1, "来年": 1, "上年": -1, "去年": -1, "同年": 0, "当年": 0}
+_MONTH_OFFSETS = {"次月": 1, "翌月": 1, "下月": 1, "上月": -1, "当月": 0, "本月": 0}
+
+
+def _written_period(sentence, fact):
+    """按出现顺序继承省略的年/月，后一个简写期间覆盖前一个完整期间。"""
+    mentions = [(match, pattern) for pattern in (_DAY_PERIOD, _PERIOD, _SHORT_DAY_PERIOD, _SHORT_PERIOD)
+                for match in pattern.finditer(sentence)]
+    mentions.sort(key=lambda item: (item[0].start(), -item[0].end()))
+    parsed = [_parse_fact_period(item.period, fact.period_granularity) for item in fact.period_values]
+    years = {item.value.year for item in parsed if item is not None}
+    months = {item.value.month for item in parsed if item is not None}
+    year = month = None
+    covered = -1
+    written = None
+    for mention, pattern in mentions:
+        if mention.start() < covered:
+            continue  # 完整日历表达式中的年月/日不是独立的新期间。
+        covered = mention.end()
+        if pattern in (_DAY_PERIOD, _PERIOD):
+            written = mention
+        else:
+            inherited_year = year if year is not None else next(iter(years)) if len(years) == 1 else None
+            inherited_month = month if month is not None else next(iter(months)) if len(months) == 1 else None
+            relative = _RELATIVE_PERIOD.search(sentence[:mention.start()])
+            relative_month = None
+            if relative:
+                modifier = relative[1]
+                # 相对期间必须有正文给出的基准，不能把唯一快照年份当作“次年”的上年。
+                if (written is False or year is None or not 1 <= year <= 9999
+                        or (modifier in _MONTH_OFFSETS and (month is None or not 1 <= month <= 12))):
+                    written = False
+                    continue
+                if modifier in _YEAR_OFFSETS:
+                    inherited_year = year + _YEAR_OFFSETS[modifier]
+                else:
+                    absolute_month = year * 12 + month - 1 + _MONTH_OFFSETS[modifier]
+                    inherited_year, zero_based_month = divmod(absolute_month, 12)
+                    inherited_month = relative_month = zero_based_month + 1
+            if inherited_year is None:
+                written = False
+                continue
+            prefix = f'{inherited_year}年'
+            if pattern is _SHORT_DAY_PERIOD and not mention['month']:
+                if inherited_month is None:
+                    written = False
+                    continue
+                prefix += f'{inherited_month}月'
+            written = (_DAY_PERIOD if pattern is _SHORT_DAY_PERIOD else _PERIOD).fullmatch(prefix + mention[0])
+            if written is None:
+                written = False
+                continue
+            if relative_month is not None:
+                explicit_month = int(written['month'] if written.re is _DAY_PERIOD else written['start'])
+                if explicit_month != relative_month:
+                    written = False
+                    continue
+        year = int(written['end_year'] or written['year'])
+        if written.re is _DAY_PERIOD:
+            month = int(written['end_month'] or written['month'])
+        else:
+            month = int(written['end'] or written['start']) if written['start'] else None
+    return written
 
 
 def _daily_selector(fact, written):
@@ -47,7 +118,8 @@ def _labelled_window_selector(fact, start, end):
     """月度桶以月初标注：“2025年1月1日至12月1日”正好写出事实首末桶标签时即其完整统计窗口。"""
     labels = [_parse_fact_period(label, fact.period_granularity) if label else None
               for label in (fact.period_start, fact.period_end)]
-    if (None in labels or (labels[0].value, labels[1].value) != (start, end) or fact.period_aggregation == 'last'
+    if (start >= end or len(fact.period_values) < 2 or None in labels
+            or (labels[0].value, labels[1].value) != (start, end) or fact.period_aggregation == 'last'
             or fact.aggregation not in {'sum', 'count'} or fact.period_missing_count):
         return None
     return 'total'
@@ -108,14 +180,15 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             return match[0]
         if not re.fullmatch(r'[\s（(]*(?:合计|累计|全年|总额|总量|规模|为|约|达到|是|的|：|:|=|登记值|登记|对应)*[\s）)]*', tail):
             return match[0]
-        periods = [*_PERIOD.finditer(sentence), *_DAY_PERIOD.finditer(sentence)]
-        written = max(periods, key=lambda period: period.end()) if periods else None
         candidates = {}
         for fact_id in labels[subject[0]]:
             if fact_id in conflicts:
                 continue
             fact = facts[fact_id]
             if fact.scope != original.scope or fact.unit != original.unit:
+                continue
+            written = _written_period(sentence, fact)
+            if written is False:
                 continue
             selector = 'total'
             if written and written.re is _DAY_PERIOD:

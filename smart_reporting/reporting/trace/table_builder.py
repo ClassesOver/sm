@@ -20,7 +20,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle, _parse_period
 from ..models import ReportingError
 from .contracts_v1 import (
     FactRefV1,
@@ -281,6 +281,35 @@ def _fact_label(
             if legacy_fallback else fact.field)
 
 
+def _analysis_table_metrics(bundle: DeterministicAnalysisBundle) -> dict[str, Any]:
+    candidates: dict[str, list[Any]] = {}
+    for fact in bundle.metrics:
+        for code in fact.metric_codes:
+            candidates.setdefault(code, []).append(fact)
+    facts_by_code: dict[str, Any] = {}
+    for code, facts in candidates.items():
+        current = [fact for fact in facts if "current" in fact.period_roles and fact.fact_id]
+        if len(facts) == 1:
+            facts_by_code[code] = facts[0]
+        elif len(current) == 1:
+            facts_by_code[code] = current[0]
+    # 各期金额均为零的收支项（未启用的医疗服务收入等）只占版面，不进表；合计仍在正文与溯源中可查。
+    # 只省略金额指标：投诉、不良事件等计数为零本身就是结果。全部列都为零时保留原表。
+    active = {code: fact for code, fact in facts_by_code.items()
+              if fact.unit not in _MONEY_UNITS
+              or any(item.value for item in fact.period_values) or (not fact.period_values and fact.total)}
+    facts_by_code = active or facts_by_code
+    return facts_by_code
+
+
+def _analysis_table_periods(facts: Sequence[Any]) -> list[str]:
+    periods = list(dict.fromkeys(pv.period for fact in facts for pv in fact.period_values))
+    parsed = {period: _parse_period(period) for period in periods}
+    if all(value is not None for value in parsed.values()):
+        periods.sort(key=lambda period: parsed[period].value)
+    return periods
+
+
 def build_analysis_table(
     bundle: DeterministicAnalysisBundle,
     *,
@@ -289,17 +318,24 @@ def build_analysis_table(
     metric_descriptions: Mapping[str, str] | None = None,
     column_offset: int = 0,
     column_limit: int | None = None,
+    row_offset: int = 0,
+    row_limit: int | None = None,
+    part_index: int | None = None,
 ) -> tuple[TableTraceV1, str] | None:
     """按 B0 冻结规则从一个分析 bundle 自动生成服务端指标期间表。
 
     规则（不发明内容，缺依据就不生成）：
     - 列 = 唯一指标事实，或同代码下唯一的本期事实；其他歧义 code 跳过；
-    - 行 = 这些指标 periodValues 的期间并集（按首个 fact 的冻结顺序）；
+    - 行 = 这些指标 periodValues 的期间并集（日历期间按时间排序）；
     - 无可用指标 → 返回 None；无分期间值 → 展示冻结指标合计。
     """
 
+    table_id = f"table-{bundle.analysis_id}"
+    if part_index is not None:
+        table_id += f"-part-{part_index}"
+    elif column_limit:
+        table_id += f"-part-{column_offset // column_limit + 1}"
     if bundle.comparisons:
-        table_id = f"table-{bundle.analysis_id}" + (f"-part-{column_offset // column_limit + 1}" if column_limit else "")
         comparisons = [fact for fact in bundle.comparisons if fact.fact_id]
         comparisons = comparisons[column_offset:column_offset + column_limit if column_limit else None]
         if not comparisons:
@@ -349,32 +385,12 @@ def build_analysis_table(
             table_id, columns, rows, caption=bundle.analysis_name or "指标对比",
         )
 
-    candidates: dict[str, list[Any]] = {}
-    for fact in bundle.metrics:
-        for code in fact.metric_codes:
-            candidates.setdefault(code, []).append(fact)
-    facts_by_code: dict[str, Any] = {}
-    for code, facts in candidates.items():
-        current = [fact for fact in facts if "current" in fact.period_roles and fact.fact_id]
-        if len(facts) == 1:
-            facts_by_code[code] = facts[0]
-        elif len(current) == 1:
-            facts_by_code[code] = current[0]
-    # 各期金额均为零的收支项（未启用的医疗服务收入等）只占版面，不进表；合计仍在正文与溯源中可查。
-    # 只省略金额指标：投诉、不良事件等计数为零本身就是结果。全部列都为零时保留原表。
-    active = {code: fact for code, fact in facts_by_code.items()
-              if fact.unit not in _MONEY_UNITS
-              or any(item.value for item in fact.period_values) or (not fact.period_values and fact.total)}
-    facts_by_code = active or facts_by_code
+    facts_by_code = _analysis_table_metrics(bundle)
     codes = list(facts_by_code)[column_offset:column_offset + column_limit if column_limit else None]
     if not codes:
         return None
     selected = [facts_by_code[code] for code in codes]
-    periods: list[str] = []
-    for fact in selected:
-        for period_value in fact.period_values:
-            if period_value.period not in periods:
-                periods.append(period_value.period)
+    periods = _analysis_table_periods(selected)
     granularities = {fact.period_granularity for fact in selected}
     granularity = next(iter(granularities)) if len(granularities) == 1 else None
     # 未声明序列粒度的分析把月度数据记为日期（2025-01-01、2025-02-01…），按月显示，与声明按月的同一数据表一致。
@@ -392,6 +408,9 @@ def build_analysis_table(
         {"key": f"period:{period}", "label": labels_by_period[period], "period": period}
         for period in periods
     ] or [{"key": "total", "label": "合计"}]
+    rows = rows[row_offset:row_offset + row_limit if row_limit is not None else None]
+    if not rows:
+        return None
     display_units = {
         code: _table_display_unit(
             facts_by_code[code].unit,
@@ -407,7 +426,7 @@ def build_analysis_table(
     if len(set(labels.values())) != len(labels):
         labels = {code: f"{labels[code]} · {code}" for code in codes}
     spec: dict[str, Any] = {
-        "tableId": f"table-{bundle.analysis_id}" + (f"-part-{column_offset // column_limit + 1}" if column_limit else ""),
+        "tableId": table_id,
         "metricCodes": codes,
         "columnLabels": labels,
         "factIds": {code: fact.fact_id for code, fact in facts_by_code.items() if fact.fact_id},
@@ -430,19 +449,29 @@ def build_analysis_tables(
     dataset_contexts: Sequence[Mapping[str, Any]] = (),
     metric_descriptions: Mapping[str, str] | None = None,
 ) -> tuple[tuple[TableTraceV1, str], ...]:
-    """每张表最多五个数值列；始终在完整 bundle 中解析原始事实指针。"""
+    """按列数、行数和单元格预算分表；在完整 bundle 中解析原始事实指针。"""
     options = dict(fact_file_resource_id=fact_file_resource_id,
                    dataset_contexts=dataset_contexts, metric_descriptions=metric_descriptions)
-    table = build_analysis_table(bundle, **options)
-    if table is None:
-        return ()
-    count = len(table[0].column_keys)
-    if count <= 5:
-        return (table,)
+    # 先统计实际列，再构建受限分表；不能先生成可能超过单元格预算的整张表。
+    facts = list(_analysis_table_metrics(bundle).values()) if not bundle.comparisons else []
+    count = (sum(bool(fact.fact_id) for fact in bundle.comparisons) if bundle.comparisons
+             else len(facts))
+    row_count = 4 if bundle.comparisons else max(1, len(_analysis_table_periods(facts)))
+    column_limit = min(5, 2000 // min(row_count, 1000))
+    if count <= column_limit and row_count <= 1000:
+        table = build_analysis_table(bundle, **options)
+        return (table,) if table is not None else ()
     tables = []
-    for offset in range(0, count, 5):
-        part = build_analysis_table(bundle, **options, column_offset=offset, column_limit=5)
-        if part is not None:
-            tables.append(part)
+    for offset in range(0, count, column_limit):
+        selected = facts[offset:offset + column_limit]
+        rows = 4 if bundle.comparisons else max(1, len(_analysis_table_periods(selected)))
+        row_limit = min(1000, 2000 // min(column_limit, count - offset))
+        for row_offset in range(0, rows, row_limit):
+            part = build_analysis_table(
+                bundle, **options, column_offset=offset, column_limit=column_limit,
+                row_offset=row_offset, row_limit=row_limit, part_index=len(tables) + 1,
+            )
+            if part is not None:
+                tables.append(part)
     return tuple(tables)
 

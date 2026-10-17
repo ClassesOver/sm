@@ -264,7 +264,7 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
         baseline, current = (operand(item['value']) for item in selected_periods)
         formula = f'({current}) - ({baseline})'
         if selector.startswith('periodChangeRates.'):
-            formula = f'({formula}) / ({baseline}) * 100'
+            formula = f'({formula}) / abs({baseline}) * 100'
     elif selector.startswith('groupShares.'):
         _, group, index = selector.split('.')
         numerator = primary[group][int(index)]

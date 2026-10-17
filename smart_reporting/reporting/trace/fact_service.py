@@ -146,7 +146,7 @@ def _input_fact_refs(
     metrics = document.get("metrics")
     if not isinstance(metrics, list):
         return ()
-    if kind == "derived" and entry.get("inputFactIds"):
+    if kind in {"derived", "comparison", "reconciliation"} and entry.get("inputFactIds"):
         known_ids = {metric.get("factId") for metric in metrics if isinstance(metric, Mapping)}
         return tuple({"analysisId": document.get("analysisId"), "factId": fact_id}
                      for fact_id in dict.fromkeys(entry["inputFactIds"]) if fact_id in known_ids)

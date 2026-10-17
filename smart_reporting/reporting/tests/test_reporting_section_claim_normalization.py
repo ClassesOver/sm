@@ -20,6 +20,7 @@ def _work_item(*charts: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(
         metric_definitions=(SimpleNamespace(code="revenue", period_basis="月度"),),
         charts=charts,
+        finding_ids=(),
         citations=(SimpleNamespace(citation_id="citation_001"),),
         management_question_catalog=(SimpleNamespace(ref="analysis_001", question="收入如何？"),),
     )
