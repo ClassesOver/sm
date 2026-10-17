@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -175,6 +175,42 @@ def validate_supplemental_evidence(
             "analysisId": current_analysis.get("analysisId"),
             "datasetIds": dataset_ids,
         }
+    )
+
+
+def _evidence_tables(value: Any) -> Iterator[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        if isinstance(value.get("columns"), list) and isinstance(value.get("rows"), list):
+            yield value
+        for key, item in value.items():
+            if key not in {"columns", "rows", "columnMeta"}:
+                yield from _evidence_tables(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _evidence_tables(item)
+
+
+def empty_supplemental_evidence_error(evidence: SupplementalEvidence) -> ReportingError | None:
+    """补证表全部为空、或对账一侧为 0 而另一侧是已确认的非零总额：几乎都是筛选条件与数据
+    实际格式不符（period_code 实为“2025-01-01”却按“2025-01”匹配）。交给修复循环重跑一次，
+    不能把“复算结果为空、对账全部不通过”当作业务事实写进报告。"""
+
+    tables = list(_evidence_tables(evidence.findings))
+    empty_tables = bool(tables) and all(not table["rows"] for table in tables)
+    zero_sides = [
+        str(item.get("name"))
+        for item in evidence.reconciliations
+        if item.get("passed") is False
+        and isinstance(left := item.get("left"), (int, float)) and isinstance(right := item.get("right"), (int, float))
+        and (left == 0) != (right == 0)
+    ]
+    if not empty_tables and not zero_sides:
+        return None
+    return ReportingError(
+        "report_analysis_evidence_empty",
+        "补充 evidence 的表格全部为空或对账一侧为 0，通常是期间、编码等筛选条件与数据实际取值格式不符；"
+        "请对照 profile 中该字段的 topValues 实际取值修正筛选后重新运行。",
+        details={"emptyTables": empty_tables, "zeroSidedReconciliations": zero_sides[:20]},
     )
 
 
@@ -1130,6 +1166,8 @@ class AnalysisItemWorkflow:
                 content,
                 current_analysis if isinstance(current_analysis, Mapping) else {},
             )
+            if (empty := empty_supplemental_evidence_error(evidence)) is not None:
+                raise empty
         except ValidationError as error:
             rejection = supplemental_evidence_schema_error(error)
             issue_summary = (rejection.details or {}).get("issueSummary", "")

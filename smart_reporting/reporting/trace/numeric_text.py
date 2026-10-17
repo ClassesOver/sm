@@ -779,16 +779,17 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
         metrics = [fact for fact in bundle.metrics if fact.unit in {*_MONEY_UNITS, "人次", "床日"} and _short_name(fact)]
         for position, left in enumerate(metrics):
             for right in metrics[position + 1:]:
-                if (left.unit, left.period_start, left.period_end) != (right.unit, right.period_start, right.period_end):
+                if left.unit != right.unit:
                     continue
                 operands = _operand_names(_short_name(left), _short_name(right))
-                derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands)
-                if [item.period for item in left.period_values] != [item.period for item in right.period_values]:
-                    continue
-                for a, b in zip(left.period_values, right.period_values, strict=True):
-                    month = _canonical_month_label(a.period)
-                    if month:
-                        derived.add(left.unit, Decimal(str(a.value)) - Decimal(str(b.value)),
+                # 合计差额要求统计窗口相同；逐月差额只按两边都有的同一月份配对（收入到11月、成本到9月时，1月仍可比）。
+                if (left.period_start, left.period_end) == (right.period_start, right.period_end):
+                    derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands)
+                right_months = {_canonical_month_label(item.period): item.value for item in right.period_values}
+                for item in left.period_values:
+                    month = _canonical_month_label(item.period)
+                    if month and month in right_months:
+                        derived.add(left.unit, Decimal(str(item.value)) - Decimal(str(right_months[month])),
                                     (*operands, (f"{int(month[5:7])}月",)))
     return derived
 

@@ -1141,6 +1141,11 @@ def test_server_derives_gaps_and_top_share_sums_only_for_operands_named_in_the_p
     budget = json.loads(_budget_document())
     for metric, name in zip(budget['metrics'], ('实际收入', '预算收入'), strict=True):
         metric['displayName'] = name
+    # 实际 90/95/133 万、预算各 100 万：3月差额 33 万，与环比变化额（38 万）区分。
+    actual = budget['metrics'][0]
+    actual['periodValues'] = [{'period': f'2025-{index + 1:02d}', 'value': value}
+                              for index, value in enumerate((900000, 950000, 1330000))]
+    actual['total'] = 3180000
     contents = [json.dumps(budget), supplement]
     # 同表两列逐行差额、降序前两项合计占比、同一分析同期间两项事实的月度差额（实际减预算）。
     derived = ('总部门诊人次与不含急诊门诊人次相差424,831人次。\n\n总部与北部合计占比93.05%。'
@@ -1150,6 +1155,12 @@ def test_server_derives_gaps_and_top_share_sums_only_for_operands_named_in_the_p
     # 4,516,882 = 总部 − 北部，但正文写的是总部与远洋：操作数不符，仍替换。
     wrong_pair = '总部门诊人次比远洋多4,516,882人次。'
     assert replace_unregistered_numbers(wrong_pair, contents) == '总部门诊人次比远洋多待核实。'
+    # 预算只登记到2月（窗口不同）：两边都有的月份仍可比，预算缺少的3月不补算。
+    assert replace_unregistered_numbers('3月实际收入较预算收入多33.00万元。', contents) == '3月实际收入较预算收入多33.00万元。'
+    budget['metrics'][1]['periodValues'] = budget['metrics'][1]['periodValues'][:2]
+    shorter = [json.dumps(budget), supplement]
+    assert replace_unregistered_numbers('1月实际收入较预算收入少10.00万元。', shorter) == '1月实际收入较预算收入少10.00万元。'
+    assert replace_unregistered_numbers('3月实际收入较预算收入多33.00万元。', shorter) == '3月实际收入较预算收入多待核实。'
     # 百分数之差是百分点，不按百分数补算；无来源的数字仍替换。
     unrelated = '总部较北部高60.31%，另有123,457人次。'
     assert replace_unregistered_numbers(unrelated, contents) == '总部较北部高待核实，另有待核实。'
