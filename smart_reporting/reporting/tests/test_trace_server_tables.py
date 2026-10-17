@@ -490,6 +490,27 @@ def test_large_amount_tables_use_wan_yuan_columns() -> None:
     assert '同比增幅 | 5.03%' in markdown
 
 
+def test_billion_yuan_monthly_columns_use_yi_yuan() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import PeriodValue
+
+    bundle = _bundle()
+    metric = bundle.metrics[0].model_copy(update={
+        'period_values': (
+            PeriodValue(period='2025-09', value=1170250580.0),
+            PeriodValue(period='2025-10', value=926393868.0),
+            PeriodValue(period='2025-11', value=0.0),
+        ),
+        'total': 2096644448.0,
+    })
+    trace, markdown = build_analysis_table(
+        bundle.model_copy(update={'metrics': (metric,)}), fact_file_resource_id=FACT_RESOURCE,
+    )
+    # 十亿级月度金额写成“117,025.06万元”难读：各月都不少于1亿元（零值除外）时改用亿元。
+    assert trace.column_keys == ('收入（亿元）',)
+    assert '| 2025年9月 | 11.70 |' in markdown
+    assert '| 2025年10月 | 9.26 |' in markdown
+
+
 def test_server_table_numbers_are_right_aligned_in_rendered_html() -> None:
     from markdown_it import MarkdownIt
 
