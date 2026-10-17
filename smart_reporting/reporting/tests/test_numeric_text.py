@@ -1172,3 +1172,17 @@ def test_server_derives_gaps_and_top_share_sums_only_for_operands_named_in_the_p
     # 百分数之差是百分点，不按百分数补算；无来源的数字仍替换。
     unrelated = '总部较北部高60.31%，另有123,457人次。'
     assert replace_unregistered_numbers(unrelated, contents) == '总部较北部高待核实，另有待核实。'
+
+
+def test_single_character_decline_words_accept_registered_negative_magnitudes():
+    document = json.loads(_budget_document())
+    document['comparisons'] = [{
+        'factId': 'fact-' + 'c' * 16, 'comparisonType': 'yoy', 'field': 'actual_revenue', 'fieldRef': 'h.actual_revenue',
+        'currentDatasetId': 'current', 'baselineDatasetId': 'base', 'currentDatasetSha256': 'b' * 64,
+        'baselineDatasetSha256': 'c' * 64, 'currentTotal': 104.43, 'baselineTotal': 115.82,
+        'change': -11.39, 'changeRate': -9.83, 'formula': 'x', 'unit': '元'}]
+    contents = [json.dumps(document)]
+    assert replace_unregistered_numbers('实际降9.83%，较上年减11.39元。', contents) == '实际降9.83%，较上年减11.39元。'
+    # “至少”不是下降：同样的数字仍按未登记替换；增长方向也不豁免。
+    assert replace_unregistered_numbers('至少9.83%。', contents) == '至少待核实。'
+    assert replace_unregistered_numbers('实际增9.83%。', contents) == '实际增待核实。'

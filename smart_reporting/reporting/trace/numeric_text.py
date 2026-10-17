@@ -1034,8 +1034,9 @@ def registered_decline_magnitude(
     符号规范化会把“减少-654.32万元”改写为“减少654.32万元”，金额、人次与百分数一样
     必须按此认定为已登记数值，否则正确正文会被替换为待核实。
     """
+    # 简写“实际降9.83%”“较预算少4.34万人次”同样是下降幅度；“至少”“最少”“减少”等不按单字处理。
     if number <= 0 or not re.search(
-        rf"(?:{'|'.join(FALLING_WORDS)})(?:了|约|为|达)?\s*$", prefix,
+        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少])(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
     return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
