@@ -191,7 +191,21 @@ class ReportEditorTraceService:
         return manifest
 
     async def load_index(self, context: Any) -> RevisionTraceIndexV1 | None:
+        return (await self.load_manifest_and_index(context))[1]
+
+    async def load_manifest_and_index(
+        self, context: Any
+    ) -> tuple[ReportArtifactManifest | None, RevisionTraceIndexV1 | None]:
+        """一次读取并核验修订产物清单与追溯索引，供同时需要两者的调用方复用。"""
+
         manifest = await self.load_manifest(context)
+        return manifest, await self.index_for_manifest(context, manifest)
+
+    async def index_for_manifest(
+        self, context: Any, manifest: ReportArtifactManifest | None
+    ) -> RevisionTraceIndexV1 | None:
+        """按已核验的产物清单读取并核验追溯索引。"""
+
         if manifest is None or manifest.trace_index is None:
             return None
         content = await self._read_registered_file(
@@ -232,7 +246,7 @@ class ReportEditorTraceService:
         *,
         analysis_context_file: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        index = await self.load_index(context)
+        manifest, index = await self.load_manifest_and_index(context)
         if index is None:
             return {
                 "available": False,
@@ -240,7 +254,6 @@ class ReportEditorTraceService:
                 "datasets": [],
                 "narrativeSections": [],
             }
-        manifest = await self.load_manifest(context)
         files = {item.resource_id: item for item in index.files}
         field_labels: dict[tuple[str, str], str] = {}
         if analysis_context_file is not None:

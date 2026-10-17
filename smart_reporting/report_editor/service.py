@@ -750,8 +750,10 @@ class ReportEditorService:
         async with AsyncExitStack() as locks:
             for candidate in sorted(contexts.values(), key=lambda item: item.markdown_path):
                 await locks.enter_async_context(self._draft_lock(candidate))
-            for candidate in contexts.values():
+            manifests = {}
+            for key, candidate in contexts.items():
                 manifest = await self.trace.load_manifest(candidate)
+                manifests[key] = manifest
                 if manifest is not None and manifest.trace_index is not None:
                     record_paths.add(manifest.trace_index.path)
             for key, candidate in contexts.items():
@@ -771,7 +773,8 @@ class ReportEditorService:
                             protected.add(source_key)
                     except (KeyError, ValueError, TypeError) as error:
                         raise ReportingError("snapshot_integrity_failed", "草稿来源登记无效，停止清理。") from error
-                index = await self.trace.load_index(candidate)
+                # 清单已在同一把锁内读取并核验，这里只读取索引，不重复读清单。
+                index = await self.trace.index_for_manifest(candidate, manifests[key])
                 if index is None:
                     raise ReportingError("report_editor_retention_invalid", "版本缺少权威来源索引，停止清理。")
                 for file in index.files:
@@ -1816,9 +1819,10 @@ class ReportEditorService:
             target_job = session_state[REPORT_JOBS_STATE_KEY][context.job_id]
             original_presentations = copy.deepcopy(target_job.get("_citationPresentations"))
             try:
-                artifact_manifest = await self.trace.load_manifest(source_context)
+                artifact_manifest, trace_index = await self.trace.load_manifest_and_index(
+                    source_context
+                )
                 if artifact_manifest is not None:
-                    trace_index = await self.trace.load_index(source_context)
                     await verify_revision_lineage_files(
                         self.workspace,
                         scope.workspace_key,
