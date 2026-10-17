@@ -20,7 +20,6 @@ from agno.models.response import ModelResponse
 from agno.tools.function import FunctionCall
 from agno.utils.message import normalize_tool_messages, reformat_tool_call_ids
 from loguru import logger
-from openai.types.responses import ResponseReasoningItem
 
 from ...context_management import (
     CODING_FREEFORM_TOOL_ARGUMENTS,
@@ -2067,26 +2066,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             raise _custom_protocol_error("Coding Agent 工具调用缺少对应结果。")
 
         formatted = super()._format_messages(normalized_messages, compress_tool_results, tools)
-        # Agno 已原生解析 reasoning_output，但 3.0.9 的工具调用分支未回放它。
-        # 按第一条调用身份插回原始 item，同一批多个调用只插入一次。
-        if self.store is False:
-            reasoning_by_call = {
-                message.tool_calls[0].get(
-                    "call_id", message.tool_calls[0].get("id")
-                ): message.provider_data["reasoning_output"]
-                for message in normalized_messages
-                if message.tool_calls
-                and message.provider_data
-                and message.provider_data.get("reasoning_output") is not None
-            }
-            replayed: list[Any] = []
-            for item in formatted:
-                if isinstance(item, dict) and item.get("type") == "function_call":
-                    reasoning = reasoning_by_call.get(item.get("call_id"))
-                    if reasoning is not None:
-                        replayed.append(ResponseReasoningItem.model_validate(reasoning))
-                replayed.append(item)
-            formatted = replayed
+        # Agno 3.1.2 已在无链式 response_id 时原生回放 reasoning_output，不再重复插入。
         for index, item in enumerate(formatted):
             if not isinstance(item, dict) or item.get("type") not in {
                 "function_call",
