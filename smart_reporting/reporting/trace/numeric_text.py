@@ -437,6 +437,12 @@ def frozen_number_guide(
                 text = catalog.get(f"{{{{value:{fact.fact_id}:{field}:{target}}}}}")
                 return text if text and text != "数值待核实" else None
 
+            def shown_reference(field: str, unit: str | None = None) -> str | None:
+                # 模型常照着 monthOverMonth 键名自造 “monthOverMonth.N” 引用；直接给出可用的服务端引用。
+                target = unit or ("万元" if fact.unit in _MONEY_UNITS else fact.unit or "")
+                token = f"{{{{value:{fact.fact_id}:{field}:{target}}}}}"
+                return token if shown(field, unit) else None
+
             periods = [item.period for item in fact.period_values]
             stock = fact.period_aggregation == "last"
             total_periods = periods[-1:] if stock else periods
@@ -476,12 +482,15 @@ def frozen_number_guide(
                                        for index, period in enumerate(periods) if reference(f"periodAverages.0-{index}")],
                     "monthOverMonth": [
                         {"period": period, "change": shown(f"periodChanges.{index}"),
-                         "changeRate": shown(f"periodChangeRates.{index}", "%")}
+                         "changeRate": shown(f"periodChangeRates.{index}", "%"),
+                         "reference": shown_reference(f"periodChanges.{index}"),
+                         "rateReference": shown_reference(f"periodChangeRates.{index}", "%")}
                         for index, period in enumerate(periods) if shown(f"periodChanges.{index}")
                     ],
                     "meaning": "包含已登记的零值月份；零值本身不证明未入账或缺失。局部极值必须明确子期间。"
                                "monthOverMonth 是服务端按登记月度值计算的相邻两月变化额与变化率（某月较上月），"
-                               "可按显示值直接书写，不是环比比较事实的窗口变化",
+                               "可按显示值直接书写或使用 reference/rateReference 引用，不得自造 monthOverMonth.N 引用；"
+                               "不是环比比较事实的窗口变化",
                 }
             item["groups"] = [{"group": group.group, "reference": reference(f"{key}.{index}"),
                                "meaning": ("最新登记期间的完整分组组合期末余额" if stock else "完整分组组合的数值")

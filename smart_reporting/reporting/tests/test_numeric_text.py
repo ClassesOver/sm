@@ -809,10 +809,18 @@ def test_adjacent_month_changes_are_registered_from_frozen_monthly_values():
     assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodChangeRates.2:%}}'] == '-10.00%'
     # 3月与5月不相邻：不登记“环比”。
     assert not [token for token in catalog if 'periodChange' in token and token.split(':')[2].endswith('.3')]
-    # 数值说明直接给显示值（金额按万元）；引用只供服务端核对，不进模型可见目录，避免目录膨胀。
+    # 数值说明给显示值（金额按万元）及可直接使用的服务端引用；引用不进模型可见目录，避免目录膨胀，
+    # 但给出引用后模型不必照着键名自造 “monthOverMonth.N”。
     guide = frozen_number_guide([content], catalog)[0]['monthlyStatistics']['monthOverMonth']
-    assert guide == [{'period': '2025-02', 'change': '20.00万元', 'changeRate': '20.00%'},
-                     {'period': '2025-03', 'change': '-12.00万元', 'changeRate': '-10.00%'}]
+    prefix = '{{value:fact-aaaaaaaaaaaaaaaa:'
+    assert guide == [
+        {'period': '2025-02', 'change': '20.00万元', 'changeRate': '20.00%',
+         'reference': prefix + 'periodChanges.1:万元}}', 'rateReference': prefix + 'periodChangeRates.1:%}}'},
+        {'period': '2025-03', 'change': '-12.00万元', 'changeRate': '-10.00%',
+         'reference': prefix + 'periodChanges.2:万元}}', 'rateReference': prefix + 'periodChangeRates.2:%}}'},
+    ]
+    assert all(catalog[item['reference']] == item['change'] and catalog[item['rateReference']] == item['changeRate']
+               for item in guide)
     from smart_reporting.reporting.trace.numeric_text import prompt_number_catalog
     prompt = prompt_number_catalog(catalog)
     assert not [token for token in prompt if 'periodChange' in token]
