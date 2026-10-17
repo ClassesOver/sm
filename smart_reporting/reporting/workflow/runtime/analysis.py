@@ -50,7 +50,12 @@ from ..benchmark_variants import (
     LegacyAnalysisEvidenceDecision,
     LegacyVisualizationPlanDraft,
 )
-from ..checkpoint import ChartVisualInspectionReceipt, CheckpointRetryUsage
+from ..checkpoint import (
+    ChartVisualInspectionReceipt,
+    CheckpointRetryUsage,
+    attach_retry_usage,
+    retry_usage_of,
+)
 from ..execution import ReportingTaskInvocation
 from .analysis_item_workflow import (
     MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
@@ -80,8 +85,6 @@ from .base import (
     REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_VISUAL_THEME,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
-    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
-    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     VISUALIZATION_SECTION_DEADLINE_SECONDS,
     VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     AnalysisReworkRequest,
@@ -107,7 +110,6 @@ from .base import (
     ReportingStateError,
     ReportOutline,
     RunContext,
-    Sequence,
     StepInput,
     StepOutput,
     TaskExecutionScope,
@@ -115,8 +117,6 @@ from .base import (
     ValidationError,
     ZoneInfo,
     _frozen_outline,
-    normalize_workspace_path,
-    _payload_sha256,
     _report_machine_terms,
     _reporting_observed_data_facts,
     _source_warnings_from_state,
@@ -131,6 +131,7 @@ from .base import (
     hashlib,
     json,
     loguru_logger,
+    normalize_workspace_path,
     partial,
     payload_sha256,
     re,
@@ -2277,25 +2278,18 @@ class RuntimeAnalysisMixin:
                 citation_bindings=citation_bindings,
                 section_codes=(section_code,),
             )
-            finding_cards = {card.finding_id: card for card in graph.findings} if graph else {}
             if narrative_section is not None and narrative_section.narrative_role == "appendix":
                 analysis_rework_allowed = False
-            work_item = self._build_section_work_item(
-                section,
-                detailed_plan=detailed_plan,
-                analysis_artifact=artifact,
-                citation_bindings=citation_bindings,
-                finding_ids=(narrative_section.finding_ids if narrative_section else ()),
-                finding_summaries=tuple(
-                    finding_cards[finding_id].model_dump(mode="json", by_alias=True)
-                    for finding_id in (narrative_section.finding_ids if narrative_section else ())
-                    if finding_id in finding_cards
-                ),
-                narrative_role=(narrative_section.narrative_role if narrative_section else None),
-                grouping_reason=(narrative_section.grouping_reason if narrative_section else None),
-                max_blocks=(narrative_section.max_blocks if narrative_section else None),
-                max_charts=(narrative_section.max_charts if narrative_section else None),
-            )
+            if narrative_section is not None and graph is not None:
+                work_item = self._build_narrative_section_work_item(
+                    narrative_section, graph=graph, detailed_plan=detailed_plan,
+                    analysis_artifact=artifact, citation_bindings=citation_bindings,
+                )
+            else:
+                work_item = self._build_section_work_item(
+                    section, detailed_plan=detailed_plan, analysis_artifact=artifact,
+                    citation_bindings=citation_bindings,
+                )
             updated, _section_artifact, rework = await self._run_section_phase(
                 run_context,
                 checkpoint=checkpoint,
@@ -2607,6 +2601,26 @@ class RuntimeAnalysisMixin:
             report_goal=self._envelope(run_context).report_goal,
             analyses=analyses, run_context=run_context,
         )
+        if any(section.narrative_role == "appendix" for section in narrative.sections):
+            # 此时尚未绑定最终目录/启动章节。复用冻结分析产物构造与渲染阶段
+            # 相同的 WorkItem（附录不生成图表），将切分后的提纲一次性持久化。
+            citation_bindings = authoritative_citations(tuple(
+                DatasetLineage.model_validate(item)
+                for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
+            ))
+            artifact = await self._build_reporting_artifact(
+                run_context,
+                analysis_ids=tuple(item.analysis_id for item in detailed_plan.analyses),
+                detailed_plan=detailed_plan,
+                fact_files=checkpoint.deterministic_fact_files,
+                citation_bindings=citation_bindings,
+                section_codes=(),
+            )
+            narrative = self._fit_narrative_outline_context(
+                narrative, graph=graph, detailed_plan=detailed_plan,
+                analysis_artifact=artifact,
+                citation_bindings=citation_bindings,
+            )
         compatible = build_compatible_report_outline(
             graph, report_type=legacy_outline.report_type, title=narrative.title,
             narrative_outline=narrative,
@@ -3091,7 +3105,7 @@ class RuntimeAnalysisMixin:
         state = self._state(run_context)
         outline_hash = str(
             state.get(REPORT_OUTLINE_HASH_STATE_KEY)
-            or _payload_sha256(outline.model_dump(mode="json", by_alias=True))
+            or payload_sha256(outline.model_dump(mode="json", by_alias=True))
         )
         # 用户反馈会推进 revision，但同一 revision 的进程中断不能再次清空 analysis 和已完成章节。
         # 只有旧 checkpoint revision 落后时才创建新状态；同 revision 必须同时核验 state、落盘文件、
@@ -4345,11 +4359,7 @@ def _visualization_section_retry_error(
             "运行中的 Reporting checkpoint 缺少可信章节恢复身份或预算，请重新分析。",
         )
     error = ReportingError(stored.code, stored.message)
-    setattr(
-        error,
-        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-        stored.retry_usage.model_dump(mode="python", by_alias=True),
-    )
+    attach_retry_usage(error, stored.retry_usage)
     return error
 
 
@@ -4405,19 +4415,7 @@ def _checkpoint_retry_error(
             "运行中的 Reporting checkpoint 缺少可信恢复身份或预算，请重新分析。",
         )
     error = ReportingError(stored.code, stored.message)
-    usage = stored.retry_usage
-    if work_kind == "analysis_item":
-        setattr(
-            error,
-            REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
-            {"queryCount": usage.analysis_fact_queries_used},
-        )
-    else:
-        setattr(
-            error,
-            REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-            usage.model_dump(mode="python", by_alias=True),
-        )
+    attach_retry_usage(error, stored.retry_usage)
     return error
 
 
@@ -4428,19 +4426,15 @@ def _checkpoint_retry_usage(
 ) -> CheckpointRetryUsage:
     if work_kind == "analysis_item":
         return CheckpointRetryUsage(analysisFactQueriesUsed=_analysis_fact_retry_usage(error))
-    source = getattr(error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
-    attempt_successes = (
-        source.get("visualizationAttemptSuccessfulToolCalls", 0)
-        if isinstance(source, Mapping)
-        else 0
-    )
-    attempt_rejections = (
-        source.get("visualizationAttemptRejectedToolCalls", 0) if isinstance(source, Mapping) else 0
-    )
+    usage = retry_usage_of(error)
     return CheckpointRetryUsage(
         **_visualization_retry_usage(error),
-        visualizationAttemptSuccessfulToolCalls=attempt_successes,
-        visualizationAttemptRejectedToolCalls=attempt_rejections,
+        visualizationAttemptSuccessfulToolCalls=(
+            usage.visualization_attempt_successful_tool_calls if usage is not None else 0
+        ),
+        visualizationAttemptRejectedToolCalls=(
+            usage.visualization_attempt_rejected_tool_calls if usage is not None else 0
+        ),
     )
 
 
@@ -4721,65 +4715,32 @@ def _analysis_fact_recovery_required(last_error: Exception | None) -> bool:
 
 
 def _analysis_fact_retry_usage(last_error: Exception | None) -> int:
-    source: Any = getattr(last_error, REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR, None)
+    usage = retry_usage_of(last_error)
+    if usage is not None:
+        return usage.analysis_fact_queries_used
     details = last_error.details if isinstance(last_error, ReportingError) else None
-
-    if isinstance(source, Mapping):
-        return _nonnegative_int(source.get("queryCount"))
-    if isinstance(details, Mapping):
-        return _nonnegative_int(details.get("queryCount"))
-    return 0
+    return _nonnegative_int(details.get("queryCount")) if isinstance(details, Mapping) else 0
 
 
 def _visualization_retry_usage(last_error: Exception | None) -> dict[str, int]:
-    source: Any = getattr(last_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
-    details = last_error.details if isinstance(last_error, ReportingError) else None
-
-    if isinstance(source, Mapping):
-        usage = {
-            "visualizationReadUnitsUsed": _nonnegative_int(
-                source.get("visualizationReadUnitsUsed")
-            ),
-            "visualizationFactQueriesUsed": _nonnegative_int(
-                source.get("visualizationFactQueriesUsed")
-            ),
-            "visualizationToolCalls": _nonnegative_int(
-                source.get("visualizationToolCalls", source.get("totalToolCalls"))
-            ),
-            "visualizationScriptFailures": _nonnegative_int(
-                source.get("visualizationScriptFailures", source.get("scriptFailureCount"))
-            ),
-        }
-        # 预算终态错误在动态预留点生成，details 对总调用和脚本失败的计数最及时；
-        # read/fact 则只能来自执行器退出时附加的完整累计快照，两者必须合并。
-        if isinstance(details, Mapping):
-            if "totalToolCalls" in details:
-                usage["visualizationToolCalls"] = _nonnegative_int(details.get("totalToolCalls"))
-            if "scriptFailureCount" in details:
-                usage["visualizationScriptFailures"] = _nonnegative_int(
-                    details.get("scriptFailureCount")
-                )
-        return usage
-    if isinstance(source, Sequence) and not isinstance(source, (str, bytes)) and len(source) == 2:
-        return {
-            "visualizationReadUnitsUsed": 0,
-            "visualizationFactQueriesUsed": 0,
-            "visualizationToolCalls": _nonnegative_int(source[0]),
-            "visualizationScriptFailures": _nonnegative_int(source[1]),
-        }
-    if isinstance(details, Mapping):
-        return {
-            "visualizationReadUnitsUsed": 0,
-            "visualizationFactQueriesUsed": 0,
-            "visualizationToolCalls": _nonnegative_int(details.get("totalToolCalls")),
-            "visualizationScriptFailures": _nonnegative_int(details.get("scriptFailureCount")),
-        }
-    return {
-        "visualizationReadUnitsUsed": 0,
-        "visualizationFactQueriesUsed": 0,
-        "visualizationToolCalls": 0,
-        "visualizationScriptFailures": 0,
+    usage = retry_usage_of(last_error)
+    result = {
+        "visualizationReadUnitsUsed": usage.visualization_read_units_used if usage else 0,
+        "visualizationFactQueriesUsed": usage.visualization_fact_queries_used if usage else 0,
+        "visualizationToolCalls": usage.visualization_tool_calls if usage else 0,
+        "visualizationScriptFailures": usage.visualization_script_failures if usage else 0,
     }
+    # 预算终态错误在动态预留点生成，其 details 中总调用与脚本失败计数比执行器
+    # 退出时附加的累计快照更新；read/fact 只能来自快照，两者合并。
+    details = last_error.details if isinstance(last_error, ReportingError) else None
+    if isinstance(details, Mapping):
+        if "totalToolCalls" in details:
+            result["visualizationToolCalls"] = _nonnegative_int(details.get("totalToolCalls"))
+        if "scriptFailureCount" in details:
+            result["visualizationScriptFailures"] = _nonnegative_int(
+                details.get("scriptFailureCount")
+            )
+    return result
 
 
 def _visualization_dynamic_budget(

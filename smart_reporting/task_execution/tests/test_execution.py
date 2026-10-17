@@ -14,7 +14,11 @@ from agno.tools.function import FunctionCall
 from sqlalchemy import text
 
 import smart_reporting.task_execution.execution as execution_module
-from smart_reporting.agent_control import AGENT_PLAN_STATE_KEY
+from smart_reporting.agent_control import (
+    AGENT_PLAN_STATE_KEY,
+    is_parallel_safe_tool,
+    is_scheduler_parallel_safe_tool,
+)
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
     ReportingWorkspaceRouter,
@@ -31,7 +35,6 @@ from smart_reporting.task_execution.execution import (
     TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY,
     TaskExecutionKernel,
     TaskExecutionRuntime,
-    _task_tool_parallel_safe,
     absolute_paths,
     create_task_tool_scheduler_hook,
     normalize_task_function_call_arguments,
@@ -774,10 +777,13 @@ async def test_create_files_defers_scheduling_to_atomic_patch_kernel():
         ("report_materialize_dataset", {}, False),
         ("report_prepare_dataset", {}, False),
         ("unknown_tool", {}, False),
+        # 文件读取与视觉检查只在批量准入里放行，调度器仍串行执行。
+        ("view_image", {}, False),
+        ("read_file", {}, False),
     ],
 )
 def test_skill_and_report_tool_scheduler_classification(tool_name, arguments, expected):
-    assert _task_tool_parallel_safe(tool_name, arguments) is expected
+    assert is_scheduler_parallel_safe_tool(tool_name, arguments) is expected
 
 
 @pytest.mark.anyio
@@ -1015,3 +1021,11 @@ async def test_patch_settles_completed_when_bookkeeping_fails_after_apply() -> N
 
     assert result["ok"] is True
     assert updates == ["failed-attempt", "completed"]
+
+
+def test_batch_admission_allows_scheduler_tools_and_read_only_file_tools():
+    assert is_parallel_safe_tool("read_profile_pointer", {})
+    assert is_parallel_safe_tool("view_image", {})
+    assert is_parallel_safe_tool("get_skill_script", {"execute": False})
+    assert not is_parallel_safe_tool("get_skill_script", {"execute": True})
+    assert not is_parallel_safe_tool("apply_patch", {})

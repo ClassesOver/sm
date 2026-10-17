@@ -1,6 +1,5 @@
 import { renderEvidenceNotes } from './evidence-notes'
 import { createEvidenceGraph, mergeEvidenceGraph, graphRelations, type EvidenceGraph } from './evidence-graph'
-import { graphlib } from '@dagrejs/dagre'
 import {
   ReportEditorApiError,
   type ReportEditorClient,
@@ -80,7 +79,7 @@ export interface EvidencePageContext {
 }
 
 // ---------------------------------------------------------------------------
-// 文案字典与取值助手（与 trace-panel 同源，M4 删除面板前保持两份一致）
+// 文案字典与取值助手
 // ---------------------------------------------------------------------------
 
 const KIND_LABELS: Record<EvidenceObjectKind, string> = {
@@ -405,7 +404,7 @@ function renderPageError(container: HTMLElement, ctx: EvidencePageContext, error
   finishRender(container, ctx, skeleton.title)
 }
 
-function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relations: EvidenceRelations, expand: (ref: EvidenceObjectRef) => void, rerender: () => void): void {
+function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relations: EvidenceRelations, expand: (ref: EvidenceObjectRef) => void): void {
   host.innerHTML = ''
   host.dataset.graphHost = ''
   const controls = document.createElement('div')
@@ -1013,10 +1012,7 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rawR
     }
     redraw()
   }
-  renderEvidenceGraph(graph, ctx, loaded, ref => void expand(ref), () => {
-    slot.replaceChildren()
-    renderRelationSection(slot, ctx, relations)
-  })
+  renderEvidenceGraph(graph, ctx, loaded, ref => void expand(ref))
   body.append(graph, list)
   section.append(head, body)
   slot.append(section)

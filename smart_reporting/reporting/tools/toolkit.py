@@ -30,8 +30,8 @@ if TYPE_CHECKING:
     from ..host_workspace import ReportingWorkspaceRouter
 
 REPORTING_TOOLKIT_INSTRUCTIONS = (
-    "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\\n"
-    "直接使用任务 JSON 中的受信工作区相对路径，不浏览根目录、不猜测路径。\\n"
+    "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
+    "直接使用任务 JSON 中的受信工作区相对路径，不浏览根目录、不猜测路径。\n"
     "严格按工具 schema 直接传参，并以每次服务端回执决定下一步。"
 )
 
@@ -186,7 +186,8 @@ class ReportingToolkit(
                 Function(
                     name="view_image",
                     description=(
-                        '检查工作区图片。示例：{"path":"analysis/charts/trend.png","detail":"high"}'
+                        "使用独立视觉模型查看工作区图片，并返回结构化视觉结论。"
+                        '{"path":"analysis/charts/trend.png","detail":"high"}'
                     ),
                     parameters={
                         "type": "object",
@@ -216,37 +217,6 @@ class ReportingToolkit(
             )
         self._finish_function = registered_finish_function
         self.async_functions.pop("finish_task", None)
-        for hidden_tool_name in ("create_files", "overwrite_file", "replace_text", "apply_patch"):
-            self.functions.pop(hidden_tool_name, None)
-            self.async_functions.pop(hidden_tool_name, None)
-        self.functions.pop("verify", None)
-        self.async_functions.pop("verify", None)
-        view_image = self.async_functions.get("view_image")
-        if view_image is not None:
-            view_image.description = (
-                "使用独立视觉模型查看工作区图片，并返回结构化视觉结论。"
-                '{"path":"analysis/charts/trend.png","detail":"high"}'
-            )
-        raw_toolkit_instructions = getattr(self, "instructions", None)
-        toolkit_instructions = (
-            raw_toolkit_instructions if isinstance(raw_toolkit_instructions, str) else ""
-        )
-        reporting_instruction_lines: list[str] = []
-        for line in toolkit_instructions.splitlines():
-            if "verification_ids" in line or "成功 verify" in line:
-                continue
-            if "探测工作区根目录时调用 list_files" in line:
-                reporting_instruction_lines.append(
-                    "- Reporting 任务 JSON 已提供受信输入与阶段输出路径；直接使用这些工作区"
-                    "相对路径，禁止浏览工作区根目录或猜测路径。"
-                )
-                continue
-            updated = line.replace("、verify", "")
-            for unused_tool_name in ("list_files", "tree", "git_status", "git_diff"):
-                updated = updated.replace(f"、{unused_tool_name}", "")
-            updated = updated.replace("、目录列举及 Git 状态或差异", "")
-            reporting_instruction_lines.append(updated)
-        self.instructions = "\\n".join(reporting_instruction_lines)
         for name, description, parameters, entrypoint in (
             (
                 "apply_analysis_patch",

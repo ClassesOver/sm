@@ -412,7 +412,7 @@ class ReportDatasetStore:
         if not isinstance(stored, dict):
             raise ReportingError("dataset_not_found", "数据集状态不存在。")
         paths: list[str] = []
-        binding = _thread_binding(_thread(run_context))
+        binding = thread_binding(_thread(run_context))
         for dataset_id in dataset_ids:
             raw = stored.get(dataset_id)
             if not isinstance(raw, dict) or raw.get("_threadBinding") != binding:
@@ -430,7 +430,7 @@ class ReportDatasetStore:
     def _store_handles(handles: tuple[DatasetHandle, ...], run_context: RunContext) -> None:
         state = _session_state(run_context)
         stored = dict(state.get(REPORT_DATASET_HANDLES_STATE_KEY) or {})
-        binding = _thread_binding(_thread(run_context))
+        binding = thread_binding(_thread(run_context))
         for handle in handles:
             stored[handle.dataset_id] = {**handle.public_dict(), "_threadBinding": binding}
         state[REPORT_DATASET_HANDLES_STATE_KEY] = stored
@@ -475,5 +475,5 @@ def _session_state(run_context: RunContext | None) -> MutableMapping[str, Any]:
     return run_context.session_state
 
 
-def _thread_binding(thread_id: str) -> str:
+def thread_binding(thread_id: str) -> str:
     return hashlib.sha256(thread_id.encode()).hexdigest()

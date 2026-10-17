@@ -44,15 +44,18 @@ from ..reporting.trace.dataset_service import (
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
 from ..reporting.trace.fact_service import fact_display_unit, fact_display_value, read_fact_document
-from ..reporting.trace.index_builder import TRACE_INDEX_FILENAME
 from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field
 from ..reporting.workflow.checkpoint import FileIdentity
 from ..workspace import WorkspaceError
+from .capabilities import EditorCapabilities
 from .trace_exports import TraceDerivedExportService
 
 _MAX_INDEX_BYTES = 4 * 1024 * 1024
 _DRILLDOWN_TIMEOUT_SECONDS = 10.0
 _DRILLDOWN_LARGE_FILE_BYTES = 64 * 1024 * 1024
+
+
+CapabilitiesInput = EditorCapabilities | Mapping[str, Any] | None
 
 
 def _registered_dataset_file(files: Mapping[str, Any], dataset: Any) -> Any | None:
@@ -146,11 +149,6 @@ class _RegisteredFile(Protocol):
     def sha256(self) -> str: ...
 
 
-def trace_index_path_for_context(markdown_path: str) -> str:
-    parent = PurePosixPath(markdown_path).parent
-    return parent.joinpath(TRACE_INDEX_FILENAME).as_posix()
-
-
 class ReportEditorTraceService:
     def __init__(self, workspace: Any, *, cursor_secret: bytes) -> None:
         self._workspace = workspace
@@ -195,7 +193,21 @@ class ReportEditorTraceService:
         return manifest
 
     async def load_index(self, context: Any) -> RevisionTraceIndexV1 | None:
+        return (await self.load_manifest_and_index(context))[1]
+
+    async def load_manifest_and_index(
+        self, context: Any
+    ) -> tuple[ReportArtifactManifest | None, RevisionTraceIndexV1 | None]:
+        """一次读取并核验修订产物清单与追溯索引，供同时需要两者的调用方复用。"""
+
         manifest = await self.load_manifest(context)
+        return manifest, await self.index_for_manifest(context, manifest)
+
+    async def index_for_manifest(
+        self, context: Any, manifest: ReportArtifactManifest | None
+    ) -> RevisionTraceIndexV1 | None:
+        """按已核验的产物清单读取并核验追溯索引。"""
+
         if manifest is None or manifest.trace_index is None:
             return None
         content = await self._read_registered_file(
@@ -232,11 +244,11 @@ class ReportEditorTraceService:
     async def sources(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None = None,
+        session_capabilities: CapabilitiesInput = None,
         *,
         analysis_context_file: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        index = await self.load_index(context)
+        manifest, index = await self.load_manifest_and_index(context)
         if index is None:
             return {
                 "available": False,
@@ -244,7 +256,6 @@ class ReportEditorTraceService:
                 "datasets": [],
                 "narrativeSections": [],
             }
-        manifest = await self.load_manifest(context)
         files = {item.resource_id: item for item in index.files}
         field_labels: dict[tuple[str, str], str] = {}
         if analysis_context_file is not None:
@@ -284,7 +295,11 @@ class ReportEditorTraceService:
                     "businessLabel": dataset.business_label,
                     "sqlHash": dataset.sql_hash,
                     # 原始 SQL 含库表结构、过滤字面值与列名；分享会话（受限能力）只见哈希。
-                    "querySql": dataset.query_sql if session_capabilities is None else None,
+                    "querySql": (
+                        dataset.query_sql
+                        if EditorCapabilities.of(session_capabilities).full
+                        else None
+                    ),
                     "rowCount": dataset.row_count,
                     "size": file_ref.size,
                     "materializedAt": dataset.materialized_at,
@@ -432,7 +447,7 @@ class ReportEditorTraceService:
     async def drilldown_metric(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         metric_code: str,
         *,
         dataset_id: str,
@@ -470,7 +485,7 @@ class ReportEditorTraceService:
     async def drilldown(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         subject_id: str,
         *,
         metric_code: str,
@@ -520,7 +535,7 @@ class ReportEditorTraceService:
         context: Any,
         index: RevisionTraceIndexV1,
         declaration: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         *,
         dimension_code: str,
         limit: int,
@@ -590,7 +605,7 @@ class ReportEditorTraceService:
     async def preview(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         dataset_id: str,
         *,
         columns: Sequence[str] | None = None,
@@ -617,7 +632,7 @@ class ReportEditorTraceService:
     async def columns(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         dataset_id: str,
     ) -> dict[str, Any]:
         index = await self.require_index(context)
@@ -640,7 +655,7 @@ class ReportEditorTraceService:
     async def download(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         dataset_id: str,
     ) -> tuple[Path, str, int, str]:
         index = await self.require_index(context)
@@ -654,7 +669,7 @@ class ReportEditorTraceService:
     async def create_derived_export(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         dataset_id: str,
         policy: str,
         params: Mapping[str, Any],
@@ -682,7 +697,7 @@ class ReportEditorTraceService:
     async def derived_export_download(
         self,
         context: Any,
-        session_capabilities: Mapping[str, Any] | None,
+        session_capabilities: CapabilitiesInput,
         export_id: str,
     ) -> tuple[Path, str, int, str]:
         permissions = self._permissions(session_capabilities)
@@ -736,7 +751,7 @@ class ReportEditorTraceService:
         """
 
         from ..reporting.trace.contracts_v1 import FactRefV1, derive_resource_id
-        from ..reporting.trace.fact_service import resolve_fact
+        from ..reporting.trace.fact_service import resolve_fact_from_document
 
         index = await self.require_index(context)
         entry = next(
@@ -757,7 +772,8 @@ class ReportEditorTraceService:
         bundle_bytes = await self._read_registered_file(
             context, file_ref, max_bytes=16 * 1024 * 1024
         )
-        pointer = self._locate_fact_pointer(bundle_bytes, fact_id)
+        document = read_fact_document(bundle_bytes)
+        pointer = self._locate_fact_pointer(document, fact_id)
         fact_ref = FactRefV1(
             analysisId=analysis_id,
             fileResourceId=derive_resource_id(file_ref.path),
@@ -765,13 +781,12 @@ class ReportEditorTraceService:
             factKind=self._pointer_kind(pointer),
             factKey=fact_id,
         )
-        result = resolve_fact(bundle_bytes, fact_ref, with_inputs=True)
-        result["analysisName"] = json.loads(bundle_bytes).get("analysisName")
+        result = resolve_fact_from_document(document, fact_ref, with_inputs=True)
+        result["analysisName"] = document.get("analysisName")
         return result
 
     @staticmethod
-    def _locate_fact_pointer(bundle_bytes: bytes, fact_id: str) -> str:
-        document = read_fact_document(bundle_bytes)
+    def _locate_fact_pointer(document: Mapping[str, Any], fact_id: str) -> str:
         # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
         for array_name, prefix in (
             ("metrics", "/metrics/"),
@@ -1589,7 +1604,7 @@ class ReportEditorTraceService:
         context: Any,
         chart_id: str,
         *,
-        session_capabilities: Mapping[str, Any] | None = None,
+        session_capabilities: CapabilitiesInput = None,
         preview_limit: int = 20,
         preview_offset: int = 0,
     ) -> dict[str, Any]:
@@ -1818,33 +1833,24 @@ class ReportEditorTraceService:
             return "correlation"
         return "metric"
 
-    def _permissions(
-        self, capabilities: Mapping[str, Any] | None
-    ) -> TracePreviewPermissions:
-        # capabilities 为 None 表示完整 editor 会话（向后兼容旧会话结构）；
-        # 分享会话在签发时写入受限能力字典。
-        if capabilities is None:
-            return TracePreviewPermissions(
-                can_download_original=True, can_download_derived=True
-            )
-        blocked = capabilities.get("blocked_columns") or ()
+    def _permissions(self, capabilities: CapabilitiesInput) -> TracePreviewPermissions:
+        resolved = EditorCapabilities.of(capabilities)
         return TracePreviewPermissions(
-            blocked_columns=frozenset(str(item) for item in blocked),
-            can_download_original=bool(capabilities.get("download_original", False)),
-            can_download_derived=bool(capabilities.get("download_derived", False)),
+            blocked_columns=resolved.blocked_columns,
+            can_download_original=resolved.download_original,
+            can_download_derived=resolved.download_derived,
         )
 
     @staticmethod
-    def _drilldown_enabled(capabilities: Mapping[str, Any] | None) -> bool:
-        return capabilities is None or bool(capabilities.get("drilldown", False))
+    def _drilldown_enabled(capabilities: CapabilitiesInput) -> bool:
+        return EditorCapabilities.of(capabilities).drilldown
 
     @staticmethod
-    def _drilldown_declaration_allowed(
-        declaration: Any, capabilities: Mapping[str, Any] | None
-    ) -> bool:
-        if capabilities is None:
+    def _drilldown_declaration_allowed(declaration: Any, capabilities: CapabilitiesInput) -> bool:
+        resolved = EditorCapabilities.of(capabilities)
+        if resolved.full:
             return True
-        blocked = {str(item) for item in capabilities.get("blocked_columns") or ()}
+        blocked = resolved.blocked_columns
         required = {
             *(item.field for item in declaration.dimensions),
             *declaration.fixed_scope,

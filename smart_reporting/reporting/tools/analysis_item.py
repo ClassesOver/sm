@@ -19,7 +19,7 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
 from ...task_execution import abuild_workspace_changes, parse_unified_diff
-from ...workspace import normalize_workspace_path, WorkspaceError, WorkspacePathConflict
+from ...workspace import WorkspaceError, WorkspacePathConflict, normalize_workspace_path
 from ..models import ReportingError
 from ..workflow.checkpoint import FileIdentity
 from ..workflow.state import ReportingRunState
@@ -30,7 +30,6 @@ from .validation import (
 )
 from .visualization import MAX_VISUALIZATION_SCRIPT_BYTES
 
-MAX_ANALYSIS_PYTHON_DEPENDENCIES = 100
 MAX_ANALYSIS_PYTHON_SOURCE_BYTES = 128 * 1024
 MAX_ANALYSIS_PYTHON_LINE_BYTES = 8 * 1024
 MAX_ANALYSIS_PYTHON_LITERAL_BYTES = 8 * 1024
@@ -48,6 +47,7 @@ def _valid_visualization_source(tree: ast.Module) -> bool:
         "__file__",
         "apply_analysis_patch",
         "null",
+        # 已下线的旧工具名：在写入阶段直接拒绝，避免运行时才 NameError 并消耗重试。
         "run_python_script",
         "submit_visualization_charts",
         "true",
@@ -712,29 +712,6 @@ class RuntimeAnalysisMixin:
         except (ReportingError, WorkspaceError, ValueError) as error:
             return self._failure(error)
 
-    async def _installed_python_modules(
-        self,
-        *,
-        thread_id: str,
-        module_names: set[str],
-    ) -> set[str]:
-        if not module_names:
-            return set()
-        try:
-            return await self.runtime.workspace.probe_python_modules(thread_id, module_names)
-        except WorkspaceError as error:
-            raise ReportingError(
-                "report_analysis_dependency_probe_failed",
-                "无法确认分析脚本依赖是否完整，已拒绝执行脚本。",
-            ) from error
-
-    async def _analysis_python_source(self, *, thread_id: str, path: str) -> bytes:
-        return await self.runtime.workspace.read_limited_regular_file(
-            thread_id,
-            path,
-            max_bytes=MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
-        )
-
     async def complete_analysis_item(
         self,
         analysisId: str,
@@ -1133,13 +1110,3 @@ class RuntimeAnalysisMixin:
         )
         return durable, list(dict.fromkeys(warnings))
 
-
-def _require_dataset_id_sequence(value: object) -> list[str]:
-    if (
-        not isinstance(value, Sequence)
-        or isinstance(value, (str, bytes))
-        or not value
-        or any(not isinstance(item, str) or not item for item in value)
-    ):
-        raise ReportingError("report_analysis_dataset_inconsistent", "Dataset ID 序列无效。")
-    return list(value)

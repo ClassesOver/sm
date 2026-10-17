@@ -34,7 +34,6 @@ def build_reporting_tools(
     *,
     state_repository: ReportingStateRepository,
     run_context: RunContext | None = None,
-    agent: Any | None = None,
     vision_reviewer: ReportVisionReviewer | None = None,
     exclude_file_tools: bool = False,
 ) -> list[Toolkit]:

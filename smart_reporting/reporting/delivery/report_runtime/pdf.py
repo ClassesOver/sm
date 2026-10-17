@@ -27,7 +27,6 @@ _CITATION_MARKER = re.compile(r"\[\[citation:([^\]\r\n]+)\]\]")
 _SECTION_MARKER = re.compile(r"\[\[section:([^\]\r\n]+)\]\]")
 _ANALYSIS_MARKER = re.compile(r"\[\[analysis:([^\]\r\n]+)\]\]")
 _CLAIM_MARKER = re.compile(r"\[\[claim:([^\]\r\n]+)\]\]")
-_TABLE_MARKER = re.compile(r"\[\[/?table:[^\]\r\n]+\]\]")
 _TABLE_OPEN_MARKER = re.compile(r"\[\[table:([^\]\r\n]+)\]\]")
 _TABLE_CLOSE_MARKER = re.compile(r"\[\[/table:([^\]\r\n]+)\]\]")
 # 数据来源锚点按文档出现顺序扫描：claim 标记、表格起始标记与行内图片。

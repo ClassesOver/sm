@@ -64,7 +64,7 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "逐字使用 binding.dataPath 读取数据，不要用正则、字符串拼接、+、f-string 或 os.path.join 构造/推导路径。",
     "输入文件路径必须使用 task.authorized_read_paths 或 binding.factFile.path 中的逐字字符串，"
     "不得把 facts 文件（如 analysis_*.json）当作 supplement 来访问 findings。",
-    "修复 execution_output_error 时必须修正原始数据读取或解码错误，不得仅删除失败代码、"
+    "修复脚本执行失败时必须修正原始数据读取或解码错误，不得仅删除失败代码、"
     "吞掉异常或补默认数据。",
     "按 visualizationMode 选择 Matplotlib 或 Plotly；每张图都必须生成签发路径的 PNG/JPEG 静态图，"
     "Plotly 图还必须生成签发路径的 .plotly.json。"
@@ -81,7 +81,7 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "金额偏低本身不能证明数据截断或未完整入账；缺少直接证据时，标题、注释和替代文本只说明数值偏低及原因待核实。",
     "若 facts 含未入账、字段为零或不可比告警，图中只能作为软告警呈现，不得用图形把"
     "缺失数据补成零值或把相关性表达成确定因果。",
-    "不得调用或导入 run_python_script、submit_visualization_charts 等编排工具。",
+    "不得调用或导入 submit_visualization_charts 等编排工具。",
 )
 
 _VISUALIZATION_CODE_LEGACY_INSTRUCTIONS = _VISUALIZATION_CODE_COMMON_INSTRUCTIONS

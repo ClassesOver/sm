@@ -19,7 +19,7 @@ from ...hospital_operation.narrative_outline import (
 )
 from ...trace.contracts_v1 import RevisionTraceIndexV1
 from ...trace.drilldown_builder import build_drilldown_metrics
-from ...trace.fact_service import resolve_fact
+from ...trace.fact_service import read_fact_document, resolve_fact_from_document
 from ...trace.index_builder import (
     build_csv_trace_index,
     encode_trace_index,
@@ -540,7 +540,7 @@ class RuntimePublicationMixin:
                 "snapshot_integrity_failed", "来源附录引用的追溯索引无法解析。"
             ) from error
         files = {item.resource_id: item for item in index.files}
-        contents: dict[str, bytes] = {}
+        documents: dict[str, Mapping[str, Any] | None] = {}
         links: dict[str, list[dict[str, str]]] = {}
         kind_labels = {
             "text_claim": "正文结论",
@@ -554,8 +554,7 @@ class RuntimePublicationMixin:
                 file = files.get(fact_ref.file_resource_id)
                 if file is None:
                     continue
-                raw = contents.get(file.resource_id)
-                if raw is None:
+                if file.resource_id not in documents:
                     raw = await self.workspace_service.read_limited_regular_file(
                         thread_id, file.path, max_bytes=16 * 1024 * 1024
                     )
@@ -567,9 +566,15 @@ class RuntimePublicationMixin:
                             "snapshot_integrity_failed",
                             "来源附录引用的事实文件身份不一致。",
                         )
-                    contents[file.resource_id] = raw
+                    try:
+                        documents[file.resource_id] = read_fact_document(raw)
+                    except ReportingError:
+                        documents[file.resource_id] = None
+                document = documents[file.resource_id]
+                if document is None:
+                    continue
                 try:
-                    resolved = resolve_fact(raw, fact_ref, with_inputs=False)
+                    resolved = resolve_fact_from_document(document, fact_ref, with_inputs=False)
                 except ReportingError:
                     continue
                 dataset_id = resolved["entry"].get("datasetId")
@@ -878,9 +883,13 @@ class RuntimePublicationMixin:
                 complete=audit_complete,
             )
         except Exception as error:
-            raise ReportingError(
-                "report_quality_audit_failed", "发布质量告警审计写入失败。"
-            ) from error
+            # 审计写入失败与其他门禁问题一样记为 issue；保留已收集的问题和告警，
+            # 不用 raise 把整个门禁替换成一条笼统问题（AGENTS.md 非阻断要求）。
+            logger.warning(
+                "report_quality_audit_write_failed error_type={}", type(error).__name__
+            )
+            invalid_notice_count = 0
+            issue("report_quality_audit_failed", "发布质量告警审计写入失败，已有产物仍可下载。")
         audit_summary = audit.build().as_dict()
         if invalid_notice_count:
             audit_summary["invalidNoticeCount"] = invalid_notice_count
@@ -900,14 +909,26 @@ class RuntimePublicationMixin:
             await self._render_and_validate(run_context)
         result = self._workflow_result(self._state(run_context))
         state = self._state(run_context)
+        # AGENTS：产物清单核验失败属于发布门禁问题，不得阻止已生成 PDF/Word 的签发。
+        # 失败时不使用该清单（本修订不带溯源与交互图），照常继续并在门禁中返回原因；
+        # 与 issue_http_publication 的 _drop_lineage 口径一致。
+        manifest_issues: list[dict[str, str]] = []
+        manifest: ReportArtifactManifest | None
         try:
             manifest = ReportArtifactManifest.model_validate(
                 state[REPORT_ARTIFACTS_STATE_KEY]["draft"]
             )
         except Exception as error:
-            raise ReportingError(
-                "report_artifact_manifest_invalid", "发布门禁缺少已验收的产物清单。"
-            ) from error
+            logger.warning(
+                "report_publication_manifest_dropped code=report_artifact_manifest_invalid "
+                "error_type={}",
+                type(error).__name__,
+            )
+            manifest = None
+            manifest_issues.append({
+                "code": "report_artifact_manifest_invalid",
+                "message": "发布门禁缺少已验收的产物清单，本修订不提供来源追溯；已有产物仍可下载。",
+            })
         try:
             gate = await self._dataset_publication_gate(run_context, result)
         except Exception as error:
@@ -922,31 +943,57 @@ class RuntimePublicationMixin:
             }
         manifest_identity = None
         if result.get("artifactManifest") is not None:
-            manifest_identity = ArtifactFile.model_validate(result["artifactManifest"])
-            content_bytes = await self.workspace_service.read_limited_regular_file(
-                self._scope(run_context)["threadId"],
-                manifest_identity.path,
-                max_bytes=manifest_identity.size,
-            )
-            if (
-                len(content_bytes) != manifest_identity.size
-                or hashlib.sha256(content_bytes).hexdigest() != manifest_identity.sha256
-                or ReportArtifactManifest.model_validate_json(content_bytes) != manifest
-                or manifest.markdown.path != result["markdownPath"]
-                or manifest.report_id != str(run_context.run_id)
-                or manifest.revision != result.get("revision")
-            ):
-                raise ReportingError(
-                    "report_artifact_manifest_changed", "已验收报告产物清单发生变化。"
+            try:
+                manifest_identity = ArtifactFile.model_validate(result["artifactManifest"])
+                content_bytes = await self.workspace_service.read_limited_regular_file(
+                    self._scope(run_context)["threadId"],
+                    manifest_identity.path,
+                    max_bytes=manifest_identity.size,
                 )
+                if (
+                    manifest is None
+                    or len(content_bytes) != manifest_identity.size
+                    or hashlib.sha256(content_bytes).hexdigest() != manifest_identity.sha256
+                    or ReportArtifactManifest.model_validate_json(content_bytes) != manifest
+                    or manifest.markdown.path != result["markdownPath"]
+                    or manifest.report_id != str(run_context.run_id)
+                    or manifest.revision != result.get("revision")
+                ):
+                    raise ReportingError(
+                        "report_artifact_manifest_changed", "已验收报告产物清单发生变化。"
+                    )
+            except Exception as error:
+                code = (
+                    error.code if isinstance(error, ReportingError)
+                    else "report_artifact_manifest_changed"
+                )
+                logger.warning(
+                    "report_publication_manifest_dropped code={} error_type={}",
+                    code,
+                    type(error).__name__,
+                )
+                manifest_identity = None
+                manifest = None
+                manifest_issues.append({
+                    "code": code,
+                    "message": "报告产物清单核验未通过，本修订不提供来源追溯；已有产物仍可下载。",
+                })
         elif result.get("artifactManifestPath") is not None:
-            raise ReportingError(
-                "report_artifact_manifest_invalid", "报告产物清单缺少已验收身份。"
-            )
+            manifest = None
+            manifest_issues.append({
+                "code": "report_artifact_manifest_invalid",
+                "message": "报告产物清单缺少已验收身份，本修订不提供来源追溯；已有产物仍可下载。",
+            })
+        if manifest_issues:
+            gate = {
+                **gate,
+                "formalReleaseAllowed": False,
+                "issues": [*gate.get("issues", []), *manifest_issues],
+            }
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
-        interactive_charts = _editor_interactive_charts(manifest)
+        interactive_charts = _editor_interactive_charts(manifest) if manifest is not None else {}
         if interactive_charts:
             editor_job = {**editor_job, "interactiveCharts": interactive_charts}
         return StepOutput(

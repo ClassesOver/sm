@@ -11,7 +11,7 @@ from loguru import logger
 from markdown_it import MarkdownIt
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from ..contract import StrictModel
+from ..contract import StrictModel, safe_relative_posix_path
 from ..models import ReportingError
 from ..trace.contracts_v1 import NumberReferenceV1, ReviewNoticeV1
 from .report_runtime.markdown import (
@@ -147,11 +147,9 @@ class ReportChartRegistration(StrictModel):
     @field_validator("source_path")
     @classmethod
     def validate_source_path(cls, value: str) -> str:
-        if "\\" in value:
-            raise ValueError("图表源路径必须使用 POSIX 格式")
-        path = PurePosixPath(value)
-        if path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("图表源路径必须是安全工作区相对路径")
+        path = safe_relative_posix_path(
+            value, "图表源路径必须是安全工作区相对路径", backslash_message="图表源路径必须使用 POSIX 格式"
+        )
         return path.as_posix()
 
     @field_validator("interactive_path")

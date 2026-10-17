@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
+from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
 from smart_reporting.reporting.workflow.checkpoint import (
     FileIdentity,
     ReportingCheckpoint,
-    SectionClaim,
     SectionArtifact,
+    SectionClaim,
 )
-from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
 from smart_reporting.reporting.workflow.runtime.publication import RuntimePublicationMixin
 
 # 直接测试核对逻辑：通过未绑定方法调用（避免拉起整个 workflow facade）。

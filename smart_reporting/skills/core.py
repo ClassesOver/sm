@@ -1,7 +1,6 @@
 import hashlib
 import json
 import os
-import re
 from collections.abc import Callable
 from inspect import isawaitable
 from typing import Any
@@ -10,14 +9,8 @@ from agno.run import RunContext
 from agno.skills import LocalSkills, Skills
 from agno.skills.loaders.base import SkillLoader
 
-
 TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY = "agentos_task_execution_skill_script_receipts"
 MAX_SKILL_SCRIPT_RECEIPTS = 64
-MAX_SKILL_VALIDATORS = 32
-MAX_SKILL_VALIDATOR_SCRIPT_BYTES = 1024 * 1024
-MAX_SKILL_VALIDATOR_TIMEOUT = 900
-_VALIDATOR_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\Z")
-_SKILL_PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _SKILL_SCRIPT_HOOK_MARKER = "_agentos_skill_script_hook"
 
 

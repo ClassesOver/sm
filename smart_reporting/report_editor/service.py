@@ -38,6 +38,7 @@ from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from ..workspace import WorkspaceError, WorkspacePathConflict
+from .capabilities import EditorCapabilities
 from .trace_retention import source_lifecycle, source_lifecycle_lock
 from .trace_revisions import (
     rebuild_edited_manifest,
@@ -530,14 +531,14 @@ class ReportEditorGrantService:
         if not await self.repository.grant_active(jti, now=current):
             raise ReportingError("report_editor_grant_invalid", "报告编辑授权无效。")
         raw_session = secrets.token_urlsafe(32)
-        await self.repository.put_session(_token_hash(raw_session), session)
+        await self.repository.put_session(token_hash(raw_session), session)
         return raw_session, session
 
     async def lookup_session(
         self, raw_session: str, *, now: datetime | None = None
     ) -> ReportEditorSession:
         current = _utc(now or datetime.now(UTC))
-        session = await self.repository.get_session(_token_hash(raw_session))
+        session = await self.repository.get_session(token_hash(raw_session))
         if session is None:
             raise ReportingError("report_editor_session_invalid", "报告编辑会话无效。")
         if session.expires_at <= current:
@@ -749,8 +750,10 @@ class ReportEditorService:
         async with AsyncExitStack() as locks:
             for candidate in sorted(contexts.values(), key=lambda item: item.markdown_path):
                 await locks.enter_async_context(self._draft_lock(candidate))
-            for candidate in contexts.values():
+            manifests = {}
+            for key, candidate in contexts.items():
                 manifest = await self.trace.load_manifest(candidate)
+                manifests[key] = manifest
                 if manifest is not None and manifest.trace_index is not None:
                     record_paths.add(manifest.trace_index.path)
             for key, candidate in contexts.items():
@@ -770,7 +773,8 @@ class ReportEditorService:
                             protected.add(source_key)
                     except (KeyError, ValueError, TypeError) as error:
                         raise ReportingError("snapshot_integrity_failed", "草稿来源登记无效，停止清理。") from error
-                index = await self.trace.load_index(candidate)
+                # 清单已在同一把锁内读取并核验，这里只读取索引，不重复读清单。
+                index = await self.trace.index_for_manifest(candidate, manifests[key])
                 if index is None:
                     raise ReportingError("report_editor_retention_invalid", "版本缺少权威来源索引，停止清理。")
                 for file in index.files:
@@ -1057,7 +1061,9 @@ class ReportEditorService:
                     "markdown": markdown,
                     "sha256": sha256,
                     "sources": _history_sources_for_session(
-                        sources, restricted=capabilities is not None, expired=expired
+                        sources,
+                        restricted=EditorCapabilities.of(capabilities).restricted,
+                        expired=expired,
                     ),
                 }
         raise ReportingError("report_editor_history_missing", "历史版本不存在。")
@@ -1813,9 +1819,10 @@ class ReportEditorService:
             target_job = session_state[REPORT_JOBS_STATE_KEY][context.job_id]
             original_presentations = copy.deepcopy(target_job.get("_citationPresentations"))
             try:
-                artifact_manifest = await self.trace.load_manifest(source_context)
+                artifact_manifest, trace_index = await self.trace.load_manifest_and_index(
+                    source_context
+                )
                 if artifact_manifest is not None:
-                    trace_index = await self.trace.load_index(source_context)
                     await verify_revision_lineage_files(
                         self.workspace,
                         scope.workspace_key,
@@ -2302,7 +2309,7 @@ def _next_pdf_path(context: ReportEditorContext, *, revision: int | None = None)
     return str(path.parent.with_name(f"revision-{target_revision}") / path.name)
 
 
-def _token_hash(value: str) -> str:
+def token_hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 

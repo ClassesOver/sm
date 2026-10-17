@@ -27,8 +27,8 @@ from smart_reporting.reporting.tools.mock_workspace import (
 )
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
 from smart_reporting.reporting.tools.workspace_adapter import (
-    ReportingWorkspaceAdapter,
     ReportingTaskWorkspacePort,
+    ReportingWorkspaceAdapter,
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
@@ -319,28 +319,6 @@ async def test_reporting_tool_reads_through_async_workspace_api() -> None:
     )
 
     assert result["content"] == "source"
-
-
-@pytest.mark.anyio
-async def test_analysis_dependency_probe_uses_structured_workspace_operation() -> None:
-    class Workspace:
-        async def probe_python_modules(self, thread_id: str, names: set[str]) -> set[str]:
-            assert thread_id == "thread-1"
-            assert names == {"numpy", "missing"}
-            return {"numpy"}
-
-        async def execute_isolated(self, *_args: object, **_kwargs: object) -> object:
-            raise AssertionError("依赖探测不得调用通用命令执行")
-
-    harness = SimpleNamespace(runtime=SimpleNamespace(workspace=Workspace()))
-
-    installed = await RuntimeAnalysisMixin._installed_python_modules(
-        harness,  # type: ignore[arg-type]
-        thread_id="thread-1",
-        module_names={"numpy", "missing"},
-    )
-
-    assert installed == {"numpy"}
 
 
 @pytest.mark.anyio

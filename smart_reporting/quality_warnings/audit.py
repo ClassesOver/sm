@@ -114,18 +114,6 @@ class WarningEmitter:
 
 class WarningAdapter:
     @staticmethod
-    def from_notice(notice: WarningNotice) -> WarningNotice:
-        """在跨阶段边界重新校验 notice，防止绕过规则目录构造对象。"""
-
-        return WarningEmitter(source_phase=notice.source_phase).emit(
-            code=notice.rule_code,
-            subject_type=notice.subject_type,
-            subject_id=notice.subject_id,
-            message=notice.message,
-            details=notice.details,
-        )
-
-    @staticmethod
     def from_source_warning(source_warning: Any, *, source_phase: str) -> WarningNotice:
         if hasattr(source_warning, "model_dump"):
             value = source_warning.model_dump(mode="json", by_alias=True)

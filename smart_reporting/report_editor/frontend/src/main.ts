@@ -607,7 +607,8 @@ try {
       evidenceView.dispatch(evidenceView.state.tr.setSelection(scene.selection.resolve(evidenceView.state.doc)))
     }
     evidenceView.focus()
-    if (scene && evidenceView.state.doc === scene.doc) window.scrollTo({ left: scene.left, top: scene.top, behavior: 'auto' })
+    // auto 会继承 html 的平滑滚动，焦点已归还时视口仍可能停在旧位置；现场恢复应立即完成。
+    if (scene && evidenceView.state.doc === scene.doc) window.scrollTo({ left: scene.left, top: scene.top, behavior: 'instant' })
   }
   const { installSlashMenuHeadingPreview } = await import('./slash-menu-preview')
   installSlashMenuHeadingPreview()

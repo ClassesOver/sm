@@ -7,12 +7,11 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from ..contract import SHA256_PATTERN, StrictModel
+from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
 from ..delivery.draft_v1 import ReportDraftBlock
 from ..models import ReportingError
 
@@ -25,9 +24,7 @@ class FileIdentity(StrictModel):
     @field_validator("path")
     @classmethod
     def validate_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("文件路径必须是安全的工作区相对路径")
+        path = safe_relative_posix_path(value, "文件路径必须是安全的工作区相对路径")
         return path.as_posix()
 
 
@@ -254,9 +251,7 @@ class ChartVisualInspectionReceipt(StrictModel):
     @field_validator("source_path")
     @classmethod
     def validate_source_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("图表视觉回执路径必须是安全工作区相对路径")
+        path = safe_relative_posix_path(value, "图表视觉回执路径必须是安全工作区相对路径")
         return path.as_posix()
 
     @model_validator(mode="after")
@@ -700,6 +695,20 @@ class CheckpointRetryUsage(StrictModel):
     )
 
 
+_RETRY_USAGE_ERROR_ATTR = "_agentos_reporting_retry_usage"
+
+
+def attach_retry_usage(error: BaseException, usage: CheckpointRetryUsage) -> None:
+    """把任务失败时已发生的预算用量随异常传递给 fresh retry；只接受显式类型。"""
+
+    setattr(error, _RETRY_USAGE_ERROR_ATTR, usage)
+
+
+def retry_usage_of(error: BaseException | None) -> CheckpointRetryUsage | None:
+    usage = getattr(error, _RETRY_USAGE_ERROR_ATTR, None)
+    return usage if isinstance(usage, CheckpointRetryUsage) else None
+
+
 class CheckpointError(StrictModel):
     phase: Literal["analysis", "section", "finalize"]
     code: str = Field(min_length=1, max_length=128)
@@ -800,15 +809,18 @@ class ReportingCheckpoint(StrictModel):
     # 按章保存 visualization_section 失败与预算账本;并发合并时按键合并,
     # 不复用标量 last_error（后者保留给汇总阶段的全局终态失败）。
     visualization_section_errors: dict[str, CheckpointError] = Field(
-        default_factory=dict, alias="visualizationSectionErrors", max_length=200
+        default_factory=dict, alias="visualizationSectionErrors"
     )
     deterministic_fact_files: dict[str, FileIdentity] = Field(
         default_factory=dict,
         alias="deterministicFactFiles",
         max_length=200,
     )
-    files: tuple[FileIdentity, ...] = Field(default=(), max_length=500)
-    trace: tuple[ContextTrace, ...] = Field(default=(), max_length=2000)
+    # 运行账本随章节和重试增长，不能借用分析项（最多 200 项）的数量上限。
+    # files 按路径合并，保留已有分析产物及每章的 WorkItem、约束和完成产物身份；
+    # trace 按 taskId 合并。单项身份、分析项和发现图谱的契约继续各自校验。
+    files: tuple[FileIdentity, ...] = Field(default=())
+    trace: tuple[ContextTrace, ...] = Field(default=())
 
     @model_validator(mode="after")
     def validate_sections(self) -> ReportingCheckpoint:

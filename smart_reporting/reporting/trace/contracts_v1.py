@@ -18,12 +18,11 @@ import json
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from ..contract import SHA256_PATTERN, StrictModel
+from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
 
 TRACE_CONTRACT_VERSION = "1"
 
@@ -180,11 +179,9 @@ class TraceFileRefV1(StrictModel):
     @field_validator("path")
     @classmethod
     def validate_relative_path(cls, value: str) -> str:
-        if "\\" in value:
-            raise ValueError("追溯文件路径必须使用 POSIX 相对路径")
-        path = PurePosixPath(value)
-        if path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("追溯文件路径必须位于工作区内")
+        safe_relative_posix_path(
+            value, "追溯文件路径必须位于工作区内", backslash_message="追溯文件路径必须使用 POSIX 相对路径"
+        )
         return value
 
     @model_validator(mode="after")

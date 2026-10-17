@@ -37,11 +37,11 @@ from .base import (
     StepInput,
     StepOutput,
     ValidationError,
-    _payload_sha256,
     _source_warnings_from_state,
     anyio,
     build_profile_coverage_manifest,
     hashlib,
+    payload_sha256,
     profile_csv_dataset,
     project_measure_semantics_to_query_outputs,
     time_series_diagnostics_requested,
@@ -622,7 +622,7 @@ class RuntimeDatasetsMixin:
             run_context,
             ReportingCommand(
                 name="set_analysis_plan",
-                commandId=f"analysis-plan:{_payload_sha256(plan.model_dump(mode='json', by_alias=True))}",
+                commandId=f"analysis-plan:{payload_sha256(plan.model_dump(mode='json', by_alias=True))}",
                 payload={
                     "analysisIds": [item.analysis_id for item in plan.analyses],
                     "datasetIds": list(plan.dataset_ids),

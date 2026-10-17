@@ -48,7 +48,11 @@ from smart_reporting.reporting.workflow.scope import (
 )
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution import TaskState
-from smart_reporting.workspace import WorkspacePathConflict, normalize_workspace_path
+from smart_reporting.workspace import (
+    WorkspaceError,
+    WorkspacePathConflict,
+    normalize_workspace_path,
+)
 
 
 async def _chunks(*values: bytes):
@@ -189,6 +193,13 @@ class _Workspace:
         if len(content) > max_bytes:
             raise ValueError("file too large")
         return content
+
+    async def aiter_regular_file_chunks(
+        self, thread: str, path: str, *, max_bytes: int, chunk_size: int
+    ):
+        content = await self.read_limited_regular_file(thread, path, max_bytes=max_bytes)
+        for offset in range(0, len(content), chunk_size):
+            yield content[offset : offset + chunk_size]
 
     def remove_files(self) -> None:
         self.files.clear()
@@ -1221,6 +1232,69 @@ async def test_publication_gate_exception_preserves_download_input_and_failed_va
     assert output.content["validation"]["ok"] is False
     assert output.content["validationIssues"] == result["validationIssues"]
     assert output.content["publicationGate"]["issues"]
+    for key in ("pdfPath", "pdfSize", "pdfSha256", "wordPath", "wordSize", "wordSha256"):
+        assert output.content[key] == result[key]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("case", ["draft_invalid", "file_changed", "file_unreadable", "identity_missing"])
+async def test_publication_manifest_failures_keep_artifacts_and_report_issue(monkeypatch, case):
+    """产物清单核验失败只丢弃清单（不带溯源），PDF/Word 身份照常交给签发并返回原因。"""
+    from smart_reporting.reporting.workflow.runtime import publication
+
+    manifest = {
+        "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
+        "datasetSnapshotHash": "a" * 64, "effectiveProfileHash": "b" * 64,
+        "markdown": {"path": "reports/report.md", "mediaType": "text/markdown",
+                     "size": 1, "sha256": "c" * 64},
+        "citations": [{"citationId": "citation_001", "datasetId": "dataset_001",
+                       "requirementId": "requirement_001", "snapshotHash": "a" * 64}],
+        "sections": ["section_001"], "sectionNumbers": ["1"],
+        "headingNumbers": [{"level": 2, "number": "1", "title": "运营分析",
+                           "sectionCode": "section_001", "anchor": "report-section-001"}],
+    }
+    tampered = b'{"tampered": true}'
+    result = {
+        "status": "validated", "jobId": "job-1", "revision": 1,
+        "markdownPath": "reports/report.md", "pdfPath": "reports/report.pdf",
+        "pdfSize": 3, "pdfSha256": "a" * 64, "wordPath": "reports/report.docx",
+        "wordSize": 4, "wordSha256": "b" * 64, "validation": {"ok": True},
+    }
+    if case == "identity_missing":
+        result["artifactManifestPath"] = "reports/manifest.json"
+    elif case in {"file_changed", "file_unreadable"}:
+        result["artifactManifest"] = {
+            "path": "reports/manifest.json", "mediaType": "application/json",
+            "size": len(tampered), "sha256": "d" * 64,
+        }
+
+    async def read_file(*_args, **_kwargs):
+        if case == "file_unreadable":
+            raise WorkspaceError("工作区路径不存在，请检查名称后重试。")
+        return tampered
+
+    state = {"report_artifacts": {"draft": {} if case == "draft_invalid" else manifest}}
+    runtime = SimpleNamespace(
+        _feedback=lambda _step: None, _state=lambda _context: state,
+        _workflow_result=lambda _state: result,
+        _dataset_publication_gate=AsyncMock(
+            return_value={"formalReleaseAllowed": True, "issues": [], "warnings": []}
+        ),
+        workspace_service=SimpleNamespace(read_limited_regular_file=read_file),
+        _scope=lambda _context: {"threadId": "thread"},
+        report_tools=SimpleNamespace(_load_job=lambda *_args: {}),
+        _tool_context=lambda context: context,
+    )
+    monkeypatch.setattr(publication, "_frozen_outline", lambda _state: SimpleNamespace(title="运营分析"))
+
+    output = await publication.RuntimePublicationMixin.publish_report(
+        runtime, SimpleNamespace(), RunContext(run_id="report-1", session_id="thread", session_state=state),
+    )
+
+    gate = output.content["publicationGate"]
+    assert output.content["formalReleaseAllowed"] is False
+    assert any(issue["code"].startswith("report_artifact_manifest_") for issue in gate["issues"])
+    assert "artifactManifest" not in output.content
     for key in ("pdfPath", "pdfSize", "pdfSha256", "wordPath", "wordSize", "wordSha256"):
         assert output.content[key] == result[key]
 

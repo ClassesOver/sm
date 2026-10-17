@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..code_agent.context import ReportingCodingTaskContext
+from ..contract import safe_relative_posix_path
 
 
 class _StrictModel(BaseModel):
@@ -27,9 +28,7 @@ class BenchmarkFileIdentity(_StrictModel):
     @field_validator("path")
     @classmethod
     def validate_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("benchmark 文件必须使用安全相对路径")
+        path = safe_relative_posix_path(value, "benchmark 文件必须使用安全相对路径")
         return path.as_posix()
 
 

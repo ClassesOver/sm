@@ -514,13 +514,13 @@ async def test_reporting_postgres_execution_lock_matrix() -> None:
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_reporting_postgres_controller_releases_owner_after_deferred_sandbox_cleanup() -> (
+async def test_reporting_postgres_controller_releases_owner_after_failed_run_cleanup() -> (
     None
 ):
     database = create_agent_database(_integration_database_url())
     repository = ReportingStateRepository(database.async_db)
     suffix = uuid4().hex
-    thread_id = f"integration-deferred-cleanup-{suffix}"
+    thread_id = f"integration-failed-run-cleanup-{suffix}"
     run_calls = 0
 
     class Workflow:
@@ -533,11 +533,11 @@ async def test_reporting_postgres_controller_releases_owner_after_deferred_sandb
                 raise RuntimeError("materialize failed")
             return SimpleNamespace(status=RunStatus.completed)
 
+    cleanup_calls = 0
+
     async def cleanup(*_args, **_kwargs) -> None:
-        raise ReportingError(
-            "report_sandbox_cleanup_failed",
-            "失败运行环境已隔离并转入后台清理。",
-        )
+        nonlocal cleanup_calls
+        cleanup_calls += 1
 
     controller = ReportWorkflowController(
         lambda: Workflow(),
@@ -561,6 +561,7 @@ async def test_reporting_postgres_controller_releases_owner_after_deferred_sandb
         with pytest.raises(RuntimeError, match="materialize failed"):
             await controller.start(ReportingWorkflowInput(prompt="第一次运行"), first_context)
         assert await repository.get_workflow_thread_owner(thread_id) is None
+        assert cleanup_calls >= 1
 
         result = await controller.start(ReportingWorkflowInput(prompt="第二次运行"), second_context)
 

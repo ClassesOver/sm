@@ -7,6 +7,7 @@ import uuid
 import pytest
 from agno.run import RunContext
 
+from smart_reporting.reporting.data_sources import thread_binding
 from smart_reporting.reporting.workflow.runtime.publication import _coverage_period_bounds
 from smart_reporting.reporting.workspace import (
     MAX_REPORT_JOB_STATE_BYTES,
@@ -36,7 +37,7 @@ def _service_with_job() -> tuple[WorkspaceReportService, RunContext, str]:
     run_context = RunContext(run_id="run-1", session_id="session-1", session_state={})
     service = WorkspaceReportService(object())  # type: ignore[arg-type]
     run_context.session_state[REPORT_JOBS_STATE_KEY] = {
-        job_id: {"jobId": job_id, "_threadBinding": service._thread_binding("session-1")}
+        job_id: {"jobId": job_id, "_threadBinding": thread_binding("session-1")}
     }
     return service, run_context, job_id
 

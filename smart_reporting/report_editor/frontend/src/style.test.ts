@@ -696,3 +696,15 @@ describe('auxiliary text contrast', () => {
     expect(failures).toEqual([])
   })
 })
+
+describe('source validation status styles', () => {
+  it('keeps the toolbar status button styled for every state main.ts sets', () => {
+    for (const selector of [
+      ".source-validation-status {",
+      ".source-validation-status[data-state='checking']::before",
+      ".source-validation-status[data-state='stale']",
+      ".source-validation-status[data-state='unknown']",
+      '.report-meta .source-validation-status:not([hidden])',
+    ]) expect(stylesheet).toContain(selector)
+  })
+})

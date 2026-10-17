@@ -16,6 +16,7 @@ from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
 from loguru import logger
 
+from ...async_utils import safe_reset_context_var
 from ..models import reporting_failure
 from .controller import REPORT_PROCESS_LIFECYCLE_DEPENDENCY
 from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
@@ -48,21 +49,17 @@ _STEP_MODEL_METRICS: ContextVar[_StepModelMetricsAccumulator | None] = ContextVa
 _PLANNER_REQUEST_RECORDER: ContextVar[PlannerRequestRecorder | None] = ContextVar(
     "reporting_planner_request_recorder", default=None
 )
-_TOKEN_METRIC_FIELDS = (
-    "input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "reasoning_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
+MODEL_TOKEN_FIELDS = (
+    ("input_tokens", "inputTokens"),
+    ("output_tokens", "outputTokens"),
+    ("total_tokens", "totalTokens"),
+    ("reasoning_tokens", "reasoningTokens"),
+    ("cache_read_tokens", "cacheReadTokens"),
+    ("cache_write_tokens", "cacheWriteTokens"),
 )
 
 
-def _safe_reset_context_var(variable: ContextVar[Any], token: Any) -> None:
-    try:
-        variable.reset(token)
-    except ValueError:
-        logger.debug("report_contextvar_reset_skipped_cross_context")
+_CONTEXTVAR_RESET_SKIPPED_EVENT = "report_contextvar_reset_skipped_cross_context"
 
 
 class PlannerRequestRecorder:
@@ -249,7 +246,7 @@ def bind_planner_request_recorder(recorder: PlannerRequestRecorder):
 
 
 def reset_planner_request_recorder(token: Any) -> None:
-    _safe_reset_context_var(_PLANNER_REQUEST_RECORDER, token)
+    safe_reset_context_var(_PLANNER_REQUEST_RECORDER, token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
 
 
 def current_planner_request_recorder() -> PlannerRequestRecorder | None:
@@ -267,15 +264,7 @@ def record_step_model_metrics(value: Any, request_count: int | None = None) -> N
     if current is None or value is None:
         return
     incoming = RunMetrics()
-    for field in _TOKEN_METRIC_FIELDS:
-        alias = {
-            "input_tokens": "inputTokens",
-            "output_tokens": "outputTokens",
-            "total_tokens": "totalTokens",
-            "reasoning_tokens": "reasoningTokens",
-            "cache_read_tokens": "cacheReadTokens",
-            "cache_write_tokens": "cacheWriteTokens",
-        }[field]
+    for field, alias in MODEL_TOKEN_FIELDS:
         metric = value.get(alias) if isinstance(value, Mapping) else getattr(value, field, None)
         if isinstance(metric, int | float):
             setattr(incoming, field, metric)
@@ -366,7 +355,7 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 result = await result
         except BaseException as error:
             if not isinstance(error, Exception):
-                _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
+                safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
                 raise
             if not hasattr(error, "_reporting_failed_step"):
                 error._reporting_failed_step = step_id
@@ -395,12 +384,12 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 failed_metrics.cache_write_tokens,
                 failed_additional.get("time_to_first_token_seconds"),
             )
-            _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
+            safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
             await finish_activity("failed", "步骤执行失败")
             raise
         duration = perf_counter() - started_at
         collected_metrics = accumulator.snapshot()
-        _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
+        safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
         metrics = collected_metrics
         if isinstance(result, StepOutput):
             if result.metrics is not None:

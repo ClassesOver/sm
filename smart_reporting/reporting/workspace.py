@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import functools
 import hashlib
 import io
 import json
@@ -12,6 +13,7 @@ from collections.abc import MutableMapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+import anyio
 from agno.run import RunContext
 from loguru import logger as loguru_logger
 from PIL import Image, UnidentifiedImageError
@@ -23,7 +25,7 @@ from ..workspace import (
     WorkspacePathConflict,
     _thread,
 )
-from .data_sources import _best_effort_delete
+from .data_sources import _best_effort_delete, thread_binding
 from .models import ReportingError
 
 REPORT_JOBS_STATE_KEY = "report_jobs"
@@ -40,7 +42,9 @@ if TYPE_CHECKING:
     from .host_workspace import ReportingWorkspaceRouter
 
 
+@functools.cache
 def _report_runtime_package() -> tuple[bytes, str]:
+    """运行时包源码在进程生命周期内固定，只打包一次。"""
     from .delivery.report_runtime import runtime as report_runtime
 
     package_root = Path(report_runtime.__file__).parent
@@ -58,6 +62,16 @@ def _report_runtime_package() -> tuple[bytes, str]:
 
 def _report_runtime_digest() -> str:
     return _report_runtime_package()[1]
+
+
+def _decode_chart_image(content: bytes) -> tuple[str, str, int, int, list[Any] | None]:
+    digest = hashlib.sha256(content).hexdigest()
+    with Image.open(io.BytesIO(content)) as image:
+        image.load()
+        image_format = str(image.format or "").upper()
+        width, height = image.size
+        colors = image.convert("RGBA").getcolors(maxcolors=2)
+    return digest, image_format, width, height, colors
 
 
 async def inspect_report_chart_file(
@@ -80,13 +94,11 @@ async def inspect_report_chart_file(
         ) from error
     if not 0 < len(content) <= MAX_REPORT_CHART_BYTES:
         raise ReportingError("report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。")
-    digest = hashlib.sha256(content).hexdigest()
     try:
-        with Image.open(io.BytesIO(content)) as image:
-            image.load()
-            image_format = str(image.format or "").upper()
-            width, height = image.size
-            colors = image.convert("RGBA").getcolors(maxcolors=2)
+        # 解码与 RGBA 转换是 CPU 密集操作，放到工作线程以免阻塞事件循环。
+        digest, image_format, width, height, colors = await anyio.to_thread.run_sync(
+            _decode_chart_image, content
+        )
     except (UnidentifiedImageError, OSError) as error:
         raise ReportingError(
             "report_chart_source_invalid", "图表源文件无法解码或图片签名无效。"
@@ -223,10 +235,6 @@ class WorkspaceReportService:
             raise WorkspaceError("当前报表任务状态无效，请重新准备数据集。")
         return run_context.session_state
 
-    @staticmethod
-    def _thread_binding(thread: str) -> str:
-        return hashlib.sha256(thread.encode()).hexdigest()
-
     def _load_job(
         self,
         job_id: str,
@@ -242,7 +250,7 @@ class WorkspaceReportService:
             raise WorkspaceError("分析任务不存在，请重新准备数据集。")
         if raw.get("jobId") != normalized_job_id:
             raise WorkspaceError("分析任务状态无效，请重新准备数据集。")
-        if raw.get("_threadBinding") != self._thread_binding(_thread(run_context)):
+        if raw.get("_threadBinding") != thread_binding(_thread(run_context)):
             raise WorkspaceError("分析任务不属于当前对话，请重新准备数据集。")
         return copy.deepcopy(raw)
 
@@ -459,7 +467,7 @@ class WorkspaceReportService:
         job_id = str(uuid.uuid4())
         job = {
             "jobId": job_id,
-            "_threadBinding": self._thread_binding(_thread(run_context)),
+            "_threadBinding": thread_binding(_thread(run_context)),
             "sources": sources,
         }
         self._store_job(job, run_context)
@@ -637,6 +645,8 @@ class WorkspaceReportService:
                 or render.get("word", {}).get("path") != staged_word_relative
             ):
                 raise WorkspaceError("报表运行时返回无效产物。")
+            # 在昂贵的 PDF/Word 验收之前先核对暂存身份：不一致时直接失败，不移动、不发布；
+            # 移动后的复核覆盖的是另一段时间窗口，两者都需要。
             staged_pdf = await self.service.ahash_file(_thread(run_context), staged_pdf_relative)
             staged_word = await self.service.ahash_file(_thread(run_context), staged_word_relative)
             if any(

@@ -125,6 +125,7 @@ try {
   await editor.click()
   await page.keyboard.press('Control+End')
   await page.keyboard.type('现场草稿')
+  assert.ok((await editor.innerText()).includes('现场草稿'), '来源标记后的段末输入不能被吞掉')
   await editor.evaluate(node => {
     node.style.minHeight = '1800px'
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
@@ -140,21 +141,28 @@ try {
       selection.addRange(range)
       break
     }
-    window.scrollTo({ top: 180, behavior: 'auto' })
+    // html 启用了 scroll-behavior: smooth；auto 仍会动画，不能记录中途的滚动位置。
+    window.scrollTo({ top: 180, behavior: 'instant' })
   })
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
   assert.equal(await page.evaluate(() => window.getSelection().toString()), '现场草稿')
   const editorTop = await page.evaluate(() => scrollY)
+  assert.equal(editorTop, 180, '先建立稳定的正文滚动现场')
   await page.locator('[data-action="sources"]').click()
   await page.locator('.evidence-object-title').waitFor({ state: 'visible' })
+  // 改变覆盖层下的窗口滚动，确保返回操作确实恢复现场，而不是碰巧停留在原位。
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }))
+  assert.equal(await page.evaluate(() => scrollY), 0)
   await page.locator('.evidence-tab-report').click()
   assert.equal(await page.evaluate(() => window.getSelection().toString()), '现场草稿')
   assert.equal(await page.evaluate(() => scrollY), editorTop)
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  assert.equal(await page.evaluate(() => scrollY), editorTop, '恢复后的滚动不能继续平滑漂移')
   assert.ok((await editor.innerText()).includes('现场草稿'))
   const saved = await (await page.request.get(`${editorUrl}/api/document`)).json()
   assert.equal(saved.markdown.includes('现场草稿'), false)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ evidenceNavigation: 'passed', mobileWidth: sizes[0], screenshots: output.pathname }))
+  console.log(JSON.stringify({ evidenceNavigation: 'passed', editorSelection: '现场草稿', editorScroll: editorTop, mobileWidth: sizes[0], screenshots: output.pathname }))
 } finally {
   await browser.close()
 }

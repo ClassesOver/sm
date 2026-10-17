@@ -28,11 +28,11 @@ from ..async_utils import complete_cleanup
 from ..workspace import (
     MAX_DOWNLOAD_BYTES,
     MAX_PATCH_FILES,
+    WorkspaceError,
+    WorkspacePathConflict,
     normalize_workspace_path,
     validate_patch_hash,
     validate_workspace_content,
-    WorkspaceError,
-    WorkspacePathConflict,
 )
 from .models import ReportingError
 from .workflow.scope import ReportingWorkflowScope
@@ -89,7 +89,9 @@ class ReportingPathMapper:
         return candidate
 
 
-def _read_regular_file(path: Path, max_bytes: int) -> bytes:
+def _open_regular_file(path: Path, max_bytes: int) -> int:
+    """以 O_NOFOLLOW 打开允许大小内的普通文件，返回描述符；调用方负责关闭。"""
+
     try:
         info = path.lstat()
     except FileNotFoundError as error:
@@ -101,18 +103,52 @@ def _read_regular_file(path: Path, max_bytes: int) -> bytes:
     if info.st_size > max_bytes:
         raise WorkspaceError("工作区文件超过读取大小上限。")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        # lstat 与 open 之间文件可能被删除或替换为符号链接（O_NOFOLLOW 返回 ELOOP）。
+        raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
     try:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or opened.st_size > max_bytes:
             raise WorkspaceError("工作区路径不是允许大小的普通文件。")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _read_regular_file(path: Path, max_bytes: int) -> bytes:
+    descriptor = _open_regular_file(path, max_bytes)
+    try:
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             content = stream.read(max_bytes + 1)
+    except OSError as error:
+        raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
     finally:
         os.close(descriptor)
     if len(content) > max_bytes:
         raise WorkspaceError("工作区文件超过读取大小上限。")
     return content
+
+
+def _hash_regular_file(path: Path, max_bytes: int) -> tuple[int, str]:
+    """分块计算普通文件的大小与 sha256，不把整个文件读入内存。"""
+
+    descriptor = _open_regular_file(path, max_bytes)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        while chunk := os.read(descriptor, 1024 * 1024):
+            size += len(chunk)
+            if size > max_bytes:
+                raise WorkspaceError("工作区文件超过读取大小上限。")
+            digest.update(chunk)
+    except OSError as error:
+        raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
+    finally:
+        os.close(descriptor)
+    return size, digest.hexdigest()
 
 
 def _ensure_directory(path: Path, root: Path) -> None:
@@ -405,18 +441,41 @@ class HostReportingWorkspace:
         target = self.paths.to_host_path(path)
         return await anyio.to_thread.run_sync(lambda: _read_regular_file(target, max_bytes))
 
-    async def ahash_file(self, thread_id: str, path: str) -> dict[str, Any]:
+    async def aiter_regular_file_chunks(
+        self,
+        _thread_id: str,
+        path: str,
+        *,
+        max_bytes: int,
+        chunk_size: int,
+    ) -> AsyncIterator[bytes]:
+        """按块读取普通文件，不把整个文件读入内存；打开校验与 read_limited_regular_file 相同。"""
+
+        target = self.paths.to_host_path(path)
+        descriptor = await anyio.to_thread.run_sync(lambda: _open_regular_file(target, max_bytes))
+        total = 0
+        try:
+            while True:
+                try:
+                    chunk = await anyio.to_thread.run_sync(os.read, descriptor, chunk_size)
+                except OSError as error:
+                    raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
+                if not chunk:
+                    return
+                total += len(chunk)
+                if total > max_bytes:
+                    raise WorkspaceError("工作区文件超过读取大小上限。")
+                yield chunk
+        finally:
+            os.close(descriptor)
+
+    async def ahash_file(self, _thread_id: str, path: str) -> dict[str, Any]:
         relative = self.paths.normalize(path)
-        content = await self.read_limited_regular_file(
-            thread_id,
-            relative,
-            max_bytes=MAX_DOWNLOAD_BYTES,
+        target = self.paths.to_host_path(relative)
+        size, sha256 = await anyio.to_thread.run_sync(
+            lambda: _hash_regular_file(target, MAX_DOWNLOAD_BYTES)
         )
-        return {
-            "path": relative,
-            "size": len(content),
-            "sha256": hashlib.sha256(content).hexdigest(),
-        }
+        return {"path": relative, "size": size, "sha256": sha256}
 
     async def abatch_hash_files(self, thread_id: str, paths: list[str]) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
@@ -725,6 +784,13 @@ class ReportingWorkspaceRouter:
     ) -> bytes:
         return await self.workspace(thread_id).read_limited_regular_file(
             thread_id, path, max_bytes=max_bytes
+        )
+
+    def aiter_regular_file_chunks(
+        self, thread_id: str, path: str, *, max_bytes: int, chunk_size: int
+    ) -> AsyncIterator[bytes]:
+        return self.workspace(thread_id).aiter_regular_file_chunks(
+            thread_id, path, max_bytes=max_bytes, chunk_size=chunk_size
         )
 
     async def ahash_file(self, thread_id: str, path: str) -> dict[str, Any]:

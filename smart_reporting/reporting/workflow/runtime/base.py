@@ -146,10 +146,6 @@ from ...model_policy import (
     apply_reporting_thinking_profile,
 )
 from ...models import ReportingError
-from ...phase import (
-    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
-    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-)
 from ...presentation import completed_report_content
 from ...profile import (
     CapabilitySet,
@@ -338,7 +334,7 @@ def _frozen_outline(state: Mapping[str, Any]) -> ReportOutline:
     except Exception as error:
         raise ReportingError("report_outline_invalid", "报告提纲状态无效。") from error
     expected_hash = state.get(REPORT_OUTLINE_HASH_STATE_KEY)
-    if isinstance(expected_hash, str) and expected_hash != _payload_sha256(raw):
+    if isinstance(expected_hash, str) and expected_hash != payload_sha256(raw):
         raise ReportingError("report_outline_changed", "已批准报告提纲发生变化，必须重新审核。")
     return outline
 
@@ -1643,16 +1639,3 @@ def _planner_candidate(content: Any) -> Any:
     except ValueError:
         return decoded
 
-
-def _payload_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        default=str,
-    ).encode()
-
-
-def _payload_sha256(value: Any) -> str:
-    return hashlib.sha256(_payload_bytes(value)).hexdigest()

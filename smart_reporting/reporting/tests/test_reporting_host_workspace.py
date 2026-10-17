@@ -8,6 +8,7 @@ import pytest
 from agno.run import RunContext
 from PIL import Image
 
+import smart_reporting.reporting.host_workspace as host_workspace_module
 from smart_reporting.reporting.agent import create_reporting_phase_agent
 from smart_reporting.reporting.contract import REPORT_WORKFLOW_SCOPE_STATE_KEY
 from smart_reporting.reporting.host_workspace import (
@@ -759,3 +760,57 @@ def test_ensure_directory_rejects_symlink_created_concurrently(tmp_path, monkeyp
     monkeypatch.setattr(Path, "mkdir", racing_symlink)
     with pytest.raises(WorkspaceError):
         _ensure_directory(tmp_path / "linked", tmp_path)
+
+
+@pytest.mark.anyio
+async def test_batch_hash_marks_file_missing_when_open_races_with_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _host_workspace(tmp_path)
+    await workspace.awrite_bytes("thread-1", "a.txt", b"a")
+    await workspace.awrite_bytes("thread-1", "b.txt", b"bb")
+    real_open = host_workspace_module.os.open
+
+    def racing_open(path, flags, *args, **kwargs):
+        # 模拟 lstat 之后文件被替换为符号链接：O_NOFOLLOW 打开返回 ELOOP。
+        if str(path).endswith("a.txt"):
+            raise OSError(40, "Too many levels of symbolic links")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(host_workspace_module.os, "open", racing_open)
+
+    results = await workspace.abatch_hash_files("thread-1", ["a.txt", "b.txt"])
+
+    assert results[0] == {"path": "a.txt", "missing": True}
+    assert results[1]["sha256"] == hashlib.sha256(b"bb").hexdigest()
+
+
+def test_file_identity_rejects_workspace_root_path() -> None:
+    from pydantic import ValidationError
+
+    from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+
+    with pytest.raises(ValidationError):
+        FileIdentity(path=".", size=1, sha256="a" * 64)
+    assert FileIdentity(path="facts/./a.json", size=1, sha256="a" * 64).path == "facts/a.json"
+
+
+@pytest.mark.anyio
+async def test_regular_file_chunks_stream_bounded_content(tmp_path: Path) -> None:
+    workspace = _host_workspace(tmp_path)
+    content = b"abcdefghij"
+    await workspace.awrite_bytes("thread-1", "reports/report.pdf", content)
+
+    chunks = [
+        chunk
+        async for chunk in workspace.aiter_regular_file_chunks(
+            "thread-1", "reports/report.pdf", max_bytes=len(content), chunk_size=4
+        )
+    ]
+
+    assert chunks == [b"abcd", b"efgh", b"ij"]
+    with pytest.raises(WorkspaceError, match="大小上限"):
+        async for _chunk in workspace.aiter_regular_file_chunks(
+            "thread-1", "reports/report.pdf", max_bytes=len(content) - 1, chunk_size=4
+        ):
+            pass

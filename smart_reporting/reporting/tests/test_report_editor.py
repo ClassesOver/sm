@@ -320,14 +320,10 @@ async def test_sql_session_round_trip_keeps_share_capabilities_and_legacy_null(
     )
     trace = object.__new__(ReportEditorTraceService)
 
-    async def load_index(_context: object) -> object:
-        return index
+    async def load_manifest_and_index(_context: object) -> tuple[None, object]:
+        return None, index
 
-    async def load_manifest(_context: object) -> None:
-        return None
-
-    trace.load_index = load_index  # type: ignore[method-assign]
-    trace.load_manifest = load_manifest  # type: ignore[method-assign]
+    trace.load_manifest_and_index = load_manifest_and_index  # type: ignore[method-assign]
     overview = await trace.sources(
         SimpleNamespace(report_id="report-1", revision=1), session.capabilities
     )

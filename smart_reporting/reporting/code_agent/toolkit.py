@@ -21,8 +21,8 @@ from agno.tools import Function, Toolkit
 from loguru import logger
 
 from ...code_monitor.tools import log_tool_event
-from ...workspace import normalize_workspace_path, WorkspaceError
-from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult
+from ...workspace import WorkspaceError, normalize_workspace_path
+from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult, cell_field
 from ..contract import interactive_spec_path
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
@@ -1305,12 +1305,6 @@ def validate_script_source(context: ReportingCodingTaskContext, source: str) -> 
     return raw
 
 
-def _cell_field(cell: Any, name: str, default: Any = None) -> Any:
-    if isinstance(cell, Mapping):
-        return cell.get(name, default)
-    return getattr(cell, name, default)
-
-
 def _bounded_exploration_variables(value: Any) -> dict[str, str]:
     if not isinstance(value, Mapping):
         return {}
@@ -1688,9 +1682,9 @@ def _bounded_failure(
     next_tools: list[str] | None = None,
 ) -> dict[str, Any]:
     details: dict[str, Any] = {
-        name: str(_cell_field(cell, name, "") or "") for name in ("traceback", "stderr", "stdout")
+        name: str(cell_field(cell, name, "") or "") for name in ("traceback", "stderr", "stdout")
     }
-    variable_summary = _cell_field(cell, "variableSummary")
+    variable_summary = cell_field(cell, "variableSummary")
     if isinstance(variable_summary, Mapping):
         details["variableSummary"] = variable_summary
     else:
@@ -3172,8 +3166,8 @@ class ReportingCodeModeToolkit(Toolkit):
                 except WorkspaceError:
                     pass
             return _failure(error.code, error.message, details)
-        if _cell_field(cell, "status") != "ok":
-            if _cell_field(cell, "status") == "aborted":
+        if cell_field(cell, "status") != "ok":
+            if cell_field(cell, "status") == "aborted":
                 return _bounded_failure(
                     "report_code_mode_execution_failed",
                     cell,
@@ -3187,13 +3181,13 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         exploration_variables = await self._exploration_variables()
         outputs = {
-            name: str(_cell_field(cell, name, "") or "") for name in ("result", "stderr", "stdout")
+            name: str(cell_field(cell, name, "") or "") for name in ("result", "stderr", "stdout")
         }
         diagnostics: dict[str, Any] = dict(outputs)
         if exploration_variables is not None:
             diagnostics["explorationVariables"] = exploration_variables
         bounded = _safe_diagnostic_details(diagnostics)
-        truncated = set(_cell_field(cell, "truncated", ()) or ()) & outputs.keys()
+        truncated = set(cell_field(cell, "truncated", ()) or ()) & outputs.keys()
         truncated.update(name for name, value in outputs.items() if bounded.get(name, "") != value)
         return {
             "ok": True,
@@ -3721,12 +3715,12 @@ class ReportingCodeModeToolkit(Toolkit):
                     {"nextTools": ["read_script", "edit_script", "run_script"]},
                 )
             cell, exit_code = process.cell, process.exit_code
-            if _cell_field(cell, "status") != "ok" or exit_code not in (None, 0):
+            if cell_field(cell, "status") != "ok" or exit_code not in (None, 0):
                 details: dict[str, Any] = {
-                    name: str(_cell_field(cell, name, "") or "")
+                    name: str(cell_field(cell, name, "") or "")
                     for name in ("traceback", "stderr", "stdout")
                 }
-                variable_summary = _cell_field(cell, "variableSummary")
+                variable_summary = cell_field(cell, "variableSummary")
                 details["variableSummary"] = (
                     variable_summary
                     if isinstance(variable_summary, Mapping)
@@ -3757,10 +3751,10 @@ class ReportingCodeModeToolkit(Toolkit):
             except ReportingError as error:
                 # 交付校验失败也保留进程执行证据，供下一轮直接修复。
                 outputs_text = {
-                    name: str(_cell_field(cell, name, "") or "") for name in ("stdout", "stderr")
+                    name: str(cell_field(cell, name, "") or "") for name in ("stdout", "stderr")
                 }
                 details = dict(error.details) if isinstance(error.details, Mapping) else {}
-                variable_summary = _cell_field(cell, "variableSummary")
+                variable_summary = cell_field(cell, "variableSummary")
                 details.setdefault(
                     "variableSummary",
                     variable_summary
@@ -3771,7 +3765,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 details["exitCode"] = exit_code
                 details = await self._script_repair_details(details, source_before.sha256)
                 result = _failure(error.code, error.message, details)
-                truncated = set(_cell_field(cell, "truncated", ()) or ()) & outputs_text.keys()
+                truncated = set(cell_field(cell, "truncated", ()) or ()) & outputs_text.keys()
                 truncated.update(
                     name
                     for name, value in outputs_text.items()

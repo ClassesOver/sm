@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..contract import safe_relative_posix_path
 from .runtime.phase_models import MAX_SECTION_CHART_COUNT
 
 
@@ -62,9 +63,7 @@ class LegacyChartDraft(BaseModel):
     @field_validator("source_path")
     @classmethod
     def validate_source_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("图表源文件必须是安全工作区相对路径")
+        path = safe_relative_posix_path(value, "图表源文件必须是安全工作区相对路径")
         if path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
             raise ValueError("图表源文件必须是 PNG 或 JPEG")
         return path.as_posix()

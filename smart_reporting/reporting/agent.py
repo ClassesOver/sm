@@ -93,9 +93,7 @@ from .model_policy import (
     resolve_reporting_input_token_hard_cap,
 )
 from .models import ReportingError
-from .presentation import completed_report_content as _completed_report_content
 from .phase import (
-    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY,
@@ -128,6 +126,7 @@ from .phase import (
     reporting_visualization_recovery_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
+from .presentation import completed_report_content as _completed_report_content
 from .structured_output.agno_compat import install_agno_structured_output_parser
 from .structured_output.policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
@@ -142,6 +141,7 @@ from .structured_output.wire_schema import (
 )
 from .tools import build_reporting_tools
 from .vision import ReportVisionReviewer
+from .workflow.checkpoint import CheckpointRetryUsage, attach_retry_usage, payload_sha256
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
 from .workflow.orchestration import current_planner_request_recorder
 from .workflow.repository import ReportingStateRepository
@@ -386,7 +386,7 @@ def _visualization_exploration_limit(run_context: RunContext, function_name: str
             else default
         )
 
-    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    counted_tool_name = _counted_tool_name(function_name)
     if counted_tool_name == "query_analysis_facts":
         return limit(
             REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
@@ -472,7 +472,7 @@ def _stop_analysis_fact_query_budget(run_context: RunContext) -> None:
         details=details,
     )
     _record_reporting_tool_run_error(run_context, error)
-    setattr(error, REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR, details)
+    attach_retry_usage(error, CheckpointRetryUsage(analysisFactQueriesUsed=details["queryCount"]))
     serialized = json.dumps(
         {
             "ok": False,
@@ -534,7 +534,7 @@ def _visualization_exploration_budget_receipt(
     is_exploration = function_name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
     if not is_exploration:
         return None
-    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    counted_tool_name = _counted_tool_name(function_name)
     if reporting_visualization_exploration_budget_exhausted_from_run_context(run_context):
         if reporting_visualization_exploration_count(run_context, "query_analysis_facts") >= (
             _visualization_exploration_limit(run_context, "query_analysis_facts")
@@ -658,7 +658,7 @@ def _reporting_visualization_tool_budget(
             attempt_limit=attempt_limit,
             total_limit=total_limit,
         )
-    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    counted_tool_name = _counted_tool_name(function_name)
     in_flight_read_units = _nonnegative_int(stored.get("inFlightReadUnits"))
     in_flight_fact_queries = _nonnegative_int(stored.get("inFlightFactQueries"))
     budgets[identity] = {
@@ -733,7 +733,7 @@ def _finish_visualization_tool_budget(
     tool_counts = (
         dict(stored.get("toolCounts", {})) if isinstance(stored.get("toolCounts"), dict) else {}
     )
-    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    counted_tool_name = _counted_tool_name(function_name)
     tool_counts[counted_tool_name] = _nonnegative_int(tool_counts.get(counted_tool_name)) + 1
     in_flight_tools = (
         dict(stored.get("inFlightToolCounts", {}))
@@ -1264,15 +1264,7 @@ def _enforce_reporting_no_progress(
         "code": code,
         "details": result.get("details"),
     }
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            call_identity,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    fingerprint = payload_sha256(call_identity)
     stored = state.get(_REPORT_TOOL_FAILURE_STATE_KEY)
     counts = (
         dict(stored.get("counts", {}))
@@ -1374,6 +1366,34 @@ def _enforce_reporting_no_progress(
     return guided
 
 
+def _counted_tool_name(function_name: str) -> str:
+    """read_tool_output 是被截断 read_file 的续读，按同一类读取计入预算。"""
+
+    return "read_file" if function_name == "read_tool_output" else function_name
+
+
+def _settle_reporting_tool_budgets(
+    run_context: RunContext,
+    function_name: str,
+    reservations: tuple[Any, Any, Any],
+    result: Any,
+    *,
+    succeeded: bool,
+) -> None:
+    """一次结算本次调用预留的分析项、facts 查询与可视化预算。"""
+
+    analysis_reservation, analysis_fact_reservation, visualization_reservation = reservations
+    _finish_reporting_success_tool_budget(analysis_reservation, succeeded=succeeded)
+    _finish_analysis_fact_query(analysis_fact_reservation)
+    _finish_visualization_tool_budget(
+        run_context,
+        visualization_reservation,
+        function_name,
+        result,
+        succeeded=succeeded,
+    )
+
+
 async def normalize_reporting_tool_arguments(
     run_context: RunContext,
     function_name: str,
@@ -1437,21 +1457,17 @@ async def normalize_reporting_tool_arguments(
                 "snapshotHash": repeated_empty["details"]["snapshotHash"],
             },
         )
-    analysis_reservation = _reporting_analysis_item_tool_budget(run_context, function_name)
-    analysis_fact_reservation = _reserve_analysis_fact_query(run_context, function_name)
-    visualization_reservation = _reporting_visualization_tool_budget(run_context, function_name)
+    reservations = (
+        _reporting_analysis_item_tool_budget(run_context, function_name),
+        _reserve_analysis_fact_query(run_context, function_name),
+        _reporting_visualization_tool_budget(run_context, function_name),
+    )
     try:
         result = function_call(**arguments)
         result = await result if inspect.isawaitable(result) else result
     except (TypeError, ValidationError) as error:
-        _finish_reporting_success_tool_budget(analysis_reservation, succeeded=False)
-        _finish_analysis_fact_query(analysis_fact_reservation)
-        _finish_visualization_tool_budget(
-            run_context,
-            visualization_reservation,
-            function_name,
-            None,
-            succeeded=False,
+        _settle_reporting_tool_budgets(
+            run_context, function_name, reservations, None, succeeded=False
         )
         if not _is_tool_argument_error(error):
             raise
@@ -1467,14 +1483,8 @@ async def normalize_reporting_tool_arguments(
             arguments,
         )
     except BaseException:
-        _finish_reporting_success_tool_budget(analysis_reservation, succeeded=False)
-        _finish_analysis_fact_query(analysis_fact_reservation)
-        _finish_visualization_tool_budget(
-            run_context,
-            visualization_reservation,
-            function_name,
-            None,
-            succeeded=False,
+        _settle_reporting_tool_budgets(
+            run_context, function_name, reservations, None, succeeded=False
         )
         raise
     if (
@@ -1508,14 +1518,8 @@ async def normalize_reporting_tool_arguments(
             # 绕过去重。首次空回执保留；串行重复会在执行前短路，并行重复在完成时拒绝。
             empty_queries[query_identity] = details
     succeeded = isinstance(result, dict) and result.get("ok") is True
-    _finish_reporting_success_tool_budget(analysis_reservation, succeeded=succeeded)
-    _finish_analysis_fact_query(analysis_fact_reservation)
-    _finish_visualization_tool_budget(
-        run_context,
-        visualization_reservation,
-        function_name,
-        result,
-        succeeded=succeeded,
+    _settle_reporting_tool_budgets(
+        run_context, function_name, reservations, result, succeeded=succeeded
     )
     if (
         function_name == "apply_analysis_patch"

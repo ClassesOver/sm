@@ -59,7 +59,7 @@ def test_missing_workspace_capability_is_fatal(task):
 
 
 def test_task_specific_recovery_and_thinking_share_policy():
-    error = ReportingError("execution_output_error", "failed")
+    error = ReportingError("report_visualization_script_failed", "failed")
     assert recovery_for(error, "analysis") == "retry"
     assert recovery_for(error, "visualization") == "retry_then_degrade"
     assert failure_kind({"code": error.code}) == "python_execution_failure"
