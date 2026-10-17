@@ -790,6 +790,7 @@ class _DerivedValue:
     comparison: tuple[tuple[str, ...], ...]
     column: str | None
     peer_columns: tuple[str, ...]
+    named_only: bool = False
 
 
 def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: Decimal, claim: str) -> bool:
@@ -836,6 +837,15 @@ def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: 
     return difference.quantize(quantum, rounding=ROUND_HALF_UP) == number
 
 
+def _column_stems(columns: tuple[str, ...]) -> dict[str, str]:
+    """同单位多列去掉共同后缀后的区分词（“预算占比/实际占比”→“预算/实际”）；不唯一时不给。"""
+    suffix = os.path.commonprefix([name[::-1] for name in columns])[::-1]
+    stems = {name: name[:len(name) - len(suffix)] for name in columns} if suffix else {}
+    if any(len(stem) < 2 for stem in stems.values()) or len(set(stems.values())) != len(stems):
+        return {}
+    return stems
+
+
 class DerivedNumbers:
     """服务端补算的派生数值及其操作数名称：正文须在当前比较句写出参与计算的对象才认可。
 
@@ -850,7 +860,8 @@ class DerivedNumbers:
     def add(self, unit: str, number: Decimal, operands: tuple[tuple[str, ...], ...], top: int | None = None,
             *, periods: tuple[str, ...] | None = None,
             comparison: tuple[tuple[str, ...], ...] | None = None,
-            column: str | None = None, peer_columns: tuple[str, ...] = ()) -> None:
+            column: str | None = None, peer_columns: tuple[str, ...] = (),
+            named_only: bool = False) -> None:
         if not operands or any(not names for names in operands):
             return
         targets = [(unit, Decimal(1))]
@@ -864,7 +875,7 @@ class DerivedNumbers:
                 self._values.setdefault(target, []).append(_DerivedValue(
                     value * factor, operands, top, periods, number * factor if top is None else None,
                     comparison or operands[-2:],
-                    column, peer_columns,
+                    column, peer_columns, named_only,
                 ))
         self._sorted.clear()
 
@@ -890,6 +901,13 @@ class DerivedNumbers:
                                       if any(name in clause for name in entry.peer_columns)), local_claim)
                 mentions = [(match.start(), match.end(), name) for name in entry.peer_columns
                             for match in re.finditer(re.escape(name), measure_claim)]
+                if not mentions:
+                    # “预算端……合计93.86%”只写出列名去掉共同后缀（“占比”）后的部分；以最先出现者为
+                    # 主语，分项名中的“支出预算-全院性”不能再把实际端改判为预算端。
+                    stems = sorted((match.start(), match.end(), name)
+                                   for name, stem in _column_stems(entry.peer_columns).items()
+                                   for match in re.finditer(re.escape(stem), measure_claim))
+                    mentions = stems[:1]
                 # 嵌套列名按最长匹配解释，“医疗收入”不能同时冒充“收入”列。
                 columns = {name for start, end, name in mentions if not any(
                     (a, b) != (start, end) and a <= start and end <= b for a, b, _name in mentions
@@ -913,33 +931,48 @@ class DerivedNumbers:
                 ranked = rankings and rankings[-1][0][1:] in names
                 if rankings and not ranked:
                     continue
-                if (named or ranked) and not re.search('相差|差额|差值|高于|低于', local_claim):
+                if (named or ranked and not entry.named_only) and not re.search('相差|差额|差值|高于|低于', local_claim):
                     return True
         return False
 
 
+_TOTAL_ROW = re.compile(r"(?:全院|全部|总)?(?:合计|总计|小计|汇总|总额|总量)")
+
+
 def _derive_from_table(derived: DerivedNumbers, labels: list[str | None],
-                       columns: Mapping[str, tuple[str, list[Decimal]]]) -> None:
+                       columns: Mapping[str, tuple[str, list[Decimal]]],
+                       aliases: list[tuple[str, ...]] | None = None) -> None:
     """同一张表内补算：列内两行差额与降序前 N 项合计，同单位两列的逐行差额与合计差额。"""
     for column, (unit, numbers) in columns.items():
         peers = tuple(name for name, (other_unit, _values) in columns.items()
                       if other_unit == unit or other_unit in (_unit_scales(unit) or {}))
-        if not 1 < len(numbers) <= _DERIVED_ROW_LIMIT:
+        if len(numbers) < 2:
             continue
         # 两个百分数之差是百分点，不是百分数；占比列只补算降序前 N 项合计。
-        if unit != "%":
+        # 两两差额随行数平方增长，只在小表补算；前 N 项合计只需一次排序，长表（科室、预算单元明细）
+        # 也补算前 10 项，“预算端前五个单元合计94.08%”不再因表长被判为无依据。
+        if unit != "%" and len(numbers) <= _DERIVED_ROW_LIMIT:
             for position, (left_label, left) in enumerate(zip(labels, numbers, strict=True)):
                 for right_label, right in zip(labels[position + 1:], numbers[position + 1:], strict=True):
                     if left_label and right_label:
                         derived.add(unit, left - right, _operand_names(left_label, right_label),
                                     column=column, peer_columns=peers)
-        ranked = sorted(zip(numbers, labels, strict=True), key=lambda item: item[0], reverse=True)
+        # 补证表常带“合计”行：它不是分项，参与排序会让“前两项合计”变成合计行加首项。
+        # 行名取该行全部文本单元格（编码与名称），正文写“财务处”也能对上“RJ008.01 / 财务处”。
+        names = aliases or [(label,) if label else () for label in labels]
+        ranked = sorted(((number, row_names) for number, label, row_names in zip(numbers, labels, names, strict=True)
+                         if not (label and _TOTAL_ROW.fullmatch(label.strip()))),
+                        key=lambda item: item[0], reverse=True)
         running = Decimal(0)
-        for count, (number, label) in enumerate(ranked[:-1], start=1):
+        # 长表只补算前 10 项，且须逐项写出名称：只写“前五”时，长表中巧合相等的合计太多。
+        long_table = len(numbers) > _DERIVED_ROW_LIMIT
+        prefixes = ranked[:10] if long_table else ranked[:-1]
+        for count, (number, row_names) in enumerate(prefixes, start=1):
             running += number
-            members = tuple((item[1],) for item in ranked[:count] if item[1])
+            members = tuple(item[1] for item in ranked[:count] if item[1])
             if count > 1 and len(members) == count:
-                derived.add(unit, running, members, top=count, column=column, peer_columns=peers)
+                derived.add(unit, running, members, top=count, column=column, peer_columns=peers,
+                            named_only=long_table)
     items = list(columns.items())
     for position, (left_name, (unit, left)) in enumerate(items):
         for right_name, (right_unit, right) in items[position + 1:]:
@@ -985,6 +1018,8 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
             rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
             labels = [next((cell.strip() for cell in row if isinstance(cell, str) and cell.strip()), None)
                       for row in rows]
+            aliases = [tuple(cell.strip() for cell in row if isinstance(cell, str) and cell.strip())
+                       for row in rows]
             table: dict[str, tuple[str, list[Decimal]]] = {}
             for index, column in enumerate(columns):
                 meta = metadata.get(column) if isinstance(column, str) else None
@@ -997,7 +1032,7 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                            and math.isfinite(row[index])]
                 if rows and len(numbers) == len(rows):
                     table[column] = (unit, numbers)
-            _derive_from_table(derived, labels, table)
+            _derive_from_table(derived, labels, table, aliases)
     for bundle in frozen_fact_bundles(contents):
         from .subject_builder import fact_periods
 

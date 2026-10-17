@@ -1202,6 +1202,34 @@ def test_server_derives_gaps_and_top_share_sums_only_for_operands_named_in_the_p
     assert replace_unregistered_numbers(unrelated, contents) == '总部较北部高待核实，另有待核实。'
 
 
+def test_top_share_sums_skip_total_rows_and_cover_long_two_sided_tables():
+    # 回放：院区表带“合计”行；预算类型表有预算占比、实际占比两列；预算单元表 40 行且首列为编码。
+    campus = {'name': '院区', 'columns': ['院区', '金额', '占比'],
+              'columnMeta': {'金额': {'unit': '元'}, '占比': {'unit': '%', 'isPercent': True}},
+              'rows': [['总部院区', 8529370395, 76.6786], ['北部院区', 1820767778, 16.3686],
+                       ['转化', 357747450, 3.2161], ['合计', 11123541503, 100.0]]}
+    types = {'name': '预算类型', 'columns': ['budget_type', '预算占比', '实际占比'],
+             'columnMeta': {'预算占比': {'unit': '%', 'isPercent': True}, '实际占比': {'unit': '%', 'isPercent': True}},
+             'rows': [['人员经费', 45.43, 30.75], ['卫生材料费', 33.58, 18.83], ['药品费', 0.0, 17.88],
+                      ['支出预算-全院性', 12.54, 7.40], ['其他', 8.45, 2.00]]}
+    units = {'name': '预算单元', 'columns': ['code', 'unit', '实际占比'],
+             'columnMeta': {'实际占比': {'unit': '%', 'isPercent': True}},
+             'rows': [['RJ008.01', '财务处', 38.26], ['RJ020.01', '资产管理处', 19.09], ['RJ301.01', '药剂科', 17.88]]
+             + [[f'RJ9{index:02d}.01', f'单元{index}', 0.5] for index in range(40)]}
+    contents = [json.dumps({'findings': [campus, types, units]})]
+    accepted = ('总部院区85.29亿元与北部院区18.21亿元合计103.50亿元，占93.05%。',
+                '预算端人员经费、卫生材料费两项合计79.01%。',
+                # 分项名“支出预算-全院性”含“预算”，主语仍是先出现的“实际端”。
+                '实际端人员经费、卫生材料费、药品费合计67.46%，支出预算-全院性另计。',
+                '实际端前三为财务处、资产管理处、药剂科，合计75.23%。')
+    for text in accepted:
+        assert replace_unregistered_numbers(text, contents) == text
+    # 长表只写“前三”不点名、或口径写反（预算端用实际占比之和），仍替换。
+    assert replace_unregistered_numbers('前三位合计75.23%。', contents) == '前三位合计待核实。'
+    assert replace_unregistered_numbers('预算端人员经费、卫生材料费、药品费合计67.46%。', contents) == (
+        '预算端人员经费、卫生材料费、药品费合计待核实。')
+
+
 def test_single_character_decline_words_accept_registered_negative_magnitudes():
     document = json.loads(_budget_document())
     document['comparisons'] = [{
