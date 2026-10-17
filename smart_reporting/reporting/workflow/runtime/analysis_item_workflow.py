@@ -197,6 +197,8 @@ def empty_supplemental_evidence_error(evidence: SupplementalEvidence) -> Reporti
 
     tables = list(_evidence_tables(evidence.findings))
     empty_tables = bool(tables) and all(not table["rows"] for table in tables)
+    # 表中有数据时，对账一侧为 0 也可能是真实结果（该范围确无记录）；只在同时有空表时才视为筛选失误。
+    any_empty_table = any(not table["rows"] for table in tables)
     zero_sides = [
         str(item.get("name"))
         for item in evidence.reconciliations
@@ -204,7 +206,7 @@ def empty_supplemental_evidence_error(evidence: SupplementalEvidence) -> Reporti
         and isinstance(left := item.get("left"), (int, float)) and isinstance(right := item.get("right"), (int, float))
         and (left == 0) != (right == 0)
     ]
-    if not empty_tables and not zero_sides:
+    if not empty_tables and not (zero_sides and any_empty_table):
         return None
     return ReportingError(
         "report_analysis_evidence_empty",

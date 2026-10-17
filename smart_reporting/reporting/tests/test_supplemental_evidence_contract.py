@@ -54,3 +54,5 @@ def test_empty_supplement_tables_or_zero_sided_reconciliation_trigger_repair():
     assert error.details["emptyTables"] and error.details["zeroSidedReconciliations"] == ["成本类型合计对账"]
     # 有数据而对账差异只是业务上的不一致：照常作为软告警，不触发重跑。
     assert empty_supplemental_evidence_error(evidence([["人员支出", 60]], 60)) is None
+    # 表中有数据时对账一侧为 0 可能是真实结果（该范围确无记录），同样不触发重跑。
+    assert empty_supplemental_evidence_error(evidence([["人员支出", 60]], 0)) is None

@@ -28,12 +28,9 @@ from .contracts_v1 import (
     TableTraceV1,
 )
 from .fact_index import fact_pointer
-from .numeric_text import PERCENT_POINT, format_fact_value, percent_point_field
+from .numeric_text import _MONEY_UNITS, PERCENT_POINT, format_fact_value, percent_point_field
 
 _TABLE_ID_PATTERN_RULES = "表格 ID 只允许字母数字与 _ . :-"
-
-
-_MONEY_UNITS = frozenset({"元", "万元", "亿元"})
 
 
 def _normalize_table_id(table_id: str) -> str:
