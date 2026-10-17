@@ -1295,6 +1295,7 @@ def test_profile_missing_and_zero_rates_are_accepted_only_in_matching_paragraphs
     ('零值仅代表这两个月度桶的记录取值为零。', '零值仅代表这两个月的记录取值为零。'),
     ('月度标签为月度桶标签，不代表数据截止时点。', '月度标签为月份，不代表数据截止时点。'),
     ('均基于同一收入口径的月度桶数据。', '均基于同一收入口径的月度数据。'),
+    ('11月与12月实际登记值均为0元。', '11月与12月实际记录值均为0元。'),
 ])
 def test_plain_period_wording_drops_month_bucket_jargon(text, expected):
     assert plain_period_wording(text) == expected
