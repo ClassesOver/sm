@@ -547,7 +547,7 @@ def test_display_never_shows_negative_zero_or_hides_nonzero_amounts_as_zero():
     # 非零差额（-10万元）换算到亿元会显示为 0.00：亿元引用改按万元显示；真实的零差额仍可显示。
     assert catalog[prefix + '2025-01.difference:亿元}}'] == '-10.00万元'
     assert catalog[prefix + '2025-01.difference:万元}}'] == '-10.00万元'
-    assert catalog[prefix + '2025-02.difference:亿元}}'] == '0.00亿元'
+    assert catalog[prefix + '2025-02.difference:亿元}}'] == '0亿元'
     # 非零差额舍入为 0.00亿元的原值不作为亿元依据，手写“0.00亿元”不能借它通过核对。
     from smart_reporting.reporting.trace.numeric_text import frozen_number_values
 
@@ -1032,6 +1032,8 @@ def test_conflicting_totals_cannot_support_multiples(reverse):
     (-10, '人次', '门诊量减少0.00万人次', False),
     (0, '元', '收入0.00万元', True),
     (0, '人次', '门诊量0.00万人次', True),
+    (0, '人次', '门诊量0万人次', True),
+    (0, '元', '收入0亿元', True),
     (100, '元', '收入0.01万元', True),
     (100, '人次', '门诊量0.01万人次', True),
 ])

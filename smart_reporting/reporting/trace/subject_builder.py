@@ -247,6 +247,10 @@ def _formatted_patterns(value: Any, unit: str | None, units: Sequence[str]) -> l
         r"(?<![\d.,+\-])" + re.escape(format_fact_value(value, unit, target)) + r"(?![\d.])"
         for target in units if not _hidden_by_rounding(value, unit, target)
     ]
+    # 旧版把零值写成“0.00万元”；已发布正文仍按登记零值核对。
+    if Decimal(str(value)) == 0:
+        patterns.extend(r"(?<![\d.,+\-])0\.00" + re.escape(target) + r"(?![\d.])"
+                        for target in units if target in {"万元", "亿元", "万人次"})
     magnitude = _negative_magnitude(value)
     if magnitude is not None:
         patterns.extend(

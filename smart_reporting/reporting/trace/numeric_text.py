@@ -72,6 +72,9 @@ def format_fact_value(value: Any, unit: str | None, display_unit: str | None = N
     if target != unit and not (unit == "%" and target == PERCENT_POINT):
         scales = _unit_scales(unit)
         number = number * scales[unit] / scales[target]
+    # 零值在万元、亿元、万人次下写成“0.00万人次”既别扭又像有零头，直接写 0。
+    if number == 0 and target in {"万元", "亿元", "万人次"}:
+        return "0" + target
     if target in {"万元", "亿元", "万人次", "%", "‰", PERCENT_POINT} or number != number.to_integral_value():
         rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         # 舍入为零的负数不能显示为“-0.00”。
@@ -571,6 +574,15 @@ _VALUE_TOKEN_WITH_UNIT = re.compile(
 
 def _unit_family(unit: str) -> tuple[str, ...] | None:
     return next((family for family in _UNIT_FAMILIES if unit in family), None)
+
+
+# 模型从补证表抄写的原始元值、人次（“1097718506元”“差额-66724688元”）没有千分位，领导读不出量级。
+# 只处理五位及以上整数、紧跟元/人次/床日的写法；万元、亿元、编号与年份不动。
+_UNGROUPED_AMOUNT = re.compile(r"(?<![A-Za-z0-9_.,])(\d{5,})(?=(?:\.\d+)?(?:元|人次|床日))")
+
+
+def group_large_amounts(markdown: str) -> str:
+    return _UNGROUPED_AMOUNT.sub(lambda match: f"{int(match[1]):,}", markdown)
 
 
 def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=None) -> str:
