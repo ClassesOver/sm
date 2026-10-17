@@ -220,3 +220,25 @@ def test_analysis_table_uses_default_cny_for_untyped_amount_columns() -> None:
     assert trace.row_keys == ("period:2025-09",)
     assert trace.cells[0].fact_refs[0].fact_key == bundle.metrics[0].fact_id
     assert trace.cells[0].fact_refs[0].file_resource_id == FACT_FILE_RESOURCE
+
+
+def test_analysis_table_reads_like_a_management_table():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+
+    def metric(letter, code, name, values):
+        return {
+            "factId": "fact-" + letter * 16, "datasetId": "ds", "datasetSha256": SHA, "periodRoles": ["current"],
+            "metricCodes": [code], "field": code, "fieldRef": "src.db.t." + code, "displayName": name,
+            "aggregation": "sum", "unit": "元", "formula": "sum", "total": sum(values),
+            "missingCount": 0, "zeroCount": 0, "negativeCount": 0, "periodGranularity": "day",
+            "periodValues": [{"period": f"2025-{index + 1:02d}-01", "value": value} for index, value in enumerate(values)],
+        }
+
+    bundle = DeterministicAnalysisBundle.model_validate({"analysisId": "analysis_001", "metrics": [
+        metric("a", "income", "收入金额，也称医疗收入金额", [100, 200]),
+        metric("b", "service", "医疗服务收入", [0, 0]),
+    ]})
+    trace, markdown = build_analysis_table(bundle, fact_file_resource_id=FACT_FILE_RESOURCE)
+    assert "收入金额（元）" in markdown and "也称" not in markdown
+    assert "医疗服务收入" not in markdown and len(trace.column_keys) == 1
+    assert "2025年1月" in markdown and "1日" not in markdown

@@ -145,3 +145,21 @@ def test_reference_comparison_note_is_added_once_per_section() -> None:
     assert [block.markdown.count("仅作参考性对比") for block in noted] == [1, 0, 0]
     written = (blocks[0].model_copy(update={"markdown": "两期口径不同，仅供参考。"}), *blocks[1:])
     assert RuntimeSectionsMixin._note_reference_comparisons(written, {"c1"}) == written
+
+
+def test_section_writer_does_not_receive_visual_review_notes() -> None:
+    from smart_reporting.reporting.workflow.checkpoint import AnalysisChart
+    from smart_reporting.reporting.workflow.runtime.sections import _writer_chart
+
+    identity = {"path": "报表/charts/chart-001.png", "size": 10, "sha256": "a" * 64}
+    chart = AnalysisChart.model_validate({
+        "chartId": "chart_001", "sourceFile": identity, "title": "月度收入", "altText": "月度收入",
+        "citationIds": ["c1"], "metricCodes": ["revenue"], "currentPeriod": "2025-01至2025-11",
+        "sourceDatasetId": "ds", "aggregationGrain": "月度",
+        "visualInspectionReceipt": {"sourcePath": identity["path"], "sha256": identity["sha256"],
+                                    "inspectionMode": "deterministic", "visualReviewStatus": "not_run",
+                                    "inspectorId": "deterministic-raster-inspector-v1", "reviewed": True, "requiresRevision": False},
+    })
+    payload = _writer_chart(chart)
+    assert payload["title"] == "月度收入" and payload["currentPeriod"] == "2025-01至2025-11"
+    assert not {"visualInspectionReceipt", "sourceFile", "plotDataFiles"} & set(payload)

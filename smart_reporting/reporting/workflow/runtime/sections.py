@@ -201,6 +201,17 @@ def _analysis_chart_from_registration(
     return AnalysisChart.model_validate(payload)
 
 
+# 写作模型只需图表的主题、口径与期间；视觉审查回执、文件身份等用于服务端门禁与溯源，
+# 交给模型会被写进正文（“视觉回执提示纵轴比例失真”“柱形顶部被截断”）。
+_WRITER_CHART_EXCLUDE = frozenset({
+    "visual_inspection_receipt", "source_file", "interactive_file", "plot_data_files", "plot_data_kind", "renderer",
+})
+
+
+def _writer_chart(chart: AnalysisChart) -> dict[str, Any]:
+    return chart.model_dump(mode="json", by_alias=True, exclude=set(_WRITER_CHART_EXCLUDE))
+
+
 _SECTION_BLOCK_DEFAULT_INPUT_TOKEN_BUDGET = 64 * 1024
 _SECTION_BLOCK_PAYLOAD_TOKEN_NUMERATOR = 3
 _SECTION_BLOCK_PAYLOAD_TOKEN_DENOMINATOR = 4
@@ -956,7 +967,8 @@ def _section_stage_agent(
             ),
             "每个 block 必须完成 objective 对应的事实陈述，不得以‘整体呈’‘分别为’等半句结尾；没有证据的结论直接删去，不逐句写待核实。",
             "不得输出 H1/H2、图片语法、协议标记或无证据数字；内部 ID 仅可用于 frozenNumbers 提供的数值占位符。",
-            "管理层正文禁止出现 block、Markdown、CSV、SQL、ACF/PACF、服务端、数据集、字段、x轴/y轴 等实现或验收术语；改写为段落、正文、明细数据、查询口径、统计相关性、登记结果、统计口径、指标、横轴/纵轴。不要解释 harness、生成流程、文件格式或验收过程。",
+            "管理层正文禁止出现 block、Markdown、CSV、SQL、ACF/PACF、服务端、数据集、字段、x轴/y轴 等实现或验收术语；改写为段落、正文、明细数据、统计相关性、指标、横轴/纵轴。不要解释 harness、生成流程、文件格式或验收过程。",
+            "读者是医院领导，不是数据人员：每段首句先写结论与管理含义，再给关键数字；用“1—11月”“11月”等日常说法，不写“月度桶”“登记值”“登记结果”“冻结”“补证”“净额口径”“数值引用”等技术用语；同一口径说明全章只写一次，不复述图表画法、标注位置或图表质量。",
             "月度日期是月度桶标签，不是数据截止时点；其他模型摘要或图表标题中的推测不构成直接证据。不得补写目录中不存在的月均值或派生金额。",
             "月均值必须与正文月份范围一致；完整12个月的均值不得用于1—10月。多个指标各取前N名后并集展示时，分类数量可以超过N，不能据此认定图表超范围。声称各月方向一致前须逐月核对；存在反向月份时明确例外，不写全部一致。",
             "异常或偏低只描述事实；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
@@ -1719,11 +1731,7 @@ async def _generate_section_in_blocks(
             for item in work_item.citations
             if item.citation_id in citation_ids
         ]
-        block_charts = [
-            item.model_dump(mode="json", by_alias=True)
-            for item in work_item.charts
-            if item.chart_id in chart_ids
-        ]
+        block_charts = [_writer_chart(item) for item in work_item.charts if item.chart_id in chart_ids]
         block_metrics = [
             item.model_dump(mode="json", by_alias=True)
             for item in work_item.metric_definitions
@@ -1947,7 +1955,7 @@ async def _generate_whole_section_content(
             for item in work_item.management_question_catalog
         ],
         "citations": [item.model_dump(mode="json", by_alias=True) for item in work_item.citations],
-        "charts": [item.model_dump(mode="json", by_alias=True) for item in work_item.charts],
+        "charts": [_writer_chart(item) for item in work_item.charts],
         "markdownRequirements": list(work_item.markdown_requirements),
         "requiredAction": (
             "一次返回规划中所有 block 的 blockId 和完整 markdown，围绕各自 objective 与 claims"
@@ -3158,6 +3166,7 @@ class RuntimeSectionsMixin:
             fact_binding_records,
             fact_entry_from_pointer,
             fact_pointer,
+            frozen_fact_content,
             merge_binding_records,
         )
 
@@ -3237,7 +3246,7 @@ class RuntimeSectionsMixin:
                         "rows": trace.row_keys,
                         "columns": trace.column_keys,
                         "facts": [
-                            fact_entry_from_pointer(document, ref.json_pointer)[1]
+                            frozen_fact_content(fact_entry_from_pointer(document, ref.json_pointer)[1])
                             for cell in trace.cells for ref in cell.fact_refs
                         ],
                     }, sort_keys=True, ensure_ascii=False)

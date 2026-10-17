@@ -287,12 +287,14 @@ _ANALYSIS_LOCAL_FACT_FIELDS = frozenset({"periodGranularity", "displayName", "al
 _GRANULARITY_RANK = {"day": 1, "month": 2, "year": 3}
 
 
+def frozen_fact_content(record: Mapping[str, Any]) -> dict[str, Any]:
+    """去掉分析级描述后的冻结内容，用于跨分析判断两条事实记录是否相同。"""
+    return {key: value for key, value in record.items() if key not in _ANALYSIS_LOCAL_FACT_FIELDS}
+
+
 def merge_frozen_fact(existing: Mapping[str, Any], candidate: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """同一事实身份的两条记录：只差分析级描述时返回保留的一条，冻结数值或口径不同返回 None。"""
-    def frozen(record: Mapping[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in record.items() if key not in _ANALYSIS_LOCAL_FACT_FIELDS}
-
-    if frozen(existing) != frozen(candidate):
+    if frozen_fact_content(existing) != frozen_fact_content(candidate):
         return None
     # 期间值相同而一方声明为月或年：标签已满足该粒度，采用声明的较粗粒度，与按月核对的分析一致。
     rank = _GRANULARITY_RANK.get
