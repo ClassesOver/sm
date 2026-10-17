@@ -1193,8 +1193,9 @@ class ReportEditorTraceService:
             fingerprints = chart_fingerprints(presentations, image.path, allow_filename=unique_name) if image else []
             if image is not None:
                 registered_paths.add(image.path)
-                if unique_name:
-                    registered_paths.add(PurePosixPath(image.path).name)
+                # 重名裸文件名已由上述未绑定记录覆盖，不能再追加为新图片。
+                # 是否能绑定仍由 unique_name 控制；其他目录的路径仍须独立计数。
+                registered_paths.add(PurePosixPath(image.path).name)
             status = "unbound" if len(fingerprints) != 1 else (
                 "valid" if fingerprints[0] == trace.presentation_sha256 else "stale"
             )
