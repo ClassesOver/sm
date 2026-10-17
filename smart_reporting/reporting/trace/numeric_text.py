@@ -1015,15 +1015,21 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
     return derived
 
 
-_MISSING_RATE = re.compile(r"\((\d+(?:\.\d+)?)%\)\s*missing values|缺失(?:率|比例)?\s*(?:为|约)?\s*(\d+(?:\.\d+)?)%")
+# Profile 告警登记的比例及正文须写明的含义词：缺失比例（“23646 (78.7%) missing values”）、
+# 零值比例（“9673 (68.7%) zeros”）。
+_PROFILE_RATES = (
+    (re.compile(r"\((\d+(?:\.\d+)?)%\)\s*missing values|缺失(?:率|比例)?\s*(?:为|约)?\s*(\d+(?:\.\d+)?)%"), ("缺失",)),
+    (re.compile(r"\((\d+(?:\.\d+)?)%\)\s*zeros"), ("零", "为0")),
+)
 
 
-def missing_rate_values(contents: Iterable[str]) -> set[Decimal]:
-    """事实告警中 Profile 登记的缺失比例（“[rdlevel_analytic_unit] 23646 (78.7%) missing values”）。
+def profile_rate_values(contents: Iterable[str]) -> list[tuple[tuple[str, ...], set[Decimal]]]:
+    """事实告警中 Profile 登记的缺失、零值比例。
 
-    正文说明数据质量时会引用这些比例；只在写明“缺失”的段落中认可，不作为一般百分数依据。
+    正文说明数据质量时会引用这些比例；只在写明对应含义（“缺失”“零值”）的段落中认可，
+    不作为一般百分数依据。
     """
-    values: set[Decimal] = set()
+    rates = [(words, set()) for _pattern, words in _PROFILE_RATES]
     for bundle in frozen_fact_bundles(contents):
         document = bundle.model_dump(mode="json", by_alias=True)
         warnings = list(document.get("warnings") or ())
@@ -1031,9 +1037,16 @@ def missing_rate_values(contents: Iterable[str]) -> set[Decimal]:
             for entry in document.get(array) or ():
                 warnings.extend(entry.get("warnings") or ())
         for warning in warnings:
-            for match in _MISSING_RATE.finditer(str(warning)):
-                values.add(Decimal(match[1] or match[2]))
-    return values
+            for (pattern, _words), (_same, values) in zip(_PROFILE_RATES, rates, strict=True):
+                values.update(Decimal(next(group for group in match.groups() if group))
+                              for match in pattern.finditer(str(warning)))
+    return rates
+
+
+def profile_rate_supported(rates, number: Decimal, quantum: Decimal, context: str) -> bool:
+    return any(any(word in context for word in words)
+               and any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in values)
+               for words, values in rates)
 
 
 def _paragraph_at(markdown: str, index: int) -> str:
@@ -1349,7 +1362,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     catalog = frozen_number_catalog(contents)
     known = supplemental_number_values(contents)
     derived = derived_number_values(contents)
-    missing_rates = missing_rate_values(contents)
+    profile_rates = profile_rate_values(contents)
     # 没有可解析的冻结事实时，服务端无法判断正文数字是否为派生值；
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
     if not catalog and not known:
@@ -1368,8 +1381,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
                 or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
                 or bounded_by_registered(number, number_text, candidates, prefix=prefix)
                 or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
-                or (unit == "%" and "缺失" in (claim or statement or context)
-                    and any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in missing_rates))):
+                or (unit == "%" and profile_rate_supported(profile_rates, number, quantum,
+                                                           claim or statement or context))):
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
