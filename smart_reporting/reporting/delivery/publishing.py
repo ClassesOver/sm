@@ -50,6 +50,7 @@ REPORT_ARTIFACT_CLEANUP_BATCH = 100
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
 _EDITOR_ACCESS_PATH = re.compile(r"/reports/v1/editor/open/[^?\s]+(?:\?[^\s]*)?")
 _PUBLICATION_LOCK_KEY = "report-download-publication-v2"
+_ARTIFACT_CHUNK_INSERT_BATCH = 8
 _metadata = MetaData()
 report_download_grants_v2 = Table(
     "report_download_grants_v2",
@@ -340,7 +341,7 @@ class SqlAlchemyDownloadGrantRepository:
 
         PostgreSQL advisory lock 覆盖同一张授权表的并发发布与回收。较低 revision 必须
         失败关闭；同 revision 重试则在同一事务中撤销旧 token 并插入新 token，因此
-        sandbox 清理失败后的重试不会留下多个仍可下载的 bearer。
+        工作区清理失败后的重试不会留下多个仍可下载的 bearer。
         """
 
         conditions = _grant_scope_conditions(grant.report_id, grant.scope)
@@ -509,6 +510,8 @@ class SqlAlchemyReportArtifactRepository:
                 )
             )
             await connection.execute(insert(report_artifact_files_v1).values(**values))
+            # 分块按批 executemany 写入，避免每 1 MiB 一次数据库往返；批内仍按 chunk_index 有序。
+            pending: list[dict[str, Any]] = []
             async for chunk in chunks:
                 _validate_artifact_chunk(chunk)
                 if not chunk:
@@ -517,14 +520,19 @@ class SqlAlchemyReportArtifactRepository:
                 if total > artifact.size or total > MAX_DOWNLOAD_BYTES:
                     raise ReportingError("report_artifact_changed", "报告文件已变化。")
                 digest.update(chunk)
-                await connection.execute(
-                    insert(report_artifact_chunks_v1).values(
-                        artifact_key=artifact.artifact_key,
-                        chunk_index=chunk_index,
-                        content=chunk,
-                    )
+                pending.append(
+                    {
+                        "artifact_key": artifact.artifact_key,
+                        "chunk_index": chunk_index,
+                        "content": chunk,
+                    }
                 )
                 chunk_index += 1
+                if len(pending) >= _ARTIFACT_CHUNK_INSERT_BATCH:
+                    await connection.execute(insert(report_artifact_chunks_v1), pending)
+                    pending = []
+            if pending:
+                await connection.execute(insert(report_artifact_chunks_v1), pending)
             _validate_stored_artifact(artifact, total=total, digest=digest.hexdigest())
 
     async def get(self, artifact_key: str) -> StoredReportArtifact | None:

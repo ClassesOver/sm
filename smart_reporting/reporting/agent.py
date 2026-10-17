@@ -93,7 +93,6 @@ from .model_policy import (
     resolve_reporting_input_token_hard_cap,
 )
 from .models import ReportingError
-from .presentation import completed_report_content as _completed_report_content
 from .phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT,
@@ -128,6 +127,7 @@ from .phase import (
     reporting_visualization_recovery_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
+from .presentation import completed_report_content as _completed_report_content
 from .structured_output.agno_compat import install_agno_structured_output_parser
 from .structured_output.policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
@@ -142,6 +142,7 @@ from .structured_output.wire_schema import (
 )
 from .tools import build_reporting_tools
 from .vision import ReportVisionReviewer
+from .workflow.checkpoint import payload_sha256
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
 from .workflow.orchestration import current_planner_request_recorder
 from .workflow.repository import ReportingStateRepository
@@ -1264,15 +1265,7 @@ def _enforce_reporting_no_progress(
         "code": code,
         "details": result.get("details"),
     }
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            call_identity,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    fingerprint = payload_sha256(call_identity)
     stored = state.get(_REPORT_TOOL_FAILURE_STATE_KEY)
     counts = (
         dict(stored.get("counts", {}))

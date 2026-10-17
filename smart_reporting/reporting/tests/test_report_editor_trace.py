@@ -53,7 +53,7 @@ CSV_BYTES = (
     "2025-08,B院区,2000,20\n"
     "2025-09,A院区,1200,10\n"
     "2025-09,B院区,2400,20\n"
-).encode("utf-8")
+).encode()
 DATASET_ID = "dataset-url-abc0001"
 
 
@@ -1044,9 +1044,9 @@ async def test_derived_export_times_out_instead_of_staying_running(
 @pytest.mark.anyio
 async def test_overdue_running_derived_export_is_cancelled_before_completion() -> None:
     from smart_reporting.report_editor.trace_exports import (
+        _RETENTION_SECONDS,
         TraceDerivedExportService,
         TraceExportJob,
-        _RETENTION_SECONDS,
     )
 
     deleted: list[str] = []
@@ -1234,8 +1234,8 @@ async def _write_two_period_datasets(
     """当期/同比两个期间的数据集 + 完整索引。"""
 
     contents = {
-        "current": "period,branch,revenue\n2025-09,A院区,1200\n".encode("utf-8"),
-        "baseline": "period,branch,revenue\n2025-08,A院区,1000\n".encode("utf-8"),
+        "current": "period,branch,revenue\n2025-09,A院区,1200\n".encode(),
+        "baseline": "period,branch,revenue\n2025-08,A院区,1000\n".encode(),
     }
     handles = []
     lineages = []
@@ -1446,7 +1446,7 @@ def test_fact_detail_locates_correlation_facts() -> None:
     """相关性事实（correlationDetails）同样可被引用绑定，事实详情必须能定位与解析。"""
     from smart_reporting.report_editor.trace_sources import ReportEditorTraceService
     from smart_reporting.reporting.trace.contracts_v1 import FactRefV1
-    from smart_reporting.reporting.trace.fact_service import resolve_fact
+    from smart_reporting.reporting.trace.fact_service import read_fact_document, resolve_fact
 
     fact_id = "fact-" + "c" * 16
     bundle = json.dumps({
@@ -1457,7 +1457,7 @@ def test_fact_detail_locates_correlation_facts() -> None:
             "rightField": "revenue", "method": "pearson", "sampleCount": 12, "value": 0.82,
         }],
     }).encode("utf-8")
-    pointer = ReportEditorTraceService._locate_fact_pointer(bundle, fact_id)
+    pointer = ReportEditorTraceService._locate_fact_pointer(read_fact_document(bundle), fact_id)
     assert pointer == "/correlationDetails/0"
     kind = ReportEditorTraceService._pointer_kind(pointer)
     assert kind == "correlation"

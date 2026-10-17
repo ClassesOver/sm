@@ -45,3 +45,39 @@ def validated_agent_plan(value: object) -> dict[str, Any] | None:
     if active > 1:
         return None
     return {"plan": normalized, "explanation": explanation.strip()}
+
+
+# 只读、可与同一任务内其他只读调用并行执行的工具；任务调度器（读写锁）与
+# 批量调用准入共用这一份清单，避免两处各自维护后出现分歧。
+PARALLEL_SAFE_TOOLS = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "read_lines",
+        "search_text",
+        "tree",
+        "git_status",
+        "git_diff",
+        "read_tool_output",
+        "view_image",
+        "get_skill_instructions",
+        "get_skill_reference",
+        "report_list_data_sources",
+        "report_describe_data_source",
+        # 该工具只按受信身份读取 Profile 节点，不修改工作区或任务状态。
+        "inspect_profile_index",
+        "read_profile_pointer",
+    }
+)
+
+
+def is_parallel_safe_tool(name: str, arguments: Any) -> bool:
+    """get_skill_script 仅在只读取脚本（execute=False）时可并行。"""
+
+    if name in PARALLEL_SAFE_TOOLS:
+        return True
+    return bool(
+        name == "get_skill_script"
+        and isinstance(arguments, dict)
+        and arguments.get("execute", False) is False
+    )

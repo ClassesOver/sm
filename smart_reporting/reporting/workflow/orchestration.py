@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextvars import ContextVar
-from functools import wraps
+from functools import partial, wraps
 from inspect import isawaitable
 from threading import Lock
 from time import perf_counter, time
@@ -16,6 +16,7 @@ from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
 from loguru import logger
 
+from ...async_utils import safe_reset_context_var
 from ..models import reporting_failure
 from .controller import REPORT_PROCESS_LIFECYCLE_DEPENDENCY
 from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
@@ -48,21 +49,19 @@ _STEP_MODEL_METRICS: ContextVar[_StepModelMetricsAccumulator | None] = ContextVa
 _PLANNER_REQUEST_RECORDER: ContextVar[PlannerRequestRecorder | None] = ContextVar(
     "reporting_planner_request_recorder", default=None
 )
-_TOKEN_METRIC_FIELDS = (
-    "input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "reasoning_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
+MODEL_TOKEN_FIELDS = (
+    ("input_tokens", "inputTokens"),
+    ("output_tokens", "outputTokens"),
+    ("total_tokens", "totalTokens"),
+    ("reasoning_tokens", "reasoningTokens"),
+    ("cache_read_tokens", "cacheReadTokens"),
+    ("cache_write_tokens", "cacheWriteTokens"),
 )
 
 
-def _safe_reset_context_var(variable: ContextVar[Any], token: Any) -> None:
-    try:
-        variable.reset(token)
-    except ValueError:
-        logger.debug("report_contextvar_reset_skipped_cross_context")
+_safe_reset_context_var = partial(
+    safe_reset_context_var, event="report_contextvar_reset_skipped_cross_context"
+)
 
 
 class PlannerRequestRecorder:
@@ -267,15 +266,7 @@ def record_step_model_metrics(value: Any, request_count: int | None = None) -> N
     if current is None or value is None:
         return
     incoming = RunMetrics()
-    for field in _TOKEN_METRIC_FIELDS:
-        alias = {
-            "input_tokens": "inputTokens",
-            "output_tokens": "outputTokens",
-            "total_tokens": "totalTokens",
-            "reasoning_tokens": "reasoningTokens",
-            "cache_read_tokens": "cacheReadTokens",
-            "cache_write_tokens": "cacheWriteTokens",
-        }[field]
+    for field, alias in MODEL_TOKEN_FIELDS:
         metric = value.get(alias) if isinstance(value, Mapping) else getattr(value, field, None)
         if isinstance(metric, int | float):
             setattr(incoming, field, metric)

@@ -12,12 +12,10 @@ ID，条目顺序变化不影响（按内容而非位置寻址）。JSON Pointer
 from __future__ import annotations
 
 import hashlib
-import json
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
-
-FACT_ID_PATTERN = r"^fact-[0-9a-f]{16}$"
 
 _POINTER_KIND_PREFIX = {
     "metric": "/metrics/",
@@ -268,18 +266,3 @@ def fact_entry_from_pointer(
             return kind, entry
     raise KeyError(pointer)
 
-
-def correlation_pointer(correlation_key: str) -> str:
-    return f"/correlations/{_escape_pointer_token(correlation_key)}"
-
-
-def bundle_to_storable_json(bundle: DeterministicAnalysisBundle) -> bytes:
-    """与既有落盘一致的 canonical JSON（analysis.py 使用的同款序列化）。"""
-
-    return json.dumps(
-        bundle.model_dump(mode="json", by_alias=True),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")

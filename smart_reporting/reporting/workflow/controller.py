@@ -1451,7 +1451,7 @@ class ReportWorkflowController:
                 finalization_pending=None,
             )
             return
-        # completed 的发布步骤已经在产物持久化后删除 sandbox；这里只覆盖没有发布
+        # completed 的发布步骤已经在产物持久化后释放工作区；这里只覆盖没有发布
         # 收尾机会的取消和失败终态，避免成功路径二次清理反而遮蔽下载回执。
         if control.status in {"cancelled", "failed"}:
             async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
@@ -1676,16 +1676,11 @@ class ReportWorkflowController:
             finalizationPending=True,
         )
 
-    async def _cleanup_terminal(
+    async def _cleanup_terminal_settled(
         self, scope: dict[str, str], workflow_session_id: str, workflow_run_id: str
     ) -> None:
         if self._terminal_cleanup is not None:
             await self._terminal_cleanup(scope, workflow_session_id, workflow_run_id)
-
-    async def _cleanup_terminal_settled(
-        self, scope: dict[str, str], workflow_session_id: str, workflow_run_id: str
-    ) -> None:
-        await self._cleanup_terminal(scope, workflow_session_id, workflow_run_id)
         self._background_cleanup_deferred.discard(scope["external_run_id"])
 
     def _workflow(self) -> ReviewableWorkflow:

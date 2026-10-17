@@ -169,7 +169,6 @@ def _chart_trace():
 
 
 def test_index_registers_chart_trace_with_archived_files() -> None:
-    from smart_reporting.reporting.trace.contracts_v1 import derive_resource_id
     from smart_reporting.reporting.workflow.checkpoint import FileIdentity
 
     index = _build(

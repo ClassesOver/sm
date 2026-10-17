@@ -17,8 +17,6 @@ from .contracts_v1 import TRACE_BUDGETS_V1, FactRefV1
 from .fact_index import fact_entry_from_pointer
 from .numeric_text import PERCENT_POINT
 
-_JSON = json.JSONDecoder()
-
 
 def fact_display_value(entry: Mapping[str, Any]) -> Any:
     """从 fact 记录提取展示值（按 kind 取最自然的数值字段）。"""
@@ -101,7 +99,19 @@ def resolve_fact(
     analysisId 必须与 FactRef 一致（防御索引装配错位）。
     """
 
-    document = read_fact_document(bundle_bytes)
+    return resolve_fact_from_document(
+        read_fact_document(bundle_bytes), fact_ref, with_inputs=with_inputs
+    )
+
+
+def resolve_fact_from_document(
+    document: Mapping[str, Any],
+    fact_ref: FactRefV1,
+    *,
+    with_inputs: bool = True,
+) -> dict[str, Any]:
+    """与 ``resolve_fact`` 相同，但复用调用方已经解析好的事实文件文档。"""
+
     kind, entry = _resolve_fact_entry(document, fact_ref)
 
     payload: dict[str, Any] = {

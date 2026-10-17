@@ -58,9 +58,6 @@ POLICIES = MappingProxyType(
         "report_code_model_request_limit": _DEGRADE,
         "report_code_no_progress": _DEGRADE,
         "report_code_generation_rate_limited": _DEGRADE,
-        "execution_output_error": FailurePolicy(
-            visualization="retry_then_degrade", thinking="python_execution_failure"
-        ),
         "report_visualization_script_failed": FailurePolicy(
             visualization="retry_then_degrade", thinking="python_execution_failure"
         ),

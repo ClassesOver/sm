@@ -11,7 +11,7 @@ from urllib.parse import unquote, urlsplit
 from markdown_it import MarkdownIt
 from pydantic import Field, field_validator, model_validator
 
-from ..contract import SHA256_PATTERN, StrictModel, interactive_spec_path
+from ..contract import SHA256_PATTERN, StrictModel, interactive_spec_path, safe_relative_posix_path
 from ..hospital_operation.delivery import SourcePolicy, SourceWarning
 from ..models import ReportingError
 from ..workflow.query_pipeline import DatasetLineage
@@ -45,11 +45,9 @@ class ArtifactFile(StrictModel):
     @field_validator("path")
     @classmethod
     def validate_relative_path(cls, value: str) -> str:
-        if "\\" in value:
-            raise ValueError("产物路径必须使用 POSIX 相对路径")
-        path = PurePosixPath(value)
-        if path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("产物路径必须位于工作区内")
+        safe_relative_posix_path(
+            value, "产物路径必须位于工作区内", backslash_message="产物路径必须使用 POSIX 相对路径"
+        )
         return value
 
 

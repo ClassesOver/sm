@@ -77,7 +77,6 @@ from .base import (
     TableReference,
     TaskState,
     ValidationError,
-    _payload_sha256,
     _validation_issue,
     anyio,
     approve_query_batch,
@@ -93,6 +92,7 @@ from .base import (
     parse_ddl,
     parse_field_ref,
     parse_reporting_workflow_input,
+    payload_sha256,
     publication_result,
     re,
     require_sources,
@@ -1214,7 +1214,7 @@ class RuntimePlanningMixin:
                 ),
             )
         state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
-        state[REPORT_OUTLINE_HASH_STATE_KEY] = _payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
+        state[REPORT_OUTLINE_HASH_STATE_KEY] = payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
         self._assert_state_safe(state)
         logger.info(
             "report_outline_planned outline={}",
@@ -1448,7 +1448,7 @@ class RuntimePlanningMixin:
                     "summary": "分析计划不可执行或与数据理解计划不一致",
                     "issues": semantic_issues,
                 }
-                correction_signature = _payload_sha256(
+                correction_signature = payload_sha256(
                     {
                         "output": output_payload,
                         "feedback": _compact_validation_feedback(validation_feedback),
@@ -1460,8 +1460,8 @@ class RuntimePlanningMixin:
                         "output_sha256={} issue_signature={}",
                         getattr(self._analysis_agent, "id", "report-analysis-planner"),
                         attempt,
-                        _payload_sha256(output_payload),
-                        _payload_sha256(_compact_validation_feedback(validation_feedback)),
+                        payload_sha256(output_payload),
+                        payload_sha256(_compact_validation_feedback(validation_feedback)),
                     )
                     raise ReportingError(
                         "report_analysis_plan_invalid",

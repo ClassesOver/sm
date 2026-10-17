@@ -991,27 +991,31 @@ class ReportEditorService:
         offset: int = 0,
         include_markdown: bool = True,
     ) -> list[dict[str, object]]:
-        candidates = await self._candidate_revisions(expected)
-        history: list[dict[str, object]] = []
-        for candidate in candidates[offset : offset + limit]:
+        candidates = (await self._candidate_revisions(expected))[offset : offset + limit]
+        if not include_markdown:
+            return [self._history_metadata(candidate) for candidate in candidates]
+
+        async def read(candidate: Any) -> dict[str, object] | None:
             item = self._history_metadata(candidate)
-            if include_markdown:
-                try:
-                    _path, markdown, sha256 = await self._read_frozen_markdown(candidate)
-                except ReportingError as error:
-                    # 单个历史修订的工作区文件缺失不应拖垮整个历史列表。
-                    logger.warning(
-                        "report_editor_history_revision_unreadable report_id={} revision={} "
-                        "code={}",
-                        candidate.report_id,
-                        candidate.revision,
-                        error.code,
-                    )
-                    continue
-                item["markdown"] = markdown
-                item["sha256"] = sha256
-            history.append(item)
-        return history
+            try:
+                _path, markdown, sha256 = await self._read_frozen_markdown(candidate)
+            except ReportingError as error:
+                # 单个历史修订的工作区文件缺失不应拖垮整个历史列表。
+                logger.warning(
+                    "report_editor_history_revision_unreadable report_id={} revision={} "
+                    "code={}",
+                    candidate.report_id,
+                    candidate.revision,
+                    error.code,
+                )
+                return None
+            item["markdown"] = markdown
+            item["sha256"] = sha256
+            return item
+
+        # 各修订的冻结文件互不依赖，并发读取；gather 保持原有顺序。
+        items = await asyncio.gather(*(read(candidate) for candidate in candidates))
+        return [item for item in items if item is not None]
 
     async def history_page(
         self,

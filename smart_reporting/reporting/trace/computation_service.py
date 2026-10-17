@@ -14,7 +14,8 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from ..models import ReportingError
 from .contracts_v1 import (
@@ -44,7 +45,6 @@ def build_supplemental_computation_record(
     reproducibility 按 environment 有无判定。
     """
 
-    script_path = str(script_file.get("path", ""))
     execution_id = str((execution or {}).get("runId", "")) or None
     environment = (execution or {}).get("environment")
     environment = dict(environment) if isinstance(environment, Mapping) else None

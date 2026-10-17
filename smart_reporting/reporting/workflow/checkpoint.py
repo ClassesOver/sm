@@ -7,12 +7,11 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from ..contract import SHA256_PATTERN, StrictModel
+from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
 from ..delivery.draft_v1 import ReportDraftBlock
 from ..models import ReportingError
 
@@ -25,9 +24,7 @@ class FileIdentity(StrictModel):
     @field_validator("path")
     @classmethod
     def validate_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("文件路径必须是安全的工作区相对路径")
+        path = safe_relative_posix_path(value, "文件路径必须是安全的工作区相对路径")
         return path.as_posix()
 
 
@@ -254,9 +251,7 @@ class ChartVisualInspectionReceipt(StrictModel):
     @field_validator("source_path")
     @classmethod
     def validate_source_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("图表视觉回执路径必须是安全工作区相对路径")
+        path = safe_relative_posix_path(value, "图表视觉回执路径必须是安全工作区相对路径")
         return path.as_posix()
 
     @model_validator(mode="after")

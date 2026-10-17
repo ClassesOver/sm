@@ -46,6 +46,7 @@ from .models import (
     TaskExecutionScope,
     TaskSnapshot,
     TaskState,
+    utcnow,
 )
 
 TASK_SCHEMA_VERSION = "2.1.0"
@@ -68,10 +69,6 @@ class TaskExecutionRepositoryError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
-
-
-def utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -812,62 +809,6 @@ class TaskExecutionRepository:
             ).scalar_one_or_none()
         if value is None:
             raise TaskExecutionRepositoryError("task_not_active", "执行任务已结束，不能继续修改。")
-        return int(value)
-
-    async def record_execution_mutation(
-        self,
-        external_run_id: str,
-        execution_id: str,
-        expected_mutation_sequence: int,
-        *,
-        lease: Lease | None,
-        internal_run_id: str,
-    ) -> int:
-        await self.initialize()
-        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            conditions = [
-                self.tasks.c.external_run_id == external_run_id,
-                self.tasks.c.current_internal_run_id == internal_run_id,
-                self.tasks.c.mutation_sequence == expected_mutation_sequence,
-                self.tasks.c.status.in_([TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]),
-            ]
-            if lease is not None:
-                conditions.extend(
-                    [
-                        self.tasks.c.lease_owner == lease.owner,
-                        self.tasks.c.lease_epoch == lease.epoch,
-                        self.tasks.c.lease_expires_at > utcnow(),
-                    ]
-                )
-            value = (
-                await connection.execute(
-                    update(self.tasks)
-                    .where(*conditions)
-                    .values(
-                        mutation_sequence=self.tasks.c.mutation_sequence + 1,
-                        updated_at=utcnow(),
-                    )
-                    .returning(self.tasks.c.mutation_sequence)
-                )
-            ).scalar_one_or_none()
-            if value is None:
-                raise TaskExecutionRepositoryError(
-                    "execution_mutation_conflict", "Execution mutation 序号已变化。"
-                )
-            execution = await connection.execute(
-                update(self.executions)
-                .where(
-                    self.executions.c.execution_id == execution_id,
-                    self.executions.c.external_run_id == external_run_id,
-                    self.executions.c.internal_run_id == internal_run_id,
-                    self.executions.c.mutation_sequence == expected_mutation_sequence,
-                )
-                .values(mutation_sequence=value, updated_at=utcnow())
-            )
-            if execution.rowcount != 1:
-                raise TaskExecutionRepositoryError(
-                    "execution_mutation_conflict", "Execution mutation 绑定已变化。"
-                )
         return int(value)
 
     async def reserve_execution(

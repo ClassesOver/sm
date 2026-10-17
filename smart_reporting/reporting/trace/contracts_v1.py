@@ -16,13 +16,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
-from pathlib import PurePosixPath
-from typing import Any, Literal, Mapping
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from ..contract import SHA256_PATTERN, StrictModel
+from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
 
 TRACE_CONTRACT_VERSION = "1"
 
@@ -63,7 +63,7 @@ def validate_json_pointer(value: str) -> str:
 def utc_now_timestamp() -> str:
     """当前 UTC 时间的契约时间戳（ISO8601，秒级，Z 结尾）。"""
 
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +179,9 @@ class TraceFileRefV1(StrictModel):
     @field_validator("path")
     @classmethod
     def validate_relative_path(cls, value: str) -> str:
-        if "\\" in value:
-            raise ValueError("追溯文件路径必须使用 POSIX 相对路径")
-        path = PurePosixPath(value)
-        if path.is_absolute() or ".." in path.parts or value.endswith("/"):
-            raise ValueError("追溯文件路径必须位于工作区内")
+        safe_relative_posix_path(
+            value, "追溯文件路径必须位于工作区内", backslash_message="追溯文件路径必须使用 POSIX 相对路径"
+        )
         return value
 
     @model_validator(mode="after")

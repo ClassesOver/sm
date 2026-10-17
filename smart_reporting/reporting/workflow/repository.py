@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -31,6 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 
+from .checkpoint import payload_sha256
 from .state import (
     REPORTING_STATE_SCHEMA_VERSION,
     ReportingCommand,
@@ -53,14 +52,7 @@ def _utc(value: datetime) -> datetime:
 
 
 def _command_fingerprint(command: ReportingCommand) -> str:
-    payload = json.dumps(
-        {"name": command.name, "payload": command.payload},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return payload_sha256({"name": command.name, "payload": command.payload})
 
 
 class ReportingStateRepository:

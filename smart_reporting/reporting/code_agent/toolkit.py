@@ -21,8 +21,8 @@ from agno.tools import Function, Toolkit
 from loguru import logger
 
 from ...code_monitor.tools import log_tool_event
-from ...workspace import normalize_workspace_path, WorkspaceError
-from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult
+from ...workspace import WorkspaceError, normalize_workspace_path
+from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult, _cell_field
 from ..contract import interactive_spec_path
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
@@ -1303,12 +1303,6 @@ def validate_script_source(context: ReportingCodingTaskContext, source: str) -> 
     authorized = frozenset((*context.authorized_read_paths, *context.authorized_write_paths))
     compile_script_source(context.script_path, source, authorized)
     return raw
-
-
-def _cell_field(cell: Any, name: str, default: Any = None) -> Any:
-    if isinstance(cell, Mapping):
-        return cell.get(name, default)
-    return getattr(cell, name, default)
 
 
 def _bounded_exploration_variables(value: Any) -> dict[str, str]:
