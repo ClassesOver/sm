@@ -774,8 +774,12 @@ def test_postprocess_docx_source_appendix_entries_and_signature_match_pdf(tmp_pa
     assert styles["Report Signature"].font.size == Pt(10.5)
     signature = [item for item in processed.paragraphs if item.style.name == "Report Signature"]
     assert [item.text for item in signature] == ["测试机构", "2026-08-17"]
-    assert abs(signature[0].paragraph_format.space_before - Mm(18)) < Mm(0.1)
+    assert abs(signature[0].paragraph_format.space_before - Mm(12)) < Mm(0.1)
     assert signature[1].paragraph_format.space_before is None
+    # 落款不单独占一页：末段与机构名都随下一段换页。
+    position = next(index for index, item in enumerate(processed.paragraphs) if item._p is signature[0]._p)
+    assert processed.paragraphs[position - 1].paragraph_format.keep_with_next is True
+    assert signature[0].paragraph_format.keep_with_next is True
     assert styles["Definition Term"].font.bold is True
     assert abs(styles["Definition"].paragraph_format.left_indent - Mm(6)) < Mm(0.1)
     assert styles["Definition"].paragraph_format.space_after == Pt(2)

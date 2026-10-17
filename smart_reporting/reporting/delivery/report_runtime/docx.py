@@ -619,14 +619,19 @@ def _postprocess_docx(
             shape.height = new_height
 
     signature_started = False
+    previous = None
     for paragraph in paragraphs[body_start_index + 1 :]:
         if paragraph.text.strip() in {context["organizationName"], context["generatedDate"]}:
             paragraph.style = document.styles["Report Signature"]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             if not signature_started:
-                # 与 PDF 落款一致：与上文隔开 18mm，不紧贴附录或正文末段。
-                paragraph.paragraph_format.space_before = Mm(18)
+                paragraph.paragraph_format.keep_with_next = True
+                # 与 PDF 落款一致：与上文隔开 12mm；末段随落款换页，落款不单独占一页。
+                paragraph.paragraph_format.space_before = Mm(12)
+                if previous is not None:
+                    previous.paragraph_format.keep_with_next = True
                 signature_started = True
+        previous = paragraph
 
     settings = document.settings._element
     for existing in settings.findall(qn("w:updateFields")):

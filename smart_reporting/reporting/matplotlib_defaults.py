@@ -227,14 +227,45 @@ class _PostImportHooks(importlib.abc.MetaPathFinder):
         return spec
 
 
+def _compact_tick(value: float) -> str:
+    magnitude = abs(value)
+    for scale, suffix in ((1e8, "亿"), (1e4, "万")):
+        if magnitude >= scale:
+            return f"{value / scale:,.2f}".rstrip("0").rstrip(".") + suffix
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def _apply_ticker_defaults(module: Any) -> None:
+    """默认刻度把大数写成“5亿”“60万”，不出现“1e9”或挤在一起的长串数字；脚本自设格式器不受影响。"""
+
+    formatter = module.ScalarFormatter
+    if getattr(formatter.__call__, "_reporting_compact", False):
+        return
+    original = formatter.__call__
+
+    def call(self: Any, value: float, pos: Any = None) -> str:
+        text = original(self, value, pos)
+        if type(self) is not formatter or not text or abs(value) < 1e4:
+            return text
+        return _compact_tick(value)
+
+    call._reporting_compact = True  # type: ignore[attr-defined]
+    formatter.__call__ = call
+
+
 def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
-    hooks = _PostImportHooks({"kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults})
+    hooks = _PostImportHooks({
+        "kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults,
+        "matplotlib.ticker": _apply_ticker_defaults,
+    })
     sys.meta_path.insert(0, hooks)
     # 包装器之前已导入的模块直接应用默认值。
     if "kaleido" in sys.modules:
         kaleido.patch(sys.modules["kaleido"])
     if "plotly.io" in sys.modules:
         _apply_plotly_layout_defaults(sys.modules["plotly.io"])
+    if "matplotlib.ticker" in sys.modules:
+        _apply_ticker_defaults(sys.modules["matplotlib.ticker"])
     return hooks
 
 

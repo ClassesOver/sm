@@ -829,7 +829,7 @@ def _semantic_documents(
         ";margin-left:0;padding:3mm 4mm;color:"
         f"{theme['ink']}"
         "}"
-        ".report-signature{margin-top:18mm;text-align:right;break-inside:avoid}"
+        ".report-signature{margin-top:12mm;text-align:right;break-inside:avoid;break-before:avoid}"
         ".report-signature p{margin:0 0 2mm}"
         ".report-source-appendix{break-before:page;page-break-before:always}"
         ".report-source-title{color:"
