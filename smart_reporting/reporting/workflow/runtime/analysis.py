@@ -2275,25 +2275,18 @@ class RuntimeAnalysisMixin:
                 citation_bindings=citation_bindings,
                 section_codes=(section_code,),
             )
-            finding_cards = {card.finding_id: card for card in graph.findings} if graph else {}
             if narrative_section is not None and narrative_section.narrative_role == "appendix":
                 analysis_rework_allowed = False
-            work_item = self._build_section_work_item(
-                section,
-                detailed_plan=detailed_plan,
-                analysis_artifact=artifact,
-                citation_bindings=citation_bindings,
-                finding_ids=(narrative_section.finding_ids if narrative_section else ()),
-                finding_summaries=tuple(
-                    finding_cards[finding_id].model_dump(mode="json", by_alias=True)
-                    for finding_id in (narrative_section.finding_ids if narrative_section else ())
-                    if finding_id in finding_cards
-                ),
-                narrative_role=(narrative_section.narrative_role if narrative_section else None),
-                grouping_reason=(narrative_section.grouping_reason if narrative_section else None),
-                max_blocks=(narrative_section.max_blocks if narrative_section else None),
-                max_charts=(narrative_section.max_charts if narrative_section else None),
-            )
+            if narrative_section is not None and graph is not None:
+                work_item = self._build_narrative_section_work_item(
+                    narrative_section, graph=graph, detailed_plan=detailed_plan,
+                    analysis_artifact=artifact, citation_bindings=citation_bindings,
+                )
+            else:
+                work_item = self._build_section_work_item(
+                    section, detailed_plan=detailed_plan, analysis_artifact=artifact,
+                    citation_bindings=citation_bindings,
+                )
             updated, _section_artifact, rework = await self._run_section_phase(
                 run_context,
                 checkpoint=checkpoint,
@@ -2605,6 +2598,26 @@ class RuntimeAnalysisMixin:
             report_goal=self._envelope(run_context).report_goal,
             analyses=analyses, run_context=run_context,
         )
+        if any(section.narrative_role == "appendix" for section in narrative.sections):
+            # 此时尚未绑定最终目录/启动章节。复用冻结分析产物构造与渲染阶段
+            # 相同的 WorkItem（附录不生成图表），将切分后的提纲一次性持久化。
+            citation_bindings = authoritative_citations(tuple(
+                DatasetLineage.model_validate(item)
+                for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
+            ))
+            artifact = await self._build_reporting_artifact(
+                run_context,
+                analysis_ids=tuple(item.analysis_id for item in detailed_plan.analyses),
+                detailed_plan=detailed_plan,
+                fact_files=checkpoint.deterministic_fact_files,
+                citation_bindings=citation_bindings,
+                section_codes=(),
+            )
+            narrative = self._fit_narrative_outline_context(
+                narrative, graph=graph, detailed_plan=detailed_plan,
+                analysis_artifact=artifact,
+                citation_bindings=citation_bindings,
+            )
         compatible = build_compatible_report_outline(
             graph, report_type=legacy_outline.report_type, title=narrative.title,
             narrative_outline=narrative,

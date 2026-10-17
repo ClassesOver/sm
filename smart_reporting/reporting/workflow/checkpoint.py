@@ -795,15 +795,18 @@ class ReportingCheckpoint(StrictModel):
     # 按章保存 visualization_section 失败与预算账本;并发合并时按键合并,
     # 不复用标量 last_error（后者保留给汇总阶段的全局终态失败）。
     visualization_section_errors: dict[str, CheckpointError] = Field(
-        default_factory=dict, alias="visualizationSectionErrors", max_length=200
+        default_factory=dict, alias="visualizationSectionErrors"
     )
     deterministic_fact_files: dict[str, FileIdentity] = Field(
         default_factory=dict,
         alias="deterministicFactFiles",
         max_length=200,
     )
-    files: tuple[FileIdentity, ...] = Field(default=(), max_length=500)
-    trace: tuple[ContextTrace, ...] = Field(default=(), max_length=2000)
+    # 运行账本随章节和重试增长，不能借用分析项（最多 200 项）的数量上限。
+    # files 按路径合并，保留已有分析产物及每章的 WorkItem、约束和完成产物身份；
+    # trace 按 taskId 合并。单项身份、分析项和发现图谱的契约继续各自校验。
+    files: tuple[FileIdentity, ...] = Field(default=())
+    trace: tuple[ContextTrace, ...] = Field(default=())
 
     @model_validator(mode="after")
     def validate_sections(self) -> ReportingCheckpoint:
