@@ -3078,6 +3078,8 @@ class RuntimeSectionsMixin:
         table_signatures: set[str] = set()
         fact_directory: dict[str, tuple[str, str]] = {}
         fact_values: dict[str, tuple[Any, str | None]] = {}
+        fact_documents: dict[str, dict[str, Any]] = {}
+        ambiguous_fact_ids: set[str] = set()
         try:
             # 表头指标名的兜底来源；Profile 不可读时表格照常生成（显示字段名）。
             metric_descriptions = {
@@ -3104,10 +3106,24 @@ class RuntimeSectionsMixin:
                     if fact.fact_id:
                         pointer = fact_pointer(bundle, fact.fact_id)
                         if pointer:
+                            frozen_fact = fact.model_dump(mode="json", by_alias=True)
+                            if fact.fact_id in ambiguous_fact_ids:
+                                continue
+                            if fact.fact_id in fact_documents and fact_documents[fact.fact_id] != frozen_fact:
+                                # 兼容旧快照：同 ID 不同内容不能按文件顺序选择来源。
+                                ambiguous_fact_ids.add(fact.fact_id)
+                                fact_directory.pop(fact.fact_id, None)
+                                fact_values.pop(fact.fact_id, None)
+                                loguru_logger.warning(
+                                    "report_claim_fact_binding_omitted fact_id={} reason=conflicting_identity",
+                                    fact.fact_id,
+                                )
+                                continue
+                            fact_documents[fact.fact_id] = frozen_fact
                             fact_directory[fact.fact_id] = (analysis_id, pointer)
                             fact_values[fact.fact_id] = (
-                                fact_display_value(fact.model_dump(mode="json", by_alias=True)),
-                                fact_display_unit(fact.model_dump(mode="json", by_alias=True)),
+                                fact_display_value(frozen_fact),
+                                fact_display_unit(frozen_fact),
                             )
                 section_code = section_by_analysis.get(analysis_id)
                 if section_code is None:

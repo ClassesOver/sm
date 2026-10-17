@@ -201,6 +201,56 @@ def test_builder_skips_missing_dimensions_and_conflicting_facts() -> None:
     assert result == ()
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_ratio_drilldown_survives_identical_facts_shared_by_analyses(reverse):
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        build_deterministic_analysis_bundle,
+    )
+
+    from .test_deterministic_analysis import analysis, context, semantic
+
+    fields = ("month", "department", "revenue", "visits")
+    dataset_id = "dataset-current01"
+    prefix = "dynamic_source.dynamic_db.dynamic_table."
+    profile_metrics = (
+        {"code": "revenue", "fieldRef": prefix + "revenue", "aggregation": "sum"},
+        {"code": "visits", "fieldRef": prefix + "visits", "aggregation": "sum"},
+        {"code": "revenue_per_visit", "aggregation": "ratio",
+         "numeratorMetric": "revenue", "denominatorMetric": "visits"},
+    )
+    semantics = (semantic("revenue", unit="元"), semantic("visits", unit="人次"))
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("revenue", "visits")),
+        ((dataset_id, b"month,department,revenue,visits\n2025-01,A,90,10\n2025-01,B,30,5\n",
+          context(dataset_id, fields=fields, semantics=semantics), ("current",)),),
+        profile_metrics=profile_metrics,
+    )
+    second = bundle.model_copy(update={"analysis_id": "analysis_002"})
+    options = dict(
+        dataset_columns={dataset_id: fields}, profile_metrics=profile_metrics,
+        profile_dimensions=({"code": "department", "fieldRefs": [prefix + "department"]},),
+        measure_semantics=semantics,
+    )
+    single = build_drilldown_metrics(bundles=[bundle.model_dump(mode="json", by_alias=True)], **options)
+    assert any(item.aggregation == "ratio" for item in single)
+    bundles = [bundle, second]
+    if reverse:
+        bundles.reverse()
+    shared = build_drilldown_metrics(
+        bundles=[item.model_dump(mode="json", by_alias=True) for item in bundles], **options,
+    )
+    assert shared == single
+
+    # 同 ID 不同冻结数值是真实冲突，不能被去重掩盖。
+    conflict = second.model_copy(update={"metrics": (
+        second.metrics[0].model_copy(update={"total": 999}), second.metrics[1],
+    )})
+    result = build_drilldown_metrics(
+        bundles=[item.model_dump(mode="json", by_alias=True) for item in (bundle, conflict)], **options,
+    )
+    assert not any(item.aggregation == "ratio" for item in result)
+
+
 @pytest.mark.parametrize("aggregation", ["count", "count_distinct", "average"])
 @pytest.mark.parametrize("side", ["revenue", "visits"])
 def test_ratio_skips_non_sum_inputs(aggregation: str, side: str) -> None:

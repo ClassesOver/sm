@@ -158,7 +158,7 @@ def build_table_trace(
 def _format_number(value: float, unit: str | None) -> str:
     if float(value).is_integer():
         return f"{int(value):,}"
-    return f"{value:,.2f}"
+    return format_fact_value(value, unit).removesuffix(unit or "")
 
 
 # 百万以上的元/人次整列改用万元/万人次两位小数，“1,112,354,150”难以阅读。
@@ -192,7 +192,13 @@ def render_table_markdown(
     等于 len(column_keys) + 1。
     """
 
-    header = "| " + " | ".join(("", *column_keys)) + " |"
+    def literal_cell(value: str) -> str:
+        # 标签是冻结的字面量；转义不能改变 columnKey/row label 的身份。
+        value = value.replace("&", "&amp;")
+        value = re.sub(r"([\\|`*_{}\[\]<>])", r"\\\1", value)
+        return value.replace("\r", "&#13;").replace("\n", "&#10;")
+
+    header = "| " + " | ".join(("", *(literal_cell(key) for key in column_keys))) + " |"
     # 行标签左对齐，数值列右对齐，便于逐行比较位数与小数点。
     separator = "| " + " | ".join(("---", *("---:",) * len(column_keys))) + " |"
     for row in rows:
@@ -200,7 +206,7 @@ def render_table_markdown(
             raise ReportingError(
                 "request_invalid", f"表格行单元格数与列数不一致: {row[:1]}"
             )
-    body_lines = ["| " + " | ".join(row) + " |" for row in rows]
+    body_lines = ["| " + " | ".join(literal_cell(cell) for cell in row) + " |" for row in rows]
     lines = [header, separator, *body_lines]
     table = "\n".join(lines)
     # 空行隔离结束标记，避免 Milkdown 表格解析器把结束标记吞进表格最后一行。

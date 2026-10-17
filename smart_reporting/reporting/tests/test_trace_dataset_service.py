@@ -38,7 +38,7 @@ def _file(
         dataset_id=dataset_id,
         local_path=path,
         size=size if size is not None else (path.stat().st_size if path.is_file() else 0),
-        sha256="0" * 64,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "0" * 64,
         row_count=rows,
         filename=path.name if path.is_file() else None,
     )

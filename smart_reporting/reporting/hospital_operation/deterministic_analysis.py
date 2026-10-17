@@ -140,6 +140,7 @@ class CorrelationDetail(AnalysisModel):
     left_field: str = Field(alias="leftField", min_length=1, max_length=128)
     right_field: str = Field(alias="rightField", min_length=1, max_length=128)
     method: Literal["pearson"] = "pearson"
+    scope: dict[str, str] = Field(default_factory=dict, max_length=100)
     sample_count: int = Field(alias="sampleCount", ge=0)
     value: float
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
@@ -246,7 +247,8 @@ def build_deterministic_analysis_bundle(
     warnings.extend(comparison_warnings)
     warnings.extend(derived_warnings)
     warnings.extend(reconciliation_warnings)
-    correlations, correlation_details = _correlations(prepared, facts)
+    correlations, correlation_details, correlation_warnings = _correlations(prepared, facts)
+    warnings.extend(correlation_warnings)
     bundle = DeterministicAnalysisBundle(
         analysisId=analysis.analysis_id,
         analysisName=analysis.analysis_name or analysis.management_question,
@@ -1166,21 +1168,33 @@ def _grain_columns(
 
 def _correlations(
     datasets: list[_Dataset], facts: list[DeterministicMetricFact]
-) -> tuple[dict[str, float], tuple[CorrelationDetail, ...]]:
+) -> tuple[dict[str, float], tuple[CorrelationDetail, ...], tuple[str, ...]]:
     """相关性键值投影（模型沿用）+ B4 完整元数据（n/字段身份/方法）。"""
 
     result: dict[str, float] = {}
     details: list[CorrelationDetail] = []
-    fields_by_dataset: dict[str, list[str]] = {}
+    warnings: list[str] = []
+    facts_by_dataset: dict[str, dict[str, DeterministicMetricFact]] = {}
     for fact in facts:
-        fields_by_dataset.setdefault(fact.dataset_id, []).append(fact.field)
+        facts_by_dataset.setdefault(fact.dataset_id, {})[fact.field] = fact
     for dataset in datasets:
-        fields = tuple(dict.fromkeys(fields_by_dataset.get(dataset.dataset_id, ())))
+        metrics = facts_by_dataset.get(dataset.dataset_id, {})
+        fields = tuple(metrics)
         if len(fields) < 2:
             continue
+        scoped_frames: dict[tuple[tuple[str, str], ...], pl.DataFrame] = {}
         for left_index, left in enumerate(fields):
             for right in fields[left_index + 1 :]:
-                pair = dataset.frame.select(
+                scope = metrics[left].scope
+                if scope != metrics[right].scope:
+                    warnings.append(
+                        f"Dataset {dataset.dataset_id} 的 {left} 与 {right} 固定范围不一致，未计算相关性。"
+                    )
+                    continue
+                scope_key = tuple(sorted(scope.items()))
+                if scope_key not in scoped_frames:
+                    scoped_frames[scope_key], _ = _apply_scope(dataset, {"exclusiveScope": scope})
+                pair = scoped_frames[scope_key].select(
                     pl.col(left).cast(pl.Float64, strict=False).alias("left"),
                     pl.col(right).cast(pl.Float64, strict=False).alias("right"),
                 ).drop_nulls()
@@ -1197,11 +1211,12 @@ def _correlations(
                             leftField=left,
                             rightField=right,
                             method="pearson",
+                            scope=scope,
                             sampleCount=pair.height,
                             value=_finite(value),
                         )
                     )
-    return result, tuple(details)
+    return result, tuple(details), tuple(warnings)
 
 
 def _coverage_warnings(dataset: _Dataset) -> list[str]:
