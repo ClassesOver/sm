@@ -94,7 +94,6 @@ from .model_policy import (
 )
 from .models import ReportingError
 from .phase import (
-    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY,
@@ -142,7 +141,7 @@ from .structured_output.wire_schema import (
 )
 from .tools import build_reporting_tools
 from .vision import ReportVisionReviewer
-from .workflow.checkpoint import payload_sha256
+from .workflow.checkpoint import CheckpointRetryUsage, attach_retry_usage, payload_sha256
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
 from .workflow.orchestration import current_planner_request_recorder
 from .workflow.repository import ReportingStateRepository
@@ -473,7 +472,7 @@ def _stop_analysis_fact_query_budget(run_context: RunContext) -> None:
         details=details,
     )
     _record_reporting_tool_run_error(run_context, error)
-    setattr(error, REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR, details)
+    attach_retry_usage(error, CheckpointRetryUsage(analysisFactQueriesUsed=details["queryCount"]))
     serialized = json.dumps(
         {
             "ok": False,

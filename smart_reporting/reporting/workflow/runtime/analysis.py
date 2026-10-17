@@ -50,7 +50,12 @@ from ..benchmark_variants import (
     LegacyAnalysisEvidenceDecision,
     LegacyVisualizationPlanDraft,
 )
-from ..checkpoint import ChartVisualInspectionReceipt, CheckpointRetryUsage
+from ..checkpoint import (
+    ChartVisualInspectionReceipt,
+    CheckpointRetryUsage,
+    attach_retry_usage,
+    retry_usage_of,
+)
 from ..execution import ReportingTaskInvocation
 from .analysis_item_workflow import (
     MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
@@ -80,8 +85,6 @@ from .base import (
     REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_VISUAL_THEME,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
-    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
-    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     VISUALIZATION_SECTION_DEADLINE_SECONDS,
     VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     AnalysisReworkRequest,
@@ -4356,11 +4359,7 @@ def _visualization_section_retry_error(
             "运行中的 Reporting checkpoint 缺少可信章节恢复身份或预算，请重新分析。",
         )
     error = ReportingError(stored.code, stored.message)
-    setattr(
-        error,
-        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-        stored.retry_usage.model_dump(mode="python", by_alias=True),
-    )
+    attach_retry_usage(error, stored.retry_usage)
     return error
 
 
@@ -4416,19 +4415,7 @@ def _checkpoint_retry_error(
             "运行中的 Reporting checkpoint 缺少可信恢复身份或预算，请重新分析。",
         )
     error = ReportingError(stored.code, stored.message)
-    usage = stored.retry_usage
-    if work_kind == "analysis_item":
-        setattr(
-            error,
-            REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
-            {"queryCount": usage.analysis_fact_queries_used},
-        )
-    else:
-        setattr(
-            error,
-            REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-            usage.model_dump(mode="python", by_alias=True),
-        )
+    attach_retry_usage(error, stored.retry_usage)
     return error
 
 
@@ -4439,19 +4426,15 @@ def _checkpoint_retry_usage(
 ) -> CheckpointRetryUsage:
     if work_kind == "analysis_item":
         return CheckpointRetryUsage(analysisFactQueriesUsed=_analysis_fact_retry_usage(error))
-    source = getattr(error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
-    attempt_successes = (
-        source.get("visualizationAttemptSuccessfulToolCalls", 0)
-        if isinstance(source, Mapping)
-        else 0
-    )
-    attempt_rejections = (
-        source.get("visualizationAttemptRejectedToolCalls", 0) if isinstance(source, Mapping) else 0
-    )
+    usage = retry_usage_of(error)
     return CheckpointRetryUsage(
         **_visualization_retry_usage(error),
-        visualizationAttemptSuccessfulToolCalls=attempt_successes,
-        visualizationAttemptRejectedToolCalls=attempt_rejections,
+        visualizationAttemptSuccessfulToolCalls=(
+            usage.visualization_attempt_successful_tool_calls if usage is not None else 0
+        ),
+        visualizationAttemptRejectedToolCalls=(
+            usage.visualization_attempt_rejected_tool_calls if usage is not None else 0
+        ),
     )
 
 
@@ -4732,65 +4715,32 @@ def _analysis_fact_recovery_required(last_error: Exception | None) -> bool:
 
 
 def _analysis_fact_retry_usage(last_error: Exception | None) -> int:
-    source: Any = getattr(last_error, REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR, None)
+    usage = retry_usage_of(last_error)
+    if usage is not None:
+        return usage.analysis_fact_queries_used
     details = last_error.details if isinstance(last_error, ReportingError) else None
-
-    if isinstance(source, Mapping):
-        return _nonnegative_int(source.get("queryCount"))
-    if isinstance(details, Mapping):
-        return _nonnegative_int(details.get("queryCount"))
-    return 0
+    return _nonnegative_int(details.get("queryCount")) if isinstance(details, Mapping) else 0
 
 
 def _visualization_retry_usage(last_error: Exception | None) -> dict[str, int]:
-    source: Any = getattr(last_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
-    details = last_error.details if isinstance(last_error, ReportingError) else None
-
-    if isinstance(source, Mapping):
-        usage = {
-            "visualizationReadUnitsUsed": _nonnegative_int(
-                source.get("visualizationReadUnitsUsed")
-            ),
-            "visualizationFactQueriesUsed": _nonnegative_int(
-                source.get("visualizationFactQueriesUsed")
-            ),
-            "visualizationToolCalls": _nonnegative_int(
-                source.get("visualizationToolCalls", source.get("totalToolCalls"))
-            ),
-            "visualizationScriptFailures": _nonnegative_int(
-                source.get("visualizationScriptFailures", source.get("scriptFailureCount"))
-            ),
-        }
-        # 预算终态错误在动态预留点生成，details 对总调用和脚本失败的计数最及时；
-        # read/fact 则只能来自执行器退出时附加的完整累计快照，两者必须合并。
-        if isinstance(details, Mapping):
-            if "totalToolCalls" in details:
-                usage["visualizationToolCalls"] = _nonnegative_int(details.get("totalToolCalls"))
-            if "scriptFailureCount" in details:
-                usage["visualizationScriptFailures"] = _nonnegative_int(
-                    details.get("scriptFailureCount")
-                )
-        return usage
-    if isinstance(source, Sequence) and not isinstance(source, (str, bytes)) and len(source) == 2:
-        return {
-            "visualizationReadUnitsUsed": 0,
-            "visualizationFactQueriesUsed": 0,
-            "visualizationToolCalls": _nonnegative_int(source[0]),
-            "visualizationScriptFailures": _nonnegative_int(source[1]),
-        }
-    if isinstance(details, Mapping):
-        return {
-            "visualizationReadUnitsUsed": 0,
-            "visualizationFactQueriesUsed": 0,
-            "visualizationToolCalls": _nonnegative_int(details.get("totalToolCalls")),
-            "visualizationScriptFailures": _nonnegative_int(details.get("scriptFailureCount")),
-        }
-    return {
-        "visualizationReadUnitsUsed": 0,
-        "visualizationFactQueriesUsed": 0,
-        "visualizationToolCalls": 0,
-        "visualizationScriptFailures": 0,
+    usage = retry_usage_of(last_error)
+    result = {
+        "visualizationReadUnitsUsed": usage.visualization_read_units_used if usage else 0,
+        "visualizationFactQueriesUsed": usage.visualization_fact_queries_used if usage else 0,
+        "visualizationToolCalls": usage.visualization_tool_calls if usage else 0,
+        "visualizationScriptFailures": usage.visualization_script_failures if usage else 0,
     }
+    # 预算终态错误在动态预留点生成，其 details 中总调用与脚本失败计数比执行器
+    # 退出时附加的累计快照更新；read/fact 只能来自快照，两者合并。
+    details = last_error.details if isinstance(last_error, ReportingError) else None
+    if isinstance(details, Mapping):
+        if "totalToolCalls" in details:
+            result["visualizationToolCalls"] = _nonnegative_int(details.get("totalToolCalls"))
+        if "scriptFailureCount" in details:
+            result["visualizationScriptFailures"] = _nonnegative_int(
+                details.get("scriptFailureCount")
+            )
+    return result
 
 
 def _visualization_dynamic_budget(

@@ -34,7 +34,6 @@ from ..code_agent.metrics import (
 )
 from ..models import ReportingError
 from ..phase import (
-    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
@@ -47,7 +46,6 @@ from ..phase import (
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_EVIDENCE_READ_UNITS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY,
@@ -72,6 +70,7 @@ from ..phase import (
     reporting_visualization_recovery_from_acceptance_contract,
     reporting_visualization_usage_from_run_context,
 )
+from .checkpoint import CheckpointRetryUsage, attach_retry_usage
 from .orchestration import MODEL_TOKEN_FIELDS as _MODEL_TOKEN_FIELDS
 from .orchestration import record_step_model_metrics
 
@@ -644,20 +643,20 @@ class ReportingTaskCoordinator:
                 if isinstance(error, anyio.get_cancelled_exc_class()):
                     task_outcome = "cancelled"
                 if reporting_task_kind == "analysis_item" and isinstance(error, Exception):
-                    setattr(
+                    attach_retry_usage(
                         error,
-                        REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
-                        {
-                            "queryCount": reporting_analysis_fact_usage_from_run_context(
+                        CheckpointRetryUsage(
+                            analysisFactQueriesUsed=reporting_analysis_fact_usage_from_run_context(
                                 task_run_context
                             )
-                        },
+                        ),
                     )
                 if reporting_task_kind == "visualization_section" and isinstance(error, Exception):
-                    setattr(
+                    attach_retry_usage(
                         error,
-                        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-                        reporting_visualization_usage_from_run_context(task_run_context),
+                        CheckpointRetryUsage(
+                            **reporting_visualization_usage_from_run_context(task_run_context)
+                        ),
                     )
                 await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
                 raise
