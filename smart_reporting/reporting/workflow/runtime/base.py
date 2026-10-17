@@ -146,10 +146,6 @@ from ...model_policy import (
     apply_reporting_thinking_profile,
 )
 from ...models import ReportingError
-from ...phase import (
-    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
-    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-)
 from ...presentation import completed_report_content
 from ...profile import (
     CapabilitySet,

@@ -441,6 +441,34 @@ class HostReportingWorkspace:
         target = self.paths.to_host_path(path)
         return await anyio.to_thread.run_sync(lambda: _read_regular_file(target, max_bytes))
 
+    async def aiter_regular_file_chunks(
+        self,
+        _thread_id: str,
+        path: str,
+        *,
+        max_bytes: int,
+        chunk_size: int,
+    ) -> AsyncIterator[bytes]:
+        """按块读取普通文件，不把整个文件读入内存；打开校验与 read_limited_regular_file 相同。"""
+
+        target = self.paths.to_host_path(path)
+        descriptor = await anyio.to_thread.run_sync(lambda: _open_regular_file(target, max_bytes))
+        total = 0
+        try:
+            while True:
+                try:
+                    chunk = await anyio.to_thread.run_sync(os.read, descriptor, chunk_size)
+                except OSError as error:
+                    raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
+                if not chunk:
+                    return
+                total += len(chunk)
+                if total > max_bytes:
+                    raise WorkspaceError("工作区文件超过读取大小上限。")
+                yield chunk
+        finally:
+            os.close(descriptor)
+
     async def ahash_file(self, _thread_id: str, path: str) -> dict[str, Any]:
         relative = self.paths.normalize(path)
         target = self.paths.to_host_path(relative)
@@ -756,6 +784,13 @@ class ReportingWorkspaceRouter:
     ) -> bytes:
         return await self.workspace(thread_id).read_limited_regular_file(
             thread_id, path, max_bytes=max_bytes
+        )
+
+    def aiter_regular_file_chunks(
+        self, thread_id: str, path: str, *, max_bytes: int, chunk_size: int
+    ) -> AsyncIterator[bytes]:
+        return self.workspace(thread_id).aiter_regular_file_chunks(
+            thread_id, path, max_bytes=max_bytes, chunk_size=chunk_size
         )
 
     async def ahash_file(self, thread_id: str, path: str) -> dict[str, Any]:

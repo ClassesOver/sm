@@ -695,6 +695,20 @@ class CheckpointRetryUsage(StrictModel):
     )
 
 
+_RETRY_USAGE_ERROR_ATTR = "_agentos_reporting_retry_usage"
+
+
+def attach_retry_usage(error: BaseException, usage: CheckpointRetryUsage) -> None:
+    """把任务失败时已发生的预算用量随异常传递给 fresh retry；只接受显式类型。"""
+
+    setattr(error, _RETRY_USAGE_ERROR_ATTR, usage)
+
+
+def retry_usage_of(error: BaseException | None) -> CheckpointRetryUsage | None:
+    usage = getattr(error, _RETRY_USAGE_ERROR_ATTR, None)
+    return usage if isinstance(usage, CheckpointRetryUsage) else None
+
+
 class CheckpointError(StrictModel):
     phase: Literal["analysis", "section", "finalize"]
     code: str = Field(min_length=1, max_length=128)

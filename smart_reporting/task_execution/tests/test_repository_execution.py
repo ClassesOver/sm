@@ -4,7 +4,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, inspect, select
 
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution.repository import (
@@ -25,6 +25,8 @@ async def repository():
         pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
     database = create_agent_database(database_url)
     current = TaskExecutionRepository(database.async_db)
+    # 共享测试库里其他测试可能已建好 Agno 版本表；记录初始化前状态，只断言本仓储不新建它。
+    current.agno_versions_existed_before_init = await _agno_versions_table_exists(database)
     await current.initialize()
     try:
         async with database.async_engine.begin() as connection:
@@ -35,6 +37,15 @@ async def repository():
             await connection.execute(delete(current.tasks))
         await database.async_engine.dispose()
         database.sync_engine.dispose()
+
+
+async def _agno_versions_table_exists(database) -> bool:
+    async with database.async_engine.connect() as connection:
+        return await connection.run_sync(
+            lambda sync: inspect(sync).has_table(
+                database.async_db.versions_table_name, schema=database.async_db.db_schema
+            )
+        )
 
 
 async def create_task(repository: TaskExecutionRepository, run_id: str = "external-run"):
@@ -73,11 +84,8 @@ async def test_postgres_repository_initializes_schema_versions_and_supports_cas(
     assert versions["agentos_coding_executions"] == TASK_SCHEMA_VERSION
     assert versions["agentos_coding_task_instructions"] == TASK_SCHEMA_VERSION
     assert (
-        await database.async_db._get_table(  # type: ignore[attr-defined]
-            table_type="versions", create_table_if_not_found=False
-        )
-        is None
-    )
+        await _agno_versions_table_exists(database)
+    ) is current.agno_versions_existed_before_init
 
 
 @pytest.mark.anyio

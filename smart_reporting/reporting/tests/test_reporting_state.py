@@ -21,6 +21,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
 )
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.state import (
+    ReportingCommand,
     ReportingPhase,
     ReportingRunState,
     ReportingStateConflict,
@@ -2161,3 +2162,27 @@ def test_checkpoint_visualization_section_errors_default_empty() -> None:
     payload = checkpoint.model_dump(mode="json", by_alias=True)
     payload.pop("visualizationSectionErrors")
     assert ReportingCheckpoint.model_validate(payload).visualization_section_errors == {}
+
+
+def test_command_aliases_are_canonicalized_for_reducer_without_changing_fingerprint():
+    from smart_reporting.reporting.workflow.repository import _command_fingerprint
+
+    command = ReportingCommand.from_value(
+        {"name": "section_completed", "commandId": "c1", "payload": {"section_code": "s1"}}
+    )
+    assert command.canonical() == ("complete_section", {"sectionCode": "s1"})
+    # 命令对象保持原样：已持久化命令的幂等指纹不因归一而变化。
+    assert command.name == "section_completed"
+    assert command.payload == {"section_code": "s1"}
+    assert _command_fingerprint(command) == _command_fingerprint(
+        ReportingCommand(name="section_completed", commandId="c1", payload={"section_code": "s1"})
+    )
+
+    camel_wins = ReportingCommand(
+        name="set_plan", commandId="c2", payload={"analysisIds": ["a"], "analysis_ids": ["b"]}
+    )
+    assert camel_wins.canonical() == ("set_analysis_plan", {"analysisIds": ["a"]})
+    assert ReportingCommand(name="start_analysis", commandId="c3").canonical() == (
+        "start_analysis",
+        {},
+    )

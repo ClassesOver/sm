@@ -793,3 +793,24 @@ def test_file_identity_rejects_workspace_root_path() -> None:
     with pytest.raises(ValidationError):
         FileIdentity(path=".", size=1, sha256="a" * 64)
     assert FileIdentity(path="facts/./a.json", size=1, sha256="a" * 64).path == "facts/a.json"
+
+
+@pytest.mark.anyio
+async def test_regular_file_chunks_stream_bounded_content(tmp_path: Path) -> None:
+    workspace = _host_workspace(tmp_path)
+    content = b"abcdefghij"
+    await workspace.awrite_bytes("thread-1", "reports/report.pdf", content)
+
+    chunks = [
+        chunk
+        async for chunk in workspace.aiter_regular_file_chunks(
+            "thread-1", "reports/report.pdf", max_bytes=len(content), chunk_size=4
+        )
+    ]
+
+    assert chunks == [b"abcd", b"efgh", b"ij"]
+    with pytest.raises(WorkspaceError, match="大小上限"):
+        async for _chunk in workspace.aiter_regular_file_chunks(
+            "thread-1", "reports/report.pdf", max_bytes=len(content) - 1, chunk_size=4
+        ):
+            pass
