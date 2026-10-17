@@ -242,3 +242,28 @@ def test_analysis_table_reads_like_a_management_table():
     assert "收入金额（元）" in markdown and "也称" not in markdown
     assert "医疗服务收入" not in markdown and len(trace.column_keys) == 1
     assert "2025年1月" in markdown and "1日" not in markdown
+
+
+def test_analysis_table_keeps_zero_counts_and_single_dates():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+
+    def metric(letter, code, unit, periods, values):
+        return {
+            "factId": "fact-" + letter * 16, "datasetId": "ds", "datasetSha256": SHA, "periodRoles": ["current"],
+            "metricCodes": [code], "field": code, "fieldRef": "src.db.t." + code, "displayName": code,
+            "aggregation": "sum", "unit": unit, "formula": "sum", "total": sum(values),
+            "missingCount": 0, "zeroCount": 0, "negativeCount": 0, "periodGranularity": "day",
+            "periodValues": [{"period": period, "value": value} for period, value in zip(periods, values, strict=True)],
+        }
+
+    # 不良事件为零是结果，不能省略；只有一期的 2025-01-01 是日期，不改写为 1 月。
+    single = DeterministicAnalysisBundle.model_validate({"analysisId": "analysis_001", "metrics": [
+        metric("a", "不良事件", "人次", ["2025-01-01"], [0]),
+    ]})
+    trace, markdown = build_analysis_table(single, fact_file_resource_id=FACT_FILE_RESOURCE)
+    assert "不良事件" in markdown and "2025年1月1日" in markdown
+    # 不连续的月初日期同样按日期显示。
+    gapped = DeterministicAnalysisBundle.model_validate({"analysisId": "analysis_001", "metrics": [
+        metric("b", "收入", "元", ["2025-01-01", "2025-03-01"], [1, 2]),
+    ]})
+    assert "2025年3月1日" in build_analysis_table(gapped, fact_file_resource_id=FACT_FILE_RESOURCE)[1]

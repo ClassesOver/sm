@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
+import os
 import re
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -635,50 +637,111 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
 
 
 _DERIVED_ROW_LIMIT = 30
+_CHINESE_COUNTS = "一两二三四五六七八九十"
 
 
-def _add_derived(known: dict[str, set[Decimal]], unit: str, number: Decimal) -> None:
-    for value in {number, -number}:
-        known.setdefault(unit, set()).add(value)
+def _operand_names(left: str, right: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """两个操作数在正文中的可接受写法：全称，或去掉二者共同前后缀后的区分部分
+    （“门诊人次”与“不含体检&急诊门诊人次”写作“含与不含体检&急诊”）。"""
+    prefix = len(os.path.commonprefix((left, right)))
+    suffix = len(os.path.commonprefix((left[::-1], right[::-1])))
+
+    def names(label: str) -> tuple[str, ...]:
+        core = label[prefix:len(label) - suffix] if prefix + suffix < len(label) else ""
+        return (label, core) if len(core) >= 2 else (label,)
+
+    return names(left), names(right)
+
+
+class DerivedNumbers:
+    """服务端补算的派生数值及其操作数名称：正文须在同一段写出参与计算的对象才认可。
+
+    只登记数值会让“A比B多60元”因 60 恰好等于 A−C 而通过；因此每个差额、合计都带上
+    操作数的行名、列名或指标名，核对时要求这些名称出现在数字所在段落。
+    """
+
+    def __init__(self) -> None:
+        self._values: dict[str, list[tuple[Decimal, tuple[tuple[str, ...], ...], int | None]]] = {}
+        self._sorted: dict[str, list[Decimal]] = {}
+
+    def add(self, unit: str, number: Decimal, operands: tuple[tuple[str, ...], ...], top: int | None = None) -> None:
+        if not operands or any(not names for names in operands):
+            return
+        targets = [(unit, Decimal(1))]
         if (scales := _unit_scales(unit)) is not None:
-            for target, scale in scales.items():
-                known.setdefault(target, set()).add(value * scales[unit] / scale)
-        if unit == "人次":
-            known.setdefault("万人次", set()).add(value / 10000)
+            targets = [(target, scales[unit] / scale) for target, scale in scales.items()]
+        elif unit == "人次":
+            targets.append(("万人次", Decimal("0.0001")))
+        for target, factor in targets:
+            for value in {number, -number}:
+                self._values.setdefault(target, []).append((value * factor, operands, top))
+        self._sorted.clear()
+
+    def supports(self, number: Decimal, unit: str, quantum: Decimal, context: str) -> bool:
+        entries = self._values.get(unit)
+        if not entries:
+            return False
+        if unit not in self._sorted:
+            entries.sort(key=lambda entry: entry[0])
+            self._sorted[unit] = [entry[0] for entry in entries]
+        keys = self._sorted[unit]
+        index = bisect.bisect_left(keys, number - quantum)
+        while index < len(keys) and keys[index] <= number + quantum:
+            value, operands, top = entries[index]
+            index += 1
+            if value.quantize(quantum, rounding=ROUND_HALF_UP) != number:
+                continue
+            if all(any(name in context for name in names) for names in operands):
+                return True
+            if top is not None and re.search(rf"前(?:{top}|{_CHINESE_COUNTS[top - 1] if top <= 10 else '_'})", context):
+                return True
+        return False
 
 
-def _derive_from_columns(known: dict[str, set[Decimal]], columns: Mapping[str, tuple[str, list[Decimal]]]) -> None:
-    """同一张表内补算：列内两两差额与降序前 N 项合计，同单位两列的逐行差额与合计差额。"""
+def _derive_from_table(derived: DerivedNumbers, labels: list[str | None],
+                       columns: Mapping[str, tuple[str, list[Decimal]]]) -> None:
+    """同一张表内补算：列内两行差额与降序前 N 项合计，同单位两列的逐行差额与合计差额。"""
     for unit, numbers in columns.values():
         if not 1 < len(numbers) <= _DERIVED_ROW_LIMIT:
             continue
         # 两个百分数之差是百分点，不是百分数；占比列只补算降序前 N 项合计。
         if unit != "%":
-            for position, left in enumerate(numbers):
-                for right in numbers[position + 1:]:
-                    _add_derived(known, unit, left - right)
+            for position, (left_label, left) in enumerate(zip(labels, numbers, strict=True)):
+                for right_label, right in zip(labels[position + 1:], numbers[position + 1:], strict=True):
+                    if left_label and right_label:
+                        derived.add(unit, left - right, _operand_names(left_label, right_label))
+        ranked = sorted(zip(numbers, labels, strict=True), key=lambda item: item[0], reverse=True)
         running = Decimal(0)
-        for number in sorted(numbers, reverse=True)[:-1]:
+        for count, (number, label) in enumerate(ranked[:-1], start=1):
             running += number
-            _add_derived(known, unit, running)
-    items = list(columns.values())
-    for position, (unit, left) in enumerate(items):
-        for right_unit, right in items[position + 1:]:
-            if unit == "%" or right_unit != unit or len(right) != len(left) or len(left) > _DERIVED_ROW_LIMIT:
+            members = tuple((item[1],) for item in ranked[:count] if item[1])
+            if count > 1 and len(members) == count:
+                derived.add(unit, running, members, top=count)
+    items = list(columns.items())
+    for position, (left_name, (unit, left)) in enumerate(items):
+        for right_name, (right_unit, right) in items[position + 1:]:
+            if unit == "%" or right_unit != unit or len(left) > _DERIVED_ROW_LIMIT:
                 continue
-            for a, b in zip(left, right, strict=True):
-                _add_derived(known, unit, a - b)
-            _add_derived(known, unit, sum(left) - sum(right))
+            operands = _operand_names(left_name, right_name)
+            for label, a, b in zip(labels, left, right, strict=True):
+                if label:
+                    derived.add(unit, a - b, ((label,), *operands))
+            derived.add(unit, sum(left) - sum(right), operands)
 
 
-def derived_number_values(contents: Iterable[str]) -> dict[str, set[Decimal]]:
+def _short_name(fact: Any) -> str | None:
+    name = fact.display_name or ""
+    return re.split(r"[，,；;]", name, maxsplit=1)[0].strip() or None
+
+
+def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
     """服务端补算模型常写的两数之差与前 N 项合计，供正文核对使用，不进入模型可见目录。
 
     只在同一张补证表、同一分析的同口径事实内组合（同单位、同期间），不跨表或跨分析凑数：
     “门诊人次相差424,831人次”“总部与北部院区合计占比93.05%”“1月成本高于收入3.02亿元”。
     """
     contents = tuple(contents)
-    known: dict[str, set[Decimal]] = {}
+    derived = DerivedNumbers()
     for content in contents:
         try:
             document = json.loads(content)
@@ -696,6 +759,9 @@ def derived_number_values(contents: Iterable[str]) -> dict[str, set[Decimal]]:
             if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
                 pending.extend(value for value in finding.values() if isinstance(value, (dict, list)))
                 continue
+            rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
+            labels = [next((cell.strip() for cell in row if isinstance(cell, str) and cell.strip()), None)
+                      for row in rows]
             table: dict[str, tuple[str, list[Decimal]]] = {}
             for index, column in enumerate(columns):
                 meta = metadata.get(column) if isinstance(column, str) else None
@@ -704,23 +770,33 @@ def derived_number_values(contents: Iterable[str]) -> dict[str, set[Decimal]]:
                         or unit == "%" and meta.get("isPercent") is not True):
                     continue
                 numbers = [Decimal(str(row[index])) for row in rows
-                           if isinstance(row, list) and len(row) == len(columns)
-                           and isinstance(row[index], (int, float)) and not isinstance(row[index], bool)
+                           if isinstance(row[index], (int, float)) and not isinstance(row[index], bool)
                            and math.isfinite(row[index])]
-                if len(numbers) == len(rows):
+                if rows and len(numbers) == len(rows):
                     table[column] = (unit, numbers)
-            _derive_from_columns(known, table)
+            _derive_from_table(derived, labels, table)
     for bundle in frozen_fact_bundles(contents):
-        metrics = [fact for fact in bundle.metrics if fact.unit in {*_MONEY_UNITS, "人次", "床日"}]
+        metrics = [fact for fact in bundle.metrics if fact.unit in {*_MONEY_UNITS, "人次", "床日"} and _short_name(fact)]
         for position, left in enumerate(metrics):
             for right in metrics[position + 1:]:
                 if (left.unit, left.period_start, left.period_end) != (right.unit, right.period_start, right.period_end):
                     continue
-                _add_derived(known, left.unit, Decimal(str(left.total)) - Decimal(str(right.total)))
-                if [item.period for item in left.period_values] == [item.period for item in right.period_values]:
-                    for a, b in zip(left.period_values, right.period_values, strict=True):
-                        _add_derived(known, left.unit, Decimal(str(a.value)) - Decimal(str(b.value)))
-    return known
+                operands = _operand_names(_short_name(left), _short_name(right))
+                derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands)
+                if [item.period for item in left.period_values] != [item.period for item in right.period_values]:
+                    continue
+                for a, b in zip(left.period_values, right.period_values, strict=True):
+                    month = _canonical_month_label(a.period)
+                    if month:
+                        derived.add(left.unit, Decimal(str(a.value)) - Decimal(str(b.value)),
+                                    (*operands, (f"{int(month[5:7])}月",)))
+    return derived
+
+
+def _paragraph_at(markdown: str, index: int) -> str:
+    start = markdown.rfind("\n\n", 0, index)
+    end = markdown.find("\n\n", index)
+    return markdown[start + 2 if start >= 0 else 0:end if end >= 0 else len(markdown)]
 
 
 def registered_decline_magnitude(
@@ -1022,8 +1098,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     contents = tuple(contents)
     catalog = frozen_number_catalog(contents)
     known = supplemental_number_values(contents)
-    for unit, values in derived_number_values(contents).items():
-        known.setdefault(unit, set()).update(values)
+    derived = derived_number_values(contents)
     # 没有可解析的冻结事实时，服务端无法判断正文数字是否为派生值；
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
     if not catalog and not known:
@@ -1031,7 +1106,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
 
-    def verify(number_text: str, unit: str, prefix: str) -> tuple[str, str]:
+    def verify(number_text: str, unit: str, prefix: str, context: str) -> tuple[str, str]:
         """返回 (结论, 数字)：registered 按显示精度保留，percent_point 改写为百分点，missing 替换。"""
         number = Decimal(number_text.replace(",", ""))
         digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
@@ -1039,7 +1114,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         candidates = known.get(unit, ())
         if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                 or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
-                or bounded_by_registered(number, number_text, candidates, prefix=prefix)):
+                or bounded_by_registered(number, number_text, candidates, prefix=prefix)
+                or derived.supports(number, unit, quantum, context)):
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
@@ -1056,14 +1132,15 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
 
     # 模型自写表格把单位写在表头（“金额（万元）”），单元格只有数字：按表头单位同样核对。
     for start, end, number_text, unit in reversed(table_unit_cells(markdown)):
-        verdict, written = verify(number_text, unit, "")
+        verdict, written = verify(number_text, unit, "", _paragraph_at(markdown, start))
         cell = (written if verdict == "registered" else f"{written}{PERCENT_POINT}"
                 if verdict == "percent_point" else missing())
         markdown = markdown[:start] + cell + markdown[end:]
 
     def replace(match: re.Match[str]) -> str:
         verdict, written = verify(match["number"], match["unit"],
-                                  markdown[max(0, match.start() - 12):match.start()])
+                                  markdown[max(0, match.start() - 12):match.start()],
+                                  _paragraph_at(markdown, match.start()))
         if verdict == "registered":
             return written + match[0][len(match["number"]):]
         return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else missing()
