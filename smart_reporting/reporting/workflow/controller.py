@@ -2160,6 +2160,7 @@ class ReportWorkflowController:
                     "pdf",
                     "word",
                     "editor",
+                    "publicationGate",
                 }
                 report = {key: content[key] for key in allowed if key in content}
                 if report:

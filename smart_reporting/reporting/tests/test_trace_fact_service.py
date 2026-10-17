@@ -75,6 +75,7 @@ def _bundle(*, roles=("current",), zero_budget=False):
             "relativeTolerance": 0.01,
         },
     )
+    periods_by_role = {"current": b"2025-01", "yoy": b"2024-01", "mom": b"2024-12"}
     return build_deterministic_analysis_bundle(
         analysis(fields=("actual_value", "budget_value", "ledger_value")),
         tuple(
@@ -84,7 +85,7 @@ def _bundle(*, roles=("current",), zero_budget=False):
                 + (
                     b"2025-01,A,80,0,80\n" if zero_budget else
                     b"2025-01,A,80,100,80\n2025-01,B,10,20,8\n"
-                ),
+                ).replace(b"2025-01", periods_by_role[role]),
                 dataset_context.model_copy(update={"dataset_id": role}),
                 (role,),
             )

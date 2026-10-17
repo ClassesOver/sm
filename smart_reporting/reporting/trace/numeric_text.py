@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
@@ -15,8 +16,10 @@ from ..hospital_operation.deterministic_analysis import (
     PeriodValue,
     _parse_period,
 )
+from ..units import MONEY_UNITS as _MONEY_UNITS
+from ..units import unit_scales as _unit_scales
+from .fact_index import fact_binding_records
 
-_MONEY_UNITS = {"元": Decimal(1), "万元": Decimal(10_000), "亿元": Decimal(100_000_000)}
 # 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
 # （“跌幅-5%”“上涨-654万元”曾因词表不全原样发布）。
 RISING_TO_FALLING = {
@@ -40,12 +43,6 @@ _RATE_SUBJECT = re.compile(
 def describes_rate_level(prefix: str) -> bool:
     """方向词之前紧邻比率名词时返回 True。"""
     return _RATE_SUBJECT.search(prefix) is not None
-_VISIT_UNITS = {"人次": Decimal(1), "万人次": Decimal(10_000)}
-
-
-def _unit_scales(unit: str | None) -> dict[str, Decimal] | None:
-    """同一量纲内可互换的显示单位及倍率；只有金额与人次按固定倍率换算。"""
-    return next((family for family in (_MONEY_UNITS, _VISIT_UNITS) if unit in family), None)
 _NUMBER = r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _MONEY_PAIR = re.compile(
     rf"(?<![\d.,])(?P<large>{_NUMBER})\s*(?P<unit>亿元|万元)"
@@ -92,11 +89,16 @@ def _hidden_by_rounding(value: Any, unit: str | None, target: str | None) -> boo
     return converted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == 0
 
 
+def _canonical_month_label(label: str) -> str | None:
+    """统一有效年月和月初标签，保留数值选择器对应的原始桶索引。"""
+    parsed = _parse_period(label)
+    if parsed is None or parsed.granularity == "year" or parsed.value.day != 1:
+        return None
+    return f"{parsed.value.year:04d}-{parsed.value.month:02d}"
+
+
 def _valid_month_labels(periods: Iterable[str]) -> bool:
-    """沿用事实日期解析；月桶只接受有效年月或有效月初标签。"""
-    return all(re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", label)
-               and (parsed := _parse_period(label)) is not None and parsed.value.day == 1
-               for label in periods)
+    return all(_canonical_month_label(label) is not None for label in periods)
 
 
 def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, Any]]:
@@ -113,13 +115,15 @@ def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[s
         if len(budgets) != 1 or not budgets[0].fact_id:
             continue
         budget = budgets[0]
+        if actual.period_aggregation != budget.period_aggregation:
+            continue
         monthly = []
         for fact in (actual, budget):
             if fact.aggregation != "sum" or fact.period_granularity != "month" or not 0 < len(fact.period_values) <= 12:
                 break
             if not _valid_month_labels(value.period for value in fact.period_values):
                 break
-            values = {value.period[:7]: Decimal(str(value.value)) for value in fact.period_values}
+            values = {_canonical_month_label(value.period): Decimal(str(value.value)) for value in fact.period_values}
             if len(values) != len(fact.period_values) or len({period[:4] for period in values}) != 1:
                 break
             monthly.append(values)
@@ -133,8 +137,10 @@ def budget_comparison_values(bundle: DeterministicAnalysisBundle) -> list[dict[s
             numerator, denominator = monthly[0][period], monthly[1][period]
             actual_running += numerator
             budget_running += denominator
-            for window, current, planned in ((period, numerator, denominator),
-                                             (f"{periods[0]}..{period}", actual_running, budget_running)):
+            windows = [(period, numerator, denominator)]
+            if actual.period_aggregation != "last":
+                windows.append((f"{periods[0]}..{period}", actual_running, budget_running))
+            for window, current, planned in windows:
                 comparisons.append({
                     "actualFactId": actual.fact_id, "budgetFactId": budget.fact_id,
                     "numeratorMetric": actual.field, "denominatorMetric": budget.field,
@@ -181,6 +187,13 @@ def frozen_fact_bundles(contents: Iterable[str]) -> Iterator[DeterministicAnalys
         yield bundle
 
 
+def _registered_groups(entry: Mapping[str, Any], key: str):
+    groups = entry.get(key, ())
+    counts = Counter(item['group'] for item in groups)
+    return [(index, item) for index, item in enumerate(groups)
+            if item.get('groupValues') or counts[item['group']] == 1]
+
+
 def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
     """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
     for bundle in frozen_fact_bundles(contents):
@@ -200,7 +213,7 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                 values.extend((f"periodValues.{index}", item["value"]) for index, item in enumerate(entry.get("periodValues", ())))
                 for groups_key in ("topGroups", "bottomGroups"):
                     values.extend((f"{groups_key}.{index}", item["value"])
-                                  for index, item in enumerate(entry.get(groups_key, ())))
+                                  for index, item in _registered_groups(entry, groups_key))
                 # 分组占比（“心内科占全院门诊收入的23.85%”）由服务端按登记分组值与合计计算：
                 # 仅限求和指标、合计为正且无负值，百分数指标的占比无意义，不在此登记。
                 total = entry.get("total")
@@ -209,34 +222,36 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                     for groups_key in ("topGroups", "bottomGroups"):
                         values.extend(
                             (f"groupShares.{groups_key}.{index}", Decimal(str(item["value"])) / Decimal(str(total)) * 100)
-                            for index, item in enumerate(entry.get(groups_key, ()))
+                            for index, item in _registered_groups(entry, groups_key)
                             if isinstance(item.get("value"), (int, float)) and item["value"] >= 0)
                 # 分组之间的差额（“心内科较骨科多140.00万元”）：按登记的前列分组两两相减，只登记非负差额。
-                top = [item for item in entry.get("topGroups", ()) if isinstance(item.get("value"), (int, float))]
+                top = [(index, item) for index, item in _registered_groups(entry, "topGroups")
+                       if isinstance(item.get("value"), (int, float))]
                 if array == "metrics" and entry.get("unit") != "%" and len(top) <= 12:
                     values.extend(
-                        (f"groupGaps.{left}-{right}", abs(Decimal(str(top[left]["value"])) - Decimal(str(top[right]["value"]))))
-                        for left in range(len(top)) for right in range(left + 1, len(top)))
-                periods = entry.get("periodValues", ())
+                        (f"groupGaps.{left[0]}-{right[0]}", abs(Decimal(str(left[1]["value"])) - Decimal(str(right[1]["value"]))))
+                        for left_position, left in enumerate(top) for right in top[left_position + 1:])
+                periods = [{**item, "period": _canonical_month_label(item["period"]) or item["period"]}
+                           for item in entry.get("periodValues", ())]
                 if (array == "metrics" and entry.get("aggregation") == "sum"
                         and entry.get("periodGranularity") == "month" and periods
                         and len(periods) <= 12
                         and _valid_month_labels(item["period"] for item in periods)
-                        and len({item["period"][:7] for item in periods}) == len(periods)
-                        and len({item["period"][:4] for item in periods}) == 1):
+                        and len({item["period"][:7] for item in periods}) == len(periods)):
                     # 均值分母使用实际月桶数，前缀累计从原值相加，禁止先舍入再累加。
                     amounts = [Decimal(str(item["value"])) for item in periods]
                     values.extend((("monthlyAverage", sum(amounts) / len(amounts)),
                                    ("monthlyMinimum", min(amounts)), ("monthlyMaximum", max(amounts))))
                     running = Decimal(0)
-                    months = [int(item["period"][5:7]) for item in periods]
+                    months = [int(item["period"][:4]) * 12 + int(item["period"][5:7]) for item in periods]
                     chronological = True
                     for index, amount in enumerate(amounts):
                         running += amount
                         chronological = chronological and (index == 0 or months[index] > months[index - 1])
                         if not chronological:
                             continue
-                        values.append((f"periodTotals.0-{index}", running))
+                        if entry.get("periodAggregation") != "last":
+                            values.append((f"periodTotals.0-{index}", running))
                         if months[:index + 1] == list(range(months[0], months[0] + index + 1)):
                             values.append((f"periodAverages.0-{index}", running / (index + 1)))
                     # 相邻两月的变化额与变化率（“3月环比增长…”）由服务端按登记月度值计算：只在月份
@@ -313,9 +328,20 @@ def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
 
 
 def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
+    contents = tuple(contents)
+    records = {}
+    conflicts = set()
+    for bundle in frozen_fact_bundles(contents):
+        for fact_id, record in fact_binding_records(bundle).items():
+            if fact_id in records and records[fact_id] != record:
+                conflicts.add(fact_id)
+            records[fact_id] = record
     catalog: dict[str, str] = {}
     originals: dict[str, tuple[Decimal, str | None, str | None]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
+        if any(fact_id in conflicts for fact_id in re.findall(r"fact-[0-9a-f]{16}", token)):
+            catalog[token] = "数值待核实"
+            continue
         original = (Decimal(str(value)), unit, target)
         if token in originals:
             # 必须比较未舍入原值；显示均为 30.00 不能证明 30.001 与 30.002 一致。
@@ -352,6 +378,7 @@ def _month_coverage(periods: list[str]) -> str | None:
     """单一年度月度期间的覆盖说明（“2025年1—10月（10个月），不是全年”），供模型直接引用。"""
     if not periods or not _valid_month_labels(periods):
         return None
+    periods = [_canonical_month_label(period) for period in periods]
     years = {period[:4] for period in periods}
     months = sorted({int(period[5:7]) for period in periods})
     if len(years) != 1 or len(months) != len(periods):
@@ -402,6 +429,8 @@ def frozen_number_guide(
                 return text if text and text != "数值待核实" else None
 
             periods = [item.period for item in fact.period_values]
+            stock = fact.period_aggregation == "last"
+            total_periods = periods[-1:] if stock else periods
             item: dict[str, Any] = {
                 "factId": fact.fact_id, "analysisId": bundle.analysis_id,
                 "datasetId": fact.dataset_id,
@@ -409,14 +438,17 @@ def frozen_number_guide(
                 "metricCodes": list(fact.metric_codes), "scope": fact.scope,
                 "unit": fact.unit, "periodRoles": list(fact.period_roles),
                 "periodGranularity": fact.period_granularity,
-                "total": {"reference": reference("total"), "periods": periods,
-                          "periodStart": fact.period_start, "periodEnd": fact.period_end,
+                "periodAggregation": fact.period_aggregation,
+                "total": {"reference": reference("total"), "periods": total_periods,
+                          "periodStart": fact.period_end if stock else fact.period_start, "periodEnd": fact.period_end,
                           "aggregation": fact.aggregation,
-                          "meaning": _TOTAL_MEANINGS.get(fact.aggregation, "完整期间的统计值"),
-                          **({"coverage": coverage} if (coverage := _month_coverage(periods)) else {})},
+                          "meaning": "最新登记期间的期末余额，不能跨期相加" if stock else
+                                     _TOTAL_MEANINGS.get(fact.aggregation, "完整期间的统计值"),
+                          **({"coverage": coverage} if (coverage := _month_coverage(total_periods)) else {})},
                 "rowStatistics": {"average": reference("average"), "minimum": reference("minimum"),
                                   "maximum": reference("maximum"),
-                                  "meaning": "原始行统计，不能称为月均值或月度极值"},
+                                  "meaning": ("最新登记期间的原始行统计" if stock else "原始行统计")
+                                             + "，不能称为月均值或月度极值"},
             }
             if reference("monthlyAverage"):
                 low = min(value.value for value in fact.period_values)
@@ -443,7 +475,8 @@ def frozen_number_guide(
                                "可按显示值直接书写，不是环比比较事实的窗口变化",
                 }
             item["groups"] = [{"group": group.group, "reference": reference(f"{key}.{index}"),
-                               "meaning": "完整分组组合的数值，不能称为单一科室或院区累计"}
+                               "meaning": ("最新登记期间的完整分组组合期末余额" if stock else "完整分组组合的数值")
+                                          + "，不能称为单一科室或院区累计"}
                               for key, groups in (("topGroups", fact.top_groups), ("bottomGroups", fact.bottom_groups))
                               for index, group in enumerate(groups)]
             item["budgetComparisons"] = []
@@ -478,6 +511,7 @@ def frozen_number_guide(
             guide.append({
                 "factId": fact.fact_id, "analysisId": bundle.analysis_id, "metric": fact.code,
                 "kind": fact.kind, "periodRole": fact.period_role,
+                "periodGranularity": fact.period_granularity,
                 "periodStart": fact.period_start, "periodEnd": fact.period_end,
                 "numeratorMetric": fact.numerator_metric, "denominatorMetric": fact.denominator_metric,
                 "references": references,
@@ -495,8 +529,11 @@ def frozen_number_guide(
             guide.append({
                 "factId": fact.fact_id, "analysisId": bundle.analysis_id, "kind": "comparison",
                 "comparisonType": {"yoy": "同比", "mom": "环比"}[fact.comparison_type],
+                "periodGranularity": fact.period_granularity,
                 "metric": getattr(fact, "display_name", None) or (field_definitions or {}).get(fact.field, fact.field), "unit": fact.unit,
                 "periodStart": fact.period_start, "periodEnd": fact.period_end,
+                "baselinePeriodStart": fact.baseline_period_start, "baselinePeriodEnd": fact.baseline_period_end,
+                "baselineScale": fact.baseline_scale,
                 "references": references,
                 "meaning": "本期与基期取同一连续窗口的合计后比较；periodStart 与 periodEnd 跨多个月时是累计窗口，"
                            "正文须写明该窗口，不能写成单月变化；同比与环比不可混用",
@@ -1074,6 +1111,8 @@ def _validated_monthly_periods(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     labels = [str(item["period"]) for item in periods]
     if not _valid_month_labels(labels):
         return []
+    periods = [{**item, "period": _canonical_month_label(item["period"])} for item in periods]
+    labels = [item["period"] for item in periods]
     if len({label[:4] for label in labels}) != 1:
         return []
     if len({label[:7] for label in labels}) != len(periods):

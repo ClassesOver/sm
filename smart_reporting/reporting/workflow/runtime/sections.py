@@ -3154,7 +3154,7 @@ class RuntimeSectionsMixin:
         目录供 B6 正文 subject 绑定构造复用（不重复读 bundle）。
         """
 
-        from ...trace.fact_index import fact_entry_from_pointer, fact_pointer
+        from ...trace.fact_index import fact_binding_records, fact_entry_from_pointer, fact_pointer
 
         scope = self._scope(run_context)
         thread_id = scope["threadId"]
@@ -3185,6 +3185,7 @@ class RuntimeSectionsMixin:
                 )
                 bundle = DeterministicAnalysisBundle.model_validate_json(raw)
                 document = bundle.model_dump(mode="json", by_alias=True)
+                binding_records = fact_binding_records(bundle)
                 for fact in (
                     *bundle.metrics,
                     *bundle.comparisons,
@@ -3196,9 +3197,10 @@ class RuntimeSectionsMixin:
                         pointer = fact_pointer(bundle, fact.fact_id)
                         if pointer:
                             frozen_fact = fact.model_dump(mode="json", by_alias=True)
+                            binding_record = binding_records[fact.fact_id]
                             if fact.fact_id in ambiguous_fact_ids:
                                 continue
-                            if fact.fact_id in fact_documents and fact_documents[fact.fact_id] != frozen_fact:
+                            if fact.fact_id in fact_documents and fact_documents[fact.fact_id] != binding_record:
                                 # 兼容旧快照：同 ID 不同内容不能按文件顺序选择来源。
                                 ambiguous_fact_ids.add(fact.fact_id)
                                 fact_directory.pop(fact.fact_id, None)
@@ -3208,7 +3210,7 @@ class RuntimeSectionsMixin:
                                     fact.fact_id,
                                 )
                                 continue
-                            fact_documents[fact.fact_id] = frozen_fact
+                            fact_documents[fact.fact_id] = binding_record
                             fact_directory[fact.fact_id] = (analysis_id, pointer)
                             fact_values[fact.fact_id] = (
                                 fact_display_value(frozen_fact),

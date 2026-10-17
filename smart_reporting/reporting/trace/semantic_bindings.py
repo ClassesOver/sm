@@ -7,8 +7,14 @@ from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
+from ..hospital_operation.deterministic_analysis import (
+    DeterministicMetricFact,
+    _aligned_comparison_values,
+)
 from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1
+from .fact_index import fact_binding_records
 from .numeric_text import (
+    _canonical_month_label,
     _frozen_number_entries,
     align_placeholder_direction,
     correct_period_extrema,
@@ -118,7 +124,12 @@ class NumberReferenceResolver:
             self.numbers.setdefault(token, []).append((value, unit, target))
         self.entries = {}
         self.conflicts = set()
+        records = {}
         for bundle in frozen_fact_bundles(contents):
+            for key, record in fact_binding_records(bundle).items():
+                if key in records and records[key] != record:
+                    self.conflicts.add(key)
+                records[key] = record
             document = bundle.model_dump(mode="json", by_alias=True)
             for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
                 for fact in document.get(array, ()):
@@ -134,7 +145,7 @@ class NumberReferenceResolver:
         ids = reference_fact_ids(token)
         if not ids or any(key not in self.entries or key in self.conflicts for key in ids):
             return None
-        return _resolved_number_reference(token, ids, self.entries, matches[0])
+        return _resolved_number_reference(token, ids, self.entries, matches[0], self.conflicts)
 
 
 def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
@@ -148,7 +159,33 @@ def resolve_number_references(tokens: Iterable[str], contents) -> dict[str, dict
     return {token: resolver.resolve(token) for token in tokens}
 
 
-def _resolved_number_reference(token, ids, entries, selected_value):
+def _comparison_baseline_periods(primary, entries, conflicts):
+    from .subject_builder import fact_periods
+
+    if primary.get('baselinePeriodStart') and primary.get('baselinePeriodEnd'):
+        return fact_periods({**primary, 'periodStart': primary['baselinePeriodStart'],
+                             'periodEnd': primary['baselinePeriodEnd']})
+    # 旧快照从已登记输入复核完整比较窗口；没有唯一依据时不把本期冒充基期。
+    operands = []
+    for prefix in ('current', 'baseline'):
+        candidates = [entry for entry in entries.values()
+                      if entry.get('factId') not in conflicts
+                      and entry.get('datasetId') == primary.get(prefix + 'DatasetId')
+                      and entry.get('datasetSha256') == primary.get(prefix + 'DatasetSha256')
+                      and entry.get('fieldRef') == primary.get('fieldRef')]
+        if len(candidates) != 1:
+            return ()
+        operands.append(DeterministicMetricFact.model_validate(candidates[0]))
+    try:
+        aligned = _aligned_comparison_values(*operands, primary['comparisonType'])
+    except ValueError:
+        return ()
+    if aligned is None or fact_periods({**primary, 'periodStart': aligned[2], 'periodEnd': aligned[3]}) != fact_periods(primary):
+        return ()
+    return fact_periods({**primary, 'periodStart': aligned[4], 'periodEnd': aligned[5]})
+
+
+def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
     primary = entries[ids[0]]
     value, unit, target = selected_value
     selector = token[2:-2].split(':')[2]
@@ -156,7 +193,18 @@ def _resolved_number_reference(token, ids, entries, selected_value):
     periods = fact_periods(primary)
     period_roles = {}
     selected_periods = None
-    if selector.startswith('periodValues.'):
+    if primary.get('comparisonType') and selector in {'currentTotal', 'baselineTotal', 'change', 'changeRate'}:
+        current_periods = periods
+        baseline_periods = _comparison_baseline_periods(primary, entries, conflicts)
+        if selector == 'baselineTotal':
+            periods = baseline_periods
+            period_roles['baseline'] = baseline_periods
+        elif selector == 'currentTotal':
+            period_roles['current'] = current_periods
+        else:
+            periods = tuple(dict.fromkeys((*current_periods, *baseline_periods)))
+            period_roles.update(current=current_periods, baseline=baseline_periods)
+    elif selector.startswith('periodValues.'):
         selected_periods = [primary['periodValues'][int(selector.split('.')[1])]]
     elif selector.startswith(('periodTotals.', 'periodAverages.')):
         start, end = (int(index) for index in selector.split('.')[1].split('-'))
@@ -170,6 +218,11 @@ def _resolved_number_reference(token, ids, entries, selected_value):
         periods = fact_periods({'periodStart': window[0], 'periodEnd': window[-1],
                                 'periodGranularity': 'month'})
         period_roles['endpoint'] = (periods[-1],)
+    elif primary.get('periodAggregation') == 'last' and (
+        selector in {'total', 'average', 'minimum', 'maximum'}
+        or selector.startswith(('topGroups.', 'bottomGroups.', 'groupShares.', 'groupGaps.'))
+    ):
+        selected_periods = primary.get('periodValues', ())[-1:]
     if selected_periods is not None:
         # 复用事实粒度规范化，保留累计窗口的所有桶及环比的基期与本期。
         periods = fact_periods({**primary, 'periodValues': selected_periods})
@@ -181,7 +234,9 @@ def _resolved_number_reference(token, ids, entries, selected_value):
     scope = dict(primary.get('scope') or {})
     if selector.startswith(('topGroups.', 'bottomGroups.')):
         group, index = selector.split('.')
-        scope['group'] = primary[group][int(index)]['group']
+        selected_group = primary[group][int(index)]
+        scope['group'] = selected_group['group']
+        scope.update(selected_group.get('groupValues') or {})
 
     def operand(value) -> str:
         return format(Decimal(str(value)).normalize(), 'f')
@@ -207,15 +262,18 @@ def _resolved_number_reference(token, ids, entries, selected_value):
         _, group, index = selector.split('.')
         numerator = primary[group][int(index)]
         scope['group'] = numerator['group']
+        scope.update(numerator.get('groupValues') or {})
         formula = f"({operand(numerator['value'])}) / ({operand(primary['total'])}) * 100"
     elif selector.startswith('groupGaps.'):
         left, right = (int(index) for index in selector.split('.')[1].split('-'))
         left_group, right_group = primary['topGroups'][left], primary['topGroups'][right]
         scope.update(leftGroup=left_group['group'], rightGroup=right_group['group'])
+        for prefix, selected_group in (('leftGroup', left_group), ('rightGroup', right_group)):
+            scope.update({f'{prefix}.{key}': value for key, value in (selected_group.get('groupValues') or {}).items()})
         formula = f"abs(({operand(left_group['value'])}) - ({operand(right_group['value'])}))"
     elif selector.startswith('budgetComparison.'):
         operands = [sum((Decimal(str(item['value'])) for item in entry['periodValues']
-                         if window[0] <= item['period'][:7] <= window[-1]), Decimal(0))
+                         if window[0] <= _canonical_month_label(item['period']) <= window[-1]), Decimal(0))
                     for entry in (primary, entries[ids[1]])]
         operation = '/' if selector.endswith('.percentage') else '-'
         formula = f'({operand(operands[0])}) {operation} ({operand(operands[1])})'

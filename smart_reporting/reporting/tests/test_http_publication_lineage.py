@@ -435,6 +435,40 @@ async def test_http_publication_drops_hash_registered_foreign_index_but_still_is
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("failure", [OSError("editor storage unavailable"),
+                                     ReportingError("editor_unavailable", "编辑授权不可用。")])
+async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monkeypatch, failure):
+    from smart_reporting.reporting.workflow.runtime.base import merge_publication_issues
+    from smart_reporting.reporting_mcp.contracts import ReportingPublishedReport
+
+    runtime, arguments, _, _, artifacts, grants, files, _ = await _publication_fixture(tmp_path)
+    monkeypatch.setattr(runtime.editor_grants, "issue", AsyncMock(side_effect=failure))
+
+    result = await runtime.issue_http_publication(**arguments)
+
+    assert "editor" not in result
+    assert artifacts.records and grants.records
+    assert result["publicationIssues"][0]["code"] == "report_editor_grant_unavailable"
+    gate = merge_publication_issues({"formalReleaseAllowed": True, "issues": []}, result["publicationIssues"])
+    assert gate["formalReleaseAllowed"] is False
+    # MCP's closed output schema must also accept a report with downloads only.
+    report = ReportingPublishedReport.model_validate({
+        "reportId": result["reportId"], "revision": result["revision"],
+        **{kind: {key: value for key, value in result[kind].items() if key != "path"}
+           for kind in ("pdf", "word")},
+    })
+    assert report.editor is None
+    app = FastAPI()
+    app.include_router(create_report_download_router(
+        ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        for artifact, suffix in (("pdf", "pdf"), ("word", "docx")):
+            response = await client.get(result[artifact]["downloadUrl"])
+            assert response.status_code == 200
+            assert response.content == files[f"reports/report.{suffix}"]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("fault", ["manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot"])
 async def test_http_publication_never_blocks_links_on_lineage_faults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Literal
@@ -583,7 +584,20 @@ class RuntimePlanningMixin:
             word_size=content["wordSize"],
             word_sha256=content["wordSha256"],
         )
-        editor_raw, editor_expires_at = await editor_grants.issue(editor_context)
+        editor_raw: str | None = None
+        editor_expires_at: datetime | None = None
+        try:
+            editor_raw, editor_expires_at = await editor_grants.issue(editor_context)
+        except Exception as error:
+            # 编辑入口是附加交付项；下载凭证已签发，不能因编辑授权失败丢弃下载链接。
+            loguru_logger.warning(
+                "report_editor_grant_failed report_id={} revision={} error_type={}",
+                content["reportId"], content["revision"], type(error).__name__,
+            )
+            publication_issues.append({
+                "code": "report_editor_grant_unavailable",
+                "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开报告编辑入口。",
+            })
         result = publication_result(
             report_id=content["reportId"],
             revision=content["revision"],

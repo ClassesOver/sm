@@ -202,14 +202,14 @@ class ReportingLspProcessManager:
                     created, "initialize", {"rootUri": canonical_root.as_uri(), "capabilities": {}}
                 )
                 await self._notify(created, "initialized", {})
-            except ReportingLspProcessError:
+                async with self._states_lock:
+                    if self._closed:
+                        raise ReportingLspProcessError("pylsp 管理器已关闭。")
+                    self._states[canonical_root] = created
+            except BaseException:
+                # 初始化与登记之间的取消也必须回收尚未进入 _states 的进程。
                 await self._close_state(created)
                 raise
-            async with self._states_lock:
-                if self._closed:
-                    await self._close_state(created)
-                    raise ReportingLspProcessError("pylsp 管理器已关闭。")
-                self._states[canonical_root] = created
             return created
 
     async def _reap_loop(self) -> None:
@@ -327,6 +327,8 @@ class ReportingLspProcessManager:
             except TimeoutError:
                 state.process.kill()
                 await state.process.wait()
+        if state.reader_task is not None and state.reader_task is not asyncio.current_task():
+            await asyncio.gather(state.reader_task, return_exceptions=True)
 
     @staticmethod
     def _fail_waiters(state: _LspState) -> None:

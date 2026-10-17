@@ -35,8 +35,13 @@ def _scope_identity(scope: Mapping[str, str]) -> str:
     return ";".join(f"{key}={scope[key]}" for key in sorted(scope))
 
 
+def _period_granularity_identity(fact: Any) -> str:
+    grain = getattr(fact, "period_granularity", None)
+    return f"|periodGranularity={grain}" if grain else ""
+
+
 def metric_fact_identity(fact: Any) -> str:
-    return "|".join(
+    identity = "|".join(
         (
             "metric",
             fact.dataset_id,
@@ -54,10 +59,18 @@ def metric_fact_identity(fact: Any) -> str:
             }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False),
         )
     )
+    period_aggregation = getattr(fact, "period_aggregation", None)
+    if any(item.group_values for item in (*fact.top_groups, *fact.bottom_groups)):
+        identity += "|groupValues=" + json.dumps({
+            "topGroups": [item.group_values for item in fact.top_groups],
+            "bottomGroups": [item.group_values for item in fact.bottom_groups],
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return (identity + (f"|periodAggregation={period_aggregation}" if period_aggregation else "")
+            + _period_granularity_identity(fact))
 
 
 def comparison_fact_identity(fact: Any) -> str:
-    return "|".join(
+    identity = "|".join(
         (
             "comparison",
             fact.comparison_type,
@@ -67,11 +80,16 @@ def comparison_fact_identity(fact: Any) -> str:
             fact.current_dataset_sha256,
             fact.baseline_dataset_sha256,
         )
-    )
+    ) + _period_granularity_identity(fact)
+    start, end = getattr(fact, "baseline_period_start", None), getattr(fact, "baseline_period_end", None)
+    if start or end:
+        identity += f"|baselinePeriod={start or ''}:{end or ''}"
+    scale = getattr(fact, "baseline_scale", 1)
+    return identity + (f"|baselineScale={scale}" if scale != 1 else "")
 
 
 def derived_fact_identity(fact: Any) -> str:
-    return "|".join(
+    identity = "|".join(
         (
             "derived",
             fact.code,
@@ -80,11 +98,16 @@ def derived_fact_identity(fact: Any) -> str:
             fact.denominator_metric,
             ";".join(fact.dataset_sha256s),
         )
-    )
+    ) + _period_granularity_identity(fact)
+    inputs = getattr(fact, "input_fact_ids", ())
+    if inputs:
+        identity += "|inputFactIds=" + json.dumps(inputs, separators=(",", ":"))
+    scale = getattr(fact, "denominator_scale", 1)
+    return identity + (f"|denominatorScale={scale}" if scale != 1 else "")
 
 
 def reconciliation_fact_identity(fact: Any) -> str:
-    return "|".join(
+    identity = "|".join(
         (
             "reconciliation",
             fact.code,
@@ -94,6 +117,9 @@ def reconciliation_fact_identity(fact: Any) -> str:
             ";".join(fact.dataset_sha256s),
         )
     )
+    start, end = getattr(fact, "period_start", None), getattr(fact, "period_end", None)
+    return (identity + (f"|period={start or ''}:{end or ''}" if start or end else "")
+            + _period_granularity_identity(fact))
 
 
 def correlation_fact_identity(fact: Any) -> str:
@@ -136,10 +162,18 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
         fact.model_copy(update={"fact_id": _unique(comparison_fact_identity(fact))})
         for fact in bundle.comparisons
     )
-    derived = tuple(
-        fact.model_copy(update={"fact_id": _unique(derived_fact_identity(fact))})
-        for fact in bundle.derived_metrics
-    )
+    derived = []
+    for fact in bundle.derived_metrics:
+        # 在基础事实签发后冻结有序依赖；相同 CSV、代码和比值也可能来自不同固定范围。
+        operands = [
+            [metric.fact_id for metric in metrics
+             if code in metric.metric_codes and metric.dataset_id in fact.dataset_ids
+             and fact.period_role in metric.period_roles]
+            for code in (fact.numerator_metric, fact.denominator_metric)
+        ]
+        input_ids = tuple(ids[0] for ids in operands) if all(len(ids) == 1 for ids in operands) else ()
+        frozen = fact.model_copy(update={"input_fact_ids": input_ids})
+        derived.append(frozen.model_copy(update={"fact_id": _unique(derived_fact_identity(frozen))}))
     reconciliations = tuple(
         fact.model_copy(update={"fact_id": _unique(reconciliation_fact_identity(fact))})
         for fact in bundle.reconciliations
@@ -152,7 +186,7 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
         update={
             "metrics": metrics,
             "comparisons": comparisons,
-            "derived_metrics": derived,
+            "derived_metrics": tuple(derived),
             "reconciliations": reconciliations,
             "correlation_details": correlation_details,
         }
@@ -201,6 +235,12 @@ def fact_input_relations(
 
     relations: dict[str, tuple[str, ...]] = {}
     for fact in bundle.derived_metrics:
+        if fact.input_fact_ids:
+            known_ids = {metric.fact_id for metric in bundle.metrics}
+            relations[fact.fact_id] = tuple(dict.fromkeys(
+                fact_id for fact_id in fact.input_fact_ids if fact_id in known_ids
+            ))
+            continue
         inputs = [
             metric.fact_id
             for code in (fact.numerator_metric, fact.denominator_metric)
@@ -226,6 +266,19 @@ def fact_input_relations(
         ]
         relations[fact.fact_id] = tuple(dict.fromkeys(inputs))
     return relations
+
+
+def fact_binding_records(bundle: DeterministicAnalysisBundle) -> dict[str, dict[str, Any]]:
+    """跨文件合并引用时连同实际输入身份比较，兼容尚未冻结 inputFactIds 的旧事实。"""
+    inputs = fact_input_relations(bundle)
+    derived_ids = {fact.fact_id for fact in bundle.derived_metrics}
+    return {
+        fact.fact_id: {"entry": fact.model_dump(mode="json", by_alias=True),
+                       "inputs": inputs.get(fact.fact_id, ()) if fact.fact_id in derived_ids else ()}
+        for fact in (*bundle.metrics, *bundle.comparisons, *bundle.derived_metrics,
+                     *bundle.reconciliations, *bundle.correlation_details)
+        if fact.fact_id
+    }
 
 
 def resolve_pointer_value(document: Any, pointer: str) -> Any:
