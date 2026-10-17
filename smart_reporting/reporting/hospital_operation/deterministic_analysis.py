@@ -18,7 +18,12 @@ import polars as pl
 from pydantic import Field
 
 from ..units import unit_conversion_scale
-from .detailed_analysis import AnalysisModel, DatasetAnalysisContext, DetailedAnalysisItem
+from .detailed_analysis import (
+    AnalysisModel,
+    DatasetAnalysisContext,
+    DetailedAnalysisItem,
+    _is_period_field_name,
+)
 
 Aggregation = Literal["sum", "average", "min", "max", "count", "count_distinct"]
 PeriodRole = Literal["current", "yoy", "mom"]
@@ -335,6 +340,13 @@ def _dataset_facts(
         return facts, selected_semantics, warnings
 
     period_field = _period_field(dataset.frame, dataset.context)
+    # 同一时间轴常有多个列（data_date 与 period_code）：语义声明可沿其中任一列相加即为流量指标，
+    # 不能因所选期间列不在 additiveAcross 中就按时点取期末值（期末为零时合计变成 0）。
+    time_fields = {
+        str(column).casefold() for column in dataset.frame.columns
+        if str(column) == period_field or str(column) in dataset.context.period_granularities
+        or _is_period_field_name(str(column))
+    }
     source_grain = dataset.context.period_granularities.get(period_field or "")
     period_granularity = (
         analysis.series_granularity or "day" if source_grain == "date"
@@ -369,7 +381,7 @@ def _dataset_facts(
         additive = {str(item).casefold() for item in semantic.get("additiveAcross", ())}
         period_aggregation = (
             "last" if aggregation == "sum" and period_field and additive
-            and period_field.casefold() not in additive else None
+            and not additive & time_fields else None
         )
         value_frame = scoped_frame
         if period_aggregation == "last":
