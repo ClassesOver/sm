@@ -75,12 +75,54 @@ class ReportingStateVersionUnsupported(ReportingStateError):
         super().__init__("report_state_version_unsupported", message)
 
 
+# 历史命令名别名 → 规范名。reducer 只按规范名分支；别名在构造命令时一次性归一。
+_COMMAND_NAME_ALIASES = {
+    "set_plan": "set_analysis_plan",
+    "analysis_item_completed": "complete_analysis_item",
+    "profile_coverage_ready": "set_profile_coverage",
+    "profile_read": "record_profile_receipt",
+    "section_completed": "complete_section",
+    "start_analysis_rework": "request_analysis_rework",
+    "set_report_brief": "set_analysis_artifact",
+    "enter_narrative_planning": "start_narrative_planning",
+    "enter_sections": "start_sections",
+    "start_finalize": "finalize",
+    "start_analysis_coverage": "start_analysis",
+}
+# payload 顶层 snake_case 写法 → 规范 camelCase 键（两者同时存在时保留 camelCase）。
+_PAYLOAD_KEY_ALIASES = {
+    "analysis_ids": "analysisIds",
+    "missing_evidence": "missingEvidence",
+    "analysis_id": "analysisId",
+    "section_code": "sectionCode",
+}
+
+
 class ReportingCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
     name: str = Field(min_length=1, max_length=128)
     payload: dict[str, Any] = Field(default_factory=dict)
     command_id: str = Field(alias="commandId", min_length=1, max_length=256)
+
+    @model_validator(mode="before")
+    @classmethod
+    def canonicalize(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        normalized = dict(value)
+        name = normalized.get("name")
+        if isinstance(name, str):
+            normalized["name"] = _COMMAND_NAME_ALIASES.get(name, name)
+        payload = normalized.get("payload")
+        if isinstance(payload, Mapping) and any(key in payload for key in _PAYLOAD_KEY_ALIASES):
+            canonical = dict(payload)
+            for alias, key in _PAYLOAD_KEY_ALIASES.items():
+                if alias in canonical:
+                    aliased = canonical.pop(alias)
+                    canonical.setdefault(key, aliased)
+            normalized["payload"] = canonical
+        return normalized
 
     @classmethod
     def from_value(cls, value: ReportingCommand | Mapping[str, Any] | str) -> ReportingCommand:
@@ -295,30 +337,23 @@ def apply(
     next_phase = state.phase
 
     phase_commands = {
-        "start_analysis_coverage": ReportingPhase.ANALYSIS_RUNNING,
         "start_analysis": ReportingPhase.ANALYSIS_RUNNING,
         "start_visualization": ReportingPhase.VISUALIZATION,
         "freeze_analysis": ReportingPhase.ANALYSIS_FREEZING,
         "start_narrative_planning": ReportingPhase.NARRATIVE_PLANNING,
-        "enter_narrative_planning": ReportingPhase.NARRATIVE_PLANNING,
         "complete_narrative_planning": ReportingPhase.SECTIONS,
-        "enter_sections": ReportingPhase.SECTIONS,
         "start_sections": ReportingPhase.SECTIONS,
         "request_analysis_rework": ReportingPhase.ANALYSIS_REWORK,
-        "start_analysis_rework": ReportingPhase.ANALYSIS_REWORK,
         "resume_sections": ReportingPhase.SECTIONS,
-        "start_finalize": ReportingPhase.FINALIZE,
         "finalize": ReportingPhase.FINALIZE,
         "complete": ReportingPhase.COMPLETED,
         "fail": ReportingPhase.FAILED,
     }
     if name in phase_commands:
         next_phase = phase_commands[name]
-        if name in {"request_analysis_rework", "start_analysis_rework"}:
-            analysis_ids = _tuple_unique(
-                arguments.get("analysisIds", arguments.get("analysis_ids"))
-            )
-            missing = arguments.get("missingEvidence", arguments.get("missing_evidence", ()))
+        if name == "request_analysis_rework":
+            analysis_ids = _tuple_unique(arguments.get("analysisIds"))
+            missing = arguments.get("missingEvidence", ())
             if not analysis_ids or not isinstance(missing, (list, tuple)) or not missing:
                 raise ReportingStateError(
                     "report_analysis_rework_invalid",
@@ -423,8 +458,8 @@ def apply(
         elif name == "complete":
             payload["result"] = dict(arguments)
             effects.append(ReportingEffect("run_completed", dict(arguments)))
-    elif name in {"set_plan", "set_analysis_plan"}:
-        analysis_ids = _tuple_unique(arguments.get("analysisIds", arguments.get("analysis_ids")))
+    elif name == "set_analysis_plan":
+        analysis_ids = _tuple_unique(arguments.get("analysisIds"))
         if not analysis_ids:
             raise ReportingStateError("report_analysis_plan_invalid", "分析计划不能为空。")
         payload["analysisIds"] = analysis_ids
@@ -443,8 +478,8 @@ def apply(
         payload["currentAnalysisId"] = next(
             (value for value in analysis_ids if value not in payload["completedAnalysisIds"]), None
         )
-    elif name in {"complete_analysis_item", "analysis_item_completed"}:
-        analysis_id = arguments.get("analysisId", arguments.get("analysis_id"))
+    elif name == "complete_analysis_item":
+        analysis_id = arguments.get("analysisId")
         if not isinstance(analysis_id, str) or not analysis_id:
             raise ReportingStateError("report_analysis_item_invalid", "缺少 analysisId。")
         plan = _tuple_unique(payload.get("analysisIds"))
@@ -471,9 +506,9 @@ def apply(
         effects.append(ReportingEffect("analysis_item_completed", {"analysisId": analysis_id}))
         # 分析期间按章节交错执行图表和成稿；全局 durable phase 保持
         # ANALYSIS_RUNNING，最终汇总前不切换到独立 visualization 阶段。
-    elif name in {"set_profile_coverage", "profile_coverage_ready"}:
+    elif name == "set_profile_coverage":
         payload["profileCoverage"] = arguments.get("manifest", arguments)
-    elif name in {"record_profile_receipt", "profile_read"}:
+    elif name == "record_profile_receipt":
         receipt = arguments.get("receipt", arguments)
         receipts = payload.setdefault("profileReadReceipts", [])
         if not isinstance(receipts, list):
@@ -700,7 +735,7 @@ def apply(
             )
         if section_code not in completed:
             completed.append(section_code)
-    elif name in {"set_analysis_artifact", "set_report_brief"}:
+    elif name == "set_analysis_artifact":
         if "reportBrief" in arguments:
             payload["reportBrief"] = arguments["reportBrief"]
         if "evidenceManifest" in arguments:
@@ -837,8 +872,8 @@ def apply(
                 "report_section_start_conflict", "sectionCode 已绑定其他 WorkItem。"
             )
         running[section_code] = work_item_hash
-    elif name in {"complete_section", "section_completed"}:
-        section_code = arguments.get("sectionCode", arguments.get("section_code"))
+    elif name == "complete_section":
+        section_code = arguments.get("sectionCode")
         if not isinstance(section_code, str) or not section_code:
             raise ReportingStateError("report_section_invalid", "缺少 sectionCode。")
         raw_completed_section_artifacts = payload.get("sectionArtifacts")
