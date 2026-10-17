@@ -3242,11 +3242,15 @@ class RuntimeSectionsMixin:
                 )
                 for trace, markdown in built:
                     # 仅折叠行列及完整冻结事实均一致的表；金额相等不足以认定重复。
+                    # 不同分析对同一数据集同一指标各自冻结出内容完全相同、仅 factId 不同的事实，
+                    # 附录会出现两张一模一样的表：比较时不计 factId。
                     signature = json.dumps({
                         "rows": trace.row_keys,
                         "columns": trace.column_keys,
                         "facts": [
-                            frozen_fact_content(fact_entry_from_pointer(document, ref.json_pointer)[1])
+                            {key: value for key, value in frozen_fact_content(
+                                fact_entry_from_pointer(document, ref.json_pointer)[1]).items()
+                             if key != "factId"}
                             for cell in trace.cells for ref in cell.fact_refs
                         ],
                     }, sort_keys=True, ensure_ascii=False)

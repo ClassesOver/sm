@@ -384,8 +384,12 @@ async def test_server_tables_deduplicate_exact_facts_but_keep_different_snapshot
     other = base.model_copy(update={'analysis_id': 'analysis_003', 'metrics': (
         base.metrics[0].model_copy(update={'dataset_sha256': 'd' * 64, 'fact_id': 'fact-' + 'd' * 16}),
     )})
+    # 回放中两项分析对同一指标各自冻结出内容相同、仅 factId 不同的事实，附录出现两张相同的表。
+    renamed = base.model_copy(update={'analysis_id': 'analysis_004', 'metrics': (
+        base.metrics[0].model_copy(update={'fact_id': 'fact-' + 'e' * 16}),
+    )})
     files, identities = {}, {}
-    for bundle in (base, duplicate, other):
+    for bundle in (base, duplicate, other, renamed):
         path = f'facts/{bundle.analysis_id}.json'
         raw = bundle.model_dump_json(by_alias=True).encode()
         files[path] = raw
@@ -397,7 +401,9 @@ async def test_server_tables_deduplicate_exact_facts_but_keep_different_snapshot
     )
     assert len(tables) == len(traces) == 2
     assert {trace.cells[0].fact_refs[0].analysis_id for trace in traces} == {'analysis_001', 'analysis_003'}
-    assert set(directory) == set(values) == {base.metrics[0].fact_id, other.metrics[0].fact_id}
+    assert set(directory) == set(values) == {
+        base.metrics[0].fact_id, other.metrics[0].fact_id, renamed.metrics[0].fact_id,
+    }
 
 
 def test_comparison_table_uses_aligned_totals_and_readable_labels() -> None:
