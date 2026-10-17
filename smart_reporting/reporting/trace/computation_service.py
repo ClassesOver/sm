@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
+from graphlib import CycleError, TopologicalSorter
 from typing import Any
 
 from ..models import ReportingError
@@ -125,25 +126,37 @@ def _computation_id(
     return "comp-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
 
-def _fact_identity(ref: FactRefV1) -> tuple[str, str, str, str]:
-    # factKey 是可选核对键；定位以冻结文件内的具体事实为准。
+_FactIdentity = tuple[str, str, str, str]
+_OutputProviders = dict[_FactIdentity, dict[str | None, set[str]]]
+
+
+def _fact_identity(ref: FactRefV1) -> _FactIdentity:
+    # 位置身份与可选核对键分别索引，兼容旧记录但拒绝已知的 factKey 冲突。
     return ref.analysis_id, ref.file_resource_id, ref.json_pointer, ref.fact_kind
 
 
 def _output_providers(
     records: Sequence[ComputationRecordV1],
-) -> dict[tuple[str, str, str, str], set[str]]:
-    providers: dict[tuple[str, str, str, str], set[str]] = {}
+) -> _OutputProviders:
+    providers: _OutputProviders = {}
     for record in records:
         for ref in record.output_fact_refs:
-            providers.setdefault(_fact_identity(ref), set()).add(record.computation_id)
+            providers.setdefault(_fact_identity(ref), {}).setdefault(ref.fact_key, set()).add(record.computation_id)
     return providers
 
 
-def detect_computation_cycles(records: Sequence[ComputationRecordV1]) -> list[list[str]]:
-    """返回计算记录依赖图中的所有环（computationId 序列）；无环返回 []。
+def _matching_providers(providers: _OutputProviders, ref: FactRefV1) -> set[str]:
+    candidates = providers.get(_fact_identity(ref), {})
+    if ref.fact_key is None:
+        return set().union(*candidates.values())
+    return candidates.get(ref.fact_key, set()) | candidates.get(None, set())
 
-    依赖边：record A 的 inputFactRefs 精确匹配 record B 的 outputFactRefs。
+
+def detect_computation_cycles(records: Sequence[ComputationRecordV1]) -> list[list[str]]:
+    """返回一个足以判定依赖无效的环（computationId 序列）；无环返回 []。
+
+    依赖边：record A 的 inputFactRefs 与 record B 的 outputFactRefs 位置
+    相同且核对键不冲突。发布方只需判断是否有环，不枚举所有路径或所有环。
     """
 
     output_providers = _output_providers(records)
@@ -152,36 +165,18 @@ def detect_computation_cycles(records: Sequence[ComputationRecordV1]) -> list[li
     for record in records:
         dependencies: set[str] = set()
         for ref in record.input_fact_refs:
-            providers = output_providers.get(_fact_identity(ref), ())
+            providers = _matching_providers(output_providers, ref)
             if len(providers) == 1:
                 dependencies.update(providers)
         graph[record.computation_id] = dependencies
 
-    cycles: list[list[str]] = []
-    seen_cycles: set[tuple[str, ...]] = set()
-    for start in graph:
-        path: list[str] = []
-        visited: set[str] = set()
-
-        def _walk(node: str) -> None:
-            if node in visited:
-                if node == start:
-                    canonical = _canonical_cycle(path)
-                    if canonical not in seen_cycles:
-                        seen_cycles.add(canonical)
-                        cycles.append(list(path))
-                return
-            if node not in graph:
-                return
-            visited.add(node)
-            path.append(node)
-            for dependency in sorted(graph[node]):
-                _walk(dependency)
-            path.pop()
-            visited.discard(node)
-
-        _walk(start)
-    return cycles
+    # 标准库按节点和边访问一次，避免菱形依赖图上的指数级重复遍历。
+    try:
+        TopologicalSorter({node: sorted(graph[node]) for node in sorted(graph)}).prepare()
+    except CycleError as error:
+        cycle = error.args[1]
+        return [list(_canonical_cycle(cycle[:-1]))]
+    return []
 
 
 def _canonical_cycle(cycle: list[str]) -> tuple[str, ...]:
@@ -233,7 +228,13 @@ def expand_computation_chain(
         warnings: list[str] = []
         seen: set[str] = set()
         for ref in record.input_fact_refs:
-            providers = output_providers.get(_fact_identity(ref), ())
+            providers = _matching_providers(output_providers, ref)
+            if not providers and _fact_identity(ref) in output_providers:
+                warnings.append(
+                    f"事实 {ref.analysis_id} {ref.json_pointer} 的核对键与登记输出不一致，"
+                    "无法确认该输入的计算链。"
+                )
+                continue
             if len(providers) > 1:
                 warnings.append(
                     f"事实 {ref.analysis_id} {ref.json_pointer} 的计算来源不唯一，"

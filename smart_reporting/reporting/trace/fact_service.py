@@ -48,18 +48,26 @@ def read_fact_document(bundle_bytes: bytes) -> Mapping[str, Any]:
     """校验事实文件的容器结构，兼容省略可选事实数组的旧文件。"""
     try:
         document = json.loads(bundle_bytes)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+    except (ValueError, UnicodeDecodeError) as error:
         raise ReportingError(
             "snapshot_integrity_failed", "事实文件无法解析。"
         ) from error
     if not isinstance(document, Mapping):
         raise ReportingError("snapshot_integrity_failed", "事实文件结构无效。")
+    fact_ids: set[str] = set()
     for key in ("metrics", "comparisons", "derivedMetrics", "reconciliations", "correlationDetails"):
         if key not in document:
             continue
         entries = document[key]
         if not isinstance(entries, list) or any(not isinstance(entry, Mapping) for entry in entries):
             raise ReportingError("snapshot_integrity_failed", "事实文件结构无效。")
+        for entry in entries:
+            fact_id = entry.get("factId")
+            if fact_id is None or fact_id == "":
+                continue  # 旧文件可仅通过冻结指针定位。
+            if not isinstance(fact_id, str) or fact_id in fact_ids:
+                raise ReportingError("snapshot_integrity_failed", "事实文件包含无效或重复的事实 ID。")
+            fact_ids.add(fact_id)
     return document
 
 

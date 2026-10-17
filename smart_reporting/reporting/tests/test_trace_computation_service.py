@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from smart_reporting.reporting.code_agent.context import ExecutionReceipt
@@ -222,6 +224,74 @@ def test_repeated_output_in_one_record_does_not_create_ambiguity():
     assert not tree.get("warnings")
 
 
+@pytest.mark.parametrize(("provider_key", "input_key", "matches"), [
+    (None, None, True),
+    (None, "fact-a", True),
+    ("fact-a", None, True),
+    ("fact-a", "fact-a", True),
+    ("fact-a", "fact-b", False),
+])
+def test_chain_checks_known_fact_keys_and_preserves_keyless_records(provider_key, input_key, matches):
+    provider = _record(finding_count=1)
+    output = provider.output_fact_refs[0].model_copy(update={"fact_key": provider_key})
+    provider = provider.model_copy(update={"output_fact_refs": (output,)})
+    consumer = _record(
+        analysis_id="analysis_002", input_fact_refs=(output.model_copy(update={"fact_key": input_key}),),
+    )
+    provider = provider.model_copy(update={"input_fact_refs": consumer.output_fact_refs})
+    tree = expand_computation_chain((provider, consumer), consumer.computation_id)
+    assert bool(tree.get("inputs")) == matches
+    if not matches:
+        assert any("核对键" in warning for warning in tree["warnings"])
+    assert bool(detect_computation_cycles((provider, consumer))) == matches
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_matching_fact_key_disambiguates_conflicting_output_keys(reverse):
+    first = _record(finding_count=1)
+    first = first.model_copy(update={"output_fact_refs": (
+        first.output_fact_refs[0].model_copy(update={"fact_key": "fact-a"}),
+    )})
+    second = _record(finding_count=1, execution={"runId": "other-key"})
+    second = second.model_copy(update={"output_fact_refs": (
+        second.output_fact_refs[0].model_copy(update={"fact_key": "fact-b"}),
+    )})
+    consumer = _record(analysis_id="analysis_002", input_fact_refs=second.output_fact_refs)
+    records = (second, first, consumer) if reverse else (first, second, consumer)
+    tree = expand_computation_chain(records, consumer.computation_id)
+    assert [node["computationId"] for node in tree["inputs"]] == [second.computation_id]
+
+
+def test_cycle_detection_does_not_enumerate_paths_in_a_shared_dag():
+    from smart_reporting.reporting.trace import computation_service
+
+    records = []
+    previous = ()
+    for level in range(24):
+        layer = tuple(_record(
+            analysis_id=f"analysis_{level * 2 + side + 1:03}", finding_count=1,
+            input_fact_refs=previous,
+        ) for side in range(2))
+        records.extend(layer)
+        previous = tuple(ref for record in layer for ref in record.output_fact_refs)
+
+    # 固定工作量预算避免依赖 CI 墙钟速度：48 个合法节点不应触发十万次服务函数调用。
+    calls = 0
+
+    def bounded_work(frame, event, _arg):
+        nonlocal calls
+        if event == "call" and frame.f_code.co_filename == computation_service.__file__:
+            calls += 1
+            assert calls < 100_000, "合法无环依赖图被按共享路径反复遍历"
+
+    previous_profile = sys.getprofile()
+    try:
+        sys.setprofile(bounded_work)
+        assert detect_computation_cycles(tuple(records)) == []
+    finally:
+        sys.setprofile(previous_profile)
+
+
 def test_self_cycle_is_detected_and_chain_stops() -> None:
     record = _record(finding_count=1)
     record = record.model_copy(update={"input_fact_refs": record.output_fact_refs})
@@ -343,7 +413,8 @@ def test_finalize_extracts_computation_records_into_index() -> None:
 
     from smart_reporting.reporting.trace.index_builder import build_csv_trace_index
     from smart_reporting.reporting.workflow.checkpoint import FileIdentity
-    from .test_trace_index_builder import _handle, _lineage, MARKDOWN
+
+    from .test_trace_index_builder import MARKDOWN, _handle, _lineage
 
     record = _record(finding_count=2)
     index = build_csv_trace_index(
@@ -376,6 +447,7 @@ def test_correlations_carry_metadata_and_fact_ids() -> None:
     from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
         build_deterministic_analysis_bundle,
     )
+
     from .test_deterministic_analysis import analysis, context
 
     bundle = build_deterministic_analysis_bundle(

@@ -250,6 +250,28 @@ def test_fact_readers_report_invalid_structure(reader, document):
 
 
 @pytest.mark.parametrize("reader", [resolve_fact, expand_fact_tree])
+@pytest.mark.parametrize("duplicate_array", ["metrics", "derivedMetrics"])
+def test_fact_readers_reject_duplicate_ids_across_the_bundle(reader, duplicate_array):
+    bundle = _bundle()
+    document = json.loads(_bundle_bytes())
+    duplicate = dict(document[duplicate_array][0])
+    duplicate["factId"] = document["metrics"][0]["factId"]
+    duplicate["total"] = 9999
+    document[duplicate_array].append(duplicate)
+    with pytest.raises(ReportingError) as error:
+        reader(json.dumps(document).encode(), _metric_ref(bundle))
+    assert error.value.code == "snapshot_integrity_failed"
+
+
+@pytest.mark.parametrize("reader", [resolve_fact, expand_fact_tree])
+def test_fact_readers_report_json_integer_limits_as_integrity_errors(reader):
+    content = b'{"metrics":[{"total":' + b"9" * 5000 + b"}]}"
+    with pytest.raises(ReportingError) as error:
+        reader(content, _metric_ref(_bundle()))
+    assert error.value.code == "snapshot_integrity_failed"
+
+
+@pytest.mark.parametrize("reader", [resolve_fact, expand_fact_tree])
 @pytest.mark.parametrize("updates", [
     {"analysis_id": "analysis_999"},
     {"fact_kind": "derived"},

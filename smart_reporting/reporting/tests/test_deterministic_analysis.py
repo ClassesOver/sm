@@ -702,3 +702,55 @@ def test_freezes_metric_label_from_matching_schema():
         analysis(), (('current', b'month,department,amount\n2025-01,A,10\n', ctx, ('current',)),),
     )
     assert bundle.metrics[0].display_name == '设备租赁回款'
+
+
+@pytest.mark.parametrize("selected", ["actual", "budget"])
+def test_correlation_uses_the_metrics_registered_scope(selected):
+    content = (
+        b"month,department,scope_type,amount,visits\n"
+        b"2025-01,A,actual,1,1\n2025-01,B,actual,2,2\n2025-01,C,actual,3,3\n"
+        b"2025-01,A,budget,1,30\n2025-01,B,budget,2,20\n2025-01,C,budget,3,10\n"
+    )
+    scope = {"scope_type": selected}
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("amount", "visits")),
+        (("current", content, context(
+            "current", fields=("month", "department", "scope_type", "amount", "visits"),
+            semantics=(semantic("amount", scope=scope), semantic("visits", scope=scope)),
+        ), ("current",)),),
+        profile_metrics=(
+            {"code": "amount", "fieldRef": "dynamic_source.dynamic_db.dynamic_table.amount"},
+            {"code": "visits", "fieldRef": "dynamic_source.dynamic_db.dynamic_table.visits"},
+        ),
+    )
+    detail = bundle.correlation_details[0]
+    assert detail.sample_count == 3
+    assert detail.value == pytest.approx(1 if selected == "actual" else -1)
+    assert detail.scope == scope
+    assert next(iter(bundle.correlations.values())) == detail.value
+
+    from smart_reporting.reporting.trace.fact_index import assign_fact_ids
+
+    changed_scope = detail.model_copy(update={"scope": {"scope_type": "other"}})
+    changed_bundle = assign_fact_ids(bundle.model_copy(update={"correlation_details": (changed_scope,)}))
+    assert changed_bundle.correlation_details[0].fact_id != detail.fact_id
+
+
+def test_correlation_skips_incompatible_metric_scopes_with_warning():
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("amount", "visits")),
+        (("current", b"month,department,scope_type,amount,visits\n"
+          b"2025-01,A,actual,1,1\n2025-01,B,actual,2,2\n2025-01,C,budget,3,3\n",
+          context("current", fields=("month", "department", "scope_type", "amount", "visits"),
+                  semantics=(semantic("amount", scope={"scope_type": "actual"}),
+                             semantic("visits", scope={"scope_type": "budget"}))),
+          ("current",)),),
+        profile_metrics=(
+            {"code": "amount", "fieldRef": "dynamic_source.dynamic_db.dynamic_table.amount"},
+            {"code": "visits", "fieldRef": "dynamic_source.dynamic_db.dynamic_table.visits"},
+        ),
+    )
+    assert bundle.metrics
+    assert bundle.correlations == {}
+    assert bundle.correlation_details == ()
+    assert any("固定范围不一致" in warning for warning in bundle.warnings)

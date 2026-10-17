@@ -1,5 +1,6 @@
 import pytest
 
+from smart_reporting.reporting.data_source import sql_validation
 from smart_reporting.reporting.data_source.sql_validation import validate_starrocks_read_only_sql
 from smart_reporting.reporting.models import ReportingError
 
@@ -85,3 +86,41 @@ def test_starrocks_validation_rejects_normalized_session_functions(sql: str) -> 
         validate_starrocks_read_only_sql(sql, database="rj", allowed_tables=_ALLOWED)
 
     assert caught.value.code == "sql_function_denied"
+
+
+@pytest.mark.parametrize("padding", [" ", "\n", ";", "\u3000"])
+def test_starrocks_validation_bounds_raw_input_before_parsing(monkeypatch, padding: str) -> None:
+    sql = "SELECT 1" + padding * sql_validation.MAX_QUERY_BYTES
+
+    def unexpected_parse(*_args, **_kwargs):
+        pytest.fail("oversized raw SQL must be rejected before parsing")
+
+    monkeypatch.setattr(sql_validation, "parse", unexpected_parse)
+    with pytest.raises(ReportingError) as caught:
+        validate_starrocks_read_only_sql(sql, database="rj", allowed_tables=_ALLOWED)
+
+    assert caught.value.code == "invalid_sql"
+
+
+@pytest.mark.parametrize("character", ["x", "中"])
+def test_starrocks_validation_enforces_utf8_byte_boundary(character: str) -> None:
+    prefix = "SELECT 1 /*"
+    suffix = "*/"
+    available = sql_validation.MAX_QUERY_BYTES - len((prefix + suffix).encode())
+    count, remaining = divmod(available, len(character.encode()))
+    sql = prefix + character * count + " " * remaining + suffix
+    assert len(sql.encode()) == sql_validation.MAX_QUERY_BYTES
+    assert validate_starrocks_read_only_sql(sql, database="rj", allowed_tables=_ALLOWED) == sql
+    with pytest.raises(ReportingError) as caught:
+        validate_starrocks_read_only_sql(sql + " ", database="rj", allowed_tables=_ALLOWED)
+    assert caught.value.code == "invalid_sql"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    ["SELECT 1; SELECT 2;", "SELECT 1; DELETE FROM secret;", "SELECT * FROM secret;"],
+)
+def test_starrocks_normalization_does_not_hide_extra_queries_or_denied_tables(sql: str) -> None:
+    with pytest.raises(ReportingError) as caught:
+        validate_starrocks_read_only_sql(sql, database="rj", allowed_tables=_ALLOWED)
+    assert caught.value.code in {"invalid_sql", "sql_table_denied"}
