@@ -516,10 +516,34 @@ def test_multiple_comparisons_keep_unique_rows_and_source_identity() -> None:
     other = fact.model_copy(update={'fact_id': 'fact-' + 'd' * 16, 'current_dataset_id': 'other'})
     trace, markdown = build_analysis_table(bundle.model_copy(update={'comparisons': (fact, other)}), fact_file_resource_id=FACT_RESOURCE)
     assert len(trace.row_keys) == 4 and len(trace.cells) == 8
-    assert trace.column_keys == ('对比 1', '对比 2')
+    # 同名指标按序号区分，不再写成读者无法分辨的“对比 1”“对比 2”。
+    assert trace.column_keys == ('收入（1）', '收入（2）')
     assert markdown.count('| 本期收入 |') == 1
     assert trace.cells[0].fact_refs[0].json_pointer == '/comparisons/0'
     assert trace.cells[1].fact_refs[0].json_pointer == '/comparisons/1'
+
+
+def test_comparison_columns_use_metric_names_and_skip_all_zero_amounts() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+    )
+
+    bundle = _bundle()
+
+    def comparison(letter, field, current, baseline, unit='元'):
+        return DeterministicComparison(
+            factId='fact-' + letter * 16, comparisonType='yoy', field=field, fieldRef='h.' + field,
+            currentDatasetId='current', baselineDatasetId='baseline', currentDatasetSha256=SHA,
+            baselineDatasetSha256=SHA, currentTotal=current, baselineTotal=baseline, change=current - baseline,
+            changeRate=(current - baseline) / baseline * 100 if baseline else None, formula='x', unit=unit,
+        )
+
+    facts = (comparison('c', 'revenue', 3600, 3000), comparison('d', 'indicator_value', 120, 100, '人次'),
+             comparison('e', 'service_income', 0, 0))
+    trace, markdown = build_analysis_table(bundle.model_copy(update={'comparisons': facts}),
+                                           fact_file_resource_id=FACT_RESOURCE)
+    assert trace.column_keys == ('收入', '指标值')
+    assert '对比' not in markdown
 
 
 @pytest.mark.parametrize(("field", "label", "unit"), (

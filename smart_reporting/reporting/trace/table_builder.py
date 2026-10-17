@@ -337,6 +337,9 @@ def build_analysis_table(
         table_id += f"-part-{column_offset // column_limit + 1}"
     if bundle.comparisons:
         comparisons = [fact for fact in bundle.comparisons if fact.fact_id]
+        # 本期与基期金额均为零的比较（未启用的收入项）只占版面；全部为零时保留原表。
+        comparisons = [fact for fact in comparisons
+                       if fact.unit not in _MONEY_UNITS or fact.current_total or fact.baseline_total] or comparisons
         comparisons = comparisons[column_offset:column_offset + column_limit if column_limit else None]
         if not comparisons:
             return None
@@ -345,8 +348,11 @@ def build_analysis_table(
         metric_label = next(iter(metric_labels)) if len(metric_labels) == 1 else "数值"
         baseline_label = ("同期" if types == {"yoy"} else "上期" if types == {"mom"} else "基期") + metric_label
         rate_label = "同比增幅" if types == {"yoy"} else "环比增幅" if types == {"mom"} else "变化率"
+        # 多项比较并列时列名用各自指标名称（“对比 1…对比 5”读者无法分辨）；同名时加序号。
+        names = [_fact_label(fact, dataset_contexts, metric_descriptions) for fact in comparisons]
         columns = ("数值",) if len(comparisons) == 1 else tuple(
-            f"对比 {index + 1}" for index in range(len(comparisons))
+            name if names.count(name) == 1 else f"{name}（{names[:index + 1].count(name)}）"
+            for index, name in enumerate(names)
         )
         rows: list[list[str]] = []
         cells: list[TableCellBindingV1] = []
