@@ -605,6 +605,15 @@ def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=No
             logger.warning("report_number_reference_unavailable token={}", match["token"])
             return (annotate(match["token"], "数值待核实") if annotate else "数值待核实") + written
         shown = re.search(rf"(?:{_TRAILING_UNIT})$", text)
+        parts = match["token"][2:-2].split(":")
+        field, target = (parts[2] if len(parts) > 2 else ""), (parts[3] if len(parts) > 3 else "")
+        # 相关系数、比值等无量纲引用（“…:value:”）后写了金额或人次单位，或显示单位与所写单位
+        # 不同类（“5.03%万元”）：模型拿错了引用，回放中相关系数0.0048被写成“最小约0.00万元”。
+        if written.strip() and (
+                (not shown and field == "value" and not target)
+                or (shown and _unit_family(shown[0]) != _unit_family(written.strip()))):
+            logger.warning("report_number_reference_unit_mismatch token={} unit={}", match["token"], written.strip())
+            return annotate(match["token"], "数值待核实") if annotate else "数值待核实"
         if annotate:
             text = annotate(match["token"], text)
         if written and shown and _unit_family(shown[0]) == _unit_family(written.strip()):

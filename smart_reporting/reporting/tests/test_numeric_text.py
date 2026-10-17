@@ -74,9 +74,10 @@ def test_catalog_and_render_use_frozen_totals_and_months():
     ('同比增长{{value:a:changeRate:%}}%，', '同比增长5.03%，'),
     ('门诊{{value:a:visits:人次}} 人次', '门诊35.30万人次'),
     ('提高{{value:a:share:%}}个百分点', '提高2.10个百分点'),
-    # 其后不是单位、量纲不同、显示值不带单位或占位无法解析时不动。
+    # 其后不是单位、显示值不带单位或占位无法解析时不动。
     ('收入{{value:a:total:亿元}}以上，次均{{value:a:visits:人次}}次均', '收入1.37亿元以上，次均35.30万人次次均'),
-    ('增长{{value:a:changeRate:%}}元', '增长5.03%元'),
+    # 量纲不同（“5.03%元”）是拿错了引用，撤销数值。
+    ('增长{{value:a:changeRate:%}}元', '增长数值待核实'),
     ('金额{{value:b:total}}元（单位待核实）', '金额136,543,211元（单位待核实）'),
 ])
 def test_unit_written_again_after_placeholder_is_not_duplicated(text, expected):
@@ -1303,3 +1304,17 @@ def test_profile_missing_and_zero_rates_are_accepted_only_in_matching_paragraphs
 ])
 def test_plain_period_wording_drops_month_bucket_jargon(text, expected):
     assert plain_period_wording(text) == expected
+
+
+def test_dimensionless_or_mismatched_reference_followed_by_unit_is_withdrawn():
+    # 回放：相关系数 0.0048 被写成“最小约{{…:value:}}万元”，渲染为“0.00万元”。
+    correlation = '{{value:fact-' + 'c' * 16 + ':value:}}'
+    rate = '{{value:fact-' + 'd' * 16 + ':changeRate:%}}'
+    amount = '{{value:fact-' + 'e' * 16 + ':total:万元}}'
+    count = '{{value:fact-' + 'f' * 16 + ':total:}}'
+    catalog = {correlation: '0.00', rate: '5.03%', amount: '12.00万元', count: '120'}
+    assert render_frozen_numbers(f'最小约{correlation}万元。', catalog) == '最小约数值待核实。'
+    assert render_frozen_numbers(f'增长{rate}万元。', catalog) == '增长数值待核实。'
+    # 同类单位重复只去掉多写的单位；单位未知的计数补写单位、相关系数不跟单位都照常显示。
+    assert render_frozen_numbers(f'收入{amount}元。', catalog) == '收入12.00万元。'
+    assert render_frozen_numbers(f'共{count}人次，相关系数{correlation}。', catalog) == '共120人次，相关系数0.00。'
