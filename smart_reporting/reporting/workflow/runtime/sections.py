@@ -25,7 +25,9 @@ from ...delivery.draft_v1 import (
 )
 from ...delivery.report_runtime.markdown import normalize_number_notation
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
-from ...hospital_operation.narrative_outline import NarrativeOutline
+from ...hospital_operation.findings import FindingGraph
+from ...hospital_operation.narrative_outline import NarrativeOutline, NarrativeSection
+from ...hospital_operation.outline import ReportOutlineSection
 from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
@@ -2253,6 +2255,93 @@ def _section_claim_authoring_contract(work_item: SectionWorkItem) -> dict[str, A
 
 
 class RuntimeSectionsMixin:
+    def _build_narrative_section_work_item(
+        self,
+        section: NarrativeSection,
+        *,
+        graph: FindingGraph,
+        detailed_plan: DetailedAnalysisPlan,
+        analysis_artifact: AnalysisArtifact,
+        citation_bindings: tuple[Citation, ...],
+    ) -> SectionWorkItem:
+        cards = {card.finding_id: card for card in graph.findings}
+        return self._build_section_work_item(
+            ReportOutlineSection(
+                code=section.code, sectionNumber=section.section_number, title=section.title,
+                focus=(section.objective,), analysisIds=section.analysis_ids,
+            ),
+            detailed_plan=detailed_plan, analysis_artifact=analysis_artifact,
+            citation_bindings=citation_bindings,
+            finding_ids=section.finding_ids,
+            finding_summaries=tuple(
+                cards[finding_id].model_dump(mode="json", by_alias=True)
+                for finding_id in section.finding_ids
+            ),
+            narrative_role=section.narrative_role, grouping_reason=section.grouping_reason,
+            max_blocks=section.max_blocks, max_charts=section.max_charts,
+        )
+
+    def _fit_narrative_outline_context(
+        self,
+        outline: NarrativeOutline,
+        *,
+        graph: FindingGraph,
+        detailed_plan: DetailedAnalysisPlan,
+        analysis_artifact: AnalysisArtifact,
+        citation_bindings: tuple[Citation, ...],
+    ) -> NarrativeOutline:
+        """冻结前按渲染器的完整投影拆分附录，不用发现条数近似上下文大小。"""
+        cards = {card.finding_id: card for card in graph.findings}
+        fitted: list[NarrativeSection] = []
+
+        def append(section: NarrativeSection, finding_ids: tuple[str, ...]) -> None:
+            index = len(fitted) + 1
+            projected = section.model_copy(update={
+                "code": f"section_{index:03d}", "section_number": str(index),
+                "finding_ids": finding_ids,
+                "analysis_ids": tuple(dict.fromkeys(
+                    aid for finding_id in finding_ids for aid in cards[finding_id].analysis_ids
+                )),
+            })
+            try:
+                work_item = self._build_narrative_section_work_item(
+                    projected, graph=graph, detailed_plan=detailed_plan,
+                    analysis_artifact=analysis_artifact, citation_bindings=citation_bindings,
+                )
+                fits = len(_json_text(_section_model_work_item_payload(work_item)).encode(
+                    "utf-8"
+                )) <= MAX_SECTION_WORK_ITEM_BYTES
+            except ValidationError as error:
+                # 多个发现可绑定很多证据文件；先满足 WorkItem 的集合容量，
+                # 其他结构错误必须照常暴露，不能伪装成输入过大。
+                if any(item["type"] != "too_long" for item in error.errors()):
+                    raise
+                fits = False
+            if fits:
+                fitted.append(projected)
+                return
+            if len(finding_ids) == 1:
+                raise ReportingError(
+                    "report_section_context_too_large",
+                    "单条附录发现及其冻结证据超过章节输入预算，无法继续无损拆分。",
+                    details={"findingId": finding_ids[0], "maxBytes": MAX_SECTION_WORK_ITEM_BYTES},
+                )
+            middle = len(finding_ids) // 2
+            append(section, finding_ids[:middle])
+            append(section, finding_ids[middle:])
+
+        for section in outline.sections:
+            if section.narrative_role == "appendix":
+                append(section, section.finding_ids)
+            else:
+                index = len(fitted) + 1
+                fitted.append(section.model_copy(update={
+                    "code": f"section_{index:03d}", "section_number": str(index),
+                }))
+        return NarrativeOutline.model_validate({
+            **outline.model_dump(mode="python"), "sections": tuple(fitted),
+        })
+
     @staticmethod
     def _analysis_rework_constraints(
         *,
