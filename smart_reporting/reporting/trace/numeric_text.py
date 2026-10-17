@@ -1087,14 +1087,15 @@ def normalize_signed_wording(markdown: str) -> str:
         markdown,
     )
 
-    # “实际较预算少-4.34万人次；2月少-6.37万人次”：比较句里的“多/少”同样不能再带负号。
-    # 单字不进方向词表，以免“至少”“最多”等被改写。
+    # “实际较预算少-4.34万人次”“较预算支出低-13.47亿元”：比较句里的“多/少”“高/低”同样不能再带负号。
+    # 单字不进方向词表，以免“至少”“最多”“最低-5.2%”“提高”“降低”等被改写。
     def replace_comparative(match: re.Match[str]) -> str:
         logger.warning("report_signed_wording_normalized verb={} value={}", match["verb"], match["value"])
-        return f"少{match['space']}{match['value']}"
+        word = "少" if match["verb"] in "多少" else "低"
+        return f"{word}{match['space']}{match['value']}"
 
     return re.sub(
-        r"(?<![至最不多少])(?P<verb>多|少)(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
+        r"(?<![至最不多少偏提降升抬拉])(?P<verb>多|少|高|低)(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
         replace_comparative,
         markdown,
     )

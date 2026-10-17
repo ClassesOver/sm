@@ -335,6 +335,8 @@ def test_extrema_correction_only_rewrites_the_analysis_that_produced_the_warning
     ("1月实际较预算少-4.34万人次，2月多-6.37万人次。", "1月实际较预算少4.34万人次，2月少6.37万人次。"),
     ("实际比预算多-1,200人次。", "实际比预算少1,200人次。"),
     ("至少-3天内无登记，最多-2次。", "至少-3天内无登记，最多-2次。"),
+    ("9月实际支出较预算支出低-13.47亿元，1月高-2.00亿元。", "9月实际支出较预算支出低13.47亿元，1月低2.00亿元。"),
+    ("月度最低-5.20%，降低-3.00%，提高-1.00%。", "月度最低-5.20%，降低3.00%，降低1.00%。"),
 ])
 def test_signed_direction_wording_is_normalized_from_frozen_sign(text, expected):
     from smart_reporting.reporting.trace.numeric_text import normalize_signed_wording
