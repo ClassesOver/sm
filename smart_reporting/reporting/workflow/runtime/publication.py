@@ -905,14 +905,26 @@ class RuntimePublicationMixin:
             await self._render_and_validate(run_context)
         result = self._workflow_result(self._state(run_context))
         state = self._state(run_context)
+        # AGENTS：产物清单核验失败属于发布门禁问题，不得阻止已生成 PDF/Word 的签发。
+        # 失败时不使用该清单（本修订不带溯源与交互图），照常继续并在门禁中返回原因；
+        # 与 issue_http_publication 的 _drop_lineage 口径一致。
+        manifest_issues: list[dict[str, str]] = []
+        manifest: ReportArtifactManifest | None
         try:
             manifest = ReportArtifactManifest.model_validate(
                 state[REPORT_ARTIFACTS_STATE_KEY]["draft"]
             )
         except Exception as error:
-            raise ReportingError(
-                "report_artifact_manifest_invalid", "发布门禁缺少已验收的产物清单。"
-            ) from error
+            logger.warning(
+                "report_publication_manifest_dropped code=report_artifact_manifest_invalid "
+                "error_type={}",
+                type(error).__name__,
+            )
+            manifest = None
+            manifest_issues.append({
+                "code": "report_artifact_manifest_invalid",
+                "message": "发布门禁缺少已验收的产物清单，本修订不提供来源追溯；已有产物仍可下载。",
+            })
         try:
             gate = await self._dataset_publication_gate(run_context, result)
         except Exception as error:
@@ -927,31 +939,57 @@ class RuntimePublicationMixin:
             }
         manifest_identity = None
         if result.get("artifactManifest") is not None:
-            manifest_identity = ArtifactFile.model_validate(result["artifactManifest"])
-            content_bytes = await self.workspace_service.read_limited_regular_file(
-                self._scope(run_context)["threadId"],
-                manifest_identity.path,
-                max_bytes=manifest_identity.size,
-            )
-            if (
-                len(content_bytes) != manifest_identity.size
-                or hashlib.sha256(content_bytes).hexdigest() != manifest_identity.sha256
-                or ReportArtifactManifest.model_validate_json(content_bytes) != manifest
-                or manifest.markdown.path != result["markdownPath"]
-                or manifest.report_id != str(run_context.run_id)
-                or manifest.revision != result.get("revision")
-            ):
-                raise ReportingError(
-                    "report_artifact_manifest_changed", "已验收报告产物清单发生变化。"
+            try:
+                manifest_identity = ArtifactFile.model_validate(result["artifactManifest"])
+                content_bytes = await self.workspace_service.read_limited_regular_file(
+                    self._scope(run_context)["threadId"],
+                    manifest_identity.path,
+                    max_bytes=manifest_identity.size,
                 )
+                if (
+                    manifest is None
+                    or len(content_bytes) != manifest_identity.size
+                    or hashlib.sha256(content_bytes).hexdigest() != manifest_identity.sha256
+                    or ReportArtifactManifest.model_validate_json(content_bytes) != manifest
+                    or manifest.markdown.path != result["markdownPath"]
+                    or manifest.report_id != str(run_context.run_id)
+                    or manifest.revision != result.get("revision")
+                ):
+                    raise ReportingError(
+                        "report_artifact_manifest_changed", "已验收报告产物清单发生变化。"
+                    )
+            except Exception as error:
+                code = (
+                    error.code if isinstance(error, ReportingError)
+                    else "report_artifact_manifest_changed"
+                )
+                logger.warning(
+                    "report_publication_manifest_dropped code={} error_type={}",
+                    code,
+                    type(error).__name__,
+                )
+                manifest_identity = None
+                manifest = None
+                manifest_issues.append({
+                    "code": code,
+                    "message": "报告产物清单核验未通过，本修订不提供来源追溯；已有产物仍可下载。",
+                })
         elif result.get("artifactManifestPath") is not None:
-            raise ReportingError(
-                "report_artifact_manifest_invalid", "报告产物清单缺少已验收身份。"
-            )
+            manifest = None
+            manifest_issues.append({
+                "code": "report_artifact_manifest_invalid",
+                "message": "报告产物清单缺少已验收身份，本修订不提供来源追溯；已有产物仍可下载。",
+            })
+        if manifest_issues:
+            gate = {
+                **gate,
+                "formalReleaseAllowed": False,
+                "issues": [*gate.get("issues", []), *manifest_issues],
+            }
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
-        interactive_charts = _editor_interactive_charts(manifest)
+        interactive_charts = _editor_interactive_charts(manifest) if manifest is not None else {}
         if interactive_charts:
             editor_job = {**editor_job, "interactiveCharts": interactive_charts}
         return StepOutput(
