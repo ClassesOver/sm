@@ -108,6 +108,8 @@ class DeterministicDerivedMetricFact(AnalysisModel):
     period_role: PeriodRole = Field(alias="periodRole")
     numerator_metric: str = Field(alias="numeratorMetric", min_length=1, max_length=128)
     denominator_metric: str = Field(alias="denominatorMetric", min_length=1, max_length=128)
+    input_fact_ids: tuple[str, ...] = Field(default=(), alias="inputFactIds", max_length=200)
+    scope: dict[str, str] = Field(default_factory=dict, max_length=100)
     numerator: float
     denominator: float
     denominator_scale: float = Field(default=1, alias="denominatorScale", gt=0, allow_inf_nan=False)
@@ -1056,6 +1058,8 @@ def _derived_metrics(
                     periodRole=role,
                     numeratorMetric=numerator_code,
                     denominatorMetric=denominator_code,
+                    scope={key: value for key, value in numerator_fact.scope.items()
+                           if denominator_fact.scope.get(key) == value},
                     numerator=numerator,
                     denominator=denominator,
                     denominatorScale=float(denominator_scale),
@@ -1199,6 +1203,7 @@ def _reconciliations(
             left_total, right_total = left_fact.total, right_fact.total
             period_start = period_end = None
             at_period = None
+            period_window = None
             period_warnings: tuple[str, ...] = ()
             if left_fact.period_aggregation == "last" or right_fact.period_aggregation == "last":
                 if left_fact.period_aggregation != right_fact.period_aggregation:
@@ -1214,6 +1219,18 @@ def _reconciliations(
                     warnings.append(f"Profile 对账规则 {code} 无法解析共同期末，未生成对账。")
                     continue
                 at_period = parsed_end.value
+            elif left_fact.period_field is not None or right_fact.period_field is not None:
+                aligned = _aligned_period_totals(left_fact, right_fact, operation="对账")
+                if aligned is None:
+                    warnings.append(f"Profile 对账规则 {code} 无法确定共同连续期间，未生成对账。")
+                    continue
+                left_total, right_total, period_start, period_end, period_warnings = aligned
+                parsed_start = _parse_fact_period(period_start or "", left_fact.period_granularity)
+                parsed_end = _parse_fact_period(period_end or "", left_fact.period_granularity)
+                if parsed_start is None or parsed_end is None:
+                    warnings.append(f"Profile 对账规则 {code} 无法解析共同连续期间，未生成对账。")
+                    continue
+                period_window = (parsed_start.value, parsed_end.value)
             left_groups = _reconciliation_groups(
                 dataset_map[left_fact.dataset_id],
                 left_fact,
@@ -1221,6 +1238,7 @@ def _reconciliations(
                 grain,
                 profile_dimensions,
                 at_period=at_period,
+                period_window=period_window,
             )
             right_groups = _reconciliation_groups(
                 dataset_map[right_fact.dataset_id],
@@ -1229,6 +1247,7 @@ def _reconciliations(
                 grain,
                 profile_dimensions,
                 at_period=at_period,
+                period_window=period_window,
             )
             if left_groups is None or right_groups is None:
                 warnings.append(f"Profile 对账规则 {code} 无法按声明粒度 {grain} 映射动态字段。")
@@ -1240,15 +1259,24 @@ def _reconciliations(
                 key=lambda key: tuple((value is None, value or "") for value in key),
             )
             failed = 0
+            unavailable = 0
             for key in keys:
-                left = left_groups.get(key, 0.0)
-                right = right_groups.get(key, 0.0)
+                left = left_groups.get(key)
+                right = right_groups.get(key)
+                if left is None or right is None:
+                    failed += 1
+                    unavailable += 1
+                    continue
                 tolerance = max(
                     absolute_tolerance,
                     relative_tolerance * max(abs(left), abs(right)),
                 )
                 if abs(left - right) > tolerance:
                     failed += 1
+            availability_warnings = (
+                (f"对账规则 {code} 有 {unavailable} 个分组缺少可计算值（含单侧缺失），未将缺失值视为零。",)
+                if unavailable else (f"对账规则 {code} 没有可核对分组。",) if not keys else ()
+            )
             dataset_ids = tuple(dict.fromkeys((left_fact.dataset_id, right_fact.dataset_id)))
             hashes = tuple(dict.fromkeys((left_fact.dataset_sha256, right_fact.dataset_sha256)))
             result.append(
@@ -1268,12 +1296,13 @@ def _reconciliations(
                     relativeTolerance=relative_tolerance,
                     checkedGroupCount=len(keys),
                     failedGroupCount=failed,
-                    passed=failed == 0,
+                    passed=bool(keys) and failed == 0,
                     formula="abs(left-right) <= max(absoluteTolerance, relativeTolerance*max(abs(left),abs(right)))",
                     datasetIds=dataset_ids,
                     datasetSha256s=hashes,
                     profileHash=profile_hash,
-                    warnings=tuple(dict.fromkeys((*left_fact.warnings, *right_fact.warnings, *period_warnings)))[
+                    warnings=tuple(dict.fromkeys((*availability_warnings, *period_warnings,
+                                                   *left_fact.warnings, *right_fact.warnings)))[
                         :100
                     ],
                 )
@@ -1289,22 +1318,32 @@ def _reconciliation_groups(
     profile_dimensions: tuple[Mapping[str, Any], ...],
     *,
     at_period: date | None = None,
-) -> dict[tuple[str | None, ...], float] | None:
+    period_window: tuple[date, date] | None = None,
+) -> dict[tuple[str | None, ...], float | None] | None:
     frame, _warnings = _apply_scope(dataset, semantic)
     if fact.period_aggregation == "last":
         frame = _last_period_rows(frame, fact.period_field, at_period=at_period)
         if frame is None:
             return None
+    elif period_window is not None:
+        if fact.period_field is None:
+            return None
+        labels = [label for label in frame[fact.period_field].drop_nulls().unique().to_list()
+                  if (parsed := _parse_fact_period(str(label), fact.period_granularity)) is not None
+                  and period_window[0] <= parsed.value <= period_window[1]]
+        frame = frame.filter(pl.col(fact.period_field).is_in(labels))
     columns = _grain_columns(fact.field_ref, frame, grain, profile_dimensions)
     if columns is None:
         return None
-    result: dict[tuple[str | None, ...], float] = {}
+    result: dict[tuple[str | None, ...], float | None] = {}
     grouped, groups = _grouped_aggregation(
         frame, fact.field, columns, fact.aggregation,
     )
     for row in grouped.iter_rows(named=True):
-        if row["__valid"] > 0 and row["__value"] is not None:
-            result[tuple(row[column] for column in groups)] = _finite(row["__value"])
+        present = row["__valid"] > 0 or fact.aggregation in {"count", "count_distinct"}
+        result[tuple(row[column] for column in groups)] = (
+            _finite(row["__value"]) if present and row["__value"] is not None else None
+        )
     return result
 
 

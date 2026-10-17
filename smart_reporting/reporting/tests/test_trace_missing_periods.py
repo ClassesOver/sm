@@ -33,6 +33,7 @@ async def test_missing_period_placeholder_is_not_an_edited_value(
     )
     cell = SimpleNamespace(
         row_key="period:2025-12", column_key="收入（元）",
+        value_selector=None,
         fact_refs=(SimpleNamespace(),) if has_reference else (),
     )
     index = SimpleNamespace(tables=(SimpleNamespace(

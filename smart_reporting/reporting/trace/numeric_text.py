@@ -18,6 +18,7 @@ from ..hospital_operation.deterministic_analysis import (
 )
 from ..units import MONEY_UNITS as _MONEY_UNITS
 from ..units import unit_scales as _unit_scales
+from .fact_index import fact_binding_records
 
 # 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
 # （“跌幅-5%”“上涨-654万元”曾因词表不全原样发布）。
@@ -327,9 +328,20 @@ def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
 
 
 def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
+    contents = tuple(contents)
+    records = {}
+    conflicts = set()
+    for bundle in frozen_fact_bundles(contents):
+        for fact_id, record in fact_binding_records(bundle).items():
+            if fact_id in records and records[fact_id] != record:
+                conflicts.add(fact_id)
+            records[fact_id] = record
     catalog: dict[str, str] = {}
     originals: dict[str, tuple[Decimal, str | None, str | None]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
+        if any(fact_id in conflicts for fact_id in re.findall(r"fact-[0-9a-f]{16}", token)):
+            catalog[token] = "数值待核实"
+            continue
         original = (Decimal(str(value)), unit, target)
         if token in originals:
             # 必须比较未舍入原值；显示均为 30.00 不能证明 30.001 与 30.002 一致。
