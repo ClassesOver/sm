@@ -4,8 +4,10 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import anyio
 import pytest
 
+from smart_reporting.reporting.data_source import sql_validation
 from smart_reporting.reporting.data_source.starrocks import StarRocksDataSourceAdapter
 from smart_reporting.reporting.models import ReportingError
 
@@ -141,3 +143,30 @@ def test_starrocks查询超过字节上限时不再读取后续批次() -> None:
 
     assert captured.value.code == "query_result_too_large"
     assert source.fetch_sizes == [10_000]
+
+
+@pytest.mark.parametrize("method", ["query", "materialize"])
+@pytest.mark.parametrize(
+    "sql, normalized",
+    [
+        ("  SELECT 1;\n", "SELECT 1"),
+        ("SELECT ';' AS value;;", "SELECT ';' AS value"),
+        ("SELECT 1 -- trailing comment\n;", "SELECT 1 -- trailing comment"),
+    ],
+)
+def test_starrocks_parses_exactly_the_sql_sent_to_database(monkeypatch, method, sql, normalized):
+    adapter, _ = _adapter(((1,),))
+    adapter.config.database = "rj"
+    adapter.allowed_tables = ()
+    parsed = []
+    original = sql_validation.parse
+
+    def record_parse(value, **kwargs):
+        parsed.append(value)
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(sql_validation, "parse", record_parse)
+    anyio.run(getattr(adapter, method), sql)
+
+    assert parsed == [normalized]
+    assert adapter._engine.connection.statements == ["SET query_timeout = 30", normalized]

@@ -26,11 +26,16 @@ _DANGEROUS_FUNCTIONS = frozenset(
 def validate_starrocks_read_only_sql(
     sql: str, *, database: str, allowed_tables: tuple[str, ...]
 ) -> str:
-    normalized = str(sql or "").strip().rstrip(";").strip()
-    if not normalized or len(normalized.encode()) > MAX_QUERY_BYTES:
+    raw = str(sql or "")
+    # 先限制原始输入，避免尾部空白/分号绕过上限并进入解析器。
+    if len(raw) > MAX_QUERY_BYTES or len(raw.encode()) > MAX_QUERY_BYTES:
+        raise ReportingError("invalid_sql", "SQL 必须是非空且不超过 256 KiB 的查询。")
+    normalized = raw.strip().rstrip(";").strip()
+    if not normalized:
         raise ReportingError("invalid_sql", "SQL 必须是非空且不超过 256 KiB 的查询。")
     try:
-        statements = parse(sql, read="mysql")
+        # 返回值会原样传给数据库；只读、函数和表白名单校验必须针对同一文本。
+        statements = parse(normalized, read="mysql")
     except Exception as error:
         raise ReportingError("invalid_sql", "SQL 语法无效。") from error
     if len(statements) != 1 or statements[0] is None:
