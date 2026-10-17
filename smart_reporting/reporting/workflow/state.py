@@ -75,7 +75,8 @@ class ReportingStateVersionUnsupported(ReportingStateError):
         super().__init__("report_state_version_unsupported", message)
 
 
-# 历史命令名别名 → 规范名。reducer 只按规范名分支；别名在构造命令时一次性归一。
+# 历史命令名别名 → 规范名。reducer 入口一次性归一后只按规范名分支；命令对象本身保持原样，
+# 以免改变已持久化命令的幂等指纹（指纹按调用方提交的原始 name/payload 计算）。
 _COMMAND_NAME_ALIASES = {
     "set_plan": "set_analysis_plan",
     "analysis_item_completed": "complete_analysis_item",
@@ -105,24 +106,15 @@ class ReportingCommand(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     command_id: str = Field(alias="commandId", min_length=1, max_length=256)
 
-    @model_validator(mode="before")
-    @classmethod
-    def canonicalize(cls, value: Any) -> Any:
-        if not isinstance(value, Mapping):
-            return value
-        normalized = dict(value)
-        name = normalized.get("name")
-        if isinstance(name, str):
-            normalized["name"] = _COMMAND_NAME_ALIASES.get(name, name)
-        payload = normalized.get("payload")
-        if isinstance(payload, Mapping) and any(key in payload for key in _PAYLOAD_KEY_ALIASES):
-            canonical = dict(payload)
-            for alias, key in _PAYLOAD_KEY_ALIASES.items():
-                if alias in canonical:
-                    aliased = canonical.pop(alias)
-                    canonical.setdefault(key, aliased)
-            normalized["payload"] = canonical
-        return normalized
+    def canonical(self) -> tuple[str, dict[str, Any]]:
+        """返回 reducer 使用的规范命令名与 payload，不修改命令本身。"""
+
+        payload = dict(self.payload)
+        for alias, key in _PAYLOAD_KEY_ALIASES.items():
+            if alias in payload:
+                aliased = payload.pop(alias)
+                payload.setdefault(key, aliased)
+        return _COMMAND_NAME_ALIASES.get(self.name, self.name), payload
 
     @classmethod
     def from_value(cls, value: ReportingCommand | Mapping[str, Any] | str) -> ReportingCommand:
@@ -331,8 +323,7 @@ def apply(
     if command_value.command_id in applied:
         return ReportingReducerResult(state=state, idempotent=True)
 
-    name = command_value.name
-    arguments = command_value.payload
+    name, arguments = command_value.canonical()
     effects: list[ReportingEffect] = []
     next_phase = state.phase
 
