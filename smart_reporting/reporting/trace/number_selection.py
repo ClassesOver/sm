@@ -28,6 +28,12 @@ _YEAR_OFFSETS = {"次年": 1, "翌年": 1, "来年": 1, "上年": -1, "去年": 
 _MONTH_OFFSETS = {"次月": 1, "翌月": 1, "下月": 1, "上月": -1, "当月": 0, "本月": 0}
 
 
+_PERIOD_WORDS = re.compile(
+    r'\d{1,2}月|\d{4}年|\d{1,2}日|月份|季度|当月|同月|该月|上月|本月|次月|首月|末月|'
+    r'各月|每月|逐月|月度|介于|区间|之间|波动|至'
+)
+
+
 def _written_period(sentence, fact):
     """按出现顺序继承省略的年/月，后一个简写期间覆盖前一个完整期间。"""
     mentions = [(match, pattern) for pattern in (_DAY_PERIOD, _PERIOD, _SHORT_DAY_PERIOD, _SHORT_PERIOD)
@@ -169,6 +175,12 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             warnings.append('数值引用身份冲突：同一事实身份存在不同记录，需复核。')
             return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
         sentence = re.split(r'[。！？；;\n]', markdown[:match.start()])[-1]
+        # 单期数值必须写在该期间名下：回放中“普通住院业务预算减实际的差额为10.93亿元”引用的是
+        # 3月实际收入，句中没有任何期间。区间与逐月表述（“介于…至…”“各月”）不在此列。
+        if (match[2].startswith('periodValues.') and len(original.period_values) > 1
+                and not _PERIOD_WORDS.search(sentence + markdown[match.end():match.end() + 12])):
+            warnings.append('数值引用期间缺失：单期数值所在句未写出期间，已撤销引用，需复核。')
+            return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
         clause = re.split(r'[，,]', sentence)[-1]
         named = list(names.finditer(clause))
         if not named:
