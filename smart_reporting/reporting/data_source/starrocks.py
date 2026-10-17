@@ -258,7 +258,11 @@ class StarRocksDataSourceAdapter:
                 connection.execute(
                     text(f"SET query_timeout = {self.config.statement_timeout_seconds}")
                 )
-                result = connection.execution_options(stream_results=True).execute(text(sql))
+                # SQL 已完整校验；直接交给驱动，避免 :name 字面量被识别为绑定参数。
+                # 无参数调用也防止 MySQL 驱动把字面量中的 % 作为占位符展开。
+                result = connection.execution_options(
+                    stream_results=True, no_parameters=True
+                ).exec_driver_sql(sql)
                 columns = tuple(str(name) for name in result.keys())
                 byte_count = 2
                 if byte_count > self.config.max_bytes:
@@ -294,7 +298,10 @@ class StarRocksDataSourceAdapter:
                 connection.execute(
                     text(f"SET query_timeout = {self.config.statement_timeout_seconds}")
                 )
-                result = connection.execution_options(stream_results=True).execute(text(sql))
+                # 与 query 使用相同的无参数执行契约，保留已校验 SQL 的原始字面量。
+                result = connection.execution_options(
+                    stream_results=True, no_parameters=True
+                ).exec_driver_sql(sql)
                 columns = tuple(str(name) for name in result.keys())
                 materializer = CsvMaterializer(
                     columns,

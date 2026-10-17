@@ -240,14 +240,17 @@ def one_sided_gap_warnings(
                 ],
             }
             for direction, labels in directions.items():
-                if not labels or any(
-                    label in text
-                    or (
-                        re.fullmatch(r"\d{4}-\d{2}-01", label)
-                        and re.search(rf"(?<!\d){re.escape(label[:7])}(?![\d-])", text)
+                undisclosed = [
+                    label for label in labels
+                    if not (
+                        label in text
+                        or (
+                            re.fullmatch(r"\d{4}-\d{2}-01", label)
+                            and re.search(rf"(?<!\d){re.escape(label[:7])}(?![\d-])", text)
+                        )
                     )
-                    for label in labels
-                ):
+                ]
+                if not undisclosed:
                     continue
                 results.append(
                     {
@@ -256,8 +259,8 @@ def one_sided_gap_warnings(
                         "direction": direction,
                         "currentColumn": current_name,
                         "priorColumn": prior_name,
-                        "count": len(labels),
-                        "samples": labels[:MAX_MISSING_SAMPLES],
+                        "count": len(undisclosed),
+                        "samples": undisclosed[:MAX_MISSING_SAMPLES],
                     }
                 )
     return results

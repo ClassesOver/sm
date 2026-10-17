@@ -181,6 +181,36 @@ describe('createHistoryController', () => {
     expect(loadRevision).toHaveBeenCalledWith(2)
   })
 
+  it('does not restore a previous selection while the next revision loads', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const restore = vi.fn()
+    let resolve!: (markdown: string) => void
+    const pending = new Promise<string>((done) => { resolve = done })
+    const controller = createHistoryController(document.body, restore, () => pending)
+    controller.replace([
+      { label: '版本 1', markdown: '# 旧版本', revision: 1 },
+      { label: '版本 2', markdown: '', revision: 2 },
+    ])
+    controller.open()
+    document.querySelector<HTMLButtonElement>('.history-item')!.click()
+    const select = document.querySelector<HTMLSelectElement>('.history-compare-select')!
+    select.value = '1'
+    select.dispatchEvent(new Event('change'))
+    const button = document.querySelector<HTMLButtonElement>('.history-restore')!
+    try {
+      expect(button.hidden).toBe(true)
+      button.click()
+      expect(restore).not.toHaveBeenCalled()
+      resolve('# 新版本')
+      await vi.waitFor(() => expect(button.hidden).toBe(false))
+      button.click()
+      expect(restore).toHaveBeenCalledExactlyOnceWith('# 新版本', 2)
+    } finally {
+      resolve('# 新版本')
+      confirm.mockRestore()
+    }
+  })
+
   it('explains a failed revision load instead of silently keeping the old preview', async () => {
     const loadRevision = vi.fn(async (revision: number) => {
       if (revision === 2) throw new TypeError('network')

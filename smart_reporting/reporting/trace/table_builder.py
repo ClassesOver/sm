@@ -78,6 +78,8 @@ def build_table_trace(
     selected_fact_ids = spec.get("factIds", {})
     for fact in bundle.metrics:
         for code in fact.metric_codes:
+            if code not in metric_codes:
+                continue
             if code in selected_fact_ids and fact.fact_id != selected_fact_ids[code]:
                 continue
             # 同一 code 多个 fact（多数据集/多范围）时拒绝装配，避免猜。
@@ -108,21 +110,24 @@ def build_table_trace(
                     "request_invalid", f"表格列引用了不存在的指标: {code}"
                 )
             value = None
+            value_selector = "total"
             if period:
                 match = next(
-                    (pv for pv in fact.period_values if pv.period == period), None
+                    ((index, pv) for index, pv in enumerate(fact.period_values) if pv.period == period), None
                 )
                 if match is None and not spec.get("allowMissingPeriods", False):
                     raise ReportingError(
                         "request_invalid",
                         f"行 {row_key} 的期间 {period} 在指标 {code} 中不存在。",
                     )
-                value = float(match.value) if match is not None else None
+                value = float(match[1].value) if match is not None else None
+                value_selector = f"periodValues.{match[0]}" if match is not None else None
             else:
                 value = _metric_value(fact, "total")
             cell = TableCellBindingV1(
                 rowKey=row_key,
                 columnKey=spec.get("columnLabels", {}).get(code, code),
+                valueSelector=value_selector,
                 factRefs=(
                     FactRefV1(
                         analysisId=bundle.analysis_id,
@@ -328,6 +333,7 @@ def build_analysis_table(
                 )
                 cells.append(TableCellBindingV1(
                     rowKey=row_key, columnKey=column,
+                    valueSelector=field,
                     factRefs=(FactRefV1(
                         analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
                         jsonPointer=fact_pointer(bundle, fact.fact_id) or "",

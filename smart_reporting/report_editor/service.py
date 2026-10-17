@@ -1655,7 +1655,7 @@ class ReportEditorService:
         running = [job.task for job in self._export_jobs.values() if not job.task.done()]
         for task in running:
             task.cancel()
-        await asyncio.gather(*running, self.trace.exports.aclose(), return_exceptions=True)
+        await asyncio.gather(*running, self.trace.aclose(), return_exceptions=True)
 
     @staticmethod
     def _log_export_failure(

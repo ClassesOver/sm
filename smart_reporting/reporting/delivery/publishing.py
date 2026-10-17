@@ -28,14 +28,15 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    and_,
     delete,
     func,
     insert,
+    or_,
     select,
     text,
     update,
 )
-from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ...workspace import (
@@ -258,12 +259,8 @@ async def _lock_publication(connection: Any) -> None:
     )
 
 
-async def _artifact_has_active_grant(
-    connection: Any,
-    artifact: RowMapping,
-    *,
-    now: datetime,
-) -> bool:
+def _active_artifact_grant(*, now: datetime) -> Any:
+    artifact = report_artifact_files_v1.c
     conditions = [
         report_download_grants_v2.c.database_name == artifact["database_name"],
         report_download_grants_v2.c.user_id == artifact["user_id"],
@@ -276,30 +273,25 @@ async def _artifact_has_active_grant(
         report_download_grants_v2.c.revoked_at.is_(None),
         report_download_grants_v2.c.expires_at > now,
     ]
-    artifact_type = artifact["artifact"]
-    if artifact_type == "pdf":
-        conditions.extend(
-            (
-                report_download_grants_v2.c.pdf_path == artifact["path"],
-                report_download_grants_v2.c.pdf_size == artifact["size"],
-                report_download_grants_v2.c.pdf_sha256 == artifact["sha256"],
-            )
-        )
-    elif artifact_type == "word":
-        conditions.extend(
-            (
-                report_download_grants_v2.c.word_path == artifact["path"],
-                report_download_grants_v2.c.word_size == artifact["size"],
-                report_download_grants_v2.c.word_sha256 == artifact["sha256"],
-            )
-        )
-    else:
-        return False
+    conditions.append(or_(
+        and_(
+            artifact.artifact == "pdf",
+            report_download_grants_v2.c.pdf_path == artifact.path,
+            report_download_grants_v2.c.pdf_size == artifact.size,
+            report_download_grants_v2.c.pdf_sha256 == artifact.sha256,
+        ),
+        and_(
+            artifact.artifact == "word",
+            report_download_grants_v2.c.word_path == artifact.path,
+            report_download_grants_v2.c.word_size == artifact.size,
+            report_download_grants_v2.c.word_sha256 == artifact.sha256,
+        ),
+    ))
     return (
-        await connection.scalar(
-            select(report_download_grants_v2.c.grant_hash).where(*conditions).limit(1)
-        )
-        is not None
+        select(report_download_grants_v2.c.grant_hash)
+        .where(*conditions)
+        .correlate(report_artifact_files_v1)
+        .exists()
     )
 
 
@@ -390,14 +382,15 @@ class SqlAlchemyDownloadGrantRepository:
             candidates = (
                 await connection.execute(
                     select(report_artifact_files_v1)
-                    .where(report_artifact_files_v1.c.created_at <= cutoff)
+                    .where(
+                        report_artifact_files_v1.c.created_at <= cutoff,
+                        ~_active_artifact_grant(now=now),
+                    )
                     .order_by(report_artifact_files_v1.c.created_at)
                     .limit(REPORT_ARTIFACT_CLEANUP_BATCH)
                 )
             ).mappings()
             for artifact in candidates:
-                if await _artifact_has_active_grant(connection, artifact, now=now):
-                    continue
                 artifact_key = cast(str, artifact["artifact_key"])
                 await connection.execute(
                     delete(report_artifact_chunks_v1).where(
@@ -885,8 +878,8 @@ def publication_result(
     raw_grant: str,
     grant: ReportDownloadGrant,
     base_url: str,
-    editor_raw_grant: str,
-    editor_expires_at: datetime,
+    editor_raw_grant: str | None,
+    editor_expires_at: datetime | None,
     source_warnings: list[dict[str, object]] | None = None,
     task_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
@@ -907,10 +900,10 @@ def publication_result(
             "size": grant.word_size,
             "sha256": grant.word_sha256,
         },
-        "editor": {
+        **({"editor": {
             "openUrl": f"{base_url}/reports/v1/editor/open/{editor_raw_grant}",
             "expiresAt": editor_expires_at.isoformat(),
-        },
+        }} if editor_raw_grant is not None and editor_expires_at is not None else {}),
         "sourceWarnings": list(source_warnings or ()),
         "codingReceipts": list(task_receipts or ()),
     }

@@ -11,6 +11,7 @@ resourceId → 工作区相对路径；预览与列清单流式复制并校验 s
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -157,6 +158,7 @@ class ReportEditorTraceService:
         self._drilldown = TraceDrilldownService(secret=cursor_secret)
         self._drilldown_limiter = anyio.CapacityLimiter(4)
         self._drilldown_large_limiter = anyio.CapacityLimiter(1)
+        self._drilldown_tasks: set[asyncio.Task[Any]] = set()
         self._validation_limiter = anyio.CapacityLimiter(2)
         self.exports = TraceDerivedExportService(workspace)
 
@@ -552,16 +554,34 @@ class ReportEditorTraceService:
 
         try:
             with anyio.fail_after(_DRILLDOWN_TIMEOUT_SECONDS):
-                page = await anyio.to_thread.run_sync(
-                    read_drilldown,
-                    abandon_on_cancel=True,
-                    limiter=limiter,
+                # 等待名额也计入超时；尚未取得名额的请求不能留下后台排队任务。
+                borrower = object()
+                await limiter.acquire_on_behalf_of(borrower)
+                execution = asyncio.create_task(
+                    anyio.to_thread.run_sync(read_drilldown)
                 )
+                self._drilldown_tasks.add(execution)
+
+                def finished(task: asyncio.Task[Any]) -> None:
+                    limiter.release_on_behalf_of(borrower)
+                    self._drilldown_tasks.discard(task)
+                    if not task.cancelled():
+                        task.exception()
+
+                # 超时或调用方取消都不能终止同步线程；实际完成后才释放名额。
+                execution.add_done_callback(finished)
+                page = await asyncio.shield(execution)
         except TimeoutError as error:
             raise ReportingError(
                 "resource_limit_exceeded", "下钻计算超时，请稍后重试。"
             ) from error
         return page.to_payload()
+
+    async def aclose(self) -> None:
+        """关闭时等待已脱离请求的下钻线程及派生导出完成。"""
+        await asyncio.gather(
+            self.exports.aclose(), *self._drilldown_tasks, return_exceptions=True
+        )
 
     # ------------------------------------------------------------------
     # 预览与下载
@@ -918,6 +938,14 @@ class ReportEditorTraceService:
 
         async def _fact_value_of(ref: Any, row_key: str) -> Any:
             entry = await _fact_entry_of(ref)
+            if entry is not None and (selection := re.fullmatch(r"periodValues\.(\d+)", row_key)):
+                values = entry.get("periodValues") or ()
+                position = int(selection[1])
+                return values[position].get("value") if position < len(values) and isinstance(values[position], dict) else None
+            if entry is not None and row_key == "total":
+                return entry.get("total")
+            if entry is not None and row_key in {"currentTotal", "baselineTotal", "change", "changeRate"}:
+                return "—" if entry.get(row_key) is None else entry[row_key]
             if row_key.startswith("comparison:") and entry is not None:
                 field = row_key.rsplit(":", 1)[-1]
                 if field not in {"currentTotal", "baselineTotal", "change", "changeRate"} or field not in entry:
@@ -935,7 +963,7 @@ class ReportEditorTraceService:
             entry = await _fact_entry_of(ref)
             if entry is None:
                 return None
-            if row_key.startswith("comparison:"):
+            if row_key.startswith("comparison:") or row_key in {"currentTotal", "baselineTotal", "change", "changeRate"}:
                 field = row_key.rsplit(":", 1)[-1]
                 if field == "changeRate":
                     return "%"
@@ -1340,10 +1368,11 @@ class ReportEditorTraceService:
                     value: Any = None
                     unit: str | None = None
                     for ref in cell.fact_refs:
-                        value = await fact_value_of(ref, cell.row_key)
+                        selector = cell.value_selector or cell.row_key
+                        value = await fact_value_of(ref, selector)
                         if value is not None:
                             if fact_unit_of is not None:
-                                unit = await fact_unit_of(ref, cell.row_key)
+                                unit = await fact_unit_of(ref, selector)
                             break
                     frozen_values.append((cell, value, unit))
                 for cell, fact_value, fact_unit in frozen_values:

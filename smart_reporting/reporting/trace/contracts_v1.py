@@ -16,9 +16,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -63,7 +64,7 @@ def validate_json_pointer(value: str) -> str:
 def utc_now_timestamp() -> str:
     """当前 UTC 时间的契约时间戳（ISO8601，秒级，Z 结尾）。"""
 
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +118,8 @@ VerificationStatusV1 = Literal["verified", "not_checked", "failed", "not_applica
 EvidenceKindV1 = Literal["observed", "computed", "estimated", "interpretation"]
 ReproducibilityV1 = Literal["reproducible", "limited", "unavailable"]
 
-#: 快照内单维度下钻算法。``semi_additive_last`` 表示先在每个分组中选择
-#: 最新期间，再对该期间的值求和；期间本身不能作为可选下钻维度。
+#: 快照内单维度下钻算法。``semi_additive_last`` 表示全部分组采用同一最新
+#: 登记期间，再对该期间的值求和；期间本身不能作为可选下钻维度。
 DrilldownAggregationV1 = Literal[
     "sum",
     "count",
@@ -250,6 +251,7 @@ class DrilldownMetricV1(StrictModel):
     denominator_field: str | None = Field(
         default=None, alias="denominatorField", max_length=128
     )
+    denominator_scale: float = Field(default=1, alias="denominatorScale", gt=0, allow_inf_nan=False)
     period_field: str | None = Field(default=None, alias="periodField", max_length=128)
     period_start: str | None = Field(default=None, alias="periodStart", max_length=128)
     period_end: str | None = Field(default=None, alias="periodEnd", max_length=128)
@@ -285,6 +287,7 @@ class DrilldownMetricV1(StrictModel):
             not self.value_field
             or self.numerator_field is not None
             or self.denominator_field is not None
+            or self.denominator_scale != 1
         ):
             raise ValueError("非 ratio 下钻必须且只能声明 valueField")
         if self.aggregation == "semi_additive_last":
@@ -441,6 +444,8 @@ class TableCellBindingV1(StrictModel):
 
     row_key: str = Field(alias="rowKey", pattern=TRACE_STRUCTURE_KEY_PATTERN)
     column_key: str = Field(alias="columnKey", pattern=TRACE_STRUCTURE_KEY_PATTERN)
+    value_selector: str | None = Field(default=None, alias="valueSelector", max_length=128,
+                                       pattern=r"^(?:total|periodValues\.\d+|currentTotal|baselineTotal|change|changeRate)$")
     fact_refs: tuple[FactRefV1, ...] = Field(
         default=(), alias="factRefs", max_length=50
     )

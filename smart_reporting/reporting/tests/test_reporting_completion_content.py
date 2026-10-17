@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+
 import pytest
 
 from smart_reporting.reporting.agent import _completed_report_content
+from smart_reporting.reporting.workflow.controller import ReportWorkflowController
+from smart_reporting.reporting_mcp.contracts import ReportingOperationResult
 
 
 def _completed_payload(**overrides: object) -> dict[str, object]:
@@ -77,6 +81,38 @@ def test_completed_report_content_states_the_specific_validation_reasons():
     assert "[下载 PDF](https://reports.example/report.pdf)" in content
     assert "PDF 与 Word 页数不一致。" in content
     assert "font_missing" in content
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_controller_completion_preserves_gate_reasons_and_warnings(allowed):
+    payload = _completed_payload(publicationGate={
+        "formalReleaseAllowed": allowed,
+        "issues": [] if allowed else [{
+            "code": "artifact_not_validated", "message": "验收未通过。",
+            "details": {"validationIssues": [{"message": "PDF 与 Word 页数不一致。"}]},
+        }],
+        "warnings": [{
+            "code": "report_section_block_unverified_numbers", "message": "需核对。",
+            "details": {"count": 2},
+        }],
+    })
+    for kind in ("pdf", "word"):
+        payload["report"][kind].update(
+            path=f"报告.{kind}", expiresAt="2026-11-01T00:00:00Z", size=12, sha256="a" * 64,
+        )
+    payload["report"]["editor"]["expiresAt"] = "2026-11-01T00:00:00Z"
+    result = ReportWorkflowController._result(
+        SimpleNamespace(status="completed", review=None),
+        SimpleNamespace(content=payload["report"]),
+    )
+    # The actual controller result must survive the MCP contract too.
+    validated = ReportingOperationResult.model_validate({"operationId": "operation-1", **result})
+    content = _completed_report_content(validated.model_dump(mode="json", by_alias=True))
+    assert "[下载 PDF](https://reports.example/report.pdf)" in content
+    assert "[下载 Word](https://reports.example/report.docx)" in content
+    assert "2 处缺少登记依据的数值" in content
+    assert ("PDF 与 Word 页数不一致。" in content) is (not allowed)
+    assert ("验收或发布检查未通过" in content) is (not allowed)
 
 
 def test_completed_report_content_discloses_residual_content_review_as_soft_notice():

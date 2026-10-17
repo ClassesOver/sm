@@ -267,6 +267,8 @@ export function createHistoryController(
       return
     }
     const sequence = ++clickSequence
+    selected = null
+    restoreButton.hidden = true
     const comparisonSnapshot = snapshots[compareIndex]!
     const before = revisionContent(baseIndex === null || baseIndex < 0 ? undefined : snapshots[baseIndex])
     const after = revisionContent(comparisonSnapshot)
@@ -302,7 +304,18 @@ export function createHistoryController(
       updateItemSelection()
     }
     if (typeof before === 'string' && typeof after === 'string') apply(before, after)
-    else void Promise.all([before, after]).then(([previous, current]) => apply(previous, current), failed)
+    else {
+      previewLabel.textContent = comparisonSnapshot.label
+      const loading = document.createElement('p')
+      loading.setAttribute('role', 'status')
+      loading.textContent = '正在加载版本内容…'
+      diff.replaceChildren(loading)
+      previewContent.hidden = false
+      previewEmpty.hidden = true
+      populateComparisonControls()
+      updateItemSelection()
+      void Promise.all([before, after]).then(([previous, current]) => apply(previous, current), failed)
+    }
   }
 
   const render = () => {

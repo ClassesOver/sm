@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
@@ -57,6 +57,7 @@ class ReportingReviewInput(ReportingGetInput):
 
 
 class ReportingArtifactLink(StrictModel):
+    path: str | None = None
     download_url: HttpUrl = Field(alias="downloadUrl")
     expires_at: datetime = Field(alias="expiresAt")
     size: int = Field(gt=0)
@@ -70,10 +71,12 @@ class ReportingEditorLink(StrictModel):
 
 class ReportingPublishedReport(StrictModel):
     report_id: str = Field(alias="reportId", min_length=1, max_length=128)
+    report_title: str | None = Field(default=None, alias="reportTitle")
     revision: int = Field(ge=0)
     pdf: ReportingArtifactLink
     word: ReportingArtifactLink
-    editor: ReportingEditorLink
+    editor: ReportingEditorLink | None = None
+    publication_gate: dict[str, Any] | None = Field(default=None, alias="publicationGate")
 
 
 class ReportingOperationResult(StrictModel):

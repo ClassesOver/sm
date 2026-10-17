@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal
 from io import BytesIO
 from typing import Any, Literal
 
 import polars as pl
 from pydantic import Field
 
+from ..units import unit_conversion_scale
 from .detailed_analysis import AnalysisModel, DatasetAnalysisContext, DetailedAnalysisItem
 
 Aggregation = Literal["sum", "average", "min", "max", "count", "count_distinct"]
@@ -27,6 +32,7 @@ class PeriodValue(AnalysisModel):
 class GroupContribution(AnalysisModel):
     group: str = Field(min_length=1, max_length=512)
     value: float
+    group_values: dict[str, str | None] = Field(default_factory=dict, alias="groupValues", max_length=100)
 
 
 class DeterministicMetricFact(AnalysisModel):
@@ -43,6 +49,8 @@ class DeterministicMetricFact(AnalysisModel):
     display_name: str | None = Field(default=None, alias="displayName", max_length=2000)
     aliases: tuple[str, ...] = Field(default=(), max_length=100)
     aggregation: Aggregation
+    # 空值兼容旧快照及可跨期相加的流量指标；时点指标按共同期末汇总。
+    period_aggregation: Literal["last"] | None = Field(default=None, alias="periodAggregation")
     unit: str | None = Field(default=None, max_length=64)
     formula: str = Field(min_length=1, max_length=1000)
     scope: dict[str, str] = Field(default_factory=dict, max_length=100)
@@ -55,6 +63,8 @@ class DeterministicMetricFact(AnalysisModel):
     minimum: float | None = None
     maximum: float | None = None
     missing_count: int = Field(alias="missingCount", ge=0)
+    # 旧快照未登记此项；不能由 periodValues 数量反推所有原始行都有期间。
+    period_missing_count: int | None = Field(default=None, alias="periodMissingCount", ge=0)
     zero_count: int = Field(alias="zeroCount", ge=0)
     negative_count: int = Field(alias="negativeCount", ge=0)
     period_values: tuple[PeriodValue, ...] = Field(
@@ -78,12 +88,16 @@ class DeterministicComparison(AnalysisModel):
     baseline_dataset_sha256: str = Field(alias="baselineDatasetSha256", pattern=r"^[0-9a-f]{64}$")
     current_total: float = Field(alias="currentTotal")
     baseline_total: float = Field(alias="baselineTotal")
+    baseline_scale: float = Field(default=1, alias="baselineScale", gt=0, allow_inf_nan=False)
     change: float
     change_rate: float | None = Field(default=None, alias="changeRate")
     formula: str = Field(min_length=1, max_length=1000)
     unit: str | None = Field(default=None, max_length=64)
+    period_granularity: Literal["day", "month", "year"] | None = Field(default=None, alias="periodGranularity")
     period_start: str | None = Field(default=None, alias="periodStart", max_length=128)
     period_end: str | None = Field(default=None, alias="periodEnd", max_length=128)
+    baseline_period_start: str | None = Field(default=None, alias="baselinePeriodStart", max_length=128)
+    baseline_period_end: str | None = Field(default=None, alias="baselinePeriodEnd", max_length=128)
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
 
@@ -96,11 +110,13 @@ class DeterministicDerivedMetricFact(AnalysisModel):
     denominator_metric: str = Field(alias="denominatorMetric", min_length=1, max_length=128)
     numerator: float
     denominator: float
+    denominator_scale: float = Field(default=1, alias="denominatorScale", gt=0, allow_inf_nan=False)
     value: float | None = None
     percentage: float | None = None
     difference: float
     unit: str | None = Field(default=None, max_length=64)
     formula: str = Field(min_length=1, max_length=1000)
+    period_granularity: Literal["day", "month", "year"] | None = Field(default=None, alias="periodGranularity")
     period_start: str | None = Field(default=None, alias="periodStart", max_length=128)
     period_end: str | None = Field(default=None, alias="periodEnd", max_length=128)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=20)
@@ -113,6 +129,9 @@ class DeterministicReconciliationFact(AnalysisModel):
     fact_id: str | None = Field(default=None, alias="factId", pattern=r"^fact-[0-9a-f]{16}$")
     code: str = Field(min_length=1, max_length=128)
     period_role: PeriodRole = Field(alias="periodRole")
+    period_granularity: Literal["day", "month", "year"] | None = Field(default=None, alias="periodGranularity")
+    period_start: str | None = Field(default=None, alias="periodStart", max_length=128)
+    period_end: str | None = Field(default=None, alias="periodEnd", max_length=128)
     left_metric: str = Field(alias="leftMetric", min_length=1, max_length=128)
     right_metric: str = Field(alias="rightMetric", min_length=1, max_length=128)
     grain: tuple[str, ...] = Field(min_length=1, max_length=20)
@@ -187,7 +206,8 @@ def build_deterministic_analysis_bundle(
     warnings: list[str] = list(analysis.limitations)
     for dataset_id, content, context, period_roles in datasets:
         try:
-            frame = pl.read_csv(BytesIO(content))
+            # CSV 标识、固定范围和分组键保留原文；只在数值聚合时显式转换。
+            frame = pl.read_csv(BytesIO(content), infer_schema=False)
         except (UnicodeDecodeError, pl.exceptions.PolarsError):
             warnings.append(f"Dataset {dataset_id} 无法解析为 CSV，未生成确定性事实。")
             continue
@@ -308,6 +328,11 @@ def _dataset_facts(
         return facts, selected_semantics, warnings
 
     period_field = _period_field(dataset.frame, dataset.context)
+    source_grain = dataset.context.period_granularities.get(period_field or "")
+    period_granularity = (
+        analysis.series_granularity or "day" if source_grain == "date"
+        else source_grain or analysis.series_granularity
+    )
     group_fields = tuple(
         field for field in analysis.organization_grain if field in dataset.frame.columns
     )
@@ -326,14 +351,31 @@ def _dataset_facts(
         field = str(semantic.get("datasetField") or field_ref.rsplit(".", 1)[-1])
         aggregation = _aggregation(semantic)
         scoped_frame, scope_warnings = _apply_scope(dataset, semantic)
-        period_values = _period_values(scoped_frame, field, period_field, aggregation)
+        additive = {str(item).casefold() for item in semantic.get("additiveAcross", ())}
+        period_aggregation = (
+            "last" if aggregation == "sum" and period_field and additive
+            and period_field.casefold() not in additive else None
+        )
+        value_frame = scoped_frame
+        if period_aggregation == "last":
+            value_frame = _last_period_rows(scoped_frame, period_field)
+            if value_frame is None:
+                warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 无法确定唯一期末口径，未生成时点事实。")
+                continue
+        period_values = _period_values(
+            scoped_frame, field, period_field, aggregation,
+            period_granularity=period_granularity,
+        )
         scoped_frame, period_values, period_warnings = _warn_trailing_zero_periods(
             scoped_frame,
             period_field,
             period_values,
             enabled="current" in dataset.period_roles,
         )
-        series = scoped_frame[field]
+        series = value_frame[field]
+        period_missing_count = (
+            scoped_frame[period_field].null_count() if period_field is not None else None
+        )
         value = _aggregate(series, aggregation)
         if value is None:
             warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 没有可计算值。")
@@ -341,7 +383,7 @@ def _dataset_facts(
         numeric = series.cast(pl.Float64, strict=False)
         valid_numeric = numeric.drop_nulls()
         periods = period_values
-        top, bottom = _group_contributions(scoped_frame, field, group_fields, aggregation)
+        top, bottom = _group_contributions(value_frame, field, group_fields, aggregation)
         period_labels = [item.period for item in periods]
         fact_warnings = tuple(
             dict.fromkeys(
@@ -350,6 +392,8 @@ def _dataset_facts(
                     *dataset.context.quality_warnings,
                     *scope_warnings,
                     *period_warnings,
+                    *((f"期间字段 {period_field} 缺失 {period_missing_count} 行，期间比较不使用这些行。",)
+                      if period_missing_count else ()),
                 )
             )
         )[:100]
@@ -364,16 +408,14 @@ def _dataset_facts(
                 field=field,
                 fieldRef=field_ref,
                 aggregation=aggregation,
+                periodAggregation=period_aggregation,
                 unit=_metric_unit(semantic, money_field=field_ref.casefold() in money_fields),
-                formula=_formula(field, aggregation, scope),
+                formula=_formula(field, aggregation, scope) + (
+                    f"；仅汇总 {period_field} 最新登记期间" if period_aggregation else ""
+                ),
                 scope=scope,
                 periodField=period_field,
-                periodGranularity=(
-                    (
-                        analysis.series_granularity or "day" if dataset.context.period_granularities.get(period_field or "") == "date"
-                        else dataset.context.period_granularities.get(period_field or "")
-                    ) or analysis.series_granularity
-                ),
+                periodGranularity=period_granularity,
                 periodStart=period_labels[0] if period_labels else None,
                 periodEnd=period_labels[-1] if period_labels else None,
                 total=value,
@@ -387,6 +429,7 @@ def _dataset_facts(
                 if not valid_numeric.is_empty()
                 else None,
                 missingCount=series.null_count(),
+                periodMissingCount=period_missing_count,
                 zeroCount=int((valid_numeric == 0).sum()),
                 negativeCount=int((valid_numeric < 0).sum()),
                 periodValues=periods,
@@ -463,27 +506,77 @@ def _aggregate(series: pl.Series, aggregation: Aggregation) -> float | None:
     return _finite(values[aggregation])
 
 
+def _last_period_rows(
+    frame: pl.DataFrame, period_field: str | None, *, at_period: date | None = None,
+) -> pl.DataFrame | None:
+    if period_field is None:
+        return None
+    periods = {str(label): _parse_period(str(label))
+               for label in frame[period_field].drop_nulls().unique().to_list()}
+    if not periods or any(period is None for period in periods.values()):
+        return None
+    latest = at_period or max(period.value for period in periods.values() if period is not None)
+    labels = [label for label, period in periods.items() if period is not None and period.value == latest]
+    return frame.filter(pl.col(period_field).cast(pl.String).is_in(labels))
+
+
+def _grouped_aggregation(
+    frame: pl.DataFrame,
+    field: str,
+    group_fields: tuple[str, ...],
+    aggregation: Aggregation,
+) -> tuple[pl.DataFrame, tuple[str, ...]]:
+    # 先投影到互不重叠的输入/分组别名，来源字段可与任意内部列名相同。
+    groups = tuple(f"__group_{index}" for index in range(len(group_fields)))
+    projected = frame.select(
+        pl.col(field).alias("__input"),
+        *(pl.col(column).cast(pl.String).alias(alias)
+          for column, alias in zip(group_fields, groups, strict=True)),
+    )
+    grouped = projected.group_by(list(groups)).agg(
+        _aggregation_expression("__input", aggregation).alias("__value"),
+        _valid_count_expression("__input", aggregation).alias("__valid"),
+    )
+    return grouped, groups
+
+
 def _period_values(
     frame: pl.DataFrame,
     field: str,
     period_field: str | None,
     aggregation: Aggregation,
+    *,
+    period_granularity: Literal["day", "month", "year"] | None = None,
 ) -> tuple[PeriodValue, ...]:
     if period_field is None or period_field not in frame.columns:
         return ()
-    grouped = (
-        frame.with_columns(pl.col(period_field).cast(pl.String).alias("__period"))
-        .group_by("__period")
-        .agg(
-            _aggregation_expression(field, aggregation).alias("__value"),
-            _valid_count_expression(field, aggregation).alias("__valid"),
+    aliases: dict[tuple[str, date], list[str]] = {}
+    for label in frame[period_field].drop_nulls().unique().cast(pl.String).to_list():
+        period = _parse_fact_period(label, period_granularity)
+        if period is not None:
+            aliases.setdefault((period.granularity, period.value), []).append(label)
+    replacements: dict[str, str] = {}
+    for (grain, value), labels in aliases.items():
+        if len(labels) < 2:
+            continue
+        canonical = (f"{value.year:04d}" if grain == "year" else
+                     f"{value.year:04d}-{value.month:02d}" if grain == "month" else value.isoformat())
+        replacements.update(dict.fromkeys(labels, canonical))
+    if replacements:
+        # 在原始行上合并同一期的别名，平均/去重也须保留各行，不能相加预聚合值。
+        period = pl.col(period_field).cast(pl.String)
+        frame = frame.select(
+            pl.col(field).alias("__metric_input"),
+            period.replace_strict(replacements, default=period).alias("__period_input"),
         )
-        .sort("__period")
-    )
+        field, period_field = "__metric_input", "__period_input"
+    grouped, groups = _grouped_aggregation(frame, field, (period_field,), aggregation)
+    period_key = groups[0]
+    grouped = grouped.sort(period_key)
     values = tuple(
-        PeriodValue(period=str(row["__period"]), value=_finite(row["__value"]))
+        PeriodValue(period=str(row[period_key]), value=_finite(row["__value"]))
         for row in grouped.iter_rows(named=True)
-        if row["__period"] is not None and row["__valid"] > 0 and row["__value"] is not None
+        if row[period_key] is not None and row["__valid"] > 0 and row["__value"] is not None
     )
     # 字符串排序会把不补零的月份排成 2025-1, 2025-10, 2025-2；期末零值裁剪等依赖
     # 期间先后，能全部解析为日历期间时按日历顺序排列。
@@ -550,18 +643,25 @@ def _group_contributions(
 ) -> tuple[tuple[GroupContribution, ...], tuple[GroupContribution, ...]]:
     if not group_fields:
         return (), ()
-    grouped = frame.group_by(list(group_fields)).agg(
-        _aggregation_expression(field, aggregation).alias("__value"),
-        _valid_count_expression(field, aggregation).alias("__valid"),
-    )
+    grouped, groups = _grouped_aggregation(frame, field, group_fields, aggregation)
     values = [
         GroupContribution(
-            group=" / ".join(str(row[column]) for column in group_fields),
+            group=" / ".join(str(row[column]) for column in groups),
             value=_finite(row["__value"]),
+            groupValues={field: row[column] for field, column in zip(group_fields, groups, strict=True)},
         )
         for row in grouped.iter_rows(named=True)
         if row["__valid"] > 0 and row["__value"] is not None
     ]
+    # 原始值可能含分隔符或字面量 None；重名时用完整字段和值区分显示身份。
+    if any(count > 1 for count in Counter(item.group for item in values).values()):
+        disambiguated = []
+        for item in values:
+            label = json.dumps(item.group_values, ensure_ascii=False, sort_keys=True)
+            if len(label) > 512:
+                label = label[:492] + "…" + hashlib.sha256(label.encode()).hexdigest()[:16]
+            disambiguated.append(item.model_copy(update={"group": label}))
+        values = disambiguated
     # facts 文件是 revision 内的不可变产物；数值相同时必须用组名打破平局，
     # 不能继承 Polars 未承诺稳定的 group_by 输出顺序。
     top = sorted(values, key=lambda item: (-item.value, item.group))[:10]
@@ -580,7 +680,10 @@ def _parse_period(label: str) -> _ParsedPeriod | None:
     normalized = label.strip()
     match = re.fullmatch(r"(\d{4})", normalized)
     if match:
-        return _ParsedPeriod(label, date(int(match.group(1)), 1, 1), "year")
+        try:
+            return _ParsedPeriod(label, date(int(match.group(1)), 1, 1), "year")
+        except ValueError:
+            return None
     match = re.fullmatch(r"(\d{4})[-/](\d{1,2})", normalized)
     if match:
         try:
@@ -631,22 +734,33 @@ def _previous_period(value: _ParsedPeriod) -> date:
     return value.value - timedelta(days=1)
 
 
+def _parse_fact_period(
+    label: str, grain: Literal["day", "month", "year"] | None,
+) -> _ParsedPeriod | None:
+    period = _parse_period(label)
+    if period is None or grain is None:
+        return period
+    if (grain == "month" and period.value.day != 1
+            or grain == "year" and (period.value.month, period.value.day) != (1, 1)
+            or grain == "day" and period.granularity != "day"):
+        return None
+    return _ParsedPeriod(period.label, period.value, grain)
+
+
 def _parsed_period_values(
     fact: DeterministicMetricFact,
 ) -> list[tuple[_ParsedPeriod, PeriodValue]] | None:
     parsed: list[tuple[_ParsedPeriod, PeriodValue]] = []
+    seen: set[tuple[str, date]] = set()
     for item in fact.period_values:
-        period = _parse_period(item.period)
+        period = _parse_fact_period(item.period, fact.period_granularity)
         if period is None:
             return None
-        if fact.period_granularity is not None:
-            grain = fact.period_granularity
-            if (grain == "month" and period.value.day != 1
-                    or grain == "year" and (period.value.month, period.value.day) != (1, 1)
-                    or grain == "day" and period.granularity != "day"):
-                return None
-            # 粒度来自批准的数据需求；日期格式的月初标签仍按月比较，不猜测相邻行间距。
-            period = _ParsedPeriod(period.label, period.value, grain)
+        key = period.granularity, period.value
+        # 旧快照缺少原始行，不能从各期汇总安全恢复平均/去重结果。
+        if key in seen:
+            return None
+        seen.add(key)
         parsed.append((period, item))
     parsed.sort(key=lambda item: item[0].value)
     return parsed
@@ -655,19 +769,29 @@ def _parsed_period_values(
 def _fact_total_for_periods(
     fact: DeterministicMetricFact, selected: tuple[PeriodValue, ...]
 ) -> float | None:
-    if len(selected) == len(fact.period_values):
-        return fact.total
     values = [item.value for item in selected]
     if not values:
         return None
+    if fact.period_aggregation == "last":
+        return values[-1]
     if fact.aggregation in {"sum", "count"}:
         return _finite(sum(values))
     if fact.aggregation == "min":
         return _finite(min(values))
     if fact.aggregation == "max":
         return _finite(max(values))
+    if len(selected) == len(fact.period_values) and fact.period_missing_count == 0:
+        return fact.total
     # average 需要各期间有效行数，count_distinct 需要跨期间去重；现有事实不足以安全重算。
     return None
+
+
+def _fact_period_granularity(fact: DeterministicMetricFact) -> Literal["day", "month", "year"] | None:
+    if fact.period_granularity is not None:
+        return fact.period_granularity
+    parsed = _parsed_period_values(fact)
+    grains = {period.granularity for period, _value in parsed or ()}
+    return next(iter(grains)) if len(grains) == 1 else None
 
 
 def _is_leap_day(value: _ParsedPeriod) -> bool:
@@ -731,10 +855,12 @@ def _aligned_comparison_values(
     current: DeterministicMetricFact,
     baseline: DeterministicMetricFact,
     comparison_type: Literal["yoy", "mom"],
-) -> tuple[float, float, str, str, tuple[str, ...]] | None:
+) -> tuple[float, float, str, str, str, str, tuple[str, ...]] | None:
     current_values = _parsed_period_values(current)
     baseline_values = _parsed_period_values(baseline)
     if not current_values or not baseline_values:
+        return None
+    if current.period_aggregation != baseline.period_aggregation:
         return None
     if comparison_type == "mom":
         latest_current = current_values[-1]
@@ -752,25 +878,23 @@ def _aligned_comparison_values(
             latest_baseline[1].value,
             latest_current[1].period,
             latest_current[1].period,
+            latest_baseline[1].period,
+            latest_baseline[1].period,
             (),
         )
 
-    current_by_key: dict[tuple[str, int, int], tuple[_ParsedPeriod, PeriodValue]] = {}
-    baseline_by_key: dict[tuple[str, int, int], tuple[_ParsedPeriod, PeriodValue]] = {}
-    for target, values in ((current_by_key, current_values), (baseline_by_key, baseline_values)):
-        for parsed, item in values:
-            key = (
-                parsed.granularity,
-                parsed.value.month if parsed.granularity != "year" else 0,
-                parsed.value.day if parsed.granularity == "day" else 0,
-            )
-            if key in target:
-                return None
-            target[key] = (parsed, item)
-    pairs = [
-        (*current_by_key[key], *baseline_by_key[key])
-        for key in current_by_key.keys() & baseline_by_key.keys()
-    ]
+    baseline_by_key = {(parsed.granularity, parsed.value): (parsed, item)
+                       for parsed, item in baseline_values}
+    pairs = []
+    for parsed, item in current_values:
+        # 同比必须属于上一日历年，不能只凭月日或声明角色匹配。
+        # 无对侧配对的闰日仍由下方完整窗口逻辑计入，不能重复借用 2 月 28 日。
+        if _is_leap_day(parsed) or parsed.value.year == 1:
+            continue
+        previous_year = parsed.value.replace(year=parsed.value.year - 1)
+        baseline_item = baseline_by_key.get((parsed.granularity, previous_year))
+        if baseline_item is not None:
+            pairs.append((parsed, item, *baseline_item))
     pairs.sort(key=lambda item: item[0].value)
     selected = _latest_contiguous_pairs(pairs)
     if not selected:
@@ -781,6 +905,8 @@ def _aligned_comparison_values(
     baseline_periods = _with_inner_leap_days(
         tuple(item[3] for item in selected), selected[0][2], selected[-1][2], baseline_values
     )
+    if current.period_aggregation == "last":
+        current_periods, baseline_periods = current_periods[-1:], baseline_periods[-1:]
     current_total = _fact_total_for_periods(current, current_periods)
     baseline_total = _fact_total_for_periods(baseline, baseline_periods)
     if current_total is None or baseline_total is None:
@@ -797,6 +923,8 @@ def _aligned_comparison_values(
         baseline_total,
         current_periods[0].period,
         current_periods[-1].period,
+        baseline_periods[0].period,
+        baseline_periods[-1].period,
         warnings,
     )
 
@@ -823,12 +951,20 @@ def _comparisons(
                     aligned = _aligned_comparison_values(current, baseline, comparison_type)
                     if aligned is None:
                         warnings.append(
-                            f"{current.field_ref} 的 {comparison_type} 期间无法形成唯一连续可比窗口，未生成比较。"
+                            f"{current.field_ref} 的 {comparison_type} 期间无法形成唯一连续可比窗口，"
+                            + ("同比须匹配上一年相同期间，" if comparison_type == "yoy" else "")
+                            + "未生成比较。"
                         )
                         continue
-                    current_total, baseline_total, period_start, period_end, period_warnings = (
+                    current_total, baseline_total, period_start, period_end, baseline_start, baseline_end, period_warnings = (
                         aligned
                     )
+                    baseline_scale = unit_conversion_scale(baseline.unit, current.unit)
+                    if baseline_scale is None:
+                        warnings.append(f"{current.field_ref} 的 {comparison_type} 单位无法换算"
+                                        f"（{baseline.unit} → {current.unit}），未生成比较。")
+                        continue
+                    baseline_total = _finite(Decimal(str(baseline_total)) * baseline_scale)
                     change = current_total - baseline_total
                     rate = None if baseline_total == 0 else change / abs(baseline_total) * 100
                     result.append(
@@ -842,12 +978,16 @@ def _comparisons(
                             baselineDatasetSha256=baseline.dataset_sha256,
                             currentTotal=current_total,
                             baselineTotal=baseline_total,
+                            baselineScale=float(baseline_scale),
                             change=_finite(change),
                             changeRate=_optional_finite(rate),
                             formula="(currentTotal-baselineTotal)/abs(baselineTotal)*100%",
                             unit=current.unit,
+                            periodGranularity=_fact_period_granularity(current),
                             periodStart=period_start,
                             periodEnd=period_end,
+                            baselinePeriodStart=baseline_start,
+                            baselinePeriodEnd=baseline_end,
                             warnings=tuple(
                                 dict.fromkeys(
                                     (*current.warnings, *baseline.warnings, *period_warnings)
@@ -903,12 +1043,16 @@ def _derived_metrics(
             ratio_warnings = list(
                 dict.fromkeys((*numerator_fact.warnings, *denominator_fact.warnings))
             )
-            aligned_ratio = _aligned_ratio_values(numerator_fact, denominator_fact)
+            aligned_ratio = _aligned_period_totals(numerator_fact, denominator_fact)
             if aligned_ratio is None:
                 warnings.append(f"Profile 比率指标 {code} 在 {role} 期间无法形成唯一连续可比窗口。")
                 continue
             numerator, denominator, period_start, period_end, period_warnings = aligned_ratio
             ratio_warnings.extend(period_warnings)
+            # 同量纲比例先把分母换算为分子单位；金额/人次等不同量纲比值保留原口径。
+            conversion = unit_conversion_scale(denominator_fact.unit, numerator_fact.unit)
+            denominator_scale = conversion if conversion is not None else Decimal(1)
+            denominator = _finite(Decimal(str(denominator)) * denominator_scale)
             if denominator == 0:
                 value = None
                 percentage = None
@@ -931,15 +1075,19 @@ def _derived_metrics(
                     denominatorMetric=denominator_code,
                     numerator=numerator,
                     denominator=denominator,
+                    denominatorScale=float(denominator_scale),
                     value=value,
                     percentage=percentage,
                     difference=_finite(numerator - denominator),
                     unit=(
                         numerator_fact.unit
-                        if numerator_fact.unit == denominator_fact.unit
+                        if conversion is not None
                         else None
                     ),
-                    formula=f"{numerator_code}/{denominator_code}; difference={numerator_code}-{denominator_code}",
+                    formula=(f"{numerator_code}/{denominator_code}; difference={numerator_code}-{denominator_code}"
+                             + (f"; {denominator_code} 按 {denominator_scale} 换算为 {numerator_fact.unit}"
+                                if denominator_scale != 1 else "")),
+                    periodGranularity=_fact_period_granularity(numerator_fact),
                     periodStart=period_start,
                     periodEnd=period_end,
                     datasetIds=dataset_ids,
@@ -951,13 +1099,18 @@ def _derived_metrics(
     return tuple(result), warnings
 
 
-def _aligned_ratio_values(
+def _aligned_period_totals(
     numerator: DeterministicMetricFact,
     denominator: DeterministicMetricFact,
+    *,
+    operation: str = "比率",
 ) -> tuple[float, float, str | None, str | None, tuple[str, ...]] | None:
     numerator_values = _parsed_period_values(numerator)
     denominator_values = _parsed_period_values(denominator)
     if not numerator_values or not denominator_values:
+        # 已声明期间却无法对齐时，不能降级成包含无期间行的整表比率。
+        if numerator.period_field is not None or denominator.period_field is not None:
+            return None
         if numerator.dataset_id != denominator.dataset_id:
             return None
         starts = tuple(
@@ -991,6 +1144,8 @@ def _aligned_ratio_values(
         return None
     numerator_periods = tuple(item[1] for item in selected)
     denominator_periods = tuple(item[3] for item in selected)
+    if numerator.period_aggregation == denominator.period_aggregation == "last":
+        numerator_periods, denominator_periods = numerator_periods[-1:], denominator_periods[-1:]
     numerator_total = _fact_total_for_periods(numerator, numerator_periods)
     denominator_total = _fact_total_for_periods(denominator, denominator_periods)
     if numerator_total is None or denominator_total is None:
@@ -998,7 +1153,7 @@ def _aligned_ratio_values(
     warnings: tuple[str, ...] = ()
     if len(selected) != len(numerator_values) or len(selected) != len(denominator_values):
         warnings = (
-            "比率仅使用共同连续窗口 "
+            f"{operation}仅使用共同连续窗口 "
             f"{numerator_periods[0].period} 至 {numerator_periods[-1].period}。",
         )
     return (
@@ -1058,12 +1213,31 @@ def _reconciliations(
                 continue
             left_fact = left_candidates[0]
             right_fact = right_candidates[0]
+            left_total, right_total = left_fact.total, right_fact.total
+            period_start = period_end = None
+            at_period = None
+            period_warnings: tuple[str, ...] = ()
+            if left_fact.period_aggregation == "last" or right_fact.period_aggregation == "last":
+                if left_fact.period_aggregation != right_fact.period_aggregation:
+                    warnings.append(f"Profile 对账规则 {code} 的时点与跨期汇总口径不一致，未生成对账。")
+                    continue
+                aligned = _aligned_period_totals(left_fact, right_fact, operation="时点对账")
+                if aligned is None:
+                    warnings.append(f"Profile 对账规则 {code} 无法确定共同期末，未生成对账。")
+                    continue
+                left_total, right_total, period_start, period_end, period_warnings = aligned
+                parsed_end = _parse_period(period_end or "")
+                if parsed_end is None:
+                    warnings.append(f"Profile 对账规则 {code} 无法解析共同期末，未生成对账。")
+                    continue
+                at_period = parsed_end.value
             left_groups = _reconciliation_groups(
                 dataset_map[left_fact.dataset_id],
                 left_fact,
                 semantics[(left_fact.dataset_id, left_fact.field_ref.casefold())],
                 grain,
                 profile_dimensions,
+                at_period=at_period,
             )
             right_groups = _reconciliation_groups(
                 dataset_map[right_fact.dataset_id],
@@ -1071,13 +1245,17 @@ def _reconciliations(
                 semantics[(right_fact.dataset_id, right_fact.field_ref.casefold())],
                 grain,
                 profile_dimensions,
+                at_period=at_period,
             )
             if left_groups is None or right_groups is None:
                 warnings.append(f"Profile 对账规则 {code} 无法按声明粒度 {grain} 映射动态字段。")
                 continue
             absolute_tolerance = float(rule.get("absoluteTolerance", 0))
             relative_tolerance = float(rule.get("relativeTolerance", 0))
-            keys = sorted(set(left_groups) | set(right_groups))
+            keys = sorted(
+                set(left_groups) | set(right_groups),
+                key=lambda key: tuple((value is None, value or "") for value in key),
+            )
             failed = 0
             for key in keys:
                 left = left_groups.get(key, 0.0)
@@ -1094,12 +1272,15 @@ def _reconciliations(
                 DeterministicReconciliationFact(
                     code=code,
                     periodRole=role,
+                    periodGranularity=_fact_period_granularity(left_fact) if period_start else None,
+                    periodStart=period_start,
+                    periodEnd=period_end,
                     leftMetric=left_code,
                     rightMetric=right_code,
                     grain=grain,
-                    leftTotal=left_fact.total,
-                    rightTotal=right_fact.total,
-                    difference=_finite(left_fact.total - right_fact.total),
+                    leftTotal=left_total,
+                    rightTotal=right_total,
+                    difference=_finite(left_total - right_total),
                     absoluteTolerance=absolute_tolerance,
                     relativeTolerance=relative_tolerance,
                     checkedGroupCount=len(keys),
@@ -1109,7 +1290,7 @@ def _reconciliations(
                     datasetIds=dataset_ids,
                     datasetSha256s=hashes,
                     profileHash=profile_hash,
-                    warnings=tuple(dict.fromkeys((*left_fact.warnings, *right_fact.warnings)))[
+                    warnings=tuple(dict.fromkeys((*left_fact.warnings, *right_fact.warnings, *period_warnings)))[
                         :100
                     ],
                 )
@@ -1123,19 +1304,24 @@ def _reconciliation_groups(
     semantic: Mapping[str, Any],
     grain: tuple[str, ...],
     profile_dimensions: tuple[Mapping[str, Any], ...],
-) -> dict[tuple[str, ...], float] | None:
+    *,
+    at_period: date | None = None,
+) -> dict[tuple[str | None, ...], float] | None:
     frame, _warnings = _apply_scope(dataset, semantic)
+    if fact.period_aggregation == "last":
+        frame = _last_period_rows(frame, fact.period_field, at_period=at_period)
+        if frame is None:
+            return None
     columns = _grain_columns(fact.field_ref, frame, grain, profile_dimensions)
     if columns is None:
         return None
-    result: dict[tuple[str, ...], float] = {}
-    grouped = frame.group_by(list(columns)).agg(
-        _aggregation_expression(fact.field, fact.aggregation).alias("__value"),
-        _valid_count_expression(fact.field, fact.aggregation).alias("__valid"),
+    result: dict[tuple[str | None, ...], float] = {}
+    grouped, groups = _grouped_aggregation(
+        frame, fact.field, columns, fact.aggregation,
     )
     for row in grouped.iter_rows(named=True):
         if row["__valid"] > 0 and row["__value"] is not None:
-            result[tuple(str(row[column]) for column in columns)] = _finite(row["__value"])
+            result[tuple(row[column] for column in groups)] = _finite(row["__value"])
     return result
 
 

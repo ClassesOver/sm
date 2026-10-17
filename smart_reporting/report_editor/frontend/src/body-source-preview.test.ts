@@ -53,6 +53,35 @@ const asyncDialogs = () => {
   } })
 }
 
+it.each([
+  ['%', 'currentTotal', 80, '%'], ['%', 'baselineTotal', 75, '%'],
+  ['%', 'change', 5, '个百分点'], ['%', 'changeRate', 10, '%'],
+  ['元', 'currentTotal', 80, '元'], ['元', 'baselineTotal', 75, '元'],
+  ['元', 'change', 5, '元'], ['元', 'changeRate', 10, '%'],
+] as const)('uses the selected comparison field unit (%s, %s)', async (baseUnit, field, value, unit) => {
+  asyncDialogs()
+  const client = new ReportEditorClient('/test')
+  const entry = { currentTotal: 80, baselineTotal: 75, change: 5, changeRate: 10, unit: baseUnit }
+  const defaultUnit = baseUnit === '%' ? '个百分点' : baseUnit
+  vi.spyOn(client, 'factDetail').mockResolvedValue({
+    analysisId: 'analysis_001', factId: 'fact-c', factKind: 'comparison', entry,
+    displayValue: 5, displayUnit: defaultUnit, inputFactRefs: [], warnings: [],
+  })
+  const sources: TraceSources = {
+    available: true,
+    subjects: [{ subjectId: 'sub-c', subjectKind: 'table_cell',
+      locator: { tableId: 't', rowKey: `comparison:0:${field}`, columnKey: '同比' },
+      factRefs: [{ analysisId: 'analysis_001', factId: 'fact-c' }] }],
+    facts: [{ analysisId: 'analysis_001', factId: 'fact-c', factKind: 'comparison',
+      name: '指标', label: '指标', unit: defaultUnit, displayValue: 5, datasetIds: [] }],
+  }
+  const preview = createBodySourcePreview({ client, sources: async () => sources, validation: () => null, open: vi.fn() })
+  document.body.innerHTML = `<table><tr><td>${value}${unit}<span id="marker"></span></td></tr></table>`
+  await preview(document.getElementById('marker')!, [{ kind: 'citation', value: 'sub-c' }])
+  const frozen = document.querySelector('.source-preview-values > div:last-child strong')
+  expect(frozen?.textContent).toBe(`${value}${unit}`)
+})
+
 const baseSources = (): TraceSources => ({
   available: true,
   citations: [{ citationId: 'cite-a', datasetId: 'data-a' }, { citationId: 'cite-b', datasetId: 'data-a' }] as TraceSources['citations'],

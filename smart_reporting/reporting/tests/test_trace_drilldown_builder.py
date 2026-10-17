@@ -405,6 +405,7 @@ def test_g7_capability_and_algorithm_matrix_uses_one_frozen_snapshot(
             "periodField": "month",
             "periodStart": "2025-01",
             "periodEnd": "2025-02",
+            "periodMissingCount": 0,
             "total": total,
         }
 

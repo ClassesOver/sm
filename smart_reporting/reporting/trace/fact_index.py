@@ -37,8 +37,13 @@ def _scope_identity(scope: Mapping[str, str]) -> str:
     return ";".join(f"{key}={scope[key]}" for key in sorted(scope))
 
 
+def _period_granularity_identity(fact: Any) -> str:
+    grain = getattr(fact, "period_granularity", None)
+    return f"|periodGranularity={grain}" if grain else ""
+
+
 def metric_fact_identity(fact: Any) -> str:
-    return "|".join(
+    identity = "|".join(
         (
             "metric",
             fact.dataset_id,
@@ -56,10 +61,18 @@ def metric_fact_identity(fact: Any) -> str:
             }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False),
         )
     )
+    period_aggregation = getattr(fact, "period_aggregation", None)
+    if any(item.group_values for item in (*fact.top_groups, *fact.bottom_groups)):
+        identity += "|groupValues=" + json.dumps({
+            "topGroups": [item.group_values for item in fact.top_groups],
+            "bottomGroups": [item.group_values for item in fact.bottom_groups],
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return (identity + (f"|periodAggregation={period_aggregation}" if period_aggregation else "")
+            + _period_granularity_identity(fact))
 
 
 def comparison_fact_identity(fact: Any) -> str:
-    return "|".join(
+    identity = "|".join(
         (
             "comparison",
             fact.comparison_type,
@@ -69,11 +82,16 @@ def comparison_fact_identity(fact: Any) -> str:
             fact.current_dataset_sha256,
             fact.baseline_dataset_sha256,
         )
-    )
+    ) + _period_granularity_identity(fact)
+    start, end = getattr(fact, "baseline_period_start", None), getattr(fact, "baseline_period_end", None)
+    if start or end:
+        identity += f"|baselinePeriod={start or ''}:{end or ''}"
+    scale = getattr(fact, "baseline_scale", 1)
+    return identity + (f"|baselineScale={scale}" if scale != 1 else "")
 
 
 def derived_fact_identity(fact: Any) -> str:
-    return "|".join(
+    identity = "|".join(
         (
             "derived",
             fact.code,
@@ -82,11 +100,13 @@ def derived_fact_identity(fact: Any) -> str:
             fact.denominator_metric,
             ";".join(fact.dataset_sha256s),
         )
-    )
+    ) + _period_granularity_identity(fact)
+    scale = getattr(fact, "denominator_scale", 1)
+    return identity + (f"|denominatorScale={scale}" if scale != 1 else "")
 
 
 def reconciliation_fact_identity(fact: Any) -> str:
-    return "|".join(
+    identity = "|".join(
         (
             "reconciliation",
             fact.code,
@@ -96,6 +116,9 @@ def reconciliation_fact_identity(fact: Any) -> str:
             ";".join(fact.dataset_sha256s),
         )
     )
+    start, end = getattr(fact, "period_start", None), getattr(fact, "period_end", None)
+    return (identity + (f"|period={start or ''}:{end or ''}" if start or end else "")
+            + _period_granularity_identity(fact))
 
 
 def correlation_fact_identity(fact: Any) -> str:

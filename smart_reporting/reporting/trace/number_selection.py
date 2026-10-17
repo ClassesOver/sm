@@ -4,10 +4,11 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
+from ..hospital_operation.deterministic_analysis import _parse_fact_period
 from .numeric_text import frozen_fact_bundles, frozen_number_catalog
 
 _TOKEN = re.compile(r'\{\{value:([^:{}]+):([^:{}]+):([^:{}]*)\}\}')
-_PERIOD = re.compile(r'(?P<year>\d{4})年(?:(?P<start>\d{1,2})月?(?:[—–至到~-](?P<end>\d{1,2}))?月)?')
+_PERIOD = re.compile(r'(?P<year>\d{4})年(?:(?P<start>\d{1,2})月?(?:[—–至到~～-](?:(?P<end_year>\d{4})年)?(?P<end>\d{1,2}))?月)?')
 
 
 def align_number_selections(markdown: str, contents, field_definitions: Mapping[str, str] | None = None):
@@ -71,15 +72,28 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             selector = 'total'
             if written:
                 year, start, end = written['year'], written['start'], written['end']
-                buckets = [(i, item.period[:7]) for i, item in enumerate(fact.period_values)]
+                # 事实允许不补零及斜线年月；不能截取原始标签猜月桶，也不能把日桶当作月桶。
+                buckets = [(i, f'{period.value.year:04d}-{period.value.month:02d}')
+                           for i, item in enumerate(fact.period_values)
+                           if (period := _parse_fact_period(item.period, fact.period_granularity)) is not None
+                           and period.granularity == 'month']
                 if start:
                     first, last = int(start), int(end or start)
-                    expected = [f'{year}-{month:02d}' for month in range(first, last + 1)]
+                    end_year = int(written['end_year'] or year)
+                    first_month, last_month = int(year) * 12 + first - 1, end_year * 12 + last - 1
+                    if not (1 <= first <= 12 and 1 <= last <= 12 and 0 <= last_month - first_month < 1200):
+                        continue
+                    expected = [f'{month // 12:04d}-{month % 12 + 1:02d}'
+                                for month in range(first_month, last_month + 1)]
                     selected = [(i, period) for i, period in buckets if period in expected]
                     if not expected or [p for _, p in selected] != expected:
                         continue
-                    selector = (f'periodTotals.{selected[0][0]}-{selected[-1][0]}'
+                    selector = (f'periodValues.{selected[-1][0]}' if fact.period_aggregation == 'last'
+                                else f'periodTotals.{selected[0][0]}-{selected[-1][0]}'
                                 if end else f'periodValues.{selected[0][0]}')
+                    if (end and fact.period_aggregation != 'last' and fact.aggregation in {'sum', 'count'}
+                            and len(selected) == len(fact.period_values) and fact.period_missing_count == 0):
+                        selector = 'total'
                 elif not fact.period_start or fact.period_start[:4] != year or not fact.period_end or fact.period_end[:4] != year:
                     continue
             elif fact_id == match[1] and not match[2].startswith(('budgetComparison.', 'projectRatio.')):
