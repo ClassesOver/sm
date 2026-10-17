@@ -635,7 +635,7 @@ def _warn_trailing_zero_periods(
     warning = (
         f"当前期末发现连续 {trailing_zero_count} 个零值期间 "
         f"{zero_periods[0].period} 至 {zero_periods[-1].period}，保留原始零值；"
-        "零值不能证明数据缺失或未入账，数据完整性及原因待核实。"
+        "零值本身不能说明数据缺失或未入账，需结合入账记录确认。"
     )
     return frame, periods, (warning,)
 

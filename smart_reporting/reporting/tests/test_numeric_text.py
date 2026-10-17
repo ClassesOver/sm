@@ -7,10 +7,12 @@ from pathlib import Path
 import pytest
 
 from smart_reporting.reporting.trace.numeric_text import (
+    correct_constant_monthly_totals,
     correct_period_extrema,
     format_fact_value,
     frozen_number_catalog,
     money_text_warnings,
+    plain_period_wording,
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
@@ -230,6 +232,28 @@ def test_extrema_correction_needs_a_unique_bundle_for_unmarked_text():
     assert correct_period_extrema('2月金额为最高值50元。', documents) == '2月金额为最高值50元。'
 
 
+_FLAT_BUDGET = (1097718506,) * 12
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    # 回放原文：全年合计 131.73 亿元被写成各月取值。
+    ('预算总医疗收入各月均为常量131.73亿元（13,172,622,072元）。',
+     '预算总医疗收入各月均为常量10.98亿元（1097718506元）。'),
+    ('每月预算为13172622072元。', '每月预算为1097718506元。'),
+])
+def test_constant_monthly_total_written_as_each_month_is_rewritten(text, expected):
+    assert correct_constant_monthly_totals(text, [_monthly_document(values=_FLAT_BUDGET)]) == expected
+
+
+@pytest.mark.parametrize(('text', 'values'), [
+    ('各月合计131.73亿元。', _FLAT_BUDGET),  # 明写合计
+    ('全年预算131.73亿元，各月均为10.98亿元。', _FLAT_BUDGET),  # 已是单月值
+    ('预算各月均为350元。', (100, 50, 80, 120)),  # 各月取值不同，合计不能均摊
+])
+def test_constant_monthly_total_keeps_text_it_cannot_safely_rewrite(text, values):
+    assert correct_constant_monthly_totals(text, [_monthly_document(values=values)]) == text
+
+
 def test_budget_ratio_catalog_preserves_amounts_and_dimensionless_value():
     from smart_reporting.reporting.trace.fact_service import fact_display_unit, fact_display_value
 
@@ -335,6 +359,8 @@ def test_extrema_correction_only_rewrites_the_analysis_that_produced_the_warning
     ("1月实际较预算少-4.34万人次，2月多-6.37万人次。", "1月实际较预算少4.34万人次，2月少6.37万人次。"),
     ("实际比预算多-1,200人次。", "实际比预算少1,200人次。"),
     ("至少-3天内无登记，最多-2次。", "至少-3天内无登记，最多-2次。"),
+    ("9月实际支出较预算支出低-13.47亿元，1月高-2.00亿元。", "9月实际支出较预算支出低13.47亿元，1月低2.00亿元。"),
+    ("月度最低-5.20%，降低-3.00%，提高-1.00%。", "月度最低-5.20%，降低3.00%，降低1.00%。"),
 ])
 def test_signed_direction_wording_is_normalized_from_frozen_sign(text, expected):
     from smart_reporting.reporting.trace.numeric_text import normalize_signed_wording
@@ -545,7 +571,7 @@ def test_display_never_shows_negative_zero_or_hides_nonzero_amounts_as_zero():
     # 非零差额（-10万元）换算到亿元会显示为 0.00：亿元引用改按万元显示；真实的零差额仍可显示。
     assert catalog[prefix + '2025-01.difference:亿元}}'] == '-10.00万元'
     assert catalog[prefix + '2025-01.difference:万元}}'] == '-10.00万元'
-    assert catalog[prefix + '2025-02.difference:亿元}}'] == '0.00亿元'
+    assert catalog[prefix + '2025-02.difference:亿元}}'] == '0亿元'
     # 非零差额舍入为 0.00亿元的原值不作为亿元依据，手写“0.00亿元”不能借它通过核对。
     from smart_reporting.reporting.trace.numeric_text import frozen_number_values
 
@@ -809,10 +835,18 @@ def test_adjacent_month_changes_are_registered_from_frozen_monthly_values():
     assert catalog['{{value:fact-aaaaaaaaaaaaaaaa:periodChangeRates.2:%}}'] == '-10.00%'
     # 3月与5月不相邻：不登记“环比”。
     assert not [token for token in catalog if 'periodChange' in token and token.split(':')[2].endswith('.3')]
-    # 数值说明直接给显示值（金额按万元）；引用只供服务端核对，不进模型可见目录，避免目录膨胀。
+    # 数值说明给显示值（金额按万元）及可直接使用的服务端引用；引用不进模型可见目录，避免目录膨胀，
+    # 但给出引用后模型不必照着键名自造 “monthOverMonth.N”。
     guide = frozen_number_guide([content], catalog)[0]['monthlyStatistics']['monthOverMonth']
-    assert guide == [{'period': '2025-02', 'change': '20.00万元', 'changeRate': '20.00%'},
-                     {'period': '2025-03', 'change': '-12.00万元', 'changeRate': '-10.00%'}]
+    prefix = '{{value:fact-aaaaaaaaaaaaaaaa:'
+    assert guide == [
+        {'period': '2025-02', 'change': '20.00万元', 'changeRate': '20.00%',
+         'reference': prefix + 'periodChanges.1:万元}}', 'rateReference': prefix + 'periodChangeRates.1:%}}'},
+        {'period': '2025-03', 'change': '-12.00万元', 'changeRate': '-10.00%',
+         'reference': prefix + 'periodChanges.2:万元}}', 'rateReference': prefix + 'periodChangeRates.2:%}}'},
+    ]
+    assert all(catalog[item['reference']] == item['change'] and catalog[item['rateReference']] == item['changeRate']
+               for item in guide)
     from smart_reporting.reporting.trace.numeric_text import prompt_number_catalog
     prompt = prompt_number_catalog(catalog)
     assert not [token for token in prompt if 'periodChange' in token]
@@ -1022,6 +1056,8 @@ def test_conflicting_totals_cannot_support_multiples(reverse):
     (-10, '人次', '门诊量减少0.00万人次', False),
     (0, '元', '收入0.00万元', True),
     (0, '人次', '门诊量0.00万人次', True),
+    (0, '人次', '门诊量0万人次', True),
+    (0, '元', '收入0亿元', True),
     (100, '元', '收入0.01万元', True),
     (100, '人次', '门诊量0.01万人次', True),
 ])
@@ -1141,6 +1177,11 @@ def test_server_derives_gaps_and_top_share_sums_only_for_operands_named_in_the_p
     budget = json.loads(_budget_document())
     for metric, name in zip(budget['metrics'], ('实际收入', '预算收入'), strict=True):
         metric['displayName'] = name
+    # 实际 90/95/133 万、预算各 100 万：3月差额 33 万，与环比变化额（38 万）区分。
+    actual = budget['metrics'][0]
+    actual['periodValues'] = [{'period': f'2025-{index + 1:02d}', 'value': value}
+                              for index, value in enumerate((900000, 950000, 1330000))]
+    actual['total'] = 3180000
     contents = [json.dumps(budget), supplement]
     # 同表两列逐行差额、降序前两项合计占比、同一分析同期间两项事实的月度差额（实际减预算）。
     derived = ('总部门诊人次与不含急诊门诊人次相差424,831人次。\n\n总部与北部合计占比93.05%。'
@@ -1150,6 +1191,50 @@ def test_server_derives_gaps_and_top_share_sums_only_for_operands_named_in_the_p
     # 4,516,882 = 总部 − 北部，但正文写的是总部与远洋：操作数不符，仍替换。
     wrong_pair = '总部门诊人次比远洋多4,516,882人次。'
     assert replace_unregistered_numbers(wrong_pair, contents) == '总部门诊人次比远洋多待核实。'
+    # 预算只登记到2月（窗口不同）：两边都有的月份仍可比，预算缺少的3月不补算。
+    assert replace_unregistered_numbers('3月实际收入较预算收入多33.00万元。', contents) == '3月实际收入较预算收入多33.00万元。'
+    budget['metrics'][1]['periodValues'] = budget['metrics'][1]['periodValues'][:2]
+    shorter = [json.dumps(budget), supplement]
+    assert replace_unregistered_numbers('1月实际收入较预算收入少10.00万元。', shorter) == '1月实际收入较预算收入少10.00万元。'
+    assert replace_unregistered_numbers('3月实际收入较预算收入多33.00万元。', shorter) == '3月实际收入较预算收入多待核实。'
     # 百分数之差是百分点，不按百分数补算；无来源的数字仍替换。
     unrelated = '总部较北部高60.31%，另有123,457人次。'
     assert replace_unregistered_numbers(unrelated, contents) == '总部较北部高待核实，另有待核实。'
+
+
+def test_single_character_decline_words_accept_registered_negative_magnitudes():
+    document = json.loads(_budget_document())
+    document['comparisons'] = [{
+        'factId': 'fact-' + 'c' * 16, 'comparisonType': 'yoy', 'field': 'actual_revenue', 'fieldRef': 'h.actual_revenue',
+        'currentDatasetId': 'current', 'baselineDatasetId': 'base', 'currentDatasetSha256': 'b' * 64,
+        'baselineDatasetSha256': 'c' * 64, 'currentTotal': 104.43, 'baselineTotal': 115.82,
+        'change': -11.39, 'changeRate': -9.83, 'formula': 'x', 'unit': '元'}]
+    contents = [json.dumps(document)]
+    assert replace_unregistered_numbers('实际降9.83%，较上年减11.39元。', contents) == '实际降9.83%，较上年减11.39元。'
+    # “至少”不是下降：同样的数字仍按未登记替换；增长方向也不豁免。
+    assert replace_unregistered_numbers('至少9.83%。', contents) == '至少待核实。'
+    assert replace_unregistered_numbers('实际增9.83%。', contents) == '实际增待核实。'
+
+
+def test_profile_missing_and_zero_rates_are_accepted_only_in_matching_paragraphs():
+    from smart_reporting.reporting.trace.content_review import review_content
+
+    document = json.loads(_budget_document())
+    document['metrics'][0]['warnings'] = ['[rdlevel_analytic_unit] 23646 (78.7%) missing values',
+                                          '[budget_medical_income] has 9673 (68.7%) zeros']
+    contents = [json.dumps(document)]
+    text = '四级科室字段缺失比例为78.7%，下钻受限；预算医疗收入零值行占68.7%。'
+    assert replace_unregistered_numbers(text, contents) == text
+    assert replace_unregistered_numbers('预算医疗收入缺失68.7%。', contents) == '预算医疗收入缺失待核实。'
+    assert not any('冻结依据' in warning for warning in review_content(text, contents))
+    assert replace_unregistered_numbers('收入完成率为78.7%。', contents) == '收入完成率为待核实。'
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('覆盖2025年1月至11月共11个月度桶。', '覆盖2025年1月至11月共11个月。'),
+    ('零值仅代表这两个月度桶的记录取值为零。', '零值仅代表这两个月的记录取值为零。'),
+    ('月度标签为月度桶标签，不代表数据截止时点。', '月度标签为月份，不代表数据截止时点。'),
+    ('均基于同一收入口径的月度桶数据。', '均基于同一收入口径的月度数据。'),
+])
+def test_plain_period_wording_drops_month_bucket_jargon(text, expected):
+    assert plain_period_wording(text) == expected

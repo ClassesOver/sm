@@ -28,12 +28,9 @@ from .contracts_v1 import (
     TableTraceV1,
 )
 from .fact_index import fact_pointer
-from .numeric_text import PERCENT_POINT, format_fact_value, percent_point_field
+from .numeric_text import _MONEY_UNITS, PERCENT_POINT, format_fact_value, percent_point_field
 
 _TABLE_ID_PATTERN_RULES = "表格 ID 只允许字母数字与 _ . :-"
-
-
-_MONEY_UNITS = frozenset({"元", "万元", "亿元"})
 
 
 def _normalize_table_id(table_id: str) -> str:
@@ -175,11 +172,18 @@ _TABLE_SCALE_THRESHOLD = 1_000_000
 
 
 def _table_display_unit(unit: str | None, values: Sequence[float | None]) -> str | None:
-    """整列（或整组对比值）最大绝对值达到百万时返回万元/万人次，否则沿用原单位。"""
+    """整列（或整组对比值）最大绝对值达到百万时返回万元/万人次，否则沿用原单位。
+
+    全院收入、成本等十亿级金额写成“1,317,262.21万元”领导读不出量级：非零值都不少于
+    1亿元且最大值达到10亿元时改用亿元；有小额值的列仍用万元，避免舍入丢失精度。
+    """
     present = [abs(value) for value in values if value is not None]
-    if unit in _TABLE_SCALED_UNITS and present and max(present) >= _TABLE_SCALE_THRESHOLD:
-        return _TABLE_SCALED_UNITS[unit]
-    return unit
+    if unit not in _TABLE_SCALED_UNITS or not present or max(present) < _TABLE_SCALE_THRESHOLD:
+        return unit
+    nonzero = [value for value in present if value]
+    if unit == "元" and max(nonzero) >= 1_000_000_000 and min(nonzero) >= 100_000_000:
+        return "亿元"
+    return _TABLE_SCALED_UNITS[unit]
 
 
 def _scaled_number(value: float, unit: str | None, display_unit: str) -> str:
@@ -337,16 +341,29 @@ def build_analysis_table(
         table_id += f"-part-{column_offset // column_limit + 1}"
     if bundle.comparisons:
         comparisons = [fact for fact in bundle.comparisons if fact.fact_id]
+        # 本期与基期金额均为零的比较（未启用的收入项）只占版面；全部为零时保留原表。
+        comparisons = [fact for fact in comparisons
+                       if fact.unit not in _MONEY_UNITS or fact.current_total or fact.baseline_total] or comparisons
         comparisons = comparisons[column_offset:column_offset + column_limit if column_limit else None]
         if not comparisons:
             return None
         types = {fact.comparison_type for fact in comparisons}
-        metric_labels = {_fact_label(fact, dataset_contexts, metric_descriptions) for fact in comparisons}
+        # 比较事实没有显示名：同一分析中字段引用相同的指标事实带有业务名称，优先借用。
+        metric_names = {metric.field_ref: _fact_label(metric, dataset_contexts, metric_descriptions)
+                        for metric in bundle.metrics}
+
+        def comparison_label(fact: Any) -> str:
+            return metric_names.get(fact.field_ref) or _fact_label(fact, dataset_contexts, metric_descriptions)
+
+        metric_labels = {comparison_label(fact) for fact in comparisons}
         metric_label = next(iter(metric_labels)) if len(metric_labels) == 1 else "数值"
         baseline_label = ("同期" if types == {"yoy"} else "上期" if types == {"mom"} else "基期") + metric_label
         rate_label = "同比增幅" if types == {"yoy"} else "环比增幅" if types == {"mom"} else "变化率"
+        # 多项比较并列时列名用各自指标名称（“对比 1…对比 5”读者无法分辨）；同名时加序号。
+        names = [comparison_label(fact) for fact in comparisons]
         columns = ("数值",) if len(comparisons) == 1 else tuple(
-            f"对比 {index + 1}" for index in range(len(comparisons))
+            name if names.count(name) == 1 else f"{name}（{names[:index + 1].count(name)}）"
+            for index, name in enumerate(names)
         )
         rows: list[list[str]] = []
         cells: list[TableCellBindingV1] = []

@@ -490,6 +490,27 @@ def test_large_amount_tables_use_wan_yuan_columns() -> None:
     assert '同比增幅 | 5.03%' in markdown
 
 
+def test_billion_yuan_monthly_columns_use_yi_yuan() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import PeriodValue
+
+    bundle = _bundle()
+    metric = bundle.metrics[0].model_copy(update={
+        'period_values': (
+            PeriodValue(period='2025-09', value=1170250580.0),
+            PeriodValue(period='2025-10', value=926393868.0),
+            PeriodValue(period='2025-11', value=0.0),
+        ),
+        'total': 2096644448.0,
+    })
+    trace, markdown = build_analysis_table(
+        bundle.model_copy(update={'metrics': (metric,)}), fact_file_resource_id=FACT_RESOURCE,
+    )
+    # 十亿级月度金额写成“117,025.06万元”难读：各月都不少于1亿元（零值除外）时改用亿元。
+    assert trace.column_keys == ('收入（亿元）',)
+    assert '| 2025年9月 | 11.70 |' in markdown
+    assert '| 2025年10月 | 9.26 |' in markdown
+
+
 def test_server_table_numbers_are_right_aligned_in_rendered_html() -> None:
     from markdown_it import MarkdownIt
 
@@ -516,10 +537,42 @@ def test_multiple_comparisons_keep_unique_rows_and_source_identity() -> None:
     other = fact.model_copy(update={'fact_id': 'fact-' + 'd' * 16, 'current_dataset_id': 'other'})
     trace, markdown = build_analysis_table(bundle.model_copy(update={'comparisons': (fact, other)}), fact_file_resource_id=FACT_RESOURCE)
     assert len(trace.row_keys) == 4 and len(trace.cells) == 8
-    assert trace.column_keys == ('对比 1', '对比 2')
+    # 同名指标按序号区分，不再写成读者无法分辨的“对比 1”“对比 2”。
+    assert trace.column_keys == ('收入（1）', '收入（2）')
     assert markdown.count('| 本期收入 |') == 1
     assert trace.cells[0].fact_refs[0].json_pointer == '/comparisons/0'
     assert trace.cells[1].fact_refs[0].json_pointer == '/comparisons/1'
+
+
+def test_comparison_columns_use_metric_names_and_skip_all_zero_amounts() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+    )
+
+    bundle = _bundle()
+
+    def comparison(letter, field, current, baseline, unit='元'):
+        return DeterministicComparison(
+            factId='fact-' + letter * 16, comparisonType='yoy', field=field, fieldRef='h.' + field,
+            currentDatasetId='current', baselineDatasetId='baseline', currentDatasetSha256=SHA,
+            baselineDatasetSha256=SHA, currentTotal=current, baselineTotal=baseline, change=current - baseline,
+            changeRate=(current - baseline) / baseline * 100 if baseline else None, formula='x', unit=unit,
+        )
+
+    facts = (comparison('c', 'revenue', 3600, 3000), comparison('d', 'indicator_value', 120, 100, '人次'),
+             comparison('e', 'service_income', 0, 0))
+    trace, markdown = build_analysis_table(bundle.model_copy(update={'comparisons': facts}),
+                                           fact_file_resource_id=FACT_RESOURCE)
+    assert trace.column_keys == ('收入', '指标值')
+    assert '对比' not in markdown
+    # 比较事实没有显示名时借用同一字段引用的指标显示名，不退回英文字段名。
+    named_metric = bundle.metrics[0].model_copy(update={'field_ref': 'h.service_income',
+                                                        'display_name': '医疗服务收入，服务收入'})
+    facts = (comparison('c', 'revenue', 3600, 3000), comparison('f', 'service_income', 120, 100))
+    trace, _markdown = build_analysis_table(
+        bundle.model_copy(update={'metrics': (*bundle.metrics, named_metric), 'comparisons': facts}),
+        fact_file_resource_id=FACT_RESOURCE)
+    assert trace.column_keys[1] == '医疗服务收入'
 
 
 @pytest.mark.parametrize(("field", "label", "unit"), (

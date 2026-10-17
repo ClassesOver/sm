@@ -29,6 +29,8 @@ from .numeric_text import (
     percent_point_written_for_rate,
     period_extrema_warnings,
     positive_directed_placeholders,
+    profile_rate_supported,
+    profile_rate_values,
     registered_change_rates,
     registered_decline_magnitude,
     registered_group_shares,
@@ -260,6 +262,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
             warnings.extend(f"{label}：{warning}" for warning in period_extrema_warnings(local, [{**bundle, "metrics": selected}]))
     known = supplemental_number_values(contents)
     derived = derived_number_values(contents)
+    profile_rates = profile_rate_values(contents)
     # 复核直接按冻结原值舍入，不能将两位小数显示值再次舍入（如1.245万元→1.25→1.3）。
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
@@ -295,7 +298,9 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
                                                      quantum=quantum)
                      or bounded_by_registered(number, match[1], known.get(match[2], ()),
                                               prefix=text[max(0, match.start() - 12):match.start()])
-                     or derived.supports(number, match[2], quantum, _paragraph_at(text, match.start())))
+                     or derived.supports(number, match[2], quantum, _paragraph_at(text, match.start()))
+                     or (match[2] == "%" and profile_rate_supported(
+                         profile_rates, number, quantum, _paragraph_at(text, match.start()))))
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")

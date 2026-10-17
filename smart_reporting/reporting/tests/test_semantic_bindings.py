@@ -459,3 +459,20 @@ def test_batch_statement_fingerprints_preserve_normalization_and_duplicates():
     assert statement_fingerprints(markdown, claims) == {
         key: statement_fingerprint(markdown, key) for key in claims
     }
+
+
+def test_raw_large_amounts_get_thousands_separators_without_moving_anchors():
+    from smart_reporting.reporting.trace.numeric_text import group_large_amounts
+
+    assert group_large_amounts('每月均为1097718506元，差额-66724688元，人次6009877人次。') == (
+        '每月均为1,097,718,506元，差额-66,724,688元，人次6,009,877人次。')
+    # 年份、编号、万元与已分组数字不动。
+    unchanged = '2025年RJ301012345元编号，12345万元，1,234,567元，1234元。'
+    assert group_large_amounts(unchanged) == unchanged
+    doc = json.loads(contents()[0])
+    doc['metrics'][0]['periodValues'][1]['value'] = 1097718506
+    doc['metrics'][0]['total'] = 1097718516
+    markdown, refs, notices = render_bound_numbers(
+        '另有1097718506元，全年{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}。', [json.dumps(doc)], key='s:b')
+    anchored = anchor_bound_numbers(markdown, refs, notices)
+    assert anchored == f'另有1,097,718,506元，全年1,097,718,506元[[claim:{refs[0].claim_id}]]。'

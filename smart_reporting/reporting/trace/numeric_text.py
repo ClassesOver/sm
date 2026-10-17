@@ -72,6 +72,9 @@ def format_fact_value(value: Any, unit: str | None, display_unit: str | None = N
     if target != unit and not (unit == "%" and target == PERCENT_POINT):
         scales = _unit_scales(unit)
         number = number * scales[unit] / scales[target]
+    # 零值在万元、亿元、万人次下写成“0.00万人次”既别扭又像有零头，直接写 0。
+    if number == 0 and target in {"万元", "亿元", "万人次"}:
+        return "0" + target
     if target in {"万元", "亿元", "万人次", "%", "‰", PERCENT_POINT} or number != number.to_integral_value():
         rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         # 舍入为零的负数不能显示为“-0.00”。
@@ -437,6 +440,12 @@ def frozen_number_guide(
                 text = catalog.get(f"{{{{value:{fact.fact_id}:{field}:{target}}}}}")
                 return text if text and text != "数值待核实" else None
 
+            def shown_reference(field: str, unit: str | None = None) -> str | None:
+                # 模型常照着 monthOverMonth 键名自造 “monthOverMonth.N” 引用；直接给出可用的服务端引用。
+                target = unit or ("万元" if fact.unit in _MONEY_UNITS else fact.unit or "")
+                token = f"{{{{value:{fact.fact_id}:{field}:{target}}}}}"
+                return token if shown(field, unit) else None
+
             periods = [item.period for item in fact.period_values]
             stock = fact.period_aggregation == "last"
             total_periods = periods[-1:] if stock else periods
@@ -476,12 +485,15 @@ def frozen_number_guide(
                                        for index, period in enumerate(periods) if reference(f"periodAverages.0-{index}")],
                     "monthOverMonth": [
                         {"period": period, "change": shown(f"periodChanges.{index}"),
-                         "changeRate": shown(f"periodChangeRates.{index}", "%")}
+                         "changeRate": shown(f"periodChangeRates.{index}", "%"),
+                         "reference": shown_reference(f"periodChanges.{index}"),
+                         "rateReference": shown_reference(f"periodChangeRates.{index}", "%")}
                         for index, period in enumerate(periods) if shown(f"periodChanges.{index}")
                     ],
                     "meaning": "包含已登记的零值月份；零值本身不证明未入账或缺失。局部极值必须明确子期间。"
                                "monthOverMonth 是服务端按登记月度值计算的相邻两月变化额与变化率（某月较上月），"
-                               "可按显示值直接书写，不是环比比较事实的窗口变化",
+                               "可按显示值直接书写或使用 reference/rateReference 引用，不得自造 monthOverMonth.N 引用；"
+                               "不是环比比较事实的窗口变化",
                 }
             item["groups"] = [{"group": group.group, "reference": reference(f"{key}.{index}"),
                                "meaning": ("最新登记期间的完整分组组合期末余额" if stock else "完整分组组合的数值")
@@ -562,6 +574,24 @@ _VALUE_TOKEN_WITH_UNIT = re.compile(
 
 def _unit_family(unit: str) -> tuple[str, ...] | None:
     return next((family for family in _UNIT_FAMILIES if unit in family), None)
+
+
+# 模型从补证表抄写的原始元值、人次（“1097718506元”“差额-66724688元”）没有千分位，领导读不出量级。
+# 只处理五位及以上整数、紧跟元/人次/床日的写法；万元、亿元、编号与年份不动。
+_UNGROUPED_AMOUNT = re.compile(r"(?<![A-Za-z0-9_.,])(\d{5,})(?=(?:\.\d+)?(?:元|人次|床日))")
+
+
+def group_large_amounts(markdown: str) -> str:
+    return _UNGROUPED_AMOUNT.sub(lambda match: f"{int(match[1]):,}", markdown)
+
+
+# 读者是医院领导与财务人员，“月度桶”是数据处理用语，按日常说法改写。
+_MONTH_BUCKET_COUNT = re.compile(r"(\d+|[一两二三四五六七八九十]+)个月度桶")
+
+
+def plain_period_wording(markdown: str) -> str:
+    markdown = _MONTH_BUCKET_COUNT.sub(r"\1个月", markdown)
+    return markdown.replace("月度桶标签", "月份").replace("月度桶", "月度")
 
 
 def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=None) -> str:
@@ -974,19 +1004,21 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
         metrics = [fact for fact in bundle.metrics if fact.unit in {*_MONEY_UNITS, "人次", "床日"} and _short_name(fact)]
         for position, left in enumerate(metrics):
             for right in metrics[position + 1:]:
-                if (left.unit, left.period_start, left.period_end, left.scope, left.aggregation,
-                    left.period_aggregation, left.period_granularity) != (
-                    right.unit, right.period_start, right.period_end, right.scope, right.aggregation,
-                    right.period_aggregation, right.period_granularity):
-                    continue
-                periods = fact_periods(left.model_dump(mode='json', by_alias=True))
-                if periods != fact_periods(right.model_dump(mode='json', by_alias=True)):
+                if (left.unit, left.scope, left.aggregation, left.period_aggregation, left.period_granularity) != (
+                        right.unit, right.scope, right.aggregation, right.period_aggregation, right.period_granularity):
                     continue
                 operands = _operand_names(_short_name(left), _short_name(right))
-                derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands, periods=periods)
-                if [item.period for item in left.period_values] != [item.period for item in right.period_values]:
-                    continue
-                for a, b in zip(left.period_values, right.period_values, strict=True):
+                periods = fact_periods(left.model_dump(mode='json', by_alias=True))
+                # 合计差额要求统计窗口完全相同；逐期差额只按两边都有的同一期间配对
+                # （收入到11月、成本到9月时，1月仍可比）。
+                if ((left.period_start, left.period_end) == (right.period_start, right.period_end)
+                        and periods == fact_periods(right.model_dump(mode='json', by_alias=True))):
+                    derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands,
+                                periods=periods)
+                right_values = {item.period: item.value for item in right.period_values}
+                for a in left.period_values:
+                    if a.period not in right_values:
+                        continue
                     period = _parse_fact_period(a.period, left.period_granularity)
                     if period:
                         year, month, day = period.value.year, period.value.month, period.value.day
@@ -999,9 +1031,43 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                         else:
                             key = f'{year:04d}'
                             aliases = (f'{year}年', key)
-                        derived.add(left.unit, Decimal(str(a.value)) - Decimal(str(b.value)),
+                        derived.add(left.unit, Decimal(str(a.value)) - Decimal(str(right_values[a.period])),
                                     (*operands, aliases), periods=(key,), comparison=operands)
     return derived
+
+
+# Profile 告警登记的比例及正文须写明的含义词：缺失比例（“23646 (78.7%) missing values”）、
+# 零值比例（“9673 (68.7%) zeros”）。
+_PROFILE_RATES = (
+    (re.compile(r"\((\d+(?:\.\d+)?)%\)\s*missing values|缺失(?:率|比例)?\s*(?:为|约)?\s*(\d+(?:\.\d+)?)%"), ("缺失",)),
+    (re.compile(r"\((\d+(?:\.\d+)?)%\)\s*zeros"), ("零", "为0")),
+)
+
+
+def profile_rate_values(contents: Iterable[str]) -> list[tuple[tuple[str, ...], set[Decimal]]]:
+    """事实告警中 Profile 登记的缺失、零值比例。
+
+    正文说明数据质量时会引用这些比例；只在写明对应含义（“缺失”“零值”）的段落中认可，
+    不作为一般百分数依据。
+    """
+    rates = [(words, set()) for _pattern, words in _PROFILE_RATES]
+    for bundle in frozen_fact_bundles(contents):
+        document = bundle.model_dump(mode="json", by_alias=True)
+        warnings = list(document.get("warnings") or ())
+        for array in ("metrics", "comparisons", "derivedMetrics"):
+            for entry in document.get(array) or ():
+                warnings.extend(entry.get("warnings") or ())
+        for warning in warnings:
+            for (pattern, _words), (_same, values) in zip(_PROFILE_RATES, rates, strict=True):
+                values.update(Decimal(next(group for group in match.groups() if group))
+                              for match in pattern.finditer(str(warning)))
+    return rates
+
+
+def profile_rate_supported(rates, number: Decimal, quantum: Decimal, context: str) -> bool:
+    return any(any(word in context for word in words)
+               and any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in values)
+               for words, values in rates)
 
 
 def _paragraph_at(markdown: str, index: int) -> str:
@@ -1023,8 +1089,9 @@ def registered_decline_magnitude(
     符号规范化会把“减少-654.32万元”改写为“减少654.32万元”，金额、人次与百分数一样
     必须按此认定为已登记数值，否则正确正文会被替换为待核实。
     """
+    # 简写“实际降9.83%”“较预算少4.34万人次”同样是下降幅度；“至少”“最少”“减少”等不按单字处理。
     if number <= 0 or not re.search(
-        rf"(?:{'|'.join(FALLING_WORDS)})(?:了|约|为|达)?\s*$", prefix,
+        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少])(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
     return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
@@ -1054,14 +1121,15 @@ def normalize_signed_wording(markdown: str) -> str:
         markdown,
     )
 
-    # “实际较预算少-4.34万人次；2月少-6.37万人次”：比较句里的“多/少”同样不能再带负号。
-    # 单字不进方向词表，以免“至少”“最多”等被改写。
+    # “实际较预算少-4.34万人次”“较预算支出低-13.47亿元”：比较句里的“多/少”“高/低”同样不能再带负号。
+    # 单字不进方向词表，以免“至少”“最多”“最低-5.2%”“提高”“降低”等被改写。
     def replace_comparative(match: re.Match[str]) -> str:
         logger.warning("report_signed_wording_normalized verb={} value={}", match["verb"], match["value"])
-        return f"少{match['space']}{match['value']}"
+        word = "少" if match["verb"] in "多少" else "低"
+        return f"{word}{match['space']}{match['value']}"
 
     return re.sub(
-        r"(?<![至最不多少])(?P<verb>多|少)(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
+        r"(?<![至最不多少偏提降升抬拉])(?P<verb>多|少|高|低)(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
         replace_comparative,
         markdown,
     )
@@ -1315,6 +1383,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     catalog = frozen_number_catalog(contents)
     known = supplemental_number_values(contents)
     derived = derived_number_values(contents)
+    profile_rates = profile_rate_values(contents)
     # 没有可解析的冻结事实时，服务端无法判断正文数字是否为派生值；
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
     if not catalog and not known:
@@ -1332,7 +1401,9 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                 or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
                 or bounded_by_registered(number, number_text, candidates, prefix=prefix)
-                or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)):
+                or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
+                or (unit == "%" and profile_rate_supported(profile_rates, number, quantum,
+                                                           claim or statement or context))):
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
@@ -1477,6 +1548,62 @@ def correct_period_extrema(markdown: str, bundles: Iterable[dict[str, Any] | str
                                    wrong_month, expected)
                     break
     return corrected[len(scope):]
+
+
+# “预算各月均为131.73亿元（13,172,622,072元）”把全年合计写成了单月值，领导会读成每月 131 亿。
+# 只在事实为逐月相加且各月取值相同、正文数值恰为其合计时改写为单月值；其余情形不猜。
+_EACH_MONTH_AMOUNT = re.compile(
+    rf"(?P<lead>(?:各月|每月|逐月|按月)[^。；;\n\d{{}}（(]{{0,12}}?)"
+    rf"(?P<number>{_NUMBER})\s*(?P<unit>亿元|万元|元|万人次|人次)"
+    rf"(?P<base>\s*[（(]\s*(?P<base_number>{_NUMBER})\s*(?P<base_unit>元|人次)\s*[）)])?"
+)
+
+
+def _scaled_value(value: Decimal, fact_unit: str, unit: str, number_text: str) -> Decimal | None:
+    scales = _unit_scales(fact_unit)
+    if scales is None or unit not in scales:
+        return None
+    digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
+    return (value * scales[fact_unit] / scales[unit]).quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)
+
+
+def correct_constant_monthly_totals(markdown: str, contents: Iterable[str]) -> str:
+    constants: list[tuple[str, Decimal, Decimal]] = []
+    for bundle in frozen_fact_bundles(contents):
+        for fact in bundle.metrics:
+            values = {Decimal(str(item.value)) for item in fact.period_values}
+            if (fact.period_granularity != "month" or len(fact.period_values) < 2 or len(values) != 1
+                    or fact.aggregation not in {"sum", "count"} or fact.period_aggregation == "last"
+                    or not fact.unit or _unit_scales(fact.unit) is None):
+                continue
+            month, total = next(iter(values)), Decimal(str(fact.total))
+            if month and total == month * len(fact.period_values):
+                constants.append((fact.unit, total, month))
+    if not constants:
+        return markdown
+
+    def replace(match: re.Match[str]) -> str:
+        if re.search(r"合计|累计|全年|总计|总额|年度", match["lead"]):
+            return match[0]
+        number = Decimal(match["number"].replace(",", ""))
+        months = {month for fact_unit, total, month in constants
+                  if _scaled_value(total, fact_unit, match["unit"], match["number"]) == number}
+        if len(months) != 1:
+            return match[0]
+        month = months.pop()
+        fact_unit = next(unit for unit, _, value in constants if value == month)
+        written = f"{_scaled_value(month, fact_unit, match['unit'], match['number'])}{match['unit']}"
+        base = match["base"] or ""
+        if base:
+            base_number = Decimal(match["base_number"].replace(",", ""))
+            total = next(total for _, total, value in constants if value == month)
+            if _scaled_value(total, fact_unit, match["base_unit"], match["base_number"]) == base_number:
+                monthly = _scaled_value(month, fact_unit, match["base_unit"], match["base_number"])
+                base = base.replace(match["base_number"], str(monthly), 1)
+        logger.warning("report_constant_monthly_total_corrected value={}{}", match["number"], match["unit"])
+        return match["lead"] + written + base
+
+    return _EACH_MONTH_AMOUNT.sub(replace, markdown)
 
 
 _EXTREMA_WORDS = {"最高": "最高|峰值", "最低": "最低|低点"}

@@ -33,3 +33,26 @@ def test_reconciliation_wire_contract_matches_acceptance(reconciliation, valid):
     else:
         with pytest.raises(ValidationError):
             validate_supplemental_evidence(json.dumps(payload), identity)
+
+
+def test_empty_supplement_tables_or_zero_sided_reconciliation_trigger_repair():
+    from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+        empty_supplemental_evidence_error,
+        validate_supplemental_evidence,
+    )
+
+    def evidence(rows, left):
+        return validate_supplemental_evidence(json.dumps({
+            "findings": [{"name": "成本类型构成", "columns": ["成本类型", "金额"], "rows": rows}],
+            "reconciliations": [{"name": "成本类型合计对账", "passed": left == 100, "left": left, "right": 100}],
+            "warnings": [],
+        }), {"analysisId": "analysis_005", "datasetIds": ["ds"]})
+
+    # period_code 实为“2025-01-01”却按“2025-01”筛选：整表为空、对账左侧为 0。
+    error = empty_supplemental_evidence_error(evidence([], 0))
+    assert error is not None and error.code == "report_analysis_evidence_empty"
+    assert error.details["emptyTables"] and error.details["zeroSidedReconciliations"] == ["成本类型合计对账"]
+    # 有数据而对账差异只是业务上的不一致：照常作为软告警，不触发重跑。
+    assert empty_supplemental_evidence_error(evidence([["人员支出", 60]], 60)) is None
+    # 表中有数据时对账一侧为 0 可能是真实结果（该范围确无记录），同样不触发重跑。
+    assert empty_supplemental_evidence_error(evidence([["人员支出", 60]], 0)) is None

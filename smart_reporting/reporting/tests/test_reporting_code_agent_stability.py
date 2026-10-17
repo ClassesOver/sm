@@ -1075,7 +1075,7 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
 
 
 @pytest.mark.parametrize(
-    "base_url,extra_body,expected_extra_body",
+    "provider_base_url,extra_body,expected_extra_body",
     [
         (
             "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v2",
@@ -1114,12 +1114,12 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
     ],
 )
 def test_responses_thinking_transport_is_projected_per_provider(
-    base_url, extra_body, expected_extra_body
+    provider_base_url, extra_body, expected_extra_body
 ):
     model = ReportingCodeOpenAIResponses(
         id="reasoning-model",
         api_key="test",
-        base_url=base_url,
+        base_url=provider_base_url,
         extra_body=extra_body,
         reasoning_effort="high",
         reasoning={"effort": "high", "summary": "detailed"},
