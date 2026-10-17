@@ -586,12 +586,14 @@ def group_large_amounts(markdown: str) -> str:
 
 
 # 读者是医院领导与财务人员，“月度桶”“登记值”是数据处理用语，按日常说法改写。
+_NULL_WORDING = re.compile(r"(为|是|记为)\s*(?:null|None|NaN|nan)(?![A-Za-z0-9_])")
 _MONTH_BUCKET_COUNT = re.compile(r"(\d+|[一两二三四五六七八九十]+)个月度桶")
 
 
 def plain_period_wording(markdown: str) -> str:
     markdown = _MONTH_BUCKET_COUNT.sub(r"\1个月", markdown)
-    # “登记值”是数据处理用语，财务与业务人员习惯说“记录值”。
+    # “登记值”是数据处理用语，财务与业务人员习惯说“记录值”；模型照抄的空值写法（“为null”）改为“为空”。
+    markdown = _NULL_WORDING.sub(r"\1空", markdown)
     return markdown.replace("月度桶标签", "月份").replace("月度桶", "月度").replace("登记值", "记录值")
 
 
