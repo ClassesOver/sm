@@ -33,6 +33,7 @@ from .numeric_text import (
     registered_multiple_matches,
     registered_multiples,
     render_frozen_numbers,
+    derived_number_values,
     supplemental_number_values,
     table_unit_cells,
 )
@@ -257,6 +258,8 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
             label = (field_definitions or {}).get(selected[0]["field"], selected[0]["field"])
             warnings.extend(f"{label}：{warning}" for warning in period_extrema_warnings(local, [{**bundle, "metrics": selected}]))
     known = supplemental_number_values(contents)
+    for unit, values in derived_number_values(contents).items():
+        known.setdefault(unit, set()).update(values)
     # 复核直接按冻结原值舍入，不能将两位小数显示值再次舍入（如1.245万元→1.25→1.3）。
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)

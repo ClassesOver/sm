@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -633,6 +634,95 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
     return known
 
 
+_DERIVED_ROW_LIMIT = 30
+
+
+def _add_derived(known: dict[str, set[Decimal]], unit: str, number: Decimal) -> None:
+    for value in {number, -number}:
+        known.setdefault(unit, set()).add(value)
+        if (scales := _unit_scales(unit)) is not None:
+            for target, scale in scales.items():
+                known.setdefault(target, set()).add(value * scales[unit] / scale)
+        if unit == "人次":
+            known.setdefault("万人次", set()).add(value / 10000)
+
+
+def _derive_from_columns(known: dict[str, set[Decimal]], columns: Mapping[str, tuple[str, list[Decimal]]]) -> None:
+    """同一张表内补算：列内两两差额与降序前 N 项合计，同单位两列的逐行差额与合计差额。"""
+    for unit, numbers in columns.values():
+        if not 1 < len(numbers) <= _DERIVED_ROW_LIMIT:
+            continue
+        # 两个百分数之差是百分点，不是百分数；占比列只补算降序前 N 项合计。
+        if unit != "%":
+            for position, left in enumerate(numbers):
+                for right in numbers[position + 1:]:
+                    _add_derived(known, unit, left - right)
+        running = Decimal(0)
+        for number in sorted(numbers, reverse=True)[:-1]:
+            running += number
+            _add_derived(known, unit, running)
+    items = list(columns.values())
+    for position, (unit, left) in enumerate(items):
+        for right_unit, right in items[position + 1:]:
+            if unit == "%" or right_unit != unit or len(right) != len(left) or len(left) > _DERIVED_ROW_LIMIT:
+                continue
+            for a, b in zip(left, right, strict=True):
+                _add_derived(known, unit, a - b)
+            _add_derived(known, unit, sum(left) - sum(right))
+
+
+def derived_number_values(contents: Iterable[str]) -> dict[str, set[Decimal]]:
+    """服务端补算模型常写的两数之差与前 N 项合计，供正文核对使用，不进入模型可见目录。
+
+    只在同一张补证表、同一分析的同口径事实内组合（同单位、同期间），不跨表或跨分析凑数：
+    “门诊人次相差424,831人次”“总部与北部院区合计占比93.05%”“1月成本高于收入3.02亿元”。
+    """
+    contents = tuple(contents)
+    known: dict[str, set[Decimal]] = {}
+    for content in contents:
+        try:
+            document = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        pending = [document] if isinstance(document, (dict, list)) else []
+        while pending:
+            finding = pending.pop()
+            if isinstance(finding, list):
+                pending.extend(finding)
+                continue
+            if not isinstance(finding, dict):
+                continue
+            columns, rows, metadata = (finding.get(key) for key in ("columns", "rows", "columnMeta"))
+            if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
+                pending.extend(value for value in finding.values() if isinstance(value, (dict, list)))
+                continue
+            table: dict[str, tuple[str, list[Decimal]]] = {}
+            for index, column in enumerate(columns):
+                meta = metadata.get(column) if isinstance(column, str) else None
+                unit = meta.get("unit") if isinstance(meta, dict) else None
+                if (not isinstance(unit, str) or unit not in {*_MONEY_UNITS, "人次", "床日", "%"}
+                        or unit == "%" and meta.get("isPercent") is not True):
+                    continue
+                numbers = [Decimal(str(row[index])) for row in rows
+                           if isinstance(row, list) and len(row) == len(columns)
+                           and isinstance(row[index], (int, float)) and not isinstance(row[index], bool)
+                           and math.isfinite(row[index])]
+                if len(numbers) == len(rows):
+                    table[column] = (unit, numbers)
+            _derive_from_columns(known, table)
+    for bundle in frozen_fact_bundles(contents):
+        metrics = [fact for fact in bundle.metrics if fact.unit in {*_MONEY_UNITS, "人次", "床日"}]
+        for position, left in enumerate(metrics):
+            for right in metrics[position + 1:]:
+                if (left.unit, left.period_start, left.period_end) != (right.unit, right.period_start, right.period_end):
+                    continue
+                _add_derived(known, left.unit, Decimal(str(left.total)) - Decimal(str(right.total)))
+                if [item.period for item in left.period_values] == [item.period for item in right.period_values]:
+                    for a, b in zip(left.period_values, right.period_values, strict=True):
+                        _add_derived(known, left.unit, Decimal(str(a.value)) - Decimal(str(b.value)))
+    return known
+
+
 def registered_decline_magnitude(
     number: Decimal, unit: str, candidates: Iterable[Decimal], *, prefix: str, quantum: Decimal,
 ) -> bool:
@@ -932,6 +1022,8 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     contents = tuple(contents)
     catalog = frozen_number_catalog(contents)
     known = supplemental_number_values(contents)
+    for unit, values in derived_number_values(contents).items():
+        known.setdefault(unit, set()).update(values)
     # 没有可解析的冻结事实时，服务端无法判断正文数字是否为派生值；
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
     if not catalog and not known:
