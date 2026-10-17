@@ -60,6 +60,18 @@ def section_content_budget_issues(
 
 class RuntimeSectionsMixin:
     @staticmethod
+    def _note_reference_comparisons(blocks: tuple[Any, ...], reference_claim_ids: set[str]) -> tuple[Any, ...]:
+        """同一章节只提示一次参考性对比；任一相关段落已写明“参考”时不再追加。"""
+        related = [block for block in blocks if reference_claim_ids.intersection(block.claim_ids)]
+        if not related or any("参考" in block.markdown for block in related):
+            return tuple(blocks)
+        return tuple(
+            block.model_copy(update={"markdown": f"{block.markdown}\n\n> 注：相关比较仅作参考性对比。"})
+            if block is related[0] else block
+            for block in blocks
+        )
+
+    @staticmethod
     def _normalize_section_claims(
         *,
         section_code: str,
@@ -811,13 +823,9 @@ class RuntimeSectionsMixin:
         reference_claim_ids = {
             claim.claim_id for claim in artifact.claims if claim.comparability == "reference_only"
         }
-        normalized_reference_blocks = []
-        for block in artifact.blocks:
-            markdown = block.markdown
-            if reference_claim_ids.intersection(block.claim_ids) and "参考" not in markdown:
-                markdown = f"{markdown}\n\n> 注：相关比较仅作参考性对比。"
-            normalized_reference_blocks.append(block.model_copy(update={"markdown": markdown}))
-        artifact = artifact.model_copy(update={"blocks": tuple(normalized_reference_blocks)})
+        artifact = artifact.model_copy(
+            update={"blocks": self._note_reference_comparisons(artifact.blocks, reference_claim_ids)}
+        )
         semantic_conflicts: list[dict[str, Any]] = []
         for claim in artifact.claims:
             metric = metrics_by_code.get(claim.metric_code)

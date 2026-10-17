@@ -134,3 +134,14 @@ def test_claimless_blocks_stay_when_no_block_keeps_a_claim() -> None:
 
     assert merged == blocks
     assert warnings == []
+
+
+def test_reference_comparison_note_is_added_once_per_section() -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+
+    blocks = tuple(ReportDraftBlock(blockId=f"b{index}", markdown=f"第{index}段。", claimIds=claims)
+                   for index, claims in enumerate((("c1",), ("c2",), ("c1",))))
+    noted = RuntimeSectionsMixin._note_reference_comparisons(blocks, {"c1"})
+    assert [block.markdown.count("仅作参考性对比") for block in noted] == [1, 0, 0]
+    written = (blocks[0].model_copy(update={"markdown": "两期口径不同，仅供参考。"}), *blocks[1:])
+    assert RuntimeSectionsMixin._note_reference_comparisons(written, {"c1"}) == written
