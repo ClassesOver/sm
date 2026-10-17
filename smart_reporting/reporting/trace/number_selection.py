@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-from .numeric_text import frozen_fact_bundles, frozen_number_catalog
+from .numeric_text import frozen_fact_bundles, frozen_number_catalog, merge_frozen_fact
 
 _TOKEN = re.compile(r'\{\{value:([^:{}]+):([^:{}]+):([^:{}]*)\}\}')
 _PERIOD = re.compile(r'(?P<year>\d{4})年(?:(?P<start>\d{1,2})月?(?:[—–至到~-](?P<end>\d{1,2}))?月)?')
@@ -21,8 +21,14 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
     for bundle in frozen_fact_bundles(contents):
         for fact in bundle.metrics:
             if fact.fact_id:
-                if fact.fact_id in facts and facts[fact.fact_id] != fact:
-                    conflicts.add(fact.fact_id)
+                if fact.fact_id in facts:
+                    existing = facts[fact.fact_id]
+                    merged = merge_frozen_fact(existing.model_dump(mode='json', by_alias=True),
+                                               fact.model_dump(mode='json', by_alias=True))
+                    if merged is None:
+                        conflicts.add(fact.fact_id)
+                    elif merged['periodGranularity'] == existing.period_granularity:
+                        fact = existing
                 facts[fact.fact_id] = fact
                 owners.setdefault(fact.fact_id, set()).add(bundle.analysis_id)
     labels = {}
@@ -61,6 +67,9 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             return match[0]
         periods = list(_PERIOD.finditer(sentence))
         written = periods[-1] if periods else None
+        # “2025年1月1日至12月1日”写的是日期区间，不是“2025年1月”单月；窗口不明确时不纠正。
+        if written and re.match(r'\d{1,2}日', sentence[written.end():]):
+            return match[0]
         candidates = {}
         for fact_id in labels[subject[0]]:
             if fact_id in conflicts:

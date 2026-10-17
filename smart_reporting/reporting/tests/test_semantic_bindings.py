@@ -68,6 +68,41 @@ def test_missing_operand_or_conflicting_identity_never_falls_back_to_total():
                                     [*contents(), json.dumps(conflicting)]) is None
 
 
+def test_same_fact_described_differently_by_two_analyses_is_not_an_identity_conflict():
+    # 未声明序列粒度的分析把月初标签记为 day，声明按月的分析记为 month；冻结数值完全一致。
+    from smart_reporting.reporting.trace.number_selection import align_number_selections
+
+    daily = json.loads(contents()[0])
+    for metric in daily['metrics']:
+        metric.update(periodGranularity='day', displayName='设备支出，也称设备金额', warnings=['期间索引存在重复'])
+    daily['analysisId'] = 'analysis_002'
+    sources = [json.dumps(daily), *contents()]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}'
+    resolved = resolve_number_reference(token, sources)
+    assert resolved is not None and resolved['value'] == 20 and resolved['periods'] == ('2025-02',)
+    assert resolved['entry']['periodGranularity'] == 'month'
+    markdown, warnings = align_number_selections('设备支出合计为{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。', sources)
+    assert markdown == '设备支出合计为{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。'
+    assert not warnings
+    conflicting = json.loads(json.dumps(daily))
+    conflicting['metrics'][0]['total'] = 31
+    markdown, warnings = align_number_selections('设备支出合计为{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。',
+                                                 [json.dumps(conflicting), *contents()],
+                                                 {'actual_equipment': '设备支出'})
+    assert ':unverified:' in markdown and warnings
+
+
+def test_date_range_is_not_read_as_its_first_month_when_aligning_selections():
+    from smart_reporting.reporting.trace.number_selection import align_number_selections
+
+    definitions = {'actual_equipment': '设备支出'}
+    markdown = '2025年1月1日至2月1日，设备支出合计为{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。'
+    assert align_number_selections(markdown, contents(), definitions) == (markdown, [])
+    aligned, warnings = align_number_selections(
+        '2025年1月设备支出合计为{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。', contents(), definitions)
+    assert 'periodValues.0' in aligned and warnings
+
+
 def test_missing_numbers_are_typed_at_replacement_not_guessed_from_prose():
     markdown, refs, notices = render_bound_numbers(
         '供应商答复待核实。租赁999999元。无效引用{{value:fact-cccccccccccccccc:total:元}}。', contents(), key='s:b')

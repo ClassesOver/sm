@@ -181,6 +181,25 @@ def frozen_fact_bundles(contents: Iterable[str]) -> Iterator[DeterministicAnalys
         yield bundle
 
 
+# 事实身份按数据集、字段、口径、期间与冻结值签发；以下字段是各分析自己的描述
+# （未声明序列粒度的分析把月初标签记为 day，声明按月的分析记为 month），不改变冻结数值。
+_ANALYSIS_LOCAL_FACT_FIELDS = frozenset({"periodGranularity", "displayName", "aliases", "metricCodes", "warnings"})
+_GRANULARITY_RANK = {"day": 1, "month": 2, "year": 3}
+
+
+def merge_frozen_fact(existing: Mapping[str, Any], candidate: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """同一事实身份的两条记录：只差分析级描述时返回保留的一条，冻结数值或口径不同返回 None。"""
+    def frozen(record: Mapping[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in record.items() if key not in _ANALYSIS_LOCAL_FACT_FIELDS}
+
+    if frozen(existing) != frozen(candidate):
+        return None
+    # 期间值相同而一方声明为月或年：标签已满足该粒度，采用声明的较粗粒度，与按月核对的分析一致。
+    rank = _GRANULARITY_RANK.get
+    return candidate if (rank(candidate.get("periodGranularity")) or 0) > (rank(existing.get("periodGranularity")) or 0) \
+        else existing
+
+
 def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
     """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
     for bundle in frozen_fact_bundles(contents):
@@ -625,10 +644,22 @@ def normalize_signed_wording(markdown: str) -> str:
         logger.warning("report_signed_wording_normalized verb={} value={}", verb, match["value"])
         return f"{falling}{match['filler'] or ''}{match['space']}{match['value']}"
 
-    return re.sub(
+    markdown = re.sub(
         rf"(?P<verb>{DIRECTION_WORD_PATTERN})"
         r"(?P<filler>了|约|为|达|幅度为)?(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
         replace,
+        markdown,
+    )
+
+    # “实际较预算少-4.34万人次；2月少-6.37万人次”：比较句里的“多/少”同样不能再带负号。
+    # 单字不进方向词表，以免“至少”“最多”等被改写。
+    def replace_comparative(match: re.Match[str]) -> str:
+        logger.warning("report_signed_wording_normalized verb={} value={}", match["verb"], match["value"])
+        return f"少{match['space']}{match['value']}"
+
+    return re.sub(
+        r"(?<![至最不多少])(?P<verb>多|少)(?P<space>\s*)-\s*(?P<value>\d[\d,]*(?:\.\d+)?)",
+        replace_comparative,
         markdown,
     )
 

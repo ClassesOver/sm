@@ -14,6 +14,7 @@ from .numeric_text import (
     correct_period_extrema,
     frozen_fact_bundles,
     frozen_number_catalog,
+    merge_frozen_fact,
     normalize_signed_wording,
     render_frozen_numbers,
     replace_unregistered_numbers,
@@ -123,8 +124,12 @@ class NumberReferenceResolver:
             for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
                 for fact in document.get(array, ()):
                     key = fact.get('factId')
-                    if key in self.entries and self.entries[key] != fact:
-                        self.conflicts.add(key)
+                    if key in self.entries:
+                        merged = merge_frozen_fact(self.entries[key], fact)
+                        if merged is None:
+                            self.conflicts.add(key)
+                        else:
+                            fact = merged
                     self.entries[key] = fact
 
     def resolve(self, token: str) -> dict[str, Any] | None:
