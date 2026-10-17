@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextvars import ContextVar
-from functools import partial, wraps
+from functools import wraps
 from inspect import isawaitable
 from threading import Lock
 from time import perf_counter, time
@@ -59,9 +59,7 @@ MODEL_TOKEN_FIELDS = (
 )
 
 
-_safe_reset_context_var = partial(
-    safe_reset_context_var, event="report_contextvar_reset_skipped_cross_context"
-)
+_CONTEXTVAR_RESET_SKIPPED_EVENT = "report_contextvar_reset_skipped_cross_context"
 
 
 class PlannerRequestRecorder:
@@ -248,7 +246,7 @@ def bind_planner_request_recorder(recorder: PlannerRequestRecorder):
 
 
 def reset_planner_request_recorder(token: Any) -> None:
-    _safe_reset_context_var(_PLANNER_REQUEST_RECORDER, token)
+    safe_reset_context_var(_PLANNER_REQUEST_RECORDER, token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
 
 
 def current_planner_request_recorder() -> PlannerRequestRecorder | None:
@@ -357,7 +355,7 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 result = await result
         except BaseException as error:
             if not isinstance(error, Exception):
-                _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
+                safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
                 raise
             if not hasattr(error, "_reporting_failed_step"):
                 error._reporting_failed_step = step_id
@@ -386,12 +384,12 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 failed_metrics.cache_write_tokens,
                 failed_additional.get("time_to_first_token_seconds"),
             )
-            _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
+            safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
             await finish_activity("failed", "步骤执行失败")
             raise
         duration = perf_counter() - started_at
         collected_metrics = accumulator.snapshot()
-        _safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token)
+        safe_reset_context_var(_STEP_MODEL_METRICS, metrics_token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
         metrics = collected_metrics
         if isinstance(result, StepOutput):
             if result.metrics is not None:

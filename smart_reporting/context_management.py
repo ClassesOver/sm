@@ -9,7 +9,6 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import fields
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 from time import perf_counter
 from types import MappingProxyType
@@ -1844,10 +1843,9 @@ class TaskExecutionContextProjector:
 def _parallel_safe_tool_call(function_call: Any) -> bool:
     name = str(getattr(getattr(function_call, "function", None), "name", "") or "")
     arguments = getattr(function_call, "arguments", None)
-    return _parallel_safe_tool(name, arguments)
+    return is_parallel_safe_tool(name, arguments)
 
 
-_parallel_safe_tool = is_parallel_safe_tool
 
 
 def _tool_batch_attributes(size: int, admitted: bool, admission: str) -> dict[str, Any]:
@@ -1893,7 +1891,7 @@ def _stream_tool_batch_attributes(calls: dict[int, dict[str, Any]]) -> dict[str,
     size = len(parsed_calls)
     parallel = size <= 1 or (
         size <= TASK_EXECUTION_TOOL_BATCH_LIMIT
-        and all(_parallel_safe_tool(name, arguments) for name, arguments in parsed_calls)
+        and all(is_parallel_safe_tool(name, arguments) for name, arguments in parsed_calls)
     )
     admission = "single" if size <= 1 else "parallel_safe_read" if parallel else "serialized"
     return _tool_batch_attributes(size, True, admission)
@@ -1942,9 +1940,7 @@ _TASK_EXECUTION_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 
 
-_safe_reset_context_var = partial(
-    safe_reset_context_var, event="task_execution_contextvar_reset_skipped_cross_context"
-)
+_CONTEXTVAR_RESET_SKIPPED_EVENT = "task_execution_contextvar_reset_skipped_cross_context"
 
 
 class ProjectedOpenAIChat(OpenAIChat):
@@ -2004,7 +2000,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     duration_ms(provider_started_at),
                     str(failed).lower(),
                 )
-            _safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token)
+            safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         model_id, host = _model_log_fields(self)
@@ -2039,7 +2035,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     duration_ms(provider_started_at),
                     str(failed).lower(),
                 )
-            _safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token)
+            safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
         model_id, host = _model_log_fields(self)
@@ -2087,7 +2083,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     chunk_count,
                     str(failed).lower(),
                 )
-            _safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token)
+            safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
 
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
@@ -2137,7 +2133,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     chunk_count,
                     str(failed).lower(),
                 )
-            _safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token)
+            safe_reset_context_var(_TASK_EXECUTION_REQUEST_METRICS, token, event=_CONTEXTVAR_RESET_SKIPPED_EVENT)
 
     def run_function_calls(self, function_calls, function_call_results, *args, **kwargs):
         for batch in _tool_call_batches(function_calls):

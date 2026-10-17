@@ -1060,6 +1060,7 @@ async def test_analysis_python_source_gate_enforces_signed_source_size_boundary(
 @pytest.mark.parametrize(
     "source",
     [
+        "x = run_python_script\nprint(x)\n",
         "x = submit_visualization_charts\nprint(x)\n",
         (
             "import matplotlib\n"

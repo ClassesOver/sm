@@ -103,7 +103,11 @@ def _open_regular_file(path: Path, max_bytes: int) -> int:
     if info.st_size > max_bytes:
         raise WorkspaceError("工作区文件超过读取大小上限。")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        # lstat 与 open 之间文件可能被删除或替换为符号链接（O_NOFOLLOW 返回 ELOOP）。
+        raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
     try:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or opened.st_size > max_bytes:
@@ -119,6 +123,8 @@ def _read_regular_file(path: Path, max_bytes: int) -> bytes:
     try:
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             content = stream.read(max_bytes + 1)
+    except OSError as error:
+        raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
     finally:
         os.close(descriptor)
     if len(content) > max_bytes:
@@ -138,6 +144,8 @@ def _hash_regular_file(path: Path, max_bytes: int) -> tuple[int, str]:
             if size > max_bytes:
                 raise WorkspaceError("工作区文件超过读取大小上限。")
             digest.update(chunk)
+    except OSError as error:
+        raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
     finally:
         os.close(descriptor)
     return size, digest.hexdigest()

@@ -47,6 +47,8 @@ def _valid_visualization_source(tree: ast.Module) -> bool:
         "__file__",
         "apply_analysis_patch",
         "null",
+        # 已下线的旧工具名：在写入阶段直接拒绝，避免运行时才 NameError 并消耗重试。
+        "run_python_script",
         "submit_visualization_charts",
         "true",
         "false",

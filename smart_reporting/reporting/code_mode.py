@@ -35,7 +35,7 @@ class ScriptProcessResult:
     exit_code: int | None
 
 
-def _cell_field(cell: Any, name: str, default: Any = None) -> Any:
+def cell_field(cell: Any, name: str, default: Any = None) -> Any:
     if isinstance(cell, Mapping):
         return cell.get(name, default)
     return getattr(cell, name, default)
@@ -202,14 +202,14 @@ class ReportingCodeModeRuntime:
             ) from error
         finally:
             self._record_execution_span(session_id, "bootstrap", started)
-        if _cell_field(result, "status") != "ok":
+        if cell_field(result, "status") != "ok":
             raise ReportingError(
                 "report_code_mode_bootstrap_failed",
                 "CodeMode 工作区初始化失败。",
                 details={
                     "sessionId": session_id,
-                    "status": _cell_field(result, "status"),
-                    "traceback": _cell_field(result, "traceback"),
+                    "status": cell_field(result, "status"),
+                    "traceback": cell_field(result, "traceback"),
                 },
             )
         self._log_connection(session_id)
@@ -274,7 +274,7 @@ class ReportingCodeModeRuntime:
                 matplotlib_agg=matplotlib_agg,
             )
             cell = process.cell
-            status = _cell_field(cell, "status")
+            status = cell_field(cell, "status")
             exit_code = process.exit_code
             if exit_code is None and status == "ok":
                 raise ReportingError(
@@ -287,9 +287,9 @@ class ReportingCodeModeRuntime:
                     "sessionId": session_id,
                     "scriptPath": normalized,
                     "status": status,
-                    "stdout": _cell_field(cell, "stdout", "") or "",
-                    "stderr": _cell_field(cell, "stderr", "") or "",
-                    "traceback": _cell_field(cell, "traceback"),
+                    "stdout": cell_field(cell, "stdout", "") or "",
+                    "stderr": cell_field(cell, "stderr", "") or "",
+                    "traceback": cell_field(cell, "traceback"),
                     "exitCode": exit_code,
                 }
                 raise ReportingError(
@@ -301,8 +301,8 @@ class ReportingCodeModeRuntime:
                 "ok": True,
                 "status": "completed",
                 "exitCode": 0,
-                "stdout": _cell_field(cell, "stdout", "") or "",
-                "stderr": _cell_field(cell, "stderr", "") or "",
+                "stdout": cell_field(cell, "stdout", "") or "",
+                "stderr": cell_field(cell, "stderr", "") or "",
             }
         finally:
             if close:

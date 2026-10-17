@@ -811,11 +811,17 @@ def interactive_spec_path(image_path: str) -> str:
 def safe_relative_posix_path(
     value: str, message: str, *, backslash_message: str | None = None
 ) -> PurePosixPath:
-    """校验工作区相对 POSIX 路径：拒绝反斜杠、绝对路径、“..”与目录形式。"""
+    """校验工作区相对 POSIX 路径：拒绝反斜杠、绝对路径、工作区根（"."）、“..”与目录形式。"""
 
     if backslash_message is not None and "\\" in value:
         raise ValueError(backslash_message)
     path = PurePosixPath(value)
-    if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
+    if (
+        "\\" in value
+        or path.is_absolute()
+        or not path.parts
+        or ".." in path.parts
+        or value.endswith("/")
+    ):
         raise ValueError(message)
     return path
