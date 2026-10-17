@@ -3,11 +3,54 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import date, timedelta
 
-from .numeric_text import frozen_fact_bundles, frozen_number_catalog, merge_frozen_fact
+from ..hospital_operation.deterministic_analysis import _parse_fact_period
+from .fact_index import merge_frozen_fact
+from .numeric_text import frozen_fact_bundles, frozen_number_catalog
 
 _TOKEN = re.compile(r'\{\{value:([^:{}]+):([^:{}]+):([^:{}]*)\}\}')
-_PERIOD = re.compile(r'(?P<year>\d{4})年(?:(?P<start>\d{1,2})月?(?:[—–至到~-](?P<end>\d{1,2}))?月)?')
+_PERIOD = re.compile(r'(?P<year>\d{4})年(?:(?P<start>\d{1,2})月?(?:[—–至到~～-](?:(?P<end_year>\d{4})年)?(?P<end>\d{1,2}))?月)?')
+_DAY_PERIOD = re.compile(
+    r'(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})'
+    r'(?:[日号]?[—–至到~～-](?:(?P<end_year>\d{4})年)?'
+    r'(?:(?P<end_month>\d{1,2})月)?(?P<end_day>\d{1,2}))?[日号]'
+)
+
+
+def _daily_selector(fact, written):
+    try:
+        start = date(int(written['year']), int(written['month']), int(written['day']))
+        end = date(int(written['end_year'] or written['year']),
+                   int(written['end_month'] or written['month']), int(written['end_day'] or written['day']))
+    except ValueError:
+        return None
+    length = (end - start).days + 1
+    if not 0 < length <= 1200:
+        return None
+    selected = [(i, period.value) for i, item in enumerate(fact.period_values)
+                if (period := _parse_fact_period(item.period, fact.period_granularity)) is not None
+                and period.granularity == 'day' and start <= period.value <= end]
+    if [period for _, period in selected] != [start + timedelta(days=i) for i in range(length)]:
+        return _labelled_window_selector(fact, start, end)
+    if fact.period_aggregation == 'last':
+        return f'periodValues.{selected[-1][0]}'
+    if length == 1:
+        return f'periodValues.{selected[0][0]}'
+    if (len(selected) == len(fact.period_values) and fact.period_missing_count == 0
+            and fact.aggregation in {'sum', 'count'}):
+        return 'total'
+    return None
+
+
+def _labelled_window_selector(fact, start, end):
+    """月度桶以月初标注：“2025年1月1日至12月1日”正好写出事实首末桶标签时即其完整统计窗口。"""
+    labels = [_parse_fact_period(label, fact.period_granularity) if label else None
+              for label in (fact.period_start, fact.period_end)]
+    if (None in labels or (labels[0].value, labels[1].value) != (start, end) or fact.period_aggregation == 'last'
+            or fact.aggregation not in {'sum', 'count'} or fact.period_missing_count):
+        return None
+    return 'total'
 
 
 def align_number_selections(markdown: str, contents, field_definitions: Mapping[str, str] | None = None):
@@ -65,11 +108,8 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             return match[0]
         if not re.fullmatch(r'[\s（(]*(?:合计|累计|全年|总额|总量|规模|为|约|达到|是|的|：|:|=|登记值|登记|对应)*[\s）)]*', tail):
             return match[0]
-        periods = list(_PERIOD.finditer(sentence))
-        written = periods[-1] if periods else None
-        # “2025年1月1日至12月1日”写的是日期区间，不是“2025年1月”单月；窗口不明确时不纠正。
-        if written and re.match(r'\d{1,2}日', sentence[written.end():]):
-            return match[0]
+        periods = [*_PERIOD.finditer(sentence), *_DAY_PERIOD.finditer(sentence)]
+        written = max(periods, key=lambda period: period.end()) if periods else None
         candidates = {}
         for fact_id in labels[subject[0]]:
             if fact_id in conflicts:
@@ -78,17 +118,34 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             if fact.scope != original.scope or fact.unit != original.unit:
                 continue
             selector = 'total'
-            if written:
+            if written and written.re is _DAY_PERIOD:
+                selector = _daily_selector(fact, written)
+                if selector is None:
+                    continue
+            elif written:
                 year, start, end = written['year'], written['start'], written['end']
-                buckets = [(i, item.period[:7]) for i, item in enumerate(fact.period_values)]
+                # 事实允许不补零及斜线年月；不能截取原始标签猜月桶，也不能把日桶当作月桶。
+                buckets = [(i, f'{period.value.year:04d}-{period.value.month:02d}')
+                           for i, item in enumerate(fact.period_values)
+                           if (period := _parse_fact_period(item.period, fact.period_granularity)) is not None
+                           and period.granularity == 'month']
                 if start:
                     first, last = int(start), int(end or start)
-                    expected = [f'{year}-{month:02d}' for month in range(first, last + 1)]
+                    end_year = int(written['end_year'] or year)
+                    first_month, last_month = int(year) * 12 + first - 1, end_year * 12 + last - 1
+                    if not (1 <= first <= 12 and 1 <= last <= 12 and 0 <= last_month - first_month < 1200):
+                        continue
+                    expected = [f'{month // 12:04d}-{month % 12 + 1:02d}'
+                                for month in range(first_month, last_month + 1)]
                     selected = [(i, period) for i, period in buckets if period in expected]
                     if not expected or [p for _, p in selected] != expected:
                         continue
-                    selector = (f'periodTotals.{selected[0][0]}-{selected[-1][0]}'
+                    selector = (f'periodValues.{selected[-1][0]}' if fact.period_aggregation == 'last'
+                                else f'periodTotals.{selected[0][0]}-{selected[-1][0]}'
                                 if end else f'periodValues.{selected[0][0]}')
+                    if (end and fact.period_aggregation != 'last' and fact.aggregation in {'sum', 'count'}
+                            and len(selected) == len(fact.period_values) and fact.period_missing_count == 0):
+                        selector = 'total'
                 elif not fact.period_start or fact.period_start[:4] != year or not fact.period_end or fact.period_end[:4] != year:
                     continue
             elif fact_id == match[1] and not match[2].startswith(('budgetComparison.', 'projectRatio.')):

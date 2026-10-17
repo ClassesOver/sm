@@ -237,3 +237,51 @@ async def test_reap_idle_drops_unlocked_start_lock(tmp_path: Path) -> None:
 
     assert root not in manager._states
     assert root not in manager._start_locks
+
+
+@pytest.mark.parametrize("phase", ["initialize", "registration"])
+async def test_cancelled_initialization_reaps_unregistered_process(
+    tmp_path: Path, lsp_server: tuple[str, ...], monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    manager = ReportingLspProcessManager(command=lsp_server, request_timeout_seconds=1)
+    root = tmp_path / "workspace"
+    root.mkdir()
+    reached = asyncio.Event()
+    captured = []
+    send = manager._send
+    registration_locked = False
+
+    async def observe(state, payload):
+        nonlocal registration_locked
+        await send(state, payload)
+        target = "initialize" if phase == "initialize" else "initialized"
+        if payload.get("method") == target:
+            captured.append(state)
+            if phase == "registration":
+                await manager._states_lock.acquire()
+                registration_locked = True
+            reached.set()
+
+    monkeypatch.setattr(manager, "_send", observe)
+    request = asyncio.create_task(manager.request(root, "test/first", {}))
+    try:
+        await asyncio.wait_for(reached.wait(), timeout=5)
+        request.cancel()
+        if registration_locked:
+            manager._states_lock.release()
+            registration_locked = False
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        # Cancellation itself must clean up, before the manager is closed.
+        assert captured[0].process.returncode is not None
+        assert captured[0].reader_task.done()
+        assert root.resolve() not in manager._states
+        await manager.aclose()
+    finally:
+        if registration_locked:
+            manager._states_lock.release()
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        await manager.aclose()
+        for state in captured:
+            await manager._close_state(state)

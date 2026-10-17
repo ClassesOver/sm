@@ -6,6 +6,7 @@ from typing import Any
 
 import anyio
 import pytest
+from sqlalchemy import create_engine
 
 from smart_reporting.reporting.data_source import sql_validation
 from smart_reporting.reporting.data_source.starrocks import StarRocksDataSourceAdapter
@@ -40,6 +41,9 @@ class _FakeConnection:
 
     def execution_options(self, **_kwargs: object) -> _FakeConnection:
         return self
+
+    def exec_driver_sql(self, statement: str) -> _FakeResult | None:
+        return self.execute(statement)
 
     def execute(self, statement: object) -> _FakeResult | None:
         sql = str(statement)
@@ -170,3 +174,45 @@ def test_starrocks_parses_exactly_the_sql_sent_to_database(monkeypatch, method, 
 
     assert parsed == [normalized]
     assert adapter._engine.connection.statements == ["SET query_timeout = 30", normalized]
+
+
+@pytest.mark.parametrize("method", ["query", "materialize"])
+@pytest.mark.parametrize("literal", [":pending", "100% :pending", "中文 :pending"])
+def test_query_literals_are_not_reinterpreted_as_bind_parameters(method, literal):
+    engine = create_engine("sqlite://")
+
+    class Connection:
+        def __enter__(self):
+            self.connection = engine.connect()
+            return self
+
+        def __exit__(self, *_args):
+            self.connection.close()
+
+        def execute(self, statement):
+            if str(statement).startswith("SET query_timeout"):
+                return None
+            return self.connection.execute(statement)
+
+        def execution_options(self, **kwargs):
+            self.connection = self.connection.execution_options(**kwargs)
+            return self
+
+        def exec_driver_sql(self, statement):
+            # MySQL drivers must also receive no parameter collection: otherwise
+            # literal percent signs can be interpreted as DBAPI placeholders.
+            assert self.connection.get_execution_options()["no_parameters"] is True
+            return self.connection.exec_driver_sql(statement)
+
+    adapter, _ = _adapter(())
+    adapter.config.database = "db"
+    adapter.allowed_tables = ()
+    adapter._engine = SimpleNamespace(connect=Connection)
+    try:
+        result = anyio.run(getattr(adapter, method), f"SELECT '{literal}' AS value")
+        if method == "query":
+            assert result.rows == ((literal,),)
+        else:
+            assert result.content.decode() == f"value\r\n{literal}\r\n"
+    finally:
+        engine.dispose()

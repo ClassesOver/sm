@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 from agno.run import RunStatus
-from agno.run.workflow import WorkflowCancelledEvent, WorkflowCompletedEvent
+from agno.run.workflow import WorkflowCancelledEvent, WorkflowCompletedEvent, WorkflowPausedEvent
 from agno.workflow import Step, Workflow
 from agno.workflow.types import HumanReview, OnError, StepInput, StepOutput
 
@@ -268,3 +269,123 @@ async def test_official_cancel_settles_only_the_target_run_as_cancelled() -> Non
     await task
 
     assert lifecycle.events[-1] == ("settle", ("run-a", "cancelled"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("continued", [False, True])
+@pytest.mark.parametrize("status", ["running", "completed", "paused", "cancelled"])
+async def test_closing_public_stream_closes_source_before_settling(
+    monkeypatch, continued, status,
+) -> None:
+    lifecycle = Lifecycle()
+    workflow = ManagedReportingWorkflow(id="reporting", steps=[], lifecycle=lifecycle)
+    event_type = {
+        "completed": WorkflowCompletedEvent, "paused": WorkflowPausedEvent,
+        "cancelled": WorkflowCancelledEvent,
+    }
+
+    async def source():
+        try:
+            yield (event_type[status](run_id="run-a", workflow_id="reporting")
+                   if status in event_type else object())
+            await asyncio.Event().wait()
+        finally:
+            lifecycle.events.append(("closed", "run-a"))
+
+    execution = source()
+    if continued:
+        monkeypatch.setattr(Workflow, "acontinue_run", AsyncMock(return_value=execution))
+        stream = await workflow.acontinue_run(run_id="run-a", stream=True)
+    else:
+        monkeypatch.setattr(Workflow, "arun", lambda *args, **kwargs: execution)
+        stream = workflow.arun("input", run_id="run-a", stream=True)
+    await anext(stream)
+    await stream.aclose()
+    await stream.aclose()
+
+    expected = "cancelled" if status == "running" else status
+    assert lifecycle.events[-2:] == [("closed", "run-a"), ("settle", ("run-a", expected))]
+    assert sum(name == "settle" for name, _ in lifecycle.events) == 1
+
+
+@pytest.mark.anyio
+async def test_stream_supports_iterators_without_aclose() -> None:
+    lifecycle = Lifecycle()
+    workflow = ManagedReportingWorkflow(id="reporting", steps=[], lifecycle=lifecycle)
+
+    class Events:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    assert [event async for event in workflow._stream(Events(), "run-a")] == []
+    assert lifecycle.events == [("settle", ("run-a", "failed"))]
+
+
+@pytest.mark.anyio
+async def test_stream_preserves_execution_error_when_close_also_fails() -> None:
+    lifecycle = Lifecycle()
+    workflow = ManagedReportingWorkflow(id="reporting", steps=[], lifecycle=lifecycle)
+
+    class Events:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise ValueError("execution failed")
+
+        async def aclose(self):
+            raise RuntimeError("close failed")
+
+    with pytest.raises(ValueError, match="execution failed"):
+        await anext(workflow._stream(Events(), "run-a"))
+    assert lifecycle.events == [("settle", ("run-a", "failed"))]
+
+
+@pytest.mark.anyio
+async def test_continuation_adapter_forwards_close_to_agno(monkeypatch) -> None:
+    lifecycle = Lifecycle()
+    workflow = ManagedReportingWorkflow(id="reporting", steps=[], lifecycle=lifecycle)
+
+    async def source(*args, **kwargs):
+        try:
+            yield object()
+        finally:
+            lifecycle.events.append(("closed", "run-a"))
+
+    monkeypatch.setattr(Workflow, "_acontinue_execute_stream", source)
+    stream = workflow._acontinue_execute_stream(run_context=SimpleNamespace(dependencies=None))
+    await anext(stream)
+    await stream.aclose()
+    assert lifecycle.events == [("closed", "run-a")]
+
+
+@pytest.mark.anyio
+async def test_cancelling_consumer_closes_source_and_settles_once(monkeypatch) -> None:
+    lifecycle = Lifecycle()
+    workflow = ManagedReportingWorkflow(id="reporting", steps=[], lifecycle=lifecycle)
+    started = asyncio.Event()
+
+    async def source():
+        try:
+            yield object()
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            lifecycle.events.append(("closed", "run-a"))
+
+    monkeypatch.setattr(Workflow, "arun", lambda *args, **kwargs: source())
+
+    async def consume():
+        async for _ in workflow.arun("input", run_id="run-a", stream=True):
+            pass
+
+    consumer = asyncio.create_task(consume())
+    await started.wait()
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+    assert lifecycle.events[-2:] == [("closed", "run-a"), ("settle", ("run-a", "cancelled"))]
+    assert sum(name == "settle" for name, _ in lifecycle.events) == 1

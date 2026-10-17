@@ -217,7 +217,9 @@ export function createBodySourcePreview(options: Options) {
             } else if (rowKey.startsWith('comparison:')) {
               const field = rowKey.split(':').at(-1)!
               value = ['currentTotal', 'baselineTotal', 'change', 'changeRate'].includes(field) ? entry[field] : undefined
-              if (field === 'changeRate') unit = '%'
+              const baseUnit = typeof entry.unit === 'string' ? entry.unit : ''
+              unit = field === 'changeRate' ? '%'
+                : field === 'change' && baseUnit === '%' ? '个百分点' : baseUnit
             }
             const comparison = document.createElement('div')
             comparison.className = 'source-preview-values'

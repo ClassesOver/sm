@@ -161,14 +161,17 @@ def _base_declaration(
     expected = _finite(fact.get("total"))
     if not dimensions or scope is None or expected is None:
         return None
+    # 基础指标 total 包含固定范围内的全部行。缺失期间或旧快照未登记完整性时，
+    # 趋势的起止日期不能变成总额下钻的过滤条件，否则会丢掉无期间的记录。
+    restrict_period = algorithm == "semi_additive_last" or fact.get("periodMissingCount") == 0
     return DrilldownMetricV1(
         metricCode=code,
         datasetId=str(fact["datasetId"]),
         aggregation=algorithm,
         valueField=str(fact["field"]),
         periodField=period_field,
-        periodStart=fact.get("periodStart") if period_field else None,
-        periodEnd=fact.get("periodEnd") if period_field else None,
+        periodStart=fact.get("periodStart") if period_field and restrict_period else None,
+        periodEnd=fact.get("periodEnd") if period_field and restrict_period else None,
         dimensions=dimensions,
         fixedScope=scope,
         expectedValue=expected,
@@ -251,6 +254,7 @@ def _ratio_declaration(
         aggregation="ratio",
         numeratorField=numerator_field,
         denominatorField=denominator_field,
+        denominatorScale=ratio_fact.get("denominatorScale", 1),
         periodField=period_field,
         periodStart=period_start,
         periodEnd=period_end,

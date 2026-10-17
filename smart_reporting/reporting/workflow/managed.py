@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator, Awaitable, Mapping
+from contextlib import aclosing
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from inspect import isawaitable
@@ -54,6 +56,20 @@ def _terminal_status(status: RunStatus | str | None) -> str:
     if value == RunStatus.cancelled.value:
         return "cancelled"
     return "failed"
+
+
+async def _close_execution(execution: AsyncIterator[Any]) -> None:
+    # AsyncIterator does not require aclose. Preserve an execution error if cleanup also fails.
+    interrupted = sys.exception() is not None
+    with anyio.CancelScope(shield=True):
+        try:
+            aclose = getattr(execution, "aclose", None)
+            if callable(aclose):
+                await aclose()
+        except Exception:
+            if not interrupted:
+                raise
+            logger.exception("report_workflow_stream_close_failed")
 
 
 class ManagedReportingWorkflow(Workflow):
@@ -166,10 +182,14 @@ class ManagedReportingWorkflow(Workflow):
 
         async def stream() -> AsyncIterator[WorkflowRunOutputEvent]:
             self._resume_dependencies(run_context, dependencies)
-            async for event in super(ManagedReportingWorkflow, self)._acontinue_execute_stream(
+            execution = super(ManagedReportingWorkflow, self)._acontinue_execute_stream(
                 *args, **kwargs
-            ):
-                yield event
+            )
+            try:
+                async for event in execution:
+                    yield event
+            finally:
+                await _close_execution(execution)
 
         return stream()
 
@@ -206,19 +226,18 @@ class ManagedReportingWorkflow(Workflow):
         try:
             await self.lifecycle.start_run(run_id, session_state)
         except BaseException:
-            # AsyncIterator 协议不保证 aclose；缺失时直接抛出原异常，不能被 AttributeError 覆盖。
-            aclose = getattr(execution, "aclose", None)
-            if callable(aclose):
-                await aclose()
+            await _close_execution(execution)
             raise
-        async for event in self._stream(execution, run_id):
-            yield event
+        async with aclosing(self._stream(execution, run_id)) as stream:
+            async for event in stream:
+                yield event
 
     async def _stream_continued(
         self, execution: AsyncIterator[WorkflowRunOutputEvent], run_id: str
     ) -> AsyncIterator[WorkflowRunOutputEvent]:
-        async for event in self._stream(execution, run_id):
-            yield event
+        async with aclosing(self._stream(execution, run_id)) as stream:
+            async for event in stream:
+                yield event
 
     async def _stream(
         self, execution: AsyncIterator[WorkflowRunOutputEvent], run_id: str
@@ -236,21 +255,28 @@ class ManagedReportingWorkflow(Workflow):
         except asyncio.CancelledError:
             status = "cancelled"
             raise
+        except GeneratorExit:
+            if status == "failed":
+                status = "cancelled"
+            raise
         except BaseException:
             raise
         finally:
             with anyio.CancelScope(shield=True):
                 try:
-                    await self.lifecycle.settle_run(run_id, status)
-                except Exception:
-                    if status == "failed":
-                        logger.exception(
-                            "report_workflow_terminal_cleanup_failed run_id={} status={}",
-                            run_id,
-                            status,
-                        )
-                    else:
-                        raise
+                    await _close_execution(execution)
+                finally:
+                    try:
+                        await self.lifecycle.settle_run(run_id, status)
+                    except Exception:
+                        if status == "failed":
+                            logger.exception(
+                                "report_workflow_terminal_cleanup_failed run_id={} status={}",
+                                run_id,
+                                status,
+                            )
+                        else:
+                            raise
 
     async def _settle_cancelled(self, run_id: str) -> None:
         with anyio.CancelScope(shield=True):

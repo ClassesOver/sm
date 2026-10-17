@@ -27,6 +27,7 @@ from .contracts_v1 import (
 )
 from .dataset_service import TraceDatasetFile
 
+
 @lru_cache(maxsize=4096)
 def _period_date(label: str):
     """与冻结事实共用期间口径；缓存快照内重复的日期标签。"""
@@ -36,6 +37,11 @@ def _period_date(label: str):
 
 def _period_expression(field: str) -> pl.Expr:
     return pl.col(field).cast(pl.String).map_elements(_period_date, return_dtype=pl.Date)
+
+
+def _sum_present(values: pl.Expr) -> pl.Expr:
+    """无有效观测是缺失值；只有存在真实零值时才产生零合计。"""
+    return pl.when(values.count() > 0).then(values.sum()).otherwise(None)
 
 
 _DEFAULT_LIMIT = 50
@@ -341,22 +347,14 @@ class TraceDrilldownService:
             return frame.filter(pl.col("__period") == pl.col("__latest")).group_by(
                 "__group"
             ).agg(
-                pl.col(declaration.value_field)
-                .cast(pl.Float64, strict=False)
-                .sum()
-                .alias("__value")
+                _sum_present(pl.col(declaration.value_field).cast(pl.Float64, strict=False)).alias("__value")
             )
         if declaration.aggregation == "ratio":
             assert declaration.numerator_field and declaration.denominator_field
             grouped = frame.group_by("__group").agg(
-                pl.col(declaration.numerator_field)
-                .cast(pl.Float64, strict=False)
-                .sum()
-                .alias("__numerator"),
-                pl.col(declaration.denominator_field)
-                .cast(pl.Float64, strict=False)
-                .sum()
-                .alias("__denominator"),
+                _sum_present(pl.col(declaration.numerator_field).cast(pl.Float64, strict=False)).alias("__numerator"),
+                _sum_present(pl.col(declaration.denominator_field).cast(pl.Float64, strict=False)
+                             * declaration.denominator_scale).alias("__denominator"),
             )
             return grouped.with_columns(
                 pl.when(pl.col("__denominator") != 0)
@@ -387,14 +385,14 @@ class TraceDrilldownService:
         """从互斥完整分组的隐藏状态计算总体；去重必须独立扫原始标识。"""
 
         if declaration.aggregation == "ratio":
-            numerator = pl.col("__numerator").sum()
-            denominator = pl.col("__denominator").sum()
+            numerator = _sum_present(pl.col("__numerator"))
+            denominator = _sum_present(pl.col("__denominator"))
             return pl.when(denominator != 0).then(numerator / denominator).otherwise(None)
         if declaration.aggregation == "average":
             total = pl.col("__sum").sum()
             count = pl.col("__count").sum()
             return pl.when(count != 0).then(total / count).otherwise(None)
-        return pl.col("__value").sum()
+        return _sum_present(pl.col("__value"))
 
     @classmethod
     def _observed_value(
@@ -428,12 +426,9 @@ class TraceDrilldownService:
     def _value_expression(declaration: DrilldownMetricV1) -> pl.Expr:
         if declaration.aggregation == "ratio":
             assert declaration.numerator_field and declaration.denominator_field
-            numerator = pl.col(declaration.numerator_field).cast(
-                pl.Float64, strict=False
-            ).sum()
-            denominator = pl.col(declaration.denominator_field).cast(
-                pl.Float64, strict=False
-            ).sum()
+            numerator = _sum_present(pl.col(declaration.numerator_field).cast(pl.Float64, strict=False))
+            denominator = _sum_present(pl.col(declaration.denominator_field).cast(pl.Float64, strict=False)
+                                       * declaration.denominator_scale)
             return pl.when(denominator != 0).then(numerator / denominator).otherwise(None)
         assert declaration.value_field is not None
         source = pl.col(declaration.value_field)
@@ -444,7 +439,7 @@ class TraceDrilldownService:
         numeric = source.cast(pl.Float64, strict=False)
         if declaration.aggregation == "average":
             return numeric.mean()
-        return numeric.sum()
+        return _sum_present(numeric)
 
     def _sign_cursor(self, payload: dict) -> str:
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

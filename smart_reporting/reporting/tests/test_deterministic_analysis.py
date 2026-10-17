@@ -87,6 +87,67 @@ def test_measure_semantic_accepts_confirmed_unit() -> None:
     assert value.unit == "元"
 
 
+@pytest.mark.parametrize("aggregation,expected", [
+    ("sum", 100), ("count", 1), ("min", 100), ("max", 100),
+    ("average", None), ("count_distinct", None),
+])
+def test_comparison_excludes_rows_without_period(aggregation, expected):
+    def scoped(dataset_id):
+        return context(dataset_id, semantics=(semantic("amount", aggregation),))
+
+    bundle = build_deterministic_analysis_bundle(analysis(), (
+        ("current", b"month,department,amount\n2025-01,A,100\n,A,900\n", scoped("current"), ("current",)),
+        ("baseline", b"month,department,amount\n2024-01,A,50\n", scoped("baseline"), ("yoy",)),
+    ))
+    assert bundle.metrics[0].period_missing_count == 1
+    if expected is None:
+        assert bundle.comparisons == ()
+        assert any("无法形成" in warning for warning in bundle.warnings)
+    else:
+        assert bundle.comparisons[0].current_total == expected
+        if aggregation == "sum":
+            assert bundle.comparisons[0].change_rate == 100
+    assert any("期间" in warning and "缺失" in warning for warning in bundle.metrics[0].warnings)
+
+
+@pytest.mark.parametrize("aggregation,current_rows,baseline_rows,total", [
+    ("average", "2025-01,A,10\n2025-01,A,20\n2025-02,A,90\n",
+     "2024-01,A,5\n2024-01,A,10\n2024-02,A,45\n", 40),
+    ("count_distinct", "2025-01,A,1\n2025-02,A,1\n",
+     "2024-01,A,2\n2024-02,A,2\n", 1),
+])
+def test_complete_periods_preserve_weighted_average_and_cross_period_distinct(
+    aggregation, current_rows, baseline_rows, total
+):
+    bundle = build_deterministic_analysis_bundle(analysis(), tuple(
+        (name, ("month,department,amount\n" + rows).encode(),
+         context(name, semantics=(semantic("amount", aggregation),)), (role,))
+        for name, rows, role in (("current", current_rows, "current"), ("baseline", baseline_rows, "yoy"))
+    ))
+    assert bundle.comparisons[0].current_total == total
+
+
+@pytest.mark.parametrize("period", ["2025-01", "", "invalid-period"])
+def test_derived_ratio_uses_only_rows_in_the_common_period(period):
+    metrics = (
+        {"code": "revenue", "aggregation": "sum", "fieldRef": semantic("amount")["fieldRef"]},
+        {"code": "visits", "aggregation": "sum", "fieldRef": semantic("visits")["fieldRef"]},
+        {"code": "per_visit", "aggregation": "ratio", "numeratorMetric": "revenue", "denominatorMetric": "visits"},
+    )
+    bundle = build_deterministic_analysis_bundle(analysis(fields=("amount", "visits")), (
+        ("current", f"month,department,amount,visits\n{period},A,100,10\n,A,900,1\n".encode(),
+         context("current", fields=("month", "department", "amount", "visits"),
+                 semantics=(semantic("amount"), semantic("visits"))), ("current",)),
+    ), profile_metrics=metrics)
+    if period != "2025-01":
+        assert bundle.derived_metrics == ()
+        assert any("无法形成" in warning for warning in bundle.warnings)
+        return
+    assert bundle.derived_metrics[0].numerator == 100
+    assert bundle.derived_metrics[0].denominator == 10
+    assert bundle.derived_metrics[0].value == 10
+
+
 def test_fact_granularity_uses_dataset_buckets_instead_of_planned_summary():
     item = analysis().model_copy(update={'series_granularity': 'year'})
     dataset = context('current').model_copy(update={'period_granularities': {'month': 'month'}})

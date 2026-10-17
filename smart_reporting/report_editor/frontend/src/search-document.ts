@@ -13,9 +13,16 @@ export interface SearchMatch {
 export function findDocumentMatches(doc: ProseNode, query: string): SearchMatch[] {
   const matches: SearchMatch[] = []
   if (!query) return matches
+  // Formatting splits adjacent text into nodes. Join only contiguous document
+  // positions so matches cannot cross paragraphs, hard breaks or inline atoms.
+  const runs: Array<{ text: string; position: number }> = []
   doc.descendants((node, position) => {
     if (!node.isText || !node.text) return
-    const value = node.text
+    const previous = runs.at(-1)
+    if (previous && previous.position + previous.text.length === position) previous.text += node.text
+    else runs.push({ text: node.text, position })
+  })
+  for (const { text: value, position } of runs) {
     const markers = findProtocolMarkers(value)
     let found = value.indexOf(query)
     while (found >= 0) {
@@ -25,7 +32,7 @@ export function findDocumentMatches(doc: ProseNode, query: string): SearchMatch[
       }
       found = value.indexOf(query, end)
     }
-  })
+  }
   return matches
 }
 

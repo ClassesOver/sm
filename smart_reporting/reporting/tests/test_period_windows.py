@@ -23,9 +23,18 @@ def _yoy(start: date, end: date) -> tuple[date, date]:
         (date(2025, 3, 1), date(2025, 3, 31), (date(2024, 3, 1), date(2024, 3, 31))),
         # 非月末的任意日期区间保持月日不变。
         (date(2025, 2, 10), date(2025, 2, 20), (date(2024, 2, 10), date(2024, 2, 20))),
+        (date(2025, 2, 28), date(2025, 2, 28), (date(2024, 2, 28), date(2024, 2, 28))),
+        (date(2025, 1, 15), date(2025, 2, 28), (date(2024, 1, 15), date(2024, 2, 28))),
+        (date(2024, 2, 29), date(2024, 2, 29), (date(2023, 2, 28), date(2023, 2, 28))),
     ],
 )
 def test_yoy_window_keeps_month_ends_aligned(
     start: date, end: date, expected: tuple[date, date]
 ) -> None:
     assert _yoy(start, end) == expected
+
+
+def test_month_granularity_still_compares_complete_february():
+    windows = build_period_windows(date(2025, 2, 28), date(2025, 2, 28), granularity="month")
+    yoy = next(window for window in windows.windows if window.role == "yoy")
+    assert (yoy.start, yoy.end) == (date(2024, 2, 1), date(2024, 2, 29))

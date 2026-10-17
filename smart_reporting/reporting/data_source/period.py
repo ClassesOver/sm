@@ -78,11 +78,16 @@ def build_period_windows(
     period_start, period_end = normalize_period_bounds(period_start, period_end, granularity)
     windows = [PeriodWindow("current", period_start, period_end)]
     if include_yoy:
+        # 仅完整月份序列对齐月末；日粒度的单日/部分月份保持对应月日。
         windows.append(
             PeriodWindow(
                 "yoy",
                 _same_month_day_previous_year(period_start),
-                _previous_year_end(period_end),
+                (
+                    _previous_year_end(period_end)
+                    if _is_complete_month_sequence(period_start, period_end)
+                    else _same_month_day_previous_year(period_end)
+                ),
             )
         )
     if include_mom:
