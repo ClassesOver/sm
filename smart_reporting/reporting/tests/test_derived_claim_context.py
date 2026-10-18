@@ -179,6 +179,34 @@ def test_ratios_of_same_scope_metrics_follow_numerator_and_window(text, supporte
     ('总部40%、北部30%为主，两类合计约60%。', False),
     ('甲40%、乙20%为主，两类合计约70%。', False),
     ('两类合计约70%。', False),
+    ('甲40%；乙30%。上述两类合计约70%。', True),
+    ('甲40%；乙30%。上述三类合计约70%。', False),
 ])
 def test_sum_of_listed_shares_is_supported_without_full_row_names(text, supported):
     assert ('待核实' not in replace_unregistered_numbers(text, [share_table()])) is supported
+
+
+@pytest.mark.parametrize('text,supported', [
+    # 回放：补证表列名是字段编码，“资产管理处预算与合同之间相差…”因找不到比较对象被替换。
+    ('总部实际收入与预算收入之间相差380元。', True),
+    ('总部实际与预算相差380元。', True),
+    ('总部预算比实际少380元。', True),
+    ('总部预算比实际多380元。', False),
+    ('总部实际与预算相差379元。', False),
+])
+def test_field_code_columns_use_fact_display_names(text, supported):
+    table = json.dumps({'findings': [{'columns': ['院区', 'income', 'cost'],
+        'columnMeta': {'income': {'unit': '元'}, 'cost': {'unit': '元'}},
+        'rows': [['总部', 500, 120], ['北部', 90, 100]]}]})
+    frozen = [monthly_bundle().model_dump_json(by_alias=True), table]
+    assert ('待核实' not in replace_unregistered_numbers(text, frozen)) is supported
+
+
+@pytest.mark.parametrize('text,supported', [
+    ('总部超支60元。', True), ('总部预算与实际相差约60元。', True), ('总部缺口60元。', True),
+    ('总部超支61元。', False), ('总部增长60元。', False),
+])
+def test_negative_registered_gaps_read_as_magnitudes_after_gap_words(text, supported):
+    table = json.dumps({'findings': [{'columns': ['院区', '差额'], 'columnMeta': {'差额': {'unit': '元'}},
+        'rows': [['总部', -60], ['北部', 41]]}]})
+    assert ('待核实' not in replace_unregistered_numbers(text, [table])) is supported

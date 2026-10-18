@@ -838,14 +838,24 @@ def _ratio_matches(entry: _DerivedValue, claim: str) -> bool:
 
 
 def _members_written(members: tuple[Decimal, ...], claim: str) -> bool:
-    """“人员支出35.32%、卫生材料27.28%、药品26.40%为主，三类合计约89.00%”：各分项数值已在句中写出时，
-    合计就是这几项之和，分项名称可简写。"""
+    """“人员支出35.32%、卫生材料27.28%、药品26.40%为主，三类合计约89.00%”：各分项数值已在本段写出时，
+    合计就是这几项之和，分项名称可简写；写明的项数须与分项数一致。"""
+    counts = re.findall(r'(\d+|[一二两三四五六七八九十])(?:项|类|个|家)(?:合计|共计|之和|总计|累计|共占)', claim)
+    if counts:
+        count = counts[-1]
+        expected = {str(len(members))}
+        if len(members) <= 10:
+            expected.add(_CHINESE_COUNTS[len(members) - 1])
+        if len(members) == 2:
+            expected.add('两')
+        if count not in expected:
+            return False
     written = []
     for match in _PERCENT_NUMBER.finditer(claim):
         text = match[0].replace(',', '')
         digits = len(text.split('.', 1)[1]) if '.' in text else 0
         written.append((Decimal(text), Decimal(1).scaleb(-digits)))
-    remaining = list(written[:-1])
+    remaining = list(written)
     for member in members:
         hit = next((item for item in remaining
                     if member.quantize(item[1], rounding=ROUND_HALF_UP) == item[0]), None)
@@ -1023,7 +1033,7 @@ class DerivedNumbers:
                 if rankings and not ranked:
                     continue
                 listed = (re.search('合计|共计|累计|总计|之和|共占', local_claim)
-                          and _members_written(entry.members, local_claim))
+                          and _members_written(entry.members, context))
                 if ((named or ranked and not entry.named_only or listed)
                         and not re.search('相差|差额|差值|高于|低于', local_claim)):
                     return True
@@ -1092,6 +1102,13 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
     """
     contents = tuple(contents)
     derived = DerivedNumbers()
+    # 补证表列名常是字段编码（budget_project_amount），正文写“预算”“合同”：
+    # 按同批事实的字段显示名改写列名，差额与列归属才能对上正文的比较对象。
+    display: dict[str, str] = {}
+    for bundle in frozen_fact_bundles(contents):
+        for fact in bundle.metrics:
+            if fact.field and (name := _short_name(fact)):
+                display.setdefault(fact.field, name)
     for content in contents:
         try:
             document = json.loads(content)
@@ -1126,7 +1143,8 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                            if isinstance(row[index], (int, float)) and not isinstance(row[index], bool)
                            and math.isfinite(row[index])]
                 if rows and len(numbers) == len(rows):
-                    table[column] = (unit, numbers)
+                    name = display.get(column, column)
+                    table[column if name in table or name in columns else name] = (unit, numbers)
             _derive_from_table(derived, labels, table, aliases)
     for bundle in frozen_fact_bundles(contents):
         from .subject_builder import fact_periods
@@ -1247,8 +1265,10 @@ def registered_decline_magnitude(
     必须按此认定为已登记数值，否则正确正文会被替换为待核实。
     """
     # 简写“实际降9.83%”“较预算少4.34万人次”同样是下降幅度；“至少”“最少”“减少”等不按单字处理。
+    # “超支41.69亿元”“相差约6.06亿元”：差额列按预算减实际登记为负，这些词后接的是幅度。
     if number <= 0 or not re.search(
-        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少])(?:了|约|为|达)?\s*$", prefix,
+        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少]|超支|超出|相差|差额|差距|缺口)"
+        r"(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
     return any(value < 0 and (-value).quantize(quantum, rounding=ROUND_HALF_UP) == number
