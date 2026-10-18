@@ -26,6 +26,9 @@ from smart_reporting.reporting.trace.numeric_text import (
     (6.1892819593, '%', '%', '6.19%'),
     (1.005, '元', '元', '1.01元'),
     (111.24, '亿元', '元', '11,124,000,000元'),
+    # 浮点尾差舍入后为整数时不写“.00”；真正带零头的月均值保留两位。
+    (20921671264.99973, '元', '元', '20,921,671,265元'),
+    (1011231045.7272, '元', '元', '1,011,231,045.73元'),
 ])
 def test_format_frozen_value(value, unit, target, expected):
     assert format_fact_value(value, unit, target) == expected
@@ -1318,3 +1321,14 @@ def test_dimensionless_or_mismatched_reference_followed_by_unit_is_withdrawn():
     # 同类单位重复只去掉多写的单位；单位未知的计数补写单位、相关系数不跟单位都照常显示。
     assert render_frozen_numbers(f'收入{amount}元。', catalog) == '收入12.00万元。'
     assert render_frozen_numbers(f'共{count}人次，相关系数{correlation}。', catalog) == '共120人次，相关系数0.00。'
+
+
+def test_formatted_patterns_accept_legacy_trailing_zero_cents():
+    import re
+
+    from smart_reporting.reporting.trace.subject_builder import _formatted_patterns
+
+    patterns = _formatted_patterns(20921671264.99973, '元', ('元', '亿元'))
+    for text in ('预算支出20,921,671,265元。', '预算支出20,921,671,265.00元。', '预算支出209.22亿元。'):
+        assert any(re.search(pattern, text) for pattern in patterns)
+    assert not any(re.search(pattern, '预算支出20,921,671,266元。') for pattern in patterns)

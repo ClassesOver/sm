@@ -66,6 +66,9 @@ def percent_point_field(field: str, unit: str | None) -> bool:
     return unit == "%" and (field in {"change", "difference"} or field.endswith(".difference"))
 
 
+_SCALED_DISPLAY_UNITS = frozenset({"万元", "亿元", "万人次", "%", "‰", PERCENT_POINT})
+
+
 def format_fact_value(value: Any, unit: str | None, display_unit: str | None = None) -> str:
     number = Decimal(str(value))
     target = display_unit or unit
@@ -75,10 +78,15 @@ def format_fact_value(value: Any, unit: str | None, display_unit: str | None = N
     # 零值在万元、亿元、万人次下写成“0.00万人次”既别扭又像有零头，直接写 0。
     if number == 0 and target in {"万元", "亿元", "万人次"}:
         return "0" + target
-    if target in {"万元", "亿元", "万人次", "%", "‰", PERCENT_POINT} or number != number.to_integral_value():
+    if target in _SCALED_DISPLAY_UNITS or number != number.to_integral_value():
         rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         # 舍入为零的负数不能显示为“-0.00”。
         text = f"{abs(rounded) if rounded == 0 else rounded:,f}"
+        # 百万以上元、人次合计的浮点尾差（20921671264.99973）舍入后是整数，不写“265.00元”；
+        # 小额值保留“30.00元”，以区分与整数登记值冲突的未舍入值。
+        if (target not in _SCALED_DISPLAY_UNITS and abs(rounded) >= 1_000_000
+                and rounded == rounded.to_integral_value()):
+            text = f"{rounded:,.0f}"
     else:
         text = f"{number:,.0f}"
     return text + (target or "")
