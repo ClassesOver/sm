@@ -117,3 +117,36 @@ def test_reporting_script_runner_writes_large_ticks_in_chinese_units(tmp_path: P
     assert "5亿" in labels.split("|") and "0" in labels.split("|")
     assert offset == "" and "e" not in labels
     assert "500000000" in custom.split("|")
+
+
+def test_reporting_script_runner_keeps_numbers_whole_across_title_breaks(tmp_path: Path) -> None:
+    # 回放：textwrap.fill 把图题“9月11.68亿元”拆成“9月11.6\n8亿元”。
+    script_path = tmp_path / "chart.py"
+    output_path = tmp_path / "titles.txt"
+    script_path.write_text(
+        "from pathlib import Path\n"
+        "import matplotlib.pyplot as plt\n"
+        "fig, ax = plt.subplots()\n"
+        "title = fig.suptitle('3—10月均超10亿元，9月11.6\\n8亿元为年内最高')\n"
+        "label = ax.annotate('合计93.0\\n5%', (0, 0))\n"
+        "plain = ax.set_title('收入构成\\n总部院区')\n"
+        "ax.bar(['2025-01', '2025-02'], [1, 2]); fig.canvas.draw()\n"
+        "note = fig.text(0, 0, '数据期间：2025-01至2025-11；文件 2025-01-01.csv')\n"
+        "ticks = [tick.get_text() for tick in ax.get_xticklabels()]\n"
+        f"Path({str(output_path)!r}).write_text('|'.join([*(item.get_text() for item in (title, label, plain, note)),"
+        " *ticks]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = (
+        "from smart_reporting.reporting.matplotlib_defaults import run_reporting_script;"
+        f"run_reporting_script({str(script_path)!r}, {str(tmp_path / 'runtime')!r})"
+    )
+
+    result = subprocess.run([sys.executable, "-B", "-c", command], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert output_path.read_text(encoding="utf-8").split("|") == [
+        "3—10月均超10亿元，9月\n11.68亿元为年内最高", "合计\n93.05%", "收入构成\n总部院区",
+        # 图内年月与正文一致写作中文；带日的日期与文件名不动。
+        "数据期间：2025年1月至2025年11月；文件 2025-01-01.csv", "2025年1月", "2025年2月",
+    ]
