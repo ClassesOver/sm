@@ -26,6 +26,21 @@ def test_projection_creates_trend_finding_from_period_values():
     assert any(item.kind == "trend" for item in result)
 
 
+def test_projection_treats_scalar_grain_as_one_dimension():
+    result = project_analysis_findings("analysis_001", {
+        "analysisId": "analysis_001", "metrics": [{
+        "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
+        "periodRoles": ["current"], "field": "income", "fieldRef": "income",
+        "aggregation": "sum", "formula": "sum(income)", "total": 10,
+        "periodValues": [{"period": "2025-01", "value": 10}, {"period": "2025-02", "value": 20}],
+        "grain": "stlevel_analytic_unit",
+        }], "comparisons": [], "derivedMetrics": [], "reconciliations": [],
+        "correlations": {}, "correlationDetails": [],
+    }, None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
+    trend = next(item for item in result if item.kind == "trend")
+    assert trend.grain == ("stlevel_analytic_unit",)
+
+
 @pytest.mark.parametrize('values', [(0, 0), (10, 10)])
 def test_constant_metric_is_low_priority_and_uses_display_name(values):
     result = project_analysis_findings('analysis_001', facts(metrics=[{

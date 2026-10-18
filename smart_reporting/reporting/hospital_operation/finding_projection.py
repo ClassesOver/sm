@@ -24,6 +24,15 @@ def _source(analysis_id: str, path: str, file_sha256: str, pointer: str) -> Find
     return FindingSourceRef(analysisId=analysis_id, path=path, fileSha256=file_sha256, pointer=pointer)
 
 
+def _tuple_values(value: Any, fallback: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """Normalize provider payloads without splitting a scalar string into characters."""
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return tuple(str(item) for item in value)
+    return fallback
+
+
 def project_analysis_findings(
     analysis_id: str,
     deterministic_facts: DeterministicAnalysisBundle | Mapping[str, Any],
@@ -81,7 +90,7 @@ def project_analysis_findings(
             title=title, summary=summary, metricCodes=metrics or (analysis_id,), periodRoles=periods,
             periodStart=source_fact.get("periodStart"), periodEnd=source_fact.get("periodEnd"),
             scope=dict(source_fact.get("scope") or {}),
-            grain=tuple(source_fact.get("grain") or grain), priority=priority, evidenceLevel=evidence, impactValue=impact,
+            grain=_tuple_values(source_fact.get("grain"), grain), priority=priority, evidenceLevel=evidence, impactValue=impact,
             impactUnit=display_unit, actionability="unknown", citationIds=citation_ids,
             sourceRefs=(_source(analysis_id, fact_file_path, file_sha256, path),), limitations=limitations,
         ))
@@ -191,7 +200,7 @@ def project_analysis_findings(
                     metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
                     periodRoles=tuple(item.get("periodRoles") or ("current",)),
                     periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
-                    grain=tuple(item.get("grain") or ()), scope=dict(item.get("scope") or {}),
+                    grain=_tuple_values(item.get("grain")), scope=dict(item.get("scope") or {}),
                     priority="high", evidenceLevel="direct_decomposition", actionability="high",
                     citationIds=citation_ids,
                     sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
@@ -208,7 +217,7 @@ def project_analysis_findings(
                 metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
                 periodRoles=tuple(item.get("periodRoles") or ("current",)),
                 periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
-                grain=tuple(item.get("grain") or ()), scope=dict(item.get("scope") or {}),
+                grain=_tuple_values(item.get("grain")), scope=dict(item.get("scope") or {}),
                 priority="medium", evidenceLevel="verified_fact", actionability="unknown",
                 citationIds=citation_ids,
                 sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
