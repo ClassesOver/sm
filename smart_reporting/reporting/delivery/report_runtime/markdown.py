@@ -3,7 +3,7 @@
 import hashlib
 import html
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -437,6 +437,54 @@ def relocate_server_tables(markdown: str) -> str:
     return "\n\n".join((body, APPENDIX_TABLES_SENTINEL, *tables)) + "\n"
 
 
+# 领导先看结论：渲染时在第1章前生成“核心结论”，逐章取正文首段首句。写作规则要求每段
+# 首句先写结论，且这些句子已通过数值核对，不另调模型、不引入新数字；附录、口径与统计
+# 说明类章节不取。去掉协议标记，不重复生成来源编号；报告 Markdown 与编辑器不变。
+SUMMARY_SENTINEL = "REPORTING-EXECUTIVE-SUMMARY"
+SUMMARY_END_SENTINEL = "REPORTING-EXECUTIVE-SUMMARY-END"
+SUMMARY_TITLE = '<p class="report-summary-title"><strong>核心结论</strong></p>'
+SUMMARY_END = '<div class="report-summary-end"></div>'
+_SUMMARY_SKIPPED_SECTION = re.compile(r"附录|附表|补充|限制|口径|说明|统计关系")
+_SECTION_START = re.compile(r"^\[\[section:([^\]\r\n]+)\]\][ \t]*$", re.MULTILINE)
+_NOT_PROSE = re.compile(r"^(?:#|\||!\[|\[\[|>|\*图表|[-*+]\s|\d+[.)]\s)")
+
+
+def _section_conclusion(block: str) -> str | None:
+    for paragraph in block.split("\n\n"):
+        paragraph = paragraph.strip()
+        if not paragraph or _NOT_PROSE.match(paragraph):
+            continue
+        text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "").replace("\n", "")
+        sentences = re.findall(r"[^。！？]+[。！？]", text)
+        if not sentences:
+            return None
+        conclusion = sentences[0]
+        # 首句只有定性结论（“整体未达预算。”）时带上紧随的关键数字句。
+        if not re.search(r"\d", conclusion) and len(sentences) > 1 and len(conclusion + sentences[1]) <= 200:
+            conclusion += sentences[1]
+        return conclusion if 8 <= len(conclusion) <= 200 else None
+    return None
+
+
+def insert_executive_summary(markdown: str, sections: Sequence[Mapping[str, Any]]) -> str:
+    titles = {item["code"]: item["title"] for item in sections}
+    starts = list(_SECTION_START.finditer(markdown))
+    lines = []
+    for index, start in enumerate(starts):
+        title = titles.get(start[1])
+        if not title or _SUMMARY_SKIPPED_SECTION.search(title):
+            continue
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(markdown)
+        conclusion = _section_conclusion(markdown[start.end():end])
+        if conclusion:
+            lines.append(f"- **{title}**：{conclusion}")
+    if len(lines) < 2:
+        return markdown
+    first = starts[0].start()
+    summary = "\n\n".join((SUMMARY_SENTINEL, "\n".join(lines), SUMMARY_END_SENTINEL))
+    return f"{markdown[:first]}{summary}\n\n{markdown[first:]}"
+
+
 def _normalize_cjk_wording_text(text: str) -> str:
     def range_text(match: re.Match[str]) -> str:
         start = _cjk_date(match, "a")
@@ -840,6 +888,13 @@ def _semantic_documents(
         ";font-size:16pt;padding-left:3mm}"
         ".report-appendix-title{break-before:page;page-break-before:always;margin:0.8em 0;"
         "page-break-after:avoid;break-after:avoid}"
+        ".report-summary-title{color:"
+        f"{theme['primary']}"
+        ";border-left:3pt solid "
+        f"{theme['accent']}"
+        ";font-size:16pt;padding-left:3mm;margin:0.8em 0}"
+        ".report-summary-end{break-after:page;page-break-after:always}"
+        ".report-summary-title+ul li{font-size:11pt;line-height:1.8;margin:0 0 3mm}"
         "h3{font-size:12.5pt;color:"
         f"{theme['ink']}"
         "}h4{font-size:11pt;color:"

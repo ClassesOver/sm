@@ -831,3 +831,47 @@ def test_render_markdown_moves_server_tables_to_appendix_after_body(tmp_path: Pa
         # 表格上一行是带标记、以句号结尾的正文段落，不是表名，必须留在正文。
         assert text.index("次均收入120元") < text.index("附表")
     assert pdf_text.find("营业收入3,600万元", pdf_text.index("附表")) != -1
+
+
+def test_render_markdown_opens_with_executive_summary_from_section_conclusions(tmp_path: Path) -> None:
+    """领导先看结论：目录后、第1章前列出各章首句结论；附录类章节不取，协议标记不进入摘要。"""
+    import pypdf
+    from docx import Document
+
+    workspace = tmp_path / "workspace"
+    state = _build_workspace(workspace)
+    (workspace / "report.md").write_text(
+        "# 智能运营全链路渲染验证报告\n\n"
+        "[[section:income]]\n\n## 1. 收入分析\n\n"
+        "营业收入同比增长8.6%，主要由门诊带动[[citation:citation_001]]。门诊收入持续增长。\n\n"
+        "[[section:cost]]\n\n## 2. 成本分析\n\n"
+        "成本整体平稳。全年成本合计32.10亿元，与预算基本持平。\n\n"
+        "[[section:appendix]]\n\n## 3. 补充统计与数据限制\n\n"
+        "本章说明数据口径限制。\n",
+        encoding="utf-8",
+    )
+    sections = [("income", "1", "收入分析"), ("cost", "2", "成本分析"), ("appendix", "3", "补充统计与数据限制")]
+    state["_documentContext"].update({
+        "sectionNumbers": [number for _code, number, _title in sections],
+        "sections": [{"code": code, "sectionNumber": number, "title": title} for code, number, title in sections],
+        "headingNumbers": [{"level": 2, "number": number, "title": title, "sectionCode": code,
+                            "anchor": f"report-section-{code}"} for code, number, title in sections],
+    })
+    state.pop("_editorExportSettings")
+    try:
+        result = ReportRuntime(workspace).render_markdown(state, "report.md", "out/report.pdf", _TEMPORARY_PDF_PATH)
+    finally:
+        shutil.rmtree(workspace / ".reporting-tmp", ignore_errors=True)
+
+    assert result["status"] == "rendered"
+    pdf_text = "".join("".join((page.extract_text() or "").split())
+                       for page in pypdf.PdfReader(workspace / "out" / "report.pdf").pages)
+    word_text = "".join("".join(paragraph.text.split())
+                        for paragraph in Document(workspace / "out" / "report.docx").paragraphs)
+    for text in (pdf_text, word_text):
+        summary = text.index("核心结论")
+        assert summary < text.index("收入分析：营业收入同比增长8.6%，主要由门诊带动。")
+        # 首句无数字时带上紧随的数字句。
+        assert "成本分析：成本整体平稳。全年成本合计32.10亿元，与预算基本持平。" in text
+        assert "补充统计与数据限制：" not in text
+        assert summary < text.rindex("1.收入分析")

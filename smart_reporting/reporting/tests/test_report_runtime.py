@@ -1234,3 +1234,29 @@ def test_server_tables_move_after_body_with_their_captions_only():
     assert "次均收入120元[[claim:c]]。" in body and "| 留在正文 |" in body
     assert appendix.index("分期间指标汇总") < appendix.index("[[table:t1]]") < appendix.index("[[table:t2]]")
     assert relocate_server_tables("## 1. 收入\n\n正文。\n") == "## 1. 收入\n\n正文。\n"
+
+
+def test_executive_summary_takes_each_section_conclusion():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        SUMMARY_END_SENTINEL,
+        SUMMARY_SENTINEL,
+        insert_executive_summary,
+    )
+
+    sections = [{"code": "a", "title": "收入预算执行情况"}, {"code": "b", "title": "业务工作量变化"},
+                {"code": "c", "title": "指标统计关系说明"}]
+    markdown = (
+        "# 报告\n\n[[section:a]]\n\n## 1. 收入预算执行情况\n\n### 1.1 总体\n\n"
+        "全院收入预算执行整体未达预算。全年完成率为79.28%[[claim:x]]，收入端滞后。\n\n"
+        "[[section:b]]\n\n## 2. 业务工作量变化\n\n| 表 |\n| --- |\n\n"
+        "门诊人次3月最高，为644,217人次，10月最低。其余月份平稳。\n\n"
+        "[[section:c]]\n\n## 3. 指标统计关系说明\n\n相关不等于因果，仅作观察。\n"
+    )
+    result = insert_executive_summary(markdown, sections)
+    summary = result[result.index(SUMMARY_SENTINEL):result.index(SUMMARY_END_SENTINEL)]
+    assert result.index(SUMMARY_SENTINEL) < result.index("[[section:a]]")
+    assert "- **收入预算执行情况**：全院收入预算执行整体未达预算。全年完成率为79.28%，收入端滞后。" in summary
+    assert "- **业务工作量变化**：门诊人次3月最高，为644,217人次，10月最低。" in summary
+    assert "指标统计关系说明" not in summary and "[[" not in summary
+    # 只有一章可取时不生成。
+    assert insert_executive_summary(markdown, sections[:1]) == markdown

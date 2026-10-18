@@ -18,6 +18,10 @@ from .markdown import (
     APPENDIX_TABLES_SENTINEL,
     APPENDIX_TABLES_TITLE,
     REPORT_VISUAL_THEME,
+    SUMMARY_END,
+    SUMMARY_END_SENTINEL,
+    SUMMARY_SENTINEL,
+    SUMMARY_TITLE,
     _bind_heading_anchors,
     _body_tokens,
     _document_context,
@@ -27,6 +31,7 @@ from .markdown import (
     _semantic_documents,
     _strip_strong_boundaries,
     format_heading_label,
+    insert_executive_summary,
     relocate_server_tables,
 )
 from .pdf import (
@@ -264,8 +269,9 @@ class ReportRuntime:
             export_settings = state.get("_editorExportSettings")
             # 导出的 PDF/Word 默认不带来源编号与附录；只有导出设置显式开启时才展示。
             include_sources = isinstance(export_settings, dict) and export_settings.get("sources") is True
+            context = _document_context(state.get("_documentContext"))
             pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
-                relocate_server_tables(markdown),
+                insert_executive_summary(relocate_server_tables(markdown), context["sections"]),
                 state.get("_citationPresentations"),
                 include_sources=include_sources,
                 trace_sources=state.get("_traceSourcePresentations"),
@@ -288,7 +294,6 @@ class ReportRuntime:
                 include_header_footer=include_header_footer,
                 include_page_numbers=include_page_numbers,
             )
-            context = _document_context(state.get("_documentContext"))
             title = _markdown_title(tokens)
             if title != context["title"]:
                 raise ReportFailure("Markdown 标题与服务端文档展示契约不一致")
@@ -306,7 +311,9 @@ class ReportRuntime:
                 )
             )
             html_body = self._inline_images(
-                body.replace(f"<p>{APPENDIX_TABLES_SENTINEL}</p>", APPENDIX_TABLES_TITLE),
+                body.replace(f"<p>{APPENDIX_TABLES_SENTINEL}</p>", APPENDIX_TABLES_TITLE)
+                .replace(f"<p>{SUMMARY_SENTINEL}</p>", SUMMARY_TITLE)
+                .replace(f"<p>{SUMMARY_END_SENTINEL}</p>", SUMMARY_END),
                 source.parent, allowed_images, self._image_sources,
             )
             self._reject_html_links(
