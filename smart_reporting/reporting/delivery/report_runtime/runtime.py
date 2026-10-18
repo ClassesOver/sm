@@ -30,6 +30,7 @@ from .markdown import (
     _normalize_cjk_strong_markers,
     _semantic_documents,
     _strip_strong_boundaries,
+    align_numeric_table_columns,
     format_heading_label,
     insert_executive_summary,
     relocate_server_tables,
@@ -271,7 +272,9 @@ class ReportRuntime:
             include_sources = isinstance(export_settings, dict) and export_settings.get("sources") is True
             context = _document_context(state.get("_documentContext"))
             pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
-                insert_executive_summary(relocate_server_tables(markdown), context["sections"]),
+                align_numeric_table_columns(
+                    insert_executive_summary(relocate_server_tables(markdown), context["sections"])
+                ),
                 state.get("_citationPresentations"),
                 include_sources=include_sources,
                 trace_sources=state.get("_traceSourcePresentations"),

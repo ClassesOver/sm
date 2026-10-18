@@ -1260,3 +1260,18 @@ def test_executive_summary_takes_each_section_conclusion():
     assert "指标统计关系说明" not in summary and "[[" not in summary
     # 只有一章可取时不生成。
     assert insert_executive_summary(markdown, sections[:1]) == markdown
+
+
+def test_model_table_numeric_columns_are_right_aligned():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import align_numeric_table_columns
+
+    table = (
+        "| 月份 | 收入总额 | 环比差额（万元） | 环比幅度 | 说明 |\n"
+        "| --- | --- | --- | :---: | --- |\n"
+        "| 2025年1月 | 8.90亿元 | — | — | 起始月 |\n"
+        "| 2025年2月 | **8.99亿元** | -322.71 | 1.05% | 回升 |\n"
+    )
+    aligned = align_numeric_table_columns("正文。\n\n" + table)
+    # 数值列右对齐；文本列与已声明居中的列不动。
+    assert "| --- | ---: | ---: | :---: | --- |" in aligned
+    assert align_numeric_table_columns("| a |\n| --- |") == "| a |\n| --- |"

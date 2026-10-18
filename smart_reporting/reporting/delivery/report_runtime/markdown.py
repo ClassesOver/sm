@@ -485,6 +485,41 @@ def insert_executive_summary(markdown: str, sections: Sequence[Mapping[str, Any]
     return f"{markdown[:first]}{summary}\n\n{markdown[first:]}"
 
 
+# 模型自写表格常把分隔行写成全左对齐，金额、比率列的位数与小数点对不齐。渲染时全部
+# 单元格都是数值（可带单位、百分号或“—”）的列改为右对齐；已声明对齐方式的列不动。
+_NUMERIC_CELL = re.compile(
+    r"[+\-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:%|‰|亿元|万元|元|万人次|人次|床日|个百分点|亿|万)?"
+    r"|[—–\-]{1,2}|"
+)
+_TABLE_SEPARATOR = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$")
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def align_numeric_table_columns(markdown: str) -> str:
+    lines = markdown.split("\n")
+    for index, line in enumerate(lines):
+        if index == 0 or not _TABLE_SEPARATOR.match(line.strip()) or not lines[index - 1].lstrip().startswith("|"):
+            continue
+        rows = []
+        for body in lines[index + 1:]:
+            if not body.lstrip().startswith("|"):
+                break
+            rows.append(_table_cells(body))
+        separators = _table_cells(line)
+        if not rows or any(len(row) != len(separators) for row in rows):
+            continue
+        aligned = [
+            "---:" if separator == "---" and any(row[column] for row in rows)
+            and all(_NUMERIC_CELL.fullmatch(row[column].replace("**", "")) for row in rows) else separator
+            for column, separator in enumerate(separators)
+        ]
+        lines[index] = "| " + " | ".join(aligned) + " |"
+    return "\n".join(lines)
+
+
 def _normalize_cjk_wording_text(text: str) -> str:
     def range_text(match: re.Match[str]) -> str:
         start = _cjk_date(match, "a")
