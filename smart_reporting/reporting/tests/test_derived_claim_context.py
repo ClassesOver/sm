@@ -145,3 +145,40 @@ def test_negative_source_rows_preserve_the_real_negative_sum(text, supported):
     for row, value in zip(table['findings'][0]['rows'], [-10, -40, -60], strict=True):
         row[1] = value
     assert ('待核实' not in replace_unregistered_numbers(text, [json.dumps(table)])) is supported
+
+
+def monthly_bundle():
+    fields = ('month', 'department', 'income', 'cost')
+    ctx = context('current', fields=fields, semantics=(semantic('income', unit='元'), semantic('cost', unit='元')))
+    metrics = tuple({'code': field, 'aggregation': 'sum', 'fieldRef': semantic(field)['fieldRef'], 'description': label}
+        for field, label in (('income', '实际收入'), ('cost', '预算收入')))
+    rows = b'2025-01-01,A,300,100\n2025-02-01,A,90,100\n2025-03-01,A,60,100\n'
+    item = analysis(fields=('income', 'cost')).model_copy(update={'series_granularity': 'month'})
+    return build_deterministic_analysis_bundle(
+        item, (dataset('current', b'month,department,income,cost\n' + rows, ctx),), profile_metrics=metrics)
+
+
+@pytest.mark.parametrize('text,supported', [
+    # 回放：“实际支出相当于预算支出的X%”因服务端不补算比值被替换为待核实。
+    ('2025年1—3月实际收入相当于预算收入的150.00%。', True),
+    ('2025年1—3月预算收入相当于实际收入的66.67%。', True),
+    ('2025年1—3月预算收入相当于实际收入的150.00%。', False),
+    ('2025年1月实际收入相当于同月预算收入的300.00%。', True),
+    ('2025年2月实际收入相当于同月预算收入的300.00%。', False),
+    ('1—2月累计实际收入相当于累计预算收入的195.00%。', True),
+    ('1—2月累计实际收入相当于累计预算收入的150.00%。', False),
+    ('2025年1—3月实际收入较预算收入增长150.00%。', False),
+])
+def test_ratios_of_same_scope_metrics_follow_numerator_and_window(text, supported):
+    frozen = [monthly_bundle().model_dump_json(by_alias=True)]
+    assert ('待核实' not in replace_unregistered_numbers(text, frozen)) is supported
+
+
+@pytest.mark.parametrize('text,supported', [
+    ('总部40%、北部30%为主，两类合计约70%。', True),
+    ('总部40%、北部30%为主，两类合计约60%。', False),
+    ('甲40%、乙20%为主，两类合计约70%。', False),
+    ('两类合计约70%。', False),
+])
+def test_sum_of_listed_shares_is_supported_without_full_row_names(text, supported):
+    assert ('待核实' not in replace_unregistered_numbers(text, [share_table()])) is supported

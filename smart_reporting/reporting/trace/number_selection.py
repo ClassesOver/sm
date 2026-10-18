@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 from ..hospital_operation.deterministic_analysis import _parse_fact_period
 from .fact_index import merge_frozen_fact
-from .numeric_text import frozen_fact_bundles, frozen_number_catalog
+from .numeric_text import _frozen_number_entries, frozen_fact_bundles, frozen_number_catalog
 
 _TOKEN = re.compile(r'\{\{value:([^:{}]+):([^:{}]+):([^:{}]*)\}\}')
 _PERIOD = re.compile(r'(?P<year>\d{4})年(?:(?P<start>\d{1,2})月?(?:[—–至到~～-](?:(?P<end_year>\d{4})年)?(?P<end>\d{1,2}))?月)?')
@@ -165,6 +165,7 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
         return markdown, []
     names = re.compile('|'.join(re.escape(name) for name in sorted(labels, key=len, reverse=True)))
     catalog = frozen_number_catalog(contents)
+    raw_values = {token: (value, unit) for token, value, unit, _target in _frozen_number_entries(contents)}
     warnings = []
 
     def replace(match):
@@ -245,6 +246,10 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
                  if owners[fact_id] & owners[match[1]]}
         if local:
             candidates = local
+        # 回放：同一字段在多个分析中各自登记（成本金额 1—9 月合计在三个事实中完全相同），
+        # 候选原值一致时并无歧义，取其一而不撤销引用。
+        if len(candidates) > 1 and len({raw_values.get(token) for token in candidates}) == 1:
+            candidates = {min(candidates): candidates[min(candidates)]}
         if len(candidates) == 1:
             replacement = next(iter(candidates))
         else:

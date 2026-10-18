@@ -820,6 +820,39 @@ class _DerivedValue:
     peer_columns: tuple[str, ...]
     named_only: bool = False
     window_required: bool = False
+    ratio: bool = False
+    members: tuple[Decimal, ...] = ()
+
+
+_RATIO_VERB = r'(?:相当于|为|占|是|达到?)'
+_PERCENT_NUMBER = re.compile(r'(?<![\d.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?=\s*%)')
+
+
+def _ratio_matches(entry: _DerivedValue, claim: str) -> bool:
+    """“实际支出相当于预算支出的122.55%”：分子写在比较词前、分母写在其后且紧邻数值，方向不能互换。"""
+    numerator, denominator = ('|'.join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+                              for names in entry.comparison)
+    tail = re.sub(r'[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*%$', '', claim.rstrip())
+    return re.search(rf'(?:{numerator})[^，,。；]*?{_RATIO_VERB}[^，,。；\d]{{0,6}}?(?:{denominator})'
+                     rf'[^，,。；\d]{{0,4}}$', tail) is not None
+
+
+def _members_written(members: tuple[Decimal, ...], claim: str) -> bool:
+    """“人员支出35.32%、卫生材料27.28%、药品26.40%为主，三类合计约89.00%”：各分项数值已在句中写出时，
+    合计就是这几项之和，分项名称可简写。"""
+    written = []
+    for match in _PERCENT_NUMBER.finditer(claim):
+        text = match[0].replace(',', '')
+        digits = len(text.split('.', 1)[1]) if '.' in text else 0
+        written.append((Decimal(text), Decimal(1).scaleb(-digits)))
+    remaining = list(written[:-1])
+    for member in members:
+        hit = next((item for item in remaining
+                    if member.quantize(item[1], rounding=ROUND_HALF_UP) == item[0]), None)
+        if hit is None:
+            return False
+        remaining.remove(hit)
+    return True
 
 
 def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: Decimal, claim: str) -> bool:
@@ -898,7 +931,8 @@ class DerivedNumbers:
             *, periods: tuple[str, ...] | None = None,
             comparison: tuple[tuple[str, ...], ...] | None = None,
             column: str | None = None, peer_columns: tuple[str, ...] = (),
-            named_only: bool = False, window_required: bool = False) -> None:
+            named_only: bool = False, window_required: bool = False,
+            members: tuple[Decimal, ...] = ()) -> None:
         if not operands or any(not names for names in operands):
             return
         targets = [(unit, Decimal(1))]
@@ -913,8 +947,21 @@ class DerivedNumbers:
                     value * factor, operands, top, periods, number * factor if top is None else None,
                     comparison or operands[-2:],
                     column, peer_columns, named_only, window_required,
+                    members=tuple(member * factor for member in members),
                 ))
         self._sorted.clear()
+
+    def add_ratio(self, numerator: Decimal, denominator: Decimal,
+                  names: tuple[tuple[str, ...], tuple[str, ...]], *,
+                  extra: tuple[tuple[str, ...], ...] = (), periods: tuple[str, ...] | None = None) -> None:
+        """登记两个同口径值之比（百分数）；只在正文按“分子相当于分母的”写法时认可。"""
+        if denominator == 0 or not all(names):
+            return
+        self._values.setdefault('%', []).append(_DerivedValue(
+            numerator / denominator * 100, (*names, *extra), None, periods, None, names, None, (),
+            ratio=True,
+        ))
+        self._sorted.pop('%', None)
 
     def supports(self, number: Decimal, unit: str, quantum: Decimal, context: str,
                  *, statement: str | None = None, claim: str | None = None) -> bool:
@@ -957,6 +1004,10 @@ class DerivedNumbers:
             if entry.window_required and not re.search(r'\d{1,2}月', statement or local_claim):
                 continue
             named = all(any(name in local_claim for name in names) for names in entry.operands)
+            if entry.ratio:
+                if named and _ratio_matches(entry, local_claim):
+                    return True
+                continue
             if entry.difference is not None:
                 if named and _derived_difference_matches(entry, number, quantum, local_claim):
                     return True
@@ -971,7 +1022,10 @@ class DerivedNumbers:
                 ranked = rankings and rankings[-1][0][1:] in names
                 if rankings and not ranked:
                     continue
-                if (named or ranked and not entry.named_only) and not re.search('相差|差额|差值|高于|低于', local_claim):
+                listed = (re.search('合计|共计|累计|总计|之和|共占', local_claim)
+                          and _members_written(entry.members, local_claim))
+                if ((named or ranked and not entry.named_only or listed)
+                        and not re.search('相差|差额|差值|高于|低于', local_claim)):
                     return True
         return False
 
@@ -1012,7 +1066,7 @@ def _derive_from_table(derived: DerivedNumbers, labels: list[str | None],
             members = tuple(item[1] for item in ranked[:count] if item[1])
             if count > 1 and len(members) == count:
                 derived.add(unit, running, members, top=count, column=column, peer_columns=peers,
-                            named_only=long_table)
+                            named_only=long_table, members=tuple(item[0] for item in ranked[:count]))
     items = list(columns.items())
     for position, (left_name, (unit, left)) in enumerate(items):
         for right_name, (right_unit, right) in items[position + 1:]:
@@ -1091,8 +1145,13 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                         and periods == fact_periods(right.model_dump(mode='json', by_alias=True))):
                     derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands,
                                 periods=periods)
+                    # “实际支出相当于预算支出的122.55%”：两个方向都登记，核对时按分子分母的写法定方向。
+                    derived.add_ratio(Decimal(str(left.total)), Decimal(str(right.total)), operands, periods=periods)
+                    derived.add_ratio(Decimal(str(right.total)), Decimal(str(left.total)), operands[::-1],
+                                      periods=periods)
                 right_values = {item.period: item.value for item in right.period_values}
                 shared: list[tuple[str, Decimal]] = []
+                running: list[tuple[str, Decimal, Decimal]] = []
                 for a in left.period_values:
                     if a.period not in right_values:
                         continue
@@ -1108,9 +1167,24 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                         else:
                             key = f'{year:04d}'
                             aliases = (f'{year}年', key)
-                        gap = Decimal(str(a.value)) - Decimal(str(right_values[a.period]))
+                        value, other = Decimal(str(a.value)), Decimal(str(right_values[a.period]))
+                        gap = value - other
                         shared.append((key, gap))
                         derived.add(left.unit, gap, (*operands, aliases), periods=(key,), comparison=operands)
+                        derived.add_ratio(value, other, operands, extra=(aliases,), periods=(key,))
+                        derived.add_ratio(other, value, operands[::-1], extra=(aliases,), periods=(key,))
+                        if period.granularity == 'month':
+                            running.append((key, value, other))
+                # “1—11月累计实际支出相当于累计预算支出的…”：按共同月份从首月起逐月累计后求比。
+                if running == sorted(running) and len(running) > 1:
+                    total_left = total_right = Decimal(0)
+                    for count, (_key, value, other) in enumerate(running, start=1):
+                        total_left += value
+                        total_right += other
+                        if count > 1:
+                            window = tuple(key for key, _a, _b in running[:count])
+                            derived.add_ratio(total_left, total_right, operands, periods=window)
+                            derived.add_ratio(total_right, total_left, operands[::-1], periods=window)
                 # 统计窗口不同（收入到11月、成本到9月）时，“1—9月成本比收入多3.98亿元”按两边都有的
                 # 期间累计差额核对；正文须写出完整的共同窗口。
                 if len(shared) > 1 and (left.period_start, left.period_end) != (right.period_start, right.period_end):
