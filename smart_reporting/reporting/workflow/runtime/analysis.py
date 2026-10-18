@@ -1845,7 +1845,12 @@ class RuntimeAnalysisMixin:
             job_id,
             {
                 "title": outline.title,
-                "periodLabel": f"{period.start.isoformat()} 至 {period.end.isoformat()}",
+                # 封面期间与正文一致写中文日期，同年时结束日省略年份。
+                "periodLabel": (
+                    f"{period.start.year}年{period.start.month}月{period.start.day}日至"
+                    f"{'' if period.end.year == period.start.year else f'{period.end.year}年'}"
+                    f"{period.end.month}月{period.end.day}日"
+                ),
                 "organizationName": profile.document_branding.organization_name,
                 "generatedByLabel": profile.document_branding.generated_by_label,
                 "watermarkText": profile.document_branding.watermark_text,

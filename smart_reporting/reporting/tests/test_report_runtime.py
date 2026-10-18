@@ -1203,3 +1203,16 @@ def test_cjk_soft_breaks_render_without_spaces(markdown, expected):
 
     parser = MarkdownIt("commonmark", {"html": False}).enable("table")
     assert parser.renderer.render(_join_cjk_soft_breaks(parser.parse(markdown)), parser.options, {}) == expected
+
+
+@pytest.mark.parametrize(("title", "expected"), [
+    # 回放：按宽度自然折行剩下单字孤行“…运营分析报 / 告”。
+    ("2025年瑞金医院综合运营分析报告", "2025年瑞金医院<br>综合运营分析报告"),
+    ("运营报告", "运营报告"),
+    ("2025年瑞金医院综合运营与财务预算执行情况分析报告", "2025年瑞金医院综合运营<br>与财务预算执行情况分析报告"),
+    ("<脚本>报告名称超过十五个字的测试标题啊", "&lt;脚本&gt;报告名称超过<br>十五个字的测试标题啊"),
+])
+def test_cover_title_breaks_into_balanced_lines(title, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _balanced_cover_title
+
+    assert _balanced_cover_title(title) == expected
