@@ -947,7 +947,8 @@ def _section_stage_agent(
                 "每个 claim 必须由至少一个 block 引用；只使用输入中的 metric、管理问题、citation 和 chart ID。",
                 "逐张核对 charts 的 title、altText、metricCodes 与 visualInspectionReceipt.summary；"
                 "视觉passed只表示呈现可读，不证明指标正确。回执描述收入金额而图表声明工作量人次等"
-                "明显冲突时，不得在任何claim中引用该chartId；仍可用冻结事实写正文并披露图表冲突。",
+                "明显冲突时，不得在任何claim中引用该chartId；正文只用冻结事实陈述，block objective "
+                "不得要求说明图表单位、标注、标题或是否采用某图。",
                 (
                     "每张图表只绑定到最直接阐述它的那个 block 的 claim；多张图表应分散到各自"
                     "对应的 block，不要集中绑定到总览或总结 block，避免图表堆叠渲染。"
