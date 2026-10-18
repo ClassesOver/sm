@@ -491,6 +491,14 @@ def frozen_number_guide(
                     "prefixAverages": [{"start": periods[0], "end": period, "monthCount": index + 1,
                                         "reference": reference(f"periodAverages.0-{index}")}
                                        for index, period in enumerate(periods) if reference(f"periodAverages.0-{index}")],
+                    # 期末连续零值月份（回放：11、12月工作量为0）会拉低全期月均，正文只好解释分母；
+                    # 另给零值月份之前的月均引用。
+                    **({"averageBeforeTrailingZeros": {
+                        "end": periods[len(periods) - trailing - 1], "monthCount": len(periods) - trailing,
+                        "reference": reference(f"periodAverages.0-{len(periods) - trailing - 1}"),
+                    }} if 0 < (trailing := next((count for count, value in enumerate(reversed(fact.period_values))
+                                                 if value.value != 0), 0)) < len(periods)
+                        and reference(f"periodAverages.0-{len(periods) - trailing - 1}") else {}),
                     "monthOverMonth": [
                         {"period": period, "change": shown(f"periodChanges.{index}"),
                          "changeRate": shown(f"periodChangeRates.{index}", "%"),

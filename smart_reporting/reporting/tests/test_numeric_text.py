@@ -1332,3 +1332,19 @@ def test_formatted_patterns_accept_legacy_trailing_zero_cents():
     for text in ('预算支出20,921,671,265元。', '预算支出20,921,671,265.00元。', '预算支出209.22亿元。'):
         assert any(re.search(pattern, text) for pattern in patterns)
     assert not any(re.search(pattern, '预算支出20,921,671,266元。') for pattern in patterns)
+
+
+def test_guide_offers_average_before_trailing_zero_months():
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    def guide(values):
+        contents = [_monthly_document(values=values)]
+        return frozen_number_guide(contents, frozen_number_catalog(contents))[0]['monthlyStatistics']
+
+    # 回放：门诊人次11、12月为0，全期月均被拉低。
+    statistics = guide((100, 50, 0, 0))
+    before = statistics['averageBeforeTrailingZeros']
+    assert before['end'] == '2025-02' and before['monthCount'] == 2
+    assert before['reference'] == '{{value:fact-' + 'a' * 16 + ':periodAverages.0-1:元}}'
+    assert 'averageBeforeTrailingZeros' not in guide((100, 50, 80, 120))
+    assert 'averageBeforeTrailingZeros' not in guide((0, 0, 0, 0))
