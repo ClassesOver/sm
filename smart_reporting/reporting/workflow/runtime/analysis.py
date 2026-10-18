@@ -22,6 +22,7 @@ from ...hospital_operation.narrative_outline import (
     NarrativeOutline,
     NarrativeOutlineCandidate,
     freeze_narrative_outline,
+    repair_narrative_candidate,
 )
 from ...hospital_operation.narrative_planner import (
     NarrativeContentBudget,
@@ -2420,6 +2421,25 @@ class RuntimeAnalysisMixin:
         """模型提出章节候选；服务端冻结，纠错失败后保留确定性发现归属。"""
 
         reason = ""
+        repairs = {"unknown": 0, "duplicate": 0, "reassigned": 0}
+
+        def repaired(candidate: NarrativeOutlineCandidate, target: FindingGraph) -> NarrativeOutlineCandidate:
+            fixed, counts = repair_narrative_candidate(candidate, graph=target)
+            if fixed is None:
+                raise ValueError(f"章节规划修正后没有可用章节（未知编号 {counts['unknown']} 个）")
+            for key, value in counts.items():
+                repairs[key] += value
+            return fixed
+
+        def repair_warnings() -> tuple[dict[str, Any], ...]:
+            if not any(repairs.values()):
+                return ()
+            return ({
+                "code": "report_narrative_outline_repaired",
+                "message": (f"章节规划中 {repairs['unknown']} 个未知、{repairs['duplicate']} 个重复的发现编号已去除，"
+                            f"{repairs['reassigned']} 个发现已按分析项归入章节；章节划分沿用模型规划。"),
+            },)
+
         try:
             # UTF-8 字节数作为 token 数的保守上界，另外预留外层标题与纠错信息。
             budget = _analysis_summary_input_token_budget(self._narrative_outline_agent, run_context)
@@ -2459,7 +2479,7 @@ class RuntimeAnalysisMixin:
                             attempt=min(attempt, 1),
                             failure_kind="schema_failure" if attempt else None,
                         )
-                        candidate = NarrativeOutlineCandidate.model_validate(candidate)
+                        candidate = repaired(NarrativeOutlineCandidate.model_validate(candidate), batch_graph)
                         freeze_narrative_outline(candidate, graph=batch_graph, analyses=analyses)
                         accepted = candidate
                         break
@@ -2484,7 +2504,7 @@ class RuntimeAnalysisMixin:
                     index + 1, len(batches), len(ids),
                 )
             if len(planned) == 1:
-                return freeze_narrative_outline(planned[0], graph=graph, analyses=analyses), ()
+                return freeze_narrative_outline(planned[0], graph=graph, analyses=analyses), repair_warnings()
             # 批次只是主题候选，不能直接拼接成最终章节。共同范围按候选描述，
             # 完整 findingId 目录留给全局规划重新分配，冻结仍逐一核对原始图谱。
             cards = {card.finding_id: card for card in graph.findings}
@@ -2525,8 +2545,8 @@ class RuntimeAnalysisMixin:
                         call_budget=call_budget, attempt=min(attempt, 1),
                         failure_kind="schema_failure" if attempt else None,
                     )
-                    combined = NarrativeOutlineCandidate.model_validate(candidate)
-                    return freeze_narrative_outline(combined, graph=graph, analyses=analyses), ()
+                    combined = repaired(NarrativeOutlineCandidate.model_validate(candidate), graph)
+                    return freeze_narrative_outline(combined, graph=graph, analyses=analyses), repair_warnings()
                 except (ValueError, ReportingError, ModelProviderError) as error:
                     reason = str(error)[:2000]
                     if isinstance(error, ReportingError) and error.code == "report_planner_context_budget_exceeded":

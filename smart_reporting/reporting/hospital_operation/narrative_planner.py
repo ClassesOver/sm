@@ -153,6 +153,16 @@ def build_fallback_narrative_candidate(
         if any("\u4e00" <= char <= "\u9fff" for char in card.title):
             return card.title
         return "；".join(dict.fromkeys(names[aid] for aid in card.analysis_ids if aid in names)) or card.title
+    def group_title(group: Sequence[str]) -> str:
+        # 回放中把组内全部发现标题用“；”拼接成章节名（数百字）；改用分析名称，
+        # 最多两个，超过时加“等”。
+        analysis_names = list(dict.fromkeys(names[aid] for item in group for aid in cards[item].analysis_ids
+                                            if aid in names))
+        if not analysis_names:
+            return display_title(cards[group[0]])[:30]
+        title = "、".join(analysis_names[:2]) + ("等" if len(analysis_names) > 2 else "")
+        return title if len(title) <= 30 else analysis_names[0][:30]
+
     # 统计关系和常量等限制保留在附录，不占用经营主题的正文容量。
     body = tuple(card for card in graph.findings
                  if card.priority == 'high' or (card.priority != 'low'
@@ -172,7 +182,7 @@ def build_fallback_narrative_candidate(
         return NarrativeOutlineCandidate(
             title=title, snapshotHash=graph.snapshot_hash,
             sections=tuple({
-                "title": "；".join(dict.fromkeys(display_title(cards[item]) for item in group))[:200],
+                "title": group_title(group),
                 "findingIds": group,
                 "objective": "解释已核验发现并提出管理动作",
                 "groupingReason": "依据共享指标、管理主题和已登记关系确定性分组",

@@ -106,6 +106,68 @@ def evaluate_narrative_quality(
     )
 
 
+def repair_narrative_candidate(
+    candidate: NarrativeOutlineCandidate, *, graph: FindingGraph,
+) -> tuple[NarrativeOutlineCandidate | None, dict[str, int]]:
+    """模型抄错、重复或漏写个别 findingId 时就地修正，保留其章节划分与标题。
+
+    回放中190个发现的全局统筹因抄错编号三次被拒，整份报告退回确定性分组，章节名成了
+    几十个发现标题的拼接。修正只做最小处理：去掉未知与重复编号、删去因此为空的章节、
+    把附录章节中的高优先级发现移回正文，遗漏发现归入分析项重合最多的正文章节（高优先级
+    无处可归时进第一个正文章节，其余进附录）。修正后没有章节时返回 None。
+    """
+    cards = {card.finding_id: card for card in graph.findings}
+    seen: set[str] = set()
+    counts = {"unknown": 0, "duplicate": 0, "reassigned": 0}
+
+    def keep(finding_id: str) -> bool:
+        if finding_id not in cards:
+            counts["unknown"] += 1
+            return False
+        if finding_id in seen:
+            counts["duplicate"] += 1
+            return False
+        seen.add(finding_id)
+        return True
+
+    sections = []
+    moved: list[str] = []
+    for section in candidate.sections:
+        ids = [finding_id for finding_id in section.finding_ids if keep(finding_id)]
+        if section.narrative_role == "appendix":
+            moved.extend(finding_id for finding_id in ids if cards[finding_id].priority == "high")
+            ids = [finding_id for finding_id in ids if cards[finding_id].priority != "high"]
+        if ids:
+            sections.append(section.model_copy(update={"finding_ids": tuple(ids)}))
+    appendix = [finding_id for finding_id in candidate.appendix_finding_ids if keep(finding_id)]
+    omitted = [item for item in candidate.omitted_findings
+               if item.get("reason", "").strip() and keep(item.get("findingId", ""))]
+    missing = [card.finding_id for card in graph.findings if card.finding_id not in seen] + moved
+    body = [index for index, section in enumerate(sections) if section.narrative_role != "appendix"]
+    for finding_id in missing:
+        card = cards[finding_id]
+        overlap = {index: len(set(card.analysis_ids) & {aid for fid in sections[index].finding_ids
+                                                          for aid in cards[fid].analysis_ids})
+                   for index in body}
+        target = max(overlap, key=lambda index: overlap[index]) if overlap and max(overlap.values()) else None
+        if target is None and card.priority == "high" and body:
+            target = body[0]
+        if target is None:
+            if card.priority == "high":
+                return None, counts
+            appendix.append(finding_id)
+        else:
+            sections[target] = sections[target].model_copy(
+                update={"finding_ids": (*sections[target].finding_ids, finding_id)})
+        counts["reassigned"] += 1
+    if not sections:
+        return None, counts
+    return candidate.model_copy(update={
+        "sections": tuple(sections), "appendix_finding_ids": tuple(appendix),
+        "omitted_findings": tuple(omitted), "snapshot_hash": graph.snapshot_hash,
+    }), counts
+
+
 def freeze_narrative_outline(
     candidate: NarrativeOutlineCandidate,
     *,

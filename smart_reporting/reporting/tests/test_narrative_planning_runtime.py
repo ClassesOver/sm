@@ -204,3 +204,40 @@ async def test_runtime_restores_frozen_outline_without_replanning(anyio_backend,
     assert state[REPORT_OUTLINE_STATE_KEY] == compatible
     assert durable.phase is (ReportingPhase.FINALIZE if phase == "finalize" else ReportingPhase.SECTIONS)
     assert durable.payload["workflowCheckpoint"] == checkpoint.model_dump(mode="json", by_alias=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_runtime_repairs_mistyped_finding_ids_and_keeps_planned_sections(anyio_backend):
+    # 回放：190个发现的全局统筹因抄错编号被拒，整份报告退回确定性分组，章节名成了发现标题拼接。
+    cards = [finding(i) for i in range(1, 5)]
+    source = graph(*cards)
+    ids = [card.finding_id for card in cards]
+
+    async def planner(agent, payload, context, **kwargs):
+        return candidate(source.snapshot_hash, [ids[0], "finding_ffffffffffffffff", ids[0], ids[1]],
+                         title="收入规模与结构")
+
+    runtime = SimpleNamespace(_narrative_outline_agent=object(), _run_planner=planner)
+    result, issues = await RuntimeAnalysisMixin._plan_narrative_outline(
+        runtime, graph=source, title="医院运营分析", report_goal="识别经营风险",
+        analyses=[{"analysisId": f"analysis_{i:03d}"} for i in range(1, 5)], run_context=None,
+    )
+    assert result.sections[0].title == "收入规模与结构"
+    assigned = [item for section in result.sections for item in section.finding_ids] + list(result.appendix_finding_ids)
+    assert sorted(assigned) == sorted(ids)
+    assert [issue["code"] for issue in issues] == ["report_narrative_outline_repaired"]
+    assert "1 个未知、1 个重复" in issues[0]["message"]
+
+
+def test_fallback_section_titles_use_analysis_names_not_joined_finding_titles():
+    from smart_reporting.reporting.hospital_operation.narrative_planner import (
+        build_fallback_narrative_candidate,
+    )
+
+    cards = [finding(i, title=f"指标{i}比较变化") for i in range(1, 4)]
+    names = [{"analysisId": f"analysis_{i:03d}", "analysisName": f"分析{i}"} for i in range(1, 4)]
+    outline = build_fallback_narrative_candidate(graph(*cards), "医院运营分析", analyses=names)
+    for section in outline.sections:
+        assert "；" not in section.title and len(section.title) <= 30
+        assert section.title.startswith("分析")
