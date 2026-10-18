@@ -293,6 +293,7 @@ def test_informational_normalization_rules_keep_their_declared_subjects() -> Non
         "chart_path_normalized",
         "markdown_strong_marker_normalized",
         "duplicate_section_heading_removed",
+        "repeated_subheading_removed",
     ):
         rule = get_warning_rule(code)
         assert rule.subject_types == frozenset({"report", "section"})

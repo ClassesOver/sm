@@ -251,6 +251,12 @@ def _formatted_patterns(value: Any, unit: str | None, units: Sequence[str]) -> l
     if Decimal(str(value)) == 0:
         patterns.extend(r"(?<![\d.,+\-])0\.00" + re.escape(target) + r"(?![\d.])"
                         for target in units if target in {"万元", "亿元", "万人次"})
+    # 旧版把舍入后为整数的原始元值写成“20,921,671,265.00元”，已发布正文仍可核对。
+    patterns.extend(r"(?<![\d.,+\-])" + re.escape(text.removesuffix(target) + ".00" + target) + r"(?![\d.])"
+                    for target in units
+                    if (text := format_fact_value(value, unit, target)) and target in {"元", "人次", "床日"}
+                    and Decimal(str(value)) != Decimal(str(value)).to_integral_value()
+                    and abs(Decimal(str(value))) >= 1_000_000 and "." not in text)
     magnitude = _negative_magnitude(value)
     if magnitude is not None:
         patterns.extend(

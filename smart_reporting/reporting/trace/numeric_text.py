@@ -66,6 +66,9 @@ def percent_point_field(field: str, unit: str | None) -> bool:
     return unit == "%" and (field in {"change", "difference"} or field.endswith(".difference"))
 
 
+_SCALED_DISPLAY_UNITS = frozenset({"万元", "亿元", "万人次", "%", "‰", PERCENT_POINT})
+
+
 def format_fact_value(value: Any, unit: str | None, display_unit: str | None = None) -> str:
     number = Decimal(str(value))
     target = display_unit or unit
@@ -75,10 +78,15 @@ def format_fact_value(value: Any, unit: str | None, display_unit: str | None = N
     # 零值在万元、亿元、万人次下写成“0.00万人次”既别扭又像有零头，直接写 0。
     if number == 0 and target in {"万元", "亿元", "万人次"}:
         return "0" + target
-    if target in {"万元", "亿元", "万人次", "%", "‰", PERCENT_POINT} or number != number.to_integral_value():
+    if target in _SCALED_DISPLAY_UNITS or number != number.to_integral_value():
         rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         # 舍入为零的负数不能显示为“-0.00”。
         text = f"{abs(rounded) if rounded == 0 else rounded:,f}"
+        # 百万以上元、人次合计的浮点尾差（20921671264.99973）舍入后是整数，不写“265.00元”；
+        # 小额值保留“30.00元”，以区分与整数登记值冲突的未舍入值。
+        if (target not in _SCALED_DISPLAY_UNITS and abs(rounded) >= 1_000_000
+                and rounded == rounded.to_integral_value()):
+            text = f"{rounded:,.0f}"
     else:
         text = f"{number:,.0f}"
     return text + (target or "")
@@ -483,6 +491,14 @@ def frozen_number_guide(
                     "prefixAverages": [{"start": periods[0], "end": period, "monthCount": index + 1,
                                         "reference": reference(f"periodAverages.0-{index}")}
                                        for index, period in enumerate(periods) if reference(f"periodAverages.0-{index}")],
+                    # 期末连续零值月份（回放：11、12月工作量为0）会拉低全期月均，正文只好解释分母；
+                    # 另给零值月份之前的月均引用。
+                    **({"averageBeforeTrailingZeros": {
+                        "end": periods[len(periods) - trailing - 1], "monthCount": len(periods) - trailing,
+                        "reference": reference(f"periodAverages.0-{len(periods) - trailing - 1}"),
+                    }} if 0 < (trailing := next((count for count, value in enumerate(reversed(fact.period_values))
+                                                 if value.value != 0), 0)) < len(periods)
+                        and reference(f"periodAverages.0-{len(periods) - trailing - 1}") else {}),
                     "monthOverMonth": [
                         {"period": period, "change": shown(f"periodChanges.{index}"),
                          "changeRate": shown(f"periodChangeRates.{index}", "%"),
@@ -585,13 +601,16 @@ def group_large_amounts(markdown: str) -> str:
     return _UNGROUPED_AMOUNT.sub(lambda match: f"{int(match[1]):,}", markdown)
 
 
-# 读者是医院领导与财务人员，“月度桶”是数据处理用语，按日常说法改写。
+# 读者是医院领导与财务人员，“月度桶”“登记值”是数据处理用语，按日常说法改写。
+_NULL_WORDING = re.compile(r"(为|是|记为)\s*(?:null|None|NaN|nan)(?![A-Za-z0-9_])")
 _MONTH_BUCKET_COUNT = re.compile(r"(\d+|[一两二三四五六七八九十]+)个月度桶")
 
 
 def plain_period_wording(markdown: str) -> str:
     markdown = _MONTH_BUCKET_COUNT.sub(r"\1个月", markdown)
-    return markdown.replace("月度桶标签", "月份").replace("月度桶", "月度")
+    # “登记值”是数据处理用语，财务与业务人员习惯说“记录值”；模型照抄的空值写法（“为null”）改为“为空”。
+    markdown = _NULL_WORDING.sub(r"\1空", markdown)
+    return markdown.replace("月度桶标签", "月份").replace("月度桶", "月度").replace("登记值", "记录值")
 
 
 def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=None) -> str:
@@ -602,6 +621,15 @@ def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=No
             logger.warning("report_number_reference_unavailable token={}", match["token"])
             return (annotate(match["token"], "数值待核实") if annotate else "数值待核实") + written
         shown = re.search(rf"(?:{_TRAILING_UNIT})$", text)
+        parts = match["token"][2:-2].split(":")
+        field, target = (parts[2] if len(parts) > 2 else ""), (parts[3] if len(parts) > 3 else "")
+        # 相关系数、比值等无量纲引用（“…:value:”）后写了金额或人次单位，或显示单位与所写单位
+        # 不同类（“5.03%万元”）：模型拿错了引用，回放中相关系数0.0048被写成“最小约0.00万元”。
+        if written.strip() and (
+                (not shown and field == "value" and not target)
+                or (shown and _unit_family(shown[0]) != _unit_family(written.strip()))):
+            logger.warning("report_number_reference_unit_mismatch token={} unit={}", match["token"], written.strip())
+            return annotate(match["token"], "数值待核实") if annotate else "数值待核实"
         if annotate:
             text = annotate(match["token"], text)
         if written and shown and _unit_family(shown[0]) == _unit_family(written.strip()):
@@ -639,10 +667,10 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
             if not isinstance(finding, dict):
                 continue
             columns, rows, metadata = (finding.get(key) for key in ("columns", "rows", "columnMeta"))
+            # 明细表下可再挂汇总子表（finding.tables：按月合计、按科室合计），同样要登记。
+            pending.extend(value for key, value in finding.items()
+                           if key not in {"columns", "rows", "columnMeta"} and isinstance(value, (dict, list)))
             if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
-                pending.extend(value for key, value in finding.items()
-                               if key not in {"columns", "rows", "columnMeta"}
-                               and isinstance(value, (dict, list)))
                 continue
             for index, column in enumerate(columns):
                 meta = metadata.get(column) if isinstance(column, str) else None
@@ -790,6 +818,8 @@ class _DerivedValue:
     comparison: tuple[tuple[str, ...], ...]
     column: str | None
     peer_columns: tuple[str, ...]
+    named_only: bool = False
+    window_required: bool = False
 
 
 def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: Decimal, claim: str) -> bool:
@@ -825,6 +855,14 @@ def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: 
     difference = entry.difference if a[0] < b[0] else -entry.difference
     directions = list(re.finditer(r'高于|低于|多于|少于|超过|不足|(?<![至最不多少])(?:多|少|高|低)',
                                   claim[max(a[1], b[1]):]))
+    if directions and not relations:
+        # “1月收入…、成本…，成本高3.02亿元”：没有比较词时，方向词的主语是紧邻其前的操作数，
+        # 不是先写出的一方。
+        position = max(a[1], b[1]) + directions[-1].start()
+        subjects = [(span[1], side) for side, found in ((1, left), (-1, right))
+                    for span in found if span[1] <= position]
+        if subjects:
+            difference = entry.difference * max(subjects)[1]
     directed = (directions[-1][0] if directions else relations[-1][0]
                 if relations and relations[-1][0] in {'高于', '低于', '多于', '少于', '超过', '不足'} else None)
     if directed:
@@ -834,6 +872,15 @@ def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: 
     if re.search('相差|差距|差异', claim):
         return number >= 0 and abs(difference).quantize(quantum, rounding=ROUND_HALF_UP) == number
     return difference.quantize(quantum, rounding=ROUND_HALF_UP) == number
+
+
+def _column_stems(columns: tuple[str, ...]) -> dict[str, str]:
+    """同单位多列去掉共同后缀后的区分词（“预算占比/实际占比”→“预算/实际”）；不唯一时不给。"""
+    suffix = os.path.commonprefix([name[::-1] for name in columns])[::-1]
+    stems = {name: name[:len(name) - len(suffix)] for name in columns} if suffix else {}
+    if any(len(stem) < 2 for stem in stems.values()) or len(set(stems.values())) != len(stems):
+        return {}
+    return stems
 
 
 class DerivedNumbers:
@@ -850,7 +897,8 @@ class DerivedNumbers:
     def add(self, unit: str, number: Decimal, operands: tuple[tuple[str, ...], ...], top: int | None = None,
             *, periods: tuple[str, ...] | None = None,
             comparison: tuple[tuple[str, ...], ...] | None = None,
-            column: str | None = None, peer_columns: tuple[str, ...] = ()) -> None:
+            column: str | None = None, peer_columns: tuple[str, ...] = (),
+            named_only: bool = False, window_required: bool = False) -> None:
         if not operands or any(not names for names in operands):
             return
         targets = [(unit, Decimal(1))]
@@ -864,7 +912,7 @@ class DerivedNumbers:
                 self._values.setdefault(target, []).append(_DerivedValue(
                     value * factor, operands, top, periods, number * factor if top is None else None,
                     comparison or operands[-2:],
-                    column, peer_columns,
+                    column, peer_columns, named_only, window_required,
                 ))
         self._sorted.clear()
 
@@ -890,6 +938,13 @@ class DerivedNumbers:
                                       if any(name in clause for name in entry.peer_columns)), local_claim)
                 mentions = [(match.start(), match.end(), name) for name in entry.peer_columns
                             for match in re.finditer(re.escape(name), measure_claim)]
+                if not mentions:
+                    # “预算端……合计93.86%”只写出列名去掉共同后缀（“占比”）后的部分；以最先出现者为
+                    # 主语，分项名中的“支出预算-全院性”不能再把实际端改判为预算端。
+                    stems = sorted((match.start(), match.end(), name)
+                                   for name, stem in _column_stems(entry.peer_columns).items()
+                                   for match in re.finditer(re.escape(stem), measure_claim))
+                    mentions = stems[:1]
                 # 嵌套列名按最长匹配解释，“医疗收入”不能同时冒充“收入”列。
                 columns = {name for start, end, name in mentions if not any(
                     (a, b) != (start, end) and a <= start and end <= b for a, b, _name in mentions
@@ -897,6 +952,9 @@ class DerivedNumbers:
                 if columns != {entry.column}:
                     continue
             if entry.periods is not None and not _derived_period_matches(entry.periods, statement or local_claim):
+                continue
+            # 只在共同期间成立的累计差额，正文不写期间会被读成全年口径。
+            if entry.window_required and not re.search(r'\d{1,2}月', statement or local_claim):
                 continue
             named = all(any(name in local_claim for name in names) for names in entry.operands)
             if entry.difference is not None:
@@ -913,33 +971,48 @@ class DerivedNumbers:
                 ranked = rankings and rankings[-1][0][1:] in names
                 if rankings and not ranked:
                     continue
-                if (named or ranked) and not re.search('相差|差额|差值|高于|低于', local_claim):
+                if (named or ranked and not entry.named_only) and not re.search('相差|差额|差值|高于|低于', local_claim):
                     return True
         return False
 
 
+_TOTAL_ROW = re.compile(r"(?:全院|全部|总)?(?:合计|总计|小计|汇总|总额|总量)")
+
+
 def _derive_from_table(derived: DerivedNumbers, labels: list[str | None],
-                       columns: Mapping[str, tuple[str, list[Decimal]]]) -> None:
+                       columns: Mapping[str, tuple[str, list[Decimal]]],
+                       aliases: list[tuple[str, ...]] | None = None) -> None:
     """同一张表内补算：列内两行差额与降序前 N 项合计，同单位两列的逐行差额与合计差额。"""
     for column, (unit, numbers) in columns.items():
         peers = tuple(name for name, (other_unit, _values) in columns.items()
                       if other_unit == unit or other_unit in (_unit_scales(unit) or {}))
-        if not 1 < len(numbers) <= _DERIVED_ROW_LIMIT:
+        if len(numbers) < 2:
             continue
         # 两个百分数之差是百分点，不是百分数；占比列只补算降序前 N 项合计。
-        if unit != "%":
+        # 两两差额随行数平方增长，只在小表补算；前 N 项合计只需一次排序，长表（科室、预算单元明细）
+        # 也补算前 10 项，“预算端前五个单元合计94.08%”不再因表长被判为无依据。
+        if unit != "%" and len(numbers) <= _DERIVED_ROW_LIMIT:
             for position, (left_label, left) in enumerate(zip(labels, numbers, strict=True)):
                 for right_label, right in zip(labels[position + 1:], numbers[position + 1:], strict=True):
                     if left_label and right_label:
                         derived.add(unit, left - right, _operand_names(left_label, right_label),
                                     column=column, peer_columns=peers)
-        ranked = sorted(zip(numbers, labels, strict=True), key=lambda item: item[0], reverse=True)
+        # 补证表常带“合计”行：它不是分项，参与排序会让“前两项合计”变成合计行加首项。
+        # 行名取该行全部文本单元格（编码与名称），正文写“财务处”也能对上“RJ008.01 / 财务处”。
+        names = aliases or [(label,) if label else () for label in labels]
+        ranked = sorted(((number, row_names) for number, label, row_names in zip(numbers, labels, names, strict=True)
+                         if not (label and _TOTAL_ROW.fullmatch(label.strip()))),
+                        key=lambda item: item[0], reverse=True)
         running = Decimal(0)
-        for count, (number, label) in enumerate(ranked[:-1], start=1):
+        # 长表只补算前 10 项，且须逐项写出名称：只写“前五”时，长表中巧合相等的合计太多。
+        long_table = len(numbers) > _DERIVED_ROW_LIMIT
+        prefixes = ranked[:10] if long_table else ranked[:-1]
+        for count, (number, row_names) in enumerate(prefixes, start=1):
             running += number
-            members = tuple((item[1],) for item in ranked[:count] if item[1])
+            members = tuple(item[1] for item in ranked[:count] if item[1])
             if count > 1 and len(members) == count:
-                derived.add(unit, running, members, top=count, column=column, peer_columns=peers)
+                derived.add(unit, running, members, top=count, column=column, peer_columns=peers,
+                            named_only=long_table)
     items = list(columns.items())
     for position, (left_name, (unit, left)) in enumerate(items):
         for right_name, (right_unit, right) in items[position + 1:]:
@@ -979,12 +1052,15 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
             if not isinstance(finding, dict):
                 continue
             columns, rows, metadata = (finding.get(key) for key in ("columns", "rows", "columnMeta"))
+            pending.extend(value for key, value in finding.items()
+                           if key not in {"columns", "rows", "columnMeta"} and isinstance(value, (dict, list)))
             if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
-                pending.extend(value for value in finding.values() if isinstance(value, (dict, list)))
                 continue
             rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
             labels = [next((cell.strip() for cell in row if isinstance(cell, str) and cell.strip()), None)
                       for row in rows]
+            aliases = [tuple(cell.strip() for cell in row if isinstance(cell, str) and cell.strip())
+                       for row in rows]
             table: dict[str, tuple[str, list[Decimal]]] = {}
             for index, column in enumerate(columns):
                 meta = metadata.get(column) if isinstance(column, str) else None
@@ -997,7 +1073,7 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                            and math.isfinite(row[index])]
                 if rows and len(numbers) == len(rows):
                     table[column] = (unit, numbers)
-            _derive_from_table(derived, labels, table)
+            _derive_from_table(derived, labels, table, aliases)
     for bundle in frozen_fact_bundles(contents):
         from .subject_builder import fact_periods
 
@@ -1016,6 +1092,7 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                     derived.add(left.unit, Decimal(str(left.total)) - Decimal(str(right.total)), operands,
                                 periods=periods)
                 right_values = {item.period: item.value for item in right.period_values}
+                shared: list[tuple[str, Decimal]] = []
                 for a in left.period_values:
                     if a.period not in right_values:
                         continue
@@ -1031,8 +1108,14 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                         else:
                             key = f'{year:04d}'
                             aliases = (f'{year}年', key)
-                        derived.add(left.unit, Decimal(str(a.value)) - Decimal(str(right_values[a.period])),
-                                    (*operands, aliases), periods=(key,), comparison=operands)
+                        gap = Decimal(str(a.value)) - Decimal(str(right_values[a.period]))
+                        shared.append((key, gap))
+                        derived.add(left.unit, gap, (*operands, aliases), periods=(key,), comparison=operands)
+                # 统计窗口不同（收入到11月、成本到9月）时，“1—9月成本比收入多3.98亿元”按两边都有的
+                # 期间累计差额核对；正文须写出完整的共同窗口。
+                if len(shared) > 1 and (left.period_start, left.period_end) != (right.period_start, right.period_end):
+                    derived.add(left.unit, sum(gap for _key, gap in shared), operands,
+                                periods=tuple(key for key, _gap in shared), window_required=True)
     return derived
 
 
@@ -1402,8 +1485,9 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
                 or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
                 or bounded_by_registered(number, number_text, candidates, prefix=prefix)
                 or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
+                # “预算支出有65.9%的行为零”：含义词写在比例之后，按整句判断。
                 or (unit == "%" and profile_rate_supported(profile_rates, number, quantum,
-                                                           claim or statement or context))):
+                                                           statement or claim or context))):
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。

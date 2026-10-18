@@ -3,7 +3,7 @@
 import hashlib
 import html
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -394,6 +394,132 @@ def _cjk_date(match: re.Match[str], prefix: str, *, omit_year: bool = False) -> 
     return text + (f"{int(day)}日" if day else "")
 
 
+# 封面标题 28pt、最宽 150mm：每行约 15 个汉字。按宽度自然折行会剩下单字孤行
+# （“…运营分析报 / 告”），改为各行字数接近的均衡折行；不拆开数字和英文。
+_COVER_TITLE_LINE_CHARS = 15
+
+
+def _balanced_cover_title(title: str) -> str:
+    if len(title) <= _COVER_TITLE_LINE_CHARS:
+        return html.escape(title)
+    lines = -(-len(title) // _COVER_TITLE_LINE_CHARS)
+    width = -(-len(title) // lines)
+    pieces, start = [], 0
+    while len(title) - start > width:
+        end = start + width
+        while end > start + 1 and all(title[i].isascii() and title[i].isalnum() for i in (end - 1, end)):
+            end -= 1
+        if end == start + 1:  # 整行都是连续英文数字，无处可避，按宽度折行。
+            end = start + width
+        pieces.append(title[start:end])
+        start = end
+    pieces.append(title[start:])
+    return "<br>".join(html.escape(piece) for piece in pieces)
+
+
+# 服务端分期间汇总表（[[table:…]] 协议块及其上一行表名）原样追加在各章末尾，回放中第1章
+# 后连续3—4页月度表格把下一章推远。渲染时统一移到正文之后的“附表”，报告 Markdown、编辑器
+# 与溯源标记不变；模型自写表格没有协议标记，不受影响。
+_SERVER_TABLE_BLOCK = re.compile(
+    # 表名是表格上一行不含协议标记、不以句末标点结尾的短行；正文段落不能被当作表名一起移走。
+    r"(?:^(?![\[|#!>])(?![^\n]*\[\[)[^\n]*[^\n。！？；.!?]\n\n)?^\[\[table:(?P<id>[^\]\r\n]+)\]\]\n.*?^\[\[/table:(?P=id)\]\][ \t]*(?:\n|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+APPENDIX_TABLES_SENTINEL = "REPORTING-APPENDIX-TABLES"
+APPENDIX_TABLES_TITLE = '<p class="report-appendix-title"><strong>附表</strong></p>'
+
+
+def relocate_server_tables(markdown: str) -> str:
+    tables = [match[0].strip() for match in _SERVER_TABLE_BLOCK.finditer(markdown)]
+    if not tables:
+        return markdown
+    body = re.sub(r"\n{3,}", "\n\n", _SERVER_TABLE_BLOCK.sub("", markdown)).rstrip()
+    return "\n\n".join((body, APPENDIX_TABLES_SENTINEL, *tables)) + "\n"
+
+
+# 领导先看结论：渲染时在第1章前生成“核心结论”，逐章取正文首段首句。写作规则要求每段
+# 首句先写结论，且这些句子已通过数值核对，不另调模型、不引入新数字；附录、口径与统计
+# 说明类章节不取。去掉协议标记，不重复生成来源编号；报告 Markdown 与编辑器不变。
+SUMMARY_SENTINEL = "REPORTING-EXECUTIVE-SUMMARY"
+SUMMARY_END_SENTINEL = "REPORTING-EXECUTIVE-SUMMARY-END"
+SUMMARY_TITLE = '<p class="report-summary-title"><strong>核心结论</strong></p>'
+SUMMARY_END = '<div class="report-summary-end"></div>'
+_SUMMARY_SKIPPED_SECTION = re.compile(r"附录|附表|补充|限制|口径|说明|统计关系")
+_SECTION_START = re.compile(r"^\[\[section:([^\]\r\n]+)\]\][ \t]*$", re.MULTILINE)
+_NOT_PROSE = re.compile(r"^(?:#|\||!\[|\[\[|>|\*图表|[-*+]\s|\d+[.)]\s)")
+
+
+def _section_conclusion(block: str) -> str | None:
+    for paragraph in block.split("\n\n"):
+        paragraph = paragraph.strip()
+        if not paragraph or _NOT_PROSE.match(paragraph):
+            continue
+        text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "").replace("\n", "")
+        sentences = re.findall(r"[^。！？]+[。！？]", text)
+        if not sentences:
+            return None
+        conclusion = sentences[0]
+        # 首句只有定性结论（“整体未达预算。”）时带上紧随的关键数字句。
+        if not re.search(r"\d", conclusion) and len(sentences) > 1 and len(conclusion + sentences[1]) <= 200:
+            conclusion += sentences[1]
+        return conclusion if 8 <= len(conclusion) <= 200 else None
+    return None
+
+
+def insert_executive_summary(markdown: str, sections: Sequence[Mapping[str, Any]]) -> str:
+    titles = {item["code"]: item["title"] for item in sections}
+    starts = list(_SECTION_START.finditer(markdown))
+    lines = []
+    for index, start in enumerate(starts):
+        title = titles.get(start[1])
+        if not title or _SUMMARY_SKIPPED_SECTION.search(title):
+            continue
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(markdown)
+        conclusion = _section_conclusion(markdown[start.end():end])
+        if conclusion:
+            lines.append(f"- **{title}**：{conclusion}")
+    if len(lines) < 2:
+        return markdown
+    first = starts[0].start()
+    summary = "\n\n".join((SUMMARY_SENTINEL, "\n".join(lines), SUMMARY_END_SENTINEL))
+    return f"{markdown[:first]}{summary}\n\n{markdown[first:]}"
+
+
+# 模型自写表格常把分隔行写成全左对齐，金额、比率列的位数与小数点对不齐。渲染时全部
+# 单元格都是数值（可带单位、百分号或“—”）的列改为右对齐；已声明对齐方式的列不动。
+_NUMERIC_CELL = re.compile(
+    r"[+\-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:%|‰|亿元|万元|元|万人次|人次|床日|个百分点|亿|万)?"
+    r"|[—–\-]{1,2}|"
+)
+_TABLE_SEPARATOR = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$")
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def align_numeric_table_columns(markdown: str) -> str:
+    lines = markdown.split("\n")
+    for index, line in enumerate(lines):
+        if index == 0 or not _TABLE_SEPARATOR.match(line.strip()) or not lines[index - 1].lstrip().startswith("|"):
+            continue
+        rows = []
+        for body in lines[index + 1:]:
+            if not body.lstrip().startswith("|"):
+                break
+            rows.append(_table_cells(body))
+        separators = _table_cells(line)
+        if not rows or any(len(row) != len(separators) for row in rows):
+            continue
+        aligned = [
+            "---:" if separator == "---" and any(row[column] for row in rows)
+            and all(_NUMERIC_CELL.fullmatch(row[column].replace("**", "")) for row in rows) else separator
+            for column, separator in enumerate(separators)
+        ]
+        lines[index] = "| " + " | ".join(aligned) + " |"
+    return "\n".join(lines)
+
+
 def _normalize_cjk_wording_text(text: str) -> str:
     def range_text(match: re.Match[str]) -> str:
         start = _cjk_date(match, "a")
@@ -729,7 +855,7 @@ def _semantic_documents(
         for item in context["headingNumbers"]
     )
     cover = (
-        f'<section class="report-cover"><h1>{title}</h1>'
+        f'<section class="report-cover"><h1>{_balanced_cover_title(context["title"])}</h1>'
         f'<p class="report-period">分析期间：{period}</p>'
         f'<p class="report-organization">{organization}</p>'
         f'<p class="report-generated">{generated_label}</p></section>'
@@ -790,11 +916,20 @@ def _semantic_documents(
         ".report-title{color:"
         f"{theme['primary']}"
         ";font-size:22pt;margin:0 0 8mm}"
-        "h2{color:"
+        "h2,.report-appendix-title{color:"
         f"{theme['primary']}"
         ";border-left:3pt solid "
         f"{theme['accent']}"
         ";font-size:16pt;padding-left:3mm}"
+        ".report-appendix-title{break-before:page;page-break-before:always;margin:0.8em 0;"
+        "page-break-after:avoid;break-after:avoid}"
+        ".report-summary-title{color:"
+        f"{theme['primary']}"
+        ";border-left:3pt solid "
+        f"{theme['accent']}"
+        ";font-size:16pt;padding-left:3mm;margin:0.8em 0}"
+        ".report-summary-end{break-after:page;page-break-after:always}"
+        ".report-summary-title+ul li{font-size:11pt;line-height:1.8;margin:0 0 3mm}"
         "h3{font-size:12.5pt;color:"
         f"{theme['ink']}"
         "}h4{font-size:11pt;color:"

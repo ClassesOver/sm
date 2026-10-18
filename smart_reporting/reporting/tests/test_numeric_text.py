@@ -26,6 +26,9 @@ from smart_reporting.reporting.trace.numeric_text import (
     (6.1892819593, '%', '%', '6.19%'),
     (1.005, '元', '元', '1.01元'),
     (111.24, '亿元', '元', '11,124,000,000元'),
+    # 浮点尾差舍入后为整数时不写“.00”；真正带零头的月均值保留两位。
+    (20921671264.99973, '元', '元', '20,921,671,265元'),
+    (1011231045.7272, '元', '元', '1,011,231,045.73元'),
 ])
 def test_format_frozen_value(value, unit, target, expected):
     assert format_fact_value(value, unit, target) == expected
@@ -74,9 +77,10 @@ def test_catalog_and_render_use_frozen_totals_and_months():
     ('同比增长{{value:a:changeRate:%}}%，', '同比增长5.03%，'),
     ('门诊{{value:a:visits:人次}} 人次', '门诊35.30万人次'),
     ('提高{{value:a:share:%}}个百分点', '提高2.10个百分点'),
-    # 其后不是单位、量纲不同、显示值不带单位或占位无法解析时不动。
+    # 其后不是单位、显示值不带单位或占位无法解析时不动。
     ('收入{{value:a:total:亿元}}以上，次均{{value:a:visits:人次}}次均', '收入1.37亿元以上，次均35.30万人次次均'),
-    ('增长{{value:a:changeRate:%}}元', '增长5.03%元'),
+    # 量纲不同（“5.03%元”）是拿错了引用，撤销数值。
+    ('增长{{value:a:changeRate:%}}元', '增长数值待核实'),
     ('金额{{value:b:total}}元（单位待核实）', '金额136,543,211元（单位待核实）'),
 ])
 def test_unit_written_again_after_placeholder_is_not_duplicated(text, expected):
@@ -1202,6 +1206,66 @@ def test_server_derives_gaps_and_top_share_sums_only_for_operands_named_in_the_p
     assert replace_unregistered_numbers(unrelated, contents) == '总部较北部高待核实，另有待核实。'
 
 
+def test_top_share_sums_skip_total_rows_and_cover_long_two_sided_tables():
+    # 回放：院区表带“合计”行；预算类型表有预算占比、实际占比两列；预算单元表 40 行且首列为编码。
+    campus = {'name': '院区', 'columns': ['院区', '金额', '占比'],
+              'columnMeta': {'金额': {'unit': '元'}, '占比': {'unit': '%', 'isPercent': True}},
+              'rows': [['总部院区', 8529370395, 76.6786], ['北部院区', 1820767778, 16.3686],
+                       ['转化', 357747450, 3.2161], ['合计', 11123541503, 100.0]]}
+    types = {'name': '预算类型', 'columns': ['budget_type', '预算占比', '实际占比'],
+             'columnMeta': {'预算占比': {'unit': '%', 'isPercent': True}, '实际占比': {'unit': '%', 'isPercent': True}},
+             'rows': [['人员经费', 45.43, 30.75], ['卫生材料费', 33.58, 18.83], ['药品费', 0.0, 17.88],
+                      ['支出预算-全院性', 12.54, 7.40], ['其他', 8.45, 2.00]]}
+    units = {'name': '预算单元', 'columns': ['code', 'unit', '实际占比'],
+             'columnMeta': {'实际占比': {'unit': '%', 'isPercent': True}},
+             'rows': [['RJ008.01', '财务处', 38.26], ['RJ020.01', '资产管理处', 19.09], ['RJ301.01', '药剂科', 17.88]]
+             + [[f'RJ9{index:02d}.01', f'单元{index}', 0.5] for index in range(40)]}
+    contents = [json.dumps({'findings': [campus, types, units]})]
+    accepted = ('总部院区85.29亿元与北部院区18.21亿元合计103.50亿元，占93.05%。',
+                '预算端人员经费、卫生材料费两项合计79.01%。',
+                # 分项名“支出预算-全院性”含“预算”，主语仍是先出现的“实际端”。
+                '实际端人员经费、卫生材料费、药品费合计67.46%，支出预算-全院性另计。',
+                '实际端前三为财务处、资产管理处、药剂科，合计75.23%。')
+    for text in accepted:
+        assert replace_unregistered_numbers(text, contents) == text
+    # 长表只写“前三”不点名、或口径写反（预算端用实际占比之和），仍替换。
+    assert replace_unregistered_numbers('前三位合计75.23%。', contents) == '前三位合计待核实。'
+    assert replace_unregistered_numbers('预算端人员经费、卫生材料费、药品费合计67.46%。', contents) == (
+        '预算端人员经费、卫生材料费、药品费合计待核实。')
+
+
+def test_nested_summary_tables_and_income_cost_gaps_are_registered():
+    # 回放：按科室合计挂在明细表的 tables 下；收入到11月、成本到9月。
+    detail = {'name': '收入明细', 'columns': ['科室', 'amount'], 'columnMeta': {'amount': {'unit': '元'}},
+              'rows': [['普通外科', 1], ['手术室', 2]],
+              'tables': [{'name': '按科室合计', 'columns': ['科室', 'amount'], 'columnMeta': {'amount': {'unit': '元'}},
+                          'rows': [['普通外科', 1482873737], ['手术室', 151211]]}]}
+    def metric(fact, name, values):
+        return {'factId': 'fact-' + fact * 16, 'datasetId': name, 'datasetSha256': fact * 64,
+                'periodRoles': ['current'], 'field': 'amount', 'fieldRef': f'h.{name}.amount',
+                'displayName': name, 'aggregation': 'sum', 'unit': '元', 'formula': 'sum(amount)',
+                'total': sum(values), 'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+                'periodGranularity': 'month', 'periodField': 'data_date',
+                'periodStart': '2025-01-01', 'periodEnd': f'2025-{len(values):02d}-01',
+                'periodValues': [{'period': f'2025-{index + 1:02d}-01', 'value': value}
+                                 for index, value in enumerate(values)]}
+    bundle = {'analysisId': 'analysis_011', 'metrics': [
+        metric('a', '收入金额', [889688670, 899035187, 500000000]),
+        metric('b', '成本金额', [1191933469, 972805980]),
+    ]}
+    contents = [json.dumps({'findings': [detail]}), json.dumps(bundle)]
+    accepted = ('普通外科收入1,482,873,737元，手术室收入151,211元。',
+                # 没有比较词时，“高”的主语是紧邻其前的成本。
+                '1月收入889,688,670元、成本1,191,933,469元，成本高302,244,799元。',
+                # 窗口不同，按共同的1—2月累计差额核对，须写出期间。
+                '2025年1—2月成本比收入多376,015,592元。')
+    for text in accepted:
+        assert replace_unregistered_numbers(text, contents) == text
+    assert replace_unregistered_numbers('1月收入889,688,670元、成本1,191,933,469元，收入高302,244,799元。', contents) == (
+        '1月收入889,688,670元、成本1,191,933,469元，收入高待核实。')
+    assert replace_unregistered_numbers('成本比收入多376,015,592元。', contents) == '成本比收入多待核实。'
+
+
 def test_single_character_decline_words_accept_registered_negative_magnitudes():
     document = json.loads(_budget_document())
     document['comparisons'] = [{
@@ -1228,6 +1292,9 @@ def test_profile_missing_and_zero_rates_are_accepted_only_in_matching_paragraphs
     assert replace_unregistered_numbers('预算医疗收入缺失68.7%。', contents) == '预算医疗收入缺失待核实。'
     assert not any('冻结依据' in warning for warning in review_content(text, contents))
     assert replace_unregistered_numbers('收入完成率为78.7%。', contents) == '收入完成率为待核实。'
+    # 含义词写在比例之后（回放：“预算支出有65.9%的行为零”）同样认可。
+    after = '预算医疗收入有68.7%的行为零。'
+    assert replace_unregistered_numbers(after, contents) == after
 
 
 @pytest.mark.parametrize(('text', 'expected'), [
@@ -1235,6 +1302,49 @@ def test_profile_missing_and_zero_rates_are_accepted_only_in_matching_paragraphs
     ('零值仅代表这两个月度桶的记录取值为零。', '零值仅代表这两个月的记录取值为零。'),
     ('月度标签为月度桶标签，不代表数据截止时点。', '月度标签为月份，不代表数据截止时点。'),
     ('均基于同一收入口径的月度桶数据。', '均基于同一收入口径的月度数据。'),
+    ('11月与12月实际登记值均为0元。', '11月与12月实际记录值均为0元。'),
+    ('相邻月变化额与变化贡献占比为null，不可用于比较。', '相邻月变化额与变化贡献占比为空，不可用于比较。'),
 ])
 def test_plain_period_wording_drops_month_bucket_jargon(text, expected):
     assert plain_period_wording(text) == expected
+
+
+def test_dimensionless_or_mismatched_reference_followed_by_unit_is_withdrawn():
+    # 回放：相关系数 0.0048 被写成“最小约{{…:value:}}万元”，渲染为“0.00万元”。
+    correlation = '{{value:fact-' + 'c' * 16 + ':value:}}'
+    rate = '{{value:fact-' + 'd' * 16 + ':changeRate:%}}'
+    amount = '{{value:fact-' + 'e' * 16 + ':total:万元}}'
+    count = '{{value:fact-' + 'f' * 16 + ':total:}}'
+    catalog = {correlation: '0.00', rate: '5.03%', amount: '12.00万元', count: '120'}
+    assert render_frozen_numbers(f'最小约{correlation}万元。', catalog) == '最小约数值待核实。'
+    assert render_frozen_numbers(f'增长{rate}万元。', catalog) == '增长数值待核实。'
+    # 同类单位重复只去掉多写的单位；单位未知的计数补写单位、相关系数不跟单位都照常显示。
+    assert render_frozen_numbers(f'收入{amount}元。', catalog) == '收入12.00万元。'
+    assert render_frozen_numbers(f'共{count}人次，相关系数{correlation}。', catalog) == '共120人次，相关系数0.00。'
+
+
+def test_formatted_patterns_accept_legacy_trailing_zero_cents():
+    import re
+
+    from smart_reporting.reporting.trace.subject_builder import _formatted_patterns
+
+    patterns = _formatted_patterns(20921671264.99973, '元', ('元', '亿元'))
+    for text in ('预算支出20,921,671,265元。', '预算支出20,921,671,265.00元。', '预算支出209.22亿元。'):
+        assert any(re.search(pattern, text) for pattern in patterns)
+    assert not any(re.search(pattern, '预算支出20,921,671,266元。') for pattern in patterns)
+
+
+def test_guide_offers_average_before_trailing_zero_months():
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    def guide(values):
+        contents = [_monthly_document(values=values)]
+        return frozen_number_guide(contents, frozen_number_catalog(contents))[0]['monthlyStatistics']
+
+    # 回放：门诊人次11、12月为0，全期月均被拉低。
+    statistics = guide((100, 50, 0, 0))
+    before = statistics['averageBeforeTrailingZeros']
+    assert before['end'] == '2025-02' and before['monthCount'] == 2
+    assert before['reference'] == '{{value:fact-' + 'a' * 16 + ':periodAverages.0-1:元}}'
+    assert 'averageBeforeTrailingZeros' not in guide((100, 50, 80, 120))
+    assert 'averageBeforeTrailingZeros' not in guide((0, 0, 0, 0))

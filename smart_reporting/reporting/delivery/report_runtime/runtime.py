@@ -15,7 +15,13 @@ from urllib.parse import unquote, urlsplit
 
 from .docx import _render_docx, _validate_docx_rendering, _validate_docx_structure
 from .markdown import (
+    APPENDIX_TABLES_SENTINEL,
+    APPENDIX_TABLES_TITLE,
     REPORT_VISUAL_THEME,
+    SUMMARY_END,
+    SUMMARY_END_SENTINEL,
+    SUMMARY_SENTINEL,
+    SUMMARY_TITLE,
     _bind_heading_anchors,
     _body_tokens,
     _document_context,
@@ -24,7 +30,10 @@ from .markdown import (
     _normalize_cjk_strong_markers,
     _semantic_documents,
     _strip_strong_boundaries,
+    align_numeric_table_columns,
     format_heading_label,
+    insert_executive_summary,
+    relocate_server_tables,
 )
 from .pdf import (
     MAX_PDF_PAGES,
@@ -243,7 +252,7 @@ class ReportRuntime:
         try:
             import pypdf
             from markdown_it import MarkdownIt
-            from weasyprint import HTML, URLFetcher, default_url_fetcher
+            from weasyprint import HTML, URLFetcher
         except ImportError as error:
             raise ReportFailure("PDF 运行时依赖不可用") from error
 
@@ -261,8 +270,11 @@ class ReportRuntime:
             export_settings = state.get("_editorExportSettings")
             # 导出的 PDF/Word 默认不带来源编号与附录；只有导出设置显式开启时才展示。
             include_sources = isinstance(export_settings, dict) and export_settings.get("sources") is True
+            context = _document_context(state.get("_documentContext"))
             pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
-                markdown,
+                align_numeric_table_columns(
+                    insert_executive_summary(relocate_server_tables(markdown), context["sections"])
+                ),
                 state.get("_citationPresentations"),
                 include_sources=include_sources,
                 trace_sources=state.get("_traceSourcePresentations"),
@@ -285,7 +297,6 @@ class ReportRuntime:
                 include_header_footer=include_header_footer,
                 include_page_numbers=include_page_numbers,
             )
-            context = _document_context(state.get("_documentContext"))
             title = _markdown_title(tokens)
             if title != context["title"]:
                 raise ReportFailure("Markdown 标题与服务端文档展示契约不一致")
@@ -303,7 +314,10 @@ class ReportRuntime:
                 )
             )
             html_body = self._inline_images(
-                body, source.parent, allowed_images, self._image_sources
+                body.replace(f"<p>{APPENDIX_TABLES_SENTINEL}</p>", APPENDIX_TABLES_TITLE)
+                .replace(f"<p>{SUMMARY_SENTINEL}</p>", SUMMARY_TITLE)
+                .replace(f"<p>{SUMMARY_END_SENTINEL}</p>", SUMMARY_END),
+                source.parent, allowed_images, self._image_sources,
             )
             self._reject_html_links(
                 html_body,
@@ -323,13 +337,15 @@ class ReportRuntime:
             temporary = _temporary_pdf_path(self.workspace, temporary_path)
             temporary_docx = _temporary_docx_path(temporary)
             file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
+            # default_url_fetcher 已弃用（WeasyPrint 后续版本移除），data URI 同样交给只放行
+            # 该协议的 URLFetcher 解码。
+            data_fetcher = URLFetcher(allowed_protocols={"data"}, fail_on_errors=True)
 
             def fetch_resource(url: str) -> dict[str, Any]:
                 parsed = urlsplit(url)
                 if parsed.scheme == "data":
-                    # data URI 由 _inline_images 从已校验工作区图片生成，自包含
-                    # 内容，交给 weasyprint 默认抓取器解码即可。
-                    return default_url_fetcher(url)
+                    # data URI 由 _inline_images 从已校验工作区图片生成，自包含内容。
+                    return data_fetcher(url)
                 if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
                     raise ReportFailure("PDF 渲染禁止访问外部资源")
                 path = Path(unquote(parsed.path)).resolve()

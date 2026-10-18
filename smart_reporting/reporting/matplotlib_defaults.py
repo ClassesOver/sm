@@ -1,5 +1,6 @@
 import importlib.abc
 import importlib.machinery
+import re
 import runpy
 import sys
 import warnings
@@ -253,10 +254,59 @@ def _apply_ticker_defaults(module: Any) -> None:
     formatter.__call__ = call
 
 
+_NUMBER_CHARS = "0123456789.,"
+_UNIT_STARTS = "亿万元%‰个人床次"
+
+
+def _repair_number_breaks(text: str) -> str:
+    """把落在数字中间（“9月11.6\n8亿元”）或数字与单位之间的换行移到该数字之前。
+
+    脚本常用 textwrap.fill 按字符数折行，中文无空格时会把数字拆到两行。
+    """
+    if "\n" not in text:
+        return text
+    position = text.find("\n")
+    while position != -1:
+        before = text[position - 1] if position else ""
+        after = text[position + 1] if position + 1 < len(text) else ""
+        if before and before in _NUMBER_CHARS and after and (after in _NUMBER_CHARS or after in _UNIT_STARTS):
+            start = position
+            while start > 0 and text[start - 1] in _NUMBER_CHARS + "+-":
+                start -= 1
+            joined = text[:position] + text[position + 1:]
+            text = joined if start == 0 or text[start - 1] == "\n" else joined[:start] + "\n" + joined[start:]
+        position = text.find("\n", position + 1)
+    return text
+
+
+# 图内“2025-01”与正文统一写作“2025年1月”；带日的日期、编号与版本号不动。
+_ISO_MONTH = re.compile(r"(?<![A-Za-z0-9_.\-/])(\d{4})-(0[1-9]|1[0-2])(?![A-Za-z0-9_.\-/])")
+
+
+def _chart_text(text: str) -> str:
+    text = _ISO_MONTH.sub(lambda match: f"{match[1]}年{int(match[2])}月", text)
+    return _repair_number_breaks(text)
+
+
+def _apply_text_defaults(module: Any) -> None:
+    """图题、标注与刻度：换行不拆开数字，年月写作中文；只调整断行与年月写法。"""
+
+    text_class = module.Text
+    if getattr(text_class.set_text, "_reporting_number_breaks", False):
+        return
+    original = text_class.set_text
+
+    def set_text(self: Any, s: Any) -> Any:
+        return original(self, _chart_text(s) if isinstance(s, str) else s)
+
+    set_text._reporting_number_breaks = True  # type: ignore[attr-defined]
+    text_class.set_text = set_text
+
+
 def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
     hooks = _PostImportHooks({
         "kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults,
-        "matplotlib.ticker": _apply_ticker_defaults,
+        "matplotlib.ticker": _apply_ticker_defaults, "matplotlib.text": _apply_text_defaults,
     })
     sys.meta_path.insert(0, hooks)
     # 包装器之前已导入的模块直接应用默认值。
@@ -266,6 +316,8 @@ def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
         _apply_plotly_layout_defaults(sys.modules["plotly.io"])
     if "matplotlib.ticker" in sys.modules:
         _apply_ticker_defaults(sys.modules["matplotlib.ticker"])
+    if "matplotlib.text" in sys.modules:
+        _apply_text_defaults(sys.modules["matplotlib.text"])
     return hooks
 
 

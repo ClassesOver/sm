@@ -69,6 +69,7 @@ _QUALITY_WARNING_CODES: Final[frozenset[str]] = frozenset(
         "chart_path_normalized",
         "markdown_strong_marker_normalized",
         "duplicate_section_heading_removed",
+        "repeated_subheading_removed",
     }
 )
 
@@ -86,6 +87,7 @@ _INFORMATIONAL_CODES: Final[frozenset[str]] = frozenset(
         "chart_path_normalized",
         "markdown_strong_marker_normalized",
         "duplicate_section_heading_removed",
+        "repeated_subheading_removed",
     }
 )
 

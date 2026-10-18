@@ -1203,3 +1203,75 @@ def test_cjk_soft_breaks_render_without_spaces(markdown, expected):
 
     parser = MarkdownIt("commonmark", {"html": False}).enable("table")
     assert parser.renderer.render(_join_cjk_soft_breaks(parser.parse(markdown)), parser.options, {}) == expected
+
+
+@pytest.mark.parametrize(("title", "expected"), [
+    # 回放：按宽度自然折行剩下单字孤行“…运营分析报 / 告”。
+    ("2025年瑞金医院综合运营分析报告", "2025年瑞金医院<br>综合运营分析报告"),
+    ("运营报告", "运营报告"),
+    ("2025年瑞金医院综合运营与财务预算执行情况分析报告", "2025年瑞金医院综合运营<br>与财务预算执行情况分析报告"),
+    ("<脚本>报告名称超过十五个字的测试标题啊", "&lt;脚本&gt;报告名称超过<br>十五个字的测试标题啊"),
+])
+def test_cover_title_breaks_into_balanced_lines(title, expected):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _balanced_cover_title
+
+    assert _balanced_cover_title(title) == expected
+
+
+def test_server_tables_move_after_body_with_their_captions_only():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        APPENDIX_TABLES_SENTINEL,
+        relocate_server_tables,
+    )
+
+    table = "[[table:{0}]]\n| | 金额 |\n| --- | ---: |\n| 1月 | 1 |\n\n[[/table:{0}]]"
+    markdown = (
+        "## 1. 收入\n\n正文结论。\n\n2025年收入：分期间指标汇总\n\n" + table.format("t1")
+        + "\n\n## 2. 成本\n\n次均收入120元[[claim:c]]。\n\n" + table.format("t2") + "\n\n| 模型表 |\n| --- |\n| 留在正文 |\n"
+    )
+    body, appendix = relocate_server_tables(markdown).split(APPENDIX_TABLES_SENTINEL)
+    assert "[[table:" not in body and "分期间指标汇总" not in body
+    assert "次均收入120元[[claim:c]]。" in body and "| 留在正文 |" in body
+    assert appendix.index("分期间指标汇总") < appendix.index("[[table:t1]]") < appendix.index("[[table:t2]]")
+    assert relocate_server_tables("## 1. 收入\n\n正文。\n") == "## 1. 收入\n\n正文。\n"
+
+
+def test_executive_summary_takes_each_section_conclusion():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        SUMMARY_END_SENTINEL,
+        SUMMARY_SENTINEL,
+        insert_executive_summary,
+    )
+
+    sections = [{"code": "a", "title": "收入预算执行情况"}, {"code": "b", "title": "业务工作量变化"},
+                {"code": "c", "title": "指标统计关系说明"}]
+    markdown = (
+        "# 报告\n\n[[section:a]]\n\n## 1. 收入预算执行情况\n\n### 1.1 总体\n\n"
+        "全院收入预算执行整体未达预算。全年完成率为79.28%[[claim:x]]，收入端滞后。\n\n"
+        "[[section:b]]\n\n## 2. 业务工作量变化\n\n| 表 |\n| --- |\n\n"
+        "门诊人次3月最高，为644,217人次，10月最低。其余月份平稳。\n\n"
+        "[[section:c]]\n\n## 3. 指标统计关系说明\n\n相关不等于因果，仅作观察。\n"
+    )
+    result = insert_executive_summary(markdown, sections)
+    summary = result[result.index(SUMMARY_SENTINEL):result.index(SUMMARY_END_SENTINEL)]
+    assert result.index(SUMMARY_SENTINEL) < result.index("[[section:a]]")
+    assert "- **收入预算执行情况**：全院收入预算执行整体未达预算。全年完成率为79.28%，收入端滞后。" in summary
+    assert "- **业务工作量变化**：门诊人次3月最高，为644,217人次，10月最低。" in summary
+    assert "指标统计关系说明" not in summary and "[[" not in summary
+    # 只有一章可取时不生成。
+    assert insert_executive_summary(markdown, sections[:1]) == markdown
+
+
+def test_model_table_numeric_columns_are_right_aligned():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import align_numeric_table_columns
+
+    table = (
+        "| 月份 | 收入总额 | 环比差额（万元） | 环比幅度 | 说明 |\n"
+        "| --- | --- | --- | :---: | --- |\n"
+        "| 2025年1月 | 8.90亿元 | — | — | 起始月 |\n"
+        "| 2025年2月 | **8.99亿元** | -322.71 | 1.05% | 回升 |\n"
+    )
+    aligned = align_numeric_table_columns("正文。\n\n" + table)
+    # 数值列右对齐；文本列与已声明居中的列不动。
+    assert "| --- | ---: | ---: | :---: | --- |" in aligned
+    assert align_numeric_table_columns("| a |\n| --- |") == "| a |\n| --- |"

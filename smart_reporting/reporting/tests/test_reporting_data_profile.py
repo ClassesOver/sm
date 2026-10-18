@@ -274,3 +274,20 @@ def test_profile_csv_explicit_time_series_diagnostics_runs_on_bounded_series() -
     assert analysis["enabled"] is True
     assert analysis["fields"]["amount"]["acf"]
     assert analysis["fields"]["amount"]["pacf"]
+
+
+def test_adf_on_rank_deficient_series_is_not_reported_as_a_stationarity_result() -> None:
+    # 等差序列让 ADF 回归设计矩阵秩亏，p 值（约0.90）不可信，不能据此判断平稳性。
+    content = ("date,amount\n" + "\n".join(f"2025-01-{day:02d},{day}" for day in range(1, 25)) + "\n").encode()
+
+    profiled = profile_csv_dataset(
+        content,
+        dataset_id="dataset-linear",
+        path="linear.csv",
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        period_fields=("date",),
+        enable_time_series_diagnostics=True,
+    )
+
+    amount = profiled.profile["time_series_analysis"]["fields"]["amount"]
+    assert amount["adf_p_value"] is None and amount["stationary"] is None

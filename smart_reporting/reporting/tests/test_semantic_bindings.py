@@ -476,3 +476,26 @@ def test_raw_large_amounts_get_thousands_separators_without_moving_anchors():
         '另有1097718506元，全年{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}。', [json.dumps(doc)], key='s:b')
     anchored = anchor_bound_numbers(markdown, refs, notices)
     assert anchored == f'另有1,097,718,506元，全年1,097,718,506元[[claim:{refs[0].claim_id}]]。'
+
+
+def test_single_period_value_without_written_period_is_withdrawn():
+    """回放：“普通住院业务预算减实际的差额为10.93亿元”引用的是3月实际收入，句中没有任何期间。"""
+    import json
+
+    from smart_reporting.reporting.trace.number_selection import align_number_selections
+
+    fact = 'fact-' + 'a' * 16
+    document = json.dumps({'analysisId': 'analysis_001', 'metrics': [{
+        'factId': fact, 'datasetId': 'current', 'datasetSha256': 'b' * 64, 'periodRoles': ['current'],
+        'field': 'amount', 'fieldRef': 'h.amount', 'displayName': '实际收入', 'aggregation': 'sum', 'unit': '元',
+        'formula': 'sum(amount)', 'total': 600, 'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        'periodGranularity': 'month',
+        'periodValues': [{'period': f'2025-{index:02d}', 'value': value}
+                         for index, value in ((1, 100), (2, 200), (3, 300))]}]})
+    token = '{{value:' + fact + ':periodValues.2:元}}'
+    wrong = '普通住院业务预算减实际的差额为' + token + '。'
+    aligned, warnings = align_number_selections(wrong, [document])
+    assert ':unverified:' in aligned and any('期间缺失' in item for item in warnings)
+    for kept in ('3月实际收入为' + token + '。', '实际收入各月介于{{value:' + fact + ':periodValues.0:元}}至' + token + '。',
+                 '当月实际收入为' + token + '。'):
+        assert align_number_selections(kept, [document])[0] == kept

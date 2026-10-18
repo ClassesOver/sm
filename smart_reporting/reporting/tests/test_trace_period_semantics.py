@@ -35,6 +35,20 @@ def stock_bundle():
     ))
 
 
+def test_flow_metric_additive_across_sibling_period_column_sums_all_periods():
+    """回放中实际收入声明可沿 period_code 相加，事实却按 data_date 统计：不能当作时点取期末值。"""
+    ctx = context('current', fields=('data_date', 'period_code', 'area', 'income'), semantics=(
+        {**semantic('income', unit='元'), 'additiveAcross': ['period_code', 'area']},
+    )).model_copy(update={'period_granularities': {'data_date': 'date'}})
+    bundle = build_deterministic_analysis_bundle(analysis(fields=('income',)), (
+        ('current', b'data_date,period_code,area,income\n2025-01-01,2025-01,A,100\n2025-02-01,2025-02,A,200\n'
+                    b'2025-03-01,2025-03,A,0\n', ctx, ('current',)),
+    ))
+    fact = bundle.metrics[0]
+    assert fact.period_aggregation is None
+    assert fact.total == 300
+
+
 def test_stock_number_selection_must_preserve_endpoint_total():
     bundle = stock_bundle()
     fact = bundle.metrics[0]
