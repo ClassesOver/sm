@@ -93,6 +93,10 @@ testpaths = [
 pythonpath = ["."]
 addopts = "-m 'not integration'"
 markers = ["integration: requires external services such as PostgreSQL"]
+# 第三方 starlette TestClient 内部仍引用 anyio 已弃用别名，只影响测试客户端；其余警告照常显示。
+filterwarnings = [
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
+]
 
 [tool.ruff]
 target-version = "py312"
