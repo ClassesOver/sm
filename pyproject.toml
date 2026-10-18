@@ -29,30 +29,30 @@ dependencies = [
     "python-dotenv>=1.2",
     "python-dateutil>=2.9,<3.0",
     "python-docx>=1.2,<2.0",
-    "scipy",
-    "seaborn",
-    "statsmodels",
-    "sympy",
-    "tabulate",
-    "adjusttext",
-    "altair",
-    "bokeh",
-    "plotnine",
-    "pygal",
-    "graphviz",
-    "pillow",
-    "xlsxwriter",
-    "odfpy",
-    "python-pptx",
-    "reportlab",
-    "pdfplumber",
-    "pymupdf",
-    "pikepdf",
-    "cairosvg",
-    "beautifulsoup4",
-    "jinja2",
-    "pyarrow",
-    "duckdb",
+    "scipy==1.16.3",
+    "seaborn==0.13.2",
+    "statsmodels==0.15.0",
+    "sympy==1.14.0",
+    "tabulate==0.10.0",
+    "adjusttext==1.4.0",
+    "altair==6.3.0",
+    "bokeh==3.10.0",
+    "plotnine==0.15.8",
+    "pygal==3.1.3",
+    "graphviz==0.21",
+    "pillow==12.3.0",
+    "xlsxwriter==3.2.9",
+    "odfpy==1.4.1",
+    "python-pptx==1.0.2",
+    "reportlab==5.0.1",
+    "pdfplumber==0.11.10",
+    "pymupdf==1.28.2",
+    "pikepdf==10.13.0.post1",
+    "cairosvg==2.9.1",
+    "beautifulsoup4==4.15.0",
+    "jinja2==3.1.6",
+    "pyarrow==25.0.1",
+    "duckdb==1.5.5",
     "jsonpointer==3.1.1",
     "jsonschema>=4.26,<5.0",
     "jmespath==1.0.1",
@@ -83,6 +83,11 @@ dev = [
     "pytest-playwright>=0.7,<1.0",
 ]
 
+[tool.uv]
+# 服务端应用只在 Linux（部署镜像）与 Windows/macOS 开发机运行；不解析 emscripten（浏览器
+# WebAssembly）分支，否则精确锁定的 statsmodels 等包在该平台无可用版本而无法生成锁文件。
+environments = ["sys_platform != 'emscripten'"]
+
 [tool.pytest.ini_options]
 testpaths = [
     "smart_reporting/task_execution/tests",
@@ -93,9 +98,11 @@ testpaths = [
 pythonpath = ["."]
 addopts = "-m 'not integration'"
 markers = ["integration: requires external services such as PostgreSQL"]
-# 第三方 starlette TestClient 内部仍引用 anyio 已弃用别名，只影响测试客户端；其余警告照常显示。
+# 第三方库内部的弃用提示（starlette TestClient 引用 anyio 旧别名、data_profiling 调用 utcnow），
+# 不在本项目代码中；按来源模块精确忽略，其余警告照常显示。
 filterwarnings = [
     "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
+    "ignore:datetime.datetime.utcnow\\(\\) is deprecated:DeprecationWarning:data_profiling.model.describe",
 ]
 
 [tool.ruff]

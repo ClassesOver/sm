@@ -20,6 +20,7 @@ import polars as pl
 from data_profiling import ProfileReport
 from data_profiling import __version__ as DATA_PROFILING_VERSION
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from statsmodels.tools.sm_exceptions import SingularMatrixWarning
 from statsmodels.tsa.stattools import acf, adfuller, pacf
 
 MAX_PROFILE_MODEL_VIEW_BYTES = 12 * 1024
@@ -735,8 +736,15 @@ def _append_time_series_statistics(
         adf_p_value: float | None = None
         stationary: bool | None = None
         try:
-            adf_p_value = _optional_finite_float(adfuller(values, autolag="AIC")[1])
-            stationary = adf_p_value is not None and adf_p_value < 0.05 and not seasonality_presence
+            # 回归设计矩阵秩亏（序列过短、完全线性或恒定）时 ADF 的 p 值不可信（等差序列给出
+            # 0.90），不能据此判断平稳性；此时记为无法判断。
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", SingularMatrixWarning)
+                # 显式保留元组返回值（statsmodels 0.15 起默认值将改为 ADFullerResult）。
+                adf_result = adfuller(values, autolag="AIC", result_object=False)
+            if not any(issubclass(item.category, SingularMatrixWarning) for item in caught):
+                adf_p_value = _optional_finite_float(adf_result[1])
+                stationary = adf_p_value is not None and adf_p_value < 0.05 and not seasonality_presence
         except (ValueError, FloatingPointError, ZeroDivisionError):
             pass
 
