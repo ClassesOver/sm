@@ -417,6 +417,26 @@ def _balanced_cover_title(title: str) -> str:
     return "<br>".join(html.escape(piece) for piece in pieces)
 
 
+# 服务端分期间汇总表（[[table:…]] 协议块及其上一行表名）原样追加在各章末尾，回放中第1章
+# 后连续3—4页月度表格把下一章推远。渲染时统一移到正文之后的“附表”，报告 Markdown、编辑器
+# 与溯源标记不变；模型自写表格没有协议标记，不受影响。
+_SERVER_TABLE_BLOCK = re.compile(
+    # 表名是表格上一行不含协议标记、不以句末标点结尾的短行；正文段落不能被当作表名一起移走。
+    r"(?:^(?![\[|#!>])(?![^\n]*\[\[)[^\n]*[^\n。！？；.!?]\n\n)?^\[\[table:(?P<id>[^\]\r\n]+)\]\]\n.*?^\[\[/table:(?P=id)\]\][ \t]*(?:\n|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+APPENDIX_TABLES_SENTINEL = "REPORTING-APPENDIX-TABLES"
+APPENDIX_TABLES_TITLE = '<p class="report-appendix-title"><strong>附表</strong></p>'
+
+
+def relocate_server_tables(markdown: str) -> str:
+    tables = [match[0].strip() for match in _SERVER_TABLE_BLOCK.finditer(markdown)]
+    if not tables:
+        return markdown
+    body = re.sub(r"\n{3,}", "\n\n", _SERVER_TABLE_BLOCK.sub("", markdown)).rstrip()
+    return "\n\n".join((body, APPENDIX_TABLES_SENTINEL, *tables)) + "\n"
+
+
 def _normalize_cjk_wording_text(text: str) -> str:
     def range_text(match: re.Match[str]) -> str:
         start = _cjk_date(match, "a")
@@ -813,11 +833,13 @@ def _semantic_documents(
         ".report-title{color:"
         f"{theme['primary']}"
         ";font-size:22pt;margin:0 0 8mm}"
-        "h2{color:"
+        "h2,.report-appendix-title{color:"
         f"{theme['primary']}"
         ";border-left:3pt solid "
         f"{theme['accent']}"
         ";font-size:16pt;padding-left:3mm}"
+        ".report-appendix-title{break-before:page;page-break-before:always;margin:0.8em 0;"
+        "page-break-after:avoid;break-after:avoid}"
         "h3{font-size:12.5pt;color:"
         f"{theme['ink']}"
         "}h4{font-size:11pt;color:"

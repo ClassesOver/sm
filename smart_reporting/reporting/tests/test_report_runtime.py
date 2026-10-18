@@ -1216,3 +1216,21 @@ def test_cover_title_breaks_into_balanced_lines(title, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import _balanced_cover_title
 
     assert _balanced_cover_title(title) == expected
+
+
+def test_server_tables_move_after_body_with_their_captions_only():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        APPENDIX_TABLES_SENTINEL,
+        relocate_server_tables,
+    )
+
+    table = "[[table:{0}]]\n| | 金额 |\n| --- | ---: |\n| 1月 | 1 |\n\n[[/table:{0}]]"
+    markdown = (
+        "## 1. 收入\n\n正文结论。\n\n2025年收入：分期间指标汇总\n\n" + table.format("t1")
+        + "\n\n## 2. 成本\n\n次均收入120元[[claim:c]]。\n\n" + table.format("t2") + "\n\n| 模型表 |\n| --- |\n| 留在正文 |\n"
+    )
+    body, appendix = relocate_server_tables(markdown).split(APPENDIX_TABLES_SENTINEL)
+    assert "[[table:" not in body and "分期间指标汇总" not in body
+    assert "次均收入120元[[claim:c]]。" in body and "| 留在正文 |" in body
+    assert appendix.index("分期间指标汇总") < appendix.index("[[table:t1]]") < appendix.index("[[table:t2]]")
+    assert relocate_server_tables("## 1. 收入\n\n正文。\n") == "## 1. 收入\n\n正文。\n"

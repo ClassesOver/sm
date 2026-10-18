@@ -15,6 +15,8 @@ from urllib.parse import unquote, urlsplit
 
 from .docx import _render_docx, _validate_docx_rendering, _validate_docx_structure
 from .markdown import (
+    APPENDIX_TABLES_SENTINEL,
+    APPENDIX_TABLES_TITLE,
     REPORT_VISUAL_THEME,
     _bind_heading_anchors,
     _body_tokens,
@@ -25,6 +27,7 @@ from .markdown import (
     _semantic_documents,
     _strip_strong_boundaries,
     format_heading_label,
+    relocate_server_tables,
 )
 from .pdf import (
     MAX_PDF_PAGES,
@@ -262,7 +265,7 @@ class ReportRuntime:
             # 导出的 PDF/Word 默认不带来源编号与附录；只有导出设置显式开启时才展示。
             include_sources = isinstance(export_settings, dict) and export_settings.get("sources") is True
             pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
-                markdown,
+                relocate_server_tables(markdown),
                 state.get("_citationPresentations"),
                 include_sources=include_sources,
                 trace_sources=state.get("_traceSourcePresentations"),
@@ -303,7 +306,8 @@ class ReportRuntime:
                 )
             )
             html_body = self._inline_images(
-                body, source.parent, allowed_images, self._image_sources
+                body.replace(f"<p>{APPENDIX_TABLES_SENTINEL}</p>", APPENDIX_TABLES_TITLE),
+                source.parent, allowed_images, self._image_sources,
             )
             self._reject_html_links(
                 html_body,

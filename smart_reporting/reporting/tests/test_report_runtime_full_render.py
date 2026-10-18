@@ -795,3 +795,39 @@ def test_render_markdown_hides_trace_source_appendix_when_sources_disabled(
         assert "[数据来源" not in rendered_text
         assert "数据来源附录" not in rendered_text
         assert "本期营业收入 3,600 万元" in rendered_text
+
+
+def test_render_markdown_moves_server_tables_to_appendix_after_body(tmp_path: Path) -> None:
+    """服务端汇总表原在各章末尾，回放中第1章后连续数页表格；渲染时统一移到正文之后的“附表”。"""
+    import pypdf
+    from docx import Document
+
+    workspace = tmp_path / "workspace"
+    state = _build_trace_appendix_workspace(workspace)
+    draft = workspace / "reports" / "r1" / "revision-1" / "draft" / "report.md"
+    draft.write_text(
+        draft.read_text(encoding="utf-8").replace(
+            "[[/table:tbl-1]]\n", "[[/table:tbl-1]]\n\n表格之后的结论段落。\n"
+        ),
+        encoding="utf-8",
+    )
+    try:
+        result = ReportRuntime(workspace).render_markdown(
+            state,
+            "reports/r1/revision-1/draft/report.md",
+            "reports/r1/revision-1/report.pdf",
+            _TRACE_APPENDIX_TEMPORARY_PDF_PATH,
+        )
+    finally:
+        shutil.rmtree(workspace / ".reporting-tmp", ignore_errors=True)
+
+    assert result["status"] == "rendered"
+    revision = workspace / "reports" / "r1" / "revision-1"
+    pdf_text = "".join("".join((page.extract_text() or "").split())
+                       for page in pypdf.PdfReader(revision / "report.pdf").pages)
+    word_text = "".join("".join(paragraph.text.split()) for paragraph in Document(revision / "report.docx").paragraphs)
+    for text in (pdf_text, word_text):
+        assert text.index("表格之后的结论段落") < text.index("附表")
+        # 表格上一行是带标记、以句号结尾的正文段落，不是表名，必须留在正文。
+        assert text.index("次均收入120元") < text.index("附表")
+    assert pdf_text.find("营业收入3,600万元", pdf_text.index("附表")) != -1
