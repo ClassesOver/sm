@@ -739,6 +739,7 @@ class _ReportWorkflowRuntimeBase:
                 "不得提交 analysisIds、section code、编号、数值事实或 citation。",
                 "snapshotHash 逐字复制 planningContext.snapshotHash。",
                 "章节目标围绕结论、证据、经营影响和管理动作；相关性不得改写为因果。",
+                "统计关系发现并入其指标所属的经营主题章节或附录，不单设“统计关系说明”类章节；口径限制在所属章节末尾说明，不另起一章重复。",
             ),
         )
         self._analysis_agent = self._planning_agent(

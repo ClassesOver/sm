@@ -65,6 +65,20 @@ def test_projection_marks_correlation_as_statistical_relation():
     assert next(item for item in result if item.kind == "impact").evidence_level == "statistical_relation"
 
 
+def test_projection_keeps_only_the_strongest_moderate_correlations():
+    # 回放：每对相关系数都成为发现（含 r=0.005），规划出整章重复的“统计关系说明”。
+    values = (0.0048, -0.31, 0.95, -0.88, 0.81, 0.77, 0.66, 0.52)
+    details = [{"datasetId": "dataset-abc123", "datasetSha256": "a" * 64, "leftField": f"left{index}",
+                "rightField": "workload", "method": "pearson", "sampleCount": 12, "value": value}
+               for index, value in enumerate(values)]
+    result = project_analysis_findings("analysis_001", facts(correlationDetails=details), None,
+                                       snapshot_hash="b" * 64, citation_ids=("citation_001",))
+    relations = [item for item in result if item.evidence_level == "statistical_relation"]
+    pointers = [item.source_refs[0].pointer for item in relations]
+    assert pointers == [f"/correlationDetails/{index}" for index in (2, 3, 4, 5, 6)]
+    assert "相关系数0.95" in relations[0].summary
+
+
 def test_projection_has_missing_evidence_when_bundle_is_empty():
     result = project_analysis_findings("analysis_001", facts(), None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
     assert result[0].impact_value is None

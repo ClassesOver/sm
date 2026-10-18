@@ -11,6 +11,9 @@ from typing import Any
 from .deterministic_analysis import DeterministicAnalysisBundle
 from .findings import FindingCard, FindingGraph, FindingSourceRef
 
+_CORRELATION_FINDING_MIN = 0.5
+_CORRELATION_FINDING_LIMIT = 5
+
 
 def _stable_id(analysis_id: str, path: str, snapshot_hash: str) -> str:
     digest = hashlib.sha256(f"{snapshot_hash}:{analysis_id}:{path}".encode()).hexdigest()[:16]
@@ -112,9 +115,16 @@ def project_analysis_findings(
         else:
             add("data_quality", f"/reconciliations/{index}", "指标对账待核对", f"{relation.get('code', '指标')}未通过对账。", priority="medium", evidence="evidence_missing", metrics=(str(relation.get("leftMetric") or "指标"),), limitations=("指标对账未通过",))
 
-    for index, detail in enumerate(payload.get("correlationDetails") or ()):
-        if isinstance(detail, Mapping):
-            add("impact", f"/correlationDetails/{index}", "指标存在统计关系", f"{detail.get('leftField', '指标')}与{detail.get('rightField', '指标')}存在统计关系，不能据此确认因果。", evidence="statistical_relation", metrics=(str(detail.get("leftField") or "指标"), str(detail.get("rightField") or "指标")), limitations=("仅有统计关系证据",))
+    # 每对指标的相关系数都成为发现时，回放中 183 条发现有 102 条是统计关系（含 r=0.005），
+    # 规划出整章“相关不等于因果”的重复说明。只保留中等以上相关（|r|≥0.5）中最强的几对。
+    correlations = sorted(
+        ((index, detail) for index, detail in enumerate(payload.get("correlationDetails") or ())
+         if isinstance(detail, Mapping) and isinstance(detail.get("value"), (int, float))
+         and math.isfinite(detail["value"]) and abs(detail["value"]) >= _CORRELATION_FINDING_MIN),
+        key=lambda item: abs(item[1]["value"]), reverse=True,
+    )[:_CORRELATION_FINDING_LIMIT]
+    for index, detail in sorted(correlations, key=lambda item: item[0]):
+        add("impact", f"/correlationDetails/{index}", "指标存在统计关系", f"{detail.get('leftField', '指标')}与{detail.get('rightField', '指标')}相关系数{detail['value']:.2f}，存在统计关系，不能据此确认因果。", evidence="statistical_relation", metrics=(str(detail.get("leftField") or "指标"), str(detail.get("rightField") or "指标")), limitations=("仅有统计关系证据",))
 
     if supplemental_evidence is not None:
         if not supplemental_file_path or not supplemental_file_sha256:
