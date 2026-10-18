@@ -32,7 +32,7 @@ from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationP
 _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "只能修改 visualizationWorkspace.scriptPath 签发的唯一 Python 文件。",
     "收到视觉审查的 critical 问题后，只修改与该问题直接相关的局部代码；禁止插入临时诊断、raise、打印、探针数据或改写无关数据读取。",
-    "warning、info 和已通过图片不触发修复；不要为了验证假设重新生成整段脚本或改变未被指出的图表。",
+    "warning、info 和已通过图片不触发修复，不重写整段脚本或改动未被指出的图表。",
     "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径。",
     "脚本从冻结 facts 生成计划中的全部图表，不得增删图表或改写引用元数据；"
     "首轮 write_script 直接完整实现全部图表并写出所有签发产物，"
@@ -70,10 +70,10 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "Plotly 图还必须生成签发路径的 .plotly.json。"
     "使用 Matplotlib 时在导入 pyplot 前设置 Agg；Plotly 的静态图使用 fig.write_image()"
     "（Kaleido 已随环境提供），交互产物使用 fig.write_json()。",
-    "高质量图必须做到：标题明确表达核心结论，坐标轴、单位、图例和数据标签完整；"
+    "高质量图：标题明确表达核心结论，坐标轴、单位、图例和数据标签完整；"
     "标签不得重叠、截断或超出画布；系列、颜色和标注克制，主信息突出；"
     "所有数值、单位和比较口径必须与 facts 一致。",
-    "大额刻度写成万或亿（如“50亿”）而非完整位数；图内不写英文字段名。",
+    "大额刻度与标签写成万或亿（如“50亿”）；同图单位统一，副标题单位与坐标轴一致；图内不写英文字段名。",
     "图表标题、注释和图例必须标明数据期间及必要的口径（实际/预算、台账/汇总等）；"
     "图内来源使用输入中的可读数据集名、指标名或业务来源说明，不展示 citation_003、analysis_001 "
     "等内部ID；追溯ID只保留在结构化元数据。标题中的转正、转负和最高最低等结论须先按"
