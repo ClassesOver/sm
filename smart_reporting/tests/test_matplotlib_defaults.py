@@ -184,3 +184,34 @@ def test_reporting_script_runner_moves_legends_off_plotted_data(tmp_path: Path) 
     moved, kept, anchored = output_path.read_text(encoding="utf-8").split("|")
     # 9 = upper center；移到不压数据的位置，原本不重叠与脚本自定锚点的不动。
     assert moved not in {"9", "0"} and kept == "1" and anchored == "9"
+
+
+def test_reporting_script_runner_maps_default_tab10_colors_to_the_theme(tmp_path: Path) -> None:
+    # 回放：脚本照抄“#1f77b4”“#d62728”，整份报告配色与主题不一。
+    from smart_reporting.reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
+
+    script_path = tmp_path / "chart.py"
+    output_path = tmp_path / "colors.txt"
+    script_path.write_text(
+        "from pathlib import Path\n"
+        "import matplotlib.pyplot as plt\n"
+        "from matplotlib.colors import to_hex\n"
+        "fig, ax = plt.subplots()\n"
+        "a = ax.plot([0, 1], [0, 1], color='#1f77b4')[0]\n"
+        "b = ax.bar([0, 1], [1, 2], color=['#d62728', 'tab:green'])\n"
+        "c = ax.plot([0, 1], [1, 0], color='#123456')[0]\n"
+        f"fig.savefig({str(tmp_path / 'chart.png')!r})\n"
+        f"Path({str(output_path)!r}).write_text('|'.join(to_hex(x) for x in (a.get_color(), b[0].get_facecolor(),"
+        " b[1].get_facecolor(), c.get_color())), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = (
+        "from smart_reporting.reporting.matplotlib_defaults import run_reporting_script;"
+        f"run_reporting_script({str(script_path)!r}, {str(tmp_path / 'runtime')!r})"
+    )
+
+    result = subprocess.run([sys.executable, "-B", "-c", command], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    palette = [color.lower() for color in REPORT_VISUAL_THEME["chartPalette"]]
+    assert output_path.read_text(encoding="utf-8").split("|") == [palette[0], palette[7], palette[5], "#123456"]

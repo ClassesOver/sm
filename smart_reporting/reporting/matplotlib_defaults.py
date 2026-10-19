@@ -9,6 +9,7 @@ from typing import Any
 
 from .delivery.report_runtime.theme import (
     REPORT_CHART_FONTS,
+    REPORT_VISUAL_THEME,
     matplotlib_theme_rc,
     plotly_theme_layout,
 )
@@ -390,11 +391,38 @@ def _apply_figure_defaults(module: Any) -> None:
     figure_class.savefig = savefig
 
 
+# 脚本常照抄 Matplotlib 默认 tab10 色值（“#1f77b4”“#d62728”），整份报告配色因此与主题不一。
+# 按语义（蓝、橙、绿、红、紫、青）换成主题色，保留“门诊蓝、出院红”之类的区分；棕、粉、灰、
+# 橄榄色无对应主题色不改，脚本的其他自定义颜色不受影响。
+def _theme_color_aliases() -> dict[str, str]:
+    palette = REPORT_VISUAL_THEME["chartPalette"]
+    pairs = (("blue", "#1f77b4", palette[0]), ("orange", "#ff7f0e", palette[4]),
+             ("green", "#2ca02c", palette[5]), ("red", "#d62728", palette[7]),
+             ("purple", "#9467bd", palette[6]), ("cyan", "#17becf", palette[3]))
+    return {key: theme for name, code, theme in pairs for key in (code, f"tab:{name}")}
+
+
+def _apply_color_defaults(module: Any) -> None:
+    original = module._to_rgba_no_colorcycle
+    if getattr(original, "_reporting_theme", False):
+        return
+    aliases = _theme_color_aliases()
+
+    def to_rgba(c: Any, alpha: Any = None) -> Any:
+        if isinstance(c, str):
+            c = aliases.get(c.lower(), c)
+        return original(c, alpha)
+
+    to_rgba._reporting_theme = True  # type: ignore[attr-defined]
+    module._to_rgba_no_colorcycle = to_rgba
+    module._colors_full_map.cache.clear()
+
+
 def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
     hooks = _PostImportHooks({
         "kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults,
         "matplotlib.ticker": _apply_ticker_defaults, "matplotlib.text": _apply_text_defaults,
-        "matplotlib.figure": _apply_figure_defaults,
+        "matplotlib.figure": _apply_figure_defaults, "matplotlib.colors": _apply_color_defaults,
     })
     sys.meta_path.insert(0, hooks)
     # 包装器之前已导入的模块直接应用默认值。
@@ -408,6 +436,8 @@ def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
         _apply_text_defaults(sys.modules["matplotlib.text"])
     if "matplotlib.figure" in sys.modules:
         _apply_figure_defaults(sys.modules["matplotlib.figure"])
+    if "matplotlib.colors" in sys.modules:
+        _apply_color_defaults(sys.modules["matplotlib.colors"])
     return hooks
 
 
