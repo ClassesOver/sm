@@ -85,6 +85,7 @@ export function createSourceValidationController(
   onResult: (result: TraceValidation | null) => void,
   onChecking: () => void,
   delayMs = 450,
+  onError: (error: unknown) => void = () => {},
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined
   let sequence = 0
@@ -108,6 +109,7 @@ export function createSourceValidationController(
       onResult(result)
     } catch (error) {
       if (requestSequence !== sequence || getMarkdown() !== markdown || (error instanceof DOMException && error.name === 'AbortError')) return
+      onError(error)
       onResult(null)
     }
   }

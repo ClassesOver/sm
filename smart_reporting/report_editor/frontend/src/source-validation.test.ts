@@ -106,6 +106,16 @@ describe('source validation', () => {
     controller.cancel()
   })
 
+  it('reports the validation failure so the UI can show its cause', async () => {
+    const error = new Error('network')
+    const validateSources = vi.fn().mockRejectedValue(error)
+    const onError = vi.fn()
+    const controller = createSourceValidationController({ validateSources }, () => 'current', vi.fn(), vi.fn(), 10, onError)
+    controller.schedule()
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(error))
+    controller.cancel()
+  })
+
   it('ignores a mismatched response digest and cancels a pending check', async () => {
     const validateSources = vi.fn().mockResolvedValue(validation('0'.repeat(64)))
     const onResult = vi.fn()
