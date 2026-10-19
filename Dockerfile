@@ -36,6 +36,7 @@ RUN apt-get update \
 FROM base AS runtime
 
 ARG UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/
+ARG PYPI_FILES_MIRROR=https://mirrors.aliyun.com/pypi
 
 COPY --from=uv-source /uv /uvx /bin/
 
@@ -53,6 +54,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
+RUN sed -i "s|https://files.pythonhosted.org|${PYPI_FILES_MIRROR}|g" uv.lock
 RUN UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
     uv sync --frozen --no-dev --no-install-project
 
