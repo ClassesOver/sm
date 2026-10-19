@@ -26,6 +26,47 @@ _SHORT_DAY_PERIOD = re.compile(
 _RELATIVE_PERIOD = re.compile(r'(次年|翌年|来年|上年|去年|同年|当年|次月|翌月|下月|上月|当月|本月)\s*$')
 _YEAR_OFFSETS = {"次年": 1, "翌年": 1, "来年": 1, "上年": -1, "去年": -1, "同年": 0, "当年": 0}
 _MONTH_OFFSETS = {"次月": 1, "翌月": 1, "下月": 1, "上月": -1, "当月": 0, "本月": 0}
+_MONTHLY_WORDING = re.compile(r'月均|月平均|平均每月|各月|每月|逐月')
+
+
+def _monthly_selector(fact, sentence, *, uniform):
+    """仅从完整月桶选择已登记均值；每月相同还须逐桶验证相等。"""
+    if (fact.aggregation != 'sum' or fact.period_aggregation == 'last'
+            or fact.period_granularity != 'month' or fact.period_missing_count not in (None, 0)
+            or fact.unit in {'%', '‰'} or re.search(r'[/／]', fact.unit or '')):
+        return None
+    buckets = []
+    for index, item in enumerate(fact.period_values):
+        period = _parse_fact_period(item.period, fact.period_granularity)
+        if period is None or period.granularity != 'month':
+            return None
+        buckets.append((index, period.value.year * 12 + period.value.month - 1))
+    if not buckets or len({month for _, month in buckets}) != len(buckets):
+        return None
+    written = _written_period(sentence, fact)
+    if written is False or (written and written.re is not _PERIOD):
+        return None
+    if written:
+        year = int(written['year'])
+        first = year * 12 + int(written['start'] or 1) - 1
+        last = int(written['end_year'] or year) * 12 + int(written['end'] or written['start'] or 12) - 1
+        if (written['start'] and not 1 <= int(written['start']) <= 12
+                or written['end'] and not 1 <= int(written['end']) <= 12
+                or not 0 <= last - first < 1200):
+            return None
+        expected = list(range(first, last + 1))
+    elif uniform:
+        expected = list(range(buckets[0][1], buckets[-1][1] + 1))
+    else:
+        return None  # “月均”本身不授权改变原引用的统计期间。
+    selected = [(index, month) for index, month in buckets if month in expected]
+    if not selected or [month for _, month in selected] != expected:
+        return None
+    if uniform and len({fact.period_values[index].value for index, _ in selected}) != 1:
+        return None
+    if len(selected) == len(buckets):
+        return 'monthlyAverage'
+    return f'periodAverages.{selected[0][0]}-{selected[-1][0]}'
 
 
 _VALUE_INTERVAL = re.compile(
@@ -229,6 +270,38 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
         clause = re.split(r'[，,]', sentence)[-1]
         named = list(names.finditer(clause)) if names else []
+        monthly = list(_MONTHLY_WORDING.finditer(clause))
+        if monthly:
+            # 先确定统计方式，不能因“月均”位于指标名前就把正确均值改成合计。
+            if (_TOKEN.search(clause)
+                    or any(re.search(r'(?:不是|并非|而非|非|不属于|不代表)\s*$', clause[:word.start()])
+                           for word in monthly)):
+                return match[0]
+            subject = named[-1] if named else None
+            wording = clause[:subject.start()] + clause[subject.end():] if subject else clause
+            if re.search(r'同比|环比|增|减|差|缺口|率|占比|比重|最高|最低|单笔|单行|排名|第|累计|合计|总额|总量|总计|汇总', wording):
+                return match[0]
+            tail = clause[subject.end():] if subject else ''
+            if subject and not re.fullmatch(
+                r'[\s（(]*(?:月均|月平均|平均每月|各月|每月|逐月|均|为|约|达到|是|的|：|:|=|登记值|登记|对应)*[\s）)]*', tail,
+            ):
+                return match[0]
+            uniform = not any(word[0] in {'月均', '月平均', '平均每月'} for word in monthly)
+            candidates = set()
+            for fact_id in labels[subject[0]] if subject else (match[1],):
+                if fact_id in conflicts:
+                    continue
+                fact = facts[fact_id]
+                if fact.scope != original.scope or fact.unit != original.unit:
+                    continue
+                selector = _monthly_selector(fact, sentence, uniform=uniform)
+                token = '{{value:' + fact_id + ':' + str(selector) + ':' + match[3] + '}}'
+                if selector and token in catalog and catalog[token] != '数值待核实':
+                    candidates.add(token)
+            if match[0] in candidates or len(candidates) != 1:
+                return match[0]
+            warnings.append('数值引用口径不匹配：正文明确限定月度口径，已匹配唯一冻结月均依据。')
+            return next(iter(candidates))
         if not named:
             return match[0]
         subject = named[-1]

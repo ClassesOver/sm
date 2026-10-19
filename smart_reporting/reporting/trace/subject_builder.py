@@ -14,6 +14,7 @@ from typing import Any
 
 from ..delivery.report_runtime.markdown import _subject_id
 from ..hospital_operation.deterministic_analysis import _next_period, _parse_period, _ParsedPeriod
+from ..units import REPORT_VALUE_UNIT_PATTERN, unit_scales
 from .contracts_v1 import (
     FactRefV1,
     SubjectBindingV1,
@@ -338,7 +339,7 @@ _PERIOD_TOKEN = re.compile(
     r"|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
 )
 _UNIT_TOKENS = ("亿元", "万元", "千元", "个百分点", "%", "‰", "万人次", "人次", "万人", "床日", "床", "张", "次", "人", "元")
-_UNIT_PATTERN = "|".join(re.escape(unit) for unit in _UNIT_TOKENS)
+_UNIT_PATTERN = REPORT_VALUE_UNIT_PATTERN + "|" + "|".join(re.escape(unit) for unit in _UNIT_TOKENS)
 _NUMBER_UNIT_RE = re.compile(
     r"(?<![\dA-Za-z_.,+−－-])(?P<number>[+−－-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
     rf"(?P<unit>{_UNIT_PATTERN})(?![\dA-Za-z_])"
@@ -348,6 +349,32 @@ _NUMBER_UNIT_RE = re.compile(
 def _period_key(token: str) -> tuple[int, ...] | None:
     digits = re.findall(r"\d+", token)
     return tuple(int(part) for part in digits) if digits else None
+
+
+_MONTH_RANGE_WORDING = re.compile(
+    r'(?P<year>\d{4})年\s*(?P<start>\d{1,2})月?\s*(?:至|到|[-~～–—])\s*'
+    r'(?:(?P<end_year>\d{4})年\s*)?(?P<end>\d{1,2})月'
+)
+
+
+def _expanded_period_wording(window: str) -> str:
+    """补齐月份范围终点的年份，再继承正文明确给出的年份；不从来源猜年份。"""
+    window = _MONTH_RANGE_WORDING.sub(
+        lambda match: f"{match['year']}年{match['start']}月至{match['end_year'] or match['year']}年{match['end']}月",
+        window,
+    )
+    year = None
+
+    def expand(match):
+        nonlocal year
+        key = _period_key(match[0])
+        if key and len(key) >= 2:
+            year = key[0]
+        elif key and year is not None and not re.search(r'去年|上年|次年|翌年|上月|下月', window[max(0, match.start() - 3):match.start()]):
+            return f'{year}年{match[0]}'
+        return match[0]
+
+    return re.sub(_PERIOD_TOKEN.pattern + r'|(?<!\d)\d{1,2}月', expand, window)
 
 
 def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
@@ -395,7 +422,7 @@ def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
 
 def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> list[str]:
     """按明确语法区分截止期、本期、基期与上下文；不要求正文补写期间。"""
-    window = _point_plain_text(window)
+    window = _expanded_period_wording(_point_plain_text(window))
     written = [match for match in _PERIOD_TOKEN.finditer(window) if _period_key(match[0])]
     labels = {'endpoint': '累计终点', 'current': '当前期', 'baseline': '基期'}
     for index, match in enumerate(written):
@@ -454,6 +481,24 @@ def unit_period_warnings(
         if present and any(unit != expected_unit for unit in present):
             warnings.append(f"单位文本与生成时不一致（生成时 {expected_unit}）")
     if expected_periods:
+        period_window = _expanded_period_wording(window)
+        # 月份范围可以是背景；当它后面明确点出当前数值所属月份时，范围不替代该月份。
+        # 未点出单期、或“截至…，含…”的说明仍按完整期间集合和角色复核。
+        if fact_value is not None:
+            values = [match for match in _NUMBER_UNIT_RE.finditer(period_window)
+                      if value_matches(match[0], fact_value)
+                      or formatted_value_matches(match[0], fact_value, expected_unit)]
+            if len(values) == 1:
+                before_value = period_window[:values[0].start()]
+                ranges = list(_MONTH_RANGE_WORDING.finditer(before_value))
+                if ranges:
+                    last_range = ranges[-1]
+                    later = before_value[last_range.end():]
+                    # “同比/环比/本月”没有具体日期，不能据此抹去已写明的累计窗口。
+                    if (any(_period_key(match[0]) for match in _PERIOD_TOKEN.finditer(later))
+                            and not re.search(r'(?:包含|包括|含|例如|覆盖)\s*\d{4}', later)):
+                        period_window = (period_window[:last_range.start()] + ' ' * len(last_range[0])
+                                         + period_window[last_range.end():])
         expected_keys = {
             key
             for period in expected_periods
@@ -461,7 +506,7 @@ def unit_period_warnings(
         }
         written = [
             token
-            for token in _PERIOD_TOKEN.findall(window)
+            for token in _PERIOD_TOKEN.findall(period_window)
             if _period_key(token) is not None
         ]
         if expected_keys and any(_period_key(token) not in expected_keys for token in written):
@@ -469,7 +514,7 @@ def unit_period_warnings(
                 f"期间文本与生成时不一致（生成时 {'、'.join(expected_periods)}）"
             )
         elif expected_period_roles:
-            warnings.extend(_period_role_warnings(window, expected_period_roles))
+            warnings.extend(_period_role_warnings(period_window, expected_period_roles))
     return warnings
 
 
@@ -530,7 +575,8 @@ def extract_comparable_value(
     ]
     if not written_periods or any(_period_key(token) not in expected_keys for token in written_periods):
         return None
-    candidates = [match for match in _NUMBER_UNIT_RE.finditer(statement) if match.group("unit") == expected_unit]
+    compatible_units = unit_scales(expected_unit) or {expected_unit: Decimal(1)}
+    candidates = [match for match in _NUMBER_UNIT_RE.finditer(statement) if match.group("unit") in compatible_units]
     if len(candidates) != 1:
         return None
     try:
@@ -548,7 +594,7 @@ def extract_comparable_value(
                 value = -value
     return {
         "value": int(value) if value.is_integer() else value,
-        "unit": expected_unit,
+        "unit": candidates[0].group("unit"),
         "periods": written_periods,
         **({"direction": direction} if direction is not None else {}),
     }
@@ -564,6 +610,7 @@ def claim_status(
     expected_periods: tuple[str, ...] = (),
     expected_period_roles: Mapping[str, tuple[str, ...]] | None = None,
     expected_scope: Mapping[str, str] | None = None,
+    expected_reference: Mapping[str, Any] | None = None,
     section_id: str | None = None,
 ) -> dict[str, Any]:
     """单个引用校验；整篇多引用校验使用 ClaimStatusChecker 复用正文解析。"""
@@ -575,6 +622,7 @@ def claim_status(
         expected_periods=expected_periods,
         expected_period_roles=expected_period_roles,
         expected_scope=expected_scope,
+        expected_reference=expected_reference,
         section_id=section_id,
     )
 
@@ -582,6 +630,64 @@ def claim_status(
 def prepare_claim_status(markdown: str) -> Callable[..., dict[str, Any]]:
     """供同一草稿的全部引用复用正文解析。"""
     return ClaimStatusChecker(markdown).check
+
+
+def _reference_notes_end(text: str) -> int:
+    """返回前置括注的末端，嵌套的中英文括号均属于同一值。"""
+    pairs = {'（': '）', '(': ')'}
+    position = 0
+    end = 0
+    while position < len(text):
+        if text[position].isspace():
+            position += 1
+            continue
+        if text[position] not in pairs:
+            break
+        stack = []
+        while position < len(text):
+            character = text[position]
+            if character in pairs:
+                stack.append(pairs[character])
+            elif character in pairs.values():
+                if not stack or stack.pop() != character:
+                    return end
+                if not stack:
+                    position += 1
+                    end = position
+                    break
+            position += 1
+        else:
+            break
+    return end
+
+
+def _reference_local_window(before: str, after: str) -> str | None:
+    """并列引用先继承已写年份，再隔离当前锚点的期间与值。"""
+    claim = re.compile(r'\[\[claim:[^\]\r\n]+\]\]')
+    if not claim.search(before + after):
+        return None
+    # 继承须先于截断：“一月…[[claim]]及二月…”的年份仍属于当前正文。
+    before, after = _expanded_period_wording(before + '\0' + after).split('\0', 1)
+    previous = list(claim.finditer(before))
+    local_before = before[previous[-1].end():] if previous else before
+    local_before = re.sub(r'\[\[[^\]\r\n]+\]\]', '', local_before)
+    # 前一锚点后的日期括注属于前值；当前前缀从括注之后开始。
+    if previous:
+        local_before = local_before[_reference_notes_end(local_before):]
+    after = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*', '', after)
+    after = re.split(claim, after, maxsplit=1)[0]
+    # 当前值紧邻的括注保留；连接词之后已是下一个值的说明。
+    notes_end = _reference_notes_end(after)
+    local_after = after[:notes_end] if notes_end else re.split(r'[及和与、，,]', after, maxsplit=1)[0]
+    local_after = re.sub(r'\[\[[^\]\r\n]+\]\]', '', local_after)
+    local = local_before + local_after
+    if previous and not any(_period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local)):
+        # “2025年二月…[[claim]]及收入…”仍继承正文前项明确的月份。
+        calendars = [match[0] for match in _PERIOD_TOKEN.finditer(before[:previous[-1].start()])
+                     if _period_key(match[0])]
+        if calendars:
+            local = calendars[-1] + ' ' + local
+    return local
 
 
 class ClaimStatusChecker:
@@ -606,6 +712,7 @@ def _claim_status_from_body(
     expected_periods: tuple[str, ...] = (),
     expected_period_roles: Mapping[str, tuple[str, ...]] | None = None,
     expected_scope: Mapping[str, str] | None = None,
+    expected_reference: Mapping[str, Any] | None = None,
     section_id: str | None = None,
 ) -> dict[str, Any]:
     sections = list(re.finditer(r"\[\[section:([^\]\r\n]+)\]\]", markdown))
@@ -634,18 +741,27 @@ def _claim_status_from_body(
         after = ""
     statement = re.split(r"[。！？;；\n]", before)[-1] + re.split(r"[。！？;；\n]", after)[0]
     window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", statement)
+    reference_window = None
+    if expected_reference:
+        reference_window = _reference_local_window(
+            re.split(r'[。！？;；\n]', before)[-1], re.split(r'[。！？;；\n]', after)[0],
+        )
     if expected_unit == "个百分点":
         window = _point_plain_text(window)
+        if reference_window is not None:
+            reference_window = _point_plain_text(reference_window)
     statements = re.split(r"[。！？;；\n]", window)
     matched_statements = [
         statement for statement in statements
         if (value_matches(statement, fact_value) or formatted_value_matches(statement, fact_value, expected_unit))
         and not (expected_unit == "个百分点" and _point_direction_conflicts(statement, fact_value))
+        and (reference_window is None or value_matches(reference_window, fact_value)
+             or formatted_value_matches(reference_window, fact_value, expected_unit))
     ]
     if matched_statements:
         warning_window = "\n".join(matched_statements)
         warnings = unit_period_warnings(
-            warning_window,
+            reference_window if reference_window is not None else warning_window,
             expected_unit=expected_unit,
             expected_periods=expected_periods,
             expected_period_roles=expected_period_roles,
@@ -654,6 +770,14 @@ def _claim_status_from_body(
         for key, value in (expected_scope or {}).items():
             if value and value not in warning_window:
                 warnings.append(f"业务范围需复核：当前引用句未体现登记范围 {key}={value}。")
+        if expected_reference:
+            from .reference_semantics import number_reference_warnings
+
+            prefix = re.split(r'[。！？;；\n]', before)[-1]
+            suffix = re.split(r'[。！？;；\n]', after)[0]
+            # 同一引用的来源入口可以紧邻 claim；它本身不截断后置括注。
+            suffix = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*', '', suffix)
+            warnings.extend(number_reference_warnings(prefix, expected_reference, suffix=suffix))
         return {
             "status": "valid",
             "warnings": warnings,

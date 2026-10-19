@@ -75,4 +75,25 @@ uv sync --frozen --group dev
 .venv/bin/pytest -q smart_reporting/reporting/tests/{test_numeric_text,test_semantic_bindings,test_trace_subject_validate,test_reporting_code_reasoning_replay}.py
 ```
 
+引用与“待复核”链路可通过同一份案例进行离线回放：
+
+```bash
+.venv/bin/python scripts/check_reference_review.py --output /tmp/report-reference-harness
+```
+
+运行前需安装后端开发依赖，以及在 `smart_reporting/report_editor/frontend` 执行 `npm ci`。
+Harness 先执行整章、分块两条真实生成函数，使用离线模型响应回放确定性引用对齐与模型纠错，
+核对评分、最终正文和冻结引用一致，已自动修正的问题不会回退或留下过期告警。这一阶段固定执行4项
+`test_generation_reference_convergence.py` 用例；未通过时不进入后续阶段。
+随后按共享案例生成并冻结数值引用，在进程内调用编辑器校验服务，再将本次校验结果交给 ProseMirror，
+核对数值标注、告警卡片、问题计数、跳转和恢复行为。共享案例覆盖期间、科室、聚合、复合单位、
+十进制舍入、正负号、重复/缺失锚点和原始待核实值。案例位于
+`smart_reporting/reporting/tests/fixtures/reference_review_cases.json`。
+
+每次运行保存独立的结果文件与日志，输出目录的 `report.json` 指向最近一次结果。
+生成、后端和前端阶段的失败、超时、缺少案例或跳过案例均返回非零退出码，不把未执行视为通过。
+普通前端单测未提供后端回放产物时会跳过跨端案例；上述命令要求全部跨端案例实际执行。
+生成纠错的 `referenceIssues` 同时提供具体引用、期间、范围和告警，整章与分块路径共用。
+业务校验仍为软告警，不影响已有 PDF/Word 下载链接签发。
+
 接口与配置见 [smart_reporting/README.md](smart_reporting/README.md)。

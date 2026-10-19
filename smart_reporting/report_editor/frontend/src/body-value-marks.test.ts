@@ -1,10 +1,10 @@
 import { Schema } from '@milkdown/kit/prose/model'
 import { EditorState, type Transaction } from '@milkdown/kit/prose/state'
-import type { EditorView } from '@milkdown/kit/prose/view'
-import { afterEach, describe, expect, it } from 'vitest'
+import { Decoration, type EditorView } from '@milkdown/kit/prose/view'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { TraceSources, TraceValidation } from './api'
-import { documentValueMarks, findValueMarks, formatRegisteredValue, installValueCard, restoreRegisteredValue } from './body-value-marks'
+import { documentValueMarks, findValueMarks, formatRegisteredValue, installValueCard, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 
 const schema = new Schema({
   nodes: { doc: { content: 'block+' }, code_block: { content: 'text*', group: 'block', code: true, toDOM: () => ['pre', ['code', 0]] }, paragraph: { group: 'block', content: 'inline*', toDOM: () => ['p', 0] },
@@ -34,7 +34,7 @@ function fakeView(text: string) {
   return view as unknown as EditorView & { state: EditorState }
 }
 
-afterEach(() => document.body.replaceChildren())
+afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks() })
 
 describe('body value marks', () => {
   it('marks the cited number with its registered value and business name', () => {
@@ -44,6 +44,28 @@ describe('body value marks', () => {
     expect(text.slice(marks[0].start, marks[0].end)).toBe('12,450 万元')
     expect(marks[0].state).toBe('valid')
     expect(marks[0].card).toEqual(expect.arrayContaining(['指标：华东营收', '登记值：12,450万元', '期间：2025-01、2025-10']))
+  })
+
+  it('shows semantic warnings without treating the matching value as an edited number', () => {
+    const result = validation('valid')
+    const warning = '业务范围需复核：登记范围为全院。'
+    result.subjects[0].warnings = [warning]
+    const text = '普通外科收入12,450万元[[citation:sub-1]]'
+    const [mark] = findValueMarks(text, result)
+    expect(mark.state).toBe('review')
+    expect(mark.card).toContain('状态：数值一致，业务口径需复核')
+    expect(mark.card).toContain(`提示：${warning}`)
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe(text)
+  })
+
+  it('keeps an edited value stale while displaying its semantic warnings', () => {
+    const result = validation('stale', 12780)
+    result.subjects[0].warnings = ['期间需复核']
+    const [mark] = findValueMarks('营收12,780万元[[citation:sub-1]]', result)
+    expect(mark.state).toBe('stale')
+    expect(mark.card).toContain('提示：期间需复核')
   })
 
   it('converts units and ignores numbers from the previous sentence', () => {
@@ -61,6 +83,44 @@ describe('body value marks', () => {
 
   it('does not guess a source for an unrelated number', () => {
     expect(findValueMarks('共有 37 家门店[[citation:sub-1]]', validation('valid'))).toEqual([])
+  })
+
+  it.each([1.005, 2.675, -1.005])('matches server decimal rounding for %s', factValue => {
+    const result = validation('valid')
+    Object.assign(result.subjects[0], { factValue, unit: '元' })
+    const written = factValue === 2.675 ? '2.68' : factValue < 0 ? '-1.01' : '1.01'
+    expect(findValueMarks(`收入${written}元[[citation:sub-1]]`, result)[0]?.state).toBe('valid')
+  })
+
+  it.each([
+    [-0.004, '0.00'], [-0.004, '-0.00'], [-0.4, '0'], [-0, '0.00'], [0, '-0.00'],
+  ] as const)('matches zero after rounding %s to %s', (factValue, written) => {
+    const result = validation('valid')
+    Object.assign(result.subjects[0], { factValue, unit: '元' })
+    expect(findValueMarks(`调整${written}元[[citation:sub-1]]`, result)[0]?.state).toBe('valid')
+  })
+
+  it.each([[-0.005, '0.01'], [0.005, '-0.01']] as const)(
+    'preserves the sign of a nonzero rounded value %s against %s', (factValue, written) => {
+      const result = validation('valid')
+      Object.assign(result.subjects[0], { factValue, unit: '元' })
+      expect(findValueMarks(`调整${written}元[[citation:sub-1]]`, result)).toEqual([])
+    },
+  )
+
+  it('does not mark an opposite-sign number using the same absolute magnitude', () => {
+    const result = validation('valid')
+    Object.assign(result.subjects[0], { factValue: 10, unit: '元' })
+    const text = '调整-10元，收入10元[[citation:sub-1]]'
+    expect(findValueMarks(text, result).map(mark => text.slice(mark.start, mark.end))).toEqual(['10元'])
+  })
+
+  it('does not offer numeric restoration for a semantic-only edit', () => {
+    const result = validation('stale')
+    result.subjects[0].comparable = false
+    const view = fakeView('成本12,450万元[[citation:sub-1]]')
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe('成本12,450万元[[citation:sub-1]]')
   })
 
   it.each(['2026年1月', '2026-01', '2026/01/12', '2026.01.12', '1—10月'])('does not restore a calendar number in %s', (period) => {
@@ -148,6 +208,67 @@ describe('body value marks', () => {
     const compact = fakeView('营收12,780万元[[citation:sub-1]]')
     expect(restoreRegisteredValue(compact, 'sub-1', validation('stale', 12780))).toBe(true)
     expect(compact.state.doc.textContent).toBe('营收12,450万元[[citation:sub-1]]')
+  })
+
+  it.each([
+    { factValue: 2400, unit: '万元', draftValue: 2500, written: '2,500.00万元', restoreText: '2,400.00万元' },
+    { factValue: 2400, unit: '万元', draftValue: 2500, written: '2,500万元', restoreText: '2,400.00万元' },
+    { factValue: 0.505, unit: '元', draftValue: 0.52, written: '0.52元', restoreText: '0.51元' },
+    { factValue: 240, unit: '万元', draftValue: 250, written: '250.000万元', restoreText: '240.00万元' },
+    { factValue: 30, unit: '元/人次', draftValue: 31, written: '31元/人次', restoreText: '30元/人次' },
+  ])('restores the signed display text $restoreText without reformatting', entry => {
+    const result = validation('stale', entry.draftValue)
+    Object.assign(result.subjects[0], entry, { comparable: true, draftUnit: entry.unit })
+    const view = fakeView(`2025年10月收入${entry.written}[[citation:sub-1]]`)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+    expect(view.state.doc.textContent).toBe(`2025年10月收入${entry.restoreText}[[citation:sub-1]]`)
+  })
+
+  it('preserves semantic-only edit protection even when a signed display text is available', () => {
+    const result = validation('stale')
+    Object.assign(result.subjects[0], { comparable: false, restoreText: '12,450.00万元' })
+    const view = fakeView('成本12,450万元[[citation:sub-1]]')
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe('成本12,450万元[[citation:sub-1]]')
+  })
+
+  it.each(['下降', '减少了约', '回落 约'])(
+    'restores a signed money magnitude after %s without adding a negative sign', verb => {
+      const result = validation('stale', 3)
+      Object.assign(result.subjects[0], { factValue: -2, unit: '元', draftUnit: '元', comparable: true, restoreText: '2元' })
+      const text = `2025年10月收入${verb}3元[[citation:sub-1]]`
+      const view = fakeView(text)
+      expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(true)
+      expect(view.state.doc.textContent).toBe(text.replace('3元', '2元'))
+    },
+  )
+
+  it.each(['增长', '下降至', '为'])(
+    'does not restore a signed positive magnitude after an unsupported direction %s', verb => {
+      const result = validation('stale', 3)
+      Object.assign(result.subjects[0], { factValue: -2, unit: '元', draftUnit: '元', comparable: true, restoreText: '2元' })
+      const text = `2025年10月收入${verb}3元[[citation:sub-1]]`
+      const view = fakeView(text)
+      expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+      expect(view.state.doc.textContent).toBe(text)
+    },
+  )
+
+  it('does not infer a decline magnitude from an old reference without a signed display text', () => {
+    const result = validation('stale', 3)
+    Object.assign(result.subjects[0], { factValue: -2, unit: '元', draftUnit: '元', comparable: true, restoreText: null })
+    const view = fakeView('2025年10月收入下降3元[[citation:sub-1]]')
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+  })
+
+  it('does not restore a negative signed display into a decline magnitude', () => {
+    const result = validation('stale', -3)
+    Object.assign(result.subjects[0], { factValue: -2, unit: '个百分点', draftUnit: '个百分点',
+      comparable: true, draftDirection: 'decrease', restoreText: '-2.00个百分点' })
+    const text = '2025年10月占比下降3个百分点[[citation:sub-1]]'
+    const view = fakeView(text)
+    expect(restoreRegisteredValue(view, 'sub-1', result)).toBe(false)
+    expect(view.state.doc.textContent).toBe(text)
   })
 
   it.each(['千元', '万人', '床日', '床', '张', '次', '人', '家', '元/人'])('restores the whole value without duplicating unit %s', (unit) => {
@@ -423,4 +544,79 @@ it('uses typed notices regardless of business wording and never offers a guessed
   expect(marks[0].start).toBe(text.lastIndexOf('待核实'))
   expect(marks[0].subjectId).toBeUndefined()
   expect(findValueMarks('供应商回复待核实。', { ...result, reviewNotices: [] }, sources)).toHaveLength(0)
+})
+
+function unverifiedOriginal(originalText?: string | null, bound = true, occurrences = 1): TraceValidation {
+  return { ...validation('valid'), subjects: [], summary: { valid: 0, stale: 0, unbound: 0 },
+    reviewNotices: [{ claimId: 'original', sectionId: null, kind: 'numeric_unverified', originalText, bound, occurrences }] }
+}
+
+describe('original unverified values', () => {
+  const text = '收入待核实[[claim:original]]。'
+  it('shows the original spelling while keeping it unverified and without a fact binding', () => {
+    const result = unverifiedOriginal('999,999.1234万元')
+    const [mark] = findValueMarks(text, result)
+    expect(mark.originalText).toBe('999,999.1234万元')
+    expect(mark.state).toBe('unverified')
+    expect(mark.subjectId).toBeUndefined()
+    expect(mark.card).toContain('原始值：999,999.1234万元')
+    expect(mark.card.join('')).toContain('尚未通过来源校验')
+    expect(restoreRegisteredValue(fakeView(text), 'original', result)).toBe(false)
+  })
+
+  it.each([' ', '   ', '\t', '\u00a0', '\u3000', '\t \u00a0\u3000'])(
+    'keeps an original value linked across horizontal whitespace %j', gap => {
+      const marks = findValueMarks(`收入待核实${gap}[[claim:original]]。`, unverifiedOriginal('999元'))
+      expect(marks).toHaveLength(1)
+      expect(marks[0].originalText).toBe('999元')
+      expect(marks[0].state).toBe('unverified')
+    },
+  )
+
+  it.each(['\n', '\r\n', '\u2028', '\u2029', '另项', '，'])(
+    'does not link an original value across a line or business text %j', gap => {
+      expect(findValueMarks(`收入待核实${gap}[[claim:original]]。`, unverifiedOriginal('999元'))).toEqual([])
+    },
+  )
+
+  it.each([undefined, null, ''])('does not invent an original value for an old notice (%s)', original => {
+    const [mark] = findValueMarks(text, unverifiedOriginal(original))
+    expect(mark.originalText).toBeUndefined()
+    expect(mark.card).toContain('未保存原始值')
+  })
+
+  it.each([[false, 1], [false, 2], [true, 2]] as const)('hides ambiguous original values (bound=%s, occurrences=%s)', (bound, occurrences) => {
+    expect(findValueMarks(text, unverifiedOriginal('999元', bound, occurrences))[0].originalText).toBeUndefined()
+  })
+
+  it('does not duplicate an original value when a marker is copied in the current block', () => {
+    const marks = findValueMarks(text + text, unverifiedOriginal('999元'))
+    expect(marks).toHaveLength(2)
+    expect(marks.every(mark => mark.originalText === undefined)).toBe(true)
+  })
+
+  it('keeps originals attached to their own notices', () => {
+    const result = unverifiedOriginal('999元')
+    result.reviewNotices!.push({ claimId: 'other', sectionId: null, kind: 'numeric_unverified', originalText: '888人次', bound: true, occurrences: 1 })
+    const marks = findValueMarks(text + '门诊待核实[[claim:other]]', result)
+    expect(marks.map(mark => mark.originalText)).toEqual(['999元', '888人次'])
+  })
+
+  it('renders the original as plain text without writing it into the document', () => {
+    const raw = '<img src=x onerror=alert(1)>999元'
+    const widget = vi.spyOn(Decoration, 'widget')
+    const view = fakeView(text)
+    const before = view.state.doc.toJSON()
+    updateBodyValueMarks(view, unverifiedOriginal(raw))
+    expect(widget).toHaveBeenCalledTimes(1)
+    const factory = widget.mock.calls[0][1]
+    expect(typeof factory).toBe('function')
+    if (typeof factory !== 'function') throw new Error('expected widget factory')
+    const element = factory(view, () => 1) as HTMLElement
+    expect(element.textContent).toBe(raw + ' · ')
+    expect(element.querySelector('img')).toBeNull()
+    expect(element.contentEditable).toBe('false')
+    expect(view.state.doc.toJSON()).toEqual(before)
+    expect(view.state.doc.textContent).not.toContain('999元')
+  })
 })

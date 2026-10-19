@@ -126,6 +126,22 @@ describe('source validation', () => {
     controller.cancel()
   })
 
+  it('clears the previous result before showing an error so the cause remains visible', async () => {
+    const error = new Error('source_missing: request-123')
+    let status = '来源校验中'
+    const events: string[] = []
+    const controller = createSourceValidationController(
+      { validateSources: vi.fn().mockRejectedValue(error) }, () => 'current',
+      result => { expect(result).toBeNull(); status = '来源暂无法校验'; events.push('result') },
+      vi.fn(), 10,
+      failure => { status = (failure as Error).message; events.push('error') },
+    )
+    controller.schedule()
+    await vi.waitFor(() => expect(events).toEqual(['result', 'error']))
+    expect(status).toBe('source_missing: request-123')
+    controller.cancel()
+  })
+
   it('ignores a mismatched response digest and cancels a pending check', async () => {
     const validateSources = vi.fn().mockResolvedValue(validation('0'.repeat(64)))
     const onResult = vi.fn()
@@ -252,4 +268,40 @@ it('counts typed numeric placeholders independently of visible wording', () => {
   expect(sourceCoverageSummary(result, '任意业务描述待核实').text).toContain('文字待确认 1')
   result.reviewNotices = []
   expect(sourceCoverageSummary(result, '任意业务描述待核实').text).not.toContain('待核实数值')
+})
+
+it('does not count the original-value widget as another review location', () => {
+  const root = document.createElement('div')
+  root.innerHTML = '<span class="report-value-mark--unverified report-original-value" data-pos="1">999元 · </span><span class="report-value-mark--unverified" data-pos="2">待核实</span>'
+  const position = (element: HTMLElement) => Number(element.dataset.pos)
+  expect(nextSourceIssue(root, null, position)?.dataset.pos).toBe('2')
+  expect(nextSourceIssue(root, 2, position)?.dataset.pos).toBe('2')
+})
+
+it('locates a valid claim with business warnings using its citation', () => {
+  const result = validation('draft')
+  result.summary.valid = 1
+  result.subjects = [{ subjectId: 'a', claimId: 'a', sectionId: null, status: 'valid',
+    factValue: 30, warnings: ['业务范围需复核'] }]
+  const root = document.createElement('div')
+  const marker = document.createElement('span')
+  marker.className = 'report-protocol-marker'
+  marker.dataset.markerReferences = JSON.stringify([{ kind: 'citation', value: 'a' }])
+  root.append(marker)
+  expect(sourceCoverageSummary(result, '').text).toContain('待复核 1')
+  expect(nextSourceIssue(root, null, () => 1, result)).toBe(marker)
+})
+
+it('navigates review marks once each without stopping again at their citations', () => {
+  const result = validation('draft')
+  result.subjects = [{ subjectId: 'a', claimId: 'a', sectionId: null, status: 'valid',
+    factValue: 30, warnings: ['期间需复核'] }]
+  const root = document.createElement('div')
+  root.innerHTML = '<span id="value" class="report-value-mark--review" data-value-subject="a">30元</span>' +
+    '<span class="report-protocol-marker" data-marker-references=\'[{"kind":"citation","value":"a"}]\'></span>' +
+    '<span id="other" class="report-value-mark--unverified">待核实</span>'
+  const position = (element: HTMLElement) => [...root.children].indexOf(element)
+  expect(nextSourceIssue(root, null, position, result)?.id).toBe('value')
+  expect(nextSourceIssue(root, 0, position, result)?.id).toBe('other')
+  expect(nextSourceIssue(root, 2, position, result)?.id).toBe('value')
 })

@@ -107,6 +107,35 @@ def test_claim_unit_period_modifications_are_soft_warnings(text: str, warning_co
     assert len(result["warnings"]) == warning_count
 
 
+@pytest.mark.parametrize('relative', ['同比', '环比', '本月', '上月', '去年同期'])
+def test_relative_wording_does_not_erase_an_explicit_cumulative_window(relative):
+    from smart_reporting.reporting.trace.subject_builder import unit_period_warnings
+
+    warnings = unit_period_warnings(
+        f'2025年9—10月累计收入{relative}2,400.00万元',
+        expected_unit='万元', fact_value=2400, expected_periods=('2025-10',),
+    )
+    assert any('期间' in warning for warning in warnings)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('comparison', ['', '同比', '环比', '本月'])
+async def test_editor_retains_period_warning_with_relative_comparison(tmp_path, comparison):
+    editor, grants, context = await _make_editor_with_subject(
+        tmp_path, period_table=True, number_reference=True, include_table=False,
+        number_statement='2025年9—10月累计收入' + comparison
+            + '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:万元}}。',
+    )
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    markdown = next(tmp_path.rglob('report.md')).read_text()
+    result = await editor.trace_validate(context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    subject = result['subjects'][0]
+    # 业务期间仍为软告警，数值绑定不因此失效。
+    assert subject['status'] == 'valid'
+    assert any('期间' in warning for warning in subject['warnings'])
+
+
 def test_claim_changed_units_do_not_share_substring_identity() -> None:
     result = claim_status(
         "收入3600万元[[claim:claim-1]]", "claim-1", 3600,
@@ -305,11 +334,18 @@ async def _make_editor_with_subject(
     percentage_point_claim: bool = False, window_claim: str | None = None, window_date_labels: bool = False,
     number_reference: bool = False,
     number_statement: str | None = None,
+    metric_scope: dict[str, str] | None = None,
+    metric_values: tuple[float, float] | None = None,
+    metric_unit: str | None = None,
+    include_table: bool = True,
 ) -> tuple:
     # large_amounts：元为单位的大额分期间表，服务端按“收入（万元）”表头写换算后的数字。
     column_key = "收入（万元）" if large_amounts else "income_total"
     period_numbers = (11123541503.0, 2400000.0) if large_amounts else (1200.0, 2400.0)
     period_cells = ["1,112,354.15", "240.00"] if large_amounts else ["1,200", "2,400"]
+    if metric_values is not None:
+        period_numbers = metric_values
+        period_cells = [f'{value:,}' for value in period_numbers]
     from smart_reporting.report_editor import (
         InMemoryReportEditorRepository,
         ReportEditorContext,
@@ -381,9 +417,9 @@ async def _make_editor_with_subject(
                     "fieldRef": "dynamic_source.dynamic_db.dynamic_table.revenue",
                     "aggregation": "sum",
                     "formula": "sum(revenue)",
-                    "scope": {},
-                    "total": sum(period_numbers) if large_amounts else 3600.0,
-                    "unit": "元" if large_amounts else "万元",
+                    "scope": metric_scope or {},
+                    "total": sum(period_numbers) if large_amounts or metric_values is not None else 3600.0,
+                    "unit": metric_unit or ("元" if large_amounts else "万元"),
                     "periodGranularity": "month",
                     "periodValues": ([{"period": "2025-09", "value": period_numbers[0]},
                                       {"period": "2025-10", "value": period_numbers[1]}] if period_table
@@ -562,7 +598,7 @@ async def _make_editor_with_subject(
         },
         subject_bindings=(subject,),
         review_notices=review_notices,
-        server_table_traces=(table_trace,),
+        server_table_traces=(table_trace,) if include_table else (),
     )
     await workspace.awrite_bytes(
         scope.workspace_key,
@@ -1373,6 +1409,8 @@ async def test_exact_number_reference_validates_month_and_detects_changed_subjec
     assert result['subjects'][0]['periods'] == ['2025-10']
     assert result['subjects'][0]['status'] == 'valid'
     assert {item['kind'] for item in result['reviewNotices']} == {'source_review', 'numeric_unverified'}
+    assert next(item for item in result['reviewNotices'] if item['kind'] == 'numeric_unverified')['originalText'] == '999999元'
+    assert next(item for item in result['reviewNotices'] if item['kind'] == 'source_review')['originalText'] is None
     assert all(item['occurrences'] == 1 and item['bound'] for item in result['reviewNotices'])
     for variant, occurrences, bound in ((markdown + markdown, 2, False), (f'<!--{markdown}-->', 0, False),
                                         (markdown.replace('待核实[[', '**待核实**[['), 1, True)):

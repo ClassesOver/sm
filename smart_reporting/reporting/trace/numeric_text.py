@@ -23,7 +23,7 @@ from ..hospital_operation.deterministic_analysis import (
     _parse_period,
 )
 from ..units import MONEY_UNITS as _MONEY_UNITS
-from ..units import unit_conversion_scale
+from ..units import REPORT_VALUE_UNIT_PATTERN, unit_conversion_scale
 from ..units import unit_scales as _unit_scales
 from .fact_index import fact_binding_records, merge_binding_records
 
@@ -1319,7 +1319,8 @@ def normalize_signed_wording(markdown: str) -> str:
     """
 
     def replace(match: re.Match[str]) -> str:
-        if describes_rate_level(match.string[:match.start()]):
+        if (describes_rate_level(match.string[:match.start()])
+                and not re.match(r'\s*个百分点', match.string[match.end():])):
             return match[0]
         verb = match["verb"]
         falling = RISING_TO_FALLING.get(verb, verb)
@@ -1506,7 +1507,7 @@ def registered_multiple_matches(match: re.Match[str], multiples: dict[str, set[D
 
 _TABLE_SEPARATOR_ROW = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
 _TABLE_HEADER_UNIT = re.compile(
-    r"[（(]\s*(?:单位\s*[:：]\s*)?(亿元|万元|元|万人次|人次|床日|%|个百分点)\s*[）)]\s*$"
+    rf"[（(]\s*(?:单位\s*[:：]\s*)?({REPORT_VALUE_UNIT_PATTERN}|个百分点)\s*[）)]\s*$"
 )
 _BARE_CELL_NUMBER = re.compile(
     r"^\s*(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*$"
@@ -1588,9 +1589,12 @@ def bounded_by_registered(number: Decimal, number_text: str, values: Iterable[De
     return False
 
 
-def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, missing=None,
+def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, missing=None, on_unverified=None,
                                  references: Mapping[str, str] | None = None) -> str:
-    """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
+    """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。
+
+    references 仅接受本次服务端渲染生成的 claim→token 映射，不信任正文自带的标记。
+    """
 
     contents = tuple(contents)
     catalog = frozen_number_catalog(contents)
@@ -1603,6 +1607,10 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         return markdown
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
+
+    def reference_at(tail: str) -> str | None:
+        anchor = re.match(r"\[\[claim:([^\]\n]+)\]\]", tail)
+        return (references or {}).get(anchor[1]) if anchor else None
 
     def verify(number_text: str, unit: str, prefix: str, context: str,
                statement: str, claim: str, reference: str | None = None) -> tuple[str, str]:
@@ -1651,28 +1659,33 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
 
     missing = missing or (lambda: "待核实")
 
+    def unverified(original: str) -> str:
+        # 原始写法仅供编辑器核对，不能重新登记成可信数值或写回正文。
+        return on_unverified(original) if on_unverified is not None else missing()
+
     # 模型自写表格把单位写在表头（“金额（万元）”），单元格只有数字：按表头单位同样核对。
     for start, end, number_text, unit in reversed(table_unit_cells(markdown)):
         verdict, written = verify(number_text, unit, "", _paragraph_at(markdown, start), _statement_at(markdown, start),
-                                  re.split(r'[。！？；;\n]', markdown[:end])[-1])
+                                  re.split(r'[。！？；;\n]', markdown[:end])[-1],
+                                  reference_at(markdown[end:]))
         cell = (written if verdict in {"registered", "corrected"} else f"{written}{PERCENT_POINT}"
-                if verdict == "percent_point" else missing())
+                if verdict == "percent_point" else unverified(number_text + unit))
         markdown = markdown[:start] + cell + markdown[end:]
 
     def replace(match: re.Match[str]) -> str:
         # 只使用调用方提供的服务端锚点映射；正文自行书写的 claim 标记不能建立数值身份。
-        anchor = re.compile(r"\[\[claim:([^\]\n]+)\]\]").match(markdown, match.end())
-        reference = (references or {}).get(anchor[1]) if anchor else None
+        reference = reference_at(markdown[match.end():])
         verdict, written = verify(match["number"], match["unit"],
                                   markdown[max(0, match.start() - 12):match.start()],
                                   _paragraph_at(markdown, match.start()), _statement_at(markdown, match.start()),
                                   re.split(r'[。！？；;\n]', markdown[:match.end()])[-1], reference)
         if verdict in {"registered", "corrected"}:
             return written + match[0][len(match["number"]):]
-        return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else missing()
+        return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else unverified(match[0])
 
     replaced = re.sub(
-        r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>亿元|万元|元|万人次|人次|床日|%)",
+        r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
+        rf"(?P<unit>{REPORT_VALUE_UNIT_PATTERN})",
         replace,
         markdown,
     )
@@ -1690,7 +1703,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         ]
         if not matched:
             logger.warning("report_unregistered_number_replaced value={}", match[0])
-            return missing()
+            return unverified(match[0])
         written = _display_precision(match["number"]) + match["scale"]
         return written + matched[0][1:] if len(matched) == 1 else written
 
@@ -1726,7 +1739,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         if registered_multiple_matches(match, multiples):
             return _display_precision(match["number"]) + match[0][len(match["number"]):]
         logger.warning("report_unregistered_multiple_replaced value={}", match[0])
-        return missing()
+        return unverified(match[0])
 
     return MULTIPLE_NUMBER.sub(replace_multiple, BARE_SCALED_NUMBER.sub(replace_bare, replaced))
 

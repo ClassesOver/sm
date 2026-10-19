@@ -8,7 +8,12 @@ from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
-_VALUE = re.compile(r"(?<![\d.,])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(亿元|万元|元|万人次|人次|床日|%)")
+from ..units import REPORT_VALUE_UNIT_PATTERN
+
+_VALUE = re.compile(
+    r"(?<![\d.,])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
+    rf"({REPORT_VALUE_UNIT_PATTERN})"
+)
 
 
 # 百分点核对按两两相减，候选过多时跳过以免复核耗时失控。
