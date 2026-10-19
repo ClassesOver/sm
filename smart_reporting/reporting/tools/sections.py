@@ -5,13 +5,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from agno.run import RunContext
 from pydantic import ValidationError
 
-from ...workspace import normalize_workspace_path, WorkspaceError
+from ...workspace import WorkspaceError, normalize_workspace_path
 from ..delivery.draft_v1 import ReportDraftBlock, validate_report_draft_blocks
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -27,6 +28,95 @@ from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
 # 固定 Workflow 可随章节提交的服务端正文复核告警；模型工具 schema 不暴露该参数。
 _REVIEW_WARNING_CODES = frozenset({"report_section_block_content_review", "report_section_block_unverified_numbers"})
 _MAX_REVIEW_WARNINGS = 200
+
+
+def metric_equivalents(definitions: Sequence[Any]) -> dict[str, frozenset[str]]:
+    """同一冻结事实的字段别名与规范指标代码（budget_project_amount / project_budget）：
+    公式、单位与期间口径完全相同的目录项视为同一指标。"""
+
+    groups: dict[tuple[str, str | None, str], set[str]] = {}
+    for item in definitions:
+        formula = item.definition.split("；", 1)[1] if "；" in item.definition else item.definition
+        groups.setdefault((formula, item.unit, item.period_basis), set()).add(item.code)
+    return {code: frozenset(codes) for codes in groups.values() for code in codes}
+
+
+def metric_matches(code: str, codes: Sequence[str], equivalents: Mapping[str, frozenset[str]]) -> bool:
+    return code in codes or bool(equivalents.get(code, frozenset()) & set(codes))
+
+
+def _month_span(period: str | None) -> tuple[str, str] | None:
+    parts = re.findall(r"\d{4}-\d{2}", period or "")
+    if not parts or len(parts) > 2:
+        return None
+    return parts[0], parts[-1]
+
+
+def period_within(inner: str | None, outer: str | None) -> bool:
+    """图表期间落在 claim 期间内（图表去掉末尾零值月份：2025-01至2025-10 ⊆ 2025-01至2025-12）。"""
+
+    if inner == outer:
+        return True
+    inner_span, outer_span = _month_span(inner), _month_span(outer)
+    return bool(inner_span and outer_span and outer_span[0] <= inner_span[0] <= inner_span[1] <= outer_span[1])
+
+
+def chart_block_candidates(
+    chart: Any,
+    blocks: Sequence[Any],
+    claims_by_id: Mapping[str, Any],
+    citation_dataset_by_id: Mapping[str, str],
+    equivalents: Mapping[str, frozenset[str]],
+) -> list[Any]:
+    """图表应补绑的正文 block：claim 显式引用者优先，否则按指标、期间、citation 与来源语义匹配。"""
+
+    explicit_candidates = [
+        block
+        for block in blocks
+        if any(
+            chart.chart_id in claims_by_id[claim_id].chart_ids
+            for claim_id in block.claim_ids
+            if claim_id in claims_by_id
+        )
+    ]
+    candidates = explicit_candidates
+    if not candidates:
+        # 允许模型只提交 claim 的指标/期间和 citation，而遗漏 chartId：按冻结语义匹配；
+        # 字段别名与规范指标代码视为同一指标，图表期间落在 claim 期间内即可。
+        candidates = [
+            block
+            for block in blocks
+            if any(
+                metric_matches(claim.metric_code, chart.metric_codes, equivalents)
+                and period_within(chart.current_period, claim.current_period)
+                and set(chart.citation_ids).issubset(set(claim.citation_ids))
+                and (
+                    not chart.source_dataset_id
+                    or chart.source_dataset_id
+                    in {
+                        citation_dataset_by_id[citation_id]
+                        for citation_id in claim.citation_ids
+                        if citation_id in citation_dataset_by_id
+                    }
+                )
+                for claim_id in block.claim_ids
+                if (claim := claims_by_id.get(claim_id)) is not None
+            )
+        ]
+    if len(candidates) > 1:
+        # 回放：第3章两张图都有多段正文讨论同一指标而被整张排除。取 claim 覆盖图表
+        # 指标最多的 block，并列时取最先出现者；无任何语义匹配时才排除。
+        def coverage(block: Any) -> int:
+            return len({
+                code for code in chart.metric_codes
+                for claim_id in block.claim_ids
+                if (claim := claims_by_id.get(claim_id)) is not None
+                and metric_matches(claim.metric_code, (code,), equivalents)
+            })
+
+        best = max(coverage(block) for block in candidates)
+        candidates = [next(block for block in candidates if coverage(block) == best)]
+    return candidates
 
 
 def accepted_review_warnings(items: Sequence[Any]) -> list[dict[str, Any]]:
@@ -704,42 +794,13 @@ class RuntimeSectionsMixin:
         }
         claims_by_id = {claim.claim_id: claim for claim in normalized_claims}
         citation_dataset_by_id = {item.citation_id: item.dataset_id for item in work_item.citations}
+        equivalents = metric_equivalents(work_item.metric_definitions)
         for chart in work_item.charts:
             if chart.chart_id in referenced_chart_ids:
                 continue
-            explicit_candidates = [
-                block
-                for block in normalized_blocks
-                if any(
-                    chart.chart_id in claims_by_id[claim_id].chart_ids
-                    for claim_id in block.claim_ids
-                    if claim_id in claims_by_id
-                )
-            ]
-            candidates = explicit_candidates
-            if not candidates:
-                # 允许模型只提交 claim 的指标/期间和 citation，而遗漏 chartId；仅在
-                # 这些冻结语义组合能唯一匹配时补绑，避免相同指标的多图误绑定。
-                candidates = [
-                    block
-                    for block in normalized_blocks
-                    if any(
-                        claim.metric_code in chart.metric_codes
-                        and claim.current_period == chart.current_period
-                        and set(chart.citation_ids).issubset(set(claim.citation_ids))
-                        and (
-                            not chart.source_dataset_id
-                            or chart.source_dataset_id
-                            in {
-                                citation_dataset_by_id[citation_id]
-                                for citation_id in claim.citation_ids
-                                if citation_id in citation_dataset_by_id
-                            }
-                        )
-                        for claim_id in block.claim_ids
-                        if (claim := claims_by_id.get(claim_id)) is not None
-                    )
-                ]
+            candidates = chart_block_candidates(
+                chart, normalized_blocks, claims_by_id, citation_dataset_by_id, equivalents
+            )
             if len(candidates) == 1:
                 target = candidates[0]
                 bound_chart_ids = (*target.chart_ids, chart.chart_id)
@@ -816,6 +877,7 @@ class RuntimeSectionsMixin:
         )
         metrics_by_code = {item.code: item for item in work_item.metric_definitions}
         charts_by_id = {item.chart_id: item for item in work_item.charts}
+        chart_equivalents = metric_equivalents(work_item.metric_definitions)
         citation_datasets = {item.citation_id: item.dataset_id for item in work_item.citations}
         management_questions = {
             item.question for item in getattr(work_item, "management_question_catalog", ())
@@ -872,7 +934,7 @@ class RuntimeSectionsMixin:
                     "claimId": claim.claim_id,
                     "chartId": chart_id,
                 }
-                if claim.metric_code not in chart.metric_codes:
+                if not metric_matches(claim.metric_code, chart.metric_codes, chart_equivalents):
                     semantic_conflicts.append(
                         {
                             "code": "report_section_claim_chart_conflict",
@@ -902,7 +964,7 @@ class RuntimeSectionsMixin:
                             "actualCitationDatasetIds": sorted(claim_datasets),
                         }
                     )
-                if chart.current_period != claim.current_period:
+                if not period_within(chart.current_period, claim.current_period):
                     semantic_conflicts.append(
                         {
                             "code": "report_section_claim_chart_conflict",
