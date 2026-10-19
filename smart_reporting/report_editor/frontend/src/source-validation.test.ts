@@ -56,6 +56,16 @@ describe('source validation', () => {
     expect(await markdownSha256('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
   })
 
+  it('hashes Markdown on HTTP origins without Web Crypto', async () => {
+    const original = crypto.subtle
+    Object.defineProperty(globalThis.crypto, 'subtle', { configurable: true, value: undefined })
+    try {
+      await expect(markdownSha256('abc')).resolves.toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+    } finally {
+      Object.defineProperty(globalThis.crypto, 'subtle', { configurable: true, value: original })
+    }
+  })
+
   it('accepts only the current draft when requests resolve out of order', async () => {
     let markdown = 'first'
     const first = deferred<TraceValidation>()
