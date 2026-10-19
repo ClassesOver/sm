@@ -1262,6 +1262,28 @@ def test_executive_summary_takes_each_section_conclusion():
     assert insert_executive_summary(markdown, sections[:1]) == markdown
 
 
+def test_executive_summary_skips_unverified_sentences_raw_values_and_long_titles():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        SUMMARY_END_SENTINEL,
+        SUMMARY_SENTINEL,
+        insert_executive_summary,
+    )
+
+    # 回放：领导首页出现“数值待核实”、括号原值和拼接成的长章节名。
+    long_title = "预算人次比较变化；预算总医疗收入比较变化；预算药品收入比较变化；实际人次趋势"
+    sections = [{"code": "a", "title": long_title}, {"code": "b", "title": "成本结构"}]
+    markdown = (
+        "[[section:a]]\n\n## 1. 预算\n\n实际支出相当于预算支出的数值待核实。"
+        "全院收入合计111.24亿元（11,123,541,503元），较上年增长。\n\n"
+        "[[section:b]]\n\n## 2. 成本结构\n\n成本合计数值待核实。\n\n人员支出占比最高，为35.32%。\n"
+    )
+    result = insert_executive_summary(markdown, sections)
+    summary = result[result.index(SUMMARY_SENTINEL):result.index(SUMMARY_END_SENTINEL)]
+    assert "- **预算人次比较变化等**：全院收入合计111.24亿元，较上年增长。" in summary
+    assert "- **成本结构**：人员支出占比最高，为35.32%。" in summary
+    assert "待核实" not in summary
+
+
 def test_model_table_numeric_columns_are_right_aligned():
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
         align_numeric_table_columns,

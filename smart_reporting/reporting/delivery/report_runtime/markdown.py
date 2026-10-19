@@ -449,15 +449,27 @@ _SECTION_START = re.compile(r"^\[\[section:([^\]\r\n]+)\]\][ \t]*$", re.MULTILIN
 _NOT_PROSE = re.compile(r"^(?:#|\||!\[|\[\[|>|\*图表|[-*+]\s|\d+[.)]\s)")
 
 
+# 核心结论是领导首页：含“待核实”的句子不取，括号内保留的元/人次原值去掉，过长的章节名截短。
+_SUMMARY_RAW_VALUE = re.compile(r"[（(]-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:元|人次)[）)]")
+
+
+def _summary_title(title: str) -> str:
+    if len(title) <= 30:
+        return title
+    first = re.split(r"[；;]", title, maxsplit=1)[0].strip()
+    return f"{first[:28]}等"
+
+
 def _section_conclusion(block: str) -> str | None:
     for paragraph in block.split("\n\n"):
         paragraph = paragraph.strip()
         if not paragraph or _NOT_PROSE.match(paragraph):
             continue
         text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "").replace("\n", "")
-        sentences = re.findall(r"[^。！？]+[。！？]", text)
+        text = _SUMMARY_RAW_VALUE.sub("", text)
+        sentences = [sentence for sentence in re.findall(r"[^。！？]+[。！？]", text) if "待核实" not in sentence]
         if not sentences:
-            return None
+            continue
         conclusion = sentences[0]
         # 首句只有定性结论（“整体未达预算。”）时带上紧随的关键数字句。
         if not re.search(r"\d", conclusion) and len(sentences) > 1 and len(conclusion + sentences[1]) <= 200:
@@ -477,7 +489,7 @@ def insert_executive_summary(markdown: str, sections: Sequence[Mapping[str, Any]
         end = starts[index + 1].start() if index + 1 < len(starts) else len(markdown)
         conclusion = _section_conclusion(markdown[start.end():end])
         if conclusion:
-            lines.append(f"- **{title}**：{conclusion}")
+            lines.append(f"- **{_summary_title(title)}**：{conclusion}")
     if len(lines) < 2:
         return markdown
     first = starts[0].start()
