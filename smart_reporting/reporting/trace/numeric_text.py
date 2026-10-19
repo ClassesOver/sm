@@ -394,18 +394,14 @@ def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
     return catalog
 
 
-def frozen_number_values(contents: Iterable[str], catalog: dict[str, str], *,
-                         differences_only: bool = False) -> dict[str, set[Decimal]]:
+def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> dict[str, set[Decimal]]:
     """按显示单位给出未舍入的冻结原值。
 
     正文数字应由原值按其书写精度舍入后比较；若用两位小数的显示文本再舍入，
-    1.245万元会先变成1.25再变成1.3，正确的1.2反被判为无依据。differences_only 只取
-    比较差额、对账差额等差额类事实（选择器含 difference）。
+    1.245万元会先变成1.25再变成1.3，正确的1.2反被判为无依据。
     """
     values: dict[str, set[Decimal]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
-        if differences_only and "difference" not in token[2:-2].split(":")[2]:
-            continue
         display_unit = target or unit
         # 非零值换算后舍入为 0.00（-10万元 → 0.00亿元）不能作为依据，手写“0.00亿元”仍替换。
         if (not display_unit or catalog.get(token) == "数值待核实"
@@ -1283,6 +1279,18 @@ def _statement_at(markdown: str, index: int) -> str:
 NEUTRAL_DIFFERENCE_PREFIX = re.compile(r"(?:相差|差额|差距)(?:了|约|为|达)?\s*$")
 
 
+def referenced_difference_matches(
+    token: str | None, catalog: Mapping[str, str], number: Decimal, unit: str,
+) -> bool:
+    """只认可当前数值的差额引用；其他同值事实或同句引用不能提供豁免。"""
+    parts = (token or "").removeprefix("{{value:").removesuffix("}}").split(":")
+    if len(parts) != 3 or not (parts[1] == "difference" or (
+            parts[1].startswith("budgetComparison.") and parts[1].endswith(".difference"))):
+        return False
+    shown = re.fullmatch(rf"({_NUMBER})\s*{re.escape(unit)}", catalog.get(token or "", ""))
+    return shown is not None and Decimal(shown[1].replace(",", "")) == number
+
+
 def registered_decline_magnitude(
     number: Decimal, unit: str, candidates: Iterable[Decimal], *, prefix: str, quantum: Decimal,
 ) -> bool:
@@ -1580,7 +1588,8 @@ def bounded_by_registered(number: Decimal, number_text: str, values: Iterable[De
     return False
 
 
-def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, missing=None) -> str:
+def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, missing=None,
+                                 references: Mapping[str, str] | None = None) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。"""
 
     contents = tuple(contents)
@@ -1594,10 +1603,9 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         return markdown
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
-    differences = frozen_number_values(contents, catalog, differences_only=True)
 
     def verify(number_text: str, unit: str, prefix: str, context: str,
-               statement: str, claim: str) -> tuple[str, str]:
+               statement: str, claim: str, reference: str | None = None) -> tuple[str, str]:
         """返回 (结论, 数字)：registered 按显示精度保留，corrected 改写为服务端补算值，
         percent_point 改写为百分点，missing 替换。"""
         number = Decimal(number_text.replace(",", ""))
@@ -1606,11 +1614,9 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         candidates = known.get(unit, ())
         neutral = NEUTRAL_DIFFERENCE_PREFIX.search(prefix) is not None
         if neutral:
-            # 中性差额只认当前句操作数的补算差额，或服务端登记的差额类事实本身（“较预算差额为
-            # {{value:…difference}}”）；普通金额的幅度不能借用。
+            # 中性差额只认当前句操作数的补算差额，或当前数字由服务端渲染的差额引用。
             supported = (derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
-                         or any(value.quantize(quantum, rounding=ROUND_HALF_UP) in {number, -number}
-                                for value in differences.get(unit, ())))
+                         or referenced_difference_matches(reference, catalog, number, unit))
         else:
             supported = (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                          or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
@@ -1639,7 +1645,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
                 corrected = f"{nearby[0]:,.{digits}f}" if "," in number_text else f"{nearby[0]:.{digits}f}"
                 logger.warning("report_derived_number_corrected value={}{} corrected={}{}",
                                number_text, unit, corrected, unit)
-                return "corrected", corrected
+                return "corrected", _display_precision(corrected)
         logger.warning("report_unregistered_number_replaced value={}{}", number_text, unit)
         return "missing", number_text
 
@@ -1654,10 +1660,13 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         markdown = markdown[:start] + cell + markdown[end:]
 
     def replace(match: re.Match[str]) -> str:
+        # 只使用调用方提供的服务端锚点映射；正文自行书写的 claim 标记不能建立数值身份。
+        anchor = re.compile(r"\[\[claim:([^\]\n]+)\]\]").match(markdown, match.end())
+        reference = (references or {}).get(anchor[1]) if anchor else None
         verdict, written = verify(match["number"], match["unit"],
                                   markdown[max(0, match.start() - 12):match.start()],
                                   _paragraph_at(markdown, match.start()), _statement_at(markdown, match.start()),
-                                  re.split(r'[。！？；;\n]', markdown[:match.end()])[-1])
+                                  re.split(r'[。！？；;\n]', markdown[:match.end()])[-1], reference)
         if verdict in {"registered", "corrected"}:
             return written + match[0][len(match["number"]):]
         return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else missing()

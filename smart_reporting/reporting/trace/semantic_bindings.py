@@ -90,6 +90,7 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
         normalize_signed_wording(correct_period_extrema(
             correct_constant_monthly_totals(markdown, contents), contents)), contents,
         missing=lambda: notice('numeric_unverified'),
+        references=dict(references),
     )))
     references = tuple(NumberReferenceV1(
         claimId=claim_id, token=token, statementSha256=statement_fingerprint(markdown, claim_id),
