@@ -1552,3 +1552,12 @@ def test_metric_attribution_never_treats_a_unit_as_a_metric_name(text, expected)
         metric("a", "outpatient", "门诊人次", "人次", 644217), metric("b", "discharges", "出院人次", "人次", 21200),
         metric("c", "bed_days", "出院者占用床日数", "床日", 150000)]})
     assert [w for w in review_content(text, [content]) if "数值归属" in w] == expected
+
+
+def test_review_flags_statistical_processing_terms_from_the_appendix():
+    # 回放附录：“行级皮尔逊系数”“期间索引存在重复，行级时序统计已禁用”原样进入正文。
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric(values=(10, 20, 0))]})
+    text = "上述系数为行级皮尔逊系数，期间索引存在重复，时序统计已禁用。"
+    warnings = [w for w in review_content(text, [content]) if "技术实现术语" in w]
+    assert len(warnings) == 4 and any("行级" in w and "明细记录层面" in w for w in warnings)
+    assert not [w for w in review_content("门诊人次与出院人次同步变动。", [content]) if "技术实现术语" in w]

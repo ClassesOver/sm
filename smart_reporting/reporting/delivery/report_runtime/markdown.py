@@ -529,6 +529,17 @@ def readable_large_amounts(markdown: str) -> str:
     return "\n".join(lines)
 
 
+# “四项全年合计分别为0元、0元、0元、0元”：逐项相同的数值渲染时合并为“均为0元”，保留首个来源标记。
+_REPEATED_VALUES = re.compile(
+    r"分别为(?P<value>-?\d[\d,]*(?:\.\d+)?(?:亿元|万元|元|万人次|人次|床日|%))(?P<marks>(?:\[\[[^\]\r\n]+\]\])*)"
+    r"(?:、(?P=value)(?:\[\[[^\]\r\n]+\]\])*)+(?![\d.,]|、)"
+)
+
+
+def collapse_repeated_values(markdown: str) -> str:
+    return _REPEATED_VALUES.sub(lambda match: f"均为{match['value']}{match['marks']}", markdown)
+
+
 # 模型自写表格常把分隔行写成全左对齐，金额、比率列的位数与小数点对不齐。渲染时全部
 # 单元格都是数值（可带单位、百分号或“—”）的列改为右对齐；已声明对齐方式的列不动。
 _NUMERIC_CELL = re.compile(

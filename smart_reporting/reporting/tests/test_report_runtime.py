@@ -1284,6 +1284,14 @@ def test_executive_summary_skips_unverified_sentences_raw_values_and_long_titles
     assert "待核实" not in summary
 
 
+def test_render_collapses_identical_listed_values():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import collapse_repeated_values
+
+    assert collapse_repeated_values("全年合计分别为0元[[claim:a]]、0元[[claim:b]]、0元、0元。") == "全年合计均为0元[[claim:a]]。"
+    assert collapse_repeated_values("分别为0元、0元、5元。") == "分别为0元、0元、5元。"
+    assert collapse_repeated_values("分别为10%、10.5%。") == "分别为10%、10.5%。"
+
+
 def test_model_table_numeric_columns_are_right_aligned():
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
         align_numeric_table_columns,

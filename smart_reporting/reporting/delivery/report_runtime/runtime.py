@@ -31,6 +31,7 @@ from .markdown import (
     _semantic_documents,
     _strip_strong_boundaries,
     align_numeric_table_columns,
+    collapse_repeated_values,
     format_heading_label,
     insert_executive_summary,
     readable_large_amounts,
@@ -274,9 +275,9 @@ class ReportRuntime:
             context = _document_context(state.get("_documentContext"))
             pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
                 align_numeric_table_columns(
-                    readable_large_amounts(
+                    readable_large_amounts(collapse_repeated_values(
                         insert_executive_summary(relocate_server_tables(markdown), context["sections"])
-                    )
+                    ))
                 ),
                 state.get("_citationPresentations"),
                 include_sources=include_sources,
