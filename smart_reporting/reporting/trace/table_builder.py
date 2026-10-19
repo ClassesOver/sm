@@ -17,6 +17,7 @@ FactRef，不依赖最终 Markdown 里的位置猜测。总计行、比例列分
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -363,10 +364,18 @@ def build_analysis_table(
         rate_label = "同比增幅" if types == {"yoy"} else "环比增幅" if types == {"mom"} else "变化率"
         # 多项比较并列时列名用各自指标名称（“对比 1…对比 5”读者无法分辨）；同名时加序号。
         names = [comparison_label(fact) for fact in comparisons]
-        columns = ("数值",) if len(comparisons) == 1 else tuple(
-            name if names.count(name) == 1 else f"{name}（{names[:index + 1].count(name)}）"
-            for index, name in enumerate(names)
-        )
+        counts = Counter(names)
+        reserved = set(names)
+        labels = []
+        for name in names:
+            label = name
+            if counts[name] > 1:
+                suffix = 1
+                while (label := f"{name}（{suffix}）") in reserved:
+                    suffix += 1
+                reserved.add(label)
+            labels.append(label)
+        columns = ("数值",) if len(comparisons) == 1 else tuple(labels)
         rows: list[list[str]] = []
         cells: list[TableCellBindingV1] = []
         row_keys: list[str] = []

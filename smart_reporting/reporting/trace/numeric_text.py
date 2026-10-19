@@ -23,6 +23,7 @@ from ..hospital_operation.deterministic_analysis import (
     _parse_period,
 )
 from ..units import MONEY_UNITS as _MONEY_UNITS
+from ..units import unit_conversion_scale
 from ..units import unit_scales as _unit_scales
 from .fact_index import fact_binding_records, merge_binding_records
 
@@ -211,6 +212,23 @@ def _registered_groups(entry: Mapping[str, Any], key: str):
             if item.get('groupValues') or counts[item['group']] == 1]
 
 
+def _derived_units_comparable(entry: Mapping[str, Any], metrics: Sequence[Mapping[str, Any]]) -> bool:
+    """旧快照可能已登记异量纲差额；有完整输入依据时不能重新认可。"""
+    inputs = entry.get("inputFactIds", ())
+    operands = []
+    for index, code in enumerate((entry["numeratorMetric"], entry["denominatorMetric"])):
+        candidates = [metric for metric in metrics if (
+            metric.get("factId") == inputs[index] if len(inputs) == 2 else
+            code in metric.get("metricCodes", ())
+            and metric.get("datasetId") in entry.get("datasetIds", ())
+            and entry.get("periodRole") in metric.get("periodRoles", ())
+        )]
+        if len(candidates) != 1:
+            return True  # 保留尚未登记完整输入身份的旧文件读取行为。
+        operands.append(candidates[0])
+    return unit_conversion_scale(operands[1].get("unit"), operands[0].get("unit")) is not None
+
+
 def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, str | None, str | None]]:
     """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
     for bundle in frozen_fact_bundles(contents):
@@ -227,6 +245,8 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
                 if not fact_id:
                     continue
                 values = [(field, entry.get(field)) for field in fields]
+                if array == "derivedMetrics" and not _derived_units_comparable(entry, document["metrics"]):
+                    values = [(field, value) for field, value in values if field != "difference"]
                 values.extend((f"periodValues.{index}", item["value"]) for index, item in enumerate(entry.get("periodValues", ())))
                 for groups_key in ("topGroups", "bottomGroups"):
                     values.extend((f"{groups_key}.{index}", item["value"])

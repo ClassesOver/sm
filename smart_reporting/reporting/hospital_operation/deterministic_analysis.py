@@ -122,7 +122,7 @@ class DeterministicDerivedMetricFact(AnalysisModel):
     denominator_scale: float = Field(default=1, alias="denominatorScale", gt=0, allow_inf_nan=False)
     value: float | None = None
     percentage: float | None = None
-    difference: float
+    difference: float | None = None
     unit: str | None = Field(default=None, max_length=64)
     formula: str = Field(min_length=1, max_length=1000)
     period_granularity: Literal["day", "month", "year"] | None = Field(default=None, alias="periodGranularity")
@@ -807,12 +807,13 @@ def _is_leap_day(value: _ParsedPeriod) -> bool:
     return value.granularity == "day" and (value.value.month, value.value.day) == (2, 29)
 
 
-def _follows(previous: _ParsedPeriod, current: _ParsedPeriod) -> bool:
-    """current 是否紧接 previous；日粒度允许跨过只存在于闰年一侧的 2 月 29 日。"""
+def _follows(previous: _ParsedPeriod, current: _ParsedPeriod, *, allow_leap_gap: bool = False) -> bool:
+    """按日历判断连续；只有同比配对允许跨过单侧闰日。"""
     if current.value == _next_period(previous):
         return True
     return (
-        current.granularity == "day"
+        allow_leap_gap
+        and current.granularity == "day"
         and (previous.value.month, previous.value.day) == (2, 28)
         and (current.value.month, current.value.day) == (3, 1)
         and current.value.year == previous.value.year
@@ -821,6 +822,7 @@ def _follows(previous: _ParsedPeriod, current: _ParsedPeriod) -> bool:
 
 def _latest_contiguous_pairs(
     pairs: list[tuple[_ParsedPeriod, PeriodValue, _ParsedPeriod, PeriodValue]],
+    *, allow_leap_gap: bool = False,
 ) -> list[tuple[_ParsedPeriod, PeriodValue, _ParsedPeriod, PeriodValue]]:
     if not pairs:
         return []
@@ -831,8 +833,8 @@ def _latest_contiguous_pairs(
         if (
             pair[0].granularity == previous[0].granularity
             and pair[2].granularity == previous[2].granularity
-            and _follows(previous[0], pair[0])
-            and _follows(previous[2], pair[2])
+            and _follows(previous[0], pair[0], allow_leap_gap=allow_leap_gap)
+            and _follows(previous[2], pair[2], allow_leap_gap=allow_leap_gap)
         ):
             current_run.append(pair)
         else:
@@ -905,7 +907,7 @@ def _aligned_comparison_values(
         if baseline_item is not None:
             pairs.append((parsed, item, *baseline_item))
     pairs.sort(key=lambda item: item[0].value)
-    selected = _latest_contiguous_pairs(pairs)
+    selected = _latest_contiguous_pairs(pairs, allow_leap_gap=True)
     if not selected:
         return None
     current_periods = _with_inner_leap_days(
@@ -1094,13 +1096,14 @@ def _derived_metrics(
                     denominatorScale=float(denominator_scale),
                     value=value,
                     percentage=percentage,
-                    difference=_finite(numerator - denominator),
+                    difference=_finite(numerator - denominator) if conversion is not None else None,
                     unit=(
                         numerator_fact.unit
                         if conversion is not None
                         else None
                     ),
-                    formula=(f"{numerator_code}/{denominator_code}; difference={numerator_code}-{denominator_code}"
+                    formula=(f"{numerator_code}/{denominator_code}"
+                             + (f"; difference={numerator_code}-{denominator_code}" if conversion is not None else "")
                              + (f"; {denominator_code} 按 {denominator_scale} 换算为 {numerator_fact.unit}"
                                 if denominator_scale != 1 else "")),
                     periodGranularity=_fact_period_granularity(numerator_fact),
