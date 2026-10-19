@@ -911,3 +911,21 @@ def test_ambiguous_chart_keeps_section_and_records_soft_warning(monkeypatch) -> 
     warning = next(item for item in artifact["warnings"] if item["code"] == "report_section_chart_unbound")
     assert warning["details"]["candidateBlockIds"] == ["first", "second"]
     finish.assert_awaited_once()
+
+
+def test_reference_comparison_note_is_a_plain_explained_paragraph_once_per_section() -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+    from smart_reporting.reporting.tools.sections import (
+        REFERENCE_COMPARISON_NOTE,
+        RuntimeSectionsMixin,
+    )
+
+    # 回放：“> 注：相关比较仅作参考性对比。”渲染为图表前的提示框，且不说明是什么对比。
+    blocks = (
+        ReportDraftBlock(blockId="b1", markdown="收入与成本对比。", claimIds=("ref",)),
+        ReportDraftBlock(blockId="b2", markdown="再次对比。", claimIds=("ref",)),
+    )
+    noted = RuntimeSectionsMixin._note_reference_comparisons(blocks, {"ref"})
+    assert noted[0].markdown == f"收入与成本对比。\n\n{REFERENCE_COMPARISON_NOTE}"
+    assert noted[1].markdown == "再次对比。"
+    assert not REFERENCE_COMPARISON_NOTE.startswith(">") and "不同数据来源" in REFERENCE_COMPARISON_NOTE

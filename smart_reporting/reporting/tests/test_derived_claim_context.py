@@ -42,8 +42,9 @@ def money_table():
     ('北部与总部相差60元。', True),
     ('总部与北部相差-60元。', False),
     ('总部与北部差额为60元。', True),
-    ('北部与总部差额为-60元。', True),
-    ('北部与总部差额为60元。', False),
+    # 中性“差额”后接幅度（PR #62）：两种操作数顺序都写正数，负号不认可。
+    ('北部与总部差额为-60元。', False),
+    ('北部与总部差额为60元。', True),
     ('前两项合计占比70%。', True),
     ('前两项合计占比-70%。', False),
 ])
@@ -203,10 +204,24 @@ def test_field_code_columns_use_fact_display_names(text, supported):
 
 
 @pytest.mark.parametrize('text,supported', [
-    ('总部超支60元。', True), ('总部预算与实际相差约60元。', True), ('总部缺口60元。', True),
+    # 中性“相差”须由当前句操作数补算（PR #62），差额列里的负值不能借给“预算与实际相差”。
+    ('总部超支60元。', True), ('总部预算与实际相差约60元。', False), ('总部缺口60元。', True),
     ('总部超支61元。', False), ('总部增长60元。', False),
 ])
 def test_negative_registered_gaps_read_as_magnitudes_after_gap_words(text, supported):
     table = json.dumps({'findings': [{'columns': ['院区', '差额'], 'columnMeta': {'差额': {'unit': '元'}},
         'rows': [['总部', -60], ['北部', 41]]}]})
     assert ('待核实' not in replace_unregistered_numbers(text, [table])) is supported
+
+
+@pytest.mark.parametrize('text,expected', [
+    # 回放：“三项合计占88.99%”实为88.9987%；“相差约6.51亿元”实为6.5164亿元。模型用已舍入的
+    # 显示值手算，末位差一个单位：改写为服务端补算值。
+    ('总部、北部合计占69.9%。', '总部、北部合计占70.0%。'),
+    ('总部比北部多59.9元。', '总部比北部多60.0元。'),
+    ('总部、北部合计占69.8%。', '总部、北部合计占待核实。'),
+    ('总部比北部多59元。', '总部比北部多待核实。'),
+    ('总部比北部少59.9元。', '总部比北部少待核实。'),
+])
+def test_last_digit_drift_on_named_derived_values_is_corrected(text, expected):
+    assert replace_unregistered_numbers(text, [money_table(), share_table()]) == expected
