@@ -394,14 +394,18 @@ def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
     return catalog
 
 
-def frozen_number_values(contents: Iterable[str], catalog: dict[str, str]) -> dict[str, set[Decimal]]:
+def frozen_number_values(contents: Iterable[str], catalog: dict[str, str], *,
+                         differences_only: bool = False) -> dict[str, set[Decimal]]:
     """按显示单位给出未舍入的冻结原值。
 
     正文数字应由原值按其书写精度舍入后比较；若用两位小数的显示文本再舍入，
-    1.245万元会先变成1.25再变成1.3，正确的1.2反被判为无依据。
+    1.245万元会先变成1.25再变成1.3，正确的1.2反被判为无依据。differences_only 只取
+    比较差额、对账差额等差额类事实（选择器含 difference）。
     """
     values: dict[str, set[Decimal]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
+        if differences_only and "difference" not in token[2:-2].split(":")[2]:
+            continue
         display_unit = target or unit
         # 非零值换算后舍入为 0.00（-10万元 → 0.00亿元）不能作为依据，手写“0.00亿元”仍替换。
         if (not display_unit or catalog.get(token) == "数值待核实"
@@ -1590,33 +1594,52 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         return markdown
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
+    differences = frozen_number_values(contents, catalog, differences_only=True)
 
     def verify(number_text: str, unit: str, prefix: str, context: str,
                statement: str, claim: str) -> tuple[str, str]:
-        """返回 (结论, 数字)：registered 按显示精度保留，percent_point 改写为百分点，missing 替换。"""
+        """返回 (结论, 数字)：registered 按显示精度保留，corrected 改写为服务端补算值，
+        percent_point 改写为百分点，missing 替换。"""
         number = Decimal(number_text.replace(",", ""))
         digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
         quantum = Decimal(1).scaleb(-digits)
         candidates = known.get(unit, ())
-        if NEUTRAL_DIFFERENCE_PREFIX.search(prefix):
-            supported = derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
-            return ("registered", _display_precision(number_text)) if supported else ("missing", number_text)
-        if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
-                or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
-                or bounded_by_registered(number, number_text, candidates, prefix=prefix)
-                or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
-                # “预算支出有65.9%的行为零”：含义词写在比例之后，按整句判断。
-                or (unit == "%" and profile_rate_supported(profile_rates, number, quantum,
-                                                           statement or claim or context))):
+        neutral = NEUTRAL_DIFFERENCE_PREFIX.search(prefix) is not None
+        if neutral:
+            # 中性差额只认当前句操作数的补算差额，或服务端登记的差额类事实本身（“较预算差额为
+            # {{value:…difference}}”）；普通金额的幅度不能借用。
+            supported = (derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
+                         or any(value.quantize(quantum, rounding=ROUND_HALF_UP) in {number, -number}
+                                for value in differences.get(unit, ())))
+        else:
+            supported = (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
+                         or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
+                         or bounded_by_registered(number, number_text, candidates, prefix=prefix)
+                         or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
+                         # “预算支出有65.9%的行为零”：含义词写在比例之后，按整句判断。
+                         or (unit == "%" and profile_rate_supported(profile_rates, number, quantum,
+                                                                    statement or claim or context)))
+        if supported:
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
-        points = known.get(PERCENT_POINT, ()) if unit == "%" else ()
+        points = known.get(PERCENT_POINT, ()) if unit == "%" and not neutral else ()
         if points and (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points)
                        or registered_decline_magnitude(number, PERCENT_POINT, points,
                                                        prefix=prefix, quantum=quantum)):
             logger.warning("report_percent_point_unit_corrected value={}{}", number_text, unit)
             return "percent_point", _display_precision(number_text)
+        # 回放：“三项合计占88.99%”（实为88.9987%，应写89.00%）、“相差约6.51亿元”（实为6.5164亿元）：
+        # 模型拿已舍入的显示值手算，末位差一个单位。正文已写明参与计算的对象、服务端补算值唯一
+        # 对得上相邻末位时改写为补算值，不替换为待核实；整数与直接登记值不做此修正。
+        if digits:
+            nearby = [candidate for candidate in (number - quantum, number + quantum)
+                      if derived.supports(candidate, unit, quantum, context, statement=statement, claim=claim)]
+            if len(nearby) == 1:
+                corrected = f"{nearby[0]:,.{digits}f}" if "," in number_text else f"{nearby[0]:.{digits}f}"
+                logger.warning("report_derived_number_corrected value={}{} corrected={}{}",
+                               number_text, unit, corrected, unit)
+                return "corrected", corrected
         logger.warning("report_unregistered_number_replaced value={}{}", number_text, unit)
         return "missing", number_text
 
@@ -1626,7 +1649,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     for start, end, number_text, unit in reversed(table_unit_cells(markdown)):
         verdict, written = verify(number_text, unit, "", _paragraph_at(markdown, start), _statement_at(markdown, start),
                                   re.split(r'[。！？；;\n]', markdown[:end])[-1])
-        cell = (written if verdict == "registered" else f"{written}{PERCENT_POINT}"
+        cell = (written if verdict in {"registered", "corrected"} else f"{written}{PERCENT_POINT}"
                 if verdict == "percent_point" else missing())
         markdown = markdown[:start] + cell + markdown[end:]
 
@@ -1635,7 +1658,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
                                   markdown[max(0, match.start() - 12):match.start()],
                                   _paragraph_at(markdown, match.start()), _statement_at(markdown, match.start()),
                                   re.split(r'[。！？；;\n]', markdown[:match.end()])[-1])
-        if verdict == "registered":
+        if verdict in {"registered", "corrected"}:
             return written + match[0][len(match["number"]):]
         return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else missing()
 

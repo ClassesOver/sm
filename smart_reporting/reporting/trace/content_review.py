@@ -275,6 +275,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         known.setdefault(unit, set()).update(values)
         if unit == "人次":
             known.setdefault("万人次", set()).update(value / 10000 for value in values)
+    differences = frozen_number_values(contents, catalog, differences_only=True)
     # 仅为旧格式简化证据保留无单位回退。事实包必须使用上面的带单位目录，
     # 否则金额、缺失行数等原始数字会被借作百分比或人次的依据。
     supplemental = set().union(*(_numeric_literals(document) for document in documents
@@ -314,7 +315,8 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
                 number, match[2], quantum, _paragraph_at(text, match.start()),
                 statement=_statement_at(text, match.start()),
                 claim=re.split(r'[。！？；;\n]', text[:match.end()])[-1],
-            )
+            ) or any(value.quantize(quantum, rounding=ROUND_HALF_UP) in {number, -number}
+                     for value in differences.get(match[2], ()))
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
