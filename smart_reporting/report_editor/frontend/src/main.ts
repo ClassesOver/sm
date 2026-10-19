@@ -243,6 +243,17 @@ const sourceValidation = createSourceValidationController(
     sourceStatusLabel.disabled = true
     sourceStatusLabel.hidden = false
   },
+  450,
+  (error) => {
+    const detail = error instanceof ReportEditorApiError
+      ? `${error.code}${error.requestId ? `（请求 ${error.requestId}）` : ''}`
+      : '网络或服务暂时不可用'
+    sourceStatusLabel.title = `正文来源校验失败：${detail}`
+    sourceStatusLabel.textContent = `来源校验失败：${detail}`
+    sourceStatusLabel.dataset.state = 'unknown'
+    sourceStatusLabel.disabled = true
+    sourceStatusLabel.hidden = false
+  },
 )
 const scheduleSourceValidation = () => {
   if (lineagePanelEnabled) sourceValidation.schedule()
