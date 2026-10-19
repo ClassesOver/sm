@@ -4,7 +4,11 @@ from smart_reporting.reporting.hospital_operation.deterministic_analysis import 
     DeterministicAnalysisBundle,
 )
 from smart_reporting.reporting.hospital_operation.finding_projection import (
+    build_finding_graph,
     project_analysis_findings,
+)
+from smart_reporting.reporting.hospital_operation.narrative_planner import (
+    build_narrative_planning_context,
 )
 
 
@@ -39,6 +43,69 @@ def test_projection_treats_scalar_grain_as_one_dimension():
     }, None, snapshot_hash="b" * 64, citation_ids=("citation_001",))
     trend = next(item for item in result if item.kind == "trend")
     assert trend.grain == ("stlevel_analytic_unit",)
+
+
+@pytest.fixture(params=["fact", "supplemental", "attribution"])
+def grain_graph(request):
+    def build(grain):
+        metric = {
+            "factId": "fact-1111111111111111", "total": 100, "field": "income",
+            "topGroups": [{"group": "A", "value": 60}, {"group": "B", "value": 40}],
+        }
+        evidence = None
+        if request.param == "fact":
+            metric.update(grain=grain, periodValues=[
+                {"period": "2025-01", "value": 40}, {"period": "2025-02", "value": 60},
+            ])
+        else:
+            evidence = {
+                "analysisId": "analysis_001",
+                "findings": [{
+                    "name": "科室收入分解",
+                    "kind": "attribution" if request.param == "attribution" else "impact",
+                    "directDecomposition": True, "reconciliationCode": "income_by_department",
+                    "sourceFactIds": [metric["factId"]], "grain": grain, "scope": {},
+                    "total": 100,
+                    "components": [{"name": "A", "value": 60}, {"name": "B", "value": 40}],
+                }],
+                "reconciliations": [{
+                    "code": "income_by_department", "passed": True,
+                    "grain": grain, "scope": {}, "leftTotal": 100, "rightTotal": 100,
+                }],
+            }
+        return build_finding_graph(
+            [{"analysisId": "analysis_001", "metrics": [metric]}],
+            {"analysis_001": evidence} if evidence else None, (),
+            snapshot_hash="b" * 64, citation_ids_by_analysis={"analysis_001": ("citation_001",)},
+            fact_file_sha256s={"analysis_001": "a" * 64},
+            supplemental_file_paths={"analysis_001": "evidence/001.json"},
+            supplemental_file_sha256s={"analysis_001": "c" * 64},
+        )
+
+    return build
+
+
+@pytest.mark.parametrize("grain", [
+    [None], [1], [{}], [True], [b"department"], ["科室", None], ("科室", {}),
+], ids=["null", "number", "object", "boolean", "bytes", "mixed-list", "mixed-tuple"])
+def test_projection_rejects_non_string_grain_before_freezing(grain_graph, grain):
+    with pytest.raises(ValueError, match="grain"):
+        grain_graph(grain)
+
+
+@pytest.mark.parametrize(("grain", "expected"), [
+    ("stlevel_analytic_unit", ("stlevel_analytic_unit",)),
+    (["院区", "科室"], ("院区", "科室")),
+    (("院区", "科室"), ("院区", "科室")),
+    ([], ()),
+    (None, ()),
+], ids=["scalar-string", "string-list", "string-tuple", "empty", "missing"])
+def test_projection_preserves_valid_grain_in_graph_and_planning(grain_graph, grain, expected):
+    graph = grain_graph(grain)
+    assert len(graph.findings) == 1
+    assert graph.findings[0].grain == expected
+    context = build_narrative_planning_context(graph, "经营报告")
+    assert context["findings"][0]["grain"] == list(expected)
 
 
 @pytest.mark.parametrize('values', [(0, 0), (10, 10)])

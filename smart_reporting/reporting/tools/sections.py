@@ -70,11 +70,16 @@ def chart_block_candidates(
 ) -> list[Any]:
     """图表应补绑的正文 block：claim 显式引用者优先，否则按指标、期间、citation 与来源语义匹配。"""
 
+    def comparison_matches(claim: Any) -> bool:
+        return (chart.comparison_type == claim.comparison_type
+                and chart.comparison_period == claim.comparison_period)
+
     explicit_candidates = [
         block
         for block in blocks
         if any(
             chart.chart_id in claims_by_id[claim_id].chart_ids
+            and comparison_matches(claims_by_id[claim_id])
             for claim_id in block.claim_ids
             if claim_id in claims_by_id
         )
@@ -89,6 +94,7 @@ def chart_block_candidates(
             if any(
                 metric_matches(claim.metric_code, chart.metric_codes, equivalents)
                 and period_within(chart.current_period, claim.current_period)
+                and comparison_matches(claim)
                 and set(chart.citation_ids).issubset(set(claim.citation_ids))
                 and (
                     not chart.source_dataset_id
@@ -104,18 +110,18 @@ def chart_block_candidates(
             )
         ]
     if len(candidates) > 1:
-        # 回放：第3章两张图都有多段正文讨论同一指标而被整张排除。取 claim 覆盖图表
-        # 指标最多的 block，并列时取最先出现者；无任何语义匹配时才排除。
+        # 只用比较语义一致的 claim 计算覆盖率；并列仍保留候选，让调用方软告警而不误绑。
         def coverage(block: Any) -> int:
             return len({
                 code for code in chart.metric_codes
                 for claim_id in block.claim_ids
                 if (claim := claims_by_id.get(claim_id)) is not None
+                and comparison_matches(claim)
                 and metric_matches(claim.metric_code, (code,), equivalents)
             })
 
         best = max(coverage(block) for block in candidates)
-        candidates = [next(block for block in candidates if coverage(block) == best)]
+        candidates = [block for block in candidates if coverage(block) == best]
     return candidates
 
 

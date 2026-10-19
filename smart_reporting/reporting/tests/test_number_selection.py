@@ -29,6 +29,50 @@ def source():
     return [json.dumps({'analysisId': 'analysis_001', 'metrics': metrics})]
 
 
+@pytest.mark.parametrize('before,after', [
+    ('实际总医疗收入为', '，随后波动。'),
+    ('实际总医疗收入区间为', '。'),
+    ('实际总医疗收入为', '，至此完成。'),
+    ('实际总医疗收入介于', '，之间存在差异。'),
+    ('实际总医疗收入为', '。3月继续分析。'),
+    ('实际总医疗收入为', '；3月继续分析。'),
+    ('实际总医疗收入月份记录为', '。'),
+    ('实际总医疗收入季度记录为', '。'),
+    ('实际总医疗收入为', '（99月）。'),
+    ('实际总医疗收入为', '（2025年2月30日）。'),
+])
+def test_generic_prose_and_next_sentence_cannot_supply_a_period(before, after):
+    token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    markdown = before + token + after
+    aligned, warnings = align_number_selections(markdown, source())
+    assert ':unverified:' in aligned
+    assert any('期间缺失' in warning for warning in warnings)
+    text, refs, notices = render_bound_numbers(markdown, source(), key='periodless')
+    assert '40元' not in text and '待核实' in text
+    assert not refs and any(notice.kind == 'numeric_unverified' for notice in notices)
+
+
+def test_valid_multi_value_interval_can_describe_monthly_range_without_calendar_labels():
+    first = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    last = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.1:元}}'
+    markdown = '实际总医疗收入介于' + first + '至' + last + '之间。'
+    assert align_number_selections(markdown, source()) == (markdown, [])
+
+
+@pytest.mark.parametrize('last', [
+    '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}',
+    '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.99:元}}',
+    '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.1:万元}}',
+    '{{value:fact-cccccccccccccccc:periodValues.1:元}}',
+    '{{value:fact-bbbbbbbbbbbbbbbb:total:元}}',
+])
+def test_unvalidated_interval_does_not_exempt_periodless_value(last):
+    first = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    aligned, warnings = align_number_selections('实际总医疗收入介于' + first + '至' + last + '。', source())
+    assert first not in aligned
+    assert any('期间缺失' in warning for warning in warnings)
+
+
 @pytest.mark.parametrize(('statement', 'selected', 'expected', 'value'), [
     ('2025年1—2月实际总医疗收入为', 'a:periodValues.0', 'b:periodTotals.0-1', '100元'),
     ('2025年1—2月，成本金额合计', 'b:periodTotals.0-1', 'c:periodTotals.0-1', '110元'),

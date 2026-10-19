@@ -35,23 +35,72 @@ def stock_bundle():
     ))
 
 
-@pytest.mark.parametrize('periods', [
+@pytest.mark.parametrize('aliases', [
     ('2025-01', '2025-02', '2025-03'),
     ('2025/1', '2025/2', '2025/3'),
     ('202501', '202502', '202503'),
 ])
-def test_flow_metric_additive_across_sibling_period_column_sums_all_periods(periods):
+def test_flow_metric_additive_across_sibling_period_column_sums_all_periods(aliases):
     """回放中实际收入声明可沿 period_code 相加，事实却按 data_date 统计：不能当作时点取期末值。"""
     ctx = context('current', fields=('data_date', 'period_code', 'area', 'income'), semantics=(
         {**semantic('income', unit='元'), 'additiveAcross': ['period_code', 'area']},
     )).model_copy(update={'period_granularities': {'data_date': 'date'}})
+    rows = ''.join(f'2025-0{i}-01,{alias},A,{value}\n'
+                   for i, (alias, value) in enumerate(zip(aliases, (100, 200, 0)), 1))
     bundle = build_deterministic_analysis_bundle(analysis(fields=('income',)), (
-        ('current', (f'data_date,period_code,area,income\n2025-01-01,{periods[0]},A,100\n'
-                     f'2025-02-01,{periods[1]},A,200\n2025-03-01,{periods[2]},A,0\n').encode(), ctx, ('current',)),
+        ('current', ('data_date,period_code,area,income\n' + rows).encode(), ctx, ('current',)),
     ))
     fact = bundle.metrics[0]
     assert fact.period_aggregation is None
     assert fact.total == 300
+
+
+@pytest.mark.parametrize('declared_birth_year', [False, True])
+@pytest.mark.parametrize('additive_axis,expected,period_aggregation', [
+    ('birth_year', 340, 'last'), ('data_date', 640, None),
+])
+def test_unrelated_birth_year_does_not_change_reporting_axis_aggregation(
+    declared_birth_year, additive_axis, expected, period_aggregation,
+):
+    grains = {'data_date': 'date'}
+    if declared_birth_year:
+        grains['birth_year'] = 'year'
+    ctx = context('current', fields=('data_date', 'birth_year', 'department', 'balance'), semantics=(
+        {**semantic('balance', unit='元'), 'additiveAcross': [additive_axis, 'department']},
+    )).model_copy(update={'period_granularities': grains, 'time_series_sort_field': 'data_date'})
+    content = (b'data_date,birth_year,department,balance\n'
+               b'2025-01-01,1980,A,100\n2025-01-01,1990,B,200\n'
+               b'2025-02-01,1980,A,110\n2025-02-01,1990,B,230\n')
+    bundle = build_deterministic_analysis_bundle(analysis(fields=('balance',)), (
+        ('current', content, ctx, ('current',)),
+    ))
+    fact = bundle.metrics[0]
+    assert fact.period_field == 'data_date'
+    assert [item.value for item in fact.period_values] == [300, 340]
+    assert fact.total == expected
+    assert fact.period_aggregation == period_aggregation
+    contents = [bundle.model_dump_json(by_alias=True)]
+    token = '{{value:' + fact.fact_id + ':total:元}}'
+    assert resolve_number_reference(token, contents)['value'] == expected
+
+
+@pytest.mark.parametrize('alias_values', [
+    ('2024-01', '2024-02', '2024-03'),
+    ('2025-01', '', '2025-03'),
+    ('2025-01', 'not-a-period', '2025-03'),
+    ('2025-01', '2025-03', '2025-02'),
+])
+def test_period_named_column_requires_complete_rowwise_axis_agreement(alias_values):
+    ctx = context('current', fields=('data_date', 'period_code', 'area', 'income'), semantics=(
+        {**semantic('income', unit='元'), 'additiveAcross': ['period_code', 'area']},
+    )).model_copy(update={'period_granularities': {'data_date': 'date', 'period_code': 'month'}})
+    rows = ''.join(f'2025-0{i}-01,{alias},A,{value}\n'
+                   for i, (alias, value) in enumerate(zip(alias_values, (100, 200, 0)), 1))
+    bundle = build_deterministic_analysis_bundle(analysis(fields=('income',)), (
+        ('current', ('data_date,period_code,area,income\n' + rows).encode(), ctx, ('current',)),
+    ))
+    assert bundle.metrics[0].period_aggregation == 'last'
+    assert bundle.metrics[0].total == 0
 
 
 @pytest.mark.parametrize('declared_grain', [False, True])

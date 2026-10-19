@@ -824,6 +824,7 @@ def test_chart_binding_accepts_field_aliases_subperiods_and_picks_best_block() -
 
     def claim(claim_id, metric):
         return SimpleNamespace(claim_id=claim_id, metric_code=metric, current_period="2025-01至2025-12",
+                               comparison_type="none", comparison_period=None,
                                citation_ids=("c1",), chart_ids=())
 
     claims = {item.claim_id: item for item in (
@@ -831,9 +832,82 @@ def test_chart_binding_accepts_field_aliases_subperiods_and_picks_best_block() -
     blocks = [SimpleNamespace(block_id="b1", claim_ids=("a",)), SimpleNamespace(block_id="b2", claim_ids=("b", "c")),
               SimpleNamespace(block_id="b3", claim_ids=("d",))]
     chart = SimpleNamespace(chart_id="chart", metric_codes=("income", "visits"), current_period="2025-01至2025-10",
+                            comparison_type="none", comparison_period=None,
                             citation_ids=("c1",), source_dataset_id="ds")
     assert [item.block_id for item in chart_block_candidates(chart, blocks, claims, {"c1": "ds"}, {})] == ["b2"]
     single = SimpleNamespace(**{**vars(chart), "metric_codes": ("income",)})
-    assert [item.block_id for item in chart_block_candidates(single, blocks, claims, {"c1": "ds"}, {})] == ["b1"]
+    assert [item.block_id for item in chart_block_candidates(single, blocks, claims, {"c1": "ds"}, {})] == ["b1", "b2"]
     unrelated = SimpleNamespace(**{**vars(chart), "metric_codes": ("cost",)})
     assert chart_block_candidates(unrelated, blocks, claims, {"c1": "ds"}, {}) == []
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("case", ["type", "period", "no_match", "ambiguous"])
+def test_chart_binding_filters_comparisons_and_keeps_ambiguity(case, explicit) -> None:
+    from smart_reporting.reporting.tools.sections import chart_block_candidates
+
+    chart = SimpleNamespace(
+        chart_id="chart", metric_codes=("income",), current_period="2025-01至2025-10",
+        comparison_type="yoy", comparison_period="2024-01至2024-12",
+        citation_ids=("c1",), source_dataset_id="ds",
+    )
+    common = dict(metric_code="income", current_period="2025-01至2025-12",
+                  comparison_type="yoy", comparison_period="2024-01至2024-12",
+                  citation_ids=("c1",), chart_ids=("chart",) if explicit else ())
+    wrong = {**common, **({"comparison_type": "period"} if case == "type" else
+                         {"comparison_period": "2025-01至2025-12"})}
+    claims = {"wrong": SimpleNamespace(**wrong), "right": SimpleNamespace(**common)}
+    blocks = [SimpleNamespace(block_id="budget", claim_ids=("wrong",)),
+              SimpleNamespace(block_id="yoy", claim_ids=("right",))]
+    if case == "no_match":
+        blocks = blocks[:1]
+    elif case == "ambiguous":
+        blocks.append(SimpleNamespace(block_id="another-yoy", claim_ids=("right",)))
+    candidates = chart_block_candidates(chart, blocks, claims, {"c1": "ds"}, {})
+    expected = [] if case == "no_match" else ["yoy", "another-yoy"] if case == "ambiguous" else ["yoy"]
+    assert [block.block_id for block in candidates] == expected
+
+
+def test_ambiguous_chart_keeps_section_and_records_soft_warning(monkeypatch) -> None:
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from smart_reporting.reporting.tools.sections import RuntimeSectionsMixin as SectionTools
+
+    chart = SimpleNamespace(
+        chart_id="chart", metric_codes=("income",), current_period="2025-01",
+        comparison_type="yoy", comparison_period="2024-01", citation_ids=("c1",),
+        source_dataset_id="ds",
+    )
+    claims = tuple(SectionClaim(
+        claimId=claim_id, metricCode="income", value=100, periodBasis="月度",
+        managementQuestion="收入如何？", currentPeriod="2025-01",
+        comparisonType="yoy", comparisonPeriod="2024-01", citationIds=("c1",),
+    ) for claim_id in ("first", "second"))
+    work_item = SimpleNamespace(
+        section_code="section_001", title="收入分析", charts=(chart,),
+        citations=(SimpleNamespace(citation_id="c1", dataset_id="ds"),),
+        metric_definitions=(SimpleNamespace(code="income", definition="sum(income)", unit="元",
+                                            period_basis="月度"),),
+        management_question_catalog=(SimpleNamespace(question="收入如何？"),),
+        max_blocks=None, max_charts=None,
+    )
+    toolkit = SectionTools()
+    monkeypatch.setattr(toolkit, "_phase_parameters", lambda *_: ({"sectionOutputPath": "/section.json"}, {}), raising=False)
+    monkeypatch.setattr(toolkit, "_section_work_item", AsyncMock(return_value=work_item))
+    monkeypatch.setattr(toolkit, "_normalize_section_claims", lambda **_: (claims, ()))
+    write = AsyncMock(return_value={})
+    monkeypatch.setattr(toolkit, "_write_phase_json", write, raising=False)
+    finish = AsyncMock(return_value={"completed": True})
+    monkeypatch.setattr(toolkit, "_finish_phase_task", finish, raising=False)
+    result = asyncio.run(toolkit._render_isolated_section(
+        scope=SimpleNamespace(), section_code="section_001", claims=[], state=None, run_context=None,
+        blocks=[{"blockId": claim.claim_id, "markdown": f"收入同比分析：{claim.claim_id}。",
+                 "claimIds": [claim.claim_id], "citationIds": ["c1"]} for claim in claims],
+    ))
+    artifact = write.call_args.kwargs["payload"]
+    assert result == {"completed": True}
+    assert len(artifact["blocks"]) == 2 and all(not block["chartIds"] for block in artifact["blocks"])
+    warning = next(item for item in artifact["warnings"] if item["code"] == "report_section_chart_unbound")
+    assert warning["details"]["candidateBlockIds"] == ["first", "second"]
+    finish.assert_awaited_once()

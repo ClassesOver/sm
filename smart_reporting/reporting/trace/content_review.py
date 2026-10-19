@@ -14,12 +14,14 @@ from .numeric_text import (
     DIRECTION_WORD_PATTERN,
     FALLING_WORDS,
     MULTIPLE_NUMBER,
+    NEUTRAL_DIFFERENCE_PREFIX,
     PERCENT_POINT,
     PERSON_COUNT,
     RATE_AS_PERCENT_POINT,
     RISING_WORDS,
     _frozen_number_entries,
     _paragraph_at,
+    _statement_at,
     bounded_by_registered,
     derived_number_values,
     describes_rate_level,
@@ -297,6 +299,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
             )
             continue
         candidates = known.get(match[2], set()) | supplemental
+        prefix = text[max(0, match.start() - 12):match.start()]
         supported = (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                      or registered_decline_magnitude(number, match[2], candidates,
                                                      prefix=text[max(0, match.start() - 12):match.start()],
@@ -306,6 +309,12 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
                      or derived.supports(number, match[2], quantum, _paragraph_at(text, match.start()))
                      or (match[2] == "%" and profile_rate_supported(
                          profile_rates, number, quantum, _paragraph_at(text, match.start()))))
+        if NEUTRAL_DIFFERENCE_PREFIX.search(prefix):
+            supported = derived.supports(
+                number, match[2], quantum, _paragraph_at(text, match.start()),
+                statement=_statement_at(text, match.start()),
+                claim=re.split(r'[。！？；;\n]', text[:match.end()])[-1],
+            )
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")

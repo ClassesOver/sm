@@ -340,7 +340,7 @@ def _dataset_facts(
         return facts, selected_semantics, warnings
 
     period_field = _period_field(dataset.frame, dataset.context)
-    time_fields = _period_axis_fields(dataset, period_field)
+    time_fields = _period_axis_aliases(dataset.frame, dataset.context, period_field)
     source_grain = dataset.context.period_granularities.get(period_field or "")
     period_granularity = (
         analysis.series_granularity or "day" if source_grain == "date"
@@ -1501,27 +1501,35 @@ def _period_field(frame: pl.DataFrame, context: DatasetAnalysisContext) -> str |
     )
 
 
-def _period_axis_fields(dataset: _Dataset, period_field: str | None) -> set[str]:
-    """时间列名或粒度声明只提供候选；别名必须逐行对应所选时间轴。"""
+def _period_axis_aliases(
+    frame: pl.DataFrame, context: DatasetAnalysisContext, period_field: str | None,
+) -> set[str]:
+    """期间别名须逐行对应同一日期；字段名或期间粒度声明本身不能证明同轴。"""
     if period_field is None:
         return set()
-    fields = {period_field.casefold()}
-    for column in dataset.frame.columns:
+
+    def parse(value: str | None, column: str) -> _ParsedPeriod | None:
+        grain = context.period_granularities.get(column)
+        return _parse_fact_period(value, 'day' if grain == 'date' else grain) if value is not None else None
+
+    aliases = {period_field.casefold()}
+    for column in frame.columns:
         if column == period_field or not (
-            column in dataset.context.period_granularities or _is_period_field_name(column)
+            column in context.period_granularities or _is_period_field_name(column)
         ):
             continue
-        pairs = dataset.frame.select(period_field, column).unique()
-        # 月初日期与年月标签可以指向同一桶；不同月份、无效值或缺失值都不能证明别名。
-        if pairs.height and all(
-            left is not None and right is not None
-            and (selected := _parse_period(left)) is not None
-            and (candidate := _parse_period(right)) is not None
-            and selected.value == candidate.value
-            for left, right in pairs.iter_rows()
-        ):
-            fields.add(column.casefold())
-    return fields
+        pairs = frame.select(period_field, column).unique().iter_rows()
+        matched = False
+        for selected, candidate in pairs:
+            left, right = parse(selected, period_field), parse(candidate, column)
+            if (left is None or right is None or left.value != right.value
+                    or (left.granularity == 'year') != (right.granularity == 'year')):
+                matched = False
+                break
+            matched = True
+        if matched:
+            aliases.add(column.casefold())
+    return aliases
 
 
 def _metric_codes_by_ref(

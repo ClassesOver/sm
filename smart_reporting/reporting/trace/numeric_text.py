@@ -932,7 +932,7 @@ def _derived_difference_matches(entry: _DerivedValue, number: Decimal, quantum: 
         direction = 1 if directed in {'高于', '多于', '超过', '多', '高'} else -1
         return (number >= 0 and difference * direction >= 0
                 and abs(difference).quantize(quantum, rounding=ROUND_HALF_UP) == number)
-    if re.search('相差|差距|差异', claim):
+    if re.search('相差|差额|差距|差异', claim):
         return number >= 0 and abs(difference).quantize(quantum, rounding=ROUND_HALF_UP) == number
     return difference.quantize(quantum, rounding=ROUND_HALF_UP) == number
 
@@ -1276,6 +1276,9 @@ def _statement_at(markdown: str, index: int) -> str:
             + re.split(r'[。！？；;\n]', markdown[index:])[0])
 
 
+NEUTRAL_DIFFERENCE_PREFIX = re.compile(r"(?:相差|差额|差距)(?:了|约|为|达)?\s*$")
+
+
 def registered_decline_magnitude(
     number: Decimal, unit: str, candidates: Iterable[Decimal], *, prefix: str, quantum: Decimal,
 ) -> bool:
@@ -1285,9 +1288,9 @@ def registered_decline_magnitude(
     必须按此认定为已登记数值，否则正确正文会被替换为待核实。
     """
     # 简写“实际降9.83%”“较预算少4.34万人次”同样是下降幅度；“至少”“最少”“减少”等不按单字处理。
-    # “超支41.69亿元”“相差约6.06亿元”：差额列按预算减实际登记为负，这些词后接的是幅度。
+    # 中性差额（相差/差额/差距）必须由操作数验证，不能借用全局负值的幅度。
     if number <= 0 or not re.search(
-        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少]|超支|超出|相差|差额|差距|缺口)"
+        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少]|超支|超出|缺口)"
         r"(?:了|约|为|达)?\s*$", prefix,
     ):
         return False
@@ -1595,6 +1598,9 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
         quantum = Decimal(1).scaleb(-digits)
         candidates = known.get(unit, ())
+        if NEUTRAL_DIFFERENCE_PREFIX.search(prefix):
+            supported = derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
+            return ("registered", _display_precision(number_text)) if supported else ("missing", number_text)
         if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
                 or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
                 or bounded_by_registered(number, number_text, candidates, prefix=prefix)
