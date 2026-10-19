@@ -772,3 +772,68 @@ def test_unreferenced_quality_warning_does_not_block_release() -> None:
         citations=citations,
     )
     assert gate["formalReleaseAllowed"] is True
+
+
+def _catalog(*metrics):
+    return _finalize_semantic_catalog(
+        analysis_plans={"analysis_001": {"datasetIds": ["dataset-1"], "organizationGrain": ["month"]}},
+        fact_bundles={"analysis_001": {"metrics": list(metrics)}},
+        dataset_ids=("dataset-1",),
+    )
+
+
+def test_semantic_catalog_keeps_consistently_periodless_single_period_metrics() -> None:
+    # 回放：项目预算合同付款数据没有期间字段，三个指标全被判为语义不完整，
+    # 第5章 metricDefinitions 为空，52 条 claim 被告警为“引用了未冻结指标”。
+    metric = {"field": "budget_project_amount", "metricCodes": ["project_budget"], "displayName": "预算金额",
+              "formula": "sum(budget_project_amount)", "unit": "元", "periodStart": None, "periodEnd": None,
+              "periodField": None, "periodValues": []}
+    _semantics, definitions, findings = _catalog(metric)
+    assert [(item["code"], item["name"]) for item in definitions] == [
+        ("budget_project_amount", "预算金额"), ("project_budget", "预算金额"),
+    ]
+    assert definitions[0]["periodBasis"] == "未提供统计期间（单期累计）"
+    assert findings == []
+    # 同一指标部分事实有期间、部分没有，仍是不完整定义。
+    dated = {**metric, "periodStart": "2025-01-01", "periodEnd": "2025-12-01", "periodField": "month"}
+    _semantics, definitions, findings = _catalog(metric, dated)
+    assert definitions == [] and {item["subjectId"] for item in findings} == {"project_budget", "budget_project_amount"}
+
+
+def test_chart_binding_accepts_field_aliases_subperiods_and_picks_best_block() -> None:
+    from smart_reporting.reporting.tools.sections import (
+        chart_block_candidates,
+        metric_equivalents,
+        metric_matches,
+        period_within,
+    )
+
+    # 回放：第3章两张图因期间去掉末尾零值月份、且多段正文讨论同一指标被整张排除；
+    # 第5章 claim 用字段别名 budget_project_amount 被判与图表 project_budget 冲突。
+    definitions = [
+        SimpleNamespace(code=code, definition="预算金额；sum(budget_project_amount)", unit="元",
+                        period_basis="未提供统计期间（单期累计）")
+        for code in ("budget_project_amount", "project_budget")
+    ] + [SimpleNamespace(code="contract", definition="合同金额；sum(contract_amount)", unit="元",
+                         period_basis="未提供统计期间（单期累计）")]
+    equivalents = metric_equivalents(definitions)
+    assert metric_matches("budget_project_amount", ("project_budget",), equivalents)
+    assert not metric_matches("contract", ("project_budget",), equivalents)
+    assert period_within("2025-01至2025-10", "2025-01至2025-12")
+    assert not period_within("2025-01至2025-12", "2025-01至2025-10")
+
+    def claim(claim_id, metric):
+        return SimpleNamespace(claim_id=claim_id, metric_code=metric, current_period="2025-01至2025-12",
+                               citation_ids=("c1",), chart_ids=())
+
+    claims = {item.claim_id: item for item in (
+        claim("a", "income"), claim("b", "income"), claim("c", "visits"), claim("d", "other"))}
+    blocks = [SimpleNamespace(block_id="b1", claim_ids=("a",)), SimpleNamespace(block_id="b2", claim_ids=("b", "c")),
+              SimpleNamespace(block_id="b3", claim_ids=("d",))]
+    chart = SimpleNamespace(chart_id="chart", metric_codes=("income", "visits"), current_period="2025-01至2025-10",
+                            citation_ids=("c1",), source_dataset_id="ds")
+    assert [item.block_id for item in chart_block_candidates(chart, blocks, claims, {"c1": "ds"}, {})] == ["b2"]
+    single = SimpleNamespace(**{**vars(chart), "metric_codes": ("income",)})
+    assert [item.block_id for item in chart_block_candidates(single, blocks, claims, {"c1": "ds"}, {})] == ["b1"]
+    unrelated = SimpleNamespace(**{**vars(chart), "metric_codes": ("cost",)})
+    assert chart_block_candidates(unrelated, blocks, claims, {"c1": "ds"}, {}) == []

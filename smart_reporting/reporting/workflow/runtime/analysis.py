@@ -22,12 +22,14 @@ from ...hospital_operation.narrative_outline import (
     NarrativeOutline,
     NarrativeOutlineCandidate,
     freeze_narrative_outline,
+    repair_narrative_candidate,
 )
 from ...hospital_operation.narrative_planner import (
     NarrativeContentBudget,
     build_compatible_report_outline,
     build_fallback_narrative_candidate,
     build_narrative_planning_batches,
+    default_report_title,
 )
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
@@ -2392,8 +2394,11 @@ class RuntimeAnalysisMixin:
         state = self._state(run_context)
         if REPORT_OUTLINE_STATE_KEY not in state:
             plan = DetailedAnalysisPlan.model_validate(state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY])
+            envelope = self._envelope(run_context)
             outline = ReportOutline(
-                reportType=self._envelope(run_context).report_type, title="运营分析报告",
+                reportType=envelope.report_type,
+                title=default_report_title(envelope.report_goal, envelope.period.start,
+                                           envelope.period.end, envelope.report_type),
                 sections=[{
                     "code": "section_001", "sectionNumber": "1",
                     "title": "分析任务执行分区",
@@ -2420,6 +2425,25 @@ class RuntimeAnalysisMixin:
         """模型提出章节候选；服务端冻结，纠错失败后保留确定性发现归属。"""
 
         reason = ""
+        repairs = {"unknown": 0, "duplicate": 0, "reassigned": 0}
+
+        def repaired(candidate: NarrativeOutlineCandidate, target: FindingGraph) -> NarrativeOutlineCandidate:
+            fixed, counts = repair_narrative_candidate(candidate, graph=target)
+            if fixed is None:
+                raise ValueError(f"章节规划修正后没有可用章节（未知编号 {counts['unknown']} 个）")
+            for key, value in counts.items():
+                repairs[key] += value
+            return fixed
+
+        def repair_warnings() -> tuple[dict[str, Any], ...]:
+            if not any(repairs.values()):
+                return ()
+            return ({
+                "code": "report_narrative_outline_repaired",
+                "message": (f"章节规划中 {repairs['unknown']} 个未知、{repairs['duplicate']} 个重复的发现编号已去除，"
+                            f"{repairs['reassigned']} 个发现已按分析项归入章节；章节划分沿用模型规划。"),
+            },)
+
         try:
             # UTF-8 字节数作为 token 数的保守上界，另外预留外层标题与纠错信息。
             budget = _analysis_summary_input_token_budget(self._narrative_outline_agent, run_context)
@@ -2459,7 +2483,7 @@ class RuntimeAnalysisMixin:
                             attempt=min(attempt, 1),
                             failure_kind="schema_failure" if attempt else None,
                         )
-                        candidate = NarrativeOutlineCandidate.model_validate(candidate)
+                        candidate = repaired(NarrativeOutlineCandidate.model_validate(candidate), batch_graph)
                         freeze_narrative_outline(candidate, graph=batch_graph, analyses=analyses)
                         accepted = candidate
                         break
@@ -2484,7 +2508,7 @@ class RuntimeAnalysisMixin:
                     index + 1, len(batches), len(ids),
                 )
             if len(planned) == 1:
-                return freeze_narrative_outline(planned[0], graph=graph, analyses=analyses), ()
+                return freeze_narrative_outline(planned[0], graph=graph, analyses=analyses), repair_warnings()
             # 批次只是主题候选，不能直接拼接成最终章节。共同范围按候选描述，
             # 完整 findingId 目录留给全局规划重新分配，冻结仍逐一核对原始图谱。
             cards = {card.finding_id: card for card in graph.findings}
@@ -2525,8 +2549,8 @@ class RuntimeAnalysisMixin:
                         call_budget=call_budget, attempt=min(attempt, 1),
                         failure_kind="schema_failure" if attempt else None,
                     )
-                    combined = NarrativeOutlineCandidate.model_validate(candidate)
-                    return freeze_narrative_outline(combined, graph=graph, analyses=analyses), ()
+                    combined = repaired(NarrativeOutlineCandidate.model_validate(candidate), graph)
+                    return freeze_narrative_outline(combined, graph=graph, analyses=analyses), repair_warnings()
                 except (ValueError, ReportingError, ModelProviderError) as error:
                     reason = str(error)[:2000]
                     if isinstance(error, ReportingError) and error.code == "report_planner_context_budget_exceeded":
@@ -4573,7 +4597,11 @@ def _finalize_semantic_catalog(
     metric_definitions = []
     for code in sorted(facts_by_code):
         facts = facts_by_code[code]
-        name = code
+        # 目录名称给模型看：用事实显示名（“预算金额”），不是字段编码；显示名不唯一时退回编码。
+        display_names = {
+            str(fact.get("displayName") or "").split("，")[0].split(",")[0].strip() for fact in facts
+        }
+        name = next(iter(display_names)) if len(display_names) == 1 and next(iter(display_names)) else code
         formulas = sorted(
             {
                 formula
@@ -4598,14 +4626,23 @@ def _finalize_semantic_catalog(
         # 同一指标可在当前期、同比期等多个冻结事实中重复出现。目录只表达其
         # 唯一计算定义和覆盖期间，不能把多个完整期间误判为定义冲突；但每条事实
         # 仍必须具备完整 formula、unit 和期间边界，避免用部分证据补全语义目录。
+        # 回放：项目预算合同付款数据没有期间字段，全部事实都只有单期累计值；这类一致
+        # 无期间的指标按单期登记，部分有期间、部分没有的仍判为不完整。
+        periodless = all(
+            not fact.get("periodStart") and not fact.get("periodEnd") and not fact.get("periodField")
+            and not fact.get("periodValues")
+            for fact in facts
+        )
         if (
             any(
                 not isinstance(fact.get("formula"), str)
                 or not fact["formula"]
-                or not isinstance(fact.get("periodStart"), str)
-                or not fact["periodStart"]
-                or not isinstance(fact.get("periodEnd"), str)
-                or not fact["periodEnd"]
+                or not periodless and (
+                    not isinstance(fact.get("periodStart"), str)
+                    or not fact["periodStart"]
+                    or not isinstance(fact.get("periodEnd"), str)
+                    or not fact["periodEnd"]
+                )
                 for fact in facts
             )
             or len(formulas) != 1
@@ -4616,9 +4653,9 @@ def _finalize_semantic_catalog(
                 missing_fields.append("formula")
             if not units_valid:
                 missing_fields.append("unit")
-            if not periods or any(
+            if not periodless and (not periods or any(
                 not fact.get("periodStart") or not fact.get("periodEnd") for fact in facts
-            ):
+            )):
                 missing_fields.append("period")
             findings.append(
                 {
@@ -4633,7 +4670,7 @@ def _finalize_semantic_catalog(
         period_basis = "；".join(
             period_start if period_start == period_end else f"{period_start} 至 {period_end}"
             for period_start, period_end in periods
-        )
+        ) or "未提供统计期间（单期累计）"
         metric_definitions.append(
             {
                 "code": code,

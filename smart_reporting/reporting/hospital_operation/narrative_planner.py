@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from .findings import FindingCard, FindingGraph
@@ -16,6 +18,32 @@ from .outline import ReportOutline
 class NarrativeContentBudget:
     # 章节数量由管理主题决定；发现摘要仍需留在单次章节模型输入预算内。
     max_findings_per_section: int = 500
+
+
+_REQUESTED_TITLE = re.compile(
+    r"(?:生成|撰写|编制|形成|出具|输出|制作)(?:一份|一篇)?(?P<title>[^，。；,;：:\n“”\"《》]{4,40}?报告)"
+)
+
+
+def default_report_title(goal: str, start: date, end: date, report_type: str | None) -> str:
+    """叙事提纲的默认报告标题：请求写明“生成××报告”时沿用，否则按期间与报告类型拼出。
+
+    回放：占位标题“运营分析报告”在章节规划降级时原样成为封面标题，读者看不出年度与范围。
+    """
+    if match := _REQUESTED_TITLE.search(goal):
+        title = re.sub(r"正式|完整|详细", "", match["title"]).strip()
+        if len(title) >= 6 and re.search(r"\d{4}年|医院|运营|经营", title):
+            return title
+    if start.year != end.year:
+        period = f"{start.year}—{end.year}年"
+    elif (start.month, end.month) == (1, 12):
+        period = f"{start.year}年"
+    elif start.month == end.month:
+        period = f"{start.year}年{start.month}月"
+    else:
+        period = f"{start.year}年{start.month}—{end.month}月"
+    kind = {"comprehensive": "综合", "topic": "专题"}.get(report_type or "", "")
+    return f"{period}{kind}运营分析报告"
 
 
 def rank_finding(finding: FindingCard) -> tuple[int, int, int]:
@@ -153,6 +181,16 @@ def build_fallback_narrative_candidate(
         if any("\u4e00" <= char <= "\u9fff" for char in card.title):
             return card.title
         return "；".join(dict.fromkeys(names[aid] for aid in card.analysis_ids if aid in names)) or card.title
+    def group_title(group: Sequence[str]) -> str:
+        # 回放中把组内全部发现标题用“；”拼接成章节名（数百字）；改用分析名称，
+        # 最多两个，超过时加“等”。
+        analysis_names = list(dict.fromkeys(names[aid] for item in group for aid in cards[item].analysis_ids
+                                            if aid in names))
+        if not analysis_names:
+            return display_title(cards[group[0]])[:30]
+        title = "、".join(analysis_names[:2]) + ("等" if len(analysis_names) > 2 else "")
+        return title if len(title) <= 30 else analysis_names[0][:30]
+
     # 统计关系和常量等限制保留在附录，不占用经营主题的正文容量。
     body = tuple(card for card in graph.findings
                  if card.priority == 'high' or (card.priority != 'low'
@@ -172,7 +210,7 @@ def build_fallback_narrative_candidate(
         return NarrativeOutlineCandidate(
             title=title, snapshotHash=graph.snapshot_hash,
             sections=tuple({
-                "title": "；".join(dict.fromkeys(display_title(cards[item]) for item in group))[:200],
+                "title": group_title(group),
                 "findingIds": group,
                 "objective": "解释已核验发现并提出管理动作",
                 "groupingReason": "依据共享指标、管理主题和已登记关系确定性分组",

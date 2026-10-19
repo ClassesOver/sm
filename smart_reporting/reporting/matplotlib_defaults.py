@@ -303,10 +303,98 @@ def _apply_text_defaults(module: Any) -> None:
     text_class.set_text = set_text
 
 
+_LEGEND_LOCATIONS = (
+    "upper left", "upper right", "lower left", "lower right",
+    "upper center", "lower center", "center left", "center right",
+)
+
+
+def _legend_overlap(legend: Any, axes: list[Any], renderer: Any) -> float:
+    """图例框压住的折线采样点、柱形与数据标签数；同位置的双轴一并计入。"""
+
+    box = legend.get_window_extent(renderer)
+    score = 0.0
+    for ax in axes:
+        for line in ax.get_lines():
+            if not line.get_visible():
+                continue
+            points = line.get_transform().transform(line.get_xydata())
+            for (x0, y0), (x1, y1) in zip(points, points[1:], strict=False):
+                score += sum(box.contains(x0 + (x1 - x0) * step / 12, y0 + (y1 - y0) * step / 12)
+                             for step in range(13))
+            if len(points) == 1:
+                score += box.contains(*points[0])
+        for artist in (*ax.patches, *ax.texts):
+            if artist.get_visible() and box.overlaps(artist.get_window_extent(renderer)):
+                score += 12
+    return score
+
+
+def _place_legends(figure: Any) -> None:
+    """保存前把压住数据的轴内图例移到重叠最少的轴内位置；脚本用 bbox_to_anchor 自定位置的不动。"""
+
+    # 自动缩放与布局在绘制时才落定；不先布局时双轴折线仍按旧坐标计算重叠。
+    figure.draw_without_rendering()
+    renderer = figure.canvas.get_renderer()
+    for ax in figure.axes:
+        legend = ax.get_legend()
+        if legend is None or not legend.get_visible() or getattr(legend, "_bbox_to_anchor", None) is not None:
+            continue
+        twins = [other for other in figure.axes
+                 if other.get_position().bounds == ax.get_position().bounds]
+        original = legend._loc
+        overlap = _legend_overlap(legend, twins, renderer)
+        if overlap == 0:
+            continue
+        scores = []
+        for location in _LEGEND_LOCATIONS:
+            legend.set_loc(location)
+            scores.append((_legend_overlap(legend, twins, renderer), location))
+        best, location = min(scores, key=lambda item: item[0])
+        if best > 0 and all(item.get_yscale() == "linear" for item in twins):
+            # 轴内各处都压数据（多条折线铺满全幅）：抬高纵轴上限，在数据上方留出图例高度的空白带。
+            share = legend.get_window_extent(renderer).height / ax.get_window_extent(renderer).height
+            if share < 0.4:
+                limits = [item.get_ylim() for item in twins]
+                for item, (bottom, top) in zip(twins, limits, strict=True):
+                    item.set_ylim(bottom, bottom + (top - bottom) / (1 - share - 0.04))
+                legend.set_loc("upper center")
+                headroom = _legend_overlap(legend, twins, renderer)
+                if headroom < best:
+                    best, location = headroom, "upper center"
+                else:
+                    for item, limit in zip(twins, limits, strict=True):
+                        item.set_ylim(*limit)
+        if best < overlap:
+            legend.set_loc(location)
+        else:
+            legend._loc = original
+
+
+def _apply_figure_defaults(module: Any) -> None:
+    """图例压住折线、柱形或数据标签时自动换到空白处；任何异常都按原图保存。"""
+
+    figure_class = module.Figure
+    if getattr(figure_class.savefig, "_reporting_legend", False):
+        return
+    original = figure_class.savefig
+
+    def savefig(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            _place_legends(self)
+        except Exception:
+            pass
+        return original(self, *args, **kwargs)
+
+    savefig._reporting_legend = True  # type: ignore[attr-defined]
+    figure_class.savefig = savefig
+
+
 def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
     hooks = _PostImportHooks({
         "kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults,
         "matplotlib.ticker": _apply_ticker_defaults, "matplotlib.text": _apply_text_defaults,
+        "matplotlib.figure": _apply_figure_defaults,
     })
     sys.meta_path.insert(0, hooks)
     # 包装器之前已导入的模块直接应用默认值。
@@ -318,6 +406,8 @@ def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
         _apply_ticker_defaults(sys.modules["matplotlib.ticker"])
     if "matplotlib.text" in sys.modules:
         _apply_text_defaults(sys.modules["matplotlib.text"])
+    if "matplotlib.figure" in sys.modules:
+        _apply_figure_defaults(sys.modules["matplotlib.figure"])
     return hooks
 
 

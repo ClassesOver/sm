@@ -43,7 +43,8 @@ async def test_evidence_stage_creates_internal_partition_without_outline_model(a
             return state
 
         def _envelope(self, context):
-            return SimpleNamespace(report_type="comprehensive")
+            return SimpleNamespace(report_type="comprehensive", report_goal="分析收入与成本",
+                                   period=SimpleNamespace(start=date(2025, 1, 1), end=date(2025, 12, 31)))
 
         async def run_reporting_analysis(self, step_input, context):
             observed["outline"] = _frozen_outline(state)
@@ -52,6 +53,7 @@ async def test_evidence_stage_creates_internal_partition_without_outline_model(a
 
     await Runtime().run_analysis_evidence(None, RunContext(run_id="run-1", session_id="session-1"))
     assert observed["outline"].sections[0].analysis_ids == ("analysis_001", "analysis_002", "analysis_003")
+    assert observed["outline"].title == "2025年综合运营分析报告"
     assert "_narrative_evidence_only" not in state
 
 

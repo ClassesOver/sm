@@ -1262,8 +1262,59 @@ def test_executive_summary_takes_each_section_conclusion():
     assert insert_executive_summary(markdown, sections[:1]) == markdown
 
 
+def test_executive_summary_skips_unverified_sentences_raw_values_and_long_titles():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        SUMMARY_END_SENTINEL,
+        SUMMARY_SENTINEL,
+        insert_executive_summary,
+    )
+
+    # 回放：领导首页出现“数值待核实”、括号原值和拼接成的长章节名。
+    long_title = "预算人次比较变化，也称预算门诊人次；预算总医疗收入比较变化；预算药品收入比较变化；实际人次趋势"
+    sections = [{"code": "a", "title": long_title}, {"code": "b", "title": "成本结构"}]
+    markdown = (
+        "[[section:a]]\n\n## 1. 预算\n\n实际支出相当于预算支出的数值待核实。其中1月偏差最大。\n\n"
+        "全院收入合计111.24亿元（11,123,541,503元），较上年增长。\n\n"
+        "[[section:b]]\n\n## 2. 成本结构\n\n成本合计数值待核实。该口径为含负值的净额口径。\n\n人员支出占比最高，为35.32%。\n"
+    )
+    result = insert_executive_summary(markdown, sections)
+    summary = result[result.index(SUMMARY_SENTINEL):result.index(SUMMARY_END_SENTINEL)]
+    assert "- **预算人次比较变化等**：全院收入合计111.24亿元，较上年增长。" in summary
+    assert "- **成本结构**：人员支出占比最高，为35.32%。" in summary
+    assert "待核实" not in summary and "1月偏差最大" not in summary and "净额口径" not in summary
+
+
+def test_render_collapses_identical_listed_values():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import collapse_repeated_values
+
+    assert collapse_repeated_values("全年合计分别为0元[[claim:a]]、0元[[claim:b]]、0元、0元。") == "全年合计均为0元[[claim:a]]。"
+    assert collapse_repeated_values("分别为0元、0元、5元。") == "分别为0元、0元、5元。"
+    assert collapse_repeated_values("分别为10%、10.5%。") == "分别为10%、10.5%。"
+
+
+def test_render_transposes_tall_single_column_server_tables():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        compact_single_column_tables,
+    )
+
+    # 回放附表：“收入金额（亿元）”逐月一行，11行只有一列数字，占半页。
+    rows = "".join(f"| 2025年{month}月 | {month}.00 |\n" for month in range(1, 12))
+    block = f"[[table:t1]]\n|  | 收入金额（亿元） |\n| --- | ---: |\n{rows}\n[[/table:t1]]"
+    compact = compact_single_column_tables("表名\n\n" + block + "\n")
+    assert compact.startswith("表名\n\n[[table:t1]]\n| 2025年 | 1月 | 2月 | 3月 | 4月 | 5月 | 6月 |")
+    assert "| 收入金额（亿元） | 1.00 | 2.00 | 3.00 | 4.00 | 5.00 | 6.00 |" in compact
+    assert "| 2025年 | 7月 | 8月 | 9月 | 10月 | 11月 |" in compact and compact.rstrip().endswith("[[/table:t1]]")
+    # 行数少或多列的表不动。
+    short = "[[table:t2]]\n|  | 收入 |\n| --- | ---: |\n| 2025年1月 | 1.00 |\n\n[[/table:t2]]"
+    wide = block.replace("收入金额（亿元） |", "收入 | 成本 |").replace("---: |", "---: | ---: |")
+    assert compact_single_column_tables(short) == short
+    assert compact_single_column_tables(wide) == wide
+
+
 def test_model_table_numeric_columns_are_right_aligned():
-    from smart_reporting.reporting.delivery.report_runtime.markdown import align_numeric_table_columns
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        align_numeric_table_columns,
+    )
 
     table = (
         "| 月份 | 收入总额 | 环比差额（万元） | 环比幅度 | 说明 |\n"
@@ -1275,3 +1326,23 @@ def test_model_table_numeric_columns_are_right_aligned():
     # 数值列右对齐；文本列与已声明居中的列不动。
     assert "| --- | ---: | ---: | :---: | --- |" in aligned
     assert align_numeric_table_columns("| a |\n| --- |") == "| a |\n| --- |"
+
+
+def test_render_shows_large_yuan_amounts_in_readable_units() -> None:
+    from smart_reporting.reporting.delivery.report_runtime.markdown import readable_large_amounts
+
+    # 回放：正文 68 处“3,046,407,434元”式全位数金额，领导与财务读者难以读出量级。
+    text = (
+        "药品收入3,046,407,434元[[claim:number-1]]、占27.39%；其他费用91,342,503元，"
+        "差额为-7,977,183元，零星支出52,300元。预算人次7,275,108人次，门诊644,217人次。\n\n"
+        "合计99.12亿元（9,911,520,144元），覆盖9个月。\n\n"
+        "| 项目 | 金额 |\n| --- | --- |\n| 药品 | 3,046,407,434元 |\n\n"
+        "![图：药品3,046,407,434元](chart.png)"
+    )
+    rendered = readable_large_amounts(text)
+    assert "药品收入30.46亿元[[claim:number-1]]" in rendered
+    assert "其他费用9,134.25万元" in rendered and "差额为-797.72万元" in rendered
+    assert "零星支出52,300元" in rendered
+    assert "预算人次727.51万人次" in rendered and "门诊644,217人次" in rendered
+    assert "（9,911,520,144元）" in rendered
+    assert "| 药品 | 3,046,407,434元 |" in rendered and "![图：药品3,046,407,434元]" in rendered

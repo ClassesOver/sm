@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -60,8 +61,10 @@ def project_analysis_findings(
     findings: list[FindingCard] = []
 
     def metric_label(fact: Mapping[str, Any]) -> str:
-        if fact.get('displayName'):
-            return str(fact['displayName'])
+        # 显示名常带别名（“收入金额，也称医疗收入金额”）：发现标题只用主名称，别名进标题后会被
+        # 拼进章节名和核心结论。
+        if main := re.split(r"[，,；;]", str(fact.get('displayName') or ''), maxsplit=1)[0].strip():
+            return main
         labels = {str(definitions[code]['description']) for code in fact.get('metricCodes', ())
                   if definitions.get(code, {}).get('description')}
         if not labels and fact.get('fieldRef'):

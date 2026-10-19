@@ -517,6 +517,23 @@ def test_billion_yuan_monthly_columns_use_yi_yuan() -> None:
     assert '| 2025年10月 | 9.26 |' in markdown
 
 
+def test_hundred_million_columns_use_yi_yuan_without_reaching_one_billion() -> None:
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import PeriodValue
+
+    # 回放：同表“实际总医疗收入（亿元）”旁的实际药品收入（月度约2.7亿元）写成“27,201.40万元”。
+    bundle = _bundle()
+    metric = bundle.metrics[0].model_copy(update={
+        'period_values': (PeriodValue(period='2025-09', value=272014000.0),
+                          PeriodValue(period='2025-10', value=253513500.0)),
+        'total': 525527500.0,
+    })
+    trace, markdown = build_analysis_table(
+        bundle.model_copy(update={'metrics': (metric,)}), fact_file_resource_id=FACT_RESOURCE,
+    )
+    assert trace.column_keys == ('收入（亿元）',)
+    assert '| 2025年9月 | 2.72 |' in markdown
+
+
 def test_server_table_numbers_are_right_aligned_in_rendered_html() -> None:
     from markdown_it import MarkdownIt
 

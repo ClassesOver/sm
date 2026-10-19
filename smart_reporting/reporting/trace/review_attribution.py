@@ -286,7 +286,10 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
         for right in labels - {left}:
             for label, written in zip((left, right), _operand_names(left, right), strict=True):
                 names.setdefault(written[-1], set()).add(label)
-    names = {name: owners for name, owners in names.items() if len(owners) == 1}
+    # 回放：“出院人次”与“出院者占用床日数”去掉共同前缀后只剩单位“人次”，任何“644,217人次”
+    # 都被当成点名了出院人次；简称不能是单位，查找名称时也先去掉数值及其单位。
+    names = {name: owners for name, owners in names.items()
+             if len(owners) == 1 and not _VALUE.fullmatch(f"1{name}")}
     # (业务名称或 None, 单位, 原值)：None 表示派生、对账或补证数值，对上时不判定归属。
     values: list[tuple[str | None, str, Decimal]] = []
     for token, value, unit, _target in _frozen_number_entries(contents):
@@ -296,7 +299,8 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
         values.extend((None, unit, number) for number in numbers)
     warnings: list[str] = []
     for clause in _CLAUSE_BREAK.split(text):
-        written = [name for name in names if name in clause]
+        wording = _VALUE.sub("，", clause)
+        written = [name for name in names if name in wording]
         written = [name for name in written if not any(name != other and name in other for other in written)]
         named = sorted({label for name in written for label in names[name]})
         if len(named) != 1:

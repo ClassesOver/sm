@@ -150,3 +150,37 @@ def test_reporting_script_runner_keeps_numbers_whole_across_title_breaks(tmp_pat
         # 图内年月与正文一致写作中文；带日的日期与文件名不动。
         "数据期间：2025年1月至2025年11月；文件 2025-01-01.csv", "2025年1月", "2025年2月",
     ]
+
+
+def test_reporting_script_runner_moves_legends_off_plotted_data(tmp_path: Path) -> None:
+    # 回放：双轴工作量图把图例放在上方居中，压住7月出院人次的峰值点。
+    script_path = tmp_path / "chart.py"
+    output_path = tmp_path / "legend.txt"
+    script_path.write_text(
+        "from pathlib import Path\n"
+        "import matplotlib.pyplot as plt\n"
+        "fig, (ax, kept, anchored) = plt.subplots(1, 3, figsize=(12, 4))\n"
+        "months = list(range(1, 11))\n"
+        "ax.plot(months, [55, 53, 64, 63, 57, 59, 61, 59, 61, 42], label='门诊人次')\n"
+        "right = ax.twinx()\n"
+        "right.plot(months, [1.75, 1.5, 2.04, 2.0, 1.94, 1.96, 2.12, 2.09, 2.1, 1.45], label='出院人次')\n"
+        "lines = ax.get_lines() + right.get_lines()\n"
+        "ax.legend(lines, [line.get_label() for line in lines], loc='upper center')\n"
+        "kept.plot([0, 1], [0, 0.1], label='平稳'); kept.set_ylim(0, 1); kept.legend(loc='upper right')\n"
+        "anchored.plot([0, 1], [1, 1], label='固定'); anchored.legend(loc='upper center', bbox_to_anchor=(0.5, 1))\n"
+        f"fig.savefig({str(tmp_path / 'chart.png')!r})\n"
+        f"Path({str(output_path)!r}).write_text('|'.join(str(item.get_legend()._loc) for item in (ax, kept, anchored)),"
+        " encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = (
+        "from smart_reporting.reporting.matplotlib_defaults import run_reporting_script;"
+        f"run_reporting_script({str(script_path)!r}, {str(tmp_path / 'runtime')!r})"
+    )
+
+    result = subprocess.run([sys.executable, "-B", "-c", command], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    moved, kept, anchored = output_path.read_text(encoding="utf-8").split("|")
+    # 9 = upper center；移到不压数据的位置，原本不重叠与脚本自定锚点的不动。
+    assert moved not in {"9", "0"} and kept == "1" and anchored == "9"

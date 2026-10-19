@@ -77,3 +77,15 @@ def test_missing_period_selection_is_a_numeric_notice():
     _, refs, notices = render_bound_numbers('2026年1月实际总医疗收入为' + token, source(), key='s:b')
     assert not refs
     assert notices[0].kind == 'numeric_unverified'
+
+
+@pytest.mark.parametrize(('total', 'resolved'), [(110, True), (111, False)])
+def test_identical_duplicate_facts_resolve_instead_of_revoking(total, resolved):
+    # 回放：成本金额在多个分析中各自登记且原值相同，“1—9月成本金额合计”因候选不唯一被撤销为待核实。
+    document = json.loads(source()[0])
+    duplicate = {**document['metrics'][2], 'factId': 'fact-' + 'e' * 16, 'total': total,
+                 'periodValues': [{'period': '2025-01', 'value': 45}, {'period': '2025-02', 'value': total - 45}]}
+    document['metrics'].append(duplicate)
+    token = '{{value:fact-bbbbbbbbbbbbbbbb:periodTotals.0-1:元}}'
+    text, refs, _ = render_bound_numbers('2025年1—2月，成本金额合计' + token + '。', [json.dumps(document)], key='s:b')
+    assert ('110元' in text and len(refs) == 1) is resolved, text

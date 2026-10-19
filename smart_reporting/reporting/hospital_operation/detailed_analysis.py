@@ -463,13 +463,15 @@ def profile_csv_dataset(
     if dataframe.height == 0:
         quality_warnings.append("数据集为空，无法进行趋势、分布和相关性分析。")
     if duplicate_time_index:
+        # 质量提示会进入章节写作上下文，模型常原样抄进正文：用管理层能读懂的说法。
         quality_warnings.append(
-            "期间索引存在重复，行级 ACF/PACF 和季节性统计已禁用；需先按月及组织粒度聚合。"
+            "同一月份有多条科室或项目明细记录，未在明细层面做趋势与季节性检验；"
+            "趋势判断须以按月及科室汇总后的数据为准。"
         )
     if duplicate_row_count:
-        quality_warnings.append(f"数据集包含 {duplicate_row_count} 行重复记录。")
+        quality_warnings.append(f"明细中有 {duplicate_row_count} 条完全重复的记录。")
     if empty_row_count:
-        quality_warnings.append(f"数据集包含 {empty_row_count} 行空记录。")
+        quality_warnings.append(f"明细中有 {empty_row_count} 条各项均为空的记录。")
     raw_alerts = profile.get("alerts", ())
     if isinstance(raw_alerts, list):
         quality_warnings.extend(
