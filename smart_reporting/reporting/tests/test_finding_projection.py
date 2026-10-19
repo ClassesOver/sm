@@ -233,3 +233,15 @@ def test_supplemental_attribution_without_authoritative_source_fact_is_not_direc
     )
     attribution = next(item for item in result if item.title == "伪造分解")
     assert attribution.evidence_level != "direct_decomposition"
+
+
+def test_finding_titles_use_the_main_display_name_without_aliases():
+    # 回放：“收入金额，也称医疗收入金额趋势”进入章节名与核心结论。
+    result = project_analysis_findings('analysis_001', facts(metrics=[{
+        'datasetId': 'dataset-abc123', 'datasetSha256': 'a' * 64, 'periodRoles': ['current'],
+        'field': 'income', 'fieldRef': 'income', 'displayName': '收入金额，也称医疗收入金额',
+        'aggregation': 'sum', 'formula': 'sum(income)', 'total': 30,
+        'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+        'periodValues': [{'period': '2025-01', 'value': 10}, {'period': '2025-02', 'value': 20}],
+    }]), None, snapshot_hash='b' * 64, citation_ids=('citation_001',))
+    assert result[0].title == '收入金额趋势'

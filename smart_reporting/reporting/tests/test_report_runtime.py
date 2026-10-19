@@ -1270,18 +1270,18 @@ def test_executive_summary_skips_unverified_sentences_raw_values_and_long_titles
     )
 
     # 回放：领导首页出现“数值待核实”、括号原值和拼接成的长章节名。
-    long_title = "预算人次比较变化；预算总医疗收入比较变化；预算药品收入比较变化；实际人次趋势"
+    long_title = "预算人次比较变化，也称预算门诊人次；预算总医疗收入比较变化；预算药品收入比较变化；实际人次趋势"
     sections = [{"code": "a", "title": long_title}, {"code": "b", "title": "成本结构"}]
     markdown = (
-        "[[section:a]]\n\n## 1. 预算\n\n实际支出相当于预算支出的数值待核实。"
+        "[[section:a]]\n\n## 1. 预算\n\n实际支出相当于预算支出的数值待核实。其中1月偏差最大。\n\n"
         "全院收入合计111.24亿元（11,123,541,503元），较上年增长。\n\n"
-        "[[section:b]]\n\n## 2. 成本结构\n\n成本合计数值待核实。\n\n人员支出占比最高，为35.32%。\n"
+        "[[section:b]]\n\n## 2. 成本结构\n\n成本合计数值待核实。该口径为含负值的净额口径。\n\n人员支出占比最高，为35.32%。\n"
     )
     result = insert_executive_summary(markdown, sections)
     summary = result[result.index(SUMMARY_SENTINEL):result.index(SUMMARY_END_SENTINEL)]
     assert "- **预算人次比较变化等**：全院收入合计111.24亿元，较上年增长。" in summary
     assert "- **成本结构**：人员支出占比最高，为35.32%。" in summary
-    assert "待核实" not in summary
+    assert "待核实" not in summary and "1月偏差最大" not in summary and "净额口径" not in summary
 
 
 def test_render_collapses_identical_listed_values():
@@ -1290,6 +1290,25 @@ def test_render_collapses_identical_listed_values():
     assert collapse_repeated_values("全年合计分别为0元[[claim:a]]、0元[[claim:b]]、0元、0元。") == "全年合计均为0元[[claim:a]]。"
     assert collapse_repeated_values("分别为0元、0元、5元。") == "分别为0元、0元、5元。"
     assert collapse_repeated_values("分别为10%、10.5%。") == "分别为10%、10.5%。"
+
+
+def test_render_transposes_tall_single_column_server_tables():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        compact_single_column_tables,
+    )
+
+    # 回放附表：“收入金额（亿元）”逐月一行，11行只有一列数字，占半页。
+    rows = "".join(f"| 2025年{month}月 | {month}.00 |\n" for month in range(1, 12))
+    block = f"[[table:t1]]\n|  | 收入金额（亿元） |\n| --- | ---: |\n{rows}\n[[/table:t1]]"
+    compact = compact_single_column_tables("表名\n\n" + block + "\n")
+    assert compact.startswith("表名\n\n[[table:t1]]\n| 2025年 | 1月 | 2月 | 3月 | 4月 | 5月 | 6月 |")
+    assert "| 收入金额（亿元） | 1.00 | 2.00 | 3.00 | 4.00 | 5.00 | 6.00 |" in compact
+    assert "| 2025年 | 7月 | 8月 | 9月 | 10月 | 11月 |" in compact and compact.rstrip().endswith("[[/table:t1]]")
+    # 行数少或多列的表不动。
+    short = "[[table:t2]]\n|  | 收入 |\n| --- | ---: |\n| 2025年1月 | 1.00 |\n\n[[/table:t2]]"
+    wide = block.replace("收入金额（亿元） |", "收入 | 成本 |").replace("---: |", "---: | ---: |")
+    assert compact_single_column_tables(short) == short
+    assert compact_single_column_tables(wide) == wide
 
 
 def test_model_table_numeric_columns_are_right_aligned():

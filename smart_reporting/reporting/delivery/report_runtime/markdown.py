@@ -437,6 +437,44 @@ def relocate_server_tables(markdown: str) -> str:
     return "\n\n".join((body, APPENDIX_TABLES_SENTINEL, *tables)) + "\n"
 
 
+# 附表里单一数值列的月度表（“收入金额（亿元）”逐月一行）占半页却只有一列数字：渲染时转置为
+# 每行6个期间的横表；同一年份的期间写在左上角，列头只写月份。报告 Markdown 与编辑器不变。
+_COMPACT_TABLE_MIN_ROWS = 8
+_COMPACT_TABLE_COLUMNS = 6
+_SERVER_TABLE_BODY = re.compile(
+    r"^(?P<open>\[\[table:(?P<id>[^\]\r\n]+)\]\]\n)(?P<table>(?:\|[^\n]*\|[ \t]*\n)+)(?P<rest>\n*\[\[/table:(?P=id)\]\])",
+    re.MULTILINE,
+)
+
+
+def _compact_table(match: re.Match[str]) -> str:
+    lines = match["table"].strip("\n").split("\n")
+    rows = [_table_cells(line) for line in lines]
+    if (len(rows) < 2 + _COMPACT_TABLE_MIN_ROWS or not _TABLE_SEPARATOR.match(lines[1].strip())
+            or any(len(row) != 2 for row in rows) or rows[0][0]):
+        return match[0]
+    header, body = rows[0][1], rows[2:]
+    labels = [row[0] for row in body]
+    years = {label[:5] for label in labels if re.fullmatch(r"\d{4}年\d{1,2}月", label)}
+    corner = ""
+    if len(years) == 1 and all(re.fullmatch(r"\d{4}年\d{1,2}月", label) for label in labels):
+        corner = next(iter(years))
+        labels = [label[5:] for label in labels]
+    tables = []
+    for start in range(0, len(body), _COMPACT_TABLE_COLUMNS):
+        chunk = range(start, min(start + _COMPACT_TABLE_COLUMNS, len(body)))
+        tables.append("\n".join((
+            "| " + " | ".join((corner, *(labels[index] for index in chunk))) + " |",
+            "| " + " | ".join(("---", *("---:",) * len(chunk))) + " |",
+            "| " + " | ".join((header, *(body[index][1] for index in chunk))) + " |",
+        )))
+    return match["open"] + "\n\n".join(tables) + "\n" + match["rest"]
+
+
+def compact_single_column_tables(markdown: str) -> str:
+    return _SERVER_TABLE_BODY.sub(_compact_table, markdown)
+
+
 # 领导先看结论：渲染时在第1章前生成“核心结论”，逐章取正文首段首句。写作规则要求每段
 # 首句先写结论，且这些句子已通过数值核对，不另调模型、不引入新数字；附录、口径与统计
 # 说明类章节不取。去掉协议标记，不重复生成来源编号；报告 Markdown 与编辑器不变。
@@ -456,7 +494,7 @@ _SUMMARY_RAW_VALUE = re.compile(r"[（(]-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?
 def _summary_title(title: str) -> str:
     if len(title) <= 30:
         return title
-    first = re.split(r"[；;]", title, maxsplit=1)[0].strip()
+    first = re.split(r"[；;，,]", title, maxsplit=1)[0].strip()
     return f"{first[:28]}等"
 
 
@@ -467,9 +505,12 @@ def _section_conclusion(block: str) -> str | None:
             continue
         text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "").replace("\n", "")
         text = _SUMMARY_RAW_VALUE.sub("", text)
-        sentences = [sentence for sentence in re.findall(r"[^。！？]+[。！？]", text) if "待核实" not in sentence]
-        if not sentences:
+        sentences = re.findall(r"[^。！？]+[。！？]", text)
+        # 首句含“待核实”时同段后续多是对它的口径补充（“该口径为含负值的净额口径……”），
+        # 不是结论：改取下一段。
+        if not sentences or "待核实" in sentences[0]:
             continue
+        sentences = [sentence for sentence in sentences if "待核实" not in sentence]
         conclusion = sentences[0]
         # 首句只有定性结论（“整体未达预算。”）时带上紧随的关键数字句。
         if not re.search(r"\d", conclusion) and len(sentences) > 1 and len(conclusion + sentences[1]) <= 200:

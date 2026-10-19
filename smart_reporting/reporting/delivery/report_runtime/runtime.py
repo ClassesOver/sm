@@ -32,6 +32,7 @@ from .markdown import (
     _strip_strong_boundaries,
     align_numeric_table_columns,
     collapse_repeated_values,
+    compact_single_column_tables,
     format_heading_label,
     insert_executive_summary,
     readable_large_amounts,
@@ -276,7 +277,9 @@ class ReportRuntime:
             pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
                 align_numeric_table_columns(
                     readable_large_amounts(collapse_repeated_values(
-                        insert_executive_summary(relocate_server_tables(markdown), context["sections"])
+                        insert_executive_summary(
+                            compact_single_column_tables(relocate_server_tables(markdown)), context["sections"]
+                        )
                     ))
                 ),
                 state.get("_citationPresentations"),

@@ -174,14 +174,16 @@ _TABLE_SCALE_THRESHOLD = 1_000_000
 def _table_display_unit(unit: str | None, values: Sequence[float | None]) -> str | None:
     """整列（或整组对比值）最大绝对值达到百万时返回万元/万人次，否则沿用原单位。
 
-    全院收入、成本等十亿级金额写成“1,317,262.21万元”领导读不出量级：非零值都不少于
-    1亿元且最大值达到10亿元时改用亿元；有小额值的列仍用万元，避免舍入丢失精度。
+    全院收入、成本等亿级金额写成“1,317,262.21万元”领导读不出量级：非零值都不少于
+    1亿元时改用亿元（两位小数仍精确到百万）；有小额值的列仍用万元，避免舍入丢失精度。
+    回放：同表“实际总医疗收入（亿元）”旁的“实际药品收入”月度约2.7亿元，因未到10亿元
+    写成“27,201.40万元”，同表单位不一难以对比。
     """
     present = [abs(value) for value in values if value is not None]
     if unit not in _TABLE_SCALED_UNITS or not present or max(present) < _TABLE_SCALE_THRESHOLD:
         return unit
     nonzero = [value for value in present if value]
-    if unit == "元" and max(nonzero) >= 1_000_000_000 and min(nonzero) >= 100_000_000:
+    if unit == "元" and min(nonzero) >= 100_000_000:
         return "亿元"
     return _TABLE_SCALED_UNITS[unit]
 
