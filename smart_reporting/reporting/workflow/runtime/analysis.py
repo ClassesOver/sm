@@ -29,6 +29,7 @@ from ...hospital_operation.narrative_planner import (
     build_compatible_report_outline,
     build_fallback_narrative_candidate,
     build_narrative_planning_batches,
+    default_report_title,
 )
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
@@ -2393,8 +2394,11 @@ class RuntimeAnalysisMixin:
         state = self._state(run_context)
         if REPORT_OUTLINE_STATE_KEY not in state:
             plan = DetailedAnalysisPlan.model_validate(state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY])
+            envelope = self._envelope(run_context)
             outline = ReportOutline(
-                reportType=self._envelope(run_context).report_type, title="运营分析报告",
+                reportType=envelope.report_type,
+                title=default_report_title(envelope.report_goal, envelope.period.start,
+                                           envelope.period.end, envelope.report_type),
                 sections=[{
                     "code": "section_001", "sectionNumber": "1",
                     "title": "分析任务执行分区",

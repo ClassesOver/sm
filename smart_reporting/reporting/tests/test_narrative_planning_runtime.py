@@ -241,3 +241,18 @@ def test_fallback_section_titles_use_analysis_names_not_joined_finding_titles():
     for section in outline.sections:
         assert "；" not in section.title and len(section.title) <= 30
         assert section.title.startswith("分析")
+
+
+@pytest.mark.parametrize(("goal", "start", "end", "report_type", "expected"), [
+    ("请使用默认真实数据源和现有Reporting流程生成2025年瑞金医院综合运营分析正式报告，覆盖收入规模。",
+     "2025-01-01", "2025-12-31", "comprehensive", "2025年瑞金医院综合运营分析报告"),
+    ("分析收入和成本变化。", "2025-01-01", "2025-12-31", "comprehensive", "2025年综合运营分析报告"),
+    ("分析收入和成本变化。", "2025-01-01", "2025-09-30", "topic", "2025年1—9月专题运营分析报告"),
+    ("生成报告。", "2024-07-01", "2025-06-30", None, "2024—2025年运营分析报告"),
+])
+def test_default_report_title_uses_requested_title_or_period(goal, start, end, report_type, expected):
+    from datetime import date
+
+    from smart_reporting.reporting.hospital_operation.narrative_planner import default_report_title
+
+    assert default_report_title(goal, date.fromisoformat(start), date.fromisoformat(end), report_type) == expected
