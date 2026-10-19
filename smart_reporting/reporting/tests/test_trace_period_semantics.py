@@ -35,18 +35,47 @@ def stock_bundle():
     ))
 
 
-def test_flow_metric_additive_across_sibling_period_column_sums_all_periods():
+@pytest.mark.parametrize('periods', [
+    ('2025-01', '2025-02', '2025-03'),
+    ('2025/1', '2025/2', '2025/3'),
+    ('202501', '202502', '202503'),
+])
+def test_flow_metric_additive_across_sibling_period_column_sums_all_periods(periods):
     """回放中实际收入声明可沿 period_code 相加，事实却按 data_date 统计：不能当作时点取期末值。"""
     ctx = context('current', fields=('data_date', 'period_code', 'area', 'income'), semantics=(
         {**semantic('income', unit='元'), 'additiveAcross': ['period_code', 'area']},
     )).model_copy(update={'period_granularities': {'data_date': 'date'}})
     bundle = build_deterministic_analysis_bundle(analysis(fields=('income',)), (
-        ('current', b'data_date,period_code,area,income\n2025-01-01,2025-01,A,100\n2025-02-01,2025-02,A,200\n'
-                    b'2025-03-01,2025-03,A,0\n', ctx, ('current',)),
+        ('current', (f'data_date,period_code,area,income\n2025-01-01,{periods[0]},A,100\n'
+                     f'2025-02-01,{periods[1]},A,200\n2025-03-01,{periods[2]},A,0\n').encode(), ctx, ('current',)),
     ))
     fact = bundle.metrics[0]
     assert fact.period_aggregation is None
     assert fact.total == 300
+
+
+@pytest.mark.parametrize('declared_grain', [False, True])
+@pytest.mark.parametrize('other_values', [
+    ('1980', '1980'), ('2025-02', '2025-01'), ('2025-01', ''),
+    ('not-a-period', '2025-02'),
+])
+def test_unrelated_period_dimension_does_not_make_stock_additive(other_values, declared_grain):
+    ctx = context('current', fields=('data_date', 'birth_year', 'balance'), semantics=(
+        {**semantic('balance'), 'additiveAcross': ['birth_year']},
+    )).model_copy(update={
+        'time_series_sort_field': 'data_date',
+        'period_granularities': {'data_date': 'date', **({'birth_year': 'year'} if declared_grain else {})},
+    })
+    content = (f'data_date,birth_year,balance\n2025-01-01,{other_values[0]},100\n'
+               f'2025-02-01,{other_values[1]},200\n').encode()
+    bundle = build_deterministic_analysis_bundle(analysis(fields=('balance',)), (
+        ('current', content, ctx, ('current',)),
+    ))
+    fact = bundle.metrics[0]
+    assert fact.period_field == 'data_date'
+    assert [item.value for item in fact.period_values] == [100, 200]
+    assert fact.total == 200
+    assert fact.period_aggregation == 'last'
 
 
 def test_stock_number_selection_must_preserve_endpoint_total():

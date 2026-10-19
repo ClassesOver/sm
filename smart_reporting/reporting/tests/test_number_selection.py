@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from smart_reporting.reporting.trace.number_selection import align_number_selections
 from smart_reporting.reporting.trace.semantic_bindings import render_bound_numbers
 
 
@@ -89,3 +90,77 @@ def test_identical_duplicate_facts_resolve_instead_of_revoking(total, resolved):
     token = '{{value:fact-bbbbbbbbbbbbbbbb:periodTotals.0-1:元}}'
     text, refs, _ = render_bound_numbers('2025年1—2月，成本金额合计' + token + '。', [json.dumps(document)], key='s:b')
     assert ('110元' in text and len(refs) == 1) is resolved, text
+
+
+@pytest.mark.parametrize('template', [
+    '实际总医疗收入为{token}，随后波动。',
+    '实际总医疗收入区间为{token}。',
+    '实际总医疗收入至少为{token}。',
+    '实际总医疗收入介于{token}之间。',
+    '实际总医疗收入为{token}。3月另行分析。',
+    '实际总医疗收入月度值为{token}。',
+    '实际总医疗收入当月为{token}。',
+    '2025年13月实际总医疗收入为{token}。',
+    '2025-13实际总医疗收入为{token}。',
+])
+def test_single_period_value_requires_real_period_context(template):
+    token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    markdown = template.format(token=token)
+    aligned, warnings = align_number_selections(markdown, source())
+    assert ':unverified:' in aligned
+    assert any('期间缺失' in warning for warning in warnings)
+    text, refs, notices = render_bound_numbers(markdown, source(), key='period')
+    assert '40元' not in text and '待核实' in text
+    assert not refs and notices[0].kind == 'numeric_unverified'
+
+
+def test_missing_display_names_does_not_skip_period_validation():
+    document = json.loads(source()[0])
+    for metric in document['metrics']:
+        metric.pop('displayName')
+    token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    aligned, warnings = align_number_selections('收入为' + token + '，随后波动。', [json.dumps(document)])
+    assert ':unverified:' in aligned and warnings
+
+
+@pytest.mark.parametrize('period', ['2025年1月', '1月', '2025-01', '2025/01'])
+def test_explicit_calendar_period_is_kept(period):
+    token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    markdown = period + '实际总医疗收入为' + token + '。'
+    aligned, warnings = align_number_selections(markdown, source())
+    assert aligned == markdown and not warnings
+
+
+def test_explicit_daily_period_is_kept():
+    document = json.loads(source()[0])
+    for metric in document['metrics']:
+        metric['periodGranularity'] = 'day'
+        for value in metric['periodValues']:
+            value['period'] += '-01'
+    token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    markdown = '2025年1月1日实际总医疗收入为' + token + '。'
+    assert align_number_selections(markdown, [json.dumps(document)]) == (markdown, [])
+
+
+@pytest.mark.parametrize('other,kept', [
+    ('fact-bbbbbbbbbbbbbbbb:periodValues.1', True),
+    ('fact-bbbbbbbbbbbbbbbb:periodValues.0', False),
+    ('fact-cccccccccccccccc:periodValues.1', False),
+    ('fact-bbbbbbbbbbbbbbbb:periodValues.99', False),
+])
+def test_periodless_value_interval_requires_valid_endpoints_of_same_fact(other, kept):
+    token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    markdown = '实际总医疗收入各月介于' + token + '至{{value:' + other + ':元}}。'
+    aligned, warnings = align_number_selections(markdown, source())
+    assert (aligned == markdown) is kept
+    assert bool(warnings) is not kept
+
+
+def test_later_valid_interval_does_not_exempt_an_earlier_copy_of_its_endpoint():
+    first = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
+    last = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.1:元}}'
+    markdown = '实际总医疗收入为' + first + '，各月介于' + first + '至' + last + '。'
+    aligned, warnings = align_number_selections(markdown, source())
+    assert aligned.count(':unverified:') == 1
+    assert '各月介于' + first + '至' + last in aligned
+    assert warnings

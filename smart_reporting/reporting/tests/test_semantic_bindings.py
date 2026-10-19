@@ -42,7 +42,7 @@ def test_resolves_exact_selector_instead_of_first_fact_total(selector, value, un
 def test_number_anchors_keep_repeated_values_distinct_and_bind_both_operands():
     first = '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}'
     second = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.2025-02.percentage:%}}'
-    markdown, references, notices = render_bound_numbers('租赁' + first + '，执行率' + second + '。', contents(), key='s:b')
+    markdown, references, notices = render_bound_numbers('2025年2月租赁' + first + '，执行率' + second + '。', contents(), key='s:b')
     markdown = anchor_bound_numbers(markdown, references, notices)
     assert len(references) == 2 and references[0].claim_id != references[1].claim_id
     assert all(markdown.count('[[claim:' + ref.claim_id + ']]') == 1 for ref in references)
@@ -473,9 +473,9 @@ def test_raw_large_amounts_get_thousands_separators_without_moving_anchors():
     doc['metrics'][0]['periodValues'][1]['value'] = 1097718506
     doc['metrics'][0]['total'] = 1097718516
     markdown, refs, notices = render_bound_numbers(
-        '另有1097718506元，全年{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}。', [json.dumps(doc)], key='s:b')
+        '另有1097718506元，2025年2月{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:元}}。', [json.dumps(doc)], key='s:b')
     anchored = anchor_bound_numbers(markdown, refs, notices)
-    assert anchored == f'另有1,097,718,506元，全年1,097,718,506元[[claim:{refs[0].claim_id}]]。'
+    assert anchored == f'另有1,097,718,506元，2025年2月1,097,718,506元[[claim:{refs[0].claim_id}]]。'
 
 
 def test_single_period_value_without_written_period_is_withdrawn():
@@ -496,6 +496,7 @@ def test_single_period_value_without_written_period_is_withdrawn():
     wrong = '普通住院业务预算减实际的差额为' + token + '。'
     aligned, warnings = align_number_selections(wrong, [document])
     assert ':unverified:' in aligned and any('期间缺失' in item for item in warnings)
-    for kept in ('3月实际收入为' + token + '。', '实际收入各月介于{{value:' + fact + ':periodValues.0:元}}至' + token + '。',
-                 '当月实际收入为' + token + '。'):
+    for kept in ('3月实际收入为' + token + '。', '实际收入各月介于{{value:' + fact + ':periodValues.0:元}}至' + token + '。'):
         assert align_number_selections(kept, [document])[0] == kept
+    # 没有日期基准的“当月”无法确定冻结序列中的月份。
+    assert ':unverified:' in align_number_selections('当月实际收入为' + token + '。', [document])[0]

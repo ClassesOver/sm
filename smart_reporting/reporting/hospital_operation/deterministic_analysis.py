@@ -340,13 +340,7 @@ def _dataset_facts(
         return facts, selected_semantics, warnings
 
     period_field = _period_field(dataset.frame, dataset.context)
-    # 同一时间轴常有多个列（data_date 与 period_code）：语义声明可沿其中任一列相加即为流量指标，
-    # 不能因所选期间列不在 additiveAcross 中就按时点取期末值（期末为零时合计变成 0）。
-    time_fields = {
-        str(column).casefold() for column in dataset.frame.columns
-        if str(column) == period_field or str(column) in dataset.context.period_granularities
-        or _is_period_field_name(str(column))
-    }
+    time_fields = _period_axis_fields(dataset, period_field)
     source_grain = dataset.context.period_granularities.get(period_field or "")
     period_granularity = (
         analysis.series_granularity or "day" if source_grain == "date"
@@ -1505,6 +1499,29 @@ def _period_field(frame: pl.DataFrame, context: DatasetAnalysisContext) -> str |
         (by_casefold[item.casefold()] for item in candidates if item.casefold() in by_casefold),
         None,
     )
+
+
+def _period_axis_fields(dataset: _Dataset, period_field: str | None) -> set[str]:
+    """时间列名或粒度声明只提供候选；别名必须逐行对应所选时间轴。"""
+    if period_field is None:
+        return set()
+    fields = {period_field.casefold()}
+    for column in dataset.frame.columns:
+        if column == period_field or not (
+            column in dataset.context.period_granularities or _is_period_field_name(column)
+        ):
+            continue
+        pairs = dataset.frame.select(period_field, column).unique()
+        # 月初日期与年月标签可以指向同一桶；不同月份、无效值或缺失值都不能证明别名。
+        if pairs.height and all(
+            left is not None and right is not None
+            and (selected := _parse_period(left)) is not None
+            and (candidate := _parse_period(right)) is not None
+            and selected.value == candidate.value
+            for left, right in pairs.iter_rows()
+        ):
+            fields.add(column.casefold())
+    return fields
 
 
 def _metric_codes_by_ref(
