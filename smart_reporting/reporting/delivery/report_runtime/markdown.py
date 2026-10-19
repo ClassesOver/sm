@@ -485,16 +485,19 @@ def insert_executive_summary(markdown: str, sections: Sequence[Mapping[str, Any]
     return f"{markdown[:first]}{summary}\n\n{markdown[first:]}"
 
 
-# 读者是医院领导与财务人员：正文里“药品收入3,046,407,434元”难以读出量级。渲染时把百万元以上的
-# 元值按亿元/万元两位小数显示；括号内的原值（“99.12亿元（9,911,520,144元）”）是有意保留的
-# 精确值，表格、图片与代码不动。报告 Markdown 与编辑器不变。
+# 读者是医院领导与财务人员：正文里“药品收入3,046,407,434元”“预算人次7,275,108人次”难以读出
+# 量级。渲染时把百万以上的元值按亿元/万元、人次按万人次两位小数显示（阈值与内容复核的“位数过多”
+# 一致）；括号内的原值（“99.12亿元（9,911,520,144元）”）是有意保留的精确值，表格、图片与代码
+# 不动。报告 Markdown 与编辑器不变。
 _LARGE_YUAN = re.compile(
-    r"(?<![\d.,（(])(?P<number>-?(?:\d{1,3}(?:,\d{3}){2,}|\d{7,})(?:\.\d+)?)元"
+    r"(?<![\d.,（(])(?P<number>-?(?:\d{1,3}(?:,\d{3}){2,}|\d{7,})(?:\.\d+)?)(?P<unit>元|人次)(?!\s*[）)])"
 )
 
 
 def _readable_amount(match: re.Match[str]) -> str:
     value = Decimal(match["number"].replace(",", ""))
+    if match["unit"] == "人次":
+        return f"{(value / 10_000).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}万人次"
     if abs(value) >= 100_000_000:
         return f"{(value / 100_000_000).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}亿元"
     return f"{(value / 10_000).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}万元"

@@ -1285,7 +1285,7 @@ def test_render_shows_large_yuan_amounts_in_readable_units() -> None:
     # 回放：正文 68 处“3,046,407,434元”式全位数金额，领导与财务读者难以读出量级。
     text = (
         "药品收入3,046,407,434元[[claim:number-1]]、占27.39%；其他费用91,342,503元，"
-        "差额为-7,977,183元，零星支出52,300元。\n\n"
+        "差额为-7,977,183元，零星支出52,300元。预算人次7,275,108人次，门诊644,217人次。\n\n"
         "合计99.12亿元（9,911,520,144元），覆盖9个月。\n\n"
         "| 项目 | 金额 |\n| --- | --- |\n| 药品 | 3,046,407,434元 |\n\n"
         "![图：药品3,046,407,434元](chart.png)"
@@ -1294,5 +1294,6 @@ def test_render_shows_large_yuan_amounts_in_readable_units() -> None:
     assert "药品收入30.46亿元[[claim:number-1]]" in rendered
     assert "其他费用9,134.25万元" in rendered and "差额为-797.72万元" in rendered
     assert "零星支出52,300元" in rendered
+    assert "预算人次727.51万人次" in rendered and "门诊644,217人次" in rendered
     assert "（9,911,520,144元）" in rendered
     assert "| 药品 | 3,046,407,434元 |" in rendered and "![图：药品3,046,407,434元]" in rendered

@@ -1535,3 +1535,20 @@ def test_metric_attribution_distinguishes_metrics_sharing_a_field_name(text, exp
         metric("a", "收入金额，也称医疗收入金额", 890000000), metric("b", "成本金额", 1192000000)]})
     fields = {"indicator_value": "指标值"}
     assert [w for w in review_content(text, [content], field_definitions=fields) if "数值归属" in w] == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # 回放：“出院人次”与“出院者占用床日数”的区分词只剩单位“人次”，门诊人次的数值被判到出院人次名下。
+    ("门诊人次在3月达到最高，为644,217人次。", []),
+    ("3月门诊人次644,217人次最高。", []),
+    ("3月出院人次644,217人次。", ["指标数值归属需复核：出院人次名下的644,217人次是门诊人次的登记值。"
+                               "请改用出院人次对应的数值引用，或改写主语。"]),
+])
+def test_metric_attribution_never_treats_a_unit_as_a_metric_name(text, expected):
+    def metric(letter, field, name, unit, value):
+        return {**_metric(field), "factId": "fact-" + letter * 16, "fieldRef": f"t.{field}",
+                "displayName": name, "unit": unit, "total": value}
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [
+        metric("a", "outpatient", "门诊人次", "人次", 644217), metric("b", "discharges", "出院人次", "人次", 21200),
+        metric("c", "bed_days", "出院者占用床日数", "床日", 150000)]})
+    assert [w for w in review_content(text, [content]) if "数值归属" in w] == expected
