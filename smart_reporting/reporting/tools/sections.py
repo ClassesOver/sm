@@ -30,6 +30,9 @@ _REVIEW_WARNING_CODES = frozenset({"report_section_block_content_review", "repor
 _MAX_REVIEW_WARNINGS = 200
 
 
+REFERENCE_COMPARISON_NOTE = "注：以上对比涉及不同数据来源或统计口径，仅作参考。"
+
+
 def metric_equivalents(definitions: Sequence[Any]) -> dict[str, frozenset[str]]:
     """同一冻结事实的字段别名与规范指标代码（budget_project_amount / project_budget）：
     公式、单位与期间口径完全相同的目录项视为同一指标。"""
@@ -157,12 +160,16 @@ def section_content_budget_issues(
 class RuntimeSectionsMixin:
     @staticmethod
     def _note_reference_comparisons(blocks: tuple[Any, ...], reference_claim_ids: set[str]) -> tuple[Any, ...]:
-        """同一章节只提示一次参考性对比；任一相关段落已写明“参考”时不再追加。"""
+        """同一章节只提示一次参考性对比；任一相关段落已写明“参考”时不再追加。
+
+        回放：“> 注：相关比较仅作参考性对比。”渲染为图表前的醒目提示框且不说明原因；改为
+        普通注释段落并写明是跨来源或口径的对比。
+        """
         related = [block for block in blocks if reference_claim_ids.intersection(block.claim_ids)]
         if not related or any("参考" in block.markdown for block in related):
             return tuple(blocks)
         return tuple(
-            block.model_copy(update={"markdown": f"{block.markdown}\n\n> 注：相关比较仅作参考性对比。"})
+            block.model_copy(update={"markdown": f"{block.markdown}\n\n{REFERENCE_COMPARISON_NOTE}"})
             if block is related[0] else block
             for block in blocks
         )
@@ -1017,7 +1024,11 @@ class RuntimeSectionsMixin:
                 claim_blocks = [
                     block for block in artifact.blocks if claim.claim_id in block.claim_ids
                 ]
-                if not claim_blocks or any("参考" not in block.markdown for block in claim_blocks):
+                # 参考提示每章只写一次（_note_reference_comparisons）：本章任一参考性段落写明即可。
+                reference_blocks = [
+                    block for block in artifact.blocks if reference_claim_ids.intersection(block.claim_ids)
+                ]
+                if not claim_blocks or not any("参考" in block.markdown for block in reference_blocks):
                     semantic_conflicts.append(
                         {
                             "code": "report_cross_source_inference_unsupported",
