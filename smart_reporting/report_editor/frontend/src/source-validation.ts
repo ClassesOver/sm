@@ -50,18 +50,22 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
  */
 export function nextSourceIssue(root: HTMLElement, after: number | null, positionOf: (element: HTMLElement) => number,
   validation: TraceValidation | null = null): HTMLElement | null {
-  const staleSubjects = new Set(validation?.subjects.filter(subject => subject.status === 'stale').map(subject => subject.subjectId))
+  const reviewSubjects = new Set(validation?.subjects.filter(subject =>
+    subject.status !== 'valid' || (subject.warnings?.length ?? 0) > 0,
+  ).map(subject => subject.subjectId))
   const valueSubjects = new Set([...root.querySelectorAll<HTMLElement>(
-    '.report-value-mark--stale, .report-value-mark--unverified',
+    '.report-value-mark--review, .report-value-mark--stale, .report-value-mark--unverified',
   )].map(mark => mark.dataset.valueSubject))
   // 无法提取唯一正文值时，使用协议引用兜底。读取整组引用，兼容首项为 analysis 的合并入口。
   const issues = [...root.querySelectorAll<HTMLElement>(
-    '.report-value-mark--stale, .report-value-mark--unverified, .report-object-source-marker[data-marker-state="stale"], .report-protocol-marker[data-marker-references]',
+    '.report-value-mark--review, .report-value-mark--stale, .report-value-mark--unverified, .report-object-source-marker[data-marker-state="stale"], .report-protocol-marker[data-marker-references]',
   )].filter(item => {
-    if (item.matches('.report-value-mark--stale, .report-value-mark--unverified, .report-object-source-marker[data-marker-state="stale"]')) return true
+    // 原始值与待核实占位属于同一处，跳转只定位正文占位。
+    if (item.classList.contains('report-original-value')) return false
+    if (item.matches('.report-value-mark--review, .report-value-mark--stale, .report-value-mark--unverified, .report-object-source-marker[data-marker-state="stale"]')) return true
     if (item.classList.contains('report-object-source-marker')) return false
     const references: Array<{ kind: string; value: string }> = JSON.parse(item.dataset.markerReferences ?? '[]')
-    return references.some(ref => ref.kind === 'citation' && staleSubjects.has(ref.value) && !valueSubjects.has(ref.value))
+    return references.some(ref => ref.kind === 'citation' && reviewSubjects.has(ref.value) && !valueSubjects.has(ref.value))
   })
   // 未绑定但仍在正文的图可以定位；不为它创建指向不存在的来源记录的按钮。
   for (const chart of validation?.charts ?? []) {
@@ -159,8 +163,9 @@ export function createSourceValidationController(
       onResult(result)
     } catch (error) {
       if (requestSequence !== sequence || getMarkdown() !== markdown || (error instanceof DOMException && error.name === 'AbortError')) return
-      onError(error)
+      // 先清除旧结果，避免通用空状态覆盖具体错误原因。
       onResult(null)
+      onError(error)
     }
   }
 

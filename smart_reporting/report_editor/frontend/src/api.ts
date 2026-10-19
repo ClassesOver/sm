@@ -223,7 +223,7 @@ export interface TraceChartSource {
 }
 
 export interface TraceValidation {
-  reviewNotices?: { claimId: string; sectionId: string | null; kind: 'numeric_unverified' | 'source_review'; occurrences: number; bound: boolean }[]
+  reviewNotices?: { claimId: string; sectionId: string | null; kind: 'numeric_unverified' | 'source_review'; originalText?: string | null; occurrences: number; bound: boolean }[]
   draftSha256: string
   warnings?: string[]
   subjects: {
@@ -233,6 +233,8 @@ export interface TraceValidation {
     status: 'valid' | 'stale' | 'unbound'
     /** 当前修订登记值；正文提取值仅在 comparable=true 且字段齐全时提供。 */
     factValue: unknown
+    /** 已核验数值引用签发时的精确显示文本；恢复时保留原单位、精度及幅度写法。 */
+    restoreText?: string | null
     draftValue?: number
     draftUnit?: string | null
     draftPeriods?: string[]

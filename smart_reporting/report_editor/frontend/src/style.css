@@ -5084,15 +5084,16 @@ input:disabled, textarea:disabled, select:disabled {
 /* 数值级溯源标注：虚下划线区分状态，不改变正文字色与排版。 */
 .report-value-mark { text-decoration: underline dotted 1.5px; text-underline-offset: 4px; cursor: help; border-radius: 3px; }
 .report-value-mark--valid { text-decoration-color: #2b7b65; }
-.report-value-mark--stale { text-decoration-color: #b4660d; text-decoration-style: wavy; background: #fff5e3; }
+.report-value-mark--review, .report-value-mark--stale { text-decoration-color: #b4660d; text-decoration-style: wavy; background: #fff5e3; }
 .report-value-mark--unverified { text-decoration-color: var(--color-danger); text-decoration-style: wavy; background: #fdecea; }
+.report-original-value { color: #8f3528; overflow-wrap: anywhere; }
 .report-value-mark:hover { background: #e6f1f8; }
 .report-value-card { position: absolute; z-index: var(--z-popover); max-width: 288px; padding: 10px 12px; border: 1px solid #c7dce8; border-left: 3px solid #2b7b65; border-radius: var(--radius-md); background: var(--color-surface); color: #1f3a4d; box-shadow: 0 10px 30px #193c5a26; font-size: var(--font-size-sm); line-height: 1.7; pointer-events: none; }
 .report-value-card[hidden] { display: none; }
 .report-value-card[data-state="stale"] { border-left-color: #b4660d; }
 .report-value-card[data-state="unverified"] { border-left-color: var(--color-danger); }
 .report-value-card > div:first-child { font-weight: 600; }
-@media print { .report-value-mark { text-decoration: none; background: none; } }
+@media print { .report-value-mark { text-decoration: none; background: none; } .report-original-value { display: none; } }
 
 /* 触屏：来源入口点击区扩到 44px（全局 border-box），透明边框配负外边距不占行高，可见尺寸仍为 20px。 */
 @media (pointer: coarse) {

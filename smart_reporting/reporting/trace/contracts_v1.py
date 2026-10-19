@@ -505,6 +505,7 @@ class NumberReferenceV1(StrictModel):
     claim_id: str = Field(alias="claimId", max_length=128)
     token: str = Field(min_length=1, max_length=1000)
     statement_sha256: str = Field(alias="statementSha256", pattern=SHA256_PATTERN)
+    display_text: str | None = Field(default=None, alias="displayText", max_length=4096)
 
 
 class ReviewNoticeV1(StrictModel):
@@ -512,6 +513,7 @@ class ReviewNoticeV1(StrictModel):
     claim_id: str = Field(alias="claimId", max_length=128)
     section_id: str | None = Field(default=None, alias="sectionId", max_length=128)
     kind: Literal["numeric_unverified", "source_review"]
+    original_text: str | None = Field(default=None, alias="originalText", max_length=4096)
 
 
 class SubjectBindingV1(StrictModel):

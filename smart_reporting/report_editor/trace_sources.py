@@ -853,6 +853,7 @@ class ReportEditorTraceService:
 
         from ..reporting.delivery.artifacts_v1 import _TABLE_BLOCK
         from ..reporting.trace.semantic_bindings import (
+            bound_number_display,
             reference_fact_ids,
             resolve_number_references,
             statement_fingerprints,
@@ -995,6 +996,45 @@ class ReportEditorTraceService:
             binding.claim_id for binding in index.subject_bindings
             if binding.number_reference and binding.claim_id and binding.fact_refs
         ), limiter=self._validation_limiter)
+        legacy_claims = tuple(
+            binding.claim_id for binding in index.subject_bindings
+            if binding.claim_id and binding.number_reference and binding.number_reference.display_text is None
+        )
+        legacy_loaded = False
+        legacy_markdown: str | None = None
+        legacy_fingerprints: dict[str, str | None] = {}
+
+        async def _legacy_restore_text(number: Any, selected: dict[str, Any]) -> str | None:
+            nonlocal legacy_loaded, legacy_markdown, legacy_fingerprints
+            if not legacy_loaded:
+                legacy_loaded = True
+                try:
+                    identity = files[index.markdown_file_resource_id]
+                    committed = await self._read_registered_file(context, identity, max_bytes=16 * 1024 * 1024)
+                    legacy_markdown = committed.decode('utf-8')
+                    legacy_fingerprints = await anyio.to_thread.run_sync(
+                        statement_fingerprints, legacy_markdown, legacy_claims, limiter=self._validation_limiter,
+                    )
+                except Exception as error:
+                    legacy_markdown = None
+                    logger.warning('source_validation_restore_unavailable report_id={} error={}',
+                                   context.report_id, getattr(error, 'code', type(error).__name__))
+            if legacy_markdown is None:
+                return None
+            if legacy_fingerprints.get(number.claim_id) != number.statement_sha256:
+                logger.warning('source_validation_restore_fingerprint_mismatch claim_id={}', number.claim_id)
+                return None
+            try:
+                shown = bound_number_display(legacy_markdown, number.claim_id, selected)
+            except Exception as error:
+                logger.warning('source_validation_restore_display_failed claim_id={} error={}',
+                               number.claim_id, type(error).__name__)
+                return None
+            if shown is None or not shown.verified or len(shown.text) > 4096:
+                logger.warning('source_validation_restore_display_unavailable claim_id={}', number.claim_id)
+                return None
+            return shown.text
+
         number_tokens: dict[tuple[str, ...], set[str]] = {}
         for binding in index.subject_bindings:
             if binding.number_reference and binding.claim_id and binding.fact_refs:
@@ -1041,6 +1081,7 @@ class ReportEditorTraceService:
                 expected_periods=expected_periods,
                 expected_period_roles=selected['period_roles'] if selected else None,
                 expected_scope=_entry_scope(entry),
+                expected_reference=selected,
                 section_id=binding.locator.section_id,
             )
             if number is not None:
@@ -1051,6 +1092,9 @@ class ReportEditorTraceService:
                     detail["status"] = "stale"
                     detail["warnings"].append("引用所在陈述已修改，请复核指标、期间和范围。")
                     detail["comparable"] = False
+            restore_text = number.display_text if number is not None and selected is not None else None
+            if number is not None and selected is not None and restore_text is None:
+                restore_text = await _legacy_restore_text(number, selected)
             status = detail["status"]
             summary[status] += 1
             subjects.append(
@@ -1060,6 +1104,7 @@ class ReportEditorTraceService:
                     "sectionId": binding.locator.section_id,
                     "status": status,
                     "factValue": fact_value,
+                    "restoreText": restore_text,
                     "warnings": detail["warnings"],
                     "draftValue": detail.get("draftValue"),
                     "draftUnit": detail.get("draftUnit"),

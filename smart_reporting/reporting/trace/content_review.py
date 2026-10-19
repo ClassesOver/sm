@@ -5,8 +5,10 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 from ..delivery.report_runtime.markdown import normalize_number_notation
+from ..units import REPORT_VALUE_UNIT_PATTERN
 from .markdown_body import trace_body
 from .numeric_text import (
     BARE_SCALED_NUMBER,
@@ -139,6 +141,7 @@ _INFERENCE = re.compile(
 class ContentReviewResult:
     warnings: tuple[str, ...]
     accuracy_count: int
+    reference_issues: tuple[dict[str, Any], ...] = ()
 
     @property
     def presentation_count(self) -> int:
@@ -190,6 +193,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     text = re.sub(marker_pattern, strip_marker, marked)
     documents = _documents(contents)
     warnings = [*selection_warnings, *money_text_warnings(text)]
+    reference_issues: list[dict[str, Any]] = []
     warnings.extend(supplemental_attribution_warnings(text, documents, field_definitions or {}))
     for paragraph in re.split(r"\n\s*\n", text):
         if (re.search(r"相关系数|相关性|高度相关", paragraph)
@@ -204,6 +208,24 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     for token in re.findall(r"\{\{value:[^{}\r\n]+\}\}", markdown):
         if token not in catalog:
             warnings.append(f"数值引用未登记：{token}。请选择 frozenNumbers 中的引用；没有对应事实时写待核实。")
+    if '{{value:' in markdown:
+        from .reference_semantics import number_reference_warnings
+        from .semantic_bindings import NumberReferenceResolver
+
+        resolver = NumberReferenceResolver(contents)
+        for match in re.finditer(r'\{\{value:[^{}\r\n]+\}\}', markdown):
+            selected = resolver.resolve(match[0])
+            if selected:
+                prefix = re.split(r'[。！？;；\n]', markdown[:match.start()])[-1]
+                suffix = re.split(r'[。！？;；\n]', markdown[match.end():])[0]
+                issues = number_reference_warnings(prefix, selected, suffix=suffix)
+                warnings.extend(issues)
+                if issues and len(reference_issues) < 20:
+                    reference_issues.append({
+                        'token': match[0], 'selector': selected['selector'],
+                        'periods': list(selected['periods']), 'scope': selected['scope'],
+                        'statement': (prefix[-120:] + match[0] + suffix)[:240], 'warnings': issues,
+                    })
     for match in BARE_SCALED_NUMBER.finditer(text):
         warnings.append(
             f"数值缺少单位：{match[0]}。请使用带单位的冻结数值引用（如亿元、万元、万人次），不得省略单位。"
@@ -372,7 +394,8 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     # 方向与真实值相反。
     for match in re.finditer(
         r"(?P<qualifier>超过|逾|高于|突破|多于|不足|低于|未达|少于|不到)\s*"
-        r"(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>亿元|万元|元|万人次|人次|床日|%)",
+        r"(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
+        rf"(?P<unit>{REPORT_VALUE_UNIT_PATTERN})",
         text,
     ):
         number = Decimal(match["number"].replace(",", ""))
@@ -551,7 +574,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     # 段落级（带指标名）与期间级复核可能报出同一问题；保留更具体的带指标名形式。
     labelled = {warning.split("：", 1)[1] for warning in unique if "：" in warning}
     retained = tuple(warning for warning in unique if warning not in labelled)
-    return ContentReviewResult(retained, sum(warning not in presentation for warning in retained))
+    return ContentReviewResult(retained, sum(warning not in presentation for warning in retained), tuple(reference_issues))
 
 
 __all__ = ["INTERNAL_ID_PATTERN", "readability_warnings", "repeated_sentence_warnings", "review_content", "review_content_result", "ContentReviewResult"]

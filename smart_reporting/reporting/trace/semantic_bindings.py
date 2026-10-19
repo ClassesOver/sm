@@ -5,7 +5,7 @@ import hashlib
 import re
 from collections.abc import Iterable
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..hospital_operation.deterministic_analysis import (
     DeterministicMetricFact,
@@ -14,6 +14,7 @@ from ..hospital_operation.deterministic_analysis import (
 from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1
 from .fact_index import fact_binding_records, merge_binding_records, merge_frozen_fact
 from .numeric_text import (
+    _NUMBER,
     _canonical_month_label,
     _frozen_number_entries,
     align_placeholder_direction,
@@ -55,6 +56,42 @@ def _statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     return hashlib.sha256(re.sub(r"[\s*]", "", statement).encode()).hexdigest()
 
 
+class BoundNumberDisplay(NamedTuple):
+    text: str
+    start: int
+    verified: bool
+
+
+def bound_number_display(markdown: str, claim_id: str, selected: dict[str, Any] | None) -> BoundNumberDisplay | None:
+    """读取唯一锚点紧邻显示，并按冻结选择器核值；不从同句其他数值借依据。"""
+    from .subject_builder import (
+        _DECLINE_PREFIX,
+        _UNIT_PATTERN,
+        formatted_value_matches,
+        value_matches,
+    )
+
+    marker = f'[[claim:{claim_id}]]'
+    if markdown.count(marker) != 1:
+        return None
+    position = markdown.index(marker)
+    before = re.sub(r'(?:\s*\[\[citation:[^\]\r\n]+\]\]\s*)+$', '', markdown[:position])
+    unit = re.escape(selected['unit']) if selected and selected['unit'] else ''
+    units = (unit + '|' if unit else '') + _UNIT_PATTERN
+    shown = re.search(r'(?<![\d.,+\-a-zA-Z_])(?P<display>' + _NUMBER +
+                      rf'\s*(?:{units})?)\s*$', before)
+    if shown is None:
+        return None
+    prefix = re.sub(r'\[\[[^\]\n]+\]\]', '', markdown[:shown.start('display')])
+    direction = re.search(_DECLINE_PREFIX + '$', prefix)
+    comparable = (direction[0] if direction else '') + shown['display']
+    verified = selected is not None and (
+        value_matches(comparable, selected['value'])
+        or formatted_value_matches(comparable, selected['value'], selected['unit'])
+    )
+    return BoundNumberDisplay(shown['display'], shown.start('display'), verified)
+
+
 def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions=None):
     contents = tuple(contents)
     from .number_selection import align_number_selections
@@ -70,9 +107,11 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
         counter += 1
         return kind + '-' + hashlib.sha256(f'{key}:{counter}'.encode()).hexdigest()[:20]
 
-    def notice(kind: str, text: str = '待核实') -> str:
+    def notice(kind: str, text: str = '待核实', *, original_text: str | None = None) -> str:
         claim_id = identity('review')
-        notices.append(ReviewNoticeV1(claimId=claim_id, kind=kind))
+        if original_text is not None and len(original_text) > 4096:
+            original_text = None  # 附加展示信息超预算不能阻断报告生成。
+        notices.append(ReviewNoticeV1(claimId=claim_id, kind=kind, originalText=original_text))
         return text + f'[[claim:{claim_id}]]'
 
     def annotate(token: str, text: str) -> str:
@@ -90,11 +129,36 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
         normalize_signed_wording(correct_period_extrema(
             correct_constant_monthly_totals(markdown, contents), contents)), contents,
         missing=lambda: notice('numeric_unverified'),
+        on_unverified=lambda original: notice('numeric_unverified', original_text=original),
         references=dict(references),
     )))
-    references = tuple(NumberReferenceV1(
-        claimId=claim_id, token=token, statementSha256=statement_fingerprint(markdown, claim_id),
-    ) for claim_id, token in references)
+    resolver = NumberReferenceResolver(contents)
+    signed_references = []
+    for claim_id, token in references:
+        marker = f'[[claim:{claim_id}]]'
+        position = markdown.find(marker)
+        if position < 0:
+            continue
+        selected = resolver.resolve(token)
+        shown = bound_number_display(markdown, claim_id, selected)
+        if shown is None:
+            # 数值可能已被下游替换为待核实，不能为占位继续签发原数值引用。
+            markdown = markdown[:position] + markdown[position + len(marker):]
+            continue
+        display_text = shown.text
+        if not shown.verified:
+            # 后置规范化不能改变已经登记的事实值；失配则保留真实待核实事件。
+            markdown = (markdown[:shown.start] + notice('numeric_unverified', original_text=display_text)
+                        + markdown[position + len(marker):])
+            continue
+        signed_references.append(NumberReferenceV1(
+            claimId=claim_id, token=token, statementSha256=statement_fingerprint(markdown, claim_id),
+            displayText=display_text,
+        ))
+    # 后续引用撤销会改变同句文字，指纹必须在最终正文上统一冻结。
+    references = tuple(reference.model_copy(update={
+        'statement_sha256': statement_fingerprint(markdown, reference.claim_id),
+    }) for reference in signed_references)
     return strip_bound_anchors(markdown, references, notices)
 
 
@@ -298,4 +362,4 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
             formula += ' * 100'
     return {'value': float(value), 'unit': target if target == '个百分点' else unit,
             'periods': periods, 'period_roles': period_roles,
-            'scope': scope, 'formula': formula, 'entry': primary}
+            'scope': scope, 'formula': formula, 'entry': primary, 'selector': selector}

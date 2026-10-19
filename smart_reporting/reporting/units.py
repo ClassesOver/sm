@@ -5,6 +5,12 @@ from decimal import Decimal
 MONEY_UNITS = {"元": Decimal(1), "万元": Decimal(10_000), "亿元": Decimal(100_000_000)}
 VISIT_UNITS = {"人次": Decimal(1), "万人次": Decimal(10_000)}
 
+# 正文核对须读取完整量纲，不能把“30元/人次”截成“30元”。
+REPORT_VALUE_UNIT_PATTERN = (
+    r"(?:亿元|万元|元|万人次|人次|床日|%)"
+    r"(?:[/／](?:万人次|人次|床日|人|次|床|日|天|月|年))?(?![/／])"
+)
+
 
 def unit_scales(unit: str | None) -> dict[str, Decimal] | None:
     return next((family for family in (MONEY_UNITS, VISIT_UNITS) if unit in family), None)

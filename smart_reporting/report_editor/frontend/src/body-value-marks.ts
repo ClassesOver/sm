@@ -7,13 +7,15 @@ import type { TraceSources, TraceValidation } from './api'
 import { findProtocolMarkers, groupProtocolMarkers } from './protocol'
 import { isExplanatoryUnverified } from './unverified-text'
 
-export type ValueMarkState = 'valid' | 'stale' | 'unverified'
+export type ValueMarkState = 'valid' | 'review' | 'stale' | 'unverified'
 
 export interface ValueMark {
   start: number
   end: number
   state: ValueMarkState
   subjectId?: string
+  /** 未获校验通过的原始写法，仅用于编辑器展示。 */
+  originalText?: string
   /** 悬停卡片的逐行说明（指标、登记值、正文值、期间、口径、状态）。 */
   card: string[]
 }
@@ -27,6 +29,7 @@ const UNIT_SCALES: Record<string, Record<string, number>> = {
 // 正文数值：千分位数字 + 可选单位；“待核实”是服务端替换无依据数值后的占位。
 const VALUE_PATTERN = /(?<![\dA-Za-z_.,+−－-])[+−－-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d.,eE])/g
 const UNIT_TOKENS = ['亿元', '万元', '千元', '元', '万人次', '人次', '万人', '床日', '床', '张', '次', '人', '个百分点', '%', '‰']
+const DECLINE_MAGNITUDE_PREFIX = /(?:下降|减少|降低|回落|下滑|降幅|减幅|跌幅|下跌|缩减)(?:\s*(?:了|约|为|达|幅度为))*\s*$/
 
 function unitAfter(tail: string, subject: Subject): { unit: string; length: number } {
   const spaces = /^\s*/.exec(tail)![0].length
@@ -45,7 +48,8 @@ function unitFamily(unit: string): Record<string, number> | undefined {
 }
 
 /** 正文写法换算到登记单位后，按正文书写精度舍入比较。 */
-function sameValue(written: string, writtenUnit: string, registered: number, registeredUnit: string): boolean {
+function sameValue(written: string, writtenUnit: string, registered: number, registeredUnit: string,
+  declineMagnitude = false): boolean {
   const number = Number(written.replace(/,/g, '').replace(/[−－]/g, '-'))
   if (!Number.isFinite(number)) return false
   let target = registered
@@ -54,8 +58,19 @@ function sameValue(written: string, writtenUnit: string, registered: number, reg
     if (!family || !(writtenUnit in family)) return false
     target = registered * family[registeredUnit] / family[writtenUnit]
   }
+  if (declineMagnitude && target < 0 && number >= 0) target = -target
   const digits = written.includes('.') ? written.split('.')[1].length : 0
-  const rounded = (value: number) => Math.round(Math.abs(value) * 10 ** digits) / 10 ** digits
+  // Intl 按十进制显示精度舍入，与服务端 ROUND_HALF_UP 一致（1.005 → 1.01）。
+  // 超出通用浏览器精度范围时只接受完全相等，不把两个微小值一起舍入成零。
+  if (digits > 20) return number === target
+  const formatter = new Intl.NumberFormat('en-US', {
+    useGrouping: false, minimumFractionDigits: digits, maximumFractionDigits: digits,
+  })
+  const rounded = (value: number) => {
+    const formatted = formatter.format(value)
+    // 与服务端一致：舍入后的零不保留负号，非零结果仍须核对符号。
+    return /^-0(?:\.0+)?$/.test(formatted) ? formatted.slice(1) : formatted
+  }
   return rounded(number) === rounded(target)
 }
 
@@ -79,7 +94,10 @@ function subjectCard(subject: Subject, sources: TraceSources | undefined, writte
     written ? `正文值：${written}` : '',
     periodText(subject.periods) ? `期间：${periodText(subject.periods)}` : '',
     subject.formulaText || subject.formula ? `口径：${subject.formulaText || subject.formula}` : '',
-    subject.status === 'valid' ? '状态：与登记值一致' : '状态：正文已改动，需复核',
+    subject.status === 'valid'
+      ? (subject.warnings?.length ? '状态：数值一致，业务口径需复核' : '状态：与登记值一致')
+      : '状态：正文已改动，需复核',
+    ...(subject.warnings ?? []).map(warning => `提示：${warning}`),
   ].filter(Boolean)
 }
 
@@ -116,15 +134,17 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
         if (/^[\dA-Za-z_]/.test(tail.slice(unit.length))) continue
         const writtenUnit = unit.unit
         const registeredUnit = subject.unit ?? ''
-        const matchesRegistered = sameValue(match[0], writtenUnit, subject.factValue, registeredUnit)
+        const declineMagnitude = DECLINE_MAGNITUDE_PREFIX.test(text.slice(sentenceStart, start))
+        const matchesRegistered = sameValue(match[0], writtenUnit, subject.factValue, registeredUnit, declineMagnitude)
         const matchesDraft = subject.status !== 'valid' && typeof subject.draftValue === 'number' &&
-          sameValue(match[0], writtenUnit, subject.draftValue, subject.draftUnit ?? registeredUnit)
+          sameValue(match[0], writtenUnit, subject.draftValue, subject.draftUnit ?? registeredUnit, declineMagnitude)
         if (!matchesRegistered && !matchesDraft) continue
         const end = start + match[0].length + unit.length
         const written = text.slice(start, end).replace(/\s+/g, '')
         marks.push({
           start, end, subjectId: subject.subjectId,
-          state: subject.status === 'valid' && matchesRegistered ? 'valid' : 'stale',
+          state: subject.status === 'valid' && matchesRegistered
+            ? (subject.warnings?.length ? 'review' : 'valid') : 'stale',
           card: subjectCard(subject, sources, written),
         })
       }
@@ -134,12 +154,20 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
   for (let index = text.indexOf(UNVERIFIED); index >= 0; index = text.indexOf(UNVERIFIED, index + UNVERIFIED.length)) {
     if (hidden(index)) continue
     if (validation?.reviewNotices !== undefined) {
-      const marker = findProtocolMarkers(text.slice(index + UNVERIFIED.length))[0]
-      const notice = marker?.kind === 'claim' && marker.start === 0
+      const tail = text.slice(index + UNVERIFIED.length)
+      const marker = findProtocolMarkers(tail)[0]
+      // 后端允许占位与锚点之间有空白；仅跨同一文本块内的水平空白，不借用下一行。
+      const notice = marker?.kind === 'claim' && /^[\p{Zs}\t]*$/u.test(tail.slice(0, marker.start))
         ? validation.reviewNotices.find(item => item.claimId === marker.value) : undefined
       if (notice?.kind !== 'numeric_unverified') continue
+      // 重复标记不能把一个原始值关联到多个占位；等待用户消歧。
+      const originalText = notice.bound && notice.occurrences === 1 &&
+        markers.filter(item => item.kind === 'claim' && item.value === notice.claimId).length === 1
+        ? notice.originalText || undefined : undefined
       marks.push({ start: index, end: index + UNVERIFIED.length, state: 'unverified',
-        card: ['缺少登记依据的数值，请核对数据后改写或删除'] })
+        originalText,
+        card: [originalText ? `原始值：${originalText}` : '未保存原始值',
+          '状态：待核实，原始值尚未通过来源校验', '请核对数据后改写或删除'] })
       continue
     }
     if (isExplanatoryUnverified(text, index)) continue
@@ -193,7 +221,8 @@ export function documentValueMarks(doc: ProseNode, validation: TraceValidation |
 
 const key = new PluginKey<DecorationSet>('SMART_REPORT_BODY_VALUE_MARKS')
 
-export const bodyValueMarksPlugin = $prose(() => new Plugin<DecorationSet>({
+export function createBodyValueMarksPlugin(): Plugin<DecorationSet> {
+  return new Plugin<DecorationSet>({
   key,
   state: {
     init: () => DecorationSet.empty,
@@ -201,16 +230,33 @@ export const bodyValueMarksPlugin = $prose(() => new Plugin<DecorationSet>({
     apply: (tr, previous) => tr.getMeta(key) ?? (tr.docChanged ? DecorationSet.empty : previous),
   },
   props: { decorations: state => key.getState(state) ?? DecorationSet.empty },
-}))
+  })
+}
+
+export const bodyValueMarksPlugin = $prose(createBodyValueMarksPlugin)
 
 export function updateBodyValueMarks(view: EditorView, validation: TraceValidation | null, sources?: TraceSources): void {
-  const decorations = documentValueMarks(view.state.doc, validation, sources).map(mark => Decoration.inline(mark.from, mark.to, {
-    class: `report-value-mark report-value-mark--${mark.state}`,
-    'data-value-state': mark.state,
-    'data-value-card': JSON.stringify(mark.card),
-    ...(mark.subjectId ? { 'data-value-subject': mark.subjectId } : {}),
-    'aria-label': mark.card.join('；'),
-  }))
+  const decorations = documentValueMarks(view.state.doc, validation, sources).flatMap(mark => {
+    const attributes = {
+      class: `report-value-mark report-value-mark--${mark.state}`,
+      'data-value-state': mark.state,
+      'data-value-card': JSON.stringify(mark.card),
+      ...(mark.subjectId ? { 'data-value-subject': mark.subjectId } : {}),
+      'aria-label': mark.card.join('；'),
+    }
+    const highlight = Decoration.inline(mark.from, mark.to, attributes)
+    if (!mark.originalText) return [highlight]
+    const originalText = mark.originalText
+    const original = Decoration.widget(mark.from, () => {
+      const element = document.createElement('span')
+      for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value)
+      element.classList.add('report-original-value')
+      element.contentEditable = 'false'
+      element.textContent = `${originalText} · `
+      return element
+    }, { side: -1 })
+    return [original, highlight]
+  })
   view.dispatch(view.state.tr.setMeta(key, DecorationSet.create(view.state.doc, decorations)).setMeta('addToHistory', false))
 }
 
@@ -223,8 +269,10 @@ export function restoreRegisteredValue(view: EditorView, subjectId: string, vali
   const subject = validation?.subjects.find(item => item.subjectId === subjectId)
   // 缺失或重复引用尚未形成唯一绑定，不能仅凭一个候选数值自动写入。
   if (!subject || subject.status === 'unbound' || typeof subject.factValue !== 'number' || !Number.isFinite(subject.factValue)) return false
+  // 只改了指标、期间或范围时，重填相同数字无法修复语义，须保留人工复核。
+  if (subject.status === 'stale' && subject.comparable === false) return false
   const targets = documentValueMarks(view.state.doc, validation, sources)
-    .filter(mark => mark.subjectId === subjectId && mark.state !== 'valid')
+    .filter(mark => mark.subjectId === subjectId && (mark.state === 'stale' || mark.state === 'unverified'))
   if (targets.length !== 1) return false
   const [target] = targets
   const written = view.state.doc.textBetween(target.from, target.to)
@@ -239,16 +287,22 @@ export function restoreRegisteredValue(view: EditorView, subjectId: string, vali
     // 只恢复幅度，不猜测或改写方向；登记方向与正文冲突时保留人工处理。
     if ((subject.draftDirection === 'decrease' && replacementValue > 0) ||
       (subject.draftDirection === 'increase' && replacementValue < 0)) return false
+    if (subject.restoreText && /^[−－-]/.test(subject.restoreText.trimStart())) return false
     replacementValue = Math.abs(replacementValue)
   } else if (replacementValue < 0 && !/^[−－-]/.test(written)) {
-    // 旧校验响应或占位没有足够的方向信息，不能把负值填到可能是“下降”的正幅度中。
-    return false
+    // 只有已签发的正幅度原文和当前紧邻的下降词能共同确认方向；旧响应或“下降至”仍不猜测。
+    const magnitude = /^\+?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?/.exec(subject.restoreText ?? '')?.[0]
+    const position = view.state.doc.resolve(target.from)
+    const prefix = position.parent.textBetween(0, position.parentOffset, '\n', '\n')
+    if (!magnitude || Number(magnitude.replace(/,/g, '')) <= 0 || !DECLINE_MAGNITUDE_PREFIX.test(prefix)) return false
   }
   // 沿用正文原有的数字与单位间距写法，只替换数值。
   const spaced = /\d\s+\D/.test(written)
   // 写回正文保留登记值精度；卡片的两位小数仅用于展示，不能用于数据恢复。
   const exactValue = replacementValue.toLocaleString('zh-CN', { maximumSignificantDigits: 21 })
-  const replacement = `${exactValue}${spaced && subject.unit ? ' ' : ''}${subject.unit ?? ''}`
+  // 新引用恢复签发时的显示原文，避免正确值因 .00、单位或舍入写法变化再次触发陈述告警。
+  // 旧引用未保存该文本时仍保留原有精度与方向保护。
+  const replacement = subject.restoreText || `${exactValue}${spaced && subject.unit ? ' ' : ''}${subject.unit ?? ''}`
   const tr: Transaction = view.state.tr.insertText(replacement, target.from, target.to)
   view.dispatch(tr)
   return true

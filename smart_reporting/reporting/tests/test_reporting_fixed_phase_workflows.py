@@ -3474,6 +3474,58 @@ async def test_section_semantic_review_corrects_once_and_stays_soft(monkeypatch)
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
+@pytest.mark.parametrize('postfixed', [False, True])
+async def test_reference_review_harness_supplies_exact_metadata_to_model_correction(monkeypatch, mode, postfixed):
+    from .test_content_review import _metric
+
+    calls = []
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:monthlyAverage:人次}}'
+
+    async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == 'plan':
+            return SectionPlanOutput.model_validate({'kind': 'render', 'sectionCode': 'section_001',
+                'blocks': [{'blockId': 'block_001', 'objective': '收入', 'claimIds': ['claim_001']}],
+                'claims': [_plan_claim('claim_001')]})
+        calls.append(dict(payload))
+        if len(calls) == 1:
+            text = '收入' + token + '（累计值）。' if postfixed else '累计收入' + token + '。'
+        else:
+            text = '月均收入' + token + '。'
+        if mode == 'whole':
+            return SectionContent.model_validate({'blocks': [{'blockId': 'block_001', 'markdown': text}]})
+        return SectionBlockContent(markdown=text)
+
+    monkeypatch.setattr(reporting_sections, '_run_section_stage', fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(sectionCode='section_001', factSummaries=(), files=(SectionEvidenceFile(
+        identity=work_item.evidence[0].evidence_files[0],
+        content=json.dumps({'analysisId': 'analysis_001', 'metrics': [_metric(values=(10, 20))]})),))
+    options = dict(scope=TaskExecutionScope('task-1', 'user-1', 'thread-1', 'sandbox-1', 'section'),
+                   run_context=_context(), thinking_request=ThinkingRequest(operation='section_generation', complexity='standard'))
+    if mode == 'whole':
+        plan = RenderSectionPlan.model_validate({'sectionCode': 'section_001',
+            'blocks': [{'blockId': 'block_001', 'objective': '收入', 'claimIds': ['claim_001']}],
+            'claims': [_plan_claim('claim_001')]})
+        result = await reporting_sections._generate_whole_section_content(object(), {}, evidence, work_item, plan, **options)
+    else:
+        result = await reporting_sections._generate_section_in_blocks(object(), {}, evidence, work_item, **options)
+    assert len(calls) == 2
+    issues = calls[1]['correction']['referenceIssues']
+    if mode == 'whole':
+        assert set(issues) == {'block_001'}
+        issues = issues['block_001']
+    assert len(issues) == 1
+    assert issues[0]['token'] == token
+    assert issues[0]['selector'] == 'monthlyAverage'
+    assert issues[0]['periods'] == ['2025-01', '2025-02']
+    assert issues[0]['scope'] == {}
+    assert any('统计口径' in warning for warning in issues[0]['warnings'])
+    assert ('累计值' if postfixed else '累计收入') in issues[0]['statement']
+    assert result.blocks[0].markdown == '月均收入15人次。'
+
+
+@pytest.mark.anyio
 async def test_residual_review_warnings_are_collected_as_soft_block_notices(monkeypatch):
     # 纠错后仍残留的复核告警与“待核实”替换按 blockId 收集，随章节提交进入质量告警；不阻断。
     from .test_content_review import _metric

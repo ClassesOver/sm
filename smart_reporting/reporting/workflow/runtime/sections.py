@@ -50,6 +50,7 @@ from ...trace.contracts_v1 import (
 )
 from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
+from ...trace.number_selection import align_number_selections
 from ...trace.numeric_text import (
     frozen_number_catalog,
     frozen_number_guide,
@@ -225,6 +226,8 @@ _SECTION_BLOCK_OMISSION_MARKER = "[...已省略与当前正文块无关的证据
 # 小标题），两种生成路径共用。
 _LATER_CORRECTION_ACTIONS = (
     "同比/环比、月均值与分组排名按登记结果改正；数值归属与点名的指标或科室不符时改用该对象的数值引用或改写主语；"
+    "referenceIssues 列出当前引用的真实期间、范围和选择器，逐项核对当前分句；多月合计不能充当单月值，"
+    "科室名称须与引用范围一致，找不到对应来源时保留待核实，不得删除告警文字来冒充已核实；"
     "历史新高、首次突破等表述改为与对比期的比较；图表编号改用图表标题主题词指代；"
     "小标题压缩为不超过 24 字的主题短语；过长段落按结论、证据、建议拆分；倍数改用已登记的变化率。"
 )
@@ -1829,6 +1832,10 @@ async def _generate_section_in_blocks(
                 loguru_logger.warning("report_content_review_correction_unavailable section={} code={}", work_item.section_code, getattr(error, "code", type(error).__name__))
                 # 不让无效纠错响应覆盖已验证的首轮正文。
                 content = first_block_content
+            aligned_markdown, _ = align_number_selections(
+                content.markdown, number_contents, block_payload["fieldDefinitions"],
+            )
+            content = content.model_copy(update={"markdown": aligned_markdown})
             content_review = review_content_result(content.markdown, number_contents,
                                              field_definitions=block_payload["fieldDefinitions"],
                                              fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids),
@@ -1854,6 +1861,7 @@ async def _generate_section_in_blocks(
                 first_block_content, first_block_warnings, first_block_score = content, review_warnings, review_score
                 block_payload["correction"] = {
                     "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
+                    "referenceIssues": list(content_review.reference_issues),
                     "requiredAction": (
                         "逐条处理 issues：修正有依据的数字和口径；内部 ID 和英文字段名改用业务名称；"
                         "负值改写为正的下降幅度或“变化率为…”；删去与前文重复的表述；拆分过长或数值堆砌的句子；"
@@ -2002,7 +2010,7 @@ async def _generate_whole_section_content(
 
     def review_blocks(
         candidate: SectionContent,
-    ) -> tuple[dict[str, tuple[int, int]], dict[str, list[str]]]:
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, list[str]], dict[str, list[dict[str, Any]]]]:
         # 默认整章生成路径与分块路径使用同一组复核：数值口径、跨 block 重复与可读性。
         content_reviews = {
             block.block_id: review_content_result(block.markdown, number_contents,
@@ -2028,7 +2036,9 @@ async def _generate_whole_section_content(
             key: [*review.warnings, *style_warnings[key]]
             for key, review in content_reviews.items() if review.warnings or style_warnings[key]
         }
-        return review_scores, review_warnings
+        return review_scores, review_warnings, {
+            key: list(review.reference_issues) for key, review in content_reviews.items() if review.reference_issues
+        }
 
     first_by_id: dict[str, Any] = {}
     first_warnings: dict[str, list[str]] = {}
@@ -2084,9 +2094,13 @@ async def _generate_whole_section_content(
         if review_attempt:
             content_by_id = {**first_by_id, **content_by_id}
         content = content.model_copy(update={"blocks": tuple(
-            content_by_id[block.block_id] for block in plan.blocks
+            content_by_id[block.block_id].model_copy(update={"markdown": align_number_selections(
+                content_by_id[block.block_id].markdown, number_contents, payload["fieldDefinitions"],
+            )[0]}) for block in plan.blocks
         )})
-        review_scores, review_warnings = review_blocks(content)
+        # 复核、回退与最终签发共用已经确定性对齐的候选，避免恢复已失效的原始告警。
+        content_by_id = {block.block_id: block for block in content.blocks}
+        review_scores, review_warnings, reference_issues = review_blocks(content)
         if review_attempt == 1:
             # 纠错后问题反而更严重的 block 回退到首轮版本，纠错不能让正文变差。
             worse = {block_id for block_id in flagged_ids
@@ -2100,7 +2114,7 @@ async def _generate_whole_section_content(
                 )})
                 content_by_id = {item.block_id: item for item in content.blocks}
                 # 部分回退会改变其他 block 的“前文”，旧的重复检测结果已失效。
-                _, review_warnings = review_blocks(content)
+                _, review_warnings, _ = review_blocks(content)
         loguru_logger.info("report_content_review_completed section={} attempt={} issue_count={} block_count={}",
                            work_item.section_code, review_attempt,
                            len({warning for warnings in review_warnings.values() for warning in warnings}), len(content.blocks))
@@ -2126,6 +2140,7 @@ async def _generate_whole_section_content(
             ]
             payload["correction"] = {
                 "issues": review_warnings,
+                "referenceIssues": {key: issues for key, issues in reference_issues.items() if key in flagged_ids},
                 "previousOutput": {"blocks": [block.model_dump(mode="json", by_alias=True)
                                               for block in content.blocks if block.block_id in flagged_ids]},
                 "requiredAction": (
