@@ -29,9 +29,48 @@ _MONTH_OFFSETS = {"次月": 1, "翌月": 1, "下月": 1, "上月": -1, "当月":
 
 
 _PERIOD_WORDS = re.compile(
-    r'\d{1,2}月|\d{4}年|\d{1,2}日|月份|季度|当月|同月|该月|上月|本月|次月|首月|末月|'
-    r'各月|每月|逐月|月度|介于|区间|之间|波动|至'
+    r'当月|同月|该月|上月|本月|次月|首月|末月|各月|每月|逐月|第?[一二三四1-4]季度'
 )
+_VALUE_INTERVAL = re.compile(
+    r'(?:介于|区间为?)\s*(?P<first>' + _TOKEN.pattern + r')\s*'
+    r'(?:至|到|[—–~～-])\s*(?P<last>' + _TOKEN.pattern + r')'
+)
+
+
+def _in_value_interval(sentence, token, fact, catalog):
+    """只豁免同一事实、同一单位的两个不同单期冻结值构成的明确数值区间。"""
+    for interval in _VALUE_INTERVAL.finditer(sentence):
+        endpoints = [interval['first'], interval['last']]
+        if token not in endpoints or endpoints[0] == endpoints[1]:
+            continue
+        matches = [_TOKEN.fullmatch(endpoint) for endpoint in endpoints]
+        if (any(match[1] != fact.fact_id or not re.fullmatch(r'periodValues\.\d+', match[2])
+                or catalog.get(match[0], '数值待核实') == '数值待核实' for match in matches)
+                or matches[0][2] == matches[1][2] or matches[0][3] != matches[1][3]):
+            continue
+        return True
+    return False
+
+
+def _has_period_expression(sentence, fact):
+    # 相对月份及逐月表述沿用已有契约；日历表达必须能解析为有效日期。
+    if _PERIOD_WORDS.search(sentence):
+        return True
+    written = _written_period(sentence, fact)
+    if not written:
+        return False
+    try:
+        if written.re is _DAY_PERIOD:
+            start = date(int(written['year']), int(written['month']), int(written['day']))
+            end = date(int(written['end_year'] or written['year']),
+                       int(written['end_month'] or written['month']), int(written['end_day'] or written['day']))
+        else:
+            start = date(int(written['year']), int(written['start'] or 1), 1)
+            end = date(int(written['end_year'] or written['year']),
+                       int(written['end'] or written['start'] or 1), 1)
+    except ValueError:
+        return False
+    return start <= end
 
 
 def _written_period(sentence, fact):
@@ -176,10 +215,12 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             warnings.append('数值引用身份冲突：同一事实身份存在不同记录，需复核。')
             return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
         sentence = re.split(r'[。！？；;\n]', markdown[:match.start()])[-1]
-        # 单期数值必须写在该期间名下：回放中“普通住院业务预算减实际的差额为10.93亿元”引用的是
-        # 3月实际收入，句中没有任何期间。区间与逐月表述（“介于…至…”“各月”）不在此列。
+        following = re.split(r'[。！？；;\n]', markdown[match.end():], maxsplit=1)[0]
+        statement = sentence + match[0] + following
+        # 单期数值需有期间或明确的冻结值区间；泛化词及下一句的期间不能为本句背书。
         if (match[2].startswith('periodValues.') and len(original.period_values) > 1
-                and not _PERIOD_WORDS.search(sentence + markdown[match.end():match.end() + 12])):
+                and not _has_period_expression(statement, original)
+                and not _in_value_interval(statement, match[0], original, catalog)):
             warnings.append('数值引用期间缺失：单期数值所在句未写出期间，已撤销引用，需复核。')
             return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
         clause = re.split(r'[，,]', sentence)[-1]
