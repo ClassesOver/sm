@@ -166,7 +166,7 @@ def test_reporting_script_runner_moves_legends_off_plotted_data(tmp_path: Path) 
         "right.plot(months, [1.75, 1.5, 2.04, 2.0, 1.94, 1.96, 2.12, 2.09, 2.1, 1.45], label='出院人次')\n"
         "lines = ax.get_lines() + right.get_lines()\n"
         "ax.legend(lines, [line.get_label() for line in lines], loc='upper center')\n"
-        "kept.plot([0, 1], [0, 0.1], label='平稳'); kept.legend(loc='upper right')\n"
+        "kept.plot([0, 1], [0, 0.1], label='平稳'); kept.set_ylim(0, 1); kept.legend(loc='upper right')\n"
         "anchored.plot([0, 1], [1, 1], label='固定'); anchored.legend(loc='upper center', bbox_to_anchor=(0.5, 1))\n"
         f"fig.savefig({str(tmp_path / 'chart.png')!r})\n"
         f"Path({str(output_path)!r}).write_text('|'.join(str(item.get_legend()._loc) for item in (ax, kept, anchored)),"
