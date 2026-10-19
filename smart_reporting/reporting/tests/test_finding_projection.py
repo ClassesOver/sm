@@ -220,6 +220,24 @@ def test_supplemental_finding_retains_its_file_identity_and_pointer():
     assert selected.impact_value is None
 
 
+@pytest.mark.parametrize("scope", ["开单收入", ["开单收入"], 1])
+def test_supplemental_finding_with_non_mapping_scope_is_kept_without_crashing(scope):
+    evidence = {
+        "analysisId": "analysis_001", "datasetIds": ["dataset-abc123"],
+        "findings": [{"name": "异常收入", "kind": "anomaly", "scope": scope}],
+        "reconciliations": [], "warnings": [],
+    }
+    result = project_analysis_findings(
+        "analysis_001", facts(), evidence, snapshot_hash="b" * 64,
+        citation_ids=("citation_007",),
+        supplemental_file_path="evidence/001.json", supplemental_file_sha256="c" * 64,
+    )
+    selected = next(item for item in result if item.title == "异常收入")
+    assert selected.scope == {}
+    assert any("scope" in warning for warning in selected.limitations)
+    assert selected.source_refs[0].pointer == "/findings/0"
+
+
 def test_supplemental_projection_requires_frozen_file_identity():
     with pytest.raises(ValueError, match="身份"):
         project_analysis_findings(
@@ -228,7 +246,8 @@ def test_supplemental_projection_requires_frozen_file_identity():
         )
 
 
-def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_scope():
+@pytest.mark.parametrize("scope", [{"性质": "开单收入"}, "开单收入"])
+def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_scope(scope):
     authoritative = facts(metrics=[{
         "factId": "fact-1111111111111111", "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
         "periodRoles": ["current"], "metricCodes": ["income"], "field": "income",
@@ -242,13 +261,13 @@ def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_s
             "name": "科室收入分解", "kind": "attribution", "directDecomposition": True,
             "reconciliationCode": "income_by_department", "metricCodes": ["income"],
             "sourceFactIds": ["fact-1111111111111111"],
-            "periodRoles": ["current"], "grain": ["科室"], "scope": {"性质": "开单收入"},
+            "periodRoles": ["current"], "grain": ["科室"], "scope": scope,
             "total": 100, "components": [{"name": "A", "value": 60}, {"name": "B", "value": 40}],
         }],
         "reconciliations": [{
             "name": "科室收入合计对账", "code": "income_by_department", "passed": True,
             "leftTotal": 100, "rightTotal": 100, "difference": 0,
-            "grain": ["科室"], "scope": {"性质": "开单收入"},
+            "grain": ["科室"], "scope": scope,
         }],
         "warnings": [],
     }
@@ -258,10 +277,15 @@ def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_s
         supplemental_file_sha256="c" * 64,
     )
     attribution = next(item for item in result if item.title == "科室收入分解")
-    assert attribution.kind == "attribution"
-    assert attribution.evidence_level == "direct_decomposition"
     assert attribution.grain == ("科室",)
-    assert attribution.scope == {"性质": "开单收入"}
+    if isinstance(scope, dict):
+        assert attribution.kind == "attribution"
+        assert attribution.evidence_level == "direct_decomposition"
+        assert attribution.scope == scope
+    else:
+        assert attribution.evidence_level != "direct_decomposition"
+        assert attribution.scope == {}
+        assert any("scope" in warning for warning in attribution.limitations)
 
 
 def test_supplemental_attribution_with_failed_or_nonclosing_reconciliation_is_not_direct():
