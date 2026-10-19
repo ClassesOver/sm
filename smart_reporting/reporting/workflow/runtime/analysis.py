@@ -4597,7 +4597,11 @@ def _finalize_semantic_catalog(
     metric_definitions = []
     for code in sorted(facts_by_code):
         facts = facts_by_code[code]
-        name = code
+        # 目录名称给模型看：用事实显示名（“预算金额”），不是字段编码；显示名不唯一时退回编码。
+        display_names = {
+            str(fact.get("displayName") or "").split("，")[0].split(",")[0].strip() for fact in facts
+        }
+        name = next(iter(display_names)) if len(display_names) == 1 and next(iter(display_names)) else code
         formulas = sorted(
             {
                 formula
@@ -4622,14 +4626,23 @@ def _finalize_semantic_catalog(
         # 同一指标可在当前期、同比期等多个冻结事实中重复出现。目录只表达其
         # 唯一计算定义和覆盖期间，不能把多个完整期间误判为定义冲突；但每条事实
         # 仍必须具备完整 formula、unit 和期间边界，避免用部分证据补全语义目录。
+        # 回放：项目预算合同付款数据没有期间字段，全部事实都只有单期累计值；这类一致
+        # 无期间的指标按单期登记，部分有期间、部分没有的仍判为不完整。
+        periodless = all(
+            not fact.get("periodStart") and not fact.get("periodEnd") and not fact.get("periodField")
+            and not fact.get("periodValues")
+            for fact in facts
+        )
         if (
             any(
                 not isinstance(fact.get("formula"), str)
                 or not fact["formula"]
-                or not isinstance(fact.get("periodStart"), str)
-                or not fact["periodStart"]
-                or not isinstance(fact.get("periodEnd"), str)
-                or not fact["periodEnd"]
+                or not periodless and (
+                    not isinstance(fact.get("periodStart"), str)
+                    or not fact["periodStart"]
+                    or not isinstance(fact.get("periodEnd"), str)
+                    or not fact["periodEnd"]
+                )
                 for fact in facts
             )
             or len(formulas) != 1
@@ -4640,9 +4653,9 @@ def _finalize_semantic_catalog(
                 missing_fields.append("formula")
             if not units_valid:
                 missing_fields.append("unit")
-            if not periods or any(
+            if not periodless and (not periods or any(
                 not fact.get("periodStart") or not fact.get("periodEnd") for fact in facts
-            ):
+            )):
                 missing_fields.append("period")
             findings.append(
                 {
@@ -4657,7 +4670,7 @@ def _finalize_semantic_catalog(
         period_basis = "；".join(
             period_start if period_start == period_end else f"{period_start} 至 {period_end}"
             for period_start, period_end in periods
-        )
+        ) or "未提供统计期间（单期累计）"
         metric_definitions.append(
             {
                 "code": code,

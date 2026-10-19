@@ -772,3 +772,29 @@ def test_unreferenced_quality_warning_does_not_block_release() -> None:
         citations=citations,
     )
     assert gate["formalReleaseAllowed"] is True
+
+
+def _catalog(*metrics):
+    return _finalize_semantic_catalog(
+        analysis_plans={"analysis_001": {"datasetIds": ["dataset-1"], "organizationGrain": ["month"]}},
+        fact_bundles={"analysis_001": {"metrics": list(metrics)}},
+        dataset_ids=("dataset-1",),
+    )
+
+
+def test_semantic_catalog_keeps_consistently_periodless_single_period_metrics() -> None:
+    # 回放：项目预算合同付款数据没有期间字段，三个指标全被判为语义不完整，
+    # 第5章 metricDefinitions 为空，52 条 claim 被告警为“引用了未冻结指标”。
+    metric = {"field": "budget_project_amount", "metricCodes": ["project_budget"], "displayName": "预算金额",
+              "formula": "sum(budget_project_amount)", "unit": "元", "periodStart": None, "periodEnd": None,
+              "periodField": None, "periodValues": []}
+    _semantics, definitions, findings = _catalog(metric)
+    assert [(item["code"], item["name"]) for item in definitions] == [
+        ("budget_project_amount", "预算金额"), ("project_budget", "预算金额"),
+    ]
+    assert definitions[0]["periodBasis"] == "未提供统计期间（单期累计）"
+    assert findings == []
+    # 同一指标部分事实有期间、部分没有，仍是不完整定义。
+    dated = {**metric, "periodStart": "2025-01-01", "periodEnd": "2025-12-01", "periodField": "month"}
+    _semantics, definitions, findings = _catalog(metric, dated)
+    assert definitions == [] and {item["subjectId"] for item in findings} == {"project_budget", "budget_project_amount"}
