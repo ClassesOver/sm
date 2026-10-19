@@ -152,6 +152,17 @@ def project_analysis_findings(
                 continue
             pointer = f"/findings/{index}"
             name = str(item.get("name") or "补充分析发现")
+            raw_scope = item.get("scope")
+            scope_valid = raw_scope is None or (
+                isinstance(raw_scope, Mapping)
+                and len(raw_scope) <= 100
+                and all(isinstance(key, str) and isinstance(value, str)
+                        for key, value in raw_scope.items())
+            )
+            scope = dict(raw_scope or {}) if scope_valid else {}
+            scope_limitations = () if scope_valid else (
+                "范围字段 scope 格式无效，未用于范围匹配或直接归因；原始值保留在来源证据中。",
+            )
             reconciliation_code = item.get("reconciliationCode")
             reconciliation = next(
                 (
@@ -173,6 +184,7 @@ def project_analysis_findings(
             )
             direct_decomposition = (
                 item.get("kind") == "attribution"
+                and scope_valid
                 and item.get("directDecomposition") is True
                 and isinstance(total, (int, float))
                 and component_total is not None
@@ -207,7 +219,7 @@ def project_analysis_findings(
                     metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
                     periodRoles=tuple(item.get("periodRoles") or ("current",)),
                     periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
-                    grain=_tuple_values(item.get("grain")), scope=dict(item.get("scope") or {}),
+                    grain=_tuple_values(item.get("grain")), scope=scope,
                     priority="high", evidenceLevel="direct_decomposition", actionability="high",
                     citationIds=citation_ids,
                     sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
@@ -224,11 +236,11 @@ def project_analysis_findings(
                 metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
                 periodRoles=tuple(item.get("periodRoles") or ("current",)),
                 periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
-                grain=_tuple_values(item.get("grain")), scope=dict(item.get("scope") or {}),
+                grain=_tuple_values(item.get("grain")), scope=scope,
                 priority="medium", evidenceLevel="verified_fact", actionability="unknown",
                 citationIds=citation_ids,
                 sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
-                limitations=tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning),
+                limitations=tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning) + scope_limitations,
             ))
     if not findings:
         add("data_quality", "/warnings", "当前分析缺少可编排发现", "当前分析没有形成可用于正文的确定性发现。", priority="low", evidence="evidence_missing", limitations=tuple(str(item) for item in payload.get("warnings", ()) if item))
