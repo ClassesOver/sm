@@ -61,6 +61,10 @@ def metric_fact_identity(fact: Any) -> str:
         )
     )
     period_aggregation = getattr(fact, "period_aggregation", None)
+    # 相同原文在不同已确认单位或期间字段下的选择器含义不同。
+    identity += "|semantics=" + json.dumps({
+        "unit": fact.unit, "periodField": fact.period_field,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if any(item.group_values for item in (*fact.top_groups, *fact.bottom_groups)):
         identity += "|groupValues=" + json.dumps({
             "topGroups": [item.group_values for item in fact.top_groups],
@@ -122,6 +126,11 @@ def reconciliation_fact_identity(fact: Any) -> str:
         )
     )
     inputs = getattr(fact, "input_fact_ids", ())
+    identity += "|rule=" + json.dumps({
+        "grain": fact.grain,
+        "absoluteTolerance": fact.absolute_tolerance,
+        "relativeTolerance": fact.relative_tolerance,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if inputs:
         identity += "|inputFactIds=" + json.dumps(inputs, separators=(",", ":"))
     scale = getattr(fact, "right_scale", 1)
