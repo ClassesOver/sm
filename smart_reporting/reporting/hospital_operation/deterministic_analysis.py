@@ -340,13 +340,7 @@ def _dataset_facts(
         return facts, selected_semantics, warnings
 
     period_field = _period_field(dataset.frame, dataset.context)
-    # 同一时间轴常有多个列（data_date 与 period_code）：语义声明可沿其中任一列相加即为流量指标，
-    # 不能因所选期间列不在 additiveAcross 中就按时点取期末值（期末为零时合计变成 0）。
-    time_fields = {
-        str(column).casefold() for column in dataset.frame.columns
-        if str(column) == period_field or str(column) in dataset.context.period_granularities
-        or _is_period_field_name(str(column))
-    }
+    time_fields = _period_axis_aliases(dataset.frame, dataset.context, period_field)
     source_grain = dataset.context.period_granularities.get(period_field or "")
     period_granularity = (
         analysis.series_granularity or "day" if source_grain == "date"
@@ -1505,6 +1499,37 @@ def _period_field(frame: pl.DataFrame, context: DatasetAnalysisContext) -> str |
         (by_casefold[item.casefold()] for item in candidates if item.casefold() in by_casefold),
         None,
     )
+
+
+def _period_axis_aliases(
+    frame: pl.DataFrame, context: DatasetAnalysisContext, period_field: str | None,
+) -> set[str]:
+    """期间别名须逐行对应同一日期；字段名或期间粒度声明本身不能证明同轴。"""
+    if period_field is None:
+        return set()
+
+    def parse(value: str | None, column: str) -> _ParsedPeriod | None:
+        grain = context.period_granularities.get(column)
+        return _parse_fact_period(value, 'day' if grain == 'date' else grain) if value is not None else None
+
+    aliases = {period_field.casefold()}
+    for column in frame.columns:
+        if column == period_field or not (
+            column in context.period_granularities or _is_period_field_name(column)
+        ):
+            continue
+        pairs = frame.select(period_field, column).unique().iter_rows()
+        matched = False
+        for selected, candidate in pairs:
+            left, right = parse(selected, period_field), parse(candidate, column)
+            if (left is None or right is None or left.value != right.value
+                    or (left.granularity == 'year') != (right.granularity == 'year')):
+                matched = False
+                break
+            matched = True
+        if matched:
+            aliases.add(column.casefold())
+    return aliases
 
 
 def _metric_codes_by_ref(
