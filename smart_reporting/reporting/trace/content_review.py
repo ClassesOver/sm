@@ -33,6 +33,7 @@ from .numeric_text import (
     positive_directed_placeholders,
     profile_rate_supported,
     profile_rate_values,
+    referenced_difference_matches,
     registered_change_rates,
     registered_decline_magnitude,
     registered_group_shares,
@@ -164,9 +165,29 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     catalog = frozen_number_catalog(contents)
     # 编辑器复核的是用户可能手输的正文：全角数字与百分点缩写同样要识别。
     markdown = normalize_number_notation(trace_body(markdown, mask_inline_code=False))
-    text = render_frozen_numbers(markdown, catalog).replace("**", "")
-    # 数值锚点可能插在数字与单位之间；复核时只移除非分析协议标记。
-    text = re.sub(r"\[\[(?:claim|citation|section|table|/table):[^\]]+\]\]", "", text)
+    # 先去掉正文自带的锚点，再用临时服务端锚点记录每个占位符渲染值的身份。
+    # 复核仍使用干净文本，保留的终点偏移只授权对应数字，不能豁免同句或同段的同值手写数。
+    marker_pattern = r"\[\[(?:claim|citation|section|table|/table):[^\]]+\]\]"
+    clean = re.sub(marker_pattern, "", markdown).replace("**", "")
+    references: dict[str, str] = {}
+
+    def annotate(token: str, shown: str) -> str:
+        marker = f"[[claim:number-review-{len(references)}]]"
+        references[marker] = token
+        return shown + marker
+
+    marked = render_frozen_numbers(clean, catalog, annotate=annotate)
+    number_references: dict[int, str] = {}
+    removed = 0
+
+    def strip_marker(match: re.Match[str]) -> str:
+        nonlocal removed
+        if token := references.get(match[0]):
+            number_references[match.start() - removed] = token
+        removed += len(match[0])
+        return ""
+
+    text = re.sub(marker_pattern, strip_marker, marked)
     documents = _documents(contents)
     warnings = [*selection_warnings, *money_text_warnings(text)]
     warnings.extend(supplemental_attribution_warnings(text, documents, field_definitions or {}))
@@ -275,7 +296,6 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         known.setdefault(unit, set()).update(values)
         if unit == "人次":
             known.setdefault("万人次", set()).update(value / 10000 for value in values)
-    differences = frozen_number_values(contents, catalog, differences_only=True)
     # 仅为旧格式简化证据保留无单位回退。事实包必须使用上面的带单位目录，
     # 否则金额、缺失行数等原始数字会被借作百分比或人次的依据。
     supplemental = set().union(*(_numeric_literals(document) for document in documents
@@ -315,8 +335,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
                 number, match[2], quantum, _paragraph_at(text, match.start()),
                 statement=_statement_at(text, match.start()),
                 claim=re.split(r'[。！？；;\n]', text[:match.end()])[-1],
-            ) or any(value.quantize(quantum, rounding=ROUND_HALF_UP) in {number, -number}
-                     for value in differences.get(match[2], ()))
+            ) or referenced_difference_matches(number_references.get(match.end()), catalog, number, match[2])
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
             warnings.append(f"数值缺少可核对的冻结依据：{match[0]}。请使用对应数值引用，或删去未登记的计算结果。")
