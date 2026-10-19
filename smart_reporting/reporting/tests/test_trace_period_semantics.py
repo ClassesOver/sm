@@ -103,6 +103,30 @@ def test_period_named_column_requires_complete_rowwise_axis_agreement(alias_valu
     assert bundle.metrics[0].total == 0
 
 
+@pytest.mark.parametrize('declared_grain', [False, True])
+@pytest.mark.parametrize('other_values', [
+    ('1980', '1980'), ('2025-02', '2025-01'), ('2025-01', ''),
+    ('not-a-period', '2025-02'),
+])
+def test_unrelated_period_dimension_does_not_make_stock_additive(other_values, declared_grain):
+    ctx = context('current', fields=('data_date', 'birth_year', 'balance'), semantics=(
+        {**semantic('balance'), 'additiveAcross': ['birth_year']},
+    )).model_copy(update={
+        'time_series_sort_field': 'data_date',
+        'period_granularities': {'data_date': 'date', **({'birth_year': 'year'} if declared_grain else {})},
+    })
+    content = (f'data_date,birth_year,balance\n2025-01-01,{other_values[0]},100\n'
+               f'2025-02-01,{other_values[1]},200\n').encode()
+    bundle = build_deterministic_analysis_bundle(analysis(fields=('balance',)), (
+        ('current', content, ctx, ('current',)),
+    ))
+    fact = bundle.metrics[0]
+    assert fact.period_field == 'data_date'
+    assert [item.value for item in fact.period_values] == [100, 200]
+    assert fact.total == 200
+    assert fact.period_aggregation == 'last'
+
+
 def test_stock_number_selection_must_preserve_endpoint_total():
     bundle = stock_bundle()
     fact = bundle.metrics[0]

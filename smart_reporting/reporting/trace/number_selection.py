@@ -28,49 +28,56 @@ _YEAR_OFFSETS = {"次年": 1, "翌年": 1, "来年": 1, "上年": -1, "去年": 
 _MONTH_OFFSETS = {"次月": 1, "翌月": 1, "下月": 1, "上月": -1, "当月": 0, "本月": 0}
 
 
-_PERIOD_WORDS = re.compile(
-    r'当月|同月|该月|上月|本月|次月|首月|末月|各月|每月|逐月|第?[一二三四1-4]季度'
-)
 _VALUE_INTERVAL = re.compile(
-    r'(?:介于|区间为?)\s*(?P<first>' + _TOKEN.pattern + r')\s*'
-    r'(?:至|到|[—–~～-])\s*(?P<last>' + _TOKEN.pattern + r')'
+    r'(?:介于|区间为|范围为)\s*' + _TOKEN.pattern
+    + r'\s*(?:至|到|[—–~～-])\s*' + _TOKEN.pattern
 )
+_ISO_PERIOD = re.compile(r'(?<![\d/.-])\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?(?![\d/.-])')
 
 
-def _in_value_interval(sentence, token, fact, catalog):
-    """只豁免同一事实、同一单位的两个不同单期冻结值构成的明确数值区间。"""
+def _has_period_context(sentence, fact, position, catalog):
+    prose = _TOKEN.sub('', sentence[:position])
+    written = _written_period(prose, fact)
+    if written is None:
+        # 允许引用后括注期间，但不能让后续分句的日期改变当前引用的期间。
+        prose += re.split(r'[，,]', _TOKEN.sub('', sentence[position:]), maxsplit=1)[0]
+        written = _written_period(prose, fact)
+    if written:
+        try:
+            if written.re is _DAY_PERIOD:
+                start = date(int(written['year']), int(written['month']), int(written['day']))
+                end = date(int(written['end_year'] or written['year']),
+                           int(written['end_month'] or written['month']),
+                           int(written['end_day'] or written['day']))
+            else:
+                start = date(int(written['year']), int(written['start'] or 1), 1)
+                end = date(int(written['end_year'] or written['year']),
+                           int(written['end'] or written['start'] or 1), 1)
+            if start <= end:
+                return True
+        except ValueError:
+            pass
+    if any(_parse_fact_period(item[0], None) is not None for item in _ISO_PERIOD.finditer(prose)):
+        return True
+    # “介于…至…”必须是同一事实的两个有效单期引用，且确实覆盖冻结序列的最小/最大值。
     for interval in _VALUE_INTERVAL.finditer(sentence):
-        endpoints = [interval['first'], interval['last']]
-        if token not in endpoints or endpoints[0] == endpoints[1]:
+        endpoints = list(_TOKEN.finditer(interval[0]))
+        if not any(interval.start() + item.start() == position for item in endpoints):
             continue
-        matches = [_TOKEN.fullmatch(endpoint) for endpoint in endpoints]
-        if (any(match[1] != fact.fact_id or not re.fullmatch(r'periodValues\.\d+', match[2])
-                or catalog.get(match[0], '数值待核实') == '数值待核实' for match in matches)
-                or matches[0][2] == matches[1][2] or matches[0][3] != matches[1][3]):
+        if any(item[1] != fact.fact_id or not re.fullmatch(r'periodValues\.\d+', item[2])
+               or catalog.get(item[0], '数值待核实') == '数值待核实' for item in endpoints):
             continue
-        return True
+        indices = [int(item[2].split('.')[1]) for item in endpoints]
+        if (indices[0] == indices[1] or endpoints[0][3] != endpoints[1][3]
+                or any(index >= len(fact.period_values) for index in indices)):
+            continue
+        if any(_parse_fact_period(item.period, fact.period_granularity) is None
+               for item in fact.period_values):
+            continue
+        values = [item.value for item in fact.period_values]
+        if [values[index] for index in indices] == [min(values), max(values)]:
+            return True
     return False
-
-
-def _has_period_expression(sentence, fact):
-    # 相对月份及逐月表述沿用已有契约；日历表达必须能解析为有效日期。
-    if _PERIOD_WORDS.search(sentence):
-        return True
-    written = _written_period(sentence, fact)
-    if not written:
-        return False
-    try:
-        if written.re is _DAY_PERIOD:
-            start = date(int(written['year']), int(written['month']), int(written['day']))
-            end = date(int(written['end_year'] or written['year']),
-                       int(written['end_month'] or written['month']), int(written['end_day'] or written['day']))
-        else:
-            start = date(int(written['year']), int(written['start'] or 1), 1)
-            end = date(int(written['end_year'] or written['year']),
-                       int(written['end'] or written['start'] or 1), 1)
-    except ValueError:
-        return False
-    return start <= end
 
 
 def _written_period(sentence, fact):
@@ -200,9 +207,8 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             for label in re.split(r'[，,、；;]', name):
                 if len(label.strip()) >= 2:
                     labels.setdefault(label.strip(), set()).add(fact_id)
-    if not labels:
-        return markdown, []
-    names = re.compile('|'.join(re.escape(name) for name in sorted(labels, key=len, reverse=True)))
+    names = (re.compile('|'.join(re.escape(name) for name in sorted(labels, key=len, reverse=True)))
+             if labels else None)
     catalog = frozen_number_catalog(contents)
     raw_values = {token: (value, unit) for token, value, unit, _target in _frozen_number_entries(contents)}
     warnings = []
@@ -215,16 +221,14 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             warnings.append('数值引用身份冲突：同一事实身份存在不同记录，需复核。')
             return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
         sentence = re.split(r'[。！？；;\n]', markdown[:match.start()])[-1]
-        following = re.split(r'[。！？；;\n]', markdown[match.end():], maxsplit=1)[0]
-        statement = sentence + match[0] + following
-        # 单期数值需有期间或明确的冻结值区间；泛化词及下一句的期间不能为本句背书。
+        # 只读本句，防止下一句的日期替当前单期引用提供虚假的期间依据。
+        suffix = re.split(r'[。！？；;\n]', markdown[match.end():], maxsplit=1)[0]
         if (match[2].startswith('periodValues.') and len(original.period_values) > 1
-                and not _has_period_expression(statement, original)
-                and not _in_value_interval(statement, match[0], original, catalog)):
+                and not _has_period_context(sentence + match[0] + suffix, original, len(sentence), catalog)):
             warnings.append('数值引用期间缺失：单期数值所在句未写出期间，已撤销引用，需复核。')
             return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
         clause = re.split(r'[，,]', sentence)[-1]
-        named = list(names.finditer(clause))
+        named = list(names.finditer(clause)) if names else []
         if not named:
             return match[0]
         subject = named[-1]
