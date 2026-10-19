@@ -108,6 +108,29 @@ def test_unregistered_derived_numbers_are_replaced_before_publishing():
     assert replace_unregistered_numbers('总额100元，派生比例12.3%。', [content]) == '总额100元，派生比例待核实。'
 
 
+@pytest.mark.parametrize('word', ['相差', '差额为', '差距约'])
+@pytest.mark.parametrize('unrelated', [-60, 60])
+def test_neutral_difference_requires_its_own_operands(word, unrelated):
+    from smart_reporting.reporting.trace.content_review import review_content
+
+    contents = [json.dumps({'findings': [{
+        'columns': ['项目', '金额'], 'columnMeta': {'金额': {'unit': '元'}},
+        'rows': [['甲项目', 100], ['乙项目', 80], ['无关项目', unrelated]],
+    }]})]
+    wrong = f'甲项目与乙项目{word}60元。'
+    assert replace_unregistered_numbers(wrong, contents) == f'甲项目与乙项目{word}待核实。'
+    assert any('冻结依据' in warning for warning in review_content(wrong, contents))
+    # 正确差额须支持两种操作数顺序，包括按幅度表述负的差值。
+    for subjects in ('甲项目与乙项目', '乙项目与甲项目'):
+        correct = f'{subjects}{word}20元。'
+        assert replace_unregistered_numbers(correct, contents) == correct
+        assert not any('冻结依据' in warning for warning in review_content(correct, contents))
+    # 同段早先的正确对象不能为后一句未写操作数的声明提供依据。
+    missing_subjects = f'甲项目与乙项目已核对。两者{word}20元。'
+    assert replace_unregistered_numbers(missing_subjects, contents).endswith(f'两者{word}待核实。')
+    assert any('冻结依据' in warning for warning in review_content(missing_subjects, contents))
+
+
 def test_typed_supplement_numbers_keep_units_and_unrounded_precision():
     from smart_reporting.reporting.trace.content_review import review_content
 
