@@ -26,11 +26,15 @@ def _source(analysis_id: str, path: str, file_sha256: str, pointer: str) -> Find
 
 
 def _tuple_values(value: Any, fallback: tuple[str, ...] = ()) -> tuple[str, ...]:
-    """Normalize provider payloads without splitting a scalar string into characters."""
+    """Normalize grain strings without fabricating dimensions from other types."""
     if isinstance(value, str):
         return (value,)
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return tuple(str(item) for item in value)
+        values = tuple(value)
+        for index, item in enumerate(values):
+            if not isinstance(item, str):
+                raise ValueError(f"grain[{index}] 必须是字符串")
+        return values
     return fallback
 
 
