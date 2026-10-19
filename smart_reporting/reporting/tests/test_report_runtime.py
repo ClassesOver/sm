@@ -1263,7 +1263,9 @@ def test_executive_summary_takes_each_section_conclusion():
 
 
 def test_model_table_numeric_columns_are_right_aligned():
-    from smart_reporting.reporting.delivery.report_runtime.markdown import align_numeric_table_columns
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        align_numeric_table_columns,
+    )
 
     table = (
         "| 月份 | 收入总额 | 环比差额（万元） | 环比幅度 | 说明 |\n"
@@ -1275,3 +1277,22 @@ def test_model_table_numeric_columns_are_right_aligned():
     # 数值列右对齐；文本列与已声明居中的列不动。
     assert "| --- | ---: | ---: | :---: | --- |" in aligned
     assert align_numeric_table_columns("| a |\n| --- |") == "| a |\n| --- |"
+
+
+def test_render_shows_large_yuan_amounts_in_readable_units() -> None:
+    from smart_reporting.reporting.delivery.report_runtime.markdown import readable_large_amounts
+
+    # 回放：正文 68 处“3,046,407,434元”式全位数金额，领导与财务读者难以读出量级。
+    text = (
+        "药品收入3,046,407,434元[[claim:number-1]]、占27.39%；其他费用91,342,503元，"
+        "差额为-7,977,183元，零星支出52,300元。\n\n"
+        "合计99.12亿元（9,911,520,144元），覆盖9个月。\n\n"
+        "| 项目 | 金额 |\n| --- | --- |\n| 药品 | 3,046,407,434元 |\n\n"
+        "![图：药品3,046,407,434元](chart.png)"
+    )
+    rendered = readable_large_amounts(text)
+    assert "药品收入30.46亿元[[claim:number-1]]" in rendered
+    assert "其他费用9,134.25万元" in rendered and "差额为-797.72万元" in rendered
+    assert "零星支出52,300元" in rendered
+    assert "（9,911,520,144元）" in rendered
+    assert "| 药品 | 3,046,407,434元 |" in rendered and "![图：药品3,046,407,434元]" in rendered

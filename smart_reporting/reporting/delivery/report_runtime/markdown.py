@@ -485,6 +485,35 @@ def insert_executive_summary(markdown: str, sections: Sequence[Mapping[str, Any]
     return f"{markdown[:first]}{summary}\n\n{markdown[first:]}"
 
 
+# 读者是医院领导与财务人员：正文里“药品收入3,046,407,434元”难以读出量级。渲染时把百万元以上的
+# 元值按亿元/万元两位小数显示；括号内的原值（“99.12亿元（9,911,520,144元）”）是有意保留的
+# 精确值，表格、图片与代码不动。报告 Markdown 与编辑器不变。
+_LARGE_YUAN = re.compile(
+    r"(?<![\d.,（(])(?P<number>-?(?:\d{1,3}(?:,\d{3}){2,}|\d{7,})(?:\.\d+)?)元"
+)
+
+
+def _readable_amount(match: re.Match[str]) -> str:
+    value = Decimal(match["number"].replace(",", ""))
+    if abs(value) >= 100_000_000:
+        return f"{(value / 100_000_000).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}亿元"
+    return f"{(value / 10_000).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}万元"
+
+
+def readable_large_amounts(markdown: str) -> str:
+    lines = markdown.split("\n")
+    fence = False
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            fence = not fence
+            continue
+        if fence or stripped.startswith(("|", "![", "    ")):
+            continue
+        lines[index] = _LARGE_YUAN.sub(_readable_amount, line)
+    return "\n".join(lines)
+
+
 # 模型自写表格常把分隔行写成全左对齐，金额、比率列的位数与小数点对不齐。渲染时全部
 # 单元格都是数值（可带单位、百分号或“—”）的列改为右对齐；已声明对齐方式的列不动。
 _NUMERIC_CELL = re.compile(
