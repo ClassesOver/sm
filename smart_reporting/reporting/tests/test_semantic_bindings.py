@@ -500,3 +500,60 @@ def test_single_period_value_without_written_period_is_withdrawn():
         assert align_number_selections(kept, [document])[0] == kept
     # 没有日期基准的“当月”无法确定冻结序列中的月份。
     assert ':unverified:' in align_number_selections('当月实际收入为' + token + '。', [document])[0]
+
+
+def test_metric_share_token_signs_claim_with_both_operand_facts():
+    """metricShare 占位符：签发带双操作数事实的数值声明，公式带分母合计。"""
+    metrics = []
+    for key, field, name, total in [
+        ('a', 'medicine_income', '实际药品收入', 2872560090),
+        ('b', 'medical_income_total', '实际总医疗收入，实际医疗收入合计', 10443473747),
+    ]:
+        metrics.append(dict(factId='fact-' + key * 16, datasetId='ds', datasetSha256='c' * 64,
+                            periodRoles=['current'], field=field, fieldRef='hospital.revenue.' + field,
+                            displayName=name, aggregation='sum', unit='元', formula='SUM(' + field + ')',
+                            scope={}, total=total, missingCount=0, zeroCount=0, negativeCount=0,
+                            periodGranularity='month', periodStart='2025-01', periodEnd='2025-09'))
+    content = [json.dumps({'analysisId': 'analysis_001', 'metrics': metrics})]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:metricShare.fact-bbbbbbbbbbbbbbbb:%}}'
+    resolved = resolve_number_reference(token, content)
+    assert resolved['value'] == pytest.approx(27.5057913, abs=1e-6)
+    assert resolved['unit'] == '%'
+    assert 'SUM(medicine_income)' in resolved['formula'] and 'SUM(medical_income_total)' in resolved['formula']
+    markdown, references, notices = render_bound_numbers(
+        '实际药品收入占医疗收入' + token + '。', content, key='s:b')
+    assert not notices and len(references) == 1
+    assert references[0].token == token and references[0].display_text == '27.51%'
+    anchored = anchor_bound_numbers(markdown, references, notices)
+    assert anchored.count('[[claim:' + references[0].claim_id + ']]') == 1
+    block = SimpleNamespace(number_references=references)
+    artifact = SimpleNamespace(section_code='s', blocks=[block], claims=[])
+    bindings = build_claim_subject_bindings([artifact],
+        {'fact-' + c * 16: ('analysis_001', '/metrics/' + str(i)) for i, c in enumerate('ab')},
+        {'analysis_001': derive_resource_id('facts.json')})
+    assert len(bindings) == 1
+    assert {ref.fact_key for ref in bindings[0].fact_refs} == {
+        'fact-' + 'a' * 16, 'fact-' + 'b' * 16}
+
+
+def test_metric_share_window_token_resolves_window_periods_and_sums():
+    """窗口 metricShare 引用：期间取窗口月桶，公式分子分母按窗口求和，不套全期总额。"""
+    metrics = []
+    for key, field, name, values in [
+        ('a', 'medicine_income', '实际药品收入', [30, 30, 30]),
+        ('b', 'medical_income_total', '实际总医疗收入，实际医疗收入合计', [100, 100, 110]),
+    ]:
+        metrics.append(dict(factId='fact-' + key * 16, datasetId='ds', datasetSha256='c' * 64,
+                            periodRoles=['current'], field=field, fieldRef='hospital.revenue.' + field,
+                            displayName=name, aggregation='sum', unit='元', formula='SUM(' + field + ')',
+                            scope={}, total=sum(values), missingCount=0, zeroCount=0, negativeCount=0,
+                            periodGranularity='month', periodStart='2025-01', periodEnd='2025-03',
+                            periodValues=[{'period': f'2025-0{index + 1}', 'value': value}
+                                          for index, value in enumerate(values)]))
+    content = [json.dumps({'analysisId': 'analysis_001', 'metrics': metrics})]
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:metricShare.fact-bbbbbbbbbbbbbbbb.2025-01..2025-02:%}}'
+    resolved = resolve_number_reference(token, content)
+    assert resolved['value'] == pytest.approx(30.0, abs=1e-9)
+    assert resolved['unit'] == '%'
+    assert resolved['periods'] == ('2025-01', '2025-02')
+    assert '(60)' in resolved['formula'] and '(200)' in resolved['formula']

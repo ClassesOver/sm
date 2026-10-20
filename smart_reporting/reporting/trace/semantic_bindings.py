@@ -360,6 +360,19 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
         formula = f"({primary.get('formula')}) {operation} ({entries[ids[1]].get('formula')})"
         if operation == '/':
             formula += ' * 100'
+    elif selector.startswith('metricShare.'):
+        window = selector[len('metricShare.' + ids[1] + '.'):] if '.' in selector[len('metricShare.'):] else None
+        if window:
+            span = window.split('..')
+            periods = fact_periods({'periodStart': span[0], 'periodEnd': span[-1],
+                                    'periodGranularity': 'month'})
+            period_roles['endpoint'] = (periods[-1],)
+            operands = [sum((Decimal(str(item['value'])) for item in entry['periodValues']
+                             if span[0] <= _canonical_month_label(item['period']) <= span[-1]), Decimal(0))
+                        for entry in (primary, entries[ids[1]])]
+            formula = f'({operand(operands[0])}) / ({operand(operands[1])}) * 100'
+        else:
+            formula = f"({primary.get('formula')}) / ({entries[ids[1]].get('formula')}) * 100"
     return {'value': float(value), 'unit': target if target == '个百分点' else unit,
             'periods': periods, 'period_roles': period_roles,
             'scope': scope, 'formula': formula, 'entry': primary, 'selector': selector}
