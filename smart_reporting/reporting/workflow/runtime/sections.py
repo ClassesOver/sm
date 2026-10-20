@@ -3141,6 +3141,13 @@ class RuntimeSectionsMixin:
                 for item in checkpoint.evidence_manifest.evidence
                 for identity in item.evidence_files
             )
+            # 作图数据（chart-input/v1）与事实同源；图表行值会进入图注与正文解读，
+            # 不并入核对依据会把逐行数值误判为无依据（numeric_text 识别该 schema）。
+            identities.extend(
+                identity
+                for chart in checkpoint.evidence_manifest.charts
+                for identity in chart.plot_data_files
+            )
         contents: list[str] = []
         seen: set[str] = set()
         for identity in identities:
