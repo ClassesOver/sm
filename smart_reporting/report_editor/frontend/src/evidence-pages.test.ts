@@ -1849,7 +1849,8 @@ describe('图表页', () => {
     container.querySelector<HTMLButtonElement>('[data-status-row="datasets"] button')!.click()
     expect(ctx.navigate).toHaveBeenCalledWith({ kind: 'dataset', key: 'dataset-url-abc0001', label: 'dataset-url-abc0001' })
     expect(container.textContent).toContain('按院区聚合')
-    expect(container.textContent).toContain('作图数据（主序列）')
+    expect(container.querySelector('.evidence-plot-header h2')?.textContent).toBe('作图数据')
+    expect(container.querySelector('.evidence-plot-description')?.textContent).toBe('主序列')
     expect(container.querySelector('.evidence-page-number')?.textContent).toBe('第 1 / 2 页')
     const more = container.querySelector<HTMLButtonElement>('.evidence-more')!
     if (!container.isConnected) document.body.append(container)
