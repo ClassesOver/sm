@@ -67,7 +67,7 @@ renderer 反事实对照（同 104 段、同核验 contents，仅 `table_sources
 - 当前代码重跑与首次全链路签发逐字段复现（claimId/token/displayText/offset 一致）。
 - 两轮核验结论完全相同（registered:direct 389、decline 8、derived 9、profile_rate 7；missing/corrected/percent_point 均为 0）：表来源映射只新增锚点签发，不改变核验与替换行为。
 
-剩余无引用数值的具体原因：46 处 source_review 为归档前已替换“待核实”、原始显示不可恢复；413 处核验通过但已发布正文是纯文本、没有 `{{value:…}}` 占位，普通事实引用只能在草稿期签发、不能对纯文本追溯补签，当前仅唯一可铸 token 的 tableDerived 满足补锚条件；9 处 derived 支持的核验无一具备可铸 `{{derived:…}}` 的唯一双事实身份。无隐性丢失。
+剩余无引用数值的具体原因：46 处 source_review 为归档前已替换“待核实”、原始显示不可恢复；413 处核验通过但已发布正文是纯文本、没有 `{{value:…}}` 占位，普通事实引用只能在草稿期签发、不能对纯文本追溯补签，当前仅唯一可铸 token 的 tableDerived 满足补锚条件；9 处 derived 支持的核验无一具备可铸 `{{derived:…}}` 的唯一双事实身份。无隐性丢失。补充锚点裁决追踪：22 处出现派生候选的数字中 3 处候选唯一并锚定，其余 19 处均为多候选歧义（每处 2–12 个候选、token 各不相同，典型为补证表与图表输入表同值各推一遍）；零处来源未授权、共享校验拒绝或无身份候选。后续扩大锚定量的方向是同值多源的角色消歧策略，属信任策略决策，需另行立项。
 
 回放脚本 `scripts/replay_table_derivation_references.py`（含 `--baseline-from` 只读对照模式）；脱敏聚合报告见 `docs/superpowers/plans/2026-10-20-table-derivation-replay.md`；含正文与身份的全量结果仅保留在本地 `/tmp`。
 

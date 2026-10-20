@@ -1706,10 +1706,11 @@ def _derived_number_text(value: Decimal) -> str:
 def derived_reference_token(
     entry: _DerivedValue, unit: str, *, legacy: bool = False
 ) -> str | None:
-    """事实对派生（同口径两事实之差/之比）铸成可解析引用 token；无事实身份不铸。
+    """唯一来源的派生铸成可解析引用 token；无身份或身份不唯一不铸。
 
-    token 内嵌两个操作数 factId（供绑定构建提取来源），并以内容寻址摘要保证唯一；
-    解析端用同一 contents 重建派生登记后按 token 相等匹配，不做文法反解。
+    表内派生返回已绑定来源字节的 tableDerived token；事实对派生内嵌两个操作数
+    factId（供绑定构建提取来源），并以内容寻址摘要保证唯一，解析端用同一
+    contents 重建派生登记后按 token 相等匹配，不做文法反解。
     ``legacy=True`` 按 PR #80 首版格式（操作数 ID 排序）重铸，用于继续解析已签发旧 token。
     """
     if entry.table_derivation is not None:
