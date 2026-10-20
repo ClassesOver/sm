@@ -759,7 +759,7 @@ def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=No
 
 
 def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal]]:
-    """只登记补证列元数据声明的数值及单位，不从数字大小猜测用途。"""
+    """按补证列元数据或列名中的可信单位登记数值，不从数字大小猜测用途。"""
     known: dict[str, set[Decimal]] = {}
     for content in contents:
         try:
@@ -796,10 +796,9 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
                     # 补证表常缺 columnMeta；金额/人次/占比的列名自带单位词（“收入金额（元）”
                     # “门诊人次”“药耗占比”），按列名登记，不从数字大小猜用途。
                     unit = _unit_from_column_name(column if isinstance(column, str) else "")
+                    meta = {**(meta if isinstance(meta, dict) else {}), "unit": unit}
                     if unit == "%":
-                        meta = {"unit": "%", "isPercent": True}
-                    elif unit is not None:
-                        meta = {"unit": unit}
+                        meta.setdefault("isPercent", True)
                 if unit not in {*_MONEY_UNITS, "人次", "万人次", "床日", "%", "‰"}:
                     continue
                 if unit == "%" and meta.get("isPercent") is not True:
@@ -821,20 +820,35 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
 
 
 _COLUMN_UNIT_WORDS = (
-    # 占比列：命中即按百分数登记（占比类列不会是“个百分点”差值）。
+    # 仅供没有显式单位的列名回退；占比差额不能当成百分数水平。
     (("%",), ("占比", "比重", "比例", "贡献率", "完成率", "百分比")),
     # 金额列：单位词最具体者优先；无括号单位时金额类列名仍能识别。
     (("亿元",), ("亿元",)),
     (("万元",), ("万元",)),
     (("元",), ("金额", "收入", "支出", "成本", "费用", "差额", "缺口", "余额", "（元）", "(元)")),
     # 人次列：人次单位不可按金额列名误配。
-    (("人次",), ("人次", "人数", "门诊量", "出院量", "工作量")),
+    (("人次",), ("人次", "门诊量", "出院量")),
 )
+_COLUMN_UNIT_ANNOTATION = re.compile(r"[（(]\s*(?:单位\s*[:：]\s*)?([^（）()]+?)\s*[）)]\s*$")
+_COLUMN_UNIT_SUFFIX = re.compile(r"(亿元|万元|万人次|人次|床日|%|‰)\s*$")
+_COLUMN_SUPPORTED_UNITS = frozenset({*_MONEY_UNITS, "人次", "万人次", "床日", "%", "‰"})
 
 
 def _unit_from_column_name(column: str) -> str | None:
     """补证表列名推断显示单位；无法确定时返回 None，不登记。"""
-    for (unit,), words in _COLUMN_UNIT_WORDS:
+    # 完整单位优先于业务词；未知或复合单位也不能退回到“收入→元”等推断。
+    if match := _COLUMN_UNIT_ANNOTATION.search(column):
+        unit = match[1].strip()
+        return unit if unit in _COLUMN_SUPPORTED_UNITS else None
+    if re.search(r"[/／]|百分点|人数|人均|次均|床均|均次|单价|平均|每", column):
+        return None
+    if match := _COLUMN_UNIT_SUFFIX.search(column):
+        return match[1]
+    if any(word in column for word in _COLUMN_UNIT_WORDS[0][1]):
+        return None if re.search(r"差额|差值|变化|变动|增减|缺口", column) else "%"
+    if "率" in column:
+        return None
+    for (unit,), words in _COLUMN_UNIT_WORDS[1:]:
         if any(word in column for word in words):
             return unit
     return None
@@ -1287,8 +1301,10 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                     # 与 supplemental_number_values 同一列名推断；补证表缺 columnMeta 时
                     # 行差额/前 N 合计仍可按列单位补算。
                     unit = _unit_from_column_name(column if isinstance(column, str) else "")
-                    meta = {"unit": unit, **({"isPercent": True} if unit == "%" else {})}
-                if (unit not in {*_MONEY_UNITS, "人次", "床日", "%"}
+                    meta = {**(meta if isinstance(meta, dict) else {}), "unit": unit}
+                    if unit == "%":
+                        meta.setdefault("isPercent", True)
+                if (unit not in {*_MONEY_UNITS, "人次", "万人次", "床日", "%"}
                         or unit == "%" and meta.get("isPercent") is not True):
                     continue
                 numbers = [Decimal(str(row[index])) for row in rows

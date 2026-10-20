@@ -1339,9 +1339,6 @@ class ReportEditorService:
             raise ReportingError("dataset_access_denied", "分享会话不能下载报告原始产物。")
         context = await self._restore(expected)
         await self._ensure_sources_retained(context)
-        state = await self.state_repository.get(context.workflow_run_id)
-        if state is None:
-            raise ReportingError("report_editor_context_missing", "报告编辑上下文不存在。")
 
         identities: dict[str, tuple[int, str]] = {}
 
@@ -1383,8 +1380,8 @@ class ReportEditorService:
         job = context.job
         collect(job)
 
-        checkpoint = state.payload.get("workflowCheckpoint")
-        collect(checkpoint)
+        # 可变的 workflowCheckpoint 可能已属于其他修订，不能建立当前修订的产物身份。
+        # 只使用上面已核验的清单、索引，以及 _restore 恢复的冻结 job。
         if not identities:
             raise ReportingError("report_editor_revision_missing", "当前修订没有可打包的报告产物。")
         total_source_bytes = sum(size for size, _ in identities.values())
