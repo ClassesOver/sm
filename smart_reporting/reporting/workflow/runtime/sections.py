@@ -388,6 +388,7 @@ def _section_number_context(
     dependencies = {
         item["factId"]: {entry["budgetFactId"] for key in ("budgetComparisons", "projectRatios")
                          for entry in item.get(key, ())}
+                       | {entry["totalFactId"] for entry in item.get("metricShares", ())}
         for item in guide
     }
 
@@ -984,6 +985,7 @@ def _section_stage_agent(
             "已签发补证表列元数据明确单位且 frozenNumbers 未提供对应占位符时，可直接引用对应行列的数值，并按列单位规范换算；必须同时核对分组维度、指标和期间，不得用 topGroups 多维明细替代院区或科室汇总。缺少占位符不代表缺少证据，不得拿相近值替代。已签发补证表同一列的 columnMeta.isPercent=true 时，该列是已计算的百分数，可按对应行直接引用并四舍五入；不得因 frozenNumbers 缺少补证占位符就称其未登记或待核实，不得重新计算或累加出新比例。",
             "先按 numberGuide 确认指标、期间、粒度和完整分组再选数值引用。rowStatistics 是原始行统计；monthlyStatistics 才是月度统计。已登记零值月份保留；局部最高/最低必须明确子期间。目录未提供的比率不能根据图注或模型摘要推算；只写已登记分子分母，或说明该比率待核实。",
             "budgetComparisons 是服务端按同口径事实计算的差额与百分数。表格有对应引用时必须填写，包括零分子的0%；只有百分数引用为空时才写不可计算。负差额写‘差额为负’或‘实际减预算为……’，不得写‘少-……’；零值月份仅称‘记录为零’，不称‘尚无数据’或‘未执行月份’。",
+            "正文中的完成率、同比增速、构成占比与差额一律优先使用 numberGuide 提供的 budgetComparisons、comparisons、metricShares 引用占位符，不得用两个登记数值现场相除或相减得出新数值。metricShares 是该指标占同口径合计的百分比，写“某项占……的X%”时必须使用它；目录没有对应派生引用时，只分别写出分子与分母（或本期与基期）的登记数值，或说明该比率待核实。",
             "total 是该事实完整期间的总额；正文写1—10月时必须使用相应 periodTotals 累计引用，不能套用12个月 total。零分子且分母非零时完成率为0%，只有分母为零或缺失时才不能计算。",
             (
                 "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"

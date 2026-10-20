@@ -2953,6 +2953,37 @@ def test_section_number_context_excludes_unrelated_facts_and_keeps_exact_values(
     ]
 
 
+def test_section_number_context_keeps_metric_share_total_dependency():
+    """块级目录按 claim 过滤时，占比合计事实随部分事实一起保留，metricShares 引用不丢。"""
+    contents = (json.dumps({
+        "analysisId": "analysis_001",
+        "metrics": [
+            {
+                "factId": fact_id, "datasetId": "current", "datasetSha256": "a" * 64,
+                "periodRoles": ["current"], "field": code,
+                "fieldRef": f"hospital.revenue.{code}", "metricCodes": [code],
+                "displayName": name, "aggregation": "sum", "unit": "元", "formula": f"sum({code})",
+                "total": total, "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+            }
+            for fact_id, code, name, total in (
+                ("fact-aaaaaaaaaaaaaaaa", "medicine_income", "实际药品收入", 2872560090),
+                ("fact-bbbbbbbbbbbbbbbb", "medical_income_total",
+                 "实际总医疗收入，实际医疗收入合计", 10443473747),
+                ("fact-cccccccccccccccc", "cost", "成本", 200),
+            )
+        ],
+    }),)
+    claim = SimpleNamespace(fact_ids=("fact-aaaaaaaaaaaaaaaa",), metric_code="medicine_income")
+    catalog, guide = reporting_sections._section_number_context(contents, {}, claims=(claim,))
+    assert [item["factId"] for item in guide] == [
+        "fact-aaaaaaaaaaaaaaaa", "fact-bbbbbbbbbbbbbbbb",
+    ]
+    share = "{{value:fact-aaaaaaaaaaaaaaaa:metricShare.fact-bbbbbbbbbbbbbbbb:%}}"
+    assert catalog[share] == "27.51%"
+    assert guide[0]["metricShares"][0]["reference"] == share
+    assert not any("fact-cccccccccccccccc" in key for key in catalog)
+
+
 @pytest.mark.anyio
 async def test_section_stage_attempts_use_independent_sessions(monkeypatch):
     sessions = []

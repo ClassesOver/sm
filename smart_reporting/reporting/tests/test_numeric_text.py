@@ -591,6 +591,139 @@ def test_project_rates_use_only_matching_frozen_budget_snapshot():
     assert '{{value:fact-bbbbbbbbbbbbbbbb:projectRatio.fact-aaaaaaaaaaaaaaaa.percentage:%}}' not in frozen_number_catalog([json.dumps(document)])
 
 
+def _share_document(with_monthly=False):
+    def metric(letter, field, name, values):
+        entry = {
+            'factId': 'fact-' + letter * 16, 'datasetId': 'snapshot', 'datasetSha256': 'd' * 64,
+            'periodRoles': ['current'], 'field': field, 'fieldRef': 'hospital.revenue.' + field,
+            'displayName': name, 'aggregation': 'sum', 'unit': '元', 'formula': 'SUM(' + field + ')',
+            'total': sum(values), 'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+            'periodGranularity': 'month', 'periodStart': '2025-01', 'periodEnd': '2025-09',
+        }
+        if with_monthly:
+            entry['periodValues'] = [{'period': f'2025-0{index + 1}', 'value': value}
+                                     for index, value in enumerate(values)]
+        return entry
+    return {'analysisId': 'analysis_001', 'metrics': [
+        metric('a', 'medicine_income', '实际药品收入', [30, 30, 30, 30, 30, 30, 30, 30, 30]),
+        metric('b', 'medical_income_total', '实际总医疗收入，实际医疗收入合计',
+               [100, 100, 110, 110, 110, 110, 110, 110, 110]),
+    ]}
+
+
+def test_metric_share_supplies_reference_guide_and_verification():
+    from smart_reporting.reporting.trace.numeric_text import (
+        frozen_number_guide,
+        frozen_number_values,
+    )
+
+    content = json.dumps(_share_document())
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:metricShare.fact-bbbbbbbbbbbbbbbb:%}}'
+    catalog = frozen_number_catalog([content])
+    assert catalog[token] == '27.84%'
+    guide = frozen_number_guide([content], catalog)
+    part = next(item for item in guide if item['factId'] == 'fact-' + 'a' * 16)
+    assert part['metricShares'] == [{
+        'totalFactId': 'fact-bbbbbbbbbbbbbbbb',
+        'totalMetric': '实际总医疗收入，实际医疗收入合计',
+        'period': None,
+        'reference': token,
+        'meaning': '该指标占同口径合计指标的百分比，分子分母均为冻结值；写占比必须使用此引用，不得自行相除',
+    }]
+    total = next(item for item in guide if item['factId'] == 'fact-' + 'b' * 16)
+    assert not total.get('metricShares')
+    # 手写占比数值因服务端补算进入核对目录而不再判为无依据。
+    assert any(abs(value - Decimal('27.8350515464')) < Decimal('0.000001')
+               for value in frozen_number_values([content], catalog)['%'])
+    assert '药品收入占27.84%。' == replace_unregistered_numbers('药品收入占27.84%。', [content])
+
+
+def test_metric_share_registers_monthly_and_cumulative_windows():
+    from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
+
+    content = json.dumps(_share_document(with_monthly=True))
+    catalog = frozen_number_catalog([content])
+    prefix = '{{value:fact-aaaaaaaaaaaaaaaa:metricShare.fact-bbbbbbbbbbbbbbbb'
+
+    def token(window=None):
+        return prefix + (f'.{window}' if window else '') + ':%}}'
+
+    # 全期 270/970 与逐月、累计窗口同在一个目录；模型写 1—9 月口径占比时有引用可占。
+    assert catalog[token()] == '27.84%'
+    assert catalog[token('2025-01')] == '30.00%'
+    assert catalog[token('2025-01..2025-02')] == '30.00%'
+    assert catalog[token('2025-01..2025-03')] == '29.03%'
+    guide = frozen_number_guide([content], catalog)
+    part = next(item for item in guide if item['factId'] == 'fact-' + 'a' * 16)
+    assert {item['period'] for item in part['metricShares']} == {
+        None, '2025-01', '2025-02', '2025-01..2025-02', '2025-01..2025-03', '2025-01..2025-04',
+        '2025-01..2025-05', '2025-01..2025-06', '2025-01..2025-07', '2025-01..2025-08',
+        '2025-01..2025-09', '2025-03', '2025-04', '2025-05', '2025-06', '2025-07', '2025-08', '2025-09',
+    }
+
+
+def test_metric_share_registers_contiguous_windows_across_year_boundary():
+    document = _share_document(with_monthly=True)
+    for metric in document['metrics']:
+        metric['periodStart'] = '2024-11'
+        metric['periodEnd'] = '2025-01'
+        metric['periodValues'] = [
+            {'period': period, 'value': value}
+            for period, value in zip(
+                ('2024-11', '2024-12', '2025-01'),
+                (item['value'] for item in metric['periodValues'][:3]),
+            )
+        ]
+        metric['total'] = sum(value['value'] for value in metric['periodValues'])
+    catalog = frozen_number_catalog([json.dumps(document)])
+    prefix = '{{value:fact-aaaaaaaaaaaaaaaa:metricShare.fact-bbbbbbbbbbbbbbbb'
+    assert prefix + '.2024-12:%}}' in catalog
+    assert prefix + '.2024-11..2025-01:%}}' in catalog
+
+
+def test_metric_share_omits_invalid_monthly_and_cumulative_windows():
+    document = _share_document(with_monthly=True)
+    part, total = document['metrics']
+    part['periodValues'] = [
+        {'period': f'2025-0{index}', 'value': value}
+        for index, value in enumerate((29, 40, *([30] * 6)), start=1)
+    ]
+    total['periodValues'] = [
+        {'period': f'2025-0{index}', 'value': value}
+        for index, value in enumerate((30, 30, *([110] * 6)), start=1)
+    ]
+    # Keep period totals compatible while the February and cumulative windows exceed their denominators.
+    part['total'] = sum(value['value'] for value in part['periodValues'])
+    total['total'] = sum(value['value'] for value in total['periodValues'])
+    catalog = frozen_number_catalog([json.dumps(document)])
+    prefix = '{{value:fact-aaaaaaaaaaaaaaaa:metricShare.fact-bbbbbbbbbbbbbbbb'
+    assert prefix + '.2025-01:%}}' in catalog
+    assert prefix + '.2025-02:%}}' not in catalog
+    assert prefix + '.2025-01..2025-02:%}}' not in catalog
+
+
+def test_metric_share_requires_unique_compatible_total_metric():
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:metricShare.fact-bbbbbbbbbbbbbbbb:%}}'
+
+    def catalog_for(document):
+        return frozen_number_catalog([json.dumps(document)])
+
+    # 部分值超过合计、名称无合计标记、跨数据集、合计不唯一时均不登记。
+    exceeding = _share_document()
+    exceeding['metrics'][0]['total'] = exceeding['metrics'][1]['total'] + 1
+    assert token not in catalog_for(exceeding)
+    unnamed = _share_document()
+    unnamed['metrics'][1]['displayName'] = '实际医疗收入'
+    assert token not in catalog_for(unnamed)
+    foreign = _share_document()
+    foreign['metrics'][1]['datasetId'] = 'other'
+    assert token not in catalog_for(foreign)
+    ambiguous = _share_document()
+    ambiguous['metrics'].append({**ambiguous['metrics'][1], 'factId': 'fact-' + 'c' * 16,
+                                 'field': 'medical_income_total_2'})
+    assert token not in catalog_for(ambiguous)
+
+
 def test_display_never_shows_negative_zero_or_hides_nonzero_amounts_as_zero():
     assert format_fact_value(-0.001, '%') == '0.00%'
     catalog = frozen_number_catalog([_budget_document()])

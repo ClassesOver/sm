@@ -195,6 +195,86 @@ def project_ratio_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, 
     return ratios
 
 
+_TOTAL_METRIC_MARKERS = ("合计", "总额", "总量")
+
+
+def _is_total_metric(fact: Any) -> bool:
+    return any(marker in (fact.display_name or fact.field) for marker in _TOTAL_METRIC_MARKERS)
+
+
+def metric_share_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, Any]]:
+    """同快照、同范围、同期间的“部分占合计”构成占比：正文引用与核对共用同一来源。
+
+    合计指标按显示名中的 合计/总额/总量 识别；仅当分母唯一、口径完全一致且
+    部分值不超过合计时登记，避免把不同命名空间或不同口径的金额凑成占比。
+    双方均为对齐的月度求和事实时，与 budgetComparisons 一致地逐月与累计窗口登记。
+    """
+    shares = []
+    for part in bundle.metrics:
+        if not part.fact_id or _is_total_metric(part) or part.negative_count:
+            continue
+        totals = [total for total in bundle.metrics
+                  if total.fact_id and total.fact_id != part.fact_id and _is_total_metric(total)
+                  and total.aggregation == part.aggregation == "sum"
+                  and total.dataset_id == part.dataset_id
+                  and total.dataset_sha256 == part.dataset_sha256
+                  and total.scope == part.scope and total.unit == part.unit
+                  and total.period_roles == part.period_roles
+                  and total.period_start == part.period_start
+                  and total.period_end == part.period_end
+                  and total.period_aggregation == part.period_aggregation
+                  and total.field_ref.rsplit(".", 1)[0] == part.field_ref.rsplit(".", 1)[0]
+                  and total.total > 0 and not total.negative_count
+                  and 0 <= part.total <= total.total]
+        if len(totals) != 1:
+            continue
+        total = totals[0]
+
+        def entry(period: str | None, numerator: Decimal, denominator: Decimal) -> dict[str, Any]:
+            return {
+                "partFactId": part.fact_id, "totalFactId": total.fact_id,
+                "partMetric": part.display_name or part.field,
+                "totalMetric": total.display_name or total.field,
+                "period": period,
+                "percentage": numerator / denominator * 100,
+            }
+
+        shares.append(entry(None, Decimal(str(part.total)), Decimal(str(total.total))))
+        monthly = []
+        for fact in (part, total):
+            if (fact.period_aggregation == "last" or fact.period_granularity != "month"
+                    or not 0 < len(fact.period_values) <= 12
+                    or not _valid_month_labels(value.period for value in fact.period_values)):
+                monthly = []
+                break
+            values = {_canonical_month_label(value.period): Decimal(str(value.value))
+                      for value in fact.period_values}
+            if len(values) != len(fact.period_values):
+                monthly = []
+                break
+            monthly.append(values)
+        if not monthly or monthly[0].keys() != monthly[1].keys():
+            continue
+        periods = sorted(monthly[0])
+        def month_index(period: str) -> int:
+            return int(period[:4]) * 12 + int(period[5:7])
+
+        if any(month_index(right) - month_index(left) != 1
+               for left, right in zip(periods, periods[1:])):
+            continue
+        part_running = total_running = Decimal(0)
+        for index, period in enumerate(periods):
+            part_running += monthly[0][period]
+            total_running += monthly[1][period]
+            windows = [(period, monthly[0][period], monthly[1][period])]
+            if index:
+                windows.append((f"{periods[0]}..{period}", part_running, total_running))
+            for window, numerator, denominator in windows:
+                if denominator > 0 and 0 <= numerator <= denominator:
+                    shares.append(entry(window, numerator, denominator))
+    return shares
+
+
 def frozen_fact_bundles(contents: Iterable[str]) -> Iterator[DeterministicAnalysisBundle]:
     """目录与引用解析共用模型校验和字段规范化，忽略非事实文档。"""
     for content in contents:
@@ -332,6 +412,10 @@ def _frozen_number_entries(contents: Iterable[str]) -> Iterator[tuple[str, Any, 
         for ratio in project_ratio_values(bundle):
             yield (f"{{{{value:{ratio['numeratorFactId']}:projectRatio.{ratio['budgetFactId']}.percentage:%}}}}",
                    ratio["percentage"], "%", "%")
+        for share in metric_share_values(bundle):
+            window = f".{share['period']}" if share["period"] else ""
+            yield (f"{{{{value:{share['partFactId']}:metricShare.{share['totalFactId']}{window}:%}}}}",
+                   share["percentage"], "%", "%")
 
 
 def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> str | None:
@@ -453,6 +537,7 @@ def frozen_number_guide(
             continue
         comparisons = budget_comparison_values(bundle)
         project_ratios = project_ratio_values(bundle)
+        metric_shares = metric_share_values(bundle)
         for fact in bundle.metrics:
             if not fact.fact_id or fact.fact_id in seen:
                 continue
@@ -556,6 +641,16 @@ def frozen_number_guide(
                 "meaning": "同快照合同或付款总额除以项目预算总额×100%；金额单位未知不影响比率。",
             } for ratio in project_ratios if ratio["numeratorFactId"] == fact.fact_id
             if (token := f"{{{{value:{fact.fact_id}:projectRatio.{ratio['budgetFactId']}.percentage:%}}}}") in catalog]
+            item["metricShares"] = [{
+                "totalFactId": share["totalFactId"],
+                "totalMetric": share["totalMetric"],
+                "period": share["period"],
+                "reference": token,
+                "meaning": "该指标占同口径合计指标的百分比，分子分母均为冻结值；写占比必须使用此引用，不得自行相除",
+            } for share in metric_shares if share["partFactId"] == fact.fact_id
+            if (token := f"{{{{value:{fact.fact_id}:metricShare.{share['totalFactId']}"
+                        + (f".{share['period']}" if share["period"] else "") + ":%}}") in catalog
+            and catalog[token] != "数值待核实"]
             guide.append(item)
         for fact in bundle.derived_metrics:
             if not fact.fact_id or fact.fact_id in seen:
