@@ -1476,6 +1476,42 @@ def _verified_table_sources(files: Sequence[SectionEvidenceFile]) -> dict[str, b
     return sources
 
 
+def _evidence_and_computation_layers(
+    evidence_manifest: Any,
+) -> tuple[tuple[ComputationRecordV1, ...], tuple[FileIdentity, ...]]:
+    """B4：计算记录/脚本只随有效记录登记；补证文件身份始终登记。
+
+    修订产物包只收 manifest/index/job 登记过的身份；补证文件不进索引时，编辑器
+    导出的修订包会整棵丢失 evidence 树，编辑器与离线回放随之失去核验来源。
+    计算记录无效或存在循环依赖时只丢弃计算层，不连补证文件一起丢。
+    """
+
+    records: list[ComputationRecordV1] = []
+    scripts: list[FileIdentity] = []
+    evidence_files: list[FileIdentity] = []
+    for item in (evidence_manifest.evidence if evidence_manifest is not None else ()):
+        evidence_files.extend(item.evidence_files)
+        raw = item.computation_record
+        if not isinstance(raw, dict):
+            continue
+        try:
+            record = ComputationRecordV1.model_validate(raw)
+        except ValidationError:
+            loguru_logger.warning(
+                "report_computation_record_invalid analysis_id={}",
+                item.analysis_id,
+            )
+            continue
+        records.append(record)
+        if item.computation_script_file is not None:
+            scripts.append(item.computation_script_file)
+    cycles = detect_computation_cycles(tuple(records))
+    if cycles:
+        loguru_logger.warning("report_computation_cycle_dropped cycles={}", cycles[:5])
+        return (), tuple(evidence_files)
+    return tuple(records), tuple((*scripts, *evidence_files))
+
+
 async def _generate_section_in_blocks(
     agent: Any,
     instruction_payload: Mapping[str, Any],
@@ -3593,34 +3629,9 @@ class RuntimeSectionsMixin:
             if derive_resource_id(identity.path) in used_table_source_ids
         )
         # B4：补充分析计算记录（ComputationRecordV1）与脚本文件进索引。
-        computation_records: list[ComputationRecordV1] = []
-        computation_files: list[FileIdentity] = []
-        if checkpoint.evidence_manifest is not None:
-            for item in checkpoint.evidence_manifest.evidence:
-                raw = item.computation_record
-                if not isinstance(raw, dict):
-                    continue
-                try:
-                    record = ComputationRecordV1.model_validate(raw)
-                except ValidationError:
-                    loguru_logger.warning(
-                        "report_computation_record_invalid analysis_id={}",
-                        item.analysis_id,
-                    )
-                    continue
-                computation_records.append(record)
-                if item.computation_script_file is not None:
-                    computation_files.append(item.computation_script_file)
-                for evidence_file in item.evidence_files:
-                    computation_files.append(evidence_file)
-            cycles = detect_computation_cycles(tuple(computation_records))
-            if cycles:
-                # 计算记录只是追溯元数据；循环依赖时不登记计算层，报告照常交付。
-                loguru_logger.warning(
-                    "report_computation_cycle_dropped cycles={}", cycles[:5]
-                )
-                computation_records = []
-                computation_files = []
+        computation_records, computation_files = _evidence_and_computation_layers(
+            checkpoint.evidence_manifest
+        )
         manifest = await self._build_and_write_artifact_manifest(
             manifest_path,
             accepted_artifacts=accepted_artifacts,
