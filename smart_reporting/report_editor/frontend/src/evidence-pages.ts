@@ -2204,6 +2204,7 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
   }
 
   const plotBox = document.createElement('div')
+  plotBox.className = 'evidence-plots'
   skeleton.detailBox.append(plotBox)
 
   const moreSlot = document.createElement('div')
@@ -2223,17 +2224,30 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
       plotBox.append(empty)
     }
     for (const plot of plots) {
+      const card = document.createElement('section')
+      card.className = 'evidence-plot-card'
+      const header = document.createElement('header')
+      header.className = 'evidence-plot-header'
       const heading = document.createElement('h2')
-      heading.textContent = plot.role ? `作图数据（${PLOT_ROLE_LABELS[plot.role] ?? plot.role}）` : '作图数据'
-      plotBox.append(heading)
-      const wrap = makeTableRegion(`${heading.textContent}表，可用方向键横向滚动`)
+      heading.textContent = '作图数据'
+      header.append(heading)
+      const role = plot.role ? PLOT_ROLE_LABELS[plot.role] ?? plot.role : ''
+      if (role) {
+        const description = document.createElement('p')
+        description.className = 'evidence-plot-description'
+        description.textContent = role
+        header.append(description)
+      }
+      card.append(header)
+      const wrap = makeTableRegion(`作图数据${role ? `（${role}）` : ''}表，可用方向键横向滚动`)
       renderTable(wrap, plot.columns, plot.rows as (string | null)[][])
-      plotBox.append(wrap)
+      card.append(wrap)
       const range = document.createElement('p')
       range.className = 'evidence-plot-range'
       range.textContent = `共 ${plot.rowCount} 行 · ` + (plot.rows.length
         ? `预览序号 ${plot.offset + 1}–${plot.offset + plot.rows.length}` : '当前页无预览记录')
-      plotBox.append(range)
+      card.append(range)
+      plotBox.append(card)
     }
     moreSlot.innerHTML = ''
     // 总页数按最长的作图表计算；只有一页时不显示分页区。
