@@ -71,6 +71,8 @@ renderer 反事实对照（同 104 段、同核验 contents，仅 `table_sources
 
 回放脚本 `scripts/replay_table_derivation_references.py`（含 `--baseline-from` 只读对照模式）；脱敏聚合报告见 `docs/superpowers/plans/2026-10-20-table-derivation-replay.md`；含正文与身份的全量结果仅保留在本地 `/tmp`。
 
+第二份真实附件（另一 report-run，全部产物位于 revision-2/ 下、无补证树）复验：129 段重渲染，净新增 tableDerived 2 条（唯一派生候选全部锚定、无歧义），编辑器重算/篡改/恢复 2/2 全通过且逐字节还原；registered 336、missing 67。missing 的主因是归档未携带 evidence/supplement（第一份携带 11 个补证时 missing 为 0），属产物打包缺口而非算法缺口；图表输入 source 0/20 可核验，同样如实记录。回放脚本已泛化支持两种归档布局，第一份归档的发现计数回归校验不变。
+
 ## 验证记录
 
 已完成的定向验证（批次间可能重叠，不将批次数相加作为 unique 总数）：

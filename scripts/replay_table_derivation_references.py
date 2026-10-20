@@ -49,6 +49,32 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _discover(members):
+    """Locate manifest/index/facts/supplements/chart-inputs in either archive layout.
+
+    Supported layouts: revision artifacts at the run root (facts/, evidence/, analysis/)
+    or entirely under revision-2/ with datasets in revision-2/trace-resources/.
+    """
+    manifests = sorted(name for name in members if name.endswith('/report-revision-1.manifest.json'))
+    assert manifests, 'no report manifest in archive'
+    root_manifests = [name for name in manifests if '/revision-2/' not in name]
+    manifest_name = root_manifests[0] if root_manifests else manifests[0]
+    base = manifest_name.rsplit('/', 1)[0]
+    root_index = base + '/trace-index-v1.json' if base + '/trace-index-v1.json' in members else None
+    rev_index = base + '/revision-2/trace-index-v1.json'
+    rev_index_name = rev_index if rev_index in members else (root_index or next(
+        name for name in members if name.endswith('/trace-index-v1.json')))
+    facts = sorted(name for name in members
+                   if name.startswith(base + '/facts/revision-1/') and name.endswith('.json'))
+    if not facts:  # layouts that only ship facts beside the revision-2 manifest
+        facts = sorted(name for name in members
+                       if '/facts/revision-1/' in name and name.endswith('.json'))
+    supplements = sorted(name for name in members if name.endswith('/supplement.json'))
+    charts = sorted(name for name in members if name.endswith('.chart-input.json'))
+    assert facts, 'no fact files discovered'
+    return manifest_name, (root_index or rev_index_name), rev_index_name, facts, supplements, charts
+
+
 def identity(path, raw, media='application/json'):
     return ArtifactFile(path=path, mediaType=media, size=len(raw), sha256=sha(raw))
 
@@ -101,11 +127,7 @@ def baseline_compare(args):
         members = {entry.filename: archive.read(entry) for entry in archive.infolist() if not entry.is_dir()}
     for name, raw in members.items():
         assert (extracted / name).read_bytes() == raw, f'extraction mismatch: {name}'
-    main = next(name.rsplit('/', 1)[0] for name in members
-                if name.endswith('/report-revision-1.manifest.json') and '/revision-2/' not in name)
-    facts = sorted(name for name in members if name.startswith(main + '/facts/revision-1/') and name.endswith('.json'))
-    supplements = sorted(name for name in members if name.startswith(main + '/evidence/') and name.endswith('/supplement.json'))
-    charts = sorted(name for name in members if name.startswith(main + '/analysis/chart-inputs/') and name.endswith('.json'))
+    _, _, _, facts, supplements, charts = _discover(members)
     first_counts = first['counts']
     assert (len(facts), len(charts), len(supplements)) == (
         first_counts['facts'], first_counts['chartInputs'], first_counts['supplements'])
@@ -206,10 +228,10 @@ async def replay(args):
         members = {entry.filename: archive.read(entry) for entry in archive.infolist() if not entry.is_dir()}
     for name, raw in members.items():
         assert (extracted / name).read_bytes() == raw, f'extraction mismatch: {name}'
-    main = next(name.rsplit('/', 1)[0] for name in members if name.endswith('/report-revision-1.manifest.json') and '/revision-2/' not in name)
-    old_manifest = ReportArtifactManifest.model_validate_json(members[main + '/report-revision-1.manifest.json'])
-    old_index = json.loads(members[main + '/trace-index-v1.json'])
-    rev_index = json.loads(members[main + '/revision-2/trace-index-v1.json'])
+    manifest_name, old_index_name, rev_index_name, facts, supplements, charts = _discover(members)
+    old_manifest = ReportArtifactManifest.model_validate_json(members[manifest_name])
+    old_index = json.loads(members[old_index_name])
+    rev_index = json.loads(members[rev_index_name])
     by_digest = {}
     for name, raw in members.items():
         by_digest.setdefault((len(raw), sha(raw)), []).append(name)
@@ -221,16 +243,14 @@ async def replay(args):
             assert len(members[entry['path']]) == entry['size'] and sha(members[entry['path']]) == entry['sha256']
         assert matching, entry['path']
         old_file_checks.append({**entry, 'exactPathPresent': exact, 'matchingArchiveMembers': matching})
-    facts = sorted(name for name in members if name.startswith(main + '/facts/revision-1/') and name.endswith('.json'))
-    supplements = sorted(name for name in members if name.startswith(main + '/evidence/') and name.endswith('/supplement.json'))
-    charts = sorted(name for name in members if name.startswith(main + '/analysis/chart-inputs/') and name.endswith('.json'))
-    assert len(facts) == 12 and len(supplements) == 11 and len(charts) == 18
     chart_sources = []
     for name in charts:
         source = json.loads(members[name])['source']
-        raw = members[source['path']]
-        assert sha(raw) == source['sha256'], name
-        chart_sources.append({'chartInput': name, 'source': source, 'identityVerified': True})
+        # Some archives omit the evidence/ tree entirely; record unverifiable chart
+        # sources honestly instead of failing the replay.
+        raw = members.get(source['path'])
+        chart_sources.append({'chartInput': name, 'source': source,
+                              'identityVerified': raw is not None and sha(raw) == source['sha256']})
     source_names = facts + charts + supplements
     sources = {derive_resource_id(name): members[name] for name in source_names}
     assert len({sha(raw) for raw in sources.values()}) == len(sources), 'ambiguous duplicate content IDs'
@@ -405,6 +425,7 @@ async def replay(args):
     final_originals_unchanged = all((extracted / name).read_bytes() == raw for name, raw in members.items())
     assert final_originals_unchanged
     counts = {'zipFilesVerified': len(members), 'facts': len(facts), 'chartInputs': len(charts), 'supplements': len(supplements),
+              'chartSourcesVerified': sum(item['identityVerified'] for item in chart_sources),
               'bodyParagraphsRendered': len(records), 'historicalClaimMarkersRemoved': original.count('[[claim:'),
               'newBodyReferences': len(references), 'tableDerivedReferences': sum(ref.table_derivation is not None for ref in references),
               'subjectsBuilt': len(subjects), 'numberSubjectsIndexed': sum(item.number_reference is not None for item in index.subject_bindings),
@@ -421,7 +442,9 @@ async def replay(args):
               'editorBaseline': baseline, 'mutations': mutation_details, 'originalFilesUnchanged': final_originals_unchanged,
               'manifestIdentity': jsonable(identity(manifest_path, manifest_bytes)),
               'traceIndexIdentity': jsonable(identity(index_path, index_bytes)),
-              'limitations': ['Archive actually contains 18 chart-inputs (15 charts, four attempts for chart-013), not 17.',
+              'limitations': ['Two archive layouts are supported: revision artifacts at the run root or entirely under revision-2/.',
+                'Archives may omit the evidence/ tree; chart-input source references are then recorded as unverifiable instead of failing.',
+                'Archive may contain multi-attempt chart inputs (e.g. chart-013 with 4 attempts in one sample).',
                 'Original Markdown has already replaced some values with 待核实; missing original displays cannot be recovered from this report text.',
                 'No supplement is added to factFiles, no fabricated computation or structured claim is created.',
                 'Section adapter carries actual renderer blocks, not a full LLM workflow or PDF/Word publication.',

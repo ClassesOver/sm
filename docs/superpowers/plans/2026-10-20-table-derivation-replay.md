@@ -87,3 +87,38 @@
 - “待核实”处的原始数值不可恢复，保持复核告警。
 - 章节适配器承载真实渲染 block，不含完整 LLM 工作流与 PDF/Word 发布链路；编辑器恢复经验证/restoreText 与内存内显示替换完成，未走浏览器 UI 或 HTTP 导出。
 - 未修改任何应用源码；未运行完整测试；未 commit/push。
+
+## 9. 第二份真实附件（另一 report-run，revision-2 集中布局）
+
+回放脚本已泛化支持第二种归档布局（全部修订产物位于 `revision-2/` 下、数据集在 `revision-2/trace-resources/`、无根 manifest/索引）；facts 优先取 manifest 同层目录，图表输入按 `.chart-input.json` 识别，supplement 允许为 0。对第一份归档的发现计数回归校验不变（12/11/18）。
+
+脱敏聚合结果：
+
+| 项 | 值 |
+| --- | --- |
+| 归档成员 / 事实 / 图表输入 / 补证 | 71 / 15 / 20（17 图，3 图各 2 次尝试）/ 0 |
+| 图表输入 source 可核验 | 0/20（`evidence/` 树未随归档携带，如实记录为不可核验，不伪造） |
+| 参与渲染正文段落 | 129（排除：协议段 31、图片段 17、图表题注 17） |
+| 核验结论 | registered 336（direct 323 / decline 5 / profile_rate 6 / derived 2）；missing 67 |
+| 反事实对照 | baseline 0 → final 2，净新增 tableDerived 2；retained/lost/重签均为 0；与首次全链路逐字段复现 |
+| 编辑器闭环 | 重算 2/2、基线 valid 2、篡改 stale 2、restoreText 2、恢复 valid 2、逐字节还原 2 |
+| 锚点裁决追踪 | 仅 2 处出现派生候选且全部唯一锚定，无歧义、无未授权来源 |
+| 复核告警 | source_review 40 + numeric_unverified 67（两轮一致） |
+
+第二份附件剩余缺口的主因与第一份不同：**归档未携带 evidence/supplement 树**，67 处带单位数值在 facts+图表输入目录下无法核验（第一份归档携带 11 个补证文件时 missing 为 0）。这是产物打包缺口而非算法缺口；携带补证后这些数值多数应可如第一份一样核验，其中表内派生还可能继续转化为精确引用。两轮对照核验结论逐项相同，表来源只新增锚点、不改变核验与替换行为。
+
+复现命令（第二种布局需显式传 `--archive` 与 `--extracted`）：
+
+```bash
+/home/junge/pros/smart_reporting/.venv/bin/python \
+  /home/junge/pros/smart_reporting/scripts/replay_table_derivation_references.py \
+  --archive '/path/to/report-revision-2-artifacts-2.zip' --extracted /tmp/replay-78 \
+  --output /tmp/table-derivation-replay2-A
+/home/junge/pros/smart_reporting/.venv/bin/python \
+  /home/junge/pros/smart_reporting/scripts/replay_table_derivation_references.py \
+  --archive '/path/to/report-revision-2-artifacts-2.zip' --extracted /tmp/replay-78 \
+  --baseline-from /tmp/table-derivation-replay2-A/results.json \
+  --output /tmp/table-derivation-replay2-B
+```
+
+本地全量结果：`/tmp/table-derivation-replay2-20261020-a`（全链路）、`/tmp/table-derivation-replay2-20261020-baseline`（对照）；均不入库。
