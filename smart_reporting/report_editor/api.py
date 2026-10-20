@@ -7,6 +7,7 @@ from typing import Any, Literal, NoReturn
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
+import anyio
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import (
     FileResponse,
@@ -166,6 +167,45 @@ def create_report_editor_router(
         return response
 
     if editor is not None:
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/export",
+            include_in_schema=False,
+        )
+        async def export_report_artifact_bundle(
+            report_id: str, revision: int, request: Request
+        ) -> StreamingResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                path, filename, size = await editor.export_artifact_bundle(context, session)
+            except ReportingError as error:
+                _editor_http_error(error, request_id=_request_id(request.headers.get("x-request-id")))
+            logger.info(
+                "report_editor_artifact_bundle_export report_id={} revision={} size={}",
+                context.report_id,
+                context.revision,
+                size,
+            )
+            async def download_chunks():
+                try:
+                    async with await anyio.open_file(path, "rb") as archive:
+                        while chunk := await archive.read(1024 * 1024):
+                            yield chunk
+                finally:
+                    Path(path).unlink(missing_ok=True)
+
+            return StreamingResponse(
+                download_chunks(),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(size),
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
 
         @router.get(
             "/reports/v1/editor/{report_id}/{revision}",

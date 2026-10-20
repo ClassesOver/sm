@@ -8,9 +8,12 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import stat
+import tempfile
 import time
+import zipfile
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -20,6 +23,7 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
+import anyio
 from agno.run import RunContext
 from cryptography.fernet import Fernet, InvalidToken
 from loguru import logger
@@ -551,6 +555,9 @@ class ReportEditorGrantService:
 
 _MAX_EXPORT_JOBS = 64
 _EXPORT_JOB_RETENTION_SECONDS = 3600
+_MAX_BUNDLE_BYTES = 30 * 1024 * 1024
+_MAX_BUNDLE_SOURCE_BYTES = 200 * 1024 * 1024
+_BUNDLE_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -1321,6 +1328,124 @@ class ReportEditorService:
         if include_identity:
             return str(path), filename, size, sha256
         return str(path), filename, size
+
+    @source_lifecycle
+    async def export_artifact_bundle(
+        self, expected: ReportEditorContext, session: ReportEditorSession
+    ) -> tuple[str, str, int]:
+        """Create an identity-checked, revision-scoped archive of report artifacts."""
+
+        if not EditorCapabilities.of(session.capabilities).full:
+            raise ReportingError("dataset_access_denied", "分享会话不能下载报告原始产物。")
+        context = await self._restore(expected)
+        await self._ensure_sources_retained(context)
+        state = await self.state_repository.get(context.workflow_run_id)
+        if state is None:
+            raise ReportingError("report_editor_context_missing", "报告编辑上下文不存在。")
+
+        identities: dict[str, tuple[int, str]] = {}
+
+        def register(raw: Any) -> None:
+            if not isinstance(raw, Mapping):
+                return
+            identity_keys = {"path", "size", "sha256"}
+            if not identity_keys.issubset(raw):
+                return
+            try:
+                path = self.workspace.normalize_path(str(raw["path"]), allow_root=False)
+                size = int(raw["size"])
+                sha256 = str(raw["sha256"])
+            except (KeyError, TypeError, ValueError, WorkspaceError) as error:
+                raise ReportingError("snapshot_integrity_failed", "报告产物登记身份无效。") from error
+            if size < 1 or size > _MAX_BUNDLE_SOURCE_BYTES or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+                raise ReportingError("snapshot_integrity_failed", "报告产物登记身份无效。")
+            identity = (size, sha256)
+            previous = identities.setdefault(path, identity)
+            if previous != identity:
+                raise ReportingError("snapshot_integrity_failed", "同一报告产物存在冲突的文件身份。")
+
+        def collect(value: Any) -> None:
+            if isinstance(value, Mapping):
+                register(value)
+                for item in value.values():
+                    collect(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    collect(item)
+
+        manifest, index = await self.trace.load_manifest_and_index(context)
+        if manifest is not None:
+            collect(manifest.model_dump(mode="json", by_alias=True))
+            collect(context.artifact_manifest.model_dump(mode="json", by_alias=True) if context.artifact_manifest else None)
+        if index is not None:
+            collect(index.model_dump(mode="json", by_alias=True))
+
+        job = context.job
+        collect(job)
+
+        checkpoint = state.payload.get("workflowCheckpoint")
+        collect(checkpoint)
+        if not identities:
+            raise ReportingError("report_editor_revision_missing", "当前修订没有可打包的报告产物。")
+        total_source_bytes = sum(size for size, _ in identities.values())
+        if total_source_bytes > _MAX_BUNDLE_SOURCE_BYTES:
+            raise ReportingError("resource_limit_exceeded", "报告源产物总量超过 200 MiB 打包安全上限。")
+
+        archive_descriptor, archive_path = tempfile.mkstemp(prefix="report-artifacts-", suffix=".zip")
+        os.close(archive_descriptor)
+        try:
+            with tempfile.TemporaryDirectory(prefix="report-artifacts-snapshot-") as snapshot_dir:
+                snapshots: dict[str, str] = {}
+                for index, (path, (expected_size, expected_sha256)) in enumerate(sorted(identities.items())):
+                    digest = hashlib.sha256()
+                    total = 0
+                    snapshot_path = os.path.join(snapshot_dir, f"{index:05d}")
+                    snapshots[path] = snapshot_path
+                    with open(snapshot_path, "wb") as target:
+                        try:
+                            async for chunk in self.workspace.aiter_regular_file_chunks(
+                                context.scope["threadId"], path,
+                                max_bytes=expected_size, chunk_size=_BUNDLE_CHUNK_BYTES,
+                            ):
+                                total += len(chunk)
+                                if total > expected_size:
+                                    raise ReportingError("snapshot_integrity_failed", "报告产物大小与登记身份不一致。")
+                                digest.update(chunk)
+                                target.write(chunk)
+                        except (OSError, WorkspaceError) as error:
+                            raise ReportingError("snapshot_integrity_failed", "报告登记产物无法安全读取。") from error
+                    if total != expected_size or not secrets.compare_digest(digest.hexdigest(), expected_sha256):
+                        raise ReportingError("snapshot_integrity_failed", "报告产物与登记身份不一致。")
+                validation = job.get("validation") if isinstance(job.get("validation"), Mapping) else {}
+                metadata = json.dumps({
+                    "reportId": context.report_id,
+                    "revision": context.revision,
+                    "workflowRunId": context.workflow_run_id,
+                    "artifactCount": len(identities),
+                    "validation": {"ok": validation.get("ok")},
+                }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+                def write_archive() -> None:
+                    with zipfile.ZipFile(
+                        archive_path, "w", compression=zipfile.ZIP_LZMA, compresslevel=9,
+                        allowZip64=False,
+                    ) as archive:
+                        for path, snapshot_path in sorted(snapshots.items()):
+                            archive.write(snapshot_path, arcname=path, compress_type=zipfile.ZIP_LZMA)
+                        archive.writestr("bundle.json", metadata, compress_type=zipfile.ZIP_LZMA)
+
+                await anyio.to_thread.run_sync(write_archive)
+            size = os.path.getsize(archive_path)
+            if size > _MAX_BUNDLE_BYTES:
+                raise ReportingError("resource_limit_exceeded", "全部报告产物深度压缩后仍超过 30 MiB，未提供不完整压缩包。")
+            filename = f"report-revision-{context.revision}-artifacts.zip"
+            return archive_path, filename, size
+        except BaseException:
+            try:
+                os.unlink(archive_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     @source_lifecycle
     async def trace_facts(
