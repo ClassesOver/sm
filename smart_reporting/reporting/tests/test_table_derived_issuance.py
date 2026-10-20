@@ -1,5 +1,6 @@
 """Original-cell provenance survives numeric checking and reference issuance."""
 
+import hashlib
 import json
 
 import pytest
@@ -122,3 +123,103 @@ def test_source_byte_or_operand_tampering_invalidates_issued_reference():
         "operands": (operands[0].model_copy(update={"coefficient": "-1"}), operands[1]),
     })
     assert resolve_table_derivation(reference.token, tampered, {RID: raw}) is None
+
+
+SUPPLEMENT_RID = "trf-0123456789abcdefabc1"
+CHART_RID = "trf-0123456789abcdefabc2"
+OTHER_RID = "trf-0123456789abcdefabc3"
+
+
+def _chart_bytes(rows, declared_sha, *, columns=None, metadata=None):
+    return json.dumps({
+        "chartId": "chart-001",
+        "columns": columns or ["项目", "金额"],
+        "rows": rows,
+        "columnMeta": metadata if metadata is not None else {"金额": {"unit": "万元"}},
+        "source": {"path": "run/evidence/analysis_001/attempt-1/supplement.json",
+                   "sha256": declared_sha},
+        "rowCount": len(rows),
+    }, ensure_ascii=False).encode()
+
+
+def test_declared_chart_projection_collapses_to_verified_supplement_source():
+    supplement = table_bytes([["甲", 100], ["乙", 40]])
+    chart = _chart_bytes(
+        [["甲", 100], ["乙", 40]], hashlib.sha256(supplement).hexdigest(),
+    )
+    markdown, references, notices = render_bound_numbers(
+        "甲项目比乙项目多60.00万元。", [supplement.decode(), chart.decode()],
+        key="chart-collapse", table_sources={SUPPLEMENT_RID: supplement, CHART_RID: chart},
+    )
+    assert "60.00万元" in markdown and not notices
+    assert len(references) == 1
+    operands = references[0].table_derivation.operands
+    assert {op.file_resource_id for op in operands} == {SUPPLEMENT_RID}
+    assert resolve_table_derivation(
+        references[0].token, references[0].table_derivation, {SUPPLEMENT_RID: supplement},
+    ) is not None
+
+
+def test_unverifiable_declaration_keeps_ambiguity_without_reference():
+    missing = hashlib.sha256(b"absent-supplement").hexdigest()
+    first = _chart_bytes([["甲", 100], ["乙", 40]], missing)
+    second = _chart_bytes([["甲", 100], ["乙", 40]], missing)
+    markdown, references, notices = render_bound_numbers(
+        "甲项目比乙项目多60.00万元。", [first.decode(), second.decode()],
+        key="chart-unverified", table_sources={CHART_RID: first, OTHER_RID: second},
+    )
+    assert markdown == "甲项目比乙项目多60.00万元。"
+    assert not references and not notices
+
+
+def test_projection_only_collapses_when_declared_original_is_a_candidate():
+    unrelated = table_bytes([["丙", 1], ["丁", 2]])
+    supplement = table_bytes([["甲", 100], ["乙", 40]])
+    chart = _chart_bytes(
+        [["甲", 100], ["乙", 40]], hashlib.sha256(unrelated).hexdigest(),
+    )
+    markdown, references, notices = render_bound_numbers(
+        "甲项目比乙项目多60.00万元。",
+        [unrelated.decode(), supplement.decode(), chart.decode()],
+        key="chart-noncandidate", table_sources={
+            OTHER_RID: unrelated, SUPPLEMENT_RID: supplement, CHART_RID: chart,
+        },
+    )
+    assert markdown == "甲项目比乙项目多60.00万元。"
+    assert not references and not notices
+
+
+def test_decline_worded_difference_still_anchors():
+    raw = table_bytes([["甲", 100], ["乙", 40]])
+    markdown, references, notices = issue("乙项目比甲项目减少60.00万元。", raw)
+    assert "60.00万元" in markdown and not notices
+    assert len(references) == 1
+    assert resolve_table_derivation(
+        references[0].token, references[0].table_derivation, {RID: raw},
+    ) is not None
+
+
+def test_unique_but_display_inexact_candidate_keeps_number_without_anchor():
+    """折叠到全精度补证值时不得签锚；已注册数值更不能被降级为待核实。"""
+
+    full_precision = table_bytes(
+        [["甲", "29.663578969945096"], ["乙", "45.321578969945096"],
+         ["丙", "14.013521030054904"]],
+        columns=["项目", "占比"], metadata={"占比": {"unit": "%", "isPercent": True}},
+    )
+    rounded = _chart_bytes(
+        [["甲", "29.66"], ["乙", "45.32"], ["丙", "14.02"]],
+        hashlib.sha256(full_precision).hexdigest(),
+        columns=["项目", "占比"], metadata={"占比": {"unit": "%", "isPercent": True}},
+    )
+    markdown, references, notices = render_bound_numbers(
+        "甲、乙、丙三类合计约占89.0%，是主要构成。",
+        [full_precision.decode(), rounded.decode()],
+        key="display-inexact", table_sources={
+            SUPPLEMENT_RID: full_precision, CHART_RID: rounded,
+        },
+    )
+    assert "89.0%" in markdown
+    assert "待核实" not in markdown
+    assert not references
+    assert notices == ()

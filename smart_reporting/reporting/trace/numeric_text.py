@@ -1462,10 +1462,16 @@ class DerivedNumbers:
     操作数的行名、列名或指标名，并保留运算方向与期间，核对时只使用数字所在句。
     """
 
-    def __init__(self, table_sources: Mapping[str, bytes] | None = None) -> None:
+    def __init__(
+        self,
+        table_sources: Mapping[str, bytes] | None = None,
+        derived_from: Mapping[str, str] | None = None,
+    ) -> None:
         self._values: dict[str, list[_DerivedValue]] = {}
         self._sorted: dict[str, list[Decimal]] = {}
         self._table_sources = table_sources or {}
+        # resource_id → 声明的原始来源 resource_id；仅收录经字节核验的 source.sha256 声明。
+        self._derived_from = dict(derived_from or {})
 
     def add(
         self,
@@ -1592,6 +1598,20 @@ class DerivedNumbers:
                 replace(entry, table_token=table_derivation_token(entry.table_derivation, self._table_sources))
                 if entry.table_derivation is not None else entry
                 for entry in matches
+            ]
+        if len(matches) > 1 and self._derived_from:
+            # 图表输入自带 source.sha256 声明它是某个补证的投影视图；该声明经字节
+            # 核验后，原始来源也在候选集中时折叠投影视图，保留声明的原始来源。
+            present = {
+                entry.table_derivation.operands[0].file_resource_id
+                for entry in matches if entry.table_derivation is not None
+            }
+            matches = [
+                entry for entry in matches
+                if entry.table_derivation is None
+                or self._derived_from.get(
+                    entry.table_derivation.operands[0].file_resource_id
+                ) not in present
             ]
         tokens = {derived_reference_token(entry, unit) for entry in matches}
         return matches[0] if matches and None not in tokens and len(tokens) == 1 else None
@@ -1905,11 +1925,32 @@ def derived_number_values(
     """
     contents = tuple(contents)
     sources = table_sources or {}
-    derived = DerivedNumbers(sources)
     sources_by_digest: dict[bytes, list[str]] = {}
     for resource_id, raw in sources.items():
         if isinstance(raw, bytes):
             sources_by_digest.setdefault(hashlib.sha256(raw).digest(), []).append(resource_id)
+    # 图表输入的 source.sha256 声明其派生自某个补证文件；只按内容寻址核验采信，
+    # 声明目标不在核验来源或存在歧义时不折叠。
+    derived_from: dict[str, str] = {}
+    for resource_id, raw in sources.items():
+        if not isinstance(raw, bytes):
+            continue
+        try:
+            declaration = json.loads(raw).get("source")
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not isinstance(declaration, dict):
+            continue
+        declared = declaration.get("sha256")
+        if not isinstance(declared, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", declared):
+            continue
+        targets = [
+            target for target in sources_by_digest.get(bytes.fromhex(declared), ())
+            if target != resource_id
+        ]
+        if len(targets) == 1:
+            derived_from[resource_id] = targets[0]
+    derived = DerivedNumbers(sources, derived_from)
     source_matches = {
         content: sources_by_digest.get(hashlib.sha256(content.encode("utf-8")).digest(), [])
         for content in contents if isinstance(content, str)
@@ -2656,7 +2697,25 @@ def replace_unregistered_numbers(
             if on_derived_anchor is None or reference is not None:
                 return ""
             entry = derived.match(value, unit, quantum, context, statement=statement, claim=claim)
-            return on_derived_anchor(entry, unit) if entry is not None else ""
+            if entry is None:
+                return ""
+            # 锚点只在重算值能按发布显示规则核对该数字时签发；语义放行（量子化相等）
+            # 不等于可锚定，否则签发后严格复核会把已注册数值降级为待核实。
+            # 探针与 bound_number_display 同口径：方向词参与负值差额的显示核对。
+            from .subject_builder import (
+                _DECLINE_PREFIX,
+                formatted_value_matches,
+                value_matches,
+            )
+
+            direction = re.search(_DECLINE_PREFIX + "$", re.sub(r"\[\[[^\]\n]+\]\]", "", prefix))
+            probe = (direction[0] if direction else "") + _derived_number_text(value)
+            if not (
+                value_matches(probe, entry.value)
+                or formatted_value_matches(probe + unit, entry.value, unit)
+            ):
+                return ""
+            return on_derived_anchor(entry, unit)
 
         if neutral:
             # 中性差额只认当前句操作数的补算差额，或当前数字由服务端渲染的差额引用。
