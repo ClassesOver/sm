@@ -785,14 +785,22 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
             # 明细表下可再挂汇总子表（finding.tables：按月合计、按科室合计），同样要登记。
             pending.extend(value for key, value in finding.items()
                            if key not in {"columns", "rows", "columnMeta"} and isinstance(value, (dict, list)))
-            if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
+            if not isinstance(columns, list) or not isinstance(rows, list):
                 continue
+            if not isinstance(metadata, dict):
+                metadata = {}
             for index, column in enumerate(columns):
                 meta = metadata.get(column) if isinstance(column, str) else None
-                if not isinstance(meta, dict):
-                    continue
-                unit = meta.get("unit")
-                if not isinstance(unit, str) or unit not in {*_MONEY_UNITS, "人次", "万人次", "床日", "%", "‰"}:
+                unit = meta.get("unit") if isinstance(meta, dict) else None
+                if not isinstance(unit, str):
+                    # 补证表常缺 columnMeta；金额/人次/占比的列名自带单位词（“收入金额（元）”
+                    # “门诊人次”“药耗占比”），按列名登记，不从数字大小猜用途。
+                    unit = _unit_from_column_name(column if isinstance(column, str) else "")
+                    if unit == "%":
+                        meta = {"unit": "%", "isPercent": True}
+                    elif unit is not None:
+                        meta = {"unit": unit}
+                if unit not in {*_MONEY_UNITS, "人次", "万人次", "床日", "%", "‰"}:
                     continue
                 if unit == "%" and meta.get("isPercent") is not True:
                     continue
@@ -810,6 +818,26 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
                         for target, scale in scales.items():
                             known.setdefault(target, set()).add(number * scales[unit] / scale)
     return known
+
+
+_COLUMN_UNIT_WORDS = (
+    # 占比列：命中即按百分数登记（占比类列不会是“个百分点”差值）。
+    (("%",), ("占比", "比重", "比例", "贡献率", "完成率", "百分比")),
+    # 金额列：单位词最具体者优先；无括号单位时金额类列名仍能识别。
+    (("亿元",), ("亿元",)),
+    (("万元",), ("万元",)),
+    (("元",), ("金额", "收入", "支出", "成本", "费用", "差额", "缺口", "余额", "（元）", "(元)")),
+    # 人次列：人次单位不可按金额列名误配。
+    (("人次",), ("人次", "人数", "门诊量", "出院量", "工作量")),
+)
+
+
+def _unit_from_column_name(column: str) -> str | None:
+    """补证表列名推断显示单位；无法确定时返回 None，不登记。"""
+    for (unit,), words in _COLUMN_UNIT_WORDS:
+        if any(word in column for word in words):
+            return unit
+    return None
 
 
 _DERIVED_ROW_LIMIT = 30
@@ -1242,8 +1270,10 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
             columns, rows, metadata = (finding.get(key) for key in ("columns", "rows", "columnMeta"))
             pending.extend(value for key, value in finding.items()
                            if key not in {"columns", "rows", "columnMeta"} and isinstance(value, (dict, list)))
-            if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
+            if not isinstance(columns, list) or not isinstance(rows, list):
                 continue
+            if not isinstance(metadata, dict):
+                metadata = {}
             rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
             labels = [next((cell.strip() for cell in row if isinstance(cell, str) and cell.strip()), None)
                       for row in rows]
@@ -1253,7 +1283,12 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
             for index, column in enumerate(columns):
                 meta = metadata.get(column) if isinstance(column, str) else None
                 unit = meta.get("unit") if isinstance(meta, dict) else None
-                if (not isinstance(unit, str) or unit not in {*_MONEY_UNITS, "人次", "床日", "%"}
+                if not isinstance(unit, str):
+                    # 与 supplemental_number_values 同一列名推断；补证表缺 columnMeta 时
+                    # 行差额/前 N 合计仍可按列单位补算。
+                    unit = _unit_from_column_name(column if isinstance(column, str) else "")
+                    meta = {"unit": unit, **({"isPercent": True} if unit == "%" else {})}
+                if (unit not in {*_MONEY_UNITS, "人次", "床日", "%"}
                         or unit == "%" and meta.get("isPercent") is not True):
                     continue
                 numbers = [Decimal(str(row[index])) for row in rows

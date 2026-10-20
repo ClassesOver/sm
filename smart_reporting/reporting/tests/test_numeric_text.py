@@ -179,6 +179,59 @@ def test_nested_supplement_numbers_require_metadata_at_the_same_table():
     assert any('冻结依据' in w for w in review_content('未标单位777元。', [supplement]))
 
 
+def test_column_name_units_register_without_metadata():
+    """补证表缺 columnMeta：金额/人次/占比列按列名单位登记，行值不再是“无依据”。"""
+    from smart_reporting.reporting.trace.content_review import review_content
+    from smart_reporting.reporting.trace.numeric_text import supplemental_number_values
+
+    supplement = json.dumps({'findings': [{'name': '一级科室收入', 'columns':
+        ['科室', '收入金额', '占比'], 'rows': [
+        ['普通外科', 1482873737, 15.59], ['血液内科', 711117212, 7.47]]}]})
+    values = supplemental_number_values([supplement])
+    assert {Decimal('1482873737'), Decimal('711117212')} <= values['元']
+    assert Decimal('15.59') in values['%'] and Decimal('7.47') in values['%']
+    text = '普通外科收入1,482,873,737元、占15.59%，血液内科711,117,212元、占7.47%。'
+    assert replace_unregistered_numbers(text, [supplement]) == text
+    assert not [w for w in review_content(text, [supplement]) if '冻结依据' in w]
+
+
+def test_chart_input_rows_register_without_metadata():
+    """chart-input/v1 行数据（院区明细）进入核对目录：图注与正文解读逐行数值不再误判。"""
+    from smart_reporting.reporting.trace.numeric_text import supplemental_number_values
+
+    chart = json.dumps({'schema': 'chart-input/v1', 'chartId': 'chart-1',
+                        'columns': ['院区', '收入（元）'], 'rows': [
+                            ['总部', 7308859598], ['北部', 1538902522], ['远洋', 72098737]],
+                        'rowCount': 3})
+    values = supplemental_number_values([chart])
+    assert {Decimal('7308859598'), Decimal('72098737')} <= values['元']
+    text = '总部院区收入7,308,859,598元，远洋收入72,098,737元。'
+    assert replace_unregistered_numbers(text, [chart]) == text
+
+
+def test_column_name_shares_derive_pairwise_totals():
+    """占比列行值补算：同表“总部与北部合计占93.00%”由行占比相加支撑。"""
+    from smart_reporting.reporting.trace.numeric_text import supplemental_number_values
+
+    chart = json.dumps({'findings': [{'columns': ['院区', '收入占比'], 'rows': [
+        ['总部', 76.82], ['北部', 16.18], ['其他', 7.00]]}]})
+    values = supplemental_number_values([chart])
+    assert Decimal('76.82') in values['%']
+    text = '总部（76.82%）与北部（16.18%）合计占93.00%。'
+    assert replace_unregistered_numbers(text, [chart]) == text
+
+
+def test_column_name_inference_only_trusted_unit_words():
+    from smart_reporting.reporting.trace.numeric_text import _unit_from_column_name
+
+    assert _unit_from_column_name('收入金额') == '元'
+    assert _unit_from_column_name('预算医疗收入（亿元）') == '亿元'
+    assert _unit_from_column_name('门诊人次') == '人次'
+    assert _unit_from_column_name('药耗占比') == '%'
+    assert _unit_from_column_name('预算项目数') is None
+    assert _unit_from_column_name('科室名称') is None
+
+
 @pytest.mark.parametrize(('text', 'supported'), [
     ('2月环比下降18.38%。', True),
     ('2月降幅为18.38%。', True),
