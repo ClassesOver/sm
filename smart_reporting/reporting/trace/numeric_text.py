@@ -10,7 +10,7 @@ import os
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
@@ -26,7 +26,9 @@ from ..hospital_operation.deterministic_analysis import (
 from ..units import MONEY_UNITS as _MONEY_UNITS
 from ..units import REPORT_VALUE_UNIT_PATTERN, unit_conversion_scale
 from ..units import unit_scales as _unit_scales
+from .contracts_v1 import TableDerivationV1, TableOperandV1
 from .fact_index import fact_binding_records, merge_binding_records
+from .table_sources import table_semantics
 
 # 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
 # （“跌幅-5%”“上涨-654万元”曾因词表不全原样发布）。
@@ -1292,10 +1294,10 @@ class _DerivedValue:
     window_required: bool = False
     ratio: bool = False
     members: tuple[Decimal, ...] = ()
-    # 事实对派生（同口径两事实之差/之比）携带操作数身份，可铸成引用 token 进编辑器；
-    # 表内派生没有事实身份，留空即维持只放行不锚定的行为。
     fact_ids: tuple[str, ...] = ()
     operand_values: tuple[Decimal, ...] = ()
+    table_derivation: TableDerivationV1 | None = None
+    table_token: str | None = None
 
 
 _RATIO_VERB = r"(?:相当于|为|占|是|达到?)"
@@ -1460,9 +1462,10 @@ class DerivedNumbers:
     操作数的行名、列名或指标名，并保留运算方向与期间，核对时只使用数字所在句。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, table_sources: Mapping[str, bytes] | None = None) -> None:
         self._values: dict[str, list[_DerivedValue]] = {}
         self._sorted: dict[str, list[Decimal]] = {}
+        self._table_sources = table_sources or {}
 
     def add(
         self,
@@ -1480,6 +1483,7 @@ class DerivedNumbers:
         members: tuple[Decimal, ...] = (),
         fact_ids: tuple[str, ...] = (),
         operand_values: tuple[Decimal, ...] = (),
+        table_operands: tuple[TableOperandV1, ...] = (),
     ) -> None:
         if not operands or any(not names for names in operands):
             return
@@ -1491,6 +1495,19 @@ class DerivedNumbers:
         for target, factor in targets:
             # 前 N 项合计只登记真实符号；差额的两个显示符号仍须按左右操作数和方向复核。
             for value in {number} if top is not None else {number, -number}:
+                direction = Decimal(-1) if value != number else Decimal(1)
+                table_derivation = (
+                    TableDerivationV1(
+                        operands=tuple(
+                            operand.model_copy(update={
+                                "coefficient": format(Decimal(operand.coefficient) * factor * direction, "f")
+                            })
+                            for operand in table_operands
+                        ),
+                        unit=target,
+                    )
+                    if table_operands and len(table_operands) <= 100 else None
+                )
                 self._values.setdefault(target, []).append(
                     _DerivedValue(
                         value * factor,
@@ -1506,6 +1523,7 @@ class DerivedNumbers:
                         members=tuple(member * factor for member in members),
                         fact_ids=fact_ids,
                         operand_values=tuple(operand * factor for operand in operand_values),
+                        table_derivation=table_derivation,
                     )
                 )
         self._sorted.clear()
@@ -1551,9 +1569,9 @@ class DerivedNumbers:
         statement: str | None = None,
         claim: str | None = None,
     ) -> bool:
-        return (
-            self.match(number, unit, quantum, context, statement=statement, claim=claim) is not None
-        )
+        return next(
+            self._matches(number, unit, quantum, context, statement=statement, claim=claim), None
+        ) is not None
 
     def match(
         self,
@@ -1565,10 +1583,32 @@ class DerivedNumbers:
         statement: str | None = None,
         claim: str | None = None,
     ) -> _DerivedValue | None:
-        """返回按当前句核对通过的派生条目；供锚定与核对共用同一判定。"""
+        """只有全部候选具有同一派生身份时才能签发引用。"""
+        matches = list(self._matches(number, unit, quantum, context, statement=statement, claim=claim))
+        if self._table_sources:
+            from .table_sources import table_derivation_token
+
+            matches = [
+                replace(entry, table_token=table_derivation_token(entry.table_derivation, self._table_sources))
+                if entry.table_derivation is not None else entry
+                for entry in matches
+            ]
+        tokens = {derived_reference_token(entry, unit) for entry in matches}
+        return matches[0] if matches and None not in tokens and len(tokens) == 1 else None
+
+    def _matches(
+        self,
+        number: Decimal,
+        unit: str,
+        quantum: Decimal,
+        context: str,
+        *,
+        statement: str | None = None,
+        claim: str | None = None,
+    ) -> Iterator[_DerivedValue]:
         entries = self._values.get(unit)
         if not entries:
-            return None
+            return
         if unit not in self._sorted:
             entries.sort(key=lambda entry: entry.value)
             self._sorted[unit] = [entry.value for entry in entries]
@@ -1625,11 +1665,11 @@ class DerivedNumbers:
             named = all(any(name in local_claim for name in names) for names in entry.operands)
             if entry.ratio:
                 if named and _ratio_matches(entry, local_claim):
-                    return entry
+                    yield entry
                 continue
             if entry.difference is not None:
                 if named and _derived_difference_matches(entry, number, quantum, local_claim):
-                    return entry
+                    yield entry
                 continue
             if entry.top is not None:
                 names = [str(entry.top)]
@@ -1647,8 +1687,7 @@ class DerivedNumbers:
                 if (named or ranked and not entry.named_only or listed) and not re.search(
                     "相差|差额|差值|高于|低于", local_claim
                 ):
-                    return entry
-        return None
+                    yield entry
 
     def registered_values(self, unit: str) -> tuple[Decimal, ...]:
         """已登记的派生值（诊断用）：不做语句匹配，仅供质量扫描寻找最近候选。"""
@@ -1664,14 +1703,20 @@ def _derived_number_text(value: Decimal) -> str:
     return format(Decimal(str(value)).normalize(), "f")
 
 
-def derived_reference_token(entry: _DerivedValue, unit: str) -> str | None:
+def derived_reference_token(
+    entry: _DerivedValue, unit: str, *, legacy: bool = False
+) -> str | None:
     """事实对派生（同口径两事实之差/之比）铸成可解析引用 token；无事实身份不铸。
 
     token 内嵌两个操作数 factId（供绑定构建提取来源），并以内容寻址摘要保证唯一；
     解析端用同一 contents 重建派生登记后按 token 相等匹配，不做文法反解。
+    ``legacy=True`` 按 PR #80 首版格式（操作数 ID 排序）重铸，用于继续解析已签发旧 token。
     """
-    if len(entry.fact_ids) < 2 or len(set(entry.fact_ids)) < 2 or len(entry.operand_values) < 2:
+    if entry.table_derivation is not None:
+        return entry.table_token if not legacy and entry.table_derivation.unit == unit else None
+    if len(entry.fact_ids) != 2 or len(set(entry.fact_ids)) != 2 or len(entry.operand_values) != 2:
         return None
+    fact_ids = tuple(sorted(entry.fact_ids)) if legacy else tuple(entry.fact_ids)
     kind = "ratio" if entry.ratio else "difference" if entry.difference is not None else None
     if kind is None:
         return None
@@ -1680,14 +1725,14 @@ def derived_reference_token(entry: _DerivedValue, unit: str) -> str | None:
             (
                 kind,
                 unit,
-                *sorted(entry.fact_ids),
+                *fact_ids,
                 _derived_number_text(entry.value),
                 *(entry.periods or ()),
                 *(_derived_number_text(value) for value in entry.operand_values),
             )
         ).encode()
     ).hexdigest()[:16]
-    return "{{derived:" + ":".join((*sorted(entry.fact_ids), kind, digest, unit)) + "}}"
+    return "{{derived:" + ":".join((*fact_ids, kind, digest, unit)) + "}}"
 
 
 def derived_reference_resolution(
@@ -1697,27 +1742,38 @@ def derived_reference_resolution(
     if derived_reference_token(entry, unit) is None:
         return None
     left, right = entry.operand_values[:2]
+    fact_ids = entry.fact_ids[:2]
+    fact_entries = fact_entries or {}
+    if any(fact_id not in fact_entries for fact_id in fact_ids):
+        return None
+    if entry.difference is not None and entry.value != left - right:
+        left, right = right, left
     if entry.ratio:
         formula = f"({_derived_number_text(left)}) / ({_derived_number_text(right)}) * 100"
         selector = "derivedRatio"
     else:
         formula = f"({_derived_number_text(left)}) - ({_derived_number_text(right)})"
         selector = "derivedDifference"
-    names = [
-        str((fact_entries or {}).get(fact_id, {}).get("displayName") or "")
-        for fact_id in entry.fact_ids[:2]
-    ]
+    names = [str(fact_entries[fact_id].get("displayName") or "") for fact_id in fact_ids]
+    common_scope = fact_entries[fact_ids[0]].get("scope") or {}
+    if common_scope != (fact_entries[fact_ids[1]].get("scope") or {}):
+        return None
+    roles = {
+        role: tuple(entry.periods or ())
+        for fact_id in fact_ids
+        for role in fact_entries[fact_id].get("periodRoles") or ()
+    }
     return {
         "value": float(entry.value),
         "unit": unit,
         "periods": tuple(entry.periods or ()),
-        "period_roles": {},
-        "scope": {},
+        "period_roles": roles,
+        "scope": common_scope,
         "formula": formula,
         "entry": {
             "displayName": "与".join(name for name in names if name) or None,
             "aliases": (),
-            "scope": {},
+            "scope": common_scope,
         },
         "selector": selector,
     }
@@ -1731,8 +1787,26 @@ def _derive_from_table(
     labels: list[str | None],
     columns: Mapping[str, tuple[str, list[Decimal]]],
     aliases: list[tuple[str, ...]] | None = None,
+    *,
+    resource_id: str | None = None,
+    table_pointer: str = "",
+    row_indices: Sequence[int] = (),
+    column_indices: Mapping[str, int] | None = None,
+    periods: tuple[str, ...] | None = None,
 ) -> None:
-    """同一张表内补算：列内两行差额与降序前 N 项合计，同单位两列的逐行差额与合计差额。"""
+    """同一张表内补算，并在来源唯一时保留原始 JSON 单元格坐标。"""
+    def cells(items: Iterable[tuple[int, str, int]]) -> tuple[TableOperandV1, ...]:
+        if resource_id is None or column_indices is None:
+            return ()
+        return tuple(
+            TableOperandV1(
+                fileResourceId=resource_id, tablePointer=table_pointer,
+                rowIndex=row_indices[row], columnIndex=column_indices[column],
+                coefficient=str(coefficient),
+            )
+            for row, column, coefficient in items
+        )
+
     for column, (unit, numbers) in columns.items():
         peers = tuple(
             name
@@ -1746,9 +1820,9 @@ def _derive_from_table(
         # 也补算前 10 项，“预算端前五个单元合计94.08%”不再因表长被判为无依据。
         if len(numbers) <= _DERIVED_ROW_LIMIT:
             for position, (left_label, left) in enumerate(zip(labels, numbers, strict=True)):
-                for right_label, right in zip(
+                for right_position, (right_label, right) in enumerate(zip(
                     labels[position + 1 :], numbers[position + 1 :], strict=True
-                ):
+                ), start=position + 1):
                     if left_label and right_label:
                         derived.add(
                             PERCENT_POINT if unit == "%" else unit,
@@ -1756,26 +1830,28 @@ def _derive_from_table(
                             _operand_names(left_label, right_label),
                             column=column,
                             peer_columns=peers,
+                            periods=periods,
+                            table_operands=cells(((position, column, 1), (right_position, column, -1))),
                         )
         # 补证表常带“合计”行：它不是分项，参与排序会让“前两项合计”变成合计行加首项。
         # 行名取该行全部文本单元格（编码与名称），正文写“财务处”也能对上“RJ008.01 / 财务处”。
         names = aliases or [(label,) if label else () for label in labels]
         ranked = sorted(
             (
-                (number, row_names)
-                for number, label, row_names in zip(numbers, labels, names, strict=True)
+                (number, row_names, row_position)
+                for row_position, (number, label, row_names) in enumerate(zip(numbers, labels, names, strict=True))
                 if not (label and _TOTAL_ROW.fullmatch(label.strip()))
             ),
             key=lambda item: item[0],
             reverse=True,
         )
         running = Decimal(0)
-        # 长表只补算前 10 项，且须逐项写出名称：只写“前五”时，长表中巧合相等的合计太多。
         long_table = len(numbers) > _DERIVED_ROW_LIMIT
         prefixes = ranked[:10] if long_table else ranked[:-1]
-        for count, (number, row_names) in enumerate(prefixes, start=1):
+        for count, (number, row_names, _row_position) in enumerate(prefixes, start=1):
             running += number
-            members = tuple(item[1] for item in ranked[:count] if item[1])
+            top_rows = ranked[:count]
+            members = tuple(item[1] for item in top_rows if item[1])
             if count > 1 and len(members) == count:
                 derived.add(
                     unit,
@@ -1785,7 +1861,9 @@ def _derive_from_table(
                     column=column,
                     peer_columns=peers,
                     named_only=long_table,
-                    members=tuple(item[0] for item in ranked[:count]),
+                    members=tuple(item[0] for item in top_rows),
+                    periods=periods,
+                    table_operands=cells(tuple((item[2], column, 1) for item in top_rows)),
                 )
     items = list(columns.items())
     for position, (left_name, (unit, left)) in enumerate(items):
@@ -1793,13 +1871,22 @@ def _derive_from_table(
             if right_unit != unit or len(left) > _DERIVED_ROW_LIMIT:
                 continue
             operands = _operand_names(left_name, right_name)
-            for label, a, b in zip(labels, left, right, strict=True):
+            for row_position, (label, a, b) in enumerate(zip(labels, left, right, strict=True)):
                 if label:
                     derived.add(
-                        PERCENT_POINT if unit == "%" else unit, a - b, ((label,), *operands)
+                        PERCENT_POINT if unit == "%" else unit, a - b, ((label,), *operands),
+                        periods=periods,
+                        table_operands=cells(((row_position, left_name, 1), (row_position, right_name, -1))),
                     )
             if unit != "%":  # 百分数水平不能跨行求和后再比较。
-                derived.add(unit, sum(left) - sum(right), operands)
+                derived.add(
+                    unit, sum(left) - sum(right), operands, periods=periods,
+                    table_operands=cells(tuple(
+                        (row, column, coefficient)
+                        for column, coefficient in ((left_name, 1), (right_name, -1))
+                        for row in range(len(left))
+                    )),
+                )
 
 
 def _short_name(fact: Any) -> str | None:
@@ -1807,14 +1894,25 @@ def _short_name(fact: Any) -> str | None:
     return re.split(r"[，,；;]", name, maxsplit=1)[0].strip() or None
 
 
-def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
+def derived_number_values(
+    contents: Iterable[str], *, table_sources: Mapping[str, bytes] | None = None,
+) -> DerivedNumbers:
     """服务端补算模型常写的两数之差与前 N 项合计，供正文核对使用，不进入模型可见目录。
 
-    只在同一张补证表、同一分析的同口径事实内组合（同单位、同期间），不跨表或跨分析凑数：
+    只在同一张补证表、同一分析的兼容事实内组合（同单位、同期间），不跨表或跨分析凑数：
     “门诊人次相差424,831人次”“总部与北部院区合计占比93.05%”“1月成本高于收入3.02亿元”。
     """
     contents = tuple(contents)
-    derived = DerivedNumbers()
+    sources = table_sources or {}
+    derived = DerivedNumbers(sources)
+    sources_by_digest: dict[bytes, list[str]] = {}
+    for resource_id, raw in sources.items():
+        if isinstance(raw, bytes):
+            sources_by_digest.setdefault(hashlib.sha256(raw).digest(), []).append(resource_id)
+    source_matches = {
+        content: sources_by_digest.get(hashlib.sha256(content.encode("utf-8")).digest(), [])
+        for content in contents if isinstance(content, str)
+    }
     # 补证表列名常是字段编码（budget_project_amount），正文写“预算”“合同”：
     # 按同批事实的字段显示名改写列名，差额与列归属才能对上正文的比较对象。
     display: dict[str, str] = {}
@@ -1827,11 +1925,13 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
             document = json.loads(content)
         except (TypeError, ValueError):
             continue
-        pending = [document] if isinstance(document, (dict, list)) else []
+        matches = set(source_matches.get(content, ()))
+        resource_id = next(iter(matches)) if len(matches) == 1 else None
+        pending = [(document, "")] if isinstance(document, (dict, list)) else []
         while pending:
-            finding = pending.pop()
+            finding, pointer = pending.pop()
             if isinstance(finding, list):
-                pending.extend(finding)
+                pending.extend((value, f"{pointer}/{index}") for index, value in enumerate(finding))
                 continue
             if not isinstance(finding, dict):
                 continue
@@ -1839,7 +1939,7 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                 finding.get(key) for key in ("columns", "rows", "columnMeta")
             )
             pending.extend(
-                value
+                (value, pointer + "/" + key.replace("~", "~0").replace("/", "~1"))
                 for key, value in finding.items()
                 if key not in {"columns", "rows", "columnMeta"} and isinstance(value, (dict, list))
             )
@@ -1847,7 +1947,11 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                 continue
             if not isinstance(metadata, dict):
                 metadata = {}
-            rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
+            row_indices = [
+                index for index, row in enumerate(rows)
+                if isinstance(row, list) and len(row) == len(columns)
+            ]
+            rows = [rows[index] for index in row_indices]
             labels = [
                 next((cell.strip() for cell in row if isinstance(cell, str) and cell.strip()), None)
                 for row in rows
@@ -1857,8 +1961,15 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                 for row in rows
             ]
             table: dict[str, tuple[str, list[Decimal]]] = {}
+            column_indices: dict[str, int] = {}
+            source_columns_valid = (
+                all(isinstance(column, str) and column for column in columns)
+                and len(set(columns)) == len(columns)
+            )
             for index, column in enumerate(columns):
-                meta = metadata.get(column) if isinstance(column, str) else None
+                if not isinstance(column, str):
+                    continue
+                meta = metadata.get(column)
                 unit = meta.get("unit") if isinstance(meta, dict) else None
                 if not isinstance(unit, str):
                     # 与 supplemental_number_values 同一列名推断；补证表缺 columnMeta 时
@@ -1882,8 +1993,18 @@ def derived_number_values(contents: Iterable[str]) -> DerivedNumbers:
                 ]
                 if rows and len(numbers) == len(rows):
                     name = display.get(column, column)
-                    table[column if name in table or name in columns else name] = (unit, numbers)
-            _derive_from_table(derived, labels, table, aliases)
+                    key = column if name in table or name in columns else name
+                    table[key] = (unit, numbers)
+                    column_indices[key] = index
+            semantics = table_semantics(document, finding)
+            _derive_from_table(
+                derived, labels, table, aliases,
+                resource_id=resource_id if source_columns_valid else None,
+                table_pointer=pointer,
+                row_indices=row_indices,
+                column_indices=column_indices,
+                periods=semantics["periods"],
+            )
     for bundle in frozen_fact_bundles(contents):
         from .subject_builder import fact_periods
 
@@ -2483,20 +2604,21 @@ def replace_unregistered_numbers(
     references: Mapping[str, str] | None = None,
     on_verdict: Callable[[str, Decimal, str, str], None] | None = None,
     on_derived_anchor: Callable[[Any, str], str] | None = None,
+    table_sources: Mapping[str, bytes] | None = None,
 ) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。
 
     references 仅接受本次服务端渲染生成的 claim→token 映射，不信任正文自带的标记。
     on_verdict 观测每个核对数字的 (结论, 数值, 单位, 依据原因)，只用于质量扫描统计，
     不改变替换行为；结论取 registered/percent_point/corrected/missing。
-    on_derived_anchor 在事实对派生核对通过时收到 (派生条目, 单位)，返回值作为锚点
+    on_derived_anchor 在唯一来源的派生核对通过时收到 (派生条目, 单位)，返回值作为锚点
     追加在该数字之后（服务端签发派生引用用）；不提供则维持只放行不锚定。
     """
 
     contents = tuple(contents)
     catalog = frozen_number_catalog(contents)
     known = supplemental_number_values(contents)
-    derived = derived_number_values(contents)
+    derived = derived_number_values(contents, table_sources=table_sources)
     profile_rates = profile_rate_values(contents)
     # 没有可解析的冻结事实时，服务端无法判断正文数字是否为派生值；
     # 保留原文，避免把仅含原始证据的旧格式内容全部改成“待核实”。
@@ -2519,20 +2641,21 @@ def replace_unregistered_numbers(
         reference: str | None = None,
     ) -> tuple[str, str, str]:
         """返回 (结论, 数字, 锚点)：registered 按显示精度保留，corrected 改写为服务端补算值，
-        percent_point 改写为百分点，missing 替换；锚点仅在事实对派生通过时非空。"""
+        percent_point 改写为百分点，missing 替换；锚点仅在唯一来源派生通过时非空。"""
         number = Decimal(number_text.replace(",", ""))
         digits = len(number_text.split(".", 1)[1]) if "." in number_text else 0
         quantum = Decimal(1).scaleb(-digits)
         candidates = known.get(unit, ())
         neutral = NEUTRAL_DIFFERENCE_PREFIX.search(prefix) is not None
-        matched: list = []
 
         def derived_check() -> bool:
-            entry = derived.match(number, unit, quantum, context, statement=statement, claim=claim)
-            if entry is None:
-                return False
-            matched.append(entry)
-            return True
+            return derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
+
+        def anchor_for(value: Decimal) -> str:
+            if on_derived_anchor is None or reference is not None:
+                return ""
+            entry = derived.match(value, unit, quantum, context, statement=statement, claim=claim)
+            return on_derived_anchor(entry, unit) if entry is not None else ""
 
         if neutral:
             # 中性差额只认当前句操作数的补算差额，或当前数字由服务端渲染的差额引用。
@@ -2576,11 +2699,7 @@ def replace_unregistered_numbers(
             )
         reason = next((name for name, check in checks if check()), None)
         if reason is not None:
-            anchor = (
-                on_derived_anchor(matched[0], unit)
-                if reason == "derived" and matched and on_derived_anchor
-                else ""
-            )
+            anchor = anchor_for(number)
             report("registered", number, unit, reason)
             return "registered", _display_precision(number_text), anchor
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
@@ -2618,7 +2737,7 @@ def replace_unregistered_numbers(
                     unit,
                 )
                 report("corrected", number, unit, "last_digit")
-                return "corrected", _display_precision(corrected), ""
+                return "corrected", _display_precision(corrected), anchor_for(nearby[0])
         logger.warning("report_unregistered_number_replaced value={}{}", number_text, unit)
         report("missing", number, unit, "unmatched")
         return "missing", number_text, ""

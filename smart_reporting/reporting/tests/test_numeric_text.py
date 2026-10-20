@@ -2544,7 +2544,7 @@ def test_metric_pair_ratio_issues_derived_reference():
 
 
 def test_table_derived_without_fact_identity_stays_unanchored():
-    # 补证表行差额没有事实身份：只放行，不铸派生引用（on_derived_anchor 收到空 token）。
+    # 补证表行差额没有事实身份：只放行数值，不调用派生锚点回调（无 token 可铸）。
     from smart_reporting.reporting.trace.numeric_text import replace_unregistered_numbers
 
     contents = [
@@ -2572,8 +2572,89 @@ def test_table_derived_without_fact_identity_stays_unanchored():
     markdown = replace_unregistered_numbers(
         "甲项目比乙项目多60.00万元。", contents, on_derived_anchor=collect
     )
-    assert seen == [None]
+    assert seen == []
     assert markdown == "甲项目比乙项目多60.00万元。"
+
+
+def test_existing_number_reference_prevents_second_derived_anchor():
+    from smart_reporting.reporting.trace.numeric_text import replace_unregistered_numbers
+
+    contents = [_metric_pair_document()]
+    seen = []
+    markdown = replace_unregistered_numbers(
+        "预算支出400.00元，实际支出150.00元，预算支出比实际支出多250.00元[[claim:existing]]。",
+        contents,
+        references={"existing": "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"},
+        on_derived_anchor=lambda entry, unit: seen.append((entry, unit)) or "[[claim:second]]",
+    )
+    assert markdown.endswith("250.00元[[claim:existing]]。")
+    assert seen == []
+
+
+def test_metric_pair_ambiguous_identity_keeps_value_without_reference():
+    from smart_reporting.reporting.trace.semantic_bindings import render_bound_numbers
+
+    document = json.loads(_metric_pair_document())
+    document["metrics"].append({
+        **document["metrics"][0], "factId": "fact-aaaaaaaaaaaaaaac",
+    })
+    markdown, references, notices = render_bound_numbers(
+        "2025年1月预算支出比实际支出多250.00元。", [json.dumps(document)], key="ambiguous"
+    )
+    assert markdown == "2025年1月预算支出比实际支出多250.00元。"
+    assert references == () and notices == ()
+
+
+@pytest.mark.parametrize("left,right,text,formula", [
+    (150, 400, "预算支出比实际支出少250.00元。", "(400) - (150)"),
+    (400, 150, "实际支出比预算支出少250.00元。", "(400) - (150)"),
+    (400, 150, "预算支出比实际支出多249.99元。", "(400) - (150)"),
+])
+def test_metric_pair_formula_matches_signed_or_corrected_display(left, right, text, formula):
+    from smart_reporting.reporting.trace.semantic_bindings import (
+        render_bound_numbers,
+        resolve_number_reference,
+    )
+
+    contents = [_metric_pair_document(left=left, right=right)]
+    markdown, references, notices = render_bound_numbers("2025年1月" + text, contents, key="direction")
+    assert "250.00元" in markdown and not notices
+    assert len(references) == 1
+    selected = resolve_number_reference(references[0].token, contents)
+    assert selected["formula"] == formula
+    assert selected["value"] == 250
+
+
+def test_normal_reference_does_not_build_derived_catalog(monkeypatch):
+    from smart_reporting.reporting.trace import semantic_bindings
+
+    def fail(_contents):
+        pytest.fail("ordinary value references must not enumerate derived candidates")
+
+    monkeypatch.setattr(semantic_bindings, "derived_number_values", fail)
+    resolver = semantic_bindings.NumberReferenceResolver([_metric_pair_document()])
+    assert resolver.resolve("{{value:fact-aaaaaaaaaaaaaaaa:total:元}}")["value"] == 400
+
+
+def test_metric_pair_ratio_full_render_retains_scope_and_period_roles():
+    from smart_reporting.reporting.trace.semantic_bindings import (
+        render_bound_numbers,
+        resolve_number_reference,
+    )
+
+    document = json.loads(_metric_pair_document())
+    for metric in document["metrics"]:
+        metric["scope"] = {"department": "全院"}
+    contents = [json.dumps(document)]
+    markdown, references, notices = render_bound_numbers(
+        "2025年1月实际支出相当于预算支出的37.50%。", contents, key="ratio-full"
+    )
+    assert markdown.endswith("37.50%。") and not notices
+    assert len(references) == 1
+    selected = resolve_number_reference(references[0].token, contents)
+    assert selected["formula"] == "(150) / (400) * 100"
+    assert selected["scope"] == selected["entry"]["scope"] == {"department": "全院"}
+    assert selected["period_roles"] == {"current": ("2025-01",)}
 
 
 def test_derived_reference_token_requires_pair_identity():
@@ -2589,10 +2670,44 @@ def test_derived_reference_token_requires_pair_identity():
     assert pairs
     tokens = [derived_reference_token(entry, unit) for unit, entry in pairs]
     assert all(tokens)
-    # 摘要覆盖 kind/单位/操作数值与期间：不同 kind、单位刻度、方向的 token 互不相同；
+    # 摘要覆盖 kind/单位/操作数顺序与期间：交换操作数身份后 token 必须不同，
+    # 解析端才能把“实际/预算”与“预算/实际”两个方向区分开。
+    unit, entry = pairs[0]
+    swapped = dataclass_replace(entry, fact_ids=tuple(reversed(entry.fact_ids)))
+    assert derived_reference_token(swapped, unit) != derived_reference_token(entry, unit)
+    # 摘要覆盖 kind/单位/操作数值与期间：不同 kind、单位刻度的 token 互不相同；
     # 同一事实对的登记（合计与逐期、正负符号）是语义重复，token 相同属预期。
     assert len(set(tokens)) >= 4
     assert all(len(token.split(":")) == 6 for token in tokens)
-    unit, entry = pairs[0]
     stripped = dataclass_replace(entry, fact_ids=())
     assert derived_reference_token(stripped, unit) is None
+
+
+def test_resolver_resolves_pr80_legacy_token_and_soft_degrades_on_rebuild_failure(monkeypatch):
+    import smart_reporting.reporting.trace.semantic_bindings as semantic_bindings
+    from smart_reporting.reporting.trace.numeric_text import derived_reference_token
+
+    # PR #80 首版 token（操作数 ID 排序、无顺序语义）：新解析端仍要继续可解析，
+    # 公式按现格式口径重算，旧 token 不因格式升级而失联。
+    contents = [_metric_pair_document()]
+    derived = semantic_bindings.derived_number_values(contents)
+    legacy_token = next(
+        derived_reference_token(entry, unit, legacy=True)
+        for unit, entry in derived.derived_entries()
+        if entry.fact_ids and entry.difference is not None and entry.value == 250
+    )
+    resolver = semantic_bindings.NumberReferenceResolver(contents)
+    selected = resolver.resolve(legacy_token)
+    assert selected is not None
+    assert selected["selector"] == "derivedDifference"
+    assert selected["formula"] == "(400) - (150)"
+    # 派生目录重建抛异常：按无法解析软降级，不让整次校验崩溃。
+    def explode(_contents):
+        raise RuntimeError("derived catalog rebuild failed")
+
+    monkeypatch.setattr(semantic_bindings, "derived_number_values", explode)
+    degraded = semantic_bindings.NumberReferenceResolver(contents)
+    assert degraded.resolve(legacy_token) is None
+    # 普通数值 token 不走派生重建路径，不受该故障影响。
+    ordinary = semantic_bindings.NumberReferenceResolver(contents)
+    assert ordinary.resolve("{{value:fact-aaaaaaaaaaaaaaaa:total:元}}")["value"] == 400

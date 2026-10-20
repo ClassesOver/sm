@@ -36,6 +36,7 @@ from smart_reporting.reporting.host_workspace import (
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.trace.contracts_v1 import (
     RevisionTraceIndexV1,
+    SubjectBindingV1,
     derive_resource_id,
 )
 from smart_reporting.reporting.trace.index_builder import build_csv_trace_index, encode_trace_index
@@ -131,7 +132,9 @@ def _identity(path: str, content: bytes, media_type: str) -> ArtifactFile:
     )
 
 
-async def _publication_fixture(tmp_path: Path, *, forged: str | None = None):
+async def _publication_fixture(
+    tmp_path: Path, *, forged: str | None = None, table_source: bool = False,
+):
     dependencies = {
         REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
             "externalRunId": "external-1",
@@ -152,12 +155,16 @@ async def _publication_fixture(tmp_path: Path, *, forged: str | None = None):
     workspace = ReportingWorkspaceRouter(registry)
     markdown = b"# Report\n"
     csv = b"period,revenue\n2025-09,1200\n"
+    table_bytes = b'{"tables":[["month","revenue"],["2025-09",1200]]}'
     files = {
         "reports/report.md": markdown,
         "datasets/input.csv": csv,
         "reports/report.pdf": b"%PDF-1.4 report",
         "reports/report.docx": b"PK report",
     }
+    table_source_path = "evidence/table.json"
+    if table_source:
+        files[table_source_path] = table_bytes
     for path, content in files.items():
         await workspace.awrite_bytes(scope.workspace_key, path, content)
     handle = DatasetHandle(
@@ -182,6 +189,37 @@ async def _publication_fixture(tmp_path: Path, *, forged: str | None = None):
         size=handle.size,
         sha256=handle.sha256,
     )
+    if table_source:
+        table_resource_id = derive_resource_id(table_source_path)
+        subject = SubjectBindingV1.model_validate({
+            "subjectId": "sub-" + "4" * 16,
+            "subjectKind": "text_claim",
+            "locator": {"sectionId": "section_001"},
+            "subjectSha256": hashlib.sha256(b"revenue is 1200").hexdigest(),
+            "claimId": "claim-table",
+            "factRefs": [],
+            "numberReference": {
+                "claimId": "claim-table",
+                "token": "{{value:table-0000000000000001:amount:万元}}",
+                "statementSha256": hashlib.sha256(b"revenue is 1200").hexdigest(),
+                "tableDerivation": {
+                    "unit": "万元",
+                    "operands": [{
+                        "fileResourceId": table_resource_id,
+                        "tablePointer": "/tables/0",
+                        "rowIndex": 0,
+                        "columnIndex": 1,
+                        "coefficient": "1",
+                    }],
+                },
+            },
+        })
+        table_source_identity = _identity(
+            table_source_path, table_bytes, "application/json"
+        )
+    else:
+        subject = None
+        table_source_identity = None
     index = build_csv_trace_index(
         handles=(handle,),
         lineage=(lineage,),
@@ -189,6 +227,8 @@ async def _publication_fixture(tmp_path: Path, *, forged: str | None = None):
         revision=1,
         workflow_run_id="workflow-run",
         markdown_file=_identity("reports/report.md", markdown, "text/markdown"),
+        table_source_files=() if table_source_identity is None else (table_source_identity,),
+        subject_bindings=() if subject is None else (subject,),
     )
     if forged is not None:
         payload = index.model_dump(mode="json", by_alias=True)
@@ -469,18 +509,33 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot"])
+@pytest.mark.parametrize("fault", [
+    "manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot",
+    "table_source_missing", "table_source_changed",
+])
 async def test_http_publication_never_blocks_links_on_lineage_faults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
 ) -> None:
     from smart_reporting.report_editor import trace_revisions
     from smart_reporting.reporting.workflow.runtime.base import merge_publication_issues
 
-    runtime, arguments, scope, durable, artifacts, grants, _, _ = await _publication_fixture(tmp_path)
+    table_source_fault = fault.startswith("table_source_")
+    runtime, arguments, scope, durable, artifacts, grants, files, index = await _publication_fixture(
+        tmp_path, table_source=table_source_fault,
+    )
     manifest_path = arguments["output"]["artifactManifest"]["path"]
     workspace = runtime.workspace_service
     original_read = workspace.read_limited_regular_file
-    if fault == "manifest_changed":
+    if table_source_fault:
+        source_path = "evidence/table.json"
+        source_id = derive_resource_id(source_path)
+        assert any(file.resource_id == source_id for file in index.files)
+        assert index.subject_bindings[0].number_reference.table_derivation.operands[0].file_resource_id == source_id
+        if fault == "table_source_missing":
+            await workspace.adelete_file(scope.workspace_key, source_path)
+        else:
+            await workspace.awrite_bytes(scope.workspace_key, source_path, b"{}", overwrite=True)
+    elif fault == "manifest_changed":
         await workspace.awrite_bytes(scope.workspace_key, manifest_path, b"{}", overwrite=True)
     elif fault in {"manifest_unreadable", "index_unreadable"}:
         target = manifest_path if fault == "manifest_unreadable" else "reports/trace-index-v1.json"
@@ -507,3 +562,12 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     assert context.artifact_manifest is None
     gate = merge_publication_issues({"formalReleaseAllowed": True, "issues": []}, result["publicationIssues"])
     assert gate["formalReleaseAllowed"] is False and gate["issues"] == result["publicationIssues"]
+    app = FastAPI()
+    app.include_router(create_report_download_router(
+        ReportDownloadHttpService(runtime.download_grants, artifacts)
+    ))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        for artifact, suffix in (("pdf", "pdf"), ("word", "docx")):
+            response = await client.get(result[artifact]["downloadUrl"])
+            assert response.status_code == 200
+            assert response.content == files[f"reports/report.{suffix}"]

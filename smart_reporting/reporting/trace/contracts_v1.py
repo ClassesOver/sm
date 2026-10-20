@@ -18,6 +18,7 @@ import json
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -499,6 +500,46 @@ class SubjectLocatorV1(StrictModel):
     chart_id: str | None = Field(default=None, alias="chartId", max_length=128)
 
 
+class TableOperandV1(StrictModel):
+    """登记 JSON 表格中一个单元格及其线性系数。"""
+
+    file_resource_id: str = Field(alias="fileResourceId", pattern=TRACE_RESOURCE_ID_PATTERN)
+    table_pointer: str = Field(alias="tablePointer")
+    row_index: int = Field(alias="rowIndex", ge=0)
+    column_index: int = Field(alias="columnIndex", ge=0)
+    coefficient: str = Field(max_length=64)
+
+    @field_validator("coefficient")
+    @classmethod
+    def _validate_coefficient(cls, value: str) -> str:
+        if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value):
+            raise ValueError("coefficient 必须是有限十进制数")
+        try:
+            number = Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError("coefficient 必须是有限十进制数") from exc
+        if not number.is_finite() or abs(number) > Decimal("1e9"):
+            raise ValueError("coefficient 必须是有限且绝对值不超过 1e9 的十进制数")
+        digits = number.as_tuple().digits
+        if len(digits) > 32:
+            raise ValueError("coefficient 精度不能超过 32 位")
+        if abs(number.as_tuple().exponent) > 1000 or abs(number.adjusted()) > 1000:
+            raise ValueError("coefficient 指数超过计算预算")
+        return value
+
+    @field_validator("table_pointer")
+    @classmethod
+    def _validate_pointer(cls, value: str) -> str:
+        return validate_json_pointer(value)
+
+
+class TableDerivationV1(StrictModel):
+    """从登记表格操作数重算正文数值，不依赖 analysis/fact 身份。"""
+
+    operands: tuple[TableOperandV1, ...] = Field(min_length=1, max_length=100)
+    unit: str = Field(max_length=64)
+
+
 class NumberReferenceV1(StrictModel):
     """服务端渲染的具体数值选择器；offset 仅用于首次装配插入稳定锚点。"""
     offset: int = Field(default=0, ge=0)
@@ -506,6 +547,7 @@ class NumberReferenceV1(StrictModel):
     token: str = Field(min_length=1, max_length=1000)
     statement_sha256: str = Field(alias="statementSha256", pattern=SHA256_PATTERN)
     display_text: str | None = Field(default=None, alias="displayText", max_length=4096)
+    table_derivation: TableDerivationV1 | None = Field(default=None, alias="tableDerivation")
 
 
 class ReviewNoticeV1(StrictModel):
@@ -564,7 +606,12 @@ class SubjectBindingV1(StrictModel):
         ):
             raise ValueError("具体数值引用必须属于同一个正文 claim")
         if not self.fact_refs and self.computation_id is None:
-            raise ValueError("subject 必须至少绑定 fact 或计算记录")
+            if not (
+                self.subject_kind == "text_claim"
+                and self.number_reference is not None
+                and self.number_reference.table_derivation is not None
+            ):
+                raise ValueError("subject 必须至少绑定 fact 或计算记录")
         return self
 
 
@@ -730,6 +777,7 @@ class RevisionTraceIndexV1(StrictModel):
             raise ValueError("subjectId 不能重复")
         known_tables = set(table_ids)
         known_charts = {c.chart_id for c in self.chart_traces}
+        files_by_id = {file.resource_id: file for file in self.files}
         for subject in self.subject_bindings:
             loc = subject.locator
             if loc.table_id is not None and loc.table_id not in known_tables:
@@ -738,6 +786,16 @@ class RevisionTraceIndexV1(StrictModel):
                 raise ValueError(f"subject 引用未登记图表: {subject.subject_id}")
             for ref in subject.fact_refs:
                 _check_fact_ref(ref)
+            number = subject.number_reference
+            if number is not None and number.table_derivation is not None:
+                for operand in number.table_derivation.operands:
+                    source = files_by_id.get(operand.file_resource_id)
+                    if source is None:
+                        raise ValueError(
+                            f"tableDerivation 引用未登记文件: {operand.file_resource_id}"
+                        )
+                    if source.media_type != "application/json":
+                        raise ValueError("tableDerivation 必须引用 application/json 文件")
             if subject.computation_id is not None and (
                 subject.computation_id not in computation_ids
             ):

@@ -321,6 +321,38 @@ def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
         build_claim_subject_bindings((unknown_artifact,), directory, resources) == ()
     )
 
+    from smart_reporting.reporting.trace.contracts_v1 import (
+        NumberReferenceV1,
+        TableDerivationV1,
+        TableOperandV1,
+    )
+
+    table_number = NumberReferenceV1(
+        claimId="claim-table",
+        token="table-value-token",
+        statementSha256="0" * 64,
+        tableDerivation=TableDerivationV1(
+            operands=(TableOperandV1(
+                fileResourceId=derive_resource_id("table.json"),
+                tablePointer="/tables/0",
+                rowIndex=0,
+                columnIndex=1,
+                coefficient="1",
+            ),),
+            unit="元",
+        ),
+    )
+    table_block = SimpleNamespace(number_references=(table_number,), review_notices=None)
+    table_artifact = SimpleNamespace(
+        section_code="section_004", blocks=(table_block,), claims=()
+    )
+    table_bindings = build_claim_subject_bindings(
+        (table_artifact,), {}, {}
+    )
+    assert len(table_bindings) == 1
+    assert table_bindings[0].claim_id == "claim-table"
+    assert table_bindings[0].fact_refs == ()
+
 
 # ---------------------------------------------------------------------------
 # Editor validate 端到端（索引 + [[claim:]] 标记）
@@ -635,6 +667,256 @@ async def _make_editor_with_subject(
     # 编辑器每次请求都会经 _restore 重新注册工作区；测试模拟该恢复。
     registry.resolve(scope)
     return editor, grants, context
+
+
+async def _make_editor_with_table_derivation(
+    tmp_path: Path, *, source_bytes: bytes | None = None, fault: str | None = None,
+    fact_ref_fault: str | None = None, claims: int = 1, include_ordinary: bool = False,
+):
+    from smart_reporting.reporting.trace.contracts_v1 import (
+        NumberReferenceV1,
+        TableDerivationV1,
+        TableOperandV1,
+    )
+    from smart_reporting.reporting.trace.index_builder import encode_trace_index
+    from smart_reporting.reporting.trace.semantic_bindings import statement_fingerprints
+    from smart_reporting.reporting.trace.table_sources import table_derivation_token
+
+    from .lineage_fixtures.manifest import register_trace_manifest
+
+    editor, _, context = await _make_editor_with_subject(
+        tmp_path, include_table=False, number_reference=include_ordinary,
+        period_table=include_ordinary,
+    )
+    index = await editor.trace.require_index(context)
+    ordinary = index.subject_bindings[0]
+    path = "reports/revision-1/table-source.json"
+    resource_id = derive_resource_id(path)
+    original = json.dumps({"tables": [{
+        "title": "收入", "columns": ["科室", "本期收入", "上期收入"],
+        "rows": [["财务科", 3600, 3000]],
+        "columnMeta": {"本期收入": {"unit": "万元"}, "上期收入": {"unit": "万元"}},
+        "periodStart": "2025-09", "periodEnd": "2025-09",
+        "scope": {"科室": "财务科"},
+    }]}, ensure_ascii=False).encode()
+    derivation = TableDerivationV1(operands=tuple(
+        TableOperandV1(fileResourceId=resource_id, tablePointer="/tables/0",
+                       rowIndex=0, columnIndex=column, coefficient=coefficient)
+        for column, coefficient in ((1, "1"), (2, "-1"))
+    ), unit="万元")
+    token = table_derivation_token(derivation, {resource_id: original})
+    assert token is not None
+    if fault == "unsupported_shape":
+        derivation = derivation.model_copy(update={"operands": derivation.operands[:1]})
+    elif fault == "bad_pointer":
+        derivation = derivation.model_copy(update={"operands": tuple(
+            operand.model_copy(update={"table_pointer": "/tables/99"})
+            for operand in derivation.operands
+        )})
+    elif fault == "token_mismatch":
+        token = "{{tableDerived:" + "0" * 64 + "}}"
+    refs = ()
+    if fact_ref_fault is not None:
+        changes = {
+            "valid": {}, "analysis": {"analysis_id": "analysis_001"},
+            "pointer": {"json_pointer": "/metrics/99"},
+            "kind": {"fact_kind": "comparison"}, "key": {"fact_key": "fact-" + "f" * 16},
+        }[fact_ref_fault]
+        refs = (ordinary.fact_refs[0].model_copy(update=changes),)
+    claim_ids = tuple(f"claim-table-{position}" for position in range(claims))
+    markdown = "\n\n".join(
+        f"2025年9月财务科收入差额600万元[[claim:{claim_id}]]。" for claim_id in claim_ids
+    )
+    if include_ordinary:
+        markdown += "\n\n" + (await editor.trace._read_registered_file(
+            context, next(file for file in index.files
+                          if file.resource_id == index.markdown_file_resource_id),
+            max_bytes=16 * 1024 * 1024,
+        )).decode()
+    fingerprints = statement_fingerprints(markdown, claim_ids)
+    bindings = tuple(ordinary.model_copy(update={
+        "subject_id": "sub-" + f"{position + 1:016x}", "claim_id": claim_id, "fact_refs": refs,
+        "number_reference": NumberReferenceV1(
+            claimId=claim_id, token=token, statementSha256=fingerprints[claim_id],
+            displayText="600万元", tableDerivation=derivation,
+        ),
+    }) for position, claim_id in enumerate(claim_ids))
+    source_bytes = original if source_bytes is None else source_bytes
+    await editor.workspace.awrite_bytes(context.scope["threadId"], path, source_bytes)
+    await editor.workspace.awrite_text(
+        context.scope["threadId"], context.markdown_path, markdown, overwrite=True,
+    )
+    if fact_ref_fault == "analysis":
+        fact_ref = ordinary.fact_refs[0]
+        fact_file = next(file for file in index.files if file.resource_id == fact_ref.file_resource_id)
+        fact_document = json.loads(await editor.trace._read_registered_file(
+            context, fact_file, max_bytes=16 * 1024 * 1024,
+        ))
+        fact_document["analysisId"] = "other_analysis"
+        fact_bytes = json.dumps(fact_document, ensure_ascii=False).encode()
+        await editor.workspace.awrite_bytes(context.scope["threadId"], fact_file.path, fact_bytes, overwrite=True)
+        index = index.model_copy(update={"files": tuple(
+            file.model_copy(update={"size": len(fact_bytes), "sha256": hashlib.sha256(fact_bytes).hexdigest()})
+            if file.resource_id == fact_file.resource_id else file for file in index.files
+        )})
+    files = tuple(file.model_copy(update={
+        "size": len(markdown.encode()), "sha256": hashlib.sha256(markdown.encode()).hexdigest(),
+    }) if file.resource_id == index.markdown_file_resource_id else file for file in index.files)
+    index = index.model_copy(update={
+        "files": (*files, TraceFileRefV1(
+            resourceId=resource_id, path=path, mediaType="application/json",
+            size=len(source_bytes), sha256=hashlib.sha256(source_bytes).hexdigest(),
+        )),
+        "subject_bindings": (*bindings, ordinary) if include_ordinary else bindings,
+    })
+    await editor.workspace.awrite_bytes(
+        context.scope["threadId"], "reports/revision-1/trace-index-v1.json",
+        encode_trace_index(index), overwrite=True,
+    )
+    manifest = await register_trace_manifest(
+        editor.workspace, context.scope["threadId"], index, overwrite=True,
+    )
+    return editor, context.model_copy(update={"artifact_manifest": manifest}), markdown, path
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_validate_table_only_derivation_uses_frozen_source_metadata(tmp_path):
+    editor, context, markdown, _ = await _make_editor_with_table_derivation(tmp_path)
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["summary"] == {"valid": 1, "stale": 0, "unbound": 0}
+    subject = result["subjects"][0]
+    assert subject["factValue"] == 600
+    assert subject["restoreText"] == "600万元"
+    assert subject["unit"] == "万元"
+    assert subject["periods"] == ["2025-09"]
+    assert subject["scope"] == {"科室": "财务科"}
+    assert subject["formula"] == "(3600) * (1) + (3000) * (-1)"
+    assert subject["datasetIds"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize(("change", "expected"), [
+    ("value", "stale"), ("statement", "stale"),
+    ("missing_marker", "unbound"), ("duplicate_marker", "unbound"),
+])
+async def test_validate_table_derivation_tracks_draft_changes(tmp_path, change, expected):
+    editor, context, markdown, _ = await _make_editor_with_table_derivation(tmp_path)
+    draft = {
+        "value": markdown.replace("600", "700"),
+        "statement": markdown.replace("收入差额", "收入差额合计"),
+        "missing_marker": markdown.replace("[[claim:claim-table-0]]", ""),
+        "duplicate_marker": markdown + "\n\n" + markdown,
+    }[change]
+    result = await editor.trace.validate(context, draft, hashlib.sha256(draft.encode()).hexdigest())
+    assert result["subjects"][0]["status"] == expected
+    assert result["subjects"][0]["factValue"] == 600
+    assert result["subjects"][0]["restoreText"] == "600万元"
+    if change == "statement":
+        assert result["subjects"][0]["comparable"] is False
+        assert any("陈述已修改" in warning for warning in result["subjects"][0]["warnings"])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("fault", [
+    "unsupported_shape", "bad_pointer", "token_mismatch", "malformed_json", "resolver_exception",
+])
+async def test_validate_table_resolution_failures_are_unbound(tmp_path, monkeypatch, fault):
+    from smart_reporting.reporting.trace import table_sources
+
+    editor, context, markdown, _ = await _make_editor_with_table_derivation(
+        tmp_path, fault=fault, source_bytes=b"{broken-json" if fault == "malformed_json" else None,
+    )
+    if fault == "resolver_exception":
+        def fail(*_args):
+            raise RuntimeError("resolver unavailable")
+        monkeypatch.setattr(table_sources, "resolve_table_derivation", fail)
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["summary"] == {"valid": 0, "stale": 0, "unbound": 1}
+    assert result["subjects"][0]["factValue"] is None
+    assert result["subjects"][0]["restoreText"] is None
+    assert result["subjects"][0]["warnings"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("fault", ["missing", "size", "hash"])
+async def test_validate_table_source_integrity_failure_is_not_softened(tmp_path, monkeypatch, fault):
+    from smart_reporting.reporting.trace import table_sources
+
+    editor, context, markdown, path = await _make_editor_with_table_derivation(tmp_path)
+    def unexpected_resolve(*_args):
+        pytest.fail("unverified source reached the resolver")
+    monkeypatch.setattr(table_sources, "resolve_table_derivation", unexpected_resolve)
+    if fault == "missing":
+        await editor.workspace.adelete_file(context.scope["threadId"], path)
+    else:
+        raw = await editor.workspace.read_limited_regular_file(
+            context.scope["threadId"], path, max_bytes=16 * 1024 * 1024,
+        )
+        changed = b"{}" if fault == "size" else raw.replace(b"3600", b"9999")
+        await editor.workspace.awrite_bytes(context.scope["threadId"], path, changed, overwrite=True)
+    with pytest.raises(ReportingError) as error:
+        await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert error.value.code == "snapshot_integrity_failed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("fact_ref_fault", ["valid", "analysis", "pointer", "kind", "key"])
+async def test_validate_table_derivation_checks_accompanying_fact_refs(tmp_path, fact_ref_fault):
+    editor, context, markdown, _ = await _make_editor_with_table_derivation(
+        tmp_path, fact_ref_fault=fact_ref_fault,
+    )
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["subjects"][0]["status"] == ("valid" if fact_ref_fault == "valid" else "unbound")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_validate_table_sources_cached_per_request_off_thread_and_not_fact_batched(tmp_path, monkeypatch):
+    import threading
+
+    from smart_reporting.reporting.trace import semantic_bindings, table_sources
+
+    editor, context, markdown, path = await _make_editor_with_table_derivation(
+        tmp_path, claims=2, include_ordinary=True,
+    )
+    source_reads = []
+    resolver_threads = []
+    batches = []
+    original_read = editor.workspace.read_limited_regular_file
+    original_table_resolve = table_sources.resolve_table_derivation
+    original_fact_resolve = semantic_bindings.resolve_number_references
+    async def read(*args, **kwargs):
+        if args[1] == path:
+            source_reads.append(args[1])
+        return await original_read(*args, **kwargs)
+    def table_resolve(*args):
+        resolver_threads.append(threading.get_ident())
+        return original_table_resolve(*args)
+    def fact_resolve(tokens, sources):
+        batches.append(set(tokens))
+        return original_fact_resolve(tokens, sources)
+    monkeypatch.setattr(editor.workspace, "read_limited_regular_file", read)
+    monkeypatch.setattr(table_sources, "resolve_table_derivation", table_resolve)
+    monkeypatch.setattr(semantic_bindings, "resolve_number_references", fact_resolve)
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["summary"] == {"valid": 3, "stale": 0, "unbound": 0}
+    assert source_reads == [path]
+    assert len(resolver_threads) == 2
+    assert all(thread != threading.get_ident() for thread in resolver_threads)
+    assert len(batches) == 1
+    assert len(batches[0]) == 1
+    assert all("tableDerived" not in token for token in batches[0])
+    # A new validation must verify the file again, not reuse a previous request's bytes.
+    await editor.workspace.awrite_bytes(context.scope["threadId"], path, b"{}", overwrite=True)
+    with pytest.raises(ReportingError) as error:
+        await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert error.value.code == "snapshot_integrity_failed"
+    assert source_reads == [path, path]
 
 
 @pytest.mark.anyio

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from typing import Any, NamedTuple
+
+from loguru import logger
 
 from ..hospital_operation.deterministic_analysis import (
     DeterministicMetricFact,
     _aligned_comparison_values,
 )
-from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1
+from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1, TableDerivationV1
 from .fact_index import fact_binding_records, merge_binding_records, merge_frozen_fact
 from .numeric_text import (
     _NUMBER,
@@ -32,6 +34,7 @@ from .numeric_text import (
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
+from .table_sources import resolve_table_derivation
 
 
 def reference_fact_ids(token: str) -> tuple[str, ...]:
@@ -99,8 +102,13 @@ def bound_number_display(
     return BoundNumberDisplay(shown["display"], shown.start("display"), verified)
 
 
-def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions=None):
+def render_bound_numbers(
+    markdown: str, contents, *, key: str, field_definitions=None,
+    table_sources: Mapping[str, bytes] | None = None,
+):
     contents = tuple(contents)
+    table_sources = table_sources or {}
+    table_derivations: dict[str, TableDerivationV1] = {}
     from .number_selection import align_number_selections
 
     markdown, _ = align_number_selections(markdown, contents, field_definitions)
@@ -136,11 +144,11 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
     )
 
     def derived_anchor(entry: Any, unit: str) -> str:
-        # 事实对派生核对通过：与 {{value:}} 渲染同一签发路径铸引用；无 token（表内派生）
-        # 返回空串维持只放行。已在句中锚定的数字不再叠加第二个锚点（调用处已保证唯一）。
         token = derived_reference_token(entry, unit)
         if token is None:
             return ""
+        if entry.table_derivation is not None:
+            table_derivations[token] = entry.table_derivation
         claim_id = identity("number")
         references.append((claim_id, token))
         return f"[[claim:{claim_id}]]"
@@ -158,6 +166,7 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
                 on_unverified=lambda original: notice("numeric_unverified", original_text=original),
                 references=dict(references),
                 on_derived_anchor=derived_anchor,
+                table_sources=table_sources,
             )
         )
     )
@@ -168,7 +177,11 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
         position = markdown.find(marker)
         if position < 0:
             continue
-        selected = resolver.resolve(token)
+        table_derivation = table_derivations.get(token)
+        selected = (
+            resolve_table_derivation(token, table_derivation, table_sources)
+            if table_derivation is not None else resolver.resolve(token)
+        )
         shown = bound_number_display(markdown, claim_id, selected)
         if shown is None:
             # 数值可能已被下游替换为待核实，不能为占位继续签发原数值引用。
@@ -189,6 +202,7 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
                 token=token,
                 statementSha256=statement_fingerprint(markdown, claim_id),
                 displayText=display_text,
+                tableDerivation=table_derivation,
             )
         )
     # 后续引用撤销会改变同句文字，指纹必须在最终正文上统一冻结。
@@ -272,26 +286,67 @@ class NumberReferenceResolver:
                         else:
                             fact = merged
                     self.entries[key] = fact
-        # 派生引用 token 以内容寻址摘要唯一；按同一 contents 重建登记后精确匹配，
-        # 不做文法反解，摘要冲突时宁可不解析。
-        self._derived: dict[str, tuple[Any, str]] = {}
-        for unit, entry in derived_number_values(contents).derived_entries():
-            token = derived_reference_token(entry, unit)
-            if token is not None and token not in self._derived:
-                self._derived[token] = (entry, unit)
+        self._contents = contents
+        self._derived: dict[str, tuple[Any, str]] | None = None
+        self._legacy_derived: dict[str, tuple[Any, str]] | None = None
+
+    def _derived_entries(self, *, legacy: bool = False) -> dict[str, tuple[Any, str]]:
+        if self._derived is None:
+            derived: dict[str, tuple[Any, str]] = {}
+            legacy_derived: dict[str, tuple[Any, str]] = {}
+            views: dict[str, dict[str, Any] | None] = {}
+            conflicts = set()
+            try:
+                # 两种格式共享一次枚举和冲突检查，不能按格式优先级隐藏同 token 的不同语义。
+                for unit, entry in derived_number_values(self._contents).derived_entries():
+                    for is_legacy, catalog in ((False, derived), (True, legacy_derived)):
+                        token = derived_reference_token(entry, unit, legacy=is_legacy)
+                        if token is None:
+                            continue
+                        view = derived_reference_resolution(entry, unit, self.entries)
+                        if token in views and views[token] != view:
+                            conflicts.add(token)
+                        else:
+                            views[token] = view
+                            catalog[token] = (entry, unit)
+                derived = {token: value for token, value in derived.items() if token not in conflicts}
+                legacy_derived = {
+                    token: value for token, value in legacy_derived.items() if token not in conflicts
+                }
+            except Exception as error:
+                # 枚举中途失败也不能使用部分目录；空结果在本次请求内缓存，避免逐 token 重试。
+                derived = {}
+                legacy_derived = {}
+                logger.warning("number_reference_derived_catalog_failed error={}", error)
+            self._derived = derived
+            self._legacy_derived = legacy_derived
+        return self._legacy_derived if legacy else self._derived
 
     def resolve(self, token: str) -> dict[str, Any] | None:
+        try:
+            return self._resolve(token)
+        except Exception:
+            # 派生目录重建只服务软校验；来源损坏时按无法解析降级，不阻断整次校验。
+            logger.warning("number_reference_resolve_failed token={}", token)
+            return None
+
+    def _resolve(self, token: str) -> dict[str, Any] | None:
         if token.startswith("{{derived:"):
-            matched = self._derived.get(token)
+            ids = reference_fact_ids(token)
+            # 兼容按操作数身份排序的旧格式，再匹配保留操作数顺序的现格式。
+            matched = self._derived_entries(legacy=True).get(token)
+            legacy = matched is not None
+            if matched is None:
+                matched = self._derived_entries().get(token)
             if matched is None:
                 return None
             entry, unit = matched
-            ids = [
-                key
-                for key in reference_fact_ids(token)
-                if key not in self.conflicts and key in self.entries
-            ]
-            if len(ids) < 2:
+            if (
+                len(ids) != 2
+                or any(key in self.conflicts or key not in self.entries for key in ids)
+                or set(ids) != set(entry.fact_ids)
+                or (legacy and ids != tuple(sorted(entry.fact_ids)))
+            ):
                 return None
             return derived_reference_resolution(entry, unit, self.entries)
         matches = self.numbers.get(token, ())

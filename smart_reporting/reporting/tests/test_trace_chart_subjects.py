@@ -179,10 +179,11 @@ async def test_trace_index_drops_rejected_computation_records_instead_of_failing
 ) -> None:
     """补充分析计算层只是追溯元数据：契约拒收时不登记该层，索引与报告照常生成。"""
     from smart_reporting.reporting.trace.contracts_v1 import RevisionTraceIndexV1
+    from smart_reporting.reporting.workflow.checkpoint import FileIdentity
     from smart_reporting.reporting.workflow.runtime.publication import RuntimePublicationMixin
 
     from .test_trace_computation_service import _record
-    from .test_trace_index_builder import _handle, _lineage
+    from .test_trace_index_builder import TABLE_SOURCE, _handle, _lineage, _table_subject
 
     editor, _grants, workspace = await _make_editor(tmp_path)
     await editor.read_document(_context())
@@ -212,6 +213,8 @@ async def test_trace_index_drops_rejected_computation_records_instead_of_failing
         revision=1,
         run_context=SimpleNamespace(run_id="report-1"),
         computations=(_record(),),
+        table_source_files=(FileIdentity(**TABLE_SOURCE),),
+        subject_bindings=(_table_subject(),),
     )
 
     content = await workspace.read_limited_regular_file(
@@ -220,3 +223,6 @@ async def test_trace_index_drops_rejected_computation_records_instead_of_failing
     published = RevisionTraceIndexV1.model_validate_json(content)
     assert published.computations == ()
     assert [item.dataset_id for item in published.datasets] == ["dataset-url-abc0001"]
+    source_id = _table_subject().number_reference.table_derivation.operands[0].file_resource_id
+    assert source_id in {item.resource_id for item in published.files}
+    assert published.subject_bindings == (_table_subject(),)

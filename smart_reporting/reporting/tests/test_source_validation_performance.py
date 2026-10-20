@@ -100,6 +100,110 @@ def test_batch_number_resolution_expands_source_once_and_rejects_conflicts(monke
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_editor_validation_softens_derived_rebuild_failure(tmp_path, monkeypatch):
+    import json
+
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.reporting.trace import semantic_bindings
+    from smart_reporting.reporting.trace.index_builder import encode_trace_index
+
+    from .lineage_fixtures.manifest import register_trace_manifest
+
+    editor, _, context = await _make_editor_with_subject(tmp_path, include_table=False)
+    index = await editor.trace.require_index(context)
+    original = index.subject_bindings[0]
+    source_id = original.fact_refs[0].file_resource_id
+    source = next(file for file in index.files if file.resource_id == source_id)
+    thread_id = context.scope['threadId']
+    document = json.loads(await editor.workspace.aread_text(thread_id, source.path))
+    metric = document['metrics'][0]
+    metric.update(
+        field='budget_amount', fieldRef='hospital.budget', displayName='预算支出',
+        metricCodes=['budget_amount'], formula='sum(budget_amount)', total=400, unit='元',
+        periodValues=[{'period': '2025-09', 'value': 400}],
+    )
+    document['metrics'].append({
+        **metric, 'factId': 'fact-bbbbbbbbbbbbbbbb', 'field': 'actual_amount',
+        'fieldRef': 'hospital.actual', 'displayName': '实际支出',
+        'metricCodes': ['actual_amount'], 'formula': 'sum(actual_amount)', 'total': 150,
+        'periodValues': [{'period': '2025-09', 'value': 150}],
+    })
+    raw = json.dumps(document, ensure_ascii=False).encode()
+    # 先从真实双事实签发派生引用；故障仅在编辑器重新构建目录时注入。
+    markdown, references, notices = semantic_bindings.render_bound_numbers(
+        '2025年9月预算支出400.00元，实际支出150.00元，预算支出比实际支出多250.00元。\n\n'
+        '2025年9月预算支出{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。',
+        [raw.decode()], key='editor-derived-failure',
+    )
+    assert not notices
+    assert len(references) == 2
+    derived = next(ref for ref in references if ref.token.startswith('{{derived:'))
+    ordinary = next(ref for ref in references if ref.token.startswith('{{value:'))
+    assert set(semantic_bindings.reference_fact_ids(derived.token)) == {
+        'fact-aaaaaaaaaaaaaaaa', 'fact-bbbbbbbbbbbbbbbb',
+    }
+    markdown = semantic_bindings.anchor_bound_numbers(markdown, references)
+    fact_refs = {
+        metric['factId']: original.fact_refs[0].model_copy(update={
+            'json_pointer': f'/metrics/{position}', 'fact_key': metric['factId'],
+        })
+        for position, metric in enumerate(document['metrics'])
+    }
+    bindings = tuple(original.model_copy(update={
+        'subject_id': f'sub-{position:016x}', 'claim_id': reference.claim_id,
+        'number_reference': reference,
+        'fact_refs': tuple(fact_refs[key] for key in semantic_bindings.reference_fact_ids(reference.token)),
+    }) for position, reference in enumerate(references))
+    markdown_bytes = markdown.encode()
+    digest = hashlib.sha256(markdown_bytes).hexdigest()
+    files = tuple(file.model_copy(update={
+        'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
+    }) if file.resource_id == source_id else file.model_copy(update={
+        'size': len(markdown_bytes), 'sha256': digest,
+    }) if file.resource_id == index.markdown_file_resource_id else file for file in index.files)
+    index = index.model_copy(update={'files': files, 'subject_bindings': bindings})
+    await editor.workspace.awrite_bytes(thread_id, source.path, raw, overwrite=True)
+    await editor.workspace.awrite_bytes(
+        thread_id, context.markdown_path, markdown_bytes, overwrite=True,
+    )
+    await editor.workspace.awrite_bytes(
+        thread_id, 'reports/revision-1/trace-index-v1.json', encode_trace_index(index), overwrite=True,
+    )
+    manifest = await register_trace_manifest(editor.workspace, thread_id, index, overwrite=True)
+    context = context.model_copy(update={'artifact_manifest': manifest})
+    baseline = await editor.trace.validate(context, markdown, digest)
+    assert baseline['summary'] == {'valid': 2, 'stale': 0, 'unbound': 0}
+    assert {item['claimId']: item['factValue'] for item in baseline['subjects']} == {
+        derived.claim_id: 250, ordinary.claim_id: 400,
+    }
+    rebuilds = []
+
+    def fail_rebuild(contents):
+        rebuilds.append(contents)
+        raise RuntimeError('injected derived directory rebuild failure')
+
+    monkeypatch.setattr(semantic_bindings, 'derived_number_values', fail_rebuild)
+    result = await editor.trace.validate(context, markdown, digest)
+    assert rebuilds
+    assert result['summary'] == {'valid': 1, 'stale': 0, 'unbound': 1}
+    subjects = {item['claimId']: item for item in result['subjects']}
+    assert subjects[ordinary.claim_id]['status'] == 'valid'
+    assert subjects[ordinary.claim_id]['factValue'] == 400
+    assert subjects[derived.claim_id]['status'] == 'unbound'
+    assert subjects[derived.claim_id]['factValue'] is None
+    assert subjects[derived.claim_id]['restoreText'] is None
+    assert '具体数值引用无法从登记事实重算。' in subjects[derived.claim_id]['warnings']
+    # 派生故障降级不能掩盖冻结文件被篡改，即使文件长度没有变化。
+    tampered = raw.replace(b'400', b'401')
+    assert tampered != raw and len(tampered) == len(raw)
+    await editor.workspace.awrite_bytes(thread_id, source.path, tampered, overwrite=True)
+    with pytest.raises(ReportingError) as error:
+        await editor.trace.validate(context, markdown, digest)
+    assert error.value.code == 'snapshot_integrity_failed'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
 async def test_content_review_does_not_block_other_async_requests(tmp_path, monkeypatch):
     import asyncio
     import threading
