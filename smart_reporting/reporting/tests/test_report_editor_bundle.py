@@ -38,7 +38,8 @@ async def bundle_fixture(tmp_path, *, capabilities=None, extra=None):
     context = context.model_copy(update={"job": {**context.job, "render": {
         "pdf": identities["reports/revision-1/report.pdf"],
         "word": identities["reports/revision-1/report.docx"],
-    }, "validation": {"ok": False, "issues": [{"code": "semantic_warning"}]}}})
+    }, "files": list(identities.values()),
+        "validation": {"ok": False, "issues": [{"code": "semantic_warning"}]}}})
     state.payload["reportEditorContexts"]["1"] = context.model_dump(mode="json", by_alias=True)
     state.payload["workflowCheckpoint"] = {"files": list(identities.values())}
     # 同一工作区中的未登记文件不属于报告导出范围。
@@ -88,6 +89,31 @@ async def test_bundle_contains_all_registered_artifacts_despite_validation_warni
         assert metadata["revision"] == 1
         assert metadata["validation"]["ok"] is False
     assert editor._source_lifecycle_locks == {}
+
+
+@pytest.mark.parametrize('checkpoint_revision', [None, 1, 2])
+@pytest.mark.parametrize('checkpoint_file', ['foreign', 'missing', 'conflicting'])
+async def test_bundle_uses_revision_snapshot_instead_of_live_checkpoint(
+    tmp_path, checkpoint_revision, checkpoint_file,
+):
+    editor, context, raw, app = await bundle_fixture(tmp_path)
+    path = 'reports/revision-2/new-analysis.json'
+    content = b'{"revision":2}'
+    identity = {'path': path, 'size': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
+    if checkpoint_file == 'foreign':
+        await editor.workspace.awrite_bytes(context.scope['threadId'], path, content)
+    elif checkpoint_file == 'conflicting':
+        identity = {**context.job['render']['pdf'], 'sha256': 'f' * 64}
+    state = await editor.state_repository.get(context.workflow_run_id)
+    state.payload['workflowCheckpoint'] = {'revision': checkpoint_revision, 'files': [identity]}
+
+    result = await fetch(app, raw)
+    assert result.status_code == 200, result.text
+    with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
+        assert path not in archive.namelist()
+        assert archive.read('reports/revision-1/report.pdf') == b'%PDF-test'
+        assert 'analysis/plan.json' in archive.namelist()
+        assert CSV_PATH in archive.namelist()
 
 
 @pytest.mark.parametrize("capabilities", [{}, {"download_original": False},

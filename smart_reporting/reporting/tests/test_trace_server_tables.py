@@ -708,7 +708,7 @@ async def test_chart_caption_numbers_are_verified_against_registered_facts() -> 
         deterministic_fact_files={"analysis_001": fact_file},
         evidence_manifest=SimpleNamespace(evidence=(
             SimpleNamespace(evidence_files=(fact_file, evidence_file, table_file, binary_file)),
-        )),
+        ), charts=()),
     )
     harness = _Harness({
         fact_file.path: facts, evidence_file.path: evidence,
