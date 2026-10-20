@@ -418,26 +418,41 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     # 分组占比两两相减组合多、取整后易凑上变化率：判断“变化率误写为百分点”时不作依据。
     shares = registered_group_shares(contents)
     rate_level_percents = [value for value in percents if value not in shares]
-    if points or pairwise:
-        for match in RATE_AS_PERCENT_POINT.finditer(text):
-            number = Decimal(match[1])
-            quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
-            if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points):
-                continue
-            if percent_point_written_for_rate(match, text, change_rates, points, rate_level_percents):
+    for match in RATE_AS_PERCENT_POINT.finditer(text):
+        number = Decimal(match[1].replace(",", ""))
+        quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
+        if NEUTRAL_DIFFERENCE_PREFIX.search(text[max(0, match.start() - 12):match.start()]):
+            # 中性百分点差额不能借用全局百分点或任意两项百分数，须绑定当前引用或操作数。
+            supported = derived.supports(
+                number, PERCENT_POINT, quantum, _paragraph_at(text, match.start()),
+                statement=_statement_at(text, match.start()),
+                claim=re.split(r'[。！？；;\n]', text[:match.end()])[-1],
+            ) or referenced_difference_matches(number_references.get(match.end()), catalog, number, PERCENT_POINT)
+            if not supported:
                 warnings.append(
-                    f"变化率单位误用：{match[0]}对应已登记的变化率{match[1]}%，应写作“{match[1]}%”；"
-                    "百分点只用于两项百分数之差。"
+                    f"百分点差值缺少可核对的冻结依据：{match[0]}。请使用对应差额引用，"
+                    "或写出参与计算的两项百分数对象。"
                 )
-                continue
-            if pairwise and not any(
-                abs(left - right).quantize(quantum, rounding=ROUND_HALF_UP) == number
-                for index, left in enumerate(percents) for right in percents[index + 1:]
-            ):
-                warnings.append(
-                    f"百分点差值缺少可核对的冻结依据：{match[0]}。须由两项已登记百分数相减得到，"
-                    "请写出两项百分数或删去该差值。"
-                )
+            continue
+        number = abs(number)
+        if not points and not pairwise:
+            continue
+        if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points):
+            continue
+        if percent_point_written_for_rate(match, text, change_rates, points, rate_level_percents):
+            warnings.append(
+                f"变化率单位误用：{match[0]}对应已登记的变化率{match[1]}%，应写作“{match[1]}%”；"
+                "百分点只用于两项百分数之差。"
+            )
+            continue
+        if pairwise and not any(
+            abs(left - right).quantize(quantum, rounding=ROUND_HALF_UP) == number
+            for index, left in enumerate(percents) for right in percents[index + 1:]
+        ):
+            warnings.append(
+                f"百分点差值缺少可核对的冻结依据：{match[0]}。须由两项已登记百分数相减得到，"
+                "请写出两项百分数或删去该差值。"
+            )
     warnings.extend(_year_label_warnings(text, contents))
     # 同比/环比口径混淆：数值本身已登记，但只对应另一种比较口径的变化率。
     rates: dict[str, set[Decimal]] = {"yoy": set(), "mom": set()}

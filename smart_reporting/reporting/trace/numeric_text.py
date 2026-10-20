@@ -1167,14 +1167,15 @@ def _derive_from_table(derived: DerivedNumbers, labels: list[str | None],
                       if other_unit == unit or other_unit in (_unit_scales(unit) or {}))
         if len(numbers) < 2:
             continue
-        # 两个百分数之差是百分点，不是百分数；占比列只补算降序前 N 项合计。
+        # 两个百分数之差以百分点补算，仍绑定行名和列名；占比合计保留百分数单位。
         # 两两差额随行数平方增长，只在小表补算；前 N 项合计只需一次排序，长表（科室、预算单元明细）
         # 也补算前 10 项，“预算端前五个单元合计94.08%”不再因表长被判为无依据。
-        if unit != "%" and len(numbers) <= _DERIVED_ROW_LIMIT:
+        if len(numbers) <= _DERIVED_ROW_LIMIT:
             for position, (left_label, left) in enumerate(zip(labels, numbers, strict=True)):
                 for right_label, right in zip(labels[position + 1:], numbers[position + 1:], strict=True):
                     if left_label and right_label:
-                        derived.add(unit, left - right, _operand_names(left_label, right_label),
+                        derived.add(PERCENT_POINT if unit == "%" else unit,
+                                    left - right, _operand_names(left_label, right_label),
                                     column=column, peer_columns=peers)
         # 补证表常带“合计”行：它不是分项，参与排序会让“前两项合计”变成合计行加首项。
         # 行名取该行全部文本单元格（编码与名称），正文写“财务处”也能对上“RJ008.01 / 财务处”。
@@ -1195,13 +1196,14 @@ def _derive_from_table(derived: DerivedNumbers, labels: list[str | None],
     items = list(columns.items())
     for position, (left_name, (unit, left)) in enumerate(items):
         for right_name, (right_unit, right) in items[position + 1:]:
-            if unit == "%" or right_unit != unit or len(left) > _DERIVED_ROW_LIMIT:
+            if right_unit != unit or len(left) > _DERIVED_ROW_LIMIT:
                 continue
             operands = _operand_names(left_name, right_name)
             for label, a, b in zip(labels, left, right, strict=True):
                 if label:
-                    derived.add(unit, a - b, ((label,), *operands))
-            derived.add(unit, sum(left) - sum(right), operands)
+                    derived.add(PERCENT_POINT if unit == "%" else unit, a - b, ((label,), *operands))
+            if unit != "%":  # 百分数水平不能跨行求和后再比较。
+                derived.add(unit, sum(left) - sum(right), operands)
 
 
 def _short_name(fact: Any) -> str | None:
@@ -1519,7 +1521,7 @@ MULTIPLE_NUMBER = re.compile(r"(?<![\d.,+-])(?P<number>[+-]?\d+(?:\.\d+)?)\s*倍
 
 # “同比增长11.00个百分点”：变化率写成了百分点。占比、比重、比例或“率”的变化本来就以百分点计，
 # 这类分句不改写。
-RATE_AS_PERCENT_POINT = re.compile(r"(?<![\d.,])(?P<number>\d+(?:\.\d+)?)\s*个?百分点")
+RATE_AS_PERCENT_POINT = re.compile(rf"(?<![\d.,])(?P<number>{_NUMBER})\s*个?百分点")
 _PERCENT_POINT_SUBJECT = re.compile(r"占比|比重|比例|构成|率|增速|增幅|降幅|涨幅|跌幅")
 
 
@@ -1543,7 +1545,7 @@ def percent_point_written_for_rate(
     clause = re.split(r"[。；，\n]", text[:match.start()])[-1]
     if _PERCENT_POINT_SUBJECT.search(clause):
         return False
-    number = Decimal(match["number"])
+    number = abs(Decimal(match["number"].replace(",", "")))
     quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
 
     def shown(values: Iterable[Decimal]) -> bool:
@@ -1768,10 +1770,16 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         markdown = markdown[:start] + cell + markdown[end:]
 
     def replace(match: re.Match[str]) -> str:
+        unit = match["unit"]
+        prefix = markdown[max(0, match.start() - 12):match.start()]
+        if unit in {PERCENT_POINT, "百分点"}:
+            # 非中性百分点仍交给后续变化率单位纠正；中性差额与金额共用当前引用/操作数校验。
+            if not NEUTRAL_DIFFERENCE_PREFIX.search(prefix):
+                return match[0]
+            unit = PERCENT_POINT
         # 只使用调用方提供的服务端锚点映射；正文自行书写的 claim 标记不能建立数值身份。
         reference = reference_at(markdown[match.end():])
-        verdict, written = verify(match["number"], match["unit"],
-                                  markdown[max(0, match.start() - 12):match.start()],
+        verdict, written = verify(match["number"], unit, prefix,
                                   _paragraph_at(markdown, match.start()), _statement_at(markdown, match.start()),
                                   re.split(r'[。！？；;\n]', markdown[:match.end()])[-1], reference)
         if verdict in {"registered", "corrected"}:
@@ -1780,7 +1788,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
 
     replaced = re.sub(
         r"(?<![\d.,])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
-        rf"(?P<unit>{REPORT_VALUE_UNIT_PATTERN})",
+        rf"(?P<unit>个?百分点|{REPORT_VALUE_UNIT_PATTERN})",
         replace,
         markdown,
     )
