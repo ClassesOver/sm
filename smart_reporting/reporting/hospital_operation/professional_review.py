@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import Literal
 
 ReviewStage = Literal["analysis", "outline", "draft"]
-PROFESSIONAL_REVIEW_VERSION = "1"
+PROFESSIONAL_REVIEW_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -175,6 +175,19 @@ def _affirmed(pattern: str, text: str) -> bool:
     return any(not _NEGATED.search(text[:match.start()]) for match in re.finditer(pattern, text))
 
 
+def _unqualified_inference(pattern: str, text: str, qualifications: str) -> bool:
+    """Unrelated limitations must not suppress a separate unsupported inference."""
+    governing_negation = re.compile(
+        r"(?:不能|不得|不可|不宜|无法|不足以|不应|不支持)"
+        r"(?:仅|只|单独)?(?:据此|根据|基于|凭借|通过|利用|使用|用|以|凭|把|将|从)?\s*$"
+    )
+    return any(
+        not re.search(qualifications, match[0])
+        and not governing_negation.search(text[:match.start()])
+        for match in re.finditer(pattern, text)
+    )
+
+
 def review_professional_content(markdown: str) -> tuple[ProfessionalReviewIssue, ...]:
     """Finite diagnostics only: never rewrites values, certifies truth or gates downloads."""
     from ..trace.markdown_body import trace_body
@@ -217,13 +230,16 @@ def review_professional_content(markdown: str) -> tuple[ProfessionalReviewIssue,
                 and _affirmed(r"(?:因此|所以|据此|说明|表明).{0,15}(?:期末余额|存量|取(?:最新|期末))", clause)):
             warn("professional_constant_budget_as_stock", "budget_policy",
                  "专业口径需复核：相同月值不能证明预算属于期末余额，须由预算时间属性和汇总规则确认。")
-        if re.search(r"开单收入.{0,90}(?:说明|表明|支持|用于|据此|因此).{0,20}(?:现金流|现金安排|资金安排)", clause):
-            if not re.search(r"不能|不足以|不代表|无法|不支持|另需|还需", clause):
-                warn("professional_billed_income_cashflow", "cross_metric",
-                     "专业口径需复核：开单收入不证明现金流或资金安排，须另有回款、应收及现金收支证据。")
-        if (re.search(r"相关系数|相关性", clause)
-                and _affirmed(r"(?:说明|表明|证明|反映).{0,12}(?:效率提升|效率改善|预算准确|预算合理|资源利用率提高)", clause)
-                and not re.search(r"不能|不代表|不足以|无法", clause)):
+        if _unqualified_inference(
+            r"开单收入.{0,90}(?:说明|表明|支持|用于|据此|因此).{0,20}(?:现金流|现金安排|资金安排)",
+            clause, r"不能|不足以|不代表|无法|不支持|另需|还需",
+        ):
+            warn("professional_billed_income_cashflow", "cross_metric",
+                 "专业口径需复核：开单收入不证明现金流或资金安排，须另有回款、应收及现金收支证据。")
+        if _unqualified_inference(
+            r"(?:相关系数|相关性).{0,90}(?:说明|表明|证明|反映).{0,12}(?:效率提升|效率改善|预算准确|预算合理|资源利用率提高)",
+            clause, r"不能|不代表|不足以|无法",
+        ):
             warn("professional_correlation_as_efficiency", "metric_identity",
                  "专业口径需复核：相关系数不能替代正式效率指标或证明预算准确性。")
         if (re.search(r"(?:负成本|负值|负数).{0,16}(?:为|是|属于|表明|反映)(?:冲销|调整|冲减)", clause)
@@ -234,9 +250,10 @@ def review_professional_content(markdown: str) -> tuple[ProfessionalReviewIssue,
                 and not re.search(r"可能|待核|不能|尚未确认", clause)):
             warn("professional_concentrated_record_as_oneoff", "anomaly",
                  "专业口径需复核：集中记录不证明一次性入账性质，须有凭证或业务说明。")
-        if (re.search(r"(?:占比|规模|集中度).{0,10}(?:高|大)", clause)
-                and _affirmed(r"(?:说明|表明|因此|据此|可见).{0,15}(?:浪费|不合理依赖|管理异常|成本管控不力)", clause)
-                and not re.search(r"不能|不足以|不代表|无法", clause)):
+        if _unqualified_inference(
+            r"(?:成本|收入|支出)?(?:占比|规模|集中度).{0,10}(?:高|大).{0,90}(?:说明|表明|因此|据此|可见).{0,15}(?:浪费|不合理依赖|管理异常|成本管控不力)",
+            clause, r"不能|不足以|不代表|无法",
+        ):
             warn("professional_concentration_as_risk", "recommendation",
                  "专业口径需复核：规模或占比不能单独证明浪费或不合理依赖，须结合业务量、结构及比较基准。")
     # Scope incompatibility can precede a claimed conclusion in the same paragraph.

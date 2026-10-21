@@ -1,0 +1,256 @@
+{
+  "version": 1,
+  "basis": {
+    "document": "全院经济运行分析报告_逐句批注与表述示例版.docx",
+    "sha256": "42e4b4bae3937fc22e97de1b7daf3d059cd9062e5437ba2c3a645b5721092d98",
+    "kind": "synthetic_policy_counterexamples",
+    "domainBlindReviewed": false,
+    "limits": "Tests finite warnings only; silence does not establish business correctness. Metric-purpose, period and source-identity contracts are evaluated separately."
+  },
+  "cases": [
+    {
+      "id": "budget_direction-unsupported",
+      "reviewIds": [
+        "R011"
+      ],
+      "text": "执行率为80%，超预算。",
+      "expectedCodes": [
+        "professional_budget_direction_conflict"
+      ]
+    },
+    {
+      "id": "budget_direction-bounded",
+      "reviewIds": [
+        "R011"
+      ],
+      "text": "执行率为80%，低于预算。",
+      "expectedCodes": []
+    },
+    {
+      "id": "budget_unverified-unsupported",
+      "reviewIds": [
+        "R009"
+      ],
+      "text": "预算数值待核实，但总体接近预算。",
+      "expectedCodes": [
+        "professional_unverified_budget_conclusion"
+      ]
+    },
+    {
+      "id": "budget_unverified-bounded",
+      "reviewIds": [
+        "R009"
+      ],
+      "text": "预算数值待核实，不能判断是否接近预算。",
+      "expectedCodes": []
+    },
+    {
+      "id": "zero_rate-unsupported",
+      "reviewIds": [
+        "R014"
+      ],
+      "text": "预算为0元，执行率为0%。",
+      "expectedCodes": [
+        "professional_zero_budget_rate"
+      ]
+    },
+    {
+      "id": "zero_rate-bounded",
+      "reviewIds": [
+        "R014"
+      ],
+      "text": "预算为0元，执行率不计算。",
+      "expectedCodes": []
+    },
+    {
+      "id": "zero_exclusion-unsupported",
+      "reviewIds": [
+        "R068"
+      ],
+      "text": "排除预算或实际为零的所有记录。",
+      "expectedCodes": [
+        "professional_zero_records_excluded"
+      ]
+    },
+    {
+      "id": "zero_exclusion-bounded",
+      "reviewIds": [
+        "R068"
+      ],
+      "text": "预算或实际为零的记录不得排除。",
+      "expectedCodes": []
+    },
+    {
+      "id": "budget_repetition-unsupported",
+      "reviewIds": [
+        "R070"
+      ],
+      "text": "各月数值相同，因此属于期末余额。",
+      "expectedCodes": [
+        "professional_constant_budget_as_stock"
+      ]
+    },
+    {
+      "id": "budget_repetition-bounded",
+      "reviewIds": [
+        "R070"
+      ],
+      "text": "各月数值相同，但不能说明属于期末余额。",
+      "expectedCodes": []
+    },
+    {
+      "id": "cashflow-unsupported",
+      "reviewIds": [
+        "R030"
+      ],
+      "text": "开单收入增长，说明现金流充裕。",
+      "expectedCodes": [
+        "professional_billed_income_cashflow"
+      ]
+    },
+    {
+      "id": "cashflow-bounded",
+      "reviewIds": [
+        "R030"
+      ],
+      "text": "开单收入不能说明现金流充裕，判断另需回款证据。",
+      "expectedCodes": []
+    },
+    {
+      "id": "efficiency-unsupported",
+      "reviewIds": [
+        "R061"
+      ],
+      "text": "相关系数为0.9，说明效率提升。",
+      "expectedCodes": [
+        "professional_correlation_as_efficiency"
+      ]
+    },
+    {
+      "id": "efficiency-bounded",
+      "reviewIds": [
+        "R061"
+      ],
+      "text": "相关系数不能说明效率提升。",
+      "expectedCodes": []
+    },
+    {
+      "id": "negative-unsupported",
+      "reviewIds": [
+        "R038"
+      ],
+      "text": "负成本为冲销。",
+      "expectedCodes": [
+        "professional_negative_value_as_adjustment"
+      ]
+    },
+    {
+      "id": "negative-bounded",
+      "reviewIds": [
+        "R038"
+      ],
+      "text": "负成本可能是冲销，原因待核实。",
+      "expectedCodes": []
+    },
+    {
+      "id": "oneoff-unsupported",
+      "reviewIds": [
+        "R040"
+      ],
+      "text": "集中记录表明是一次性入账。",
+      "expectedCodes": [
+        "professional_concentrated_record_as_oneoff"
+      ]
+    },
+    {
+      "id": "oneoff-bounded",
+      "reviewIds": [
+        "R040"
+      ],
+      "text": "集中记录可能是一次性入账，性质待核实。",
+      "expectedCodes": []
+    },
+    {
+      "id": "scale-unsupported",
+      "reviewIds": [
+        "R049"
+      ],
+      "text": "成本占比高，因此管理异常。",
+      "expectedCodes": [
+        "professional_concentration_as_risk"
+      ]
+    },
+    {
+      "id": "scale-bounded",
+      "reviewIds": [
+        "R049"
+      ],
+      "text": "成本占比高，不能据此认定管理异常。",
+      "expectedCodes": []
+    },
+    {
+      "id": "surplus-unsupported",
+      "reviewIds": [
+        "R052"
+      ],
+      "text": "收入与成本口径不一致，但科室结余为20万元，仅供参考。",
+      "expectedCodes": [
+        "professional_incompatible_surplus"
+      ]
+    },
+    {
+      "id": "surplus-bounded",
+      "reviewIds": [
+        "R052"
+      ],
+      "text": "收入与成本口径不一致，不能计算正式结余，也不能作亏损排名。",
+      "expectedCodes": []
+    },
+    {
+      "id": "cashflow-unrelated-negation",
+      "reviewIds": [
+        "R030"
+      ],
+      "text": "预算版本无法确认，开单收入增长，说明现金流充裕。",
+      "expectedCodes": [
+        "professional_billed_income_cashflow"
+      ]
+    },
+    {
+      "id": "efficiency-unrelated-negation",
+      "reviewIds": [
+        "R061"
+      ],
+      "text": "预算版本不能确认，相关系数为0.9，说明效率提升。",
+      "expectedCodes": [
+        "professional_correlation_as_efficiency"
+      ]
+    },
+    {
+      "id": "scale-unrelated-negation",
+      "reviewIds": [
+        "R049"
+      ],
+      "text": "预算版本无法确认，成本占比高，因此管理异常。",
+      "expectedCodes": [
+        "professional_concentration_as_risk"
+      ]
+    },
+    {
+      "id": "fence",
+      "reviewIds": [
+        "R011"
+      ],
+      "text": "```text\n执行率为80%，超预算。\n```",
+      "expectedCodes": []
+    },
+    {
+      "id": "comment",
+      "reviewIds": [
+        "R011"
+      ],
+      "text": "<!-- 执行率为80%，超预算。 -->",
+      "expectedCodes": []
+    }
+  ]
+}
