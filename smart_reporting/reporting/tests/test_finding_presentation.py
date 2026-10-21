@@ -42,9 +42,14 @@ def test_unknown_levels_never_grant_verified_conclusions(level):
     assert finding_presentation_policy(level)["statementMode"] == "gap"
 
 
-def test_missing_one_source_downgrades_only_affected_finding_and_preserves_frozen_summary():
-    first, second = finding(1), finding(2)
+@pytest.mark.parametrize("role", ["management_finding", "appendix"])
+def test_missing_one_source_downgrades_only_affected_finding_and_preserves_frozen_summary(role):
+    first = finding(1, title="旧结论876543元", impactValue=876543, impactUnit="元",
+                    actionability="high", scope={"性质": "旧结论876543元"},
+                    limitations=("旧结论876543元仍待核对",))
+    second = finding(2, impactValue=120, impactUnit="元")
     item = _item(
+        narrativeRole=role,
         analysisIds=["analysis_001", "analysis_002"],
         findingIds=[first.finding_id, second.finding_id],
         findingSummaries=[card.model_dump(mode="json", by_alias=True) for card in (first, second)],
@@ -55,8 +60,13 @@ def test_missing_one_source_downgrades_only_affected_finding_and_preserves_froze
     assert invalid["presentationPolicy"]["statementMode"] == "gap"
     assert invalid["summary"] != first.summary
     assert "来源未完整核实" in invalid["summary"]
+    assert "876543" not in str(invalid)
+    assert invalid["evidenceLevel"] == "evidence_missing"
+    assert invalid["actionability"] == "unknown"
+    assert invalid["priority"] == first.priority
     assert valid["presentationPolicy"]["statementMode"] == "bounded_fact"
     assert valid["summary"] == second.summary
+    assert valid["impactValue"] == second.impact_value
     assert item.model_dump(mode="json", by_alias=True) == frozen
 
 
@@ -102,6 +112,8 @@ async def test_runtime_carries_boundaries_and_source_failures_to_every_generatio
     identity = FileIdentity(path="facts.json", size=len(content.encode()),
                             sha256=hashlib.sha256(content.encode()).hexdigest())
     card = finding(evidenceLevel="statistical_relation").model_dump(mode="json", by_alias=True)
+    card.update(title="旧标题不得泄漏876543", impactValue=876543, impactUnit="元",
+                limitations=["旧范围不得泄漏876543"], legacyConclusion="旧推断不得泄漏876543")
     card["sourceRefs"] = [{"analysisId": "analysis_001", "path": identity.path,
                            "fileSha256": identity.sha256,
                            "pointer": "/metrics/9" if missing_source else "/metrics/0"}]
@@ -125,6 +137,8 @@ async def test_runtime_carries_boundaries_and_source_failures_to_every_generatio
         boundary = payload["sectionGoal"]["findingPresentation"][0]["presentationPolicy"]
         assert boundary["statementMode"] == ("gap" if missing_source else "association")
         assert "不得泄漏的分析结论" not in json.dumps(payload, ensure_ascii=False)
+        if missing_source:
+            assert "876543" not in json.dumps(payload, ensure_ascii=False)
         if stage == "plan":
             summary = payload["sectionWorkItem"]["findingSummaries"][0]["summary"]
             assert (summary != card["summary"]) == missing_source

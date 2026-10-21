@@ -14,7 +14,7 @@ def finding_presentation_policy(
     if source_unavailable:
         return {
             "statementMode": "gap",
-            "conclusionBoundary": "来源未完整核实，仅披露证据缺口；不得沿用摘要中的数值、经营结论或原因。",
+            "conclusionBoundary": "来源未完整核实，仅披露证据缺口；不得沿用原发现中的数值、经营结论或原因。",
             "actionBoundary": "核对来源身份及原始记录；补齐证据后再评价，不提出依赖该结论的整改目标。",
         }
     if evidence_level in {"verified_fact", "rule_based", "direct_decomposition"}:

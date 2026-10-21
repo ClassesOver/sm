@@ -259,7 +259,6 @@ def project_analysis_findings(
                 rejected.append(f"补证 findings/{index} 未用于正文：{issue or '指标用途不匹配'}")
                 continue
             pointer = f"/findings/{index}"
-            name = str(item.get("name") or "补充分析发现")
             raw_scope = item.get("scope")
             scope_valid = raw_scope is None or (
                 isinstance(raw_scope, Mapping)
@@ -307,10 +306,19 @@ def project_analysis_findings(
             attribution_unproven = kind == "attribution" or item.get("directDecomposition") is True
             if kind not in {"scale", "trend", "comparison", "anomaly", "impact", "data_quality"}:
                 kind = "impact"
+            # A script-authored name may itself assert a cause, risk or amount.
+            # Keep that name in the immutable source, not in planning conclusions.
+            registered_labels = {
+                str(definitions[code]["description"])
+                for code in item.get("metricCodes") or ()
+                if isinstance(code, str) and definitions.get(code, {}).get("description")
+            }
+            neutral_label = next(iter(registered_labels)) if len(registered_labels) == 1 else "补充"
+            neutral_title = neutral_label[:180] + "证据待核对"
             findings.append(FindingCard(
                 findingId=_stable_id(analysis_id, f"{supplemental_file_path}:{pointer}", snapshot_hash),
-                analysisIds=(analysis_id,), kind=cast(FindingKind, kind), title=name[:200],
-                summary=f"已登记补充证据：{name}"[:4000],
+                analysisIds=(analysis_id,), kind=cast(FindingKind, kind), title=neutral_title[:200],
+                summary="补充证据已登记，尚未形成可直接用于结论的确定性事实。",
                 metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
                 periodRoles=tuple(item.get("periodRoles") or ("current",)),
                 periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),

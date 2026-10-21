@@ -2411,12 +2411,25 @@ def _section_model_work_item_payload(
         payload.pop("factSummaries", None)
         for finding in payload["findingSummaries"]:
             unavailable = finding["findingId"] in (unavailable_finding_ids or ())
+            if unavailable:
+                # Only routing identities and priority survive a failed source
+                # check. Titles, impact values, scope and legacy free text can
+                # contain the same unsupported conclusion as the old summary.
+                routing = {key: finding[key] for key in (
+                    "findingId", "analysisIds", "kind", "metricCodes", "periodRoles",
+                    "priority", "citationIds",
+                ) if key in finding}
+                finding.clear()
+                finding.update({
+                    **routing, "title": "发现来源待核实",
+                    "summary": "来源未完整核实，原摘要不能作为经营结论；需补齐证据。",
+                    "evidenceLevel": "evidence_missing", "actionability": "unknown",
+                    "limitations": ["当前发现来源未完整核实，需补齐后再评价其数值、范围及业务含义。"],
+                })
             # Recompute from frozen evidence level, never trust a supplied policy.
             finding["presentationPolicy"] = finding_presentation_policy(
                 finding.get("evidenceLevel"), source_unavailable=unavailable,
             )
-            if unavailable:
-                finding["summary"] = "来源未完整核实，原摘要不能作为经营结论；需补齐证据。"
             finding.pop("sourceRefs", None)
             if work_item.narrative_role == "appendix":
                 finding.pop("relatedFindingIds", None)
