@@ -71,6 +71,8 @@ class StudyPlan(StrictModel):
             raise ValueError("人员身份不能为空")
         if self.baseline == self.candidate:
             raise ValueError("基线与候选身份必须不同")
+        if self.baseline_configuration.sha256 == self.candidate_configuration.sha256:
+            raise ValueError("基线与候选配置内容必须不同")
         if len(set(self.domain_reviewer_ids)) != len(self.domain_reviewer_ids):
             raise ValueError("审核人员身份重复")
         if set(self.author_ids) & set(self.domain_reviewer_ids):
@@ -78,15 +80,17 @@ class StudyPlan(StrictModel):
         if len({task.task_id for task in self.tasks}) != len(self.tasks):
             raise ValueError("评估任务身份重复")
         groups: dict[str, str] = {}
-        inputs: dict[str, str] = {}
+        inputs: dict[str, tuple[str, str]] = {}
         for task in self.tasks:
             previous = groups.setdefault(task.independence_group, task.partition)
             if previous != task.partition:
                 raise ValueError("同源任务族不可横跨试点与保留集")
             for file in task.inputs:
-                previous = inputs.setdefault(file.sha256, task.partition)
-                if previous != task.partition:
+                partition, task_id = inputs.setdefault(file.sha256, (task.partition, task.task_id))
+                if partition != task.partition:
                     raise ValueError("相同输入不可横跨试点与保留集")
+                if task_id != task.task_id:
+                    raise ValueError("不同评估任务不可复用相同输入内容")
         return self
 
     @property

@@ -160,6 +160,29 @@ def test_invalid_partition_or_reviewer_identity_rejected(tmp_path, fault):
         StudyPlan.model_validate(plan)
 
 
+@pytest.mark.parametrize("partition", ["pilot", "holdout"])
+def test_same_partition_cannot_count_duplicate_input_as_independent_tasks(tmp_path, partition):
+    plan = _evidence(tmp_path, complete=False).plan.model_dump(mode="json", by_alias=True)
+    for task in plan["tasks"]:
+        task["partition"] = partition
+    duplicate = dict(plan["tasks"][0]["inputs"][0])
+    duplicate["path"] = "inputs/same-content-different-path.csv"
+    plan["tasks"][1]["inputs"] = [duplicate]
+    assert plan["tasks"][0]["independenceGroup"] != plan["tasks"][1]["independenceGroup"]
+    with pytest.raises(ValidationError, match="不同评估任务不可复用相同输入内容"):
+        StudyPlan.model_validate(plan)
+
+
+@pytest.mark.parametrize("different_path", [False, True])
+def test_variant_labels_cannot_disguise_identical_configuration_bytes(tmp_path, different_path):
+    plan = _evidence(tmp_path, complete=False).plan.model_dump(mode="json", by_alias=True)
+    plan["candidateConfiguration"] = dict(plan["baselineConfiguration"])
+    if different_path:
+        plan["candidateConfiguration"]["path"] = "config/renamed-baseline.json"
+    with pytest.raises(ValidationError, match="基线与候选配置内容必须不同"):
+        StudyPlan.model_validate(plan)
+
+
 @pytest.mark.parametrize(
     "fault",
     [

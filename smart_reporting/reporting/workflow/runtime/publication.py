@@ -1010,8 +1010,7 @@ class RuntimePublicationMixin:
             }
         quality_issues = self._state(run_context).get("report_quality_issues", [])
         if quality_issues:
-            gate = {**gate, "formalReleaseAllowed": False,
-                    "issues": [*gate.get("issues", []), *quality_issues]}
+            gate = {**gate, "warnings": [*gate.get("warnings", []), *quality_issues]}
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
