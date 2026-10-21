@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
 from loguru import logger
@@ -90,6 +90,14 @@ _SCALED_DISPLAY_UNITS = frozenset({"万元", "亿元", "万人次", "%", "‰", 
 
 
 def format_fact_value(value: Any, unit: str | None, display_unit: str | None = None) -> str:
+    # Registered finite floats can have hundreds of integer digits. Decimal's
+    # default precision makes quantize fail even though the value is valid.
+    with localcontext() as context:
+        context.prec = max(context.prec, 700)
+        return _format_fact_value(value, unit, display_unit)
+
+
+def _format_fact_value(value: Any, unit: str | None, display_unit: str | None = None) -> str:
     number = Decimal(str(value))
     target = display_unit or unit
     if target != unit and not (unit == "%" and target == PERCENT_POINT):

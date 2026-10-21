@@ -51,6 +51,8 @@ from .test_trace_subject_validate import _make_editor_with_subject
         "cumulative_caveat",
         "cumulative_baseline",
         "cumulative_point_flow",
+        "cumulative_point_month_income",
+        "cumulative_point_realized_income",
     ],
 )
 async def test_current_business_statement_is_not_self_signed_by_unchanged_number(
@@ -87,7 +89,7 @@ async def test_current_business_statement_is_not_self_signed_by_unchanged_number
     if is_ratio:
         selector = "registeredRatio"
     if is_cumulative:
-        selector = ("total" if kind == "cumulative_point_flow" else "cumulativeChanges.2"
+        selector = ("total" if kind.startswith("cumulative_point_") else "cumulativeChanges.2"
                     if kind == "cumulative_baseline" else "cumulativeChanges.1")
     display_unit = "元/人次" if is_ratio else "%" if is_comparison else "元"
     token = f"{{{{value:{fact_id}:{selector}:{display_unit}}}}}"
@@ -154,6 +156,10 @@ async def test_current_business_statement_is_not_self_signed_by_unchanged_number
     assert original["quality"]["issues"] == [], json.dumps(original, ensure_ascii=False)
     if kind == "cumulative_point_flow":
         changed = "当月业务流量为，" + markdown
+    elif kind == "cumulative_point_month_income":
+        changed = markdown.replace('累计收入记录值为', '本月收入为')
+    elif kind == "cumulative_point_realized_income":
+        changed = markdown.replace('累计收入记录值为', '本月实现收入为')
     elif kind == "cumulative_reset":
         changed = markdown.replace("按自然年重置零基线", "以上年末快照为基线")
     elif kind == "cumulative_baseline":

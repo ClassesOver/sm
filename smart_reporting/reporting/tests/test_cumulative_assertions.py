@@ -174,6 +174,9 @@ def test_automatic_catalog_is_opt_in_scoped_and_bounded_to_latest_twelve():
 @pytest.mark.parametrize('selector', ['total', 'periodValues.1'])
 @pytest.mark.parametrize('wording,unsupported', [
     ('当月业务流量为，', True), ('本期发生额为，', True), ('当月新增为，', True),
+    ('本月收入为，', True), ('本月实现收入为，', True), ('本期支出为，', True),
+    ('本月累计收入为，', False), ('不代表本月收入，', False),
+    ('本月收入累计快照为，', False),
     ('累计快照原值，不等同当期业务流量，', False), ('不是当月新增，', False),
 ])
 def test_cumulative_point_cannot_be_relabelled_as_flow(selector, wording, unsupported):

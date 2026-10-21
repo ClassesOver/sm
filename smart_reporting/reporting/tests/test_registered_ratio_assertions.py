@@ -37,6 +37,7 @@ def ratio_document(
     num_unit="元",
     den_unit="人次",
     stock=False,
+    expected_derived_count=1,
 ):
     periods = (
         ("2025-01", "2025-02")
@@ -95,7 +96,7 @@ def ratio_document(
         profile_metrics=definitions,
         profile_hash="a" * 64,
     )
-    assert len(bundle.derived_metrics) == 1, bundle.warnings
+    assert len(bundle.derived_metrics) == expected_derived_count, bundle.warnings
     return json.loads(bundle.model_dump_json(by_alias=True))
 
 
@@ -133,6 +134,50 @@ def test_sum_ratio_is_not_the_unweighted_average_of_period_ratios():
     assert result.status == "supported"
     assert Decimal(result.value) == 25
     assert Decimal(result.value) != (Decimal(100) / 10 + Decimal(900) / 30) / 2
+
+
+@pytest.mark.parametrize('numerator,denominator,num_unit,den_unit', [
+    (1e200, 1e-200, '元', '元'),
+    (1e200, 1e-200, '元', '人次'),
+    (1e307, 1, '元', '元'),
+    (1, 1e307, '元', '万元'),
+    (-8e307, 8e307, '元', '元'),
+    (1e-200, 1e200, '元', '元'),
+    (1e-200, 1e200, '元', '人次'),
+    (1, 5e-324, '亿元', '元'),
+])
+def test_unrepresentable_ratio_preserves_its_finite_primitive_facts(
+    numerator, denominator, num_unit, den_unit,
+):
+    document = ratio_document(numerator=(numerator, numerator), denominator=(denominator, denominator),
+                              num_unit=num_unit, den_unit=den_unit, expected_derived_count=0)
+    assert len(document['metrics']) == 2
+    assert {fact['field'] for fact in document['metrics']} == {'amount', 'visits'}
+    assert all(not fact['warnings'] for fact in document['metrics'])
+    assert any('溢出或下溢' in warning for warning in document['warnings'])
+
+
+def test_legacy_nonzero_percent_underflow_cannot_acquire_a_zero_proof():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
+    from smart_reporting.reporting.trace.fact_index import assign_fact_ids
+
+    document = ratio_document(numerator=(1e-200, 1e-200), denominator=(1e200, 1e200),
+                              den_unit='元', expected_derived_count=0)
+    legacy = ratio_document(den_unit='元')['derivedMetrics'][0]
+    legacy.update(numerator=2e-200, denominator=2e200, value=0.0, percentage=0.0, difference=-2e200,
+                  datasetSha256s=[document['metrics'][0]['datasetSha256']], inputFactIds=[])
+    document['derivedMetrics'] = [legacy]
+    document['warnings'] = []
+    document = json.loads(assign_fact_ids(DeterministicAnalysisBundle.model_validate(document)).model_dump_json(by_alias=True))
+    entry = document['derivedMetrics'][0]
+    entries = {fact['factId']: fact for fact in document['metrics']}
+    proof, reasons = registered_ratio(entry, entries, profile_hash='a' * 64, fact_warnings={})
+    assert proof is None and 'ratio_quotient_out_of_range' in reasons
+    result, source, token = compile_ratio(document, '%')
+    assert result.status == 'unknown' and result.value is None
+    assert token not in frozen_number_catalog([source])
 
 
 @pytest.mark.parametrize(

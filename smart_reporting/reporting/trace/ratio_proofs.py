@@ -149,6 +149,8 @@ def registered_ratio(
         return None, ("ratio_unit_conversion_overflow",)
     value = aligned[0] / recorded_denominator
     percentage = value * 100 if conversion is not None else None
+    if not math.isfinite(value) or (aligned[0] != 0 and value == 0):
+        return None, ("ratio_quotient_out_of_range",)
     expected_difference = aligned[0] - recorded_denominator if conversion is not None else None
     if (
         ratio.numerator != aligned[0]

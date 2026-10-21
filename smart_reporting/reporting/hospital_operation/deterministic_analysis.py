@@ -1121,7 +1121,11 @@ def _derived_metrics(
             ratio_warnings = list(
                 dict.fromkeys((*numerator_fact.warnings, *denominator_fact.warnings))
             )
-            aligned_ratio = _aligned_period_totals(numerator_fact, denominator_fact)
+            try:
+                aligned_ratio = _aligned_period_totals(numerator_fact, denominator_fact)
+            except _NonFiniteMetricError:
+                warnings.append(f"Profile 比率指标 {code} 在 {role} 期间对齐结果不可表示，未生成该派生指标。")
+                continue
             if aligned_ratio is None:
                 warnings.append(f"Profile 比率指标 {code} 在 {role} 期间无法形成唯一连续可比窗口。")
                 continue
@@ -1130,15 +1134,26 @@ def _derived_metrics(
             # 同量纲比例先把分母换算为分子单位；金额/人次等不同量纲比值保留原口径。
             conversion = unit_conversion_scale(denominator_fact.unit, numerator_fact.unit)
             denominator_scale = conversion if conversion is not None else Decimal(1)
-            denominator = _finite(Decimal(str(denominator)) * denominator_scale)
-            if denominator == 0:
-                value = None
-                percentage = None
-                ratio_warnings.append(f"Profile 比率指标 {code} 的分母为零。")
-            else:
-                value = _finite(numerator / denominator)
-                # 只有同量纲的比值可以表示为百分比；金额/人次等保留原始商。
-                percentage = _finite(value * 100) if conversion is not None else None
+            try:
+                scaled_denominator = Decimal(str(denominator)) * denominator_scale
+                denominator = _finite(scaled_denominator)
+                if scaled_denominator != 0 and denominator == 0:
+                    raise _NonFiniteMetricError("比率分母换算下溢")
+                if denominator == 0:
+                    value = None
+                    percentage = None
+                    ratio_warnings.append(f"Profile 比率指标 {code} 的分母为零。")
+                else:
+                    value = _finite(numerator / denominator)
+                    if numerator != 0 and value == 0:
+                        raise _NonFiniteMetricError("非零比率下溢")
+                    # 只有同量纲的比值可以表示为百分比；金额/人次等保留原始商。
+                    percentage = _finite(value * 100) if conversion is not None else None
+                difference = _finite(numerator - denominator) if conversion is not None else None
+            except _NonFiniteMetricError:
+                warnings.append(f"Profile 比率指标 {code} 在 {role} 期间算术结果溢出或下溢，"
+                                "未生成该派生指标，其他指标继续计算。")
+                continue
             dataset_ids = tuple(
                 dict.fromkeys((numerator_fact.dataset_id, denominator_fact.dataset_id))
             )
@@ -1159,7 +1174,7 @@ def _derived_metrics(
                     denominatorScale=float(denominator_scale),
                     value=value,
                     percentage=percentage,
-                    difference=_finite(numerator - denominator) if conversion is not None else None,
+                    difference=difference,
                     unit=(
                         numerator_fact.unit
                         if conversion is not None

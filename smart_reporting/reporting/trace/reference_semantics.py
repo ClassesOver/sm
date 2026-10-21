@@ -246,8 +246,14 @@ def _cumulative_wording_warnings(text: str, reference: Mapping[str, Any]) -> tup
         label = _label(str(entry.get('displayName') or entry.get('field') or '指标'))
         for suffix in ('登记值为', '记录值为'):
             wording = wording.replace(label + suffix, ' ')
-        for match in re.finditer(r'业务流量|(?:当|本)(?:期|月)(?:业务)?(?:新增|增量|流量|发生额)', wording):
+        for match in re.finditer(
+            r'业务流量|(?:当|本)(?:期|月)(?:业务)?(?:新增|增量|流量|发生额)'
+            r'|(?:当|本)(?:期|月)(?:实现|发生|取得)?(?:收入|支出|营收|成本|费用|利润|人次|出院人数)',
+            wording,
+        ):
             prefix = wording[:match.start()]
+            if re.match(r'(?:的)?[（(]?(?:累计|快照|期末)', wording[match.end():]):
+                continue
             if not (_NEGATION.search(prefix)
                     or re.search(r'(?:不等同|不等于|不能视为)(?:(?:当|本)(?:期|月))?$', prefix)):
                 return ['累计口径需复核：累计快照原值不能证明当期业务流量或新增发生额。'], text
