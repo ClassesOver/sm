@@ -60,7 +60,9 @@ def test_appendix_model_projection_fits_without_changing_frozen_work_item():
     assert projected["findingIds"] == list(item.finding_ids)
     assert projected["findingSummaries"] == [{
         "findingId": "finding_0000000000000001", "summary": "收入变化",
+        "presentationPolicy": projected["findingSummaries"][0]["presentationPolicy"],
     }]
+    assert projected["findingSummaries"][0]["presentationPolicy"]["statementMode"] == "gap"
     assert projected["evidence"][0]["evidenceFiles"] == frozen["evidence"][0]["evidenceFiles"]
     assert projected["evidence"][0]["warnings"] == ["期间不可直接比较"]
     assert item.model_dump(mode="json", by_alias=True) == frozen
@@ -72,7 +74,9 @@ def test_body_model_projection_uses_assigned_findings_without_duplicate_analysis
     item = _item(narrativeRole="management_finding", factSummaries=["收入上升"])
     projected = _section_model_work_item_payload(item)
     assert "factSummaries" not in projected
-    assert projected["findingSummaries"] == list(item.finding_summaries)
+    assert projected["findingSummaries"][0]["summary"] == item.finding_summaries[0]["summary"]
+    assert projected["findingSummaries"][0]["presentationPolicy"]["statementMode"] == "gap"
+    assert "presentationPolicy" not in item.finding_summaries[0]
     assert item.fact_summaries == ("收入上升",)
     assert "factFiles" not in projected
 
@@ -154,7 +158,7 @@ def test_dynamic_work_item_requests_assigned_findings_instead_of_entire_analysis
         ),
         citation_bindings=(), finding_ids=item.finding_ids, finding_summaries=item.finding_summaries,
     )
-    assert result.completion_conditions[0] == "仅呈现当前章节分配的管理发现及其证据、经营影响和管理动作"
+    assert "按证据等级区分事实、关联、假设与缺项" in result.completion_conditions[0]
 
 
 def test_frozen_content_budget_enters_work_item_and_authoring_contract():

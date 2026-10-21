@@ -9,8 +9,14 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from .finding_presentation import finding_presentation_policy
 from .findings import FindingCard, FindingGraph
-from .narrative_outline import NarrativeOutline, NarrativeOutlineCandidate, freeze_narrative_outline
+from .narrative_outline import (
+    NarrativeOutline,
+    NarrativeOutlineCandidate,
+    NarrativeSectionCandidate,
+    freeze_narrative_outline,
+)
 from .outline import ReportOutline
 
 
@@ -118,9 +124,10 @@ def build_narrative_planning_context(
         "candidateGroups": [list(group) for group in body_groups],
         "overflowFindingIds": overflow,
         # 文件溯源身份留在服务端图谱；提纲只消费管理语义和分组边界。
-        "findings": [card.model_dump(mode="json", by_alias=True, exclude={
-            "source_refs", "citation_ids",
-        }) for card in cards],
+        "findings": [{
+            **card.model_dump(mode="json", by_alias=True, exclude={"source_refs", "citation_ids"}),
+            "presentationPolicy": finding_presentation_policy(card.evidence_level),
+        } for card in cards],
     }
 
 
@@ -142,7 +149,7 @@ def build_narrative_planning_batches(
         }
 
     batches = []
-    current = []
+    current: list[dict[str, Any]] = []
     for card in context["findings"]:
         proposed = project([*current, card])
         if len(json.dumps(proposed, ensure_ascii=False, separators=(",", ":")).encode()) > max_bytes:
@@ -209,13 +216,13 @@ def build_fallback_narrative_candidate(
             continue
         return NarrativeOutlineCandidate(
             title=title, snapshotHash=graph.snapshot_hash,
-            sections=tuple({
-                "title": group_title(group),
-                "findingIds": group,
-                "objective": "解释已核验发现并提出管理动作",
-                "groupingReason": "依据共享指标、管理主题和已登记关系确定性分组",
-                "priority": max((cards[item] for item in group), key=rank_finding).priority,
-            } for group in groups[:body_count]),
+            sections=tuple(NarrativeSectionCandidate(
+                title=group_title(group),
+                findingIds=group,
+                objective="按证据等级区分事实、关联、假设与缺项；建议以已核实前提为限",
+                groupingReason="依据共享指标、管理主题和已登记关系确定性分组",
+                priority=max((cards[item] for item in group), key=rank_finding).priority,
+            ) for group in groups[:body_count]),
             appendixFindingIds=appendix,
         )
     raise ValueError("高优先级发现分组超出章节容量，无法在保留全部发现的同时冻结提纲")
