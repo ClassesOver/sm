@@ -4399,7 +4399,13 @@ class RuntimeAnalysisMixin:
                 if evidence_file.path == identity.path:
                     continue
                 content = await self._read_identity_bytes(thread_id, evidence_file)
-                evidence = validate_supplemental_evidence(content, {**item, **metric_scopes.get(analysis_id, {})})
+                # Preserve original file-level business warnings. The projector
+                # below filters metric scope per finding; converting local scope
+                # rejections to global warnings here would invalidate unrelated
+                # complete numeric decompositions in the same frozen file.
+                evidence = validate_supplemental_evidence(content, {
+                    "analysisId": analysis_id, "datasetIds": item.get("datasetIds", ()),
+                })
                 supplements.setdefault(analysis_id, []).append((
                     evidence.model_dump(mode="json", by_alias=True), evidence_file.path, evidence_file.sha256,
                 ))

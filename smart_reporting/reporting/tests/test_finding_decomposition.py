@@ -165,3 +165,112 @@ def test_numeric_closure_does_not_certify_supplemental_causal_title(decompositio
     assert card.title == "收入分组数值分解"
     assert "人员浪费" not in card.summary and "必须压降" not in card.summary
     assert "不证明分类归属或业务因果" in card.summary
+
+
+@pytest.mark.parametrize("fault", ["unit", "scope", "ordinary"])
+def test_full_warning_budget_keeps_mandatory_proof_boundary(decomposition_inputs, fault):
+    document, evidence = decomposition_inputs
+    item = evidence["findings"][0]
+    if fault == "unit":
+        item["unit"] = "万元"
+    elif fault == "scope":
+        item["scope"] = ["北院"]
+    else:
+        item.update(kind="impact", directDecomposition=False)
+    evidence["warnings"] = [f"一般业务提醒{i}" for i in range(100)]
+    card = project(document, evidence)
+    assert card.evidence_level == "evidence_missing"
+    expected = "尚未得到确定性验证" if fault == "ordinary" else "不能据此归因"
+    assert any(expected in warning for warning in card.limitations)
+    if fault == "scope":
+        assert any("scope 格式无效" in warning for warning in card.limitations)
+    assert len(card.limitations) <= 100
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("invalid_count", [0, 1, 100, 499])
+@pytest.mark.parametrize("business_warning", [False, True])
+@pytest.mark.parametrize("proof_fault", [None, "unit", "incomplete_population"])
+async def test_freezing_mixed_supplements_preserves_independent_numeric_proof(
+    decomposition_inputs, invalid_count, business_warning, proof_fault,
+):
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.delivery.artifacts_v1 import Citation
+    from smart_reporting.reporting.hospital_operation.detailed_analysis import DetailedAnalysisPlan
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
+    from smart_reporting.reporting.hospital_operation.findings import FindingGraph
+    from smart_reporting.reporting.profile.models import EffectiveMetric
+    from smart_reporting.reporting.tests.test_deterministic_analysis import analysis
+    from smart_reporting.reporting.tests.test_dynamic_checkpoint import _coverage
+    from smart_reporting.reporting.workflow.checkpoint import FileIdentity, ReportingCheckpoint
+    from smart_reporting.reporting.workflow.runtime.analysis import RuntimeAnalysisMixin
+    from smart_reporting.reporting.workflow.runtime.base import (
+        REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
+    )
+
+    document, evidence = decomposition_inputs
+    if proof_fault == "unit":
+        evidence["findings"][0]["unit"] = "万元"
+    elif proof_fault == "incomplete_population":
+        document["metrics"][0]["groupPopulation"] = None
+    evidence["findings"] = [{"name": "其他用途", "metricCodes": ["budget"], "value": 999}] * invalid_count + evidence["findings"]
+    evidence["reconciliations"][0]["name"] = "完整分组对账"
+    evidence["warnings"] = ["基础数据口径待核对"] if business_warning else []
+    original = json.dumps(evidence).encode()
+    fact_file = FileIdentity(path="facts.json", size=1, sha256="a" * 64)
+    supplement = FileIdentity(path="supplement.json", size=len(original), sha256=hashlib.sha256(original).hexdigest())
+    dataset_id = "dataset-url-abc0001"
+    plan = DetailedAnalysisPlan(analyses=(analysis().model_copy(update={
+        "dataset_ids": (dataset_id,), "metric_purposes": ("收入多维分析",),
+    }),), datasetIds=(dataset_id,))
+    metric = EffectiveMetric(code="income", kind="currency", description="收入", aggregation="sum",
+                             fieldRef=document["metrics"][0]["fieldRef"], purpose="收入多维分析")
+    saved = {}
+
+    async def read_model(_thread, _identity, _model):
+        return DeterministicAnalysisBundle.model_validate(document)
+
+    async def read_bytes(_thread, _identity):
+        return original
+
+    async def write(_thread, path, content):
+        assert path not in {fact_file.path, supplement.path}
+        saved["graph"] = FindingGraph.model_validate_json(content)
+        return FileIdentity(path=path, size=len(content), sha256=hashlib.sha256(content).hexdigest())
+
+    async def persist(_context, checkpoint):
+        return checkpoint
+
+    runtime = SimpleNamespace(
+        _profile=lambda _: SimpleNamespace(metrics=(metric,)),
+        _state=lambda _: {REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: plan.model_dump(by_alias=True)},
+        _read_identity_model=read_model, _read_identity_bytes=read_bytes,
+        _write_immutable_artifact=write, _persist_reporting_checkpoint=persist,
+        _update_reporting_checkpoint=RuntimeAnalysisMixin._update_reporting_checkpoint,
+        _merge_checkpoint_files=RuntimeAnalysisMixin._merge_checkpoint_files,
+    )
+    await RuntimeAnalysisMixin._restore_or_create_finding_graph(
+        runtime, run_context=None,
+        checkpoint=ReportingCheckpoint(revision=1, phase="analysis", outlineHash="d" * 64, profileCoverage=_coverage()),
+        thread_id="thread", report_run_id="run", revision=1,
+        fact_files={"analysis_001": fact_file},
+        analysis_items={"analysis_001": {"analysisId": "analysis_001", "datasetIds": [dataset_id],
+                                        "evidenceFiles": [supplement.model_dump(by_alias=True)]}},
+        citation_bindings=(Citation(citationId="citation_001", datasetId=dataset_id,
+                                   requirementId="requirement_001", snapshotHash="b" * 64),),
+    )
+    card = next(card for card in saved["graph"].findings if any(
+        ref.path == supplement.path for ref in card.source_refs
+    ))
+    assert card.evidence_level == ("evidence_missing" if business_warning or proof_fault else "direct_decomposition")
+    assert card.source_refs[0].pointer == f"/findings/{invalid_count}"
+    assert card.source_refs[0].file_sha256 == supplement.sha256
+    assert all("budget" not in card.metric_codes for card in saved["graph"].findings)
+    if invalid_count:
+        assert any("未用于正文" in issue for card in saved["graph"].findings for issue in card.limitations)

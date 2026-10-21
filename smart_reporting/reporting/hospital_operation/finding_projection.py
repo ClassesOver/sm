@@ -318,9 +318,10 @@ def project_analysis_findings(
                 priority="medium", evidenceLevel="evidence_missing", actionability="unknown",
                 citationIds=citation_ids,
                 sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
-                limitations=(tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning)
-                             + scope_limitations + (("直接分解未证明同期间、同范围、同单位及完整分组身份；不能据此归因或安排整改。",)
-                                                    if attribution_unproven else ("补证仅完成文件登记，数值与业务表述尚未得到确定性验证。",)))[:100],
+                limitations=((("直接分解未证明同期间、同范围、同单位及完整分组身份；不能据此归因或安排整改。",)
+                              if attribution_unproven else ("补证仅完成文件登记，数值与业务表述尚未得到确定性验证。",))
+                             + scope_limitations
+                             + tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning))[:100],
             ))
     if not findings:
         add("data_quality", "/warnings", "当前分析缺少可编排发现", "当前分析没有形成可用于正文的确定性发现。", priority="low", evidence="evidence_missing", limitations=tuple([*rejected, *(str(item) for item in payload.get("warnings", ()) if item)][:100]))
