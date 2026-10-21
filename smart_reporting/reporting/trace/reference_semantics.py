@@ -232,12 +232,26 @@ def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix:
 
 def _cumulative_wording_warnings(text: str, reference: Mapping[str, Any]) -> tuple[list[str], str]:
     """Snapshot arithmetic never establishes operating flow or a different reset."""
-    if not reference['selector'].startswith('cumulativeChanges.'):
-        return [], text
     from .assertions import _label
     from .business_semantics import _NEGATION
     from .cumulative_changes import cumulative_change_template
 
+    if not reference['selector'].startswith('cumulativeChanges.'):
+        entry = reference['entry']
+        if entry.get('cumulativePolicy') is None:
+            return [], text
+        wording = text
+        for key, value in reference.get('scope', {}).items():
+            wording = wording.replace(f'{_label(key)}={_label(str(value))}', ' ')
+        label = _label(str(entry.get('displayName') or entry.get('field') or '指标'))
+        for suffix in ('登记值为', '记录值为'):
+            wording = wording.replace(label + suffix, ' ')
+        for match in re.finditer(r'业务流量|(?:当|本)(?:期|月)(?:业务)?(?:新增|增量|流量|发生额)', wording):
+            prefix = wording[:match.start()]
+            if not (_NEGATION.search(prefix)
+                    or re.search(r'(?:不等同|不等于|不能视为)(?:(?:当|本)(?:期|月))?$', prefix)):
+                return ['累计口径需复核：累计快照原值不能证明当期业务流量或新增发生额。'], text
+        return [], text
     proof = reference.get('_cumulative_change_proof')
     if proof is None:
         return ['累计口径需复核：累计快照、重置策略或基线尚未核验。'], text

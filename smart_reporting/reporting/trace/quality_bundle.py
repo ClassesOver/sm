@@ -24,7 +24,7 @@ from .semantic_bindings import reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "1", "cumulativeChanges": "1"}
+SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "1", "cumulativeChanges": "2"}
 
 
 class QualityIssue(StrictModel):

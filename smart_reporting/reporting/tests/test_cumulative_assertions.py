@@ -16,7 +16,11 @@ from smart_reporting.reporting.trace.assertions import (
     assertion_catalog,
     assertion_request_for_token,
 )
-from smart_reporting.reporting.trace.semantic_bindings import render_bound_numbers
+from smart_reporting.reporting.trace.reference_semantics import number_reference_warnings
+from smart_reporting.reporting.trace.semantic_bindings import (
+    render_bound_numbers,
+    resolve_number_reference,
+)
 
 from .test_deterministic_analysis import analysis, context, semantic
 
@@ -165,3 +169,17 @@ def test_automatic_catalog_is_opt_in_scoped_and_bounded_to_latest_twelve():
     assert len(changes) == 12 and all(result.status == "supported" for result in changes)
     assert {result.periods[0] for result in changes} == set(months[-12:])
     assert assertion_catalog([source], allowed_tokens=[], include_cumulative_changes=True, **kwargs) == {}
+
+
+@pytest.mark.parametrize('selector', ['total', 'periodValues.1'])
+@pytest.mark.parametrize('wording,unsupported', [
+    ('当月业务流量为，', True), ('本期发生额为，', True), ('当月新增为，', True),
+    ('累计快照原值，不等同当期业务流量，', False), ('不是当月新增，', False),
+])
+def test_cumulative_point_cannot_be_relabelled_as_flow(selector, wording, unsupported):
+    document = cumulative_document()
+    token = f"{{{{value:{document['metrics'][0]['factId']}:{selector}:元}}}}"
+    reference = resolve_number_reference(token, [json.dumps(document, ensure_ascii=False)])
+    assert reference is not None
+    warnings = number_reference_warnings(wording, reference)
+    assert any('累计口径需复核' in warning for warning in warnings) is unsupported
