@@ -138,6 +138,8 @@ class StudyEvidence(StrictModel):
 class DomainReview(StrictModel):
     plan_sha256: str = Field(alias="planSha256", pattern=SHA256_PATTERN)
     report_sha256: str = Field(alias="reportSha256", pattern=SHA256_PATTERN)
+    # Older exports can be read, but cannot establish a task-bound verdict.
+    task_id: str | None = Field(default=None, alias="taskId", min_length=1, max_length=200)
     reviewer_id: str = Field(alias="reviewerId", min_length=1)
     role: Literal["independent", "adjudicator"]
     blind_review_id: str = Field(alias="blindReviewId", min_length=1)
@@ -158,6 +160,9 @@ class DomainReview(StrictModel):
 class StudyMetering(StrictModel):
     plan_sha256: str = Field(alias="planSha256", pattern=SHA256_PATTERN)
     report_sha256: str = Field(alias="reportSha256", pattern=SHA256_PATTERN)
+    task_id: str | None = Field(default=None, alias="taskId", min_length=1, max_length=200)
+    variant: str | None = Field(default=None, min_length=1, max_length=200)
+    configuration_sha256: str | None = Field(default=None, alias="configurationSha256", pattern=SHA256_PATTERN)
     provenance: Literal["provider_export", "synthetic"]
     currency: str = Field(min_length=1, max_length=20)
     total_cost: float = Field(alias="totalCost", ge=0, allow_inf_nan=False)
@@ -187,6 +192,7 @@ def _review(
     if (
         review.plan_sha256 != plan.sha256
         or review.report_sha256 != run.report.sha256
+        or review.task_id != task.task_id
         or review.reviewer_id not in plan.domain_reviewer_ids
         or not review.claim_inventory_complete
         or not review.blinded_to_variant
@@ -300,11 +306,16 @@ def evaluate_study(evidence: StudyEvidence, root: Path, *, validate_only: bool =
             try:
                 _read(root, run.report)
                 metering = StudyMetering.model_validate_json(_read(root, run.metering))
+                configuration = (plan.baseline_configuration if variant == plan.baseline
+                                 else plan.candidate_configuration)
                 if (
                     metering.plan_sha256 != plan.sha256
                     or metering.report_sha256 != run.report.sha256
+                    or metering.task_id != task.task_id
+                    or metering.variant != variant
+                    or metering.configuration_sha256 != configuration.sha256
                 ):
-                    raise ValueError("计量记录不匹配冻结方案或报告")
+                    raise ValueError("计量记录不匹配冻结方案、任务、版本配置或报告")
                 if metering.provenance != "provider_export":
                     raise ValueError("真实成本必须来自提供方计量导出")
                 reviews = [_review(root, file, plan, task, run) for file in run.reviews]

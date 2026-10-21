@@ -40,9 +40,11 @@ MPLCONFIGDIR=/tmp/report-quality-matplotlib .venv/bin/python -c 'import json; fr
 
 每个 task：`taskId`、`partition=pilot|holdout`、`sampleKind=real|synthetic`、`independenceGroup`、`inputs`、`authorization`、`requiredConditionIds`。
 
-每个 run：`taskId`、`variant`（严格匹配 baseline/candidate）、`report`、`claimIds`、`metering`、`reviews`、可选 `adjudication`。每个计量文件是 `StudyMetering` JSON：`planSha256`、`reportSha256`、`provenance=provider_export`、`currency`、`totalCost`、`wallSeconds`、`inputTokens`、`outputTokens`。
+每个 run：`taskId`、`variant`（严格匹配 baseline/candidate）、`report`、`claimIds`、`metering`、`reviews`、可选 `adjudication`。每个计量文件是 `StudyMetering` JSON：`planSha256`、`reportSha256`、`taskId`、`variant`、`configurationSha256`、`provenance=provider_export`、`currency`、`totalCost`、`wallSeconds`、`inputTokens`、`outputTokens`。计量必须匹配当前任务、版本和对应配置内容哈希，不能因输出报告内容相同而复用另一任务或版本的费用记录。
 
-每个审核/裁决文件是 `DomainReview` JSON：`planSha256`、`reportSha256`、`reviewerId`、`role=independent|adjudicator`、`blindReviewId`、`claimInventoryComplete`、`blindedToVariant`、`unsupportedClaimIds`、`answeredConditionIds`、`criticalErrorCount`。布尔声明必须是真布尔；主张和条件必须在对应冻结清单内，且不能重复。工具只接受完整主张清单的审核，不把只审核部分段落算整份报告。
+每个审核/裁决文件是 `DomainReview` JSON：`planSha256`、`reportSha256`、`taskId`、`reviewerId`、`role=independent|adjudicator`、`blindReviewId`、`claimInventoryComplete`、`blindedToVariant`、`unsupportedClaimIds`、`answeredConditionIds`、`criticalErrorCount`。布尔声明必须是真布尔；主张和条件必须在对应冻结清单内，且不能重复。审核及裁决必须匹配当前任务，不能将针对另一任务背景的结论串用；审核记录不包含版本标签或配置哈希，保留对版本的盲态。工具只接受完整主张清单的审核，不把只审核部分段落算整份报告。
+
+缺少新增任务/版本/配置绑定的历史计量和审核记录仍可解析，但不能建立验收证据；评估返回 `not_ready` 和 `run_evidence_incomplete`，不自动补填或升级旧记录。
 
 ## 结果如何解释
 

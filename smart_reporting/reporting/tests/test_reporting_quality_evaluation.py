@@ -66,12 +66,15 @@ def _evidence(root, *, complete=True, real=True, baseline_cost=2, candidate_cost
             report = _file(
                 root, f"reports/{task_id}-{variant}.md", f"TEST ONLY {task_id} {variant} claim1"
             )
-            common = {"planSha256": plan.sha256, "reportSha256": report["sha256"]}
+            common = {"planSha256": plan.sha256, "reportSha256": report["sha256"], "taskId": task_id}
             metering = _file(
                 root,
                 f"metering/{task_id}-{variant}.json",
                 {
                     **common,
+                    "variant": variant,
+                    "configurationSha256": (plan.baseline_configuration.sha256 if variant == "old"
+                                            else plan.candidate_configuration.sha256),
                     "provenance": "provider_export",
                     "currency": "CNY",
                     "totalCost": baseline_cost if variant == "old" else candidate_cost,
@@ -367,6 +370,43 @@ def test_large_finite_costs_cannot_overflow_mean_and_false_pass_ratio(tmp_path):
     assert report["acceptanceMet"] is False
     assert report["metrics"]["holdout"]["variants"]["old"]["cost"] == 1e308
     json.dumps(report, allow_nan=False)
+
+
+@pytest.mark.parametrize("replay", ["other_task", "other_variant"])
+def test_valid_records_cannot_be_replayed_as_another_task_or_variant(tmp_path, replay):
+    evidence = _evidence(tmp_path)
+    runs = list(evidence.runs)
+    if replay == "other_task":
+        runs[-1] = runs[-3].model_copy(update={"task_id": runs[-1].task_id})
+    else:
+        runs[-2] = runs[-1].model_copy(update={"variant": "old"})
+    result = evaluate_study(evidence.model_copy(update={"runs": tuple(runs)}), tmp_path)
+    assert result["status"] == "not_ready" and result["acceptanceMet"] is None
+    assert any(issue["code"] == "run_evidence_incomplete" for issue in result["issues"])
+
+
+@pytest.mark.parametrize("kind,field,wrong", [
+    ("review", "taskId", "other-task"),
+    ("metering", "taskId", "other-task"),
+    ("metering", "variant", "old"),
+    ("metering", "configurationSha256", "a" * 64),
+])
+@pytest.mark.parametrize("missing", [False, True])
+def test_missing_or_wrong_record_binding_remains_unknown(tmp_path, kind, field, wrong, missing):
+    evidence = _evidence(tmp_path)
+    run = evidence.runs[-1]
+    file = run.reviews[0] if kind == "review" else run.metering
+    payload = json.loads((tmp_path / file.path).read_bytes())
+    if missing:
+        payload.pop(field)
+    else:
+        payload[field] = wrong
+    changed = BenchmarkFileIdentity.model_validate(_file(tmp_path, file.path, payload))
+    run = run.model_copy(update={"reviews": (changed, run.reviews[1])} if kind == "review"
+                         else {"metering": changed})
+    report = evaluate_study(evidence.model_copy(update={"runs": (*evidence.runs[:-1], run)}), tmp_path)
+    assert report["status"] == "not_ready" and report["acceptanceMet"] is None
+    assert any(issue["code"] == "run_evidence_incomplete" for issue in report["issues"])
 
 
 @pytest.mark.parametrize("baseline_cost,candidate_cost", [(5e-324, 1e308), (1e308, 5e-324)])
