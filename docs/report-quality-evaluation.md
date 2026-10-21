@@ -17,6 +17,21 @@ MPLCONFIGDIR=/tmp/report-quality-matplotlib .venv/bin/python -m scripts.evaluate
 
 保留原有引用闭环验证入口 `scripts/check_reference_review.py`：其 JUnit 实际执行数、退出码、失败和跳过检查仍用于工程回归。工程回归不代替这里的真实业务评估。
 
+## Hypothesis 属性与变形回归
+
+开发依赖新增 Hypothesis，标准 pytest 收集会执行 `test_fact_properties.py`。单独运行并查看生成样例统计：
+
+```sh
+uv sync --locked --group dev
+MPLCONFIGDIR=/tmp/report-quality-matplotlib .venv/bin/pytest -q smart_reporting/reporting/tests/test_fact_properties.py --hypothesis-show-statistics
+```
+
+使用 `--hypothesis-seed=20261021` 可在相同版本与策略下复现生成过程。测试保留 Hypothesis 的失败样例数据库和自动缩小行为；发现的稳定反例应加入 `@example` 或针对性回归，不能只依赖本地 `.hypothesis/` 缓存。
+
+当前 8 条属性覆盖：货币显示误差界、单位换算组合及逆变换、复合比率的独立 Decimal 参考计算、极端比率隔离与非零下溢、同金额不同主体拒绝借用证明、完整 Top-N 的竞赛排名及乱序不变性、累计自然年零重置和首期基线缺失、缺月不补零。
+
+每条属性最多生成 60 个有效样例，有限策略可提前穷尽；金额参考计算使用独立单位常量和高精度 Decimal，排名参考计算按严格更优成员个数计算。日历属性针对已声明策略的冻结月桶；它不代替原始 CSV 构建或业务累计起点的确认。全部属性通过只说明这批生成输入没有违反已声明契约，不等于完整业务语义或真实效果验收通过。
+
 ## 收集和冻结
 
 1. 在观察结果前登记 `StudyPlan` 并保存其规范 JSON SHA256；建议将其登记到外部受控审计记录。方案包含两个不同的方案身份、各自配置文件身份（代码版本、模型、提示、规则、运行模式和工具版本）、作者、领域审核人员、验收阈值及全部任务。后续报告审核和计量记录都绑定这个 `planSha256`，修改阈值或分区会使已有记录失配。
