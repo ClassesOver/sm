@@ -25,10 +25,10 @@ from .chart_quality import ChartQualityCheck, evaluate_chart_quality
 from .contracts_v1 import RevisionTraceIndexV1, canonical_sha256
 from .semantic_alignment import SemanticAlignmentCheck, evaluate_semantic_alignment
 from .semantic_bindings import reference_fact_ids, statement_fingerprints
-from .table_quality import TableQualityCheck, evaluate_table_quality
+from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION}
+SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1"}
 
 
 class QualityIssue(StrictModel):
@@ -130,6 +130,14 @@ def evaluate_quality_bundle(
     issues.extend(
         QualityIssue(code="table_support_unknown", subjectId=table_id, reasons=check.reasons)
         for table_id, check in table_checks.items() if check.status != "verified"
+    )
+    issues.extend(
+        QualityIssue(
+            code="table_coverage_unknown",
+            subjectId=f"markdown-table:L{line}",
+            reasons=("table_registration_unavailable", f"markdown_line:{line}"),
+        )
+        for line in uncovered_table_lines(markdown, {table.table_id for table in index.tables})
     )
     assertions: dict[str, AssertionResult] = {}
     bindings: dict[str, str] = {}
@@ -307,4 +315,5 @@ def quality_bundle_is_current(
         and bundle.markdown_sha256 == hashlib.sha256(markdown.encode()).hexdigest()
         and bundle.input_sha256 == input_sha256
         and bundle.checker_version == RULE_VERSION
+        and bundle.semantic_rule_versions == SEMANTIC_RULE_VERSIONS
     )

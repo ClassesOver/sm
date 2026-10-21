@@ -19,6 +19,7 @@ from .subject_builder import (
     _NUMBER_UNIT_RE,
     _UNIT_PATTERN,
     _mask_calendar_values,
+    fact_periods,
     formatted_value_matches,
     unit_period_warnings,
 )
@@ -83,6 +84,43 @@ class TableQualityCheck(StrictModel):
     scope: Literal["frozen_cells"] = "frozen_cells"
     reasons: tuple[str, ...] = ()
     checked_cells: int = Field(default=0, alias="checkedCells")
+
+
+def uncovered_table_lines(markdown: str, registered_ids: set[str]) -> tuple[int, ...]:
+    """Find rendered tables without a unique, registered protocol wrapper.
+
+    Locations are diagnostics only; they never create table or fact identities.
+    Parse actual Markdown tables so fenced examples and comments do not count.
+    """
+    from markdown_it import MarkdownIt
+
+    from ..delivery.artifacts_v1 import _TABLE_BLOCK
+
+    body = trace_body(markdown, mask_inline_code=False)
+    offsets = [0]
+    for line in body.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    tables = [
+        (token.map[0] + 1, offsets[token.map[0]], offsets[token.map[1]])
+        for token in MarkdownIt().enable("table").parse(body)
+        if token.type == "table_open" and token.map is not None
+    ]
+    # Inline-code marker examples must not claim an adjacent real table.
+    wrappers = list(_TABLE_BLOCK.finditer(trace_body(markdown)))
+    counts = Counter(match[1] for match in wrappers)
+    covered: set[int] = set()
+    for match in wrappers:
+        if match[1] not in registered_ids or counts[match[1]] != 1:
+            continue
+        if re.search(r"\[\[/?table:", match[2]):
+            continue  # Nested/malformed wrappers cannot hide extra tables.
+        contained = [
+            line for line, start, end in tables
+            if match.start(2) <= start and end <= match.end(2) + 1
+        ]
+        if len(contained) == 1:
+            covered.add(contained[0])
+    return tuple(line for line, _, _ in tables if line not in covered)
 
 
 def _blocks(markdown: str) -> dict[str, str]:
@@ -235,7 +273,10 @@ def evaluate_table_quality(
                         continue
                     if cell.row_key.startswith("period:") and unit_period_warnings(
                         rows[cell.row_key][0],
-                        expected_periods=(cell.row_key[7:],),
+                        expected_periods=fact_periods({
+                            "periodGranularity": entry.get("periodGranularity"),
+                            "periodValues": [{"period": cell.row_key[7:]}],
+                        }),
                     ):
                         reasons.append("cell_period_label_mismatch")
                         continue

@@ -1,12 +1,103 @@
 """Table checks use actual registered files and current Markdown, without old passes."""
 
 import hashlib
+import json
 
 import pytest
 
 from smart_reporting.reporting.trace.quality_bundle import evaluate_quality_bundle
 
 from .test_trace_subject_validate import _make_editor_with_subject
+
+_PLAIN_TABLE = "| 指标 | 金额 |\n| --- | --- |\n| 收入 | 100 |"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("grain", [None, "day", "month"])
+@pytest.mark.parametrize("wrong_month", [False, True])
+async def test_table_period_labels_follow_declared_grain(tmp_path, grain, wrong_month):
+    from smart_reporting.reporting.trace.table_quality import evaluate_table_quality
+
+    editor, _, context = await _make_editor_with_subject(tmp_path, period_table=True)
+    index = await editor.trace.require_index(context)
+    documents = {}
+    for file in index.files:
+        if file.resource_id in {fact.file_resource_id for fact in index.fact_files}:
+            documents[file.resource_id] = json.loads(await editor.trace._read_registered_file(
+                context, file, max_bytes=16 * 1024 * 1024
+            ))
+    table = index.tables[0]
+    entry = documents[table.cells[0].fact_refs[0].file_resource_id]["metrics"][0]
+    entry["periodGranularity"] = grain
+    for point in entry["periodValues"]:
+        point["period"] += "-01"
+    table = table.model_copy(update={
+        "row_keys": tuple(key + "-01" for key in table.row_keys),
+        "cells": tuple(cell.model_copy(update={"row_key": cell.row_key + "-01"}) for cell in table.cells),
+    })
+    index = index.model_copy(update={"tables": (table,)})
+    file = next(file for file in index.files if file.resource_id == index.markdown_file_resource_id)
+    markdown = (await editor.trace._read_registered_file(context, file, max_bytes=16 * 1024 * 1024)).decode()
+    if wrong_month:
+        markdown = markdown.replace("2025-09", "2025-08")
+    # Freeze the displayed labels as well: unchanged labels still require semantic checks.
+    table = table.model_copy(update={"origin_markdown": markdown})
+    index = index.model_copy(update={"tables": (table,)})
+    check = evaluate_table_quality(index, markdown, documents)["tbl-1"]
+    assert check.status == ("verified" if grain == "month" and not wrong_month else "unknown")
+    assert ("cell_period_label_mismatch" in check.reasons) == (grain != "month" or wrong_month)
+
+
+@pytest.mark.parametrize(
+    ("markdown", "registered", "expected"),
+    [
+        (_PLAIN_TABLE, set(), (1,)),
+        (f"[[table:t]]\n\n{_PLAIN_TABLE}\n\n[[/table:t]]", {"t"}, ()),
+        (f"[[table:foreign]]\n\n{_PLAIN_TABLE}\n\n[[/table:foreign]]", {"t"}, (3,)),
+        (f"```markdown\n{_PLAIN_TABLE}\n```", set(), ()),
+        (f"<!--\n{_PLAIN_TABLE}\n-->", set(), ()),
+        (f"`[[table:t]]`\n\n{_PLAIN_TABLE}\n\n`[[/table:t]]`", {"t"}, (3,)),
+        (f"[[table:t]]\n\n{_PLAIN_TABLE}\n\n{_PLAIN_TABLE}\n\n[[/table:t]]", {"t"}, (3, 7)),
+        (
+            f"[[table:t]]\n\n{_PLAIN_TABLE}\n\n[[/table:t]]\n\n"
+            f"[[table:t]]\n\n{_PLAIN_TABLE}\n\n[[/table:t]]",
+            {"t"},
+            (3, 11),
+        ),
+        ("> " + _PLAIN_TABLE.replace("\n", "\n> "), set(), (1,)),
+    ],
+)
+def test_rendered_table_coverage(markdown, registered, expected):
+    from smart_reporting.reporting.trace.table_quality import uncovered_table_lines
+
+    assert uncovered_table_lines(markdown, registered) == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_unregistered_table_warns_without_downgrading_verified_table(tmp_path):
+    editor, _, context = await _make_editor_with_subject(tmp_path, period_table=True)
+    index = await editor.trace.require_index(context)
+    sources = {
+        file.resource_id: await editor.trace._read_registered_file(
+            context, file, max_bytes=16 * 1024 * 1024
+        )
+        for file in index.files
+        if file.media_type in {"application/json", "text/markdown"}
+    }
+    markdown = sources[index.markdown_file_resource_id].decode() + "\n\n" + _PLAIN_TABLE
+    quality = evaluate_quality_bundle(index, markdown, sources, authorization_scope_hash="c" * 64)
+    assert quality.table_checks["tbl-1"].status == "verified"
+    warnings = [issue for issue in quality.issues if issue.code == "table_coverage_unknown"]
+    assert len(warnings) == 1
+    assert warnings[0].severity == "warning"
+    assert warnings[0].reasons[0] == "table_registration_unavailable"
+    # Cached bundles from the checker without coverage must not remain current.
+    from smart_reporting.reporting.trace.quality_bundle import quality_bundle_is_current
+
+    old = quality.model_copy(update={"semantic_rule_versions": {}})
+    assert not quality_bundle_is_current(old, index, markdown, input_sha256=quality.input_sha256)
 
 
 @pytest.mark.anyio
