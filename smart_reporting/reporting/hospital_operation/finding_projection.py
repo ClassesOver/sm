@@ -9,6 +9,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from ..profile.metric_usage import supplemental_metric_scope_issue
 from .deterministic_analysis import DeterministicAnalysisBundle
 from .findings import (
     EvidenceLevel,
@@ -145,6 +146,7 @@ def project_analysis_findings(
     fact_file_sha256: str | None = None,
     supplemental_file_path: str | None = None,
     supplemental_file_sha256: str | None = None,
+    metric_scope: Mapping[str, Any] | None = None,
 ) -> tuple[FindingCard, ...]:
     """只从已验证事实生成发现；缺失事实不会被改成零。"""
 
@@ -153,6 +155,7 @@ def project_analysis_findings(
     file_sha256 = fact_file_sha256 or hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     definitions = {str(item.get("code")): item for item in metric_definitions if item.get("code")}
     findings: list[FindingCard] = []
+    rejected: list[str] = []
 
     def metric_label(fact: Mapping[str, Any]) -> str:
         # 显示名常带别名（“收入金额，也称医疗收入金额”）：发现标题只用主名称，别名进标题后会被
@@ -240,6 +243,21 @@ def project_analysis_findings(
         for index, item in enumerate(supplemental_evidence.get("findings") or ()):
             if not isinstance(item, Mapping):
                 continue
+            scope_codes = (metric_scope or {}).get("allowedMetricCodes")
+            if scope_codes is None and any(metric.get("purpose") for metric in metric_definitions):
+                # Without an explicit server scope, authorize only codes actually
+                # present in frozen facts, never the whole multi-purpose catalog.
+                scope_codes = tuple({
+                    code for metric in payload.get("metrics", ()) if isinstance(metric, Mapping)
+                    for code in metric.get("metricCodes", ()) if isinstance(code, str) and code in definitions
+                })
+            issue = supplemental_metric_scope_issue(
+                item, allowed_codes=scope_codes,
+                allowed_field_refs=(metric_scope or {}).get("allowedFieldRefs"),
+            )
+            if issue or item.get("metricScopeRejected") is True:
+                rejected.append(f"补证 findings/{index} 未用于正文：{issue or '指标用途不匹配'}")
+                continue
             pointer = f"/findings/{index}"
             name = str(item.get("name") or "补充分析发现")
             raw_scope = item.get("scope")
@@ -297,15 +315,17 @@ def project_analysis_findings(
                 periodRoles=tuple(item.get("periodRoles") or ("current",)),
                 periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
                 grain=_tuple_values(item.get("grain")), scope=scope,
-                priority="medium", evidenceLevel="evidence_missing" if attribution_unproven else "verified_fact", actionability="unknown",
+                priority="medium", evidenceLevel="evidence_missing", actionability="unknown",
                 citationIds=citation_ids,
                 sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
                 limitations=(tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning)
                              + scope_limitations + (("直接分解未证明同期间、同范围、同单位及完整分组身份；不能据此归因或安排整改。",)
-                                                    if attribution_unproven else ())),
+                                                    if attribution_unproven else ("补证仅完成文件登记，数值与业务表述尚未得到确定性验证。",)))[:100],
             ))
     if not findings:
-        add("data_quality", "/warnings", "当前分析缺少可编排发现", "当前分析没有形成可用于正文的确定性发现。", priority="low", evidence="evidence_missing", limitations=tuple(str(item) for item in payload.get("warnings", ()) if item))
+        add("data_quality", "/warnings", "当前分析缺少可编排发现", "当前分析没有形成可用于正文的确定性发现。", priority="low", evidence="evidence_missing", limitations=tuple([*rejected, *(str(item) for item in payload.get("warnings", ()) if item)][:100]))
+    elif rejected:
+        add("data_quality", "/warnings", "部分补证指标用途不匹配", "部分补证超出分析指标用途，已保留其他有效发现。", evidence="evidence_missing", limitations=tuple(rejected[:100]))
     return tuple(findings)
 
 
@@ -321,6 +341,7 @@ def build_finding_graph(
     supplemental_file_paths: Mapping[str, str] | None = None,
     supplemental_file_sha256s: Mapping[str, str] | None = None,
     supplemental_sources: Mapping[str, Sequence[tuple[Mapping[str, Any], str, str]]] | None = None,
+    metric_scopes: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> FindingGraph:
     cards: dict[str, FindingCard] = {}
     for bundle in fact_bundles:
@@ -337,6 +358,7 @@ def build_finding_graph(
                 supplemental_file_path=path, supplemental_file_sha256=sha256,
                 fact_file_path=(fact_file_paths or {}).get(analysis_id, "deterministic-facts.json"),
                 fact_file_sha256=(fact_file_sha256s or {}).get(analysis_id),
+                metric_scope=(metric_scopes or {}).get(analysis_id),
             )
             for card in projected:
                 # 多个补证文件共享原子 facts；同一事实只登记一次，补证身份各自保留。

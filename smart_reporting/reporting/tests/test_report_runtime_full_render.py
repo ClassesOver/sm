@@ -843,9 +843,9 @@ def test_render_markdown_opens_with_executive_summary_from_section_conclusions(t
     (workspace / "report.md").write_text(
         "# 智能运营全链路渲染验证报告\n\n"
         "[[section:income]]\n\n## 1. 收入分析\n\n"
-        "营业收入同比增长8.6%，主要由门诊带动[[citation:citation_001]]。门诊收入持续增长。\n\n"
+        "营业收入同比增长8.6%[[citation:citation_001]]。收入归属与成本分摊尚未匹配，不能据此评价经营结余。\n\n"
         "[[section:cost]]\n\n## 2. 成本分析\n\n"
-        "成本整体平稳。全年成本合计32.10亿元，与预算基本持平。\n\n"
+        "成本整体平稳。全年成本合计32.10亿元，与预算基本持平。\n\n该层级组织映射缺失率80%，不支持完整科室间比较。\n\n"
         "[[section:appendix]]\n\n## 3. 补充统计与数据限制\n\n"
         "本章说明数据口径限制。\n",
         encoding="utf-8",
@@ -870,8 +870,8 @@ def test_render_markdown_opens_with_executive_summary_from_section_conclusions(t
                         for paragraph in Document(workspace / "out" / "report.docx").paragraphs)
     for text in (pdf_text, word_text):
         summary = text.index("核心结论")
-        assert summary < text.index("收入分析：营业收入同比增长8.6%，主要由门诊带动。")
+        assert summary < text.index("收入分析：营业收入同比增长8.6%。收入归属与成本分摊尚未匹配，不能据此评价经营结余。")
         # 首句无数字时带上紧随的数字句。
-        assert "成本分析：成本整体平稳。全年成本合计32.10亿元，与预算基本持平。" in text
+        assert "成本分析：成本整体平稳。全年成本合计32.10亿元，与预算基本持平。该层级组织映射缺失率80%，不支持完整科室间比较。" in text
         assert "补充统计与数据限制：" not in text
         assert summary < text.rindex("1.收入分析")

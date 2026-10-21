@@ -4320,6 +4320,26 @@ class RuntimeAnalysisMixin:
         """分析与补证完成后冻结图谱；恢复同时核对补证和引用身份。"""
 
         items = analysis_items or {}
+        from ...profile.metric_usage import select_metrics_by_usage
+
+        profile = self._profile(run_context)
+        metric_definitions = tuple(metric.model_dump(mode="json", by_alias=True) for metric in profile.metrics)
+        raw_plan = self._state(run_context).get(REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY)
+        metric_scopes: dict[str, Mapping[str, Any]] = {}
+        if any(metric.get("purpose") for metric in metric_definitions):
+            # An old/missing plan cannot authorize supplemental metrics by itself.
+            metric_scopes = {aid: {"allowedMetricCodes": (), "allowedFieldRefs": ()} for aid in fact_files}
+        if raw_plan is not None:
+            detailed_plan = DetailedAnalysisPlan.model_validate(raw_plan)
+            for analysis in detailed_plan.analyses:
+                usage = select_metrics_by_usage(
+                    metric_definitions, domain=analysis.domain, purposes=analysis.metric_purposes,
+                )
+                if usage.allowed_field_refs is not None:
+                    metric_scopes[analysis.analysis_id] = {
+                        "allowedMetricCodes": tuple(str(metric["code"]) for metric in usage.metrics),
+                        "allowedFieldRefs": tuple(sorted(usage.allowed_field_refs)),
+                    }
         snapshot_payload = {
             "revision": revision,
             "profileCoverage": checkpoint.profile_coverage.model_dump(mode="json", by_alias=True),
@@ -4379,20 +4399,20 @@ class RuntimeAnalysisMixin:
                 if evidence_file.path == identity.path:
                     continue
                 content = await self._read_identity_bytes(thread_id, evidence_file)
-                evidence = validate_supplemental_evidence(content, item)
+                evidence = validate_supplemental_evidence(content, {**item, **metric_scopes.get(analysis_id, {})})
                 supplements.setdefault(analysis_id, []).append((
                     evidence.model_dump(mode="json", by_alias=True), evidence_file.path, evidence_file.sha256,
                 ))
-        profile = self._profile(run_context)
         graph = build_finding_graph(
             facts,
             None,
-            tuple(item.model_dump(mode="json", by_alias=True) for item in profile.metrics),
+            metric_definitions,
             snapshot_hash=snapshot_hash,
             citation_ids_by_analysis=citations,
             fact_file_paths={analysis_id: identity.path for analysis_id, identity in fact_files.items()},
             fact_file_sha256s={analysis_id: identity.sha256 for analysis_id, identity in fact_files.items()},
             supplemental_sources=supplements,
+            metric_scopes=metric_scopes,
         )
         content = json.dumps(
             graph.model_dump(mode="json", by_alias=True),

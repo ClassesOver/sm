@@ -202,6 +202,8 @@ class AnalysisItem(_StrictModel):
                 raise ValueError("新分析项必须提供非空 analysisName 和 periodRoles")
             if "series_granularity" not in self.model_fields_set:
                 raise ValueError("新分析项必须提供 seriesGranularity；非时间序列填 null")
+            if info.context.get("require_metric_purposes") and not self.metric_purposes:
+                raise ValueError("配置了指标用途的新分析项必须显式提供非空 metricPurposes，不能由 domain 猜测")
         if len(set(self.period_roles)) != len(self.period_roles):
             raise ValueError("periodRoles 不能重复")
         return self

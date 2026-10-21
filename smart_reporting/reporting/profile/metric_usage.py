@@ -9,7 +9,6 @@ from typing import Any
 DOMAIN_METRIC_PURPOSES = {
     "income": ("收入多维分析",),
     "workload": ("工作量分析",),
-    "budget": ("预算或预实对比",),
     "full_cost": ("成本多维分析",),
 }
 
@@ -50,3 +49,36 @@ def usage_schema_candidates(
         semantic for semantic in schema.get("measureSemantics", ())
         if str(semantic.get("fieldRef", "")).casefold() in allowed
     ]} for schema in schemas]
+
+
+def supplemental_metric_scope_issue(
+    finding: Mapping[str, Any], *, allowed_codes: Sequence[str] | None,
+    allowed_field_refs: Sequence[str] | None = None,
+) -> str | None:
+    """Check identities, including nested tables, against a server-frozen scope."""
+    if allowed_codes is None:
+        return None
+    codes = set(allowed_codes)
+    refs = None if allowed_field_refs is None else {ref.casefold() for ref in allowed_field_refs}
+    declared = finding.get("metricCodes")
+    if (not isinstance(declared, (list, tuple)) or not declared
+            or any(not isinstance(code, str) or code not in codes for code in declared)):
+        return "补证未声明本分析允许的指标，或引用了已删除、未登记、其他用途的指标。"
+    pending: list[Any] = [finding]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                if key in {"metricCodes", "metricCode", "fieldRefs", "fieldRef"}:
+                    identities = child if isinstance(child, (list, tuple)) else (child,)
+                    allowed = codes if key.startswith("metric") else refs
+                    if allowed is not None and any(
+                        not isinstance(identity, str)
+                        or (identity if key.startswith("metric") else identity.casefold()) not in allowed
+                        for identity in identities
+                    ):
+                        return "补证嵌套指标或字段超出本分析已冻结的指标用途范围。"
+                pending.append(child)
+        elif isinstance(value, (list, tuple)):
+            pending.extend(value)
+    return None

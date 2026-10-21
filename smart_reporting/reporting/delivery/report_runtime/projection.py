@@ -25,7 +25,7 @@ from .markdown import (
 )
 from .pdf import _pdf_markdown
 
-PROJECTION_VERSION = "report-markdown/1"
+PROJECTION_VERSION = "report-markdown/2"
 
 
 def _sha256(raw: bytes) -> str:
@@ -137,7 +137,7 @@ def build_render_projection(
     apply("relocate_server_tables/1", relocate_server_tables)
     apply("compact_single_column_tables/1", compact_single_column_tables)
     apply(
-        "insert_executive_summary/1",
+        "insert_executive_summary/2",
         lambda text: insert_executive_summary(text, context["sections"]),
     )
     apply("collapse_repeated_values/1", collapse_repeated_values)

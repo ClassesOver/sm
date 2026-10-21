@@ -169,13 +169,27 @@ def validate_supplemental_evidence(
             value for value in current_analysis.get("datasetIds") or () if isinstance(value, str)
         )
     )
-    return SupplementalEvidence.model_validate(
+    from ...profile.metric_usage import supplemental_metric_scope_issue
+
+    evidence = SupplementalEvidence.model_validate(
         {
             **payload,
             "analysisId": current_analysis.get("analysisId"),
             "datasetIds": dataset_ids,
         }
     )
+    warnings = list(evidence.warnings)
+    findings = list(evidence.findings)
+    for index, finding in enumerate(findings):
+        issue = supplemental_metric_scope_issue(
+            finding, allowed_codes=current_analysis.get("allowedMetricCodes"),
+            allowed_field_refs=current_analysis.get("allowedFieldRefs"),
+        )
+        if issue:
+            # Keep original indices: immutable source pointers must never move.
+            findings[index] = {"name": "补证指标用途不匹配", "metricScopeRejected": True}
+            warnings.insert(0, f"findings/{index}: {issue}")
+    return evidence.model_copy(update={"findings": tuple(findings), "warnings": tuple(warnings[:100])})
 
 
 def _evidence_tables(value: Any) -> Iterator[Mapping[str, Any]]:

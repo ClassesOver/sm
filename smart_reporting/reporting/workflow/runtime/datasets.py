@@ -576,6 +576,10 @@ class RuntimeDatasetsMixin:
                     analysisId=f"analysis_{len(analyses) + 1:03d}",
                     domain=domain,
                     metricPurposes=initial_item.metric_purposes,
+                    allowedMetricCodes=(tuple(str(metric["code"]) for metric in usage.metrics)
+                                        if usage.allowed_field_refs is not None else None),
+                    allowedFieldRefs=(tuple(sorted(usage.allowed_field_refs))
+                                      if usage.allowed_field_refs is not None else None),
                     managementQuestion=(initial_item.management_question),
                     primaryMetricFamily=initial_item.primary_metric_family,
                     datasetIds=tuple(handle.dataset_id for handle in referenced_handles),

@@ -153,6 +153,12 @@ class DetailedAnalysisItem(AnalysisModel):
     metric_purposes: tuple[str, ...] = Field(
         default=(), alias="metricPurposes", max_length=20, exclude_if=lambda value: not value,
     )
+    allowed_metric_codes: tuple[str, ...] | None = Field(
+        default=None, alias="allowedMetricCodes", max_length=1000, exclude_if=lambda value: value is None,
+    )
+    allowed_field_refs: tuple[str, ...] | None = Field(
+        default=None, alias="allowedFieldRefs", max_length=1000, exclude_if=lambda value: value is None,
+    )
     management_question: str = Field(alias="managementQuestion", min_length=1, max_length=2_000)
     primary_metric_family: str = Field(alias="primaryMetricFamily", min_length=1, max_length=256)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)

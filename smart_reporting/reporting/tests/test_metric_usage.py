@@ -104,6 +104,19 @@ def test_historical_profiles_keep_their_unclassified_candidates():
     assert select_metrics_by_usage((), domain="income").allowed_field_refs is None
 
 
+def test_ambiguous_budget_domain_requires_purpose_instead_of_using_ordinary_budget():
+    metrics = tuple(metric.model_dump(mode="json", by_alias=True) for metric in hospital_profile().metrics)
+    missing = select_metrics_by_usage(metrics, domain="budget")
+    assert missing.metrics == () and missing.warnings
+    project = select_metrics_by_usage(metrics, domain="budget", purposes=("项目预算分析",))
+    assert {metric["code"] for metric in project.metrics} == {
+        "project_budget", "project_contract_amount", "project_payment_amount",
+    }
+    ordinary = select_metrics_by_usage(metrics, domain="budget", purposes=("预算或预实对比",))
+    assert ordinary.metrics and not ordinary.warnings
+    assert not {metric["code"] for metric in project.metrics} & {metric["code"] for metric in ordinary.metrics}
+
+
 @pytest.mark.parametrize("domain,expected", [
     ("income", {"income_summary_total"}),
     ("workload", {"outpatient_visits", "outpatient_visits_non", "discharges", "actual_open_bed", "discharges_bed"}),
@@ -148,3 +161,18 @@ def test_explicit_purpose_survives_analysis_contract_roundtrip():
     assert AnalysisItem.model_validate(item.model_dump(by_alias=True)).metric_purposes == (
         "收入多维分析", "工作量分析",
     )
+
+
+def test_new_plans_with_usage_policy_must_route_explicitly_but_legacy_remains_readable():
+    from pydantic import ValidationError
+
+    item = dict(code="project", domain="budget", analysisName="项目执行分析",
+                description="分析项目预算、合同、付款", managementQuestion="项目执行如何",
+                primaryMetricFamily="project_budget", requirementIds=["req_001"],
+                periodRoles=["current"], seriesGranularity=None)
+    assert AnalysisItem.model_validate(item).metric_purposes == ()
+    with pytest.raises(ValidationError, match="metricPurposes"):
+        AnalysisItem.model_validate(item, context={"new_analysis_plan": True, "require_metric_purposes": True})
+    valid = AnalysisItem.model_validate({**item, "metricPurposes": ["项目预算分析"]},
+                                      context={"new_analysis_plan": True, "require_metric_purposes": True})
+    assert valid.metric_purposes == ("项目预算分析",)

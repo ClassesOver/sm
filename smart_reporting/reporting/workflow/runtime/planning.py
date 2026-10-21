@@ -1392,6 +1392,15 @@ class RuntimePlanningMixin:
                     attempt=min(attempt - 1, 1),
                     failure_kind="schema_failure" if validation_feedback is not None else None,
                 )
+                if any(metric.purpose for metric in profile.metrics):
+                    candidate = output.model_dump(mode="json", by_alias=True)
+                    try:
+                        output = AnalysisBundle.model_validate(candidate, context={
+                            "new_analysis_plan": True, "require_metric_purposes": True,
+                        })
+                    except ValidationError as error:
+                        error._report_candidate = candidate  # type: ignore[attr-defined]
+                        raise
             except ValidationError as error:
                 # Analysis planner 已关闭 Agno 对同一输入的盲重试。结构错误必须携带
                 # 原始候选和精确字段路径进入 Reporting 纠错循环；否则复杂 Bundle

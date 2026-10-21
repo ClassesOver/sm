@@ -20,6 +20,54 @@ def facts(**changes):
     })
 
 
+def test_supplemental_usage_filter_preserves_original_source_identity_and_indices():
+    result = project_analysis_findings(
+        "analysis_001", facts(), {
+            "analysisId": "analysis_001", "findings": [
+                {"name": "已删指标", "metricCodes": ["discharges_non"], "value": 999},
+                {"name": "其他用途", "metricCodes": ["budget_income"], "value": 888},
+                {"name": "收入补证", "metricCodes": ["income"], "value": 100},
+            ],
+        }, snapshot_hash="b" * 64, citation_ids=("citation_001",),
+        supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
+        metric_scope={"allowedMetricCodes": ["income"], "allowedFieldRefs": ["source.db.table.income"]},
+    )
+    supplemental = [card for card in result if card.source_refs[0].path == "evidence.json"]
+    assert len(supplemental) == 1
+    assert supplemental[0].source_refs[0].pointer == "/findings/2"
+    assert supplemental[0].source_refs[0].file_sha256 == "c" * 64
+    assert supplemental[0].evidence_level == "evidence_missing"
+    assert supplemental[0].limitations
+    assert any("findings/0" in issue for card in result for issue in card.limitations)
+    assert all("discharges_non" not in card.metric_codes for card in result)
+
+
+def test_file_registration_does_not_verify_arbitrary_supplemental_values():
+    result = project_analysis_findings(
+        "analysis_001", facts(), {"analysisId": "analysis_001", "findings": [
+            {"name": "任意补证", "metricCodes": ["income"], "value": 999},
+        ]}, snapshot_hash="b" * 64, citation_ids=("citation_001",),
+        supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
+    )
+    assert result[0].evidence_level == "evidence_missing"
+
+
+def test_many_rejected_supplements_and_full_warning_budget_remain_soft_gaps():
+    for findings, scope in [
+        ([{"metricCodes": ["deleted"]}] * 500, {"allowedMetricCodes": []}),
+        ([{"metricCodes": ["income"]}], {"allowedMetricCodes": ["income"]}),
+    ]:
+        cards = project_analysis_findings(
+            "analysis_001", facts(), {"analysisId": "analysis_001", "findings": findings,
+                                      "warnings": [f"业务限制{i}" for i in range(100)]},
+            snapshot_hash="b" * 64, citation_ids=("citation_001",),
+            supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
+            metric_scope=scope,
+        )
+        assert cards and all(card.evidence_level == "evidence_missing" for card in cards)
+        assert all(len(card.limitations) <= 100 for card in cards)
+
+
 def test_projection_creates_trend_finding_from_period_values():
     result = project_analysis_findings("analysis_001", facts(metrics=[{
         "datasetId": "dataset-abc123", "datasetSha256": "a" * 64, "periodRoles": ["current"],

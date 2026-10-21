@@ -475,9 +475,8 @@ def compact_single_column_tables(markdown: str) -> str:
     return _SERVER_TABLE_BODY.sub(_compact_table, markdown)
 
 
-# 领导先看结论：渲染时在第1章前生成“核心结论”，逐章取正文首段首句。写作规则要求每段
-# 首句先写结论，且这些句子已通过数值核对，不另调模型、不引入新数字；附录、口径与统计
-# 说明类章节不取。去掉协议标记，不重复生成来源编号；报告 Markdown 与编辑器不变。
+# 核心结论只摘录完整、短小的章节表述，不按首句截断口径与限制。
+# 无法完整容纳的章节不生成摘录；复制正文不代表数值已验证。
 SUMMARY_SENTINEL = "REPORTING-EXECUTIVE-SUMMARY"
 SUMMARY_END_SENTINEL = "REPORTING-EXECUTIVE-SUMMARY-END"
 SUMMARY_TITLE = '<p class="report-summary-title"><strong>核心结论</strong></p>'
@@ -487,7 +486,7 @@ _SECTION_START = re.compile(r"^\[\[section:([^\]\r\n]+)\]\][ \t]*$", re.MULTILIN
 _NOT_PROSE = re.compile(r"^(?:#|\||!\[|\[\[|>|\*图表|[-*+]\s|\d+[.)]\s)")
 
 
-# 核心结论是领导首页：含“待核实”的句子不取，括号内保留的元/人次原值去掉，过长的章节名截短。
+# 括号内保留的元/人次原值去掉，过长的章节名截短。
 _SUMMARY_RAW_VALUE = re.compile(r"[（(]-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:元|人次)[）)]")
 
 
@@ -499,24 +498,36 @@ def _summary_title(title: str) -> str:
 
 
 def _section_conclusion(block: str) -> str | None:
+    excerpts = []
+    chapter_heading_seen = False
     for paragraph in block.split("\n\n"):
-        paragraph = paragraph.strip()
-        if not paragraph or _NOT_PROSE.match(paragraph):
+        lines = []
+        for line in paragraph.splitlines():
+            if re.fullmatch(r"\s*\[\[/?section:[^\]\r\n]+\]\]\s*", line):
+                continue
+            heading = re.match(r"\s*(#{1,6})\s+(.+)", line)
+            if heading:
+                if len(heading[1]) <= 2 and not chapter_heading_seen:
+                    chapter_heading_seen = True
+                    continue
+                line = heading[2] + "："
+            lines.append(line)
+        paragraph = "\n".join(lines).strip()
+        if not paragraph:
             continue
+        # Subheadings may contain qualifications. Tables/images/code
+        # may carry qualifications we cannot safely summarize, so omit the chapter.
+        if _NOT_PROSE.match(paragraph) and not re.match(r"^(?:>|[-*+]\s|\d+[.)]\s)", paragraph):
+            return None
+        if "```" in paragraph or "~~~" in paragraph:
+            return None
         text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "").replace("\n", "")
+        text = re.sub(r"^(?:>\s*|[-*+]\s+|\d+[.)]\s+)", "", text)
         text = _SUMMARY_RAW_VALUE.sub("", text)
-        sentences = re.findall(r"[^。！？]+[。！？]", text)
-        # 首句含“待核实”时同段后续多是对它的口径补充（“该口径为含负值的净额口径……”），
-        # 不是结论：改取下一段。
-        if not sentences or "待核实" in sentences[0]:
-            continue
-        sentences = [sentence for sentence in sentences if "待核实" not in sentence]
-        conclusion = sentences[0]
-        # 首句只有定性结论（“整体未达预算。”）时带上紧随的关键数字句。
-        if not re.search(r"\d", conclusion) and len(sentences) > 1 and len(conclusion + sentences[1]) <= 200:
-            conclusion += sentences[1]
-        return conclusion if 8 <= len(conclusion) <= 200 else None
-    return None
+        if text:
+            excerpts.append(text)
+    conclusion = " ".join(excerpts)
+    return conclusion if 8 <= len(conclusion) <= 400 else None
 
 
 def insert_executive_summary(markdown: str, sections: Sequence[Mapping[str, Any]]) -> str:
