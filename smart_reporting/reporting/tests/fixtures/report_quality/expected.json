@@ -7,6 +7,30 @@
     "total": 14,
     "unregistered": 1
   },
+  "binding": {
+    "checked": 14,
+    "verdicts": {
+      "missing": 1,
+      "registered": 13
+    },
+    "registeredReasons": {
+      "decline": 1,
+      "direct": 12
+    },
+    "missingRate": 0.0714,
+    "derivedShare": 0.0,
+    "missingClassification": {
+      "unsupported": 1
+    },
+    "missingExamples": [
+      {
+        "number": "7.77",
+        "unit": "%",
+        "category": "unsupported",
+        "nearestRelativeDistance": 0.05715527019183617
+      }
+    ]
+  },
   "unverifiedMarkers": 0,
   "accuracyWarnings": {
     "分组排名需复核": 1,

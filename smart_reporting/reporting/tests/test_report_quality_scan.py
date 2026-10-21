@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from smart_reporting.reporting.trace.numeric_text import replace_unregistered_numbers
 from smart_reporting.reporting.trace.quality_scan import main, scan_report_quality
 
 _SAMPLE = Path(__file__).parent / "fixtures" / "report_quality"
 
 
 def _sample() -> tuple[str, list[str], dict[str, str]]:
-    return ((_SAMPLE / "report.md").read_text(encoding="utf-8"),
-            [(_SAMPLE / "facts.json").read_text(encoding="utf-8")],
-            json.loads((_SAMPLE / "fields.json").read_text(encoding="utf-8")))
+    return (
+        (_SAMPLE / "report.md").read_text(encoding="utf-8"),
+        [(_SAMPLE / "facts.json").read_text(encoding="utf-8")],
+        json.loads((_SAMPLE / "fields.json").read_text(encoding="utf-8")),
+    )
 
 
 def test_sample_report_quality_matches_baseline():
@@ -34,6 +37,98 @@ def test_quality_scan_reads_only_and_counts_existing_unverified_markers():
 
 
 def test_quality_scan_cli_prints_json(capsys):
-    assert main([str(_SAMPLE / "report.md"), str(_SAMPLE / "facts.json"),
-                 "--fields", str(_SAMPLE / "fields.json")]) == 0
-    assert json.loads(capsys.readouterr().out) == json.loads((_SAMPLE / "expected.json").read_text(encoding="utf-8"))
+    assert (
+        main(
+            [
+                str(_SAMPLE / "report.md"),
+                str(_SAMPLE / "facts.json"),
+                "--fields",
+                str(_SAMPLE / "fields.json"),
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == json.loads(
+        (_SAMPLE / "expected.json").read_text(encoding="utf-8")
+    )
+
+
+def _table_contents() -> list[str]:
+    return [
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "columns": ["项目", "金额"],
+                        "rows": [["甲", 100.00], ["乙", 40.00], ["丙", 20.00]],
+                        "columnMeta": {"金额": {"unit": "万元"}},
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    ]
+
+
+def test_binding_scan_classifies_missing_numbers_by_root_cause():
+    # 四种“待核实”根因各埋一处：末位舍入差、无相近依据、万元值误写成元、目录中无百分比登记值；
+    # 甲乙前两项合计由服务端补算放行（derived，无引用锚点）。
+    contents = _table_contents()
+    markdown = (
+        "甲项目金额100.00万元，乙项目40.00万元，丙项目20.00万元，甲乙合计140.00万元。"
+        "手算末位差100.01万元，预算外的丁项目55.00万元，另一处误写成100.00元，"
+        "还有占比33.00%。"
+    )
+    result = scan_report_quality(markdown, contents)
+    binding = result["binding"]
+    assert binding["verdicts"] == {"missing": 4, "registered": 4}
+    assert binding["registeredReasons"] == {"derived": 1, "direct": 3}
+    assert binding["derivedShare"] == 0.25
+    assert binding["missingClassification"] == {
+        "formMismatch": 1,
+        "noRegisteredValues": 1,
+        "scaleMismatch": 1,
+        "unsupported": 1,
+    }
+    assert {item["category"] for item in binding["missingExamples"]} == set(
+        binding["missingClassification"]
+    )
+    # missing 结论与正文实际替换出的“待核实”同口径。
+    scrubbed = replace_unregistered_numbers(markdown, contents)
+    assert binding["verdicts"]["missing"] == scrubbed.count("待核实") - markdown.count("待核实")
+
+
+def test_quality_scan_compares_against_recorded_trace_index():
+    contents = _table_contents()
+    markdown = "甲项目金额100.00万元，预算外的丁项目55.00万元。"
+    result = scan_report_quality(
+        markdown,
+        contents,
+        trace_index={
+            "subjectBindings": [
+                {
+                    "subjectKind": "text_claim",
+                    "numberReference": {"token": "{{value:x:total:万元}}"},
+                },
+                {"subjectKind": "table_cell"},
+            ],
+            "reviewNotices": [
+                {"kind": "numeric_unverified"},
+                {"kind": "numeric_unverified"},
+                {"kind": "source_review"},
+            ],
+        },
+    )
+    # 回放 1 处待核实、线上记录 2 处：目录扩充后净修复 1 处（missingDelta 为负即改进）。
+    assert result["traceIndex"] == {
+        "anchoredReferences": 1,
+        "recordedUnverifiedNotices": 2,
+        "replayMissing": 1,
+        "missingDelta": -1,
+    }
+
+
+def test_quality_scan_without_trace_index_omits_comparison():
+    result = scan_report_quality("甲项目金额100.00万元。", _table_contents())
+    assert "traceIndex" not in result
+    assert result["binding"]["verdicts"] == {"registered": 1}

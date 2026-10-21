@@ -8,7 +8,7 @@ import math
 import os
 import re
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
@@ -1196,6 +1196,10 @@ class DerivedNumbers:
                     return True
         return False
 
+    def registered_values(self, unit: str) -> tuple[Decimal, ...]:
+        """已登记的派生值（诊断用）：不做语句匹配，仅供质量扫描寻找最近候选。"""
+        return tuple(entry.value for entry in self._values.get(unit, ()))
+
 
 _TOTAL_ROW = re.compile(r"(?:全院|全部|总)?(?:合计|总计|小计|汇总|总额|总量)")
 
@@ -1738,10 +1742,13 @@ def bounded_by_registered(number: Decimal, number_text: str, values: Iterable[De
 
 
 def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, missing=None, on_unverified=None,
-                                 references: Mapping[str, str] | None = None) -> str:
+                                 references: Mapping[str, str] | None = None,
+                                 on_verdict: Callable[[str, Decimal, str, str], None] | None = None) -> str:
     """把没有冻结依据的带单位数字替换为待核实，避免手算结果落盘。
 
     references 仅接受本次服务端渲染生成的 claim→token 映射，不信任正文自带的标记。
+    on_verdict 观测每个核对数字的 (结论, 数值, 单位, 依据原因)，只用于质量扫描统计，
+    不改变替换行为；结论取 registered/percent_point/corrected/missing。
     """
 
     contents = tuple(contents)
@@ -1771,17 +1778,24 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         neutral = NEUTRAL_DIFFERENCE_PREFIX.search(prefix) is not None
         if neutral:
             # 中性差额只认当前句操作数的补算差额，或当前数字由服务端渲染的差额引用。
-            supported = (derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
-                         or referenced_difference_matches(reference, catalog, number, unit))
+            checks = (
+                ("derived", lambda: derived.supports(number, unit, quantum, context, statement=statement, claim=claim)),
+                ("referenced_difference", lambda: referenced_difference_matches(reference, catalog, number, unit)),
+            )
         else:
-            supported = (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
-                         or registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)
-                         or bounded_by_registered(number, number_text, candidates, prefix=prefix)
-                         or derived.supports(number, unit, quantum, context, statement=statement, claim=claim)
-                         # “预算支出有65.9%的行为零”：含义词写在比例之后，按整句判断。
-                         or (unit == "%" and profile_rate_supported(profile_rates, number, quantum,
-                                                                    statement or claim or context)))
-        if supported:
+            checks = (
+                ("direct", lambda: any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number
+                                       for value in candidates)),
+                ("decline", lambda: registered_decline_magnitude(number, unit, candidates, prefix=prefix, quantum=quantum)),
+                ("bounded", lambda: bounded_by_registered(number, number_text, candidates, prefix=prefix)),
+                ("derived", lambda: derived.supports(number, unit, quantum, context, statement=statement, claim=claim)),
+                # “预算支出有65.9%的行为零”：含义词写在比例之后，按整句判断。
+                ("profile_rate", lambda: unit == "%" and profile_rate_supported(
+                    profile_rates, number, quantum, statement or claim or context)),
+            )
+        reason = next((name for name, check in checks if check()), None)
+        if reason is not None:
+            report("registered", number, unit, reason)
             return "registered", _display_precision(number_text)
         # 百分数指标的变化写成“提高2.10%”：数值只对得上登记的百分点差值时改写单位，
         # 避免把两项百分数之差读成相对变化率。
@@ -1790,6 +1804,7 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
                        or registered_decline_magnitude(number, PERCENT_POINT, points,
                                                        prefix=prefix, quantum=quantum)):
             logger.warning("report_percent_point_unit_corrected value={}{}", number_text, unit)
+            report("percent_point", number, unit, "percent_point")
             return "percent_point", _display_precision(number_text)
         # 回放：“三项合计占88.99%”（实为88.9987%，应写89.00%）、“相差约6.51亿元”（实为6.5164亿元）：
         # 模型拿已舍入的显示值手算，末位差一个单位。正文已写明参与计算的对象、服务端补算值唯一
@@ -1801,8 +1816,10 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
                 corrected = f"{nearby[0]:,.{digits}f}" if "," in number_text else f"{nearby[0]:.{digits}f}"
                 logger.warning("report_derived_number_corrected value={}{} corrected={}{}",
                                number_text, unit, corrected, unit)
+                report("corrected", number, unit, "last_digit")
                 return "corrected", _display_precision(corrected)
         logger.warning("report_unregistered_number_replaced value={}{}", number_text, unit)
+        report("missing", number, unit, "unmatched")
         return "missing", number_text
 
     missing = missing or (lambda: "待核实")
@@ -1810,6 +1827,10 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     def unverified(original: str) -> str:
         # 原始写法仅供编辑器核对，不能重新登记成可信数值或写回正文。
         return on_unverified(original) if on_unverified is not None else missing()
+
+    def report(verdict: str, number: Decimal, unit: str, reason: str) -> None:
+        if on_verdict is not None:
+            on_verdict(verdict, number, unit, reason)
 
     # 模型自写表格把单位写在表头（“金额（万元）”），单元格只有数字：按表头单位同样核对。
     for start, end, number_text, unit in reversed(table_unit_cells(markdown)):
@@ -1857,7 +1878,10 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
         ]
         if not matched:
             logger.warning("report_unregistered_number_replaced value={}", match[0])
+            report("missing", number, match["scale"], "bare_scaled")
             return unverified(match[0])
+        if len(matched) == 1:
+            report("registered", number, matched[0], "bare_scaled")
         written = _display_precision(match["number"]) + match["scale"]
         return written + matched[0][1:] if len(matched) == 1 else written
 
@@ -1890,9 +1914,12 @@ def replace_unregistered_numbers(markdown: str, contents: Iterable[str], *, miss
     multiples = registered_multiples(contents, catalog)
 
     def replace_multiple(match: re.Match[str]) -> str:
+        number = Decimal(match["number"])
         if registered_multiple_matches(match, multiples):
+            report("registered", number, "倍", "multiple")
             return _display_precision(match["number"]) + match[0][len(match["number"]):]
         logger.warning("report_unregistered_multiple_replaced value={}", match[0])
+        report("missing", number, "倍", "multiple")
         return unverified(match[0])
 
     return MULTIPLE_NUMBER.sub(replace_multiple, BARE_SCALED_NUMBER.sub(replace_bare, replaced))
