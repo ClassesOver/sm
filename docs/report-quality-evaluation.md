@@ -13,6 +13,8 @@ MPLCONFIGDIR=/tmp/report-quality-matplotlib .venv/bin/python -m scripts.evaluate
 
 `validate` 只检查方案、分区、样本及配置文件身份；`plan_validated` 不表示报告或审核已经执行。`evaluate` 校验实际报告、双审及计量证据，按任务成对计算基线/候选结果。缺少证据返回 `not_ready`、`acceptanceMet=null` 和具体 issues，退出码 2；证据完整但未达到冻结阈值也退出 2。结构无效返回 `invalid`。完整评估且阈值满足才退出 0，但所有结果的 `rolloutAuthorized` 始终为 false。
 
+`--output` 不得覆盖 study.json 或任何登记的配置、样本、授权、报告、计量、审核及裁决文件；指向这些文件的符号链接和硬链接同样拒绝。
+
 保留原有引用闭环验证入口 `scripts/check_reference_review.py`：其 JUnit 实际执行数、退出码、失败和跳过检查仍用于工程回归。工程回归不代替这里的真实业务评估。
 
 ## 收集和冻结
@@ -47,6 +49,8 @@ MPLCONFIGDIR=/tmp/report-quality-matplotlib .venv/bin/python -c 'import json; fr
 分别输出 pilot/holdout 的完整成对任务数、每方案任务平均未支持主张率、回答条件覆盖率、严重错误数、费用和耗时；不会把试点与保留集混合平均。不同计价币种不自动换汇，保持 not_ready。缺失一边的任务不计为改善，整个研究不能满足验收。
 
 配对结果包括未支持率降低、回答覆盖增益的胜/负/平、平均变化及双侧精确符号检验 p 值。平局不进入符号检验分母。统计量用于评估人员理解配对结果，不证明因果，也不替代预登记的统计方案或领域结论。阈值验收使用完整保留集的任务平均率、严重错误总数和平均成本比；基线成本为零时成本比未知，不能自动通过。
+
+均值使用十进制中间值计算，避免有限费用相加溢出后把成本比误算为零。均值或成本比无法有限表示、或正值下溢为零时保持 `not_ready`，不输出 Infinity/NaN 或标记验收通过。
 
 即使所有阈值满足，也只能说这批外部证据的计算满足登记阈值，不能说消除了所有幻觉。必须另外完成独立审核签字、覆盖代表性判断、未发现的遗漏主张检查及部署审核。
 

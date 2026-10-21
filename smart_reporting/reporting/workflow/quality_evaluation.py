@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 from collections import Counter
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any, Literal
 
@@ -217,6 +218,18 @@ def _paired(values: list[float]) -> dict:
     }
 
 
+def _finite_mean(values: list[int | float]) -> float | None:
+    if not values:
+        return None
+    with localcontext() as context:
+        context.prec = 700
+        mean = sum((Decimal(str(value)) for value in values), Decimal(0)) / len(values)
+    result = float(mean)
+    if not math.isfinite(result) or (mean != 0 and result == 0):
+        raise ValueError("评估均值无法有限表示")
+    return result
+
+
 def evaluate_study(evidence: StudyEvidence, root: Path, *, validate_only: bool = False) -> dict:
     """Read identities and external attestations. Never fabricates missing reviews."""
     plan = evidence.plan
@@ -356,18 +369,23 @@ def evaluate_study(evidence: StudyEvidence, root: Path, *, validate_only: bool =
         }
         for variant in (plan.baseline, plan.candidate):
             rows = [measurements[(task.task_id, variant)] for task in pairs]
-            summary["variants"][variant] = {
-                key: sum(row[key] for row in rows) / len(rows) if rows else None
-                for key in (
-                    "unsupportedRate",
-                    "answerCoverage",
-                    "criticalErrors",
-                    "cost",
-                    "wallSeconds",
-                    "inputTokens",
-                    "outputTokens",
-                )
-            }
+            aggregates = {}
+            for key in (
+                "unsupportedRate",
+                "answerCoverage",
+                "criticalErrors",
+                "cost",
+                "wallSeconds",
+                "inputTokens",
+                "outputTokens",
+            ):
+                try:
+                    aggregates[key] = _finite_mean([row[key] for row in rows])
+                except (ValueError, OverflowError):
+                    aggregates[key] = None
+                    issues.append({"code": "metric_aggregate_unrepresentable", "partition": partition,
+                                   "variant": variant, "metric": key})
+            summary["variants"][variant] = aggregates
         summary["pairedUnsupportedReduction"] = _paired(
             [
                 measurements[(task.task_id, plan.baseline)]["unsupportedRate"]
@@ -387,9 +405,15 @@ def evaluate_study(evidence: StudyEvidence, root: Path, *, validate_only: bool =
         return result
     held = result["metrics"]["holdout"]["variants"]
     baseline, candidate = held[plan.baseline], held[plan.candidate]
-    cost_ratio = candidate["cost"] / baseline["cost"] if baseline["cost"] else None
-    if cost_ratio is None:
+    if not baseline["cost"]:
         issues.append({"code": "baseline_cost_zero"})
+        return result
+    with localcontext() as context:
+        context.prec = 700
+        ratio = Decimal(str(candidate["cost"])) / Decimal(str(baseline["cost"]))
+    cost_ratio = float(ratio)
+    if not math.isfinite(cost_ratio) or (ratio != 0 and cost_ratio == 0):
+        issues.append({"code": "cost_ratio_unrepresentable"})
         return result
     result["acceptanceMet"] = (
         candidate["unsupportedRate"] <= plan.thresholds.maximum_unsupported_rate
@@ -407,6 +431,28 @@ def evaluate_study(evidence: StudyEvidence, root: Path, *, validate_only: bool =
     return result
 
 
+def _same_file(left: Path, right: Path) -> bool:
+    if left.resolve() == right.resolve():
+        return True
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
+def _registered_files(evidence: StudyEvidence) -> list[BenchmarkFileIdentity]:
+    files = [evidence.plan.baseline_configuration, evidence.plan.candidate_configuration]
+    for task in evidence.plan.tasks:
+        files.extend(task.inputs)
+        if task.authorization is not None:
+            files.append(task.authorization)
+    for run in evidence.runs:
+        files.extend((run.report, run.metering, *run.reviews))
+        if run.adjudication is not None:
+            files.append(run.adjudication)
+    return files
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -417,10 +463,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    if args.output is not None and args.output.resolve() == args.study.resolve():
+    if args.output is not None and _same_file(args.output, args.study):
         parser.error("输出文件不能覆盖冻结评估输入")
     try:
         evidence = StudyEvidence.model_validate_json(args.study.read_bytes())
+        if args.output is not None and any(
+            _same_file(args.output, args.study.parent / file.path) for file in _registered_files(evidence)
+        ):
+            parser.error("输出文件不能覆盖冻结评估证据")
         report = evaluate_study(
             evidence, args.study.parent, validate_only=args.command == "validate"
         )

@@ -23,7 +23,8 @@ def _file(root, name, content):
     return {"path": name, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def _evidence(root, *, complete=True, real=True):
+def _evidence(root, *, complete=True, real=True, baseline_cost=2, candidate_cost=1,
+              maximum_cost_ratio=1.2):
     tasks = []
     for i in range(42 if complete else 2):
         task = {
@@ -54,7 +55,7 @@ def _evidence(root, *, complete=True, real=True):
                 "maximumUnsupportedRate": 0.05,
                 "minimumAnswerCoverage": 0.9,
                 "maximumCriticalErrors": 0,
-                "maximumCostRatio": 1.2,
+                "maximumCostRatio": maximum_cost_ratio,
             },
         }
     )
@@ -73,7 +74,7 @@ def _evidence(root, *, complete=True, real=True):
                     **common,
                     "provenance": "provider_export",
                     "currency": "CNY",
-                    "totalCost": 2 if variant == "old" else 1,
+                    "totalCost": baseline_cost if variant == "old" else candidate_cost,
                     "wallSeconds": 2,
                     "inputTokens": 10,
                     "outputTokens": 10,
@@ -355,3 +356,51 @@ def test_cli_cannot_overwrite_frozen_input_with_its_summary(tmp_path):
     with pytest.raises(SystemExit):
         main(["evaluate", str(study), "--output", str(study)])
     assert study.read_text() == original
+
+
+def test_large_finite_costs_cannot_overflow_mean_and_false_pass_ratio(tmp_path):
+    evidence = _evidence(tmp_path, baseline_cost=1e308, candidate_cost=1e306,
+                         maximum_cost_ratio=0.001)
+    report = evaluate_study(evidence, tmp_path)
+    assert report["status"] == "evidence_evaluated"
+    assert report["costRatio"] == pytest.approx(0.01)
+    assert report["acceptanceMet"] is False
+    assert report["metrics"]["holdout"]["variants"]["old"]["cost"] == 1e308
+    json.dumps(report, allow_nan=False)
+
+
+@pytest.mark.parametrize("baseline_cost,candidate_cost", [(5e-324, 1e308), (1e308, 5e-324)])
+def test_unrepresentable_cost_ratio_stays_unknown(tmp_path, baseline_cost, candidate_cost):
+    report = evaluate_study(_evidence(tmp_path, baseline_cost=baseline_cost,
+                                     candidate_cost=candidate_cost), tmp_path)
+    assert report["status"] == "not_ready" and report["acceptanceMet"] is None
+    assert any(issue["code"] == "cost_ratio_unrepresentable" for issue in report["issues"])
+    json.dumps(report, allow_nan=False)
+
+
+@pytest.mark.parametrize("kind", ["configuration", "sample", "authorization", "report", "metering", "review"])
+@pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink"])
+def test_cli_output_cannot_overwrite_any_registered_evidence(tmp_path, kind, alias):
+    evidence = _evidence(tmp_path, complete=False, real=False)
+    files = {
+        "configuration": evidence.plan.baseline_configuration,
+        "sample": evidence.plan.tasks[0].inputs[0],
+        "authorization": evidence.plan.tasks[0].authorization,
+        "report": evidence.runs[0].report,
+        "metering": evidence.runs[0].metering,
+        "review": evidence.runs[0].reviews[0],
+    }
+    registered = tmp_path / files[kind].path
+    original = registered.read_bytes()
+    output = registered
+    if alias != "direct":
+        output = tmp_path / "output-alias.json"
+        if alias == "symlink":
+            output.symlink_to(registered)
+        else:
+            output.hardlink_to(registered)
+    study = tmp_path / "study.json"
+    study.write_text(evidence.model_dump_json(by_alias=True))
+    with pytest.raises(SystemExit):
+        main(["evaluate", str(study), "--output", str(output)])
+    assert registered.read_bytes() == original
