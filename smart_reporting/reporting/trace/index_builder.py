@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
+
+from loguru import logger
+from pydantic import ValidationError
 
 from ..data_sources import DatasetHandle
 from ..delivery.artifacts_v1 import ArtifactFile, DatasetLineage
@@ -16,6 +20,7 @@ from .contracts_v1 import (
     DatasetSnapshotRefV1,
     FactFileEntryV1,
     RevisionTraceIndexV1,
+    SubjectBindingV1,
     TraceFileRefV1,
     canonical_json_bytes,
     derive_resource_id,
@@ -42,6 +47,7 @@ def build_csv_trace_index(
     chart_traces: Sequence[Any] = (),
     computation_files: Sequence[Any] = (),
     computations: Sequence[Any] = (),
+    table_source_files: Sequence[Any] = (),
     subject_bindings: Sequence[Any] = (),
     review_notices: Sequence[Any] | None = None,
     drilldown_metrics: Sequence[Any] = (),
@@ -56,6 +62,8 @@ def build_csv_trace_index(
     chart_traces：图表追溯 ChartTraceV1。
     computation_files：补证脚本与 evidence 文件身份（B4 计算层登记）。
     computations：补充分析计算记录 ComputationRecordV1。
+    table_source_files：冻结表格来源身份，仅登记 subject 操作数实际引用的来源；
+    身份未知、冲突或不能登记时，仅降级对应绑定，不影响其他追溯层。
     drilldown_metrics：服务端冻结的指标、维度、算法与固定范围声明（B7）。
     """
 
@@ -181,6 +189,121 @@ def build_csv_trace_index(
                 sha256=sha_value,
             )
         )
+    used_table_sources: set[str] = set()
+    parsed_subjects: list[SubjectBindingV1] = []
+    for raw_subject in subject_bindings:
+        try:
+            subject = SubjectBindingV1.model_validate(raw_subject)
+        except (ValidationError, ValueError, TypeError) as error:
+            logger.warning("report_table_subject_invalid error={}", str(error)[:300])
+            continue
+        parsed_subjects.append(subject)
+        number = subject.number_reference
+        if number is not None and number.table_derivation is not None:
+            used_table_sources.update(
+                operand.file_resource_id for operand in number.table_derivation.operands
+            )
+
+    # Table sources are independent of computation records. Only referenced frozen
+    # identities are eligible, and any ambiguity degrades the affected subject.
+    source_by_id: dict[str, tuple[str, int, str]] = {}
+    invalid_source_ids: set[str] = set()
+    for identity in table_source_files:
+        resource_id = None
+        try:
+            raw_path = identity.get("path") if isinstance(identity, Mapping) else identity.path
+            if isinstance(raw_path, str):
+                resource_id = derive_resource_id(raw_path)
+            if resource_id not in used_table_sources:
+                continue
+            fields = identity if isinstance(identity, Mapping) else {
+                "path": identity.path, "size": identity.size, "sha256": identity.sha256,
+            }
+            # Validate the original fields before coercion: int(30.5) must not
+            # silently authorize a different frozen file identity.
+            source_ref = TraceFileRefV1(
+                resourceId=resource_id,
+                path=fields["path"],
+                mediaType="application/json",
+                size=fields["size"],
+                sha256=fields["sha256"],
+            )
+            identity_tuple = (source_ref.path, source_ref.size, source_ref.sha256)
+            previous = source_by_id.get(resource_id)
+            if previous is not None and previous != identity_tuple:
+                invalid_source_ids.add(resource_id)
+                source_by_id.pop(resource_id, None)
+                continue
+            if resource_id not in invalid_source_ids:
+                source_by_id[resource_id] = identity_tuple
+        except (KeyError, AttributeError, TypeError, ValueError) as error:
+            if resource_id in used_table_sources:
+                invalid_source_ids.add(resource_id)
+                source_by_id.pop(resource_id, None)
+            logger.warning("report_table_source_identity_invalid error={}", str(error)[:300])
+
+    registered_by_id = {item.resource_id: item for item in files}
+    registered_by_path = {item.path: item for item in files}
+    for resource_id in sorted(used_table_sources):
+        identity = source_by_id.get(resource_id)
+        if identity is None:
+            invalid_source_ids.add(resource_id)
+            logger.warning("report_table_source_missing resource_id={}", resource_id)
+            continue
+        path_value, size_value, sha_value = identity
+        existing = registered_by_id.get(resource_id)
+        existing_path = registered_by_path.get(path_value)
+        if existing is not None or existing_path is not None:
+            if not (
+                existing is not None
+                and existing_path is existing
+                and existing.path == path_value
+                and existing.media_type == "application/json"
+                and existing.size == size_value
+                and existing.sha256 == sha_value
+            ):
+                invalid_source_ids.add(resource_id)
+                logger.warning("report_table_source_registration_conflict resource_id={}", resource_id)
+            continue
+        if len(files) >= 2000:
+            invalid_source_ids.add(resource_id)
+            logger.warning("report_table_source_file_limit resource_id={}", resource_id)
+            continue
+        try:
+            file_ref = TraceFileRefV1(
+                resourceId=resource_id,
+                path=path_value,
+                mediaType="application/json",
+                size=size_value,
+                sha256=sha_value,
+            )
+        except (ValidationError, ValueError, TypeError) as error:
+            invalid_source_ids.add(resource_id)
+            logger.warning(
+                "report_table_source_unregistrable resource_id={} error={}",
+                resource_id,
+                str(error)[:300],
+            )
+            continue
+        files.append(file_ref)
+        registered_by_id[resource_id] = file_ref
+        registered_by_path[path_value] = file_ref
+
+    final_subjects: list[SubjectBindingV1] = []
+    for subject in parsed_subjects:
+        number = subject.number_reference
+        derivation = None if number is None else number.table_derivation
+        if derivation is not None and any(
+            operand.file_resource_id in invalid_source_ids for operand in derivation.operands
+        ):
+            if subject.fact_refs:
+                number = number.model_copy(update={"table_derivation": None})
+                subject = subject.model_copy(update={"number_reference": number})
+            else:
+                logger.warning("report_table_subject_dropped subject_id={}", subject.subject_id)
+                continue
+        final_subjects.append(subject)
+
     resource_ids = {item.resource_id for item in files}
     for analysis_id, file_resource_id in supplemental_evidence.items():
         if file_resource_id in resource_ids and analysis_id not in {
@@ -207,7 +330,7 @@ def build_csv_trace_index(
         tables=tuple(server_table_traces),
         chartTraces=tuple(chart_traces),
         computations=tuple(computations),
-        subjectBindings=tuple(subject_bindings),
+        subjectBindings=tuple(final_subjects),
         reviewNotices=None if review_notices is None else tuple(review_notices),
         drilldownMetrics=tuple(drilldown_metrics),
     )

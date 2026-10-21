@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable
 from copy import copy
@@ -134,6 +135,7 @@ from .phase_models import (
     SectionContent,
     SectionDecision,
     SectionEvidenceBundle,
+    SectionEvidenceFile,
     SectionPlanOutput,
 )
 from .publication import _accepted_artifacts_match_manifest
@@ -1445,6 +1447,71 @@ def _backfill_claim_management_question_refs(candidate: Any, work_item: SectionW
     return {wrapper_key: normalized_render} if wrapper_key else normalized_render
 
 
+def _verified_table_sources(files: Sequence[SectionEvidenceFile]) -> dict[str, bytes]:
+    """只从未投影证据的冻结身份签发表格来源；冲突来源整组弃用。"""
+
+    sources: dict[str, bytes] = {}
+    conflicting: set[str] = set()
+    for evidence_file in files:
+        identity = evidence_file.identity
+        resource_id = derive_resource_id(identity.path)
+        try:
+            content = evidence_file.content.encode("utf-8")
+        except UnicodeEncodeError:
+            conflicting.add(resource_id)
+            sources.pop(resource_id, None)
+            loguru_logger.warning("report_table_source_invalid_utf8 resource_id={}", resource_id)
+            continue
+        if len(content) != identity.size or hashlib.sha256(content).hexdigest() != identity.sha256:
+            conflicting.add(resource_id)
+            sources.pop(resource_id, None)
+            loguru_logger.warning("report_table_source_identity_mismatch resource_id={}", resource_id)
+            continue
+        if resource_id in sources and sources[resource_id] != content:
+            conflicting.add(resource_id)
+            sources.pop(resource_id)
+            loguru_logger.warning("report_table_source_identity_conflict resource_id={}", resource_id)
+        elif resource_id not in conflicting:
+            sources[resource_id] = content
+    return sources
+
+
+def _evidence_and_computation_layers(
+    evidence_manifest: Any,
+) -> tuple[tuple[ComputationRecordV1, ...], tuple[FileIdentity, ...]]:
+    """B4：计算记录/脚本只随有效记录登记；补证文件身份始终登记。
+
+    修订产物包只收 manifest/index/job 登记过的身份；补证文件不进索引时，编辑器
+    导出的修订包会整棵丢失 evidence 树，编辑器与离线回放随之失去核验来源。
+    计算记录无效或存在循环依赖时只丢弃计算层，不连补证文件一起丢。
+    """
+
+    records: list[ComputationRecordV1] = []
+    scripts: list[FileIdentity] = []
+    evidence_files: list[FileIdentity] = []
+    for item in (evidence_manifest.evidence if evidence_manifest is not None else ()):
+        evidence_files.extend(item.evidence_files)
+        raw = item.computation_record
+        if not isinstance(raw, dict):
+            continue
+        try:
+            record = ComputationRecordV1.model_validate(raw)
+        except ValidationError:
+            loguru_logger.warning(
+                "report_computation_record_invalid analysis_id={}",
+                item.analysis_id,
+            )
+            continue
+        records.append(record)
+        if item.computation_script_file is not None:
+            scripts.append(item.computation_script_file)
+    cycles = detect_computation_cycles(tuple(records))
+    if cycles:
+        loguru_logger.warning("report_computation_cycle_dropped cycles={}", cycles[:5])
+        return (), tuple(evidence_files)
+    return tuple(records), tuple((*scripts, *evidence_files))
+
+
 async def _generate_section_in_blocks(
     agent: Any,
     instruction_payload: Mapping[str, Any],
@@ -1464,6 +1531,7 @@ async def _generate_section_in_blocks(
     """
 
     original_evidence_files = evidence.files
+    table_sources = _verified_table_sources(original_evidence_files)
     scoped_fact_ids: set[str] | None = None
     if work_item.finding_ids:
         scoped_files, scoped_fact_ids, source_warnings = finding_evidence_view(
@@ -1692,6 +1760,7 @@ async def _generate_section_in_blocks(
                     agent, instruction_payload, evidence, work_item, decision,
                     scope=scope, run_context=run_context, thinking_request=thinking_request,
                     review_notices=review_notices, number_contents=number_contents,
+                    table_sources=table_sources,
                     allowed_fact_ids=scoped_fact_ids, compact=compact,
                 )
             except (ReportingError, TaskExecutionContextHardLimitError) as error:
@@ -1880,6 +1949,7 @@ async def _generate_section_in_blocks(
                 content.markdown, number_contents,
                 key=f"{work_item.section_code}:{block_plan.block_id}",
                 field_definitions=block_payload["fieldDefinitions"],
+                table_sources=table_sources,
             )
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
@@ -1943,12 +2013,15 @@ async def _generate_whole_section_content(
     thinking_request: ThinkingRequest,
     review_notices: dict[str, list[dict[str, Any]]] | None = None,
     number_contents: Sequence[str] | None = None,
+    table_sources: Mapping[str, bytes] | None = None,
     allowed_fact_ids: set[str] | None = None,
     compact: bool = False,
 ) -> RenderSectionDecision:
     """一次生成整章正文；引用与顺序始终由已校验规划决定。"""
 
     number_contents = tuple(number_contents or (item.content for item in evidence.files))
+    if table_sources is None:
+        table_sources = _verified_table_sources(evidence.files)
     payload = {
         "phase": "section",
         "generationStage": "content",
@@ -2169,6 +2242,7 @@ async def _generate_whole_section_content(
             content_by_id[block_plan.block_id].markdown, number_contents,
             key=f"{work_item.section_code}:{block_plan.block_id}",
             field_definitions=payload["fieldDefinitions"],
+            table_sources=table_sources,
         )
         block = ReportDraftBlock(
             blockId=block_plan.block_id,
@@ -3537,35 +3611,27 @@ class RuntimeSectionsMixin:
                 for analysis_id, item in trace_fact_files.items()
             },
         )
+        used_table_source_ids = {
+            operand.file_resource_id
+            for subject in subject_bindings
+            if subject.number_reference is not None
+            and subject.number_reference.table_derivation is not None
+            for operand in subject.number_reference.table_derivation.operands
+        }
+        # 来源身份独立于计算记录；保留重复项供索引识别冲突身份。
+        table_source_files = tuple(
+            identity
+            for entry in (
+                checkpoint.evidence_manifest.evidence
+                if checkpoint.evidence_manifest is not None else ()
+            )
+            for identity in entry.evidence_files
+            if derive_resource_id(identity.path) in used_table_source_ids
+        )
         # B4：补充分析计算记录（ComputationRecordV1）与脚本文件进索引。
-        computation_records: list[ComputationRecordV1] = []
-        computation_files: list[FileIdentity] = []
-        if checkpoint.evidence_manifest is not None:
-            for item in checkpoint.evidence_manifest.evidence:
-                raw = item.computation_record
-                if not isinstance(raw, dict):
-                    continue
-                try:
-                    record = ComputationRecordV1.model_validate(raw)
-                except ValidationError:
-                    loguru_logger.warning(
-                        "report_computation_record_invalid analysis_id={}",
-                        item.analysis_id,
-                    )
-                    continue
-                computation_records.append(record)
-                if item.computation_script_file is not None:
-                    computation_files.append(item.computation_script_file)
-                for evidence_file in item.evidence_files:
-                    computation_files.append(evidence_file)
-            cycles = detect_computation_cycles(tuple(computation_records))
-            if cycles:
-                # 计算记录只是追溯元数据；循环依赖时不登记计算层，报告照常交付。
-                loguru_logger.warning(
-                    "report_computation_cycle_dropped cycles={}", cycles[:5]
-                )
-                computation_records = []
-                computation_files = []
+        computation_records, computation_files = _evidence_and_computation_layers(
+            checkpoint.evidence_manifest
+        )
         manifest = await self._build_and_write_artifact_manifest(
             manifest_path,
             accepted_artifacts=accepted_artifacts,
@@ -3576,6 +3642,7 @@ class RuntimeSectionsMixin:
             chart_traces=tuple(chart_traces),
             computation_files=tuple(computation_files),
             computations=tuple(computation_records),
+            table_source_files=table_source_files,
             subject_bindings=subject_bindings,
             review_notices=(tuple(
                 notice.model_copy(update={"section_id": artifact.section_code})

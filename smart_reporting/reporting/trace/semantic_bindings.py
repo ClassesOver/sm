@@ -1,17 +1,20 @@
 """把冻结数值选择器及提示类型保留到编辑器；不根据业务名称猜事实。"""
+
 from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from typing import Any, NamedTuple
+
+from loguru import logger
 
 from ..hospital_operation.deterministic_analysis import (
     DeterministicMetricFact,
     _aligned_comparison_values,
 )
-from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1
+from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1, TableDerivationV1
 from .fact_index import fact_binding_records, merge_binding_records, merge_frozen_fact
 from .numeric_text import (
     _NUMBER,
@@ -20,6 +23,9 @@ from .numeric_text import (
     align_placeholder_direction,
     correct_constant_monthly_totals,
     correct_period_extrema,
+    derived_number_values,
+    derived_reference_resolution,
+    derived_reference_token,
     frozen_fact_bundles,
     frozen_number_catalog,
     group_large_amounts,
@@ -28,6 +34,7 @@ from .numeric_text import (
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
+from .table_sources import resolve_table_derivation
 
 
 def reference_fact_ids(token: str) -> tuple[str, ...]:
@@ -62,7 +69,9 @@ class BoundNumberDisplay(NamedTuple):
     verified: bool
 
 
-def bound_number_display(markdown: str, claim_id: str, selected: dict[str, Any] | None) -> BoundNumberDisplay | None:
+def bound_number_display(
+    markdown: str, claim_id: str, selected: dict[str, Any] | None
+) -> BoundNumberDisplay | None:
     """读取唯一锚点紧邻显示，并按冻结选择器核值；不从同句其他数值借依据。"""
     from .subject_builder import (
         _DECLINE_PREFIX,
@@ -71,29 +80,35 @@ def bound_number_display(markdown: str, claim_id: str, selected: dict[str, Any] 
         value_matches,
     )
 
-    marker = f'[[claim:{claim_id}]]'
+    marker = f"[[claim:{claim_id}]]"
     if markdown.count(marker) != 1:
         return None
     position = markdown.index(marker)
-    before = re.sub(r'(?:\s*\[\[citation:[^\]\r\n]+\]\]\s*)+$', '', markdown[:position])
-    unit = re.escape(selected['unit']) if selected and selected['unit'] else ''
-    units = (unit + '|' if unit else '') + _UNIT_PATTERN
-    shown = re.search(r'(?<![\d.,+\-a-zA-Z_])(?P<display>' + _NUMBER +
-                      rf'\s*(?:{units})?)\s*$', before)
+    before = re.sub(r"(?:\s*\[\[citation:[^\]\r\n]+\]\]\s*)+$", "", markdown[:position])
+    unit = re.escape(selected["unit"]) if selected and selected["unit"] else ""
+    units = (unit + "|" if unit else "") + _UNIT_PATTERN
+    shown = re.search(
+        r"(?<![\d.,+\-a-zA-Z_])(?P<display>" + _NUMBER + rf"\s*(?:{units})?)\s*$", before
+    )
     if shown is None:
         return None
-    prefix = re.sub(r'\[\[[^\]\n]+\]\]', '', markdown[:shown.start('display')])
-    direction = re.search(_DECLINE_PREFIX + '$', prefix)
-    comparable = (direction[0] if direction else '') + shown['display']
+    prefix = re.sub(r"\[\[[^\]\n]+\]\]", "", markdown[: shown.start("display")])
+    direction = re.search(_DECLINE_PREFIX + "$", prefix)
+    comparable = (direction[0] if direction else "") + shown["display"]
     verified = selected is not None and (
-        value_matches(comparable, selected['value'])
-        or formatted_value_matches(comparable, selected['value'], selected['unit'])
+        value_matches(comparable, selected["value"])
+        or formatted_value_matches(comparable, selected["value"], selected["unit"])
     )
-    return BoundNumberDisplay(shown['display'], shown.start('display'), verified)
+    return BoundNumberDisplay(shown["display"], shown.start("display"), verified)
 
 
-def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions=None):
+def render_bound_numbers(
+    markdown: str, contents, *, key: str, field_definitions=None,
+    table_sources: Mapping[str, bytes] | None = None,
+):
     contents = tuple(contents)
+    table_sources = table_sources or {}
+    table_derivations: dict[str, TableDerivationV1] = {}
     from .number_selection import align_number_selections
 
     markdown, _ = align_number_selections(markdown, contents, field_definitions)
@@ -105,60 +120,100 @@ def render_bound_numbers(markdown: str, contents, *, key: str, field_definitions
     def identity(kind: str) -> str:
         nonlocal counter
         counter += 1
-        return kind + '-' + hashlib.sha256(f'{key}:{counter}'.encode()).hexdigest()[:20]
+        return kind + "-" + hashlib.sha256(f"{key}:{counter}".encode()).hexdigest()[:20]
 
-    def notice(kind: str, text: str = '待核实', *, original_text: str | None = None) -> str:
-        claim_id = identity('review')
+    def notice(kind: str, text: str = "待核实", *, original_text: str | None = None) -> str:
+        claim_id = identity("review")
         if original_text is not None and len(original_text) > 4096:
             original_text = None  # 附加展示信息超预算不能阻断报告生成。
         notices.append(ReviewNoticeV1(claimId=claim_id, kind=kind, originalText=original_text))
-        return text + f'[[claim:{claim_id}]]'
+        return text + f"[[claim:{claim_id}]]"
 
     def annotate(token: str, text: str) -> str:
-        if token not in catalog or text == '数值待核实':
-            return notice('numeric_unverified', text)
-        claim_id = identity('number')
+        if token not in catalog or text == "数值待核实":
+            return notice("numeric_unverified", text)
+        claim_id = identity("number")
         references.append((claim_id, token))
-        return text + f'[[claim:{claim_id}]]'
+        return text + f"[[claim:{claim_id}]]"
 
     # 模型不能自行签发数字锚点。原正文的复核表述独立记为来源复核，不能拿来恢复数字。
-    markdown = re.sub(r'\[\[claim:[^\]\n]+\]\]', '', markdown)
-    markdown = re.sub('待核实', lambda _: notice('source_review'), markdown)
-    markdown = render_frozen_numbers(align_placeholder_direction(markdown, contents), catalog, annotate=annotate)
-    markdown = plain_period_wording(group_large_amounts(replace_unregistered_numbers(
-        normalize_signed_wording(correct_period_extrema(
-            correct_constant_monthly_totals(markdown, contents), contents)), contents,
-        missing=lambda: notice('numeric_unverified'),
-        on_unverified=lambda original: notice('numeric_unverified', original_text=original),
-        references=dict(references),
-    )))
+    markdown = re.sub(r"\[\[claim:[^\]\n]+\]\]", "", markdown)
+    markdown = re.sub("待核实", lambda _: notice("source_review"), markdown)
+    markdown = render_frozen_numbers(
+        align_placeholder_direction(markdown, contents), catalog, annotate=annotate
+    )
+
+    def derived_anchor(entry: Any, unit: str) -> str:
+        token = derived_reference_token(entry, unit)
+        if token is None:
+            return ""
+        if entry.table_derivation is not None:
+            table_derivations[token] = entry.table_derivation
+        claim_id = identity("number")
+        references.append((claim_id, token))
+        return f"[[claim:{claim_id}]]"
+
+    markdown = plain_period_wording(
+        group_large_amounts(
+            replace_unregistered_numbers(
+                normalize_signed_wording(
+                    correct_period_extrema(
+                        correct_constant_monthly_totals(markdown, contents), contents
+                    )
+                ),
+                contents,
+                missing=lambda: notice("numeric_unverified"),
+                on_unverified=lambda original: notice("numeric_unverified", original_text=original),
+                references=dict(references),
+                on_derived_anchor=derived_anchor,
+                table_sources=table_sources,
+            )
+        )
+    )
     resolver = NumberReferenceResolver(contents)
     signed_references = []
     for claim_id, token in references:
-        marker = f'[[claim:{claim_id}]]'
+        marker = f"[[claim:{claim_id}]]"
         position = markdown.find(marker)
         if position < 0:
             continue
-        selected = resolver.resolve(token)
+        table_derivation = table_derivations.get(token)
+        selected = (
+            resolve_table_derivation(token, table_derivation, table_sources)
+            if table_derivation is not None else resolver.resolve(token)
+        )
         shown = bound_number_display(markdown, claim_id, selected)
         if shown is None:
             # 数值可能已被下游替换为待核实，不能为占位继续签发原数值引用。
-            markdown = markdown[:position] + markdown[position + len(marker):]
+            markdown = markdown[:position] + markdown[position + len(marker) :]
             continue
         display_text = shown.text
         if not shown.verified:
             # 后置规范化不能改变已经登记的事实值；失配则保留真实待核实事件。
-            markdown = (markdown[:shown.start] + notice('numeric_unverified', original_text=display_text)
-                        + markdown[position + len(marker):])
+            markdown = (
+                markdown[: shown.start]
+                + notice("numeric_unverified", original_text=display_text)
+                + markdown[position + len(marker) :]
+            )
             continue
-        signed_references.append(NumberReferenceV1(
-            claimId=claim_id, token=token, statementSha256=statement_fingerprint(markdown, claim_id),
-            displayText=display_text,
-        ))
+        signed_references.append(
+            NumberReferenceV1(
+                claimId=claim_id,
+                token=token,
+                statementSha256=statement_fingerprint(markdown, claim_id),
+                displayText=display_text,
+                tableDerivation=table_derivation,
+            )
+        )
     # 后续引用撤销会改变同句文字，指纹必须在最终正文上统一冻结。
-    references = tuple(reference.model_copy(update={
-        'statement_sha256': statement_fingerprint(markdown, reference.claim_id),
-    }) for reference in signed_references)
+    references = tuple(
+        reference.model_copy(
+            update={
+                "statement_sha256": statement_fingerprint(markdown, reference.claim_id),
+            }
+        )
+        for reference in signed_references
+    )
     return strip_bound_anchors(markdown, references, notices)
 
 
@@ -170,16 +225,28 @@ def strip_bound_anchors(markdown: str, references, notices):
         offsets[match[1]] = match.start() - removed
         removed += len(match[0])
     plain = re.sub(r"\[\[claim:[^\]\n]+\]\]", "", markdown)
-    return (plain,
-            tuple(item.model_copy(update={"offset": offsets[item.claim_id]}) for item in references if item.claim_id in offsets),
-            tuple(item.model_copy(update={"offset": offsets[item.claim_id]}) for item in notices if item.claim_id in offsets))
+    return (
+        plain,
+        tuple(
+            item.model_copy(update={"offset": offsets[item.claim_id]})
+            for item in references
+            if item.claim_id in offsets
+        ),
+        tuple(
+            item.model_copy(update={"offset": offsets[item.claim_id]})
+            for item in notices
+            if item.claim_id in offsets
+        ),
+    )
 
 
 def anchor_bound_numbers(markdown: str, references, notices=()) -> str:
     """只在首次装配中按服务端记录的偏移插入锚点，此后编辑仅使用锚点定位。"""
     for item in sorted((*references, *(notices or ())), key=lambda item: item.offset, reverse=True):
         if item.offset <= len(markdown):
-            markdown = markdown[:item.offset] + f"[[claim:{item.claim_id}]]" + markdown[item.offset:]
+            markdown = (
+                markdown[: item.offset] + f"[[claim:{item.claim_id}]]" + markdown[item.offset :]
+            )
     return markdown
 
 
@@ -203,9 +270,15 @@ class NumberReferenceResolver:
                     record = merged or record
                 records[key] = record
             document = bundle.model_dump(mode="json", by_alias=True)
-            for array in ('metrics', 'comparisons', 'derivedMetrics', 'reconciliations', 'correlationDetails'):
+            for array in (
+                "metrics",
+                "comparisons",
+                "derivedMetrics",
+                "reconciliations",
+                "correlationDetails",
+            ):
                 for fact in document.get(array, ()):
-                    key = fact.get('factId')
+                    key = fact.get("factId")
                     if key in self.entries:
                         merged = merge_frozen_fact(self.entries[key], fact)
                         if merged is None:
@@ -213,8 +286,69 @@ class NumberReferenceResolver:
                         else:
                             fact = merged
                     self.entries[key] = fact
+        self._contents = contents
+        self._derived: dict[str, tuple[Any, str]] | None = None
+        self._legacy_derived: dict[str, tuple[Any, str]] | None = None
+
+    def _derived_entries(self, *, legacy: bool = False) -> dict[str, tuple[Any, str]]:
+        if self._derived is None:
+            derived: dict[str, tuple[Any, str]] = {}
+            legacy_derived: dict[str, tuple[Any, str]] = {}
+            views: dict[str, dict[str, Any] | None] = {}
+            conflicts = set()
+            try:
+                # 两种格式共享一次枚举和冲突检查，不能按格式优先级隐藏同 token 的不同语义。
+                for unit, entry in derived_number_values(self._contents).derived_entries():
+                    for is_legacy, catalog in ((False, derived), (True, legacy_derived)):
+                        token = derived_reference_token(entry, unit, legacy=is_legacy)
+                        if token is None:
+                            continue
+                        view = derived_reference_resolution(entry, unit, self.entries)
+                        if token in views and views[token] != view:
+                            conflicts.add(token)
+                        else:
+                            views[token] = view
+                            catalog[token] = (entry, unit)
+                derived = {token: value for token, value in derived.items() if token not in conflicts}
+                legacy_derived = {
+                    token: value for token, value in legacy_derived.items() if token not in conflicts
+                }
+            except Exception as error:
+                # 枚举中途失败也不能使用部分目录；空结果在本次请求内缓存，避免逐 token 重试。
+                derived = {}
+                legacy_derived = {}
+                logger.warning("number_reference_derived_catalog_failed error={}", error)
+            self._derived = derived
+            self._legacy_derived = legacy_derived
+        return self._legacy_derived if legacy else self._derived
 
     def resolve(self, token: str) -> dict[str, Any] | None:
+        try:
+            return self._resolve(token)
+        except Exception:
+            # 派生目录重建只服务软校验；来源损坏时按无法解析降级，不阻断整次校验。
+            logger.warning("number_reference_resolve_failed token={}", token)
+            return None
+
+    def _resolve(self, token: str) -> dict[str, Any] | None:
+        if token.startswith("{{derived:"):
+            ids = reference_fact_ids(token)
+            # 兼容按操作数身份排序的旧格式，再匹配保留操作数顺序的现格式。
+            matched = self._derived_entries(legacy=True).get(token)
+            legacy = matched is not None
+            if matched is None:
+                matched = self._derived_entries().get(token)
+            if matched is None:
+                return None
+            entry, unit = matched
+            if (
+                len(ids) != 2
+                or any(key in self.conflicts or key not in self.entries for key in ids)
+                or set(ids) != set(entry.fact_ids)
+                or (legacy and ids != tuple(sorted(entry.fact_ids)))
+            ):
+                return None
+            return derived_reference_resolution(entry, unit, self.entries)
         matches = self.numbers.get(token, ())
         if not matches or len({(str(value), unit, target) for value, unit, target in matches}) != 1:
             return None
@@ -238,141 +372,197 @@ def resolve_number_references(tokens: Iterable[str], contents) -> dict[str, dict
 def _comparison_baseline_periods(primary, entries, conflicts):
     from .subject_builder import fact_periods
 
-    if primary.get('baselinePeriodStart') and primary.get('baselinePeriodEnd'):
-        return fact_periods({**primary, 'periodStart': primary['baselinePeriodStart'],
-                             'periodEnd': primary['baselinePeriodEnd']})
+    if primary.get("baselinePeriodStart") and primary.get("baselinePeriodEnd"):
+        return fact_periods(
+            {
+                **primary,
+                "periodStart": primary["baselinePeriodStart"],
+                "periodEnd": primary["baselinePeriodEnd"],
+            }
+        )
     # 旧快照从已登记输入复核完整比较窗口；没有唯一依据时不把本期冒充基期。
     operands = []
-    for prefix in ('current', 'baseline'):
-        candidates = [entry for entry in entries.values()
-                      if entry.get('factId') not in conflicts
-                      and entry.get('datasetId') == primary.get(prefix + 'DatasetId')
-                      and entry.get('datasetSha256') == primary.get(prefix + 'DatasetSha256')
-                      and entry.get('fieldRef') == primary.get('fieldRef')]
+    for prefix in ("current", "baseline"):
+        candidates = [
+            entry
+            for entry in entries.values()
+            if entry.get("factId") not in conflicts
+            and entry.get("datasetId") == primary.get(prefix + "DatasetId")
+            and entry.get("datasetSha256") == primary.get(prefix + "DatasetSha256")
+            and entry.get("fieldRef") == primary.get("fieldRef")
+        ]
         if len(candidates) != 1:
             return ()
         operands.append(DeterministicMetricFact.model_validate(candidates[0]))
     try:
-        aligned = _aligned_comparison_values(*operands, primary['comparisonType'])
+        aligned = _aligned_comparison_values(*operands, primary["comparisonType"])
     except ValueError:
         return ()
-    if aligned is None or fact_periods({**primary, 'periodStart': aligned[2], 'periodEnd': aligned[3]}) != fact_periods(primary):
+    if aligned is None or fact_periods(
+        {**primary, "periodStart": aligned[2], "periodEnd": aligned[3]}
+    ) != fact_periods(primary):
         return ()
-    return fact_periods({**primary, 'periodStart': aligned[4], 'periodEnd': aligned[5]})
+    return fact_periods({**primary, "periodStart": aligned[4], "periodEnd": aligned[5]})
 
 
 def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
     primary = entries[ids[0]]
     value, unit, target = selected_value
-    selector = token[2:-2].split(':')[2]
+    selector = token[2:-2].split(":")[2]
     from .subject_builder import fact_periods
+
     periods = fact_periods(primary)
     period_roles = {}
     selected_periods = None
-    if primary.get('comparisonType') and selector in {'currentTotal', 'baselineTotal', 'change', 'changeRate'}:
+    if primary.get("comparisonType") and selector in {
+        "currentTotal",
+        "baselineTotal",
+        "change",
+        "changeRate",
+    }:
         current_periods = periods
         baseline_periods = _comparison_baseline_periods(primary, entries, conflicts)
-        if selector == 'baselineTotal':
+        if selector == "baselineTotal":
             periods = baseline_periods
-            period_roles['baseline'] = baseline_periods
-        elif selector == 'currentTotal':
-            period_roles['current'] = current_periods
+            period_roles["baseline"] = baseline_periods
+        elif selector == "currentTotal":
+            period_roles["current"] = current_periods
         else:
             periods = tuple(dict.fromkeys((*current_periods, *baseline_periods)))
             period_roles.update(current=current_periods, baseline=baseline_periods)
-    elif selector.startswith('periodValues.'):
-        selected_periods = [primary['periodValues'][int(selector.split('.')[1])]]
-    elif selector.startswith(('periodTotals.', 'periodAverages.')):
-        start, end = (int(index) for index in selector.split('.')[1].split('-'))
-        selected_periods = primary['periodValues'][start:end + 1]
-    elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
-        index = int(selector.split('.')[1])
-        selected_periods = primary['periodValues'][index - 1:index + 1]
-    elif selector.startswith('budgetComparison.'):
-        period = selector[len('budgetComparison.' + ids[1] + '.'):].rsplit('.', 1)[0]
-        window = period.split('..')
-        periods = fact_periods({'periodStart': window[0], 'periodEnd': window[-1],
-                                'periodGranularity': 'month'})
-        period_roles['endpoint'] = (periods[-1],)
-    elif primary.get('periodAggregation') == 'last' and (
-        selector in {'total', 'average', 'minimum', 'maximum'}
-        or selector.startswith(('topGroups.', 'bottomGroups.', 'groupShares.', 'groupGaps.'))
+    elif selector.startswith("periodValues."):
+        selected_periods = [primary["periodValues"][int(selector.split(".")[1])]]
+    elif selector.startswith(("periodTotals.", "periodAverages.")):
+        start, end = (int(index) for index in selector.split(".")[1].split("-"))
+        selected_periods = primary["periodValues"][start : end + 1]
+    elif selector.startswith(("periodChanges.", "periodChangeRates.")):
+        index = int(selector.split(".")[1])
+        selected_periods = primary["periodValues"][index - 1 : index + 1]
+    elif selector.startswith("budgetComparison."):
+        period = selector[len("budgetComparison." + ids[1] + ".") :].rsplit(".", 1)[0]
+        window = period.split("..")
+        periods = fact_periods(
+            {"periodStart": window[0], "periodEnd": window[-1], "periodGranularity": "month"}
+        )
+        period_roles["endpoint"] = (periods[-1],)
+    elif primary.get("periodAggregation") == "last" and (
+        selector in {"total", "average", "minimum", "maximum"}
+        or selector.startswith(("topGroups.", "bottomGroups.", "groupShares.", "groupGaps."))
     ):
-        selected_periods = primary.get('periodValues', ())[-1:]
+        selected_periods = primary.get("periodValues", ())[-1:]
     if selected_periods is not None:
         # 复用事实粒度规范化，保留累计窗口的所有桶及环比的基期与本期。
-        periods = fact_periods({**primary, 'periodValues': selected_periods})
-        if selector.startswith(('periodTotals.', 'periodAverages.')):
-            period_roles['endpoint'] = fact_periods({**primary, 'periodValues': selected_periods[-1:]})
-        elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
-            period_roles['baseline'] = fact_periods({**primary, 'periodValues': selected_periods[:1]})
-            period_roles['current'] = fact_periods({**primary, 'periodValues': selected_periods[-1:]})
-    scope = dict(primary.get('scope') or {})
-    if selector.startswith(('topGroups.', 'bottomGroups.')):
-        group, index = selector.split('.')
+        periods = fact_periods({**primary, "periodValues": selected_periods})
+        if selector.startswith(("periodTotals.", "periodAverages.")):
+            period_roles["endpoint"] = fact_periods(
+                {**primary, "periodValues": selected_periods[-1:]}
+            )
+        elif selector.startswith(("periodChanges.", "periodChangeRates.")):
+            period_roles["baseline"] = fact_periods(
+                {**primary, "periodValues": selected_periods[:1]}
+            )
+            period_roles["current"] = fact_periods(
+                {**primary, "periodValues": selected_periods[-1:]}
+            )
+    scope = dict(primary.get("scope") or {})
+    if selector.startswith(("topGroups.", "bottomGroups.")):
+        group, index = selector.split(".")
         selected_group = primary[group][int(index)]
-        scope['group'] = selected_group['group']
-        scope.update(selected_group.get('groupValues') or {})
+        scope["group"] = selected_group["group"]
+        scope.update(selected_group.get("groupValues") or {})
 
     def operand(value) -> str:
-        return format(Decimal(str(value)).normalize(), 'f')
+        return format(Decimal(str(value)).normalize(), "f")
 
-    formula = primary.get('formula')
-    if selector in {'monthlyAverage', 'monthlyMinimum', 'monthlyMaximum'}:
-        amounts = [operand(item['value']) for item in primary['periodValues']]
-        if selector == 'monthlyAverage':
-            formula = '(' + ' + '.join(f'({amount})' for amount in amounts) + f') / {len(amounts)}'
+    formula = primary.get("formula")
+    if selector in {"monthlyAverage", "monthlyMinimum", "monthlyMaximum"}:
+        amounts = [operand(item["value"]) for item in primary["periodValues"]]
+        if selector == "monthlyAverage":
+            formula = "(" + " + ".join(f"({amount})" for amount in amounts) + f") / {len(amounts)}"
         else:
-            operation = 'min' if selector == 'monthlyMinimum' else 'max'
-            formula = operation + '(' + ', '.join(amounts) + ')'
-    elif selector.startswith(('periodTotals.', 'periodAverages.')):
-        formula = ' + '.join(f"({operand(item['value'])})" for item in selected_periods)
-        if selector.startswith('periodAverages.'):
-            formula = f'({formula}) / {len(selected_periods)}'
-    elif selector.startswith(('periodChanges.', 'periodChangeRates.')):
-        baseline, current = (operand(item['value']) for item in selected_periods)
-        formula = f'({current}) - ({baseline})'
-        if selector.startswith('periodChangeRates.'):
-            formula = f'({formula}) / abs({baseline}) * 100'
-    elif selector.startswith('groupShares.'):
-        _, group, index = selector.split('.')
+            operation = "min" if selector == "monthlyMinimum" else "max"
+            formula = operation + "(" + ", ".join(amounts) + ")"
+    elif selector.startswith(("periodTotals.", "periodAverages.")):
+        formula = " + ".join(f"({operand(item['value'])})" for item in selected_periods)
+        if selector.startswith("periodAverages."):
+            formula = f"({formula}) / {len(selected_periods)}"
+    elif selector.startswith(("periodChanges.", "periodChangeRates.")):
+        baseline, current = (operand(item["value"]) for item in selected_periods)
+        formula = f"({current}) - ({baseline})"
+        if selector.startswith("periodChangeRates."):
+            formula = f"({formula}) / abs({baseline}) * 100"
+    elif selector.startswith("groupShares."):
+        _, group, index = selector.split(".")
         numerator = primary[group][int(index)]
-        scope['group'] = numerator['group']
-        scope.update(numerator.get('groupValues') or {})
+        scope["group"] = numerator["group"]
+        scope.update(numerator.get("groupValues") or {})
         formula = f"({operand(numerator['value'])}) / ({operand(primary['total'])}) * 100"
-    elif selector.startswith('groupGaps.'):
-        left, right = (int(index) for index in selector.split('.')[1].split('-'))
-        left_group, right_group = primary['topGroups'][left], primary['topGroups'][right]
-        scope.update(leftGroup=left_group['group'], rightGroup=right_group['group'])
-        for prefix, selected_group in (('leftGroup', left_group), ('rightGroup', right_group)):
-            scope.update({f'{prefix}.{key}': value for key, value in (selected_group.get('groupValues') or {}).items()})
+    elif selector.startswith("groupGaps."):
+        left, right = (int(index) for index in selector.split(".")[1].split("-"))
+        left_group, right_group = primary["topGroups"][left], primary["topGroups"][right]
+        scope.update(leftGroup=left_group["group"], rightGroup=right_group["group"])
+        for prefix, selected_group in (("leftGroup", left_group), ("rightGroup", right_group)):
+            scope.update(
+                {
+                    f"{prefix}.{key}": value
+                    for key, value in (selected_group.get("groupValues") or {}).items()
+                }
+            )
         formula = f"abs(({operand(left_group['value'])}) - ({operand(right_group['value'])}))"
-    elif selector.startswith('budgetComparison.'):
-        operands = [sum((Decimal(str(item['value'])) for item in entry['periodValues']
-                         if window[0] <= _canonical_month_label(item['period']) <= window[-1]), Decimal(0))
-                    for entry in (primary, entries[ids[1]])]
-        operation = '/' if selector.endswith('.percentage') else '-'
-        formula = f'({operand(operands[0])}) {operation} ({operand(operands[1])})'
-        if operation == '/':
-            formula += ' * 100'
-    elif selector.startswith('projectRatio.'):
-        operation = '/' if selector.endswith('.percentage') else '-'
+    elif selector.startswith("budgetComparison."):
+        operands = [
+            sum(
+                (
+                    Decimal(str(item["value"]))
+                    for item in entry["periodValues"]
+                    if window[0] <= _canonical_month_label(item["period"]) <= window[-1]
+                ),
+                Decimal(0),
+            )
+            for entry in (primary, entries[ids[1]])
+        ]
+        operation = "/" if selector.endswith(".percentage") else "-"
+        formula = f"({operand(operands[0])}) {operation} ({operand(operands[1])})"
+        if operation == "/":
+            formula += " * 100"
+    elif selector.startswith("projectRatio."):
+        operation = "/" if selector.endswith(".percentage") else "-"
         formula = f"({primary.get('formula')}) {operation} ({entries[ids[1]].get('formula')})"
-        if operation == '/':
-            formula += ' * 100'
-    elif selector.startswith('metricShare.'):
-        window = selector[len('metricShare.' + ids[1] + '.'):] if '.' in selector[len('metricShare.'):] else None
+        if operation == "/":
+            formula += " * 100"
+    elif selector.startswith("metricShare."):
+        window = (
+            selector[len("metricShare." + ids[1] + ".") :]
+            if "." in selector[len("metricShare.") :]
+            else None
+        )
         if window:
-            span = window.split('..')
-            periods = fact_periods({'periodStart': span[0], 'periodEnd': span[-1],
-                                    'periodGranularity': 'month'})
-            period_roles['endpoint'] = (periods[-1],)
-            operands = [sum((Decimal(str(item['value'])) for item in entry['periodValues']
-                             if span[0] <= _canonical_month_label(item['period']) <= span[-1]), Decimal(0))
-                        for entry in (primary, entries[ids[1]])]
-            formula = f'({operand(operands[0])}) / ({operand(operands[1])}) * 100'
+            span = window.split("..")
+            periods = fact_periods(
+                {"periodStart": span[0], "periodEnd": span[-1], "periodGranularity": "month"}
+            )
+            period_roles["endpoint"] = (periods[-1],)
+            operands = [
+                sum(
+                    (
+                        Decimal(str(item["value"]))
+                        for item in entry["periodValues"]
+                        if span[0] <= _canonical_month_label(item["period"]) <= span[-1]
+                    ),
+                    Decimal(0),
+                )
+                for entry in (primary, entries[ids[1]])
+            ]
+            formula = f"({operand(operands[0])}) / ({operand(operands[1])}) * 100"
         else:
             formula = f"({primary.get('formula')}) / ({entries[ids[1]].get('formula')}) * 100"
-    return {'value': float(value), 'unit': target if target == '个百分点' else unit,
-            'periods': periods, 'period_roles': period_roles,
-            'scope': scope, 'formula': formula, 'entry': primary, 'selector': selector}
+    return {
+        "value": float(value),
+        "unit": target if target == "个百分点" else unit,
+        "periods": periods,
+        "period_roles": period_roles,
+        "scope": scope,
+        "formula": formula,
+        "entry": primary,
+        "selector": selector,
+    }

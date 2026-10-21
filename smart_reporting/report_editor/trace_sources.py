@@ -863,6 +863,7 @@ class ReportEditorTraceService:
             prepare_claim_status,
             value_matches,
         )
+        from ..reporting.trace.table_sources import resolve_table_derivation
 
         started = perf_counter()
         actual_draft_sha256 = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
@@ -875,6 +876,21 @@ class ReportEditorTraceService:
         files = {item.resource_id: item for item in index.files}
         thread_id = context.scope["threadId"]
         bundle_cache: dict[str, Any] = {}
+        table_source_cache: dict[str, bytes] = {}
+
+        async def _table_sources_of(derivation: Any) -> dict[str, bytes]:
+            source_ids = {operand.file_resource_id for operand in derivation.operands}
+            result: dict[str, bytes] = {}
+            for resource_id in source_ids:
+                file_ref = files.get(resource_id)
+                if file_ref is None or file_ref.media_type != "application/json":
+                    raise ReportingError("snapshot_integrity_failed", "表格派生来源登记不完整。")
+                if resource_id not in table_source_cache:
+                    table_source_cache[resource_id] = await self._read_registered_file(
+                        context, file_ref, max_bytes=16 * 1024 * 1024
+                    )
+                result[resource_id] = table_source_cache[resource_id]
+            return result
 
         async def _fact_entry_of(ref: Any) -> dict[str, Any] | None:
             file_ref = files.get(ref.file_resource_id)
@@ -994,7 +1010,7 @@ class ReportEditorTraceService:
         )
         fingerprints = await anyio.to_thread.run_sync(statement_fingerprints, markdown, tuple(
             binding.claim_id for binding in index.subject_bindings
-            if binding.number_reference and binding.claim_id and binding.fact_refs
+            if binding.number_reference and binding.claim_id
         ), limiter=self._validation_limiter)
         legacy_claims = tuple(
             binding.claim_id for binding in index.subject_bindings
@@ -1037,12 +1053,16 @@ class ReportEditorTraceService:
 
         number_tokens: dict[tuple[str, ...], set[str]] = {}
         for binding in index.subject_bindings:
-            if binding.number_reference and binding.claim_id and binding.fact_refs:
+            if (binding.number_reference and binding.claim_id and binding.fact_refs
+                    and binding.number_reference.table_derivation is None):
                 source_ids = tuple(sorted({ref.file_resource_id for ref in binding.fact_refs}))
                 number_tokens.setdefault(source_ids, set()).add(binding.number_reference.token)
         number_results: dict[tuple[str, ...], dict[str, Any]] = {}
         for binding in index.subject_bindings:
-            if not binding.claim_id or not binding.fact_refs:
+            if not binding.claim_id or not (binding.fact_refs or (
+                binding.number_reference is not None
+                and binding.number_reference.table_derivation is not None
+            )):
                 continue
             entry: dict[str, Any] | None = None
             for ref in binding.fact_refs:
@@ -1055,20 +1075,41 @@ class ReportEditorTraceService:
             number = binding.number_reference
             selected = None
             if number is not None:
-                # 每个操作数先通过文件 hash、analysis、pointer 和 factKey 校验，不能借同分析其它值。
-                entries = [await _fact_entry_of(ref) for ref in binding.fact_refs]
-                ids = reference_fact_ids(number.token)
-                if (all(item is not None for item in entries)
-                        and set(ids) == {ref.fact_key for ref in binding.fact_refs}
-                        and number.claim_id == binding.claim_id):
-                    source_ids = tuple(sorted({ref.file_resource_id for ref in binding.fact_refs}))
-                    if source_ids not in number_results:
-                        number_results[source_ids] = await anyio.to_thread.run_sync(
-                            resolve_number_references, number_tokens[source_ids], tuple(
-                                _json.dumps(bundle_cache[files[resource_id].path]) for resource_id in source_ids
-                            ), limiter=self._validation_limiter,
-                        )
-                    selected = number_results[source_ids].get(number.token)
+                derivation = number.table_derivation
+                if derivation is not None:
+                    # Any ordinary FactRefs remain independent prerequisites.
+                    entries = [await _fact_entry_of(ref) for ref in binding.fact_refs]
+                    if all(item is not None for item in entries) and number.claim_id == binding.claim_id:
+                        table_sources = await _table_sources_of(derivation)
+                        try:
+                            selected = await anyio.to_thread.run_sync(
+                                resolve_table_derivation,
+                                number.token,
+                                derivation,
+                                table_sources,
+                                limiter=self._validation_limiter,
+                            )
+                        except Exception as error:
+                            logger.warning(
+                                "source_validation_table_derivation_unavailable claim_id={} error={}",
+                                binding.claim_id,
+                                type(error).__name__,
+                            )
+                else:
+                    # 每个操作数先通过文件 hash、analysis、pointer 和 factKey 校验，不能借同分析其它值。
+                    entries = [await _fact_entry_of(ref) for ref in binding.fact_refs]
+                    ids = reference_fact_ids(number.token)
+                    if (all(item is not None for item in entries)
+                            and set(ids) == {ref.fact_key for ref in binding.fact_refs}
+                            and number.claim_id == binding.claim_id):
+                        source_ids = tuple(sorted({ref.file_resource_id for ref in binding.fact_refs}))
+                        if source_ids not in number_results:
+                            number_results[source_ids] = await anyio.to_thread.run_sync(
+                                resolve_number_references, number_tokens[source_ids], tuple(
+                                    _json.dumps(bundle_cache[files[resource_id].path]) for resource_id in source_ids
+                                ), limiter=self._validation_limiter,
+                            )
+                        selected = number_results[source_ids].get(number.token)
                 fact_value = selected["value"] if selected else None
                 expected_unit = selected["unit"] if selected else None
                 expected_periods = selected["periods"] if selected else ()

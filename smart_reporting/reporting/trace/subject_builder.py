@@ -76,9 +76,13 @@ def build_claim_subject_bindings(
             if getattr(block, "review_notices", None) is not None:
                 structured_claims.update(block.claim_ids)
             for number in getattr(block, "number_references", ()):
-                ids = reference_fact_ids(number.token)
-                if not ids or any(fact_id not in fact_directory or
-                                  fact_directory[fact_id][0] not in fact_file_resources for fact_id in ids):
+                table_derived = number.table_derivation is not None
+                ids = () if table_derived else reference_fact_ids(number.token)
+                if (not ids and not table_derived) or any(
+                    fact_id not in fact_directory
+                    or fact_directory[fact_id][0] not in fact_file_resources
+                    for fact_id in ids
+                ):
                     continue
                 refs = []
                 for fact_id in ids:

@@ -30,6 +30,11 @@ from smart_reporting.reporting.trace import (
     subject_fingerprint,
     validate_json_pointer,
 )
+from smart_reporting.reporting.trace.contracts_v1 import (
+    NumberReferenceV1,
+    TableDerivationV1,
+    TableOperandV1,
+)
 
 SHA = "0" * 64
 OTHER_SHA = "1" * 64
@@ -332,6 +337,81 @@ def test_table_trace_cell_identity_rules() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Table-derived numeric references
+# ---------------------------------------------------------------------------
+
+
+def _table_number(file_resource_id: str, **operand_overrides) -> NumberReferenceV1:
+    operand = dict(fileResourceId=file_resource_id, tablePointer="/tables/0", rowIndex=0,
+                   columnIndex=1, coefficient="1")
+    operand.update(operand_overrides)
+    return NumberReferenceV1(
+        claimId="claim-table", token="table-token", statementSha256=SHA,
+        tableDerivation=TableDerivationV1(operands=(TableOperandV1(**operand),), unit="万元"),
+    )
+
+
+def _table_subject(file_resource_id: str, *, fact_refs=()) -> SubjectBindingV1:
+    return SubjectBindingV1(
+        subjectId="sub-" + "4" * 16, subjectKind="text_claim",
+        locator=SubjectLocatorV1(sectionId="section_03"), subjectSha256=SHA,
+        claimId="claim-table", numberReference=_table_number(file_resource_id),
+        factRefs=fact_refs,
+    )
+
+
+def test_table_number_contract_roundtrip_without_fact_refs() -> None:
+    subject = _table_subject(derive_resource_id("tables.json"))
+    payload = json.loads(subject.model_dump_json(by_alias=True))
+    assert payload["factRefs"] == []
+    assert payload["numberReference"]["tableDerivation"]["operands"][0] == {
+        "fileResourceId": derive_resource_id("tables.json"), "tablePointer": "/tables/0",
+        "rowIndex": 0, "columnIndex": 1, "coefficient": "1",
+    }
+    assert SubjectBindingV1.model_validate(payload) == subject
+    with pytest.raises(ValidationError, match="至少绑定"):
+        SubjectBindingV1.model_validate({**payload, "numberReference": None})
+    with pytest.raises(ValidationError, match="至少绑定"):
+        SubjectBindingV1.model_validate({**payload, "numberReference": {
+            **payload["numberReference"], "tableDerivation": None,
+        }})
+
+
+@pytest.mark.parametrize("coefficient", [
+    "NaN", "Infinity", "-Infinity", "1_000", " 1", "1 ", "", ".", "1/2",
+    "1000000001", "-1000000001", "0.123456789012345678901234567890123",
+    "1e-1001", "1e999999", "0e-999999",
+])
+def test_table_operand_rejects_unsafe_coefficients(coefficient: str) -> None:
+    with pytest.raises(ValidationError):
+        _table_number(derive_resource_id("table.json"), coefficient=coefficient)
+
+
+@pytest.mark.parametrize("coefficient", ["1", "-1", "+0.01", ".1", "1e-4", "1e9", "-1e9"])
+def test_table_operand_accepts_bounded_decimal_coefficients(coefficient: str) -> None:
+    number = _table_number(derive_resource_id("table.json"), coefficient=coefficient)
+    assert number.table_derivation.operands[0].coefficient == coefficient
+
+
+@pytest.mark.parametrize("overrides", [
+    {"tablePointer": "tables/0"}, {"tablePointer": "/bad~2escape"},
+    {"rowIndex": -1}, {"columnIndex": -1},
+])
+def test_table_operand_requires_pointer_and_original_nonnegative_indices(overrides) -> None:
+    with pytest.raises(ValidationError):
+        _table_number(derive_resource_id("table.json"), **overrides)
+
+
+def test_table_derivation_operand_and_unit_budgets() -> None:
+    operand = _table_number(derive_resource_id("table.json")).table_derivation.operands[0]
+    for operands in ((), (operand,) * 101):
+        with pytest.raises(ValidationError):
+            TableDerivationV1(operands=operands, unit="元")
+    with pytest.raises(ValidationError):
+        TableDerivationV1(operands=(operand,), unit="元" * 65)
+
+
+# ---------------------------------------------------------------------------
 # SubjectBindingV1
 # ---------------------------------------------------------------------------
 
@@ -437,8 +517,22 @@ def test_index_rejects_unknown_file_reference() -> None:
         )
 
 
-def test_index_rejects_fact_ref_not_matching_fact_files() -> None:
+def test_table_derivation_index_requires_registered_json_and_preserves_fact_checks() -> None:
     index = _index()
+    json_id = index.fact_files[0].file_resource_id
+    assert _index(subjectBindings=(_table_subject(json_id),)).subject_bindings[0].fact_refs == ()
+    with pytest.raises(ValidationError, match="未登记文件"):
+        _index(subjectBindings=(_table_subject(derive_resource_id("unknown.json")),))
+    csv_id = index.datasets[0].file_resource_id
+    with pytest.raises(ValidationError, match="application/json"):
+        _index(subjectBindings=(_table_subject(csv_id),))
+    with pytest.raises(ValidationError):
+        _index(subjectBindings=(_table_subject(json_id, fact_refs=(
+            _fact_ref(analysis_id="analysis_999", file_resource_id=json_id),
+        )),))
+
+
+def test_index_rejects_fact_ref_not_matching_fact_files() -> None:
     chart = ChartTraceV1(
         chartId="chart_001",
         imageFileResourceId=derive_resource_id("chart.png"),
