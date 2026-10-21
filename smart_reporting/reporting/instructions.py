@@ -29,6 +29,14 @@ HOSPITAL_ANALYSIS_INSTRUCTIONS = (
     *build_domain_stage_guidance("analysis"),
     *professional_stage_guidance("analysis"),
     (
+        "按 Profile 指标的 purpose（用途）和 businessCategory（业务类别）选指标："
+        "预算或预实对比、收入多维分析、工作量分析、成本多维分析、项目预算分析分别使用其登记指标。"
+        "分析计划用 metricPurposes 显式选择登记用途；跨用途分析列出全部所需用途并说明比较目的。"
+        "description 是展示名称，aliases 仅用于识别旧称；同名指标不能合并，不按名称中的预算或实际字样"
+        "改变字段角色。预算/实际角色以业务类别、code 和 fieldRef 的冻结绑定为准；"
+        "跨用途使用需明确可比性及分析目的，未声明用途不代表通用或已核实。"
+    ),
+    (
         "跨域分析仅在期间、粒度、组织和口径可比时执行："
         "收入-工作量用于验证量价结构，预算-实际用于定位执行偏差，"
         "成本-收入用于统一核算口径后的收支比较，效率另需匹配工作量及资源指标，"

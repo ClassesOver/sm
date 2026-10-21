@@ -358,6 +358,10 @@ class RuntimeDatasetsMixin:
     ) -> StepOutput:
         """把已批准分析范围与 Profile 索引编排成可执行计划。"""
         state = self._state(run_context)
+        from ...profile.metric_usage import select_metrics_by_usage
+
+        profile_metrics = tuple(metric.model_dump(mode="json", by_alias=True)
+                                for metric in self._profile(run_context).metrics)
         raw_contexts = state.get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
         if not raw_contexts:
             raise ReportingError("report_analysis_context_unavailable", "分析数据上下文缺失。")
@@ -456,6 +460,9 @@ class RuntimeDatasetsMixin:
             field_candidates: list[str] = []
             metric_candidates: list[str] = []
             periods: list[str] = []
+            usage = select_metrics_by_usage(
+                profile_metrics, domain=domain, purposes=initial_item.metric_purposes,
+            )
             for context in referenced_contexts:
                 field_candidates.extend(context.organization_grain)
                 if context.time_series_sort_field:
@@ -463,11 +470,14 @@ class RuntimeDatasetsMixin:
                 field_candidates.extend(context.numeric_fields)
                 field_candidates.extend(context.fields)
                 semantic_metrics = [
-                    str(item.get("fieldRef", "")).rsplit(".", 1)[-1]
+                    str(item.get("datasetField") or str(item.get("fieldRef", "")).rsplit(".", 1)[-1])
                     for item in context.metric_semantics
                     if isinstance(item, Mapping) and item.get("fieldRef")
+                    and (usage.allowed_field_refs is None
+                         or str(item["fieldRef"]).casefold() in usage.allowed_field_refs)
                 ]
-                metric_candidates.extend(semantic_metrics or context.numeric_fields)
+                metric_candidates.extend(semantic_metrics if usage.allowed_field_refs is not None
+                                         else semantic_metrics or context.numeric_fields)
                 period_values = list(context.period_values)
                 periods.extend(
                     period_values
@@ -503,13 +513,14 @@ class RuntimeDatasetsMixin:
             if len(referenced_contexts) > 1:
                 actions.append("校验跨数据集期间、粒度和口径的可比性")
 
-            item_warnings = tuple(
+            item_warnings = (*usage.warnings, *tuple(
                 dict.fromkeys(
                     warning
                     for context in referenced_contexts
                     for warning in (*context.source_warnings, *context.quality_warnings)
                 )
-            )
+            ))
+            plan_warnings.extend(usage.warnings)
             profile_coverages = tuple(
                 coverage
                 for context in referenced_contexts
@@ -564,6 +575,7 @@ class RuntimeDatasetsMixin:
                     seriesGranularity=initial_item.series_granularity,
                     analysisId=f"analysis_{len(analyses) + 1:03d}",
                     domain=domain,
+                    metricPurposes=initial_item.metric_purposes,
                     managementQuestion=(initial_item.management_question),
                     primaryMetricFamily=initial_item.primary_metric_family,
                     datasetIds=tuple(handle.dataset_id for handle in referenced_handles),
@@ -680,7 +692,7 @@ def _analysis_context_payload(outline_context: Any) -> dict[str, Any]:
             )
             if key in profile
         }
-    for key in ("capabilities", "terms", "reconciliations"):
+    for key in ("capabilities", "terms", "reconciliations", "metricUsageGroups"):
         if key in outline_context:
             context[key] = outline_context[key]
     tables = outline_context.get("tables")

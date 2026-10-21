@@ -228,8 +228,15 @@ def build_deterministic_analysis_bundle(
 ) -> DeterministicAnalysisBundle:
     """只计算由冻结 CSV、已确认语义和 Effective Profile 唯一确定的事实。"""
 
+    from ..profile.metric_usage import select_metrics_by_usage
+
+    selection = select_metrics_by_usage(
+        profile_metrics, domain=analysis.domain, purposes=analysis.metric_purposes,
+    )
+    profile_metrics = tuple(selection.metrics)
+
     prepared: list[_Dataset] = []
-    warnings: list[str] = list(analysis.limitations)
+    warnings: list[str] = [*analysis.limitations, *selection.warnings]
     for dataset_id, content, context, period_roles in datasets:
         try:
             # CSV 标识、固定范围和分组键保留原文；只在数值聚合时显式转换。
@@ -258,6 +265,7 @@ def build_deterministic_analysis_bundle(
             money_fields=money_fields,
             profile_hash=profile_hash,
             population_budget_bytes=remaining_population_bytes,
+            allowed_field_refs=selection.allowed_field_refs,
         )
         remaining_population_bytes -= sum(_group_population_size(fact.group_population)
                                           for fact in dataset_facts if fact.group_population is not None)
@@ -337,6 +345,7 @@ def _dataset_facts(
     money_fields: set[str],
     profile_hash: str | None,
     population_budget_bytes: int,
+    allowed_field_refs: frozenset[str] | None = None,
 ) -> tuple[
     list[DeterministicMetricFact],
     dict[tuple[str, str], Mapping[str, Any]],
@@ -349,6 +358,9 @@ def _dataset_facts(
     semantics_by_field: dict[str, list[Mapping[str, Any]]] = {}
     for raw_semantic in dataset.context.metric_semantics:
         field_ref = str(raw_semantic.get("fieldRef", ""))
+        if allowed_field_refs is not None and field_ref.casefold() not in allowed_field_refs:
+            warnings.append(f"Dataset {dataset.dataset_id} 的 {field_ref} 不属于本分析登记用途，未生成该指标事实。")
+            continue
         field = str(raw_semantic.get("datasetField") or field_ref.rsplit(".", 1)[-1])
         if field not in dataset.frame.columns or (
             requested_fields and field.casefold() not in requested_fields

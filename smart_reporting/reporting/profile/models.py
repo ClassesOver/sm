@@ -65,6 +65,11 @@ class MetricPatch(ProfileModel):
     enabled: bool = True
     kind: str | None = Field(default=None, min_length=1, max_length=64)
     description: str | None = Field(default=None, max_length=2_000)
+    purpose: str | None = Field(default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None)
+    business_category: str | None = Field(
+        default=None, alias="businessCategory", min_length=1, max_length=200, exclude_if=lambda value: value is None,
+    )
+    aliases: tuple[str, ...] | None = Field(default=None, max_length=100, exclude_if=lambda value: value is None)
     aggregation: Literal["sum", "count", "count_distinct", "average", "ratio"] | None = None
     cumulative_policy: CumulativeSnapshotPolicy | None = Field(
         default=None, alias="cumulativePolicy", exclude_if=lambda value: value is None,
@@ -198,6 +203,11 @@ class EffectiveMetric(ProfileModel):
     code: str = Field(pattern=PROFILE_ID_PATTERN)
     kind: str = Field(min_length=1, max_length=64)
     description: str = Field(default="", max_length=2_000)
+    purpose: str | None = Field(default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None)
+    business_category: str | None = Field(
+        default=None, alias="businessCategory", min_length=1, max_length=200, exclude_if=lambda value: value is None,
+    )
+    aliases: tuple[str, ...] = Field(default=(), max_length=100, exclude_if=lambda value: not value)
     aggregation: Literal["sum", "count", "count_distinct", "average", "ratio"]
     cumulative_policy: CumulativeSnapshotPolicy | None = Field(
         default=None, alias="cumulativePolicy", exclude_if=lambda value: value is None,

@@ -196,6 +196,8 @@ def build_outline_shape_view(
     ]
     result = {
         "profile": profile.model_dump(mode="json", by_alias=True),
+        # 按明确用途组织当前可用指标；不能仅按显示名合并预算、实际及其他来源。
+        "metricUsageGroups": _metric_usage_groups(profile, capabilities),
         "capabilities": capability_values,
         "tables": tables,
         "terms": terms[:1_000],
@@ -210,6 +212,15 @@ def build_outline_shape_view(
     ):
         raise ReportingError("report_outline_context_too_large", "提纲上下文超过大小限制。")
     return result
+
+
+def _metric_usage_groups(profile: EffectiveReportingProfile, capabilities: CapabilitySet) -> list[dict[str, Any]]:
+    available = {item.code for item in capabilities.capabilities if item.kind == "metric" and item.available}
+    groups: dict[str, list[str]] = {}
+    for metric in profile.metrics:
+        if metric.code in available:
+            groups.setdefault(metric.purpose or "未声明用途", []).append(metric.code)
+    return [{"purpose": purpose, "metricCodes": codes} for purpose, codes in groups.items()]
 
 
 def _missing_fields(

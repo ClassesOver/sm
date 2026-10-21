@@ -150,6 +150,9 @@ class DetailedAnalysisItem(AnalysisModel):
     analysis_id: str = Field(alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$")
     analysis_name: str | None = Field(alias="analysisName", default=None, min_length=1, max_length=60)
     domain: str = Field(min_length=1, max_length=64)
+    metric_purposes: tuple[str, ...] = Field(
+        default=(), alias="metricPurposes", max_length=20, exclude_if=lambda value: not value,
+    )
     management_question: str = Field(alias="managementQuestion", min_length=1, max_length=2_000)
     primary_metric_family: str = Field(alias="primaryMetricFamily", min_length=1, max_length=256)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)

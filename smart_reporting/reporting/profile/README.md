@@ -180,6 +180,32 @@ Schema Snapshot 中的完整 `sourceId.database.table.column` 引用比较。Pro
 
 ### metrics
 
+指标名称和用途分别配置。`description` 是当前展示名称，`purpose` 是已确认用途，
+`businessCategory` 保留预算收入、实际收入、工作量等业务类别，`aliases` 仅识别历史名称。
+同名指标始终按 `code` 和完整 `fieldRef` 区分，不因名称相同而合并，不从名称猜测预算或实际角色。
+
+```json
+{
+  "code": "actual_medical_income",
+  "kind": "currency",
+  "description": "医疗收入实际数",
+  "purpose": "预算或预实对比",
+  "businessCategory": "实际收入",
+  "aliases": ["实际总医疗收入"],
+  "fieldRef": "rj.dwd_income_budget_view.actual_medical_income",
+  "aggregation": "sum"
+}
+```
+
+配置用途后，规划的 `metricUsageGroups` 只列可用指标；原始 Schema 的数值字段不会自动成为候选。
+分析计划通过 `metricPurposes` 选择登记用途，跨用途分析显式列出各用途。历史计划没有该字段时，
+收入、工作量、普通预算、全成本分别使用收入多维、工作量、预算或预实对比、成本多维用途；项目预算
+使用显式的“项目预算分析”。其他领域须明确用途，未知用途仅保留缺口告警，不改用其他指标。
+详细计划和确定性计算使用同一筛选器；删除的指标不从 CSV 或原始数值候选重新补入。
+
+历史 Profile 未声明用途时保持原有能力读取方式；空 `purpose`、`businessCategory`、`aliases`
+不增加到原有序列化内容。已声明用途、分类和新名称进入新 Profile 的哈希，历史冻结名称不重写。
+
 基础指标必须声明一个 `fieldRef`，聚合方式支持 `sum`、`count`、`count_distinct`、`average`；比率指标
 使用 `ratio`，并引用已存在的分子、分母指标：
 

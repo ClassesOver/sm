@@ -147,6 +147,10 @@ class MeasureSemanticProposal(_StrictModel):
 
 class AnalysisItem(_StrictModel):
     code: str = Field(min_length=1, max_length=128)
+    metric_purposes: tuple[str, ...] = Field(
+        default=(), alias="metricPurposes", max_length=20, exclude_if=lambda value: not value,
+        description="本分析使用的指标用途，来自 Profile purpose/metricUsageGroups；跨用途分析显式列出各用途。",
+    )
     analysis_name: str | None = Field(
         alias="analysisName", default=None, min_length=1, max_length=60,
         description="简短业务名称，例如2025年收入汇总、2025年收入同比；不得使用分析编号。",
@@ -191,7 +195,7 @@ class AnalysisItem(_StrictModel):
     )
 
     @model_validator(mode="after")
-    def validate_new_planning_scope(self, info: ValidationInfo) -> "AnalysisItem":
+    def validate_new_planning_scope(self, info: ValidationInfo) -> AnalysisItem:
         # 旧状态仍可读取；新模型响应必须显式声明范围，不能默默复用全部窗口。
         if info.context and info.context.get("new_analysis_plan"):
             if not self.analysis_name or not self.analysis_name.strip() or not self.period_roles:

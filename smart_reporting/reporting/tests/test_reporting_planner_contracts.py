@@ -1855,6 +1855,7 @@ def test_phase_instructions_do_not_expose_patch_hash_protocol() -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize("purpose_catalog", [None, "收入多维分析", "成本多维分析"])
 @pytest.mark.parametrize(
     ("requested_domain", "expected_domain"),
     (("income", "income"), ("full_cost", "full_cost")),
@@ -1863,6 +1864,7 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     requested_domain: str,
     expected_domain: str,
     scoped: bool,
+    purpose_catalog: str | None,
 ) -> None:
     context = DatasetAnalysisContext(
         profileFile=AnalysisFileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
@@ -1978,7 +1980,16 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     runtime._envelope = lambda _run_context: SimpleNamespace(
         domains=(requested_domain,), report_goal="分析医院经营主题"
     )
-    runtime._profile = lambda _run_context: SimpleNamespace(metrics=())
+    from smart_reporting.reporting.profile.models import EffectiveMetric
+
+    profile_metrics = (() if purpose_catalog is None else (EffectiveMetric(
+        code="amount", kind="currency", description="同名金额", aggregation="sum",
+        fieldRef="source.database.income.amount", purpose=purpose_catalog,
+    ),))
+    if scoped and purpose_catalog:
+        for item in state[REPORT_ANALYSIS_PLAN_STATE_KEY]:
+            item["metricPurposes"] = [purpose_catalog]
+    runtime._profile = lambda _run_context: SimpleNamespace(metrics=profile_metrics)
     runtime._workflow_result = lambda _state: dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])
     runtime._scope = lambda _run_context: {"threadId": "thread-1"}
     runtime._write_artifact_validation_context = AsyncMock(
@@ -1993,6 +2004,11 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
 
     analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
     assert analysis.domain == expected_domain
+    selected_purpose = purpose_catalog if scoped else {
+        "income": "收入多维分析", "full_cost": "成本多维分析",
+    }[expected_domain]
+    assert analysis.metrics == (("amount",) if purpose_catalog is None or purpose_catalog == selected_purpose else ())
+    assert analysis.metric_purposes == ((purpose_catalog,) if scoped and purpose_catalog else ())
     assert analysis.dataset_ids == (("dataset-1",) if scoped else ("dataset-1", "attachment-dataset"))
     if scoped:
         comparison = DetailedAnalysisPlan.model_validate(output.content).analyses[1]
@@ -4094,7 +4110,7 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
             mode="json", by_alias=True
         ),
     }
-    profile = SimpleNamespace(reconciliations=(), duplicate_conflicts=())
+    profile = SimpleNamespace(reconciliations=(), duplicate_conflicts=(), metrics=())
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._analysis_agent = stage
     runtime._state = lambda _run_context: state

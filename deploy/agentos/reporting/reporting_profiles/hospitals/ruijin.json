@@ -1,7 +1,7 @@
 {
   "version": "1",
   "profileId": "ruijin",
-  "revision": "6",
+  "revision": "7",
   "extends": [
     "base"
   ],
@@ -9,177 +9,272 @@
     {
       "code": "actual_medical_income",
       "kind": "currency",
-      "description": "实际总医疗收入",
+      "description": "医疗收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.actual_medical_income"
+      "fieldRef": "rj.dwd_income_budget_view.actual_medical_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "实际收入",
+      "aliases": [
+        "实际总医疗收入"
+      ]
     },
     {
       "code": "actual_medicine_income",
       "kind": "currency",
-      "description": "实际药品收入",
+      "description": "药品收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.actual_medicine_income"
+      "fieldRef": "rj.dwd_income_budget_view.actual_medicine_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "实际收入",
+      "aliases": [
+        "实际药品收入"
+      ]
     },
     {
       "code": "actual_material_income",
       "kind": "currency",
-      "description": "实际材料收入",
+      "description": "材料收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.actual_material_income"
+      "fieldRef": "rj.dwd_income_budget_view.actual_material_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "实际收入",
+      "aliases": [
+        "实际材料收入"
+      ]
     },
     {
       "code": "actual_service_income",
       "kind": "currency",
-      "description": "实际医疗服务收入",
+      "description": "医疗服务收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.actual_service_income"
+      "fieldRef": "rj.dwd_income_budget_view.actual_service_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "实际收入",
+      "aliases": [
+        "实际医疗服务收入"
+      ]
     },
     {
       "code": "actual_test_income",
       "kind": "currency",
-      "description": "实际检查化验收入",
+      "description": "检查化验收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.actual_test_income"
+      "fieldRef": "rj.dwd_income_budget_view.actual_test_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "实际收入",
+      "aliases": [
+        "实际检查化验收入"
+      ]
     },
     {
       "code": "income_summary_total",
       "kind": "currency",
-      "description": "收入汇总指标金额",
+      "description": "科室数据数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_hdc_income_summary_view.indicator_value"
+      "fieldRef": "rj.dwd_hdc_income_summary_view.indicator_value",
+      "purpose": "收入多维分析",
+      "businessCategory": "收入汇总",
+      "aliases": [
+        "收入汇总指标金额"
+      ]
     },
     {
       "code": "budget_income",
       "kind": "currency",
-      "description": "预算医疗收入",
+      "description": "医疗收入预算数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.budget_medical_income"
+      "fieldRef": "rj.dwd_income_budget_view.budget_medical_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "预算收入",
+      "aliases": [
+        "预算医疗收入"
+      ]
     },
     {
       "code": "budget_medicine_income",
       "kind": "currency",
-      "description": "预算药品收入",
+      "description": "药品收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.budget_medicine_income"
+      "fieldRef": "rj.dwd_income_budget_view.budget_medicine_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "预算收入",
+      "aliases": [
+        "预算药品收入"
+      ]
     },
     {
       "code": "budget_material_income",
       "kind": "currency",
-      "description": "预算材料收入",
+      "description": "材料收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.budget_material_income"
+      "fieldRef": "rj.dwd_income_budget_view.budget_material_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "预算收入",
+      "aliases": [
+        "预算材料收入"
+      ]
     },
     {
       "code": "budget_service_income",
       "kind": "currency",
-      "description": "预算医疗服务收入",
+      "description": "医疗服务收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.budget_service_income"
+      "fieldRef": "rj.dwd_income_budget_view.budget_service_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "预算收入",
+      "aliases": [
+        "预算医疗服务收入"
+      ]
     },
     {
       "code": "budget_test_income",
       "kind": "currency",
-      "description": "预算检查化验收入",
+      "description": "检查化验收入实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.budget_test_income"
+      "fieldRef": "rj.dwd_income_budget_view.budget_test_income",
+      "purpose": "预算或预实对比",
+      "businessCategory": "预算收入",
+      "aliases": [
+        "预算检查化验收入"
+      ]
     },
     {
       "code": "budget_person_time",
       "kind": "count",
       "description": "预算人次",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.budget_person_time"
+      "fieldRef": "rj.dwd_income_budget_view.budget_person_time",
+      "purpose": "预算或预实对比",
+      "businessCategory": "预算工作量"
     },
     {
       "code": "actual_person_time",
       "kind": "count",
       "description": "实际人次",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_income_budget_view.actual_person_time"
+      "fieldRef": "rj.dwd_income_budget_view.actual_person_time",
+      "purpose": "预算或预实对比",
+      "businessCategory": "实际工作量"
     },
     {
       "code": "outpatient_visits",
       "kind": "count",
-      "description": "门诊人次",
+      "description": "门急诊人次",
       "aggregation": "sum",
-      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_outpatient"
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_outpatient",
+      "purpose": "工作量分析",
+      "businessCategory": "工作量",
+      "aliases": [
+        "门诊人次"
+      ]
     },
     {
       "code": "discharges",
       "kind": "count",
       "description": "出院人次",
       "aggregation": "sum",
-      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_discharges"
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_discharges",
+      "purpose": "工作量分析",
+      "businessCategory": "工作量"
     },
     {
       "code": "outpatient_visits_non",
       "kind": "count",
-      "description": "不含体检和急诊门诊人次",
+      "description": "门诊人次（不含体检和急诊）",
       "aggregation": "sum",
-      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_outpatient_non"
-    },
-    {
-      "code": "discharges_non",
-      "kind": "count",
-      "description": "不含体检和急诊出院人次",
-      "aggregation": "sum",
-      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_discharges_non"
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_outpatient_non",
+      "purpose": "工作量分析",
+      "businessCategory": "工作量",
+      "aliases": [
+        "不含体检和急诊门诊人次"
+      ]
     },
     {
       "code": "actual_open_bed",
       "kind": "count",
-      "description": "实际开放床日",
+      "description": "开放床日数",
       "aggregation": "sum",
-      "fieldRef": "rj.dm_hdc_gongzuoliang_view.actual_open_bed"
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.actual_open_bed",
+      "purpose": "工作量分析",
+      "businessCategory": "床日工作量",
+      "aliases": [
+        "实际开放床日"
+      ]
     },
     {
       "code": "discharges_bed",
       "kind": "count",
-      "description": "出院占用床日",
+      "description": "实际占用床日数",
       "aggregation": "sum",
-      "fieldRef": "rj.dm_hdc_gongzuoliang_view.discharges_bed"
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.discharges_bed",
+      "purpose": "工作量分析",
+      "businessCategory": "床日工作量",
+      "aliases": [
+        "出院占用床日"
+      ]
     },
     {
       "code": "budget_expenditure",
       "kind": "currency",
-      "description": "预算支出",
+      "description": "支出预算数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_expenditure_budget_view.budget_expenditure"
+      "fieldRef": "rj.dwd_expenditure_budget_view.budget_expenditure",
+      "purpose": "预算或预实对比",
+      "businessCategory": "支出预算",
+      "aliases": [
+        "预算支出"
+      ]
     },
     {
       "code": "actual_expenditure",
       "kind": "currency",
-      "description": "实际支出",
+      "description": "支出实际数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_expenditure_budget_view.actual_expenditure"
+      "fieldRef": "rj.dwd_expenditure_budget_view.actual_expenditure",
+      "purpose": "预算或预实对比",
+      "businessCategory": "实际支出",
+      "aliases": [
+        "实际支出"
+      ]
     },
     {
       "code": "total_cost",
       "kind": "currency",
-      "description": "成本汇总指标金额",
+      "description": "科室成本数",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_hdc_cost_table_view.indicator_value"
+      "fieldRef": "rj.dwd_hdc_cost_table_view.indicator_value",
+      "purpose": "成本多维分析",
+      "businessCategory": "成本",
+      "aliases": [
+        "成本汇总指标金额"
+      ]
     },
     {
       "code": "project_budget",
       "kind": "currency",
       "description": "项目预算金额",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_project_budget_view.budget_project_amount"
+      "fieldRef": "rj.dwd_project_budget_view.budget_project_amount",
+      "purpose": "项目预算分析",
+      "businessCategory": "项目预算"
     },
     {
       "code": "project_contract_amount",
       "kind": "currency",
       "description": "项目合同金额",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_project_budget_view.contract_amount"
+      "fieldRef": "rj.dwd_project_budget_view.contract_amount",
+      "purpose": "项目预算分析",
+      "businessCategory": "项目执行"
     },
     {
       "code": "project_payment_amount",
       "kind": "currency",
       "description": "项目付款金额",
       "aggregation": "sum",
-      "fieldRef": "rj.dwd_project_budget_view.payment_amount"
+      "fieldRef": "rj.dwd_project_budget_view.payment_amount",
+      "purpose": "项目预算分析",
+      "businessCategory": "项目执行"
     }
   ],
   "dimensions": [

@@ -1347,6 +1347,12 @@ class RuntimePlanningMixin:
                 data_understanding=data_understanding,
             ),
         }
+        from ...profile.metric_usage import usage_schema_candidates
+
+        base_payload["schemas"] = usage_schema_candidates(
+            base_payload["schemas"],
+            tuple(metric.model_dump(mode="json", by_alias=True) for metric in profile.metrics),
+        )
         validation_feedback: dict[str, Any] | None = None
         previous_output: dict[str, Any] | None = None
         allowed_mutation_paths: tuple[str, ...] = ()
