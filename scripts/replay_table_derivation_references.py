@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import sys
+import tarfile
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -49,6 +50,28 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _read_archive(path):
+    """Read bytes only; accept complete workspace tarballs as well as ZIP exports."""
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            members = {entry.filename: archive.read(entry) for entry in archive.infolist() if not entry.is_dir()}
+    else:
+        with tarfile.open(path) as archive:
+            members = {}
+            for entry in archive.getmembers():
+                if not entry.isfile():
+                    continue
+                stream = archive.extractfile(entry)
+                assert stream is not None
+                members[entry.name] = stream.read()
+    workspace_members = {name.removeprefix('workspace/'): raw for name, raw in members.items()
+                         if name.startswith('workspace/')}
+    if any(name.endswith('/report-revision-1.manifest.json') for name in workspace_members):
+        # README/metadata outside workspace are packaging records, not report resources.
+        members = workspace_members
+    return members
+
+
 def _discover(members):
     """Locate manifest/index/facts/supplements/chart-inputs in either archive layout.
 
@@ -70,7 +93,12 @@ def _discover(members):
         facts = sorted(name for name in members
                        if '/facts/revision-1/' in name and name.endswith('.json'))
     supplements = sorted(name for name in members if name.endswith('/supplement.json'))
-    charts = sorted(name for name in members if name.endswith('.chart-input.json'))
+    # An export may copy the same chart inputs into revision-2. Prefer those
+    # beside the selected manifest rather than registering identical tables twice.
+    charts = sorted(name for name in members if name.endswith('.chart-input.json')
+                    and name.rsplit('/', 1)[0] == base)
+    if not charts:
+        charts = sorted(name for name in members if name.endswith('.chart-input.json'))
     assert facts, 'no fact files discovered'
     return manifest_name, (root_index or rev_index_name), rev_index_name, facts, supplements, charts
 
@@ -123,8 +151,7 @@ def baseline_compare(args):
     output.mkdir(parents=True, exist_ok=False)
     first = json.loads(Path(args.baseline_from).read_text())
     extracted = args.extracted.resolve()
-    with zipfile.ZipFile(args.archive) as archive:
-        members = {entry.filename: archive.read(entry) for entry in archive.infolist() if not entry.is_dir()}
+    members = _read_archive(args.archive)
     for name, raw in members.items():
         assert (extracted / name).read_bytes() == raw, f'extraction mismatch: {name}'
     _, _, _, facts, supplements, charts = _discover(members)
@@ -224,8 +251,7 @@ async def replay(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     extracted = args.extracted.resolve()
-    with zipfile.ZipFile(args.archive) as archive:
-        members = {entry.filename: archive.read(entry) for entry in archive.infolist() if not entry.is_dir()}
+    members = _read_archive(args.archive)
     for name, raw in members.items():
         assert (extracted / name).read_bytes() == raw, f'extraction mismatch: {name}'
     manifest_name, old_index_name, rev_index_name, facts, supplements, charts = _discover(members)
@@ -424,7 +450,7 @@ async def replay(args):
                                  'edited': detail, 'restored': restored_detail, 'exactBaselineRestored': restored == markdown})
     final_originals_unchanged = all((extracted / name).read_bytes() == raw for name, raw in members.items())
     assert final_originals_unchanged
-    counts = {'zipFilesVerified': len(members), 'facts': len(facts), 'chartInputs': len(charts), 'supplements': len(supplements),
+    counts = {'archiveFilesVerified': len(members), 'facts': len(facts), 'chartInputs': len(charts), 'supplements': len(supplements),
               'chartSourcesVerified': sum(item['identityVerified'] for item in chart_sources),
               'bodyParagraphsRendered': len(records), 'historicalClaimMarkersRemoved': original.count('[[claim:'),
               'newBodyReferences': len(references), 'tableDerivedReferences': sum(ref.table_derivation is not None for ref in references),

@@ -33,7 +33,7 @@ def _postfix_qualifier(suffix: str) -> str:
     # 当前值的来源入口不是新断言；生成期和编辑期须以同样方式读取其后括注。
     suffix = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*\s*', '', suffix)
     suffix = re.split(r'\{\{value:|\[\[(?:claim|citation):', suffix, maxsplit=1)[0]
-    notes = []
+    notes: list[str] = []
     offset = 0
     while offset < len(suffix) and suffix[offset] in '（(':
         closing = []
@@ -83,7 +83,7 @@ def _affirmative_wording(clause: str) -> list[str]:
 def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, Any]) -> list[str]:
     """多月合计/均值必须对应完整窗口；累计截止月与背景月份另行处理。"""
     selector = reference['selector']
-    periods = reference.get('periods') or ()
+    periods: tuple[str, ...] = tuple(reference.get('periods') or ())
     if (selector not in {'total', 'monthlyAverage', 'monthlyTrend'} and not selector.startswith(('periodTotals.', 'periodAverages.'))
             or len(periods) < 2 or any(not re.fullmatch(r'\d{4}-\d{2}', period) for period in periods)):
         return []
@@ -100,7 +100,7 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
     if not (1 <= int(written['start']) <= 12 and 1 <= int(written['end'] or written['start']) <= 12
             and 0 <= last - first < 1200):
         return []
-    written_periods = tuple(f'{month // 12:04d}-{month % 12 + 1:02d}' for month in range(first, last + 1))
+    written_periods: tuple[str, ...] = tuple(f'{month // 12:04d}-{month % 12 + 1:02d}' for month in range(first, last + 1))
     cutoff_pattern = r'(?:截至|截止)(?:到)?\s*(?:\d{4}年)?\d{1,2}月'
     cutoff = re.search(cutoff_pattern, period_clause)
     if not cutoff and _written_period(period_clause, fact) is None:
@@ -207,7 +207,10 @@ def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix:
         warnings.append('统计口径需复核：当前引用不是月均选择器，请核对月均口径。')
 
     scope = reference.get('scope') or {}
-    identity = ' '.join((str(entry.get('displayName') or ''), *(entry.get('aliases') or ()), *scope.values()))
+    # Nullable hierarchy/group keys denote missing mapping, not a text identity.
+    # Keep registered strings usable without inventing a department for nulls.
+    identity = ' '.join((str(entry.get('displayName') or ''), *(entry.get('aliases') or ()),
+                         *(value for value in scope.values() if isinstance(value, str))))
     # 空范围不等于“全院”。正文明确限定科室而引用没有相应登记时，只提示范围未获证实。
     department_clause = scope_clause + ' ' + qualifier
     for calendar in (_DAY_PERIOD, _PERIOD, _SHORT_DAY_PERIOD, _SHORT_PERIOD):
