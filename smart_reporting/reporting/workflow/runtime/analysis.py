@@ -811,6 +811,8 @@ _MODEL_FACT_IDENTITY_KEYS = frozenset(
         "profileHash",
         "currentDatasetSha256",
         "baselineDatasetSha256",
+        "groupPopulation",  # Server-only complete partition; bounded assertion views expose selections.
+        "cumulativePolicy",  # Trusted business premise; model input cannot mint it.
     }
 )
 _MODEL_FACT_WARNING_COLLECTIONS = (
@@ -2158,9 +2160,7 @@ class RuntimeAnalysisMixin:
             checkpoint_state.update(updated.model_dump(mode="python"))
             return StepOutput(content={"sectionCode": section_code, "status": "completed"})
 
-        async def rework_analysis(
-            instruction: Mapping[str, Any], _context: RunContext
-        ) -> StepOutput:
+        async def rework_analysis(instruction: Mapping[str, Any], _context: RunContext) -> StepOutput:
             section_code = instruction.get("sectionCode")
             section_goal = instruction.get("sectionGoal")
             raw_rework = instruction.get("rework")
@@ -2169,30 +2169,51 @@ class RuntimeAnalysisMixin:
                 or not isinstance(section_goal, Mapping)
                 or not isinstance(raw_rework, Mapping)
             ):
-                raise ReportingError(
-                    "report_analysis_rework_invalid", "章节补证请求缺少有效上下文。"
-                )
+                raise ReportingError("report_analysis_rework_invalid", "章节补证请求缺少有效上下文。")
             try:
                 rework = AnalysisReworkRequest.model_validate(
                     {"sectionCode": section_code, **dict(raw_rework)}
                 )
             except ValidationError as error:
-                raise ReportingError(
-                    "report_analysis_rework_invalid", "章节补证请求结构无效。"
-                ) from error
+                raise ReportingError("report_analysis_rework_invalid", "章节补证请求结构无效。") from error
             rework_payload = rework.model_dump(mode="json", by_alias=True)
             rework_digest = payload_sha256(rework_payload)
+            quality_policy = (
+                self._state(run_context).get("report_request_context", {}).get("assertionPolicy", {})
+            )
+            quality_attempts: dict[str, str] = {}
+            if quality_policy.get("mode") == "enabled":
+                prefix = f"{revision}:{rework_digest}"
+                rework_payload["qualityRepair"] = {"attemptId": prefix}
+                quality_attempts = {
+                    analysis_id: "repair-" + hashlib.sha256(f"{prefix}:{analysis_id}".encode()).hexdigest()
+                    for analysis_id in rework.analysis_ids
+                }
             # request_analysis_rework 是补证失效边界：先由 reducer 原子撤销目标
             # analysis、当前章节及其图表，再启动定向补证。否则后续可视化会误复用
             # 补证前的 durable 完成标记，形成新分析配旧图表的混合产物。
-            await self._apply_durable_command(
-                run_context,
-                ReportingCommand(
-                    name="request_analysis_rework",
-                    commandId=f"analysis-rework-request:{revision}:{rework_digest}",
-                    payload=rework_payload,
-                ),
-            )
+            try:
+                await self._apply_durable_command(
+                    run_context,
+                    ReportingCommand(
+                        name="request_analysis_rework",
+                        commandId=f"analysis-rework-request:{revision}:{rework_digest}",
+                        payload=rework_payload,
+                    ),
+                )
+            except ReportingStateError as error:
+                if not error.code.startswith("report_quality_"):
+                    raise
+                loguru_logger.warning(
+                    "report_quality_rework_skipped section={} reason={}", section_code, error.code
+                )
+                return StepOutput(
+                    content={
+                        "sectionCode": section_code,
+                        "status": "budget_exhausted",
+                        "budgetCode": error.code,
+                    }
+                )
             await self._apply_durable_command(
                 run_context,
                 ReportingCommand(
@@ -2204,7 +2225,19 @@ class RuntimeAnalysisMixin:
                 run_context, ReportingCheckpoint.model_validate(checkpoint_state)
             )
             retry_reason = f"analysis_rework:{rework_digest}"
+            repair_failed = False
             for analysis_id in rework.analysis_ids:
+                durable = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+                entry = (
+                    durable.payload.get("qualityBudget", {})
+                    .get("attempts", {})
+                    .get(quality_attempts.get(analysis_id), {})
+                    if durable is not None
+                    else {}
+                )
+                if entry.get("status") in {"succeeded", "failed", "unknown"}:
+                    repair_failed |= entry["status"] != "succeeded"
+                    continue
                 checkpoint = await self._run_analysis_item_task(
                     run_context,
                     checkpoint=checkpoint,
@@ -2223,12 +2256,22 @@ class RuntimeAnalysisMixin:
                     feedback=feedback,
                     rework_request=rework,
                 )
+                durable = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+                result = (
+                    durable.payload.get("qualityBudget", {})
+                    .get("attempts", {})
+                    .get(quality_attempts.get(analysis_id), {})
+                    if durable is not None
+                    else {}
+                )
+                repair_failed |= result.get("status") in {"failed", "unknown"}
             checkpoint_state.clear()
             checkpoint_state.update(checkpoint.model_dump(mode="python"))
             return StepOutput(
                 content={
                     "sectionCode": section_code,
-                    "status": "completed",
+                    "status": "degraded" if repair_failed else "completed",
+                    "budgetCode": "report_quality_supplement_failed" if repair_failed else None,
                     "analysisIds": list(rework.analysis_ids),
                 }
             )
@@ -2241,9 +2284,11 @@ class RuntimeAnalysisMixin:
             raw_rework = instruction.get("rework")
             degraded_rework = dict(raw_rework) if isinstance(raw_rework, Mapping) else None
             if not analysis_rework_allowed and degraded_rework is not None:
+                budget_code = degraded_rework.get("budgetCode")
                 warning = {
-                    "code": "report_analysis_rework_exhausted",
-                    "message": "章节补证次数已达到上限，已基于现有冻结证据降级成稿。",
+                    "code": budget_code or "report_analysis_rework_exhausted",
+                    "message": ("新增补证未完成，已保留现有证据并明确缺口。" if budget_code
+                                else "章节补证次数已达到上限，已基于现有冻结证据降级成稿。"),
                     "sectionCode": section_code,
                     "details": degraded_rework,
                 }
@@ -2323,6 +2368,26 @@ class RuntimeAnalysisMixin:
                     }
                 )
             return StepOutput(content={"sectionCode": section_code, "status": "completed"})
+
+        durable = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+        pending_attempts = (durable.payload.get("qualityBudget", {}).get("attempts", {}).values()
+                            if durable is not None else ())
+        recovered_requests: set[str] = set()
+        for attempt in pending_attempts:
+            if attempt.get("status") != "reserved" or not isinstance(attempt.get("rework"), Mapping):
+                continue
+            request = attempt["rework"]
+            prefix = request.get("qualityRepair", {}).get("attemptId", "")
+            if not prefix.startswith(f"{revision}:") or prefix in recovered_requests:
+                continue
+            section = next((item for item in outline.sections if item.code == request.get("sectionCode")), None)
+            if section is None:
+                raise ReportingError("report_quality_recovery_context_invalid", "补证恢复缺少原章节上下文。")
+            recovered_requests.add(prefix)
+            await rework_analysis({"sectionCode": section.code,
+                "sectionGoal": {"sectionCode": section.code, "title": section.title,
+                                "focus": section.focus, "analysisIds": list(section.analysis_ids)},
+                "rework": {key: value for key, value in request.items() if key != "qualityRepair"}}, run_context)
 
         reporting_workflow = ReportingAnalysisAndDraftWorkflow(
             report_goal=self._envelope(run_context).report_goal,
@@ -3616,6 +3681,93 @@ class RuntimeAnalysisMixin:
         *,
         checkpoint: ReportingCheckpoint,
         revision: int,
+        analysis_id: str,
+        **task_context: Any,
+    ) -> ReportingCheckpoint:
+        """Resume supplemental work through the same contract in every workflow phase."""
+        scope = self._scope(run_context)
+        durable = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+        payload = durable.payload if durable is not None else {}
+        attempt_id = payload.get("qualityRepairOwners", {}).get(analysis_id)
+        entry = payload.get("qualityBudget", {}).get("attempts", {}).get(attempt_id, {})
+        repair = entry.get("rework", {})
+        repair_prefix = repair.get("qualityRepair", {}).get("attemptId", "")
+        if not repair_prefix.startswith(f"{revision}:"):
+            return await self._execute_analysis_item_task(
+                run_context,
+                checkpoint=checkpoint,
+                revision=revision,
+                analysis_id=analysis_id,
+                **task_context,
+            )
+        if entry.get("status") != "reserved":
+            if analysis_id in payload.get("completedAnalysisIds", ()):
+                return checkpoint
+            raise ReportingError(
+                "report_quality_attempt_finished", "补证已结算，缺少可恢复的分析证据。"
+            )
+        rework = AnalysisReworkRequest.model_validate(
+            {key: value for key, value in repair.items() if key != "qualityRepair"}
+        )
+        retry_reason = "analysis_rework:" + payload_sha256(
+            rework.model_dump(mode="json", by_alias=True)
+        )
+        task_context.update(rework_request=rework, retry_reason=retry_reason)
+        settlement = "unknown"
+        try:
+            # A crash after task completion but before settlement must not call
+            # the provider again. The completed trace was written only after
+            # the durable evidence and task receipt passed identity checks.
+            completed = analysis_id in payload.get("completedAnalysisIds", ()) and any(
+                trace.phase == "analysis"
+                and trace.work_kind == "analysis_item"
+                and trace.analysis_id == analysis_id
+                and trace.retry_reason == retry_reason
+                and trace.status == "completed"
+                for trace in checkpoint.trace
+            )
+            if not completed:
+                checkpoint = await self._execute_analysis_item_task(
+                    run_context,
+                    checkpoint=checkpoint,
+                    revision=revision,
+                    analysis_id=analysis_id,
+                    **task_context,
+                )
+            settlement = "succeeded"
+        except Exception as error:
+            settlement = "failed"
+            if not isinstance(error, ReportingError):
+                raise
+            loguru_logger.warning(
+                "report_quality_supplement_failed analysis={} reason={}", analysis_id, error.code
+            )
+        finally:
+            try:
+                await self._apply_durable_command(
+                    run_context,
+                    ReportingCommand(
+                        name="settle_quality_attempt",
+                        commandId=f"quality-settle:{attempt_id}:{settlement}",
+                        payload={"attemptId": attempt_id, "status": settlement},
+                    ),
+                )
+            except Exception as error:
+                loguru_logger.warning(
+                    "report_quality_settlement_unavailable analysis={} reason={}",
+                    analysis_id,
+                    type(error).__name__,
+                )
+                if settlement != "succeeded":
+                    raise
+        return await self._current_reporting_checkpoint(run_context, checkpoint)
+
+    async def _execute_analysis_item_task(
+        self,
+        run_context: RunContext,
+        *,
+        checkpoint: ReportingCheckpoint,
+        revision: int,
         sandbox_id: str,
         validation_context_file: FileIdentity,
         detailed_plan: DetailedAnalysisPlan,
@@ -3701,6 +3853,10 @@ class RuntimeAnalysisMixin:
                 and item.analysis_id == analysis_id
                 and item.retry_reason == retry_reason
             ]
+            if rework_request is not None:
+                failed_count = sum(item.status == "failed" for item in matching_traces)
+                if failed_count >= MAX_REPORT_SECTION_PHASE_ATTEMPTS:
+                    raise last_error or ReportingError("report_analysis_rework_exhausted", "当前补证的持久重试预算已耗尽。")
             started_trace = next(
                 (item for item in reversed(matching_traces) if item.status == "started"),
                 None,

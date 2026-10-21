@@ -1690,7 +1690,9 @@ def test_adjacent_month_changes_are_registered_from_frozen_monthly_values():
 
     prompt = prompt_number_catalog(catalog)
     assert not [token for token in prompt if "periodChange" in token]
-    assert set(catalog) - set(prompt) == {token for token in catalog if "periodChange" in token}
+    assert set(catalog) - set(prompt) == {
+        token for token in catalog if "periodChange" in token or "monthlyTrend" in token
+    }
     text = "2月收入环比增长20.00%，增加20.00万元；3月环比下降10.00%；5月环比增长7.41%。"
     assert replace_unregistered_numbers(text, [content]) == (
         "2月收入环比增长20.00%，增加20.00万元；3月环比下降10.00%；5月环比增长待核实。"

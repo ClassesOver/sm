@@ -237,7 +237,7 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
                     {
                         "chartId": "chart_001",
                         "subjectIds": [],
-                        "status": "valid",
+                        "status": "stale",
                         "imagePath": chart_path,
                         "datasetIds": ["dataset-url-abc0001"],
                         "methods": [],

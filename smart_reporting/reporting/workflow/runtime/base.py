@@ -1518,20 +1518,20 @@ class _ReportWorkflowRuntimeBase:
             or not isinstance(values["editorJob"], dict)
             or values["editorJob"].get("jobId") != values["jobId"]
             or not isinstance(values["markdownPath"], str)
-            or not isinstance(values["pdfPath"], str)
-            or not isinstance(values["pdfSize"], int)
-            or values["pdfSize"] <= 0
-            or not isinstance(values["pdfSha256"], str)
-            or re.fullmatch(r"[0-9a-f]{64}", values["pdfSha256"]) is None
-            or not isinstance(values["wordPath"], str)
-            or not isinstance(values["wordSize"], int)
-            or values["wordSize"] <= 0
-            or not isinstance(values["wordSha256"], str)
-            or re.fullmatch(r"[0-9a-f]{64}", values["wordSha256"]) is None
             or not isinstance(values["sourceWarnings"], list)
             or not isinstance(values["codingReceipts"], list)
         ):
             raise ReportingError("report_publication_invalid", "报表发布产物无效。")
+        available = 0
+        for label in ("pdf", "word"):
+            path, size, digest = (values[f"{label}{suffix}"] for suffix in ("Path", "Size", "Sha256"))
+            if path is None and size is None and digest is None:
+                continue
+            if not isinstance(path, str) or not path or isinstance(size, bool) or not isinstance(size, int) or size <= 0 or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise ReportingError("report_publication_invalid", "报表发布产物身份不完整。")
+            available += 1
+        if not available:
+            raise ReportingError("report_publication_invalid", "没有可发布的报告格式。")
         try:
             if content.get("artifactManifest") is not None:
                 identity = ArtifactFile.model_validate(content["artifactManifest"])

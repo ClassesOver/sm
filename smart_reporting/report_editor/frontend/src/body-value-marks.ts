@@ -94,7 +94,11 @@ function subjectCard(subject: Subject, sources: TraceSources | undefined, writte
     written ? `正文值：${written}` : '',
     periodText(subject.periods) ? `期间：${periodText(subject.periods)}` : '',
     subject.formulaText || subject.formula ? `口径：${subject.formulaText || subject.formula}` : '',
-    subject.status === 'valid'
+    subject.sourceStatus === 'integrity_failed'
+      ? '状态：来源身份无法核验；其余来源已独立检查'
+      : subject.status === 'unbound'
+      ? '状态：尚未建立有效来源绑定'
+      : subject.status === 'valid'
       ? (subject.warnings?.length ? '状态：数值一致，业务口径需复核' : '状态：与登记值一致')
       : '状态：正文已改动，需复核',
     ...(subject.warnings ?? []).map(warning => `提示：${warning}`),

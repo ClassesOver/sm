@@ -30,6 +30,8 @@ def _expected_sample() -> dict:
     # Keep the legacy fixture intact and explicitly assert the additive metric semantics.
     expected = json.loads((_SAMPLE / "expected.json").read_text(encoding="utf-8"))
     expected["binding"].update(
+        evaluationStatus="evaluated",
+        unverifiedOriginalsEvaluated=False,
         derivedShareMeaning="share_of_registered_validations_accepted_by_derivation",
         derivedShareDenominator="registered",
         missingClassificationMeaning="heuristic_similarity_candidates_not_verified_root_causes",
@@ -170,3 +172,16 @@ def test_quality_scan_without_trace_index_omits_comparison():
     result = scan_report_quality("甲项目金额100.00万元。", _table_contents())
     assert "traceIndex" not in result
     assert result["binding"]["verdicts"] == {"registered": 1}
+
+
+@pytest.mark.parametrize("markdown,contents", [
+    ("丁项目55万元。", []),
+    ("丁项目待核实。", _table_contents()),
+    ("没有数值。", _table_contents()),
+])
+def test_no_checks_is_unknown_not_zero_error(markdown, contents):
+    binding = scan_report_quality(markdown, contents)["binding"]
+    assert binding["checked"] == 0
+    assert binding["missingRate"] is None
+    assert binding["derivedShare"] is None
+    assert binding["evaluationStatus"] == "not_evaluated"

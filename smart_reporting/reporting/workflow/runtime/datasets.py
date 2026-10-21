@@ -618,20 +618,35 @@ class RuntimeDatasetsMixin:
             warnings=unique_warnings,
         )
         state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY] = plan.model_dump(mode="json", by_alias=True)
+        from ..questions import QuestionSet, freeze_analysis_questions, request_questions
+
+        request_context = state.get("report_request_context", {})
+        raw_questions = request_context.get("questionSpecs")
+        questions = QuestionSet.model_validate(raw_questions) if raw_questions is not None else request_questions(
+            request_context.get("originalGoal", envelope.report_goal),
+        )
+        frozen_questions = freeze_analysis_questions(
+            questions, [item.model_dump(mode="json", by_alias=True) for item in plan.analyses],
+        )
         await self._apply_durable_command(
             run_context,
             ReportingCommand(
                 name="set_analysis_plan",
-                commandId=f"analysis-plan:{payload_sha256(plan.model_dump(mode='json', by_alias=True))}",
+                commandId="analysis-plan-questions-v1:" + payload_sha256({
+                    "plan": plan.model_dump(mode="json", by_alias=True),
+                    "questions": frozen_questions.model_dump(mode="json", by_alias=True),
+                }),
                 payload={
                     "analysisIds": [item.analysis_id for item in plan.analyses],
                     "datasetIds": list(plan.dataset_ids),
+                    "questionSpecs": frozen_questions.model_dump(mode="json", by_alias=True),
                     "analysisPlans": {
                         item.analysis_id: {
                             "analysisId": item.analysis_id,
                             "analysisName": item.analysis_name,
                             "domain": item.domain,
                             "step": item.management_question,
+                            "questionId": frozen_questions.analysis_to_question[item.analysis_id],
                             "primaryMetricFamily": item.primary_metric_family,
                             "datasetIds": list(item.dataset_ids),
                         }
@@ -640,6 +655,9 @@ class RuntimeDatasetsMixin:
                 },
             ),
         )
+        state.setdefault("report_request_context", {"originalGoal": envelope.report_goal, "feedback": []})[
+            "questionSpecs"
+        ] = frozen_questions.model_dump(mode="json", by_alias=True)
         self._assert_state_safe(state)
         return StepOutput(content=plan)
 

@@ -385,7 +385,12 @@ def _decode_bdata(values: Mapping[str, Any]) -> list[float | None]:
     try:
         import numpy as np
 
-        array = np.frombuffer(base64.b64decode(values["bdata"]), dtype=np.dtype(values["dtype"]))
+        dtype = np.dtype(values["dtype"])
+        if dtype.kind not in "iuf":
+            return [math.nan]
+        array = np.frombuffer(base64.b64decode(values["bdata"], validate=True), dtype=dtype)
+        if values.get("shape") is not None and str(values["shape"]).strip() != str(len(array)):
+            return [math.nan]  # Multi-dimensional axes need a registered grid transform.
         return [None if np.isnan(item) else float(item) for item in array.ravel()]
     except Exception:  # noqa: BLE001 - 无法解码时核对失败，由调用方软告警
         return [math.nan]
@@ -401,67 +406,244 @@ def _numbers(values: Any) -> list[float | None] | None:
     numeric = False
     for value in values:
         if isinstance(value, (list, tuple)):
-            nested = _numbers(value)
-            numeric = numeric or nested is not None
-            flat.extend(nested if nested is not None else [math.nan] * len(value))
+            return [math.nan]  # Flattening changes point identities.
         elif value is None:
             numeric = True
             flat.append(None)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             numeric = True
-            flat.append(None if math.isnan(value) else float(value))
+            try:
+                converted = float(value)
+            except (OverflowError, ValueError):
+                return [math.nan]
+            flat.append(None if math.isnan(converted) else converted)
         else:
             flat.append(math.nan)
     return flat if numeric or not values else None
 
 
 def _close(left: float, right: float) -> bool:
-    return (math.isfinite(left) and math.isfinite(right)
-            and abs(left - right) <= max(1e-6, 0.006 * max(abs(left), abs(right))))
+    # Display rounding is an absolute decimal-place operation. A relative
+    # tolerance would approve, for example, 100500 in place of 100000.
+    return (
+        math.isfinite(left)
+        and math.isfinite(right)
+        and any(
+            abs(left - candidate) <= math.ulp(left) + math.ulp(candidate)
+            for candidate in (right, *(round(right, places) for places in range(7)))
+        )
+    )
+
+
+def _axis_scales(
+    figure: Mapping[str, Any], trace: Mapping[str, Any], key: str, metadata: Any
+) -> tuple[float, ...]:
+    """Conversions require a frozen source unit and an explicit target axis."""
+    from ...units import unit_conversion_scale
+
+    source = metadata.get("unit") if isinstance(metadata, Mapping) else None
+    if key not in {"x", "y"}:
+        return (1.0,)
+    axis_name = trace.get(key + "axis", key)
+    if not isinstance(axis_name, str) or re.fullmatch(key + r"\d*", axis_name) is None:
+        return ()
+    layout = figure.get("layout") or {}
+    if not isinstance(layout, Mapping):
+        return ()
+    axis = layout.get(key + "axis" + axis_name[1:], {})
+    if not isinstance(axis, Mapping):
+        return ()
+    if isinstance(axis.get("tickformat"), str) and "%" in axis["tickformat"]:
+        if re.fullmatch(r",?(?:\.\d{1,2})?%", axis["tickformat"]) is None:
+            return ()
+        return (0.01,) if source == "%" else (1.0,) if source == "1" else ()
+    title = axis.get("title") or ""
+    title = title.get("text", "") if isinstance(title, Mapping) else title
+    if not isinstance(title, str):
+        return ()
+    target = re.findall(r"[（(]\s*(亿元|万元|元|万人次|人次|%)\s*[）)]", title)
+    if not target:
+        return (1.0,)
+    if len(set(target)) != 1:
+        return ()
+    if not isinstance(source, str):
+        return ()
+    if source == "1" and target[0] == "%":
+        return (100.0,)
+    scale = unit_conversion_scale(source, target[0])
+    return (float(scale),) if scale is not None else ()
+
+
+def _array_matches(values: Any, column: list[Any], scales: tuple[float, ...]) -> bool:
+    numbers = _numbers(values)
+    candidates = _numbers(column)
+    if numbers is not None:
+        return candidates is not None and any(
+            len(numbers) == len(candidates)
+            and all(
+                value is candidate
+                if value is None or candidate is None
+                else _close(value, candidate * scale)
+                for value, candidate in zip(numbers, candidates, strict=True)
+            )
+            for scale in scales
+        )
+    return isinstance(values, (list, tuple)) and list(values) == column
 
 
 def plotly_trace_matches_chart_inputs(
     figure: Mapping[str, Any], chart_inputs: Sequence[Mapping[str, Any]]
 ) -> bool:
-    """每个 trace 数值数组均须与完整的 chart-input 数值列按位置对应。
+    """Match complete label/value pairs to the same frozen table and row order.
 
-    允许显示舍入与 ×100 百分比换算；只做软告警依据，不改变交付。
+    This verifies registered arrays, not image pixels, title semantics or the
+    upstream business population. Unsupported transformations remain unknown.
     """
-
-    columns: list[list[float | None]] = []
+    tables = []
     for item in chart_inputs:
         names = item.get("columns")
         rows = item.get("rows")
-        if not isinstance(names, list) or not isinstance(rows, list):
+        if (
+            not isinstance(names, list)
+            or not names
+            or not all(isinstance(name, str) for name in names)
+            or len(set(names)) != len(names)
+            or not isinstance(rows, list)
+            or not rows
+            or any(
+                not isinstance(row, list)
+                or len(row) != len(names)
+                or any(not _is_scalar(value) for value in row)
+                or any(isinstance(value, float) and not math.isfinite(value) for value in row)
+                for row in rows
+            )
+        ):
             continue
-        for position in range(len(names)):
-            if any(not isinstance(row, list) or position >= len(row) for row in rows):
-                continue
-            values = _numbers([row[position] for row in rows])
-            if values and any(value is not None and math.isfinite(value) for value in values):
-                columns.append(values)
-    if not columns:
+        tables.append(
+            (
+                names,
+                [[row[position] for row in rows] for position in range(len(names))],
+                item.get("columnMeta") or {},
+                item.get("dataScope") or {},
+            )
+        )
+    traces = figure.get("data")
+    if not tables or not isinstance(traces, (list, tuple)) or not traces:
         return False
-    matched = False
-    for trace in figure.get("data") or ():
-        if not isinstance(trace, Mapping):
-            continue
-        for key in ("y", "x", "values", "z", "r", "text"):
-            trace_values = _numbers(trace.get(key))
-            if trace_values is None:
-                continue
-            if not any(
-                len(trace_values) == len(column) and all(
-                    value is candidate if value is None or candidate is None
-                    else _close(value, candidate * scale)
-                    for value, candidate in zip(trace_values, column)
+    layout = figure.get("layout") or {}
+    if not isinstance(layout, Mapping) or layout.get("barnorm"):
+        return False
+    for trace in traces:
+        if not isinstance(trace, Mapping) or "z" in trace:
+            return False  # Grids need an explicitly registered row/column transform.
+        if (
+            trace.get("type", "scatter")
+            not in {"scatter", "scattergl", "bar", "pie", "scatterpolar", "barpolar"}
+            or trace.get("groupnorm")
+            or trace.get("histnorm")
+            or trace.get("transforms")
+        ):
+            return False
+        groups = [
+            tuple(key for key in pair if key in trace)
+            for pair in (("x", "y"), ("labels", "values"), ("theta", "r"))
+        ]
+        groups = [group for group in groups if group]
+        if len(groups) != 1:
+            return False
+        keys = groups[0]
+        numeric_keys = [key for key in keys if _numbers(trace[key]) is not None]
+        measure = (
+            "values"
+            if "values" in keys
+            else "r"
+            if "r" in keys
+            else "x"
+            if trace.get("orientation") == "h" or "y" not in keys
+            else "y"
+        )
+        if measure not in numeric_keys or not any(
+            value is not None and math.isfinite(value) for value in (_numbers(trace[measure]) or ())
+        ):
+            return False
+        matched = False
+        for names, columns, metadata, scope in tables:
+            if (
+                measure == "values"
+                and isinstance(scope, Mapping)
+                and (
+                    scope.get("coverage") == "ranked_subset"
+                    or scope.get("canRepresentFullDistribution") is False
                 )
-                for column in columns
-                for scale in (1.0, 100.0, 0.01)
             ):
-                return False
-            matched = True
-    return matched
+                continue  # A pie normalizes its subset into a false full distribution.
+            if len(keys) == 1 and len(columns) != 1:
+                continue  # Missing category/period identity cannot be inferred.
+            candidates = {
+                key: [
+                    position
+                    for position, column in enumerate(columns)
+                    if _array_matches(
+                        trace[key],
+                        column,
+                        _axis_scales(
+                            figure,
+                            trace,
+                            key,
+                            metadata.get(names[position])
+                            if isinstance(metadata, Mapping)
+                            else None,
+                        ),
+                    )
+                ]
+                for key in keys
+            }
+            assignments = (
+                [(position,) for position in candidates[keys[0]]]
+                if len(keys) == 1
+                else [
+                    (left, right)
+                    for left in candidates[keys[0]]
+                    for right in candidates[keys[1]]
+                    if left != right
+                ]
+            )
+            for assignment in assignments:
+                # Numeric annotations must belong to this trace's own data,
+                # rather than borrowing an unrelated input column/table.
+                text = _numbers(trace.get("text"))
+                if text is not None and not any(
+                    _array_matches(
+                        trace["text"],
+                        columns[position],
+                        _axis_scales(
+                            figure,
+                            trace,
+                            key,
+                            metadata.get(names[position])
+                            if isinstance(metadata, Mapping)
+                            else None,
+                        ),
+                    )
+                    for key, position in zip(keys, assignment, strict=True)
+                    if key in numeric_keys
+                ):
+                    continue
+                if not any(
+                    any(
+                        value is not None and math.isfinite(value)
+                        for value in (_numbers(trace[key]) or ())
+                    )
+                    for key in numeric_keys
+                ):
+                    continue
+                matched = True
+                break
+            if matched:
+                break
+        if not matched:
+            return False
+    return True
 
 
 async def verify_plotly_chart_inputs(
@@ -470,34 +652,48 @@ async def verify_plotly_chart_inputs(
     workspace: Any,
     *,
     thread_id: str,
-) -> None:
+) -> dict[str, dict[str, str]]:
     """Plotly 产物与 chart-input 数值核对；无法完整对应时记软告警。"""
 
     payloads: dict[str, list[dict[str, Any]]] = {}
+    results: dict[str, dict[str, str]] = {}
     for item in materialized.files:
         try:
             decoded = json.loads(item.content)
         except ValueError:
             continue
-        payloads.setdefault(str(decoded.get("chartId")), []).append(decoded)
+        if isinstance(decoded, dict):
+            payloads.setdefault(str(decoded.get("chartId")), []).append(decoded)
     for chart in plan.charts:
-        if chart.interactive_path is None or chart.chart_id not in payloads:
+        if chart.interactive_path is None:
+            results[chart.chart_id] = {"status": "unknown", "reason": "static_image_not_evaluated"}
+            continue
+        reason = "chart_input_unavailable"
+        if chart.chart_id not in payloads:
+            results[chart.chart_id] = {"status": "unknown", "reason": reason}
             continue
         try:
             content, _mime = await workspace.afile_bytes(thread_id, chart.interactive_path)
             figure = json.loads(content)
+            reason = "chart_data_unverified"
+            matched = isinstance(figure, Mapping) and plotly_trace_matches_chart_inputs(
+                figure, payloads[chart.chart_id]
+            )
         except Exception:  # noqa: BLE001 - 核对只是软告警
-            continue
-        if isinstance(figure, Mapping) and not plotly_trace_matches_chart_inputs(
-            figure, payloads[chart.chart_id]
-        ):
+            matched = False
+            reason = "chart_check_failed"
+        results[chart.chart_id] = {
+            "status": "verified" if matched else "unknown",
+            "reason": "registered_arrays_match" if matched else reason,
+        }
+        if not matched:
             logger.bind(chart_id=chart.chart_id).warning(
                 "report_visualization_chart_data_unverified chart_id={} path={} "
-                "Plotly trace 数值未能与 chart-input 数值列对应，继续交付。",
+                "Plotly 类别、数值或单位未能与冻结 chart-input 对应，继续交付。",
                 chart.chart_id,
                 chart.interactive_path,
             )
-
+    return results
 
 def chart_input_root_for(chart_output_root: str) -> str:
     """chart-input 根目录：chartOutputRoot 的只读兄弟目录。

@@ -60,7 +60,22 @@ def metric_fact_identity(fact: Any) -> str:
             }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False),
         )
     )
+    population = getattr(fact, "group_population", None)
+    policy = getattr(fact, "cumulative_policy", None)
+    if policy is not None:
+        identity += "|cumulativePolicy=" + json.dumps(
+            policy.model_dump(mode="json", by_alias=True),
+            sort_keys=True, separators=(",", ":"),
+        )
+    if population is not None:
+        identity += "|groupPopulation=" + hashlib.sha256(json.dumps(
+            [item.model_dump(mode="json", by_alias=True) for item in population],
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest()
     period_aggregation = getattr(fact, "period_aggregation", None)
+    series_missing_count = getattr(fact, "series_missing_count", None)
+    if series_missing_count is not None:
+        identity += f"|seriesMissingCount={series_missing_count}"
     # 相同原文在不同已确认单位或期间字段下的选择器含义不同。
     identity += "|semantics=" + json.dumps({
         "unit": fact.unit, "periodField": fact.period_field,

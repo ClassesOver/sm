@@ -17,6 +17,48 @@ const deferred = <T>() => {
 }
 
 describe('source validation', () => {
+  it('does not turn unreviewed answer coverage into a successful report', () => {
+    const result = validation('draft')
+    result.quality = { status: 'evaluated', allKeyFactsEvaluated: false, issues: [],
+      questionCoverage: { required: 1, evaluated: 0, answered: 0, effectiveAnswerRate: null, evaluationStatus: 'not_fully_evaluated' } }
+    expect(sourceCoverageSummary(result, '').text).toContain('回答覆盖待核验')
+    expect(sourceCoverageSummary(result, '').state).toBe('stale')
+    result.quality.questionCoverage = { required: 1, evaluated: 1, answered: 0, effectiveAnswerRate: 0, evaluationStatus: 'evaluated' }
+    expect(sourceCoverageSummary(result, '').text).toContain('已核验回答 0/1')
+    result.quality.questionCoverage.answered = 1
+    result.quality.questionCoverage.effectiveAnswerRate = 1
+    expect(sourceCoverageSummary(result, '').text).toContain('已核验回答 1/1')
+    expect(sourceCoverageSummary(result, '').state).toBe('unknown')
+  })
+
+  it('keeps a matching array pending when its metric identity conflicts', () => {
+    const result = validation('draft')
+    result.charts = [{ chartId: 'chart1', imagePath: 'chart1.png', status: 'valid',
+      dataCheck: { status: 'verified', scope: 'registered_arrays', reason: 'registered_arrays_match' },
+      semanticCheck: { status: 'conflicting', scope: 'registered_fact_projection', reasons: ['chart_fact_projection_mismatch'] } }]
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 0/1 · 待复核 1', state: 'stale' })
+    result.charts[0].semanticCheck!.status = 'verified'
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1', state: 'valid' })
+  })
+
+  it('keeps table source binding separate from frozen cell verification', () => {
+    const result = validation('draft')
+    result.tableSummary = { valid: 2, stale: 0, unbound: 0, insertedRows: 0, copiedCells: 0 }
+    result.tables = [{ tableId: 'table1', cells: { valid: 2, stale: 0, unbound: 0 },
+      dataCheck: { status: 'unknown', scope: 'frozen_cells', reasons: ['cell_period_binding_mismatch'] } }]
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 0/2 · 待复核 1', state: 'stale' })
+    result.tables[0].dataCheck!.status = 'verified'
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 2/2', state: 'valid' })
+  })
+
+  it('keeps source failures and unavailable semantic checks visible with no bound subjects', () => {
+    const result = validation('draft')
+    result.sourceIssues = [{ resourceId: 'source', code: 'snapshot_integrity_failed' }]
+    result.quality = { status: 'failed', allKeyFactsEvaluated: false, issues: [{ code: 'quality_evaluation_unavailable' }] }
+    expect(sourceCoverageSummary(result, '')).toEqual({
+      text: '当前内容无精确来源绑定 · 来源异常 1 · 语义检查暂不可用', state: 'stale',
+    })
+  })
   it('separates content warnings from source binding issues', () => {
     const result = validation('draft')
     result.warnings = ['金额单位换算不一致']
@@ -26,7 +68,7 @@ describe('source validation', () => {
   it('counts deleted or stale charts alongside claim and table issues', () => {
     const result = validation('draft')
     result.charts = [
-      { chartId: 'chart1', imagePath: 'chart1.png', status: 'valid' },
+      { chartId: 'chart1', imagePath: 'chart1.png', status: 'valid', dataCheck: { status: 'verified', scope: 'registered_arrays', reason: 'registered_arrays_match' }, semanticCheck: { status: 'verified', scope: 'registered_fact_projection', reasons: [] } },
       { chartId: 'chart2', imagePath: 'chart2.png', status: 'unbound' },
       { chartId: 'chart3', imagePath: 'chart3.png', status: 'stale' },
     ]
@@ -156,6 +198,18 @@ describe('source validation', () => {
 })
 
 describe('source coverage summary', () => {
+  it('does not count an unchanged chart caption as verified data', () => {
+    const result = validation('draft')
+    result.charts = [{ chartId: 'chart', imagePath: 'chart.png', status: 'valid' }]
+    expect(sourceValidationIssueCount(result)).toBe(1)
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 0/1 · 待复核 1', state: 'stale' })
+    result.charts[0].dataCheck = { status: 'unknown', scope: 'registered_arrays', reason: 'chart_source_unavailable' }
+    expect(sourceValidationIssueCount(result)).toBe(1)
+    result.charts[0].dataCheck = { status: 'verified', scope: 'registered_arrays', reason: 'registered_arrays_match' }
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 0/1 · 待复核 1', state: 'stale' })
+    result.charts[0].semanticCheck = { status: 'verified', scope: 'registered_fact_projection', reasons: [] }
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1', state: 'valid' })
+  })
   it('summarises traceable, review and unverified counts', () => {
     const result: TraceValidation = {
       draftSha256: 'x',
@@ -165,7 +219,7 @@ describe('source coverage summary', () => {
       ],
       summary: { valid: 1, stale: 1, unbound: 0 },
       tableSummary: { valid: 3, stale: 0, unbound: 0, insertedRows: 0, copiedCells: 0 },
-      charts: [{ chartId: 'c', imagePath: null, status: 'valid' }],
+      charts: [{ chartId: 'c', imagePath: null, status: 'valid', dataCheck: { status: 'verified', scope: 'registered_arrays', reason: 'registered_arrays_match' }, semanticCheck: { status: 'verified', scope: 'registered_fact_projection', reasons: [] } }],
     }
     expect(sourceCoverageSummary(result, '收入待核实，利润待核实')).toEqual({ text: '可溯源 5/6 · 待复核 1 · 待核实数值 2', state: 'stale' })
     expect(sourceCoverageSummary({ ...result, subjects: [], summary: { valid: 0, stale: 0, unbound: 0 }, tableSummary: undefined, charts: [] }, ''))

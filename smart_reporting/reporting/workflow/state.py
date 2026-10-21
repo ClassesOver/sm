@@ -299,6 +299,130 @@ def _transition(
     effects.append(ReportingEffect("phase_changed", {"from": state.phase.value, "to": phase.value}))
 
 
+def _apply_quality_budget(
+    payload: dict[str, Any],
+    name: str,
+    arguments: Mapping[str, Any],
+    effects: list[ReportingEffect],
+) -> None:
+    # Additional quality work shares the existing transactional CAS and
+    # command receipts. Reservations count even after failure or restart.
+    attempt_id = arguments.get("attemptId")
+    if not isinstance(attempt_id, str) or not 1 <= len(attempt_id) <= 128:
+        raise ReportingStateError("report_quality_attempt_invalid", "质量尝试缺少有效身份。")
+    ledger = payload.setdefault(
+        "qualityBudget",
+        {
+            "version": "1",
+            "attempts": {},
+            "limits": {"semantic_audit": 1, "supplement": 2, "supplementPerQuestion": 1},
+        },
+    )
+    if (
+        not isinstance(ledger, dict)
+        or ledger.get("version") != "1"
+        or not isinstance(ledger.get("attempts"), dict)
+        or not isinstance(ledger.get("limits"), dict)
+        or any(
+            type(ledger["limits"].get(key)) is not int or not 0 <= ledger["limits"][key] <= maximum
+            for key, maximum in (
+                ("semantic_audit", 1),
+                ("supplement", 2),
+                ("supplementPerQuestion", 1),
+            )
+        )
+    ):
+        raise ReportingStateError("report_quality_budget_invalid", "质量预算版本或账本无效。")
+    attempts = ledger["attempts"]
+    if any(
+        not isinstance(item, dict)
+        or item.get("kind") not in {"semantic_audit", "supplement"}
+        or item.get("status") not in {"reserved", "succeeded", "failed", "unknown"}
+        for item in attempts.values()
+    ):
+        raise ReportingStateError("report_quality_budget_invalid", "质量尝试账本无效。")
+    previous = attempts.get(attempt_id)
+    if name == "reserve_quality_attempt":
+        kind, question_id = arguments.get("kind"), arguments.get("questionId")
+        if (
+            kind not in {"semantic_audit", "supplement"}
+            or kind == "semantic_audit"
+            and question_id is not None
+            or (
+                kind == "supplement"
+                and (not isinstance(question_id, str) or not 1 <= len(question_id) <= 128)
+            )
+        ):
+            raise ReportingStateError(
+                "report_quality_attempt_invalid", "质量尝试种类或问题身份无效。"
+            )
+        entry = {"kind": kind, "questionId": question_id, "status": "reserved"}
+        if previous is not None:
+            if previous.get("kind") != kind or previous.get("questionId") != question_id:
+                raise ReportingStateError(
+                    "report_quality_attempt_conflict", "尝试身份已用于不同工作。"
+                )
+        else:
+            count = sum(item["kind"] == kind for item in attempts.values())
+            question_count = sum(
+                item["kind"] == "supplement" and item["questionId"] == question_id
+                for item in attempts.values()
+            )
+            if (
+                count >= ledger["limits"][kind]
+                or kind == "supplement"
+                and question_count >= ledger["limits"]["supplementPerQuestion"]
+            ):
+                raise ReportingStateError(
+                    "report_quality_budget_exhausted", "新增质量工作预算已耗尽。"
+                )
+            attempts[attempt_id] = entry
+            effects.append(
+                ReportingEffect("quality_attempt_reserved", {"attemptId": attempt_id, **entry})
+            )
+    else:
+        status = arguments.get("status")
+        if previous is None or status not in {"succeeded", "failed", "unknown"}:
+            raise ReportingStateError(
+                "report_quality_attempt_invalid", "只能结算已预约的质量尝试。"
+            )
+        if previous["status"] not in {"reserved", status}:
+            raise ReportingStateError(
+                "report_quality_attempt_conflict", "已结算的质量尝试不可改写。"
+            )
+        attempts[attempt_id] = {**previous, "status": status}
+        if status in {"failed", "unknown"} and previous.get("analysisId"):
+            warning = {"code": "report_quality_supplement_failed", "analysisId": previous["analysisId"],
+                       "message": "补证未完成，保留现有证据并明确缺口。", "attemptStatus": status}
+            payload["warnings"] = _tuple_unique([*payload.get("warnings", []), warning])
+        # Restore only the missing item owned by this repair. Never overwrite
+        # independently committed evidence or revive old sections/charts.
+        analysis_id = previous.get("analysisId")
+        baseline = previous.get("baseline")
+        owners = payload.get("qualityRepairOwners", {})
+        if (
+            status in {"failed", "unknown"}
+            and isinstance(baseline, dict)
+            and owners.get(analysis_id) == attempt_id
+        ):
+            items = payload.setdefault("analysisItems", {})
+            if analysis_id not in items:
+                items[analysis_id] = deepcopy(baseline)
+                completed = _tuple_unique(payload.get("completedAnalysisIds"))
+                payload["completedAnalysisIds"] = _tuple_unique([*completed, analysis_id])
+                payload["currentAnalysisId"] = next(
+                    (
+                        item
+                        for item in _tuple_unique(payload.get("analysisIds"))
+                        if item not in payload["completedAnalysisIds"]
+                    ),
+                    None,
+                )
+                effects.append(
+                    ReportingEffect("quality_baseline_restored", {"analysisId": analysis_id})
+                )
+
+
 def apply(
     state: ReportingRunState,
     command: ReportingCommand | Mapping[str, Any] | str,
@@ -350,6 +474,54 @@ def apply(
                     "report_analysis_rework_invalid",
                     "targeted rework 必须包含 analysisIds 和 missingEvidence。",
                 )
+            # New quality repairs reserve all target slots in the same CAS as
+            # invalidation. Rejection leaves the original evidence untouched.
+            repair = arguments.get("qualityRepair")
+            if repair is not None:
+                if not isinstance(repair, dict) or not isinstance(repair.get("attemptId"), str):
+                    raise ReportingStateError(
+                        "report_quality_attempt_invalid", "质量补证预约身份无效。"
+                    )
+                plans = payload.get("analysisPlans", {})
+                for analysis_id in analysis_ids:
+                    plan = plans.get(analysis_id, {})
+                    question_id = plan.get("questionId", analysis_id)
+                    attempt_id = (
+                        "repair-"
+                        + hashlib.sha256(
+                            f"{repair['attemptId']}:{analysis_id}".encode()
+                        ).hexdigest()
+                    )
+                    _apply_quality_budget(
+                        payload,
+                        "reserve_quality_attempt",
+                        {
+                            "attemptId": attempt_id,
+                            "kind": "supplement",
+                            "questionId": question_id,
+                        },
+                        effects,
+                    )
+                    entry = payload["qualityBudget"]["attempts"][attempt_id]
+                    if entry["status"] != "reserved":
+                        raise ReportingStateError(
+                            "report_quality_attempt_finished", "已结算补证不可再次执行。"
+                        )
+                    if "analysisId" not in entry:
+                        baseline = payload.get("analysisItems", {}).get(analysis_id)
+                        if not isinstance(baseline, dict) or analysis_id not in payload.get(
+                            "completedAnalysisIds", ()
+                        ):
+                            raise ReportingStateError(
+                                "report_quality_baseline_unavailable",
+                                "缺少可保留的原分析证据，跳过新增补证。",
+                            )
+                        entry.update(
+                            analysisId=analysis_id,
+                            baseline=deepcopy(baseline),
+                            rework=deepcopy(dict(arguments)),
+                        )
+                    payload.setdefault("qualityRepairOwners", {})[analysis_id] = attempt_id
             payload["rework"] = {
                 "analysisIds": analysis_ids,
                 "missingEvidence": [str(item) for item in missing],
@@ -449,6 +621,86 @@ def apply(
         elif name == "complete":
             payload["result"] = dict(arguments)
             effects.append(ReportingEffect("run_completed", dict(arguments)))
+    elif name in {"reserve_quality_attempt", "settle_quality_attempt"}:
+        _apply_quality_budget(payload, name, arguments, effects)
+    elif name in {"freeze_answer_review_plan", "record_answer_review"}:
+        from ..trace.contracts_v1 import canonical_sha256
+        from .answer_review import AnswerReviewPlan, AnswerReviewResult, questions_sha256
+        from .questions import QuestionSet
+
+        try:
+            questions = QuestionSet.model_validate(payload.get("questionSpecs"))
+            if name == "freeze_answer_review_plan":
+                review_plan = AnswerReviewPlan.model_validate(arguments.get("plan"))
+                review_plan.validate_questions(questions)
+                frozen_plan = review_plan.model_dump(mode="json", by_alias=True)
+                previous_plan = payload.get("answerReviewPlan")
+                if previous_plan is not None and previous_plan != frozen_plan:
+                    raise ReportingStateError(
+                        "report_answer_review_plan_conflict", "已冻结的回答审核映射不可改写。"
+                    )
+                payload["answerReviewPlan"] = frozen_plan
+                effects.append(
+                    ReportingEffect(
+                        "answer_review_plan_frozen",
+                        {"questionSetSha256": questions_sha256(questions)},
+                    )
+                )
+            else:
+                if arguments.get("revision") != state.revision or isinstance(
+                    arguments.get("revision"), bool
+                ):
+                    raise ReportingStateError(
+                        "report_answer_review_revision_conflict", "回答审核修订身份不一致。"
+                    )
+                review_result = AnswerReviewResult.model_validate(arguments.get("review"))
+                review_result.validate_questions(questions)
+                raw_plan = payload.get("answerReviewPlan")
+                if raw_plan is None:
+                    if review_result.plan_sha256 is not None or any(
+                        item.status != "unknown" for item in review_result.conditions
+                    ):
+                        raise ValueError("缺少可信映射时只能记录未知回答状态")
+                else:
+                    registered_plan = AnswerReviewPlan.model_validate(raw_plan)
+                    registered_plan.validate_questions(questions)
+                    if review_result.plan_sha256 != canonical_sha256(
+                        registered_plan.model_dump(mode="json", by_alias=True)
+                    ):
+                        raise ValueError("回答审核未使用当前冻结计划")
+                    mapped = {
+                        (item.question_id, item.condition) for item in registered_plan.criteria
+                    }
+                    if any(
+                        (item.question_id, item.condition) not in mapped
+                        and item.status != "unknown"
+                        for item in review_result.conditions
+                    ):
+                        raise ValueError("未批准的条件映射不能标记为已审核")
+                reviews = payload.setdefault("answerReviews", {})
+                if not isinstance(reviews, dict):
+                    raise ValueError("回答审核记录状态损坏")
+                frozen_review = review_result.model_dump(mode="json", by_alias=True)
+                key = f"{state.revision}:{review_result.input_sha256}"
+                if key in reviews and reviews[key] != frozen_review:
+                    raise ReportingStateError(
+                        "report_answer_review_result_conflict", "同一输入的回答审核结论不可改写。"
+                    )
+                reviews[key] = frozen_review
+                for old_key in list(reviews)[:-20]:
+                    reviews.pop(old_key)
+                payload["currentAnswerReviewInputSha256"] = review_result.input_sha256
+                effects.append(
+                    ReportingEffect(
+                        "answer_review_recorded", {"inputSha256": review_result.input_sha256}
+                    )
+                )
+        except (ValueError, TypeError) as error:
+            if isinstance(error, ReportingStateError):
+                raise
+            raise ReportingStateError(
+                "report_answer_review_invalid", "回答审核契约或输入身份无效。"
+            ) from error
     elif name == "set_analysis_plan":
         analysis_ids = _tuple_unique(arguments.get("analysisIds"))
         if not analysis_ids:
@@ -461,6 +713,35 @@ def apply(
                     "report_analysis_plan_invalid", "分析计划明细与 analysisId 不一致。"
                 )
             payload["analysisPlans"] = deepcopy(raw_plans)
+        raw_questions = arguments.get("questionSpecs")
+        if raw_questions is not None:
+            from .questions import QuestionSet
+
+            try:
+                questions = QuestionSet.model_validate(raw_questions)
+            except ValueError as error:
+                raise ReportingStateError(
+                    "report_question_specs_invalid", "冻结问题契约无效。"
+                ) from error
+            if questions.stage != "analysis" or set(questions.analysis_to_question) != set(
+                analysis_ids
+            ):
+                raise ReportingStateError(
+                    "report_question_specs_invalid", "问题映射必须精确覆盖分析计划。"
+                )
+            frozen_questions = questions.model_dump(mode="json", by_alias=True)
+            previous_questions = payload.get("questionSpecs")
+            if previous_questions is not None and previous_questions != frozen_questions:
+                raise ReportingStateError(
+                    "report_question_specs_conflict", "已冻结的问题不能由恢复或返工改写。"
+                )
+            for analysis_id, question_id in questions.analysis_to_question.items():
+                plan = payload.get("analysisPlans", {}).get(analysis_id)
+                if not isinstance(plan, dict) or plan.get("questionId") != question_id:
+                    raise ReportingStateError(
+                        "report_question_specs_invalid", "分析项绑定了不同的问题身份。"
+                    )
+            payload["questionSpecs"] = frozen_questions
         payload["completedAnalysisIds"] = [
             value
             for value in _tuple_unique(payload.get("completedAnalysisIds"))

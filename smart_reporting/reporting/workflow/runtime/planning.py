@@ -102,7 +102,7 @@ from .base import (
     resolve_schema_snapshot,
 )
 from .datasets import _analysis_context_payload
-from .models import _NUMERIC_MEASURE_TYPE_PATTERN
+from .models import _NUMERIC_MEASURE_TYPE_PATTERN, MeasureSemanticDecision
 from .validation import (
     _analysis_bundle_semantic_issues,
     _available_table_columns,
@@ -199,7 +199,13 @@ class RuntimePlanningMixin:
     ) -> None:
         current = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
         if not isinstance(current, dict):
-            current = {"originalGoal": original_goal, "feedback": []}
+            import os
+
+            mode = os.environ.get("REPORT_ASSERTION_MODE", "shadow")
+            current = {"originalGoal": original_goal, "feedback": [], "assertionPolicy": {
+                "version": "1", "mode": mode if mode in {"off", "shadow", "enabled"} else "shadow",
+                "ruleVersion": "assertions/1",
+            }}
             state[REPORT_REQUEST_CONTEXT_STATE_KEY] = current
         elif current.get("originalGoal") != original_goal:
             raise ReportingError(
@@ -222,6 +228,19 @@ class RuntimePlanningMixin:
         current = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
         if not isinstance(current, dict):
             raise ReportingError("report_workflow_state_invalid", "报表请求语境状态无效。")
+        # Pin at run creation; a restart or deployment toggle must not silently
+        # change an in-flight run's authoring contract.
+        current.setdefault("assertionPolicy", {
+            "version": "1", "mode": "shadow",
+            "ruleVersion": "assertions/1",
+        })
+        from ..questions import request_questions
+
+        if current.get("questionSpecs", {}).get("stage") != "analysis":
+            current["questionSpecs"] = request_questions(
+                current["originalGoal"], tuple(item["content"] for item in current.get("feedback", ())
+                                               if isinstance(item, dict) and isinstance(item.get("content"), str)),
+            ).model_dump(mode="json", by_alias=True)
         current.update(
             {
                 "reportType": envelope.report_type,
@@ -533,25 +552,27 @@ class RuntimePlanningMixin:
             thread_id=thread_id,
             workflow_run_id=workflow_run_id,
         )
-        await artifact_persistence.persist(
-            scope=download_scope,
-            report_id=content["reportId"],
-            revision=content["revision"],
-            artifacts=(
-                ReportArtifactSpec(
-                    artifact="pdf",
-                    path=content["pdfPath"],
-                    size=content["pdfSize"],
-                    sha256=content["pdfSha256"],
-                ),
-                ReportArtifactSpec(
-                    artifact="word",
-                    path=content["wordPath"],
-                    size=content["wordSize"],
-                    sha256=content["wordSha256"],
-                ),
-            ),
+        format_labels: tuple[Literal["pdf", "word"], ...] = ("pdf", "word")
+        selected_specs = tuple(
+            ReportArtifactSpec(artifact=label, path=content[f"{label}Path"], size=content[f"{label}Size"], sha256=content[f"{label}Sha256"])
+            for label in format_labels if content.get(f"{label}Path")
         )
+        if hasattr(artifact_persistence, "persist_available"):
+            saved_specs = await artifact_persistence.persist_available(
+                scope=download_scope,
+                report_id=content["reportId"],
+                revision=content["revision"],
+                artifacts=selected_specs,
+            )
+        else:
+            await artifact_persistence.persist(scope=download_scope, report_id=content["reportId"], revision=content["revision"], artifacts=selected_specs)
+            saved_specs = selected_specs
+        saved_labels = {spec.artifact for spec in saved_specs}
+        for spec in selected_specs:
+            if spec.artifact not in saved_labels:
+                for suffix in ("Path", "Size", "Sha256"):
+                    content.pop(f"{spec.artifact}{suffix}", None)
+                publication_issues.append({"code": "report_format_persistence_failed", "message": f"{'PDF' if spec.artifact == 'pdf' else 'Word'} 持久化失败，其他已保存格式仍可下载。"})
         editor_context = ReportEditorContext(
             reportId=content["reportId"],
             revision=content["revision"],
@@ -577,12 +598,12 @@ class RuntimePlanningMixin:
             scope=download_scope,
             report_id=content["reportId"],
             revision=content["revision"],
-            pdf_path=content["pdfPath"],
-            pdf_size=content["pdfSize"],
-            pdf_sha256=content["pdfSha256"],
-            word_path=content["wordPath"],
-            word_size=content["wordSize"],
-            word_sha256=content["wordSha256"],
+            pdf_path=content.get("pdfPath"),
+            pdf_size=content.get("pdfSize"),
+            pdf_sha256=content.get("pdfSha256"),
+            word_path=content.get("wordPath"),
+            word_size=content.get("wordSize"),
+            word_sha256=content.get("wordSha256"),
         )
         editor_raw: str | None = None
         editor_expires_at: datetime | None = None
@@ -620,17 +641,17 @@ class RuntimePlanningMixin:
         output: Any,
     ) -> dict[str, Any]:
         content = self._publication_content(output)
-        current_pdf = await self.workspace_service.ahash_file(thread_id, content["pdfPath"])
-        current_word = await self.workspace_service.ahash_file(thread_id, content["wordPath"])
-        self._require_artifact_identity(content, current_pdf, artifact="pdf")
-        self._require_artifact_identity(content, current_word, artifact="word")
+        for label in ("pdf", "word"):
+            if content.get(f"{label}Path"):
+                current = await self.workspace_service.ahash_file(thread_id, content[f"{label}Path"])
+                self._require_artifact_identity(content, current, artifact=label)
         return cli_result(
-            path=content["pdfPath"],
-            size=content["pdfSize"],
-            sha256=content["pdfSha256"],
-            word_path=content["wordPath"],
-            word_size=content["wordSize"],
-            word_sha256=content["wordSha256"],
+            path=content.get("pdfPath"),
+            size=content.get("pdfSize"),
+            sha256=content.get("pdfSha256"),
+            word_path=content.get("wordPath"),
+            word_size=content.get("wordSize"),
+            word_sha256=content.get("wordSha256"),
             source_warnings=content["sourceWarnings"],
             task_receipts=content["codingReceipts"],
         )
@@ -872,14 +893,15 @@ class RuntimePlanningMixin:
         refs_by_table: dict[str, list[str]] = {}
         for field_ref in candidate_refs:
             refs_by_table.setdefault(field_ref.rsplit(".", 1)[0], []).append(field_ref)
-        decisions = []
+        decisions: list[MeasureSemanticDecision] = []
         for table_refs in refs_by_table.values():
             for start in range(0, len(table_refs), 6):
                 output = await self._propose_measure_semantic_batch(
                     step_input, run_context, snapshots=snapshots, profile=profile,
                     candidate_refs=tuple(table_refs[start:start + 6]),
                 )
-                decisions.extend(output.content.decisions)
+                batch_proposal = MeasureSemanticProposal.model_validate(output.content)
+                decisions.extend(batch_proposal.decisions)
         proposal = MeasureSemanticProposal(decisions=tuple(decisions))
         # 分批只缩小单次输入与输出；完整审核对象仍必须覆盖所有候选，不能提交部分分类。
         _apply_confirmed_measure_semantics(snapshots, proposal, candidate_refs)
@@ -1103,6 +1125,10 @@ class RuntimePlanningMixin:
                 "report_detailed_analysis_plan_unavailable",
                 "没有可供动态提纲引用的分析任务。",
             )
+        request_context = dict(state.get(REPORT_REQUEST_CONTEXT_STATE_KEY) or {})
+        assertion_policy = request_context.pop("assertionPolicy", {})
+        if assertion_policy.get("mode") != "enabled":
+            request_context.pop("questionSpecs", None)
         outline_context = {
             "reportType": envelope.report_type,
             "domains": list(envelope.domains or ()),
@@ -1111,7 +1137,7 @@ class RuntimePlanningMixin:
             ],
             "dataShapes": state.get(REPORT_DATA_SHAPES_STATE_KEY, []),
             "warnings": list(detailed_plan.warnings),
-            "requestContext": dict(state.get(REPORT_REQUEST_CONTEXT_STATE_KEY) or {}),
+            "requestContext": request_context,
         }
         base_payload = {
             "reportGoal": envelope.report_goal,
@@ -3110,7 +3136,7 @@ def _with_drilldown_projection(
             continue
         table = requirement.tables[0]
         table_name = table.table.casefold()
-        semantic_items = []
+        semantic_items: list[MeasureSemantic] = []
         for measure in table.measure_columns:
             matches = [
                 item

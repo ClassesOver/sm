@@ -12,6 +12,26 @@ from smart_reporting.reporting.workflow.runtime.models import NormalizedReportPr
 
 
 @pytest.mark.anyio
+async def test_assertion_mode_is_pinned_for_new_runs_and_legacy_resume_is_shadow(monkeypatch):
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(return_value=NormalizedReportPrompt(reportType="topic", domains=("income",)))
+    monkeypatch.setenv("REPORT_ASSERTION_MODE", "enabled")
+    context = SimpleNamespace(session_state={})
+    step = SimpleNamespace(input="分析2025年医院收入趋势", additional_data=None)
+    await runtime.normalize_report_request(step, context)
+    policy = context.session_state["report_request_context"]["assertionPolicy"]
+    assert policy["mode"] == "enabled"
+    monkeypatch.setenv("REPORT_ASSERTION_MODE", "off")
+    await runtime.normalize_report_request(step, context)
+    assert context.session_state["report_request_context"]["assertionPolicy"] == policy
+    del context.session_state["report_request_context"]["assertionPolicy"]
+    monkeypatch.setenv("REPORT_ASSERTION_MODE", "enabled")
+    await runtime.normalize_report_request(step, context)
+    assert context.session_state["report_request_context"]["assertionPolicy"]["mode"] == "shadow"
+
+
+@pytest.mark.anyio
 async def test_normalize_multi_domain_topic_without_requesting_clarification() -> None:
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._request_normalizer = object()

@@ -7,9 +7,10 @@ export function sourceValidationIssueCount(result: TraceValidation): number {
     (subject) => subject.status === 'valid' && (subject.warnings?.length ?? 0) > 0,
   ).length
   const table = result.tableSummary
-  const chartIssues = result.charts?.filter((chart) => chart.status !== 'valid').length ?? 0
+  const tableChecks = result.tables?.filter(table => table.dataCheck?.status === 'unknown' && table.cells.stale + table.cells.unbound === 0).length ?? 0
+  const chartIssues = result.charts?.filter((chart) => chart.status !== 'valid' || chart.dataCheck?.status !== 'verified' || chart.semanticCheck?.status !== 'verified').length ?? 0
   return result.summary.stale + result.summary.unbound + warningSubjects +
-    (table ? table.stale + table.unbound + table.insertedRows + (table.copiedCells ?? 0) : 0) + chartIssues
+    (table ? table.stale + table.unbound + table.insertedRows + (table.copiedCells ?? 0) : 0) + chartIssues + tableChecks
 }
 
 function numericalPlaceholderCount(visibleText: string): number {
@@ -27,21 +28,31 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
   const charts = result.charts ?? []
   const total = result.summary.valid + result.summary.stale + result.summary.unbound +
     (table ? table.valid + table.stale + table.unbound : 0) + charts.length
-  const traceable = result.summary.valid - warningSubjects + (table?.valid ?? 0) + charts.filter(chart => chart.status === 'valid').length
+  const uncheckedTableCells = result.tables?.filter(table => table.dataCheck?.status === 'unknown').reduce((sum, table) => sum + table.cells.valid, 0) ?? 0
+  const traceable = result.summary.valid - warningSubjects + Math.max(0, (table?.valid ?? 0) - uncheckedTableCells) + charts.filter(chart => chart.status === 'valid' && chart.dataCheck?.status === 'verified' && chart.semanticCheck?.status === 'verified').length
   const issues = sourceValidationIssueCount(result)
   const unverified = result.reviewNotices !== undefined
     ? result.reviewNotices.filter(notice => notice.kind === 'numeric_unverified').reduce((sum, notice) => sum + notice.occurrences, 0)
     : numericalPlaceholderCount(visibleText)
   const reviewTexts = result.reviewNotices?.filter(notice => notice.kind === 'source_review').reduce((sum, notice) => sum + notice.occurrences, 0) ?? 0
   const contentWarnings = result.warnings?.length ?? 0
+  const sourceFailures = result.sourceIssues?.length ?? 0
+  const qualityFailed = result.quality?.status === 'failed'
+  const coverage = result.quality?.questionCoverage
+  const hasQuestions = coverage?.required != null && coverage.required > 0
+  const answerPending = Boolean(hasQuestions && coverage?.effectiveAnswerRate == null)
+  const answerIncomplete = Boolean(hasQuestions && coverage && coverage.answered < coverage.required!)
   const text = [
     total ? `可溯源 ${traceable}/${total}` : '当前内容无精确来源绑定',
     issues ? `待复核 ${issues}` : '',
     unverified ? `待核实数值 ${unverified}` : '',
     reviewTexts ? `文字待确认 ${reviewTexts}` : '',
     contentWarnings ? `内容提示 ${contentWarnings}` : '',
+    sourceFailures ? `来源异常 ${sourceFailures}` : '',
+    qualityFailed ? '语义检查暂不可用' : '',
+    hasQuestions && coverage ? answerPending ? '回答覆盖待核验' : `已核验回答 ${coverage.answered}/${coverage.required}` : '',
   ].filter(Boolean).join(' · ')
-  return { text, state: issues || unverified || reviewTexts || contentWarnings ? 'stale' : total ? 'valid' : 'unknown' }
+  return { text, state: issues || unverified || reviewTexts || contentWarnings || sourceFailures || qualityFailed || answerPending || answerIncomplete ? 'stale' : total ? 'valid' : 'unknown' }
 }
 
 /**

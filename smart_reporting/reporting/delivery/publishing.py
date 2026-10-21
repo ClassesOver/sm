@@ -619,14 +619,24 @@ class ReportDownloadGrantService:
         scope: ReportDownloadScope,
         report_id: str,
         revision: int,
-        pdf_path: str,
-        pdf_size: int,
-        pdf_sha256: str,
-        word_path: str,
-        word_size: int,
-        word_sha256: str,
+        pdf_path: str | None = None,
+        pdf_size: int | None = None,
+        pdf_sha256: str | None = None,
+        word_path: str | None = None,
+        word_size: int | None = None,
+        word_sha256: str | None = None,
         now: datetime | None = None,
     ) -> tuple[str, ReportDownloadGrant]:
+        # Existing non-null v2 storage uses an empty triple for an absent format.
+        # It is never an artifact identity and never receives a download URL.
+        formats = ((pdf_path, pdf_size, pdf_sha256), (word_path, word_size, word_sha256))
+        if not any(path for path, _, _ in formats):
+            raise ReportingError("report_artifact_invalid", "至少需要一种已核验报告格式。")
+        for path, size, digest in formats:
+            if all(value is None for value in (path, size, digest)):
+                continue
+            if not isinstance(path, str) or not path or isinstance(size, bool) or not isinstance(size, int) or size <= 0 or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise ReportingError("report_artifact_invalid", "报告格式身份必须完整。")
         current = _utc_datetime(now or datetime.now(UTC))
         raw = secrets.token_urlsafe(32)
         grant = ReportDownloadGrant(
@@ -634,13 +644,13 @@ class ReportDownloadGrantService:
             scope=scope,
             report_id=report_id,
             revision=revision,
-            pdf_path=pdf_path,
-            pdf_size=pdf_size,
-            pdf_sha256=pdf_sha256,
+            pdf_path=pdf_path or "",
+            pdf_size=pdf_size or 0,
+            pdf_sha256=pdf_sha256 or "",
             expires_at=current + DOWNLOAD_GRANT_TTL,
-            word_path=word_path,
-            word_size=word_size,
-            word_sha256=word_sha256,
+            word_path=word_path or "",
+            word_size=word_size or 0,
+            word_sha256=word_sha256 or "",
         )
         await self.repository.replace(grant, now=current)
         try:
@@ -682,11 +692,8 @@ class ReportArtifactPersistenceService:
         revision: int,
         artifacts: tuple[ReportArtifactSpec, ...],
     ) -> None:
-        if len(artifacts) != 2 or {item.artifact for item in artifacts} != {
-            "pdf",
-            "word",
-        }:
-            raise ReportingError("report_artifact_invalid", "必须同时持久化 PDF 和 Word。")
+        if not artifacts or len(artifacts) > 2 or len({item.artifact for item in artifacts}) != len(artifacts) or any(item.artifact not in {"pdf", "word"} for item in artifacts):
+            raise ReportingError("report_artifact_invalid", "至少持久化一种非重复的报告格式。")
         for spec in artifacts:
             if (
                 spec.size <= 0
@@ -718,6 +725,27 @@ class ReportArtifactPersistenceService:
                 artifact,
                 self._workspace_chunks(scope.thread_id, relative, expected_size=spec.size),
             )
+
+    async def persist_available(
+        self, *, scope: ReportDownloadScope, report_id: str, revision: int,
+        artifacts: tuple[ReportArtifactSpec, ...],
+    ) -> tuple[ReportArtifactSpec, ...]:
+        """Persist independent formats; return only identities actually stored."""
+        if not artifacts or len(artifacts) > 2 or len({item.artifact for item in artifacts}) != len(artifacts):
+            raise ReportingError("report_artifact_invalid", "报告格式清单无效。")
+        saved: list[ReportArtifactSpec] = []
+        failures: list[Exception] = []
+        for spec in artifacts:
+            try:
+                await self.persist(scope=scope, report_id=report_id, revision=revision, artifacts=(spec,))
+            except Exception as error:
+                logger.warning("report_format_persistence_failed format={} error_type={}", spec.artifact, type(error).__name__)
+                failures.append(error)
+            else:
+                saved.append(spec)
+        if not saved:
+            raise failures[0]
+        return tuple(saved)
 
     async def _workspace_chunks(
         self,
@@ -897,20 +925,20 @@ def publication_result(
     return {
         "reportId": report_id,
         "revision": revision,
-        "pdf": {
+        **({"pdf": {
             "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}",
             "path": grant.pdf_path,
             "expiresAt": grant.expires_at.isoformat(),
             "size": grant.pdf_size,
             "sha256": grant.pdf_sha256,
-        },
-        "word": {
+        }} if grant.pdf_path else {}),
+        **({"word": {
             "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}/word",
             "path": grant.word_path,
             "expiresAt": grant.expires_at.isoformat(),
             "size": grant.word_size,
             "sha256": grant.word_sha256,
-        },
+        }} if grant.word_path else {}),
         **({"editor": {
             "openUrl": f"{base_url}/reports/v1/editor/open/{editor_raw_grant}",
             "expiresAt": editor_expires_at.isoformat(),
@@ -922,20 +950,18 @@ def publication_result(
 
 def cli_result(
     *,
-    path: str,
-    size: int,
-    sha256: str,
-    word_path: str,
-    word_size: int,
-    word_sha256: str,
+    path: str | None = None,
+    size: int | None = None,
+    sha256: str | None = None,
+    word_path: str | None = None,
+    word_size: int | None = None,
+    word_sha256: str | None = None,
     source_warnings: list[dict[str, object]] | None = None,
     task_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
-        "path": path,
-        "size": size,
-        "sha256": sha256,
-        "word": {"path": word_path, "size": word_size, "sha256": word_sha256},
+        **({"path": path, "size": size, "sha256": sha256} if path else {}),
+        **({"word": {"path": word_path, "size": word_size, "sha256": word_sha256}} if word_path else {}),
         "sourceWarnings": list(source_warnings or ()),
         "codingReceipts": list(task_receipts or ()),
     }
@@ -1047,9 +1073,11 @@ def _grant_artifact(
     grant: ReportDownloadGrant,
     artifact: Literal["pdf", "word"],
 ) -> tuple[str, int, str]:
-    if artifact == "pdf":
-        return grant.pdf_path, grant.pdf_size, grant.pdf_sha256
-    return grant.word_path, grant.word_size, grant.word_sha256
+    identity = ((grant.pdf_path, grant.pdf_size, grant.pdf_sha256) if artifact == "pdf"
+                else (grant.word_path, grant.word_size, grant.word_sha256))
+    if not identity[0] or identity[1] <= 0 or not identity[2]:
+        raise ReportingError("report_artifact_unavailable", "本修订未生成此格式。")
+    return identity
 
 
 def _download_error_status(code: str) -> int:

@@ -242,6 +242,8 @@ def freeze_narrative_outline(
             maxCharts=0,
             maxBlocks=2,
         ))
+    sections = [section.model_copy(update={"code": f"section_{index:03d}", "section_number": str(index)})
+                for index, section in enumerate(sections, 1)]
     return NarrativeOutline(title=candidate.title, sections=tuple(sections), appendixFindingIds=appendix,
                             omittedFindings=candidate.omitted_findings, snapshotHash=graph.snapshot_hash)
 

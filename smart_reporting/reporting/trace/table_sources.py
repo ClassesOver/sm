@@ -282,9 +282,17 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
     result = float(value)
     if not math.isfinite(result):
         return None
-    token = "{{tableDerived:" + canonical_sha256({
-        "derivation": raw_derivation,
-        "sources": {resource_id: hashlib.sha256(raw).hexdigest()},
+    # A revision may move the authorized file without changing its evidence.
+    # Resource IDs remain mandatory read capabilities, but are not proof identity.
+    digest = hashlib.sha256(raw).hexdigest()
+    token = "{{tableDerived:v2:" + canonical_sha256({
+        "ruleVersion": "table-linear/2",
+        "unit": derivation.unit,
+        "operands": [
+            {**{key: value for key, value in operand.items() if key != "fileResourceId"},
+             "sourceSha256": digest}
+            for operand in raw_derivation["operands"]
+        ],
     }) + "}}"
     semantics = table_semantics(document, table)
     names = [table.get(key) for key in ("title", "name", "displayName") if table.get(key)]
@@ -315,6 +323,21 @@ def resolve_table_derivation(
     """Verify the binding, then return the same selected view as ordinary numbers."""
     try:
         resolved = _resolve(derivation, sources)
-        return resolved[1] if resolved and token == resolved[0] else None
+        if not resolved:
+            return None
+        if token == resolved[0]:
+            return resolved[1]
+        # Previously issued tokens bind resource IDs. Read them only against the
+        # original identity; snapshot migration explicitly verifies then upgrades.
+        if not token.startswith("{{tableDerived:v2:"):
+            legacy = "{{tableDerived:" + canonical_sha256({
+                "derivation": derivation.model_dump(mode="json", by_alias=True),
+                "sources": {operand.file_resource_id: hashlib.sha256(
+                    sources[operand.file_resource_id]
+                ).hexdigest() for operand in derivation.operands},
+            }) + "}}"
+            if token == legacy:
+                return resolved[1]
+        return None
     except Exception:
         return None

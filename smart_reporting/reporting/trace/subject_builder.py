@@ -340,7 +340,7 @@ def evaluate_subject_status(
 
 _PERIOD_TOKEN = re.compile(
     r"\d{4}\s*[-/年.]\s*\d{1,2}(?:\s*[-/月.]\s*\d{1,2}\s*日?)?"
-    r"|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
+    r"|\d{4}\s*年|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
 )
 _UNIT_TOKENS = ("亿元", "万元", "千元", "个百分点", "%", "‰", "万人次", "人次", "万人", "床日", "床", "张", "次", "人", "元")
 _UNIT_PATTERN = REPORT_VALUE_UNIT_PATTERN + "|" + "|".join(re.escape(unit) for unit in _UNIT_TOKENS)
@@ -363,6 +363,16 @@ _MONTH_RANGE_WORDING = re.compile(
 
 def _expanded_period_wording(window: str) -> str:
     """补齐月份范围终点的年份，再继承正文明确给出的年份；不从来源猜年份。"""
+    # Bare years are dates only in an explicit role window, never ordinary
+    # four-digit amounts. Normalize both endpoints before the common tokenizer.
+    window = re.sub(
+        r'(?P<role>(?:本期|当前期|报告期|基期)(?:为)?)\s*(?P<start>\d{4})(?:\s*年)?'
+        r'(?:(?P<link>\s*(?:至|到|[-~～–—])\s*)(?P<end>\d{4})(?:\s*年)?)?'
+        r'(?!\d|[-/]\d)(?=\s*(?:[、，,。；;]|$|同比|环比|较前|较上一))',
+        lambda match: f"{match['role']}{match['start']}年" + (
+            f"{match['link']}{match['end']}年" if match['end'] else ""),
+        window,
+    )
     window = _MONTH_RANGE_WORDING.sub(
         lambda match: f"{match['year']}年{match['start']}月至{match['end_year'] or match['year']}年{match['end']}月",
         window,
@@ -372,7 +382,7 @@ def _expanded_period_wording(window: str) -> str:
     def expand(match):
         nonlocal year
         key = _period_key(match[0])
-        if key and len(key) >= 2:
+        if key and (len(key) >= 2 or re.fullmatch(r'\d{4}\s*年', match[0])):
             year = key[0]
         elif key and year is not None and not re.search(r'去年|上年|次年|翌年|上月|下月', window[max(0, match.start() - 3):match.start()]):
             return f'{year}年{match[0]}'
@@ -416,6 +426,11 @@ def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
             first, last = first.replace(day=1), last.replace(day=1)
         if grain == "year":
             first, last = first.replace(month=1), last.replace(month=1)
+        count = (last.year - first.year + 1 if grain == "year"
+                 else (last.year - first.year) * 12 + last.month - first.month + 1 if grain == "month"
+                 else (last - first).days + 1)
+        if count > 1200:
+            return ()  # Match frozen periodValues capacity; never return a truncated proof.
         while first <= last:
             periods.append(first.isoformat()[:width])
             if first == last:
@@ -425,36 +440,64 @@ def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> list[str]:
-    """按明确语法区分截止期、本期、基期与上下文；不要求正文补写期间。"""
+    """Explicit range labels apply to every endpoint; bare changes retain start/end roles."""
     window = _expanded_period_wording(_point_plain_text(window))
     written = [match for match in _PERIOD_TOKEN.finditer(window) if _period_key(match[0])]
     labels = {'endpoint': '累计终点', 'current': '当前期', 'baseline': '基期'}
+    connected = [bool(re.fullmatch(r'\s*[月日]?\s*(?:至|到|[-~～–—]|、|和|及)\s*',
+                                  window[left.end():right.start()]))
+                 for left, right in zip(written, written[1:])]
+    # Compute connected range ends once, so a long list never needs repeated scans.
+    group_ends = list(range(len(written)))
+    for index in range(len(written) - 2, -1, -1):
+        if connected[index]:
+            group_ends[index] = group_ends[index + 1]
+    previous_role, previous_explicit = None, False
     for index, match in enumerate(written):
         prefix = window[:match.start()]
-        suffix = re.sub(r'^\s*[月日]?', '', window[match.end():])
+        suffix = re.sub(r'^\s*[月日]?', '', window[written[group_ends[index]].end():])
         cutoff = re.search(r'(?:截至|截止|截止到|截至到)\s*$', prefix)
-        role = 'current' if roles.get('current') else 'endpoint'
-        if not cutoff:
-            # “含二月”只解释操作数范围；“一月至三月”首项是窗口起点。
-            if re.search(r'(?:包含|包括|含|其中|例如|覆盖)\s*$', prefix):
-                continue
-            baseline = re.search(r'(?:较于|相较于|相较|较|相比于|对比|比|基期(?:为)?)\s*$', prefix)
-            baseline = baseline or re.match(r'(?:作为|为)(?:环比)?(?:基期|基准)', suffix)
-            baseline = baseline or (re.search(r'与\s*$', prefix) and re.match(r'相?比', suffix))
-            if index + 1 < len(written):
-                between = window[match.end():written[index + 1].start()]
-                if re.fullmatch(r'\s*[月日]?\s*(?:至|到|[-~～–—]|、|和|及)\s*', between):
-                    if not roles.get('baseline'):
-                        continue
-                    baseline = True
-            if baseline:
-                # 累计窗口中的比较背景只受完整期间集合约束。
-                if not roles.get('baseline'):
-                    continue
-                role = 'baseline'
+        context = re.search(r'(?:包含|包括|含|其中|例如|覆盖)\s*$', prefix)
+        baseline = re.search(r'(?:较于|相较于|相较|较|相比于|对比|比|基期(?:为)?)\s*$', prefix)
+        baseline = baseline or re.match(r'(?:作为|为)(?:环比)?(?:基期|基准)', suffix)
+        baseline = baseline or (re.search(r'与\s*$', prefix) and re.match(r'相?比', suffix))
+        baseline = baseline or (re.search(r'以\s*$', prefix)
+                                and re.match(r'(?:月)?末累计快照为基线', suffix))
+        current = re.search(r'(?:本期|当前期|报告期)(?:为)?\s*$', prefix)
+        current = current or re.match(r'(?:作为|为)(?:本期|当前期|报告期)', suffix)
+        inherited = index > 0 and connected[index - 1] and previous_explicit
+        explicit = bool(cutoff or context or baseline or current or inherited)
+        if cutoff:
+            role = 'endpoint'
+        elif context:
+            role = 'context'
+        elif baseline:
+            role = 'baseline'
+        elif current:
+            role = 'current'
+        elif inherited:
+            role = previous_role
+        elif index < len(connected) and connected[index]:
+            # An unlabeled two-date change is from baseline to current. A
+            # cumulative range start does not redefine its endpoint.
+            role = 'baseline' if roles.get('baseline') else 'context'
+        else:
+            role = 'current' if roles.get('current') else 'endpoint'
+        previous_role, previous_explicit = role, explicit
         expected = roles.get(role, ())
         if expected and _period_key(match[0]) not in {_period_key(period) for period in expected}:
             return [f"期间角色与生成时不一致（{labels[role]} {'、'.join(expected)}）"]
+        if expected and role in {'current', 'baseline'} and (current or baseline) and not inherited:
+            end = group_ends[index]
+            keys = tuple(_period_key(item[0]) for item in written[index:end + 1])
+            expected_keys = tuple(_period_key(period) for period in expected)
+            connectors = [window[left.end():right.start()] for left, right in zip(
+                written[index:end], written[index + 1:end + 1])]
+            is_range = any(re.fullmatch(r'\s*[月日]?\s*(?:至|到|[-~～–—])\s*', link) for link in connectors)
+            complete = ((keys[0], keys[-1]) == (expected_keys[0], expected_keys[-1]) if is_range
+                        else set(keys) == set(expected_keys))
+            if not complete:
+                return [f"期间角色与生成时不一致（{labels[role]}完整窗口 {'、'.join(expected)}）"]
     return []
 
 

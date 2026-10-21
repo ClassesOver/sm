@@ -19,7 +19,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
@@ -87,7 +87,11 @@ def _export_citation_presentations(
             status = "unbound"
         elif int(counts.get("stale", 0) or 0):
             status = "stale"
-        if (item.get("copiedCells") or item.get("insertedRows")) and status == "valid":
+        data_check = item.get("dataCheck")
+        if status == "valid" and (
+            item.get("copiedCells") or item.get("insertedRows")
+            or (isinstance(data_check, Mapping) and data_check.get("status") != "verified")
+        ):
             status = "stale"
         table_statuses[item["tableId"]] = status
     for subject in trace_index.subject_bindings:
@@ -100,14 +104,17 @@ def _export_citation_presentations(
         for item in validation.get(kind, ()):
             if not isinstance(item, Mapping):
                 continue
-            status = (
-                table_statuses.get(item.get("tableId")) if kind == "tables"
-                else "stale" if item.get("warnings") else item.get("status")
+            dataset_status = (
+                table_statuses.get(str(item.get("tableId", ""))) if kind == "tables"
+                else "stale" if item.get("warnings") or (
+                    item.get("status") == "valid" and isinstance(item.get("dataCheck"), Mapping)
+                    and item["dataCheck"].get("status") != "verified"
+                ) else item.get("status")
             )
-            if status not in _SOURCE_STATUS_PRIORITY:
+            if not isinstance(dataset_status, str) or dataset_status not in _SOURCE_STATUS_PRIORITY:
                 continue
             for dataset_id in item.get("datasetIds", ()):
-                statuses_by_dataset.setdefault(dataset_id, []).append(status)
+                statuses_by_dataset.setdefault(dataset_id, []).append(dataset_status)
     datasets_by_citation = {item.citation_id: item.dataset_id for item in citations}
 
     base_path = (
@@ -121,16 +128,16 @@ def _export_citation_presentations(
         updated = copy.deepcopy(dict(presentation))
         links = updated.get("links")
         statuses = list(statuses_by_dataset.get(
-            datasets_by_citation.get(updated.get("citationId")), ()
+            datasets_by_citation.get(str(updated.get("citationId", "")), ""), ()
         ))
         if isinstance(links, list):
             for link in links:
                 if not isinstance(link, dict) or not isinstance(link.get("subjectId"), str):
                     continue
                 subject_id = link["subjectId"]
-                status = status_by_subject.get(subject_id)
-                if status is not None:
-                    statuses.append(status)
+                subject_status = status_by_subject.get(subject_id)
+                if subject_status is not None:
+                    statuses.append(subject_status)
                 link["url"] = (
                     f"{public_base_url.rstrip('/')}{base_path}?"
                     f"{urlencode({'subject': subject_id})}"
@@ -262,7 +269,11 @@ def _build_export_trace_sources(
             status = "unbound"
         elif int(counts.get("stale", 0) or 0):
             status = "stale"
-        if (item.get("copiedCells") or item.get("insertedRows")) and status == "valid":
+        data_check = item.get("dataCheck")
+        if status == "valid" and (
+            item.get("copiedCells") or item.get("insertedRows")
+            or (isinstance(data_check, Mapping) and data_check.get("status") != "verified")
+        ):
             status = "stale"
         table_statuses[item["tableId"]] = status
     chart_statuses: dict[str, str] = {}
@@ -270,7 +281,11 @@ def _build_export_trace_sources(
         if not isinstance(item, Mapping) or not isinstance(item.get("chartId"), str):
             continue
         if item.get("status") in _SOURCE_STATUS_PRIORITY:
-            chart_statuses[item["chartId"]] = item["status"]
+            check = item.get("dataCheck")
+            chart_statuses[item["chartId"]] = (
+                "stale" if item["status"] == "valid" and isinstance(check, Mapping)
+                and check.get("status") != "verified" else item["status"]
+            )
     computations = {item.computation_id: item for item in trace_index.computations}
     subjects_by_table: dict[str, list[str]] = {}
     for binding in trace_index.subject_bindings:
@@ -325,11 +340,11 @@ def _build_export_trace_sources(
     for chart in trace_index.chart_traces:
         chart_subjects = list(dict.fromkeys(subjects_by_chart.get(chart.chart_id, [])))
         image = files.get(chart.image_file_resource_id)
-        methods: list[str] = []
+        chart_methods: list[str] = []
         if chart.computation_id:
             computation = computations.get(chart.computation_id)
             if computation is not None:
-                methods.append(computation.method)
+                chart_methods.append(computation.method)
         charts_payload.append(
             {
                 "chartId": chart.chart_id,
@@ -337,7 +352,7 @@ def _build_export_trace_sources(
                 "status": chart_statuses.get(chart.chart_id, "valid"),
                 "imagePath": image.path if image is not None else "",
                 "datasetIds": list(chart.dataset_ids),
-                "methods": methods,
+                "methods": chart_methods,
                 "transformNotes": list(chart.transform_notes),
                 "unit": chart.axis_unit,
                 "links": [link_of(subject_id) for subject_id in chart_subjects],
@@ -629,7 +644,7 @@ class ReportEditorService:
             workspace,
             cursor_secret=trace_cursor_secret or secrets.token_bytes(32),
         )
-        self.trace.exports.source_guard = self._derived_source_guard
+        cast(Any, self.trace.exports).source_guard = self._derived_source_guard
 
     def lineage_features(self) -> dict[str, bool]:
         """返回前端可见的发布开关；关闭展示不修改或删除冻结来源。"""
@@ -1393,10 +1408,10 @@ class ReportEditorService:
         try:
             with tempfile.TemporaryDirectory(prefix="report-artifacts-snapshot-") as snapshot_dir:
                 snapshots: dict[str, str] = {}
-                for index, (path, (expected_size, expected_sha256)) in enumerate(sorted(identities.items())):
+                for artifact_number, (path, (expected_size, expected_sha256)) in enumerate(sorted(identities.items())):
                     digest = hashlib.sha256()
                     total = 0
-                    snapshot_path = os.path.join(snapshot_dir, f"{index:05d}")
+                    snapshot_path = os.path.join(snapshot_dir, f"{artifact_number:05d}")
                     snapshots[path] = snapshot_path
                     with open(snapshot_path, "wb") as target:
                         try:
@@ -1413,7 +1428,8 @@ class ReportEditorService:
                             raise ReportingError("snapshot_integrity_failed", "报告登记产物无法安全读取。") from error
                     if total != expected_size or not secrets.compare_digest(digest.hexdigest(), expected_sha256):
                         raise ReportingError("snapshot_integrity_failed", "报告产物与登记身份不一致。")
-                validation = job.get("validation") if isinstance(job.get("validation"), Mapping) else {}
+                raw_validation = job.get("validation")
+                validation = raw_validation if isinstance(raw_validation, Mapping) else {}
                 metadata = json.dumps({
                     "reportId": context.report_id,
                     "revision": context.revision,
@@ -1587,8 +1603,8 @@ class ReportEditorService:
                     expected_sha256=expected_sha256,
                 )
             else:
-                source = await self.workspace.ahash_file(thread_id, context.markdown_path)
-                if not secrets.compare_digest(str(source.get("sha256")), expected_sha256):
+                source_identity = await self.workspace.ahash_file(thread_id, context.markdown_path)
+                if not secrets.compare_digest(str(source_identity.get("sha256")), expected_sha256):
                     raise WorkspacePathConflict("报告源 Markdown 已变化。")
                 await self.workspace.awrite_text(thread_id, draft_path, markdown)
         except WorkspacePathConflict as error:
@@ -1978,7 +1994,7 @@ class ReportEditorService:
                             public_base_url=public_base_url,
                             report_id=context.report_id,
                             revision=next_revision,
-                            citations=artifact_manifest.citations,
+                            citations=artifact_manifest.citations if artifact_manifest is not None else (),
                         )
                     # B8：数据来源附录与引用展示同一次快照联合渲染，编号由渲染器
                     # 按正文首次出现顺序分配；无追溯索引的旧报告保持无附录导出。
@@ -2047,11 +2063,22 @@ class ReportEditorService:
                     ",".join(item.get("code", "") for item in validation_issues),
                 )
             word_path = str(PurePosixPath(output_path).with_suffix(".docx"))
-            pdf_identity = await self.workspace.ahash_file(scope.workspace_key, output_path)
-            word_identity = await self.workspace.ahash_file(scope.workspace_key, word_path)
-            for identity in (pdf_identity, word_identity):
+            artifact_identities: dict[str, dict[str, Any]] = {}
+            for label, path in (("pdf", output_path), ("word", word_path)):
+                try:
+                    identity = await self.workspace.ahash_file(scope.workspace_key, path)
+                except (OSError, WorkspaceError):
+                    identity = {"missing": True}
                 if identity.get("missing") or not identity.get("sha256") or not identity.get("size"):
-                    raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
+                    validation_ok = False
+                    validation_issues.append({
+                        "code": f"report_{label}_artifact_unavailable",
+                        "message": f"{'PDF' if label == 'pdf' else 'Word'} 产物未生成或身份不可读取。",
+                    })
+                    continue
+                artifact_identities[label] = {**identity, "path": path}
+            if not artifact_identities:
+                raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
             markdown_path = str(
                 PurePosixPath(output_path).with_name(PurePosixPath(context.markdown_path).name)
             )
@@ -2073,26 +2100,45 @@ class ReportEditorService:
                 thread_id=scope.workspace_key,
                 workflow_run_id=scope.run_id,
             )
-            artifacts = (
+            artifacts = tuple(
                 ReportArtifactSpec(
-                    artifact="pdf",
-                    path=output_path,
-                    size=int(pdf_identity["size"]),
-                    sha256=str(pdf_identity["sha256"]),
-                ),
-                ReportArtifactSpec(
-                    artifact="word",
-                    path=word_path,
-                    size=int(word_identity["size"]),
-                    sha256=str(word_identity["sha256"]),
-                ),
+                    artifact=cast(Literal["pdf", "word"], label), path=identity["path"],
+                    size=int(identity["size"]), sha256=str(identity["sha256"]),
+                )
+                for label, identity in artifact_identities.items()
             )
-            await artifact_persistence.persist(
-                scope=download_scope,
-                report_id=context.report_id,
-                revision=next_revision,
-                artifacts=artifacts,
-            )
+            persist_options = {
+                "scope": download_scope, "report_id": context.report_id,
+                "revision": next_revision, "artifacts": artifacts,
+            }
+            persistence_error: Exception | None = None
+            try:
+                persist_available = getattr(artifact_persistence, "persist_available", None)
+                if callable(persist_available):
+                    stored_artifacts = await persist_available(**persist_options)
+                    stored_formats = {spec.artifact for spec in stored_artifacts}
+                    if not set(artifact_identities) & stored_formats:
+                        raise ReportingError("report_artifact_unavailable", "报告下载副本均未保存成功。")
+                    for label in tuple(artifact_identities):
+                        if label not in stored_formats:
+                            artifact_identities.pop(label)
+                            validation_ok = False
+                            validation_issues.append({
+                                "code": f"report_{label}_persistence_failed",
+                                "message": f"{'PDF' if label == 'pdf' else 'Word'} 已生成，但保存下载副本失败。",
+                            })
+                else:
+                    await artifact_persistence.persist(**persist_options)
+            except Exception as error:
+                # Preserve the rendered revision and commit its editor context
+                # before reporting storage failure. A retry can rebase onto it;
+                # leaving only an unregistered directory would block all retries.
+                persistence_error = error
+                validation_ok = False
+                validation_issues.append({
+                    "code": "report_artifact_persistence_failed",
+                    "message": "报告已生成并保留，但下载副本均未保存成功，请重试导出。",
+                })
             stored_jobs = (run_context.session_state or {}).get(REPORT_JOBS_STATE_KEY, {})
             next_job = stored_jobs.get(context.job_id) if isinstance(stored_jobs, dict) else None
             if not isinstance(next_job, dict):
@@ -2111,14 +2157,29 @@ class ReportEditorService:
                 )
             # 渲染快照随后即被删除；新 revision 的权威 Markdown 是刚写入的 markdown_path。
             render_record["markdown"] = {**rendered_markdown, "path": markdown_path}
-            copied = await self._copy_revision_assets(
-                scope.workspace_key,
-                next_job,
-                source_root=PurePosixPath(source_context.markdown_path).parent,
-                target_root=PurePosixPath(markdown_path).parent,
-            )
+            for label in ("pdf", "word"):
+                render_record.pop(label, None)
+                if label in artifact_identities:
+                    render_record[label] = artifact_identities[label]
+            try:
+                copied = await self._copy_revision_assets(
+                    scope.workspace_key,
+                    next_job,
+                    source_root=PurePosixPath(source_context.markdown_path).parent,
+                    target_root=PurePosixPath(markdown_path).parent,
+                )
+            except Exception as error:
+                # A source changed after rendering: keep verified output files,
+                # but do not publish a new lineage index or dangling asset refs.
+                copied = {}
+                render_record["images"] = []
+                next_job["interactiveCharts"] = {}
+                artifact_manifest = None
+                lineage_issues.append(_lineage_unavailable_issue(error, rendered=True))
+                logger.warning("report_editor_asset_copy_unavailable report_id={} revision={} reason={}",
+                               context.report_id, next_revision, type(error).__name__)
             next_manifest_identity = None
-            if artifact_manifest is not None:
+            if artifact_manifest is not None and rebuilt is not None:
                 path_map = dict(copied)
                 if trace_index is not None:
                     source_root = PurePosixPath(source_context.markdown_path).parent
@@ -2153,6 +2214,11 @@ class ReportEditorService:
                         context.report_id,
                         context.revision,
                     )
+            next_job["validation"] = {
+                **(receipt if isinstance(receipt, dict) else {}),
+                "ok": validation_ok and not lineage_issues,
+                "issues": [*([] if validation_ok else validation_issues), *lineage_issues],
+            }
             next_context = ReportEditorContext(
                 reportId=context.report_id,
                 revision=next_revision,
@@ -2181,18 +2247,21 @@ class ReportEditorService:
             # durable 编辑上下文已提交：之后签发授权失败不得再删除 revision 文件，
             # 否则历史里会留下一个已提交却没有 Markdown/图片的版本。
             cleanup_revision = False
+            if persistence_error is not None:
+                raise ReportingError(
+                    "report_artifact_persistence_failed",
+                    "报告已生成并保留，但下载副本保存失败；请重试导出。",
+                ) from persistence_error
+            download_kwargs = {
+                f"{label}_{field}": identity[field]
+                for label, identity in artifact_identities.items()
+                for field in ("path", "size", "sha256")
+            }
             raw_download, download_grant = await download_grants.issue(
-                scope=download_scope,
-                report_id=context.report_id,
-                revision=next_revision,
-                pdf_path=output_path,
-                pdf_size=int(pdf_identity["size"]),
-                pdf_sha256=str(pdf_identity["sha256"]),
-                word_path=word_path,
-                word_size=int(word_identity["size"]),
-                word_sha256=str(word_identity["sha256"]),
+                scope=download_scope, report_id=context.report_id, revision=next_revision,
+                **download_kwargs,
             )
-            grant_options = (
+            grant_options: dict[str, Any] = (
                 {"capabilities": dict(session_capabilities)}
                 if session_capabilities is not None else {}
             )
@@ -2421,12 +2490,22 @@ def _lineage_unavailable_issue(error: BaseException, *, rendered: bool) -> dict[
 
 def _next_pdf_path(context: ReportEditorContext, *, revision: int | None = None) -> str:
     render = context.job.get("render")
-    pdf = render.get("pdf") if isinstance(render, dict) else None
-    if not isinstance(pdf, dict) or "path" not in pdf:
-        raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前 PDF revision。")
-    path = PurePosixPath(str(pdf["path"]))
-    if path.suffix.lower() != ".pdf" or path.parent.name != f"revision-{context.revision}":
-        raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前 PDF revision。")
+    # Word-only revisions remain editable/re-exportable; never borrow an older PDF.
+    artifact = next((
+        (label, render.get(label)) for label in ("pdf", "word")
+        if isinstance(render, dict) and isinstance(render.get(label), dict)
+        and isinstance(render[label].get("path"), str)
+    ), None)
+    if artifact is None:
+        raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前产物 revision。")
+    label, identity = artifact
+    if not isinstance(identity, dict):
+        raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前产物 revision。")
+    path = PurePosixPath(identity["path"])
+    suffix = ".pdf" if label == "pdf" else ".docx"
+    if path.suffix.lower() != suffix or path.parent.name != f"revision-{context.revision}":
+        raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前产物 revision。")
+    path = path.with_suffix(".pdf")
     target_revision = context.revision + 1 if revision is None else revision
     return str(path.parent.with_name(f"revision-{target_revision}") / path.name)
 

@@ -18,7 +18,8 @@ from smart_reporting.task_execution.acceptance import normalize_acceptance_contr
 
 
 @pytest.mark.anyio
-async def test_large_section_starts_with_small_contract_and_complete_frozen_constraints():
+@pytest.mark.parametrize("assertion_mode", ["shadow", "enabled"])
+async def test_large_section_starts_with_small_contract_and_complete_frozen_constraints(assertion_mode):
     class TaskStarted(BaseException):
         pass
 
@@ -44,9 +45,15 @@ async def test_large_section_starts_with_small_contract_and_complete_frozen_cons
         evidence.model_copy(update={"analysis_id": aid, "summary": "重复分析摘要" * 1100}) for aid in analysis_ids
     )})
     assert item.serialized_bytes() > 256 * 1024
-    checkpoint = SimpleNamespace(files=(), trace=(), last_error=None)
+    canonical_fact = FileIdentity(path="facts.json", size=2, sha256="c" * 64)
+    supplemental = FileIdentity(path="supplemental.json", size=2, sha256="d" * 64)
+    checkpoint = SimpleNamespace(
+        files=(canonical_fact, supplemental), trace=(), last_error=None,
+        deterministic_fact_files={"analysis_001": canonical_fact},
+    )
     files = {}
     captured = {}
+    instructions = []
 
     async def write(thread, path, payload):
         content = json.dumps(payload, ensure_ascii=False).encode()
@@ -55,11 +62,16 @@ async def test_large_section_starts_with_small_contract_and_complete_frozen_cons
 
     async def start(scope, instruction, *, acceptance_contract):
         captured.update(normalize_acceptance_contract(acceptance_contract))
+        instructions.append(json.loads(instruction))
         raise TaskStarted()
 
     runtime = object.__new__(RuntimeSectionsMixin)
     runtime._scope = lambda ctx: {"threadId": "t", "userId": "u", "externalRunId": "r"}
-    runtime._state = lambda ctx: {}
+    runtime._state = lambda ctx: {
+        "report_request_context": {"assertionPolicy": {"mode": assertion_mode, "ruleVersion": "assertions/1"}},
+    }
+    runtime._profile = lambda ctx: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
     runtime._envelope = lambda ctx: SimpleNamespace(report_goal="分析经营变化")
     runtime._durable_completed_section = AsyncMock(return_value=None)
     runtime._apply_durable_command = AsyncMock()
@@ -84,6 +96,12 @@ async def test_large_section_starts_with_small_contract_and_complete_frozen_cons
     assert len(content) == identity["size"]
     assert hashlib.sha256(content).hexdigest() == identity["sha256"]
     assert json.loads(content) == constraints
+    policy = instructions[0]["assertionPolicy"]
+    if assertion_mode == "enabled":
+        assert policy["trustedFactSha256"] == [canonical_fact.sha256]
+        assert supplemental.sha256 not in policy["trustedFactSha256"]
+    else:
+        assert "trustedFactSha256" not in policy
 
 
 @pytest.mark.anyio

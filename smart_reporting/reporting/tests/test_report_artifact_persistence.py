@@ -356,7 +356,7 @@ async def test_artifact_persistence_reads_host_workspace_without_private_sandbox
 
 
 @pytest.mark.anyio
-async def test_persistence_requires_pdf_and_word() -> None:
+async def test_persistence_accepts_a_single_successful_format() -> None:
     content = b"report"
     workspace = _Workspace(
         {
@@ -377,10 +377,9 @@ async def test_persistence_requires_pdf_and_word() -> None:
         ),
     )
 
-    with pytest.raises(ReportingError) as raised:
-        await persistence.persist(scope=_scope(), report_id="report-1", revision=1, artifacts=specs)
-
-    assert raised.value.code == "report_artifact_invalid"
+    await persistence.persist(scope=_scope(), report_id="report-1", revision=1, artifacts=specs)
+    stored = await persistence.repository.get(_artifact_key(_scope(), "report-1", 1, specs[0]))
+    assert stored is not None and stored.artifact == "pdf"
 
 
 @pytest.mark.anyio
@@ -1237,7 +1236,8 @@ async def test_publication_gate_exception_preserves_download_input_and_failed_va
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("case", ["draft_invalid", "file_changed", "file_unreadable", "identity_missing"])
+@pytest.mark.parametrize("case", ["draft_invalid", "file_changed", "file_unreadable", "identity_missing",
+                                  "quality_unavailable", "quality_with_gate_failure"])
 async def test_publication_manifest_failures_keep_artifacts_and_report_issue(monkeypatch, case):
     """产物清单核验失败只丢弃清单（不带溯源），PDF/Word 身份照常交给签发并返回原因。"""
     from smart_reporting.reporting.workflow.runtime import publication
@@ -1274,11 +1274,20 @@ async def test_publication_manifest_failures_keep_artifacts_and_report_issue(mon
         return tampered
 
     state = {"report_artifacts": {"draft": {} if case == "draft_invalid" else manifest}}
+    quality_fault = case.startswith("quality_")
+    quality_warning = {"code": "quality_evaluation_unavailable", "status": "unknown",
+                       "message": "质量检查不可用，未标记通过。"}
+    if quality_fault:
+        state["report_quality_issues"] = [quality_warning]
+    gate_failure = case == "quality_with_gate_failure"
+    prior_issue = {"code": "dataset_identity_changed"}
+    prior_warning = {"code": "existing_warning"}
     runtime = SimpleNamespace(
         _feedback=lambda _step: None, _state=lambda _context: state,
         _workflow_result=lambda _state: result,
         _dataset_publication_gate=AsyncMock(
-            return_value={"formalReleaseAllowed": True, "issues": [], "warnings": []}
+            return_value={"formalReleaseAllowed": not gate_failure,
+                          "issues": [prior_issue] if gate_failure else [], "warnings": [prior_warning]}
         ),
         workspace_service=SimpleNamespace(read_limited_regular_file=read_file),
         _scope=lambda _context: {"threadId": "thread"},
@@ -1292,8 +1301,13 @@ async def test_publication_manifest_failures_keep_artifacts_and_report_issue(mon
     )
 
     gate = output.content["publicationGate"]
-    assert output.content["formalReleaseAllowed"] is False
-    assert any(issue["code"].startswith("report_artifact_manifest_") for issue in gate["issues"])
+    if quality_fault:
+        assert output.content["formalReleaseAllowed"] is (not gate_failure)
+        assert gate["issues"] == ([prior_issue] if gate_failure else [])
+        assert gate["warnings"] == [prior_warning, quality_warning]
+    else:
+        assert output.content["formalReleaseAllowed"] is False
+        assert any(issue["code"].startswith("report_artifact_manifest_") for issue in gate["issues"])
     assert "artifactManifest" not in output.content
     for key in ("pdfPath", "pdfSize", "pdfSha256", "wordPath", "wordSize", "wordSha256"):
         assert output.content[key] == result[key]

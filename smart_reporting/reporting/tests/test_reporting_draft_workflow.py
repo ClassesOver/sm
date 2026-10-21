@@ -21,6 +21,39 @@ def _ok(value: str) -> StepOutput:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("status,code,visual_calls", [
+    ("budget_exhausted", "report_quality_budget_exhausted", 1),
+    ("degraded", "report_quality_supplement_failed", 2),
+])
+async def test_quality_budget_exhaustion_preserves_visuals_and_drafts_with_gap(status, code, visual_calls):
+    visualization = AsyncMock(return_value=_ok("existing visuals"))
+    analysis = AsyncMock(return_value=_ok("analysis"))
+    calls = []
+
+    async def draft(instruction, _context):
+        calls.append(dict(instruction))
+        if len(calls) == 1:
+            return StepOutput(content={"status": "rework", "rework": {
+                "analysisIds": ["a1"], "missingEvidence": ["baseline"],
+            }})
+        assert instruction["analysisReworkAllowed"] is False
+        assert instruction["rework"]["budgetCode"] == code
+        return StepOutput(content={"status": "completed"})
+
+    workflow = ReportingDraftWorkflow(
+        report_goal="目标", section_goal={"sectionCode": "s1"}, analysis_ids=["a1"],
+        run_analysis=analysis, submit_visualization=visualization, draft_section=draft,
+        rework_analysis=AsyncMock(return_value=StepOutput(content={
+            "status": status, "budgetCode": code,
+        })),
+    )
+    result = await workflow.execute_section(RunContext(run_id="run", session_id="session"))
+    assert result.draft_output.content["status"] == "completed"
+    assert visualization.await_count == visual_calls
+    assert analysis.await_count == 1
+
+
+@pytest.mark.anyio
 async def test_section_execution_logs_started_base_info_and_completed_once() -> None:
     callback = AsyncMock(return_value=_ok("ok"))
     workflow = ReportingDraftWorkflow(

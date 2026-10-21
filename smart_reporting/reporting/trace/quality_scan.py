@@ -153,10 +153,12 @@ def scan_report_quality(
             "checked": checked,
             "verdicts": dict(sorted(verdicts.items())),
             "registeredReasons": dict(sorted(reasons.items())),
-            "missingRate": round(unregistered / checked, 4) if checked else 0.0,
+            "missingRate": round(unregistered / checked, 4) if checked else None,
+            "evaluationStatus": "evaluated" if checked else "not_evaluated",
+            "unverifiedOriginalsEvaluated": False,
             # Share of registered validations accepted by server-side derivation; this says
             # nothing about whether those validations have trace anchors.
-            "derivedShare": round(reasons.get("derived", 0) / registered, 4) if registered else 0.0,
+            "derivedShare": round(reasons.get("derived", 0) / registered, 4) if registered else None,
             "derivedShareMeaning": "share_of_registered_validations_accepted_by_derivation",
             "derivedShareDenominator": "registered",
             "missingClassificationMeaning": "heuristic_similarity_candidates_not_verified_root_causes",

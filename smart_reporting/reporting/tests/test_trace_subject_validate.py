@@ -846,7 +846,7 @@ async def test_validate_table_resolution_failures_are_unbound(tmp_path, monkeypa
 async def test_validate_table_source_integrity_failure_is_not_softened(tmp_path, monkeypatch, fault):
     from smart_reporting.reporting.trace import table_sources
 
-    editor, context, markdown, path = await _make_editor_with_table_derivation(tmp_path)
+    editor, context, markdown, path = await _make_editor_with_table_derivation(tmp_path, include_ordinary=True)
     def unexpected_resolve(*_args):
         pytest.fail("unverified source reached the resolver")
     monkeypatch.setattr(table_sources, "resolve_table_derivation", unexpected_resolve)
@@ -858,9 +858,12 @@ async def test_validate_table_source_integrity_failure_is_not_softened(tmp_path,
         )
         changed = b"{}" if fault == "size" else raw.replace(b"3600", b"9999")
         await editor.workspace.awrite_bytes(context.scope["threadId"], path, changed, overwrite=True)
-    with pytest.raises(ReportingError) as error:
-        await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
-    assert error.value.code == "snapshot_integrity_failed"
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["summary"] == {"valid": 1, "stale": 0, "unbound": 1}
+    subject = result["subjects"][0]
+    assert subject["restoreText"] is None
+    assert subject["sourceStatus"] == "integrity_failed"
+    assert subject["sourceIssues"][0]["code"] == "snapshot_integrity_failed"
 
 
 @pytest.mark.anyio
@@ -913,9 +916,9 @@ async def test_validate_table_sources_cached_per_request_off_thread_and_not_fact
     assert all("tableDerived" not in token for token in batches[0])
     # A new validation must verify the file again, not reuse a previous request's bytes.
     await editor.workspace.awrite_bytes(context.scope["threadId"], path, b"{}", overwrite=True)
-    with pytest.raises(ReportingError) as error:
-        await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
-    assert error.value.code == "snapshot_integrity_failed"
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    assert result["summary"] == {"valid": 1, "stale": 0, "unbound": 2}
+    assert result["sourceIssues"][0]["code"] == "snapshot_integrity_failed"
     assert source_reads == [path, path]
 
 
@@ -1084,11 +1087,11 @@ async def test_validate_rejects_modified_fact_file(tmp_path: Path) -> None:
     await editor.workspace.adelete_file(context.scope["threadId"], fact_path)
     await editor.workspace.awrite_bytes(context.scope["threadId"], fact_path, b"{}")
     markdown = "收入 3600 万元[[claim:claim-1]]"
-    with pytest.raises(ReportingError) as error:
-        await editor.trace_validate(
-            context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest()
-        )
-    assert error.value.code == "snapshot_integrity_failed"
+    result = await editor.trace_validate(
+        context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest()
+    )
+    assert result["summary"]["valid"] == 0
+    assert result["sourceIssues"][0]["code"] == "snapshot_integrity_failed"
 
 
 @pytest.mark.anyio
@@ -1184,6 +1187,7 @@ async def test_validate_tables_keep_binding_when_rows_are_sorted(tmp_path: Path)
     assert result["tableSummary"] == {
         "valid": 2, "stale": 0, "unbound": 0, "insertedRows": 0, "copiedCells": 0,
     }
+    assert result["tables"][0].pop("dataCheck")["scope"] == "frozen_cells"
     assert result["tables"][0] == {
         "tableId": "tbl-1",
         "cells": {"valid": 2, "stale": 0, "unbound": 0},
@@ -1349,7 +1353,7 @@ async def test_validate_tables_hint_copied_cells_with_frozen_binding_candidates(
     duplicated = _table_markdown([["本期", "3,600"], ["本期", "3,600"], ["上期", "3,600"]])
     result = await _validate_tables(tmp_path / "duplicated", f"# 报告\n\n{duplicated}\n")
     assert result["tableSummary"] == {
-        "valid": 2, "stale": 0, "unbound": 0, "insertedRows": 0, "copiedCells": 1,
+        "valid": 1, "stale": 0, "unbound": 1, "insertedRows": 0, "copiedCells": 1,
     }
     hints = result["tables"][0]["copiedCells"]
     assert len(hints) == 1
@@ -1360,11 +1364,11 @@ async def test_validate_tables_hint_copied_cells_with_frozen_binding_candidates(
     assert {match["factKey"] for match in hints[0]["matches"]} == {"fact-" + "a" * 16}
     assert all(match["columnKey"] == "income_total" for match in hints[0]["matches"])
 
-    # 复制行但值被改：无候选提示，原映射行不受影响。
+    # 重复标签无唯一身份，即使副本值不同也不能挑选首行作为已验证。
     edited_copy = _table_markdown([["本期", "3,600"], ["本期", "9,999"], ["上期", "3,600"]])
     result = await _validate_tables(tmp_path / "edited-copy", f"# 报告\n\n{edited_copy}\n")
     assert result["tableSummary"] == {
-        "valid": 2, "stale": 0, "unbound": 0, "insertedRows": 0, "copiedCells": 0,
+        "valid": 1, "stale": 0, "unbound": 1, "insertedRows": 0, "copiedCells": 0,
     }
 
     # 新标签行复制了冻结值：计 insertedRows 并给出候选提示。
