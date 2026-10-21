@@ -51,13 +51,13 @@ def test_flow_metric_additive_across_sibling_period_column_sums_all_periods(alia
         ('current', ('data_date,period_code,area,income\n' + rows).encode(), ctx, ('current',)),
     ))
     fact = bundle.metrics[0]
-    assert fact.period_aggregation is None
+    assert fact.period_aggregation == 'sum'
     assert fact.total == 300
 
 
 @pytest.mark.parametrize('declared_birth_year', [False, True])
 @pytest.mark.parametrize('additive_axis,expected,period_aggregation', [
-    ('birth_year', 340, 'last'), ('data_date', 640, None),
+    ('birth_year', 340, 'last'), ('data_date', 640, 'sum'),
 ])
 def test_unrelated_birth_year_does_not_change_reporting_axis_aggregation(
     declared_birth_year, additive_axis, expected, period_aggregation,
@@ -302,3 +302,19 @@ def test_invalid_calendar_year_does_not_abort_month_reference_review():
     _text, refs, notices = render_bound_numbers('2025年1月资金余额为' + token, contents,
                                                key='invalid', field_definitions={'balance': '资金余额'})
     assert not refs and notices
+
+
+@pytest.mark.parametrize('statement,warns', [
+    ('本期2025-01至2025-02、基期2024-01至2024-02，同比差额', False),
+    ('本期2024-01至2024-02、基期2025-01至2025-02，同比差额', True),
+    ('本期2025年1月至2月，基期2024年1月至2月，同比差额', False),
+    ('基期2024-01和2024-02，本期2025-01和2025-02，同比变化率', False),
+    ('2025-01至2025-02为本期，2024-01至2024-02为基期，同比变化率', False),
+    ('本期2025-01至2025-02，与2024-01至2024-02相比的变化率', False),
+    ('本期2025-01至2025-02，较2025-01至2025-02的变化率', True),
+    ('本期2025-01至2024-02、基期2024-01至2025-02，同比差额', True),
+])
+def test_explicit_comparison_window_roles_apply_to_both_range_endpoints(statement, warns):
+    warnings = unit_period_warnings(statement, expected_periods=('2025-01', '2025-02', '2024-01', '2024-02'),
+        expected_period_roles={'current': ('2025-01', '2025-02'), 'baseline': ('2024-01', '2024-02')})
+    assert bool(warnings) is warns

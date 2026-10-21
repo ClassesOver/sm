@@ -204,8 +204,8 @@ export function createImagePreview(editor: HTMLElement) {
 interface ExportPanelResult {
   revision: number
   requestId?: string
-  pdf: { downloadUrl: string; path?: string; size?: number }
-  word: { downloadUrl: string; path?: string; size?: number }
+  pdf?: { downloadUrl: string; path?: string; size?: number }
+  word?: { downloadUrl: string; path?: string; size?: number }
   editor?: { openUrl: string }
   /** 验收失败时文件仍签发下载；必须明确显示失败原因，不得显示为通过。 */
   validation?: { ok: boolean; issues: { code?: string; message?: string }[] }
@@ -256,8 +256,10 @@ export function createExportPanel() {
       const format = button.dataset.copy as 'pdf' | 'word'
       const link = dialog.querySelector<HTMLAnchorElement>(`[data-format="${format}"]`)
       const status = dialog.querySelector<HTMLElement>('.export-copy-status')!
+      const href = link?.getAttribute('href')
+      if (!href) { status.textContent = '该格式未生成，暂无下载链接'; return }
       try {
-        await copyText(link?.getAttribute('href') ?? '')
+        await copyText(href)
         status.textContent = `${format === 'pdf' ? 'PDF' : 'Word'} 链接已复制`
       } catch {
         status.textContent = '复制失败，请直接打开下载链接'
@@ -268,17 +270,20 @@ export function createExportPanel() {
     dialog,
     close,
     show(result: ExportPanelResult, preferredFormat: 'pdf' | 'word' = 'pdf') {
-      const failed = result.validation?.ok === false
+      const partial = !result.pdf?.downloadUrl || !result.word?.downloadUrl
+      const available = Boolean(result.pdf?.downloadUrl || result.word?.downloadUrl)
+      const failed = result.validation?.ok === false || partial
       dialog.querySelector<HTMLElement>('#export-title')!.textContent =
-        `${preferredFormat === 'pdf' ? 'PDF' : 'Word'} ${failed ? '已生成 · 验收未通过' : '导出完成'}`
+        !available ? '未生成可下载文件' : partial ? '部分格式已生成 · 验收未通过'
+        : `${preferredFormat === 'pdf' ? 'PDF' : 'Word'} ${failed ? '已生成 · 验收未通过' : '导出完成'}`
       const warning = dialog.querySelector<HTMLElement>('.export-validation-warning')!
       warning.hidden = !failed
       warning.replaceChildren()
       if (failed) {
         const lead = document.createElement('p')
-        lead.textContent = '文件已生成并可下载，但 PDF/Word 联合验收未通过，请核对后再对外发布：'
+        lead.textContent = available ? '可用文件已生成并可下载，未生成的格式不提供下载链接。验收未通过，请核对后再对外发布：' : '未生成可下载文件，请查看失败原因后重试。'
         const list = document.createElement('ul')
-        for (const issue of result.validation!.issues) {
+        for (const issue of result.validation?.issues ?? []) {
           const item = document.createElement('li')
           item.textContent = issue.message || issue.code || '验收未通过'
           list.append(item)
@@ -289,21 +294,27 @@ export function createExportPanel() {
         `${formatRevisionLabel(result.revision)} 已生成`
       const pdf = dialog.querySelector<HTMLAnchorElement>('[data-format="pdf"]')!
       const word = dialog.querySelector<HTMLAnchorElement>('[data-format="word"]')!
-      pdf.href = result.pdf.downloadUrl
-      word.href = result.word.downloadUrl
-      dialog.querySelector<HTMLElement>('[data-artifact-meta="pdf"]')!.textContent =
-        exportArtifactLabel('pdf', result.pdf)
-      dialog.querySelector<HTMLElement>('[data-artifact-meta="word"]')!.textContent =
-        exportArtifactLabel('word', result.word)
+      for (const format of ['pdf', 'word'] as const) {
+        const artifact = result[format]
+        const link = format === 'pdf' ? pdf : word
+        const ready = Boolean(artifact?.downloadUrl)
+        link.hidden = !ready
+        if (ready) link.href = artifact!.downloadUrl
+        else link.removeAttribute('href')
+        dialog.querySelector<HTMLButtonElement>(`[data-copy="${format}"]`)!.disabled = !ready
+        dialog.querySelector<HTMLElement>(`[data-artifact-meta="${format}"]`)!.textContent =
+          ready ? exportArtifactLabel(format, artifact!) : `${format === 'pdf' ? 'PDF' : 'Word'} 未生成`
+      }
       const requestId = dialog.querySelector<HTMLElement>('.export-request-id')!
       requestId.textContent = result.requestId ? `请求编号：${result.requestId}` : ''
       requestId.hidden = !result.requestId
       dialog.querySelector<HTMLElement>('.export-copy-status')!.textContent = ''
-      pdf.classList.toggle('is-primary', preferredFormat === 'pdf')
-      word.classList.toggle('is-primary', preferredFormat === 'word')
+      pdf.classList.toggle('is-primary', Boolean(result.pdf?.downloadUrl) && (preferredFormat === 'pdf' || !result.word?.downloadUrl))
+      word.classList.toggle('is-primary', Boolean(result.word?.downloadUrl) && (preferredFormat === 'word' || !result.pdf?.downloadUrl))
       const editor = dialog.querySelector<HTMLAnchorElement>('[data-format="editor"]')!
       editor.hidden = !result.editor?.openUrl
       if (result.editor?.openUrl) editor.href = result.editor.openUrl
+      else editor.removeAttribute('href')
       modal.open(close)
     },
   }

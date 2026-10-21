@@ -17,6 +17,7 @@ from typing import Any, Literal
 import polars as pl
 from pydantic import Field
 
+from ..cumulative_policy import CumulativeSnapshotPolicy
 from ..units import unit_conversion_scale
 from .detailed_analysis import (
     AnalysisModel,
@@ -27,6 +28,7 @@ from .detailed_analysis import (
 
 Aggregation = Literal["sum", "average", "min", "max", "count", "count_distinct"]
 PeriodRole = Literal["current", "yoy", "mom"]
+COMPLETE_GROUP_POPULATION_BUDGET_BYTES = 4 * 1024 * 1024
 
 
 class PeriodValue(AnalysisModel):
@@ -54,8 +56,12 @@ class DeterministicMetricFact(AnalysisModel):
     display_name: str | None = Field(default=None, alias="displayName", max_length=2000)
     aliases: tuple[str, ...] = Field(default=(), max_length=100)
     aggregation: Aggregation
-    # 空值兼容旧快照及可跨期相加的流量指标；时点指标按共同期末汇总。
-    period_aggregation: Literal["last"] | None = Field(default=None, alias="periodAggregation")
+    # sum 必须来自已确认语义的报告时间轴；旧空值不再被当作可加性证明。
+    # last 表示时点指标按共同期末汇总。
+    period_aggregation: Literal["sum", "last"] | None = Field(default=None, alias="periodAggregation")
+    cumulative_policy: CumulativeSnapshotPolicy | None = Field(
+        default=None, alias="cumulativePolicy", exclude_if=lambda value: value is None,
+    )
     unit: str | None = Field(default=None, max_length=64)
     formula: str = Field(min_length=1, max_length=1000)
     scope: dict[str, str] = Field(default_factory=dict, max_length=100)
@@ -70,6 +76,9 @@ class DeterministicMetricFact(AnalysisModel):
     missing_count: int = Field(alias="missingCount", ge=0)
     # 旧快照未登记此项；不能由 periodValues 数量反推所有原始行都有期间。
     period_missing_count: int | None = Field(default=None, alias="periodMissingCount", ge=0)
+    # missingCount for a stock covers only its latest snapshot; trends consume
+    # all monthly rows, including values that cannot be parsed as numbers.
+    series_missing_count: int | None = Field(default=None, alias="seriesMissingCount", ge=0)
     zero_count: int = Field(alias="zeroCount", ge=0)
     negative_count: int = Field(alias="negativeCount", ge=0)
     period_values: tuple[PeriodValue, ...] = Field(
@@ -78,6 +87,11 @@ class DeterministicMetricFact(AnalysisModel):
     top_groups: tuple[GroupContribution, ...] = Field(default=(), alias="topGroups", max_length=20)
     bottom_groups: tuple[GroupContribution, ...] = Field(
         default=(), alias="bottomGroups", max_length=20
+    )
+    # Complete server-computed partition, never a Top/Bottom union. None is
+    # historical/unavailable/over-budget, not an empty population proof.
+    group_population: tuple[GroupContribution, ...] | None = Field(
+        default=None, alias="groupPopulation", max_length=2000,
     )
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
@@ -226,6 +240,7 @@ def build_deterministic_analysis_bundle(
         prepared.append(_Dataset(dataset_id, frame, context, period_roles))
 
     metric_codes_by_ref = _metric_codes_by_ref(profile_metrics)
+    cumulative_policies = _cumulative_policies_by_ref(profile_metrics)
     kinds_by_ref: dict[str, set[str | None]] = {}
     for metric in profile_metrics:
         if metric.get("fieldRef"):
@@ -233,14 +248,19 @@ def build_deterministic_analysis_bundle(
     money_fields = {ref for ref, kinds in kinds_by_ref.items() if kinds <= {"amount", "currency"}}
     facts: list[DeterministicMetricFact] = []
     semantics_by_dataset: dict[tuple[str, str], Mapping[str, Any]] = {}
+    remaining_population_bytes = COMPLETE_GROUP_POPULATION_BUDGET_BYTES
     for dataset in prepared:
         dataset_facts, dataset_semantics, dataset_warnings = _dataset_facts(
             dataset,
             analysis,
             metric_codes_by_ref=metric_codes_by_ref,
+            cumulative_policies=cumulative_policies,
             money_fields=money_fields,
             profile_hash=profile_hash,
+            population_budget_bytes=remaining_population_bytes,
         )
+        remaining_population_bytes -= sum(_group_population_size(fact.group_population)
+                                          for fact in dataset_facts if fact.group_population is not None)
         # 显示名随同快照事实冻结，编辑时无需读取最新业务配置。
         from ..trace.table_builder import _fact_label
 
@@ -313,8 +333,10 @@ def _dataset_facts(
     analysis: DetailedAnalysisItem,
     *,
     metric_codes_by_ref: Mapping[str, tuple[str, ...]],
+    cumulative_policies: Mapping[str, CumulativeSnapshotPolicy | None],
     money_fields: set[str],
     profile_hash: str | None,
+    population_budget_bytes: int,
 ) -> tuple[
     list[DeterministicMetricFact],
     dict[tuple[str, str], Mapping[str, Any]],
@@ -373,16 +395,27 @@ def _dataset_facts(
                                 "未生成该指标事实，其他指标继续计算。")
                 continue
         additive = {str(item).casefold() for item in semantic.get("additiveAcross", ())}
-        period_aggregation = (
-            "last" if aggregation == "sum" and period_field and additive
+        period_aggregation: Literal["sum", "last"] | None = (
+            "sum" if aggregation in {"sum", "count"} and period_field and additive & time_fields
+            else "last" if aggregation == "sum" and period_field and additive
             and not additive & time_fields else None
         )
+        cumulative_policy = cumulative_policies.get(field_ref.casefold())
+        if field_ref.casefold() in cumulative_policies and (
+            cumulative_policy is None or profile_hash is None
+            or aggregation != "sum" or period_aggregation != "last"
+            or period_granularity != "month" or source_grain != "month"
+        ):
+            warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 累计快照策略或时间可加性未确认，"
+                            "未生成该指标事实，其他指标继续计算。")
+            continue
         value_frame = scoped_frame
         if period_aggregation == "last":
-            value_frame = _last_period_rows(scoped_frame, period_field)
-            if value_frame is None:
+            latest_frame = _last_period_rows(scoped_frame, period_field)
+            if latest_frame is None:
                 warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 无法确定唯一期末口径，未生成时点事实。")
                 continue
+            value_frame = latest_frame
         try:
             period_values = _period_values(
                 scoped_frame, field, period_field, aggregation,
@@ -405,7 +438,16 @@ def _dataset_facts(
             numeric = series.cast(pl.Float64, strict=False)
             valid_numeric = numeric.drop_nulls()
             periods = period_values
-            top, bottom = _group_contributions(value_frame, field, group_fields, aggregation)
+            top, bottom, population = _group_contributions(
+                value_frame, field, group_fields, aggregation,
+                include_population=population_budget_bytes > 0,
+            )
+            if population is not None:
+                population_size = _group_population_size(population)
+                if population_size > population_budget_bytes:
+                    population = None
+                else:
+                    population_budget_bytes -= population_size
         except _NonFiniteMetricError:
             warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 聚合后出现非有限数值，"
                             "未生成该指标事实，其他指标继续计算。")
@@ -435,9 +477,10 @@ def _dataset_facts(
                 fieldRef=field_ref,
                 aggregation=aggregation,
                 periodAggregation=period_aggregation,
+                cumulativePolicy=cumulative_policy,
                 unit=_metric_unit(semantic, money_field=field_ref.casefold() in money_fields),
                 formula=_formula(field, aggregation, scope) + (
-                    f"；仅汇总 {period_field} 最新登记期间" if period_aggregation else ""
+                    f"；仅汇总 {period_field} 最新登记期间" if period_aggregation == "last" else ""
                 ),
                 scope=scope,
                 periodField=period_field,
@@ -456,11 +499,15 @@ def _dataset_facts(
                 else None,
                 missingCount=series.null_count(),
                 periodMissingCount=period_missing_count,
+                seriesMissingCount=(scoped_frame[field].null_count()
+                                    if aggregation in {"count", "count_distinct"}
+                                    else scoped_frame[field].cast(pl.Float64, strict=False).null_count()),
                 zeroCount=int((valid_numeric == 0).sum()),
                 negativeCount=int((valid_numeric < 0).sum()),
                 periodValues=periods,
                 topGroups=top,
                 bottomGroups=bottom,
+                groupPopulation=population,
                 warnings=fact_warnings,
             )
         )
@@ -573,10 +620,10 @@ def _period_values(
         replacements.update(dict.fromkeys(labels, canonical))
     if replacements:
         # 在原始行上合并同一期的别名，平均/去重也须保留各行，不能相加预聚合值。
-        period = pl.col(period_field).cast(pl.String)
+        period_expression = pl.col(period_field).cast(pl.String)
         frame = frame.select(
             pl.col(field).alias("__metric_input"),
-            period.replace_strict(replacements, default=period).alias("__period_input"),
+            period_expression.replace_strict(replacements, default=period_expression).alias("__period_input"),
         )
         field, period_field = "__metric_input", "__period_input"
     grouped, groups = _grouped_aggregation(frame, field, (period_field,), aggregation)
@@ -646,14 +693,20 @@ def _warn_trailing_zero_periods(
     return frame, periods, (warning,)
 
 
+def _group_population_size(population: tuple[GroupContribution, ...]) -> int:
+    return len(json.dumps([item.model_dump(mode="json", by_alias=True) for item in population],
+                          ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode())
+
+
 def _group_contributions(
     frame: pl.DataFrame,
     field: str,
     group_fields: tuple[str, ...],
     aggregation: Aggregation,
-) -> tuple[tuple[GroupContribution, ...], tuple[GroupContribution, ...]]:
+    *, include_population: bool = True,
+) -> tuple[tuple[GroupContribution, ...], tuple[GroupContribution, ...], tuple[GroupContribution, ...] | None]:
     if not group_fields:
-        return (), ()
+        return (), (), None
     grouped, groups = _grouped_aggregation(frame, field, group_fields, aggregation)
     rows = [
         row
@@ -675,7 +728,14 @@ def _group_contributions(
     # 不能继承 Polars 未承诺稳定的 group_by 输出顺序。
     top = sorted(values, key=lambda item: (-item.value, item.group))[:10]
     bottom = sorted(values, key=lambda item: (item.value, item.group))[:10]
-    return tuple(top), tuple(bottom)
+    population = None
+    if include_population and values and len(values) <= 2000:
+        complete = sorted(values, key=lambda item: json.dumps(item.group_values, ensure_ascii=False, sort_keys=True))
+        raw = json.dumps([item.model_dump(mode="json", by_alias=True) for item in complete],
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        if len(raw) <= 256 * 1024:
+            population = tuple(complete)
+    return tuple(top), tuple(bottom), population
 
 
 @dataclass(frozen=True)
@@ -959,6 +1019,9 @@ def _comparisons(
                     if comparison_type in roles[item.dataset_id]
                     and item.dataset_id != current.dataset_id
                 ):
+                    if current.cumulative_policy is not None or baseline.cumulative_policy is not None:
+                        warnings.append(f"{current.field_ref} 为累计快照，未将快照同比/环比解释为当期业务变化。")
+                        continue
                     if current.scope != baseline.scope or current.aggregation != baseline.aggregation:
                         warnings.append(f"{current.field_ref} 的 {comparison_type} 固定范围或聚合口径不一致，未生成比较。")
                         continue
@@ -1365,9 +1428,10 @@ def _reconciliation_groups(
 ) -> dict[tuple[str | None, ...], float | None] | None:
     frame, _warnings = _apply_scope(dataset, semantic)
     if fact.period_aggregation == "last":
-        frame = _last_period_rows(frame, fact.period_field, at_period=at_period)
-        if frame is None:
+        latest_frame = _last_period_rows(frame, fact.period_field, at_period=at_period)
+        if latest_frame is None:
             return None
+        frame = latest_frame
     elif period_window is not None:
         if fact.period_field is None:
             return None
@@ -1530,6 +1594,28 @@ def _period_axis_aliases(
         if matched:
             aliases.add(column.casefold())
     return aliases
+
+
+def _cumulative_policies_by_ref(
+    profile_metrics: tuple[Mapping[str, Any], ...],
+) -> dict[str, CumulativeSnapshotPolicy | None]:
+    declarations: dict[str, list[Mapping[str, Any]]] = {}
+    for metric in profile_metrics:
+        if metric.get("fieldRef"):
+            declarations.setdefault(str(metric["fieldRef"]).casefold(), []).append(metric)
+    result: dict[str, CumulativeSnapshotPolicy | None] = {}
+    for ref, definitions in declarations.items():
+        if not any(item.get("cumulativePolicy") is not None for item in definitions):
+            continue
+        result[ref] = None
+        try:
+            policies = [CumulativeSnapshotPolicy.model_validate(item.get("cumulativePolicy"))
+                        for item in definitions if item.get("aggregation") == "sum"]
+        except (ValueError, TypeError):
+            continue
+        if len(policies) == len(definitions) and all(item == policies[0] for item in policies):
+            result[ref] = policies[0]
+    return result
 
 
 def _metric_codes_by_ref(

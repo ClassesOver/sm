@@ -121,8 +121,10 @@ def test_high_priority_finding_cannot_be_hidden_in_appendix_section():
         freeze(value, [finding()])
 
 
-def test_distinct_management_questions_have_no_fixed_section_quota():
-    from smart_reporting.reporting.hospital_operation.narrative_planner import build_compatible_report_outline
+def test_distinct_management_findings_are_not_forced_into_ten_chapters():
+    from smart_reporting.reporting.hospital_operation.narrative_planner import (
+        build_compatible_report_outline,
+    )
 
     cards = [finding(index, metricCodes=(f"metric_{index}",)) for index in range(1, 32)]
     result = freeze(candidate(*[[card.finding_id] for card in cards]), cards)
@@ -130,7 +132,18 @@ def test_distinct_management_questions_have_no_fixed_section_quota():
         graph(*cards), report_type="comprehensive", title=result.title, narrative_outline=result,
     )
     assert len(result.sections) == len(compatible.sections) == len(cards)
-    assert [section.finding_ids for section in result.sections] == [(card.finding_id,) for card in cards]
+    assert {fid for section in result.sections for fid in section.finding_ids} == {card.finding_id for card in cards}
+    assert sum(len(section.finding_ids) for section in result.sections) == len(cards)
+    assert {aid for section in result.sections for aid in section.analysis_ids} == {aid for card in cards for aid in card.analysis_ids}
+
+
+def test_materialized_appendix_does_not_force_merging_other_chapters():
+    cards = [finding(i) for i in range(1, 11)] + [finding(11, priority="low")]
+    result = freeze(candidate(*[[card.finding_id] for card in cards[:-1]],
+                              appendixFindingIds=[cards[-1].finding_id]), cards)
+    assert len(result.sections) == 11
+    assert result.sections[-1].narrative_role == "appendix"
+    assert {fid for section in result.sections for fid in section.finding_ids} == {card.finding_id for card in cards}
 
 
 def test_appendix_keeps_all_findings_in_one_logical_chapter():
@@ -141,3 +154,18 @@ def test_appendix_keeps_all_findings_in_one_logical_chapter():
     assert result.sections[-1].narrative_role == "appendix"
     assert result.sections[-1].finding_ids == tuple(appendix_ids)
     assert len(result.sections[-1].analysis_ids) == 428
+
+
+def test_fallback_clustering_keeps_more_than_ten_unrelated_topics():
+    from smart_reporting.reporting.hospital_operation.narrative_planner import (
+        build_narrative_planning_context,
+        cluster_findings,
+    )
+
+    cards = [finding(index, metricCodes=(f"metric_{index}",)) for index in range(1, 22)]
+    source = graph(*cards)
+    groups = cluster_findings(source)
+    assert len(groups) == len(cards)
+    assert {item for group in groups for item in group} == {card.finding_id for card in cards}
+    context = build_narrative_planning_context(source, "按主题完整呈现")
+    assert "maxChaptersIncludingAppendix" not in context["contentBudget"]

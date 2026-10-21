@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from decimal import Decimal
 from typing import Any, NamedTuple
 
@@ -69,6 +69,31 @@ class BoundNumberDisplay(NamedTuple):
     verified: bool
 
 
+def expand_assertion_placeholders(
+    markdown: str,
+    assertions: Mapping[str, Any] | None,
+    *,
+    unavailable: Callable[[], str] | None = None,
+) -> str:
+    """Use the same server fragment before scoring, retry selection and binding."""
+
+    def missing() -> str:
+        return unavailable() if unavailable is not None else "证据不足，需补充来源或指标口径。"
+
+    def expand(match: re.Match[str]) -> str:
+        assertion = (assertions or {}).get(match[1])
+        if assertion is None or assertion.status != "supported":
+            return missing()
+        reference = assertion.reference_token or (
+            assertion.request.operands[0] if assertion.request.operation == "value" else None
+        )
+        if reference is None:
+            return missing()
+        return assertion.factual_fragment(value_placeholder=reference)
+
+    return re.sub(r"\{\{assert:(assert-[0-9a-f]{64})\}\}", expand, markdown)
+
+
 def bound_number_display(
     markdown: str, claim_id: str, selected: dict[str, Any] | None
 ) -> BoundNumberDisplay | None:
@@ -105,6 +130,7 @@ def bound_number_display(
 def render_bound_numbers(
     markdown: str, contents, *, key: str, field_definitions=None,
     table_sources: Mapping[str, bytes] | None = None,
+    assertions: Mapping[str, Any] | None = None,
 ):
     contents = tuple(contents)
     table_sources = table_sources or {}
@@ -139,6 +165,9 @@ def render_bound_numbers(
     # 模型不能自行签发数字锚点。原正文的复核表述独立记为来源复核，不能拿来恢复数字。
     markdown = re.sub(r"\[\[claim:[^\]\n]+\]\]", "", markdown)
     markdown = re.sub("待核实", lambda _: notice("source_review"), markdown)
+    markdown = expand_assertion_placeholders(
+        markdown, assertions, unavailable=lambda: notice("source_review", "证据不足，需补充来源或指标口径。")
+    )
     markdown = render_frozen_numbers(
         align_placeholder_direction(markdown, contents), catalog, annotate=annotate
     )
@@ -289,6 +318,10 @@ class NumberReferenceResolver:
         self._contents = contents
         self._derived: dict[str, tuple[Any, str]] | None = None
         self._legacy_derived: dict[str, tuple[Any, str]] | None = None
+        self._top_sets: dict[str, dict] = {}
+        self._registered_ratios: dict[str, dict | None] = {}
+        self._cumulative_changes: dict[str, dict] = {}
+        self._group_contributions: dict[str, dict | None] = {}
 
     def _derived_entries(self, *, legacy: bool = False) -> dict[str, tuple[Any, str]]:
         if self._derived is None:
@@ -355,7 +388,64 @@ class NumberReferenceResolver:
         ids = reference_fact_ids(token)
         if not ids or any(key not in self.entries or key in self.conflicts for key in ids):
             return None
-        return _resolved_number_reference(token, ids, self.entries, matches[0], self.conflicts)
+        resolved = _resolved_number_reference(token, ids, self.entries, matches[0], self.conflicts)
+        if resolved["selector"].startswith("cumulativeChanges."):
+            from .cumulative_changes import registered_cumulative_changes
+
+            if ids[0] not in self._cumulative_changes:
+                self._cumulative_changes[ids[0]] = registered_cumulative_changes(self.entries[ids[0]])[0]
+            proof = self._cumulative_changes[ids[0]].get(resolved["selector"])
+            if proof is None:
+                return None
+            resolved["_cumulative_change_proof"] = proof
+            baseline = (proof["baseline_period"],) if proof["baseline_period"] else ()
+            current = (proof["current_period"],)
+            resolved["periods"] = tuple(dict.fromkeys((*current, *baseline)))
+            resolved["period_roles"] = {"current": current, "baseline": baseline}
+            resolved["formula"] = (f"({proof['current_value']}) - ({proof['baseline_value']})"
+                                   + ("；按已确认自然年重置零基线" if proof["reset"] else "；相邻月末累计快照差额"))
+        if resolved["selector"].startswith("topSet."):
+            from .top_sets import registered_top_sets
+
+            if ids[0] not in self._top_sets:
+                self._top_sets[ids[0]] = registered_top_sets(self.entries[ids[0]])[0]
+            resolved["_top_set_proof"] = self._top_sets[ids[0]].get(resolved["selector"])
+        if resolved["selector"].startswith("groupContributions."):
+            if any(key in self.conflicts for key in self.entries[ids[0]].get("inputFactIds", ())):
+                return None
+            from .group_contributions import registered_group_contributions
+
+            if ids[0] not in self._group_contributions:
+                self._group_contributions[ids[0]] = registered_group_contributions(
+                    self.entries[ids[0]], self.entries,
+                    profile_hash=self.entries.get(self.entries[ids[0]]["inputFactIds"][0], {}).get("profileHash") or "",
+                    fact_warnings={key: entry.get("warnings", ()) for key, entry in self.entries.items()},
+                )[0]
+            resolved["_group_contribution_proof"] = self._group_contributions[ids[0]]
+            proof = resolved["_group_contribution_proof"]
+            if proof is not None:
+                index = int(resolved["selector"].split(".")[1])
+                resolved["formula"] = f"({proof['deltas'][index]}) / ({proof['netChange']}) * 100%（同单位分组差额 / 总体有符号净差额）"
+        if resolved["selector"] == "registeredRatio":
+            from .ratio_proofs import registered_ratio
+
+            if any(key in self.conflicts for key in self.entries[ids[0]].get("inputFactIds", ())):
+                return None
+            if ids[0] not in self._registered_ratios:
+                self._registered_ratios[ids[0]] = registered_ratio(self.entries[ids[0]], self.entries,
+                    profile_hash=self.entries[ids[0]].get("profileHash") or "",
+                    fact_warnings={key: entry.get("warnings", ()) for key, entry in self.entries.items()})[0]
+            resolved["_registered_ratio_proof"] = self._registered_ratios[ids[0]]
+            proof = resolved["_registered_ratio_proof"]
+            if proof is not None:
+                resolved["formula"] = f"({proof['numeratorValue']}) / ({proof['denominatorValue']})" + (" * 100%" if proof["unit"] == "%" else f" {proof['unit']}")
+        if resolved["entry"].get("comparisonType"):
+            resolved["_comparison_subjects"] = tuple(
+                str(name) for key in resolved["entry"].get("inputFactIds", ())
+                for name in (self.entries.get(key, {}).get("displayName"), self.entries.get(key, {}).get("field"))
+                if name
+            )
+        return resolved
 
 
 def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
@@ -414,12 +504,10 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
     periods = fact_periods(primary)
     period_roles = {}
     selected_periods = None
-    if primary.get("comparisonType") and selector in {
-        "currentTotal",
-        "baselineTotal",
-        "change",
-        "changeRate",
-    }:
+    if primary.get("comparisonType") and (
+        selector in {"currentTotal", "baselineTotal", "change", "changeRate"}
+        or selector.startswith("groupContributions.")
+    ):
         current_periods = periods
         baseline_periods = _comparison_baseline_periods(primary, entries, conflicts)
         if selector == "baselineTotal":
@@ -447,7 +535,7 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
         period_roles["endpoint"] = (periods[-1],)
     elif primary.get("periodAggregation") == "last" and (
         selector in {"total", "average", "minimum", "maximum"}
-        or selector.startswith(("topGroups.", "bottomGroups.", "groupShares.", "groupGaps."))
+        or selector.startswith(("topGroups.", "bottomGroups.", "groupShares.", "groupGaps.", "topSet."))
     ):
         selected_periods = primary.get("periodValues", ())[-1:]
     if selected_periods is not None:
@@ -468,14 +556,22 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
     if selector.startswith(("topGroups.", "bottomGroups.")):
         group, index = selector.split(".")
         selected_group = primary[group][int(index)]
-        scope["group"] = selected_group["group"]
-        scope.update(selected_group.get("groupValues") or {})
+        if selected_group.get("groupValues"):
+            scope.update(selected_group["groupValues"])
+        else:
+            scope["group"] = selected_group["group"]
 
     def operand(value) -> str:
         return format(Decimal(str(value)).normalize(), "f")
 
     formula = primary.get("formula")
-    if selector in {"monthlyAverage", "monthlyMinimum", "monthlyMaximum"}:
+    if selector.startswith("groupContributions."):
+        formula = "同一结构化分组本期值减去已换算基期值，再除以完整总体有符号净差额乘百分之百"
+    elif selector.startswith("topSet."):
+        formula = f"完整冻结分组总体按 {selector} 选择成员后求和"
+    elif selector == "monthlyTrend":
+        formula = "月值序列：" + " → ".join(operand(item["value"]) for item in primary["periodValues"])
+    elif selector in {"monthlyAverage", "monthlyMinimum", "monthlyMaximum"}:
         amounts = [operand(item["value"]) for item in primary["periodValues"]]
         if selector == "monthlyAverage":
             formula = "(" + " + ".join(f"({amount})" for amount in amounts) + f") / {len(amounts)}"
@@ -494,8 +590,12 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
     elif selector.startswith("groupShares."):
         _, group, index = selector.split(".")
         numerator = primary[group][int(index)]
-        scope["group"] = numerator["group"]
-        scope.update(numerator.get("groupValues") or {})
+        # Structured dimensions identify the group even when its display label
+        # contains a delimiter or is serialized JSON for collision handling.
+        if numerator.get("groupValues"):
+            scope.update(numerator["groupValues"])
+        else:
+            scope["group"] = numerator["group"]
         formula = f"({operand(numerator['value'])}) / ({operand(primary['total'])}) * 100"
     elif selector.startswith("groupGaps."):
         left, right = (int(index) for index in selector.split(".")[1].split("-"))

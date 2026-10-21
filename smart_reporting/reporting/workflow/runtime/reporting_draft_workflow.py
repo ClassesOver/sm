@@ -191,11 +191,14 @@ class ReportingDraftWorkflow(Workflow):
             rework_output = await self._run_rework_analysis(rework_input, run_context)
             if rework_output.success is False:
                 raise RuntimeError("章节补证分析失败")
-            visualization_output = await self.submit_visualization(visualization_input, run_context)
-            if visualization_output.success is False:
-                raise RuntimeError("章节补证后的可视化提交失败")
+            budget_blocked = isinstance(rework_output.content, Mapping) and rework_output.content.get("status") == "budget_exhausted"
+            if not budget_blocked:
+                visualization_output = await self.submit_visualization(visualization_input, run_context)
+                if visualization_output.success is False:
+                    raise RuntimeError("章节补证后的可视化提交失败")
             draft_input["analysisReworkAllowed"] = False
-            draft_input["rework"] = dict(rework)
+            draft_input["rework"] = {**rework, **({"budgetCode": rework_output.content.get("budgetCode")}
+                                               if isinstance(rework_output.content, Mapping) and rework_output.content.get("budgetCode") else {})}
             draft_output = await self.draft_section(draft_input, run_context)
             if draft_output.success is False:
                 raise RuntimeError("章节补证后的成稿失败")

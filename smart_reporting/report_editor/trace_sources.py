@@ -18,7 +18,6 @@ import math
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from time import perf_counter
 from typing import Any, Protocol
@@ -135,7 +134,6 @@ def narrative_section_projection(manifest: Mapping[str, Any]) -> list[dict[str, 
 
 
 # 服务端表格大额列的表头单位（“门诊收入（万元）”）；单元格只写换算后的数字。
-_TABLE_HEADER_UNIT = re.compile(r"[（(](元|万元|亿元|人次|万人次)[）)](?:\s*·\s*[\w.-]+)?$")
 
 class _RegisteredFile(Protocol):
     """已登记文件身份：清单产物与追溯索引文件引用都满足。"""
@@ -876,7 +874,9 @@ class ReportEditorTraceService:
         files = {item.resource_id: item for item in index.files}
         thread_id = context.scope["threadId"]
         bundle_cache: dict[str, Any] = {}
+        validated_source_bytes: dict[str, bytes] = {}
         table_source_cache: dict[str, bytes] = {}
+        source_failures: dict[str, str] = {}
 
         async def _table_sources_of(derivation: Any) -> dict[str, bytes]:
             source_ids = {operand.file_resource_id for operand in derivation.operands}
@@ -886,9 +886,16 @@ class ReportEditorTraceService:
                 if file_ref is None or file_ref.media_type != "application/json":
                     raise ReportingError("snapshot_integrity_failed", "表格派生来源登记不完整。")
                 if resource_id not in table_source_cache:
-                    table_source_cache[resource_id] = await self._read_registered_file(
-                        context, file_ref, max_bytes=16 * 1024 * 1024
-                    )
+                    if resource_id in source_failures:
+                        raise ReportingError(source_failures[resource_id], "表格来源无法核验。")
+                    try:
+                        table_source_cache[resource_id] = await self._read_registered_file(
+                            context, file_ref, max_bytes=16 * 1024 * 1024
+                        )
+                    except Exception as error:
+                        code = error.code if isinstance(error, ReportingError) else "source_read_failed"
+                        source_failures[resource_id] = code
+                        raise ReportingError(code, "表格来源无法核验。") from error
                 result[resource_id] = table_source_cache[resource_id]
             return result
 
@@ -901,15 +908,24 @@ class ReportEditorTraceService:
                     content = await self._workspace.read_limited_regular_file(
                         thread_id, file_ref.path, max_bytes=16 * 1024 * 1024
                     )
-                except (OSError, WorkspaceError) as exc:
-                    raise ReportingError("snapshot_integrity_failed", "事实文件无法读取。") from exc
+                except Exception as error:
+                    source_failures[file_ref.resource_id] = (
+                        "snapshot_integrity_failed" if isinstance(error, (OSError, WorkspaceError))
+                        else error.code if isinstance(error, ReportingError) else "source_read_failed"
+                    )
+                    bundle_cache[file_ref.path] = None
+                    return None
                 if len(content) != file_ref.size or hashlib.sha256(content).hexdigest() != file_ref.sha256:
-                    raise ReportingError("snapshot_integrity_failed", "事实文件与登记身份不一致。")
+                    source_failures[file_ref.resource_id] = "snapshot_integrity_failed"
+                    bundle_cache[file_ref.path] = None
+                    return None
+                validated_source_bytes[file_ref.resource_id] = content
                 try:
                     bundle_cache[file_ref.path] = read_fact_document(content)
                 except ReportingError as error:
                     # 只拒绝有歧义/损坏的来源；正文与其余来源仍可进行软校验。
                     bundle_cache[file_ref.path] = None
+                    source_failures[file_ref.resource_id] = error.code
                     logger.warning("source_validation_fact_unavailable resource={} error={}", file_ref.resource_id, error.code)
             document = bundle_cache[file_ref.path]
             if not isinstance(document, dict):
@@ -991,6 +1007,12 @@ class ReportEditorTraceService:
                           if isinstance(item, dict) and item.get("period") == period]
                 return values[0] if len(values) == 1 else None
             return _entry_value(entry)
+
+        async def _fact_selector_valid_of(ref: Any, row_key: str, selector: str) -> bool:
+            from ..reporting.trace.table_quality import table_selector_matches
+
+            entry = await _fact_entry_of(ref)
+            return entry is not None and table_selector_matches(entry, row_key, selector)
 
         async def _fact_unit_of(ref: Any, row_key: str) -> str | None:
             entry = await _fact_entry_of(ref)
@@ -1080,8 +1102,8 @@ class ReportEditorTraceService:
                     # Any ordinary FactRefs remain independent prerequisites.
                     entries = [await _fact_entry_of(ref) for ref in binding.fact_refs]
                     if all(item is not None for item in entries) and number.claim_id == binding.claim_id:
-                        table_sources = await _table_sources_of(derivation)
                         try:
+                            table_sources = await _table_sources_of(derivation)
                             selected = await anyio.to_thread.run_sync(
                                 resolve_table_derivation,
                                 number.token,
@@ -1133,6 +1155,12 @@ class ReportEditorTraceService:
                     detail["status"] = "stale"
                     detail["warnings"].append("引用所在陈述已修改，请复核指标、期间和范围。")
                     detail["comparable"] = False
+            dependency_ids = {ref.file_resource_id for ref in binding.fact_refs}
+            if number is not None and number.table_derivation is not None:
+                dependency_ids.update(op.file_resource_id for op in number.table_derivation.operands)
+            failed_sources = sorted(dependency_ids & source_failures.keys())
+            if failed_sources:
+                detail["warnings"].append("来源身份无法核验；已拒绝使用对应数据，其余来源继续校验。")
             restore_text = number.display_text if number is not None and selected is not None else None
             if number is not None and selected is not None and restore_text is None:
                 restore_text = await _legacy_restore_text(number, selected)
@@ -1144,6 +1172,14 @@ class ReportEditorTraceService:
                     "claimId": binding.claim_id,
                     "sectionId": binding.locator.section_id,
                     "status": status,
+                    "sourceStatus": "integrity_failed" if failed_sources else "available",
+                    "bindingStatus": {"valid": "bound", "stale": "invalidated", "unbound": "unbound"}[status],
+                    "supportStatus": "supported" if status == "valid" and selected is not None
+                                     and selected.get("scope") and selected.get("periods")
+                                     and not detail["warnings"] else "unknown",
+                    "checkStatus": "failed" if failed_sources else "completed",
+                    "sourceIssues": [{"resourceId": resource_id, "code": source_failures[resource_id]}
+                                     for resource_id in failed_sources],
                     "factValue": fact_value,
                     "restoreText": restore_text,
                     "warnings": detail["warnings"],
@@ -1167,6 +1203,7 @@ class ReportEditorTraceService:
         tables_payload, table_summary = await self._evaluate_tables(
             index, context, markdown, _fact_value_of, _TABLE_BLOCK, value_matches,
             fact_unit_of=_fact_unit_of,
+            fact_selector_valid_of=_fact_selector_valid_of,
         )
         for table, payload in zip(index.tables, tables_payload, strict=True):
             dataset_ids: list[str] = []
@@ -1197,8 +1234,13 @@ class ReportEditorTraceService:
         for fact_file in index.fact_files:
             identity = files[fact_file.file_resource_id]
             if identity.path not in bundle_cache:
-                raw = await self._read_registered_file(context, identity, max_bytes=16 * 1024 * 1024)
-                bundle_cache[identity.path] = _json.loads(raw)
+                try:
+                    raw = await self._read_registered_file(context, identity, max_bytes=16 * 1024 * 1024)
+                    validated_source_bytes[identity.resource_id] = raw
+                    bundle_cache[identity.path] = read_fact_document(raw)
+                except Exception as error:
+                    source_failures[identity.resource_id] = error.code if isinstance(error, ReportingError) else "source_read_failed"
+                    bundle_cache[identity.path] = None
         plot_contents: list[str] = []
         plot_ids = {
             resource_id
@@ -1208,6 +1250,7 @@ class ReportEditorTraceService:
         for resource_id in sorted(plot_ids):
             try:
                 raw = await self._read_registered_file(context, files[resource_id], max_bytes=8 * 1024 * 1024)
+                validated_source_bytes[resource_id] = raw
                 plot_contents.append(raw.decode("utf-8"))
             except (ReportingError, UnicodeDecodeError) as error:
                 logger.warning("report_editor_plot_validation_source_unavailable resource_id={} reason={}",
@@ -1235,11 +1278,120 @@ class ReportEditorTraceService:
             ),
             markdown,
             (
-                *(_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values()),
+                *(_json.dumps(bundle, ensure_ascii=False) for bundle in bundle_cache.values()
+                  if bundle is not None),
                 *plot_contents,
             ),
             limiter=self._validation_limiter,
         )
+        from ..reporting.trace.contracts_v1 import canonical_sha256
+        from ..reporting.trace.quality_bundle import (
+            QUALITY_FILENAME,
+            QualityBundle,
+            evaluate_quality_bundle,
+        )
+
+        try:
+            questions = None
+            answer_review_plan = None
+            interactive_charts = {}
+            try:
+                manifest = await self.load_manifest(context)
+                if manifest is not None:
+                    for chart in manifest.charts:
+                        spec = chart.interactive_spec
+                        if spec is None:
+                            continue
+                        registered = [files.get(derive_resource_id(item.path)) for item in (chart, spec)]
+                        if all(file is not None and file.path == item.path and file.size == item.size
+                               and file.sha256 == item.sha256 for file, item in zip(registered, (chart, spec), strict=True)):
+                            interactive_charts[chart.path] = spec.path
+            except Exception:
+                logger.warning("editor_chart_manifest_unavailable")
+            chart_quality_ids = {chart.image_file_resource_id for chart in index.chart_traces}
+            from ..reporting.trace.chart_quality import QUALITY_IMAGE_BYTE_BUDGET
+
+            quality_image_ids = set(chart_quality_ids)
+            quality_image_bytes = 0
+            chart_quality_ids.update(file.resource_id for file in index.files
+                                     if file.path in set(interactive_charts.values()))
+            for resource_id in (file.resource_id for file in index.files if file.resource_id in chart_quality_ids):
+                if resource_id in quality_image_ids:
+                    if files[resource_id].size > QUALITY_IMAGE_BYTE_BUDGET - quality_image_bytes:
+                        continue
+                try:
+                    validated_source_bytes[resource_id] = await self._read_registered_file(
+                        context, files[resource_id], max_bytes=min(files[resource_id].size, QUALITY_IMAGE_BYTE_BUDGET)
+                        if resource_id in quality_image_ids else 16 * 1024 * 1024,
+                    )
+                    if resource_id in quality_image_ids:
+                        quality_image_bytes += len(validated_source_bytes[resource_id])
+                except Exception:
+                    logger.warning("editor_chart_quality_source_unavailable resource_id={}", resource_id)
+            quality_path = PurePosixPath(context.markdown_path).with_name(QUALITY_FILENAME).as_posix()
+            quality_file = next((file for file in index.files if file.path == quality_path), None)
+            if quality_file is not None:
+                try:
+                    historical = QualityBundle.model_validate_json(await self._read_registered_file(
+                        context, quality_file, max_bytes=16 * 1024 * 1024,
+                    ))
+                    # Only frozen requirements are carried across revisions;
+                    # previous pass/coverage results are never reused.
+                    if historical.report_id == index.report_id:
+                        questions = historical.question_specs
+                        answer_review_plan = historical.answer_review_plan
+                except Exception as error:
+                    logger.warning("editor_question_specs_unavailable reason={}", type(error).__name__)
+            if any(table.origin_markdown is None for table in index.tables):
+                original_file = files[index.markdown_file_resource_id]
+                try:
+                    validated_source_bytes[original_file.resource_id] = await self._read_registered_file(
+                        context, original_file, max_bytes=16 * 1024 * 1024,
+                    )
+                except Exception:
+                    logger.warning("editor_table_original_unavailable")
+            quality = await anyio.to_thread.run_sync(partial(
+                evaluate_quality_bundle, index, markdown, validated_source_bytes,
+                authorization_scope_hash=canonical_sha256({
+                    key: context.scope.get(key) for key in ("userId", "threadId")
+                }),
+                questions=questions,
+                answer_review_plan=answer_review_plan,
+                interactive_charts=interactive_charts,
+            ), limiter=self._validation_limiter)
+            quality_payload = {
+                "status": "evaluated", "inputSha256": quality.input_sha256,
+                "allKeyFactsEvaluated": quality.all_key_facts_evaluated,
+                "questionCoverage": quality.question_coverage,
+                "answerReview": quality.answer_review.model_dump(mode="json", by_alias=True) if quality.answer_review is not None else None,
+                "issues": [issue.model_dump(mode="json", by_alias=True) for issue in quality.issues],
+                "tableChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.table_checks.items()},
+                "semanticChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.semantic_checks.items()},
+                "chartChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.chart_checks.items()},
+            }
+            for table in tables_payload:
+                check = quality.table_checks.get(table["tableId"])
+                table["dataCheck"] = check.model_dump(mode="json", by_alias=True) if check is not None else {
+                    "status": "unknown", "scope": "frozen_cells", "reasons": ["table_unregistered"],
+                }
+            for chart in charts_payload:
+                semantic_check = quality.semantic_checks.get(chart["chartId"])
+                chart["semanticCheck"] = semantic_check.model_dump(mode="json", by_alias=True) if semantic_check is not None else {
+                    "status": "unknown", "scope": "registered_fact_projection", "reasons": ["chart_semantics_unregistered"],
+                }
+                check = quality.chart_checks.get(chart["chartId"])
+                chart["dataCheck"] = check.model_dump(mode="json", by_alias=True) if check is not None else {
+                    "status": "unknown", "scope": "registered_arrays", "reason": "chart_unregistered",
+                }
+        except Exception as error:
+            logger.warning("editor_quality_evaluation_unavailable reason={}", type(error).__name__)
+            quality_payload = {"status": "failed", "allKeyFactsEvaluated": False,
+                               "issues": [{"code": "quality_evaluation_unavailable"}]}
+            for table in tables_payload:
+                table["dataCheck"] = {"status": "unknown", "scope": "frozen_cells", "reasons": ["table_check_failed"]}
+            for chart in charts_payload:
+                chart["dataCheck"] = {"status": "unknown", "scope": "registered_arrays", "reason": "chart_check_failed"}
+                chart["semanticCheck"] = {"status": "unknown", "scope": "registered_fact_projection", "reasons": ["chart_semantic_check_failed"]}
         logger.info(
             "report_source_validation_completed report_id={} revision={} subjects={} tables={} duration_ms={}",
             context.report_id, context.revision, len(subjects), len(tables_payload),
@@ -1247,6 +1399,9 @@ class ReportEditorTraceService:
         )
         return {
             "draftSha256": draft_sha256,
+            "quality": quality_payload,
+            "sourceIssues": [{"resourceId": key, "code": value}
+                             for key, value in sorted(source_failures.items())],
             "warnings": warnings,
             "subjects": subjects,
             "summary": summary,
@@ -1320,6 +1475,7 @@ class ReportEditorTraceService:
         value_matches: Any,
         *,
         fact_unit_of: Any = None,
+        fact_selector_valid_of: Any = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """表格身份重判（计划 6.1）：排序不失效，改值 stale，插删行/删块 unbound。
 
@@ -1329,43 +1485,7 @@ class ReportEditorTraceService:
         """
 
         from ..reporting.trace.markdown_body import trace_body
-        from ..reporting.trace.subject_builder import (
-            _NUMBER_UNIT_RE,
-            _mask_calendar_values,
-            formatted_value_matches,
-            unit_period_warnings,
-        )
-        from ..reporting.units import unit_conversion_scale
-
-        def matches_fact_value(
-            text: str, value: Any, unit: str | None, column_key: str | None = None
-        ) -> bool:
-            # 等值换算优先；裸数命中不能掩盖显式单位不一致，stale 仅提示复核。
-            # 大额列按表头单位（“收入（万元）”）显示，单元格只写数字：补上表头单位再核对。
-            header_unit = _TABLE_HEADER_UNIT.search(column_key or "")
-            bare = text.replace("−", "-").replace("－", "-").strip()
-            numeric_text = re.sub(r'\[\^?\d+\]', lambda match: ' ' * len(match[0]), _mask_calendar_values(bare))
-            if header_unit is not None:
-                # 主数值后的备注不能使金额退回原单位；备注中的其他数字也不能代替主数值。
-                number = re.search(
-                    r'(?<![\d.,+\-a-zA-Z_])[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d.,eE])',
-                    numeric_text,
-                )
-                if number is None:
-                    return False
-                explicit = _NUMBER_UNIT_RE.match(numeric_text, number.start())
-                if explicit is None and re.match(r'[A-Za-z\u4e00-\u9fff%‰]', numeric_text[number.end():].lstrip()):
-                    return False  # 未识别的单位不能被当作没有单位。
-                display_unit = explicit['unit'] if explicit is not None else header_unit[1]
-                scale = unit_conversion_scale(unit, display_unit)
-                if scale is None:
-                    return False
-                converted = Decimal(str(value)) * scale
-                return value_matches(numeric_text[:number.end()], converted)
-            return formatted_value_matches(numeric_text, value, unit) or (
-                value_matches(numeric_text, value)
-                and not unit_period_warnings(numeric_text, expected_unit=unit, fact_value=value)
-            )
+        from ..reporting.trace.table_quality import table_value_matches as matches_fact_value
 
         committed = None
         try:
@@ -1494,6 +1614,8 @@ class ReportEditorTraceService:
                     unit: str | None = None
                     for ref in cell.fact_refs:
                         selector = cell.value_selector or cell.row_key
+                        if fact_selector_valid_of is not None and not await fact_selector_valid_of(ref, cell.row_key, selector):
+                            continue
                         value = await fact_value_of(ref, selector)
                         if value is not None:
                             if fact_unit_of is not None:
@@ -1521,10 +1643,15 @@ class ReportEditorTraceService:
                             )
                         ) else "stale"
                     )
-                    if (unique_block and origin_labels[row[0]] == 1
-                            and draft_labels[row[0]] == 1
-                            and header_counts[cell.column_key] == 1
-                            and len(row) == len(draft_header) + 1):
+                    uniquely_bound = (
+                        unique_block and origin_labels[row[0]] == 1
+                        and draft_labels[row[0]] == 1
+                        and header_counts[cell.column_key] == 1
+                        and len(row) == len(draft_header) + 1
+                    )
+                    if not uniquely_bound:
+                        cell_status = "unbound"
+                    if uniquely_bound:
                         locations.append({
                             "rowKey": cell.row_key, "columnKey": cell.column_key,
                             "rowIndex": row_positions[cell.row_key], "columnIndex": column,

@@ -109,6 +109,46 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _prepare_analysis_summary_request,
     _reporting_detailed_analysis_plan,
 )
+from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+    AnalysisEvidenceDecision,
+    AnalysisSummaryDraft,
+)
+from smart_reporting.reporting.workflow.runtime.base import (
+    MAX_REPORT_SECTION_PHASE_ATTEMPTS,
+    OUTLINE_SECTION_COUNT_INSTRUCTION,
+    REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
+    REPORT_ANALYSIS_PLAN_STATE_KEY,
+    REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
+    REPORT_OUTLINE_STATE_KEY,
+    REPORT_PROFILE_COVERAGE_STATE_KEY,
+    REPORT_WORKFLOW_RESULT_STATE_KEY,
+)
+from smart_reporting.reporting.workflow.runtime.datasets import (
+    RuntimeDatasetsMixin,
+    _requirement_measure_field_refs,
+)
+from smart_reporting.reporting.workflow.runtime.models import (
+    AnalysisBundle,
+    DataUnderstandingPlan,
+    MeasureSemanticProposal,
+    _normalize_analysis_bundle_table_refs,
+)
+from smart_reporting.reporting.workflow.runtime.phase_models import SectionBlockContent
+from smart_reporting.reporting.workflow.runtime.planning import (
+    _PLANNER_DISPLAY_NAMES,
+    _outline_candidate,
+    _outline_validation_issues,
+    _row_preserving_requirement_ids,
+    _validate_reporting_profile_schema,
+)
+from smart_reporting.reporting.workflow.runtime.publication import (
+    _analysis_quality_warnings,
+)
+from smart_reporting.reporting.workflow.runtime.validation import (
+    _measure_semantic_issues,
+    _normalize_requirement_periods,
+)
+from smart_reporting.runtime.settings import AgentSettings
 
 
 def test_b7_projection_adds_only_common_profile_additive_dimensions() -> None:
@@ -200,46 +240,6 @@ def test_b7_projection_adds_only_common_profile_additive_dimensions() -> None:
     assert projected[0].grain_columns == ("month", "department")
     assert projected[1].dimension_columns == ("month", "department")
     assert projected[1].grain_columns == ("month", "department")
-from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
-    AnalysisEvidenceDecision,
-    AnalysisSummaryDraft,
-)
-from smart_reporting.reporting.workflow.runtime.base import (
-    MAX_REPORT_SECTION_PHASE_ATTEMPTS,
-    OUTLINE_SECTION_COUNT_INSTRUCTION,
-    REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
-    REPORT_ANALYSIS_PLAN_STATE_KEY,
-    REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
-    REPORT_OUTLINE_STATE_KEY,
-    REPORT_PROFILE_COVERAGE_STATE_KEY,
-    REPORT_WORKFLOW_RESULT_STATE_KEY,
-)
-from smart_reporting.reporting.workflow.runtime.datasets import (
-    RuntimeDatasetsMixin,
-    _requirement_measure_field_refs,
-)
-from smart_reporting.reporting.workflow.runtime.models import (
-    AnalysisBundle,
-    DataUnderstandingPlan,
-    MeasureSemanticProposal,
-    _normalize_analysis_bundle_table_refs,
-)
-from smart_reporting.reporting.workflow.runtime.phase_models import SectionBlockContent
-from smart_reporting.reporting.workflow.runtime.planning import (
-    _PLANNER_DISPLAY_NAMES,
-    _outline_candidate,
-    _outline_validation_issues,
-    _row_preserving_requirement_ids,
-    _validate_reporting_profile_schema,
-)
-from smart_reporting.reporting.workflow.runtime.publication import (
-    _analysis_quality_warnings,
-)
-from smart_reporting.reporting.workflow.runtime.validation import (
-    _measure_semantic_issues,
-    _normalize_requirement_periods,
-)
-from smart_reporting.runtime.settings import AgentSettings
 
 
 @pytest.mark.anyio
@@ -2019,7 +2019,7 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     assert "按 analysisId 完成 CSV 复算并保存可复现证据" not in analysis.completion_conditions
 
 
-async def _run_failing_analysis_item(monkeypatch, error: ReportingError) -> AsyncMock:
+async def _run_failing_analysis_item(monkeypatch, error: ReportingError, *, traces=(), rework=None) -> AsyncMock:
     from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
 
     for name, value in {
@@ -2028,7 +2028,7 @@ async def _run_failing_analysis_item(monkeypatch, error: ReportingError) -> Asyn
         },
         "_analysis_item_dataset_inputs": lambda *_a, **_k: [],
         "_model_facing_deterministic_facts": lambda *_a, **_k: {},
-        "_checkpoint_retry_error": lambda *_a, **_k: None,
+        "_checkpoint_retry_error": lambda *_a, **_k: error if traces else None,
         "_profile_coverage_instruction_projection": lambda *_a, **_k: None,
         "_source_warnings_from_state": lambda *_a, **_k: (),
         "_analysis_item_thinking_policy": lambda *_a, **_k: ("off", 0, "simple"),
@@ -2059,7 +2059,7 @@ async def _run_failing_analysis_item(monkeypatch, error: ReportingError) -> Asyn
     with pytest.raises(ReportingError) as caught:
         await runtime._run_analysis_item_task(
             RunContext(run_id="run-1", session_id="s"),
-            checkpoint=SimpleNamespace(trace=(), profile_coverage=None),
+            checkpoint=SimpleNamespace(trace=traces, profile_coverage=None),
             revision=1,
             sandbox_id="sandbox",
             validation_context_file=identity,
@@ -2075,7 +2075,7 @@ async def _run_failing_analysis_item(monkeypatch, error: ReportingError) -> Asyn
             section_goal={},
             retry_reason=None,
             feedback=None,
-            rework_request=None,
+            rework_request=rework,
         )
     assert caught.value is error
     return runtime.task_runner.start
@@ -2097,8 +2097,21 @@ async def test_analysis_item_stops_fresh_attempts_on_infrastructure_failure(monk
     assert ordinary.await_count == MAX_REPORT_SECTION_PHASE_ATTEMPTS
 
 
+
+@pytest.mark.anyio
+async def test_restored_supplement_cannot_reset_failed_task_attempts(monkeypatch) -> None:
+    from smart_reporting.reporting.workflow.runtime.base import MAX_REPORT_SECTION_PHASE_ATTEMPTS
+
+    traces = tuple(SimpleNamespace(phase="analysis", work_kind="analysis_item",
+        analysis_id="analysis_001", retry_reason=None, status="failed", attempt=number)
+        for number in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS))
+    started = await _run_failing_analysis_item(monkeypatch,
+        ReportingError("report_analysis_script_failed", "已失败三次。"),
+        traces=traces, rework=SimpleNamespace(analysis_ids=("analysis_001",), model_dump=lambda **_k: {}))
+    started.assert_not_awaited()
+
 def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
-    source = textwrap.dedent(inspect.getsource(ReportWorkflowRuntime._run_analysis_item_task))
+    source = textwrap.dedent(inspect.getsource(ReportWorkflowRuntime._execute_analysis_item_task))
     tree = ast.parse(source)
     string_keys = {
         node.value

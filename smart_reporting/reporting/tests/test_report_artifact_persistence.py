@@ -356,7 +356,7 @@ async def test_artifact_persistence_reads_host_workspace_without_private_sandbox
 
 
 @pytest.mark.anyio
-async def test_persistence_requires_pdf_and_word() -> None:
+async def test_persistence_accepts_a_single_successful_format() -> None:
     content = b"report"
     workspace = _Workspace(
         {
@@ -377,10 +377,9 @@ async def test_persistence_requires_pdf_and_word() -> None:
         ),
     )
 
-    with pytest.raises(ReportingError) as raised:
-        await persistence.persist(scope=_scope(), report_id="report-1", revision=1, artifacts=specs)
-
-    assert raised.value.code == "report_artifact_invalid"
+    await persistence.persist(scope=_scope(), report_id="report-1", revision=1, artifacts=specs)
+    stored = await persistence.repository.get(_artifact_key(_scope(), "report-1", 1, specs[0]))
+    assert stored is not None and stored.artifact == "pdf"
 
 
 @pytest.mark.anyio

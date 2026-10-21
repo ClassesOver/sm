@@ -251,14 +251,30 @@ class RuntimePublicationMixin:
         pdf_path: str, word_path: str, validation: dict[str, Any],
     ) -> dict[str, Any]:
         """验收失败时按实际文件身份保留下载输入，不伪造通过回执。"""
+        available = 0
+        validation = {**validation, "issues": list(validation.get("issues") or [])}
         for label, path in (("pdf", pdf_path), ("word", word_path)):
-            identity = await self.workspace_service.ahash_file(self._scope(run_context)["threadId"], path)
-            if identity.get("missing") or not identity.get("sha256") or not identity.get("size"):
-                raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
-            result.update({
-                f"{label}Path": path, f"{label}Size": int(identity["size"]),
-                f"{label}Sha256": str(identity["sha256"]),
-            })
+            for suffix in ("Path", "Size", "Sha256"):
+                result.pop(f"{label}{suffix}", None)
+            try:
+                identity = await self.workspace_service.ahash_file(self._scope(run_context)["threadId"], path)
+                if identity.get("missing") or not identity.get("sha256") or not identity.get("size"):
+                    raise OSError("artifact identity unavailable")
+            except Exception:
+                validation["issues"].append({"code": f"report_{label}_unavailable", "message": f"{'PDF' if label == 'pdf' else 'Word'} 未生成或身份不可读取。"})
+                continue
+            result.update({f"{label}Path": path, f"{label}Size": int(identity["size"]), f"{label}Sha256": str(identity["sha256"])})
+            available += 1
+            if hasattr(self, "state_repository"):
+                try:
+                    await self._apply_durable_command(run_context, ReportingCommand(
+                        name="record_artifact", commandId=f"retained-{label}:{path}:{identity['sha256']}", payload={"artifact": identity},
+                    ))
+                except Exception:
+                    logger.warning("report_retained_artifact_checkpoint_unavailable format={}", label)
+                    validation["issues"].append({"code": "report_artifact_checkpoint_unavailable", "message": "产物检查点写入失败，实际可读格式仍可下载。"})
+        if not available:
+            raise ReportingError("report_artifact_unavailable", "没有可读取身份的报告文件。")
         issues = validation.get("issues")
         result.update({
             "status": "validation_failed", "validation": {**validation, "ok": False},
@@ -491,10 +507,12 @@ class RuntimePublicationMixin:
             # 回执、状态或发布验收异常不应删除已生成文件。重新读取实际身份，
             # 由下载签发保留文件；失败原因随回执明确返回。
             logger.warning("report_artifact_validation_failed error_type={}", type(error).__name__)
+            raw_issues = validation.get("issues")
+            safe_issues = raw_issues if isinstance(raw_issues, list) else []
             return await self._retain_rendered_report(
                 run_context, result, pdf_path, word_path,
                 {**validation, "ok": False, "issues": [
-                    *(validation.get("issues") if isinstance(validation.get("issues"), list) else []),
+                    *safe_issues,
                     {
                         "code": error.code if isinstance(error, ReportingError) else "report_artifact_validation_failed",
                         "message": error.message if isinstance(error, ReportingError) else "PDF/Word 验收无法完成，产物已保留。",
@@ -990,6 +1008,10 @@ class RuntimePublicationMixin:
                 "formalReleaseAllowed": False,
                 "issues": [*gate.get("issues", []), *manifest_issues],
             }
+        quality_issues = self._state(run_context).get("report_quality_issues", [])
+        if quality_issues:
+            gate = {**gate, "formalReleaseAllowed": False,
+                    "issues": [*gate.get("issues", []), *quality_issues]}
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
@@ -1017,12 +1039,8 @@ class RuntimePublicationMixin:
                     }
                     if manifest_identity is not None else {}
                 ),
-                "pdfPath": result["pdfPath"],
-                "pdfSize": result["pdfSize"],
-                "pdfSha256": result["pdfSha256"],
-                "wordPath": result["wordPath"],
-                "wordSize": result["wordSize"],
-                "wordSha256": result["wordSha256"],
+                **{key: result[key] for label in ("pdf", "word") for suffix in ("Path", "Size", "Sha256")
+                   if (key := f"{label}{suffix}") in result},
                 "validation": result["validation"],
                 "validationIssues": result.get("validationIssues", []),
                 "sourceWarnings": result.get("sourceWarnings", []),
@@ -1223,6 +1241,7 @@ class RuntimePublicationMixin:
                     subject_bindings=subject_bindings,
                     review_notices=review_notices,
                     markdown=markdown_bytes.decode("utf-8"),
+                    interactive_charts=interactive_charts,
                     revision=revision,
                     run_context=run_context,
                 )
@@ -1286,6 +1305,7 @@ class RuntimePublicationMixin:
         server_table_traces: tuple = (),
         chart_trace_files: tuple[FileIdentity, ...] = (),
         chart_traces: tuple = (),
+        interactive_charts: Mapping[str, str] | None = None,
         computation_files: tuple[FileIdentity, ...] = (),
         computations: tuple = (),
         table_source_files: tuple[FileIdentity, ...] = (),
@@ -1345,6 +1365,110 @@ class RuntimePublicationMixin:
             if len(encoded_markdown) != markdown_artifact.size or hashlib.sha256(encoded_markdown).hexdigest() != markdown_artifact.sha256:
                 raise ReportingError("report_trace_index_invalid", "图注基线与已验收正文身份不一致。")
             index = freeze_chart_presentations(index, markdown)
+            # Register a versioned shadow record through the existing file
+            # channel; old strict manifest/index shapes remain unchanged.
+            try:
+                quality_state = self._state(run_context)
+                quality_state["report_quality_issues"] = [
+                    item for item in quality_state.get("report_quality_issues", [])
+                    if item.get("revision") != revision
+                ]
+                from functools import partial
+
+                import anyio
+
+                from ...trace.chart_quality import QUALITY_IMAGE_BYTE_BUDGET
+                from ...trace.contracts_v1 import (
+                    TraceFileRefV1,
+                    canonical_json_bytes,
+                    canonical_sha256,
+                    derive_resource_id,
+                )
+                from ...trace.quality_bundle import QUALITY_FILENAME, evaluate_quality_bundle
+                from ..questions import QuestionSet
+
+                policy = self._state(run_context).get("report_request_context", {}).get("assertionPolicy", {})
+                if policy.get("mode", "shadow") != "off":
+                    if policy.get("ruleVersion", "assertions/1") != "assertions/1":
+                        raise ReportingError("quality_rule_unavailable", "历史质量规则不可执行，不能用新规则替代原核验。")
+                    sources = {}
+                    durable_questions = await self.state_repository.get(run_id)
+                    raw_questions = durable_questions.payload.get("questionSpecs") if durable_questions is not None else None
+                    questions = QuestionSet.model_validate(raw_questions) if raw_questions is not None else None
+                    from ..answer_review import AnswerReviewPlan
+
+                    raw_review_plan = durable_questions.payload.get("answerReviewPlan") if durable_questions is not None else None
+                    answer_review_plan = AnswerReviewPlan.model_validate(raw_review_plan) if raw_review_plan is not None else None
+                    quality_source_ids = {entry.file_resource_id for entry in index.fact_files}
+                    quality_image_ids = {chart.image_file_resource_id for chart in index.chart_traces}
+                    quality_image_bytes = 0
+                    quality_source_ids.update(resource_id for chart in index.chart_traces
+                                              for resource_id in (chart.image_file_resource_id, *chart.plot_data_file_resource_ids))
+                    quality_source_ids.update(file.resource_id for file in index.files
+                                              if file.path in set((interactive_charts or {}).values()))
+                    for file in index.files:
+                        if file.resource_id not in quality_source_ids:
+                            continue
+                        if file.resource_id in quality_image_ids:
+                            if file.size > QUALITY_IMAGE_BYTE_BUDGET - quality_image_bytes:
+                                continue
+                        try:
+                            raw_source = await self.workspace_service.read_limited_regular_file(
+                                scope["threadId"], file.path,
+                                max_bytes=min(file.size, QUALITY_IMAGE_BYTE_BUDGET) if file.resource_id in quality_image_ids else 16 * 1024 * 1024,
+                            )
+                            if file.resource_id in quality_image_ids:
+                                if len(raw_source) != file.size or hashlib.sha256(raw_source).hexdigest() != file.sha256:
+                                    logger.warning("quality_source_unavailable resource_id={}", file.resource_id)
+                                    continue
+                                quality_image_bytes += len(raw_source)
+                            sources[file.resource_id] = raw_source
+                        except Exception:
+                            logger.warning("quality_source_unavailable resource_id={}", file.resource_id)
+                    bundle = await anyio.to_thread.run_sync(partial(
+                        evaluate_quality_bundle, index, markdown, sources,
+                        authorization_scope_hash=canonical_sha256({key: scope[key] for key in ("userId", "threadId")}),
+                        mode="enabled" if policy.get("mode") == "enabled" else "shadow",
+                        questions=questions,
+                        answer_review_plan=answer_review_plan,
+                        interactive_charts=interactive_charts,
+                    ))
+                    if bundle.answer_review is not None:
+                        try:
+                            await self._apply_durable_command(run_context, ReportingCommand(
+                                name="record_answer_review", commandId=f"answer-review:{index.revision}:{bundle.input_sha256}",
+                                payload={"revision": index.revision, "review": bundle.answer_review.model_dump(mode="json", by_alias=True)},
+                            ))
+                        except Exception:
+                            logger.warning("report_answer_review_checkpoint_unavailable")
+                    quality_path = str(PurePosixPath(manifest_relative).with_name(QUALITY_FILENAME))
+                    if any(file.path == quality_path for file in index.files):
+                        raise ReportingError("quality_path_conflict", "质量记录不能覆盖已登记来源。")
+                    quality_bytes = canonical_json_bytes(bundle.model_dump(mode="json", by_alias=True))
+                    await self.workspace_service.awrite_bytes(scope["threadId"], quality_path, quality_bytes, overwrite=True)
+                    stored_quality = await self.workspace_service.read_limited_regular_file(
+                        scope["threadId"], quality_path, max_bytes=len(quality_bytes),
+                    )
+                    if stored_quality != quality_bytes:
+                        raise ReportingError("quality_snapshot_changed", "质量记录写入后发生变化。")
+                    quality_file = TraceFileRefV1(
+                        resourceId=derive_resource_id(quality_path), path=quality_path,
+                        mediaType="application/json", size=len(quality_bytes),
+                        sha256=hashlib.sha256(quality_bytes).hexdigest(),
+                    )
+                    index = RevisionTraceIndexV1.model_validate(index.model_copy(update={
+                        "files": (*index.files, quality_file),
+                    }).model_dump(mode="json", by_alias=True))
+            except Exception as error:
+                logger.warning("report_quality_evaluation_unavailable reason={}", type(error).__name__)
+                try:
+                    self._state(run_context).setdefault("report_quality_issues", []).append({
+                        "code": "quality_evaluation_unavailable", "status": "unknown",
+                        "reason": type(error).__name__, "revision": revision,
+                        "message": "质量检查或记录暂不可用，未标记通过；实际可用产物仍可下载。",
+                    })
+                except Exception:
+                    logger.warning("report_quality_issue_state_unavailable revision={}", revision)
         content = encode_trace_index(index)
         index_path = trace_index_path_for(manifest_relative)
         self.workspace_service.validate_content(content)

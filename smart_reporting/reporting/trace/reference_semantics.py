@@ -84,7 +84,7 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
     """多月合计/均值必须对应完整窗口；累计截止月与背景月份另行处理。"""
     selector = reference['selector']
     periods = reference.get('periods') or ()
-    if (selector not in {'total', 'monthlyAverage'} and not selector.startswith(('periodTotals.', 'periodAverages.'))
+    if (selector not in {'total', 'monthlyAverage', 'monthlyTrend'} and not selector.startswith(('periodTotals.', 'periodAverages.'))
             or len(periods) < 2 or any(not re.fullmatch(r'\d{4}-\d{2}', period) for period in periods)):
         return []
     # 沿用数值选择阶段的日期继承和范围解析，避免两套规则解释同一句话。
@@ -113,6 +113,10 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
 
 
 def _uniform_month_warnings(clause: str, reference: Mapping[str, Any]) -> list[str]:
+    from .monthly_trends import has_monthly_trend_wording
+
+    if has_monthly_trend_wording(clause):
+        return []  # A changing series is not a claim that every month has this amount.
     # “1—2月平均每月”中的日历“月”不能吞掉“平均每月”的前半部分。
     wording = re.sub(r'(?<![各每])月均|月平均', '', clause.replace('平均每月', ''))
     assertions = [match for match in re.finditer(r'各月|每月|逐月', wording)
@@ -135,6 +139,7 @@ def _uniform_month_warnings(clause: str, reference: Mapping[str, Any]) -> list[s
 def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix: str = '') -> list[str]:
     """复核当前引用前的断言及紧邻后置限定，不跨入下一分句或引用。"""
     boundaries = list(re.finditer(r'\{\{value:[^{}\r\n]+\}\}|\[\[claim:[^\]\r\n]+\]\]', prefix))
+    rank_prefix = prefix[boundaries[-1].end():] if boundaries else prefix
     next_metric_clause = prefix[boundaries[-1].end():] if boundaries else ''
     prefix = re.sub(r"\[\[[^\]\n]+\]\]", "", prefix).replace('**', '')
     prefix_clause = _CLAUSE_BREAK.split(prefix)[-1]
@@ -152,7 +157,36 @@ def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix:
     entry = reference['entry']
     selector = reference['selector']
     warnings = _monthly_window_warnings(prefix, clause, reference)
+    from .top_sets import top_set_wording_warnings
+
+    warnings.extend(top_set_wording_warnings(rank_prefix + " " + qualifier, reference))
+    cumulative_warnings, rank_prefix = _cumulative_wording_warnings(rank_prefix + " " + qualifier, reference)
+    warnings.extend(cumulative_warnings)
+    from .ratio_proofs import ratio_wording_warnings
+
+    ratio_warnings, rank_prefix = ratio_wording_warnings(rank_prefix + " " + qualifier, reference)
+    warnings.extend(ratio_warnings)
+    from .group_contributions import contribution_wording_warnings
+
+    contribution_warnings, rank_prefix = contribution_wording_warnings(rank_prefix + " " + qualifier, reference)
+    warnings.extend(contribution_warnings)
+    from .business_semantics import mask_registered_display_data
+
+    rank_prefix = mask_registered_display_data(rank_prefix, reference)
     warnings.extend(_uniform_month_warnings(clause, reference))
+    from .group_ranking import group_rank_wording_warnings
+
+    rank_prefix = re.sub(r"\[\[[^\]\n]+\]\]", "", rank_prefix).replace('**', '')
+    warnings.extend(group_rank_wording_warnings(rank_prefix + ' ' + qualifier, reference))
+    from .monthly_trends import monthly_trend_wording_warnings
+
+    warnings.extend(monthly_trend_wording_warnings(rank_prefix + ' ' + qualifier, reference))
+    from .business_semantics import unsupported_business_warnings
+
+    warnings.extend(unsupported_business_warnings(rank_prefix + ' ' + qualifier))
+    from .comparison_proofs import comparison_wording_warnings
+
+    warnings.extend(comparison_wording_warnings(rank_prefix + ' ' + qualifier, reference))
     # 只有当前引用前最近的统计口径词生效：“累计…（月均…）”不是均值冒充累计。
     wording = _affirmative_wording(prefix_clause)
     # 前后都明确归属同一个值时，后置口径不能抹去前置的矛盾断言。
@@ -194,3 +228,35 @@ def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix:
         elif not registered and name not in identity:
             warnings.append('业务范围需复核：正文限定了科室，当前数值引用未登记对应科室范围。')
     return warnings
+
+
+def _cumulative_wording_warnings(text: str, reference: Mapping[str, Any]) -> tuple[list[str], str]:
+    """Snapshot arithmetic never establishes operating flow or a different reset."""
+    if not reference['selector'].startswith('cumulativeChanges.'):
+        return [], text
+    from .assertions import _label
+    from .business_semantics import _NEGATION
+    from .cumulative_changes import cumulative_change_template
+
+    proof = reference.get('_cumulative_change_proof')
+    if proof is None:
+        return ['累计口径需复核：累计快照、重置策略或基线尚未核验。'], text
+    scope = '、'.join(f'{_label(key)}={_label(value)}'
+                     for key, value in sorted(reference['entry']['scope'].items()))
+    entry = reference['entry']
+    subject = str(entry.get('displayName') or entry.get('field') or '指标')
+    before, after = cumulative_change_template(proof, f'{scope}，{_label(subject)}', '__VALUE__').split('__VALUE__')
+
+    def normalized(value: str) -> str:
+        # Editor normalization and postfix extraction can replace punctuation.
+        return re.sub(r'[\s，,、（）()。；;*]', '', value)
+
+    remaining = normalized(text)
+    expected, caveat = normalized(before), normalized(after)
+    if expected not in remaining or caveat not in remaining:
+        return ['累计口径需复核：期间、零基线、快照差额或追溯调整限制与冻结证据不一致。'], text
+    remaining = remaining.replace(expected, ' ', 1).replace(caveat, ' ', 1)
+    for match in re.finditer(r'当期|当月|本月|业务流量|业务增量|新增|同比|环比|增长率|累计|重置|基线', remaining):
+        if not _NEGATION.search(remaining[:match.start()]):
+            return ['累计口径需复核：快照差额不能替代当期业务流量或其他累计比较政策。'], remaining
+    return [], remaining

@@ -20,8 +20,8 @@ export interface ExportResult {
   reportId?: string
   revision: number
   requestId?: string
-  pdf: { downloadUrl: string; path?: string; size?: number }
-  word: { downloadUrl: string; path?: string; size?: number }
+  pdf?: { downloadUrl: string; path?: string; size?: number }
+  word?: { downloadUrl: string; path?: string; size?: number }
   editor?: { openUrl: string }
   validation?: { ok: boolean; issues: { code?: string; message?: string }[] }
 }
@@ -223,6 +223,8 @@ export interface TraceChartSource {
 }
 
 export interface TraceValidation {
+  sourceIssues?: { resourceId: string; code: string }[]
+  quality?: { status: 'evaluated' | 'failed'; inputSha256?: string; allKeyFactsEvaluated: false; questionCoverage?: { required: number | null; evaluated: number; answered: number; effectiveAnswerRate: number | null; evaluationStatus: string }; issues: { code: string; subjectId?: string | null; reasons?: string[] }[] }
   reviewNotices?: { claimId: string; sectionId: string | null; kind: 'numeric_unverified' | 'source_review'; originalText?: string | null; occurrences: number; bound: boolean }[]
   draftSha256: string
   warnings?: string[]
@@ -231,6 +233,11 @@ export interface TraceValidation {
     claimId: string
     sectionId: string | null
     status: 'valid' | 'stale' | 'unbound'
+    sourceStatus?: 'available' | 'integrity_failed'
+    bindingStatus?: 'bound' | 'invalidated' | 'unbound'
+    supportStatus?: 'supported' | 'unknown' | 'conflicting'
+    checkStatus?: 'completed' | 'failed'
+    sourceIssues?: { resourceId: string; code: string }[]
     /** 当前修订登记值；正文提取值仅在 comparable=true 且字段齐全时提供。 */
     factValue: unknown
     /** 已核验数值引用签发时的精确显示文本；恢复时保留原单位、精度及幅度写法。 */
@@ -253,12 +260,13 @@ export interface TraceValidation {
   summary: { valid: number; stale: number; unbound: number }
   tables?: {
     tableId: string
+    dataCheck?: { status: 'verified' | 'unknown'; scope: 'frozen_cells'; reasons: string[]; checkedCells?: number }
     locations?: TraceTableCellLocation[]
     cells: { valid: number; stale: number; unbound: number }
     copiedCells?: { rowLabel: string; columnKey: string | null; text: string; matches: { rowKey: string; columnKey: string; factKey: string | null }[] }[]
   }[]
   tableSummary?: { valid: number; stale: number; unbound: number; insertedRows: number; copiedCells: number }
-  charts?: { chartId: string; imagePath: string | null; status: 'valid' | 'stale' | 'unbound'; locationSource?: string | null }[]
+  charts?: { chartId: string; imagePath: string | null; status: 'valid' | 'stale' | 'unbound'; semanticCheck?: { status: 'verified' | 'unknown' | 'conflicting'; scope: 'registered_fact_projection'; reasons: string[] }; locationSource?: string | null; dataCheck?: { status: 'verified' | 'unknown'; scope: 'registered_arrays'; reason: string } }[]
 }
 
 export interface TraceTableCellLocation {

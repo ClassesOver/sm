@@ -639,43 +639,36 @@ class WorkspaceReportService:
                 run_context,
             )
             render = result.pop("render", None)
-            if (
-                not isinstance(render, dict)
-                or render.get("pdf", {}).get("path") != staged_pdf_relative
-                or render.get("word", {}).get("path") != staged_word_relative
-            ):
+            if not isinstance(render, dict):
                 raise WorkspaceError("报表运行时返回无效产物。")
-            # 在昂贵的 PDF/Word 验收之前先核对暂存身份：不一致时直接失败，不移动、不发布；
-            # 移动后的复核覆盖的是另一段时间窗口，两者都需要。
-            staged_pdf = await self.service.ahash_file(_thread(run_context), staged_pdf_relative)
-            staged_word = await self.service.ahash_file(_thread(run_context), staged_word_relative)
-            if any(
-                staged.get("sha256") != render[key].get("sha256")
-                or staged.get("size") != render[key].get("size")
-                for key, staged in (
-                    ("pdf", staged_pdf),
-                    ("word", staged_word),
-                )
-            ):
-                raise WorkspaceError("双格式报告暂存身份校验失败。")
-
+            outputs = {key: (staged, final) for key, staged, final in (
+                ("pdf", staged_pdf_relative, relative_output),
+                ("word", staged_word_relative, relative_word),
+            ) if key in render}
+            if not outputs or any(not isinstance(render[key], dict) or render[key].get("path") != staged for key, (staged, _) in outputs.items()):
+                raise WorkspaceError("报表运行时返回无效产物。")
+            for key, (staged_path, _) in outputs.items():
+                staged = await self.service.ahash_file(thread_id, staged_path)
+                if staged.get("sha256") != render[key].get("sha256") or staged.get("size") != render[key].get("size"):
+                    raise WorkspaceError("双格式报告暂存身份校验失败。")
             staged_render = copy.deepcopy(render)
-            staged_render["pdf"]["path"] = staged_pdf_relative
-            staged_render["word"]["path"] = staged_word_relative
             staged_job = copy.deepcopy(job)
             staged_job["render"] = staged_render
             try:
-                validation = await self._run_report_runtime(
-                    "validate_pdf",
-                    {
-                        "job": staged_job,
-                        "pdf_path": staged_pdf_relative,
-                        "word_path": staged_word_relative,
-                        "temporary_directory": validation_directory,
-                        "artifact_manifest": artifact_manifest,
-                    },
-                    run_context,
-                )
+                if len(outputs) != 2:
+                    validation = {"ok": False, "issues": render.get("renderIssues") or [{"code": "report_format_unavailable", "message": "仅部分格式成功生成，未完成联合验收。"}]}
+                else:
+                    validation = await self._run_report_runtime(
+                        "validate_pdf",
+                        {
+                            "job": staged_job,
+                            "pdf_path": staged_pdf_relative,
+                            "word_path": staged_word_relative,
+                            "temporary_directory": validation_directory,
+                            "artifact_manifest": artifact_manifest,
+                        },
+                        run_context,
+                    )
             except Exception as error:
                 # 已核验的 PDF/Word 身份足以保留产物；验收器不可用不能触发
                 # 外层清理删除。取消仍由 BaseException 路径处理。
@@ -704,25 +697,16 @@ class WorkspaceReportService:
                 )
             await self.service.amove_files(thread_id, staging_relative, final_directory_relative)
             published = True
-            current_pdf = await self.service.ahash_file(_thread(run_context), relative_output)
-            current_word = await self.service.ahash_file(_thread(run_context), relative_word)
-            if any(
-                current.get("sha256") != render[key].get("sha256")
-                or current.get("size") != render[key].get("size")
-                for key, current in (
-                    ("pdf", current_pdf),
-                    ("word", current_word),
-                )
-            ):
-                raise WorkspaceError("双格式报告发布身份校验失败。")
-            validation["pdfPath"] = relative_output
-            validation["wordPath"] = relative_word
-            render["pdf"]["path"] = relative_output
-            render["word"]["path"] = relative_word
+            for key, (_, final_path) in outputs.items():
+                current = await self.service.ahash_file(thread_id, final_path)
+                if current.get("sha256") != render[key].get("sha256") or current.get("size") != render[key].get("size"):
+                    raise WorkspaceError("双格式报告发布身份校验失败。")
+                validation[f"{key}Path"] = final_path
+                render[key]["path"] = final_path
             # 完整 render 只在同一次受控验收中使用；durable job 已分别持有文档上下文、
             # 引用和页面布局。这里只保存后续状态查询与 revision 清理所需的产物身份，
             # 避免重复结构挤占 48 KiB 的会话状态边界。
-            job["render"] = {key: render[key] for key in ("markdown", "pdf", "word", "images")}
+            job["render"] = {key: render[key] for key in ("markdown", "pdf", "word", "images", "projection") if key in render}
             # 逐页验收结果由本方法返回并写入 Workflow 权威状态；job 只需记录是否通过，
             # 否则最多 200 页的 pages 数组会让 durable job 再次线性越过 48 KiB。
             job["validation"] = {"ok": validation.get("ok") is True}
@@ -730,8 +714,7 @@ class WorkspaceReportService:
             result.update(
                 {
                     "status": "validated" if validation.get("ok") is True else "validation_failed",
-                    "pdfPath": relative_output,
-                    "wordPath": relative_word,
+                    **{f"{key}Path": final for key, (_, final) in outputs.items()},
                     "validation": validation,
                 }
             )

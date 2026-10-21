@@ -27,16 +27,9 @@ from .markdown import (
     _document_context,
     _join_cjk_soft_breaks,
     _markdown_title,
-    _normalize_cjk_strong_markers,
     _semantic_documents,
     _strip_strong_boundaries,
-    align_numeric_table_columns,
-    collapse_repeated_values,
-    compact_single_column_tables,
     format_heading_label,
-    insert_executive_summary,
-    readable_large_amounts,
-    relocate_server_tables,
 )
 from .pdf import (
     MAX_PDF_PAGES,
@@ -47,7 +40,6 @@ from .pdf import (
     _page_number_context,
     _pdf_heading_pages,
     _pdf_link_count,
-    _pdf_markdown,
     _pdf_section_pages,
     _toc_page_numbers,
 )
@@ -253,9 +245,7 @@ class ReportRuntime:
         word_output_path: str | None = None,
     ) -> dict[str, Any]:
         try:
-            import pypdf
             from markdown_it import MarkdownIt
-            from weasyprint import HTML, URLFetcher
         except ImportError as error:
             raise ReportFailure("PDF 运行时依赖不可用") from error
 
@@ -266,7 +256,8 @@ class ReportRuntime:
             if source.stat().st_size > MAX_MARKDOWN_BYTES:
                 raise ReportFailure("Markdown 文件超过 1 MiB")
             try:
-                markdown = source.read_text(encoding="utf-8")
+                source_bytes = source.read_bytes()
+                markdown = source_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             except UnicodeDecodeError as error:
                 raise ReportFailure("Markdown 文件必须使用 UTF-8 编码") from error
 
@@ -274,19 +265,15 @@ class ReportRuntime:
             # 导出的 PDF/Word 默认不带来源编号与附录；只有导出设置显式开启时才展示。
             include_sources = isinstance(export_settings, dict) and export_settings.get("sources") is True
             context = _document_context(state.get("_documentContext"))
-            pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
-                align_numeric_table_columns(
-                    readable_large_amounts(collapse_repeated_values(
-                        insert_executive_summary(
-                            compact_single_column_tables(relocate_server_tables(markdown)), context["sections"]
-                        )
-                    ))
-                ),
-                state.get("_citationPresentations"),
-                include_sources=include_sources,
-                trace_sources=state.get("_traceSourcePresentations"),
+            from .projection import build_render_projection
+
+            projection = build_render_projection(
+                source_bytes, context["sections"], citation_presentations=state.get("_citationPresentations"),
+                include_sources=include_sources, trace_sources=state.get("_traceSourcePresentations"),
             )
-            pdf_markdown = _normalize_cjk_strong_markers(pdf_markdown)
+            pdf_markdown, citation_presentations, trace_source_render = (
+                projection.markdown, projection.citation_presentations, projection.trace_source_render,
+            )
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(pdf_markdown)
             include_cover = not isinstance(export_settings, dict) or export_settings.get(
@@ -314,6 +301,8 @@ class ReportRuntime:
             _bind_heading_anchors(tokens, context["headingNumbers"])
             allowed_images = self._images(source, tokens, state)
             source_artifact = self._artifact(source)
+            if source_artifact["sha256"] != projection.receipt["sourceSha256"]:
+                raise ReportFailure("Markdown 在投影期间发生变化")
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = _strip_strong_boundaries(
                 parser.renderer.render(
@@ -343,23 +332,6 @@ class ReportRuntime:
                 raise ReportFailure("PDF 和 Word 必须发布到同一 revision 目录")
             temporary = _temporary_pdf_path(self.workspace, temporary_path)
             temporary_docx = _temporary_docx_path(temporary)
-            file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
-            # default_url_fetcher 已弃用（WeasyPrint 后续版本移除），data URI 同样交给只放行
-            # 该协议的 URLFetcher 解码。
-            data_fetcher = URLFetcher(allowed_protocols={"data"}, fail_on_errors=True)
-
-            def fetch_resource(url: str) -> dict[str, Any]:
-                parsed = urlsplit(url)
-                if parsed.scheme == "data":
-                    # data URI 由 _inline_images 从已校验工作区图片生成，自包含内容。
-                    return data_fetcher(url)
-                if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
-                    raise ReportFailure("PDF 渲染禁止访问外部资源")
-                path = Path(unquote(parsed.path)).resolve()
-                if path not in allowed_images:
-                    raise ReportFailure("PDF 渲染引用了未校验资源")
-                return file_fetcher(url)
-
             # html_body 已将工作区图片内联为 data URI，PDF 与 Word 都必须用它：
             # 草稿目录与图文目录分离时，相对 src 在两路渲染器里都解析不到。
             pdf_document, word_document = _semantic_documents(
@@ -371,91 +343,138 @@ class ReportRuntime:
                 citation_presentations=(citation_presentations if include_sources else []),
                 trace_sources=(trace_source_render if include_sources else None),
             )
-            preflight_document = HTML(
-                string=pdf_document,
-                base_url=str(source.parent),
-                url_fetcher=fetch_resource,
-            ).render()
-            toc_page_numbers = _toc_page_numbers(
-                preflight_document.pages, context["headingNumbers"]
-            )
-            pdf_document, _ = _semantic_documents(
-                html_body,
-                context=context,
-                layout=layout,
-                toc_page_numbers=toc_page_numbers,
-                include_cover=include_cover,
-                include_toc=include_toc,
-                citation_presentations=(citation_presentations if include_sources else []),
-                trace_sources=(trace_source_render if include_sources else None),
-            )
-            final_document = HTML(
-                string=pdf_document,
-                base_url=str(source.parent),
-                url_fetcher=fetch_resource,
-            ).render()
-            if (
-                _toc_page_numbers(final_document.pages, context["headingNumbers"])
-                != toc_page_numbers
+            render_issues: list[dict[str, str]] = []
+
+            def render_pdf() -> tuple[int, int]:
+                nonlocal pdf_document
+
+                import pypdf
+                from weasyprint import HTML, URLFetcher
+
+                file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
+                # default_url_fetcher 已弃用（WeasyPrint 后续版本移除），data URI 同样交给只放行
+                # 该协议的 URLFetcher 解码。
+                data_fetcher = URLFetcher(allowed_protocols={"data"}, fail_on_errors=True)
+
+                def fetch_resource(url: str) -> dict[str, Any]:
+                    parsed = urlsplit(url)
+                    if parsed.scheme == "data":
+                        # data URI 由 _inline_images 从已校验工作区图片生成，自包含内容。
+                        return data_fetcher(url)
+                    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+                        raise ReportFailure("PDF 渲染禁止访问外部资源")
+                    path = Path(unquote(parsed.path)).resolve()
+                    if path not in allowed_images:
+                        raise ReportFailure("PDF 渲染引用了未校验资源")
+                    return file_fetcher(url)
+
+                preflight_document = HTML(
+                    string=pdf_document,
+                    base_url=str(source.parent),
+                    url_fetcher=fetch_resource,
+                ).render()
+                toc_page_numbers = _toc_page_numbers(
+                    preflight_document.pages, context["headingNumbers"]
+                )
+                pdf_document, _ = _semantic_documents(
+                    html_body,
+                    context=context,
+                    layout=layout,
+                    toc_page_numbers=toc_page_numbers,
+                    include_cover=include_cover,
+                    include_toc=include_toc,
+                    citation_presentations=(citation_presentations if include_sources else []),
+                    trace_sources=(trace_source_render if include_sources else None),
+                )
+                final_document = HTML(
+                    string=pdf_document,
+                    base_url=str(source.parent),
+                    url_fetcher=fetch_resource,
+                ).render()
+                if (
+                    _toc_page_numbers(final_document.pages, context["headingNumbers"])
+                    != toc_page_numbers
+                ):
+                    # 目录页码使用固定宽度，正常不会改变分页；若字体或渲染器升级导致
+                    # 锚点漂移，则不能发布目录与正文不一致的产物。
+                    raise ReportFailure("PDF 目录页码在最终渲染时发生漂移")
+                final_document.write_pdf(str(temporary), pdf_variant="pdf/ua-1")
+                if temporary.stat().st_size > MAX_PDF_BYTES:
+                    raise ReportFailure("PDF 文件不能超过 200 MiB")
+                base_page_count = len(final_document.pages)
+                if not base_page_count:
+                    raise ReportFailure("PDF 校验失败")
+                if base_page_count > MAX_PDF_PAGES:
+                    raise ReportFailure("PDF 页数不能超过 200 页")
+                _apply_pdf_page_decorations(
+                    temporary,
+                    context=context,
+                    layout=layout,
+                    include_cover=include_cover,
+                )
+                pdf_size = temporary.stat().st_size
+                if pdf_size > MAX_PDF_BYTES:
+                    raise ReportFailure("PDF 文件不能超过 200 MiB")
+                reader = pypdf.PdfReader(str(temporary))
+                page_count = len(reader.pages)
+                if not page_count:
+                    raise ReportFailure("PDF 校验失败")
+                if page_count > MAX_PDF_PAGES:
+                    raise ReportFailure("PDF 页数不能超过 200 页")
+                return pdf_size, page_count
+
+            def render_word() -> tuple[int, dict[str, Any]]:
+                word_structure = _render_docx(
+                    word_document,
+                    source_parent=source.parent,
+                    output=temporary_docx,
+                    context=context,
+                    layout=layout,
+                    include_cover=include_cover,
+                    include_toc=include_toc,
+                )
+                docx_size = temporary_docx.stat().st_size
+                if docx_size > MAX_DOCX_BYTES:
+                    raise ReportFailure("Word 文件不能超过 200 MiB")
+                word_structure = _validate_docx_structure(
+                    temporary_docx,
+                    expected_sections=context["sections"],
+                    expected_headings=context["headingNumbers"],
+                    expected_image_count=len(allowed_images),
+                )
+                return docx_size, word_structure
+
+            completed: dict[str, tuple[Path, Path]] = {}
+            pdf_size, page_count, docx_size = 0, 0, 0
+            word_structure: dict[str, Any] = {}
+            for label, renderer, candidate, destination in (
+                ("pdf", render_pdf, temporary, output),
+                ("word", render_word, temporary_docx, word_output),
             ):
-                # 目录页码使用固定宽度，正常不会改变分页；若字体或渲染器升级导致
-                # 锚点漂移，则不能发布目录与正文不一致的产物。
-                raise ReportFailure("PDF 目录页码在最终渲染时发生漂移")
-            final_document.write_pdf(str(temporary), pdf_variant="pdf/ua-1")
-            if temporary.stat().st_size > MAX_PDF_BYTES:
-                raise ReportFailure("PDF 文件不能超过 200 MiB")
-            base_page_count = len(final_document.pages)
-            if not base_page_count:
-                raise ReportFailure("PDF 校验失败")
-            if base_page_count > MAX_PDF_PAGES:
-                raise ReportFailure("PDF 页数不能超过 200 页")
-            _apply_pdf_page_decorations(
-                temporary,
-                context=context,
-                layout=layout,
-                include_cover=include_cover,
-            )
-            word_structure = _render_docx(
-                word_document,
-                source_parent=source.parent,
-                output=temporary_docx,
-                context=context,
-                layout=layout,
-                include_cover=include_cover,
-                include_toc=include_toc,
-            )
-            pdf_size = temporary.stat().st_size
-            if pdf_size > MAX_PDF_BYTES:
-                raise ReportFailure("PDF 文件不能超过 200 MiB")
-            reader = pypdf.PdfReader(str(temporary))
-            page_count = len(reader.pages)
-            if not page_count:
-                raise ReportFailure("PDF 校验失败")
-            if page_count > MAX_PDF_PAGES:
-                raise ReportFailure("PDF 页数不能超过 200 页")
-            docx_size = temporary_docx.stat().st_size
-            if docx_size > MAX_DOCX_BYTES:
-                raise ReportFailure("Word 文件不能超过 200 MiB")
-            word_structure = _validate_docx_structure(
-                temporary_docx,
-                expected_sections=context["sections"],
-                expected_headings=context["headingNumbers"],
-                expected_image_count=len(allowed_images),
-            )
+                try:
+                    receipt: Any = renderer()
+                    if label == "pdf":
+                        pdf_size, page_count = receipt
+                    else:
+                        docx_size, word_structure = receipt
+                    completed[label] = (candidate, destination)
+                except Exception as error:
+                    from loguru import logger
+
+                    logger.warning("report_format_render_failed format={} error_type={}", label, type(error).__name__)
+                    candidate.unlink(missing_ok=True)
+                    render_issues.append({"code": f"report_{label}_render_failed", "message": f"{'PDF' if label == 'pdf' else 'Word'} 生成或结构检查失败，其他成功格式仍可下载。"})
+            if not completed:
+                raise ReportFailure("PDF 和 Word 均未成功生成")
             if self._artifact(source)["sha256"] != source_artifact["sha256"] or any(
                 self._artifact(path)["sha256"] != artifact["sha256"]
                 for path, artifact in zip(sorted(allowed_images), image_artifacts, strict=True)
             ):
                 raise ReportFailure("Markdown 或图片在渲染期间发生变化，请重新生成报表")
-            pdf_artifact = {
-                "path": str(output.relative_to(self.workspace)),
-                "size": pdf_size,
-                "sha256": _sha256(temporary),
-            }
-            word_artifact = {
-                "path": str(word_output.relative_to(self.workspace)),
-                "size": docx_size,
-                "sha256": _sha256(temporary_docx),
+            artifacts = {
+                label: {"path": str(destination.relative_to(self.workspace)),
+                        "size": candidate.stat().st_size, "sha256": _sha256(candidate)}
+                for label, (candidate, destination) in completed.items()
             }
             created_output_directory = False
             published: list[Path] = []
@@ -463,16 +482,20 @@ class ReportRuntime:
                 if not output.parent.exists():
                     output.parent.mkdir(mode=0o700)
                     created_output_directory = True
-                # 两种格式先在进程私有临时目录完成全部解析、大小和结构校验，再写入
-                # workspace staging。/tmp 可能是独立 tmpfs，不能依赖跨文件系统 rename；
-                # 外层只发布完整 staging 目录，任一复制失败都必须
-                # 删除本轮已写文件，不能留下可被后续验收误认的半成品。
-                for temporary_source, destination in (
-                    (temporary, output),
-                    (temporary_docx, word_output),
-                ):
-                    shutil.copyfile(temporary_source, destination)
-                    published.append(destination)
+                for label, (candidate, destination) in completed.items():
+                    try:
+                        shutil.copyfile(candidate, destination)
+                    except Exception as error:
+                        from loguru import logger
+
+                        logger.warning("report_format_copy_failed format={} error_type={}", label, type(error).__name__)
+                        destination.unlink(missing_ok=True)
+                        artifacts.pop(label, None)
+                        render_issues.append({"code": f"report_{label}_copy_failed", "message": f"{'PDF' if label == 'pdf' else 'Word'} 写入失败，其他成功格式仍可下载。"})
+                    else:
+                        published.append(destination)
+                if not artifacts:
+                    raise ReportFailure("PDF 和 Word 均未成功写入")
             except BaseException:
                 for path in published:
                     path.unlink(missing_ok=True)
@@ -481,8 +504,9 @@ class ReportRuntime:
                 raise
             render = {
                 "markdown": source_artifact,
-                "pdf": pdf_artifact,
-                "word": word_artifact,
+                **artifacts,
+                "renderIssues": render_issues,
+                "projection": projection.receipt,
                 "images": image_artifacts,
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
@@ -505,15 +529,14 @@ class ReportRuntime:
                 and bool(trace_source_render["entries"]),
             }
             result = {
-                "status": "rendered",
+                "status": "rendered" if not render_issues else "partial_rendered",
+                "renderIssues": render_issues,
                 "jobId": state["jobId"],
                 "markdownPath": str(source.relative_to(self.workspace)),
-                "pdfPath": str(output.relative_to(self.workspace)),
-                "wordPath": str(word_output.relative_to(self.workspace)),
+                **({"pdfPath": artifacts["pdf"]["path"], "size": pdf_size} if "pdf" in artifacts else {}),
+                **({"wordPath": artifacts["word"]["path"], "wordSize": docx_size} if "word" in artifacts else {}),
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
-                "size": pdf_size,
-                "wordSize": docx_size,
                 "render": render,
             }
             return result
@@ -842,6 +865,23 @@ class ReportRuntime:
                 or word.stat().st_size != word_current["size"]
             ):
                 raise ReportFailure("Word 产物在验收期间发生变化，请重新验收")
+            from .projection import verify_render_projection
+
+            try:
+                source_path = _input_path(self.workspace, render["markdown"]["path"], ".md")
+                projection_check = verify_render_projection(
+                    render.get("projection"), source_path.read_bytes(), context["sections"],
+                    citation_presentations=state.get("_citationPresentations"),
+                    include_sources=isinstance(export_settings, dict) and export_settings.get("sources") is True,
+                    trace_sources=state.get("_traceSourcePresentations"),
+                )
+            except Exception:
+                projection_check = {"status": "unknown", "reason": "projection_source_unavailable"}
+            validation["projectionCheck"] = projection_check
+            if projection_check["status"] != "verified":
+                validation["ok"] = False
+                validation["status"] = "validation_failed"
+                validation["issues"].append({"code": "render_projection_unknown", "message": "最终渲染投影身份未获核验，产物保留供复核。"})
             return validation
         finally:
             if temp_path is not None:

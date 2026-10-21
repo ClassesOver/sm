@@ -27,11 +27,12 @@ export function updateBodySourceLinks(view: EditorView, root: HTMLElement, sourc
     if (subject.subjectKind !== 'table_cell') continue
     const table = result?.tables?.find(item => item.tableId === subject.locator.tableId)
     const location = table?.locations?.find(item => item.rowKey === subject.locator.rowKey && item.columnKey === subject.locator.columnKey)
-    if (location && subject.locator.tableId) add(findEvidenceTableCell(root, subject.locator.tableId, location), 'citation', subject.subjectId, location.status)
+    if (location && subject.locator.tableId) add(findEvidenceTableCell(root, subject.locator.tableId, location), 'citation', subject.subjectId, table?.dataCheck?.status === 'unknown' ? 'stale' : location.status)
   }
   for (const chart of result?.charts ?? []) {
     if (chart.status === 'unbound' || !chart.locationSource) continue
-    add(findEvidenceChartImage(root, chart.locationSource, document.baseURI), 'chart', chart.chartId, chart.status)
+    add(findEvidenceChartImage(root, chart.locationSource, document.baseURI), 'chart', chart.chartId,
+      chart.status === 'valid' && chart.dataCheck?.status === 'verified' && chart.semanticCheck?.status === 'verified' ? 'valid' : 'stale')
   }
   const decorations: Decoration[] = []
   for (const [target, references] of targets) {
@@ -53,7 +54,7 @@ export function updateBodySourceLinks(view: EditorView, root: HTMLElement, sourc
       const stale = references.some(ref => ref.state === 'stale')
       button.dataset.markerState = stale ? 'stale' : 'valid'
       const title = isChart ? '查看图表来源' : `查看数据来源（${references.length}）`
-      button.title = button.ariaLabel = stale ? `${title} · 内容已变化，登记来源待复核` : title
+      button.title = button.ariaLabel = stale ? `${title} · 来源或数据尚待复核` : title
       if (references.length > 1) button.setAttribute('aria-haspopup', 'dialog')
       return button
     }, { side: -1 }))

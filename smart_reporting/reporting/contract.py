@@ -18,6 +18,7 @@ from pydantic import (
 )
 from sqlglot import exp, parse
 
+from .cumulative_policy import CumulativeSnapshotPolicy as CumulativeSnapshotPolicy
 from .hospital_operation.domains import DOMAIN_CODES
 from .models import ReportingError
 

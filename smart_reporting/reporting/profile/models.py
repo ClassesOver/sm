@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..contract import MeasureSemantic
+from ..contract import CumulativeSnapshotPolicy, MeasureSemantic
 
 PROFILE_DIRECTORY_NAME = "reporting_profiles"
 PROFILE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
@@ -66,6 +66,9 @@ class MetricPatch(ProfileModel):
     kind: str | None = Field(default=None, min_length=1, max_length=64)
     description: str | None = Field(default=None, max_length=2_000)
     aggregation: Literal["sum", "count", "count_distinct", "average", "ratio"] | None = None
+    cumulative_policy: CumulativeSnapshotPolicy | None = Field(
+        default=None, alias="cumulativePolicy", exclude_if=lambda value: value is None,
+    )
     field_ref: str | None = Field(default=None, alias="fieldRef", pattern=PROFILE_FIELD_REF_PATTERN)
     numerator_metric: str | None = Field(
         default=None, alias="numeratorMetric", pattern=PROFILE_ID_PATTERN
@@ -196,6 +199,9 @@ class EffectiveMetric(ProfileModel):
     kind: str = Field(min_length=1, max_length=64)
     description: str = Field(default="", max_length=2_000)
     aggregation: Literal["sum", "count", "count_distinct", "average", "ratio"]
+    cumulative_policy: CumulativeSnapshotPolicy | None = Field(
+        default=None, alias="cumulativePolicy", exclude_if=lambda value: value is None,
+    )
     field_ref: str | None = Field(default=None, alias="fieldRef", pattern=PROFILE_FIELD_REF_PATTERN)
     numerator_metric: str | None = Field(
         default=None, alias="numeratorMetric", pattern=PROFILE_ID_PATTERN
@@ -209,6 +215,8 @@ class EffectiveMetric(ProfileModel):
 
     @model_validator(mode="after")
     def validate_definition(self) -> EffectiveMetric:
+        if self.cumulative_policy is not None and self.aggregation != "sum":
+            raise ValueError("累计快照策略仅适用于 sum 基础指标")
         if self.aggregation == "ratio":
             if self.field_ref or not self.numerator_metric or not self.denominator_metric:
                 raise ValueError("ratio 指标必须且只能声明分子和分母指标")

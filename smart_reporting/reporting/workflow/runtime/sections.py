@@ -439,6 +439,56 @@ def _section_number_context(
     return catalog, guide
 
 
+def _controlled_assertions(contents: Sequence[str], payload: dict[str, Any], policy: Any) -> dict:
+    """Only an explicitly enabled, run-pinned policy changes generation prompts."""
+    if not isinstance(policy, Mapping) or policy.get("mode") != "enabled":
+        return {}
+    from ...trace.assertions import assertion_catalog
+
+    if policy.get("version", "1") != "1" or policy.get("ruleVersion", "assertions/1") != "assertions/1":
+        payload["assertionUnavailable"] = "historical_rule_unavailable"
+        return {}
+
+    trusted_hashes = policy.get("trustedFactSha256")
+    if not isinstance(trusted_hashes, (list, tuple)) or not trusted_hashes:
+        payload["assertionUnavailable"] = "trusted_facts_unavailable"
+        return {}
+    trusted_contents = tuple(content for content in contents
+                             if hashlib.sha256(content.encode("utf-8")).hexdigest() in trusted_hashes)
+    if not trusted_contents:
+        payload["assertionUnavailable"] = "trusted_facts_unavailable"
+        return {}
+    from ...trace.top_sets import requested_top_set_limits
+
+    selection_context = _json_text({key: payload.get(key) for key in (
+        "reportGoal", "sectionGoal", "managementQuestions", "block", "claims", "sectionPlan",
+    )})
+    top_set_limits = requested_top_set_limits(selection_context)
+    if not top_set_limits:
+        payload["topSetUnavailable"] = "requested_cutoff_outside_supported_policy"
+    records = assertion_catalog(
+        trusted_contents, profile_hash=policy["profileHash"],
+        authorization_scope_hash=policy["authorizationScopeHash"],
+        allowed_tokens=tuple(payload.get("frozenNumbers", ())),
+        include_month_changes=True, include_group_shares=True, include_month_trends=True, include_top_sets=True, include_group_contributions=True, include_registered_ratios=True, include_cumulative_changes=True,
+        top_set_limits=top_set_limits,
+    )
+    payload["assertionCatalog"] = [
+        {"id": item.assertion_id, "placeholder": "{{assert:" + item.assertion_id + "}}",
+         "status": item.status, "operation": item.request.operation, "unit": item.unit,
+         "comparison": item.request.comparison, "text": item.factual_fragment()}
+        for item in records.values()
+    ]
+    payload["assertionWritingRules"] = (
+        "单值、月均、已登记同比/环比、分组占比及分组排名优先使用受支持的 assertion placeholder，服务端会展开完整主体、期间、范围和值。"
+        "不得改写其限定或扩大到全院/全年；占比分母沿用片段中的总体范围，不得更换总体或解释为因果贡献；证据不足的问题明确说明缺口。"
+        "数字重算通过不证明经营因果，假设与建议必须明确标注。"
+        "排名保留升降序及同值同名次的竞赛规则；Top-K 展示不证明唯一名次或全部分组均已列出。"
+        "连续趋势使用服务端月度趋势断言，保留全部登记窗口；首尾增加不等于逐月增长，不由登记月值推断未来或因果。"
+    )
+    return records
+
+
 def _section_block_evidence_token_budget(
     agent: Any,
     base_payload: Mapping[str, Any],
@@ -1643,6 +1693,7 @@ async def _generate_section_in_blocks(
             ],
         },
     }
+    plan_payload.pop("assertionPolicy", None)
     analysis_rework_allowed = instruction_payload.get("analysisReworkAllowed") is not False
     plan_schema = SectionPlanOutput if analysis_rework_allowed else RenderSectionPlan
     plan_payload["analysisReworkAllowed"] = analysis_rework_allowed
@@ -1854,6 +1905,9 @@ async def _generate_section_in_blocks(
             claims=block_claims,
             allowed_fact_ids=scoped_fact_ids,
         )
+        block_assertions = _controlled_assertions(number_contents, block_payload, instruction_payload.get("assertionPolicy"))
+        if "questionSpecs" in instruction_payload:
+            block_payload["questionSpecs"] = instruction_payload["questionSpecs"]
         # claims、冻结摘要和引用对象始终完整保留，切片只移除与当前 block 无关的文件正文。
         block_payload["evidence"] = _project_section_evidence_files(
             agent,
@@ -1903,8 +1957,11 @@ async def _generate_section_in_blocks(
                 loguru_logger.warning("report_content_review_correction_unavailable section={} code={}", work_item.section_code, getattr(error, "code", type(error).__name__))
                 # 不让无效纠错响应覆盖已验证的首轮正文。
                 content = first_block_content
+            from ...trace.semantic_bindings import expand_assertion_placeholders
+
             aligned_markdown, _ = align_number_selections(
-                content.markdown, number_contents, block_payload["fieldDefinitions"],
+                expand_assertion_placeholders(content.markdown, block_assertions),
+                number_contents, block_payload["fieldDefinitions"],
             )
             content = content.model_copy(update={"markdown": aligned_markdown})
             content_review = review_content_result(content.markdown, number_contents,
@@ -1950,6 +2007,7 @@ async def _generate_section_in_blocks(
                 key=f"{work_item.section_code}:{block_plan.block_id}",
                 field_definitions=block_payload["fieldDefinitions"],
                 table_sources=table_sources,
+                assertions=block_assertions,
             )
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
@@ -2063,6 +2121,9 @@ async def _generate_whole_section_content(
         claims=plan.claims,
         allowed_fact_ids=allowed_fact_ids,
     )
+    section_assertions = _controlled_assertions(number_contents, payload, instruction_payload.get("assertionPolicy"))
+    if "questionSpecs" in instruction_payload:
+        payload["questionSpecs"] = instruction_payload["questionSpecs"]
     # 摘要和计算审计不再与已核验的原子事实重复发送；原 WorkItem 留供提交验收。
     if evidence.files:
         payload["facts"] = [
@@ -2168,9 +2229,12 @@ async def _generate_whole_section_content(
         # 模型响应可乱序；复核与最终装配必须使用同一规划顺序。
         if review_attempt:
             content_by_id = {**first_by_id, **content_by_id}
+        from ...trace.semantic_bindings import expand_assertion_placeholders
+
         content = content.model_copy(update={"blocks": tuple(
             content_by_id[block.block_id].model_copy(update={"markdown": align_number_selections(
-                content_by_id[block.block_id].markdown, number_contents, payload["fieldDefinitions"],
+                expand_assertion_placeholders(content_by_id[block.block_id].markdown, section_assertions),
+                number_contents, payload["fieldDefinitions"],
             )[0]}) for block in plan.blocks
         )})
         # 复核、回退与最终签发共用已经确定性对齐的候选，避免恢复已失效的原始告警。
@@ -2243,6 +2307,7 @@ async def _generate_whole_section_content(
             key=f"{work_item.section_code}:{block_plan.block_id}",
             field_definitions=payload["fieldDefinitions"],
             table_sources=table_sources,
+            assertions=section_assertions,
         )
         block = ReportDraftBlock(
             blockId=block_plan.block_id,
@@ -2829,6 +2894,40 @@ class RuntimeSectionsMixin:
                 "reworkRequestPath": rework_request_path,
                 "analysisReworkAllowed": analysis_rework_allowed,
             }
+            assertion_policy = self._state(run_context).get("report_request_context", {}).get("assertionPolicy")
+            if isinstance(assertion_policy, dict):
+                from ...trace.contracts_v1 import canonical_sha256
+
+                instruction_payload["assertionPolicy"] = {
+                    **assertion_policy,
+                    "profileHash": self._profile(run_context).effective_profile_hash,
+                    "authorizationScopeHash": canonical_sha256({
+                        key: scope[key] for key in ("userId", "threadId")
+                    }),
+                }
+                if assertion_policy.get("mode") == "enabled":
+                    instruction_payload["assertionPolicy"]["trustedFactSha256"] = [
+                        identity.sha256 for identity in checkpoint.deterministic_fact_files.values()
+                    ]
+                    try:
+                        from ..questions import QuestionSet
+
+                        durable_questions = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+                        raw_questions = durable_questions.payload.get("questionSpecs") if durable_questions is not None else None
+                        question_specs = QuestionSet.model_validate(raw_questions) if raw_questions is not None else None
+                        if question_specs is not None:
+                            instruction_payload["questionSpecs"] = {
+                                "version": question_specs.version,
+                                "questions": [item.model_dump(mode="json", by_alias=True)
+                                              for item in question_specs.questions
+                                              if item.kind == "request" or set(item.analysis_ids) & set(work_item.analysis_ids)],
+                                "requiredAction": "保留原始需求及补充要求；分析分配不等于问题已回答。明确说明未回答与缺证据的部分。",
+                            }
+                        else:
+                            instruction_payload["questionEvaluationStatus"] = "specification_unavailable"
+                    except Exception as error:
+                        loguru_logger.warning("report_frozen_questions_unavailable reason={}", type(error).__name__)
+                        instruction_payload["questionEvaluationStatus"] = "specification_unavailable"
             if degraded_rework is not None:
                 instruction_payload["degradedDraftContext"] = dict(degraded_rework)
             retry_context = _section_retry_context(last_error)
@@ -3638,7 +3737,7 @@ class RuntimeSectionsMixin:
             handles=trace_handles,
             fact_files=trace_fact_files,
             server_table_traces=server_table_traces,
-            chart_trace_files=(*chart_files, *chart_trace_files),
+            chart_trace_files=(*chart_files, *interactive_files, *chart_trace_files),
             chart_traces=tuple(chart_traces),
             computation_files=tuple(computation_files),
             computations=tuple(computation_records),

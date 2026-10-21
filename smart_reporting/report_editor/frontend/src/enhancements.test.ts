@@ -316,6 +316,26 @@ describe('report editor enhancements', () => {
     expect(panel.dialog.hidden).toBe(true)
   })
 
+  it.each(['pdf', 'word'] as const)('keeps only the successful %s download and clears stale links', (format) => {
+    const panel = createExportPanel()
+    panel.show({ revision: 1, pdf: { downloadUrl: '/old-pdf' }, word: { downloadUrl: '/old-word' } })
+    panel.show({ revision: 2, [format]: { downloadUrl: `/${format}` },
+      validation: { ok: false, issues: [{ code: 'render_format_failed', message: '另一格式转换失败' }] } })
+    const missing = format === 'pdf' ? 'word' : 'pdf'
+    const link = panel.dialog.querySelector<HTMLAnchorElement>(`[data-format="${format}"]`)!
+    expect(link.hidden).toBe(false)
+    expect(link.getAttribute('href')).toBe(`/${format}`)
+    const absent = panel.dialog.querySelector<HTMLAnchorElement>(`[data-format="${missing}"]`)!
+    expect(absent.hidden).toBe(true)
+    expect(absent.hasAttribute('href')).toBe(false)
+    expect(panel.dialog.querySelector<HTMLButtonElement>(`[data-copy="${missing}"]`)!.disabled).toBe(true)
+    expect(panel.dialog.querySelector('#export-title')?.textContent).toContain('部分格式已生成')
+    expect(panel.dialog.textContent).toContain('另一格式转换失败')
+    panel.show({ revision: 3, pdf: { downloadUrl: '/new-pdf' }, word: { downloadUrl: '/new-word' } })
+    expect(absent.hidden).toBe(false)
+    expect(panel.dialog.querySelector<HTMLButtonElement>(`[data-copy="${missing}"]`)!.disabled).toBe(false)
+  })
+
   it('highlights the export format requested by the user', () => {
     const panel = createExportPanel()
     panel.show(

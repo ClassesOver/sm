@@ -257,8 +257,9 @@ def test_cli_forwards_only_pdf_and_word_output_paths(
     assert '"wordPath": "reports/report.docx"' in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("failed_format", [None, "pdf", "word", "both", "pdf_copy", "word_copy"])
 def test_render_markdown_returns_only_pdf_and_word_artifact_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_format: str | None,
 ) -> None:
     source = tmp_path / "report.md"
     source.write_text(
@@ -307,6 +308,26 @@ def test_render_markdown_returns_only_pdf_and_word_artifact_identity(
         lambda *_args, **_kwargs: pytest.fail("私有 /tmp 与 workspace 之间不得使用 rename"),
     )
 
+    if failed_format in {"pdf_copy", "word_copy"}:
+        original_copy = shutil.copyfile
+        def fail_copy(source, destination, *args, **kwargs):
+            if str(destination).endswith(".pdf" if failed_format == "pdf_copy" else ".docx"):
+                raise OSError("injected format copy failure")
+            return original_copy(source, destination, *args, **kwargs)
+        monkeypatch.setattr(shutil, "copyfile", fail_copy)
+    if failed_format in {"pdf", "both"}:
+        def fail_pdf(*_args, **_kwargs):
+            raise runtime_module.ReportFailure("injected PDF failure")
+        monkeypatch.setattr(runtime_module, "_apply_pdf_page_decorations", fail_pdf)
+    if failed_format in {"word", "both"}:
+        def fail_word(*_args, **_kwargs):
+            raise runtime_module.ReportFailure("injected Word failure")
+        monkeypatch.setattr(runtime_module, "_render_docx", fail_word)
+    if failed_format == "both":
+        with pytest.raises(runtime_module.ReportFailure, match="均未成功"):
+            runtime_module.ReportRuntime(tmp_path).render_markdown(state, "report.md", "revision/report.pdf", ".reporting-tmp/workspace-report-failure-render/render.pdf")
+        assert not output.exists() and not output.with_suffix(".docx").exists()
+        return
     temporary_root = tmp_path / ".reporting-tmp" / f"workspace-report-{uuid.uuid4().hex}-render"
     try:
         result = runtime_module.ReportRuntime(tmp_path).render_markdown(
@@ -320,8 +341,13 @@ def test_render_markdown_returns_only_pdf_and_word_artifact_identity(
 
     assert "html" not in result["render"]
     assert "htmlPath" not in result
-    assert output.is_file()
-    assert output.with_suffix(".docx").is_file()
+    failed_label = failed_format.removesuffix("_copy") if failed_format else None
+    assert output.is_file() is (failed_label != "pdf")
+    assert output.with_suffix(".docx").is_file() is (failed_label != "word")
+    assert ("pdf" in result["render"]) is (failed_label != "pdf")
+    assert ("word" in result["render"]) is (failed_label != "word")
+    assert result["status"] == ("rendered" if failed_format is None else "partial_rendered")
+    assert bool(result["renderIssues"]) is (failed_format is not None)
     assert not output.with_suffix(".html").exists()
 
 
@@ -375,6 +401,7 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
             "report_runtime/docx.py",
             "report_runtime/markdown.py",
             "report_runtime/pdf.py",
+            "report_runtime/projection.py",
             "report_runtime/runtime.py",
             "report_runtime/theme.py",
             "report_runtime/validation.py",

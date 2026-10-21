@@ -391,6 +391,8 @@ def _frozen_number_entries(
     """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
     for bundle in frozen_fact_bundles(contents):
         document = bundle.model_dump(mode="json", by_alias=True)
+        metric_entries = {item["factId"]: item for item in document["metrics"] if item.get("factId")}
+        fact_warnings = {item["factId"]: item.get("warnings", ()) for item in (*document["metrics"], *document["comparisons"]) if item.get("factId")}
         for array, fields in (
             ("metrics", ("total", "average", "minimum", "maximum")),
             ("comparisons", ("currentTotal", "baselineTotal", "change", "changeRate")),
@@ -411,6 +413,45 @@ def _frozen_number_entries(
                     (f"periodValues.{index}", item["value"])
                     for index, item in enumerate(entry.get("periodValues", ()))
                 )
+                # A dedicated server selector carries the entire registered
+                # window while displaying its endpoint. Ordinary endpoint
+                # references do not acquire a monotonicity proof.
+                if array == "metrics" and entry.get("periodValues") and not entry.get("cumulativePolicy"):
+                    values.append(("monthlyTrend", entry["periodValues"][-1]["value"]))
+                if array == "metrics" and entry.get("cumulativePolicy"):
+                    from .cumulative_changes import registered_cumulative_changes
+
+                    cumulative_changes, _ = registered_cumulative_changes(
+                        entry, profile_hash=entry.get("profileHash"),
+                        warnings=fact_warnings.get(fact_id, ()),
+                    )
+                    values.extend((selector, proof["value"]) for selector, proof in cumulative_changes.items())
+                if array == "metrics" and entry.get("groupPopulation"):
+                    from .top_sets import registered_top_sets
+
+                    top_sets, _ = registered_top_sets(entry, profile_hash=document.get("profileHash"))
+                    values.extend((selector, proof["value"]) for selector, proof in top_sets.items())
+                if array == "comparisons":
+                    from .group_contributions import registered_group_contributions
+                    from .top_sets import display_members
+
+                    contribution, _ = registered_group_contributions(
+                        entry, metric_entries,
+                        profile_hash=metric_entries.get((entry.get("inputFactIds") or [None])[0], {}).get("profileHash") or "",
+                        fact_warnings=fact_warnings,
+                    )
+                    if (contribution is not None and len(contribution["members"]) <= 100
+                            and len(display_members(contribution["members"]).encode()) <= 2000):
+                        values.extend((f"groupContributions.{index}", value)
+                                      for index, value in enumerate(contribution["values"]))
+                ratio_proof = None
+                if array == "derivedMetrics":
+                    from .ratio_proofs import registered_ratio
+
+                    ratio_proof, _ = registered_ratio(entry, metric_entries,
+                        profile_hash=entry.get("profileHash") or "", fact_warnings=fact_warnings)
+                    if ratio_proof is not None:
+                        values.append(("registeredRatio", ratio_proof["value"]))
                 for groups_key in ("topGroups", "bottomGroups"):
                     values.extend(
                         (f"{groups_key}.{index}", item["value"])
@@ -421,6 +462,7 @@ def _frozen_number_entries(
                 total = entry.get("total")
                 if (
                     array == "metrics"
+                    and not entry.get("cumulativePolicy")
                     and entry.get("aggregation") == "sum"
                     and entry.get("unit") != "%"
                     and isinstance(total, (int, float))
@@ -463,6 +505,7 @@ def _frozen_number_entries(
                     and len(periods) <= 12
                     and _valid_month_labels(item["period"] for item in periods)
                     and len({item["period"][:7] for item in periods}) == len(periods)
+                    and all(math.isfinite(item["value"]) for item in periods)
                 ):
                     # 均值分母使用实际月桶数，前缀累计从原值相加，禁止先舍入再累加。
                     amounts = [Decimal(str(item["value"])) for item in periods]
@@ -505,17 +548,19 @@ def _frozen_number_entries(
                             )
 
                 for field, value in values:
-                    if value is None:
+                    if value is None or not Decimal(str(value)).is_finite():
                         continue
                     # 派生事实的 unit 是分子/差额单位，比值本身无量纲。
                     unit = (
                         "%"
                         if field in {"changeRate", "percentage"}
-                        or field.startswith(("periodChangeRates.", "groupShares."))
+                        or field.startswith(("periodChangeRates.", "groupShares.", "groupContributions."))
                         else None
                         if array == "derivedMetrics" and field == "value"
                         else entry.get("unit")
                     )
+                    if field == "registeredRatio":
+                        unit = ratio_proof["unit"]
                     if percent_point_field(field, unit):
                         yield f"{{{{value:{fact_id}:{field}:%}}}}", value, unit, PERCENT_POINT
                         continue
@@ -579,7 +624,7 @@ def _readable_display_unit(value: Any, unit: str | None, target: str | None) -> 
 
 
 # 只供服务端核对与渲染的派生数值引用（相邻月变化、分组占比与分组差额）：不放进模型可见的数值目录。
-_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.", "groupShares.", "groupGaps.")
+_SERVER_ONLY_FIELDS = ("periodChanges.", "periodChangeRates.", "groupShares.", "groupGaps.", "monthlyTrend", "topSet.", "groupContributions.", "registeredRatio", "cumulativeChanges.")
 
 
 def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
@@ -2280,7 +2325,8 @@ def referenced_difference_matches(
     """只认可当前数值的差额引用；其他同值事实或同句引用不能提供豁免。"""
     parts = (token or "").removeprefix("{{value:").removesuffix("}}").split(":")
     if len(parts) != 3 or not (
-        parts[1] == "difference"
+        parts[1] in {"difference", "change"}
+        or re.fullmatch(r"periodChanges\.[0-9]+", parts[1]) is not None
         or (parts[1].startswith("budgetComparison.") and parts[1].endswith(".difference"))
     ):
         return False

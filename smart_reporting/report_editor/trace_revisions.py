@@ -8,21 +8,21 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..reporting.delivery.artifacts_v1 import (
+    _TABLE_BLOCK,
     ArtifactFile,
     ChartArtifact,
     ReportArtifactManifest,
     _markdown_image_bindings,
     _markdown_table_artifacts,
-    _TABLE_BLOCK,
 )
 from ..reporting.models import ReportingError
-from ..workspace import WorkspaceError, WorkspacePathConflict
 from ..reporting.trace.contracts_v1 import (
     RevisionTraceIndexV1,
     canonical_json_bytes,
     derive_resource_id,
 )
 from ..reporting.trace.index_builder import encode_trace_index, trace_index_path_for
+from ..workspace import WorkspaceError, WorkspacePathConflict
 
 
 async def write_registered_json(workspace: Any, thread_id: str, path: str, content: bytes) -> ArtifactFile:
@@ -46,7 +46,7 @@ def _remap_references(value: Any, resource_ids: Mapping[str, str]) -> Any:
         return [_remap_references(item, resource_ids) for item in value]
     if not isinstance(value, dict):
         return value
-    result = {}
+    result: dict[str, Any] = {}
     for key, item in value.items():
         if key in singular and isinstance(item, str):
             result[key] = resource_ids.get(item, item)
@@ -106,11 +106,22 @@ async def snapshot_revision_lineage(
     The caller owns rollback of the target directory until its durable commit.
     """
     identities = _lineage_identities(manifest, index)
+    table_source_ids = {
+        operand.file_resource_id
+        for subject in (index.subject_bindings if index is not None else ())
+        if subject.number_reference is not None
+        and subject.number_reference.table_derivation is not None
+        for operand in subject.number_reference.table_derivation.operands
+    }
+    table_sources: dict[str, bytes] = {}
     for source, identity in identities.items():
         target = path_map.get(source, source)
         content, _media = await workspace.afile_bytes(thread_id, source)
         if len(content) != identity.size or hashlib.sha256(content).hexdigest() != identity.sha256:
             raise ReportingError("snapshot_integrity_failed", "Frozen source file identity changed.")
+        resource_id = derive_resource_id(source)
+        if resource_id in table_source_ids:
+            table_sources[resource_id] = content
         if target != source:
             if await workspace.apath_exists(thread_id, target):
                 current = await workspace.ahash_file(thread_id, target)
@@ -135,7 +146,9 @@ async def snapshot_revision_lineage(
             if len(content) != original.size or hashlib.sha256(content).hexdigest() != original.sha256:
                 raise ReportingError("snapshot_integrity_failed", "冻结图注正文身份已变化。")
             index = freeze_chart_presentations(index, content.decode("utf-8"))
-            blocks = list(_TABLE_BLOCK.finditer(content.decode("utf-8")))
+            from ..reporting.trace.markdown_body import trace_body
+
+            blocks = list(_TABLE_BLOCK.finditer(trace_body(content.decode("utf-8"), mask_inline_code=False)))
             tables = []
             for table in index.tables:
                 if table.origin_markdown is None:
@@ -149,6 +162,18 @@ async def snapshot_revision_lineage(
         resource_ids = {file.resource_id: derive_resource_id(path_map.get(file.path, file.path)) for file in index.files}
         resource_ids[index.markdown_file_resource_id] = derive_resource_id(markdown_file.path)
         payload = _remap_references(index.model_dump(mode="json", by_alias=True), resource_ids)
+        # Verify old proof before remapping. Never turn an invalid old token into
+        # a valid one merely by recomputing a digest for its claimed operands.
+        from ..reporting.trace.table_sources import resolve_table_derivation, table_derivation_token
+
+        for subject, rebound_subject in zip(index.subject_bindings, payload["subjectBindings"], strict=True):
+            number = subject.number_reference
+            if number is None or number.table_derivation is None:
+                continue
+            if resolve_table_derivation(number.token, number.table_derivation, table_sources) is not None:
+                rebound_subject["numberReference"]["token"] = table_derivation_token(
+                    number.table_derivation, table_sources,
+                )
         payload["revision"] = target_revision
         for file in payload["files"]:
             if file["resourceId"] == index.markdown_file_resource_id:

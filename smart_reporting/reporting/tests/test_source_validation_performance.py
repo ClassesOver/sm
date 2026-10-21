@@ -103,7 +103,6 @@ def test_batch_number_resolution_expands_source_once_and_rejects_conflicts(monke
 async def test_editor_validation_softens_derived_rebuild_failure(tmp_path, monkeypatch):
     import json
 
-    from smart_reporting.reporting.models import ReportingError
     from smart_reporting.reporting.trace import semantic_bindings
     from smart_reporting.reporting.trace.index_builder import encode_trace_index
 
@@ -197,9 +196,9 @@ async def test_editor_validation_softens_derived_rebuild_failure(tmp_path, monke
     tampered = raw.replace(b'400', b'401')
     assert tampered != raw and len(tampered) == len(raw)
     await editor.workspace.awrite_bytes(thread_id, source.path, tampered, overwrite=True)
-    with pytest.raises(ReportingError) as error:
-        await editor.trace.validate(context, markdown, digest)
-    assert error.value.code == 'snapshot_integrity_failed'
+    result = await editor.trace.validate(context, markdown, digest)
+    assert result['summary']['valid'] == 0
+    assert result['sourceIssues'][0]['code'] == 'snapshot_integrity_failed'
 
 
 @pytest.mark.anyio
@@ -242,7 +241,6 @@ async def test_content_review_does_not_block_other_async_requests(tmp_path, monk
 async def test_batch_lookup_keeps_file_identity_and_rechecks_changed_files(tmp_path, monkeypatch):
     import json
 
-    from smart_reporting.reporting.models import ReportingError
     from smart_reporting.reporting.trace.contracts_v1 import derive_resource_id
 
     editor, _, context = await _make_editor_with_subject(tmp_path, period_table=True, number_reference=True)
@@ -275,9 +273,11 @@ async def test_batch_lookup_keeps_file_identity_and_rechecks_changed_files(tmp_p
     assert [item['factValue'] for item in result['subjects']] == [2400, 4800]
     assert result['summary']['valid'] == 2
     await editor.workspace.awrite_bytes(thread_id, path, raw + b' ', overwrite=True)
-    with pytest.raises(ReportingError) as error:
-        await editor.trace.validate(context, markdown, digest)
-    assert error.value.code == 'snapshot_integrity_failed'
+    result = await editor.trace.validate(context, markdown, digest)
+    assert result['summary'] == {'valid': 1, 'stale': 0, 'unbound': 1}
+    assert result['subjects'][0]['factValue'] == 2400
+    assert result['subjects'][1]['factValue'] is None
+    assert result['sourceIssues'][0]['code'] == 'snapshot_integrity_failed'
 
 
 def test_year_review_rounds_registered_values_once_per_display_precision(monkeypatch):

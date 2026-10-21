@@ -134,6 +134,7 @@ def _identity(path: str, content: bytes, media_type: str) -> ArtifactFile:
 
 async def _publication_fixture(
     tmp_path: Path, *, forged: str | None = None, table_source: bool = False,
+    quality_record: bool = False,
 ):
     dependencies = {
         REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
@@ -165,6 +166,8 @@ async def _publication_fixture(
     table_source_path = "evidence/table.json"
     if table_source:
         files[table_source_path] = table_bytes
+    if quality_record:
+        files["reports/quality-bundle-v1.json"] = b'{"version":"1","mode":"shadow"}'
     for path, content in files.items():
         await workspace.awrite_bytes(scope.workspace_key, path, content)
     handle = DatasetHandle(
@@ -229,6 +232,9 @@ async def _publication_fixture(
         markdown_file=_identity("reports/report.md", markdown, "text/markdown"),
         table_source_files=() if table_source_identity is None else (table_source_identity,),
         subject_bindings=() if subject is None else (subject,),
+        computation_files=(_identity("reports/quality-bundle-v1.json",
+                                      files["reports/quality-bundle-v1.json"], "application/json"),)
+        if quality_record else (),
     )
     if forged is not None:
         payload = index.model_dump(mode="json", by_alias=True)
@@ -332,6 +338,57 @@ async def _publication_fixture(
         output=output,
     )
     return runtime, arguments, scope, durable, artifacts, grants_repository, files, index
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "runtime_state", "write", "read"])
+async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch, fault):
+    from smart_reporting.reporting.trace import quality_bundle
+
+    runtime, arguments, scope, durable, _, _, files, index = await _publication_fixture(tmp_path)
+    original_get = runtime.state_repository.get
+    async def get(run_id):
+        if run_id == "report-1":
+            if fault == "state":
+                raise OSError("injected frozen requirements read failure")
+            return durable
+        return await original_get(run_id)
+    runtime.state_repository.get = get
+    state = {}
+    runtime._scope = lambda _context: scope.as_state()
+    runtime._state = lambda _context: state
+    if fault == "runtime_state":
+        def unavailable_state(_context):
+            raise OSError("injected quality state failure")
+        runtime._state = unavailable_state
+    runtime._profile = lambda _context: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._build_drilldown_metrics = AsyncMock(return_value=())
+    monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_kwargs: index)
+    if fault in {"evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate"}:
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("injected quality evaluation failure")
+        monkeypatch.setattr(quality_bundle, {"evaluate": "evaluate_quality_bundle", "chart_evaluate": "evaluate_chart_quality", "table_evaluate": "evaluate_table_quality", "semantic_evaluate": "evaluate_semantic_alignment"}[fault], fail)
+    elif fault in {"write", "read"}:
+        workspace = runtime.workspace_service
+        original = workspace.awrite_bytes if fault == "write" else workspace.read_limited_regular_file
+        async def fail(thread_id, path, *args, **kwargs):
+            if path.endswith(quality_bundle.QUALITY_FILENAME):
+                raise OSError("injected quality storage failure")
+            return await original(thread_id, path, *args, **kwargs)
+        monkeypatch.setattr(workspace, "awrite_bytes" if fault == "write" else "read_limited_regular_file", fail)
+    identity = await runtime._write_trace_index(
+        "reports/artifact-manifest.json", handles=(), lineage=(),
+        markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
+        revision=1, run_context=SimpleNamespace(run_id="report-1"),
+        markdown=files["reports/report.md"].decode(),
+    )
+    assert identity.sha256 == hashlib.sha256(encode_trace_index(index)).hexdigest()
+    if fault != "runtime_state":
+        assert state["report_quality_issues"][0]["status"] == "unknown"
+    else:
+        runtime._state = lambda _context: state
+    result = await runtime.issue_http_publication(**arguments)
+    assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
 
 
 @pytest.mark.anyio
@@ -512,6 +569,7 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
 @pytest.mark.parametrize("fault", [
     "manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot",
     "table_source_missing", "table_source_changed",
+    "quality_record_missing", "quality_record_changed",
 ])
 async def test_http_publication_never_blocks_links_on_lineage_faults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
@@ -521,12 +579,17 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
 
     table_source_fault = fault.startswith("table_source_")
     runtime, arguments, scope, durable, artifacts, grants, files, index = await _publication_fixture(
-        tmp_path, table_source=table_source_fault,
+        tmp_path, table_source=table_source_fault, quality_record=fault.startswith("quality_record_"),
     )
     manifest_path = arguments["output"]["artifactManifest"]["path"]
     workspace = runtime.workspace_service
     original_read = workspace.read_limited_regular_file
-    if table_source_fault:
+    if fault.startswith("quality_record_"):
+        if fault == "quality_record_missing":
+            await workspace.adelete_file(scope.workspace_key, "reports/quality-bundle-v1.json")
+        else:
+            await workspace.awrite_bytes(scope.workspace_key, "reports/quality-bundle-v1.json", b"{}", overwrite=True)
+    elif table_source_fault:
         source_path = "evidence/table.json"
         source_id = derive_resource_id(source_path)
         assert any(file.resource_id == source_id for file in index.files)
@@ -571,3 +634,132 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
             response = await client.get(result[artifact]["downloadUrl"])
             assert response.status_code == 200
             assert response.content == files[f"reports/report.{suffix}"]
+
+
+@pytest.mark.anyio
+async def test_published_quality_uses_cas_frozen_requirements_over_session_mirror(tmp_path, monkeypatch):
+    from smart_reporting.reporting.trace.quality_bundle import QUALITY_FILENAME, QualityBundle
+    from smart_reporting.reporting.workflow.questions import request_questions
+
+    runtime, _, scope, durable, _, _, files, index = await _publication_fixture(tmp_path)
+    frozen = request_questions("原始收入与成本问题，保留数据缺口")
+    durable.payload["questionSpecs"] = frozen.model_dump(mode="json", by_alias=True)
+    runtime.state_repository.get = AsyncMock(return_value=durable)
+    state = {"report_request_context": {"questionSpecs": request_questions("只问收入").model_dump(mode="json", by_alias=True)}}
+    runtime._scope = lambda _context: scope.as_state()
+    runtime._state = lambda _context: state
+    runtime._profile = lambda _context: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._build_drilldown_metrics = AsyncMock(return_value=())
+    monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_kwargs: index)
+    identity = await runtime._write_trace_index(
+        "reports/artifact-manifest.json", handles=(), lineage=(),
+        markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
+        revision=1, run_context=SimpleNamespace(run_id="report-1"),
+        markdown=files["reports/report.md"].decode(),
+    )
+    stored = RevisionTraceIndexV1.model_validate_json(await runtime.workspace_service.read_limited_regular_file(
+        scope.workspace_key, identity.path, max_bytes=identity.size))
+    quality_file = next(file for file in stored.files if file.path.endswith("/" + QUALITY_FILENAME))
+    raw = await runtime.workspace_service.read_limited_regular_file(scope.workspace_key, quality_file.path,
+                                                                  max_bytes=quality_file.size)
+    assert hashlib.sha256(raw).hexdigest() == quality_file.sha256
+    bundle = QualityBundle.model_validate_json(raw)
+    assert bundle.question_specs == frozen
+    assert bundle.question_coverage["effectiveAnswerRate"] is None
+    assert state["report_quality_issues"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failed_format", ["pdf", "word"])
+async def test_format_persistence_failure_keeps_other_download(tmp_path, failed_format):
+    runtime, arguments, _, _, artifacts, _, files, _ = await _publication_fixture(tmp_path)
+    original_put = artifacts.put
+
+    async def put(artifact, chunks):
+        if artifact.artifact == failed_format:
+            raise OSError("injected storage failure")
+        await original_put(artifact, chunks)
+
+    artifacts.put = put
+    result = await runtime.issue_http_publication(**arguments)
+    surviving = "word" if failed_format == "pdf" else "pdf"
+    assert surviving in result and failed_format not in result
+    assert result["publicationIssues"][-1]["code"] == "report_format_persistence_failed"
+    app = FastAPI()
+    app.include_router(
+        create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts))
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://reports.test"
+    ) as client:
+        response = await client.get(result[surviving]["downloadUrl"])
+        assert response.status_code == 200
+        assert (
+            response.content == files[f"reports/report.{'pdf' if surviving == 'pdf' else 'docx'}"]
+        )
+
+
+@pytest.mark.anyio
+async def test_answer_review_checker_failure_preserves_index_and_downloads(tmp_path, monkeypatch):
+    import hashlib
+
+    from smart_reporting.reporting.trace import quality_bundle
+    from smart_reporting.reporting.trace.contracts_v1 import RevisionTraceIndexV1
+    from smart_reporting.reporting.workflow.answer_review import AnswerReviewPlan, questions_sha256
+    from smart_reporting.reporting.workflow.questions import request_questions
+    from smart_reporting.reporting.workflow.runtime import publication as publication_module
+
+    runtime, arguments, scope, durable, _, _, files, index = await _publication_fixture(tmp_path)
+    questions = request_questions("收入证据是否充分")
+    durable.payload.update(
+        {
+            "questionSpecs": questions.model_dump(mode="json", by_alias=True),
+            "answerReviewPlan": AnswerReviewPlan(
+                questionSetSha256=questions_sha256(questions)
+            ).model_dump(mode="json", by_alias=True),
+        }
+    )
+    original_get = runtime.state_repository.get
+
+    async def get(run_id):
+        return durable if run_id == "report-1" else await original_get(run_id)
+
+    runtime.state_repository.get = get
+    runtime._scope = lambda _: scope.as_state()
+    state = {}
+    runtime._state = lambda _: state
+    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._build_drilldown_metrics = AsyncMock(return_value=())
+    monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_: index)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("injected answer reviewer failure")
+
+    monkeypatch.setattr(quality_bundle, "evaluate_answer_review", fail)
+    identity = await runtime._write_trace_index(
+        "reports/artifact-manifest.json",
+        handles=(),
+        lineage=(),
+        markdown_artifact=_identity(
+            "reports/report.md", files["reports/report.md"], "text/markdown"
+        ),
+        revision=1,
+        run_context=SimpleNamespace(run_id="report-1"),
+        markdown=files["reports/report.md"].decode(),
+    )
+    raw = await runtime.workspace_service.read_limited_regular_file(
+        scope.workspace_key, identity.path, max_bytes=identity.size
+    )
+    assert hashlib.sha256(raw).hexdigest() == identity.sha256
+    saved_index = RevisionTraceIndexV1.model_validate_json(raw)
+    quality_file = next(
+        file for file in saved_index.files if file.path.endswith(quality_bundle.QUALITY_FILENAME)
+    )
+    stored = await runtime.workspace_service.read_limited_regular_file(
+        scope.workspace_key, quality_file.path, max_bytes=quality_file.size
+    )
+    quality = quality_bundle.QualityBundle.model_validate_json(stored)
+    assert any(issue.code == "answer_review_unavailable" for issue in quality.issues)
+    assert quality.question_coverage["effectiveAnswerRate"] is None
+    result = await runtime.issue_http_publication(**arguments)
+    assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
