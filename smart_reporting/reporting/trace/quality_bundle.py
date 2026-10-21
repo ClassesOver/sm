@@ -9,6 +9,10 @@ from typing import Literal
 from pydantic import Field
 
 from ..contract import SHA256_PATTERN, StrictModel
+from ..hospital_operation.professional_review import (
+    PROFESSIONAL_REVIEW_VERSION,
+    review_professional_content,
+)
 from ..workflow.answer_review import AnswerReviewPlan, AnswerReviewResult, evaluate_answer_review
 from ..workflow.questions import QuestionSet
 from .assertions import (
@@ -24,7 +28,7 @@ from .semantic_bindings import reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3"}
+SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION}
 
 
 class QualityIssue(StrictModel):
@@ -100,6 +104,8 @@ def evaluate_quality_bundle(
         authorization_scope_hash=authorization_scope_hash,
     )
     issues: list[QualityIssue] = []
+    issues.extend(QualityIssue(code=issue.code, reasons=(issue.message, *issue.review_ids))
+                  for issue in review_professional_content(markdown))
     chart_checks = evaluate_chart_quality(index, markdown, sources, interactive_charts or {})
     issues.extend(
         QualityIssue(code="chart_support_unknown", subjectId=chart_id, reasons=(check.reason,))

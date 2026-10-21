@@ -3,6 +3,7 @@
 from agno.run import RunContext
 
 from .hospital_operation.domains import build_domain_stage_guidance
+from .hospital_operation.professional_review import professional_stage_guidance
 from .phase import (
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
@@ -23,6 +24,7 @@ HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS = (
 
 HOSPITAL_ANALYSIS_INSTRUCTIONS = (
     *build_domain_stage_guidance("analysis"),
+    *professional_stage_guidance("analysis"),
     (
         "跨域分析仅在期间、粒度、组织和口径可比时执行："
         "收入-工作量用于验证量价结构，预算-实际用于定位执行偏差，"
@@ -32,6 +34,7 @@ HOSPITAL_ANALYSIS_INSTRUCTIONS = (
 
 HOSPITAL_REPORT_WRITING_INSTRUCTIONS = (
     *build_domain_stage_guidance("draft"),
+    *professional_stage_guidance("draft"),
     (
         "面向医院管理者，严格依据已批准提纲、详细分析计划和本轮不可变 CSV 成稿。"
         "在现有章节内按“管理结论、数据证据、异常、原因、影响、建议”表达。"
@@ -65,7 +68,7 @@ HOSPITAL_REPORT_WRITING_INSTRUCTIONS = (
 )
 
 HOSPITAL_REQUEST_INSTRUCTIONS = build_domain_stage_guidance("request")
-HOSPITAL_OUTLINE_INSTRUCTIONS = build_domain_stage_guidance("outline")
+HOSPITAL_OUTLINE_INSTRUCTIONS = (*build_domain_stage_guidance("outline"), *professional_stage_guidance("outline"))
 
 REPORTING_PHASE_COMMON_INSTRUCTIONS = [
     "你是智能报表 Agent，只处理当前任务 JSON 指定的 Reporting 阶段和交付物。",

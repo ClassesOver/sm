@@ -273,7 +273,7 @@ class EffectivePageLayout(ProfileModel):
 
 class EffectiveDocumentBranding(ProfileModel):
     organization_name: str = Field(
-        default="上海鼎医信息技术有限公司",
+        default="编制单位待确认",
         alias="organizationName",
         min_length=1,
         max_length=200,
