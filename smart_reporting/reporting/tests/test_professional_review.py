@@ -6,6 +6,8 @@ import pytest
 
 from smart_reporting.reporting.hospital_operation.professional_review import (
     PROFESSIONAL_CRITERIA,
+    PROFESSIONAL_EXPRESSION_PATTERNS,
+    professional_expression_guidance,
     professional_stage_guidance,
     review_professional_content,
 )
@@ -26,6 +28,27 @@ def test_all_79_annotations_have_a_stage_and_required_evidence_mapping():
         f"R{index:03d}" for index in range(1, 80)
     }
     assert all(rule.required_evidence and rule.stages for rule in PROFESSIONAL_CRITERIA)
+
+
+def test_all_37_native_word_expression_examples_reach_the_writing_stage_without_sample_values():
+    expected = {f"R{number:03d}" for number in (
+        1, 2, 3, 9, 11, 13, 14, 15, 17, 20, 21, 23, 24, 27, 29, 31, 33, 35, 36,
+        39, 41, 43, 46, 48, 49, 50, 52, 55, 57, 58, 59, 61, 63, 69, 70, 74, 78,
+    )}
+    refs = [ref for pattern in PROFESSIONAL_EXPRESSION_PATTERNS for ref in pattern.review_ids]
+    assert len(refs) == len(set(refs)) == 37 and set(refs) == expected
+    assert set(professional_expression_guidance()) <= set(HOSPITAL_REPORT_WRITING_INSTRUCTIONS)
+    guide = "\n".join(professional_expression_guidance())
+    assert "适用条件" in guide and "不复制示例数字" in guide
+    assert all(value not in guide for value in ("95.13", "10.57", "99.12", "531.65", "____"))
+
+
+def test_writing_instructions_keep_requested_window_and_do_not_force_causes_or_actions():
+    guide = "\n".join(HOSPITAL_REPORT_WRITING_INSTRUCTIONS)
+    assert "统计期间遵守冻结请求" in guide
+    assert "不能冒充完整本期" in guide
+    assert "不要求每段凑齐异常、原因和建议" in guide
+    assert "主口径必须采用最新完整" not in guide
 
 
 def test_missing_branding_does_not_make_the_software_supplier_the_report_author():

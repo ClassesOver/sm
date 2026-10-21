@@ -247,7 +247,7 @@ def test_supplemental_projection_requires_frozen_file_identity():
 
 
 @pytest.mark.parametrize("scope", [{"性质": "开单收入"}, "开单收入"])
-def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_scope(scope):
+def test_legacy_closed_totals_do_not_prove_complete_same_basis_attribution(scope):
     authoritative = facts(metrics=[{
         "factId": "fact-1111111111111111", "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
         "periodRoles": ["current"], "metricCodes": ["income"], "field": "income",
@@ -278,9 +278,8 @@ def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_s
     )
     attribution = next(item for item in result if item.title == "科室收入分解")
     assert attribution.grain == ("科室",)
+    assert attribution.evidence_level == "evidence_missing"
     if isinstance(scope, dict):
-        assert attribution.kind == "attribution"
-        assert attribution.evidence_level == "direct_decomposition"
         assert attribution.scope == scope
     else:
         assert attribution.evidence_level != "direct_decomposition"

@@ -99,6 +99,63 @@ def professional_stage_guidance(stage: ReviewStage) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
+class ProfessionalExpressionPattern:
+    code: str
+    review_ids: tuple[str, ...]
+    guidance: str
+
+
+# Distilled from all 37 blue examples in the native Word review. These are
+# conditional writing patterns, not example amounts or a mandatory chapter list.
+PROFESSIONAL_EXPRESSION_PATTERNS = (
+    ProfessionalExpressionPattern("structure", ("R001", "R074"),
+        "围绕管理问题合并同主题结论，收入和支出预算并列评价，支出与成本注明各自口径。"
+        "正文突出重要变化，完整维度表放附表；图解紧随结论，不反复重述。示例目录不固定为七章。"),
+    ProfessionalExpressionPattern("period", ("R002",),
+        "编制说明分别列统计期间、同比期间、数据截至、预算版本和核算口径；"
+        "历史回溯与当前年度任务明确区分，不能通过改标题年份沿用旧事实。"),
+    ProfessionalExpressionPattern("overview", ("R003", "R020", "R057"),
+        "摘要先回答本期累计、同期变化和主要偏差，再补重要月度观察；收入范围、分类字典、"
+        "门诊是否含急诊或体检使用已确认名称。缺少同期时说明该同比暂不可评价，不用月度高低替代。"),
+    ProfessionalExpressionPattern("budget", tuple(f"R{number:03d}" for number in (
+        9, 11, 13, 14, 15, 17, 35, 39, 41, 43, 70,
+    )),
+        "预算先写分母属性，再列实际、差额和相应执行率：年度预算对应年度完成率，正式同期下达预算"
+        "对应同期执行率。未下达分期预算不生成同期执行率或月度执行曲线，时间进度只作参考。"
+        "偏差按金额影响与执行率共同说明；完整同维度对照才支持最大贡献。归口部门不称使用科室，"
+        "支出性质不称业务条线；未知零说明采集/映射缺口，不能写成真实无预算。"),
+    ProfessionalExpressionPattern("income", tuple(f"R{number:03d}" for number in (21, 23, 24, 27, 29, 31)),
+        "累计与月均分别列示；分项及院区用规模、占比、同期增减和统一分母的贡献解释变化。"
+        "两个收费分类反向变化不证明分类调整或需求下降；月度环比不证明持续改善。"
+        "未证实的分类、政策和业务原因只列核查方向，科室规模排名不替代同比贡献。"),
+    ProfessionalExpressionPattern("cost", tuple(f"R{number:03d}" for number in (36, 46, 48, 49, 50)),
+        "成本先写同期间累计、同期和增减，再按类别、院区及匹配工作量解释；"
+        "首尾两月差额仅是两个单月观察，不能写成本期累计同比下降。"
+        "极值先写原始记录及性质待核实，不推导超预算或趋势；规模大不直接写成本过高、要求压降。"),
+    ProfessionalExpressionPattern("surplus", ("R052", "R055", "R063"),
+        "科室结余先交代已确认收入归属、成本分摊阶段和共同期间。未匹配单元标明暂不可评价，"
+        "分别列收入与成本，不补零或直接相减排名。临床、医技、行政后勤按职能评价，"
+        "内部结算汇总避免重复；仅在可比分解成立时说明收入与成本对结余变化的贡献。"),
+    ProfessionalExpressionPattern("efficiency", ("R033", "R058", "R059", "R061"),
+        "先匹配共同期间、组织和业务范围，再使用正式次均、平均住院日或床位使用率。"
+        "金额和人次单位不同不排除次均分析，但全院收入不能直接除以出院人次；"
+        "出院者床日不替代本期实际占用床日。无匹配指标时只报告服务量，不用相关系数评价效率。"),
+    ProfessionalExpressionPattern("actions", ("R069", "R078"),
+        "末段按已核实问题、金额或业务影响、核查/改进动作衔接。证据缺口只安排核查方向，"
+        "责任部门、目标和时限由医院确认；不代医院下达整改。署名采用已确认医院及部门，"
+        "系统提供方说明不代替编制或签发主体。"),
+)
+
+
+def professional_expression_guidance() -> tuple[str, ...]:
+    return (
+        "人工建议表述示例仅指导表达组织：仅在当前冻结证据满足适用条件时参考，不复制示例数字、"
+        "空白占位符或无关口径限制；不得为凑齐句式补造同比、原因和建议。",
+        *("人工示例表达要求：" + pattern.guidance for pattern in PROFESSIONAL_EXPRESSION_PATTERNS),
+    )
+
+
+@dataclass(frozen=True)
 class ProfessionalReviewIssue:
     code: str
     criterion: str

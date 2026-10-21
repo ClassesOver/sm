@@ -7,10 +7,17 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from .deterministic_analysis import DeterministicAnalysisBundle
-from .findings import FindingCard, FindingGraph, FindingSourceRef
+from .findings import (
+    EvidenceLevel,
+    FindingCard,
+    FindingGraph,
+    FindingKind,
+    FindingPriority,
+    FindingSourceRef,
+)
 
 _CORRELATION_FINDING_MIN = 0.5
 _CORRELATION_FINDING_LIMIT = 5
@@ -38,6 +45,94 @@ def _tuple_values(value: Any, fallback: tuple[str, ...] = ()) -> tuple[str, ...]
     return fallback
 
 
+def _direct_decomposition_source(
+    item: Mapping[str, Any], reconciliation: Mapping[str, Any] | None,
+    payload: Mapping[str, Any], partition_cache: dict[str, bool],
+) -> tuple[int, Mapping[str, Any]] | None:
+    """One complete registered partition must prove every part of the claim.
+
+    A matching total from one fact and matching Top-N from another are not a
+    decomposition. Supplemental passed flags never establish the population.
+    """
+    from ..trace.top_sets import registered_top_sets
+
+    def number(value: Any) -> bool:
+        try:
+            return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        except OverflowError:
+            return False
+
+    ids = item.get("sourceFactIds")
+    if (not isinstance(ids, (list, tuple)) or len(ids) != 1 or not isinstance(ids[0], str)
+            or reconciliation is None or reconciliation.get("passed") is not True
+            or reconciliation.get("warnings") or item.get("directDecomposition") is not True):
+        return None
+    fact_id = ids[0]
+    candidates = [(index, metric) for index, metric in enumerate(payload.get("metrics") or ())
+                  if isinstance(metric, Mapping) and metric.get("factId") == fact_id]
+    occurrences = sum(
+        1 for collection in ("metrics", "derivedMetrics", "comparisons", "reconciliations", "correlationDetails")
+        for entry in payload.get(collection) or ()
+        if isinstance(entry, Mapping) and entry.get("factId") == fact_id
+    )
+    if len(candidates) != 1 or occurrences != 1:
+        return None
+    index, metric = candidates[0]
+    if metric.get("aggregation") != "sum":
+        return None
+    for key in ("periodStart", "periodEnd", "unit"):
+        if not isinstance(metric.get(key), str) or not metric[key].strip() or item.get(key) != metric[key]:
+            return None
+        if key in reconciliation and reconciliation[key] != metric[key]:
+            return None
+    for key in ("metricCodes", "periodRoles"):
+        declared, registered = item.get(key), metric.get(key)
+        if (not isinstance(declared, (list, tuple)) or not isinstance(registered, (list, tuple))
+                or not registered or tuple(declared) != tuple(registered)):
+            return None
+    if (not metric.get("scope") or item.get("scope") != metric["scope"]
+            or reconciliation.get("scope") != metric["scope"]
+            or _tuple_values(reconciliation.get("grain")) != _tuple_values(item.get("grain"))):
+        return None
+    total = item.get("total")
+    if (not number(total) or not number(metric.get("total")) or total != metric["total"]
+            or any(not number(reconciliation.get(key)) or reconciliation[key] != total
+                   for key in ("leftTotal", "rightTotal"))
+            or ("difference" in reconciliation and (
+                not number(reconciliation["difference"]) or reconciliation["difference"] != 0))):
+        return None
+    if fact_id not in partition_cache:
+        try:
+            _, reasons = registered_top_sets(metric)
+            partition_cache[fact_id] = not reasons
+        except (ValueError, TypeError, KeyError, ArithmeticError):
+            partition_cache[fact_id] = False
+    if not partition_cache[fact_id]:
+        return None
+    grain = set(_tuple_values(item.get("grain")))
+    population = metric["groupPopulation"]
+    if (not grain or grain != set(population[0]["groupValues"])
+            or any(not number(group["value"]) for group in population)):
+        return None
+    expected = {tuple(sorted(group["groupValues"].items())): group["value"] for group in population}
+    components = item.get("components")
+    if not isinstance(components, (list, tuple)) or len(components) != len(expected):
+        return None
+    seen = set()
+    for component in components:
+        if not isinstance(component, Mapping) or not isinstance(component.get("groupValues"), Mapping):
+            return None
+        values = component["groupValues"]
+        if set(values) != grain or any(not isinstance(value, str) for value in values.values()):
+            return None
+        identity = tuple(sorted(values.items()))
+        if (identity in seen or identity not in expected or not number(component.get("value"))
+                or component["value"] != expected[identity]):
+            return None
+        seen.add(identity)
+    return index, metric
+
+
 def project_analysis_findings(
     analysis_id: str,
     deterministic_facts: DeterministicAnalysisBundle | Mapping[str, Any],
@@ -54,12 +149,7 @@ def project_analysis_findings(
     """只从已验证事实生成发现；缺失事实不会被改成零。"""
 
     payload = deterministic_facts.model_dump(mode="json", by_alias=True) if isinstance(deterministic_facts, DeterministicAnalysisBundle) else dict(deterministic_facts)
-    authoritative_facts = {
-        str(item.get("factId")): item
-        for collection in ("metrics", "derivedMetrics", "comparisons", "reconciliations", "correlationDetails")
-        for item in payload.get(collection, ())
-        if isinstance(item, Mapping) and isinstance(item.get("factId"), str)
-    }
+    partition_cache: dict[str, bool] = {}
     file_sha256 = fact_file_sha256 or hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     definitions = {str(item.get("code")): item for item in metric_definitions if item.get("code")}
     findings: list[FindingCard] = []
@@ -81,7 +171,7 @@ def project_analysis_findings(
             }
         return next(iter(labels)) if len(labels) == 1 else str(fact.get('field') or '指标')
 
-    def add(kind: str, path: str, title: str, summary: str, *, priority: str = "medium", evidence: str = "verified_fact", impact: float | None = None, unit: str | None = None, metrics: tuple[str, ...] = (), periods: tuple[str, ...] = ("current",), grain: tuple[str, ...] = (), limitations: tuple[str, ...] = ()) -> None:
+    def add(kind: FindingKind, path: str, title: str, summary: str, *, priority: FindingPriority = "medium", evidence: EvidenceLevel = "verified_fact", impact: float | None = None, unit: str | None = None, metrics: tuple[str, ...] = (), periods: tuple[str, ...] = ("current",), grain: tuple[str, ...] = (), limitations: tuple[str, ...] = ()) -> None:
         locator = path.strip("/").split("/")
         source_fact = {}
         if len(locator) >= 2 and locator[1].isdigit():
@@ -164,83 +254,55 @@ def project_analysis_findings(
                 "范围字段 scope 格式无效，未用于范围匹配或直接归因；原始值保留在来源证据中。",
             )
             reconciliation_code = item.get("reconciliationCode")
-            reconciliation = next(
-                (
+            reconciliations = [
                     candidate for candidate in supplemental_evidence.get("reconciliations", ())
                     if isinstance(candidate, Mapping)
+                    and isinstance(reconciliation_code, str) and reconciliation_code.strip()
                     and candidate.get("code") == reconciliation_code
-                ),
-                None,
+            ]
+            direct_source = (
+                _direct_decomposition_source(item, reconciliations[0], payload, partition_cache)
+                if item.get("kind") == "attribution" and scope_valid and len(reconciliations) == 1
+                and not supplemental_evidence.get("warnings") else None
             )
-            components = item.get("components")
-            total = item.get("total")
-            component_total = (
-                sum(float(component.get("value")) for component in components)
-                if isinstance(components, Sequence)
-                and not isinstance(components, (str, bytes))
-                and all(isinstance(component, Mapping) and isinstance(component.get("value"), (int, float))
-                        for component in components)
-                else None
-            )
-            direct_decomposition = (
-                item.get("kind") == "attribution"
-                and scope_valid
-                and item.get("directDecomposition") is True
-                and isinstance(total, (int, float))
-                and component_total is not None
-                and math.isclose(component_total, float(total), rel_tol=1e-12, abs_tol=1e-9)
-                and isinstance(reconciliation, Mapping)
-                and reconciliation.get("passed") is True
-                and reconciliation.get("grain") == item.get("grain")
-                and reconciliation.get("scope") == item.get("scope")
-                and isinstance(reconciliation.get("leftTotal"), (int, float))
-                and isinstance(reconciliation.get("rightTotal"), (int, float))
-                and math.isclose(float(reconciliation["leftTotal"]), float(total), rel_tol=1e-12, abs_tol=1e-9)
-                and math.isclose(float(reconciliation["rightTotal"]), float(total), rel_tol=1e-12, abs_tol=1e-9)
-                and bool(item.get("sourceFactIds"))
-                and all(str(fact_id) in authoritative_facts for fact_id in item.get("sourceFactIds", ()))
-                and any(
-                    math.isclose(float(authoritative_facts[str(fact_id)].get("total")), float(total), rel_tol=1e-12, abs_tol=1e-9)
-                    for fact_id in item.get("sourceFactIds", ())
-                    if isinstance(authoritative_facts[str(fact_id)].get("total"), (int, float))
-                )
-                and any(
-                    tuple((str(component.get("name")), float(component.get("value"))) for component in components)
-                    == tuple((str(group.get("group")), float(group.get("value"))) for group in authoritative_facts[str(fact_id)].get("topGroups", ()))
-                    for fact_id in item.get("sourceFactIds", ())
-                    if isinstance(authoritative_facts[str(fact_id)], Mapping)
-                )
-            )
-            if direct_decomposition:
+            if direct_source is not None:
+                source_index, source_metric = direct_source
+                label = metric_label(source_metric)
                 findings.append(FindingCard(
                     findingId=_stable_id(analysis_id, f"{supplemental_file_path}:{pointer}", snapshot_hash),
-                    analysisIds=(analysis_id,), kind="attribution", title=name[:200],
-                    summary=f"{name}已按登记分项完成闭合对账。"[:4000],
+                    analysisIds=(analysis_id,), kind="attribution", title=f"{label}分组数值分解"[:200],
+                    summary=f"{label}的完整分组数值与同一冻结指标登记合计闭合；不证明分类归属或业务因果。"[:4000],
                     metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
                     periodRoles=tuple(item.get("periodRoles") or ("current",)),
                     periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
                     grain=_tuple_values(item.get("grain")), scope=scope,
-                    priority="high", evidenceLevel="direct_decomposition", actionability="high",
+                    priority="high", evidenceLevel="direct_decomposition", actionability="unknown",
                     citationIds=citation_ids,
-                    sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
+                    sourceRefs=(
+                        _source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),
+                        _source(analysis_id, fact_file_path, file_sha256, f"/metrics/{source_index}"),
+                    ),
                 ))
                 continue
             # 只登记证据的存在及原始位置，不从表格重新计算指标或因标题升级归因。
             kind = item.get("kind")
+            attribution_unproven = kind == "attribution" or item.get("directDecomposition") is True
             if kind not in {"scale", "trend", "comparison", "anomaly", "impact", "data_quality"}:
                 kind = "impact"
             findings.append(FindingCard(
                 findingId=_stable_id(analysis_id, f"{supplemental_file_path}:{pointer}", snapshot_hash),
-                analysisIds=(analysis_id,), kind=kind, title=name[:200],
+                analysisIds=(analysis_id,), kind=cast(FindingKind, kind), title=name[:200],
                 summary=f"已登记补充证据：{name}"[:4000],
                 metricCodes=tuple(item.get("metricCodes") or (analysis_id,)),
                 periodRoles=tuple(item.get("periodRoles") or ("current",)),
                 periodStart=item.get("periodStart"), periodEnd=item.get("periodEnd"),
                 grain=_tuple_values(item.get("grain")), scope=scope,
-                priority="medium", evidenceLevel="verified_fact", actionability="unknown",
+                priority="medium", evidenceLevel="evidence_missing" if attribution_unproven else "verified_fact", actionability="unknown",
                 citationIds=citation_ids,
                 sourceRefs=(_source(analysis_id, supplemental_file_path, supplemental_file_sha256, pointer),),
-                limitations=tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning) + scope_limitations,
+                limitations=(tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning)
+                             + scope_limitations + (("直接分解未证明同期间、同范围、同单位及完整分组身份；不能据此归因或安排整改。",)
+                                                    if attribution_unproven else ())),
             ))
     if not findings:
         add("data_quality", "/warnings", "当前分析缺少可编排发现", "当前分析没有形成可用于正文的确定性发现。", priority="low", evidence="evidence_missing", limitations=tuple(str(item) for item in payload.get("warnings", ()) if item))
