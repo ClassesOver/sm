@@ -590,12 +590,9 @@ def _aggregate(series: pl.Series, aggregation: Aggregation) -> float | None:
     numeric = series.cast(pl.Float64, strict=False).drop_nulls()
     if numeric.is_empty():
         return None
-    values = {
-        "sum": numeric.sum(),
-        "average": numeric.mean(),
-        "min": numeric.min(),
-        "max": numeric.max(),
-    }
+    if aggregation in {"sum", "average"}:
+        return _finite(_stable_aggregate(numeric.to_list(), aggregation))
+    values = {"min": numeric.min(), "max": numeric.max()}
     return _finite(values[aggregation])
 
 
@@ -626,11 +623,36 @@ def _grouped_aggregation(
         *(pl.col(column).cast(pl.String).alias(alias)
           for column, alias in zip(group_fields, groups, strict=True)),
     )
+    if aggregation in {"sum", "average"}:
+        # 并行分组求和的浮点结果依赖相加顺序：同一数据集在不同分析中会得到末位不同的月值，
+        # 被核对视为冲突事实而改写为“待核实”。逐组用 math.fsum 精确舍入，结果与顺序无关。
+        grouped = projected.group_by(list(groups)).agg(
+            pl.col("__input").cast(pl.Float64, strict=False).drop_nulls().alias("__values"),
+            _valid_count_expression("__input", aggregation).alias("__valid"),
+        )
+        grouped = grouped.with_columns(
+            pl.col("__values").map_elements(
+                lambda values: _stable_aggregate(values.to_list(), aggregation),
+                return_dtype=pl.Float64,
+            ).alias("__value")
+        ).drop("__values")
+        return grouped, groups
     grouped = projected.group_by(list(groups)).agg(
         _aggregation_expression("__input", aggregation).alias("__value"),
         _valid_count_expression("__input", aggregation).alias("__valid"),
     )
     return grouped, groups
+
+
+def _stable_aggregate(values: list[float], aggregation: Aggregation) -> float | None:
+    if not values:
+        return 0.0 if aggregation == "sum" else None
+    try:
+        total = math.fsum(values)
+    except OverflowError:
+        # 中间值溢出时退回普通求和得到 inf/nan，交由既有非有限值告警处理。
+        total = sum(values)
+    return total if aggregation == "sum" else total / len(values)
 
 
 def _period_values(
