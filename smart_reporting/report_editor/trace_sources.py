@@ -148,6 +148,25 @@ class _RegisteredFile(Protocol):
     def sha256(self) -> str: ...
 
 
+# 数据核对结果只有 verified/unknown（语义核对另有 conflicting）。unknown 里有一类只是“未评估”：
+# 静态 PNG 不做数组比对、图表/表格未登记规格。它们不说明来源被改动，不能把未改动的图表/表格
+# 降为待复核；其余 unknown（比对不一致、来源不可读、核对失败）仍按待复核处理。前端
+# source-validation.ts 的 checkNeedsReview 保持同一清单。
+NOT_EVALUATED_REASONS = frozenset({
+    "static_image_not_evaluated", "interactive_spec_unregistered", "chart_unregistered", "table_unregistered",
+    "chart_semantics_unregistered", "chart_fact_binding_unregistered",
+    # 语义核对因数组未核验而未运行；数组本身不一致时 dataCheck 已判待复核。
+    "chart_arrays_unverified",
+})
+
+
+def check_mismatched(check: Any) -> bool:
+    if not isinstance(check, Mapping) or check.get("status") == "verified":
+        return False
+    reasons = check.get("reasons") or ((check["reason"],) if isinstance(check.get("reason"), str) else ())
+    return check.get("status") == "conflicting" or not reasons or not set(reasons) <= NOT_EVALUATED_REASONS
+
+
 class ReportEditorTraceService:
     def __init__(self, workspace: Any, *, cursor_secret: bytes) -> None:
         self._workspace = workspace
