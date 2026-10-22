@@ -1474,8 +1474,9 @@ class RuntimePublicationMixin:
                     quality_image_bytes = 0
                     quality_source_ids.update(resource_id for chart in index.chart_traces
                                               for resource_id in (chart.image_file_resource_id, *chart.plot_data_file_resource_ids))
+                    interactive_paths = set((interactive_charts or {}).values())
                     quality_source_ids.update(file.resource_id for file in index.files
-                                              if file.path in set((interactive_charts or {}).values()))
+                                              if file.path in interactive_paths)
                     for file in index.files:
                         if file.resource_id not in quality_source_ids:
                             continue

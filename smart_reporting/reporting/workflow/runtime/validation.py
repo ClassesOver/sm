@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from ..query_pipeline import _exact_constant_numeric_columns
 from .base import (
     AnalysisBundle,
     AnalysisItem,
@@ -426,33 +427,21 @@ def _measure_semantic_issues(
     return issues
 
 
-def _exact_constant_numeric_columns(
-    source_id: str,
-    qualified_table: str,
-    snapshot: SourceSchemaSnapshot,
-    data_shapes: tuple[DataShape, ...],
-) -> set[str]:
-    """返回当前报表期间内由精确画像证明不会扩大分组粒度的数值列。"""
+# 多表 requirement 无法安全合并时的结构化修复指令；纠错范围按此代码放开，不匹配提示文案。
+SPLIT_REQUIREMENTS_ACTION = "split_requirements"
 
-    matching_tables = [
-        table
-        for shape in data_shapes
-        if shape.source_id.lower() == source_id.lower()
-        and shape.metadata_revision == snapshot.revision
-        and shape.schema_hash == snapshot.schema_hash
-        for table in shape.tables
-        if table.source_id.lower() == source_id.lower()
-        and f"{table.database}.{table.table}".lower() == qualified_table.lower()
-    ]
-    if len(matching_tables) != 1:
-        return set()
-    return {
-        column.name.lower()
-        for column in matching_tables[0].columns
-        if _NUMERIC_MEASURE_TYPE_PATTERN.match(column.data_type) is not None
-        and column.distinct_mode == "exact"
-        and column.distinct_count <= 1
-    }
+
+def _rebuilt_bundle(
+    analyses: Sequence[Any], requirements: Sequence[QueryRequirement]
+) -> AnalysisBundle:
+    """用归一化后的 requirements 重建并重新校验分析计划。"""
+
+    return AnalysisBundle.model_validate(
+        {
+            "analyses": [item.model_dump(mode="json", by_alias=True) for item in analyses],
+            "requirements": [item.model_dump(mode="json", by_alias=True) for item in requirements],
+        }
+    )
 
 
 def _normalize_analysis_bundle_grain(
@@ -503,14 +492,7 @@ def _normalize_analysis_bundle_grain(
         )
     if not repairs:
         return bundle, []
-    normalized_bundle = AnalysisBundle.model_validate(
-        {
-            "analyses": [item.model_dump(mode="json", by_alias=True) for item in bundle.analyses],
-            "requirements": [
-                item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-            ],
-        }
-    )
+    normalized_bundle = _rebuilt_bundle(bundle.analyses, normalized_requirements)
     return normalized_bundle, repairs
 
 
@@ -530,16 +512,7 @@ def _normalize_requirement_columns(
     if not repairs:
         return bundle, []
     return (
-        AnalysisBundle.model_validate(
-            {
-                "analyses": [
-                    item.model_dump(mode="json", by_alias=True) for item in bundle.analyses
-                ],
-                "requirements": [
-                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-                ],
-            }
-        ),
+        _rebuilt_bundle(bundle.analyses, normalized_requirements),
         repairs,
     )
 
@@ -600,16 +573,7 @@ def _normalize_requirement_periods(
     if not repairs:
         return bundle, []
     return (
-        AnalysisBundle.model_validate(
-            {
-                "analyses": [
-                    item.model_dump(mode="json", by_alias=True) for item in bundle.analyses
-                ],
-                "requirements": [
-                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-                ],
-            }
-        ),
+        _rebuilt_bundle(bundle.analyses, normalized_requirements),
         repairs,
     )
 
@@ -720,16 +684,7 @@ def _normalize_comparison_roles(
     if not repairs:
         return bundle, []
     return (
-        AnalysisBundle.model_validate(
-            {
-                "analyses": [
-                    item.model_dump(mode="json", by_alias=True) for item in bundle.analyses
-                ],
-                "requirements": [
-                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-                ],
-            }
-        ),
+        _rebuilt_bundle(bundle.analyses, normalized_requirements),
         repairs,
     )
 
@@ -832,14 +787,7 @@ def _normalize_unsafe_multi_table_requirements(
         for analysis in bundle.analyses
     ]
     return (
-        AnalysisBundle.model_validate(
-            {
-                "analyses": [item.model_dump(mode="json", by_alias=True) for item in analyses],
-                "requirements": [
-                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-                ],
-            }
-        ),
+        _rebuilt_bundle(analyses, normalized_requirements),
         repairs,
     )
 
@@ -928,12 +876,7 @@ def _normalize_duplicate_requirements(
                 }
             )
         )
-    normalized = AnalysisBundle.model_validate(
-        {
-            "analyses": [item.model_dump(mode="json", by_alias=True) for item in analyses],
-            "requirements": [item.model_dump(mode="json", by_alias=True) for item in merged],
-        }
-    )
+    normalized = _rebuilt_bundle(analyses, merged)
     return normalized, repairs
 
 
@@ -965,6 +908,7 @@ def _multi_table_requirement_issues(
                 "requiredAction": (
                     "拆分为单表 requirements，并让 analyses.requirementIds 同时引用它们"
                 ),
+                "actionCode": SPLIT_REQUIREMENTS_ACTION,
             }
         )
 
@@ -994,6 +938,7 @@ def _multi_table_requirement_issues(
                     "requiredAction": (
                         "拆分为单表 requirements；只有确实存在完整共同粒度时才保留多表 requirement"
                     ),
+                    "actionCode": SPLIT_REQUIREMENTS_ACTION,
                 }
             )
 
@@ -1011,6 +956,7 @@ def _multi_table_requirement_issues(
                     "requiredAction": (
                         "joinColumns 必须完整等于 grainColumns；无法满足时拆分为单表 requirements"
                     ),
+                    "actionCode": SPLIT_REQUIREMENTS_ACTION,
                 }
             )
     return issues

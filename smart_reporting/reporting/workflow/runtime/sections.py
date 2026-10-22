@@ -8,8 +8,6 @@ from collections.abc import Callable
 from copy import copy
 
 from agno.exceptions import ModelProviderError
-from agno.models.message import Message
-from agno.session.agent import AgentSession
 from loguru import logger as loguru_logger
 
 from ....context_management import TaskExecutionContextHardLimitError
@@ -113,8 +111,12 @@ from .base import (
     TaskExecutionScope,
     TaskState,
     ValidationError,
+    _count_request_tokens,
     _frozen_outline,
+    _json_text,
     _planner_candidate,
+    _routed_model_copy,
+    _structured_request_messages,
     assemble_report_markdown,
     build_report_phase_acceptance_contract,
     cast,
@@ -332,34 +334,19 @@ def _section_block_input_token_budget(agent: Any, run_context: RunContext) -> in
     )
 
 
-def _json_text(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-
-
 def _section_request_tokens(agent: Any, payload: Mapping[str, Any], run_context: RunContext) -> int:
     """按最终路由计入系统约束和输出 schema；tokenizer 不可用时保守估算。"""
 
     stage_agent = _section_stage_agent(agent, SectionContent, "content") if callable(getattr(agent, "deep_copy", None)) else agent
-    model = getattr(stage_agent, "model", None)
-    counting_model = copy(model) if model is not None else None
-    route = reporting_model_route_from_run_context(run_context)
-    if counting_model is not None and route is not None:
-        counting_model.id = route[1]
-    serialized = _json_text(payload)
-    messages = []
-    get_system_message = getattr(stage_agent, "get_system_message", None)
-    if callable(get_system_message):
-        system_message = get_system_message(
-            session=AgentSession(session_id="section-content-budget", agent_id=getattr(stage_agent, "id", None)),
-            run_context=None, tools=[], add_session_state_to_context=False, input=serialized,
-        )
-        if system_message is not None:
-            messages.append(system_message)
-    messages.append(Message(role="user", content=serialized))
+    messages = _structured_request_messages(
+        stage_agent, _json_text(payload), session_id="section-content-budget"
+    )
     try:
-        count = counting_model.count_tokens(messages, output_schema=SectionContent)
-        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
-            return count
+        return _count_request_tokens(
+            _routed_model_copy(getattr(stage_agent, "model", None), run_context),
+            messages,
+            SectionContent,
+        )
     except Exception:
         pass
     return sum(len(str(message.content).encode("utf-8")) for message in messages) + len(
@@ -444,8 +431,9 @@ def _controlled_assertions(contents: Sequence[str], payload: dict[str, Any], pol
     if not isinstance(trusted_hashes, (list, tuple)) or not trusted_hashes:
         payload["assertionUnavailable"] = "trusted_facts_unavailable"
         return {}
+    trusted_set = frozenset(trusted_hashes)
     trusted_contents = tuple(content for content in contents
-                             if hashlib.sha256(content.encode("utf-8")).hexdigest() in trusted_hashes)
+                             if hashlib.sha256(content.encode("utf-8")).hexdigest() in trusted_set)
     if not trusted_contents:
         payload["assertionUnavailable"] = "trusted_facts_unavailable"
         return {}

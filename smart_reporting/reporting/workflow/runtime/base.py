@@ -20,8 +20,10 @@ from zoneinfo import ZoneInfo
 
 import anyio
 from agno.agent import Agent
+from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
+from agno.session.agent import AgentSession
 from agno.workflow.types import StepInput, StepOutput
 from loguru import logger as loguru_logger
 from pydantic import (
@@ -151,6 +153,7 @@ from ...model_policy import (
     positive_token_count,
 )
 from ...models import ReportingError
+from ...phase import reporting_model_route_from_run_context
 from ...presentation import completed_report_content
 from ...profile import (
     CapabilitySet,
@@ -526,6 +529,71 @@ def _limit_planner_output_tokens(model: OpenAIChat, output_token_limit: int) -> 
     )
     if released > 0:
         model._task_execution_input_token_budget = budget + released  # type: ignore[attr-defined]
+
+
+def _json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+_OFF_LOOP_HASH_BYTES = 1024 * 1024
+
+
+async def _sha256_hex(content: bytes) -> str:
+    """大文件摘要在线程中计算（hashlib 会释放 GIL），避免阻塞事件循环；小内容直接计算。"""
+
+    if len(content) < _OFF_LOOP_HASH_BYTES:
+        return hashlib.sha256(content).hexdigest()
+    return await anyio.to_thread.run_sync(lambda: hashlib.sha256(content).hexdigest())
+
+
+def _routed_model_copy(model: Any, run_context: RunContext) -> Any:
+    """返回绑定最终路由模型 ID 的副本，供请求前 token 计数；不修改共享模型。"""
+
+    routed = copy(model) if model is not None else None
+    route = reporting_model_route_from_run_context(run_context)
+    if routed is not None and route is not None:
+        routed.id = route[1]
+    return routed
+
+
+def _structured_request_messages(agent: Any, serialized: str, *, session_id: str) -> list[Message]:
+    """按实际请求形态组装系统约束与用户载荷，用于请求前计数。"""
+
+    messages: list[Message] = []
+    get_system_message = getattr(agent, "get_system_message", None)
+    if callable(get_system_message):
+        system_message = get_system_message(
+            session=AgentSession(session_id=session_id, agent_id=getattr(agent, "id", None)),
+            run_context=None,
+            tools=[],
+            add_session_state_to_context=False,
+            input=serialized,
+        )
+        if system_message is not None:
+            messages.append(system_message)
+    messages.append(Message(role="user", content=serialized))
+    return messages
+
+
+def _count_request_tokens(
+    model: Any, messages: list[Message], output_schema: type[BaseModel]
+) -> int:
+    """用最终路由模型的 tokenizer 计数；不可用或结果无效时抛出，由调用方决定保守后备。"""
+
+    count_tokens = getattr(model, "count_tokens", None)
+    if not callable(count_tokens):
+        raise TypeError("model 缺少 count_tokens")
+    token_count = positive_token_count(count_tokens(messages, output_schema=output_schema))
+    if token_count is None:
+        raise TypeError("count_tokens 未返回正整数")
+    return token_count
+
+
+def _validated_entrypoint(value: Any) -> str:
+    entrypoint = str(value or "")
+    if entrypoint not in {"agentos", "cli", "mcp"}:
+        raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
+    return entrypoint
 
 
 def merge_publication_issues(gate: Any, late_issues: Any) -> Any:
@@ -1125,9 +1193,7 @@ class _ReportWorkflowRuntimeBase:
         digest = hashlib.sha256(
             f"{run_context.run_id}:{agent.id}:{session_suffix}".encode()
         ).hexdigest()[:32]
-        serialized_payload = json.dumps(
-            payload, ensure_ascii=False, separators=(",", ":"), default=str
-        )
+        serialized_payload = _json_text(payload)
         planner_recorder = PlannerRequestRecorder(
             planner_id=str(getattr(agent, "id", "unknown")),
             model_id=str(getattr(getattr(agent, "model", None), "id", "unknown")),
@@ -1299,14 +1365,6 @@ class _ReportWorkflowRuntimeBase:
     ) -> Any:
         scope = self._scope(run_context)
         report_run_id = str(run_context.run_id or scope["externalRunId"])
-        durable = await self.state_repository.get_by_external_run_id(scope["externalRunId"])
-        if durable is None:
-            durable = await self.state_repository.get_or_create(
-                report_run_id=report_run_id,
-                external_run_id=scope["externalRunId"],
-                thread_id=scope["callerThreadId"],
-                owner_user_id=scope["userId"],
-            )
         # 多个章节 child task 可以同时完成；CAS 冲突只重读当前版本并重放同一
         # commandId。Reducer 对已应用 command 返回幂等结果，副作用不会重复。
         async with self._durable_command_lock:
@@ -1351,11 +1409,16 @@ class _ReportWorkflowRuntimeBase:
             stored_scope=stored if isinstance(stored, dict) and "sessionId" in stored else None,
         )
         # 原生恢复可从末端步骤开始；服务重启后需按已校验的原作用域重新绑定工作区。
-        if getattr(self, "workspace_registry", None) is not None:
-            self._workspace_for_scope(resolved)
+        self._bind_workspace(resolved)
         scope = resolved.as_state()
         state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = scope
         return scope
+
+    def _bind_workspace(self, scope: ReportingWorkflowScope) -> None:
+        """注册表已配置时预先绑定作用域工作区；未配置的测试装配跳过。"""
+
+        if getattr(self, "workspace_registry", None) is not None:
+            self._workspace_for_scope(scope)
 
     def _workspace_for_scope(self, scope: ReportingWorkflowScope) -> HostReportingWorkspace:
         registry = getattr(self, "workspace_registry", None)
@@ -1392,6 +1455,21 @@ class _ReportWorkflowRuntimeBase:
         )
         return self._workspace_for_scope(scope)
 
+    def _run_workspace(self, run_context: RunContext) -> HostReportingWorkspace:
+        """按 run 已校验的作用域取回工作区，与 _scope 使用同一 stored scope。"""
+
+        return self.workspace_for(
+            run_id=str(run_context.run_id or ""),
+            session_id=str(run_context.session_id or ""),
+            user_id=str(run_context.user_id or "") or None,
+            dependencies=(
+                dict(run_context.dependencies)
+                if isinstance(run_context.dependencies, Mapping)
+                else None
+            ),
+            stored_scope=self._scope(run_context),
+        )
+
     def prepare_run(
         self,
         *,
@@ -1406,13 +1484,10 @@ class _ReportWorkflowRuntimeBase:
             user_id=user_id,
             dependencies=dependencies,
         )
-        entrypoint = str(
+        entrypoint = _validated_entrypoint(
             (dependencies or {}).get(REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY) or "agentos"
         )
-        if entrypoint not in {"agentos", "cli", "mcp"}:
-            raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
-        if getattr(self, "workspace_registry", None) is not None:
-            self._workspace_for_scope(scope)
+        self._bind_workspace(scope)
         return {
             REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state(),
             REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY: entrypoint,
@@ -1428,11 +1503,8 @@ class _ReportWorkflowRuntimeBase:
             user_id=str(value.get("userId") or "") or None,
             stored_scope=value,
         )
-        entrypoint = str(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY) or "")
-        if entrypoint not in {"agentos", "cli", "mcp"}:
-            raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
-        if getattr(self, "workspace_registry", None) is not None:
-            self._workspace_for_scope(scope)
+        entrypoint = _validated_entrypoint(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY))
+        self._bind_workspace(scope)
         has_external_caller = (
             scope.external_run_id != run_id or scope.caller_thread_id != scope.session_id
         )

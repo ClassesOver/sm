@@ -2,6 +2,7 @@
 # 运行时由 Facade 组合的多重继承提供跨阶段成员；静态检查无法解析该装配。
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime
 from hashlib import sha256
@@ -78,6 +79,7 @@ from .base import (
     TableReference,
     TaskState,
     ValidationError,
+    _json_text,
     _validation_issue,
     anyio,
     approve_query_batch,
@@ -104,6 +106,7 @@ from .base import (
 from .datasets import _analysis_context_payload
 from .models import _NUMERIC_MEASURE_TYPE_PATTERN, MeasureSemanticDecision
 from .validation import (
+    SPLIT_REQUIREMENTS_ACTION,
     _analysis_bundle_semantic_issues,
     _available_table_columns,
     _available_tables,
@@ -118,6 +121,21 @@ from .validation import (
 )
 
 __all__ = ["RuntimePlanningMixin", "_PLANNER_DISPLAY_NAMES"]
+
+
+
+def _apply_bundle_normalizers(
+    bundle: AnalysisBundle,
+    *normalizers: Callable[[AnalysisBundle], tuple[AnalysisBundle, list[dict[str, Any]]]],
+) -> tuple[AnalysisBundle, bool]:
+    """按顺序应用服务端确定性修复；只有产生修复记录时才采用归一化结果。"""
+
+    repaired = False
+    for normalize in normalizers:
+        normalized, repairs = normalize(bundle)
+        if repairs:
+            bundle, repaired = normalized, True
+    return bundle, repaired
 
 
 class _TerminalCleanupTrace(BaseModel):
@@ -787,7 +805,7 @@ class RuntimePlanningMixin:
         raise ReportingError(
             "report_data_understanding_invalid",
             "数据理解计划连续五次未通过校验。最后一次诊断："
-            + json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"), default=str),
+            + _json_text(diagnostic),
         )
 
     async def prepare_data_profile(
@@ -1052,7 +1070,7 @@ class RuntimePlanningMixin:
         raise ReportingError(
             "report_measure_semantic_proposal_invalid",
             "指标语义候选连续五次未通过校验。最后一次诊断："
-            + json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"), default=str),
+            + _json_text(diagnostic),
         )
 
     async def commit_measure_semantics(
@@ -1431,20 +1449,14 @@ class RuntimePlanningMixin:
                 }
                 continue
             assert isinstance(output, AnalysisBundle)
-            output_payload = output.model_dump(mode="json", by_alias=True)
-            normalized_output, column_repairs = _normalize_requirement_columns(output, snapshots)
-            if column_repairs:
-                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                output = normalized_output
-                output_payload = normalized_payload
-            normalized_output, period_repairs = _normalize_requirement_periods(
+            output, _ = _apply_bundle_normalizers(
                 output,
-                self._data_understanding(run_context),
+                lambda bundle: _normalize_requirement_columns(bundle, snapshots),
+                lambda bundle: _normalize_requirement_periods(
+                    bundle, self._data_understanding(run_context)
+                ),
             )
-            if period_repairs:
-                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                output = normalized_output
-                output_payload = normalized_payload
+            output_payload = output.model_dump(mode="json", by_alias=True)
             if previous_output is not None:
                 try:
                     previous_bundle = AnalysisBundle.model_validate(previous_output)
@@ -1473,32 +1485,19 @@ class RuntimePlanningMixin:
                         tuple(unexpected_paths),
                     )
                     output = AnalysisBundle.model_validate(output_payload)
-            normalized_output, split_repairs = _normalize_unsafe_multi_table_requirements(
-                output, snapshots, data_shapes
+            output, repaired = _apply_bundle_normalizers(
+                output,
+                lambda bundle: _normalize_unsafe_multi_table_requirements(
+                    bundle, snapshots, data_shapes
+                ),
+                lambda bundle: _normalize_analysis_bundle_grain(bundle, snapshots, data_shapes),
+                _normalize_duplicate_requirements,
+                lambda bundle: _normalize_comparison_roles(
+                    bundle, self._envelope(run_context).comparison_roles
+                ),
             )
-            if split_repairs:
-                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                output = normalized_output
-                output_payload = normalized_payload
-            normalized_output, grain_repairs = _normalize_analysis_bundle_grain(
-                output, snapshots, data_shapes
-            )
-            if grain_repairs:
-                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                output = normalized_output
-                output_payload = normalized_payload
-            normalized_output, requirement_repairs = _normalize_duplicate_requirements(output)
-            if requirement_repairs:
-                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                output = normalized_output
-                output_payload = normalized_payload
-            normalized_output, comparison_repairs = _normalize_comparison_roles(
-                output, self._envelope(run_context).comparison_roles
-            )
-            if comparison_repairs:
-                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                output = normalized_output
-                output_payload = normalized_payload
+            if repaired:
+                output_payload = output.model_dump(mode="json", by_alias=True)
             semantic_issues = _analysis_bundle_semantic_issues(
                 output,
                 self._data_understanding(run_context),
@@ -2969,7 +2968,7 @@ def _analysis_allowed_mutation_paths(
     if any(
         isinstance(issue.get("path"), str)
         and str(issue["path"]).startswith("requirements[")
-        and "拆分为单表" in str(issue.get("requiredAction", ""))
+        and issue.get("actionCode") == SPLIT_REQUIREMENTS_ACTION
         for issue in issues
     ):
         return ("requirements", "analyses[*].requirementIds")
