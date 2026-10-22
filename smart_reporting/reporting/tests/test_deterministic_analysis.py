@@ -817,19 +817,29 @@ def test_correlation_skips_incompatible_metric_scopes_with_warning():
     assert any("固定范围不一致" in warning for warning in bundle.warnings)
 
 
-def test_month_start_dates_without_declared_grain_compare_the_whole_window() -> None:
-    # 月份按月初 DATE 存储且未声明序列粒度时，按日判断连续会只剩最后一个月的同比。
+
+def test_profile_month_dimension_makes_month_start_dates_compare_the_whole_window():
+    from smart_reporting.reporting.workflow.runtime.datasets import _profile_monthly_period_columns
+
+    profile = {"dimensions": [
+        {"code": "month", "kind": "time", "fieldRefs": ["rj.dwd_income_budget_view.data_date"]},
+        {"code": "year", "kind": "time", "fieldRefs": ["rj.dwd_project_budget_view.year"]},
+    ]}
+    assert _profile_monthly_period_columns(profile) == {("dwd_income_budget_view", "data_date")}
+    assert _profile_monthly_period_columns(None) == frozenset()
+
     current = b"month,department,amount\n2025-01-01,A,10\n2025-02-01,A,20\n2025-03-01,A,30\n"
     baseline = b"month,department,amount\n2024-01-01,A,5\n2024-02-01,A,10\n2024-03-01,A,15\n"
 
-    def dated(dataset_id: str) -> DatasetAnalysisContext:
-        return context(dataset_id).model_copy(update={"period_granularities": {"month": "date"}})
+    def contexts(grain: str):
+        return tuple(
+            (role, data, context(role).model_copy(update={"period_granularities": {"month": grain}}), (role,))
+            for role, data in (("current", current), ("yoy", baseline))
+        )
 
-    bundle = build_deterministic_analysis_bundle(analysis(), (
-        ("current", current, dated("current"), ("current",)),
-        ("yoy", baseline, dated("yoy"), ("yoy",)),
-    ))
-
-    comparison = bundle.comparisons[0]
-    assert (comparison.period_start, comparison.period_end) == ("2025-01-01", "2025-03-01")
-    assert (comparison.current_total, comparison.baseline_total) == (60, 30)
+    # 未经 Profile 确认的 date 粒度保持按日判断，只能对齐最后一期。
+    day = build_deterministic_analysis_bundle(analysis(), contexts("date")).comparisons[0]
+    assert (day.period_start, day.period_end) == ("2025-03-01", "2025-03-01")
+    month = build_deterministic_analysis_bundle(analysis(), contexts("month")).comparisons[0]
+    assert (month.period_start, month.period_end) == ("2025-01-01", "2025-03-01")
+    assert (month.current_total, month.baseline_total) == (60, 30)

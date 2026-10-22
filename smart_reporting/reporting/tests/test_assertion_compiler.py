@@ -512,3 +512,32 @@ def test_registered_percentage_difference_keeps_percentage_point_unit():
         assertions={result.assertion_id: result},
     )
     assert "个百分点" in text and len(refs) == 1 and not notices
+
+
+@pytest.mark.parametrize(
+    ("selector", "value", "periods"),
+    [("currentTotal", "70.0", ("2025-01",)), ("baselineTotal", "100.0", ("2024-01",))],
+)
+def test_registered_comparison_side_totals_are_value_proofs(selector, value, periods):
+    from smart_reporting.reporting.trace.assertions import assertion_request_for_token
+
+    source = json.dumps(comparison_document(current=70, baseline=100), ensure_ascii=False)
+    selected = token("c", selector=selector)
+    built = compiler([source])
+    request = assertion_request_for_token(selected, built.resolver)
+    assert request is not None and request.operation == "value"
+    result = built.compile(request)
+    assert result.status == "supported", result.reasons
+    assert result.value == value and result.periods == periods
+
+
+def test_comparison_side_total_keeps_input_identity_check():
+    from smart_reporting.reporting.trace.assertions import assertion_request_for_token
+
+    document = comparison_document(current=70, baseline=100)
+    document["comparisons"][0]["baselineDatasetSha256"] = "e" * 64
+    built = compiler([json.dumps(document, ensure_ascii=False)])
+    selected = token("c", selector="currentTotal")
+    result = built.compile(assertion_request_for_token(selected, built.resolver))
+    assert result.status != "supported" and result.value is None
+

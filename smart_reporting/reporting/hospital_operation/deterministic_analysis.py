@@ -382,8 +382,7 @@ def _dataset_facts(
     time_fields = _period_axis_aliases(dataset.frame, dataset.context, period_field)
     source_grain = dataset.context.period_granularities.get(period_field or "")
     period_granularity = (
-        analysis.series_granularity or _date_period_grain(dataset.frame, period_field)
-        if source_grain == "date"
+        analysis.series_granularity or "day" if source_grain == "date"
         else source_grain or analysis.series_granularity
     )
     group_fields = tuple(
@@ -612,17 +611,6 @@ def _grouped_aggregation(
         _valid_count_expression("__input", aggregation).alias("__valid"),
     )
     return grouped, groups
-
-
-def _date_period_grain(frame: pl.DataFrame, period_field: str | None) -> Literal["day", "month"]:
-    """月份常以月初日期存储；若按日连续性判断，同比只会剩最后一个月。"""
-    if period_field is None or period_field not in frame.columns:
-        return "day"
-    labels = frame[period_field].drop_nulls().unique().cast(pl.String).to_list()
-    parsed = [_parse_period(label) for label in labels]
-    if len(parsed) > 1 and all(item is not None and item.value.day == 1 for item in parsed):
-        return "month"
-    return "day"
 
 
 def _period_values(
