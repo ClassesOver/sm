@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
+from functools import lru_cache
 from typing import Any
 
 from loguru import logger
@@ -349,14 +350,29 @@ def metric_share_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, A
     return shares
 
 
+@lru_cache(maxsize=256)
+def _parsed_fact_bundle(content: str) -> DeterministicAnalysisBundle | None:
+    # 同一批事实文本会被目录、核对、复核各函数反复解析（整份报告单次复核约 500 次）；
+    # 事实模型 frozen，按原文缓存解析结果不改变语义。
+    try:
+        return DeterministicAnalysisBundle.model_validate_json(content)
+    except ValueError:
+        return None
+
+
+@lru_cache(maxsize=256)
+def _fact_bundle_document(content: str) -> dict[str, Any] | None:
+    """仅供本模块只读遍历的 JSON 形态；不向调用方暴露，避免共享可变对象。"""
+    bundle = _parsed_fact_bundle(content)
+    return None if bundle is None else bundle.model_dump(mode="json", by_alias=True)
+
+
 def frozen_fact_bundles(contents: Iterable[str]) -> Iterator[DeterministicAnalysisBundle]:
     """目录与引用解析共用模型校验和字段规范化，忽略非事实文档。"""
     for content in contents:
-        try:
-            bundle = DeterministicAnalysisBundle.model_validate_json(content)
-        except ValueError:
-            continue
-        yield bundle
+        bundle = _parsed_fact_bundle(content)
+        if bundle is not None:
+            yield bundle
 
 
 def _registered_groups(entry: Mapping[str, Any], key: str):
@@ -397,8 +413,11 @@ def _frozen_number_entries(
     contents: Iterable[str],
 ) -> Iterator[tuple[str, Any, str | None, str | None]]:
     """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
-    for bundle in frozen_fact_bundles(contents):
-        document = bundle.model_dump(mode="json", by_alias=True)
+    for content in contents:
+        bundle = _parsed_fact_bundle(content)
+        document = _fact_bundle_document(content)
+        if bundle is None or document is None:
+            continue
         metric_entries = {item["factId"]: item for item in document["metrics"] if item.get("factId")}
         fact_warnings = {item["factId"]: item.get("warnings", ()) for item in (*document["metrics"], *document["comparisons"]) if item.get("factId")}
         for array, fields in (
