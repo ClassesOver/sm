@@ -189,6 +189,14 @@ def render_management_overview(overview: ManagementOverview, *, formal: bool = F
     return "\n".join([*lines, "", "本表不代表整份报告业务验收通过，不授权因果解释、责任目标或预算口径推断。", ""])
 
 
+def unavailable_management_overview_projection(markdown_sha256: str) -> dict:
+    """总览证据不可用时的固定投影：渲染器只显示缺项说明，不含任何数值。"""
+    return {
+        "version": "management-overview-render/1", "sourceSha256": markdown_sha256,
+        "qualityInputSha256": "0" * 64, "status": "unavailable", "markdown": "",
+    }
+
+
 def management_overview_projection(overview: ManagementOverview | None, markdown_sha256: str,
                                    presentations=None) -> dict:
     """Server-only presentation envelope; not a signature or a source proof."""

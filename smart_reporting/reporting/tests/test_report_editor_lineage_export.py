@@ -190,8 +190,8 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             snapshot_paths.append(markdown_path)
             snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
             assert snapshot.decode() == edited_markdown
-            assert management_overview["sourceSha256"] == _sha(snapshot)
-            assert management_overview["status"] == "unavailable"
+            # 未启用回答审核：质量记录里的总览未评估，导出沿用各章核心结论而不是缺项说明。
+            assert management_overview is None
             assert artifact_manifest is not None
             assert artifact_manifest["revision"] == 2
             assert artifact_manifest["markdown"] == {
@@ -396,14 +396,15 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-@pytest.mark.parametrize("fault", ["missing_source", "snapshot", "appendix", "appendix_disabled"])
+@pytest.mark.parametrize("fault", ["missing_source", "snapshot", "appendix", "appendix_disabled", "overview"])
 async def test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing(
     tmp_path: Path, fault: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """故障注入：来源缺失、快照失败、附录失败及关闭附录。
+    """故障注入：来源缺失、快照失败、附录失败、关闭附录及经营总览投影失败。
 
     AGENTS：追溯数据不可用只拒绝使用该数据，PDF/Word 照常签发并返回原因。
     附录构建失败只降级展示，仍登记有效追溯；关闭附录不应调用构建器。
+    经营总览投影失败只显示缺项说明，不连带丢弃已核验的追溯。
     """
     editor, grants, original = await _make_editor_with_subject(tmp_path)
     thread_id = original.scope["threadId"]
@@ -430,6 +431,22 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
             raise OSError("disk full")
 
         monkeypatch.setattr(service_module, "snapshot_revision_lineage", broken_snapshot)
+    elif fault == "overview":
+        from smart_reporting.report_editor import service as service_module
+
+        validate = editor.trace.validate
+
+        async def validate_with_overview(*args, **kwargs):
+            result = await validate(*args, **kwargs)
+            result.setdefault("quality", {})["managementOverview"] = {"status": "evaluated"}
+            return result
+
+        def broken_projection(*_args, **_kwargs):
+            raise ValueError("overview does not belong to the rendered Markdown")
+
+        monkeypatch.setattr(editor.trace, "validate", validate_with_overview)
+        monkeypatch.setattr(service_module.ManagementOverview, "model_validate", staticmethod(lambda value: value))
+        monkeypatch.setattr(service_module, "management_overview_projection", broken_projection)
     else:
         from smart_reporting.report_editor import service as service_module
 
@@ -439,7 +456,7 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
 
         monkeypatch.setattr(service_module, "_build_export_trace_sources", oversized_appendix)
 
-    if fault in {"appendix", "appendix_disabled"}:
+    if fault in {"appendix", "appendix_disabled", "overview"}:
         # 本用例的冻结正文就是当前文本，避免夹具原文身份变更干扰附录故障。
         index = index.model_copy(update={"files": tuple(
             item.model_copy(update={"size": len(edited_markdown.encode()), "sha256": _sha(edited_markdown.encode())})
@@ -472,14 +489,16 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
     repository = _StateRepository(durable, failure=None)
     editor.state_repository = repository
     rendered_manifests: list[object] = []
+    rendered_overviews: list[object] = []
 
     class ReportTools:
         async def _render_report_pair(
             self, actual_job_id, markdown_path, output_path, *, artifact_manifest, management_overview=None, run_context
         ):
             rendered_manifests.append(artifact_manifest)
+            rendered_overviews.append(management_overview)
             render_job = run_context.session_state[REPORT_JOBS_STATE_KEY][actual_job_id]
-            assert ("_traceSourcePresentations" in render_job) is (fault == "snapshot")
+            assert ("_traceSourcePresentations" in render_job) is (fault in {"snapshot", "overview"})
             snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
             await workspace.awrite_bytes(thread_id, output_path, b"new-pdf")
             await workspace.awrite_bytes(thread_id, "reports/revision-2/report.docx", b"new-word")
@@ -521,10 +540,15 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
         assert rendered_manifests[0] is not None
     assert result["revision"] == 2
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
-    if fault in {"appendix", "appendix_disabled"}:
+    if fault in {"appendix", "appendix_disabled", "overview"}:
         assert result["validation"]["ok"] is (fault == "appendix_disabled")
         if fault == "appendix":
             assert result["validation"]["issues"][0]["code"] == "report_editor_source_appendix_unavailable"
+        if fault == "overview":
+            assert rendered_overviews[0]["status"] == "unavailable"
+            assert [issue["code"] for issue in result["validation"]["issues"]] == [
+                "report_editor_management_overview_unavailable"
+            ]
         committed = ReportEditorContext.model_validate(
             repository.durable.payload["reportEditorContexts"]["2"]
         )

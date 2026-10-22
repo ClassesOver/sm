@@ -245,6 +245,10 @@ def evaluate_publication_semantics(
     return {"formalReleaseAllowed": True, "issues": [], "warnings": warnings}
 
 
+class _OverviewDisabled(Exception):
+    """未注入回答审核计划提供方：不构建经营总览，渲染沿用各章核心结论。"""
+
+
 class RuntimePublicationMixin:
     async def _retain_rendered_report(
         self, run_context: RunContext, result: dict[str, Any],
@@ -336,11 +340,17 @@ class RuntimePublicationMixin:
             ),
             run_context=context,
         )
-        overview_projection = {
-            "version": "management-overview-render/1", "sourceSha256": draft.markdown.sha256,
-            "qualityInputSha256": "0" * 64, "status": "unavailable", "markdown": "",
-        }
+        # 经营问题矩阵依赖服务端注入的回答审核计划提供方；应用/CLI 默认不注入。未启用时沿用
+        # 各章核心结论，避免每份报告的首页都只剩缺项说明。启用后缺少证据才显示缺项说明。
+        overview_enabled = getattr(self, "answer_review_plan_provider", None) is not None
+        from ..management_overview import unavailable_management_overview_projection
+
+        overview_projection = (
+            unavailable_management_overview_projection(draft.markdown.sha256) if overview_enabled else None
+        )
         try:
+            if not overview_enabled:
+                raise _OverviewDisabled
             from ...trace.contracts_v1 import canonical_sha256
             from ..management_overview import management_overview_projection
             from ..overview_sources import registered_management_overview
@@ -354,12 +364,19 @@ class RuntimePublicationMixin:
             overview_projection = management_overview_projection(
                 overview, draft.markdown.sha256, job.get("_citationPresentations"),
             )
+        except _OverviewDisabled:
+            pass
         except Exception as error:
             logger.warning("report_management_overview_unavailable reason={}", type(error).__name__)
-            state.setdefault("report_quality_issues", []).append({
+            # 带修订号：反馈重跑时按修订清理，不重复累积或残留到后续修订。
+            issue = {
                 "code": "management_overview_evidence_unavailable", "status": "unknown",
+                "revision": draft.revision,
                 "message": "经营总览证据不可用，已保留缺项说明并继续生成报告。",
-            })
+            }
+            issues = state.setdefault("report_quality_issues", [])
+            if issue not in issues:
+                issues.append(issue)
         rendered_result = await self.report_tools._render_report_pair(
             str(result["jobId"]),
             str(result["markdownPath"]),

@@ -60,6 +60,9 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
     if failure == "overview_prepare":
         from smart_reporting.reporting.workflow import overview_sources
 
+        # 经营总览只在注入回答审核计划提供方时启用；这里注入后再让总览来源失败。
+        runtime.answer_review_plan_provider = object()
+
         async def unavailable(*args):
             called.append(True)
             raise OSError("overview source unavailable")
@@ -75,6 +78,11 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
     if failure == "overview_prepare":
         assert called
         assert runtime.report_tools._render_report_pair.call_args.kwargs["management_overview"]["status"] == "unavailable"
+        assert any(item["code"] == "management_overview_evidence_unavailable" and item["revision"] == 1
+                   for item in state["report_quality_issues"])
+    else:
+        # 未注入提供方：不构建经营总览，渲染沿用各章核心结论。
+        assert runtime.report_tools._render_report_pair.call_args.kwargs["management_overview"] is None
     assert result["wordSha256"] == "b" * 64
     assert result["pdfPath"] == "reports/report.pdf"
     assert result["wordPath"] == "reports/report.docx"
