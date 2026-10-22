@@ -304,3 +304,41 @@ async def test_runtime_recovery_uses_reserved_contract_and_never_refills_budget(
     calls = runtime._execute_analysis_item_task.await_count
     await runtime._run_analysis_item_task(context, **kwargs)
     assert runtime._execute_analysis_item_task.await_count == calls
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_budget_rejection_survives_durable_command_error_translation(anyio_backend):
+    # 审阅：reducer 的预算拒绝经 _apply_durable_command 转成 ReportingError，rework_analysis 只捕获
+    # ReportingStateError，降级为 budget_exhausted 的分支永远不执行，整份报告失败。
+    import asyncio
+    from types import SimpleNamespace
+
+    from agno.run import RunContext
+
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.reporting.workflow.runtime.analysis import quality_budget_code
+    from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
+
+    durable = SimpleNamespace(report_run_id="run", state_version=1)
+
+    async def get(_run):
+        return durable
+
+    async def reject(*_args, **_kwargs):
+        raise ReportingStateError("report_quality_budget_exhausted", "新增质量工作预算已耗尽。")
+
+    runtime = SimpleNamespace(
+        _scope=lambda _context: {"externalRunId": "run", "callerThreadId": "t", "userId": "u"},
+        state_repository=SimpleNamespace(get_by_external_run_id=get, apply=reject),
+        _durable_command_lock=asyncio.Lock(),
+    )
+    with pytest.raises(ReportingError) as caught:
+        await _ReportWorkflowRuntimeBase._apply_durable_command(
+            runtime, RunContext(run_id="run", session_id="t"), SimpleNamespace(name="request_analysis_rework"),
+        )
+    assert quality_budget_code(caught.value) == "report_quality_budget_exhausted"
+    assert quality_budget_code(ReportingStateError("report_quality_baseline_unavailable", "x")) == (
+        "report_quality_baseline_unavailable"
+    )
+    assert quality_budget_code(ReportingError("report_state_conflict", "x")) is None
