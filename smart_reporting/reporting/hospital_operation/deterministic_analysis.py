@@ -93,6 +93,10 @@ class DeterministicMetricFact(AnalysisModel):
     group_population: tuple[GroupContribution, ...] | None = Field(
         default=None, alias="groupPopulation", max_length=2000,
     )
+    group_warnings: dict[str, tuple[str, ...]] = Field(
+        default_factory=dict, alias="groupWarnings", max_length=100,
+        exclude_if=lambda value: not value,
+    )
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
 
@@ -467,7 +471,13 @@ def _dataset_facts(
                 include_population=population_budget_bytes > 0,
             )
             # 维度集中只影响该维度的比较，不影响合计，因此记为分析级告警。
-            warnings.extend(_dimension_concentration_warnings(value_frame, field, group_fields))
+            group_warnings = {
+                group: tuple(notes) for group in group_fields
+                if (notes := _dimension_concentration_warnings(
+                    value_frame, field, (group,), aggregation, scope=_scope(semantic)
+                ))
+            }
+            warnings.extend(note for notes in group_warnings.values() for note in notes)
             if population is not None:
                 population_size = _group_population_size(population)
                 if population_size > population_budget_bytes:
@@ -534,6 +544,7 @@ def _dataset_facts(
                 topGroups=top,
                 bottomGroups=bottom,
                 groupPopulation=population,
+                groupWarnings=group_warnings,
                 warnings=fact_warnings,
             )
         )
@@ -772,26 +783,29 @@ def _period_level_warnings(
 
 
 def _dimension_concentration_warnings(
-    frame: pl.DataFrame, field: str, group_fields: tuple[str, ...]
+    frame: pl.DataFrame, field: str, group_fields: tuple[str, ...],
+    aggregation: Aggregation, *, scope: Mapping[str, str],
 ) -> list[str]:
-    """单一维度取值占 99% 以上时，提示该维度比较可能反映集中记账或映射（R043）。"""
+    """按已登记的可加口径检查集中度；明确限定的单组织不参与跨组织检查。"""
+    if aggregation not in {"sum", "count"}:
+        return []
     warnings: list[str] = []
     for group in group_fields:
-        if group not in frame.columns or field not in frame.columns:
+        if group in scope or group not in frame.columns or field not in frame.columns:
             continue
-        totals = (
-            frame.select(pl.col(group).cast(pl.String), pl.col(field).cast(pl.Float64, strict=False).abs())
-            .drop_nulls()
-            .group_by(group)
-            .agg(pl.col(field).sum())
-        )
-        if totals.height < 2:
+        # 缺失归属不能通过丢弃记录变成“100% 集中”。
+        if frame[group].null_count() or frame[group].cast(pl.String).str.strip_chars().eq("").any():
             continue
-        overall = float(totals[field].sum())
-        top = totals.sort(field, descending=True).row(0)
-        if overall > 0 and top[1] / overall >= _CONCENTRATION_SHARE:
+        totals, aliases = _grouped_aggregation(frame, field, (group,), aggregation)
+        totals = totals.filter(pl.col("__valid") > 0)
+        if totals.is_empty() or (totals["__value"] < 0).any():
+            continue
+        overall = float(totals["__value"].sum())
+        top = totals.sort(["__value", aliases[0]], descending=[True, False]).row(0, named=True)
+        share = float(top["__value"]) / overall if overall > 0 else 0
+        if share >= _CONCENTRATION_SHARE:
             warnings.append(
-                f"{field} 按 {group} 的 {top[1] / overall:.2%} 集中于“{top[0]}”，可能反映集中记账或维度映射；"
+                f"{field} 按 {group} 的 {share:.2%} 集中于“{top[aliases[0]]}”，可能反映集中记账或维度映射；"
                 f"确认归属口径前，不做 {group} 之间的比较。"
             )
     return warnings

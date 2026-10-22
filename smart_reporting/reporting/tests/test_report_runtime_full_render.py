@@ -877,16 +877,91 @@ def test_render_markdown_opens_with_executive_summary_from_section_conclusions(t
         assert summary < text.rindex("1.收入分析")
 
 
-def test_toc_heading_pages_are_located_after_the_toc_in_reading_order() -> None:
+def test_toc_heading_pages_use_bookmark_destinations_not_body_mentions() -> None:
+    import io
+
+    from pypdf import PdfReader, PdfWriter
+
     from smart_reporting.reporting.delivery.report_runtime.docx import _heading_body_pages
 
-    labels = ["1. 预算执行", "1.1 收入预算", "2. 收入结构"]
-    pages = [
-        "封面 报告标题",
-        "目录 1. 预算执行 1 1.1 收入预算 1 2. 收入结构 3",
-        "1. 预算 执行 正文……1.1 收入 预算 正文",  # LibreOffice 会在中文标题中插入布局空格
-        "续页，仍提到 1. 预算执行 的结论",
-        "2. 收入结构 正文",
+    writer = PdfWriter()
+    for _ in range(5):
+        writer.add_blank_page(width=595, height=842)
+    # 即使正文在前页提及其他章节，定位只取真实书签，不读普通文本。
+    writer.add_outline_item("1. 预算 执行", 2)
+    writer.add_outline_item("1.1 收入预算", 2)
+    writer.add_outline_item("2. 收入结构", 4)
+    headings = [
+        {"anchor": "report-a", "level": 2, "number": "1", "title": "预算执行"},
+        {"anchor": "report-b", "level": 3, "number": "1.1", "title": "收入预算"},
+        {"anchor": "report-c", "level": 2, "number": "2", "title": "收入结构"},
     ]
-    assert _heading_body_pages(pages, labels, first_numbered_page=2) == [3, 3, 5]
-    assert _heading_body_pages(pages[:3], labels, first_numbered_page=2) is None
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    reader = PdfReader(buffer)
+    assert _heading_body_pages(reader, headings, first_numbered_page=2) == [3, 3, 5]
+    assert _heading_body_pages(reader, [dict(headings[0], title="未登记标题")], first_numbered_page=2) is None
+
+
+def test_toc_heading_pages_support_named_bookmarks_and_reject_missing_targets() -> None:
+    import io
+
+    from pypdf import PdfReader, PdfWriter
+
+    from smart_reporting.reporting.delivery.report_runtime.docx import _heading_body_pages
+
+    writer = PdfWriter()
+    for _ in range(4):
+        writer.add_blank_page(width=595, height=842)
+    writer.add_named_destination("report_a", 3)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    reader = PdfReader(buffer)
+    headings = [{"anchor": "report-a", "level": 2, "number": "1", "title": "成本"}]
+    assert _heading_body_pages(reader, headings, first_numbered_page=2) == [4]
+    assert _heading_body_pages(reader, [dict(headings[0], anchor="unknown")], first_numbered_page=2) is None
+
+
+def test_toc_cache_counts_summary_pages_before_first_chapter(tmp_path: Path) -> None:
+    from docx import Document
+    from docx.enum.section import WD_SECTION_START
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    from smart_reporting.reporting.delivery.report_runtime.docx import _cache_toc_page_numbers
+
+    path = tmp_path / 'summary.docx'
+    document = Document()
+    toc = document.add_paragraph('目录 1. 收入 ')
+    for tag, text in (
+        ('w:fldChar', 'begin'), ('w:instrText', ' PAGEREF report_income \\h '),
+        ('w:fldChar', 'separate'), ('w:t', '99'), ('w:fldChar', 'end'),
+    ):
+        run = OxmlElement('w:r')
+        child = OxmlElement(tag)
+        if tag == 'w:fldChar':
+            child.set(qn('w:fldCharType'), text)
+        else:
+            child.text = text
+        run.append(child)
+        toc._p.append(run)
+    section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    number = OxmlElement('w:pgNumType')
+    number.set(qn('w:start'), '1')
+    section._sectPr.append(number)
+    summary = document.add_paragraph('核心结论：正文第一页。')
+    start = OxmlElement('w:bookmarkStart')
+    start.set(qn('w:id'), '999')
+    start.set(qn('w:name'), 'ReportBodyStart')
+    summary._p.insert(0, start)
+    end = OxmlElement('w:bookmarkEnd')
+    end.set(qn('w:id'), '999')
+    summary._p.append(end)
+    document.add_page_break()
+    document.add_heading('1. 收入', level=1)
+    document.add_paragraph('本章在正文第二页。')
+    document.save(path)
+    _cache_toc_page_numbers(path, context={'headingNumbers': [
+        {'anchor': 'report-income', 'level': 2, 'number': '1', 'title': '收入'},
+    ]}, include_cover=False)
+    assert Document(path).paragraphs[0].text == '目录 1. 收入 2'

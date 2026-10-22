@@ -290,3 +290,23 @@ def test_dimension_labels_are_not_interpreted_as_author_supplied_rank_claims():
     reference = resolve_number_reference(token, [source])
     reference["scope"]["ward"] = "最高第1名病区"
     assert not group_rank_wording_warnings("分组（ward=最高第1名病区）登记值为80元", reference)
+
+
+def test_concentration_restricts_ranking_without_invalidating_totals():
+    document = rank_document(weights=(10000, 1))
+    metric = document['metrics'][0]
+    assert metric['warnings'] == []
+    assert metric['total'] > 0
+    assert metric['groupWarnings']['department']
+    result, _, token = compile_rank(document)
+    assert result.status != 'supported'
+    assert 'ranking_dimension_review_required' in result.reasons
+    selected = resolve_number_reference(token, [json.dumps(document, ensure_ascii=False)])
+    assert group_rank_wording_warnings('该科室排名第1名', selected)
+
+
+def test_dimension_warning_does_not_restrict_a_different_grain():
+    document = rank_document(weights=(100, 90))
+    document['metrics'][0]['groupWarnings'] = {'unrelated_dimension': ['待确认']}
+    result, _, _ = compile_rank(document)
+    assert result.status == 'supported', result.reasons

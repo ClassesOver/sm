@@ -911,3 +911,35 @@ def test_dimension_concentration_is_reported_at_analysis_level():
     balanced = b"month,department,amount\n2025-01,A,10\n2025-01,B,9\n2025-02,A,10\n2025-02,B,8\n"
     assert not any("集中于" in item for item in build_deterministic_analysis_bundle(
         analysis(), (("current", balanced, context("current"), ("current",)),)).warnings)
+
+
+@pytest.mark.parametrize("aggregation,rows,expected", [
+    ("count", "A,1\nA,2\nB,1000\n", None),
+    ("count", "A,foo\n" * 100 + "B,bar\n", "99.01%"),
+    ("sum", "A,100\nA,100\n", "100.00%"),
+    ("average", "A,1\nB,1000\n", None),
+    ("count_distinct", "A,1\nB,1000\n", None),
+    ("sum", "A,100\nB,-1\n", None),
+    ("sum", "A,100\n,10\n", None),
+])
+def test_concentration_uses_registered_additive_aggregation(aggregation, rows, expected):
+    raw = ("month,department,amount\n" + "".join(
+        "2025-01," + line + "\n" for line in rows.splitlines()
+    )).encode()
+    bundle = build_deterministic_analysis_bundle(analysis(), (
+        ("current", raw, context("current", semantics=(semantic("amount", aggregation),)), ("current",)),
+    ))
+    warnings = [item for item in bundle.warnings if "集中于" in item]
+    if expected is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1
+        assert expected in warnings[0] and "“A”" in warnings[0]
+
+
+def test_concentration_does_not_warn_for_explicit_single_organization_scope():
+    bundle = build_deterministic_analysis_bundle(analysis(), ((
+        "current", b"month,department,amount\n2025-01,A,100\n2025-01,B,1\n",
+        context("current", semantics=(semantic("amount", scope={"department": "A"}),)), ("current",),
+    ),))
+    assert not any("集中于" in item for item in bundle.warnings)

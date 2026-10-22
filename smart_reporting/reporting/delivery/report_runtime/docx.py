@@ -152,32 +152,40 @@ def _render_docx(
 
 
 def _heading_body_pages(
-    pages: list[str], labels: list[str], *, first_numbered_page: int
+    reader: Any, headings: list[dict[str, Any]], *, first_numbered_page: int
 ) -> list[int] | None:
-    """按目录顺序在正文中定位各标题所在物理页；目录本身也列出全部标题，须从目录之后找。"""
-    compact_pages = ["".join(text.split()) for text in pages]
-    compact_labels = ["".join(label.split()) for label in labels]
-    if not compact_labels:
-        return []
-    # 目录页依次列出全部标题：末个标题首次出现的页即目录末页（或正文页，若目录未渲染）。
-    toc_last = next(
-        (index for index, text in enumerate(compact_pages, start=1)
-         if index >= first_numbered_page and compact_labels[-1] in text),
-        None,
-    )
-    if toc_last is None:
-        return None
+    """仅使用 PDF 书签目标定位标题，正文交叉引用不能充当标题。"""
+    destinations = reader.named_destinations
+    outlines: dict[str, list[Any]] = {}
+
+    def collect(items: list[Any]) -> None:
+        for item in items:
+            if isinstance(item, list):
+                collect(item)
+            else:
+                title = "".join(str(item.title).split())
+                outlines.setdefault(title, []).append(item)
+
+    collect(reader.outline)
     found: list[int] = []
-    cursor = toc_last + 1
-    for label in compact_labels:
-        page = next(
-            (index for index in range(cursor, len(compact_pages) + 1) if label in compact_pages[index - 1]),
-            None,
-        )
+    for item in headings:
+        anchor = item["anchor"]
+        destination = destinations.get(anchor)
+        if destination is None:
+            destination = destinations.get(anchor.replace("-", "_"))
+        if destination is None:
+            label = format_heading_label(level=item["level"], number=item["number"], title=item["title"])
+            matches = outlines.get("".join(label.split()), [])
+            if len(matches) != 1:
+                return None
+            destination = matches[0]
+        page = reader.get_destination_page_number(destination)
         if page is None:
             return None
-        found.append(page)
-        cursor = page
+        physical = int(page) + 1
+        if physical < first_numbered_page or physical > len(reader.pages) or (found and physical < found[-1]):
+            return None
+        found.append(physical)
     return found
 
 
@@ -202,7 +210,7 @@ def _cache_toc_page_numbers(path: Path, *, context: dict[str, Any], include_cove
                 "--headless",
                 f"-env:UserInstallation={(root / 'profile').resolve().as_uri()}",
                 "--convert-to",
-                "pdf",
+                'pdf:writer_pdf_Export:{"ExportBookmarksToPDFDestination":{"type":"boolean","value":"true"}}',
                 "--outdir",
                 str(root),
                 str(path),
@@ -216,24 +224,27 @@ def _cache_toc_page_numbers(path: Path, *, context: dict[str, Any], include_cove
         if process.returncode != 0 or not converted.is_file():
             logger.warning("report_docx_toc_pages_skipped reason=convert_failed")
             return
-        pages = [page.extract_text() or "" for page in pypdf.PdfReader(str(converted)).pages]
+        reader = pypdf.PdfReader(str(converted))
         headings = context["headingNumbers"]
-        labels = [
-            format_heading_label(level=item["level"], number=item["number"], title=item["title"])
-            for item in headings
-        ]
         first_numbered_page = 2 if include_cover else 1
-        physical = _heading_body_pages(pages, labels, first_numbered_page=first_numbered_page)
-        if physical is None:
+        physical = _heading_body_pages(reader, headings, first_numbered_page=first_numbered_page)
+        if not physical:
             logger.warning("report_docx_toc_pages_skipped reason=heading_not_located")
             return
-        body_start = physical[0]
+        body_destination = reader.named_destinations.get("/ReportBodyStart")
+        if body_destination is None:
+            body_destination = reader.named_destinations.get("ReportBodyStart")
+        body_page = reader.get_destination_page_number(body_destination) if body_destination is not None else None
+        if body_page is None or not first_numbered_page <= body_page + 1 <= physical[0]:
+            logger.warning("report_docx_toc_pages_skipped reason=body_start_not_located")
+            return
+        body_start = body_page + 1
         numbers = {
             item["anchor"].replace("-", "_"): str(
                 _page_number_context(
                     page,
                     body_start_page=body_start,
-                    physical_page_count=len(pages),
+                    physical_page_count=len(reader.pages),
                     first_numbered_page=first_numbered_page,
                 )[0]
             )
@@ -595,6 +606,13 @@ def _postprocess_docx(
         )
         field_end(markers["toc_field_end"])
     clear_paragraph(markers["body_start"])
+    body_bookmark = OxmlElement("w:bookmarkStart")
+    body_bookmark.set(qn("w:id"), "999")
+    body_bookmark.set(qn("w:name"), "ReportBodyStart")
+    markers["body_start"]._p.append(body_bookmark)
+    body_bookmark_end = OxmlElement("w:bookmarkEnd")
+    body_bookmark_end.set(qn("w:id"), "999")
+    markers["body_start"]._p.append(body_bookmark_end)
 
     def clear_story(story: Any) -> Any:
         for table in list(story.tables):

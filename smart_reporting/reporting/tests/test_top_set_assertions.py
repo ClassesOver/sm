@@ -386,3 +386,11 @@ def test_member_and_population_cardinality_cannot_contradict_complete_list(extra
     assert (
         bool(top_set_wording_warnings(text, resolve_number_reference(token, [source]))) is not valid
     )
+
+
+def test_concentration_is_retained_by_top_set_validation():
+    doc = document(weights=(10000, 1))
+    result, _, _ = compile_set(doc, limit=1)
+    assert result.status != 'supported'
+    _, reasons = registered_top_sets(doc['metrics'][0], profile_hash='a' * 64)
+    assert reasons == ('ranking_dimension_review_required',)
