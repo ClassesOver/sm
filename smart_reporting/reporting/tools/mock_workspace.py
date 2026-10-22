@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ...workspace import normalize_workspace_path, WorkspaceError
+from ...workspace import WorkspaceError, normalize_workspace_path
 from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
 

@@ -13,7 +13,7 @@ from agno.run import RunContext
 from loguru import logger as loguru_logger
 from pydantic import ValidationError
 
-from ...workspace import normalize_workspace_path, WorkspaceError
+from ...workspace import WorkspaceError, normalize_workspace_path
 from ..delivery.draft_v1 import ReportChartRegistration
 from ..models import ReportingError
 from ..workflow.checkpoint import ChartVisualInspectionReceipt, FileIdentity
