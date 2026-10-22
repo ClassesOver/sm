@@ -573,6 +573,9 @@ async def test_durable_complete_keeps_parent_running_until_workflow_terminal_upd
     ][-1]
     assert terminal_update.compile().params["status"] == "completed"
     assert terminal_update.compile().params["finished_at"] is not None
+    # 已收口的 run 不被后续命令（编辑器保存新版本等）退回 running。
+    assert "reporting_runs.status NOT IN" in str(run_update)
+    assert set(run_update.compile().params["status_1"]) == {"completed", "cancelled"}
 
 
 @pytest.mark.anyio

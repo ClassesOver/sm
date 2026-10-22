@@ -161,6 +161,18 @@ async def test_structured_executor_recovers_later_complete_plan_object() -> None
     assert result == VisualizationPlanDraft(charts=(), warnings=())
 
 
+def test_json_candidates_ignore_unpaired_quotes_in_surrounding_prose() -> None:
+    from smart_reporting.reporting.structured_output.execution import (
+        _complete_json_object_candidates,
+    )
+
+    # 对象外正文里落单的英文引号不能让后续 JSON 被当作字符串而整体丢失。
+    content = '结果如下 "注意: {"charts":[],"warnings":["含 } 与 \\" 的说明"]} 完毕'
+    assert _complete_json_object_candidates(content) == (
+        '{"charts":[],"warnings":["含 } 与 \\" 的说明"]}',
+    )
+
+
 def test_structured_correction_includes_small_candidate_once() -> None:
     candidate = {"charts": [], "warnings": ["证据有限"]}
 

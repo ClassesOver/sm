@@ -1078,7 +1078,8 @@ def _complete_json_object_candidates(content: str) -> tuple[str, ...]:
             elif character == '"':
                 in_string = False
             continue
-        if character == '"':
+        # 对象外的正文引号不成对（“结果如下 "注意: {...}”）时不能把后续 JSON 当作字符串。
+        if character == '"' and depth > 0:
             in_string = True
             continue
         if character == "{":
