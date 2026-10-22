@@ -236,11 +236,17 @@ class RuntimePlanningMixin:
         })
         from ..questions import request_questions
 
-        if current.get("questionSpecs", {}).get("stage") != "analysis":
-            current["questionSpecs"] = request_questions(
-                current["originalGoal"], tuple(item["content"] for item in current.get("feedback", ())
-                                               if isinstance(item, dict) and isinstance(item.get("content"), str)),
-            ).model_dump(mode="json", by_alias=True)
+        fresh = request_questions(
+            current["originalGoal"], tuple(item["content"] for item in current.get("feedback", ())
+                                           if isinstance(item, dict) and isinstance(item.get("content"), str)),
+        )
+        stored = current.get("questionSpecs") or {}
+        # 已冻结到分析阶段的问题只在请求未变时沿用；同一会话追加反馈会带来新的必答问题，
+        # 须重新从请求阶段冻结，否则新反馈永远不进入必答问题。
+        if stored.get("stage") != "analysis" or set(fresh.required_question_ids) - set(
+            stored.get("requiredQuestionIds", ())
+        ):
+            current["questionSpecs"] = fresh.model_dump(mode="json", by_alias=True)
         current.update(
             {
                 "reportType": envelope.report_type,
