@@ -305,10 +305,9 @@ def reporting_request_input_hard_cap(
     return resolve_reporting_input_token_hard_cap(
         configured_input_token_cap=positive_token_count(configured_input_token_cap) or absolute_cap,
         model_id=model_id,
-        # 未配置输出上限时请求按模型已验证上限发送，预算须与实际请求一致。
+        # 调用方传入请求实际发送的输出上限；超出模型能力的部分由下方统一收敛。
         output_token_reserve=max(
-            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-            clamp_reporting_output_tokens(output_tokens, model_id) or 0,
+            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, positive_token_count(output_tokens) or 0
         ),
         absolute_input_token_cap=absolute_cap,
     )
