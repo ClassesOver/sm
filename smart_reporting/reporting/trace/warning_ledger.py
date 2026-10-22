@@ -8,7 +8,18 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field
 
 from ..contract import StrictModel
-from .contracts_v1 import RevisionTraceIndexV1, canonical_sha256
+from .assertions import AssertionResult
+from .chart_quality import ChartQualityCheck
+from .contracts_v1 import (
+    ChartTraceV1,
+    RevisionTraceIndexV1,
+    SubjectBindingV1,
+    TableTraceV1,
+    canonical_sha256,
+)
+from .quality_bundle import QualityIssue
+from .semantic_alignment import SemanticAlignmentCheck
+from .table_quality import TableQualityCheck
 
 if TYPE_CHECKING:
     from .quality_bundle import QualityBundle
@@ -56,6 +67,79 @@ class WarningLedger(StrictModel):
     group_count: int = Field(alias="groupCount")
     groups: tuple[WarningGroup, ...]
     business_acceptance_evaluated: Literal[False] = Field(default=False, alias="businessAcceptanceEvaluated")
+
+
+class WarningReviewCase(StrictModel):
+    case_id: str = Field(alias="caseId")
+    group_id: str = Field(alias="groupId")
+    issue_index: int = Field(alias="issueIndex", ge=0)
+    issue: QualityIssue
+    subject: SubjectBindingV1 | None = None
+    assertion: AssertionResult | None = None
+    chart: ChartTraceV1 | None = None
+    table: TableTraceV1 | None = None
+    chart_check: ChartQualityCheck | None = Field(default=None, alias="chartCheck")
+    table_check: TableQualityCheck | None = Field(default=None, alias="tableCheck")
+    semantic_check: SemanticAlignmentCheck | None = Field(default=None, alias="semanticCheck")
+    review_ids: tuple[str, ...] = Field(alias="reviewIds")
+    required_actions: tuple[str, ...] = Field(alias="requiredActions")
+    adjudication: Literal["not_adjudicated"] = "not_adjudicated"
+
+
+class WarningReviewPacket(StrictModel):
+    version: Literal["warning-review-packet/1"] = "warning-review-packet/1"
+    report_id: str = Field(alias="reportId")
+    revision: int
+    quality_sha256: str = Field(alias="qualitySha256")
+    index_sha256: str = Field(alias="indexSha256")
+    ledger: WarningLedger
+    cases: tuple[WarningReviewCase, ...]
+    business_acceptance_evaluated: Literal[False] = Field(default=False, alias="businessAcceptanceEvaluated")
+
+
+def build_warning_review_packet(quality: QualityBundle, index: RevisionTraceIndexV1) -> WarningReviewPacket:
+    """Prepare individual evidence, without inventing reviewer decisions or authorization.
+
+    Content hashes bind even issue reordering and index-only edits. They establish
+    consistency, not source authenticity. The caller must verify source authority.
+    """
+    ledger = build_warning_ledger(quality, index)
+    markdown = next(file for file in index.files if file.resource_id == index.markdown_file_resource_id)
+    if markdown.sha256 != quality.markdown_sha256:
+        raise ValueError("Quality and registered Markdown identities differ")
+    quality_hash = canonical_sha256(quality.model_dump(mode="json", by_alias=True))
+    index_hash = canonical_sha256(index.model_dump(mode="json", by_alias=True))
+    subjects = {subject.subject_id: subject for subject in index.subject_bindings}
+    charts = {chart.chart_id: chart for chart in index.chart_traces}
+    tables = {table.table_id: table for table in index.tables}
+    assertions = {assertion.assertion_id: assertion for assertion in quality.assertions}
+    if len(assertions) != len(quality.assertions):
+        raise ValueError("Duplicate assertion identities")
+    groups = {position: group.group_id for group in ledger.groups for position in group.issue_indices}
+    cases = []
+    for position, issue in enumerate(quality.issues):
+        guidance = [_GUIDANCE[reason] for reason in issue.reasons if reason in _GUIDANCE]
+        actions = tuple(dict.fromkeys(item[2] for item in guidance))
+        if not guidance or any(reason not in _GUIDANCE and not re.fullmatch(r"markdown_line:\d+", reason)
+                               for reason in issue.reasons):
+            actions += ("保留原始诊断并逐项裁定，不能自动判为金额错误或通过",)
+        cases.append(WarningReviewCase(
+            caseId="wc-" + canonical_sha256([quality_hash, index_hash, position]),
+            groupId=groups[position], issueIndex=position, issue=issue,
+            subject=subjects.get(issue.subject_id or ""),
+            assertion=assertions.get(quality.subject_assertions.get(issue.subject_id or "", "")),
+            chart=charts.get(issue.subject_id or ""), table=tables.get(issue.subject_id or ""),
+            chartCheck=quality.chart_checks.get(issue.subject_id or ""),
+            tableCheck=quality.table_checks.get(issue.subject_id or ""),
+            semanticCheck=quality.semantic_checks.get(issue.subject_id or ""),
+            reviewIds=tuple(sorted({ref for item in guidance for ref in item[1]} | {
+                reason for reason in issue.reasons if re.fullmatch(r"R\d{3}", reason)
+            })),
+            requiredActions=actions,
+        ))
+    return WarningReviewPacket(reportId=quality.report_id, revision=quality.revision,
+                               qualitySha256=quality_hash, indexSha256=index_hash,
+                               ledger=ledger, cases=tuple(cases))
 
 
 def build_warning_ledger(quality: QualityBundle, index: RevisionTraceIndexV1) -> WarningLedger:
