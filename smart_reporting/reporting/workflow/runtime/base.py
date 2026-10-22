@@ -578,6 +578,13 @@ def _count_request_tokens(
     return token_count
 
 
+def _validated_entrypoint(value: Any) -> str:
+    entrypoint = str(value or "")
+    if entrypoint not in {"agentos", "cli", "mcp"}:
+        raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
+    return entrypoint
+
+
 def merge_publication_issues(gate: Any, late_issues: Any) -> Any:
     """签发阶段发现的门禁问题（如溯源清单核验失败）并入门禁，不得标记为正式发布通过。"""
     if not late_issues:
@@ -1347,14 +1354,6 @@ class _ReportWorkflowRuntimeBase:
     ) -> Any:
         scope = self._scope(run_context)
         report_run_id = str(run_context.run_id or scope["externalRunId"])
-        durable = await self.state_repository.get_by_external_run_id(scope["externalRunId"])
-        if durable is None:
-            durable = await self.state_repository.get_or_create(
-                report_run_id=report_run_id,
-                external_run_id=scope["externalRunId"],
-                thread_id=scope["callerThreadId"],
-                owner_user_id=scope["userId"],
-            )
         # 多个章节 child task 可以同时完成；CAS 冲突只重读当前版本并重放同一
         # commandId。Reducer 对已应用 command 返回幂等结果，副作用不会重复。
         async with self._durable_command_lock:
@@ -1399,11 +1398,16 @@ class _ReportWorkflowRuntimeBase:
             stored_scope=stored if isinstance(stored, dict) and "sessionId" in stored else None,
         )
         # 原生恢复可从末端步骤开始；服务重启后需按已校验的原作用域重新绑定工作区。
-        if getattr(self, "workspace_registry", None) is not None:
-            self._workspace_for_scope(resolved)
+        self._bind_workspace(resolved)
         scope = resolved.as_state()
         state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = scope
         return scope
+
+    def _bind_workspace(self, scope: ReportingWorkflowScope) -> None:
+        """注册表已配置时预先绑定作用域工作区；未配置的测试装配跳过。"""
+
+        if getattr(self, "workspace_registry", None) is not None:
+            self._workspace_for_scope(scope)
 
     def _workspace_for_scope(self, scope: ReportingWorkflowScope) -> HostReportingWorkspace:
         registry = getattr(self, "workspace_registry", None)
@@ -1440,6 +1444,21 @@ class _ReportWorkflowRuntimeBase:
         )
         return self._workspace_for_scope(scope)
 
+    def _run_workspace(self, run_context: RunContext) -> HostReportingWorkspace:
+        """按 run 已校验的作用域取回工作区，与 _scope 使用同一 stored scope。"""
+
+        return self.workspace_for(
+            run_id=str(run_context.run_id or ""),
+            session_id=str(run_context.session_id or ""),
+            user_id=str(run_context.user_id or "") or None,
+            dependencies=(
+                dict(run_context.dependencies)
+                if isinstance(run_context.dependencies, Mapping)
+                else None
+            ),
+            stored_scope=self._scope(run_context),
+        )
+
     def prepare_run(
         self,
         *,
@@ -1454,13 +1473,10 @@ class _ReportWorkflowRuntimeBase:
             user_id=user_id,
             dependencies=dependencies,
         )
-        entrypoint = str(
+        entrypoint = _validated_entrypoint(
             (dependencies or {}).get(REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY) or "agentos"
         )
-        if entrypoint not in {"agentos", "cli", "mcp"}:
-            raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
-        if getattr(self, "workspace_registry", None) is not None:
-            self._workspace_for_scope(scope)
+        self._bind_workspace(scope)
         return {
             REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state(),
             REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY: entrypoint,
@@ -1476,11 +1492,8 @@ class _ReportWorkflowRuntimeBase:
             user_id=str(value.get("userId") or "") or None,
             stored_scope=value,
         )
-        entrypoint = str(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY) or "")
-        if entrypoint not in {"agentos", "cli", "mcp"}:
-            raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
-        if getattr(self, "workspace_registry", None) is not None:
-            self._workspace_for_scope(scope)
+        entrypoint = _validated_entrypoint(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY))
+        self._bind_workspace(scope)
         has_external_caller = (
             scope.external_run_id != run_id or scope.caller_thread_id != scope.session_id
         )

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from ..query_pipeline import _exact_constant_numeric_columns
 from .base import (
     AnalysisBundle,
     AnalysisItem,
@@ -426,33 +427,17 @@ def _measure_semantic_issues(
     return issues
 
 
-def _exact_constant_numeric_columns(
-    source_id: str,
-    qualified_table: str,
-    snapshot: SourceSchemaSnapshot,
-    data_shapes: tuple[DataShape, ...],
-) -> set[str]:
-    """返回当前报表期间内由精确画像证明不会扩大分组粒度的数值列。"""
+def _rebuilt_bundle(
+    analyses: Sequence[Any], requirements: Sequence[QueryRequirement]
+) -> AnalysisBundle:
+    """用归一化后的 requirements 重建并重新校验分析计划。"""
 
-    matching_tables = [
-        table
-        for shape in data_shapes
-        if shape.source_id.lower() == source_id.lower()
-        and shape.metadata_revision == snapshot.revision
-        and shape.schema_hash == snapshot.schema_hash
-        for table in shape.tables
-        if table.source_id.lower() == source_id.lower()
-        and f"{table.database}.{table.table}".lower() == qualified_table.lower()
-    ]
-    if len(matching_tables) != 1:
-        return set()
-    return {
-        column.name.lower()
-        for column in matching_tables[0].columns
-        if _NUMERIC_MEASURE_TYPE_PATTERN.match(column.data_type) is not None
-        and column.distinct_mode == "exact"
-        and column.distinct_count <= 1
-    }
+    return AnalysisBundle.model_validate(
+        {
+            "analyses": [item.model_dump(mode="json", by_alias=True) for item in analyses],
+            "requirements": [item.model_dump(mode="json", by_alias=True) for item in requirements],
+        }
+    )
 
 
 def _normalize_analysis_bundle_grain(
@@ -503,14 +488,7 @@ def _normalize_analysis_bundle_grain(
         )
     if not repairs:
         return bundle, []
-    normalized_bundle = AnalysisBundle.model_validate(
-        {
-            "analyses": [item.model_dump(mode="json", by_alias=True) for item in bundle.analyses],
-            "requirements": [
-                item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-            ],
-        }
-    )
+    normalized_bundle = _rebuilt_bundle(bundle.analyses, normalized_requirements)
     return normalized_bundle, repairs
 
 
@@ -530,16 +508,7 @@ def _normalize_requirement_columns(
     if not repairs:
         return bundle, []
     return (
-        AnalysisBundle.model_validate(
-            {
-                "analyses": [
-                    item.model_dump(mode="json", by_alias=True) for item in bundle.analyses
-                ],
-                "requirements": [
-                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-                ],
-            }
-        ),
+        _rebuilt_bundle(bundle.analyses, normalized_requirements),
         repairs,
     )
 
@@ -600,16 +569,7 @@ def _normalize_requirement_periods(
     if not repairs:
         return bundle, []
     return (
-        AnalysisBundle.model_validate(
-            {
-                "analyses": [
-                    item.model_dump(mode="json", by_alias=True) for item in bundle.analyses
-                ],
-                "requirements": [
-                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-                ],
-            }
-        ),
+        _rebuilt_bundle(bundle.analyses, normalized_requirements),
         repairs,
     )
 
@@ -720,16 +680,7 @@ def _normalize_comparison_roles(
     if not repairs:
         return bundle, []
     return (
-        AnalysisBundle.model_validate(
-            {
-                "analyses": [
-                    item.model_dump(mode="json", by_alias=True) for item in bundle.analyses
-                ],
-                "requirements": [
-                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-                ],
-            }
-        ),
+        _rebuilt_bundle(bundle.analyses, normalized_requirements),
         repairs,
     )
 
@@ -832,14 +783,7 @@ def _normalize_unsafe_multi_table_requirements(
         for analysis in bundle.analyses
     ]
     return (
-        AnalysisBundle.model_validate(
-            {
-                "analyses": [item.model_dump(mode="json", by_alias=True) for item in analyses],
-                "requirements": [
-                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
-                ],
-            }
-        ),
+        _rebuilt_bundle(analyses, normalized_requirements),
         repairs,
     )
 
@@ -928,12 +872,7 @@ def _normalize_duplicate_requirements(
                 }
             )
         )
-    normalized = AnalysisBundle.model_validate(
-        {
-            "analyses": [item.model_dump(mode="json", by_alias=True) for item in analyses],
-            "requirements": [item.model_dump(mode="json", by_alias=True) for item in merged],
-        }
-    )
+    normalized = _rebuilt_bundle(analyses, merged)
     return normalized, repairs
 
 

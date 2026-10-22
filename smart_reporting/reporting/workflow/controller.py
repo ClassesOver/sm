@@ -1267,50 +1267,28 @@ class ReportWorkflowController:
                 if error_requirement is not None:
                     error_requirement.skip()
                     await workflow.acancel_run(control.workflow_run_id)
-                    try:
-                        output = await workflow.acontinue_run(
-                            run_response=output,
-                            step_requirements=list(
-                                getattr(output, "step_requirements", None) or []
-                            ),
-                            dependencies=self._workflow_dependencies(
-                                scope, entrypoint=self._workflow_entrypoint(run_context)
-                            ),
-                            stream=False,
-                        )
-                    except BaseException as run_error:
-                        await self._finalize_run_error(
-                            run_error,
-                            scope,
-                            control.workflow_session_id,
-                            control.workflow_run_id,
-                            state,
-                        )
-                        raise
                 else:
                     requirement = self._active_requirement(output)
                     requirement.on_reject = OnReject.cancel
                     requirement.reject(feedback="用户取消报表工作流。")
-                    try:
-                        output = await workflow.acontinue_run(
-                            run_response=output,
-                            step_requirements=list(
-                                getattr(output, "step_requirements", None) or []
-                            ),
-                            dependencies=self._workflow_dependencies(
-                                scope, entrypoint=self._workflow_entrypoint(run_context)
-                            ),
-                            stream=False,
-                        )
-                    except BaseException as run_error:
-                        await self._finalize_run_error(
-                            run_error,
-                            scope,
-                            control.workflow_session_id,
-                            control.workflow_run_id,
-                            state,
-                        )
-                        raise
+                try:
+                    output = await workflow.acontinue_run(
+                        run_response=output,
+                        step_requirements=list(getattr(output, "step_requirements", None) or []),
+                        dependencies=self._workflow_dependencies(
+                            scope, entrypoint=self._workflow_entrypoint(run_context)
+                        ),
+                        stream=False,
+                    )
+                except BaseException as run_error:
+                    await self._finalize_run_error(
+                        run_error,
+                        scope,
+                        control.workflow_session_id,
+                        control.workflow_run_id,
+                        state,
+                    )
+                    raise
             elif status == "running":
                 # 运行中的报表工作流不允许取消：取消请求不生效，返回当前运行状态，
                 # 调用方应继续轮询等待终态。
