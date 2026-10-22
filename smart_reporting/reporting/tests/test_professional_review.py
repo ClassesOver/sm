@@ -133,6 +133,7 @@ def test_annotation_counterexamples_produce_specific_soft_diagnostics(text, code
     '![收入大类构成](chart.png "药品与卫生材料合计占49.03%")',
     '检查化验收入在本表为0，可能未采集或未映射，不作占比结论。',
     '药品收入占比27.52%。',
+    '药品占比0.50%，卫生材料占比10.00%。',
 ])
 def test_valid_limits_and_business_distinctions_are_not_flagged(text):
     assert review_professional_content(text) == ()

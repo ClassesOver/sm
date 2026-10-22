@@ -257,7 +257,7 @@ def review_professional_content(markdown: str) -> tuple[ProfessionalReviewIssue,
         ):
             warn("professional_concentration_as_risk", "recommendation",
                  "专业口径需复核：规模或占比不能单独证明浪费或不合理依赖，须结合业务量、结构及比较基准。")
-        if (re.search(r"(?:占比|比重|构成)[^。；]{0,12}?0(?:\.0+)?%|0\.00%(?:和|、)0\.00%", clause)
+        if (re.search(r"(?:占比|比重|构成)[^。；]{0,12}?(?<![\d.])0(?:\.0+)?%|(?<![\d.])0\.00%(?:和|、)0\.00%", clause)
                 and not re.search(r"不能|不得|不宜|未采集|未映射|待核实|缺失", clause)):
             warn("professional_unknown_zero_share", "missing_zero",
                  "专业口径需复核：未核实的零值不应以0.00%占比呈现为收入结构，须先区分真实零、未采集与未映射。")
