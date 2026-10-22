@@ -87,8 +87,8 @@ from .model_policy import (
     ReportingReasoningEffort,
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,
+    clamp_reporting_output_tokens,
     current_reporting_thinking_decision,
-    reporting_model_output_token_limit,
     reporting_thinking_profile_from_model,
     resolve_reporting_input_token_hard_cap,
 )
@@ -1826,16 +1826,9 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
         else:
             output_limit = None
-        limits = [
-            value
-            for value in (
-                request_model.max_tokens,
-                output_limit,
-                reporting_model_output_token_limit(request_model.id),
-            )
-            if isinstance(value, int) and value > 0
-        ]
-        request_model.max_tokens = min(limits) if limits else None
+        request_model.max_tokens = clamp_reporting_output_tokens(
+            request_model.max_tokens, request_model.id, output_limit
+        )
         return apply_reporting_thinking_profile(request_model, profile)
 
     @staticmethod

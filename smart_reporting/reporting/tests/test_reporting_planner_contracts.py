@@ -2926,6 +2926,32 @@ def test_analysis_evidence_planner_reserves_only_schema_sized_output_budget(
     assert hard_caps[0] > 130_042 + 4096
 
 
+def test_default_output_reserve_is_clamped_to_verified_model_output_limit() -> None:
+    from agno.models.openai import OpenAIChat
+
+    from smart_reporting.reporting import agent as reporting_agent
+    from smart_reporting.reporting.workflow.runtime.sections import (
+        _section_block_input_token_budget,
+    )
+
+    # 部署默认输出预留 384K 超过 deepseek-v4 的 256K 窗口；所有预算与请求都必须先
+    # 收敛到模型已验证的 128K 单次输出上限，不能在模型调用前误拒。
+    phase_model = reporting_agent._reporting_phase_model(
+        OpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        input_token_budget=1024 * 1024 - 384 * 1024,
+    )
+    phase_model.max_tokens = 384 * 1024
+    agent = SimpleNamespace(model=phase_model)
+    run_context = RunContext(run_id="run", session_id="session")
+    code_model = reporting_agent._reporting_code_model(phase_model)
+    messages = [Message(role="user", content="{}")]
+
+    assert _analysis_summary_input_token_budget(agent, run_context) == 128 * 1024 * 3 // 4
+    assert _section_block_input_token_budget(agent, run_context) == 128 * 1024
+    assert code_model._phase_request_model(messages).max_output_tokens == 128 * 1024
+    code_model._project(messages, (), {})
+
+
 @pytest.mark.skip(reason="V1 planner 日期注入测试依赖旧环境构造")
 def test_reporting_phase_agent_injects_current_shanghai_date_into_planner_context() -> None:
     template = create_reporting_phase_agent(

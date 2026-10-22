@@ -30,6 +30,7 @@ from ...context_management import (
 from ...integrations.model_config import is_dashscope_endpoint
 from ...runtime.observability import duration_ms as elapsed_ms
 from ..model_policy import (
+    clamp_reporting_output_tokens,
     current_reporting_thinking_decision,
     reporting_coding_sampling,
     resolve_reporting_input_token_hard_cap,
@@ -1249,11 +1250,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     ]
                 )
             )
-        request_model.max_output_tokens = (
-            request_model.max_output_tokens
-            if isinstance(request_model.max_output_tokens, int)
-            and request_model.max_output_tokens > 0
-            else None
+        request_model.max_output_tokens = clamp_reporting_output_tokens(
+            request_model.max_output_tokens, request_model.id
         )
         decision = current_reporting_thinking_decision()
         if decision is not None:
@@ -1304,11 +1302,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             configured_cap = (
                 TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
             )
-        output_reserve = (
-            self.max_output_tokens
-            if isinstance(self.max_output_tokens, int) and self.max_output_tokens > 0
-            else 0
-        )
+        output_reserve = clamp_reporting_output_tokens(self.max_output_tokens, self.id) or 0
         hard_cap = resolve_reporting_input_token_hard_cap(
             configured_input_token_cap=configured_cap,
             model_id=self.id,

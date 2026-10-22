@@ -32,6 +32,7 @@ from ...hospital_operation.outline import ReportOutlineSection
 from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
+    clamp_reporting_output_tokens,
     resolve_reporting_input_token_hard_cap,
 )
 from ...phase import reporting_model_route_from_run_context
@@ -327,14 +328,14 @@ def _section_block_input_token_budget(agent: Any, run_context: RunContext) -> in
             break
     route = reporting_model_route_from_run_context(run_context)
     model_id = route[1] if route is not None else getattr(getattr(agent, "model", None), "id", None)
-    output_reserve = getattr(getattr(agent, "model", None), "max_tokens", None)
+    model_id = model_id if isinstance(model_id, str) else None
+    output_reserve = clamp_reporting_output_tokens(
+        getattr(getattr(agent, "model", None), "max_tokens", None), model_id
+    )
     return resolve_reporting_input_token_hard_cap(
         configured_input_token_cap=configured_cap,
-        model_id=model_id if isinstance(model_id, str) else None,
-        output_token_reserve=max(
-            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-            output_reserve if isinstance(output_reserve, int) and not isinstance(output_reserve, bool) else 0,
-        ),
+        model_id=model_id,
+        output_token_reserve=max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_reserve or 0),
         absolute_input_token_cap=(
             TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
         ),

@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from agno.models.openai import OpenAIChat, OpenAIResponses
 
@@ -313,6 +313,27 @@ def reporting_model_output_token_limit(model_id: str | None) -> int | None:
     if family.startswith("deepseek-v4"):
         return 128 * 1024
     return None
+
+
+def clamp_reporting_output_tokens(
+    configured_output_tokens: Any, model_id: str | None, *task_limits: int | None
+) -> int | None:
+    """把部署配置的输出预留收敛到最终路由模型的已验证单次输出上限。
+
+    部署输出预留面向整个 Reporting 阶段，可能大于模型单次输出能力；请求与输入
+    预算必须使用收敛后的值，否则 256K 窗口模型会因“输出预留耗尽上下文”被误拒。
+    """
+
+    limits = [
+        value
+        for value in (
+            configured_output_tokens,
+            *task_limits,
+            reporting_model_output_token_limit(model_id),
+        )
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+    ]
+    return min(limits) if limits else None
 
 
 def reporting_coding_sampling(model_id: str | None) -> tuple[float, float] | None:
