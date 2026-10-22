@@ -2,13 +2,27 @@ import type { ReportEditorClient, TraceValidation } from './api'
 import { findEvidenceChartImage } from './evidence-location'
 import { isExplanatoryUnverified } from './unverified-text'
 
+// 与服务端 trace_sources.NOT_EVALUATED_REASONS 同一清单：静态图未做数组比对、未登记规格只是
+// “未评估”，不说明来源被改动，不计入待复核；其余 unknown 与缺少核对结果仍计入。
+const NOT_EVALUATED_REASONS = new Set([
+  'static_image_not_evaluated', 'interactive_spec_unregistered', 'chart_unregistered', 'table_unregistered',
+  'chart_semantics_unregistered', 'chart_fact_binding_unregistered', 'chart_arrays_unverified',
+])
+
+export function checkNeedsReview(check: { status: string; reason?: string; reasons?: string[] } | undefined): boolean {
+  if (!check) return true
+  if (check.status === 'verified') return false
+  const reasons = check.reasons ?? (check.reason ? [check.reason] : [])
+  return check.status === 'conflicting' || reasons.length === 0 || !reasons.every(reason => NOT_EVALUATED_REASONS.has(reason))
+}
+
 export function sourceValidationIssueCount(result: TraceValidation): number {
   const warningSubjects = result.subjects.filter(
     (subject) => subject.status === 'valid' && (subject.warnings?.length ?? 0) > 0,
   ).length
   const table = result.tableSummary
-  const tableChecks = result.tables?.filter(table => table.dataCheck?.status === 'unknown' && table.cells.stale + table.cells.unbound === 0).length ?? 0
-  const chartIssues = result.charts?.filter((chart) => chart.status !== 'valid' || chart.dataCheck?.status !== 'verified' || chart.semanticCheck?.status !== 'verified').length ?? 0
+  const tableChecks = result.tables?.filter(table => table.dataCheck !== undefined && checkNeedsReview(table.dataCheck) && table.cells.stale + table.cells.unbound === 0).length ?? 0
+  const chartIssues = result.charts?.filter((chart) => chart.status !== 'valid' || checkNeedsReview(chart.dataCheck) || checkNeedsReview(chart.semanticCheck)).length ?? 0
   return result.summary.stale + result.summary.unbound + warningSubjects +
     (table ? table.stale + table.unbound + table.insertedRows + (table.copiedCells ?? 0) : 0) + chartIssues + tableChecks
 }

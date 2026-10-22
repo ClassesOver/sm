@@ -97,3 +97,39 @@ def test_question_contract_is_frozen_in_existing_plan_cas():
         apply(state, {"name": "set_analysis_plan", "commandId": "overwrite", "payload": changed})
     assert error.value.code == "report_question_specs_conflict"
     assert state.payload["questionSpecs"] == payload["questionSpecs"]
+
+
+def test_same_session_feedback_refreshes_frozen_request_questions():
+    # 审阅：首轮冻结到 analysis 阶段后，同一会话追加的反馈永远不进入必答问题。
+    from smart_reporting.reporting.contract import ReportRequestEnvelope
+    from smart_reporting.reporting.workflow.runtime.planning import RuntimePlanningMixin
+
+    envelope = ReportRequestEnvelope.model_validate(
+        {"reportGoal": "分析收入", "period": {"start": "2025-01-01", "end": "2025-12-31"}}
+    )
+    frozen = freeze_analysis_questions(request_questions("分析收入"), analyses())
+    state = {"report_request_context": {
+        "originalGoal": "分析收入", "feedback": [], "questionSpecs": frozen.model_dump(mode="json", by_alias=True),
+    }}
+    RuntimePlanningMixin._record_normalized_request(state, envelope)
+    assert state["report_request_context"]["questionSpecs"]["stage"] == "analysis"
+    state["report_request_context"]["feedback"].append({"sequence": 1, "content": "补充成本对比"})
+    RuntimePlanningMixin._record_normalized_request(state, envelope)
+    refreshed = QuestionSet.model_validate(state["report_request_context"]["questionSpecs"])
+    assert refreshed.stage == "request"
+    assert refreshed.required_question_ids == request_questions("分析收入", ("补充成本对比",)).required_question_ids
+
+
+def test_replanned_analyses_refreeze_from_current_request_instead_of_failing():
+    # 审阅：会话沿用的冻结问题与新一轮规划不一致时抛 ValueError，整份报告失败。
+    from smart_reporting.reporting.workflow.questions import freeze_plan_questions
+
+    frozen = freeze_analysis_questions(request_questions("分析收入"), analyses())
+    replanned = [{"analysisId": "analysis_009", "managementQuestion": "成本如何", "completionConditions": ["核验成本"]}]
+    refrozen = freeze_plan_questions(frozen, replanned, goal="分析收入", feedback=("补充成本",))
+    assert set(refrozen.analysis_to_question) == {"analysis_009"}
+    assert refrozen.required_question_ids == request_questions("分析收入", ("补充成本",)).required_question_ids
+    # 计划本身无效仍报错；一致时沿用原冻结结果。
+    with pytest.raises(ValueError, match="缺少"):
+        freeze_plan_questions(frozen, [{"analysisId": "a"}], goal="分析收入")
+    assert freeze_plan_questions(frozen, analyses(), goal="分析收入") == frozen

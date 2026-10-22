@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { TraceValidation } from './api'
 import { findValueMarks } from './body-value-marks'
-import { createSourceValidationController, markdownSha256, nextSourceIssue, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
+import { checkNeedsReview, createSourceValidationController, markdownSha256, nextSourceIssue, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 const validation = (draftSha256: string): TraceValidation => ({
   draftSha256,
@@ -396,4 +396,20 @@ it('navigates review marks once each without stopping again at their citations',
   expect(nextSourceIssue(root, null, position, result)?.id).toBe('value')
   expect(nextSourceIssue(root, 0, position, result)?.id).toBe('other')
   expect(nextSourceIssue(root, 2, position, result)?.id).toBe('value')
+})
+
+describe('unevaluated data checks', () => {
+  it('does not mark unchanged static charts or unregistered tables as needing review', () => {
+    // 审阅：静态 PNG 与未登记表格的核对结果永远是 unknown，未改动的来源被显示为“待复核”并计入问题。
+    const result = validation('draft')
+    result.tables = [{ tableId: 't', cells: { valid: 1, stale: 0, unbound: 0 },
+      dataCheck: { status: 'unknown', scope: 'frozen_cells', reasons: ['table_unregistered'] } }]
+    result.charts = [{ chartId: 'c', imagePath: 'c.png', status: 'valid',
+      dataCheck: { status: 'unknown', scope: 'registered_arrays', reason: 'static_image_not_evaluated' },
+      semanticCheck: { status: 'unknown', scope: 'registered_fact_projection', reasons: ['chart_semantics_unregistered'] } }]
+    expect(sourceValidationIssueCount(result)).toBe(0)
+    result.charts[0].dataCheck = { status: 'unknown', scope: 'registered_arrays', reason: 'chart_input_projection_mismatch' }
+    expect(sourceValidationIssueCount(result)).toBe(1)
+    expect(checkNeedsReview({ status: 'conflicting', reasons: ['chart_semantics_unregistered'] })).toBe(true)
+  })
 })

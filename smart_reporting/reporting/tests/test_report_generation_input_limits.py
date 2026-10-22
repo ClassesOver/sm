@@ -49,7 +49,9 @@ async def test_large_section_starts_with_small_contract_and_complete_frozen_cons
     supplemental = FileIdentity(path="supplemental.json", size=2, sha256="d" * 64)
     checkpoint = SimpleNamespace(
         files=(canonical_fact, supplemental), trace=(), last_error=None,
-        deterministic_fact_files={"analysis_001": canonical_fact},
+        # analysis_999 不属于本章：其事实哈希不应进入本章指令。
+        deterministic_fact_files={"analysis_001": canonical_fact,
+                                  "analysis_999": FileIdentity(path="other.json", size=2, sha256="e" * 64)},
     )
     files = {}
     captured = {}
@@ -100,8 +102,10 @@ async def test_large_section_starts_with_small_contract_and_complete_frozen_cons
     if assertion_mode == "enabled":
         assert policy["trustedFactSha256"] == [canonical_fact.sha256]
         assert supplemental.sha256 not in policy["trustedFactSha256"]
+        assert {"profileHash", "authorizationScopeHash"} <= set(policy)
     else:
-        assert "trustedFactSha256" not in policy
+        # shadow/off 不使用受信事实与画像/授权哈希，章节指令不夹带。
+        assert not {"trustedFactSha256", "profileHash", "authorizationScopeHash"} & set(policy)
 
 
 @pytest.mark.anyio

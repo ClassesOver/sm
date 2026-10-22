@@ -54,7 +54,7 @@ from .trace_revisions import (
     snapshot_revision_lineage,
     verify_revision_lineage_files,
 )
-from .trace_sources import ReportEditorTraceService
+from .trace_sources import ReportEditorTraceService, check_mismatched
 
 _SOURCE_STATUS_PRIORITY = {"valid": 0, "stale": 1, "unbound": 2, "missing": 3}
 
@@ -92,10 +92,8 @@ def _export_citation_presentations(
             status = "unbound"
         elif int(counts.get("stale", 0) or 0):
             status = "stale"
-        data_check = item.get("dataCheck")
         if status == "valid" and (
-            item.get("copiedCells") or item.get("insertedRows")
-            or (isinstance(data_check, Mapping) and data_check.get("status") != "verified")
+            item.get("copiedCells") or item.get("insertedRows") or check_mismatched(item.get("dataCheck"))
         ):
             status = "stale"
         table_statuses[item["tableId"]] = status
@@ -112,8 +110,7 @@ def _export_citation_presentations(
             dataset_status = (
                 table_statuses.get(str(item.get("tableId", ""))) if kind == "tables"
                 else "stale" if item.get("warnings") or (
-                    item.get("status") == "valid" and isinstance(item.get("dataCheck"), Mapping)
-                    and item["dataCheck"].get("status") != "verified"
+                    item.get("status") == "valid" and check_mismatched(item.get("dataCheck"))
                 ) else item.get("status")
             )
             if not isinstance(dataset_status, str) or dataset_status not in _SOURCE_STATUS_PRIORITY:
@@ -274,10 +271,8 @@ def _build_export_trace_sources(
             status = "unbound"
         elif int(counts.get("stale", 0) or 0):
             status = "stale"
-        data_check = item.get("dataCheck")
         if status == "valid" and (
-            item.get("copiedCells") or item.get("insertedRows")
-            or (isinstance(data_check, Mapping) and data_check.get("status") != "verified")
+            item.get("copiedCells") or item.get("insertedRows") or check_mismatched(item.get("dataCheck"))
         ):
             status = "stale"
         table_statuses[item["tableId"]] = status
@@ -286,10 +281,9 @@ def _build_export_trace_sources(
         if not isinstance(item, Mapping) or not isinstance(item.get("chartId"), str):
             continue
         if item.get("status") in _SOURCE_STATUS_PRIORITY:
-            check = item.get("dataCheck")
             chart_statuses[item["chartId"]] = (
-                "stale" if item["status"] == "valid" and isinstance(check, Mapping)
-                and check.get("status") != "verified" else item["status"]
+                "stale" if item["status"] == "valid" and check_mismatched(item.get("dataCheck"))
+                else item["status"]
             )
     computations = {item.computation_id: item for item in trace_index.computations}
     subjects_by_table: dict[str, list[str]] = {}

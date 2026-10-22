@@ -6,6 +6,7 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
+from loguru import logger
 from pydantic import Field, model_validator
 
 from ..contract import SHA256_PATTERN, StrictModel
@@ -134,6 +135,20 @@ def freeze_analysis_questions(
         raise ValueError("冻结的问题与完成条件不可由恢复或返工静默改写")
     return result
 
+
+
+def freeze_plan_questions(
+    current: QuestionSet, analyses: Sequence[Mapping[str, Any]], *, goal: str, feedback: Sequence[str] = (),
+) -> QuestionSet:
+    """按当前计划冻结问题。会话沿用的冻结问题与本次规划不一致（新一轮运行或修订重新规划）时，
+    按当前请求问题重新冻结并软告警，不让语义映射校验中断整份报告；计划本身无效仍报错。"""
+    try:
+        return freeze_analysis_questions(current, analyses)
+    except ValueError:
+        if current.stage != "analysis":
+            raise
+    logger.warning("report_question_specs_refrozen analyses={}", len(analyses))
+    return freeze_analysis_questions(request_questions(goal, feedback), analyses)
 
 class AnswerEvaluation(StrictModel):
     question_id: str = Field(alias="questionId")

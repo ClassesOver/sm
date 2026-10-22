@@ -2140,7 +2140,11 @@ async def test_validate_marks_deleted_chart_unbound_and_keeps_present_chart(
     result = await editor.trace_validate(
         _context(), session, present, hashlib.sha256(present.encode()).hexdigest()
     )
-    assert result["charts"] == [
+    # PR #81 起图表带 dataCheck/semanticCheck；静态 PNG 两项都是“未评估”，不能把未改动的图表判为待复核。
+    from smart_reporting.report_editor.trace_sources import check_mismatched
+
+    assert [{key: chart[key] for key in ("chartId", "imagePath", "locationSource", "status")}
+            for chart in result["charts"]] == [
         {
             "chartId": "chart_001",
             "imagePath": "reports/revision-1/chart-001.png",
@@ -2148,6 +2152,8 @@ async def test_validate_marks_deleted_chart_unbound_and_keeps_present_chart(
             "status": "valid",
         }
     ]
+    assert not check_mismatched(result["charts"][0]["dataCheck"])
+    assert not check_mismatched(result["charts"][0]["semanticCheck"])
 
     deleted = "图片已删除，只保留文字结论。[[claim:claim-1]]"
     deleted_result = await editor.trace_validate(

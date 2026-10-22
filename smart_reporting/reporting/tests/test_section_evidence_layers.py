@@ -153,3 +153,27 @@ def test_real_revision_bundle_shape_registers_supplement(tmp_path: Path) -> None
     records, files = _evidence_and_computation_layers(manifest)
     assert records == () and len(files) == 1
     assert files[0].path.endswith("/supplement.json")
+
+
+def test_trace_index_falls_back_when_only_evidence_files_break_the_contract() -> None:
+    # 审阅：补证文件在没有有效计算记录时也登记；只在有计算记录时回退，会让补证文件的
+    # 问题拖垮整份溯源索引与产物清单。
+    import pytest
+
+    from smart_reporting.reporting.workflow.runtime.publication import (
+        build_with_optional_computation_layer,
+    )
+
+    calls = []
+
+    def build(files, computations):
+        calls.append((files, computations))
+        if files:
+            raise ValueError("evidence registration rejected")
+        return "index"
+
+    evidence = (_identity("analysis/evidence.json"),)
+    assert build_with_optional_computation_layer(build, evidence, ()) == "index"
+    assert calls == [(evidence, ()), ((), ())]
+    with pytest.raises(ValueError):
+        build_with_optional_computation_layer(lambda *_: (_ for _ in ()).throw(ValueError("x")), (), ())
