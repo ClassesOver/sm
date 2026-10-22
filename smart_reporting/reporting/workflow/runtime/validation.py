@@ -427,6 +427,10 @@ def _measure_semantic_issues(
     return issues
 
 
+# 多表 requirement 无法安全合并时的结构化修复指令；纠错范围按此代码放开，不匹配提示文案。
+SPLIT_REQUIREMENTS_ACTION = "split_requirements"
+
+
 def _rebuilt_bundle(
     analyses: Sequence[Any], requirements: Sequence[QueryRequirement]
 ) -> AnalysisBundle:
@@ -904,6 +908,7 @@ def _multi_table_requirement_issues(
                 "requiredAction": (
                     "拆分为单表 requirements，并让 analyses.requirementIds 同时引用它们"
                 ),
+                "actionCode": SPLIT_REQUIREMENTS_ACTION,
             }
         )
 
@@ -933,6 +938,7 @@ def _multi_table_requirement_issues(
                     "requiredAction": (
                         "拆分为单表 requirements；只有确实存在完整共同粒度时才保留多表 requirement"
                     ),
+                    "actionCode": SPLIT_REQUIREMENTS_ACTION,
                 }
             )
 
@@ -950,6 +956,7 @@ def _multi_table_requirement_issues(
                     "requiredAction": (
                         "joinColumns 必须完整等于 grainColumns；无法满足时拆分为单表 requirements"
                     ),
+                    "actionCode": SPLIT_REQUIREMENTS_ACTION,
                 }
             )
     return issues
