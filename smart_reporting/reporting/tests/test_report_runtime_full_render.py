@@ -875,3 +875,18 @@ def test_render_markdown_opens_with_executive_summary_from_section_conclusions(t
         assert "成本分析：成本整体平稳。全年成本合计32.10亿元，与预算基本持平。该层级组织映射缺失率80%，不支持完整科室间比较。" in text
         assert "补充统计与数据限制：" not in text
         assert summary < text.rindex("1.收入分析")
+
+
+def test_toc_heading_pages_are_located_after_the_toc_in_reading_order() -> None:
+    from smart_reporting.reporting.delivery.report_runtime.docx import _heading_body_pages
+
+    labels = ["1. 预算执行", "1.1 收入预算", "2. 收入结构"]
+    pages = [
+        "封面 报告标题",
+        "目录 1. 预算执行 1 1.1 收入预算 1 2. 收入结构 3",
+        "1. 预算 执行 正文……1.1 收入 预算 正文",  # LibreOffice 会在中文标题中插入布局空格
+        "续页，仍提到 1. 预算执行 的结论",
+        "2. 收入结构 正文",
+    ]
+    assert _heading_body_pages(pages, labels, first_numbered_page=2) == [3, 3, 5]
+    assert _heading_body_pages(pages[:3], labels, first_numbered_page=2) is None

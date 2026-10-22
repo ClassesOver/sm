@@ -94,6 +94,7 @@ def test_professional_criteria_reach_the_actual_workflow_stage(stage, instructio
     ('## 7.2 收入预算类统计关联\n\n说明。', 'professional_correlation_section'),
     ('![收入大类构成](chart.png "药品与卫生材料合计占待核实")', 'professional_caption_placeholder'),
     ('*图表：北部院区执行率待核实为最低*', 'professional_caption_placeholder'),
+    ('实际医疗服务收入、实际检查化验收入均为常量0，占比分别为0.00%和0.00%。', 'professional_unknown_zero_share'),
 ])
 def test_annotation_counterexamples_produce_specific_soft_diagnostics(text, code):
     issues = review_professional_content(text)
@@ -130,6 +131,8 @@ def test_annotation_counterexamples_produce_specific_soft_diagnostics(text, code
     '2025年1—9月中，7—9月处于高位。',
     '2025年全年报告，下半年收入回升，12月最高。',
     '![收入大类构成](chart.png "药品与卫生材料合计占49.03%")',
+    '检查化验收入在本表为0，可能未采集或未映射，不作占比结论。',
+    '药品收入占比27.52%。',
 ])
 def test_valid_limits_and_business_distinctions_are_not_flagged(text):
     assert review_professional_content(text) == ()

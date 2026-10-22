@@ -451,7 +451,7 @@ def test_correlations_carry_metadata_and_fact_ids() -> None:
     from .test_deterministic_analysis import analysis, context
 
     bundle = build_deterministic_analysis_bundle(
-        analysis(fields=("amount", "visits")),
+        analysis(fields=("amount", "visits"), correlation=True),
         (
             (
                 "current",

@@ -138,7 +138,7 @@ def test_reserved_scope_values_keep_metric_and_correlation_identities_distinct()
             ),
         )
         bundle = build_deterministic_analysis_bundle(
-            analysis(fields=("amount", "visits")), (dataset("current", raw, ctx),)
+            analysis(fields=("amount", "visits"), correlation=True), (dataset("current", raw, ctx),)
         )
         assert assign_fact_ids(bundle).model_dump() == bundle.model_dump()
         assert bundle.correlation_details[0].sample_count == 3

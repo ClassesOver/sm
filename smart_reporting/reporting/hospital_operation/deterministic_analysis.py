@@ -307,7 +307,10 @@ def build_deterministic_analysis_bundle(
     warnings.extend(comparison_warnings)
     warnings.extend(derived_warnings)
     warnings.extend(reconciliation_warnings)
-    correlations, correlation_details, correlation_warnings = _correlations(prepared, facts)
+    # 相关系数受规模驱动，不回答预算执行或效率问题（R017/R061/R072）；只在分析明确要求时计算。
+    correlations, correlation_details, correlation_warnings = (
+        _correlations(prepared, facts) if _correlation_requested(analysis) else ({}, (), ())
+    )
     warnings.extend(correlation_warnings)
     bundle = DeterministicAnalysisBundle(
         analysisId=analysis.analysis_id,
@@ -474,7 +477,7 @@ def _dataset_facts(
             dict.fromkeys(
                 (
                     *dataset.context.source_warnings,
-                    *dataset.context.quality_warnings,
+                    *_fact_quality_warnings(dataset.context.quality_warnings, field),
                     *scope_warnings,
                     *period_warnings,
                     *((f"期间字段 {period_field} 缺失 {period_missing_count} 行，期间比较不使用这些行。",)
@@ -1513,6 +1516,11 @@ def _grain_columns(
     return tuple(result)
 
 
+def _correlation_requested(analysis: DetailedAnalysisItem) -> bool:
+    text = " ".join((analysis.management_question, *analysis.actions))
+    return bool(re.search(r"相关|关联性|关联分析|correlat", text, re.IGNORECASE))
+
+
 def _correlations(
     datasets: list[_Dataset], facts: list[DeterministicMetricFact]
 ) -> tuple[dict[str, float], tuple[CorrelationDetail, ...], tuple[str, ...]]:
@@ -1564,6 +1572,32 @@ def _correlations(
                         )
                     )
     return result, tuple(details), tuple(warnings)
+
+
+_PROFILE_ALERT = re.compile(r"^\[([^\]]+)\]\s+(.+)$")
+_PROFILE_FIELD_DEFECT = re.compile(r"has a constant value|missing values|infinite values")
+_DESCRIPTIVE_DATASET_NOTES = frozenset({
+    "同一月份有多条科室或项目明细记录，未在明细层面做趋势与季节性检验；"
+    "趋势判断须以按月及科室汇总后的数据为准。",
+})
+
+
+def _fact_quality_warnings(warnings: tuple[str, ...], field: str) -> list[str]:
+    """事实只携带与本字段相关的数据缺陷告警。
+
+    画像告警以“[字段]”开头；其他字段的告警，以及相关、分布不均、零值占比等描述性告警
+    不说明本指标合计有缺陷，却会让依赖该事实的证明一律失效。它们仍保留在分析级 warnings。
+    """
+    kept: list[str] = []
+    for warning in warnings:
+        if warning in _DESCRIPTIVE_DATASET_NOTES:
+            continue
+        alert = _PROFILE_ALERT.match(warning)
+        if alert is None or (
+            alert[1].casefold() == field.casefold() and _PROFILE_FIELD_DEFECT.search(alert[2])
+        ):
+            kept.append(warning)
+    return kept
 
 
 def _coverage_warnings(dataset: _Dataset) -> list[str]:

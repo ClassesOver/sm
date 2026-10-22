@@ -141,12 +141,126 @@ def _render_docx(
         include_cover=include_cover,
         include_toc=include_toc,
     )
+    if include_toc:
+        _cache_toc_page_numbers(output, context=context, include_cover=include_cover)
     return _validate_docx_structure(
         output,
         expected_sections=context["sections"],
         expected_headings=context["headingNumbers"],
         expected_image_count=None,
     )
+
+
+def _heading_body_pages(
+    pages: list[str], labels: list[str], *, first_numbered_page: int
+) -> list[int] | None:
+    """按目录顺序在正文中定位各标题所在物理页；目录本身也列出全部标题，须从目录之后找。"""
+    compact_pages = ["".join(text.split()) for text in pages]
+    compact_labels = ["".join(label.split()) for label in labels]
+    if not compact_labels:
+        return []
+    # 目录页依次列出全部标题：末个标题首次出现的页即目录末页（或正文页，若目录未渲染）。
+    toc_last = next(
+        (index for index, text in enumerate(compact_pages, start=1)
+         if index >= first_numbered_page and compact_labels[-1] in text),
+        None,
+    )
+    if toc_last is None:
+        return None
+    found: list[int] = []
+    cursor = toc_last + 1
+    for label in compact_labels:
+        page = next(
+            (index for index in range(cursor, len(compact_pages) + 1) if label in compact_pages[index - 1]),
+            None,
+        )
+        if page is None:
+            return None
+        found.append(page)
+        cursor = page
+    return found
+
+
+def _cache_toc_page_numbers(path: Path, *, context: dict[str, Any], include_cover: bool) -> None:
+    """把目录 PAGEREF 的缓存结果写成实际页码。
+
+    字段仍标记为待更新，Word 打开时会重算；不刷新字段的查看器（受保护视图、WPS 预览）
+    此前会显示固定的缓存值“1”。按 LibreOffice 对同一文件的分页计算，失败时保留原缓存，不阻断导出。
+    """
+    libreoffice = shutil.which("libreoffice") or shutil.which("soffice")
+    if libreoffice is None:
+        return
+    root = Path(tempfile.mkdtemp(prefix="reporting-toc-"))
+    try:
+        import pypdf
+        from docx import Document
+        from docx.oxml.ns import qn
+
+        process = subprocess.run(
+            [
+                libreoffice,
+                "--headless",
+                f"-env:UserInstallation={(root / 'profile').resolve().as_uri()}",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(root),
+                str(path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=DOCX_VALIDATION_TIMEOUT_SECONDS,
+            check=False,
+        )
+        converted = root / f"{path.stem}.pdf"
+        if process.returncode != 0 or not converted.is_file():
+            logger.warning("report_docx_toc_pages_skipped reason=convert_failed")
+            return
+        pages = [page.extract_text() or "" for page in pypdf.PdfReader(str(converted)).pages]
+        headings = context["headingNumbers"]
+        labels = [
+            format_heading_label(level=item["level"], number=item["number"], title=item["title"])
+            for item in headings
+        ]
+        first_numbered_page = 2 if include_cover else 1
+        physical = _heading_body_pages(pages, labels, first_numbered_page=first_numbered_page)
+        if physical is None:
+            logger.warning("report_docx_toc_pages_skipped reason=heading_not_located")
+            return
+        body_start = physical[0]
+        numbers = {
+            item["anchor"].replace("-", "_"): str(
+                _page_number_context(
+                    page,
+                    body_start_page=body_start,
+                    physical_page_count=len(pages),
+                    first_numbered_page=first_numbered_page,
+                )[0]
+            )
+            for item, page in zip(headings, physical, strict=True)
+        }
+        document = Document(str(path))
+        updated = 0
+        for paragraph in document.paragraphs:
+            runs = list(paragraph._p.iter(qn("w:r")))
+            for index, run in enumerate(runs):
+                instruction = run.find(qn("w:instrText"))
+                if instruction is None or not (instruction.text or "").strip().startswith("PAGEREF"):
+                    continue
+                bookmark = (instruction.text or "").split()[1]
+                result = next(
+                    (item.find(qn("w:t")) for item in runs[index + 1:] if item.find(qn("w:t")) is not None),
+                    None,
+                )
+                if bookmark in numbers and result is not None:
+                    result.text = numbers[bookmark]
+                    updated += 1
+        document.save(str(path))
+        logger.info("report_docx_toc_pages_cached headings={} updated={}", len(numbers), updated)
+    except Exception as error:  # 缓存页码只改善离线显示，任何失败都保留原文件。
+        logger.warning("report_docx_toc_pages_skipped reason={}", type(error).__name__)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _postprocess_docx(
