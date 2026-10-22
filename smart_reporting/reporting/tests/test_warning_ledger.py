@@ -120,6 +120,68 @@ async def test_ledger_groups_dependencies_without_losing_or_adjudicating_issues(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("change", ["analysis", "file", "pointer", "kind", "extra_unkeyed", "unkeyed"])
+async def test_same_fact_key_cannot_merge_distinct_frozen_references(tmp_path, change):
+    editor, _, context = await _make_editor_with_subject(tmp_path, period_table=True, number_reference=True)
+    index = await editor.trace.require_index(context)
+    subject = next(item for item in index.subject_bindings if item.number_reference is not None)
+    original = subject.fact_refs[0]
+    changes = {
+        "analysis": {"analysis_id": "analysis_999999"},
+        "file": {"file_resource_id": "trf-" + "a" * 20},
+        "pointer": {"json_pointer": "/other/0"},
+        "kind": {"fact_kind": "comparison"},
+        "unkeyed": {"fact_key": None},
+        "extra_unkeyed": {"fact_key": None, "json_pointer": "/other/0"},
+    }
+    other_ref = type(original).model_validate({**original.model_dump(), **changes[change]})
+    refs = (*subject.fact_refs, other_ref) if change == "extra_unkeyed" else (other_ref,)
+    other = subject.model_copy(update={"subject_id": "sub-" + "f" * 16, "fact_refs": refs})
+    index = index.model_copy(update={"subject_bindings": (subject, other)})
+    quality = QualityBundle(reportId=index.report_id, revision=index.revision,
+                            markdownSha256="a" * 64, inputSha256="b" * 64, issues=tuple(
+        QualityIssue(code="assertion_support_unknown", subjectId=item.subject_id, reasons=("scope_unknown",))
+        for item in (subject, other)
+    ))
+    ledger = build_warning_ledger(quality, index)
+    assert ledger.group_count == 2
+    assert all(group.target_kind == "fact" for group in ledger.groups)
+    assert all(len(group.subject_ids) == 1 for group in ledger.groups)
+    assert ledger.groups[0].fact_refs == subject.fact_refs
+    assert set(ledger.groups[1].fact_refs) == set(refs)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_group_identity_tracks_frozen_bytes_and_ignores_reference_order(tmp_path):
+    editor, _, context = await _make_editor_with_subject(tmp_path, period_table=True, number_reference=True)
+    index = await editor.trace.require_index(context)
+    subject = next(item for item in index.subject_bindings if item.number_reference is not None)
+    first = subject.fact_refs[0]
+    second = first.model_copy(update={"json_pointer": "/metrics/99", "fact_key": None})
+    subject = subject.model_copy(update={"fact_refs": (first, second)})
+    copy = subject.model_copy(update={"subject_id": "sub-" + "f" * 16, "fact_refs": (second, first, first)})
+    index = index.model_copy(update={"subject_bindings": (subject, copy)})
+    quality = QualityBundle(reportId=index.report_id, revision=index.revision,
+                            markdownSha256="a" * 64, inputSha256="b" * 64, issues=tuple(
+        QualityIssue(code="assertion_support_unknown", subjectId=item.subject_id, reasons=("scope_unknown",))
+        for item in (subject, copy)
+    ))
+    ledger = build_warning_ledger(quality, index)
+    assert ledger.group_count == 1 and ledger.grouping_version == "fact-reference/2"
+    assert set(ledger.groups[0].fact_refs) == {first, second}
+    assert ledger.groups[0].fact_ids == (first.fact_key,)
+    changed_index = index.model_copy(update={"files": tuple(
+        file.model_copy(update={"sha256": "f" * 64}) if file.resource_id == first.file_resource_id else file
+        for file in index.files
+    )})
+    changed = build_warning_ledger(quality, changed_index)
+    assert changed.groups[0].group_id != ledger.groups[0].group_id
+    assert sorted(position for group in changed.groups for position in group.issue_indices) == [0, 1]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("ledger_failure", [False, True])
 async def test_editor_keeps_diagnostics_even_if_optional_worklist_fails(tmp_path, monkeypatch, ledger_failure):
     editor, _, context = await _make_editor_with_subject(tmp_path, period_table=True, number_reference=True)

@@ -12,12 +12,14 @@ from smart_reporting.reporting.trace.quality_bundle import (
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize(
-    "fault", ["none", "missing", "tampered", "wrong_pointer", "wrong_scope", "draft"]
+    "fault", ["none", "missing", "tampered", "wrong_pointer", "wrong_scope", "wrong_period", "draft"]
 )
 async def test_shadow_quality_does_not_borrow_other_sources_or_self_sign_a_statement(
     tmp_path, fault
 ):
-    statement = "2025年10月南院收入" if fault == "wrong_scope" else "2025年10月北院收入"
+    statement = {
+        "wrong_scope": "2025年10月南院收入", "wrong_period": "2025年9月北院收入",
+    }.get(fault, "2025年10月北院收入")
     editor, _, context = await _make_editor_with_subject(
         tmp_path,
         period_table=True,
@@ -78,6 +80,13 @@ async def test_shadow_quality_does_not_borrow_other_sources_or_self_sign_a_state
         assert quality.issues
     if fault in {"missing", "tampered", "wrong_pointer", "draft"}:
         assert not quality.assertions
+    if fault in {"wrong_scope", "wrong_period"}:
+        issue = next(issue for issue in quality.issues if "statement_not_supported" in issue.reasons)
+        assert issue.statement_review is not None
+        assert issue.statement_review.numeric_status == "valid"
+        expected = "登记范围 院区=北院" if fault == "wrong_scope" else "期间"
+        assert any(expected in warning for warning in issue.statement_review.warnings)
+        assert quality.semantic_rule_versions["statementReview"] == "1"
 
 
 @pytest.mark.anyio

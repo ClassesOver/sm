@@ -12,6 +12,7 @@ from .assertions import AssertionResult
 from .chart_quality import ChartQualityCheck
 from .contracts_v1 import (
     ChartTraceV1,
+    FactRefV1,
     RevisionTraceIndexV1,
     SubjectBindingV1,
     TableTraceV1,
@@ -50,6 +51,7 @@ class WarningGroup(StrictModel):
     target_kind: str = Field(alias="targetKind")
     subject_ids: tuple[str, ...] = Field(alias="subjectIds")
     fact_ids: tuple[str, ...] = Field(alias="factIds")
+    fact_refs: tuple[FactRefV1, ...] = Field(default=(), alias="factRefs")
     issue_indices: tuple[int, ...] = Field(alias="issueIndices")
     issue_codes: tuple[str, ...] = Field(alias="issueCodes")
     reasons: tuple[str, ...]
@@ -62,6 +64,7 @@ class WarningGroup(StrictModel):
 
 class WarningLedger(StrictModel):
     version: Literal["warning-ledger/1"] = "warning-ledger/1"
+    grouping_version: Literal["fact-reference/2"] = Field(default="fact-reference/2", alias="groupingVersion")
     quality_input_sha256: str = Field(alias="qualityInputSha256")
     original_issue_count: int = Field(alias="originalIssueCount")
     group_count: int = Field(alias="groupCount")
@@ -151,10 +154,24 @@ def build_warning_ledger(quality: QualityBundle, index: RevisionTraceIndexV1) ->
     if quality.report_id != index.report_id or quality.revision != index.revision:
         raise ValueError("Quality and index identities differ")
     subjects = {item.subject_id: item for item in index.subject_bindings}
+    files = {file.resource_id: file for file in index.files}
+    references: dict[str, FactRefV1] = {}
+
+    def reference_identity(ref: FactRefV1) -> str:
+        # factKey is only a defensive key inside a frozen file, never a global
+        # identity. Include unkeyed operands, exact pointers and registered bytes.
+        file = files.get(ref.file_resource_id)
+        identity = canonical_sha256([
+            ref.model_dump(mode="json", by_alias=True),
+            [file.sha256, file.size] if file is not None else None,
+        ])
+        references[identity] = ref
+        return identity
+
     buckets: dict[tuple[str, tuple[str, ...]], list[int]] = {}
     for position, issue in enumerate(quality.issues):
         subject = subjects.get(issue.subject_id or "")
-        facts = tuple(sorted({ref.fact_key for ref in subject.fact_refs if ref.fact_key})) if subject else ()
+        facts = tuple(sorted({reference_identity(ref) for ref in subject.fact_refs})) if subject else ()
         identity: tuple[str, ...]
         if issue.code in {"chart_support_unknown", "chart_semantic_alignment_unknown"}:
             # Only the same actual chart combines its upstream/downstream checks.
@@ -172,10 +189,14 @@ def build_warning_ledger(quality: QualityBundle, index: RevisionTraceIndexV1) ->
         unknown = any(reason not in _GUIDANCE and not re.fullmatch(r"markdown_line:\d+", reason)
                       for reason in reasons) or not guidance
         groups.append(WarningGroup(
-            groupId="wg-" + canonical_sha256([quality.report_id, quality.revision, kind, identity])[:20],
+            groupId="wg-" + canonical_sha256([
+                "fact-reference/2", quality.report_id, quality.revision, kind, identity,
+            ])[:20],
             targetKind=kind,
             subjectIds=tuple(dict.fromkeys(issue.subject_id for issue in issues if issue.subject_id)),
-            factIds=identity if kind == "fact" else (),
+            factIds=tuple(sorted({fact_key for key in identity
+                                  if (fact_key := references[key].fact_key) is not None})) if kind == "fact" else (),
+            factRefs=tuple(references[key] for key in identity) if kind == "fact" else (),
             issueIndices=tuple(positions),
             issueCodes=tuple(dict.fromkeys(issue.code for issue in issues)),
             reasons=reasons,

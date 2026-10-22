@@ -33,7 +33,18 @@ from .semantic_bindings import reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1"}
+SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1", "statementReview": "1"}
+
+
+class StatementReview(StrictModel):
+    """Existing local numeric check, not a business-acceptance verdict.
+
+    A matching number may still have scope, period, unit or selector warnings.
+    Preserve those observations instead of collapsing them into an opaque code.
+    """
+
+    numeric_status: Literal["valid", "stale", "unbound"] = Field(alias="numericStatus")
+    warnings: tuple[str, ...] = ()
 
 
 class QualityIssue(StrictModel):
@@ -42,6 +53,7 @@ class QualityIssue(StrictModel):
     severity: Literal["warning", "error"] = "warning"
     checker: Literal["deterministic"] = "deterministic"
     reasons: tuple[str, ...] = ()
+    statement_review: StatementReview | None = Field(default=None, alias="statementReview")
 
 
 class QualityBundle(StrictModel):
@@ -164,6 +176,7 @@ def evaluate_quality_bundle(
         if number is None:
             continue
         reasons = []
+        statement_review = None
         if any(ref.file_resource_id in unavailable for ref in subject.fact_refs):
             reasons.append("source_unavailable")
         if number.table_derivation is None:
@@ -219,12 +232,14 @@ def evaluate_quality_bundle(
                 )
                 if detail["status"] != "valid" or detail["warnings"]:
                     reasons.append("statement_not_supported")
+                    statement_review = StatementReview(numericStatus=detail["status"], warnings=tuple(detail["warnings"]))
         if reasons:
             issues.append(
                 QualityIssue(
                     code="assertion_support_unknown",
                     subjectId=subject.subject_id,
                     reasons=tuple(dict.fromkeys(reasons)),
+                    statementReview=statement_review,
                 )
             )
     markdown_hash = hashlib.sha256(markdown.encode()).hexdigest()
