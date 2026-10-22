@@ -447,6 +447,10 @@ def _dataset_facts(
                 period_values,
                 enabled="current" in dataset.period_roles,
             )
+            period_warnings = (
+                *period_warnings,
+                *_period_level_warnings(field, period_values, enabled=period_aggregation == "sum"),
+            )
             series = value_frame[field]
             period_missing_count = (
                 scoped_frame[period_field].null_count() if period_field is not None else None
@@ -462,6 +466,8 @@ def _dataset_facts(
                 value_frame, field, group_fields, aggregation,
                 include_population=population_budget_bytes > 0,
             )
+            # 维度集中只影响该维度的比较，不影响合计，因此记为分析级告警。
+            warnings.extend(_dimension_concentration_warnings(value_frame, field, group_fields))
             if population is not None:
                 population_size = _group_population_size(population)
                 if population_size > population_budget_bytes:
@@ -711,6 +717,84 @@ def _warn_trailing_zero_periods(
         "零值本身不能说明数据缺失或未入账，需结合入账记录确认。"
     )
     return frame, periods, (warning,)
+
+
+_SPIKE_RATIO = Decimal(5)
+_LOW_TAIL_RATIO = Decimal("0.5")
+_CONCENTRATION_SHARE = 0.99
+
+
+def _median(values: list[Decimal]) -> Decimal:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _period_level_warnings(
+    field: str, periods: tuple[PeriodValue, ...], *, enabled: bool
+) -> tuple[str, ...]:
+    """流量序列的量级异常与期末偏低：只陈述事实，不断言原因（R036/R038、数据截至期）。
+
+    期末连续零值已由 _warn_trailing_zero_periods 说明，这里先去掉再判断。
+    """
+    values = [Decimal(str(item.value)) for item in periods]
+    while values and values[-1] == 0:
+        values.pop()
+    if not enabled or len(values) < 4:
+        return ()
+    warnings: list[str] = []
+    spikes: set[int] = set()
+    for index, value in enumerate(values):
+        others = [abs(item) for position, item in enumerate(values) if position != index and item != 0]
+        baseline = _median(others) if len(others) >= 3 else Decimal(0)
+        if baseline > 0 and abs(value) > baseline * _SPIKE_RATIO:
+            spikes.add(index)
+            warnings.append(
+                f"{field} 在 {periods[index].period} 的值为其余期间中位数的 {abs(value) / baseline:.1f} 倍，"
+                "量级异常；确认是否含期初数、累计数、年度数或重复汇总前，不作为业务变化结论。"
+            )
+    tail: list[int] = []
+    for index in range(len(values) - 1, 2, -1):
+        prior = [abs(values[position]) for position in range(index) if position not in spikes and values[position] != 0]
+        baseline = _median(prior) if len(prior) >= 3 else Decimal(0)
+        if baseline > 0 and 0 < abs(values[index]) < baseline * _LOW_TAIL_RATIO:
+            tail.append(index)
+            continue
+        break
+    if tail:
+        first, last = periods[min(tail)].period, periods[max(tail)].period
+        span = first if first == last else f"{first} 至 {last}"
+        warnings.append(
+            f"{field} 在期末 {span} 显著低于此前期间中位数的一半，完整性待确认；"
+            "确认入账完整前，不据此判断下降，累计与同比需注明包含该期间。"
+        )
+    return tuple(warnings)
+
+
+def _dimension_concentration_warnings(
+    frame: pl.DataFrame, field: str, group_fields: tuple[str, ...]
+) -> list[str]:
+    """单一维度取值占 99% 以上时，提示该维度比较可能反映集中记账或映射（R043）。"""
+    warnings: list[str] = []
+    for group in group_fields:
+        if group not in frame.columns or field not in frame.columns:
+            continue
+        totals = (
+            frame.select(pl.col(group).cast(pl.String), pl.col(field).cast(pl.Float64, strict=False).abs())
+            .drop_nulls()
+            .group_by(group)
+            .agg(pl.col(field).sum())
+        )
+        if totals.height < 2:
+            continue
+        overall = float(totals[field].sum())
+        top = totals.sort(field, descending=True).row(0)
+        if overall > 0 and top[1] / overall >= _CONCENTRATION_SHARE:
+            warnings.append(
+                f"{field} 按 {group} 的 {top[1] / overall:.2%} 集中于“{top[0]}”，可能反映集中记账或维度映射；"
+                f"确认归属口径前，不做 {group} 之间的比较。"
+            )
+    return warnings
 
 
 def _group_population_size(population: tuple[GroupContribution, ...]) -> int:

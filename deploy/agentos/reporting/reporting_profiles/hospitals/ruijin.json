@@ -159,13 +159,14 @@
     {
       "code": "outpatient_visits",
       "kind": "count",
-      "description": "门急诊人次",
+      "description": "门诊人次（含急诊和体检）",
       "aggregation": "sum",
       "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_outpatient",
       "purpose": "工作量分析",
       "businessCategory": "工作量",
       "aliases": [
-        "门诊人次"
+        "门诊人次",
+        "门急诊人次"
       ]
     },
     {
@@ -204,7 +205,7 @@
     {
       "code": "discharges_bed",
       "kind": "count",
-      "description": "实际占用床日数",
+      "description": "出院者占用床日数",
       "aggregation": "sum",
       "fieldRef": "rj.dm_hdc_gongzuoliang_view.discharges_bed",
       "purpose": "工作量分析",
