@@ -2906,27 +2906,43 @@ def test_analysis_evidence_planner_reserves_only_schema_sized_output_budget(
         ),
         output_token_limit=32 * 1024,
     )
-    hard_caps: list[int] = []
-
-    def capture_hard_cap(messages: Any, **kwargs: Any) -> tuple[Any, Any]:
-        hard_caps.append(kwargs["hard_cap"])
-        return messages, None
-
-    monkeypatch.setattr(
-        reporting_agent.TaskExecutionContextProjector, "project_with_metrics", capture_hard_cap
-    )
-    monkeypatch.setattr(reporting_agent, "record_reporting_projection_metrics", lambda *_, **__: None)
+    hard_caps = _capture_projection_hard_caps(monkeypatch)
     request_model = stage.model._phase_request_model([Message(role="user", content="{}")])
     request_model._project([Message(role="user", content="{}")], (), {})
 
     assert phase_model.max_tokens == output_reserve
     assert request_model.max_tokens == 32 * 1024
-    # 2026-10 回放：补证规划首轮输入 130_042 token，另需结构化纠错余量。
+    # 2026-10 回放：补证规划首轮输入 130_042 token；224K 另留结构化纠错余量。
     assert hard_caps == [224 * 1024]
-    assert hard_caps[0] > 130_042 + 4096
 
 
-def test_default_output_reserve_is_clamped_to_verified_model_output_limit() -> None:
+def _capture_projection_hard_caps(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """截获投影硬顶，跳过真实 tokenizer 计数。"""
+
+    from smart_reporting.reporting import agent as reporting_agent
+    from smart_reporting.reporting.code_agent import protocol as code_protocol
+
+    hard_caps: list[int] = []
+
+    def capture_hard_cap(messages: Any, **kwargs: Any) -> tuple[Any, Any]:
+        hard_caps.append(kwargs["hard_cap"])
+        return messages, {}
+
+    for module in (reporting_agent, code_protocol):
+        if hasattr(module, "TaskExecutionContextProjector"):
+            monkeypatch.setattr(
+                module.TaskExecutionContextProjector, "project_with_metrics", capture_hard_cap
+            )
+        if hasattr(module, "record_reporting_projection_metrics"):
+            monkeypatch.setattr(
+                module, "record_reporting_projection_metrics", lambda *_, **__: None
+            )
+    return hard_caps
+
+
+def test_default_output_reserve_is_clamped_to_verified_model_output_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from agno.models.openai import OpenAIChat
 
     from smart_reporting.reporting import agent as reporting_agent
@@ -2949,7 +2965,9 @@ def test_default_output_reserve_is_clamped_to_verified_model_output_limit() -> N
     assert _analysis_summary_input_token_budget(agent, run_context) == 128 * 1024 * 3 // 4
     assert _section_block_input_token_budget(agent, run_context) == 128 * 1024
     assert code_model._phase_request_model(messages).max_output_tokens == 128 * 1024
+    hard_caps = _capture_projection_hard_caps(monkeypatch)
     code_model._project(messages, (), {})
+    assert hard_caps == [128 * 1024]
 
 
 @pytest.mark.skip(reason="V1 planner 日期注入测试依赖旧环境构造")

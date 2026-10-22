@@ -89,8 +89,9 @@ from .model_policy import (
     apply_reporting_thinking_profile,
     clamp_reporting_output_tokens,
     current_reporting_thinking_decision,
+    positive_token_count,
+    reporting_request_input_hard_cap,
     reporting_thinking_profile_from_model,
-    resolve_reporting_input_token_hard_cap,
 )
 from .models import ReportingError
 from .phase import (
@@ -2268,15 +2269,9 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
     def _project(self, messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]):
         response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
         tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
-        configured_cap = getattr(self, "_task_execution_input_token_budget", None)
-        if (
-            isinstance(configured_cap, bool)
-            or not isinstance(configured_cap, int)
-            or configured_cap < 1
-        ):
-            configured_cap = (
-                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-            )
+        configured_cap = positive_token_count(
+            getattr(self, "_task_execution_input_token_budget", None)
+        )
         phase = _reporting_phase_from_messages(messages)
         task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
         # Visualization 的首个请求已携带全局冻结 facts，后续还需要保留脚本执行和图片检查
@@ -2290,26 +2285,12 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
             }
             else None
         )
-        phase_input_cap = (
-            min(configured_cap, phase_cap) if phase_cap is not None else configured_cap
-        )
-        request_output_reserve = (
-            self.max_tokens
-            if isinstance(self.max_tokens, int)
-            and not isinstance(self.max_tokens, bool)
-            and self.max_tokens > 0
-            else 0
-        )
-        hard_cap = resolve_reporting_input_token_hard_cap(
-            configured_input_token_cap=phase_input_cap,
+        if phase_cap is not None:
+            configured_cap = min(configured_cap or phase_cap, phase_cap)
+        hard_cap = reporting_request_input_hard_cap(
+            configured_input_token_cap=configured_cap,
             model_id=self.id,
-            output_token_reserve=max(
-                TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-                request_output_reserve,
-            ),
-            absolute_input_token_cap=(
-                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-            ),
+            output_tokens=self.max_tokens,
         )
 
         def filter_and_bind_tools(current_tools: Any) -> Any:

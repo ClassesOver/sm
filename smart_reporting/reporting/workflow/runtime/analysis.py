@@ -10,10 +10,6 @@ from agno.exceptions import ModelProviderError
 from agno.models.message import Message
 from agno.session.agent import AgentSession
 
-from ....task_execution import (
-    TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
-    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-)
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...code_agent.failure_policy import fresh_attempt_futile
 from ...hospital_operation.finding_projection import build_finding_graph
@@ -36,8 +32,8 @@ from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
     bind_reporting_thinking,
-    clamp_reporting_output_tokens,
-    resolve_reporting_input_token_hard_cap,
+    positive_token_count,
+    reporting_request_input_hard_cap,
     select_reporting_thinking,
 )
 from ...phase import (
@@ -219,23 +215,16 @@ def _analysis_summary_input_token_budget(agent: Any, run_context: RunContext) ->
     model = getattr(agent, "model", None)
     configured_cap = REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
     for owner in (model, agent):
-        value = getattr(owner, "_task_execution_input_token_budget", None)
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        value = positive_token_count(getattr(owner, "_task_execution_input_token_budget", None))
+        if value is not None:
             configured_cap = min(configured_cap, value)
             break
     route = reporting_model_route_from_run_context(run_context)
     model_id = route[1] if route is not None else getattr(model, "id", None)
-    model_id = model_id if isinstance(model_id, str) else None
-    model_output_reserve = clamp_reporting_output_tokens(
-        getattr(model, "max_tokens", None), model_id
-    )
-    hard_cap = resolve_reporting_input_token_hard_cap(
+    hard_cap = reporting_request_input_hard_cap(
         configured_input_token_cap=configured_cap,
-        model_id=model_id,
-        output_token_reserve=max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, model_output_reserve or 0),
-        absolute_input_token_cap=(
-            TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-        ),
+        model_id=model_id if isinstance(model_id, str) else None,
+        output_tokens=getattr(model, "max_tokens", None),
     )
     # 预留四分之一给 provider wire 方言、纠错指令与 tokenizer 版本差异。
     return hard_cap * 3 // 4

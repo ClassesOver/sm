@@ -148,6 +148,7 @@ from ...model_policy import (
     ThinkingPolicyConfig,
     ThinkingRequest,
     apply_reporting_thinking_profile,
+    positive_token_count,
 )
 from ...models import ReportingError
 from ...presentation import completed_report_content
@@ -507,10 +508,6 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
 _ANALYSIS_EVIDENCE_OUTPUT_TOKEN_LIMIT = 32 * 1024
 
 
-def _positive_token_count(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
-
-
 def _limit_planner_output_tokens(model: OpenAIChat, output_token_limit: int) -> None:
     """收紧 planner 输出上限，并把释放的输出预留归还给继承的输入预算。
 
@@ -518,10 +515,10 @@ def _limit_planner_output_tokens(model: OpenAIChat, output_token_limit: int) -> 
     模板预算，收紧输出不会带来任何输入空间。
     """
 
-    configured = _positive_token_count(model.max_tokens)
+    configured = positive_token_count(model.max_tokens)
     limited = min(configured, output_token_limit) if configured is not None else output_token_limit
     model.max_tokens = limited
-    budget = _positive_token_count(getattr(model, "_task_execution_input_token_budget", None))
+    budget = positive_token_count(getattr(model, "_task_execution_input_token_budget", None))
     if budget is None or configured is None:
         return
     released = max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, configured) - max(

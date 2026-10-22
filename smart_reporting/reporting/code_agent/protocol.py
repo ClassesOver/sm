@@ -23,8 +23,6 @@ from loguru import logger
 
 from ...context_management import (
     CODING_FREEFORM_TOOL_ARGUMENTS,
-    TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
-    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
     TaskExecutionContextProjector,
 )
 from ...integrations.model_config import is_dashscope_endpoint
@@ -33,7 +31,7 @@ from ..model_policy import (
     clamp_reporting_output_tokens,
     current_reporting_thinking_decision,
     reporting_coding_sampling,
-    resolve_reporting_input_token_hard_cap,
+    reporting_request_input_hard_cap,
 )
 from ..models import ReportingError
 from ..phase import (
@@ -1293,22 +1291,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
         tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
         # CodeMode 使用任务签发的 Function；父阶段白名单仅适用于外层模型。
-        configured_cap = getattr(self, "_task_execution_input_token_budget", None)
-        if (
-            not isinstance(configured_cap, int)
-            or isinstance(configured_cap, bool)
-            or configured_cap < 1
-        ):
-            configured_cap = (
-                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-            )
-        output_reserve = clamp_reporting_output_tokens(self.max_output_tokens, self.id) or 0
-        hard_cap = resolve_reporting_input_token_hard_cap(
-            configured_input_token_cap=configured_cap,
+        hard_cap = reporting_request_input_hard_cap(
+            configured_input_token_cap=getattr(self, "_task_execution_input_token_budget", None),
             model_id=self.id,
-            output_token_reserve=max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_reserve),
-            absolute_input_token_cap=TASK_EXECUTION_CONTEXT_TOKEN_LIMIT
-            - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+            output_tokens=self.max_output_tokens,
         )
         projected_input = with_reporting_durable_identities(messages)
         state_reader = getattr(self, "_code_delivery_state_reader", None)

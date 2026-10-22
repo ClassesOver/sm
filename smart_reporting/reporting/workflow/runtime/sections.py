@@ -13,10 +13,6 @@ from agno.session.agent import AgentSession
 from loguru import logger as loguru_logger
 
 from ....context_management import TaskExecutionContextHardLimitError
-from ....task_execution import (
-    TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
-    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-)
 from ...code_agent.failure_policy import fresh_attempt_futile
 from ...contract import interactive_spec_path
 from ...delivery.draft_v1 import (
@@ -32,8 +28,8 @@ from ...hospital_operation.outline import ReportOutlineSection
 from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
-    clamp_reporting_output_tokens,
-    resolve_reporting_input_token_hard_cap,
+    positive_token_count,
+    reporting_request_input_hard_cap,
 )
 from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
@@ -320,25 +316,19 @@ def _estimated_section_tokens(value: str) -> int:
 
 
 def _section_block_input_token_budget(agent: Any, run_context: RunContext) -> int:
+    model = getattr(agent, "model", None)
     configured_cap = _SECTION_BLOCK_DEFAULT_INPUT_TOKEN_BUDGET
-    for owner in (getattr(agent, "model", None), agent):
-        value = getattr(owner, "_task_execution_input_token_budget", None)
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+    for owner in (model, agent):
+        value = positive_token_count(getattr(owner, "_task_execution_input_token_budget", None))
+        if value is not None:
             configured_cap = value
             break
     route = reporting_model_route_from_run_context(run_context)
-    model_id = route[1] if route is not None else getattr(getattr(agent, "model", None), "id", None)
-    model_id = model_id if isinstance(model_id, str) else None
-    output_reserve = clamp_reporting_output_tokens(
-        getattr(getattr(agent, "model", None), "max_tokens", None), model_id
-    )
-    return resolve_reporting_input_token_hard_cap(
+    model_id = route[1] if route is not None else getattr(model, "id", None)
+    return reporting_request_input_hard_cap(
         configured_input_token_cap=configured_cap,
-        model_id=model_id,
-        output_token_reserve=max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_reserve or 0),
-        absolute_input_token_cap=(
-            TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-        ),
+        model_id=model_id if isinstance(model_id, str) else None,
+        output_tokens=getattr(model, "max_tokens", None),
     )
 
 
