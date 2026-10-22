@@ -87,10 +87,11 @@ from .model_policy import (
     ReportingReasoningEffort,
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,
+    clamp_reporting_output_tokens,
     current_reporting_thinking_decision,
-    reporting_model_output_token_limit,
+    positive_token_count,
+    reporting_request_input_hard_cap,
     reporting_thinking_profile_from_model,
-    resolve_reporting_input_token_hard_cap,
 )
 from .models import ReportingError
 from .phase import (
@@ -194,8 +195,8 @@ _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # Reporting 的全局 reserve 用于上下文预算，不能直接作为每次模型请求的生成额度。
 # 复杂综合报告的单章输入会合并多个分析证据，真实 CLI 已观察到 16K 输出在完整
-# SectionDecision JSON 结束前被截断。章节和可视化统一允许 128K，实际请求仍取该
-# 上限与 AGENT_REPORT_OUTPUT_TOKEN_RESERVE 的较小值。
+# SectionDecision JSON 结束前被截断。可视化允许 128K、逐章正文允许 32K；实际请求
+# 取该上限、AGENT_REPORT_OUTPUT_TOKEN_RESERVE 与模型已验证单次输出上限的最小值。
 _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
 _REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 32 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
@@ -1826,16 +1827,9 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
         else:
             output_limit = None
-        limits = [
-            value
-            for value in (
-                request_model.max_tokens,
-                output_limit,
-                reporting_model_output_token_limit(request_model.id),
-            )
-            if isinstance(value, int) and value > 0
-        ]
-        request_model.max_tokens = min(limits) if limits else None
+        request_model.max_tokens = clamp_reporting_output_tokens(
+            request_model.max_tokens, request_model.id, output_limit
+        )
         return apply_reporting_thinking_profile(request_model, profile)
 
     @staticmethod
@@ -2275,15 +2269,9 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
     def _project(self, messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]):
         response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
         tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
-        configured_cap = getattr(self, "_task_execution_input_token_budget", None)
-        if (
-            isinstance(configured_cap, bool)
-            or not isinstance(configured_cap, int)
-            or configured_cap < 1
-        ):
-            configured_cap = (
-                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-            )
+        configured_cap = positive_token_count(
+            getattr(self, "_task_execution_input_token_budget", None)
+        )
         phase = _reporting_phase_from_messages(messages)
         task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
         # Visualization 的首个请求已携带全局冻结 facts，后续还需要保留脚本执行和图片检查
@@ -2297,26 +2285,12 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
             }
             else None
         )
-        phase_input_cap = (
-            min(configured_cap, phase_cap) if phase_cap is not None else configured_cap
-        )
-        request_output_reserve = (
-            self.max_tokens
-            if isinstance(self.max_tokens, int)
-            and not isinstance(self.max_tokens, bool)
-            and self.max_tokens > 0
-            else 0
-        )
-        hard_cap = resolve_reporting_input_token_hard_cap(
-            configured_input_token_cap=phase_input_cap,
+        if phase_cap is not None:
+            configured_cap = min(configured_cap or phase_cap, phase_cap)
+        hard_cap = reporting_request_input_hard_cap(
+            configured_input_token_cap=configured_cap,
             model_id=self.id,
-            output_token_reserve=max(
-                TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-                request_output_reserve,
-            ),
-            absolute_input_token_cap=(
-                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-            ),
+            output_tokens=self.max_tokens,
         )
 
         def filter_and_bind_tools(current_tools: Any) -> Any:

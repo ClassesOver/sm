@@ -273,7 +273,7 @@ def test_benchmark_planner_agent_forwards_spec_before_request(monkeypatch) -> No
     captured: dict[str, object] = {}
 
     def fake_planning_agent(
-        planner, agent_id, output_schema, *, thinking_policy, stage_instructions
+        planner, agent_id, output_schema, *, thinking_policy, stage_instructions, output_token_limit
     ):
         captured.update(
             {
@@ -282,6 +282,7 @@ def test_benchmark_planner_agent_forwards_spec_before_request(monkeypatch) -> No
                 "output_schema": output_schema,
                 "thinking_policy": thinking_policy,
                 "stage_instructions": stage_instructions,
+                "output_token_limit": output_token_limit,
             }
         )
         return "benchmark-agent"
@@ -312,6 +313,7 @@ def test_benchmark_planner_agent_forwards_spec_before_request(monkeypatch) -> No
     assert captured["agent_id"] == "benchmark-analysis-legacy-planner"
     assert captured["output_schema"] is LegacyAnalysisEvidenceDecision
     assert captured["stage_instructions"] == ("legacy evidence",)
+    assert captured["output_token_limit"] == 32 * 1024
 
 
 def test_analysis_legacy_variant_requires_pre_request_planner_and_schema() -> None:

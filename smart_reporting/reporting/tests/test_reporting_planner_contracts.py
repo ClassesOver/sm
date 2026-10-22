@@ -2873,6 +2873,103 @@ def test_planner_validation_is_exposed_to_structured_executor() -> None:
         validator("{}")
 
 
+@pytest.mark.parametrize(
+    ("context_budget", "output_reserve"),
+    [(256 * 1024, 128 * 1024), (1024 * 1024, 384 * 1024)],
+)
+def test_analysis_evidence_planner_reserves_only_schema_sized_output_budget(
+    monkeypatch: pytest.MonkeyPatch, context_budget: int, output_reserve: int
+) -> None:
+    from agno.models.openai import OpenAIChat
+
+    from smart_reporting.reporting import agent as reporting_agent
+    from smart_reporting.task_execution import (
+        TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
+        TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+    )
+
+    # 与 create_reporting_phase_agent 相同：模板输入预算已按完整输出预留扣减。
+    phase_model = reporting_agent._reporting_phase_model(
+        OpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        input_token_budget=min(context_budget, TASK_EXECUTION_CONTEXT_TOKEN_LIMIT)
+        - max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_reserve),
+    )
+    phase_model.max_tokens = output_reserve
+    stage = ReportWorkflowRuntime._planning_agent(
+        Agent(model=phase_model),
+        "report-analysis-evidence-planner",
+        AnalysisEvidenceDecision,
+        thinking_policy=ThinkingPolicyConfig(
+            operation="analysis_evidence",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
+        output_token_limit=32 * 1024,
+    )
+    hard_caps = _capture_projection_hard_caps(monkeypatch)
+    request_model = stage.model._phase_request_model([Message(role="user", content="{}")])
+    request_model._project([Message(role="user", content="{}")], (), {})
+
+    assert phase_model.max_tokens == output_reserve
+    assert request_model.max_tokens == 32 * 1024
+    # 2026-10 回放：补证规划首轮输入 130_042 token；224K 另留结构化纠错余量。
+    assert hard_caps == [224 * 1024]
+
+
+def _capture_projection_hard_caps(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """截获投影硬顶，跳过真实 tokenizer 计数。"""
+
+    from smart_reporting.reporting import agent as reporting_agent
+    from smart_reporting.reporting.code_agent import protocol as code_protocol
+
+    hard_caps: list[int] = []
+
+    def capture_hard_cap(messages: Any, **kwargs: Any) -> tuple[Any, Any]:
+        hard_caps.append(kwargs["hard_cap"])
+        return messages, {}
+
+    for module in (reporting_agent, code_protocol):
+        if hasattr(module, "TaskExecutionContextProjector"):
+            monkeypatch.setattr(
+                module.TaskExecutionContextProjector, "project_with_metrics", capture_hard_cap
+            )
+        if hasattr(module, "record_reporting_projection_metrics"):
+            monkeypatch.setattr(
+                module, "record_reporting_projection_metrics", lambda *_, **__: None
+            )
+    return hard_caps
+
+
+def test_default_output_reserve_is_clamped_to_verified_model_output_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agno.models.openai import OpenAIChat
+
+    from smart_reporting.reporting import agent as reporting_agent
+    from smart_reporting.reporting.workflow.runtime.sections import (
+        _section_block_input_token_budget,
+    )
+
+    # 部署默认输出预留 384K 超过 deepseek-v4 的 256K 窗口；所有预算与请求都必须先
+    # 收敛到模型已验证的 128K 单次输出上限，不能在模型调用前误拒。
+    phase_model = reporting_agent._reporting_phase_model(
+        OpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        input_token_budget=1024 * 1024 - 384 * 1024,
+    )
+    phase_model.max_tokens = 384 * 1024
+    agent = SimpleNamespace(model=phase_model)
+    run_context = RunContext(run_id="run", session_id="session")
+    code_model = reporting_agent._reporting_code_model(phase_model)
+    messages = [Message(role="user", content="{}")]
+
+    assert _analysis_summary_input_token_budget(agent, run_context) == 128 * 1024 * 3 // 4
+    assert _section_block_input_token_budget(agent, run_context) == 128 * 1024
+    assert code_model._phase_request_model(messages).max_output_tokens == 128 * 1024
+    hard_caps = _capture_projection_hard_caps(monkeypatch)
+    code_model._project(messages, (), {})
+    assert hard_caps == [128 * 1024]
+
+
 @pytest.mark.skip(reason="V1 planner 日期注入测试依赖旧环境构造")
 def test_reporting_phase_agent_injects_current_shanghai_date_into_planner_context() -> None:
     template = create_reporting_phase_agent(

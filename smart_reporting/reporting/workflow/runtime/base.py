@@ -37,7 +37,11 @@ from ....async_utils import complete_cleanup
 from ....context_management import TaskExecutionContextHardLimitError
 from ....model_routing import TaskComplexity
 from ....quality_warnings.service import QualityWarningService
-from ....task_execution import TaskExecutionScope, TaskState
+from ....task_execution import (
+    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+    TaskExecutionScope,
+    TaskState,
+)
 from ....workspace import normalize_workspace_path
 from ...code_agent.context import ReportingCodingTaskRegistry
 from ...contract import (
@@ -144,6 +148,7 @@ from ...model_policy import (
     ThinkingPolicyConfig,
     ThinkingRequest,
     apply_reporting_thinking_profile,
+    positive_token_count,
 )
 from ...models import ReportingError
 from ...presentation import completed_report_content
@@ -497,6 +502,32 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
 
 
 
+# 补证决策是小型结构化输出；思考预算由 analysis_evidence 策略封顶（≤6K），
+# 32K 仍为结构化答案留出足够余量。DashScope 结构化请求不会发送 max_tokens，
+# 该值在那里只作为输入预算的输出预留。
+_ANALYSIS_EVIDENCE_OUTPUT_TOKEN_LIMIT = 32 * 1024
+
+
+def _limit_planner_output_tokens(model: OpenAIChat, output_token_limit: int) -> None:
+    """收紧 planner 输出上限，并把释放的输出预留归还给继承的输入预算。
+
+    模板的输入预算按完整输出预留扣减；只降 max_tokens 而不回补，输入硬顶仍取
+    模板预算，收紧输出不会带来任何输入空间。
+    """
+
+    configured = positive_token_count(model.max_tokens)
+    limited = min(configured, output_token_limit) if configured is not None else output_token_limit
+    model.max_tokens = limited
+    budget = positive_token_count(getattr(model, "_task_execution_input_token_budget", None))
+    if budget is None or configured is None:
+        return
+    released = max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, configured) - max(
+        TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, limited
+    )
+    if released > 0:
+        model._task_execution_input_token_budget = budget + released  # type: ignore[attr-defined]
+
+
 def merge_publication_issues(gate: Any, late_issues: Any) -> Any:
     """签发阶段发现的门禁问题（如溯源清单核验失败）并入门禁，不得标记为正式发布通过。"""
     if not late_issues:
@@ -802,6 +833,8 @@ class _ReportWorkflowRuntimeBase:
                 reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=_ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS,
+            # 小型结构化决策只需 32K 输出空间，避免扣除模型完整 128K 输出上限。
+            output_token_limit=_ANALYSIS_EVIDENCE_OUTPUT_TOKEN_LIMIT,
         )
         from ...agent import create_reporting_code_agent_factory
 
@@ -878,10 +911,13 @@ class _ReportWorkflowRuntimeBase:
         *,
         thinking_policy: ThinkingPolicyConfig,
         stage_instructions: tuple[str, ...] = (),
+        output_token_limit: int | None = None,
     ) -> Agent:
         if not isinstance(planner.model, OpenAIChat):
             raise TypeError("Report planner requires OpenAIChat")
         planner_model = copy(planner.model)
+        if output_token_limit is not None:
+            _limit_planner_output_tokens(planner_model, output_token_limit)
         apply_reporting_thinking_profile(planner_model, ReportingThinkingProfile.off())
         planner_model.top_p = 1.0
         # 使用 Agno 的请求层重试；不会重新执行已完成工具或整个章节。
@@ -962,6 +998,10 @@ class _ReportWorkflowRuntimeBase:
             spec.output_schema,
             thinking_policy=thinking_policy,
             stage_instructions=spec.instructions,
+            # analysis 变体对照生产补证 planner，必须使用同一输出/输入预算。
+            output_token_limit=(
+                _ANALYSIS_EVIDENCE_OUTPUT_TOKEN_LIMIT if spec.task_kind == "analysis" else None
+            ),
         )
 
     def workflow(self):

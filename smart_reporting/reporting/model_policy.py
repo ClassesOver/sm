@@ -6,10 +6,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from agno.models.openai import OpenAIChat, OpenAIResponses
 
+from ..context_management import (
+    TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
+    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+)
 from ..integrations.model_config import reasoning_transport_fields
 from ..model_routing import TaskComplexity, log_thinking_selection
 
@@ -285,6 +289,31 @@ def reporting_model_context_token_limit(model_id: str | None) -> int | None:
     return None
 
 
+def positive_token_count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def reporting_request_input_hard_cap(
+    *,
+    configured_input_token_cap: Any,
+    model_id: str | None,
+    output_tokens: Any,
+) -> int:
+    """单次 Reporting 请求的输入硬顶：配置预算、32K 输出下限与绝对顶线统一在此收敛。"""
+
+    absolute_cap = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+    return resolve_reporting_input_token_hard_cap(
+        configured_input_token_cap=positive_token_count(configured_input_token_cap) or absolute_cap,
+        model_id=model_id,
+        # 未配置输出上限时请求按模型已验证上限发送，预算须与实际请求一致。
+        output_token_reserve=max(
+            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+            clamp_reporting_output_tokens(output_tokens, model_id) or 0,
+        ),
+        absolute_input_token_cap=absolute_cap,
+    )
+
+
 def resolve_reporting_input_token_hard_cap(
     *,
     configured_input_token_cap: int,
@@ -297,6 +326,11 @@ def resolve_reporting_input_token_hard_cap(
     candidates = [configured_input_token_cap, absolute_input_token_cap]
     model_context_limit = reporting_model_context_token_limit(model_id)
     if model_context_limit is not None:
+        # 部署输出预留面向整个 Reporting 阶段，可能大于模型单次输出能力；只扣减模型
+        # 实际能输出的部分，否则 256K 窗口模型会因“输出预留耗尽上下文”被误拒。
+        model_output_limit = reporting_model_output_token_limit(model_id)
+        if model_output_limit is not None:
+            output_token_reserve = min(output_token_reserve, model_output_limit)
         model_input_limit = model_context_limit - output_token_reserve
         if model_input_limit < 1:
             raise ValueError("Reporting 模型输出预留不得耗尽已验证的上下文窗口")
@@ -313,6 +347,23 @@ def reporting_model_output_token_limit(model_id: str | None) -> int | None:
     if family.startswith("deepseek-v4"):
         return 128 * 1024
     return None
+
+
+def clamp_reporting_output_tokens(
+    configured_output_tokens: Any, model_id: str | None, task_limit: int | None = None
+) -> int | None:
+    """单次请求输出上限：部署配置、任务上限与模型已验证单次输出上限取最小值。"""
+
+    limits = [
+        value
+        for value in (
+            positive_token_count(configured_output_tokens),
+            positive_token_count(task_limit),
+            reporting_model_output_token_limit(model_id),
+        )
+        if value is not None
+    ]
+    return min(limits) if limits else None
 
 
 def reporting_coding_sampling(model_id: str | None) -> tuple[float, float] | None:
