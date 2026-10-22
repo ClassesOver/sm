@@ -1397,6 +1397,9 @@ class RuntimePlanningMixin:
                     try:
                         output = AnalysisBundle.model_validate(candidate, context={
                             "new_analysis_plan": True, "require_metric_purposes": True,
+                            "registered_metric_purposes": sorted(
+                                {metric.purpose for metric in profile.metrics if metric.purpose}
+                            ),
                         })
                     except ValidationError as error:
                         error._report_candidate = candidate  # type: ignore[attr-defined]

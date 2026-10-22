@@ -176,3 +176,38 @@ def test_new_plans_with_usage_policy_must_route_explicitly_but_legacy_remains_re
     valid = AnalysisItem.model_validate({**item, "metricPurposes": ["项目预算分析"]},
                                       context={"new_analysis_plan": True, "require_metric_purposes": True})
     assert valid.metric_purposes == ("项目预算分析",)
+
+
+def test_new_plans_reject_unregistered_metric_purposes():
+    # 审阅：metricPurposes 写成未登记的“收入分析”会选不到任何指标、补证全部被拒且只留软告警。
+    from pydantic import ValidationError
+
+    item = dict(code="income", domain="income", analysisName="收入分析", description="分析收入",
+                managementQuestion="收入如何", primaryMetricFamily="income", requirementIds=["req_001"],
+                periodRoles=["current"], seriesGranularity=None)
+    context = {"new_analysis_plan": True, "require_metric_purposes": True,
+               "registered_metric_purposes": ["收入多维分析", "项目预算分析"]}
+    with pytest.raises(ValidationError, match="未登记的用途"):
+        AnalysisItem.model_validate({**item, "metricPurposes": ["收入分析"]}, context=context)
+    assert AnalysisItem.model_validate({**item, "metricPurposes": ["收入多维分析"]}, context=context).metric_purposes == (
+        "收入多维分析",
+    )
+
+
+def test_out_of_scope_warning_covers_only_requested_fields_in_one_line():
+    # 审阅：多用途数据集里每个未请求、非本用途的字段都单独告警，挤占真正的告警名额。
+    fields = ("income", "budget_actual", "visits", "deleted")
+    raw = b"month,department,income,budget_actual,visits,deleted\n2025-01,A,100,900,2,999\n2025-02,A,200,800,4,888\n"
+    semantics = tuple(semantic(field, unit="元" if field != "visits" else "人次") for field in fields)
+    ctx = context("current", fields=("month", "department", *fields), semantics=semantics,
+                  sha256=hashlib.sha256(raw).hexdigest())
+    metrics = tuple({
+        "code": field, "kind": "currency", "description": field, "aggregation": "sum",
+        "fieldRef": semantics[index]["fieldRef"], "purpose": purpose,
+    } for index, (field, purpose) in enumerate(zip(fields, ("收入多维分析", "预算或预实对比", "工作量分析"))))
+    plan = analysis(fields=("income", "budget_actual")).model_copy(update={"metric_purposes": ("收入多维分析",)})
+    bundle = build_deterministic_analysis_bundle(plan, (("current", raw, ctx, ("current",)),),
+                                                  profile_metrics=metrics)
+    scope = [warning for warning in bundle.warnings if "不属于本分析登记用途" in warning]
+    assert len(scope) == 1
+    assert "budget_actual" in scope[0] and "visits" not in scope[0]

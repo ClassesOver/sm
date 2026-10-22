@@ -204,6 +204,12 @@ class AnalysisItem(_StrictModel):
                 raise ValueError("新分析项必须提供 seriesGranularity；非时间序列填 null")
             if info.context.get("require_metric_purposes") and not self.metric_purposes:
                 raise ValueError("配置了指标用途的新分析项必须显式提供非空 metricPurposes，不能由 domain 猜测")
+            # 未登记的用途会选不到任何指标、所有补证被拒且只留软告警：规划阶段就退回纠错。
+            registered = info.context.get("registered_metric_purposes")
+            if registered is not None and (unknown := sorted(set(self.metric_purposes) - set(registered))):
+                raise ValueError(
+                    f"metricPurposes 包含未登记的用途 {unknown}，只能使用 Profile 登记的用途：{sorted(registered)}"
+                )
         if len(set(self.period_roles)) != len(self.period_roles):
             raise ValueError("periodRoles 不能重复")
         return self

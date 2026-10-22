@@ -356,17 +356,22 @@ def _dataset_facts(
     warnings = _coverage_warnings(dataset)
     requested_fields = {field.rsplit(".", 1)[-1].casefold() for field in analysis.fields}
     semantics_by_field: dict[str, list[Mapping[str, Any]]] = {}
+    out_of_scope: list[str] = []
     for raw_semantic in dataset.context.metric_semantics:
         field_ref = str(raw_semantic.get("fieldRef", ""))
-        if allowed_field_refs is not None and field_ref.casefold() not in allowed_field_refs:
-            warnings.append(f"Dataset {dataset.dataset_id} 的 {field_ref} 不属于本分析登记用途，未生成该指标事实。")
-            continue
         field = str(raw_semantic.get("datasetField") or field_ref.rsplit(".", 1)[-1])
+        # 先按本分析请求的字段过滤：多用途数据集里未请求的字段不应各产生一条告警，挤占真正的告警名额。
         if field not in dataset.frame.columns or (
             requested_fields and field.casefold() not in requested_fields
         ):
             continue
+        if allowed_field_refs is not None and field_ref.casefold() not in allowed_field_refs:
+            out_of_scope.append(field_ref)
+            continue
         semantics_by_field.setdefault(field.casefold(), []).append(raw_semantic)
+    if out_of_scope:
+        listed = "、".join(out_of_scope[:5]) + (f"等 {len(out_of_scope)} 项" if len(out_of_scope) > 5 else "")
+        warnings.append(f"Dataset {dataset.dataset_id} 的 {listed} 不属于本分析登记用途，未生成指标事实。")
     if not semantics_by_field:
         warnings.append(
             f"Dataset {dataset.dataset_id} 没有已确认指标语义，未对数值字段猜测固定指标。"
