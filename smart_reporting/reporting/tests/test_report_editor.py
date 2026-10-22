@@ -163,7 +163,7 @@ class _RecordingRows:
             return None
         return tuple(self._rows[0].values())
 
-    def mappings(self) -> "_RecordingRows":
+    def mappings(self) -> _RecordingRows:
         return self
 
     def one_or_none(self) -> dict[str, object] | None:
@@ -231,10 +231,10 @@ class _SessionStoreEngine:
         self.dialect = SimpleNamespace(name="postgresql")
         self.tables: dict[str, dict[str, dict[str, object]]] = {}
 
-    def begin(self) -> "_SessionStoreConnectionContext":
+    def begin(self) -> _SessionStoreConnectionContext:
         return _SessionStoreConnectionContext(self.tables)
 
-    def connect(self) -> "_SessionStoreConnectionContext":
+    def connect(self) -> _SessionStoreConnectionContext:
         return _SessionStoreConnectionContext(self.tables)
 
 
@@ -2365,12 +2365,13 @@ async def test_editor_export_timeout_cleans_partial_revision_and_logs_request_id
 
     class ReportTools:
         async def _render_report_pair(self, *_args, **_kwargs):
-            await workspace.awrite_bytes(
-                scope.workspace_key,
-                "reports/revision-2/report.pdf",
-                b"partial",
-            )
+            # 与真实渲染器一致：写入发生在自身清理范围内；超时可能恰好落在写入期间。
             try:
+                await workspace.awrite_bytes(
+                    scope.workspace_key,
+                    "reports/revision-2/report.pdf",
+                    b"partial",
+                )
                 await asyncio.sleep(60)
             finally:
                 # 与真实渲染器一致：取消时清理自己创建的暂存/发布产物。

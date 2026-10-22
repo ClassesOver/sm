@@ -500,6 +500,8 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "未声明该等式时，分项与总额差额不代表数据对账失败。",
     "管理问题要求差额、完成率或分组贡献时，逐项核对所需期间和粒度：只有分子分母总额不等于已登记月度差额/完成率，完整组合的topGroups也不等于单一科室累计。所需计算未登记时将其声明为缺口，按明确分子分母和期间生成最小补充证据；不得把图注或模型摘要中的数字当作已冻结计算。",
     "比率补证必须记录分子、分母、差额和百分数；分母非零且分子为零时百分数为0%，只有分母为零或缺失时为null并软告警。",
+    "变化额、变化率与贡献补证使用本期累计与同期相同月份累计之差；不得以窗口首尾两个月的差额代表期间变化或贡献（R050）。"
+    "授权数据集没有同期时不生成变化额，只列示各期值并说明同比暂不可评价。",
     "只返回 requiresSupplementalEvidence、reason、missingFacts、codingRequirements，不得生成 script 或任何代码。",
     "需要补证时，codingRequirements 逐项声明当前授权 datasets 中的 datasetId、fields、calculation 和 outputName；不得编造数据集或字段。",
     "固定事实足够时 missingFacts 和 codingRequirements 必须都是空数组，不得为了探索数据而声明缺口。",
@@ -862,7 +864,7 @@ class _ReportWorkflowRuntimeBase:
             ),
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
-                "每项显式提供简短 analysisName、periodRoles 和 seriesGranularity。收入汇总仅使用 current；收入同比使用 current、yoy。月度序列填 month，即使月份存储为月初日期；非时间序列填 null。",
+                "每项显式提供简短 analysisName、periodRoles 和 seriesGranularity。请求 comparisonRoles 含 yoy 时，收入、成本、支出、工作量等核心指标的规模、结构与趋势分析均使用 current、yoy，以便列示本期、同期、增减额和增幅（审阅 R003/R046/R048/R057）；仅用户明确只要本期时使用 current。月度序列填 month，即使月份存储为月初日期；非时间序列填 null。",
                 "根 JSON 必须是对象且只能包含 analyses 和 requirements；不得返回单个 analysis、单个 requirement、裸数组或占位值",
                 "每个 analyses 项只回答一个原子管理问题，并且只声明一个主要指标族；复杂问题必须拆成多个分析项",
                 "每个 analyses[].domain 必须根据该管理问题的完整业务语义，从请求 domains 中选择唯一值；不得按关键词匹配",

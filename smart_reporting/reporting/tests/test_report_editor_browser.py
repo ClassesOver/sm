@@ -315,6 +315,7 @@ async def test_shared_fact_dependencies_expand_in_batches_with_real_backend(
     tmp_path: Path, frontend_built: None, evidence_browser_engine: str, leaf_count: int,
 ) -> None:
     from playwright.async_api import async_playwright, expect
+
     from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
     from smart_reporting.reporting.trace.index_builder import encode_trace_index
 
@@ -438,8 +439,9 @@ async def test_real_chart_subject_locates_image_or_caption_without_guessing(
 ) -> None:
     from PIL import Image
     from playwright.async_api import async_playwright, expect
-    from smart_reporting.reporting.tests.test_report_editor_trace import _make_editor
+
     from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
+    from smart_reporting.reporting.tests.test_report_editor_trace import _make_editor
     from smart_reporting.reporting.trace.contracts_v1 import SubjectBindingV1, SubjectLocatorV1
     from smart_reporting.reporting.trace.index_builder import encode_trace_index
 
@@ -530,8 +532,13 @@ async def test_real_chart_sources_page_recover_and_restore_browser_state(
 
     from matplotlib.figure import Figure
     from playwright.async_api import async_playwright, expect
+
     from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
-    from smart_reporting.reporting.trace.contracts_v1 import ChartTraceV1, TraceFileRefV1, derive_resource_id
+    from smart_reporting.reporting.trace.contracts_v1 import (
+        ChartTraceV1,
+        TraceFileRefV1,
+        derive_resource_id,
+    )
     from smart_reporting.reporting.trace.index_builder import encode_trace_index
 
     editor, grants, context = await _make_editor_with_subject(tmp_path)
@@ -648,6 +655,7 @@ async def test_real_branch_integrity_failure_preserves_graph_and_recovers(
     tmp_path: Path, frontend_built: None, evidence_browser_engine: str,
 ) -> None:
     from playwright.async_api import async_playwright, expect
+
     from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
     from smart_reporting.reporting.trace.index_builder import encode_trace_index
 
@@ -765,6 +773,7 @@ async def test_high_fanout_graph_keeps_positions_and_last_node_accessible(
     tmp_path: Path, frontend_built: None, evidence_browser_engine: str,
 ) -> None:
     from playwright.async_api import async_playwright, expect
+
     from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
     from smart_reporting.reporting.trace.index_builder import encode_trace_index
 
@@ -863,6 +872,7 @@ async def test_large_snapshot_pagination_and_expired_cursor_recovery(
     tmp_path: Path, frontend_built: None, monkeypatch, evidence_browser_engine: str,
 ) -> None:
     from playwright.async_api import async_playwright, expect
+
     from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
     from smart_reporting.reporting.trace import dataset_service
     from smart_reporting.reporting.trace.index_builder import encode_trace_index
@@ -1053,6 +1063,7 @@ async def test_same_fact_subject_tasks_keep_anchor_identity_with_real_backend(
     tmp_path: Path, frontend_built: None, evidence_browser_engine: str,
 ) -> None:
     from playwright.async_api import async_playwright, expect
+
     from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
     from smart_reporting.reporting.trace.index_builder import encode_trace_index
 
@@ -1131,6 +1142,7 @@ async def test_table_subject_locates_current_cell_without_guessing(
     tmp_path: Path, frontend_built: None, evidence_browser_engine: str, ambiguous: bool,
 ) -> None:
     from playwright.async_api import async_playwright, expect
+
     from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
     from smart_reporting.reporting.trace.contracts_v1 import SubjectLocatorV1
     from smart_reporting.reporting.trace.index_builder import encode_trace_index

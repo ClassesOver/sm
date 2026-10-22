@@ -7,11 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from smart_reporting.report_editor.trace_revisions import snapshot_revision_lineage, write_registered_json
-from smart_reporting.reporting.trace.contracts_v1 import canonical_json_bytes
-from smart_reporting.reporting.trace.index_builder import encode_trace_index
+from smart_reporting.report_editor.trace_revisions import (
+    snapshot_revision_lineage,
+    write_registered_json,
+)
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.trace.contracts_v1 import canonical_json_bytes
+from smart_reporting.reporting.trace.index_builder import encode_trace_index
+
 from .test_trace_subject_validate import _make_editor_with_subject
 
 

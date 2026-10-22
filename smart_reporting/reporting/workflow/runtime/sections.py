@@ -826,9 +826,43 @@ def _verified_caption(text: str, number_contents: tuple[str, ...]) -> str:
 
     if not number_contents:
         return text
-    checked = replace_unregistered_numbers(normalize_number_notation(text), number_contents)
+    checked = _drop_placeholder_clauses(
+        replace_unregistered_numbers(normalize_number_notation(text), number_contents)
+    )
     # “待核实”比被替换的数字长，超出图注 200 字上限时截断而不是让装配失败。
     return checked if len(checked) <= 200 else f"{checked[:199]}…"
+
+
+_CAPTION_CLAUSE_BREAKS = frozenset("，,；;。：:")
+_CAPTION_OPENERS = {"（": "）", "(": ")", "“": "”", "《": "》"}
+
+
+def _drop_placeholder_clauses(text: str) -> str:
+    """图题/替代文字中整句删去含“待核实”的分句，避免“药品收入待核实级规模”这类残句（R026）。
+
+    只在括号外的逗号、分号、句号处切分；全部分句都含占位时保留原文，由质量告警提示。
+    """
+    if "待核实" not in text:
+        return text
+    clauses: list[str] = []
+    current: list[str] = []
+    closing: list[str] = []
+    for character in text:
+        current.append(character)
+        if character in _CAPTION_OPENERS:
+            closing.append(_CAPTION_OPENERS[character])
+        elif closing and character == closing[-1]:
+            closing.pop()
+        elif not closing and character in _CAPTION_CLAUSE_BREAKS:
+            clauses.append("".join(current))
+            current = []
+    if current:
+        clauses.append("".join(current))
+    kept = [clause for clause in clauses if "待核实" not in clause]
+    if not kept:
+        return text
+    result = "".join(kept).rstrip("，,；;：:")
+    return result + "。" if text.endswith("。") and not result.endswith("。") else result
 
 
 def _project_section_evidence_files(

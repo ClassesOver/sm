@@ -60,6 +60,11 @@ def metric_fact_identity(fact: Any) -> str:
             }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False),
         )
     )
+    group_warnings = getattr(fact, "group_warnings", {})
+    if group_warnings:
+        identity += "|groupWarnings=" + json.dumps(
+            group_warnings, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
     population = getattr(fact, "group_population", None)
     policy = getattr(fact, "cumulative_policy", None)
     if policy is not None:

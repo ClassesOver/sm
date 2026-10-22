@@ -331,3 +331,17 @@ def test_signed_and_repeating_contribution_survives_real_numeric_rendering(
     assert not number_reference_warnings(
         rendered.split(shown, 1)[0], resolve_number_reference(token, [source])
     )
+
+
+def test_contribution_retains_dimension_restrictions_from_either_input():
+    from smart_reporting.reporting.trace.group_contributions import registered_group_contributions
+
+    for current, baseline in (((10000, 1), (100, 80)), ((150, 50), (10000, 1))):
+        doc = contribution_document(current=current, baseline=baseline)
+        result, _, _ = compile_contribution(doc)
+        assert result.status != 'supported'
+        entries = {entry['factId']: entry for entry in doc['metrics']}
+        _, reasons = registered_group_contributions(
+            doc['comparisons'][0], entries, profile_hash='a' * 64, fact_warnings={},
+        )
+        assert reasons == ('ranking_dimension_review_required',)

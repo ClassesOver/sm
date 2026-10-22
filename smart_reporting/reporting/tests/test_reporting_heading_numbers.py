@@ -6,8 +6,8 @@ from pydantic import ValidationError
 from smart_reporting.reporting.delivery.artifacts_v1 import (
     ArtifactFile,
     Citation,
-    PdfArtifactManifest,
     DocxArtifactManifest,
+    PdfArtifactManifest,
     ReportArtifactManifest,
 )
 from smart_reporting.reporting.delivery.draft_v1 import (
@@ -1294,8 +1294,10 @@ def test_heading_contract_records_visible_text_without_claim_marker() -> None:
 
 def test_saved_heading_claim_marker_does_not_break_render_contract() -> None:
     from markdown_it import MarkdownIt
+
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
-        _bind_heading_anchors, format_heading_label,
+        _bind_heading_anchors,
+        format_heading_label,
     )
 
     heading = dict(level=3, number="1.1", title="待核实[[claim:review-123]]事项",

@@ -9,10 +9,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from starlette.responses import FileResponse
 
-from smart_reporting.report_editor import create_report_editor_router
-from smart_reporting.report_editor import trace_retention
+from smart_reporting.report_editor import create_report_editor_router, trace_retention
 from smart_reporting.reporting.models import ReportingError
-from .test_report_editor_trace import _make_editor, _context, DATASET_ID
+
+from .test_report_editor_trace import DATASET_ID, _context, _make_editor
 
 pytestmark = [pytest.mark.anyio, pytest.mark.parametrize("anyio_backend", ["asyncio"])]
 

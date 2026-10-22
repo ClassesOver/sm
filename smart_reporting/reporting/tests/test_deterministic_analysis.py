@@ -899,3 +899,68 @@ def test_period_sums_do_not_depend_on_row_order():
         results.add(tuple(item.value for item in _period_values(
             frame, "amount", "month", "sum", period_granularity="month")))
     assert len(results) == 1
+
+
+def test_period_level_warnings_flag_spikes_and_low_tail_without_asserting_causes():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        PeriodValue,
+        _period_level_warnings,
+    )
+
+    def series(*values):
+        return tuple(PeriodValue(period=f"2025-{index:02d}-01", value=value)
+                     for index, value in enumerate(values, start=1))
+
+    # 与真实支出同形：1 月含年度量级数据，9 月入账不足。
+    warnings = _period_level_warnings(
+        "actual_expenditure", series(147.9, 14.8, 15.4, 16.0, 14.6, 12.1, 14.9, 14.2, 4.0), enabled=True
+    )
+    assert any("2025-01-01" in item and "量级异常" in item for item in warnings)
+    assert any("2025-09-01" in item and "完整性待确认" in item for item in warnings)
+    assert all("未入账" not in item for item in warnings)
+    # 正常波动、期末零值（另有规则）与存量不告警。
+    assert _period_level_warnings("x", series(8.9, 9.0, 10.9, 10.9, 10.6, 11.6, 10.9, 11.7, 9.3), enabled=True) == ()
+    assert _period_level_warnings("x", series(10, 11, 12, 10, 0, 0), enabled=True) == ()
+    assert _period_level_warnings("x", series(147.9, 14.8, 15.4, 16.0), enabled=False) == ()
+
+
+def test_dimension_concentration_is_reported_at_analysis_level():
+    raw = (b"month,department,amount\n2025-01,A,1000\n2025-01,B,1\n2025-02,A,1000\n2025-02,C,2\n")
+    bundle = build_deterministic_analysis_bundle(analysis(), (("current", raw, context("current"), ("current",)),))
+    assert any("集中于“A”" in item for item in bundle.warnings)
+    assert not any("集中于" in item for item in bundle.metrics[0].warnings)
+    balanced = b"month,department,amount\n2025-01,A,10\n2025-01,B,9\n2025-02,A,10\n2025-02,B,8\n"
+    assert not any("集中于" in item for item in build_deterministic_analysis_bundle(
+        analysis(), (("current", balanced, context("current"), ("current",)),)).warnings)
+
+
+@pytest.mark.parametrize("aggregation,rows,expected", [
+    ("count", "A,1\nA,2\nB,1000\n", None),
+    ("count", "A,foo\n" * 100 + "B,bar\n", "99.01%"),
+    ("sum", "A,100\nA,100\n", "100.00%"),
+    ("average", "A,1\nB,1000\n", None),
+    ("count_distinct", "A,1\nB,1000\n", None),
+    ("sum", "A,100\nB,-1\n", None),
+    ("sum", "A,100\n,10\n", None),
+])
+def test_concentration_uses_registered_additive_aggregation(aggregation, rows, expected):
+    raw = ("month,department,amount\n" + "".join(
+        "2025-01," + line + "\n" for line in rows.splitlines()
+    )).encode()
+    bundle = build_deterministic_analysis_bundle(analysis(), (
+        ("current", raw, context("current", semantics=(semantic("amount", aggregation),)), ("current",)),
+    ))
+    warnings = [item for item in bundle.warnings if "集中于" in item]
+    if expected is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1
+        assert expected in warnings[0] and "“A”" in warnings[0]
+
+
+def test_concentration_does_not_warn_for_explicit_single_organization_scope():
+    bundle = build_deterministic_analysis_bundle(analysis(), ((
+        "current", b"month,department,amount\n2025-01,A,100\n2025-01,B,1\n",
+        context("current", semantics=(semantic("amount", scope={"department": "A"}),)), ("current",),
+    ),))
+    assert not any("集中于" in item for item in bundle.warnings)

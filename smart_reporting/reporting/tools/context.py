@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from ...workspace import normalize_workspace_path, WorkspaceError
+from ...workspace import WorkspaceError, normalize_workspace_path
 
 
 def _freeze(value: Any) -> Any:
