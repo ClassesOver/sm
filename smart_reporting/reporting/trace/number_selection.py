@@ -7,7 +7,13 @@ from datetime import date, timedelta
 
 from ..hospital_operation.deterministic_analysis import _parse_fact_period
 from .fact_index import merge_frozen_fact
-from .numeric_text import _frozen_number_entries, frozen_fact_bundles, frozen_number_catalog
+from .numeric_text import (
+    _frozen_number_entries,
+    frozen_fact_bundles,
+    frozen_number_catalog,
+    text_after_last_break,
+    text_before_next_break,
+)
 
 _TOKEN = re.compile(r'\{\{value:([^:{}]+):([^:{}]+):([^:{}]*)\}\}')
 _PERIOD = re.compile(r'(?P<year>\d{4})年(?:(?P<start>\d{1,2})月?(?:[—–至到~～-](?:(?P<end_year>\d{4})年)?(?P<end>\d{1,2}))?月)?')
@@ -261,9 +267,9 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
         if match[1] in conflicts:
             warnings.append('数值引用身份冲突：同一事实身份存在不同记录，需复核。')
             return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
-        sentence = re.split(r'[。！？；;\n]', markdown[:match.start()])[-1]
+        sentence = text_after_last_break(markdown, match.start())
         # 只读本句，防止下一句的日期替当前单期引用提供虚假的期间依据。
-        suffix = re.split(r'[。！？；;\n]', markdown[match.end():], maxsplit=1)[0]
+        suffix = text_before_next_break(markdown, match.end())
         if (match[2].startswith('periodValues.') and len(original.period_values) > 1
                 and not _has_period_context(sentence + match[0] + suffix, original, len(sentence), catalog)):
             warnings.append('数值引用期间缺失：单期数值所在句未写出期间，已撤销引用，需复核。')

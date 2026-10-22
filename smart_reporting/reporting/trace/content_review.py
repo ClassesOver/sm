@@ -44,6 +44,8 @@ from .numeric_text import (
     render_frozen_numbers,
     supplemental_number_values,
     table_unit_cells,
+    text_after_last_break,
+    text_before_next_break,
 )
 from .review_attribution import (
     _group_ranking_warnings,
@@ -219,8 +221,8 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         for match in re.finditer(r'\{\{value:[^{}\r\n]+\}\}', markdown):
             selected = resolver.resolve(match[0])
             if selected:
-                prefix = re.split(r'[。！？;；\n]', markdown[:match.start()])[-1]
-                suffix = re.split(r'[。！？;；\n]', markdown[match.end():])[0]
+                prefix = text_after_last_break(markdown, match.start())
+                suffix = text_before_next_break(markdown, match.end())
                 issues = number_reference_warnings(prefix, selected, suffix=suffix)
                 warnings.extend(issues)
                 if issues and len(reference_issues) < 20:

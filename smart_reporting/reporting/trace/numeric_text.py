@@ -2356,11 +2356,24 @@ def _paragraph_at(markdown: str, index: int) -> str:
     return markdown[start + 2 if start >= 0 else 0 : end if end >= 0 else len(markdown)]
 
 
+_STATEMENT_BREAKS = "。！？；;\n"
+_STATEMENT_BREAK = re.compile(r"[。！？；;\n]")
+
+
+def text_after_last_break(text: str, index: int, marks: str = _STATEMENT_BREAKS) -> str:
+    """等价于 re.split(f"[{marks}]", text[:index])[-1]，但不切分、不复制整段前文。"""
+    return text[max(text.rfind(mark, 0, index) for mark in marks) + 1:index]
+
+
+def text_before_next_break(text: str, index: int, pattern: re.Pattern[str] = _STATEMENT_BREAK) -> str:
+    """等价于 pattern.split(text[index:])[0]，但不复制整段后文。"""
+    end = pattern.search(text, index)
+    return text[index:end.start() if end else len(text)]
+
+
 def _statement_at(markdown: str, index: int) -> str:
-    return (
-        re.split(r"[。！？；;\n]", markdown[:index])[-1]
-        + re.split(r"[。！？；;\n]", markdown[index:])[0]
-    )
+    # 只向两侧找最近断句符；逐数字切分整篇正文是 O(数字数×正文长度)。
+    return text_after_last_break(markdown, index) + text_before_next_break(markdown, index)
 
 
 NEUTRAL_DIFFERENCE_PREFIX = re.compile(r"(?:相差|差额|差距)(?:了|约|为|达)?\s*$")
@@ -2566,7 +2579,7 @@ def percent_point_written_for_rate(
     percents: Sequence[Decimal],
 ) -> bool:
     """“个百分点”的数值只对得上登记变化率、对不上百分点差值且分句不是占比/比率类时返回 True。"""
-    clause = re.split(r"[。；，\n]", text[: match.start()])[-1]
+    clause = text_after_last_break(text, match.start(), "。；，\n")
     if _PERCENT_POINT_SUBJECT.search(clause):
         return False
     number = abs(Decimal(match["number"].replace(",", "")))
@@ -2917,7 +2930,7 @@ def replace_unregistered_numbers(
             "",
             _paragraph_at(markdown, start),
             _statement_at(markdown, start),
-            re.split(r"[。！？；;\n]", markdown[:end])[-1],
+            text_after_last_break(markdown, end),
             reference_at(markdown[end:]),
         )
         if verdict in {"registered", "corrected"}:
