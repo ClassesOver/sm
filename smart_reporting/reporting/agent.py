@@ -194,8 +194,8 @@ _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # Reporting 的全局 reserve 用于上下文预算，不能直接作为每次模型请求的生成额度。
 # 复杂综合报告的单章输入会合并多个分析证据，真实 CLI 已观察到 16K 输出在完整
-# SectionDecision JSON 结束前被截断。章节和可视化统一允许 128K，实际请求仍取该
-# 上限与 AGENT_REPORT_OUTPUT_TOKEN_RESERVE 的较小值。
+# SectionDecision JSON 结束前被截断。可视化允许 128K、逐章正文允许 32K；实际请求
+# 取该上限、AGENT_REPORT_OUTPUT_TOKEN_RESERVE 与模型已验证单次输出上限的最小值。
 _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
 _REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 32 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
