@@ -141,7 +141,7 @@ def test_stock_number_selection_must_preserve_endpoint_total():
     assert text == '2025年1—2月资金余额为340元。'
     assert not notices and selected['value'] == 340
     assert selected['periods'] == ('2025-02',)
-    assert '期末余额' in guide['total']['meaning']
+    assert '不能跨期相加' in guide['total']['meaning'] and '不得称为期末余额' in guide['total']['meaning']
     assert guide['total']['periods'] == ['2025-02']
     assert guide['total']['periodStart'] == guide['total']['periodEnd'] == '2025-02'
     assert guide['monthlyStatistics']['prefixTotals'] == []

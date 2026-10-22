@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import Literal
 
 ReviewStage = Literal["analysis", "outline", "draft"]
-PROFESSIONAL_REVIEW_VERSION = "2"
+PROFESSIONAL_REVIEW_VERSION = "3"
 
 
 @dataclass(frozen=True)
@@ -227,7 +227,8 @@ def review_professional_content(markdown: str) -> tuple[ProfessionalReviewIssue,
             warn("professional_zero_records_excluded", "missing_zero",
                  "专业口径需复核：预算或实际为零的记录不能一概剔除，需区分异常零、真实零和缺失。")
         if (re.search(r"(?:月值|各月|每月).{0,10}(?:相同|相等|一致|重复)", clause)
-                and _affirmed(r"(?:因此|所以|据此|说明|表明).{0,15}(?:期末余额|存量|取(?:最新|期末))", clause)):
+                and (_affirmed(r"(?:因此|所以|据此|说明|表明).{0,15}(?:期末余额|存量|取(?:最新|期末))", clause)
+                     or _affirmed(r"(?:属于|为|是|即)(?:按)?(?:整年|全年|年度)?(?:等额|均摊|平均分摊|分摊)", clause))):
             warn("professional_constant_budget_as_stock", "budget_policy",
                  "专业口径需复核：相同月值不能证明预算属于期末余额，须由预算时间属性和汇总规则确认。")
         if _unqualified_inference(
@@ -256,8 +257,38 @@ def review_professional_content(markdown: str) -> tuple[ProfessionalReviewIssue,
         ):
             warn("professional_concentration_as_risk", "recommendation",
                  "专业口径需复核：规模或占比不能单独证明浪费或不合理依赖，须结合业务量、结构及比较基准。")
+        if (re.search(r"(?:1月与9月|1月和9月|期初月|期末月|首尾两?月).{0,20}(?:计算|差额|相减)", clause)
+                and re.search(r"变动|变化|增减|增长|下降", clause)
+                and not re.search(r"不能|不代表|不等于|仅为两个单月|只是两个单月|不替代", clause)):
+            warn("professional_endpoint_change_as_period_change", "contribution",
+                 "专业口径需复核：首尾两个月的差额不能替代本期累计同比变化或贡献。")
+    if "下半年" in text and re.search(r"1\s*[-—–~至到]\s*9\s*月|前三季度", text) and not re.search(
+        r"1[0-2]\s*月", text
+    ):
+        warn("professional_half_year_beyond_window", "period",
+             "专业口径需复核：本期只覆盖到9月，“下半年”会被理解为7—12月，应写明7—9月。")
+    if re.search(r"^#{2,6}[^\n]*(?:统计关联|相关性分析|相关系数)", markdown, re.MULTILINE):
+        warn("professional_correlation_section", "structure",
+             "专业口径需复核：相关系数不回答预算执行或效率问题，不宜单列统计关联章节。")
+    captions = [
+        *re.findall(r"!\[([^\]]*)\]\([^)\s]*(?:\s+\"([^\"]*)\")?\)", markdown),
+        *((caption, "") for caption in re.findall(r"^\*图表[:：]([^*\n]+)\*", markdown, re.MULTILINE)),
+    ]
+    if any("待核实" in part for caption in captions for part in caption):
+        warn("professional_caption_placeholder", "consistent_values",
+             "专业口径需复核：图题、图注或替代文本含“待核实”占位，图表结论未完成核对。")
     # Scope incompatibility can precede a claimed conclusion in the same paragraph.
     for paragraph in re.split(r"\n\s*\n", text):
+        # 强弱描述常在系数之后的下一句；只看到下一个系数之前的描述。
+        coefficients = list(re.finditer(r"相关系数(?:为|约为|是)?\s*([+-]?(?:0?\.\d+|1(?:\.0+)?))", paragraph))
+        for index, coefficient in enumerate(coefficients):
+            end = coefficients[index + 1].start() if index + 1 < len(coefficients) else len(paragraph)
+            label = re.search(r"(弱|中等(?:强度)?|较强|强)(?:正|负)?相关", paragraph[coefficient.end():end])
+            strength = abs(Decimal(coefficient[1]))
+            if label and ((label[1] == "弱" and strength >= Decimal("0.7"))
+                          or (label[1] in {"强", "较强"} and strength < Decimal("0.4"))):
+                warn("professional_correlation_strength_mislabeled", "metric_identity",
+                     "专业口径需复核：相关系数强弱描述与数值不符（如0.97写成弱相关）。")
         if (re.search(r"(?:收入与成本|收支).{0,25}(?:口径不一致|不同统计口径|口径未匹配|未完成分摊)", paragraph)
                 and _affirmed(r"(?:结余|亏损|盈利|缺口)(?:最大|主要来源|排名|为[+-]?\d)|(?:最大|主要)(?:亏损|结余|缺口)", paragraph)):
             warn("professional_incompatible_surplus", "cross_metric",

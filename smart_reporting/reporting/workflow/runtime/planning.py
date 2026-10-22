@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Literal
@@ -180,7 +180,7 @@ class RuntimePlanningMixin:
             prompt_payload["supplement"] = feedback
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
-        period = _single_explicit_year(request.prompt, feedback) or normalized.period
+        period = _single_explicit_period(request.prompt, feedback) or normalized.period
         missing: list[str] = []
         if period is None:
             missing.append(normalized.clarification_question or "请明确唯一的分析期间。")
@@ -1804,15 +1804,49 @@ _PLANNER_MODEL_EXHAUSTED_CODES = frozenset(
 )
 
 
-def _single_explicit_year(prompt: str, feedback: str | None) -> ReportPeriod | None:
+_MONTH_RANGE_SEPARATOR = r"(?:-|－|—|–|~|～|至|到)"
+_CHINESE_QUARTERS = {"一": 1, "二": 2, "三": 3, "四": 4, "1": 1, "2": 2, "3": 3, "4": 4}
+
+
+def _month_period(year: int, first: int, last: int) -> ReportPeriod | None:
+    if not 1 <= first <= last <= 12:
+        return None
+    end = date(year + (last == 12), 1 if last == 12 else last + 1, 1) - timedelta(days=1)
+    return ReportPeriod(start=date(year, first, 1), end=end)
+
+
+def _single_explicit_period(prompt: str, feedback: str | None) -> ReportPeriod | None:
+    """只确定性解析唯一年份下的常见期间写法；无法唯一确定时交给模型或澄清。"""
     value = f"{prompt}\n{feedback or ''}"
     years = set(re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", value))
     if len(years) != 1:
         return None
     raw_year = years.pop()
-    if re.search(rf"{raw_year}\s*年\s*\d{{1,2}}\s*月|{raw_year}[-/.]\d{{1,2}}", value):
+    if re.search(rf"{raw_year}[-/.]\d{{1,2}}", value):
         return None
     year = int(raw_year)
+    month_ranges = {
+        (int(first), int(last))
+        for first, last in re.findall(
+            rf"(?<!\d)(\d{{1,2}})\s*月?\s*{_MONTH_RANGE_SEPARATOR}\s*(\d{{1,2}})\s*月", value
+        )
+    }
+    for cutoff, month in re.findall(
+        rf"(截至|截止)?\s*{raw_year}\s*年\s*(\d{{1,2}})\s*月(?!\s*{_MONTH_RANGE_SEPARATOR})", value
+    ):
+        # “截至某月”是年初至该月的累计窗口，不是单月。
+        month_ranges.add((1 if cutoff else int(month), int(month)))
+    for quarter in re.findall(r"第\s*([一二三四1-4])\s*季度|(?<![A-Za-z])Q([1-4])", value):
+        number = _CHINESE_QUARTERS["".join(quarter)]
+        month_ranges.add((3 * number - 2, 3 * number))
+    for phrase, months in (("前三季度", (1, 9)), ("上半年", (1, 6)), ("下半年", (7, 12))):
+        if phrase in value:
+            month_ranges.add(months)
+    if len(month_ranges) == 1:
+        return _month_period(year, *month_ranges.pop())
+    if month_ranges or re.search(r"\d\s*月|季度|半年|(?<![A-Za-z])Q[1-4]", value):
+        # 多个或未识别的期间写法不能默认为全年，交给模型或澄清。
+        return None
     return ReportPeriod(start=date(year, 1, 1), end=date(year, 12, 31))
 
 

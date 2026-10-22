@@ -93,7 +93,7 @@
     {
       "code": "budget_medicine_income",
       "kind": "currency",
-      "description": "药品收入实际数",
+      "description": "药品收入预算数",
       "aggregation": "sum",
       "fieldRef": "rj.dwd_income_budget_view.budget_medicine_income",
       "purpose": "预算或预实对比",
@@ -105,7 +105,7 @@
     {
       "code": "budget_material_income",
       "kind": "currency",
-      "description": "材料收入实际数",
+      "description": "材料收入预算数",
       "aggregation": "sum",
       "fieldRef": "rj.dwd_income_budget_view.budget_material_income",
       "purpose": "预算或预实对比",
@@ -117,7 +117,7 @@
     {
       "code": "budget_service_income",
       "kind": "currency",
-      "description": "医疗服务收入实际数",
+      "description": "医疗服务收入预算数",
       "aggregation": "sum",
       "fieldRef": "rj.dwd_income_budget_view.budget_service_income",
       "purpose": "预算或预实对比",
@@ -129,7 +129,7 @@
     {
       "code": "budget_test_income",
       "kind": "currency",
-      "description": "检查化验收入实际数",
+      "description": "检查化验收入预算数",
       "aggregation": "sum",
       "fieldRef": "rj.dwd_income_budget_view.budget_test_income",
       "purpose": "预算或预实对比",

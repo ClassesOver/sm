@@ -787,7 +787,9 @@ def frozen_number_guide(
                     "periodStart": fact.period_end if stock else fact.period_start,
                     "periodEnd": fact.period_end,
                     "aggregation": fact.aggregation,
-                    "meaning": "最新登记期间的期末余额，不能跨期相加"
+                    # 时间不可加只说明不能跨期相加；相同月值不证明期末余额或等额分摊（R018/R070）。
+                    "meaning": "最新登记期间的登记值，不能跨期相加；未确认时间属性前不得称为期末余额、"
+                    "存量或等额分摊计划"
                     if stock
                     else _TOTAL_MEANINGS.get(fact.aggregation, "完整期间的统计值"),
                     **(
@@ -888,7 +890,7 @@ def frozen_number_guide(
                     "group": group.group,
                     "reference": reference(f"{key}.{index}"),
                     "meaning": (
-                        "最新登记期间的完整分组组合期末余额" if stock else "完整分组组合的数值"
+                        "最新登记期间的完整分组组合登记值" if stock else "完整分组组合的数值"
                     )
                     + "，不能称为单一科室或院区累计",
                 }
@@ -1145,17 +1147,21 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
                     meta = {**(meta if isinstance(meta, dict) else {}), "unit": unit}
                     if unit == "%":
                         meta.setdefault("isPercent", True)
+                        meta.setdefault("scale", _inferred_percent_scale(
+                            column, (row[index] for row in rows
+                                     if isinstance(row, list) and len(row) == len(columns))))
                 if unit not in {*_MONEY_UNITS, "人次", "万人次", "床日", "%", "‰"}:
                     continue
                 if unit == "%" and meta.get("isPercent") is not True:
                     continue
+                percent_scale = meta.get("scale") if isinstance(meta.get("scale"), Decimal) else Decimal(1)
                 for row in rows:
                     if not isinstance(row, list) or len(row) != len(columns):
                         continue
                     value = row[index]
                     if isinstance(value, bool) or not isinstance(value, (int, float)):
                         continue
-                    number = Decimal(str(value))
+                    number = Decimal(str(value)) * percent_scale
                     if not number.is_finite():
                         continue
                     known.setdefault(unit, set()).add(number)
@@ -1167,7 +1173,7 @@ def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal
 
 _COLUMN_UNIT_WORDS = (
     # 仅供没有显式单位的列名回退；占比差额不能当成百分数水平。
-    (("%",), ("占比", "比重", "比例", "贡献率", "完成率", "百分比")),
+    (("%",), ("占比", "比重", "比例", "贡献率", "完成率", "执行率", "达成率", "百分比")),
     # 金额列：单位词最具体者优先；无括号单位时金额类列名仍能识别。
     (("亿元",), ("亿元",)),
     (("万元",), ("万元",)),
@@ -1178,6 +1184,21 @@ _COLUMN_UNIT_WORDS = (
 _COLUMN_UNIT_ANNOTATION = re.compile(r"[（(]\s*(?:单位\s*[:：]\s*)?([^（）()]+?)\s*[）)]\s*$")
 _COLUMN_UNIT_SUFFIX = re.compile(r"(亿元|万元|万人次|人次|床日|%|‰)\s*$")
 _COLUMN_SUPPORTED_UNITS = frozenset({*_MONEY_UNITS, "人次", "万人次", "床日", "%", "‰"})
+
+
+def _inferred_percent_scale(column: str, values: Iterable[Any]) -> Decimal:
+    """列名推断为执行/完成率且整列都是 0~3 的比值时，按百分数登记（0.9672 → 96.72%）。
+
+    只用于没有显式 columnMeta 的补证列；执行率整列低于 3% 不是可信的百分数口径。
+    """
+    if not re.search(r"(?:执行|完成|达成)率", column):
+        return Decimal(1)
+    numbers = [
+        Decimal(str(value))
+        for value in values
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    ]
+    return Decimal(100) if numbers and all(abs(value) <= 3 for value in numbers) else Decimal(1)
 
 
 def _unit_from_column_name(column: str) -> str | None:
@@ -2073,14 +2094,16 @@ def derived_number_values(
                     meta = {**(meta if isinstance(meta, dict) else {}), "unit": unit}
                     if unit == "%":
                         meta.setdefault("isPercent", True)
+                        meta.setdefault("scale", _inferred_percent_scale(column, (row[index] for row in rows)))
                 if (
                     unit not in {*_MONEY_UNITS, "人次", "万人次", "床日", "%"}
                     or unit == "%"
                     and meta.get("isPercent") is not True
                 ):
                     continue
+                percent_scale = meta.get("scale") if isinstance(meta.get("scale"), Decimal) else Decimal(1)
                 numbers = [
-                    Decimal(str(row[index]))
+                    Decimal(str(row[index])) * percent_scale
                     for row in rows
                     if isinstance(row[index], (int, float))
                     and not isinstance(row[index], bool)
@@ -2356,9 +2379,10 @@ def registered_decline_magnitude(
     必须按此认定为已登记数值，否则正确正文会被替换为待核实。
     """
     # 简写“实际降9.83%”“较预算少4.34万人次”同样是下降幅度；“至少”“最少”“减少”等不按单字处理。
-    # 中性差额（相差/差额/差距）必须由操作数验证，不能借用全局负值的幅度。
+    # 中性差额（相差/差额/差距）必须由操作数验证，不能借用全局负值的幅度；
+    # “差额为负2.48亿元”已写明符号，按负值幅度核对。
     if number <= 0 or not re.search(
-        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少]|超支|超出|缺口)"
+        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少]|超支|超出|缺口|为负|负值)"
         r"(?:了|约|为|达)?\s*$",
         prefix,
     ):

@@ -236,3 +236,31 @@ def test_request_review_title_does_not_claim_only_period_is_missing() -> None:
 
     assert review.title == "补充报表信息"
     assert review.preview == {"clarificationQuestion": "请明确主分析领域：全成本或费控。"}
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("2025年1-9月全院经济运行分析报告", ("2025-01-01", "2025-09-30")),
+        ("2025年1月至9月收入分析", ("2025-01-01", "2025-09-30")),
+        ("截至2025年9月收入分析", ("2025-01-01", "2025-09-30")),
+        ("2025年前三季度成本分析", ("2025-01-01", "2025-09-30")),
+        ("2025年第二季度收入", ("2025-04-01", "2025-06-30")),
+        ("2025年上半年工作量", ("2025-01-01", "2025-06-30")),
+        ("2025年3月收入", ("2025-03-01", "2025-03-31")),
+        ("分析2025年医院收入趋势", ("2025-01-01", "2025-12-31")),
+    ],
+)
+def test_explicit_period_keeps_requested_months_instead_of_whole_year(prompt, expected) -> None:
+    from smart_reporting.reporting.workflow.runtime.planning import _single_explicit_period
+
+    period = _single_explicit_period(prompt, None)
+    assert period is not None
+    assert (period.start.isoformat(), period.end.isoformat()) == expected
+
+
+@pytest.mark.parametrize("prompt", ["2025年1-3月和4-6月对比", "2025年13月收入", "2025-09收入"])
+def test_ambiguous_period_is_left_to_model(prompt) -> None:
+    from smart_reporting.reporting.workflow.runtime.planning import _single_explicit_period
+
+    assert _single_explicit_period(prompt, None) is None

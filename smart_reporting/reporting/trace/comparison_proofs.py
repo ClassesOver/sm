@@ -24,9 +24,13 @@ def registered_comparison_reasons(
     from .subject_builder import fact_periods
 
     entry = view["entry"]
-    selector = "change" if operation == "difference" else "changeRate"
+    # “value” 只用于比较事实两侧登记合计（currentTotal/baselineTotal），同样须重算窗口与合计。
+    selector = {"difference": "change", "relative_change": "changeRate"}.get(
+        operation, view["selector"] if operation == "value" else ""
+    )
     if (
         view["selector"] != selector
+        or operation == "value" and selector not in {"currentTotal", "baselineTotal"}
         or comparison not in {"yoy", "mom"}
         or comparison != entry.get("comparisonType")
     ):
@@ -95,10 +99,11 @@ def registered_comparison_reasons(
             "periodGranularity": baseline.period_granularity,
         }
     )
+    roles = view["period_roles"]
     if (
         not _comparable_periods(current_periods, baseline_periods, comparison, grain=grain)
-        or tuple(view["period_roles"].get("current", ())) != current_periods
-        or tuple(view["period_roles"].get("baseline", ())) != baseline_periods
+        or selector != "baselineTotal" and tuple(roles.get("current", ())) != current_periods
+        or selector != "currentTotal" and tuple(roles.get("baseline", ())) != baseline_periods
     ):
         return ["comparison_window_mismatch"]
     # Metadata endpoints cannot fill an absent leap day or any other bucket.
@@ -122,7 +127,11 @@ def registered_comparison_reasons(
     delta = current_total - baseline_total
     if operation == "relative_change" and baseline_total <= 0:
         return ["positive_baseline_required"]
-    expected = delta if operation == "difference" else delta / baseline_total * 100
+    expected = {
+        "change": delta,
+        "currentTotal": current_total,
+        "baselineTotal": baseline_total,
+    }.get(selector) if selector != "changeRate" else delta / baseline_total * 100
     recorded = entry.get(selector)
     # Inputs and the registered record were computed with the same server
     # arithmetic. Never use a relative tolerance that admits a changed

@@ -462,8 +462,19 @@ class AssertionCompiler:
                         periods = tuple(primary["period_roles"]["current"])
                         baseline_periods = tuple(primary["period_roles"]["baseline"])
                 elif request.operation == "value":
+                    kind = primary["entry"].get("comparisonType")
+                    if primary["selector"] in _COMPARISON_TOTAL_SELECTORS and kind in {"yoy", "mom"}:
+                        # 比较事实两侧合计是登记值；先按差额同一规则验证输入身份、窗口与完整性。
+                        try:
+                            reasons.extend(self._registered_comparison_reasons(
+                                request.model_copy(update={"comparison": kind}), primary
+                            ))
+                        except (ValueError, TypeError, ArithmeticError):
+                            reasons.append("comparison_inputs_invalid")
+                        if not reasons:
+                            value = amounts[0]
                     # A derived selector cannot acquire an ordinary value proof.
-                    if primary["selector"] != "total" and not primary["selector"].startswith(
+                    elif primary["selector"] != "total" and not primary["selector"].startswith(
                         "periodValues."
                     ):
                         reasons.append("value_selector_not_supported")
@@ -751,6 +762,9 @@ class AssertionCompiler:
         )
 
 
+_COMPARISON_TOTAL_SELECTORS = frozenset({"currentTotal", "baselineTotal"})
+
+
 def _consecutive_months(periods: tuple[str, ...]) -> bool:
     if any(
         len(period) != 7 or not period[:4].isdigit() or not period[5:].isdigit()
@@ -783,6 +797,8 @@ def assertion_request_for_token(
         return None
     selector = view["selector"]
     if selector == "total" or selector.startswith("periodValues."):
+        return AssertionRequest(operation="value", operands=(token,))
+    if selector in _COMPARISON_TOTAL_SELECTORS and view.get("entry", {}).get("comparisonType") in {"yoy", "mom"}:
         return AssertionRequest(operation="value", operands=(token,))
     if selector == "registeredRatio":
         return AssertionRequest(operation="registered_ratio", operands=(token,))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agno.agent import Agent
 
@@ -23,7 +23,9 @@ from .delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
 )
+from .hospital_operation.professional_review import professional_stage_guidance
 from .host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
+from .instructions import HOSPITAL_REPORT_WRITING_INSTRUCTIONS
 from .knowledge import ReportingKnowledgeIndex
 from .metadata import ReportingMetadataClient
 from .profile import load_configured_reporting_profiles
@@ -173,10 +175,8 @@ def create_report_runtime(
         state_repository=state_repository,
         workspace_registry=workspace_registry,
     )
-    visualization_generator = create_reporting_generator_agent(
-        model=reporting_agent_template.model,
-        output_schema=VisualizationPlanDraft,
-        name="reporting-visualization-generator",
+    visualization_generator, section_generator, section_recovery = create_reporting_text_generators(
+        reporting_agent_template.model
     )
     visualization_code_agent_factory = create_reporting_code_agent_factory(
         model=reporting_agent_template.model,
@@ -184,16 +184,6 @@ def create_report_runtime(
         task_kind="visualization",
         role="只为冻结图表计划签发可视化脚本。",
         instructions=_VISUALIZATION_CODE_INSTRUCTIONS,
-    )
-    section_generator = create_reporting_generator_agent(
-        model=reporting_agent_template.model,
-        output_schema=SectionDecisionOutput,
-        name="reporting-section-generator",
-    )
-    section_recovery = create_reporting_generator_agent(
-        model=reporting_agent_template.model,
-        output_schema=SectionDecisionOutput,
-        name="reporting-section-recovery",
     )
     vision_reviewer = (
         ReportVisionReviewer(settings, reporting_workspace)
@@ -260,3 +250,29 @@ def create_report_runtime(
         visualization_total_deadline_seconds=(settings.report_visualization_total_deadline_seconds),
     )
     return reporting_agent_template, runtime
+
+
+def create_reporting_text_generators(model: Any) -> tuple[Agent, Agent, Agent]:
+    """创建撰写读者可见文字的结构化生成器（图表计划、章节、章节恢复）。"""
+    visualization_generator = create_reporting_generator_agent(
+        model=model,
+        output_schema=VisualizationPlanDraft,
+        name="reporting-visualization-generator",
+        # 图题、图注与替代文本同样面向读者，遵循期间、口径与数值一致的审阅要求。
+        stage_instructions=professional_stage_guidance("draft"),
+    )
+    section_generator = create_reporting_generator_agent(
+        model=model,
+        output_schema=SectionDecisionOutput,
+        name="reporting-section-generator",
+        # 章节正文由该生成器撰写；专业审阅要求与人工表述示例必须进入其指令，否则不生效。
+        stage_instructions=HOSPITAL_REPORT_WRITING_INSTRUCTIONS,
+    )
+    section_recovery = create_reporting_generator_agent(
+        model=model,
+        output_schema=SectionDecisionOutput,
+        name="reporting-section-recovery",
+        # 章节正文由该生成器撰写；专业审阅要求与人工表述示例必须进入其指令，否则不生效。
+        stage_instructions=HOSPITAL_REPORT_WRITING_INSTRUCTIONS,
+    )
+    return visualization_generator, section_generator, section_recovery

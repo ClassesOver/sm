@@ -17,6 +17,7 @@ from .base import (
     REPORT_DATA_SHAPES_STATE_KEY,
     REPORT_DATASET_LINEAGE_STATE_KEY,
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
+    REPORT_EFFECTIVE_PROFILE_STATE_KEY,
     REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     AnalysisItem,
@@ -196,6 +197,9 @@ class RuntimeDatasetsMixin:
         enable_time_series_diagnostics = time_series_diagnostics_requested(
             self._envelope(run_context).report_goal
         )
+        # 查询仍按 DATE 精确过滤；Profile 已确认为“月份”维度的日期列在事实计算中按月解释，
+        # 否则月初日期按日判断连续，同比只会对齐最后一个月。不从月初日期本身猜测月度。
+        monthly_period_columns = _profile_monthly_period_columns(state.get(REPORT_EFFECTIVE_PROFILE_STATE_KEY))
 
         def profile_path(handle: DatasetHandle) -> str:
             return f"报表/分析计划/{run_id}/profiles/{handle.dataset_id}.profile.json"
@@ -314,7 +318,13 @@ class RuntimeDatasetsMixin:
                     )
                 contexts[index] = profiled.context.model_copy(update={
                     "period_granularities": {
-                        table.period_column: table.period_granularity
+                        table.period_column: (
+                            "month"
+                            if table.period_granularity == "date"
+                            and (table.table.rsplit(".", 1)[-1].lower(), table.period_column.lower())
+                            in monthly_period_columns
+                            else table.period_granularity
+                        )
                         for table in (requirement.tables if requirement is not None else ())
                     },
                 })
@@ -800,3 +810,17 @@ def _requirement_measure_field_refs(
             if measure.lower() in available_columns
         )
     return field_refs
+
+
+def _profile_monthly_period_columns(profile: Any) -> frozenset[tuple[str, str]]:
+    """Profile 中只登记为“month”时间维度的 table.column；缺失或冲突时不推断。"""
+    declared: dict[tuple[str, str], set[str]] = {}
+    dimensions = profile.get("dimensions") if isinstance(profile, dict) else None
+    for dimension in dimensions if isinstance(dimensions, list) else ():
+        if not isinstance(dimension, dict) or dimension.get("kind") != "time":
+            continue
+        for field_ref in dimension.get("fieldRefs") or ():
+            parts = str(field_ref).lower().split(".")
+            if len(parts) >= 2:
+                declared.setdefault((parts[-2], parts[-1]), set()).add(str(dimension.get("code")))
+    return frozenset(key for key, codes in declared.items() if codes == {"month"})

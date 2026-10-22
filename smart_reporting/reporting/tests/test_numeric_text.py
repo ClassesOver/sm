@@ -2713,3 +2713,44 @@ def test_resolver_resolves_pr80_legacy_token_and_soft_degrades_on_rebuild_failur
     # 普通数值 token 不走派生重建路径，不受该故障影响。
     ordinary = semantic_bindings.NumberReferenceResolver(contents)
     assert ordinary.resolve("{{value:fact-aaaaaaaaaaaaaaaa:total:元}}")["value"] == 400
+
+
+def _campus_budget_chart() -> str:
+    # 与真实运行的院区预算图输入同形：执行率为比值列，差额为带符号金额，均无 columnMeta。
+    return json.dumps(
+        {
+            "schema": "chart-input/v1",
+            "chartId": "chart-campus",
+            "columns": ["院区", "预算总医疗收入", "实际总医疗收入", "差额", "执行率"],
+            "rows": [
+                ["总部院区", 7553618073.0, 7305907956.0, -247710117.0, 0.9672064281505804],
+                ["北部院区", 1662013332.0, 1543188806.0, -118824526.0, 0.9285056721795298],
+                ["质子院区", 274119102.0, 287676369.0, 13557267.0, 1.0494575784798827],
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "supported"),
+    [
+        ("总部院区执行率96.72%，北部院区执行率92.85%。", True),
+        ("北部院区差额为负1.19亿元。", True),
+        ("北部院区差额1.19亿元。", False),
+        ("北部院区执行率0.93%。", False),
+        ("北部院区执行率93.85%。", False),
+    ],
+)
+def test_ratio_execution_rate_and_explicit_negative_difference_are_verified(text, supported):
+    chart = _campus_budget_chart()
+    assert (replace_unregistered_numbers(text, [chart]) == text) is supported
+
+
+def test_execution_rate_column_keeps_percent_values_unscaled():
+    from smart_reporting.reporting.trace.numeric_text import supplemental_number_values
+
+    chart = json.dumps(
+        {"schema": "chart-input/v1", "chartId": "c", "columns": ["院区", "执行率"],
+         "rows": [["总部", 96.72], ["北部", 92.85]]}
+    )
+    assert Decimal("96.72") in supplemental_number_values([chart])["%"]
