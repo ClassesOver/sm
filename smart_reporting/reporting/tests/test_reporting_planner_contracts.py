@@ -1506,6 +1506,20 @@ def test_outline_preserves_analysis_coverage_without_fixed_chapter_limit() -> No
     ]
 
 
+def test_freeze_outline_writes_titles_like_the_report_body() -> None:
+    # 回放：正文把“1-9月”规范为“1—9月”，封面、页眉与文件名仍是“2025年1-9月…报告”。
+    outline = freeze_outline(
+        {
+            "reportType": "comprehensive",
+            "title": "2025年1-9月全院经济运行分析报告",
+            "sections": [{"title": "收入分析(含体检)", "analysisIds": ["analysis_001"]}],
+        },
+        analyses=[{"analysisId": "analysis_001", "managementQuestion": "收入趋势如何"}],
+    )
+    assert outline.title == "2025年1—9月全院经济运行分析报告"
+    assert outline.sections[0].title == "收入分析（含体检）"
+
+
 def test_freeze_outline_derives_focus_from_signed_management_questions() -> None:
     outline = freeze_outline(
         {

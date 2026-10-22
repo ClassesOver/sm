@@ -229,6 +229,15 @@ class ReportOutline(HospitalOperationSchema):
         return self
 
 
+def _display_title(title: str) -> str:
+    """冻结的标题按正文同一规则规范写法：正文已把“1-9月”写成“1—9月”、半角括号改全角，
+    标题、页眉、目录与文件名沿用模型原样写法时同一份报告前后不一致。"""
+    # 延迟导入：报告运行时包在导入时加载渲染器依赖，提纲模型不应承担该开销。
+    from ..delivery.report_runtime.markdown import normalize_cjk_punctuation, normalize_cjk_wording
+
+    return normalize_cjk_punctuation(normalize_cjk_wording(title)).strip() or title
+
+
 def freeze_outline(
     proposal: ReportOutlineProposal | Mapping[str, Any],
     *,
@@ -275,7 +284,7 @@ def freeze_outline(
             ReportOutlineSection(
                 code=f"section_{index:03d}",
                 sectionNumber=str(index),
-                title=section.title,
+                title=_display_title(section.title),
                 focus=focus,
                 analysisIds=section.analysis_ids,
             )
@@ -285,7 +294,7 @@ def freeze_outline(
         raise ValueError(f"提纲遗漏 analysisId: {', '.join(sorted(missing))}")
     return ReportOutline(
         reportType=proposal_obj.report_type,
-        title=proposal_obj.title,
+        title=_display_title(proposal_obj.title),
         sections=tuple(sections),
         assumptions=proposal_obj.assumptions,
     )

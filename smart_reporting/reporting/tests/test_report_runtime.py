@@ -1389,6 +1389,25 @@ def test_model_table_numeric_columns_are_right_aligned():
     assert "| --- | ---: | ---: | ---: |" in align_numeric_table_columns(hospital)
 
 
+def test_pdf_tables_keep_edge_rows_together_and_units_whole() -> None:
+    from markdown_it import MarkdownIt
+
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _paginate_pdf_tables
+
+    rows = "".join(f"| 2025年{month}月 | {month} |\n" for month in range(1, 8))
+    rendered = _paginate_pdf_tables(
+        MarkdownIt("commonmark").enable("table").render(f"| 月份 | 实际人次（人次） |\n| --- | ---: |\n{rows}")
+    )
+    # 回放附表：末行“2025年12月”单独落到下一页；首尾各两行放进不可拆分的 tbody。
+    assert rendered.count('<tbody class="report-table-keep">') == 2 and rendered.count("<tbody") == 3
+    assert rendered.count("<tr>") + rendered.count('<tr class="report-row-even">') == 8
+    # 斑马纹按全表行序标注，不随 tbody 分组重新计数。
+    assert rendered.count('class="report-row-even"') == 3
+    assert "实际人次<span class=\"report-unit\">（人次）</span></th>" in rendered
+    short = _paginate_pdf_tables("<table>\n<tbody>\n<tr>\n<td>1</td>\n</tr>\n</tbody>\n</table>")
+    assert short.count("<tbody") == 1 and 'class="report-table-keep"' in short
+
+
 def test_render_shows_large_yuan_amounts_in_readable_units() -> None:
     from smart_reporting.reporting.delivery.report_runtime.markdown import readable_large_amounts
 
