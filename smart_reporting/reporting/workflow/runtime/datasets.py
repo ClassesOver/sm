@@ -618,15 +618,18 @@ class RuntimeDatasetsMixin:
             warnings=unique_warnings,
         )
         state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY] = plan.model_dump(mode="json", by_alias=True)
-        from ..questions import QuestionSet, freeze_analysis_questions, request_questions
+        from ..questions import QuestionSet, freeze_plan_questions, request_questions
 
         request_context = state.get("report_request_context", {})
         raw_questions = request_context.get("questionSpecs")
         questions = QuestionSet.model_validate(raw_questions) if raw_questions is not None else request_questions(
             request_context.get("originalGoal", envelope.report_goal),
         )
-        frozen_questions = freeze_analysis_questions(
+        feedback = tuple(item["content"] for item in request_context.get("feedback", ())
+                         if isinstance(item, dict) and isinstance(item.get("content"), str))
+        frozen_questions = freeze_plan_questions(
             questions, [item.model_dump(mode="json", by_alias=True) for item in plan.analyses],
+            goal=request_context.get("originalGoal", envelope.report_goal), feedback=feedback,
         )
         await self._apply_durable_command(
             run_context,

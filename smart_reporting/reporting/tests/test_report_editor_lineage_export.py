@@ -237,7 +237,8 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
                     {
                         "chartId": "chart_001",
                         "subjectIds": [],
-                        "status": "stale",
+                        # 图表未改动；静态图未做数组比对属“未评估”，不能降为待复核。
+                        "status": "valid",
                         "imagePath": chart_path,
                         "datasetIds": ["dataset-url-abc0001"],
                         "methods": [],

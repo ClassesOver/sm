@@ -906,6 +906,16 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
     return min(8, max(4, 2 + (complexity + 2) // 3))
 
 
+def quality_budget_code(error: BaseException) -> str | None:
+    """补证预算耗尽、基线不可用等质量预算拒绝：返回其代码，其他错误返回 None。
+
+    reducer 抛出 ReportingStateError，但 _apply_durable_command 会把它转成 ReportingError，
+    只捕获前者时降级分支永远不会执行，整份报告因一次预算拒绝而失败。
+    """
+    code = getattr(error, "code", None) if isinstance(error, (ReportingStateError, ReportingError)) else None
+    return code if isinstance(code, str) and code.startswith("report_quality_") else None
+
+
 class RuntimeAnalysisMixin:
     async def _run_visualization_section_task(
         self,
@@ -2201,17 +2211,18 @@ class RuntimeAnalysisMixin:
                         payload=rework_payload,
                     ),
                 )
-            except ReportingStateError as error:
-                if not error.code.startswith("report_quality_"):
+            except (ReportingStateError, ReportingError) as error:
+                budget_code = quality_budget_code(error)
+                if budget_code is None:
                     raise
                 loguru_logger.warning(
-                    "report_quality_rework_skipped section={} reason={}", section_code, error.code
+                    "report_quality_rework_skipped section={} reason={}", section_code, budget_code
                 )
                 return StepOutput(
                     content={
                         "sectionCode": section_code,
                         "status": "budget_exhausted",
-                        "budgetCode": error.code,
+                        "budgetCode": budget_code,
                     }
                 )
             await self._apply_durable_command(

@@ -1278,7 +1278,9 @@ async def test_publication_manifest_failures_keep_artifacts_and_report_issue(mon
     quality_warning = {"code": "quality_evaluation_unavailable", "status": "unknown",
                        "message": "质量检查不可用，未标记通过。"}
     if quality_fault:
-        state["report_quality_issues"] = [quality_warning]
+        # 审阅：同一会话上一修订的质量告警不能带进本修订的发布门禁。
+        stale_warning = {**quality_warning, "revision": 0, "message": "上一修订的质量问题。"}
+        state["report_quality_issues"] = [stale_warning, quality_warning, {**quality_warning, "revision": 1}]
     gate_failure = case == "quality_with_gate_failure"
     prior_issue = {"code": "dataset_identity_changed"}
     prior_warning = {"code": "existing_warning"}
@@ -1304,7 +1306,7 @@ async def test_publication_manifest_failures_keep_artifacts_and_report_issue(mon
     if quality_fault:
         assert output.content["formalReleaseAllowed"] is (not gate_failure)
         assert gate["issues"] == ([prior_issue] if gate_failure else [])
-        assert gate["warnings"] == [prior_warning, quality_warning]
+        assert gate["warnings"] == [prior_warning, quality_warning, {**quality_warning, "revision": 1}]
     else:
         assert output.content["formalReleaseAllowed"] is False
         assert any(issue["code"].startswith("report_artifact_manifest_") for issue in gate["issues"])

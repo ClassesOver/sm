@@ -3,6 +3,7 @@ import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/
 import { $prose } from '@milkdown/kit/utils'
 import type { TraceSources, TraceValidation } from './api'
 import { findEvidenceChartImage, findEvidenceTableCell } from './evidence-location'
+import { checkNeedsReview } from './source-validation'
 
 // 使用原生widget，不把显示标记写入正文。正文变更后等待新一轮精确位置校验。
 const key = new PluginKey<DecorationSet>('SMART_REPORT_BODY_SOURCES')
@@ -27,12 +28,12 @@ export function updateBodySourceLinks(view: EditorView, root: HTMLElement, sourc
     if (subject.subjectKind !== 'table_cell') continue
     const table = result?.tables?.find(item => item.tableId === subject.locator.tableId)
     const location = table?.locations?.find(item => item.rowKey === subject.locator.rowKey && item.columnKey === subject.locator.columnKey)
-    if (location && subject.locator.tableId) add(findEvidenceTableCell(root, subject.locator.tableId, location), 'citation', subject.subjectId, table?.dataCheck?.status === 'unknown' ? 'stale' : location.status)
+    if (location && subject.locator.tableId) add(findEvidenceTableCell(root, subject.locator.tableId, location), 'citation', subject.subjectId, table?.dataCheck && checkNeedsReview(table.dataCheck) ? 'stale' : location.status)
   }
   for (const chart of result?.charts ?? []) {
     if (chart.status === 'unbound' || !chart.locationSource) continue
     add(findEvidenceChartImage(root, chart.locationSource, document.baseURI), 'chart', chart.chartId,
-      chart.status === 'valid' && chart.dataCheck?.status === 'verified' && chart.semanticCheck?.status === 'verified' ? 'valid' : 'stale')
+      chart.status === 'valid' && !checkNeedsReview(chart.dataCheck) && !checkNeedsReview(chart.semanticCheck) ? 'valid' : 'stale')
   }
   const decorations: Decoration[] = []
   for (const [target, references] of targets) {

@@ -2898,17 +2898,20 @@ class RuntimeSectionsMixin:
             if isinstance(assertion_policy, dict):
                 from ...trace.contracts_v1 import canonical_sha256
 
-                instruction_payload["assertionPolicy"] = {
-                    **assertion_policy,
-                    "profileHash": self._profile(run_context).effective_profile_hash,
-                    "authorizationScopeHash": canonical_sha256({
-                        key: scope[key] for key in ("userId", "threadId")
-                    }),
-                }
+                # 只有 enabled 模式会用到画像/授权哈希与受信事实；受信事实只取本章分析项的
+                # 事实文件，避免每章指令都夹带全运行的哈希、把临界章节推过指令上限。
+                instruction_payload["assertionPolicy"] = dict(assertion_policy)
                 if assertion_policy.get("mode") == "enabled":
-                    instruction_payload["assertionPolicy"]["trustedFactSha256"] = [
-                        identity.sha256 for identity in checkpoint.deterministic_fact_files.values()
-                    ]
+                    instruction_payload["assertionPolicy"].update({
+                        "profileHash": self._profile(run_context).effective_profile_hash,
+                        "authorizationScopeHash": canonical_sha256({
+                            key: scope[key] for key in ("userId", "threadId")
+                        }),
+                        "trustedFactSha256": [
+                            identity.sha256 for analysis_id, identity in checkpoint.deterministic_fact_files.items()
+                            if analysis_id in work_item.analysis_ids
+                        ],
+                    })
                     try:
                         from ..questions import QuestionSet
 

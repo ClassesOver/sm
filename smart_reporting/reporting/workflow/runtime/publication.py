@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+from collections.abc import Callable
 from urllib.parse import quote, urlencode
 
 from loguru import logger
@@ -243,6 +244,26 @@ def evaluate_publication_semantics(
             }:
                 issue("report_cross_source_inference_unsupported", claim.claim_id)
     return {"formalReleaseAllowed": True, "issues": [], "warnings": warnings}
+
+
+def build_with_optional_computation_layer(
+    build: Callable[[tuple[FileIdentity, ...], tuple], Any],
+    computation_files: tuple[FileIdentity, ...],
+    computations: tuple,
+) -> Any:
+    """补充分析计算层（计算记录、脚本与补证文件）只是追溯元数据；契约不接受时不登记该层，
+    其余索引照常生成。审阅：补证文件现在即使没有有效计算记录也会登记，只在有计算记录时
+    回退会让补证文件的问题拖垮整份索引与产物清单。"""
+    try:
+        return build(computation_files, computations)
+    except (ValidationError, ValueError) as error:
+        if not computations and not computation_files:
+            raise
+        logger.warning(
+            "report_trace_computations_dropped count={} files={} error_type={} reason={}",
+            len(computations), len(computation_files), type(error).__name__, str(error)[:500],
+        )
+        return build((), ())
 
 
 class RuntimePublicationMixin:
@@ -1008,7 +1029,11 @@ class RuntimePublicationMixin:
                 "formalReleaseAllowed": False,
                 "issues": [*gate.get("issues", []), *manifest_issues],
             }
-        quality_issues = self._state(run_context).get("report_quality_issues", [])
+        # 同一会话的历史修订告警不能带进本次发布：只取本修订的质量问题（无修订号的沿用）。
+        quality_issues = [
+            item for item in self._state(run_context).get("report_quality_issues", [])
+            if not isinstance(item, dict) or item.get("revision") in {None, result.get("revision")}
+        ]
         if quality_issues:
             gate = {**gate, "warnings": [*gate.get("warnings", []), *quality_issues]}
         editor_job = self.report_tools._load_job(
@@ -1344,19 +1369,7 @@ class RuntimePublicationMixin:
                 drilldown_metrics=drilldown_metrics,
             )
 
-        try:
-            index = build(computation_files, computations)
-        except (ValidationError, ValueError) as error:
-            if not computations:
-                raise
-            # 补充分析计算层只是追溯元数据；契约不接受时不登记该层，其余索引照常生成。
-            logger.warning(
-                "report_trace_computations_dropped count={} error_type={} reason={}",
-                len(computations),
-                type(error).__name__,
-                str(error)[:500],
-            )
-            index = build((), ())
+        index = build_with_optional_computation_layer(build, computation_files, computations)
         if markdown is not None:
             from ...trace.chart_subjects import freeze_chart_presentations
 
