@@ -400,3 +400,13 @@ async def test_editor_and_quality_agree_on_table_dimensions(
     assert result["tables"][0]["dataCheck"]["status"] == expected
     assert result["tableSummary"]["valid"] == (2 if expected == "verified" else 0)
     assert result["tableSummary"]["stale"] == (0 if expected == "verified" else 2)
+
+
+def test_legacy_wrapper_without_blank_line_covers_its_registered_table():
+    # 审阅：旧格式结束标记紧跟末行时被 markdown-it 并入表格，已登记的旧表被误报 table_coverage_unknown。
+    from smart_reporting.reporting.trace.table_quality import uncovered_table_lines
+
+    legacy = "[[table:t1]]\n|a|b|\n|---|---|\n|1|2|\n[[/table:t1]]"
+    assert uncovered_table_lines(legacy, {"t1"}) == ()
+    assert uncovered_table_lines(legacy + "\n\n|x|y|\n|---|---|\n|3|4|\n", {"t1"}) == (7,)
+    assert uncovered_table_lines(legacy, set()) == (2,)

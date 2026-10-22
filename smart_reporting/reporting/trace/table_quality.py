@@ -114,9 +114,11 @@ def uncovered_table_lines(markdown: str, registered_ids: set[str]) -> tuple[int,
             continue
         if re.search(r"\[\[/?table:", match[2]):
             continue  # Nested/malformed wrappers cannot hide extra tables.
+        # 旧格式结束标记紧跟末行（无空行）时，markdown-it 会把结束标记行并入表格；
+        # 表格终点按整个包裹块（含结束标记）判断，否则已登记的旧表会被误报未覆盖。
         contained = [
             line for line, start, end in tables
-            if match.start(2) <= start and end <= match.end(2) + 1
+            if match.start(2) <= start and end <= match.end() + 1
         ]
         if len(contained) == 1:
             covered.add(contained[0])
