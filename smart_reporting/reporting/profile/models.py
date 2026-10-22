@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from ..contract import CumulativeSnapshotPolicy, MeasureSemantic
 
 PROFILE_DIRECTORY_NAME = "reporting_profiles"
+DEFAULT_ORGANIZATION_NAME = "上海鼎医信息技术有限公司"
 PROFILE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
 QUALIFIED_FIELD_REF_PATTERN = (
     r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\."
@@ -281,9 +283,14 @@ class EffectivePageLayout(ProfileModel):
         return self
 
 
+def _default_organization_name() -> str:
+    return os.environ.get("AGENT_REPORT_ORGANIZATION_NAME", "").strip() or DEFAULT_ORGANIZATION_NAME
+
+
 class EffectiveDocumentBranding(ProfileModel):
     organization_name: str = Field(
-        default="编制单位待确认",
+        default_factory=_default_organization_name,
+        validate_default=True,
         alias="organizationName",
         min_length=1,
         max_length=200,

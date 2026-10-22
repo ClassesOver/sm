@@ -51,13 +51,15 @@ def test_writing_instructions_keep_requested_window_and_do_not_force_causes_or_a
     assert "主口径必须采用最新完整" not in guide
 
 
-def test_missing_branding_does_not_make_the_software_supplier_the_report_author():
-    assert EffectiveDocumentBranding().organization_name == '编制单位待确认'
+def test_branding_uses_original_default_or_environment(monkeypatch):
+    monkeypatch.delenv('AGENT_REPORT_ORGANIZATION_NAME', raising=False)
+    assert EffectiveDocumentBranding().organization_name == '上海鼎医信息技术有限公司'
+    monkeypatch.setenv('AGENT_REPORT_ORGANIZATION_NAME', '  环境配置编制单位  ')
+    assert EffectiveDocumentBranding().organization_name == '环境配置编制单位'
     configured = EffectiveDocumentBranding.model_validate({'organizationName': '示例医院财务部'})
     assert configured.organization_name == '示例医院财务部'
-    # Explicitly frozen older branding is retained, never rewritten on read.
-    historical = EffectiveDocumentBranding.model_validate({'organizationName': '原编制单位'})
-    assert historical.organization_name == '原编制单位'
+    monkeypatch.setenv('AGENT_REPORT_ORGANIZATION_NAME', '  ')
+    assert EffectiveDocumentBranding().organization_name == '上海鼎医信息技术有限公司'
 
 
 @pytest.mark.parametrize('stage,instructions', [

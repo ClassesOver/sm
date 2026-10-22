@@ -333,13 +333,17 @@ Profile 中重复维护机构名称。
 
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| `organizationName` | `编制单位待确认` | 封面、页眉占位符和正文末尾落款；正式编制单位须由医院配置确认 |
+| `organizationName` | `上海鼎医信息技术有限公司` | 封面、页眉占位符和正文末尾落款；可由环境变量设置默认值 |
 | `generatedByLabel` | `AI 智能报告平台生成` | 封面底部生成标记 |
 | `watermarkText` | `AI 智能报告平台生成` | 目录和正文页背后的斜向水印 |
 
 三个字段必须包含可见文字，不能是空白或包含控制字符。封面标题、分析期间、机构名称和生成标记，
 以及目录、页眉页脚、水印和上海时区生成日期落款均由服务端写入 PDF/Word，不进入权威 Markdown，
 也不允许模型覆盖。
+
+`AGENT_REPORT_ORGANIZATION_NAME` 可覆盖默认机构名称，例如
+`AGENT_REPORT_ORGANIZATION_NAME=某医院运营管理部`。未设置或仅含空白时使用原默认名称。
+优先级：Profile 中显式配置的 `documentBranding.organizationName` > 环境变量 > 原默认值。
 
 ## 修改与验收
 
