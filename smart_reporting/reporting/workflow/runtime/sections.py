@@ -349,8 +349,9 @@ def _section_request_tokens(agent: Any, payload: Mapping[str, Any], run_context:
             messages,
             SectionContent,
         )
-    except Exception:
-        pass
+    except Exception as error:
+        # 计数器不可用时退回字节估算；记录以便发现路由或模型配置问题。
+        loguru_logger.debug("report_section_token_count_fallback reason={}", type(error).__name__)
     return sum(len(str(message.content).encode("utf-8")) for message in messages) + len(
         _json_text(SectionContent.model_json_schema()).encode("utf-8")
     )
