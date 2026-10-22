@@ -878,3 +878,24 @@ def test_correlations_are_only_computed_when_the_analysis_asks_for_them():
         analysis(fields=("amount", "visits"), correlation=True), (("current", raw, ctx, ("current",)),)
     )
     assert requested.correlation_details
+
+
+def test_period_sums_do_not_depend_on_row_order():
+    """同一数据集在不同分析中行序不同；浮点求和末位不同会被核对视为冲突事实（写成“待核实”）。"""
+    import random
+
+    import polars as pl
+
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import _period_values
+
+    rng = random.Random(7)
+    rows = [("2025-01-01" if index % 2 else "2025-02-01", 145289383.78472222 * rng.random())
+            for index in range(5000)]
+    results = set()
+    for seed in range(6):
+        shuffled = rows[:]
+        random.Random(seed).shuffle(shuffled)
+        frame = pl.DataFrame({"month": [r[0] for r in shuffled], "amount": [str(r[1]) for r in shuffled]})
+        results.add(tuple(item.value for item in _period_values(
+            frame, "amount", "month", "sum", period_granularity="month")))
+    assert len(results) == 1
