@@ -500,6 +500,8 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "未声明该等式时，分项与总额差额不代表数据对账失败。",
     "管理问题要求差额、完成率或分组贡献时，逐项核对所需期间和粒度：只有分子分母总额不等于已登记月度差额/完成率，完整组合的topGroups也不等于单一科室累计。所需计算未登记时将其声明为缺口，按明确分子分母和期间生成最小补充证据；不得把图注或模型摘要中的数字当作已冻结计算。",
     "比率补证必须记录分子、分母、差额和百分数；分母非零且分子为零时百分数为0%，只有分母为零或缺失时为null并软告警。",
+    "变化额、变化率与贡献补证使用本期累计与同期相同月份累计之差；不得以窗口首尾两个月的差额代表期间变化或贡献（R050）。"
+    "授权数据集没有同期时不生成变化额，只列示各期值并说明同比暂不可评价。",
     "只返回 requiresSupplementalEvidence、reason、missingFacts、codingRequirements，不得生成 script 或任何代码。",
     "需要补证时，codingRequirements 逐项声明当前授权 datasets 中的 datasetId、fields、calculation 和 outputName；不得编造数据集或字段。",
     "固定事实足够时 missingFacts 和 codingRequirements 必须都是空数组，不得为了探索数据而声明缺口。",
