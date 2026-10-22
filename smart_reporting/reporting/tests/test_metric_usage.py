@@ -41,9 +41,9 @@ def test_catalog_uses_all_confirmed_names_and_removes_the_requested_metric():
         "budget_income": "医疗收入预算数", "budget_medicine_income": "药品收入预算数",
         "budget_material_income": "材料收入预算数", "budget_service_income": "医疗服务收入预算数",
         "budget_test_income": "检查化验收入预算数", "budget_person_time": "预算人次",
-        "actual_person_time": "实际人次", "outpatient_visits": "门急诊人次", "discharges": "出院人次",
+        "actual_person_time": "实际人次", "outpatient_visits": "门诊人次（含急诊和体检）", "discharges": "出院人次",
         "outpatient_visits_non": "门诊人次（不含体检和急诊）", "actual_open_bed": "开放床日数",
-        "discharges_bed": "实际占用床日数", "budget_expenditure": "支出预算数",
+        "discharges_bed": "出院者占用床日数", "budget_expenditure": "支出预算数",
         "actual_expenditure": "支出实际数", "total_cost": "科室成本数", "project_budget": "项目预算金额",
         "project_contract_amount": "项目合同金额", "project_payment_amount": "项目付款金额",
     }

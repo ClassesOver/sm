@@ -862,7 +862,7 @@ class _ReportWorkflowRuntimeBase:
             ),
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
-                "每项显式提供简短 analysisName、periodRoles 和 seriesGranularity。收入汇总仅使用 current；收入同比使用 current、yoy。月度序列填 month，即使月份存储为月初日期；非时间序列填 null。",
+                "每项显式提供简短 analysisName、periodRoles 和 seriesGranularity。请求 comparisonRoles 含 yoy 时，收入、成本、支出、工作量等核心指标的规模、结构与趋势分析均使用 current、yoy，以便列示本期、同期、增减额和增幅（审阅 R003/R046/R048/R057）；仅用户明确只要本期时使用 current。月度序列填 month，即使月份存储为月初日期；非时间序列填 null。",
                 "根 JSON 必须是对象且只能包含 analyses 和 requirements；不得返回单个 analysis、单个 requirement、裸数组或占位值",
                 "每个 analyses 项只回答一个原子管理问题，并且只声明一个主要指标族；复杂问题必须拆成多个分析项",
                 "每个 analyses[].domain 必须根据该管理问题的完整业务语义，从请求 domains 中选择唯一值；不得按关键词匹配",
