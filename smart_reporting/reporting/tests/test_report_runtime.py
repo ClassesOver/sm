@@ -400,6 +400,7 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
             "report_runtime/cli.py",
             "report_runtime/docx.py",
             "report_runtime/markdown.py",
+            "report_runtime/overview.py",
             "report_runtime/pdf.py",
             "report_runtime/projection.py",
             "report_runtime/runtime.py",
