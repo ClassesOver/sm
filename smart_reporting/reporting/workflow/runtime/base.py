@@ -535,6 +535,17 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+_OFF_LOOP_HASH_BYTES = 1024 * 1024
+
+
+async def _sha256_hex(content: bytes) -> str:
+    """大文件摘要在线程中计算（hashlib 会释放 GIL），避免阻塞事件循环；小内容直接计算。"""
+
+    if len(content) < _OFF_LOOP_HASH_BYTES:
+        return hashlib.sha256(content).hexdigest()
+    return await anyio.to_thread.run_sync(lambda: hashlib.sha256(content).hexdigest())
+
+
 def _routed_model_copy(model: Any, run_context: RunContext) -> Any:
     """返回绑定最终路由模型 ID 的副本，供请求前 token 计数；不修改共享模型。"""
 

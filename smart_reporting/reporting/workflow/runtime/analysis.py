@@ -118,6 +118,7 @@ from .base import (
     _report_machine_terms,
     _reporting_observed_data_facts,
     _routed_model_copy,
+    _sha256_hex,
     _source_warnings_from_state,
     _structured_request_messages,
     anyio,
@@ -3100,7 +3101,7 @@ class RuntimeAnalysisMixin:
             identity.path,
             max_bytes=identity.size,
         )
-        if len(content) != identity.size or hashlib.sha256(content).hexdigest() != identity.sha256:
+        if len(content) != identity.size or await _sha256_hex(content) != identity.sha256:
             raise ReportingError("report_phase_artifact_changed", "阶段产物身份校验失败。")
         return content
 
@@ -3123,7 +3124,7 @@ class RuntimeAnalysisMixin:
         content: bytes,
     ) -> FileIdentity:
         self.workspace_service.validate_content(content)
-        digest = hashlib.sha256(content).hexdigest()
+        digest = await _sha256_hex(content)
         current = (await self.workspace_service.abatch_hash_files(thread_id, [path]))[0]
         if current.get("missing") is not True:
             if current.get("size") == len(content) and current.get("sha256") == digest:
@@ -4413,7 +4414,7 @@ class RuntimeAnalysisMixin:
                 handle.path,
                 max_bytes=handle.size,
             )
-            if len(content) != handle.size or hashlib.sha256(content).hexdigest() != handle.sha256:
+            if len(content) != handle.size or await _sha256_hex(content) != handle.sha256:
                 raise ReportingError("stale_dataset", "确定性事实计算前 Dataset 身份已变化。")
             contents[handle.dataset_id] = content
         identities: dict[str, FileIdentity] = {}

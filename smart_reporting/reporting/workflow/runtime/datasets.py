@@ -37,6 +37,7 @@ from .base import (
     StepInput,
     StepOutput,
     ValidationError,
+    _sha256_hex,
     _source_warnings_from_state,
     anyio,
     build_profile_coverage_manifest,
@@ -239,7 +240,7 @@ class RuntimeDatasetsMixin:
                 )
                 if (
                     len(content) != handle.size
-                    or hashlib.sha256(content).hexdigest() != handle.sha256
+                    or await _sha256_hex(content) != handle.sha256
                 ):
                     raise ReportingError("stale_dataset", "分析数据集已变化。")
                 requirement = requirements.get(handle.requirement_id)
