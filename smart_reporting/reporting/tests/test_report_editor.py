@@ -1502,6 +1502,7 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             output_path: str,
             *,
             artifact_manifest,
+            management_overview=None,
             run_context: RunContext,
         ):
             assert actual_job_id == job_id
@@ -1726,6 +1727,7 @@ async def test_repeated_export_creates_sequential_revisions(tmp_path: Path) -> N
             output_path: str,
             *,
             artifact_manifest,
+            management_overview=None,
             run_context: RunContext,
         ):
             assert actual_job_id == job_id
@@ -1963,7 +1965,7 @@ async def test_editor_export_rebases_when_latest_revision_content_unchanged(
 
     class ReportTools:
         async def _render_report_pair(
-            self, job_id, markdown_path, output_path, *, artifact_manifest, run_context
+            self, job_id, markdown_path, output_path, *, artifact_manifest, management_overview=None, run_context
         ):
             rendered.append(output_path)
             settings = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]["_editorExportSettings"]
@@ -2080,7 +2082,7 @@ async def test_editor_export_continues_when_latest_revision_markdown_missing(
 
     class ReportTools:
         async def _render_report_pair(
-            self, job_id, markdown_path, output_path, *, artifact_manifest, run_context
+            self, job_id, markdown_path, output_path, *, artifact_manifest, management_overview=None, run_context
         ):
             rendered.append(output_path)
             await workspace.awrite_bytes(scope.workspace_key, output_path, b"new-pdf")

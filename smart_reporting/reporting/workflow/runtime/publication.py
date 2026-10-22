@@ -336,11 +336,36 @@ class RuntimePublicationMixin:
             ),
             run_context=context,
         )
+        overview_projection = {
+            "version": "management-overview-render/1", "sourceSha256": draft.markdown.sha256,
+            "qualityInputSha256": "0" * 64, "status": "unavailable", "markdown": "",
+        }
+        try:
+            from ...trace.contracts_v1 import canonical_sha256
+            from ..management_overview import management_overview_projection
+            from ..overview_sources import registered_management_overview
+
+            scope = self._scope(run_context)
+            overview = await registered_management_overview(
+                self.workspace_service, scope["threadId"], draft,
+                canonical_sha256({key: scope[key] for key in ("userId", "threadId")}),
+            )
+            job = self.report_tools._load_job(str(result["jobId"]), context)
+            overview_projection = management_overview_projection(
+                overview, draft.markdown.sha256, job.get("_citationPresentations"),
+            )
+        except Exception as error:
+            logger.warning("report_management_overview_unavailable reason={}", type(error).__name__)
+            state.setdefault("report_quality_issues", []).append({
+                "code": "management_overview_evidence_unavailable", "status": "unknown",
+                "message": "经营总览证据不可用，已保留缺项说明并继续生成报告。",
+            })
         rendered_result = await self.report_tools._render_report_pair(
             str(result["jobId"]),
             str(result["markdownPath"]),
             pdf_path,
             artifact_manifest=draft.model_dump(mode="json", by_alias=True),
+            management_overview=overview_projection,
             run_context=context,
         )
 

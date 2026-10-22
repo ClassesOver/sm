@@ -182,6 +182,7 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             output_path: str,
             *,
             artifact_manifest,
+            management_overview=None,
             run_context: RunContext,
         ):
             assert actual_job_id == context.job_id
@@ -189,6 +190,8 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             snapshot_paths.append(markdown_path)
             snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
             assert snapshot.decode() == edited_markdown
+            assert management_overview["sourceSha256"] == _sha(snapshot)
+            assert management_overview["status"] == "unavailable"
             assert artifact_manifest is not None
             assert artifact_manifest["revision"] == 2
             assert artifact_manifest["markdown"] == {
@@ -472,7 +475,7 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
 
     class ReportTools:
         async def _render_report_pair(
-            self, actual_job_id, markdown_path, output_path, *, artifact_manifest, run_context
+            self, actual_job_id, markdown_path, output_path, *, artifact_manifest, management_overview=None, run_context
         ):
             rendered_manifests.append(artifact_manifest)
             render_job = run_context.session_state[REPORT_JOBS_STATE_KEY][actual_job_id]

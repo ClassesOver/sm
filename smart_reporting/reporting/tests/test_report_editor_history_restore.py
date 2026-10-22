@@ -201,7 +201,7 @@ async def test_restore_then_export_uses_historical_lineage_for_target_revision(t
     rendered: list[str] = []
 
     class Tools:
-        async def _render_report_pair(self, job_id, markdown_path, output_path, *, artifact_manifest, run_context):
+        async def _render_report_pair(self, job_id, markdown_path, output_path, *, artifact_manifest, management_overview=None, run_context):
             rendered.append(output_path)
             assert job_id == current.job_id
             assert markdown_path.startswith("reports/revision-1/.export-")

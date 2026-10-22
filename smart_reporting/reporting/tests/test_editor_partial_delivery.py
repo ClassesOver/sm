@@ -63,7 +63,7 @@ async def test_editor_commits_only_readable_formats_and_can_export_again(
 
     class Tools:
         async def _render_report_pair(
-            self, job_id, markdown_path, output_path, *, artifact_manifest, run_context
+            self, job_id, markdown_path, output_path, *, artifact_manifest, management_overview=None, run_context
         ):
             source, _ = await editor.workspace.afile_bytes(thread, markdown_path)
             record = {

@@ -1956,6 +1956,10 @@ class ReportEditorService:
             lineage_issues: list[dict[str, str]] = []
             target_job = session_state[REPORT_JOBS_STATE_KEY][context.job_id]
             original_presentations = copy.deepcopy(target_job.get("_citationPresentations"))
+            overview_projection = {
+                "version": "management-overview-render/1", "sourceSha256": document.sha256,
+                "qualityInputSha256": "0" * 64, "status": "unavailable", "markdown": "",
+            }
             try:
                 artifact_manifest, trace_index = await self.trace.load_manifest_and_index(
                     source_context
@@ -1996,6 +2000,16 @@ class ReportEditorService:
                             revision=next_revision,
                             citations=artifact_manifest.citations if artifact_manifest is not None else (),
                         )
+                    from ..reporting.workflow.management_overview import (
+                        ManagementOverview,
+                        management_overview_projection,
+                    )
+
+                    raw_overview = validation.get("quality", {}).get("managementOverview")
+                    overview_projection = management_overview_projection(
+                        ManagementOverview.model_validate(raw_overview) if raw_overview else None,
+                        document.sha256, target_job.get("_citationPresentations"),
+                    )
                     # B8：数据来源附录与引用展示同一次快照联合渲染，编号由渲染器
                     # 按正文首次出现顺序分配；无追溯索引的旧报告保持无附录导出。
                     target_job.pop("_traceSourcePresentations", None)
@@ -2022,6 +2036,10 @@ class ReportEditorService:
                 if isinstance(original_presentations, list):
                     target_job["_citationPresentations"] = original_presentations
                 target_job.pop("_traceSourcePresentations", None)
+                overview_projection = {
+                    "version": "management-overview-render/1", "sourceSha256": document.sha256,
+                    "qualityInputSha256": "0" * 64, "status": "unavailable", "markdown": "",
+                }
                 logger.opt(exception=error).warning(
                     "report_editor_export_lineage_dropped report_id={} base_revision={} stage=prepare",
                     context.report_id,
@@ -2033,6 +2051,7 @@ class ReportEditorService:
                     snapshot_path,
                     output_path,
                     artifact_manifest=render_manifest,
+                    management_overview=overview_projection,
                     run_context=run_context,
                 )
                 cleanup_revision = True

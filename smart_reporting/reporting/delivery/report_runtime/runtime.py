@@ -265,11 +265,13 @@ class ReportRuntime:
             # 导出的 PDF/Word 默认不带来源编号与附录；只有导出设置显式开启时才展示。
             include_sources = isinstance(export_settings, dict) and export_settings.get("sources") is True
             context = _document_context(state.get("_documentContext"))
+            from .overview import load_overview
             from .projection import build_render_projection
 
             projection = build_render_projection(
                 source_bytes, context["sections"], citation_presentations=state.get("_citationPresentations"),
                 include_sources=include_sources, trace_sources=state.get("_traceSourcePresentations"),
+                management_overview=load_overview(state, self.workspace),
             )
             pdf_markdown, citation_presentations, trace_source_render = (
                 projection.markdown, projection.citation_presentations, projection.trace_source_render,
@@ -344,6 +346,8 @@ class ReportRuntime:
                 trace_sources=(trace_source_render if include_sources else None),
             )
             render_issues: list[dict[str, str]] = []
+            if projection.overview_check is not None and projection.overview_check["status"] != "verified":
+                render_issues.append({"code": "management_overview_projection_unknown", "message": "经营总览身份未获核验，已保留缺项说明和可读报告。"})
 
             def render_pdf() -> tuple[int, int]:
                 nonlocal pdf_document
@@ -529,7 +533,7 @@ class ReportRuntime:
                 and bool(trace_source_render["entries"]),
             }
             result = {
-                "status": "rendered" if not render_issues else "partial_rendered",
+                "status": "rendered" if len(artifacts) == 2 else "partial_rendered",
                 "renderIssues": render_issues,
                 "jobId": state["jobId"],
                 "markdownPath": str(source.relative_to(self.workspace)),
@@ -865,6 +869,7 @@ class ReportRuntime:
                 or word.stat().st_size != word_current["size"]
             ):
                 raise ReportFailure("Word 产物在验收期间发生变化，请重新验收")
+            from .overview import load_overview
             from .projection import verify_render_projection
 
             try:
@@ -874,10 +879,15 @@ class ReportRuntime:
                     citation_presentations=state.get("_citationPresentations"),
                     include_sources=isinstance(export_settings, dict) and export_settings.get("sources") is True,
                     trace_sources=state.get("_traceSourcePresentations"),
+                    management_overview=load_overview(state, self.workspace),
                 )
             except Exception:
                 projection_check = {"status": "unknown", "reason": "projection_source_unavailable"}
             validation["projectionCheck"] = projection_check
+            if any(issue.get("code") == "management_overview_projection_unknown" for issue in render.get("renderIssues", ())):
+                validation["ok"] = False
+                validation["status"] = "validation_failed"
+                validation["issues"].append({"code": "management_overview_projection_unknown", "message": "经营总览未通过核验，产物及缺项说明已保留。"})
             if projection_check["status"] != "verified":
                 validation["ok"] = False
                 validation["status"] = "validation_failed"

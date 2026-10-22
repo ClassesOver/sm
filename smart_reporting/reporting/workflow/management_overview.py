@@ -49,6 +49,7 @@ class OverviewRow(StrictModel):
 class ManagementOverview(StrictModel):
     version: Literal["1"] = OVERVIEW_VERSION
     input_sha256: str = Field(alias="inputSha256", pattern=SHA256_PATTERN)
+    markdown_sha256: str | None = Field(default=None, alias="markdownSha256", pattern=SHA256_PATTERN)
     status: Literal["evaluated", "unavailable"]
     required_question_count: int | None = Field(alias="requiredQuestionCount")
     rows: tuple[OverviewRow, ...] = ()
@@ -60,11 +61,11 @@ def build_management_overview(quality: QualityBundle) -> ManagementOverview:
     """Caller supplies current identity-checked quality, not model-issued proofs."""
     questions, review, plan = quality.question_specs, quality.answer_review, quality.answer_review_plan
     if questions is None:
-        return ManagementOverview(inputSha256=quality.input_sha256, status="unavailable",
+        return ManagementOverview(inputSha256=quality.input_sha256, markdownSha256=quality.markdown_sha256, status="unavailable",
                                   requiredQuestionCount=None, reasons=("question_specification_unavailable",))
     required = len(questions.required_question_ids)
     if sum(max(1, len(question.completion_conditions)) for question in questions.questions) > MAX_OVERVIEW_ROWS:
-        return ManagementOverview(inputSha256=quality.input_sha256, status="unavailable",
+        return ManagementOverview(inputSha256=quality.input_sha256, markdownSha256=quality.markdown_sha256, status="unavailable",
                                   requiredQuestionCount=required, reasons=("overview_budget_exceeded",))
     invalid = []
     if quality.semantic_rule_versions.get("managementOverview") != OVERVIEW_VERSION:
@@ -141,28 +142,32 @@ def build_management_overview(quality: QualityBundle) -> ManagementOverview:
             )
             row_bytes += len(row.model_dump_json(by_alias=True).encode("utf-8"))
             if row_bytes > MAX_OVERVIEW_BYTES:
-                return ManagementOverview(inputSha256=quality.input_sha256, status="unavailable",
+                return ManagementOverview(inputSha256=quality.input_sha256, markdownSha256=quality.markdown_sha256, status="unavailable",
                                           requiredQuestionCount=required, reasons=("overview_budget_exceeded",))
             rows.append(row)
-    result = ManagementOverview(inputSha256=quality.input_sha256, status="unavailable" if invalid else "evaluated",
+    result = ManagementOverview(inputSha256=quality.input_sha256, markdownSha256=quality.markdown_sha256, status="unavailable" if invalid else "evaluated",
                                 requiredQuestionCount=required, rows=tuple(rows), reasons=tuple(invalid))
     if len(result.model_dump_json(by_alias=True).encode("utf-8")) > MAX_OVERVIEW_BYTES:
-        return ManagementOverview(inputSha256=quality.input_sha256, status="unavailable",
+        return ManagementOverview(inputSha256=quality.input_sha256, markdownSha256=quality.markdown_sha256, status="unavailable",
                                   requiredQuestionCount=required, reasons=("overview_budget_exceeded",))
     return result
 
 
-def render_management_overview(overview: ManagementOverview) -> str:
-    """Standalone review artifact; never silently replaces the report summary."""
+def render_management_overview(overview: ManagementOverview, *, formal: bool = False,
+                               source_citations: dict[str, str] | None = None) -> str:
+    """Render the registered matrix for review or an explicitly bound report view."""
     def cell(text: str) -> str:
         return re.sub(r"([\\`*_{}\[\]()<>|#])", r"\\\1", " ".join(text.splitlines()))
 
-    lines = ["# 经营问题核验总览", "", "按登记需求逐项列示；已核验事实保留各自期间和范围，不自动合并为统一口径经营结论。", ""]
+    lines = ([] if formal else ["# 经营问题核验总览", ""]) + [
+        "以下事实分别保留核验时的期间和范围；缺少同口径证据的事项暂不评价，不据此推断经营原因。", "",
+    ]
     if not overview.rows:
         if "overview_budget_exceeded" in overview.reasons:
             message = "核验事项较多，本次未生成总览；完整核验记录仍保留，未截取部分事项冒充完整结论。"
         elif "question_specification_unavailable" in overview.reasons:
-            message = "尚未登记可核验的管理问题及完成条件，暂不列示经营数值。"
+            message = ("尚未形成可核验的经营总览，本页暂不列示汇总数值。请结合正文的口径说明与待确认事项阅读。"
+                       if formal else "尚未登记可核验的管理问题及完成条件，暂不列示经营数值。")
         else:
             message = "经营总览核验暂不可用，暂不列示经营数值。"
         lines += [message, ""]
@@ -174,5 +179,36 @@ def render_management_overview(overview: ManagementOverview) -> str:
             state = {"met": "该项已核验", "not_met": "该项尚未满足", "unknown": "该项待核实"}[row.status]
             if row.status != "met":
                 state += "；需确认对应指标用途、同范围期间和事实依据"
-            lines.append(f"| {cell(row.question + '：' + label)} | {cell(facts)} | {cell(state)} |")
+            citations = tuple(dict.fromkeys(
+                (source_citations or {})[subject]
+                for evidence in row.evidence for subject in evidence.subject_ids
+                if subject in (source_citations or {})
+            ))
+            markers = "".join(f"[[citation:{citation}]]" for citation in citations)
+            lines.append(f"| {cell(row.question + '：' + label)} | {cell(facts)}{markers} | {cell(state)} |")
     return "\n".join([*lines, "", "本表不代表整份报告业务验收通过，不授权因果解释、责任目标或预算口径推断。", ""])
+
+
+def management_overview_projection(overview: ManagementOverview | None, markdown_sha256: str,
+                                   presentations=None) -> dict:
+    """Server-only presentation envelope; not a signature or a source proof."""
+    overview = overview or ManagementOverview(
+        inputSha256="0" * 64, status="unavailable", requiredQuestionCount=None,
+        reasons=("question_specification_unavailable",),
+    )
+    if overview.status == "evaluated" and overview.markdown_sha256 != markdown_sha256:
+        raise ValueError("overview does not belong to the rendered Markdown")
+    citations = {}
+    subjects = {subject for row in overview.rows for evidence in row.evidence for subject in evidence.subject_ids}
+    for item in presentations if isinstance(presentations, list) else ():
+        if not isinstance(item, dict):
+            continue
+        citation = item.get("citationId")
+        subject = item.get("subjectId") or citation
+        if isinstance(subject, str) and subject in subjects and isinstance(citation, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", citation):
+            citations[subject] = citation
+    return {
+        "version": "management-overview-render/1", "sourceSha256": markdown_sha256,
+        "qualityInputSha256": overview.input_sha256, "status": overview.status,
+        "markdown": render_management_overview(overview, formal=True, source_citations=citations),
+    }

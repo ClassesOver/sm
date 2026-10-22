@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.run import RunContext
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -648,6 +650,85 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
         for artifact, suffix in (("pdf", "pdf"), ("word", "docx")):
             response = await client.get(result[artifact]["downloadUrl"])
+            assert response.status_code == 200
+            assert response.content == files[f"reports/report.{suffix}"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["none", "overview_write", "state_store"])
+async def test_overview_delivery_faults_preserve_files_and_http_downloads(tmp_path, monkeypatch, fault):
+    from smart_reporting.reporting.delivery.report_runtime.overview import load_overview
+    from smart_reporting.reporting.workflow.management_overview import (
+        management_overview_projection,
+    )
+    from smart_reporting.reporting.workspace import REPORT_JOBS_STATE_KEY, WorkspaceReportService
+
+    runtime, arguments, scope, _, artifacts, _, files, _ = await _publication_fixture(tmp_path)
+    workspace = runtime.workspace_service
+    service = WorkspaceReportService(workspace)
+    context = RunContext(run_id="workflow-run", session_id=scope.workspace_key, session_state={})
+    job = {"jobId": "job-1", "sources": []}
+    monkeypatch.setattr(service, "_load_job", lambda *_: job)
+    monkeypatch.setattr(service, "_job_status", AsyncMock(return_value={}))
+    original_write = workspace.awrite_bytes
+    faults_seen = []
+
+    async def write(thread, path, content, **kwargs):
+        if fault == "overview_write" and path.startswith(".reporting-projections/"):
+            faults_seen.append(fault)
+            raise OSError("injected overview storage failure")
+        return await original_write(thread, path, content, **kwargs)
+
+    monkeypatch.setattr(workspace, "awrite_bytes", write)
+    if fault == "state_store":
+        def store(*_):
+            faults_seen.append(fault)
+            raise OSError("injected job storage failure")
+        monkeypatch.setattr(service, "_store_job", store)
+
+    async def run(action, payload, _context):
+        if action == "validate_pdf":
+            return {"ok": fault != "overview_write", "issues": (
+                [{"code": "management_overview_projection_unknown"}] if fault == "overview_write" else [])}
+        assert action == "render_markdown"
+        render = {"markdown": _identity("reports/report.md", files["reports/report.md"], "text/markdown").model_dump(by_alias=True)}
+        if fault == "overview_write":
+            assert payload["job"]["_managementOverviewProjection"]["invalid"]
+        else:
+            identity = payload["job"]["_managementOverviewProjectionFile"]
+            assert identity["size"] > 48 * 1024
+            assert "_managementOverviewProjection" not in payload["job"]
+            root = runtime.workspace_registry.resolve(scope).root
+            assert load_overview(payload["job"], root)["status"] == "unavailable"
+        for kind, path_key, suffix in (("pdf", "output_path", "pdf"), ("word", "word_output_path", "docx")):
+            path = payload[path_key]
+            raw = files[f"reports/report.{suffix}"]
+            await workspace.aensure_directory(scope.workspace_key, str(Path(path).parent))
+            await original_write(scope.workspace_key, path, raw)
+            render[kind] = {"path": path, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        return {"status": "rendered", "render": render}
+
+    monkeypatch.setattr(service, "_run_report_runtime", run)
+    payload = management_overview_projection(None, hashlib.sha256(files["reports/report.md"]).hexdigest())
+    payload["markdown"] = "待确认事项" * 6000  # Exceeds the durable job budget, within the sidecar budget.
+    output = await service._render_report_pair("job-1", "reports/report.md", "rendered/revision-2/report.pdf",
+        artifact_manifest=None, management_overview=payload, run_context=context)
+    assert faults_seen == ([] if fault == "none" else [fault])
+    assert output["validation"]["ok"] == (fault == "none")
+    if fault == "state_store":
+        assert output["validation"]["issues"][0]["code"] == "report_render_state_unavailable"
+    if fault == "none":
+        assert len(json.dumps(context.session_state[REPORT_JOBS_STATE_KEY]).encode()) < 48 * 1024
+    for kind, suffix in (("pdf", "pdf"), ("word", "docx")):
+        arguments["output"][f"{kind}Path"] = output[f"{kind}Path"]
+        raw, _ = await workspace.afile_bytes(scope.workspace_key, output[f"{kind}Path"])
+        assert raw == files[f"reports/report.{suffix}"]
+    result = await runtime.issue_http_publication(**arguments)
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        for kind, suffix in (("pdf", "pdf"), ("word", "docx")):
+            response = await client.get(result[kind]["downloadUrl"])
             assert response.status_code == 200
             assert response.content == files[f"reports/report.{suffix}"]
 
