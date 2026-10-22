@@ -46,6 +46,21 @@ def _metric_value(fact: Any, key: str) -> float | None:
     return float(value) if value is not None else None
 
 
+_RESERVED_ROW_KEYS = frozenset({"total", "currentTotal", "baselineTotal", "change", "changeRate"})
+
+
+def _role_consistent_row_key(row_key: str, period: str) -> str:
+    """保留命名空间的 rowKey 必须表达本行真实角色。
+
+    核验端不允许保留角色（total/period:/comparison:）改指其他等值字段；调用方自定义
+    的 key 若落入保留命名空间却与本行期间不符，按本行实际角色改写，其他自定义 key 原样保留。
+    """
+
+    if row_key not in _RESERVED_ROW_KEYS and not row_key.startswith(("period:", "comparison:")):
+        return row_key
+    return f"period:{period}" if period else "total"
+
+
 def build_table_trace(
     bundle: DeterministicAnalysisBundle,
     spec: Mapping[str, Any],
@@ -97,11 +112,11 @@ def build_table_trace(
     for row in rows_spec:
         if not isinstance(row, Mapping) or not row.get("key"):
             raise ReportingError("request_invalid", "表格行必须提供 key。")
-        row_key = str(row["key"])
+        period = str(row.get("period", ""))
+        row_key = _role_consistent_row_key(str(row["key"]), period)
         if row_key in row_keys:
             raise ReportingError("request_invalid", f"表格 rowKey 重复: {row_key}")
         row_keys.append(row_key)
-        period = str(row.get("period", ""))
         label = str(row.get("label", row_key))
         rendered_row = [label]
         for code in metric_codes:
