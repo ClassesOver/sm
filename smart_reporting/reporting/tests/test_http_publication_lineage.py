@@ -341,7 +341,7 @@ async def _publication_fixture(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "runtime_state", "write", "read"])
+@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate", "runtime_state", "write", "read"])
 async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch, fault):
     from smart_reporting.reporting.trace import quality_bundle
 
@@ -364,10 +364,10 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
     runtime._profile = lambda _context: SimpleNamespace(effective_profile_hash="a" * 64)
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_kwargs: index)
-    if fault in {"evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate"}:
+    if fault in {"evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate"}:
         def fail(*_args, **_kwargs):
             raise RuntimeError("injected quality evaluation failure")
-        monkeypatch.setattr(quality_bundle, {"evaluate": "evaluate_quality_bundle", "chart_evaluate": "evaluate_chart_quality", "table_evaluate": "evaluate_table_quality", "semantic_evaluate": "evaluate_semantic_alignment"}[fault], fail)
+        monkeypatch.setattr(quality_bundle, {"evaluate": "evaluate_quality_bundle", "chart_evaluate": "evaluate_chart_quality", "table_evaluate": "evaluate_table_quality", "semantic_evaluate": "evaluate_semantic_alignment", "overview_evaluate": "build_management_overview"}[fault], fail)
     elif fault in {"write", "read"}:
         workspace = runtime.workspace_service
         original = workspace.awrite_bytes if fault == "write" else workspace.read_limited_regular_file
@@ -382,10 +382,26 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
         revision=1, run_context=SimpleNamespace(run_id="report-1"),
         markdown=files["reports/report.md"].decode(),
     )
-    assert identity.sha256 == hashlib.sha256(encode_trace_index(index)).hexdigest()
-    if fault != "runtime_state":
-        assert state["report_quality_issues"][0]["status"] == "unknown"
+    if fault == "overview_evaluate":
+        index_raw = await runtime.workspace_service.read_limited_regular_file(
+            scope.workspace_key, identity.path, max_bytes=16 * 1024 * 1024,
+        )
+        registered = RevisionTraceIndexV1.model_validate_json(index_raw)
+        original = registered.model_copy(update={"files": tuple(
+            file for file in registered.files if not file.path.endswith("/quality-bundle-v1.json")
+        )})
+        assert encode_trace_index(original) == encode_trace_index(index)
+        quality_raw = await runtime.workspace_service.read_limited_regular_file(
+            scope.workspace_key, "reports/quality-bundle-v1.json", max_bytes=16 * 1024 * 1024,
+        )
+        quality = quality_bundle.QualityBundle.model_validate_json(quality_raw)
+        assert quality.management_overview.status == "unavailable"
+        assert any(issue.code == "management_overview_unavailable" for issue in quality.issues)
     else:
+        assert identity.sha256 == hashlib.sha256(encode_trace_index(index)).hexdigest()
+    if fault not in {"runtime_state", "overview_evaluate"}:
+        assert state["report_quality_issues"][0]["status"] == "unknown"
+    elif fault == "runtime_state":
         runtime._state = lambda _context: state
     result = await runtime.issue_http_publication(**arguments)
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]

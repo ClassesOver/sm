@@ -83,6 +83,14 @@ def test_unknown_scope_and_forged_assertion_do_not_generate_factual_value():
     assert "证据不足" in text and not refs and "140" not in text
 
 
+@pytest.mark.parametrize("scope", [{"院区": " "}, {"": "北院"}, {"院区": "北院", "科室": ""}])
+def test_blank_scope_identity_is_not_accepted_as_a_verified_subject(scope):
+    result = compiler([facts(scope=scope)]).compile(AssertionRequest(operation="value", operands=(token(),)))
+    assert result.status == "unknown" and "scope_value_unknown" in result.reasons
+    assert result.value is None
+    assert "140" not in result.factual_fragment()
+
+
 @pytest.mark.parametrize(
     "kind,complete,expected",
     [

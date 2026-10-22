@@ -14,6 +14,11 @@ from ..hospital_operation.professional_review import (
     review_professional_content,
 )
 from ..workflow.answer_review import AnswerReviewPlan, AnswerReviewResult, evaluate_answer_review
+from ..workflow.management_overview import (
+    OVERVIEW_VERSION,
+    ManagementOverview,
+    build_management_overview,
+)
 from ..workflow.questions import QuestionSet
 from .assertions import (
     RULE_VERSION,
@@ -28,7 +33,7 @@ from .semantic_bindings import reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1"}
+SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1"}
 
 
 class QualityIssue(StrictModel):
@@ -58,6 +63,7 @@ class QualityBundle(StrictModel):
     question_specs: QuestionSet | None = Field(default=None, alias="questionSpecs")
     answer_review_plan: AnswerReviewPlan | None = Field(default=None, alias="answerReviewPlan")
     answer_review: AnswerReviewResult | None = Field(default=None, alias="answerReview")
+    management_overview: ManagementOverview | None = Field(default=None, alias="managementOverview")
     question_coverage: dict = Field(default_factory=dict, alias="questionCoverage")
     question_assertions: dict[str, tuple[str, ...]] = Field(
         default_factory=dict, alias="questionAssertions"
@@ -279,7 +285,7 @@ def evaluate_quality_bundle(
             review = None
             logger.warning("answer_review_unavailable reason={}", type(error).__name__)
             issues.append(QualityIssue(code="answer_review_unavailable", reasons=("review_plan_or_checker_invalid",)))
-    return QualityBundle(
+    bundle = QualityBundle(
         reportId=index.report_id,
         revision=index.revision,
         markdownSha256=markdown_hash,
@@ -300,6 +306,21 @@ def evaluate_quality_bundle(
             key: tuple(dict.fromkeys(values)) for key, values in question_assertions.items()
         },
     )
+    try:
+        overview = build_management_overview(bundle)
+    except Exception as error:
+        from loguru import logger
+
+        logger.warning("management_overview_unavailable reason={}", type(error).__name__)
+        overview = ManagementOverview(
+            inputSha256=input_hash, status="unavailable",
+            requiredQuestionCount=len(questions.required_question_ids) if questions else None,
+            reasons=("overview_check_failed",),
+        )
+        bundle = bundle.model_copy(update={"issues": (*bundle.issues, QualityIssue(
+            code="management_overview_unavailable", reasons=("overview_check_failed",),
+        ))})
+    return bundle.model_copy(update={"management_overview": overview})
 
 
 def quality_bundle_is_current(

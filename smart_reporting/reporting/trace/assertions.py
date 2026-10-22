@@ -278,7 +278,10 @@ class AssertionCompiler:
         unit = primary.get("unit")
         periods = tuple(primary.get("periods") or ())
         raw_scope = dict(primary.get("scope") or {})
-        scope = {key: item for key, item in raw_scope.items() if isinstance(item, str)}
+        scope = {
+            key: item for key, item in raw_scope.items()
+            if isinstance(key, str) and key.strip() and isinstance(item, str) and item.strip()
+        }
         if len(scope) != len(raw_scope):
             reasons.append("scope_value_unknown")
         baseline_periods: tuple[str, ...] = ()

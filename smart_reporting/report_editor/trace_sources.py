@@ -1364,6 +1364,7 @@ class ReportEditorTraceService:
                 "allKeyFactsEvaluated": quality.all_key_facts_evaluated,
                 "questionCoverage": quality.question_coverage,
                 "answerReview": quality.answer_review.model_dump(mode="json", by_alias=True) if quality.answer_review is not None else None,
+                "managementOverview": quality.management_overview.model_dump(mode="json", by_alias=True) if quality.management_overview is not None else None,
                 "issues": [issue.model_dump(mode="json", by_alias=True) for issue in quality.issues],
                 "tableChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.table_checks.items()},
                 "semanticChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.semantic_checks.items()},
