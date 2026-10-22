@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
+from functools import lru_cache
 from io import BytesIO
 from typing import Any, Literal
 
@@ -885,7 +886,9 @@ class _ParsedPeriod:
     granularity: Literal["year", "month", "day"]
 
 
+@lru_cache(maxsize=8192)
 def _parse_period(label: str) -> _ParsedPeriod | None:
+    # 期间标签取值有限而核对时被逐值反复解析；结果为 frozen dataclass，可安全共享。
     normalized = label.strip()
     match = re.fullmatch(r"(\d{4})", normalized)
     if match:

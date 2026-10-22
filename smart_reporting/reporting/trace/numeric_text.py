@@ -8,7 +8,8 @@ import json
 import math
 import os
 import re
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -138,6 +139,7 @@ def _hidden_by_rounding(value: Any, unit: str | None, target: str | None) -> boo
     return converted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == 0
 
 
+@lru_cache(maxsize=8192)
 def _canonical_month_label(label: str) -> str | None:
     """统一有效年月和月初标签，保留数值选择器对应的原始桶索引。"""
     parsed = _parse_period(label)
@@ -664,7 +666,12 @@ def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
 
 
 def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
-    contents = tuple(contents)
+    # 同一章节逐块复核、绑定与纠错会对同一批事实反复建目录；按原文缓存，返回副本供调用方修改。
+    return dict(_frozen_number_catalog(tuple(contents)))
+
+
+@lru_cache(maxsize=64)
+def _frozen_number_catalog(contents: tuple[str, ...]) -> dict[str, str]:
     records = {}
     conflicts = set()
     for bundle in frozen_fact_bundles(contents):
@@ -1121,6 +1128,11 @@ def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=No
 
 
 def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal]]:
+    return {unit: set(values) for unit, values in _supplemental_number_values(tuple(contents)).items()}
+
+
+@lru_cache(maxsize=64)
+def _supplemental_number_values(contents: tuple[str, ...]) -> dict[str, set[Decimal]]:
     """按补证列元数据或列名中的可信单位登记数值，不从数字大小猜测用途。"""
     known: dict[str, set[Decimal]] = {}
     for content in contents:
@@ -2008,7 +2020,38 @@ def _short_name(fact: Any) -> str | None:
     return re.split(r"[，,；;]", name, maxsplit=1)[0].strip() or None
 
 
+_DERIVED_CACHE: OrderedDict[tuple[Any, ...], DerivedNumbers] = OrderedDict()
+_DERIVED_CACHE_LOCK = threading.Lock()
+_DERIVED_CACHE_SIZE = 32
+
+
 def derived_number_values(
+    contents: Iterable[str], *, table_sources: Mapping[str, bytes] | None = None,
+) -> DerivedNumbers:
+    """按（事实原文, 表格来源字节摘要）缓存派生数值；章节逐块复核与绑定会反复构建同一结果。
+
+    构建后只读（惰性排序缓存幂等），可在线程间共享；来源字节变化即换键，不会复用旧结果。
+    """
+    contents = tuple(contents)
+    sources = table_sources or {}
+    key = (contents, tuple(sorted(
+        (resource_id, hashlib.sha256(raw).digest() if isinstance(raw, bytes) else type(raw).__name__)
+        for resource_id, raw in sources.items()
+    )))
+    with _DERIVED_CACHE_LOCK:
+        cached = _DERIVED_CACHE.get(key)
+        if cached is not None:
+            _DERIVED_CACHE.move_to_end(key)
+            return cached
+    built = _build_derived_number_values(contents, table_sources=table_sources)
+    with _DERIVED_CACHE_LOCK:
+        _DERIVED_CACHE[key] = built
+        while len(_DERIVED_CACHE) > _DERIVED_CACHE_SIZE:
+            _DERIVED_CACHE.popitem(last=False)
+    return built
+
+
+def _build_derived_number_values(
     contents: Iterable[str], *, table_sources: Mapping[str, bytes] | None = None,
 ) -> DerivedNumbers:
     """服务端补算模型常写的两数之差与前 N 项合计，供正文核对使用，不进入模型可见目录。

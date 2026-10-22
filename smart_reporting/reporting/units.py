@@ -12,8 +12,12 @@ REPORT_VALUE_UNIT_PATTERN = (
 )
 
 
+_UNIT_FAMILIES = {unit: family for family in (MONEY_UNITS, VISIT_UNITS) for unit in family}
+
+
 def unit_scales(unit: str | None) -> dict[str, Decimal] | None:
-    return next((family for family in (MONEY_UNITS, VISIT_UNITS) if unit in family), None)
+    # 核对时每个候选值都要查一次量纲（整份报告上百万次），直接查表。
+    return _UNIT_FAMILIES.get(unit) if unit is not None else None
 
 
 def unit_conversion_scale(source: str | None, target: str | None) -> Decimal | None:
