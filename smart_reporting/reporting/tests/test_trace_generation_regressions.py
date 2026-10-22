@@ -182,4 +182,6 @@ async def test_grouped_claims_never_bind_to_another_analyses_values(reverse, leg
                 subject.number_reference.token, [files[f"facts/{ref.analysis_id}.json"].decode()],
             )
             assert resolved["value"] == bundle.metrics[0].top_groups[0].value
-            assert resolved["scope"]["group"] == bundle.metrics[0].top_groups[0].group
+            # 带 groupValues 的分组按维度名并入 scope；group 键只是旧数据的后备。
+            top_group = bundle.metrics[0].top_groups[0]
+            assert resolved["scope"] == dict(top_group.group_values)

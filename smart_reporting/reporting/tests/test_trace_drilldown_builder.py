@@ -596,7 +596,7 @@ def test_g7_current_ruijin_profile_has_explicit_capability_for_all_metrics() -> 
         measure_semantics=semantic_payloads,
     )
 
-    assert len(profile.metrics) == 25
+    assert len(profile.metrics) == 24
     assert {item.metric_code for item in declarations} == {
         item.code for item in profile.metrics
     }
@@ -608,7 +608,7 @@ def test_g7_current_ruijin_profile_has_explicit_capability_for_all_metrics() -> 
         profile_metrics=profile_metrics,
         measure_semantics=semantic_payloads[1:],
     )
-    assert len(without_first_semantic) == 24
+    assert len(without_first_semantic) == 23
     assert semantic_payloads[0]["fieldRef"] not in {
         next(
             fact["fieldRef"]

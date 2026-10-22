@@ -1198,8 +1198,7 @@ def test_section_block_input_budget_uses_final_routed_model() -> None:
         )
     )
 
-    # qwen3.8 已验证单次输出 64K，请求实际发送 max_tokens=64K；预算与 _project 硬顶一致。
-    assert reporting_sections._section_block_input_token_budget(agent, context) == 192 * 1024
+    assert reporting_sections._section_block_input_token_budget(agent, context) == 224 * 1024
 
 
 def _plan_stage_validator(work_item: SectionWorkItem) -> object:

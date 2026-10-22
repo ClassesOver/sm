@@ -30,6 +30,7 @@ from ...runtime.observability import duration_ms as elapsed_ms
 from ..model_policy import (
     clamp_reporting_output_tokens,
     current_reporting_thinking_decision,
+    positive_token_count,
     reporting_coding_sampling,
     reporting_request_input_hard_cap,
 )
@@ -1248,8 +1249,11 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     ]
                 )
             )
-        request_model.max_output_tokens = clamp_reporting_output_tokens(
-            request_model.max_output_tokens, request_model.id
+        # 只收敛已配置的上限；未配置时不发送，由 provider 使用默认值。
+        request_model.max_output_tokens = (
+            clamp_reporting_output_tokens(request_model.max_output_tokens, request_model.id)
+            if positive_token_count(request_model.max_output_tokens) is not None
+            else None
         )
         decision = current_reporting_thinking_decision()
         if decision is not None:
