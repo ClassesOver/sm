@@ -410,6 +410,76 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["provider", "freeze", "receipt", "invalid_frozen"])
+async def test_answer_registration_failure_preserves_quality_index_and_http_downloads(tmp_path, monkeypatch, fault):
+    from smart_reporting.reporting.trace.quality_bundle import QualityBundle
+    from smart_reporting.reporting.workflow.answer_review import AnswerReviewPlan, questions_sha256
+    from smart_reporting.reporting.workflow.questions import request_questions
+
+    runtime, arguments, scope, durable, artifacts, _, files, index = await _publication_fixture(tmp_path)
+    questions = request_questions("核验收入")
+    durable.payload["questionSpecs"] = questions.model_dump(mode="json", by_alias=True)
+    if fault == "invalid_frozen":
+        durable.payload["answerReviewPlan"] = {"version": "invalid"}
+    original_get = runtime.state_repository.get
+
+    async def get(run_id):
+        return durable if run_id == "report-1" else await original_get(run_id)
+
+    runtime.state_repository.get = get
+    observed = []
+
+    async def provider(_context):
+        observed.append("provider")
+        if fault == "provider":
+            raise OSError("injected domain approval failure")
+        return AnswerReviewPlan(questionSetSha256=questions_sha256(questions))
+
+    async def command(_context, command):
+        if command.name == "freeze_answer_review_plan":
+            observed.append("freeze")
+            if fault == "freeze":
+                raise OSError("injected durable mapping failure")
+            return SimpleNamespace(state=SimpleNamespace(report_run_id="foreign", payload={}))
+
+    runtime.answer_review_plan_provider = provider
+    runtime._apply_durable_command = command
+    state = {}
+    runtime._scope = lambda _: scope.as_state()
+    runtime._state = lambda _: state
+    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._build_drilldown_metrics = AsyncMock(return_value=())
+    monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_: index)
+    identity = await runtime._write_trace_index("reports/report.manifest.json", handles=(), lineage=(),
+        markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
+        revision=1, run_context=SimpleNamespace(run_id="report-1"), markdown=files["reports/report.md"].decode())
+    expected = [] if fault == "invalid_frozen" else ["provider"] if fault == "provider" else ["provider", "freeze"]
+    assert observed == expected
+    assert state["report_quality_issues"][0]["code"] == "answer_review_registration_unavailable"
+    workspace = runtime.workspace_service
+    registered = RevisionTraceIndexV1.model_validate_json(await workspace.read_limited_regular_file(
+        scope.workspace_key, identity.path, max_bytes=16 * 1024 * 1024))
+    quality_file = next(file for file in registered.files if file.path.endswith("/quality-bundle-v1.json"))
+    quality = QualityBundle.model_validate_json(await workspace.read_limited_regular_file(
+        scope.workspace_key, quality_file.path, max_bytes=16 * 1024 * 1024))
+    assert quality.question_coverage["answered"] == 0
+    assert quality.answer_review_plan is None
+    assert any(issue.code == "answer_review_registration_unavailable" for issue in quality.issues)
+    expected_reason = "registered_plan_invalid" if fault == "invalid_frozen" else f"registration_{fault}_unavailable"
+    assert any(expected_reason in issue.reasons for issue in quality.issues)
+    assert registered.subject_bindings == index.subject_bindings and registered.datasets == index.datasets
+    manifest_identity = await register_trace_manifest(workspace, scope.workspace_key, registered, overwrite=True)
+    arguments["output"]["artifactManifest"] = manifest_identity.model_dump(mode="json", by_alias=True)
+    result = await runtime.issue_http_publication(**arguments)
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        for kind, suffix in (("pdf", "pdf"), ("word", "docx")):
+            response = await client.get(result[kind]["downloadUrl"])
+            assert response.status_code == 200 and response.content == files[f"reports/report.{suffix}"]
+
+
+@pytest.mark.anyio
 async def test_http_publication_relocates_registered_lineage_and_replays(tmp_path: Path) -> None:
     (
         runtime,

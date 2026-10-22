@@ -15,7 +15,7 @@ from datetime import date, datetime
 from difflib import SequenceMatcher
 from functools import partial
 from pathlib import PurePosixPath
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from zoneinfo import ZoneInfo
 
 import anyio
@@ -238,6 +238,9 @@ from .models import (
     _normalize_analysis_bundle_table_refs,
     _StrictModel,
 )
+
+if TYPE_CHECKING:
+    from ..answer_registration import AnswerReviewPlanProvider
 
 logger = loguru_logger
 
@@ -534,6 +537,7 @@ class _ReportWorkflowRuntimeBase:
         editor_grants: Any | None = None,
         artifact_persistence: ReportArtifactPersistenceService | None = None,
         quality_warning_service: QualityWarningService | None = None,
+        answer_review_plan_provider: AnswerReviewPlanProvider | None = None,
         report_public_base_url: str | None = None,
         report_completion_template: str | None = None,
         state_repository: ReportingStateRepository,
@@ -578,6 +582,7 @@ class _ReportWorkflowRuntimeBase:
         self.editor_grants = editor_grants
         self.artifact_persistence = artifact_persistence
         self.quality_warning_service = quality_warning_service
+        self.answer_review_plan_provider = answer_review_plan_provider
         self.report_public_base_url = report_public_base_url
         self.report_completion_template = report_completion_template
         self.trace_registration_enabled = trace_registration_enabled

@@ -21,6 +21,7 @@ _GUIDANCE = {
     "scope_value_unknown": ("unresolved", ("R013", "R024", "R043"), "核对空组织值的采集及映射状态，不补造归属", "analysis"),
     "unit_unknown": ("unresolved", ("R004", "R005", "R011"), "补齐冻结指标的明确单位，不把空白当作已知单位", "analysis"),
     "period_unknown": ("definition_review", ("R002", "R035", "R064"), "核对原始期间的有效日历与登记粒度，不从无效桶或外层范围补造期间", "analysis"),
+    "approved_mapping_unavailable": ("unresolved", ("R003", "R020", "R057"), "核查服务端批准映射及冻结记录，不由模型自行批准需求到证据的对应关系", "review"),
     "ranking_context_unknown": ("proof_not_evaluated", ("R015", "R050"), "补齐完整同维度总体及排名上下文", "analysis"),
     "operation_semantics_not_evaluated": ("proof_not_evaluated", ("R009", "R033", "R052", "R061"), "登记对应公式的期间、用途和分子分母前提，再验证运算", "analysis"),
     "statement_not_supported": ("unresolved", ("R004", "R005", "R011", "R032"), "对照当前句子与所选事实复核范围、期间、单位及结论", "draft"),

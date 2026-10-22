@@ -1408,7 +1408,11 @@ class RuntimePublicationMixin:
                     canonical_sha256,
                     derive_resource_id,
                 )
-                from ...trace.quality_bundle import QUALITY_FILENAME, evaluate_quality_bundle
+                from ...trace.quality_bundle import (
+                    QUALITY_FILENAME,
+                    QualityIssue,
+                    evaluate_quality_bundle,
+                )
                 from ..questions import QuestionSet
 
                 policy = self._state(run_context).get("report_request_context", {}).get("assertionPolicy", {})
@@ -1422,7 +1426,19 @@ class RuntimePublicationMixin:
                     from ..answer_review import AnswerReviewPlan
 
                     raw_review_plan = durable_questions.payload.get("answerReviewPlan") if durable_questions is not None else None
-                    answer_review_plan = AnswerReviewPlan.model_validate(raw_review_plan) if raw_review_plan is not None else None
+                    answer_review_plan = None
+                    registration_failed = False
+                    registration_failure_reason = "registered_plan_invalid"
+                    if raw_review_plan is not None:
+                        try:
+                            answer_review_plan = AnswerReviewPlan.model_validate(raw_review_plan)
+                            if questions is None:
+                                raise ValueError("registered questions unavailable")
+                            answer_review_plan.validate_questions(questions)
+                        except Exception as error:
+                            answer_review_plan = None
+                            registration_failed = True
+                            logger.warning("report_answer_review_registration_unavailable reason={}", type(error).__name__)
                     quality_source_ids = {entry.file_resource_id for entry in index.fact_files}
                     quality_image_ids = {chart.image_file_resource_id for chart in index.chart_traces}
                     quality_image_bytes = 0
@@ -1449,14 +1465,65 @@ class RuntimePublicationMixin:
                             sources[file.resource_id] = raw_source
                         except Exception:
                             logger.warning("quality_source_unavailable resource_id={}", file.resource_id)
-                    bundle = await anyio.to_thread.run_sync(partial(
+                    evaluate = partial(
                         evaluate_quality_bundle, index, markdown, sources,
                         authorization_scope_hash=canonical_sha256({key: scope[key] for key in ("userId", "threadId")}),
                         mode="enabled" if policy.get("mode") == "enabled" else "shadow",
                         questions=questions,
-                        answer_review_plan=answer_review_plan,
                         interactive_charts=interactive_charts,
-                    ))
+                    )
+                    bundle = await anyio.to_thread.run_sync(partial(evaluate, answer_review_plan=answer_review_plan))
+                    # The provider is application construction, never request/session/model data.
+                    provider = getattr(self, "answer_review_plan_provider", None)
+                    if raw_review_plan is None and questions is not None and provider is not None:
+                        registration_stage = "context"
+                        try:
+                            import copy
+
+                            from ..answer_registration import (
+                                PROVIDER_TIMEOUT_SECONDS,
+                                registration_context,
+                                validate_registration,
+                            )
+
+                            registration = registration_context(bundle, index, canonical_sha256({
+                                key: scope[key] for key in ("userId", "threadId")
+                            }))
+                            registration_stage = "provider"
+                            with anyio.fail_after(PROVIDER_TIMEOUT_SECONDS):
+                                proposed = await provider(copy.deepcopy(registration))
+                            if proposed is not None:
+                                registration_stage = "proposal"
+                                # Revalidate even model_copy-created objects; the hook gets detached inputs.
+                                approved = AnswerReviewPlan.model_validate_json(proposed.model_dump_json(by_alias=True))
+                                validate_registration(approved, registration)
+                                frozen = approved.model_dump(mode="json", by_alias=True)
+                                registration_stage = "freeze"
+                                committed = await self._apply_durable_command(run_context, ReportingCommand(
+                                    name="freeze_answer_review_plan",
+                                    commandId="answer-plan:" + canonical_sha256(frozen),
+                                    payload={"plan": frozen},
+                                ))
+                                registration_stage = "receipt"
+                                if (committed.state.report_run_id != index.report_id
+                                        or committed.state.payload.get("answerReviewPlan") != frozen
+                                        or committed.state.payload.get("questionSpecs") != questions.model_dump(mode="json", by_alias=True)):
+                                    raise ValueError("answer registration durable receipt mismatch")
+                                registration_stage = "evaluation"
+                                bundle = await anyio.to_thread.run_sync(partial(evaluate, answer_review_plan=approved))
+                        except Exception as error:
+                            registration_failed = True
+                            registration_failure_reason = f"registration_{registration_stage}_unavailable"
+                            logger.warning("report_answer_review_registration_unavailable stage={} reason={}", registration_stage, type(error).__name__)
+                    if registration_failed:
+                        bundle = bundle.model_copy(update={"issues": (*bundle.issues, QualityIssue(
+                            code="answer_review_registration_unavailable", reasons=("approved_mapping_unavailable", registration_failure_reason),
+                        ))})
+                        quality_state.setdefault("report_quality_issues", []).append({
+                            "code": "answer_review_registration_unavailable", "status": "unknown", "revision": revision,
+                            "reason": registration_failure_reason,
+                            "message": "审核映射未能登记或核验，已保留独立事实和未知回答状态；实际可用产物仍可下载。",
+                        })
                     if bundle.answer_review is not None:
                         try:
                             await self._apply_durable_command(run_context, ReportingCommand(
