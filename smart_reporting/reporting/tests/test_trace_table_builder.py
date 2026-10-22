@@ -223,7 +223,9 @@ def test_analysis_table_uses_default_cny_for_untyped_amount_columns() -> None:
 
 
 def test_analysis_table_reads_like_a_management_table():
-    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
 
     def metric(letter, code, name, values):
         return {
@@ -245,7 +247,9 @@ def test_analysis_table_reads_like_a_management_table():
 
 
 def test_analysis_table_keeps_zero_counts_and_single_dates():
-    from smart_reporting.reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
 
     def metric(letter, code, unit, periods, values):
         return {

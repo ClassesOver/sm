@@ -6,26 +6,25 @@ from unittest.mock import AsyncMock
 
 import pytest
 from agno.run import RunStatus
-
 from agno.workflow import Step, Workflow
 from agno.workflow.types import StepOutput
 from sqlalchemy import create_engine
 
-from smart_reporting.integrations.dingyi_process import DingyiProcessAdapter, _STEP_TITLES
+from smart_reporting.integrations.dingyi_process import _STEP_TITLES, DingyiProcessAdapter
 
 
 def test_reporting_step_titles_are_localized_for_current_workflow_steps():
     assert _STEP_TITLES["run-analysis-evidence"] == ("完成原子分析与证据冻结", "原子分析与证据已冻结")
     assert _STEP_TITLES["generate-narrative-outline"] == ("生成叙事大纲", "叙事大纲已生成")
     assert _STEP_TITLES["run-report-draft"] == ("撰写报告正文", "报告正文已完成")
+from smart_reporting.reporting.tests.test_managed_reporting_workflow import Lifecycle
 from smart_reporting.reporting.workflow.controller import REPORT_PROCESS_LIFECYCLE_DEPENDENCY
+from smart_reporting.reporting.workflow.managed import (
+    _CONTINUATION_DEPENDENCIES,
+    ManagedReportingWorkflow,
+)
 from smart_reporting.reporting.workflow.orchestration import _timed_step_executor
 from smart_reporting.reporting.workflow.scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
-from smart_reporting.reporting.workflow.managed import (
-    ManagedReportingWorkflow,
-    _CONTINUATION_DEPENDENCIES,
-)
-from smart_reporting.reporting.tests.test_managed_reporting_workflow import Lifecycle
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -133,10 +132,11 @@ def test_workflow_steps_publish_progress_with_controller_dependencies(tmp_path):
 @pytest.mark.parametrize("outcome", ["completed", "cancelled", "failed"])
 def test_controller_resume_and_cancel_update_persisted_process(tmp_path, outcome):
     from smart_reporting.reporting.contract import ReportingWorkflowInput
-    from smart_reporting.reporting.workflow.controller import ReportWorkflowController
     from smart_reporting.reporting.tests.test_reporting_workflow_controller import (
-        _context, _ThreadOwnership,
+        _context,
+        _ThreadOwnership,
     )
+    from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 
     async def exercise():
         adapter = DingyiProcessAdapter(create_engine(f"sqlite:///{tmp_path / 'resume.db'}"))

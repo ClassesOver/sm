@@ -47,7 +47,9 @@ def test_default_grouping_does_not_split_theme_by_finding_count():
     cards = [finding(i, title="收入变化", priority="medium") for i in range(1, 241)]
     source = graph(*cards)
     assert cluster_findings(source) == (tuple(card.finding_id for card in cards),)
-    from smart_reporting.reporting.hospital_operation.narrative_planner import build_fallback_narrative_candidate
+    from smart_reporting.reporting.hospital_operation.narrative_planner import (
+        build_fallback_narrative_candidate,
+    )
 
     candidate = build_fallback_narrative_candidate(source, "经营报告")
     assert len(candidate.sections) == 1

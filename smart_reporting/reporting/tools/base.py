@@ -20,7 +20,7 @@ from ...task_execution import (
     MAX_READ_FILE_BYTES,
     MAX_TOOL_OUTPUT_READ_BYTES,
 )
-from ...workspace import normalize_workspace_path, WorkspaceError
+from ...workspace import WorkspaceError, normalize_workspace_path
 from ..models import ReportingError
 from ..phase import ReportingPhase, ReportingTaskKind, reporting_phase_allows_tool
 from ..workflow.checkpoint import FileIdentity
