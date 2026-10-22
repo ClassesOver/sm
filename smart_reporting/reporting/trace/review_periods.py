@@ -9,6 +9,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from .numeric_text import (
+    _cached_by_contents,
     _frozen_number_entries,
     _unit_scales,
     period_extrema_warnings,
@@ -452,6 +453,7 @@ def _years_between(start: Any, end: Any) -> frozenset[int] | None:
     return frozenset(range(min(years), max(years) + 1)) if years else None
 
 
+@_cached_by_contents(list)
 def _registered_value_years(contents: Iterable[str]) -> list[tuple[str, Decimal, frozenset[int] | None]]:
     """冻结数值（按显示单位）及其登记期间覆盖的年份；期间未登记时为 None。"""
     contents = tuple(contents)

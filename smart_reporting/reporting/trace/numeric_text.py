@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import Any
 
 from loguru import logger
@@ -31,6 +31,41 @@ from ..units import unit_scales as _unit_scales
 from .contracts_v1 import TableDerivationV1, TableOperandV1
 from .fact_index import fact_binding_records, merge_binding_records
 from .table_sources import table_semantics
+
+
+def _cached_by_contents(copy: Callable[[Any], Any]) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """按（事实原文, 其余参数）缓存只依赖冻结事实的纯构建结果，并返回副本。
+
+    章节逐块复核、绑定与纠错会对同一批事实反复构建相同的派生值集合；映射参数按内容入键。
+    """
+
+    def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+        cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+        lock = threading.Lock()
+
+        @wraps(function)
+        def wrapper(contents: Iterable[str], *args: Any) -> Any:
+            contents = tuple(contents)
+            key = (contents, *(frozenset(arg.items()) if isinstance(arg, Mapping) else arg for arg in args))
+            with lock:
+                if key in cache:
+                    cache.move_to_end(key)
+                    return copy(cache[key])
+            value = function(contents, *args)
+            with lock:
+                cache[key] = value
+                while len(cache) > 32:
+                    cache.popitem(last=False)
+            return copy(value)
+
+        return wrapper
+
+    return decorate
+
+
+def _copy_value_sets(value: Mapping[str, set[Decimal]]) -> dict[str, set[Decimal]]:
+    return {key: set(items) for key, items in value.items()}
+
 
 # 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
 # （“跌幅-5%”“上涨-654万元”曾因词表不全原样发布）。
@@ -700,6 +735,7 @@ def _frozen_number_catalog(contents: tuple[str, ...]) -> dict[str, str]:
     return catalog
 
 
+@_cached_by_contents(_copy_value_sets)
 def frozen_number_values(
     contents: Iterable[str], catalog: dict[str, str]
 ) -> dict[str, set[Decimal]]:
@@ -2363,6 +2399,7 @@ _PROFILE_RATES = (
 )
 
 
+@_cached_by_contents(lambda value: [(names, set(numbers)) for names, numbers in value])
 def profile_rate_values(contents: Iterable[str]) -> list[tuple[tuple[str, ...], set[Decimal]]]:
     """事实告警中 Profile 登记的缺失、零值比例。
 
@@ -2515,6 +2552,7 @@ DIRECTED_PLACEHOLDER = re.compile(
 )
 
 
+@_cached_by_contents(dict)
 def positive_directed_placeholders(contents: Iterable[str]) -> dict[str, Decimal]:
     """变化额/变化率占位中登记值确定为正的引用（同一引用出现正负冲突时不计）。"""
     signs: dict[str, set[bool]] = {}
@@ -2593,6 +2631,7 @@ RATE_AS_PERCENT_POINT = re.compile(rf"(?<![\d.,])(?P<number>{_NUMBER})\s*个?百
 _PERCENT_POINT_SUBJECT = re.compile(r"占比|比重|比例|构成|率|增速|增幅|降幅|涨幅|跌幅")
 
 
+@_cached_by_contents(set)
 def registered_change_rates(contents: Iterable[str]) -> set[Decimal]:
     """已登记的变化率幅度：比较事实的同比/环比变化率与相邻两月的变化率。"""
     return {
@@ -2605,6 +2644,7 @@ def registered_change_rates(contents: Iterable[str]) -> set[Decimal]:
     }
 
 
+@_cached_by_contents(set)
 def registered_group_shares(contents: Iterable[str]) -> set[Decimal]:
     """服务端按分组值与合计登记的分组占比（只供核对）。"""
     return {
@@ -2648,6 +2688,7 @@ def percent_point_written_for_rate(
     )
 
 
+@_cached_by_contents(_copy_value_sets)
 def registered_multiples(
     contents: Iterable[str],
     catalog: dict[str, str],
