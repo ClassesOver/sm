@@ -20,8 +20,10 @@ from zoneinfo import ZoneInfo
 
 import anyio
 from agno.agent import Agent
+from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
+from agno.session.agent import AgentSession
 from agno.workflow.types import StepInput, StepOutput
 from loguru import logger as loguru_logger
 from pydantic import (
@@ -151,6 +153,7 @@ from ...model_policy import (
     positive_token_count,
 )
 from ...models import ReportingError
+from ...phase import reporting_model_route_from_run_context
 from ...presentation import completed_report_content
 from ...profile import (
     CapabilitySet,
@@ -526,6 +529,53 @@ def _limit_planner_output_tokens(model: OpenAIChat, output_token_limit: int) -> 
     )
     if released > 0:
         model._task_execution_input_token_budget = budget + released  # type: ignore[attr-defined]
+
+
+def _json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _routed_model_copy(model: Any, run_context: RunContext) -> Any:
+    """返回绑定最终路由模型 ID 的副本，供请求前 token 计数；不修改共享模型。"""
+
+    routed = copy(model) if model is not None else None
+    route = reporting_model_route_from_run_context(run_context)
+    if routed is not None and route is not None:
+        routed.id = route[1]
+    return routed
+
+
+def _structured_request_messages(agent: Any, serialized: str, *, session_id: str) -> list[Message]:
+    """按实际请求形态组装系统约束与用户载荷，用于请求前计数。"""
+
+    messages: list[Message] = []
+    get_system_message = getattr(agent, "get_system_message", None)
+    if callable(get_system_message):
+        system_message = get_system_message(
+            session=AgentSession(session_id=session_id, agent_id=getattr(agent, "id", None)),
+            run_context=None,
+            tools=[],
+            add_session_state_to_context=False,
+            input=serialized,
+        )
+        if system_message is not None:
+            messages.append(system_message)
+    messages.append(Message(role="user", content=serialized))
+    return messages
+
+
+def _count_request_tokens(
+    model: Any, messages: list[Message], output_schema: type[BaseModel]
+) -> int:
+    """用最终路由模型的 tokenizer 计数；不可用或结果无效时抛出，由调用方决定保守后备。"""
+
+    count_tokens = getattr(model, "count_tokens", None)
+    if not callable(count_tokens):
+        raise TypeError("model 缺少 count_tokens")
+    token_count = positive_token_count(count_tokens(messages, output_schema=output_schema))
+    if token_count is None:
+        raise TypeError("count_tokens 未返回正整数")
+    return token_count
 
 
 def merge_publication_issues(gate: Any, late_issues: Any) -> Any:
@@ -1125,9 +1175,7 @@ class _ReportWorkflowRuntimeBase:
         digest = hashlib.sha256(
             f"{run_context.run_id}:{agent.id}:{session_suffix}".encode()
         ).hexdigest()[:32]
-        serialized_payload = json.dumps(
-            payload, ensure_ascii=False, separators=(",", ":"), default=str
-        )
+        serialized_payload = _json_text(payload)
         planner_recorder = PlannerRequestRecorder(
             planner_id=str(getattr(agent, "id", "unknown")),
             model_id=str(getattr(getattr(agent, "model", None), "id", "unknown")),

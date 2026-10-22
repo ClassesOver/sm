@@ -78,6 +78,7 @@ from .base import (
     TableReference,
     TaskState,
     ValidationError,
+    _json_text,
     _validation_issue,
     anyio,
     approve_query_batch,
@@ -787,7 +788,7 @@ class RuntimePlanningMixin:
         raise ReportingError(
             "report_data_understanding_invalid",
             "数据理解计划连续五次未通过校验。最后一次诊断："
-            + json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"), default=str),
+            + _json_text(diagnostic),
         )
 
     async def prepare_data_profile(
@@ -1052,7 +1053,7 @@ class RuntimePlanningMixin:
         raise ReportingError(
             "report_measure_semantic_proposal_invalid",
             "指标语义候选连续五次未通过校验。最后一次诊断："
-            + json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"), default=str),
+            + _json_text(diagnostic),
         )
 
     async def commit_measure_semantics(

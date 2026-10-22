@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from copy import copy
 from typing import Literal
 
 from agno.exceptions import ModelProviderError
-from agno.models.message import Message
-from agno.session.agent import AgentSession
 
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...code_agent.failure_policy import fresh_attempt_futile
@@ -115,10 +112,14 @@ from .base import (
     TaskState,
     ValidationError,
     ZoneInfo,
+    _count_request_tokens,
     _frozen_outline,
+    _json_text,
     _report_machine_terms,
     _reporting_observed_data_facts,
+    _routed_model_copy,
     _source_warnings_from_state,
+    _structured_request_messages,
     anyio,
     authoritative_citations,
     build_deterministic_analysis_bundle,
@@ -243,53 +244,21 @@ def _prepare_analysis_summary_request(
         **payload,
         "analysisBlock": {"blockId": f"{analysis_id}:summary"},
     }
-    model = getattr(agent, "model", None)
-    counting_model = copy(model) if model is not None else None
-    route = reporting_model_route_from_run_context(run_context)
-    if counting_model is not None and route is not None:
-        counting_model.id = route[1]
-    model_count_tokens = getattr(counting_model, "count_tokens", None)
-    get_system_message = getattr(agent, "get_system_message", None)
+    counting_model = _routed_model_copy(getattr(agent, "model", None), run_context)
     tokenizer_failed = False
 
     def count_tokens(candidate: Mapping[str, Any]) -> int:
         nonlocal tokenizer_failed
-        serialized = json.dumps(
-            candidate,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            default=str,
-        )
+        serialized = _json_text(candidate)
         if not tokenizer_failed:
             try:
-                if not callable(model_count_tokens):
-                    raise TypeError("model 缺少 count_tokens")
-                messages: list[Message] = []
-                if callable(get_system_message):
-                    system_message = get_system_message(
-                        session=AgentSession(
-                            session_id=f"analysis-summary-budget:{analysis_id}",
-                            agent_id=getattr(agent, "id", None),
-                        ),
-                        run_context=None,
-                        tools=[],
-                        add_session_state_to_context=False,
-                        input=serialized,
-                    )
-                    if system_message is not None:
-                        messages.append(system_message)
-                messages.append(Message(role="user", content=serialized))
-                token_count = model_count_tokens(
-                    messages,
-                    output_schema=AnalysisSummaryDraft,
+                return _count_request_tokens(
+                    counting_model,
+                    _structured_request_messages(
+                        agent, serialized, session_id=f"analysis-summary-budget:{analysis_id}"
+                    ),
+                    AnalysisSummaryDraft,
                 )
-                if (
-                    isinstance(token_count, bool)
-                    or not isinstance(token_count, int)
-                    or token_count < 1
-                ):
-                    raise TypeError("count_tokens 未返回正整数")
-                return token_count
             except Exception as error:
                 # tokenizer 是优化边界，不能成为绕过 hard cap 的降级开关；
                 # UTF-8 字节数对中英文 JSON 均高估 token，作为确定性失败关闭后备。
@@ -4349,9 +4318,7 @@ class RuntimeAnalysisMixin:
             ],
             "citationBindings": [item.model_dump(mode="json", by_alias=True) for item in citation_bindings],
         }
-        snapshot_hash = hashlib.sha256(
-            json.dumps(snapshot_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        snapshot_hash = payload_sha256(snapshot_payload)
 
         if checkpoint.finding_graph_file is not None:
             graph_file = checkpoint.finding_graph_file

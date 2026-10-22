@@ -255,7 +255,7 @@ def test_section_request_count_includes_system_schema_and_routed_model():
     context = RunContext(run_id="r", session_id="s")
     # 路由状态由现有协议函数读取，避免在测试中猜测状态字段。
     from unittest.mock import patch
-    with patch("smart_reporting.reporting.workflow.runtime.sections.reporting_model_route_from_run_context",
+    with patch("smart_reporting.reporting.workflow.runtime.base.reporting_model_route_from_run_context",
                return_value=("standard", "routed-model")):
         assert _section_request_tokens(agent, {"generationStage": "content"}, context) == 321
     assert agent.model.id == "original"
