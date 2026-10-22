@@ -2873,22 +2873,30 @@ def test_planner_validation_is_exposed_to_structured_executor() -> None:
         validator("{}")
 
 
-def test_analysis_evidence_planner_reserves_only_schema_sized_output_budget() -> None:
-    from smart_reporting.reporting.model_policy import resolve_reporting_input_token_hard_cap
-    from smart_reporting.reporting.phase import REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
+@pytest.mark.parametrize(
+    ("context_budget", "output_reserve"),
+    [(256 * 1024, 128 * 1024), (1024 * 1024, 384 * 1024)],
+)
+def test_analysis_evidence_planner_reserves_only_schema_sized_output_budget(
+    monkeypatch: pytest.MonkeyPatch, context_budget: int, output_reserve: int
+) -> None:
+    from agno.models.openai import OpenAIChat
+
+    from smart_reporting.reporting import agent as reporting_agent
     from smart_reporting.task_execution import (
         TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
         TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
     )
 
-    planner_template = Agent(
-        model=ReportingPhaseOpenAIChat(
-            id="deepseek-v4-flash-0731",
-            max_tokens=128 * 1024,
-        ),
+    # 与 create_reporting_phase_agent 相同：模板输入预算已按完整输出预留扣减。
+    phase_model = reporting_agent._reporting_phase_model(
+        OpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        input_token_budget=min(context_budget, TASK_EXECUTION_CONTEXT_TOKEN_LIMIT)
+        - max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_reserve),
     )
+    phase_model.max_tokens = output_reserve
     stage = ReportWorkflowRuntime._planning_agent(
-        planner_template,
+        Agent(model=phase_model),
         "report-analysis-evidence-planner",
         AnalysisEvidenceDecision,
         thinking_policy=ThinkingPolicyConfig(
@@ -2898,24 +2906,24 @@ def test_analysis_evidence_planner_reserves_only_schema_sized_output_budget() ->
         ),
         output_token_limit=32 * 1024,
     )
-    request_model = stage.model._phase_request_model(
-        [Message(role="user", content="{}")]
-    )
-    input_budget = resolve_reporting_input_token_hard_cap(
-        configured_input_token_cap=REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
-        model_id=request_model.id,
-        output_token_reserve=max(
-            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-            request_model.max_tokens or 0,
-        ),
-        absolute_input_token_cap=(
-            TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-        ),
-    )
+    hard_caps: list[int] = []
 
+    def capture_hard_cap(messages: Any, **kwargs: Any) -> tuple[Any, Any]:
+        hard_caps.append(kwargs["hard_cap"])
+        return messages, None
+
+    monkeypatch.setattr(
+        reporting_agent.TaskExecutionContextProjector, "project_with_metrics", capture_hard_cap
+    )
+    monkeypatch.setattr(reporting_agent, "record_reporting_projection_metrics", lambda *_, **__: None)
+    request_model = stage.model._phase_request_model([Message(role="user", content="{}")])
+    request_model._project([Message(role="user", content="{}")], (), {})
+
+    assert phase_model.max_tokens == output_reserve
     assert request_model.max_tokens == 32 * 1024
-    assert input_budget == 224 * 1024
-    assert input_budget > 130_042 + 4096
+    # 2026-10 回放：补证规划首轮输入 130_042 token，另需结构化纠错余量。
+    assert hard_caps == [224 * 1024]
+    assert hard_caps[0] > 130_042 + 4096
 
 
 @pytest.mark.skip(reason="V1 planner 日期注入测试依赖旧环境构造")
