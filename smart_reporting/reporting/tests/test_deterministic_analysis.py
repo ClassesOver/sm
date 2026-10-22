@@ -815,3 +815,21 @@ def test_correlation_skips_incompatible_metric_scopes_with_warning():
     assert bundle.correlations == {}
     assert bundle.correlation_details == ()
     assert any("固定范围不一致" in warning for warning in bundle.warnings)
+
+
+def test_month_start_dates_without_declared_grain_compare_the_whole_window() -> None:
+    # 月份按月初 DATE 存储且未声明序列粒度时，按日判断连续会只剩最后一个月的同比。
+    current = b"month,department,amount\n2025-01-01,A,10\n2025-02-01,A,20\n2025-03-01,A,30\n"
+    baseline = b"month,department,amount\n2024-01-01,A,5\n2024-02-01,A,10\n2024-03-01,A,15\n"
+
+    def dated(dataset_id: str) -> DatasetAnalysisContext:
+        return context(dataset_id).model_copy(update={"period_granularities": {"month": "date"}})
+
+    bundle = build_deterministic_analysis_bundle(analysis(), (
+        ("current", current, dated("current"), ("current",)),
+        ("yoy", baseline, dated("yoy"), ("yoy",)),
+    ))
+
+    comparison = bundle.comparisons[0]
+    assert (comparison.period_start, comparison.period_end) == ("2025-01-01", "2025-03-01")
+    assert (comparison.current_total, comparison.baseline_total) == (60, 30)
