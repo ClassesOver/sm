@@ -17,6 +17,7 @@ from ....workspace import WorkspaceError, WorkspacePathConflict
 from ...delivery.artifacts_v1 import ArtifactFile, ReportArtifactManifest
 from ...structured_output import StructuredOutputCallBudget
 from ...trace.contracts_v1 import RevisionTraceIndexV1, derive_resource_id
+from ..query_pipeline import period_column_has_time
 from .base import (
     _PLANNER_DISPLAY_NAMES,
     DOMAIN_CODES,
@@ -3395,6 +3396,7 @@ def _approve_generated_queries(
                     requirement,
                     envelope,
                     period_role=query.period_role,
+                    snapshots=snapshots,
                 )
                 required_action = (
                     "逐字使用 expectedPeriodPredicates 为每张表添加完整精确期间条件；"
@@ -3500,6 +3502,7 @@ def _expected_period_predicates(
     envelope: ReportRequestEnvelope,
     *,
     period_role: Literal["current", "yoy", "mom"] = "current",
+    snapshots: tuple[SourceSchemaSnapshot, ...] | list[SourceSchemaSnapshot] = (),
 ) -> list[str]:
     roles = requirement.resolved_comparison_roles(envelope.comparison_roles)
     period = next(
@@ -3521,8 +3524,26 @@ def _expected_period_predicates(
         else:
             lower = f"'{period.start.isoformat()}'"
             upper = f"'{period.end.isoformat()}'"
+            if _period_column_has_time(snapshots, requirement.source_id, table):
+                # 带时分秒的期间列用半开区间，闭区间上界只到期末当天 00:00:00。
+                next_day = (period.end + timedelta(days=1)).isoformat()
+                predicates.append(f"{column} >= {lower} AND {column} < '{next_day}'")
+                continue
         predicates.append(f"{column} BETWEEN {lower} AND {upper}")
     return predicates
+
+
+def _period_column_has_time(
+    snapshots: tuple[SourceSchemaSnapshot, ...] | list[SourceSchemaSnapshot], source_id: str, table: Any
+) -> bool:
+    name = table.table.lower()
+    return any(
+        period_column_has_time(item, table.period_column)
+        for snapshot in snapshots
+        for item in snapshot.tables
+        if item.source_id == source_id
+        and name in {f"{item.database.lower()}.{item.name.lower()}", item.name.lower()}
+    )
 
 
 def _table_references(
