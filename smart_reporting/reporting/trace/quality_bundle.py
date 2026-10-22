@@ -33,7 +33,7 @@ from .semantic_bindings import reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1"}
+SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1"}
 
 
 class QualityIssue(StrictModel):

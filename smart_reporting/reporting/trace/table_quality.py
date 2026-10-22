@@ -271,15 +271,17 @@ def evaluate_table_quality(
                     if not table_selector_matches(entry, cell.row_key, selector):
                         reasons.append("cell_selector_binding_mismatch")
                         continue
-                    if cell.row_key.startswith("period:") and unit_period_warnings(
-                        rows[cell.row_key][0],
-                        expected_periods=fact_periods({
+                    if cell.row_key.startswith("period:"):
+                        periods = fact_periods({
                             "periodGranularity": entry.get("periodGranularity"),
                             "periodValues": [{"period": cell.row_key[7:]}],
-                        }),
-                    ):
-                        reasons.append("cell_period_label_mismatch")
-                        continue
+                        })
+                        if not periods:
+                            reasons.append("cell_period_identity_unavailable")
+                            continue
+                        if unit_period_warnings(rows[cell.row_key][0], expected_periods=periods):
+                            reasons.append("cell_period_label_mismatch")
+                            continue
                     value, unit = _selected(entry, selector)
                     if value is None or not (
                         text == "—"

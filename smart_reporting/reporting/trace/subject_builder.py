@@ -10,10 +10,15 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal, localcontext
-from typing import Any
+from typing import Any, Literal, cast
 
 from ..delivery.report_runtime.markdown import _subject_id
-from ..hospital_operation.deterministic_analysis import _next_period, _parse_period, _ParsedPeriod
+from ..hospital_operation.deterministic_analysis import (
+    _next_period,
+    _parse_fact_period,
+    _parse_period,
+    _ParsedPeriod,
+)
 from ..units import REPORT_VALUE_UNIT_PATTERN, unit_scales
 from .contracts_v1 import (
     FactRefV1,
@@ -394,15 +399,24 @@ def _expanded_period_wording(window: str) -> str:
 def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
     """按已声明粒度解释日期桶；月初标签不是日粒度统计窗口。"""
     periods = []
+    declared_grain = entry.get("periodGranularity")
+    if declared_grain not in {None, "day", "month", "year"}:
+        return ()
+    grain = cast(Literal["day", "month", "year"] | None, declared_grain)
     for item in entry.get("periodValues") or ():
-        if not isinstance(item, dict) or not item.get("period"):
-            continue
-        period = str(item["period"])
-        key = _period_key(period)
-        if key and entry.get("periodGranularity") == "month" and len(key) >= 2:
-            period = f"{key[0]:04d}-{key[1]:02d}"
-        elif key and entry.get("periodGranularity") == "year":
-            period = str(key[0])
+        if not isinstance(item, dict) or not isinstance(item.get("period"), str):
+            return ()
+        period = item["period"]
+        parsed = _parse_period(period)
+        # Validate the original calendar before normalizing a monthly/yearly
+        # bucket. Never drop a bad bucket and borrow an enclosing range.
+        if (parsed is None or _parse_fact_period(period, grain) is None
+                or (grain == "month" and parsed.granularity == "year")):
+            return ()
+        if grain == "month":
+            period = parsed.value.isoformat()[:7]
+        elif grain == "year":
+            period = str(parsed.value.year)
         periods.append(period)
     if not periods:
         # 比较和派生事实只登记连续窗口，补齐中间桶以免把窗口内月份误报为错期。
@@ -413,7 +427,7 @@ def fact_periods(entry: Mapping[str, Any]) -> tuple[str, ...]:
             return ()
         if start is None or end is None or start.granularity != end.granularity:
             return ()
-        grain = entry.get("periodGranularity") or start.granularity
+        grain = grain or start.granularity
         # 比较/派生事实未重复登记粒度时，双方均为月初标签仍表示月份窗口。
         if (not entry.get("periodGranularity") and start.granularity == end.granularity == "day"
                 and start.value.day == end.value.day == 1):

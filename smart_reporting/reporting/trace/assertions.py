@@ -302,7 +302,7 @@ class AssertionCompiler:
             reasons.append("scope_unknown")
         if not periods:
             reasons.append("period_unknown")
-        if not unit:
+        if not unit or not unit.strip():
             reasons.append("unit_unknown")
         if not reasons:
             with localcontext() as ctx:
