@@ -1397,3 +1397,12 @@ def test_render_shows_large_yuan_amounts_in_readable_units() -> None:
     assert "预算人次727.51万人次" in rendered and "门诊644,217人次" in rendered
     assert "（9,911,520,144元）" in rendered
     assert "| 药品 | 3,046,407,434元 |" in rendered and "![图：药品3,046,407,434元]" in rendered
+
+
+def test_executive_summary_strips_every_list_marker_in_a_list_paragraph():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _section_conclusion
+
+    # 审阅：列表段落先拼行再去前缀，只去掉第一项的“- ”，后续项的符号混进核心结论。
+    conclusion = _section_conclusion("## 1. 收入\n\n收入总体增长。\n\n- 药品收入增长5%。\n- 材料收入下降2%。")
+    assert conclusion == "收入总体增长。 药品收入增长5%。材料收入下降2%。"
+    assert "- " not in conclusion

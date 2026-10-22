@@ -521,8 +521,11 @@ def _section_conclusion(block: str) -> str | None:
             return None
         if "```" in paragraph or "~~~" in paragraph:
             return None
-        text = re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "").replace("\n", "")
-        text = re.sub(r"^(?:>\s*|[-*+]\s+|\d+[.)]\s+)", "", text)
+        # 列表或引用段落逐行去掉前缀再拼接，否则第二项起的“- ”会混进核心结论。
+        text = "".join(
+            re.sub(r"^\s*(?:>\s*|[-*+]\s+|\d+[.)]\s+)", "", line)
+            for line in re.sub(r"\[\[[^\]\r\n]+\]\]", "", paragraph).replace("**", "").split("\n")
+        )
         text = _SUMMARY_RAW_VALUE.sub("", text)
         if text:
             excerpts.append(text)
