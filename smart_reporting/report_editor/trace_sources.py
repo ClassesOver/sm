@@ -1369,6 +1369,15 @@ class ReportEditorTraceService:
                 "semanticChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.semantic_checks.items()},
                 "chartChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.chart_checks.items()},
             }
+            try:
+                from ..reporting.trace.warning_ledger import build_warning_ledger
+
+                quality_payload["warningLedger"] = build_warning_ledger(
+                    quality, index,
+                ).model_dump(mode="json", by_alias=True)
+            except Exception as error:
+                # An optional worklist must never erase the original diagnostics.
+                logger.warning("editor_warning_ledger_unavailable reason={}", type(error).__name__)
             for table in tables_payload:
                 check = quality.table_checks.get(table["tableId"])
                 table["dataCheck"] = check.model_dump(mode="json", by_alias=True) if check is not None else {

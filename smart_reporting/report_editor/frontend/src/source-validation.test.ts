@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { TraceValidation } from './api'
 import { findValueMarks } from './body-value-marks'
-import { createSourceValidationController, markdownSha256, nextSourceIssue, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
+import { createSourceValidationController, markdownSha256, nextSourceIssue, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 const validation = (draftSha256: string): TraceValidation => ({
   draftSha256,
@@ -17,6 +17,44 @@ const deferred = <T>() => {
 }
 
 describe('source validation', () => {
+  it('shows unresolved business support even when the source value remains traceable', () => {
+    const result = validation('draft')
+    result.summary.valid = 1
+    result.subjects = [{ subjectId: 's1', claimId: 'c1', sectionId: null, status: 'valid', factValue: 20 }]
+    result.quality = { status: 'evaluated', allKeyFactsEvaluated: false, inputSha256: 'current', issues: [
+      { code: 'assertion_support_unknown', subjectId: 's1', reasons: ['scope_unknown'] },
+      { code: 'assertion_support_unknown', subjectId: 's2', reasons: ['scope_unknown'] },
+    ], warningLedger: { qualityInputSha256: 'current', originalIssueCount: 2, groups: [{ groupId: 'same-fact', issueIndices: [0, 1] }] } }
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 语义待确认 1组', state: 'stale' })
+    expect(sourceValidationIssueCount(result)).toBe(0)
+    result.quality.warningLedger!.qualityInputSha256 = 'old'
+    expect(semanticReviewGroupCount(result)).toBe(2)
+    result.quality.warningLedger!.qualityInputSha256 = 'current'
+    result.quality.warningLedger!.groups = []
+    expect(semanticReviewGroupCount(result)).toBe(2)
+  })
+
+  it('retains unregistered tables and unknown future diagnostics without duplicating chart dependencies', () => {
+    const result = validation('draft')
+    result.summary.valid = 1
+    result.subjects = [{ subjectId: 's1', claimId: 'c1', sectionId: null, status: 'valid', factValue: 20, warnings: ['period warning'] }]
+    result.tables = [{ tableId: 't1', cells: { valid: 1, stale: 0, unbound: 0 },
+      dataCheck: { status: 'unknown', scope: 'frozen_cells', reasons: ['cell_period_label_mismatch'] } }]
+    result.charts = [{ chartId: 'chart1', imagePath: 'chart.png', status: 'valid',
+      dataCheck: { status: 'unknown', scope: 'registered_arrays', reason: 'interactive_spec_unregistered' } }]
+    result.quality = { status: 'evaluated', allKeyFactsEvaluated: false, issues: [
+      { code: 'chart_support_unknown', subjectId: 'chart1' },
+      { code: 'chart_semantic_alignment_unknown', subjectId: 'chart1' },
+      { code: 'assertion_support_unknown', subjectId: 's1' },
+      { code: 'table_support_unknown', subjectId: 't1' },
+      { code: 'table_coverage_unknown', subjectId: 'markdown-table:L362' },
+      { code: 'future_check' },
+    ] }
+    expect(sourceValidationIssueCount(result)).toBe(3)
+    expect(semanticReviewGroupCount(result)).toBe(2)
+    expect(sourceCoverageSummary(result, '').state).toBe('stale')
+  })
+
   it('does not turn unreviewed answer coverage into a successful report', () => {
     const result = validation('draft')
     result.quality = { status: 'evaluated', allKeyFactsEvaluated: false, issues: [],
