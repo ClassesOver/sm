@@ -62,7 +62,7 @@ def context(
     )
 
 
-def analysis(*, fields: tuple[str, ...] = ("amount",)) -> DetailedAnalysisItem:
+def analysis(*, fields: tuple[str, ...] = ("amount",), correlation: bool = False) -> DetailedAnalysisItem:
     return DetailedAnalysisItem(
         analysisId="analysis_001",
         domain="income",
@@ -74,7 +74,7 @@ def analysis(*, fields: tuple[str, ...] = ("amount",)) -> DetailedAnalysisItem:
         periods=("2025-01", "2025-02", "2025-03"),
         comparisonBasis=("yoy", "mom"),
         organizationGrain=("department",),
-        actions=("汇总", "同比", "环比", "异常"),
+        actions=("汇总", "同比", "环比", "异常", *(("相关性",) if correlation else ())),
         evidenceSummary="服务端复算",
         suggestedSection="收入分析",
         completionConditions=("固定指标可复算",),
@@ -774,7 +774,7 @@ def test_correlation_uses_the_metrics_registered_scope(selected):
     )
     scope = {"scope_type": selected}
     bundle = build_deterministic_analysis_bundle(
-        analysis(fields=("amount", "visits")),
+        analysis(fields=("amount", "visits"), correlation=True),
         (("current", content, context(
             "current", fields=("month", "department", "scope_type", "amount", "visits"),
             semantics=(semantic("amount", scope=scope), semantic("visits", scope=scope)),
@@ -799,7 +799,7 @@ def test_correlation_uses_the_metrics_registered_scope(selected):
 
 def test_correlation_skips_incompatible_metric_scopes_with_warning():
     bundle = build_deterministic_analysis_bundle(
-        analysis(fields=("amount", "visits")),
+        analysis(fields=("amount", "visits"), correlation=True),
         (("current", b"month,department,scope_type,amount,visits\n"
           b"2025-01,A,actual,1,1\n2025-01,B,actual,2,2\n2025-01,C,budget,3,3\n",
           context("current", fields=("month", "department", "scope_type", "amount", "visits"),
@@ -843,3 +843,38 @@ def test_profile_month_dimension_makes_month_start_dates_compare_the_whole_windo
     month = build_deterministic_analysis_bundle(analysis(), contexts("month")).comparisons[0]
     assert (month.period_start, month.period_end) == ("2025-01-01", "2025-03-01")
     assert (month.current_total, month.baseline_total) == (60, 30)
+
+
+def test_fact_keeps_only_its_own_profile_defects_while_bundle_keeps_all_alerts():
+    alerts = (
+        "[amount] is highly overall correlated with [visits]",
+        "[amount] has 3 (50.0%) zeros",
+        "[department] is highly imbalanced (0.55)",
+        "[visits] has a constant value",
+        "[amount] has 2 (10.0%) missing values",
+        "同一月份有多条科室或项目明细记录，未在明细层面做趋势与季节性检验；趋势判断须以按月及科室汇总后的数据为准。",
+        "数据源提示：部分科室未映射。",
+    )
+    current = b"month,department,amount\n2025-01,A,10\n2025-02,A,20\n"
+    bundle = build_deterministic_analysis_bundle(analysis(), (
+        ("current", current, context("current").model_copy(update={"quality_warnings": alerts}), ("current",)),
+    ))
+    fact = bundle.metrics[0]
+    assert set(fact.warnings) >= {"[amount] has 2 (10.0%) missing values", "数据源提示：部分科室未映射。"}
+    assert not {alerts[0], alerts[1], alerts[2], alerts[3], alerts[5]} & set(fact.warnings)
+    # 描述性告警不丢失：仍作为分析级 warnings 供章节披露。
+    assert set(alerts) <= set(bundle.warnings)
+
+
+def test_correlations_are_only_computed_when_the_analysis_asks_for_them():
+    raw = b"month,department,amount,visits\n2025-01,A,10,1\n2025-02,A,20,3\n2025-03,A,40,4\n"
+    ctx = context("current", fields=("month", "department", "amount", "visits"),
+                  semantics=(semantic("amount", unit="元"), semantic("visits", unit="人次")))
+    plain = build_deterministic_analysis_bundle(
+        analysis(fields=("amount", "visits")), (("current", raw, ctx, ("current",)),)
+    )
+    assert not plain.correlations and not plain.correlation_details
+    requested = build_deterministic_analysis_bundle(
+        analysis(fields=("amount", "visits"), correlation=True), (("current", raw, ctx, ("current",)),)
+    )
+    assert requested.correlation_details

@@ -30,7 +30,8 @@ _REVIEW_WARNING_CODES = frozenset({"report_section_block_content_review", "repor
 _MAX_REVIEW_WARNINGS = 200
 
 
-REFERENCE_COMPARISON_NOTE = "注：以上对比涉及不同数据来源或统计口径，仅作参考。"
+# “仅作参考”不能补足口径前提（R034/R060）：写明差异未调节、不据此归因或评价。
+REFERENCE_COMPARISON_NOTE = "注：以上对比涉及不同数据来源或统计口径，差异未经调节，不据此作归因、排名或执行评价。"
 
 
 def metric_equivalents(definitions: Sequence[Any]) -> dict[str, frozenset[str]]:
@@ -166,7 +167,9 @@ class RuntimeSectionsMixin:
         普通注释段落并写明是跨来源或口径的对比。
         """
         related = [block for block in blocks if reference_claim_ids.intersection(block.claim_ids)]
-        if not related or any("参考" in block.markdown for block in related):
+        if not related or any(
+            "参考" in block.markdown or "差异未经调节" in block.markdown for block in related
+        ):
             return tuple(blocks)
         return tuple(
             block.model_copy(update={"markdown": f"{block.markdown}\n\n{REFERENCE_COMPARISON_NOTE}"})
