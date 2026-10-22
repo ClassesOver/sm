@@ -741,3 +741,22 @@ def test_period_table_caption_names_actual_grain_instead_of_analysis_dimension()
     _trace, markdown = build_analysis_table(bundle, fact_file_resource_id=FACT_RESOURCE)
     caption = markdown.splitlines()[0]
     assert caption == '医疗收入院区分布分析：分期间指标汇总'
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("收入大类高度集中：药品26.18亿元、卫生材料20.47亿元，合计占待核实",
+         "收入大类高度集中：药品26.18亿元、卫生材料20.47亿元"),
+        ("条形图（单位：元，%）：药品收入待核实级规模、占比27.52%居首，卫生材料收入20.47亿元居次。",
+         "条形图（单位：元，%）：卫生材料收入20.47亿元居次。"),
+        ("预算98.79亿元与实际95.17亿元，差额待核实，完成率96.33%。",
+         "预算98.79亿元与实际95.17亿元，完成率96.33%。"),
+        ("北部院区执行率待核实为最低", "北部院区执行率待核实为最低"),
+        ("无占位的标题，保持原样", "无占位的标题，保持原样"),
+    ],
+)
+def test_caption_placeholders_drop_the_whole_clause(text, expected):
+    from smart_reporting.reporting.workflow.runtime.sections import _drop_placeholder_clauses
+
+    assert _drop_placeholder_clauses(text) == expected
