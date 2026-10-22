@@ -802,6 +802,8 @@ class _ReportWorkflowRuntimeBase:
                 reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=_ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS,
+            # 小型结构化决策只需 32K 输出空间，避免扣除模型完整 128K 输出上限。
+            output_token_limit=32 * 1024,
         )
         from ...agent import create_reporting_code_agent_factory
 
@@ -878,10 +880,20 @@ class _ReportWorkflowRuntimeBase:
         *,
         thinking_policy: ThinkingPolicyConfig,
         stage_instructions: tuple[str, ...] = (),
+        output_token_limit: int | None = None,
     ) -> Agent:
         if not isinstance(planner.model, OpenAIChat):
             raise TypeError("Report planner requires OpenAIChat")
         planner_model = copy(planner.model)
+        if output_token_limit is not None:
+            configured_output_limit = planner_model.max_tokens
+            planner_model.max_tokens = (
+                min(configured_output_limit, output_token_limit)
+                if isinstance(configured_output_limit, int)
+                and not isinstance(configured_output_limit, bool)
+                and configured_output_limit > 0
+                else output_token_limit
+            )
         apply_reporting_thinking_profile(planner_model, ReportingThinkingProfile.off())
         planner_model.top_p = 1.0
         # 使用 Agno 的请求层重试；不会重新执行已完成工具或整个章节。

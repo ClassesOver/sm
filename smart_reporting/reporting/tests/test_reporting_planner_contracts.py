@@ -2873,6 +2873,51 @@ def test_planner_validation_is_exposed_to_structured_executor() -> None:
         validator("{}")
 
 
+def test_analysis_evidence_planner_reserves_only_schema_sized_output_budget() -> None:
+    from smart_reporting.reporting.model_policy import resolve_reporting_input_token_hard_cap
+    from smart_reporting.reporting.phase import REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
+    from smart_reporting.task_execution import (
+        TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
+        TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+    )
+
+    planner_template = Agent(
+        model=ReportingPhaseOpenAIChat(
+            id="deepseek-v4-flash-0731",
+            max_tokens=128 * 1024,
+        ),
+    )
+    stage = ReportWorkflowRuntime._planning_agent(
+        planner_template,
+        "report-analysis-evidence-planner",
+        AnalysisEvidenceDecision,
+        thinking_policy=ThinkingPolicyConfig(
+            operation="analysis_evidence",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
+        output_token_limit=32 * 1024,
+    )
+    request_model = stage.model._phase_request_model(
+        [Message(role="user", content="{}")]
+    )
+    input_budget = resolve_reporting_input_token_hard_cap(
+        configured_input_token_cap=REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
+        model_id=request_model.id,
+        output_token_reserve=max(
+            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+            request_model.max_tokens or 0,
+        ),
+        absolute_input_token_cap=(
+            TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+        ),
+    )
+
+    assert request_model.max_tokens == 32 * 1024
+    assert input_budget == 224 * 1024
+    assert input_budget > 130_042 + 4096
+
+
 @pytest.mark.skip(reason="V1 planner 日期注入测试依赖旧环境构造")
 def test_reporting_phase_agent_injects_current_shanghai_date_into_planner_context() -> None:
     template = create_reporting_phase_agent(
