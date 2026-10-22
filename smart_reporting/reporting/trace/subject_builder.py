@@ -831,6 +831,10 @@ def _claim_status_from_body(
         for key, value in (expected_scope or {}).items():
             if value and value not in warning_window:
                 warnings.append(f"业务范围需复核：当前引用句未体现登记范围 {key}={value}。")
+        if not expected_reference:
+            from .reference_semantics import scope_exclusion_warnings
+
+            warnings.extend(scope_exclusion_warnings(warning_window, expected_scope or {}))
         if expected_reference:
             from .reference_semantics import number_reference_warnings
 

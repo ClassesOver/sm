@@ -174,3 +174,24 @@ caseId 绑定完整质量内容、完整索引内容和原始诊断位置；重�
 真实附件按当前规则重新执行质量检查：235 条原始诊断的代码、主体、原因和顺序全部一致；55 个分组不变。36 条 statement_not_supported 均保留数值匹配状态及共 183 条原有具体提示，183 是提示条数，不是新增 183 个独立错误。新质量结果与审阅包分别为回放目录下的 quality-bundle-statement-review.json 和 warning-review-packet-statement-review.json；验证记录为 warning-identity-statement-review-verification.json。403 个原始文件哈希不变。未修改历史冻结来源、署名及业务财务数据，未擅自将任何范围缺项补成全院。
 
 验证：分组及图表/表格定向集 126 passed；补充错月份细节后，质量/期间/受信映射/台账定向集 81 passed；全部 8 条非阻断契约展开 35 passed。各组有重叠，不累计独立用例数。两个核心模块 mypy、四个改动 Python 文件 Ruff 和 diff 检查通过，未重复全仓测试。
+
+## 已推进：范围排除漏报与引用闭环 harness
+
+依据 R013/R024/R043 的范围要求，生成和编辑共享有限的范围排除检查。正文写成“非北院”“不含北院”或“北院之外”，不能因为仍出现“北院”几个字就被当作肯定范围。只匹配当前引用及紧邻括注中的登记范围，前一个并列引用的排除语不能污染下一个明确主语。缺失范围仍保持未知，不从排除语推断另一个院区，不改冻结数值。
+
+新增正反例先复现 19 个漏报，再验证前后置排除、粗体名称、并列引用及旧绑定入口。控制样例覆盖无关否定词、“未排除北院”“并非不含北院”“不含北院以外”等有限表达，避免把未明确排除范围的句子误报为排除。这不是任意自然语言否定的完整算法，也不将未命中排除规则当业务批准。新鲜冻结正文即使数值 supported、映射已获批准，范围被排除时回答仍为 unknown，经营总览不显示通过。scopeWording/1 进入质量输入版本，旧缓存失效。
+
+完善现有 `scripts.check_reference_review`，未新增重复 harness：生成阶段不再写死 4 个测试，先冻结 pytest 实际收集到的唯一身份，再核对执行结果的完整身份，防止“数量相同但换跑其他测试”被当作通过。收集失败、空集、重复、超时、执行遗漏、跳过或失败仍明确失败。前端回放把来源状态和语义状态分别断言：数值绑定 valid 不代表业务通过；恢复金额后，范围或证明 unknown 不能被自动清除。新增 6 个真实 API—ProseMirror 回放样例。
+
+运行完整引用闭环：
+
+```bash
+MPLCONFIGDIR=/tmp/os-replay-mpl .venv/bin/python -m scripts.check_reference_review \
+  --output /tmp/report-reference-harness --timeout 60
+```
+
+真实附件按新规则重算，原 235 条诊断的代码、主体、原因及顺序保持一致，仍为 55 组；36 条正文诊断及 183 条具体提示完整保留。该附件没有因本轮范围排除规则减少或增加告警。403 个原文件哈希不变。输出质量记录、逐条审阅包及核验记录分别为回放目录下的 quality-bundle-scope-wording.json、warning-review-packet-scope-wording.json、scope-wording-replay-verification.json。未裁定历史未知项，未修改署名或冻结来源，未重新生成真实附件 PDF/Word。
+
+验证：正文/范围/回答/质量定向集 166 passed；补充取消排除的控制样例及运行器守卫后定向集 165 passed（选择不同且有重叠，不累计）；整合远端提交后，全部 8 条非阻断契约展开 36 passed。三个核心/运行器模块 mypy、七个 Python 文件 Ruff、TypeScript 和 diff 检查通过。subject_builder 仍有与修改前逐项相同的 5 个既有类型错误，未声称全仓类型检查通过。
+
+完整引用闭环最终通过：生成阶段 38、后端真实 API 46、前端 ProseMirror 46，共 130 项均实际执行且无跳过；收集身份与生成阶段执行身份一致。此为合成工程回归，不是任意业务语义验收或真实浏览器端到端测试。

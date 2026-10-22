@@ -18,6 +18,11 @@ from .review_common import _CLAUSE_BREAK
 
 _WORDING = re.compile(r'月均|月平均|平均每月|平均值|均值|单月|累计|合计|总额|总量|总计|汇总')
 _NEGATED_WORDING = re.compile(r'(?:并非|不是|而非|不同于|非|不属于|不代表|不作为|不能称为|不能视为)\s*(?:按|以)?\s*$')
+_SCOPE_EXCLUSION_BEFORE = re.compile(
+    r'(?:并非|不是|而非|非|不含|不包括|不包含|不属于|不来自|未纳入|未计入|剔除|排除|除去)\s*(?:了\s*)?$'
+)
+_SCOPE_EXCLUSION_AFTER = re.compile(r'^\s*(?:以外|之外|除外)')
+_SCOPE_EXCLUSION_CANCELLED = re.compile(r'(?:并非|不是|并不是|没有|未曾|未|不|不能|无法|不应|不宜|不得)\s*$')
 _DEPARTMENT = re.compile(r'[\u3400-\u9fff]{1,12}科(?:室)?')
 _DEPARTMENT_PREFIX = re.compile(r'^(?:(?:其中|本期|本月|本年|本院|该院|全院|预计|目前|科室|一级科室|二级科室)(?:的)?)+')
 _DEPARTMENT_CONTEXT = re.compile(r'显示|表明|反映|可见|可知|发现|统计|观察|关注|比较|相比|相较|登记')
@@ -78,6 +83,32 @@ def _department_name(raw: str, registered: set[str], identity: str) -> str:
 def _affirmative_wording(clause: str) -> list[str]:
     return [match[0] for match in _WORDING.finditer(clause)
             if not _NEGATED_WORDING.search(clause[:match.start()])]
+
+
+def scope_exclusion_warnings(clause: str, scope: Mapping[str, Any]) -> list[str]:
+    """Recognize finite explicit exclusions, without inferring substitute scopes.
+
+    Callers supply only this reference's clause and attached qualifiers. A scope
+    name occurring inside a denial cannot establish affirmative attribution.
+    This does not claim to understand arbitrary negation or approve missing scope.
+    """
+    clause = clause.replace('**', '')
+    warnings = []
+    for key, value in scope.items():
+        if not isinstance(value, str) or not value.strip():
+            continue
+        for match in re.finditer(re.escape(value), clause):
+            before = clause[:match.start()]
+            preceding = _SCOPE_EXCLUSION_BEFORE.search(before)
+            following = _SCOPE_EXCLUSION_AFTER.search(clause[match.end():])
+            # “未排除北院” and “不含北院以外” do not explicitly exclude
+            # 北院. This finite guard is not proof of affirmative inclusion.
+            if preceding and (following or _SCOPE_EXCLUSION_CANCELLED.search(before[:preceding.start()])):
+                continue
+            if preceding or following:
+                warnings.append(f'业务范围需复核：当前引用否定或排除了登记范围 {key}={value}。')
+                break
+    return warnings
 
 
 def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, Any]) -> list[str]:
@@ -156,7 +187,8 @@ def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix:
     clause = prefix_clause + ' ' + qualifier
     entry = reference['entry']
     selector = reference['selector']
-    warnings = _monthly_window_warnings(prefix, clause, reference)
+    warnings = scope_exclusion_warnings(rank_prefix + ' ' + qualifier, reference.get('scope') or {})
+    warnings.extend(_monthly_window_warnings(prefix, clause, reference))
     from .top_sets import top_set_wording_warnings
 
     warnings.extend(top_set_wording_warnings(rank_prefix + " " + qualifier, reference))
