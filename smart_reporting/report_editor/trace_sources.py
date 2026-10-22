@@ -1383,11 +1383,21 @@ class ReportEditorTraceService:
                 "allKeyFactsEvaluated": quality.all_key_facts_evaluated,
                 "questionCoverage": quality.question_coverage,
                 "answerReview": quality.answer_review.model_dump(mode="json", by_alias=True) if quality.answer_review is not None else None,
+                "managementOverview": quality.management_overview.model_dump(mode="json", by_alias=True) if quality.management_overview is not None else None,
                 "issues": [issue.model_dump(mode="json", by_alias=True) for issue in quality.issues],
                 "tableChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.table_checks.items()},
                 "semanticChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.semantic_checks.items()},
                 "chartChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.chart_checks.items()},
             }
+            try:
+                from ..reporting.trace.warning_ledger import build_warning_ledger
+
+                quality_payload["warningLedger"] = build_warning_ledger(
+                    quality, index,
+                ).model_dump(mode="json", by_alias=True)
+            except Exception as error:
+                # An optional worklist must never erase the original diagnostics.
+                logger.warning("editor_warning_ledger_unavailable reason={}", type(error).__name__)
             for table in tables_payload:
                 check = quality.table_checks.get(table["tableId"])
                 table["dataCheck"] = check.model_dump(mode="json", by_alias=True) if check is not None else {

@@ -83,7 +83,8 @@ async def test_restore_rejects_graph_from_another_fact_snapshot(anyio_backend):
         findingGraphFile=FileIdentity(path="findings/graph.json", size=10, sha256="d" * 64),
         findingGraphHash=graph.snapshot_hash,
     )
-    runtime = SimpleNamespace(_read_identity_model=AsyncMock(return_value=graph))
+    runtime = SimpleNamespace(_read_identity_model=AsyncMock(return_value=graph),
+                              _profile=lambda _: SimpleNamespace(metrics=()), _state=lambda _: {})
     with pytest.raises(ReportingError, match="快照"):
         await RuntimeAnalysisMixin._restore_or_create_finding_graph(
             runtime, run_context=None, checkpoint=checkpoint, thread_id="thread-1",
@@ -163,7 +164,8 @@ def test_completed_section_restore_preserves_retry_history_and_checks_identity(c
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("source_count", [1, 2])
-async def test_finding_graph_freezes_supplement_identity_and_registered_citations(anyio_backend, source_count):
+@pytest.mark.parametrize("purpose_scope", [False, True])
+async def test_finding_graph_freezes_supplement_identity_and_registered_citations(anyio_backend, source_count, purpose_scope):
     import hashlib
     import json
     from types import SimpleNamespace
@@ -195,8 +197,11 @@ async def test_finding_graph_freezes_supplement_identity_and_registered_citation
         return DeterministicAnalysisBundle(analysisId="analysis_001")
 
     async def read_bytes(thread_id, identity):
+        findings = [{"name": "院区差额", "metricCodes": ["income"], "columns": ["院区", "差额"], "rows": [["东", 10]]}]
+        if purpose_scope:
+            findings.insert(0, {"name": "其他用途", "metricCodes": ["budget"], "value": 999})
         return json.dumps({
-            "findings": [{"name": "院区差额", "columns": ["院区", "差额"], "rows": [["东", 10]]}],
+            "findings": findings,
             "reconciliations": [{"name": "总额", "passed": True}], "warnings": [],
         }).encode()
 
@@ -210,9 +215,31 @@ async def test_finding_graph_freezes_supplement_identity_and_registered_citation
     runtime = SimpleNamespace(
         _read_identity_model=read, _read_identity_bytes=read_bytes, _write_immutable_artifact=write,
         _profile=lambda context: SimpleNamespace(metrics=()), _persist_reporting_checkpoint=persist,
+        _state=lambda context: {},
         _update_reporting_checkpoint=RuntimeAnalysisMixin._update_reporting_checkpoint,
         _merge_checkpoint_files=RuntimeAnalysisMixin._merge_checkpoint_files,
     )
+    if purpose_scope:
+        from smart_reporting.reporting.hospital_operation.detailed_analysis import (
+            DetailedAnalysisPlan,
+        )
+        from smart_reporting.reporting.profile.models import EffectiveMetric
+        from smart_reporting.reporting.tests.test_deterministic_analysis import analysis
+        from smart_reporting.reporting.workflow.runtime.base import (
+            REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
+        )
+
+        metrics = tuple(EffectiveMetric(
+            code=code, kind="currency", description="同名金额", aggregation="sum",
+            fieldRef=f"source.db.table.{code}", purpose=purpose,
+        ) for code, purpose in (("income", "收入多维分析"), ("budget", "预算或预实对比")))
+        # Even stale allowedMetricCodes cannot overrule the current frozen purpose.
+        plan = DetailedAnalysisPlan(analyses=(analysis().model_copy(update={
+            "dataset_ids": (binding.dataset_id,), "metric_purposes": ("收入多维分析",),
+            "allowed_metric_codes": ("income", "budget"),
+        }),), datasetIds=(binding.dataset_id,))
+        runtime._profile = lambda _: SimpleNamespace(metrics=metrics)
+        runtime._state = lambda _: {REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: plan.model_dump(by_alias=True)}
     checkpoint = ReportingCheckpoint(revision=1, phase="analysis", outlineHash="d" * 64, profileCoverage=_coverage())
     kwargs = dict(
         run_context=None, thread_id="thread-1", report_run_id="run-1", revision=1,
@@ -222,9 +249,13 @@ async def test_finding_graph_freezes_supplement_identity_and_registered_citation
     frozen = await RuntimeAnalysisMixin._restore_or_create_finding_graph(runtime, checkpoint=checkpoint, **kwargs)
     assert saved["graph"].findings[0].source_refs[0].path == supplement_file.path
     assert saved["graph"].findings[0].citation_ids == (binding.citation_id,)
-    assert {ref.path for card in saved["graph"].findings for ref in card.source_refs} == {
+    assert {ref.path for card in saved["graph"].findings for ref in card.source_refs if ref.path != fact_file.path} == {
         value["path"] for value in item["evidenceFiles"][1:]
     }
+    if purpose_scope:
+        assert saved["graph"].findings[0].source_refs[0].pointer == "/findings/1"
+        assert all("budget" not in card.metric_codes for card in saved["graph"].findings)
+        assert any("未用于正文" in issue for card in saved["graph"].findings for issue in card.limitations)
     item["evidenceFiles"][1]["sha256"] = "e" * 64
     with pytest.raises(ReportingError, match="快照"):
         await RuntimeAnalysisMixin._restore_or_create_finding_graph(runtime, checkpoint=frozen, **kwargs)

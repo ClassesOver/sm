@@ -8,6 +8,7 @@ from smart_reporting.reporting.hospital_operation.finding_projection import (
     project_analysis_findings,
 )
 from smart_reporting.reporting.hospital_operation.narrative_planner import (
+    build_fallback_narrative_candidate,
     build_narrative_planning_context,
 )
 
@@ -18,6 +19,84 @@ def facts(**changes):
         "derivedMetrics": [], "reconciliations": [], "correlations": {},
         "correlationDetails": [], **changes,
     })
+
+
+@pytest.mark.parametrize("kind", ["attribution", "comparison", "impact"])
+@pytest.mark.parametrize("name", [
+    "已证实人员浪费导致亏损999万元，必须裁员",
+    "项目付款率120%，已确认超预算风险",
+])
+@pytest.mark.parametrize("registered_label", [None, "医疗收入", "医疗收入" * 100])
+def test_unproven_supplemental_title_cannot_become_a_planned_conclusion(kind, name, registered_label):
+    import json
+
+    cards = project_analysis_findings(
+        "analysis_001", facts(), {"analysisId": "analysis_001", "findings": [
+            {"name": name, "kind": kind, "metricCodes": ["income"]},
+        ]}, ({"code": "income", "description": registered_label},) if registered_label else (),
+        snapshot_hash="b" * 64, citation_ids=("citation_001",),
+        supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
+    )
+    from smart_reporting.reporting.hospital_operation.findings import FindingGraph
+
+    graph = FindingGraph(snapshotHash="b" * 64, findings=cards)
+    planning = build_narrative_planning_context(graph, "分析经营情况")
+    fallback = build_fallback_narrative_candidate(graph, "报告")
+    assert cards[0].evidence_level == "evidence_missing"
+    assert name not in json.dumps(planning, ensure_ascii=False)
+    assert name not in fallback.model_dump_json()
+    if registered_label:
+        assert "医疗收入" in cards[0].title
+    assert cards[0].title.endswith("证据待核对")
+    assert cards[0].source_refs[0].pointer == "/findings/0"
+
+
+def test_supplemental_usage_filter_preserves_original_source_identity_and_indices():
+    result = project_analysis_findings(
+        "analysis_001", facts(), {
+            "analysisId": "analysis_001", "findings": [
+                {"name": "已删指标", "metricCodes": ["discharges_non"], "value": 999},
+                {"name": "其他用途", "metricCodes": ["budget_income"], "value": 888},
+                {"name": "收入补证", "metricCodes": ["income"], "value": 100},
+            ],
+        }, snapshot_hash="b" * 64, citation_ids=("citation_001",),
+        supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
+        metric_scope={"allowedMetricCodes": ["income"], "allowedFieldRefs": ["source.db.table.income"]},
+    )
+    supplemental = [card for card in result if card.source_refs[0].path == "evidence.json"]
+    assert len(supplemental) == 1
+    assert supplemental[0].source_refs[0].pointer == "/findings/2"
+    assert supplemental[0].source_refs[0].file_sha256 == "c" * 64
+    assert supplemental[0].evidence_level == "evidence_missing"
+    assert supplemental[0].limitations
+    assert any("findings/0" in issue for card in result for issue in card.limitations)
+    assert all("discharges_non" not in card.metric_codes for card in result)
+
+
+def test_file_registration_does_not_verify_arbitrary_supplemental_values():
+    result = project_analysis_findings(
+        "analysis_001", facts(), {"analysisId": "analysis_001", "findings": [
+            {"name": "任意补证", "metricCodes": ["income"], "value": 999},
+        ]}, snapshot_hash="b" * 64, citation_ids=("citation_001",),
+        supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
+    )
+    assert result[0].evidence_level == "evidence_missing"
+
+
+def test_many_rejected_supplements_and_full_warning_budget_remain_soft_gaps():
+    for findings, scope in [
+        ([{"metricCodes": ["deleted"]}] * 500, {"allowedMetricCodes": []}),
+        ([{"metricCodes": ["income"]}], {"allowedMetricCodes": ["income"]}),
+    ]:
+        cards = project_analysis_findings(
+            "analysis_001", facts(), {"analysisId": "analysis_001", "findings": findings,
+                                      "warnings": [f"业务限制{i}" for i in range(100)]},
+            snapshot_hash="b" * 64, citation_ids=("citation_001",),
+            supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
+            metric_scope=scope,
+        )
+        assert cards and all(card.evidence_level == "evidence_missing" for card in cards)
+        assert all(len(card.limitations) <= 100 for card in cards)
 
 
 def test_projection_creates_trend_finding_from_period_values():
@@ -212,7 +291,9 @@ def test_supplemental_finding_retains_its_file_identity_and_pointer():
         citation_ids=("citation_007",),
         supplemental_file_path="evidence/001.json", supplemental_file_sha256="c" * 64,
     )
-    selected = next(item for item in result if item.title == "院区收入变化")
+    selected = next(item for item in result if any(
+        ref.path == "evidence/001.json" and ref.pointer == "/findings/0" for ref in item.source_refs
+    ))
     assert selected.source_refs[0].path == "evidence/001.json"
     assert selected.source_refs[0].file_sha256 == "c" * 64
     assert selected.source_refs[0].pointer == "/findings/0"
@@ -232,7 +313,9 @@ def test_supplemental_finding_with_non_mapping_scope_is_kept_without_crashing(sc
         citation_ids=("citation_007",),
         supplemental_file_path="evidence/001.json", supplemental_file_sha256="c" * 64,
     )
-    selected = next(item for item in result if item.title == "异常收入")
+    selected = next(item for item in result if any(
+        ref.path == "evidence/001.json" and ref.pointer == "/findings/0" for ref in item.source_refs
+    ))
     assert selected.scope == {}
     assert any("scope" in warning for warning in selected.limitations)
     assert selected.source_refs[0].pointer == "/findings/0"
@@ -247,7 +330,7 @@ def test_supplemental_projection_requires_frozen_file_identity():
 
 
 @pytest.mark.parametrize("scope", [{"性质": "开单收入"}, "开单收入"])
-def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_scope(scope):
+def test_legacy_closed_totals_do_not_prove_complete_same_basis_attribution(scope):
     authoritative = facts(metrics=[{
         "factId": "fact-1111111111111111", "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
         "periodRoles": ["current"], "metricCodes": ["income"], "field": "income",
@@ -276,11 +359,12 @@ def test_supplemental_attribution_requires_closed_reconciliation_and_preserves_s
         citation_ids=("citation_007",), supplemental_file_path="evidence/001.json",
         supplemental_file_sha256="c" * 64,
     )
-    attribution = next(item for item in result if item.title == "科室收入分解")
+    attribution = next(item for item in result if any(
+        ref.path == "evidence/001.json" and ref.pointer == "/findings/0" for ref in item.source_refs
+    ))
     assert attribution.grain == ("科室",)
+    assert attribution.evidence_level == "evidence_missing"
     if isinstance(scope, dict):
-        assert attribution.kind == "attribution"
-        assert attribution.evidence_level == "direct_decomposition"
         assert attribution.scope == scope
     else:
         assert attribution.evidence_level != "direct_decomposition"
@@ -303,7 +387,9 @@ def test_supplemental_attribution_with_failed_or_nonclosing_reconciliation_is_no
         citation_ids=("citation_007",), supplemental_file_path="evidence/001.json",
         supplemental_file_sha256="c" * 64,
     )
-    attribution = next(item for item in result if item.title == "疑似收入分解")
+    attribution = next(item for item in result if any(
+        ref.path == "evidence/001.json" and ref.pointer == "/findings/0" for ref in item.source_refs
+    ))
     assert attribution.evidence_level != "direct_decomposition"
 
 
@@ -322,7 +408,9 @@ def test_supplemental_attribution_without_authoritative_source_fact_is_not_direc
         citation_ids=("citation_007",), supplemental_file_path="evidence/001.json",
         supplemental_file_sha256="c" * 64,
     )
-    attribution = next(item for item in result if item.title == "伪造分解")
+    attribution = next(item for item in result if any(
+        ref.path == "evidence/001.json" and ref.pointer == "/findings/0" for ref in item.source_refs
+    ))
     assert attribution.evidence_level != "direct_decomposition"
 
 

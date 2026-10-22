@@ -193,6 +193,9 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     text = re.sub(marker_pattern, strip_marker, marked)
     documents = _documents(contents)
     warnings = [*selection_warnings, *money_text_warnings(text)]
+    from ..hospital_operation.professional_review import review_professional_content
+
+    warnings.extend(issue.message for issue in review_professional_content(text))
     reference_issues: list[dict[str, Any]] = []
     warnings.extend(supplemental_attribution_warnings(text, documents, field_definitions or {}))
     for paragraph in re.split(r"\n\s*\n", text):

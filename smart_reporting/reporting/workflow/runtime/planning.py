@@ -1353,6 +1353,12 @@ class RuntimePlanningMixin:
                 data_understanding=data_understanding,
             ),
         }
+        from ...profile.metric_usage import usage_schema_candidates
+
+        base_payload["schemas"] = usage_schema_candidates(
+            base_payload["schemas"],
+            tuple(metric.model_dump(mode="json", by_alias=True) for metric in profile.metrics),
+        )
         validation_feedback: dict[str, Any] | None = None
         previous_output: dict[str, Any] | None = None
         allowed_mutation_paths: tuple[str, ...] = ()
@@ -1392,6 +1398,18 @@ class RuntimePlanningMixin:
                     attempt=min(attempt - 1, 1),
                     failure_kind="schema_failure" if validation_feedback is not None else None,
                 )
+                if any(metric.purpose for metric in profile.metrics):
+                    candidate = output.model_dump(mode="json", by_alias=True)
+                    try:
+                        output = AnalysisBundle.model_validate(candidate, context={
+                            "new_analysis_plan": True, "require_metric_purposes": True,
+                            "registered_metric_purposes": sorted(
+                                {metric.purpose for metric in profile.metrics if metric.purpose}
+                            ),
+                        })
+                    except ValidationError as error:
+                        error._report_candidate = candidate  # type: ignore[attr-defined]
+                        raise
             except ValidationError as error:
                 # Analysis planner 已关闭 Agno 对同一输入的盲重试。结构错误必须携带
                 # 原始候选和精确字段路径进入 Reporting 纠错循环；否则复杂 Bundle

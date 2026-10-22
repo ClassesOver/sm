@@ -1,5 +1,9 @@
 """Reporting Agent、Workflow Runtime 和执行依赖的协议无关装配。"""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from agno.agent import Agent
 
 from ..model_routing import build_model_profiles
@@ -28,6 +32,9 @@ from .workflow.execution import ReportingTaskCoordinator
 from .workflow.repository import ReportingStateRepository
 from .workflow.runtime import ReportWorkflowRuntime
 from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationPlanDraft
+
+if TYPE_CHECKING:
+    from .workflow.answer_registration import AnswerReviewPlanProvider
 
 _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "只能修改 visualizationWorkspace.scriptPath 签发的唯一 Python 文件。",
@@ -135,6 +142,7 @@ def create_report_runtime(
     editor_grants: ReportEditorGrantService | None = None,
     artifact_persistence: ReportArtifactPersistenceService | None = None,
     quality_warning_service: QualityWarningService | None = None,
+    answer_review_plan_provider: AnswerReviewPlanProvider | None = None,
 ) -> tuple[Agent, ReportWorkflowRuntime]:
     code_mode_runtime = getattr(context, "reporting_code_mode_runtime", None)
     if code_mode_runtime is None:
@@ -235,6 +243,7 @@ def create_report_runtime(
         editor_grants=editor_grants,
         artifact_persistence=artifact_persistence,
         quality_warning_service=quality_warning_service,
+        answer_review_plan_provider=answer_review_plan_provider,
         report_public_base_url=(
             settings.report_public_base_url if download_grants is not None else None
         ),

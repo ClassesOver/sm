@@ -87,13 +87,10 @@ def test_ruijin_profile工作量排除口径与真实字段说明一致() -> Non
     assert metrics["outpatient_visits_non"].field_ref == (
         "rj.rj.dm_hdc_gongzuoliang_view.mantime_outpatient_non"
     )
-    assert metrics["discharges_non"].field_ref == (
-        "rj.rj.dm_hdc_gongzuoliang_view.mantime_discharges_non"
-    )
+    assert "discharges_non" not in metrics
     assert metrics["outpatient_visits_non"].aggregation == "sum"
-    assert metrics["discharges_non"].aggregation == "sum"
-    assert metrics["outpatient_visits_non"].description == "不含体检和急诊门诊人次"
-    assert metrics["discharges_non"].description == "不含体检和急诊出院人次"
+    assert metrics["outpatient_visits_non"].description == "门诊人次（不含体检和急诊）"
+    assert "不含体检和急诊门诊人次" in metrics["outpatient_visits_non"].aliases
 
 
 def test_ruijin_profile覆盖收入预算取数指标() -> None:

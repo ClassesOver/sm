@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.run import RunContext
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -341,7 +343,7 @@ async def _publication_fixture(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "runtime_state", "write", "read"])
+@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate", "runtime_state", "write", "read"])
 async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch, fault):
     from smart_reporting.reporting.trace import quality_bundle
 
@@ -364,10 +366,10 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
     runtime._profile = lambda _context: SimpleNamespace(effective_profile_hash="a" * 64)
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_kwargs: index)
-    if fault in {"evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate"}:
+    if fault in {"evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate"}:
         def fail(*_args, **_kwargs):
             raise RuntimeError("injected quality evaluation failure")
-        monkeypatch.setattr(quality_bundle, {"evaluate": "evaluate_quality_bundle", "chart_evaluate": "evaluate_chart_quality", "table_evaluate": "evaluate_table_quality", "semantic_evaluate": "evaluate_semantic_alignment"}[fault], fail)
+        monkeypatch.setattr(quality_bundle, {"evaluate": "evaluate_quality_bundle", "chart_evaluate": "evaluate_chart_quality", "table_evaluate": "evaluate_table_quality", "semantic_evaluate": "evaluate_semantic_alignment", "overview_evaluate": "build_management_overview"}[fault], fail)
     elif fault in {"write", "read"}:
         workspace = runtime.workspace_service
         original = workspace.awrite_bytes if fault == "write" else workspace.read_limited_regular_file
@@ -382,13 +384,99 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
         revision=1, run_context=SimpleNamespace(run_id="report-1"),
         markdown=files["reports/report.md"].decode(),
     )
-    assert identity.sha256 == hashlib.sha256(encode_trace_index(index)).hexdigest()
-    if fault != "runtime_state":
-        assert state["report_quality_issues"][0]["status"] == "unknown"
+    if fault == "overview_evaluate":
+        index_raw = await runtime.workspace_service.read_limited_regular_file(
+            scope.workspace_key, identity.path, max_bytes=16 * 1024 * 1024,
+        )
+        registered = RevisionTraceIndexV1.model_validate_json(index_raw)
+        original = registered.model_copy(update={"files": tuple(
+            file for file in registered.files if not file.path.endswith("/quality-bundle-v1.json")
+        )})
+        assert encode_trace_index(original) == encode_trace_index(index)
+        quality_raw = await runtime.workspace_service.read_limited_regular_file(
+            scope.workspace_key, "reports/quality-bundle-v1.json", max_bytes=16 * 1024 * 1024,
+        )
+        quality = quality_bundle.QualityBundle.model_validate_json(quality_raw)
+        assert quality.management_overview.status == "unavailable"
+        assert any(issue.code == "management_overview_unavailable" for issue in quality.issues)
     else:
+        assert identity.sha256 == hashlib.sha256(encode_trace_index(index)).hexdigest()
+    if fault not in {"runtime_state", "overview_evaluate"}:
+        assert state["report_quality_issues"][0]["status"] == "unknown"
+    elif fault == "runtime_state":
         runtime._state = lambda _context: state
     result = await runtime.issue_http_publication(**arguments)
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["provider", "freeze", "receipt", "invalid_frozen"])
+async def test_answer_registration_failure_preserves_quality_index_and_http_downloads(tmp_path, monkeypatch, fault):
+    from smart_reporting.reporting.trace.quality_bundle import QualityBundle
+    from smart_reporting.reporting.workflow.answer_review import AnswerReviewPlan, questions_sha256
+    from smart_reporting.reporting.workflow.questions import request_questions
+
+    runtime, arguments, scope, durable, artifacts, _, files, index = await _publication_fixture(tmp_path)
+    questions = request_questions("核验收入")
+    durable.payload["questionSpecs"] = questions.model_dump(mode="json", by_alias=True)
+    if fault == "invalid_frozen":
+        durable.payload["answerReviewPlan"] = {"version": "invalid"}
+    original_get = runtime.state_repository.get
+
+    async def get(run_id):
+        return durable if run_id == "report-1" else await original_get(run_id)
+
+    runtime.state_repository.get = get
+    observed = []
+
+    async def provider(_context):
+        observed.append("provider")
+        if fault == "provider":
+            raise OSError("injected domain approval failure")
+        return AnswerReviewPlan(questionSetSha256=questions_sha256(questions))
+
+    async def command(_context, command):
+        if command.name == "freeze_answer_review_plan":
+            observed.append("freeze")
+            if fault == "freeze":
+                raise OSError("injected durable mapping failure")
+            return SimpleNamespace(state=SimpleNamespace(report_run_id="foreign", payload={}))
+
+    runtime.answer_review_plan_provider = provider
+    runtime._apply_durable_command = command
+    state = {}
+    runtime._scope = lambda _: scope.as_state()
+    runtime._state = lambda _: state
+    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._build_drilldown_metrics = AsyncMock(return_value=())
+    monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_: index)
+    identity = await runtime._write_trace_index("reports/report.manifest.json", handles=(), lineage=(),
+        markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
+        revision=1, run_context=SimpleNamespace(run_id="report-1"), markdown=files["reports/report.md"].decode())
+    expected = [] if fault == "invalid_frozen" else ["provider"] if fault == "provider" else ["provider", "freeze"]
+    assert observed == expected
+    assert state["report_quality_issues"][0]["code"] == "answer_review_registration_unavailable"
+    workspace = runtime.workspace_service
+    registered = RevisionTraceIndexV1.model_validate_json(await workspace.read_limited_regular_file(
+        scope.workspace_key, identity.path, max_bytes=16 * 1024 * 1024))
+    quality_file = next(file for file in registered.files if file.path.endswith("/quality-bundle-v1.json"))
+    quality = QualityBundle.model_validate_json(await workspace.read_limited_regular_file(
+        scope.workspace_key, quality_file.path, max_bytes=16 * 1024 * 1024))
+    assert quality.question_coverage["answered"] == 0
+    assert quality.answer_review_plan is None
+    assert any(issue.code == "answer_review_registration_unavailable" for issue in quality.issues)
+    expected_reason = "registered_plan_invalid" if fault == "invalid_frozen" else f"registration_{fault}_unavailable"
+    assert any(expected_reason in issue.reasons for issue in quality.issues)
+    assert registered.subject_bindings == index.subject_bindings and registered.datasets == index.datasets
+    manifest_identity = await register_trace_manifest(workspace, scope.workspace_key, registered, overwrite=True)
+    arguments["output"]["artifactManifest"] = manifest_identity.model_dump(mode="json", by_alias=True)
+    result = await runtime.issue_http_publication(**arguments)
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        for kind, suffix in (("pdf", "pdf"), ("word", "docx")):
+            response = await client.get(result[kind]["downloadUrl"])
+            assert response.status_code == 200 and response.content == files[f"reports/report.{suffix}"]
 
 
 @pytest.mark.anyio
@@ -632,6 +720,85 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
         for artifact, suffix in (("pdf", "pdf"), ("word", "docx")):
             response = await client.get(result[artifact]["downloadUrl"])
+            assert response.status_code == 200
+            assert response.content == files[f"reports/report.{suffix}"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["none", "overview_write", "state_store"])
+async def test_overview_delivery_faults_preserve_files_and_http_downloads(tmp_path, monkeypatch, fault):
+    from smart_reporting.reporting.delivery.report_runtime.overview import load_overview
+    from smart_reporting.reporting.workflow.management_overview import (
+        management_overview_projection,
+    )
+    from smart_reporting.reporting.workspace import REPORT_JOBS_STATE_KEY, WorkspaceReportService
+
+    runtime, arguments, scope, _, artifacts, _, files, _ = await _publication_fixture(tmp_path)
+    workspace = runtime.workspace_service
+    service = WorkspaceReportService(workspace)
+    context = RunContext(run_id="workflow-run", session_id=scope.workspace_key, session_state={})
+    job = {"jobId": "job-1", "sources": []}
+    monkeypatch.setattr(service, "_load_job", lambda *_: job)
+    monkeypatch.setattr(service, "_job_status", AsyncMock(return_value={}))
+    original_write = workspace.awrite_bytes
+    faults_seen = []
+
+    async def write(thread, path, content, **kwargs):
+        if fault == "overview_write" and path.startswith(".reporting-projections/"):
+            faults_seen.append(fault)
+            raise OSError("injected overview storage failure")
+        return await original_write(thread, path, content, **kwargs)
+
+    monkeypatch.setattr(workspace, "awrite_bytes", write)
+    if fault == "state_store":
+        def store(*_):
+            faults_seen.append(fault)
+            raise OSError("injected job storage failure")
+        monkeypatch.setattr(service, "_store_job", store)
+
+    async def run(action, payload, _context):
+        if action == "validate_pdf":
+            return {"ok": fault != "overview_write", "issues": (
+                [{"code": "management_overview_projection_unknown"}] if fault == "overview_write" else [])}
+        assert action == "render_markdown"
+        render = {"markdown": _identity("reports/report.md", files["reports/report.md"], "text/markdown").model_dump(by_alias=True)}
+        if fault == "overview_write":
+            assert payload["job"]["_managementOverviewProjection"]["invalid"]
+        else:
+            identity = payload["job"]["_managementOverviewProjectionFile"]
+            assert identity["size"] > 48 * 1024
+            assert "_managementOverviewProjection" not in payload["job"]
+            root = runtime.workspace_registry.resolve(scope).root
+            assert load_overview(payload["job"], root)["status"] == "unavailable"
+        for kind, path_key, suffix in (("pdf", "output_path", "pdf"), ("word", "word_output_path", "docx")):
+            path = payload[path_key]
+            raw = files[f"reports/report.{suffix}"]
+            await workspace.aensure_directory(scope.workspace_key, str(Path(path).parent))
+            await original_write(scope.workspace_key, path, raw)
+            render[kind] = {"path": path, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        return {"status": "rendered", "render": render}
+
+    monkeypatch.setattr(service, "_run_report_runtime", run)
+    payload = management_overview_projection(None, hashlib.sha256(files["reports/report.md"]).hexdigest())
+    payload["markdown"] = "待确认事项" * 6000  # Exceeds the durable job budget, within the sidecar budget.
+    output = await service._render_report_pair("job-1", "reports/report.md", "rendered/revision-2/report.pdf",
+        artifact_manifest=None, management_overview=payload, run_context=context)
+    assert faults_seen == ([] if fault == "none" else [fault])
+    assert output["validation"]["ok"] == (fault == "none")
+    if fault == "state_store":
+        assert output["validation"]["issues"][0]["code"] == "report_render_state_unavailable"
+    if fault == "none":
+        assert len(json.dumps(context.session_state[REPORT_JOBS_STATE_KEY]).encode()) < 48 * 1024
+    for kind, suffix in (("pdf", "pdf"), ("word", "docx")):
+        arguments["output"][f"{kind}Path"] = output[f"{kind}Path"]
+        raw, _ = await workspace.afile_bytes(scope.workspace_key, output[f"{kind}Path"])
+        assert raw == files[f"reports/report.{suffix}"]
+    result = await runtime.issue_http_publication(**arguments)
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        for kind, suffix in (("pdf", "pdf"), ("word", "docx")):
+            response = await client.get(result[kind]["downloadUrl"])
             assert response.status_code == 200
             assert response.content == files[f"reports/report.{suffix}"]
 

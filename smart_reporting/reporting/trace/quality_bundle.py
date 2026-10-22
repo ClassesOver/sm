@@ -9,7 +9,16 @@ from typing import Literal
 from pydantic import Field
 
 from ..contract import SHA256_PATTERN, StrictModel
+from ..hospital_operation.professional_review import (
+    PROFESSIONAL_REVIEW_VERSION,
+    review_professional_content,
+)
 from ..workflow.answer_review import AnswerReviewPlan, AnswerReviewResult, evaluate_answer_review
+from ..workflow.management_overview import (
+    OVERVIEW_VERSION,
+    ManagementOverview,
+    build_management_overview,
+)
 from ..workflow.questions import QuestionSet
 from .assertions import (
     RULE_VERSION,
@@ -21,10 +30,21 @@ from .chart_quality import ChartQualityCheck, evaluate_chart_quality
 from .contracts_v1 import RevisionTraceIndexV1, canonical_sha256
 from .semantic_alignment import SemanticAlignmentCheck, evaluate_semantic_alignment
 from .semantic_bindings import reference_fact_ids, statement_fingerprints
-from .table_quality import TableQualityCheck, evaluate_table_quality
+from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3"}
+SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1", "statementReview": "1", "scopeWording": "1"}
+
+
+class StatementReview(StrictModel):
+    """Existing local numeric check, not a business-acceptance verdict.
+
+    A matching number may still have scope, period, unit or selector warnings.
+    Preserve those observations instead of collapsing them into an opaque code.
+    """
+
+    numeric_status: Literal["valid", "stale", "unbound"] = Field(alias="numericStatus")
+    warnings: tuple[str, ...] = ()
 
 
 class QualityIssue(StrictModel):
@@ -33,6 +53,7 @@ class QualityIssue(StrictModel):
     severity: Literal["warning", "error"] = "warning"
     checker: Literal["deterministic"] = "deterministic"
     reasons: tuple[str, ...] = ()
+    statement_review: StatementReview | None = Field(default=None, alias="statementReview")
 
 
 class QualityBundle(StrictModel):
@@ -54,6 +75,7 @@ class QualityBundle(StrictModel):
     question_specs: QuestionSet | None = Field(default=None, alias="questionSpecs")
     answer_review_plan: AnswerReviewPlan | None = Field(default=None, alias="answerReviewPlan")
     answer_review: AnswerReviewResult | None = Field(default=None, alias="answerReview")
+    management_overview: ManagementOverview | None = Field(default=None, alias="managementOverview")
     question_coverage: dict = Field(default_factory=dict, alias="questionCoverage")
     question_assertions: dict[str, tuple[str, ...]] = Field(
         default_factory=dict, alias="questionAssertions"
@@ -100,6 +122,8 @@ def evaluate_quality_bundle(
         authorization_scope_hash=authorization_scope_hash,
     )
     issues: list[QualityIssue] = []
+    issues.extend(QualityIssue(code=issue.code, reasons=(issue.message, *issue.review_ids))
+                  for issue in review_professional_content(markdown))
     chart_checks = evaluate_chart_quality(index, markdown, sources, interactive_charts or {})
     issues.extend(
         QualityIssue(code="chart_support_unknown", subjectId=chart_id, reasons=(check.reason,))
@@ -125,6 +149,14 @@ def evaluate_quality_bundle(
         QualityIssue(code="table_support_unknown", subjectId=table_id, reasons=check.reasons)
         for table_id, check in table_checks.items() if check.status != "verified"
     )
+    issues.extend(
+        QualityIssue(
+            code="table_coverage_unknown",
+            subjectId=f"markdown-table:L{line}",
+            reasons=("table_registration_unavailable", f"markdown_line:{line}"),
+        )
+        for line in uncovered_table_lines(markdown, {table.table_id for table in index.tables})
+    )
     assertions: dict[str, AssertionResult] = {}
     bindings: dict[str, str] = {}
     question_assertions: dict[str, list[str]] = {}
@@ -144,6 +176,7 @@ def evaluate_quality_bundle(
         if number is None:
             continue
         reasons = []
+        statement_review = None
         if any(ref.file_resource_id in unavailable for ref in subject.fact_refs):
             reasons.append("source_unavailable")
         if number.table_derivation is None:
@@ -199,12 +232,14 @@ def evaluate_quality_bundle(
                 )
                 if detail["status"] != "valid" or detail["warnings"]:
                     reasons.append("statement_not_supported")
+                    statement_review = StatementReview(numericStatus=detail["status"], warnings=tuple(detail["warnings"]))
         if reasons:
             issues.append(
                 QualityIssue(
                     code="assertion_support_unknown",
                     subjectId=subject.subject_id,
                     reasons=tuple(dict.fromkeys(reasons)),
+                    statementReview=statement_review,
                 )
             )
     markdown_hash = hashlib.sha256(markdown.encode()).hexdigest()
@@ -265,7 +300,7 @@ def evaluate_quality_bundle(
             review = None
             logger.warning("answer_review_unavailable reason={}", type(error).__name__)
             issues.append(QualityIssue(code="answer_review_unavailable", reasons=("review_plan_or_checker_invalid",)))
-    return QualityBundle(
+    bundle = QualityBundle(
         reportId=index.report_id,
         revision=index.revision,
         markdownSha256=markdown_hash,
@@ -286,6 +321,21 @@ def evaluate_quality_bundle(
             key: tuple(dict.fromkeys(values)) for key, values in question_assertions.items()
         },
     )
+    try:
+        overview = build_management_overview(bundle)
+    except Exception as error:
+        from loguru import logger
+
+        logger.warning("management_overview_unavailable reason={}", type(error).__name__)
+        overview = ManagementOverview(
+            inputSha256=input_hash, markdownSha256=markdown_hash, status="unavailable",
+            requiredQuestionCount=len(questions.required_question_ids) if questions else None,
+            reasons=("overview_check_failed",),
+        )
+        bundle = bundle.model_copy(update={"issues": (*bundle.issues, QualityIssue(
+            code="management_overview_unavailable", reasons=("overview_check_failed",),
+        ))})
+    return bundle.model_copy(update={"management_overview": overview})
 
 
 def quality_bundle_is_current(
@@ -301,4 +351,5 @@ def quality_bundle_is_current(
         and bundle.markdown_sha256 == hashlib.sha256(markdown.encode()).hexdigest()
         and bundle.input_sha256 == input_sha256
         and bundle.checker_version == RULE_VERSION
+        and bundle.semantic_rule_versions == SEMANTIC_RULE_VERSIONS
     )

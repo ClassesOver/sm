@@ -66,7 +66,7 @@ def test_projection_runs_the_exact_existing_render_text_pipeline():
     assert [stage["name"] for stage in stages] == [
         "relocate_server_tables/1",
         "compact_single_column_tables/1",
-        "insert_executive_summary/1",
+        "insert_executive_summary/2",
         "collapse_repeated_values/1",
         "readable_large_amounts/1",
         "align_numeric_table_columns/1",
@@ -109,6 +109,7 @@ def test_raw_crlf_identity_is_not_replaced_by_normalized_text_identity():
         "presentationSha256",
         "stages",
         "semanticSupportReused",
+        "overviewCheck",
     ],
 )
 def test_receipt_fields_cannot_be_self_rehashed_into_a_pass(field):
@@ -121,7 +122,7 @@ def test_receipt_fields_cannot_be_self_rehashed_into_a_pass(field):
 def test_rule_or_context_changes_do_not_reuse_prior_support():
     projection = build_render_projection(MARKDOWN, SECTIONS)
     receipt = projection.receipt
-    receipt["version"] = "report-markdown/999"
+    receipt["version"] = "report-markdown/2"
     assert (
         verify_render_projection(receipt, MARKDOWN, SECTIONS)["reason"]
         == "projection_rule_unavailable"

@@ -51,7 +51,7 @@ def domain_definitions() -> tuple[DomainDefinition, ...]:
         DomainDefinition(
             "income",
             "收入",
-            ("actual_medical_income",),
+            ("income_summary_total",),
             aliases=("收入", "营收", "营业收入", "医疗收入", "收入分析", "income"),
             core_questions=("收入规模与结构分析", "收入趋势及主要贡献对象识别"),
             attribution_clues=(

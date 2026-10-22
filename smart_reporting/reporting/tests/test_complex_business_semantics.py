@@ -15,6 +15,15 @@ from smart_reporting.reporting.trace.semantic_bindings import resolve_number_ref
 from .test_monthly_trend_assertions import compile_trend, trend_bundle
 
 
+@pytest.mark.parametrize("department", [None, "普通外科"])
+def test_null_hierarchy_scope_does_not_crash_review(department):
+    selected, _ = reference((10, 20, 30), "total")
+    selected["scope"] = {"department": department, "parent_department": None}
+    selected["entry"]["aliases"] = ["医疗收入"]
+    warnings = number_reference_warnings("普通外科收入为", selected)
+    assert any("业务范围" in warning for warning in warnings) is (department is None)
+
+
 def reference(values, selector="monthlyTrend"):
     doc = json.loads(trend_bundle(values).model_dump_json(by_alias=True))
     result, source, token = compile_trend(doc, selector=selector)

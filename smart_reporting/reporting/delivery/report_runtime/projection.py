@@ -23,9 +23,10 @@ from .markdown import (
     readable_large_amounts,
     relocate_server_tables,
 )
+from .overview import insert_management_overview
 from .pdf import _pdf_markdown
 
-PROJECTION_VERSION = "report-markdown/1"
+PROJECTION_VERSION = "report-markdown/3"
 
 
 def _sha256(raw: bytes) -> str:
@@ -62,6 +63,11 @@ class RenderProjection:
     normalized_source_sha256: str
     context_sha256: str
     stages: tuple[ProjectionStage, ...]
+    _overview_check_json: bytes = b"null"
+
+    @property
+    def overview_check(self):
+        return json.loads(self._overview_check_json)
 
     @property
     def citation_presentations(self) -> list[dict[str, Any]]:
@@ -93,6 +99,7 @@ class RenderProjection:
             "stages": [stage.receipt() for stage in self.stages],
             # Source assertion support cannot be inherited by a changed sentence.
             "semanticSupportReused": False,
+            "overviewCheck": self.overview_check,
         }
         return {**value, "projectionSha256": _sha256(_json(value))}
 
@@ -104,6 +111,7 @@ def build_render_projection(
     citation_presentations: Any = None,
     include_sources: bool = False,
     trace_sources: Any = None,
+    management_overview: Any = None,
 ) -> RenderProjection:
     """Run the complete text pipeline once, for both output formats.
 
@@ -117,12 +125,17 @@ def build_render_projection(
     normalized_hash = _sha256(markdown.encode("utf-8"))
     # Snapshot inputs so an appendix normalizer cannot mutate caller state or
     # change the meaning of contextSha256 after the receipt is created.
+    try:
+        overview_context = json.loads(_json(management_overview))
+    except Exception:
+        overview_context = {"invalid": "overview_payload_invalid"}
     context_raw = _json(
         {
             "sections": sections,
             "citationPresentations": citation_presentations,
             "includeSources": include_sources,
             "traceSources": trace_sources,
+            "managementOverview": overview_context,
         }
     )
     context = json.loads(context_raw)
@@ -136,10 +149,17 @@ def build_render_projection(
 
     apply("relocate_server_tables/1", relocate_server_tables)
     apply("compact_single_column_tables/1", compact_single_column_tables)
-    apply(
-        "insert_executive_summary/1",
-        lambda text: insert_executive_summary(text, context["sections"]),
-    )
+    overview_check = None
+    if management_overview is None:
+        apply("insert_executive_summary/2", lambda text: insert_executive_summary(text, context["sections"]))
+    else:
+        def overview(text):
+            nonlocal overview_check
+            result, overview_check = insert_management_overview(
+                text, context["managementOverview"], _sha256(raw), context["citationPresentations"],
+            )
+            return result
+        apply("insert_management_overview/1", overview)
     apply("collapse_repeated_values/1", collapse_repeated_values)
     apply("readable_large_amounts/1", readable_large_amounts)
     apply("align_numeric_table_columns/1", align_numeric_table_columns)
@@ -163,6 +183,7 @@ def build_render_projection(
         normalized_source_sha256=normalized_hash,
         context_sha256=_sha256(context_raw),
         stages=tuple(stages),
+        _overview_check_json=_json(overview_check),
     )
 
 
@@ -174,6 +195,7 @@ def verify_render_projection(
     citation_presentations: Any = None,
     include_sources: bool = False,
     trace_sources: Any = None,
+    management_overview: Any = None,
 ) -> dict[str, str]:
     """Return a soft, bounded result; missing/legacy/invalid receipts never pass."""
     if not isinstance(receipt, Mapping):
@@ -191,6 +213,7 @@ def verify_render_projection(
             citation_presentations=citation_presentations,
             include_sources=include_sources,
             trace_sources=trace_sources,
+            management_overview=management_overview,
         ).receipt
         if receipt == current:
             return {

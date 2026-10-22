@@ -180,6 +180,36 @@ Schema Snapshot 中的完整 `sourceId.database.table.column` 引用比较。Pro
 
 ### metrics
 
+指标名称和用途分别配置。`description` 是当前展示名称，`purpose` 是已确认用途，
+`businessCategory` 保留预算收入、实际收入、工作量等业务类别，`aliases` 仅识别历史名称。
+同名指标始终按 `code` 和完整 `fieldRef` 区分，不因名称相同而合并，不从名称猜测预算或实际角色。
+
+```json
+{
+  "code": "actual_medical_income",
+  "kind": "currency",
+  "description": "医疗收入实际数",
+  "purpose": "预算或预实对比",
+  "businessCategory": "实际收入",
+  "aliases": ["实际总医疗收入"],
+  "fieldRef": "rj.dwd_income_budget_view.actual_medical_income",
+  "aggregation": "sum"
+}
+```
+
+配置用途后，规划的 `metricUsageGroups` 只列可用指标；原始 Schema 的数值字段不会自动成为候选。
+分析计划通过 `metricPurposes` 选择登记用途，跨用途分析显式列出各用途。历史计划没有该字段时，
+收入、工作量、全成本分别使用收入多维、工作量、成本多维用途；budget 同时承载普通预算和项目预算，
+不能按领域猜测用途，须显式声明“预算或预实对比”或“项目预算分析”。配置了用途的新计划必须提供
+非空 `metricPurposes`，缺失时进入现有结构纠错循环。未知用途仍保留缺口告警，不改用其他指标。
+详细计划和确定性计算使用同一筛选器；删除的指标不从 CSV 或原始数值候选重新补入。
+详细计划冻结 `allowedMetricCodes`、`allowedFieldRefs`；补证预检与验收校验顶层和嵌套指标身份，
+不匹配的发现保留原序号占位并软告警。图谱冻结时从受信详细计划及 Profile 重算范围，不信任补证
+自报用途；不可用补证不进入正文来源，其他有效发现保留。普通补证文件登记不等于数值已验证。
+
+历史 Profile 未声明用途时保持原有能力读取方式；空 `purpose`、`businessCategory`、`aliases`
+不增加到原有序列化内容。已声明用途、分类和新名称进入新 Profile 的哈希，历史冻结名称不重写。
+
 基础指标必须声明一个 `fieldRef`，聚合方式支持 `sum`、`count`、`count_distinct`、`average`；比率指标
 使用 `ratio`，并引用已存在的分子、分母指标：
 
@@ -303,7 +333,7 @@ Profile 中重复维护机构名称。
 
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| `organizationName` | `上海鼎医信息技术有限公司` | 封面、页眉占位符和正文末尾落款 |
+| `organizationName` | `编制单位待确认` | 封面、页眉占位符和正文末尾落款；正式编制单位须由医院配置确认 |
 | `generatedByLabel` | `AI 智能报告平台生成` | 封面底部生成标记 |
 | `watermarkText` | `AI 智能报告平台生成` | 目录和正文页背后的斜向水印 |
 

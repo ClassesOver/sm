@@ -27,6 +27,41 @@ export function sourceValidationIssueCount(result: TraceValidation): number {
     (table ? table.stale + table.unbound + table.insertedRows + (table.copiedCells ?? 0) : 0) + chartIssues + tableChecks
 }
 
+/** Additional semantic work, keeping source availability and business support separate. */
+export function semanticReviewGroupCount(result: TraceValidation): number {
+  const quality = result.quality
+  if (!quality || quality.status !== 'evaluated') return 0
+  const pending = new Set<number>()
+  const subjects = new Map(result.subjects.map(subject => [subject.subjectId, subject]))
+  const tables = new Map(result.tables?.map(table => [table.tableId, table]) ?? [])
+  const charts = new Map(result.charts?.map(chart => [chart.chartId, chart]) ?? [])
+  quality.issues.forEach((issue, index) => {
+    const subject = issue.subjectId ? subjects.get(issue.subjectId) : undefined
+    const table = issue.subjectId ? tables.get(issue.subjectId) : undefined
+    const chart = issue.subjectId ? charts.get(issue.subjectId) : undefined
+    // Already counted in the source review indicator; retain every raw issue.
+    if (issue.code === 'assertion_support_unknown' && subject &&
+      (subject.status !== 'valid' || (subject.warnings?.length ?? 0) > 0)) return
+    if (issue.code === 'table_support_unknown' && table &&
+      (table.dataCheck?.status === 'unknown' || table.cells.stale + table.cells.unbound > 0)) return
+    if (['chart_support_unknown', 'chart_semantic_alignment_unknown'].includes(issue.code) && chart &&
+      (chart.status !== 'valid' || chart.dataCheck?.status !== 'verified' || chart.semanticCheck?.status !== 'verified')) return
+    pending.add(index)
+  })
+  let count = 0
+  const ledger = quality.warningLedger
+  if (ledger && quality.inputSha256 && ledger.qualityInputSha256 === quality.inputSha256 &&
+    ledger.originalIssueCount === quality.issues.length) {
+    for (const group of ledger.groups) {
+      const members = group.issueIndices.filter(index => pending.has(index))
+      if (members.length) count++
+      members.forEach(index => pending.delete(index))
+    }
+  }
+  // Older/malformed worklists cannot hide diagnoses they do not cover.
+  return count + pending.size
+}
+
 function numericalPlaceholderCount(visibleText: string): number {
   let count = 0
   for (const match of visibleText.matchAll(/待核实/g)) {
@@ -52,6 +87,7 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
   const contentWarnings = result.warnings?.length ?? 0
   const sourceFailures = result.sourceIssues?.length ?? 0
   const qualityFailed = result.quality?.status === 'failed'
+  const semanticGroups = semanticReviewGroupCount(result)
   const coverage = result.quality?.questionCoverage
   const hasQuestions = coverage?.required != null && coverage.required > 0
   const answerPending = Boolean(hasQuestions && coverage?.effectiveAnswerRate == null)
@@ -64,9 +100,10 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
     contentWarnings ? `内容提示 ${contentWarnings}` : '',
     sourceFailures ? `来源异常 ${sourceFailures}` : '',
     qualityFailed ? '语义检查暂不可用' : '',
+    semanticGroups ? `语义待确认 ${semanticGroups}组` : '',
     hasQuestions && coverage ? answerPending ? '回答覆盖待核验' : `已核验回答 ${coverage.answered}/${coverage.required}` : '',
   ].filter(Boolean).join(' · ')
-  return { text, state: issues || unverified || reviewTexts || contentWarnings || sourceFailures || qualityFailed || answerPending || answerIncomplete ? 'stale' : total ? 'valid' : 'unknown' }
+  return { text, state: issues || unverified || reviewTexts || contentWarnings || sourceFailures || qualityFailed || semanticGroups || answerPending || answerIncomplete ? 'stale' : total ? 'valid' : 'unknown' }
 }
 
 /**

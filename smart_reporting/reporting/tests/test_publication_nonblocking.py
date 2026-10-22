@@ -8,7 +8,7 @@ from smart_reporting.reporting.workflow.runtime import publication
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure", ["failed_receipt", "invalid_counts", "changed_hash"])
+@pytest.mark.parametrize("failure", ["failed_receipt", "invalid_counts", "changed_hash", "overview_prepare"])
 async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, failure):
     manifest = {
         "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
@@ -34,7 +34,7 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
     }
     runtime = object.__new__(publication.RuntimePublicationMixin)
     runtime._state = lambda _context: state
-    runtime._scope = lambda _context: {"threadId": "thread", "externalRunId": "external-1"}
+    runtime._scope = lambda _context: {"threadId": "thread", "externalRunId": "external-1", "userId": "user"}
     runtime._workflow_result = lambda current: current["report_workflow_result"]
     runtime._envelope = lambda _context: SimpleNamespace(period=None)
     runtime._tool_context = lambda context: context
@@ -56,6 +56,18 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
     monkeypatch.setattr(publication, "_citation_presentations", lambda **_kwargs: [])
     monkeypatch.setattr(publication, "_reporting_observed_data_facts", lambda *_args: [])
     monkeypatch.setattr(publication, "_source_warnings_from_state", lambda _state: [])
+    called = []
+    if failure == "overview_prepare":
+        from smart_reporting.reporting.workflow import overview_sources
+
+        # 经营总览只在注入回答审核计划提供方时启用；这里注入后再让总览来源失败。
+        runtime.answer_review_plan_provider = object()
+
+        async def unavailable(*args):
+            called.append(True)
+            raise OSError("overview source unavailable")
+
+        monkeypatch.setattr(overview_sources, "registered_management_overview", unavailable)
 
     result = await runtime._render_and_validate(RunContext(run_id="report-1", session_id="thread", session_state=state))
 
@@ -63,6 +75,14 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
     assert result["validation"]["ok"] is False
     assert result["validationIssues"]
     assert result["pdfSha256"] == "a" * 64
+    if failure == "overview_prepare":
+        assert called
+        assert runtime.report_tools._render_report_pair.call_args.kwargs["management_overview"]["status"] == "unavailable"
+        assert any(item["code"] == "management_overview_evidence_unavailable" and item["revision"] == 1
+                   for item in state["report_quality_issues"])
+    else:
+        # 未注入提供方：不构建经营总览，渲染沿用各章核心结论。
+        assert runtime.report_tools._render_report_pair.call_args.kwargs["management_overview"] is None
     assert result["wordSha256"] == "b" * 64
     assert result["pdfPath"] == "reports/report.pdf"
     assert result["wordPath"] == "reports/report.docx"

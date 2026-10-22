@@ -18,6 +18,11 @@ from .review_common import _CLAUSE_BREAK
 
 _WORDING = re.compile(r'月均|月平均|平均每月|平均值|均值|单月|累计|合计|总额|总量|总计|汇总')
 _NEGATED_WORDING = re.compile(r'(?:并非|不是|而非|不同于|非|不属于|不代表|不作为|不能称为|不能视为)\s*(?:按|以)?\s*$')
+_SCOPE_EXCLUSION_BEFORE = re.compile(
+    r'(?:并非|不是|而非|非|不含|不包括|不包含|不属于|不来自|未纳入|未计入|剔除|排除|除去)\s*(?:了\s*)?$'
+)
+_SCOPE_EXCLUSION_AFTER = re.compile(r'^\s*(?:以外|之外|除外)')
+_SCOPE_EXCLUSION_CANCELLED = re.compile(r'(?:并非|不是|并不是|没有|未曾|未|不|不能|无法|不应|不宜|不得)\s*$')
 _DEPARTMENT = re.compile(r'[\u3400-\u9fff]{1,12}科(?:室)?')
 _DEPARTMENT_PREFIX = re.compile(r'^(?:(?:其中|本期|本月|本年|本院|该院|全院|预计|目前|科室|一级科室|二级科室)(?:的)?)+')
 _DEPARTMENT_CONTEXT = re.compile(r'显示|表明|反映|可见|可知|发现|统计|观察|关注|比较|相比|相较|登记')
@@ -33,7 +38,7 @@ def _postfix_qualifier(suffix: str) -> str:
     # 当前值的来源入口不是新断言；生成期和编辑期须以同样方式读取其后括注。
     suffix = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*\s*', '', suffix)
     suffix = re.split(r'\{\{value:|\[\[(?:claim|citation):', suffix, maxsplit=1)[0]
-    notes = []
+    notes: list[str] = []
     offset = 0
     while offset < len(suffix) and suffix[offset] in '（(':
         closing = []
@@ -80,10 +85,36 @@ def _affirmative_wording(clause: str) -> list[str]:
             if not _NEGATED_WORDING.search(clause[:match.start()])]
 
 
+def scope_exclusion_warnings(clause: str, scope: Mapping[str, Any]) -> list[str]:
+    """Recognize finite explicit exclusions, without inferring substitute scopes.
+
+    Callers supply only this reference's clause and attached qualifiers. A scope
+    name occurring inside a denial cannot establish affirmative attribution.
+    This does not claim to understand arbitrary negation or approve missing scope.
+    """
+    clause = clause.replace('**', '')
+    warnings = []
+    for key, value in scope.items():
+        if not isinstance(value, str) or not value.strip():
+            continue
+        for match in re.finditer(re.escape(value), clause):
+            before = clause[:match.start()]
+            preceding = _SCOPE_EXCLUSION_BEFORE.search(before)
+            following = _SCOPE_EXCLUSION_AFTER.search(clause[match.end():])
+            # “未排除北院” and “不含北院以外” do not explicitly exclude
+            # 北院. This finite guard is not proof of affirmative inclusion.
+            if preceding and (following or _SCOPE_EXCLUSION_CANCELLED.search(before[:preceding.start()])):
+                continue
+            if preceding or following:
+                warnings.append(f'业务范围需复核：当前引用否定或排除了登记范围 {key}={value}。')
+                break
+    return warnings
+
+
 def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, Any]) -> list[str]:
     """多月合计/均值必须对应完整窗口；累计截止月与背景月份另行处理。"""
     selector = reference['selector']
-    periods = reference.get('periods') or ()
+    periods: tuple[str, ...] = tuple(reference.get('periods') or ())
     if (selector not in {'total', 'monthlyAverage', 'monthlyTrend'} and not selector.startswith(('periodTotals.', 'periodAverages.'))
             or len(periods) < 2 or any(not re.fullmatch(r'\d{4}-\d{2}', period) for period in periods)):
         return []
@@ -100,7 +131,7 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
     if not (1 <= int(written['start']) <= 12 and 1 <= int(written['end'] or written['start']) <= 12
             and 0 <= last - first < 1200):
         return []
-    written_periods = tuple(f'{month // 12:04d}-{month % 12 + 1:02d}' for month in range(first, last + 1))
+    written_periods: tuple[str, ...] = tuple(f'{month // 12:04d}-{month % 12 + 1:02d}' for month in range(first, last + 1))
     cutoff_pattern = r'(?:截至|截止)(?:到)?\s*(?:\d{4}年)?\d{1,2}月'
     cutoff = re.search(cutoff_pattern, period_clause)
     if not cutoff and _written_period(period_clause, fact) is None:
@@ -156,7 +187,8 @@ def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix:
     clause = prefix_clause + ' ' + qualifier
     entry = reference['entry']
     selector = reference['selector']
-    warnings = _monthly_window_warnings(prefix, clause, reference)
+    warnings = scope_exclusion_warnings(rank_prefix + ' ' + qualifier, reference.get('scope') or {})
+    warnings.extend(_monthly_window_warnings(prefix, clause, reference))
     from .top_sets import top_set_wording_warnings
 
     warnings.extend(top_set_wording_warnings(rank_prefix + " " + qualifier, reference))
@@ -207,7 +239,10 @@ def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix:
         warnings.append('统计口径需复核：当前引用不是月均选择器，请核对月均口径。')
 
     scope = reference.get('scope') or {}
-    identity = ' '.join((str(entry.get('displayName') or ''), *(entry.get('aliases') or ()), *scope.values()))
+    # Nullable hierarchy/group keys denote missing mapping, not a text identity.
+    # Keep registered strings usable without inventing a department for nulls.
+    identity = ' '.join((str(entry.get('displayName') or ''), *(entry.get('aliases') or ()),
+                         *(value for value in scope.values() if isinstance(value, str))))
     # 空范围不等于“全院”。正文明确限定科室而引用没有相应登记时，只提示范围未获证实。
     department_clause = scope_clause + ' ' + qualifier
     for calendar in (_DAY_PERIOD, _PERIOD, _SHORT_DAY_PERIOD, _SHORT_PERIOD):

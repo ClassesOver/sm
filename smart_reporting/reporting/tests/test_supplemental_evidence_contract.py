@@ -56,3 +56,28 @@ def test_empty_supplement_tables_or_zero_sided_reconciliation_trigger_repair():
     assert empty_supplemental_evidence_error(evidence([["人员支出", 60]], 60)) is None
     # 表中有数据时对账一侧为 0 可能是真实结果（该范围确无记录），同样不触发重跑。
     assert empty_supplemental_evidence_error(evidence([["人员支出", 60]], 0)) is None
+
+
+@pytest.mark.parametrize("invalid", [
+    {"metricCodes": ["discharges_non"]},
+    {"metricCodes": ["budget_income"]},
+    {},
+    {"metricCodes": ["income"], "tables": [{"metricCode": "budget_income"}]},
+    {"metricCodes": ["income"], "tables": [{"fieldRef": "source.db.table.deleted"}]},
+])
+def test_supplemental_scope_quarantines_only_invalid_finding_without_reindexing(invalid):
+    payload = {
+        "findings": [{"name": "不能使用", "value": 999, **invalid},
+                     {"name": "收入补证", "metricCodes": ["income"], "value": 100}],
+        "reconciliations": [{"name": "合计", "passed": False}],
+        "warnings": [{"code": "business_gap", "message": "业务对账差异"}],
+    }
+    result = validate_supplemental_evidence(json.dumps(payload), {
+        "analysisId": "analysis_001", "datasetIds": ["dataset-1"],
+        "allowedMetricCodes": ["income"], "allowedFieldRefs": ["source.db.table.income"],
+    })
+    assert result.findings[0] == {"name": "补证指标用途不匹配", "metricScopeRejected": True}
+    assert result.findings[1] == payload["findings"][1]
+    assert "findings/0" in result.warnings[0]
+    assert "业务对账差异" in result.warnings
+    assert result.reconciliations[0]["passed"] is False

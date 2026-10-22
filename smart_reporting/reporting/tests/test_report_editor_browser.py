@@ -1735,7 +1735,7 @@ async def test_editor_repeated_export_creates_sequential_revisions(
 
     class Tools:
         async def _render_report_pair(
-            self, _job_id, markdown_path, output_path, *, artifact_manifest, run_context
+            self, _job_id, markdown_path, output_path, *, artifact_manifest, management_overview=None, run_context
         ):
             await workspace.awrite_bytes(thread_id, output_path, b"pdf")
             await workspace.awrite_bytes(
@@ -1882,7 +1882,7 @@ async def test_editor_export_failure_shows_error_and_recoverable(
 
     class Tools:
         async def _render_report_pair(
-            self, _job_id, markdown_path, output_path, *, artifact_manifest, run_context
+            self, _job_id, markdown_path, output_path, *, artifact_manifest, management_overview=None, run_context
         ):
             nonlocal render_attempts
             render_attempts += 1

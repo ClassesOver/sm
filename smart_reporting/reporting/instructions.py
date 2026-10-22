@@ -3,6 +3,10 @@
 from agno.run import RunContext
 
 from .hospital_operation.domains import build_domain_stage_guidance
+from .hospital_operation.professional_review import (
+    professional_expression_guidance,
+    professional_stage_guidance,
+)
 from .phase import (
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
@@ -23,23 +27,37 @@ HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS = (
 
 HOSPITAL_ANALYSIS_INSTRUCTIONS = (
     *build_domain_stage_guidance("analysis"),
+    *professional_stage_guidance("analysis"),
+    (
+        "按 Profile 指标的 purpose（用途）和 businessCategory（业务类别）选指标："
+        "预算或预实对比、收入多维分析、工作量分析、成本多维分析、项目预算分析分别使用其登记指标。"
+        "分析计划用 metricPurposes 显式选择登记用途；跨用途分析列出全部所需用途并说明比较目的。"
+        "description 是展示名称，aliases 仅用于识别旧称；同名指标不能合并，不按名称中的预算或实际字样"
+        "改变字段角色。预算/实际角色以业务类别、code 和 fieldRef 的冻结绑定为准；"
+        "跨用途使用需明确可比性及分析目的，未声明用途不代表通用或已核实。"
+    ),
     (
         "跨域分析仅在期间、粒度、组织和口径可比时执行："
         "收入-工作量用于验证量价结构，预算-实际用于定位执行偏差，"
-        "成本-收入用于判断运营效率，资金-应收用于判断收入与现金背离。"
+        "成本-收入用于统一核算口径后的收支比较，效率另需匹配工作量及资源指标，"
+        "资金-应收用于判断收入与现金背离。"
     ),
 )
 
 HOSPITAL_REPORT_WRITING_INSTRUCTIONS = (
     *build_domain_stage_guidance("draft"),
+    *professional_stage_guidance("draft"),
+    *professional_expression_guidance(),
     (
         "面向医院管理者，严格依据已批准提纲、详细分析计划和本轮不可变 CSV 成稿。"
-        "在现有章节内按“管理结论、数据证据、异常、原因、影响、建议”表达。"
+        "在现有章节内先写有证据的结论与比较，再写影响；原因和建议仅在前提已核实时展开，"
+        "不要求每段凑齐异常、原因和建议。"
     ),
     "关键结论应包含期间、对象、指标值和比较基准。",
     (
         "最终可见报告只保留经营管理需要的结论、证据、异常、影响和行动建议；"
-        "不设置数据来源、技术说明、系统实现或审计血缘章节，"
+        "不设置独立技术取数、系统实现或审计血缘章节；指标定义、业务范围和重要限制集中于"
+        "编制说明或附录，直接影响结论的限制在对应主题就近说明，"
         "不解释 SQL、表字段、数据集哈希、机器 ID 或内部处理步骤。"
     ),
     (
@@ -53,7 +71,8 @@ HOSPITAL_REPORT_WRITING_INSTRUCTIONS = (
     ),
     (
         "被 evidence 或 Warning 标记为缺失、疑似不完整或不可比的期间，不得纳入标题、执行摘要、"
-        "核心累计值、同比、预算执行率或管理目标；主口径必须采用最新完整且同期可比的连续窗口。"
+        "核心累计值、同比、预算执行率或管理目标；统计期间遵守冻结请求，不自行改用最新完整窗口。"
+        "请求窗口覆盖不足时披露缺口与影响；其中可比的子窗口仅作明确标注的补充观察，不能冒充完整本期。"
         "不完整期间只能单独披露其原始值和影响，不得外推、补齐或与完整期间合并形成经营结论。"
     ),
     "计算只能基于本轮不可变 CSV；不得连接数据库、执行 SQL 或扩大授权数据范围。",
@@ -65,7 +84,7 @@ HOSPITAL_REPORT_WRITING_INSTRUCTIONS = (
 )
 
 HOSPITAL_REQUEST_INSTRUCTIONS = build_domain_stage_guidance("request")
-HOSPITAL_OUTLINE_INSTRUCTIONS = build_domain_stage_guidance("outline")
+HOSPITAL_OUTLINE_INSTRUCTIONS = (*build_domain_stage_guidance("outline"), *professional_stage_guidance("outline"))
 
 REPORTING_PHASE_COMMON_INSTRUCTIONS = [
     "你是智能报表 Agent，只处理当前任务 JSON 指定的 Reporting 阶段和交付物。",

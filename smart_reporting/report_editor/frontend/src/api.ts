@@ -224,7 +224,7 @@ export interface TraceChartSource {
 
 export interface TraceValidation {
   sourceIssues?: { resourceId: string; code: string }[]
-  quality?: { status: 'evaluated' | 'failed'; inputSha256?: string; allKeyFactsEvaluated: false; questionCoverage?: { required: number | null; evaluated: number; answered: number; effectiveAnswerRate: number | null; evaluationStatus: string }; issues: { code: string; subjectId?: string | null; reasons?: string[] }[] }
+  quality?: { status: 'evaluated' | 'failed'; inputSha256?: string; allKeyFactsEvaluated: false; warningLedger?: { qualityInputSha256: string; originalIssueCount: number; groups: { groupId: string; issueIndices: number[] }[] }; questionCoverage?: { required: number | null; evaluated: number; answered: number; effectiveAnswerRate: number | null; evaluationStatus: string }; issues: { code: string; subjectId?: string | null; reasons?: string[] }[] }
   reviewNotices?: { claimId: string; sectionId: string | null; kind: 'numeric_unverified' | 'source_review'; originalText?: string | null; occurrences: number; bound: boolean }[]
   draftSha256: string
   warnings?: string[]

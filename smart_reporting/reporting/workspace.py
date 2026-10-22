@@ -585,10 +585,13 @@ class WorkspaceReportService:
         output_path: str,
         *,
         artifact_manifest: dict[str, Any] | None,
+        management_overview: dict[str, Any] | None = None,
         run_context: RunContext | None = None,
     ):
         """从同一 Markdown 生成并验收 PDF/Word，再原子发布整个 revision。"""
         job = self._load_job(job_id, run_context)
+        job.pop("_managementOverviewProjection", None)
+        job.pop("_managementOverviewProjectionFile", None)
         await self._job_status(job, run_context)
         relative_output = self.service.normalize_path(output_path, allow_root=False)
         output = PurePosixPath(relative_output)
@@ -626,6 +629,19 @@ class WorkspaceReportService:
                 raise WorkspacePathConflict("报告 revision 输出目录已经存在，请使用新的 revision。")
             if await self.service.apath_exists(thread_id, staging_relative):
                 raise WorkspaceError("报告 revision 暂存目录已经存在。")
+            if management_overview is not None:
+                try:
+                    content = json.dumps(management_overview, ensure_ascii=False, allow_nan=False).encode("utf-8")
+                    if len(content) > 512 * 1024:
+                        raise ValueError("overview payload exceeds budget")
+                    digest = hashlib.sha256(content).hexdigest()
+                    overview_path = f".reporting-projections/management-overview-{digest}.json"
+                    await self.service.aensure_directory(thread_id, ".reporting-projections")
+                    await self.service.awrite_bytes(thread_id, overview_path, content, overwrite=True)
+                    job["_managementOverviewProjectionFile"] = {"path": overview_path, "size": len(content), "sha256": digest}
+                except Exception as error:
+                    loguru_logger.warning("report_overview_binding_unavailable reason={}", type(error).__name__)
+                    job["_managementOverviewProjection"] = {"invalid": "overview_binding_unavailable"}
             result = await self._run_report_runtime(
                 "render_markdown",
                 {
@@ -710,7 +726,12 @@ class WorkspaceReportService:
             # 逐页验收结果由本方法返回并写入 Workflow 权威状态；job 只需记录是否通过，
             # 否则最多 200 页的 pages 数组会让 durable job 再次线性越过 48 KiB。
             job["validation"] = {"ok": validation.get("ok") is True}
-            self._store_job(job, run_context)
+            try:
+                self._store_job(job, run_context)
+            except Exception as error:
+                loguru_logger.warning("report_render_state_unavailable reason={}", type(error).__name__)
+                validation["ok"] = False
+                validation.setdefault("issues", []).append({"code": "report_render_state_unavailable", "message": "产物状态记录失败，已保留实际可读文件。"})
             result.update(
                 {
                     "status": "validated" if validation.get("ok") is True else "validation_failed",

@@ -1275,21 +1275,43 @@ def test_executive_summary_takes_each_section_conclusion():
     markdown = (
         "# 报告\n\n[[section:a]]\n\n## 1. 收入预算执行情况\n\n### 1.1 总体\n\n"
         "全院收入预算执行整体未达预算。全年完成率为79.28%[[claim:x]]，收入端滞后。\n\n"
-        "[[section:b]]\n\n## 2. 业务工作量变化\n\n| 表 |\n| --- |\n\n"
+        "[[section:b]]\n\n## 2. 业务工作量变化\n\n"
         "门诊人次3月最高，为644,217人次，10月最低。其余月份平稳。\n\n"
         "[[section:c]]\n\n## 3. 指标统计关系说明\n\n相关不等于因果，仅作观察。\n"
     )
     result = insert_executive_summary(markdown, sections)
     summary = result[result.index(SUMMARY_SENTINEL):result.index(SUMMARY_END_SENTINEL)]
     assert result.index(SUMMARY_SENTINEL) < result.index("[[section:a]]")
-    assert "- **收入预算执行情况**：全院收入预算执行整体未达预算。全年完成率为79.28%，收入端滞后。" in summary
+    assert "- **收入预算执行情况**：1.1 总体： 全院收入预算执行整体未达预算。全年完成率为79.28%，收入端滞后。" in summary
     assert "- **业务工作量变化**：门诊人次3月最高，为644,217人次，10月最低。" in summary
     assert "指标统计关系说明" not in summary and "[[" not in summary
     # 只有一章可取时不生成。
     assert insert_executive_summary(markdown, sections[:1]) == markdown
 
 
-def test_executive_summary_skips_unverified_sentences_raw_values_and_long_titles():
+@pytest.mark.parametrize("qualification", [
+    "收入归属和成本分摊口径尚未匹配，暂不能据此评价经营结余。",
+    "\n\n该层级组织映射缺失率80%，不支持完整科室间比较。",
+    "\n\n> 该结果只覆盖登记范围，不能外推全院。",
+    "\n### 口径边界\n该分类未确认，不支持业务归因。",
+    "\n\n### 预算版本未核实，不支持完成率评价",
+])
+def test_summary_keeps_same_and_later_paragraph_qualifications(qualification):
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _section_conclusion
+
+    result = _section_conclusion("## 收支\n\n收支差额为100万元。" + qualification)
+    assert "100万元" in result
+    assert qualification.splitlines()[-1].lstrip("> #") in result
+
+
+def test_summary_omits_whole_chapter_if_it_cannot_preserve_its_context():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _section_conclusion
+
+    assert _section_conclusion("收入100万元。\n\n" + "完整口径限制。" * 100) is None
+    assert _section_conclusion("收入100万元。\n\n| 口径限制 |\n| --- |\n| 不可比 |") is None
+
+
+def test_executive_summary_keeps_qualifications_and_compacts_raw_values_and_long_titles():
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
         SUMMARY_END_SENTINEL,
         SUMMARY_SENTINEL,
@@ -1306,9 +1328,11 @@ def test_executive_summary_skips_unverified_sentences_raw_values_and_long_titles
     )
     result = insert_executive_summary(markdown, sections)
     summary = result[result.index(SUMMARY_SENTINEL):result.index(SUMMARY_END_SENTINEL)]
-    assert "- **预算人次比较变化等**：全院收入合计111.24亿元，较上年增长。" in summary
-    assert "- **成本结构**：人员支出占比最高，为35.32%。" in summary
-    assert "待核实" not in summary and "1月偏差最大" not in summary and "净额口径" not in summary
+    assert "- **预算人次比较变化等**：实际支出相当于预算支出的数值待核实。" in summary
+    assert "全院收入合计111.24亿元，较上年增长。" in summary
+    assert "- **成本结构**：成本合计数值待核实。该口径为含负值的净额口径。" in summary
+    assert "人员支出占比最高，为35.32%。" in summary
+    assert "11,123,541,503元" not in summary
 
 
 def test_render_collapses_identical_listed_values():
@@ -1373,3 +1397,12 @@ def test_render_shows_large_yuan_amounts_in_readable_units() -> None:
     assert "预算人次727.51万人次" in rendered and "门诊644,217人次" in rendered
     assert "（9,911,520,144元）" in rendered
     assert "| 药品 | 3,046,407,434元 |" in rendered and "![图：药品3,046,407,434元]" in rendered
+
+
+def test_executive_summary_strips_every_list_marker_in_a_list_paragraph():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _section_conclusion
+
+    # 审阅：列表段落先拼行再去前缀，只去掉第一项的“- ”，后续项的符号混进核心结论。
+    conclusion = _section_conclusion("## 1. 收入\n\n收入总体增长。\n\n- 药品收入增长5%。\n- 材料收入下降2%。")
+    assert conclusion == "收入总体增长。 药品收入增长5%。材料收入下降2%。"
+    assert "- " not in conclusion

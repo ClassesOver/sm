@@ -8,10 +8,11 @@ import { beforeAll, expect, it } from 'vitest'
 import type { TraceValidation } from './api'
 import { createBodyValueMarksPlugin, documentValueMarks, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 import { markerDecorations } from './protocol-plugin'
-import { nextSourceIssue, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
+import { nextSourceIssue, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 interface ReviewCase {
   id: string; marks: string[]; issues: number; warning?: string; original?: string; canRestore?: boolean
+  semanticGroups?: number; restoredSemanticGroups?: number
 }
 const cases: ReviewCase[] = JSON.parse(readFileSync(resolve(
   '../../reporting/tests/fixtures/reference_review_cases.json',
@@ -54,7 +55,10 @@ for (const example of cases) {
       }
       const actionable = marks.filter(mark => mark.state !== 'valid')
       const coverage = sourceCoverageSummary(validation, view.state.doc.textContent)
-      expect(coverage.state).toBe(actionable.length ? 'stale' : 'valid')
+      const semanticGroups = example.semanticGroups ?? 0
+      expect(semanticReviewGroupCount(validation)).toBe(semanticGroups)
+      expect(coverage.state).toBe(actionable.length || semanticGroups ? 'stale' : 'valid')
+      if (semanticGroups) expect(coverage.text).toContain(`语义待确认 ${semanticGroups}组`)
       let after: number | null = null
       const visited: number[] = []
       for (let index = 0; index < actionable.length; index++) {
@@ -73,11 +77,15 @@ for (const example of cases) {
       expect(view.state.doc.eq(before)).toBe(!example.canRestore)
       if (example.canRestore) {
         expect(replay.restored).toBeTruthy()
-        // 实际写回正文必须与后端再次校验通过的正文逐字相同，才能消除待复核状态。
+        // 恢复数值须与后端重核正文相同；范围或证明缺口不能随金额恢复而清除。
         expect(view.state.doc.textContent).toBe(replay.restored!.markdown)
         updateBodyValueMarks(view, replay.restored!.validation)
         expect(documentValueMarks(view.state.doc, replay.restored!.validation).every(mark => mark.state === 'valid')).toBe(true)
-        expect(sourceCoverageSummary(replay.restored!.validation, view.state.doc.textContent).state).toBe('valid')
+        expect(sourceValidationIssueCount(replay.restored!.validation)).toBe(0)
+        const restoredSemanticGroups = example.restoredSemanticGroups ?? 0
+        expect(semanticReviewGroupCount(replay.restored!.validation)).toBe(restoredSemanticGroups)
+        expect(sourceCoverageSummary(replay.restored!.validation, view.state.doc.textContent).state)
+          .toBe(restoredSemanticGroups ? 'stale' : 'valid')
         expect(nextSourceIssue(view.dom, null, element => view.posAtDOM(element, 0), replay.restored!.validation)).toBeNull()
       }
     } finally {

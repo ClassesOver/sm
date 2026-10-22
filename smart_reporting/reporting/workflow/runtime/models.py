@@ -147,6 +147,10 @@ class MeasureSemanticProposal(_StrictModel):
 
 class AnalysisItem(_StrictModel):
     code: str = Field(min_length=1, max_length=128)
+    metric_purposes: tuple[str, ...] = Field(
+        default=(), alias="metricPurposes", max_length=20, exclude_if=lambda value: not value,
+        description="本分析使用的指标用途，来自 Profile purpose/metricUsageGroups；跨用途分析显式列出各用途。",
+    )
     analysis_name: str | None = Field(
         alias="analysisName", default=None, min_length=1, max_length=60,
         description="简短业务名称，例如2025年收入汇总、2025年收入同比；不得使用分析编号。",
@@ -191,13 +195,21 @@ class AnalysisItem(_StrictModel):
     )
 
     @model_validator(mode="after")
-    def validate_new_planning_scope(self, info: ValidationInfo) -> "AnalysisItem":
+    def validate_new_planning_scope(self, info: ValidationInfo) -> AnalysisItem:
         # 旧状态仍可读取；新模型响应必须显式声明范围，不能默默复用全部窗口。
         if info.context and info.context.get("new_analysis_plan"):
             if not self.analysis_name or not self.analysis_name.strip() or not self.period_roles:
                 raise ValueError("新分析项必须提供非空 analysisName 和 periodRoles")
             if "series_granularity" not in self.model_fields_set:
                 raise ValueError("新分析项必须提供 seriesGranularity；非时间序列填 null")
+            if info.context.get("require_metric_purposes") and not self.metric_purposes:
+                raise ValueError("配置了指标用途的新分析项必须显式提供非空 metricPurposes，不能由 domain 猜测")
+            # 未登记的用途会选不到任何指标、所有补证被拒且只留软告警：规划阶段就退回纠错。
+            registered = info.context.get("registered_metric_purposes")
+            if registered is not None and (unknown := sorted(set(self.metric_purposes) - set(registered))):
+                raise ValueError(
+                    f"metricPurposes 包含未登记的用途 {unknown}，只能使用 Profile 登记的用途：{sorted(registered)}"
+                )
         if len(set(self.period_roles)) != len(self.period_roles):
             raise ValueError("periodRoles 不能重复")
         return self

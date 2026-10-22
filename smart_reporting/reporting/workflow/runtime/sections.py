@@ -1583,20 +1583,38 @@ async def _generate_section_in_blocks(
     original_evidence_files = evidence.files
     table_sources = _verified_table_sources(original_evidence_files)
     scoped_fact_ids: set[str] | None = None
+    source_warnings: list[dict[str, Any]] = []
     if work_item.finding_ids:
         scoped_files, scoped_fact_ids, source_warnings = finding_evidence_view(
             evidence.files, work_item
         )
         evidence = evidence.model_copy(update={
             "files": scoped_files,
-            "factSummaries": (*evidence.fact_summaries, *(
+            "fact_summaries": tuple(
                 f"warning: {item['message']}" for item in source_warnings
-            )),
+            ),
         })
+        unavailable = {warning["details"]["findingId"] for warning in source_warnings}
+        model_item = _section_model_work_item_payload(work_item, unavailable_finding_ids=unavailable)
+        # 规划、整章和逐块生成共用当前来源核查结果；不改写冻结 WorkItem 身份。
+        instruction_payload = {
+            **instruction_payload,
+            "sectionWorkItem": model_item,
+            "sectionGoal": {
+                **instruction_payload.get("sectionGoal", {}),
+                "findingPresentation": [{
+                    "findingId": item["findingId"],
+                    "presentationPolicy": item["presentationPolicy"],
+                    "limitations": item.get("limitations", []),
+                } for item in model_item["findingSummaries"]],
+            },
+        }
 
-    if work_item.narrative_role == "appendix":
+    if work_item.finding_ids or work_item.narrative_role == "appendix":
         # 文件已由 SectionWorkflow 校验；这里只精简模型写作视图，提交仍核对原始 WorkItem。
-        evidence = evidence.model_copy(update={"fact_summaries": ()})
+        evidence = evidence.model_copy(update={"fact_summaries": tuple(
+            item for item in evidence.fact_summaries if item.startswith("warning:")
+        )})
         work_item = work_item.model_copy(update={"evidence": tuple(
             item.model_copy(update={
                 "summary": "本节只呈现 findingSummaries 分配的冻结发现。",
@@ -1804,16 +1822,24 @@ async def _generate_section_in_blocks(
         raise AssertionError("章节规划纠错循环未终止。")
 
     decision = _fit_section_plan_budget(decision, work_item)
+
+    def retain_source_warnings(result: RenderSectionDecision) -> RenderSectionDecision:
+        # 来源问题独立于正文纠错；即使模型不再写“待核实”，也不能抹去核查失败。
+        if review_notices is not None and result.blocks and source_warnings:
+            review_notices.setdefault(result.blocks[0].block_id, []).extend(source_warnings)
+        return result
+
     if whole_section:
         for compact in (False, True):
             try:
-                return await _generate_whole_section_content(
+                result = await _generate_whole_section_content(
                     agent, instruction_payload, evidence, work_item, decision,
                     scope=scope, run_context=run_context, thinking_request=thinking_request,
                     review_notices=review_notices, number_contents=number_contents,
                     table_sources=table_sources,
                     allowed_fact_ids=scoped_fact_ids, compact=compact,
                 )
+                return retain_source_warnings(result)
             except (ReportingError, TaskExecutionContextHardLimitError) as error:
                 if (
                     not isinstance(error, TaskExecutionContextHardLimitError)
@@ -2052,11 +2078,11 @@ async def _generate_section_in_blocks(
                 continue
             blocks.append(candidate)
             break
-    return RenderSectionDecision(
+    return retain_source_warnings(RenderSectionDecision(
         sectionCode=decision.section_code,
         blocks=tuple(blocks),
         claims=decision.claims,
-    )
+    ))
 
 
 async def _generate_whole_section_content(
@@ -2373,13 +2399,37 @@ def _promoted_heading_block(
     return promoted
 
 
-def _section_model_work_item_payload(work_item: SectionWorkItem) -> dict[str, Any]:
+def _section_model_work_item_payload(
+    work_item: SectionWorkItem, *, unavailable_finding_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    from ...hospital_operation.finding_presentation import finding_presentation_policy
+
     payload = work_item.model_dump(mode="json", by_alias=True)
     payload.pop("factFiles", None)
     if work_item.finding_ids or work_item.narrative_role == "appendix":
         # 动态章节已有发现摘要；整项分析摘要和计算审计仍保留在冻结 WorkItem。
         payload.pop("factSummaries", None)
         for finding in payload["findingSummaries"]:
+            unavailable = finding["findingId"] in (unavailable_finding_ids or ())
+            if unavailable:
+                # Only routing identities and priority survive a failed source
+                # check. Titles, impact values, scope and legacy free text can
+                # contain the same unsupported conclusion as the old summary.
+                routing = {key: finding[key] for key in (
+                    "findingId", "analysisIds", "kind", "metricCodes", "periodRoles",
+                    "priority", "citationIds",
+                ) if key in finding}
+                finding.clear()
+                finding.update({
+                    **routing, "title": "发现来源待核实",
+                    "summary": "来源未完整核实，原摘要不能作为经营结论；需补齐证据。",
+                    "evidenceLevel": "evidence_missing", "actionability": "unknown",
+                    "limitations": ["当前发现来源未完整核实，需补齐后再评价其数值、范围及业务含义。"],
+                })
+            # Recompute from frozen evidence level, never trust a supplied policy.
+            finding["presentationPolicy"] = finding_presentation_policy(
+                finding.get("evidenceLevel"), source_unavailable=unavailable,
+            )
             finding.pop("sourceRefs", None)
             if work_item.narrative_role == "appendix":
                 finding.pop("relatedFindingIds", None)
@@ -2609,7 +2659,7 @@ class RuntimeSectionsMixin:
             title=section.title,
             objective="；".join(objective_parts),
             completionConditions=(
-                ("仅呈现当前章节分配的管理发现及其证据、经营影响和管理动作" if finding_ids
+                ("仅呈现当前章节分配的管理发现，按证据等级区分事实、关联、假设与缺项；建议以已核实前提为限" if finding_ids
                  else "完整呈现当前章节全部冻结事实及其管理结论"),
                 "分别标注各发现的期间、单位和共享指标口径，不把不同口径改写成同一事实",
                 "覆盖当前章节 evidence 提供的 citation",

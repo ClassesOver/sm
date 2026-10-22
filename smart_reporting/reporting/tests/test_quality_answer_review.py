@@ -29,14 +29,14 @@ from .test_reporting_state import initial_state
 from .test_trace_subject_validate import _make_editor_with_subject
 
 
-async def case(tmp_path):
+async def case(tmp_path, scope_wording="北院"):
     editor, _, context = await _make_editor_with_subject(
         tmp_path,
         period_table=True,
         include_table=False,
         number_reference=True,
         metric_scope={"院区": "北院"},
-        number_statement="2025年10月北院收入{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:万元}}。",
+        number_statement="2025年10月" + scope_wording + "收入{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:万元}}。",
     )
     index = await editor.trace.require_index(context)
     sources = {
@@ -83,6 +83,23 @@ def evaluate(index, markdown, sources, questions, plan):
         questions=questions,
         answer_review_plan=plan,
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("wording", ["非北院", "不含北院的", "北院之外"])
+async def test_registered_mapping_cannot_approve_a_statement_excluding_its_scope(tmp_path, wording):
+    _, _, index, markdown, sources, questions, plan = await case(tmp_path, wording)
+    current = evaluate(index, markdown, sources, questions, plan)
+    # The source and arithmetic remain usable; the frozen prose contradicts scope.
+    assert current.assertions[0].status == "supported"
+    issue = next(issue for issue in current.issues if "statement_not_supported" in issue.reasons)
+    assert issue.statement_review.numeric_status == "valid"
+    assert any("登记范围 院区=北院" in warning for warning in issue.statement_review.warnings)
+    assert current.question_coverage["answered"] == 0
+    assert current.answer_review.conditions[0].status == "unknown"
+    assert current.management_overview.rows[0].status == "unknown"
+    assert current.semantic_rule_versions["scopeWording"] == "1"
 
 
 @pytest.mark.anyio
