@@ -787,7 +787,9 @@ def frozen_number_guide(
                     "periodStart": fact.period_end if stock else fact.period_start,
                     "periodEnd": fact.period_end,
                     "aggregation": fact.aggregation,
-                    "meaning": "最新登记期间的期末余额，不能跨期相加"
+                    # 时间不可加只说明不能跨期相加；相同月值不证明期末余额或等额分摊（R018/R070）。
+                    "meaning": "最新登记期间的登记值，不能跨期相加；未确认时间属性前不得称为期末余额、"
+                    "存量或等额分摊计划"
                     if stock
                     else _TOTAL_MEANINGS.get(fact.aggregation, "完整期间的统计值"),
                     **(
@@ -888,7 +890,7 @@ def frozen_number_guide(
                     "group": group.group,
                     "reference": reference(f"{key}.{index}"),
                     "meaning": (
-                        "最新登记期间的完整分组组合期末余额" if stock else "完整分组组合的数值"
+                        "最新登记期间的完整分组组合登记值" if stock else "完整分组组合的数值"
                     )
                     + "，不能称为单一科室或院区累计",
                 }

@@ -87,6 +87,13 @@ def test_professional_criteria_reach_the_actual_workflow_stage(stage, instructio
     ('集中记录表明是一次性入账。', 'professional_concentrated_record_as_oneoff'),
     ('成本占比高，因此管理异常。', 'professional_concentration_as_risk'),
     ('收入与成本口径不一致，但科室结余为20万元，仅供参考。', 'professional_incompatible_surplus'),
+    ('各月数值完全一致，属于按整年等额分摊的预算计划。', 'professional_constant_budget_as_stock'),
+    ('变动额与变动率以2025年1月与9月两个月份计算。', 'professional_endpoint_change_as_period_change'),
+    ('相关系数为0.97，样本覆盖4,091条明细记录。该关联为弱正相关。', 'professional_correlation_strength_mislabeled'),
+    ('2025年1—9月门诊人次下半年高位波动。', 'professional_half_year_beyond_window'),
+    ('## 7.2 收入预算类统计关联\n\n说明。', 'professional_correlation_section'),
+    ('![收入大类构成](chart.png "药品与卫生材料合计占待核实")', 'professional_caption_placeholder'),
+    ('*图表：北部院区执行率待核实为最低*', 'professional_caption_placeholder'),
 ])
 def test_annotation_counterexamples_produce_specific_soft_diagnostics(text, code):
     issues = review_professional_content(text)
@@ -117,6 +124,12 @@ def test_annotation_counterexamples_produce_specific_soft_diagnostics(text, code
     '本期收入与成本已经匹配，结余为20万元。',
     '### 业务情况\n\n正常零值应如实保留，缺失不得补零。',
     '```text\n执行率为89%，超预算。\n```',
+    '各月数值相同，不能据此认定属于等额分摊。',
+    '1月与9月差额仅为两个单月观察，不代表累计变化。',
+    '相关系数为0.32，属于弱正相关。',
+    '2025年1—9月中，7—9月处于高位。',
+    '2025年全年报告，下半年收入回升，12月最高。',
+    '![收入大类构成](chart.png "药品与卫生材料合计占49.03%")',
 ])
 def test_valid_limits_and_business_distinctions_are_not_flagged(text):
     assert review_professional_content(text) == ()
@@ -146,3 +159,14 @@ async def test_editor_reevaluates_professional_findings_for_current_body(tmp_pat
     updated = await editor.trace.validate(context, fixed, hashlib.sha256(fixed.encode()).hexdigest())
     assert all(issue['code'] != 'professional_budget_direction_conflict' for issue in updated['quality']['issues'])
     assert updated['quality']['inputSha256'] != result['quality']['inputSha256']
+
+
+def test_text_generators_receive_review_rules_and_expression_examples():
+    """表述示例必须进入真正撰写正文、图注的生成器，而不只存在于常量中。"""
+    from smart_reporting.reporting.bootstrap import create_reporting_text_generators
+
+    visualization, section, recovery = create_reporting_text_generators(None)
+    for agent in (section, recovery):
+        assert set(HOSPITAL_REPORT_WRITING_INSTRUCTIONS) <= set(agent.instructions)
+        assert set(professional_expression_guidance()) <= set(agent.instructions)
+    assert set(professional_stage_guidance("draft")) <= set(visualization.instructions)

@@ -130,6 +130,10 @@ from ...hospital_operation.outline import (
     freeze_outline,
     normalize_outline_proposal_candidate,
 )
+from ...hospital_operation.professional_review import (
+    professional_expression_guidance,
+    professional_stage_guidance,
+)
 from ...host_workspace import (
     HostReportingWorkspace,
     ReportingWorkspaceRegistry,
@@ -943,6 +947,9 @@ class _ReportWorkflowRuntimeBase:
                 "完整总量等于 rows 数值与 omittedNumericSums 之和；原始行数以 view.rowCount 为准，完整文件身份以 sourceFile 为准。",
                 "supplementalEvidence 为 null 且 evidenceWarnings 声明补证已放弃时，只能使用 deterministicFacts；不得声称缺失事实已经验证。",
                 "summary 使用可直接进入报告的中文业务表述，不使用 Markdown 标题；warnings 只保留会影响结论解释的事实限制。",
+                # summary 会作为冻结发现进入章节，须与章节正文遵循同一专业审阅与表述要求。
+                *professional_stage_guidance("draft"),
+                *professional_expression_guidance(),
             ),
         )
         self._sql_agent = self._planning_agent(
