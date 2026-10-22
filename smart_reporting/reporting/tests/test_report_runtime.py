@@ -1342,6 +1342,9 @@ def test_render_collapses_identical_listed_values():
     assert collapse_repeated_values("全年合计分别为0元[[claim:a]]、0元[[claim:b]]、0元、0元。") == "全年合计均为0元[[claim:a]]。"
     assert collapse_repeated_values("分别为0元、0元、5元。") == "分别为0元、0元、5元。"
     assert collapse_repeated_values("分别为10%、10.5%。") == "分别为10%、10.5%。"
+    assert collapse_repeated_values("三项分别为10%、10%和20%。") == "三项分别为10%、10%和20%。"
+    assert collapse_repeated_values("分别为0元、0元及5元") == "分别为0元、0元及5元"
+    assert collapse_repeated_values("分别为0元、0元，合计0元") == "均为0元，合计0元"
 
 
 def test_render_transposes_tall_single_column_server_tables():
@@ -1378,6 +1381,12 @@ def test_model_table_numeric_columns_are_right_aligned():
     # 数值列右对齐；文本列与已声明居中的列不动。
     assert "| --- | ---: | ---: | :---: | --- |" in aligned
     assert align_numeric_table_columns("| a |\n| --- |") == "| a |\n| --- |"
+    # 平均住院日、倍数、例数与带来源标记的单元格同样是数值列。
+    hospital = (
+        "| 科室 | 平均住院日 | 手术例数 | 收入 |\n| --- | --- | --- | --- |\n"
+        "| 内科 | 8.5天 | 1,320例 | 1.20亿元[[claim:a]] |\n| 外科 | 6天 | 980例 | **0.98亿元** |\n"
+    )
+    assert "| --- | ---: | ---: | ---: |" in align_numeric_table_columns(hospital)
 
 
 def test_render_shows_large_yuan_amounts_in_readable_units() -> None:

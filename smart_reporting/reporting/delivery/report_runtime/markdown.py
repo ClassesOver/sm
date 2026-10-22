@@ -585,9 +585,10 @@ def readable_large_amounts(markdown: str) -> str:
 
 
 # “四项全年合计分别为0元、0元、0元、0元”：逐项相同的数值渲染时合并为“均为0元”，保留首个来源标记。
+# 列举后仍以“和/及/与/或”接续其他项（“分别为10%、10%和20%”）时不是全部相同，不合并。
 _REPEATED_VALUES = re.compile(
     r"分别为(?P<value>-?\d[\d,]*(?:\.\d+)?(?:亿元|万元|元|万人次|人次|床日|%))(?P<marks>(?:\[\[[^\]\r\n]+\]\])*)"
-    r"(?:、(?P=value)(?:\[\[[^\]\r\n]+\]\])*)+(?![\d.,]|、)"
+    r"(?:、(?P=value)(?:\[\[[^\]\r\n]+\]\])*)+(?![\d.,]|、|\s*(?:和|及|与|或|以及))"
 )
 
 
@@ -598,10 +599,12 @@ def collapse_repeated_values(markdown: str) -> str:
 # 模型自写表格常把分隔行写成全左对齐，金额、比率列的位数与小数点对不齐。渲染时全部
 # 单元格都是数值（可带单位、百分号或“—”）的列改为右对齐；已声明对齐方式的列不动。
 _NUMERIC_CELL = re.compile(
-    r"[+\-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:%|‰|亿元|万元|元|万人次|人次|床日|个百分点|亿|万)?"
+    r"[+\-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:%|‰|亿元|万元|元|万人次|人次|床日|个百分点|亿|万|天|倍|例|张|人)?"
     r"|[—–\-]{1,2}|"
 )
 _TABLE_SEPARATOR = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$")
+# 单元格里的加粗与来源标记（“8.9亿元[[claim:a]]”）不影响是否为数值列。
+_CELL_MARKUP = re.compile(r"\*\*|\[\[[^\]\r\n]+\]\]")
 
 
 def _table_cells(line: str) -> list[str]:
@@ -623,7 +626,7 @@ def align_numeric_table_columns(markdown: str) -> str:
             continue
         aligned = [
             "---:" if separator == "---" and any(row[column] for row in rows)
-            and all(_NUMERIC_CELL.fullmatch(row[column].replace("**", "")) for row in rows) else separator
+            and all(_NUMERIC_CELL.fullmatch(_CELL_MARKUP.sub("", row[column])) for row in rows) else separator
             for column, separator in enumerate(separators)
         ]
         lines[index] = "| " + " | ".join(aligned) + " |"
