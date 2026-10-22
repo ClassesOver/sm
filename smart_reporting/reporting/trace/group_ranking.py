@@ -46,6 +46,8 @@ def registered_group_rank(
         or "／" in metric.unit
     ):
         return None, ("ranking_aggregation_not_supported",)
+    if any(metric.group_warnings.get(field) for field in selected.group_values):
+        return None, ("ranking_dimension_review_required",)
     if metric.missing_count != 0 or metric.period_missing_count != 0 or metric.warnings or warnings:
         return None, ("ranking_completeness_unproven",)
     if len(periods) > 1:
