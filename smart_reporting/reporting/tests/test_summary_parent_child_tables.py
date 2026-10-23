@@ -221,3 +221,24 @@ def test_summary_series_stage_does_not_reexpand_compacted_evidence_tables():
 
     assert _byte_count(projected) <= 4000
     assert len(projected["supplementalEvidence"]["findings"][0]["rows"]) <= 2
+
+
+def test_summary_trims_pairwise_correlation_table_by_strength():
+    rows = [[0, f"m{index}", f"n{index}", 0.01] for index in range(400)]
+    rows[123][3] = -0.99
+    payload = {
+        "deterministicFacts": {"metrics": [], "correlations": {
+            "datasets": ["dataset-1"], "columns": ["dataset", "left", "right", "value"], "rows": rows,
+        }},
+        "supplementalEvidence": None,
+    }
+    budget = _byte_count(payload) // 4
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=budget, count_tokens=_byte_count
+    )
+
+    table = projected["deterministicFacts"]["correlations"]
+    assert _byte_count(projected) <= budget
+    assert rows[123] in table["rows"] and table["datasets"] == ["dataset-1"]
+    assert table["view"]["rowCount"] == 400

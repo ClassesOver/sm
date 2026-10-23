@@ -639,6 +639,14 @@ def _project_analysis_summary_payload(
     ]
     raw_correlations = raw_facts.get("correlationDetails") if isinstance(raw_facts, Mapping) else None
     correlation_count = len(raw_correlations) if isinstance(raw_correlations, (list, tuple)) else 0
+    # 模型投影把相关系数压成 [dataset, left, right, value] 表，行数随指标数平方增长。
+    raw_pairs = raw_facts.get("correlations") if isinstance(raw_facts, Mapping) else None
+    pair_rows = (
+        raw_pairs.get("rows")
+        if isinstance(raw_pairs, Mapping) and raw_pairs.get("columns") == ["dataset", "left", "right", "value"]
+        else None
+    )
+    pair_count = len(pair_rows) if isinstance(pair_rows, (list, tuple)) else 0
 
     def compact_non_tabular(value: Any, *, key: str | None = None) -> Any:
         """压缩摘要中的重复长文本；完整 evidence 文件不受影响。"""
@@ -702,6 +710,23 @@ def _project_analysis_summary_payload(
                 "selectedRowCount": len(kept),
                 "order": "abs_value_desc",
             }
+        if correlation_limit is not None and pair_count > correlation_limit:
+            rows = list(pair_rows or ())
+            ranked = sorted(
+                range(len(rows)),
+                key=lambda position: (-_abs_correlation({"value": rows[position][3]}), position),
+            )
+            kept = sorted(ranked[:correlation_limit])
+            candidate["deterministicFacts"]["correlations"] = {
+                **candidate["deterministicFacts"]["correlations"],
+                "rows": [list(rows[position]) for position in kept],
+                "view": {
+                    "truncated": True,
+                    "rowCount": len(rows),
+                    "selectedRowCount": len(kept),
+                    "order": "abs_value_desc",
+                },
+            }
         if series_limit is not None:
             for index in series_indices:
                 series = raw_metrics[index]["periodValues"]
@@ -740,7 +765,7 @@ def _project_analysis_summary_payload(
             candidate = build()
             if count_tokens(candidate) <= max_tokens:
                 return candidate
-    if correlation_count:
+    if correlation_count or pair_count:
         for correlation_limit in _SUMMARY_CORRELATION_LIMITS:
             candidate = build()
             if count_tokens(candidate) <= max_tokens:
