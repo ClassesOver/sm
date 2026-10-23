@@ -5507,3 +5507,50 @@ def test_data_scope_schema_payload_shrinks_descriptions_to_fit_input_budget(
             json.dumps({**base_payload, "schemas": schemas}, ensure_ascii=False).encode()
         )
         assert payload_bytes <= configured_budget * 3 // 4
+
+
+def test_evidence_decision_request_uses_summary_budget_projection() -> None:
+    from smart_reporting.reporting.workflow.runtime.analysis import (
+        _prepare_evidence_decision_request,
+    )
+    from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+        AnalysisEvidenceDecision,
+    )
+
+    groups = [
+        {"group": f"科室{rank}", "groupValues": {"dept": f"科室{rank}"}, "value": 100 - rank}
+        for rank in range(10)
+    ]
+    request = {
+        "currentAnalysis": {"analysisId": "analysis_001"},
+        "deterministicFacts": {"metrics": [
+            {"displayName": f"指标{index}", "total": 1, "topGroups": groups, "bottomGroups": groups}
+            for index in range(200)
+        ]},
+        "datasets": [{"datasetId": "dataset_001", "columns": ["income"]}],
+        "analysisBlock": {"blockId": "analysis_001:evidence:decision"},
+    }
+
+    class ByteCountingModel:
+        id = "unverified-model"
+        max_tokens = None
+        _task_execution_input_token_budget = 64 * 1024
+
+        def count_tokens(self, messages, tools=None, output_schema=None):
+            del tools, output_schema
+            return sum(len(str(message.content).encode("utf-8")) for message in messages)
+
+    projected = _prepare_evidence_decision_request(
+        request,
+        analysis_id="analysis_001",
+        agent=SimpleNamespace(model=ByteCountingModel()),
+        run_context=RunContext(run_id="run", session_id="session"),
+        output_schema=AnalysisEvidenceDecision,
+    )
+
+    serialized = json.dumps(projected, ensure_ascii=False, separators=(",", ":"), default=str)
+    assert len(serialized.encode("utf-8")) <= 64 * 1024 * 3 // 4
+    metric = projected["deterministicFacts"]["metrics"][0]
+    assert len(metric["topGroups"]) < 10 and metric["topGroupsView"]["rowCount"] == 10
+    assert projected["analysisBlock"] == request["analysisBlock"]
+    assert projected["datasets"] == request["datasets"]

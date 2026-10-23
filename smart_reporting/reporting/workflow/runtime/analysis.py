@@ -235,6 +235,32 @@ def _prepare_analysis_summary_request(
     )
 
 
+def _prepare_evidence_decision_request(
+    request: Mapping[str, Any],
+    *,
+    analysis_id: str,
+    agent: Any,
+    run_context: RunContext,
+    output_schema: type[BaseModel],
+) -> dict[str, Any]:
+    """补证判断与摘要读取同一份确定性事实，必须走同一预算投影。
+
+    否则事实较大时，请求会在摘要之前先撞上统一 hard cap。
+    """
+
+    return _project_analysis_summary_payload(
+        request,
+        max_tokens=_analysis_summary_input_token_budget(agent, run_context),
+        count_tokens=_planner_request_token_counter(
+            agent,
+            run_context,
+            output_schema,
+            session_id=f"analysis-evidence-budget:{analysis_id}",
+            fallback_event="report_analysis_evidence_tokenizer_fallback",
+        ),
+    )
+
+
 def visualization_read_paths(facts: list[dict[str, Any]]) -> tuple[str, ...]:
     """返回图表任务投影中冻结证据的读取路径。"""
     sources = [item["factFile"] for item in facts]
@@ -3421,10 +3447,18 @@ class RuntimeAnalysisMixin:
             }
             if "correction" in planner_payload:
                 decision_request["correction"] = planner_payload["correction"]
+            evidence_agent = evidence_planner or self._analysis_evidence_agent
+            decision_request = _prepare_evidence_decision_request(
+                decision_request,
+                analysis_id=analysis_id,
+                agent=evidence_agent,
+                run_context=parent_run_context,
+                output_schema=evidence_output_type,
+            )
             return cast(
                 EvidenceDecision,
                 await run_structured_agent(
-                    evidence_planner or self._analysis_evidence_agent,
+                    evidence_agent,
                     decision_request,
                     evidence_output_type,
                 ),
