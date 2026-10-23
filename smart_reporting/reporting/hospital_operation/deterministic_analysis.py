@@ -474,7 +474,7 @@ def _dataset_facts(
             # 维度集中只影响该维度的比较，不影响合计，因此记为分析级告警。
             group_warnings = {
                 group: tuple(notes) for group in group_fields
-                if (notes := _dimension_concentration_warnings(
+                if (notes := _dimension_review_warnings(
                     value_frame, field, (group,), aggregation, scope=_scope(semantic)
                 ))
             }
@@ -803,6 +803,26 @@ def _period_level_warnings(
             "确认入账完整前，不据此判断下降，累计与同比需注明包含该期间。"
         )
     return tuple(warnings)
+
+
+def _dimension_review_warnings(
+    frame: pl.DataFrame, field: str, group_fields: tuple[str, ...],
+    aggregation: Aggregation, *, scope: Mapping[str, str],
+) -> list[str]:
+    warnings: list[str] = []
+    for group in group_fields:
+        if group not in frame.columns:
+            continue
+        missing = frame[group].is_null() | frame[group].cast(pl.String).str.strip_chars().eq("")
+        count = int(missing.fill_null(True).sum())
+        if count:
+            warnings.append(
+                f"{field} 的分组字段 {group} 有 {count} 行归属缺失；"
+                "确认归属前，该维度的排名、占比和贡献待复核，合计仍保留。"
+            )
+    return warnings + _dimension_concentration_warnings(
+        frame, field, group_fields, aggregation, scope=scope,
+    )
 
 
 def _dimension_concentration_warnings(

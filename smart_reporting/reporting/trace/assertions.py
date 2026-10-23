@@ -656,6 +656,8 @@ class AssertionCompiler:
         group = (metric.top_groups if array == "topGroups" else metric.bottom_groups)[
             int(raw_index)
         ]
+        if any(metric.group_warnings.get(field) for field in group.group_values):
+            return ["population_dimension_review_required"]
         if not group.group_values or any(
             not isinstance(value, str) or not value for value in group.group_values.values()
         ):
