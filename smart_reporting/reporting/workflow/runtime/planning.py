@@ -81,6 +81,8 @@ from .base import (
     TaskState,
     ValidationError,
     _json_text,
+    _planner_input_token_budget,
+    _planner_request_token_counter,
     _validation_issue,
     anyio,
     approve_query_batch,
@@ -750,6 +752,46 @@ class RuntimePlanningMixin:
         self._assert_state_safe(state)
         return StepOutput(content={"sources": previews})
 
+    def _budgeted_data_scope_schemas(
+        self,
+        base_payload: dict[str, Any],
+        snapshots: tuple[SourceSchemaSnapshot, ...],
+        run_context: RunContext,
+    ) -> list[dict[str, Any]]:
+        """选表阶段要看完整目录；超出输入预算时逐级截短说明，最后才去掉度量语义。"""
+
+        agent = self._data_understanding_agent
+        budget = _planner_input_token_budget(agent, run_context)
+        count_tokens = _planner_request_token_counter(
+            agent,
+            run_context,
+            DataUnderstandingPlan,
+            session_id="data-understanding-budget",
+            fallback_event="report_data_scope_tokenizer_fallback",
+        )
+        schemas: list[dict[str, Any]] = []
+        tokens = 0
+        for description_limit, keep_semantics in _DATA_SCOPE_SCHEMA_PROJECTIONS:
+            schemas = _planning_schema_payload(snapshots, description_limit=description_limit)
+            if not keep_semantics:
+                for schema in schemas:
+                    schema["measureSemantics"] = []
+            tokens = count_tokens({**base_payload, "schemas": schemas})
+            if tokens <= budget:
+                if description_limit is not None:
+                    loguru_logger.warning(
+                        "report_data_scope_schema_compacted description_limit={} "
+                        "measure_semantics={} input_tokens={} input_token_budget={}",
+                        description_limit, keep_semantics, tokens, budget,
+                    )
+                return schemas
+        # 最紧凑视图仍超限时照常请求，由统一 hard cap 给出可诊断的预算错误。
+        loguru_logger.warning(
+            "report_data_scope_schema_over_budget input_tokens={} input_token_budget={}",
+            tokens, budget,
+        )
+        return schemas
+
     async def plan_data_scope(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
         envelope = self._envelope(run_context)
         snapshots = self._snapshots(run_context)
@@ -758,8 +800,10 @@ class RuntimePlanningMixin:
             "period": envelope.period.model_dump(mode="json"),
             "periodWindows": envelope.period_windows().public_dict(),
             "domains": list(envelope.domains or ()),
-            "schemas": _planning_schema_payload(snapshots),
         }
+        base_payload["schemas"] = self._budgeted_data_scope_schemas(
+            base_payload, snapshots, run_context
+        )
         previous_output: Any = None
         validation_feedback: dict[str, Any] | None = None
         call_budget = StructuredOutputCallBudget()
@@ -2070,6 +2114,16 @@ def _planning_schemas(
         )
         for snapshot in snapshots
     )
+
+
+# 选表请求的 Schema 投影顺序：完整说明 → 截短说明 → 去掉说明 → 再去掉度量语义。
+_DATA_SCOPE_SCHEMA_PROJECTIONS: tuple[tuple[int | None, bool], ...] = (
+    (None, True),
+    (160, True),
+    (40, True),
+    (0, True),
+    (0, False),
+)
 
 
 def _planning_schema_payload(

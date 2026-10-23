@@ -48,6 +48,9 @@ from .wire_schema import (
 _MAX_CORRECTIONS = 5
 _MAX_MODEL_CALLS = _MAX_CORRECTIONS + 1
 _MAX_CORRECTION_CANDIDATE_BYTES = 32 * 1024
+# 纠错事实与原始指令一起不可约简地进入下一次请求；大批量元素同时失败时只回灌
+# 前若干条，其余以计数说明，避免纠错轮自身撑破输入上限。
+_MAX_CORRECTION_ISSUES = 50
 
 
 class _TaskInvocation(Protocol):
@@ -819,14 +822,16 @@ def _correction_instruction(
     previous_output: Any,
     issues: list[dict[str, str]],
 ) -> list[Message]:
-    correction = {
+    correction: dict[str, Any] = {
         "attempt": correction_number,
-        "issues": issues,
+        "issues": issues[:_MAX_CORRECTION_ISSUES],
         "requiredAction": (
             "逐项修复 issues，返回满足原 output_schema 的完整 JSON 对象；"
             "不得输出解释、Markdown 或省略未报错的必填字段。"
         ),
     }
+    if len(issues) > _MAX_CORRECTION_ISSUES:
+        correction["omittedIssueCount"] = len(issues) - _MAX_CORRECTION_ISSUES
     fragment = _fragment_hint(issues)
     if fragment is not None:
         correction["structureHint"] = fragment

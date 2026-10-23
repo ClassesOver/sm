@@ -1151,3 +1151,21 @@ async def test_structured_executor_timeout_raises_stable_reporting_error() -> No
         )
     assert caught.value.code == "report_structured_output_timeout"
     assert caught.value.details["schemaName"] == "VisualizationPlanDraft"
+
+
+def test_structured_correction_caps_issue_count_and_reports_omitted() -> None:
+    issues = [
+        {"path": f"$.claims[{index}].value", "type": "value_error", "message": "数值未登记"}
+        for index in range(500)
+    ]
+
+    messages = _correction_instruction(
+        "original instruction",
+        correction_number=1,
+        previous_output=None,
+        issues=issues,
+    )
+
+    correction = json.loads(str(messages[1].content).split("\n")[1])
+    assert correction["issues"] == issues[:50]
+    assert correction["omittedIssueCount"] == 450
