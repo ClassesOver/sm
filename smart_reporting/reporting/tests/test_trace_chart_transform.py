@@ -74,3 +74,17 @@ def test_invalid_requests_are_rejected() -> None:
         _transform(top_n=0)
     with pytest.raises(ReportingError, match="缺少列"):
         _transform(category_field="no_such_column")
+
+
+def test_chart_values_round_half_up_like_report_text() -> None:
+    from smart_reporting.reporting.trace.chart_transform import transform_chart_series
+
+    # 正文“2.68亿元”按十进制四舍五入；内置 round 的二进制/银行家舍入在图上标成 2.67。
+    rows = [{"k": "a", "v": 267_500_000}, {"k": "b", "v": 0.1}, {"k": "c", "v": 0.2}]
+    scaled = transform_chart_series(
+        rows, category_field="k", value_fields=["v"], top_n=1, unit_scale=1e-8, unit_decimals=2
+    )
+    assert scaled["series"]["v"] == [2.68, 0.0]
+    exact = transform_chart_series(rows, category_field="k", value_fields=["v"], top_n=1, unit_decimals=17)
+    # 「其他」合计在十进制下求和，不带 0.30000000000000004 的二进制尾差。
+    assert exact["series"]["v"][1] == 0.3

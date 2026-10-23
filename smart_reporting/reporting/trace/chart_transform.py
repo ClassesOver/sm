@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from ..models import ReportingError
@@ -62,11 +63,13 @@ def transform_chart_series(
     top = ordered[:top_n]
     others = ordered[top_n:]
 
-    def _scale(value: float | None) -> float | None:
+    def _scale(value: float | Decimal | None) -> float | None:
+        # 与正文数值同一口径：十进制计算并四舍五入（ROUND_HALF_UP）。内置 round 按二进制
+        # 浮点与银行家舍入，2.675 会取成 2.67，图上标注与正文 2.68 不一致。
         if value is None:
             return None
-        scaled = value * unit_scale
-        return round(scaled, unit_decimals)
+        scaled = _decimal(value) * _decimal(unit_scale)
+        return float(scaled.quantize(Decimal(1).scaleb(-unit_decimals), rounding=ROUND_HALF_UP))
 
     categories: list[str] = [str(row[category_field]) for row in top]
     if others:
@@ -81,10 +84,15 @@ def transform_chart_series(
                 values.append(None)
             else:
                 values.append(
-                    _scale(sum(value for value in other_values if value is not None))
+                    _scale(sum(_decimal(value) for value in other_values if value is not None))
                 )
         series[field] = values
     return {"categories": categories, "series": series}
+
+
+def _decimal(value: float | Decimal) -> Decimal:
+    # 按最短十进制表示转换（0.1 → Decimal("0.1")），不引入二进制尾差。
+    return value if isinstance(value, Decimal) else Decimal(repr(float(value)))
 
 
 def _as_number(value: Any) -> float | None:

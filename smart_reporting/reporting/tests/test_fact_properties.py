@@ -44,9 +44,10 @@ def test_money_display_is_within_half_cent_of_independent_decimal_conversion(val
 
 
 @property_settings
-@given(source=st.sampled_from(tuple(_MONEY)), middle=st.sampled_from(tuple(_MONEY)),
-       target=st.sampled_from(tuple(_MONEY)))
+@given(source=st.sampled_from((*_MONEY, "千元", "百万元")), middle=st.sampled_from((*_MONEY, "千元")),
+       target=st.sampled_from((*_MONEY, "百万元")))
 def test_unit_conversion_composition_and_inverse_preserve_value(source, middle, target):
+    # “千元”“百万元”只是数据源口径单位，同样须与元/万元/亿元可逆、可复合换算。
     direct = unit_conversion_scale(source, target)
     assert direct == unit_conversion_scale(source, middle) * unit_conversion_scale(middle, target)
     assert direct * unit_conversion_scale(target, source) == 1

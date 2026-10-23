@@ -363,3 +363,12 @@ def test_renderer_normalization_and_binning_need_their_own_registered_transform(
     assert not plotly_trace_matches_chart_inputs(
         figure, [{"columns": ["value"], "rows": [[10], [20]]}]
     )
+
+
+def test_display_rounding_accepts_half_up_like_report_text() -> None:
+    from smart_reporting.reporting.workflow.runtime.chart_inputs import _close
+
+    # 图上按正文口径四舍五入（2.675 → 2.68）与内置 round（→ 2.67）都是合法显示舍入。
+    assert _close(2.68, 2.675) and _close(2.67, 2.675)
+    assert not _close(2.69, 2.675) and not _close(100500.0, 100000.0)
+    assert _close(1e308, 1e308) and not _close(1.0, float("inf"))

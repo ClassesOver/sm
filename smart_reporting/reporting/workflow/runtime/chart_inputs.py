@@ -14,6 +14,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -430,9 +431,28 @@ def _close(left: float, right: float) -> bool:
         and math.isfinite(right)
         and any(
             abs(left - candidate) <= math.ulp(left) + math.ulp(candidate)
-            for candidate in (right, *(round(right, places) for places in range(7)))
+            for candidate in (right, *_display_roundings(right))
         )
     )
+
+
+def _display_roundings(value: float) -> tuple[float, ...]:
+    # 图上标注既可能按内置 round（银行家舍入、二进制尾差：2.675 → 2.67），也可能与正文
+    # 一样按十进制四舍五入（2.675 → 2.68）；两种写法都是对同一来源值的合法显示舍入。
+    if not math.isfinite(value):
+        return ()
+    exact = Decimal(repr(value))
+    # 浮点上限约 1.8e308，保留 6 位小数需要三百余位有效数字；默认 28 位精度会抛 InvalidOperation。
+    with localcontext() as context:
+        context.prec = 400
+        return tuple(
+            candidate
+            for places in range(7)
+            for candidate in (
+                round(value, places),
+                float(exact.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)),
+            )
+        )
 
 
 def _axis_scales(
