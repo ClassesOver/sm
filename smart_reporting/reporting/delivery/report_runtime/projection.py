@@ -26,7 +26,7 @@ from .markdown import (
 from .overview import insert_management_overview
 from .pdf import _pdf_markdown
 
-PROJECTION_VERSION = "report-markdown/3"
+PROJECTION_VERSION = "report-markdown/4"
 
 
 def _sha256(raw: bytes) -> str:
@@ -162,7 +162,7 @@ def build_render_projection(
         apply("insert_management_overview/1", overview)
     apply("collapse_repeated_values/2", collapse_repeated_values)
     apply("readable_large_amounts/1", readable_large_amounts)
-    apply("align_numeric_table_columns/2", align_numeric_table_columns)
+    apply("align_numeric_table_columns/3", align_numeric_table_columns)
     before = _sha256(markdown.encode("utf-8"))
     markdown, citations, trace = _pdf_markdown(
         markdown,

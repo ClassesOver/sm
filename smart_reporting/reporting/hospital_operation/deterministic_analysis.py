@@ -814,15 +814,30 @@ def _dimension_review_warnings(
         if group not in frame.columns:
             continue
         missing = frame[group].is_null() | frame[group].cast(pl.String).str.strip_chars().eq("")
-        count = int(missing.fill_null(True).sum())
+        missing = missing.fill_null(True)
+        count = int(missing.sum())
         if count:
             warnings.append(
-                f"{field} 的分组字段 {group} 有 {count} 行归属缺失；"
+                f"{field} 的分组字段 {group} 有 {count} 行归属缺失{_missing_value_share(frame, field, missing, aggregation)}；"
                 "确认归属前，该维度的排名、占比和贡献待复核，合计仍保留。"
             )
     return warnings + _dimension_concentration_warnings(
         frame, field, group_fields, aggregation, scope=scope,
     )
+
+
+def _missing_value_share(
+    frame: pl.DataFrame, field: str, missing: pl.Series, aggregation: Aggregation,
+) -> str:
+    """归属缺失行占指标绝对值合计的比例；只说行数时，8 行与 2 万行在正文里同样被写成重大限制。"""
+    if aggregation != "sum" or field not in frame.columns:
+        return ""
+    values = frame[field].cast(pl.Float64, strict=False).abs()
+    total = values.sum()
+    if not total or not math.isfinite(total):
+        return ""
+    share = values.filter(missing).sum() / total
+    return f"（占 {field} 绝对值合计的 {share:.2%}）"
 
 
 def _dimension_concentration_warnings(

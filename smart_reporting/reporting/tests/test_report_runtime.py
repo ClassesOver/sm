@@ -1394,6 +1394,24 @@ def test_model_table_numeric_columns_are_right_aligned():
     assert "| --- | ---: | ---: | ---: |" in align_numeric_table_columns(hospital)
 
 
+def test_cells_drop_unit_already_declared_in_column_header():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        align_numeric_table_columns,
+    )
+
+    # 回放：表头“2025年（亿元）”，单元格由数值引用渲染成“8.90亿元[[claim:a]]”。
+    table = (
+        "| 月份 | 2025年（亿元） | 2024年同期（亿元） | 增幅 |\n| --- | --- | --- | --- |\n"
+        "| 1月 | 8.90亿元[[citation:c]][[claim:a]] | 9.47亿元 | -6.02% |\n"
+        "| 2月 | 8.99亿元 | 0.68万元 | 31.62% |\n"
+    )
+    rendered = align_numeric_table_columns(table)
+    assert "| 1月 | 8.90[[citation:c]][[claim:a]] | 9.47 | -6.02% |" in rendered
+    # 与表头不同的单位保留原样，避免把万元读成亿元。
+    assert "| 2月 | 8.99 | 0.68万元 | 31.62% |" in rendered
+    assert "| --- | ---: | ---: | ---: |" in rendered
+
+
 def test_pdf_tables_keep_edge_rows_together_and_units_whole() -> None:
     from markdown_it import MarkdownIt
 
