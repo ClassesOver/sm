@@ -266,7 +266,19 @@ def _cache_toc_page_numbers(path: Path, *, context: dict[str, Any], include_cove
                 if bookmark in numbers and result is not None:
                     result.text = numbers[bookmark]
                     updated += 1
-        document.save(str(path))
+        # 缓存更新失败不得破坏已生成的原文件；替换文件与原文件在同一文件系统。
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".reporting-toc-", suffix=".docx", dir=path.parent)
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            document.save(str(temporary))
+            with zipfile.ZipFile(temporary) as archive:
+                if archive.testzip() is not None:
+                    raise ValueError("Word 缓存文件校验失败")
+            Document(str(temporary))
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
         logger.info("report_docx_toc_pages_cached headings={} updated={}", len(numbers), updated)
     except Exception as error:  # 缓存页码只改善离线显示，任何失败都保留原文件。
         logger.warning("report_docx_toc_pages_skipped reason={}", type(error).__name__)
