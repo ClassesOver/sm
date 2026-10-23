@@ -177,3 +177,22 @@ def test_trace_index_falls_back_when_only_evidence_files_break_the_contract() ->
     assert calls == [(evidence, ()), ((), ())]
     with pytest.raises(ValueError):
         build_with_optional_computation_layer(lambda *_: (_ for _ in ()).throw(ValueError("x")), (), ())
+
+
+def test_trace_index_keeps_evidence_files_when_only_computation_records_are_rejected() -> None:
+    # 回放：计算记录不被契约接受时整层回退，导出的修订包缺少图表输入声明来源的 evidence 文件。
+    from smart_reporting.reporting.workflow.runtime.publication import (
+        build_with_optional_computation_layer,
+    )
+
+    calls = []
+
+    def build(files, computations):
+        calls.append((files, computations))
+        if computations:
+            raise ValueError("computation record rejected")
+        return files
+
+    evidence = (_identity("analysis/evidence.json"),)
+    assert build_with_optional_computation_layer(build, evidence, ("record",)) == evidence
+    assert calls == [(evidence, ("record",)), (evidence, ())]

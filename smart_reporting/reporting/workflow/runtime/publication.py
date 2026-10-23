@@ -267,7 +267,17 @@ def build_with_optional_computation_layer(
             "report_trace_computations_dropped count={} files={} error_type={} reason={}",
             len(computations), len(computation_files), type(error).__name__, str(error)[:500],
         )
-        return build((), ())
+    # 先只丢计算记录、保留补证与脚本文件身份：整层一起丢会让导出的修订包缺少图表输入
+    # 声明来源的 evidence 文件，离线核验无从复算。文件身份本身仍不被接受时才全部丢弃。
+    if computations and computation_files:
+        try:
+            return build(computation_files, ())
+        except (ValidationError, ValueError) as error:
+            logger.warning(
+                "report_trace_computation_files_dropped files={} error_type={} reason={}",
+                len(computation_files), type(error).__name__, str(error)[:500],
+            )
+    return build((), ())
 
 
 class RuntimePublicationMixin:
