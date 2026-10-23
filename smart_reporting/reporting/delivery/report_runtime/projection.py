@@ -147,7 +147,7 @@ def build_render_projection(
         markdown = transform(markdown)
         stages.append(ProjectionStage(name, before, _sha256(markdown.encode("utf-8"))))
 
-    apply("relocate_server_tables/1", relocate_server_tables)
+    apply("relocate_server_tables/2", relocate_server_tables)
     apply("compact_single_column_tables/1", compact_single_column_tables)
     overview_check = None
     if management_overview is None:
