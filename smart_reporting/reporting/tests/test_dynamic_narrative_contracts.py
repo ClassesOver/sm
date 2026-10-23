@@ -22,6 +22,18 @@ def freeze(value, cards):
         analyses=[{"analysisId": aid} for card in cards for aid in card.analysis_ids])
 
 
+def test_frozen_narrative_titles_use_report_body_wording():
+    # 生产提纲走叙事冻结路径：标题与章节名同样按正文规范（“1-9月”→“1—9月”，括号全角）。
+    cards = [finding(1)]
+    value = NarrativeOutlineCandidate(
+        title="2025年1-9月全院经济运行分析报告", snapshotHash="b" * 64,
+        sections=[{"title": "收入分析(含体检)", "findingIds": [cards[0].finding_id],
+                   "objective": "解释经营变化", "groupingReason": "共同管理问题"}])
+    result = freeze(value, cards)
+    assert result.title == "2025年1—9月全院经济运行分析报告"
+    assert result.sections[0].title == "收入分析（含体检）"
+
+
 def test_sections_derive_analysis_identity_and_number_from_findings():
     cards = [finding(1), finding(2)]
     result = freeze(candidate([card.finding_id for card in cards]), cards)
