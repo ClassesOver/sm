@@ -1435,3 +1435,29 @@ def test_executive_summary_strips_every_list_marker_in_a_list_paragraph():
     conclusion = _section_conclusion("## 1. 收入\n\n收入总体增长。\n\n- 药品收入增长5%。\n- 材料收入下降2%。")
     assert conclusion == "收入总体增长。 药品收入增长5%。材料收入下降2%。"
     assert "- " not in conclusion
+
+
+def test_word_tables_keep_edge_rows_and_header_units_together() -> None:
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    from smart_reporting.reporting.delivery.report_runtime.docx import (
+        _break_before_header_unit,
+        _keep_table_together_at_edges,
+    )
+
+    document = Document()
+    document.add_paragraph("2025年1—9月收入汇总：分期间指标汇总")
+    table = document.add_table(rows=8, cols=2)
+    table.rows[0].cells[1].paragraphs[0].add_run("实际人次")
+    table.rows[0].cells[1].paragraphs[0].add_run("（人次）")
+    _keep_table_together_at_edges(table)
+    _break_before_header_unit(table.rows[0].cells[1])
+
+    # 与 PDF 一致：行不跨页拆分；表头与前两行、倒数第二行与末行同页；表名随表格。
+    assert all(row._tr.trPr.find(qn("w:cantSplit")) is not None for row in table.rows)
+    keeps = [bool(row.cells[0].paragraphs[0].paragraph_format.keep_with_next) for row in table.rows]
+    assert keeps == [True, True, False, False, False, False, True, False]
+    assert document.paragraphs[0].paragraph_format.keep_with_next
+    # 表头单位整体换行：“实际人次 / （人次）”，不在括号中间折断。
+    assert table.rows[0].cells[1].text == "实际人次\n（人次）"
