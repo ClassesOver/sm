@@ -273,12 +273,35 @@ def _payload_copy(state: ReportingRunState) -> dict[str, Any]:
     return json.loads(json.dumps(state.payload, ensure_ascii=False, default=str))
 
 
+_SCALAR_TYPES = (str, int, float, bool, type(None))
+
+
+def _equality_bucket(value: Any) -> Any:
+    """与 == 一致的分桶键：相等的值必落同一桶（1 == 1.0 == True 的哈希也相同）。
+
+    告警等对象列表随运行累积，逐个 ``value not in result`` 是 O(n²)；字典按键集合及
+    标量字段分桶后只在桶内比较。
+    """
+    if isinstance(value, dict):
+        scalar = frozenset(
+            (key, item) for key, item in value.items()
+            if isinstance(key, _SCALAR_TYPES) and isinstance(item, _SCALAR_TYPES)
+        )
+        return ("dict", frozenset(key for key in value if isinstance(key, _SCALAR_TYPES)), scalar)
+    if isinstance(value, _SCALAR_TYPES):
+        return ("scalar", value)
+    return ("other", type(value).__name__, len(value) if isinstance(value, (list, tuple)) else None)
+
+
 def _tuple_unique(values: Any) -> list[Any]:
     if not isinstance(values, (list, tuple)):
         return []
     result: list[Any] = []
+    buckets: dict[Any, list[Any]] = {}
     for value in values:
-        if value not in result:
+        bucket = buckets.setdefault(_equality_bucket(value), [])
+        if value not in bucket:
+            bucket.append(value)
             result.append(value)
     return result
 

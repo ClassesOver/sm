@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from .findings import FindingGraph
+from .outline import normalize_display_title
 from .schema import HospitalOperationSchema
 
 
@@ -196,7 +197,7 @@ def freeze_narrative_outline(
         if any(aid not in analysis_map for aid in analysis_ids):
             raise ValueError("章节发现引用未知分析项")
         sections.append(NarrativeSection(
-            code=f"section_{index:03d}", sectionNumber=str(index), title=item.title,
+            code=f"section_{index:03d}", sectionNumber=str(index), title=normalize_display_title(item.title),
             findingIds=item.finding_ids, analysisIds=analysis_ids, objective=item.objective,
             groupingReason=item.grouping_reason, narrativeRole=item.narrative_role,
             priority=item.priority, maxCharts=item.max_charts, maxBlocks=item.max_blocks,
@@ -244,7 +245,7 @@ def freeze_narrative_outline(
         ))
     sections = [section.model_copy(update={"code": f"section_{index:03d}", "section_number": str(index)})
                 for index, section in enumerate(sections, 1)]
-    return NarrativeOutline(title=candidate.title, sections=tuple(sections), appendixFindingIds=appendix,
+    return NarrativeOutline(title=normalize_display_title(candidate.title), sections=tuple(sections), appendixFindingIds=appendix,
                             omittedFindings=candidate.omitted_findings, snapshotHash=graph.snapshot_hash)
 
 

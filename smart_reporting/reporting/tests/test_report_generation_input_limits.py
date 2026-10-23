@@ -165,7 +165,7 @@ def test_comparison_title_uses_matching_frozen_metric_label():
                                 "unit": "元", "comparisonType": "yoy"}]}
     result = project_analysis_findings("analysis_001", payload, None,
                                        snapshot_hash="b" * 64, citation_ids=("citation_001",))
-    assert result[0].title == "医疗收入比较变化"
+    assert result[0].title == "医疗收入同比变化"
     assert result[0].source_refs[0].pointer == "/comparisons/0"
 
 

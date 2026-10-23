@@ -22,6 +22,18 @@ def freeze(value, cards):
         analyses=[{"analysisId": aid} for card in cards for aid in card.analysis_ids])
 
 
+def test_frozen_narrative_titles_use_report_body_wording():
+    # 生产提纲走叙事冻结路径：标题与章节名同样按正文规范（“1-9月”→“1—9月”，括号全角）。
+    cards = [finding(1)]
+    value = NarrativeOutlineCandidate(
+        title="2025年1-9月全院经济运行分析报告", snapshotHash="b" * 64,
+        sections=[{"title": "收入分析(含体检)", "findingIds": [cards[0].finding_id],
+                   "objective": "解释经营变化", "groupingReason": "共同管理问题"}])
+    result = freeze(value, cards)
+    assert result.title == "2025年1—9月全院经济运行分析报告"
+    assert result.sections[0].title == "收入分析（含体检）"
+
+
 def test_sections_derive_analysis_identity_and_number_from_findings():
     cards = [finding(1), finding(2)]
     result = freeze(candidate([card.finding_id for card in cards]), cards)
@@ -169,3 +181,21 @@ def test_fallback_clustering_keeps_more_than_ten_unrelated_topics():
     assert {item for group in groups for item in group} == {card.finding_id for card in cards}
     context = build_narrative_planning_context(source, "按主题完整呈现")
     assert "maxChaptersIncludingAppendix" not in context["contentBudget"]
+
+
+def test_cluster_findings_scales_to_large_finding_graphs() -> None:
+    import time
+
+    from smart_reporting.reporting.hospital_operation.findings import FindingGraph
+    from smart_reporting.reporting.hospital_operation.narrative_planner import cluster_findings
+    from smart_reporting.reporting.tests.narrative_helpers import finding
+
+    # 原实现逐成员线性查找卡片，1200 条发现约 16 秒；按成员卡片直接打分后应在秒级以内。
+    cards = tuple(
+        finding(index, metricCodes=(f"m{index % 300}",), analysisIds=(f"analysis_{index % 150:03d}",))
+        for index in range(1, 1201)
+    )
+    started = time.perf_counter()
+    groups = cluster_findings(FindingGraph(snapshotHash="a" * 64, findings=cards))
+    assert time.perf_counter() - started < 5
+    assert sorted(item for group in groups for item in group) == sorted(card.finding_id for card in cards)

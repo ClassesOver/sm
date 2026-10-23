@@ -201,7 +201,9 @@ def project_analysis_findings(
         change = comparison.get("change")
         metric = metric_label(comparison)
         unit = comparison.get("unit") if isinstance(comparison.get("unit"), str) else None
-        add("comparison", f"/comparisons/{index}", f"{metric}比较变化", f"{metric}比较变化为 {change}。", priority="high" if isinstance(change, (int, float)) and abs(change) > 0 else "medium", impact=change if isinstance(change, (int, float)) else None, unit=unit, metrics=(metric,), periods=("current", "yoy" if comparison.get("comparisonType") == "yoy" else "mom"))
+        # 标题会进入章节名与核心结论（回放：“预算人次比较变化；预算总医疗收入比较变化”），写明口径。
+        basis = "同比" if comparison.get("comparisonType") == "yoy" else "环比"
+        add("comparison", f"/comparisons/{index}", f"{metric}{basis}变化", f"{metric}{basis}变化为 {change}。", priority="high" if isinstance(change, (int, float)) and abs(change) > 0 else "medium", impact=change if isinstance(change, (int, float)) else None, unit=unit, metrics=(metric,), periods=("current", "yoy" if comparison.get("comparisonType") == "yoy" else "mom"))
 
     for index, metric in enumerate(payload.get("metrics") or ()):
         if not isinstance(metric, Mapping):
