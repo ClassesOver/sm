@@ -2668,7 +2668,8 @@ def create_reporting_generator_agent(
         instructions.append(
             f"每章最多生成 {MAX_SECTION_CHART_COUNT} 张图；常规章节目标 2-{MAX_SECTION_CHART_COUNT} 张，"
             "不要为每个分析、维度或证据表各配一张图；合并同质信息，删除弱相关或重复图，"
-            "每张图只表达一个明确管理问题并绑定可信数据。高质量图要求：标题明确表达核心结论，"
+            "每张图只表达一个明确管理问题并绑定可信数据。高质量图要求：title 作为报告图注明确表达核心结论"
+            "（图片内不再绘制标题），"
             "坐标轴、单位、图例和数据标签完整，标签不重叠、不截断，系列与颜色克制，主信息突出。"
         )
         # 旧版基准 schema 没有 visualForm/dataBindings；不能在其提示词中出现候选专有字段。

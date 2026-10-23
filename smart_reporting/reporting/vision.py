@@ -26,7 +26,8 @@ _IssueText = Annotated[
 ]
 _REPORT_VISION_PROMPT = """
 审查图表呈现质量，不判断源数据真实性或 citation 是否正确。
-输入提供 expectedChart 时，比较图片内实际可见标题、图例、坐标轴指标和单位与该图声明；
+报告在图下以图注给出标题与结论，图片内不绘制整图标题属于预期设计，不是缺陷。
+输入提供 expectedChart 时，比较图片内实际可见的图例、坐标轴指标、单位和注释与该图声明；
 明显画了另一个指标或业务主题时，用 misleading warning 描述具体错配。不要仅凭声明猜图内
 数值正确，也不要自行推定单位；业务错配只告警，不设置 requiresRevision=true。
 
