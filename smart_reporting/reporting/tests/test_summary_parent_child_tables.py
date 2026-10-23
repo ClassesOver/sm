@@ -137,3 +137,87 @@ def test_summary_keeps_short_series_when_projection_metadata_would_increase_size
     assert count(projected) <= 12000
     assert projected["deterministicFacts"]["metrics"][:50] == [short] * 50
     assert len(projected["deterministicFacts"]["metrics"][-1]["periodValues"]) < 1200
+
+
+def _byte_count(value):
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def _grouped_metric(index):
+    groups = [
+        {"group": f"总部院区 / 科室{index}-{rank}", "groupValues": {"dept": f"科室{rank}"},
+         "value": 1000 - rank}
+        for rank in range(10)
+    ]
+    return {
+        "displayName": f"指标{index}",
+        "total": 10_000,
+        "topGroups": groups,
+        "bottomGroups": list(reversed(groups)),
+        "periodValues": [{"period": f"2025-{month:02d}", "value": month} for month in range(1, 13)],
+    }
+
+
+def test_summary_trims_group_extremes_before_period_series():
+    payload = {
+        "deterministicFacts": {"metrics": [_grouped_metric(index) for index in range(40)]},
+        "supplementalEvidence": None,
+    }
+    original = deepcopy(payload)
+    budget = _byte_count(payload) // 2
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=budget, count_tokens=_byte_count
+    )
+
+    assert payload == original
+    assert _byte_count(projected) <= budget
+    metric = projected["deterministicFacts"]["metrics"][0]
+    assert metric["total"] == 10_000
+    assert len(metric["topGroups"]) < 10
+    assert metric["topGroups"] == original["deterministicFacts"]["metrics"][0]["topGroups"][
+        : len(metric["topGroups"])
+    ]
+    assert metric["topGroupsView"]["rowCount"] == 10
+    # 组合明细已足够腾出预算时，期间序列保持完整。
+    assert len(metric["periodValues"]) == 12
+
+
+def test_summary_keeps_strongest_correlations_when_trimming_details():
+    details = [
+        {"leftField": f"a{index}", "rightField": f"b{index}", "value": value}
+        for index, value in enumerate([0.1, -0.95, 0.3] + [0.05] * 200)
+    ]
+    payload = {
+        "deterministicFacts": {"metrics": [], "correlationDetails": details},
+        "supplementalEvidence": None,
+    }
+    budget = _byte_count(payload) // 3
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=budget, count_tokens=_byte_count
+    )
+
+    kept = projected["deterministicFacts"]["correlationDetails"]
+    assert _byte_count(projected) <= budget
+    assert kept[0] == details[0] and details[1] in kept
+    assert projected["deterministicFacts"]["correlationDetailsView"]["rowCount"] == 203
+
+
+def test_summary_series_stage_does_not_reexpand_compacted_evidence_tables():
+    table = {"columns": ["month", "amount"], "rows": [[index, index] for index in range(2000)]}
+    payload = {
+        "supplementalEvidenceSource": {"path": "evidence.json", "sha256": "a" * 64, "size": 1},
+        "supplementalEvidence": {"findings": [table]},
+        "deterministicFacts": {"metrics": [{
+            "total": 1,
+            "periodValues": [{"period": str(index), "value": index} for index in range(3000)],
+        }]},
+    }
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=4000, count_tokens=_byte_count
+    )
+
+    assert _byte_count(projected) <= 4000
+    assert len(projected["supplementalEvidence"]["findings"][0]["rows"]) <= 2

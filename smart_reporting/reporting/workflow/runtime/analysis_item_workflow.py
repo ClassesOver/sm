@@ -558,6 +558,18 @@ def _project_tabular_finding(finding: Mapping[str, Any], *, row_limit: int) -> d
     }
 
 
+_SUMMARY_GROUP_KEYS = ("topGroups", "bottomGroups")
+_SUMMARY_GROUP_LIMITS = (5, 2, 1, 0)
+_SUMMARY_CORRELATION_LIMITS = (20, 5)
+
+
+def _abs_correlation(detail: Any) -> float:
+    value = detail.get("value") if isinstance(detail, Mapping) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return abs(float(value))
+    return -1.0
+
+
 def _project_analysis_summary_payload(
     payload: Mapping[str, Any],
     *,
@@ -603,7 +615,12 @@ def _project_analysis_summary_payload(
     )
 
     projected_paths: set[tuple[int | str, ...]] = set()
+    # 补证表、期间序列与组合明细各自独立收缩；共用一个上限会让后一阶段把前一阶段
+    # 已压缩的表重新放大。
     row_limit = MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS
+    series_limit: int | None = None
+    group_limit: int | None = None
+    correlation_limit: int | None = None
     raw_facts = original.get("deterministicFacts")
     raw_metrics = raw_facts.get("metrics", []) if isinstance(raw_facts, Mapping) else []
     series_indices = [
@@ -612,7 +629,16 @@ def _project_analysis_summary_payload(
         and isinstance(metric.get("periodValues"), (list, tuple))
         and len(metric["periodValues"]) > 2
     ]
-    project_series = False
+    group_indices = [
+        index for index, metric in enumerate(raw_metrics)
+        if isinstance(metric, Mapping)
+        and any(
+            isinstance(metric.get(key), (list, tuple)) and len(metric[key]) > 1
+            for key in _SUMMARY_GROUP_KEYS
+        )
+    ]
+    raw_correlations = raw_facts.get("correlationDetails") if isinstance(raw_facts, Mapping) else None
+    correlation_count = len(raw_correlations) if isinstance(raw_correlations, (list, tuple)) else 0
 
     def compact_non_tabular(value: Any, *, key: str | None = None) -> Any:
         """压缩摘要中的重复长文本；完整 evidence 文件不受影响。"""
@@ -648,13 +674,41 @@ def _project_analysis_summary_payload(
                 "projectedFindingCount": len({path[0] for path in projected_paths}),
                 "projectedTableCount": len(projected_paths),
             }
-        if project_series:
+        if group_limit is not None:
+            # topGroups/bottomGroups 已按贡献排序，保留首部即保留最极端的组合。
+            for index in group_indices:
+                metric = candidate["deterministicFacts"]["metrics"][index]
+                for key in _SUMMARY_GROUP_KEYS:
+                    groups = metric.get(key)
+                    if isinstance(groups, list) and len(groups) > group_limit:
+                        metric[key] = groups[:group_limit]
+                        metric[f"{key}View"] = {
+                            "truncated": True,
+                            "rowCount": len(groups),
+                            "selectedRowCount": group_limit,
+                        }
+        if correlation_limit is not None and correlation_count > correlation_limit:
+            details = list(raw_correlations or ())
+            ranked = sorted(
+                range(len(details)),
+                key=lambda position: (-_abs_correlation(details[position]), position),
+            )
+            kept = sorted(ranked[:correlation_limit])
+            facts = candidate["deterministicFacts"]
+            facts["correlationDetails"] = [deepcopy(details[position]) for position in kept]
+            facts["correlationDetailsView"] = {
+                "truncated": True,
+                "rowCount": len(details),
+                "selectedRowCount": len(kept),
+                "order": "abs_value_desc",
+            }
+        if series_limit is not None:
             for index in series_indices:
                 series = raw_metrics[index]["periodValues"]
                 table = _project_tabular_finding({
                     "columns": ["period", "value"],
                     "rows": [[item["period"], item["value"]] for item in series],
-                }, row_limit=row_limit)
+                }, row_limit=series_limit)
                 selected = [
                     {"period": period, "value": value} for period, value in table["rows"]
                 ]
@@ -679,17 +733,27 @@ def _project_analysis_summary_payload(
         candidate = build()
         if count_tokens(candidate) <= max_tokens:
             return candidate
-    # 补证表压缩后仍超限时，再缩减确定性事实的期间序列；总值、指标身份不变。
+    # 补证表压缩后仍超限时，依次缩减确定性事实的组合明细、相关性明细与期间序列；
+    # 总值、指标身份不变，被省略的部分以 *View 标注原始条数。
+    if group_indices:
+        for group_limit in _SUMMARY_GROUP_LIMITS:
+            candidate = build()
+            if count_tokens(candidate) <= max_tokens:
+                return candidate
+    if correlation_count:
+        for correlation_limit in _SUMMARY_CORRELATION_LIMITS:
+            candidate = build()
+            if count_tokens(candidate) <= max_tokens:
+                return candidate
     if series_indices:
-        project_series = True
-        row_limit = MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS
+        series_limit = MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS
         while True:
             candidate = build()
             if count_tokens(candidate) <= max_tokens:
                 return candidate
-            if row_limit == 2:
+            if series_limit == 2:
                 break
-            row_limit = max(2, row_limit // 2)
+            series_limit = max(2, series_limit // 2)
     candidate = build()
     projected_tokens = count_tokens(candidate)
     if projected_tokens <= max_tokens:
