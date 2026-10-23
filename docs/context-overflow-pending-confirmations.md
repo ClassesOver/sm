@@ -4,6 +4,7 @@
 
 - **选表规划（plan_data_scope）**：原先把全部表的完整字段说明一次发给模型，没有预算控制。实测 60 张表、每表 20 列时请求约 1.2 MB，超过 196K token 输入上限。现在超预算时，说明依次截到 160 字、40 字、0 字，最后才去掉度量语义。
 - **结构化输出纠错轮**：原先把校验 issues 全量回灌给模型。现在最多回灌 50 条，其余只给出计数。
+- **`RollingSessionSummaryManager`**：没有调用方，启用后会把整段会话历史一次发给模型，已删除。
 
 下列事项涉及部署配置或供应商行为，需要确认后再改：
 
@@ -12,4 +13,3 @@
 | 1 | 供应商返回的超窗口 400 错误没有归类 | 全仓库没有识别 provider 侧 “input length / context length” 错误的逻辑。整章正文的“压缩重试 → 拆块”回退只认本地预算错误。 | 本地 tiktoken 估算低于供应商实际计数时，整章正文直接失败，不会降级拆块；模型层 `retries=2` 还会用同样的输入重复请求。 | DashScope / DeepSeek / 中台网关对超窗口请求返回的错误码和报文格式。 | 把这类错误映射为 `report_section_context_too_large`，走已有的压缩、拆块回退，并且不重试。 |
 | 2 | 代码默认预算偏大 | `AGENT_REPORT_CONTEXT_TOKEN_BUDGET` 代码默认 1M，`AGENT_REPORT_OUTPUT_TOKEN_RESERVE` 默认 384K，所以输入上限为 640K。模型窗口只对 `qwen3.6/3.8`、`deepseek-v4` 前缀生效。`.env.example` 已设为 256K/64K。 | 使用中台 SDK 时，模型 ID 是 profile key（如 fast/standard/strong），不在已验证名单里。如果部署漏配上面两个变量，输入上限按 640K 计算，实际窗口 256K 的模型会超限。 | 各环境是否都显式配置了这两个变量？中台 profile 实际对应哪个模型和窗口？ | 二选一：把代码默认值改成与 `.env.example` 一致；或允许为中台 profile key 登记窗口大小。 |
 | 3 | facade 模型不按模型窗口收敛 | `ProjectedOpenAIChat._project` 只用配置预算，不像 Reporting 阶段模型那样再按模型窗口取最小值。 | 与第 2 项相同；目前 facade 的输入很小，影响有限。 | 是否需要与阶段模型统一？ | 第 2 项确定后一起处理。 |
-| 4 | `RollingSessionSummaryManager` 输入无上限 | 摘要元数据失效时，会把整段会话历史一次发给摘要模型。该类目前没有任何调用方。 | 一旦被启用，长会话会超窗口；失败只记 warning，摘要永远不再更新。 | 这个类是保留备用，还是可以删除？ | 删除；或保留但加历史截断后再启用。 |
