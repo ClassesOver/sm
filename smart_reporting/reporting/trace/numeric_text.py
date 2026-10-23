@@ -1094,8 +1094,9 @@ _UNIT_FAMILIES = (
 _TRAILING_UNIT = "|".join(
     sorted({unit for family in _UNIT_FAMILIES for unit in family}, key=len, reverse=True)
 )
+# 计算引用（{{calc:...}}）与数值引用同样由服务端渲染成带单位的显示值。
 _VALUE_TOKEN_WITH_UNIT = re.compile(
-    rf"(?P<token>\{{\{{value:[^{{}}\r\n]+\}}\}})(?P<unit>[ \t]*(?:{_TRAILING_UNIT}))?"
+    rf"(?P<token>\{{\{{(?:value|calc):[^{{}}\r\n]+\}}\}})(?P<unit>[ \t]*(?:{_TRAILING_UNIT}))?"
 )
 
 
@@ -2941,6 +2942,16 @@ def replace_unregistered_numbers(
     for unit, values in frozen_number_values(contents, catalog).items():
         known.setdefault(unit, set()).update(values)
 
+    calc_evaluator = None
+
+    def calc_result(token: str):
+        nonlocal calc_evaluator
+        if calc_evaluator is None:
+            from .calc_references import CalcEvaluator
+
+            calc_evaluator = CalcEvaluator(contents)
+        return calc_evaluator.evaluate(token)
+
     def reference_at(tail: str) -> str | None:
         anchor = re.match(r"\[\[claim:([^\]\n]+)\]\]", tail)
         return (references or {}).get(anchor[1]) if anchor else None
@@ -2990,6 +3001,17 @@ def replace_unregistered_numbers(
                 return ""
             return on_derived_anchor(entry, unit)
 
+        if reference is not None and reference.startswith("{{calc:"):
+            # 计算引用由服务端按冻结原值重算；显示值一致即登记，不再按措辞猜操作数。
+            result = calc_result(reference)
+            shown = re.fullmatch(rf"({_NUMBER})\s*(.+)", result.text) if result is not None else None
+            value = Decimal(shown[1].replace(",", "")) if shown and shown[2] == unit else None
+            if value is not None and (
+                value == number
+                or registered_decline_magnitude(number, unit, (value,), prefix=prefix, quantum=quantum)
+            ):
+                report("registered", number, unit, "calc")
+                return "registered", _display_precision(number_text), ""
         if neutral:
             # 中性差额只认当前句操作数的补算差额，或当前数字由服务端渲染的差额引用。
             checks = (

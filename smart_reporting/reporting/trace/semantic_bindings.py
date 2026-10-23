@@ -14,6 +14,7 @@ from ..hospital_operation.deterministic_analysis import (
     DeterministicMetricFact,
     _aligned_comparison_values,
 )
+from .calc_references import CALC_TOKEN, CalcEvaluator
 from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1, TableDerivationV1
 from .fact_index import fact_binding_records, merge_binding_records, merge_frozen_fact
 from .numeric_text import (
@@ -139,6 +140,14 @@ def render_bound_numbers(
 
     markdown, _ = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
+    calc_tokens = {match[0] for match in CALC_TOKEN.finditer(markdown)}
+    if calc_tokens:
+        evaluator = CalcEvaluator(contents)
+        for token in calc_tokens:
+            result = evaluator.evaluate(token)
+            # 无法求值的计算引用不进目录，渲染时与未登记引用一样标注待核实。
+            if result is not None:
+                catalog[token] = result.text
     references: list[tuple[str, str]] = []
     notices: list[ReviewNoticeV1] = []
     counter = 0
@@ -364,6 +373,8 @@ class NumberReferenceResolver:
             return None
 
     def _resolve(self, token: str) -> dict[str, Any] | None:
+        if token.startswith("{{calc:"):
+            return self._resolve_calc(token)
         if token.startswith("{{derived:"):
             ids = reference_fact_ids(token)
             # 兼容按操作数身份排序的旧格式，再匹配保留操作数顺序的现格式。
@@ -446,6 +457,52 @@ class NumberReferenceResolver:
                 if name
             )
         return resolved
+
+
+    def _resolve_calc(self, token: str) -> dict[str, Any] | None:
+        """计算引用的核对视图：与派生引用同构，公式写出各操作数的指标名与冻结原值。"""
+        result = CalcEvaluator(self._contents).evaluate(token)
+        if result is None:
+            return None
+        views = []
+        for operand in result.operands:
+            if operand.fact_id in self.conflicts or operand.fact_id not in self.entries:
+                return None
+            view = self.resolve("{{value:" + f"{operand.fact_id}:{operand.field}:{operand.unit}" + "}}")
+            if view is None:
+                return None
+            views.append(view)
+        formula = result.formula
+        for operand, view in zip(result.operands, views, strict=True):
+            name = view["entry"].get("displayName") or operand.field
+            formula = formula.replace(
+                f"{operand.fact_id}:{operand.field}",
+                f"{name}({format(operand.value.normalize(), 'f')}{operand.unit})", 1,
+            )
+        periods = tuple(dict.fromkeys(period for view in views for period in view["periods"]))
+        roles: dict[str, tuple[str, ...]] = {}
+        for view in views:
+            for role, role_periods in (view.get("period_roles") or {}).items():
+                roles[role] = tuple(dict.fromkeys((*roles.get(role, ()), *role_periods)))
+        scopes = [view["scope"] for view in views]
+        scope = scopes[0] if all(item == scopes[0] for item in scopes) else {}
+        display = Decimal(result.text.replace(",", "").removesuffix(result.display_unit))
+        return {
+            "value": float(display),
+            "unit": result.display_unit,
+            "periods": periods,
+            "period_roles": roles,
+            "scope": scope,
+            "formula": f"{formula} = {result.text}",
+            "entry": {
+                "displayName": "、".join(dict.fromkeys(
+                    str(view["entry"].get("displayName")) for view in views if view["entry"].get("displayName")
+                )) or None,
+                "aliases": (),
+                "scope": scope,
+            },
+            "selector": "calc",
+        }
 
 
 def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:

@@ -195,7 +195,8 @@ def _mask_calendar_values(text: str) -> str:
 def _decline_prefix() -> str:
     from .numeric_text import FALLING_WORDS
 
-    return rf"(?:{'|'.join(FALLING_WORDS)})(?:\s*(?:了|约|为|达|幅度为))*\s*"
+    # 与 registered_decline_magnitude 同口径：“较预算短少/少1.09亿元”同样是负值的幅度写法。
+    return rf"(?:{'|'.join(FALLING_WORDS)}|短少|(?<![至最不多短])少)(?:\s*(?:了|约|为|达|幅度为))*\s*"
 
 
 _DECLINE_PREFIX = _decline_prefix()
