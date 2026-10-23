@@ -65,23 +65,7 @@ def rank_finding(finding: FindingCard) -> tuple[int, int, int]:
 def score_finding_relation(left: FindingCard, right: FindingCard) -> float:
     """计算发现是否适合放在同一管理主题中；硬冲突返回负值。"""
 
-    score = 0.0
-    shared_metric = bool(set(left.metric_codes) & set(right.metric_codes))
-    related = right.finding_id in left.related_finding_ids or left.finding_id in right.related_finding_ids
-    shared_analysis = bool(set(left.analysis_ids) & set(right.analysis_ids))
-    if not shared_metric and not related and not shared_analysis:
-        return 0.0
-    if shared_analysis:
-        score += 0.2
-    if shared_metric:
-        score += 0.25
-    if set(left.period_roles) & set(right.period_roles):
-        score += 0.15
-    if related:
-        score += 0.45
-    if left.kind == "attribution" or right.kind == "attribution":
-        score += 0.1
-    return score
+    return _cluster_score(_ClusterCard.of(left), _ClusterCard.of(right))
 
 
 def cluster_findings(
@@ -89,22 +73,62 @@ def cluster_findings(
     budget: NarrativeContentBudget | None = None,
 ) -> tuple[tuple[str, ...], ...]:
     budget = budget or NarrativeContentBudget()
-    groups: list[list[str]] = []
+    # 组内直接保存成员卡片与预建集合：原写法对每个成员线性查找卡片、每次打分现建集合，
+    # 1200 条发现约 16 秒（O(发现数³)）。打分规则与选组顺序不变。
+    groups: list[list[_ClusterCard]] = []
     ordered = sorted(graph.findings, key=rank_finding, reverse=True)
-    for finding in ordered:
-        best: list[str] | None = None
+    for finding in map(_ClusterCard.of, ordered):
+        best: list[_ClusterCard] | None = None
         best_score = 0.0
         for group in groups:
-            members = [next(card for card in graph.findings if card.finding_id == item) for item in group]
-            scores = [score_finding_relation(finding, member) for member in members]
-            if scores and min(scores) >= 0 and sum(scores) / len(scores) > best_score and len(group) < budget.max_findings_per_section:
+            if len(group) >= budget.max_findings_per_section:
+                continue
+            scores = [_cluster_score(finding, member) for member in group]
+            if min(scores) >= 0 and sum(scores) / len(scores) > best_score:
                 best, best_score = group, sum(scores) / len(scores)
         if best is None:
             # Keep every finding; chapter selection remains a management decision.
-            groups.append([finding.finding_id])
+            groups.append([finding])
         else:
-            best.append(finding.finding_id)
-    return tuple(tuple(group) for group in groups)
+            best.append(finding)
+    return tuple(tuple(member.finding_id for member in group) for group in groups)
+
+
+@dataclass(frozen=True)
+class _ClusterCard:
+    finding_id: str
+    metrics: frozenset[str]
+    analyses: frozenset[str]
+    periods: frozenset[str]
+    related: frozenset[str]
+    attribution: bool
+
+    @classmethod
+    def of(cls, card: FindingCard) -> _ClusterCard:
+        return cls(card.finding_id, frozenset(card.metric_codes), frozenset(card.analysis_ids),
+                   frozenset(card.period_roles), frozenset(card.related_finding_ids),
+                   card.kind == "attribution")
+
+
+def _cluster_score(left: _ClusterCard, right: _ClusterCard) -> float:
+    """共享分析、指标、期间与显式关联各自加分；无任何关联为 0。"""
+    shared_metric = not left.metrics.isdisjoint(right.metrics)
+    related = right.finding_id in left.related or left.finding_id in right.related
+    shared_analysis = not left.analyses.isdisjoint(right.analyses)
+    if not shared_metric and not related and not shared_analysis:
+        return 0.0
+    score = 0.0
+    if shared_analysis:
+        score += 0.2
+    if shared_metric:
+        score += 0.25
+    if not left.periods.isdisjoint(right.periods):
+        score += 0.15
+    if related:
+        score += 0.45
+    if left.attribution or right.attribution:
+        score += 0.1
+    return score
 
 
 def build_narrative_planning_context(

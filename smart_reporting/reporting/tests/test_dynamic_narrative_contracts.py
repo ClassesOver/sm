@@ -169,3 +169,21 @@ def test_fallback_clustering_keeps_more_than_ten_unrelated_topics():
     assert {item for group in groups for item in group} == {card.finding_id for card in cards}
     context = build_narrative_planning_context(source, "按主题完整呈现")
     assert "maxChaptersIncludingAppendix" not in context["contentBudget"]
+
+
+def test_cluster_findings_scales_to_large_finding_graphs() -> None:
+    import time
+
+    from smart_reporting.reporting.hospital_operation.findings import FindingGraph
+    from smart_reporting.reporting.hospital_operation.narrative_planner import cluster_findings
+    from smart_reporting.reporting.tests.narrative_helpers import finding
+
+    # 原实现逐成员线性查找卡片，1200 条发现约 16 秒；按成员卡片直接打分后应在秒级以内。
+    cards = tuple(
+        finding(index, metricCodes=(f"m{index % 300}",), analysisIds=(f"analysis_{index % 150:03d}",))
+        for index in range(1, 1201)
+    )
+    started = time.perf_counter()
+    groups = cluster_findings(FindingGraph(snapshotHash="a" * 64, findings=cards))
+    assert time.perf_counter() - started < 5
+    assert sorted(item for group in groups for item in group) == sorted(card.finding_id for card in cards)
