@@ -2189,3 +2189,20 @@ def test_command_aliases_are_canonicalized_for_reducer_without_changing_fingerpr
         "start_analysis",
         {},
     )
+
+
+def test_tuple_unique_matches_equality_semantics_in_linear_time() -> None:
+    import time
+
+    from smart_reporting.reporting.workflow.state import _tuple_unique
+
+    # 与逐个 “not in” 相同：1 == 1.0 == True 只保留首个，字典按值相等去重并保持首见顺序。
+    values = [1, 1.0, True, {"a": 1}, {"a": 1.0}, {"a": [1]}, {"a": [1.0]}, [1], (1,), None, "1"]
+    assert _tuple_unique(values) == [1, {"a": 1}, {"a": [1]}, [1], (1,), None, "1"]
+    assert _tuple_unique(values)[0] is values[0]
+    # 告警随运行累积：5000 条去重原为 O(n²)（约 0.5 秒/次），分桶后在毫秒级。
+    warnings = [{"code": f"c{index % 50}", "sectionCode": f"s{index % 30}", "details": {"i": index}}
+                for index in range(5000)]
+    started = time.perf_counter()
+    assert len(_tuple_unique(warnings + warnings[:500])) == 5000
+    assert time.perf_counter() - started < 0.3
