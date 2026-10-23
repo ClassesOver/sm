@@ -242,3 +242,49 @@ def test_summary_trims_pairwise_correlation_table_by_strength():
     assert _byte_count(projected) <= budget
     assert rows[123] in table["rows"] and table["datasets"] == ["dataset-1"]
     assert table["view"]["rowCount"] == 400
+
+
+def test_summary_truncates_nested_record_lists_and_records_original_counts():
+    items = [{"科室": f"科室{index}", "金额": index, "说明": "门诊收入变化" * 5} for index in range(500)]
+    payload = {
+        "supplementalEvidenceSource": {"path": "evidence.json", "sha256": "a" * 64, "size": 1},
+        "supplementalEvidence": {"findings": [{"name": "科室明细", "items": items}]},
+    }
+    original = deepcopy(payload)
+    budget = _byte_count(payload) // 10
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=budget, count_tokens=_byte_count
+    )
+
+    assert payload == original
+    assert _byte_count(projected) <= budget
+    evidence = projected["supplementalEvidence"]
+    kept = evidence["findings"][0]["items"]
+    assert kept == items[: len(kept)] and len(kept) < 500
+    assert evidence["projection"]["truncatedLists"] == [
+        {"path": "findings[0].items", "rowCount": 500, "selectedRowCount": len(kept)}
+    ]
+    assert evidence["sourceFile"] == payload["supplementalEvidenceSource"]
+
+
+def test_summary_only_counts_tables_that_can_shrink():
+    # 200 行的表在首轮 256 行上限下不会变小，只能在后续减半阶段一起压缩。
+    small = {"columns": ["a"], "rows": [[index] for index in range(200)]}
+    large = {"columns": ["a"], "rows": [[index] for index in range(5000)]}
+    payload = {
+        "supplementalEvidenceSource": {"path": "evidence.json", "sha256": "a" * 64, "size": 1},
+        "supplementalEvidence": {"findings": [deepcopy(small) for _ in range(100)] + [large]},
+    }
+    calls = 0
+
+    def count(value):
+        nonlocal calls
+        calls += 1
+        return _byte_count(value)
+
+    budget = 100_000
+    projected = _project_analysis_summary_payload(payload, max_tokens=budget, count_tokens=count)
+
+    assert _byte_count(projected) <= budget
+    assert calls <= 5

@@ -561,6 +561,7 @@ def _project_tabular_finding(finding: Mapping[str, Any], *, row_limit: int) -> d
 _SUMMARY_GROUP_KEYS = ("topGroups", "bottomGroups")
 _SUMMARY_GROUP_LIMITS = (5, 2, 1, 0)
 _SUMMARY_CORRELATION_LIMITS = (20, 5)
+_SUMMARY_LIST_LIMITS = (20, 5, 1)
 
 
 def _abs_correlation(detail: Any) -> float:
@@ -606,7 +607,23 @@ def _project_analysis_summary_payload(
             value = value[key]
         return value
 
+    list_paths: list[tuple[int | str, ...]] = []
+
+    def collect_lists(value: Any, path: tuple[int | str, ...]) -> None:
+        # 列式表由行投影处理；其余嵌套数组（如 items: [{...}]）只能整体截短。
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                if key not in {"columns", "rows", "columnMeta"}:
+                    collect_lists(child, (*path, key))
+        elif isinstance(value, (list, tuple)):
+            if path and len(value) > _SUMMARY_LIST_LIMITS[-1]:
+                list_paths.append(path)
+            for index, child in enumerate(value):
+                collect_lists(child, (*path, index))
+
     collect(raw_findings, ())
+    collect_lists(raw_findings, ())
+    list_paths.sort(key=len)
     candidates.sort(
         key=lambda path: len(
             json.dumps(at_path(raw_findings, path), ensure_ascii=False, separators=(",", ":"))
@@ -621,6 +638,7 @@ def _project_analysis_summary_payload(
     series_limit: int | None = None
     group_limit: int | None = None
     correlation_limit: int | None = None
+    list_limit: int | None = None
     raw_facts = original.get("deterministicFacts")
     raw_metrics = raw_facts.get("metrics", []) if isinstance(raw_facts, Mapping) else []
     series_indices = [
@@ -682,6 +700,29 @@ def _project_analysis_summary_payload(
                 "projectedFindingCount": len({path[0] for path in projected_paths}),
                 "projectedTableCount": len(projected_paths),
             }
+        if list_limit is not None:
+            evidence = candidate["supplementalEvidence"]
+            truncated_lists = []
+            for path in list_paths:
+                try:
+                    parent = at_path(evidence["findings"], path[:-1])
+                    values = parent[path[-1]]
+                except (KeyError, IndexError, TypeError):
+                    continue  # 所在元素已随上层数组截短。
+                if isinstance(values, (list, tuple)) and len(values) > list_limit:
+                    parent[path[-1]] = list(values[:list_limit])
+                    truncated_lists.append({
+                        "path": "findings" + "".join(
+                            f"[{key}]" if isinstance(key, int) else f".{key}" for key in path
+                        ),
+                        "rowCount": len(values),
+                        "selectedRowCount": list_limit,
+                    })
+            if truncated_lists:
+                evidence["sourceFile"] = deepcopy(original.get("supplementalEvidenceSource"))
+                evidence.setdefault("projection", {"projected": True})["truncatedLists"] = (
+                    truncated_lists
+                )
         if group_limit is not None:
             # topGroups/bottomGroups 已按贡献排序，保留首部即保留最极端的组合。
             for index in group_indices:
@@ -748,11 +789,16 @@ def _project_analysis_summary_payload(
                 metric["periodValuesView"] = table["view"]
         return compact_non_tabular(candidate)
 
+    # 不超过行数上限的表投影后只会多出 view 元数据，逐表尝试只针对能真正变小的表；
+    # 每次尝试都要完整序列化与计数，表多时逐个尝试会把开销放大到平方级。
     for path in candidates:
+        if len(at_path(raw_findings, path)["rows"]) <= row_limit:
+            continue
         projected_paths.add(path)
         candidate = build()
         if count_tokens(candidate) <= max_tokens:
             return candidate
+    projected_paths.update(candidates)
     while projected_paths and row_limit > 2:
         row_limit = max(2, row_limit // 2)
         candidate = build()
@@ -767,6 +813,11 @@ def _project_analysis_summary_payload(
                 return candidate
     if correlation_count or pair_count:
         for correlation_limit in _SUMMARY_CORRELATION_LIMITS:
+            candidate = build()
+            if count_tokens(candidate) <= max_tokens:
+                return candidate
+    if list_paths:
+        for list_limit in _SUMMARY_LIST_LIMITS:
             candidate = build()
             if count_tokens(candidate) <= max_tokens:
                 return candidate
