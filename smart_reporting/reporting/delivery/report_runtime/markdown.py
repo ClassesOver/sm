@@ -422,7 +422,9 @@ def _balanced_cover_title(title: str) -> str:
 # 与溯源标记不变；模型自写表格没有协议标记，不受影响。
 _SERVER_TABLE_BLOCK = re.compile(
     # 表名是表格上一行不含协议标记、不以句末标点结尾的短行；正文段落不能被当作表名一起移走。
-    r"(?:^(?![\[|#!>])(?![^\n]*\[\[)[^\n]*[^\n。！？；.!?]\n\n)?^\[\[table:(?P<id>[^\]\r\n]+)\]\]\n.*?^\[\[/table:(?P=id)\]\][ \t]*(?:\n|\Z)",
+    # 服务端表名自成一段（前接空行）且不是列表项：多行段落的末行、列表末项不随表格移走。
+    r"(?:(?:\A|(?<=\n\n))(?![\[|#!>])(?![-*+][ \t]|\d{1,3}[.)][ \t])(?![^\n]*\[\[)"
+    r"[^\n]*[^\n。！？；.!?]\n\n)?^\[\[table:(?P<id>[^\]\r\n]+)\]\]\n.*?^\[\[/table:(?P=id)\]\][ \t]*(?:\n|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 APPENDIX_TABLES_SENTINEL = "REPORTING-APPENDIX-TABLES"

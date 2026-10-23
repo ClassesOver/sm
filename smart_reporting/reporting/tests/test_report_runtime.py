@@ -1262,6 +1262,11 @@ def test_server_tables_move_after_body_with_their_captions_only():
     assert "次均收入120元[[claim:c]]。" in body and "| 留在正文 |" in body
     assert appendix.index("分期间指标汇总") < appendix.index("[[table:t1]]") < appendix.index("[[table:t2]]")
     assert relocate_server_tables("## 1. 收入\n\n正文。\n") == "## 1. 收入\n\n正文。\n"
+    # 表名自成一段：列表末项、多行段落末行（没有句末标点）不能被当作表名搬进附表。
+    table = "[[table:t9]]\n| a | b |\n| --- | ---: |\n\n[[/table:t9]]\n"
+    for prose in ("- 门诊收入增长\n- 住院收入稳定", "1. 门诊收入增长\n2. 住院收入稳定", "多行段落首行\n末行没有句号"):
+        body, appendix = relocate_server_tables(f"## 1. 收入\n\n{prose}\n\n{table}").split(APPENDIX_TABLES_SENTINEL)
+        assert prose in body and prose.splitlines()[-1] not in appendix
 
 
 def test_executive_summary_takes_each_section_conclusion():
