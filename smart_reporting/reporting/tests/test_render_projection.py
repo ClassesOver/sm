@@ -67,9 +67,9 @@ def test_projection_runs_the_exact_existing_render_text_pipeline():
         "relocate_server_tables/1",
         "compact_single_column_tables/1",
         "insert_executive_summary/2",
-        "collapse_repeated_values/1",
+        "collapse_repeated_values/2",
         "readable_large_amounts/1",
-        "align_numeric_table_columns/1",
+        "align_numeric_table_columns/2",
         "source_presentations/1",
         "normalize_cjk_strong_markers/1",
     ]

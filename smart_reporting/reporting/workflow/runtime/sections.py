@@ -6,7 +6,9 @@ import hashlib
 import re
 from collections.abc import Callable
 from copy import copy
+from functools import partial
 
+import anyio
 from agno.exceptions import ModelProviderError
 from loguru import logger as loguru_logger
 
@@ -347,8 +349,9 @@ def _section_request_tokens(agent: Any, payload: Mapping[str, Any], run_context:
             messages,
             SectionContent,
         )
-    except Exception:
-        pass
+    except Exception as error:
+        # 计数器不可用时退回字节估算；记录以便发现路由或模型配置问题。
+        loguru_logger.debug("report_section_token_count_fallback reason={}", type(error).__name__)
     return sum(len(str(message.content).encode("utf-8")) for message in messages) + len(
         _json_text(SectionContent.model_json_schema()).encode("utf-8")
     )
@@ -819,6 +822,11 @@ def _project_text_evidence(
         "truncated": len(selected_indices) < len(lines),
         "matchedLineCount": len(matching),
     }
+
+
+async def _in_thread(function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """秒级纯 CPU 的复核与数值绑定移出事件循环，避免并发章节与 HTTP 请求被阻塞。"""
+    return await anyio.to_thread.run_sync(partial(function, *args, **kwargs))
 
 
 def _verified_caption(text: str, number_contents: tuple[str, ...]) -> str:
@@ -2003,10 +2011,12 @@ async def _generate_section_in_blocks(
                 number_contents, block_payload["fieldDefinitions"],
             )
             content = content.model_copy(update={"markdown": aligned_markdown})
-            content_review = review_content_result(content.markdown, number_contents,
-                                             field_definitions=block_payload["fieldDefinitions"],
-                                             fact_ids=(fact_id for claim in block_claims for fact_id in claim.fact_ids),
-                                             bound_chart_ids=chart_ids)
+            content_review = await _in_thread(
+                review_content_result, content.markdown, number_contents,
+                field_definitions=block_payload["fieldDefinitions"],
+                fact_ids=tuple(fact_id for claim in block_claims for fact_id in claim.fact_ids),
+                bound_chart_ids=chart_ids,
+            )
             review_warnings = list(content_review.warnings)
             accuracy_count = content_review.accuracy_count
             # 各 block 独立生成，常重复前文的开场与结论；逐句重复同样进入纠错轮次。
@@ -2041,7 +2051,8 @@ async def _generate_section_in_blocks(
                 loguru_logger.warning("report_content_review_warning section={} message={}", work_item.section_code, warning)
             from ...trace.semantic_bindings import render_bound_numbers
 
-            bound_markdown, number_references, number_notices = render_bound_numbers(
+            bound_markdown, number_references, number_notices = await _in_thread(
+                render_bound_numbers,
                 content.markdown, number_contents,
                 key=f"{work_item.section_code}:{block_plan.block_id}",
                 field_definitions=block_payload["fieldDefinitions"],
@@ -2278,7 +2289,7 @@ async def _generate_whole_section_content(
         )})
         # 复核、回退与最终签发共用已经确定性对齐的候选，避免恢复已失效的原始告警。
         content_by_id = {block.block_id: block for block in content.blocks}
-        review_scores, review_warnings, reference_issues = review_blocks(content)
+        review_scores, review_warnings, reference_issues = await _in_thread(review_blocks, content)
         if review_attempt == 1:
             # 纠错后问题反而更严重的 block 回退到首轮版本，纠错不能让正文变差。
             worse = {block_id for block_id in flagged_ids
@@ -2292,7 +2303,7 @@ async def _generate_whole_section_content(
                 )})
                 content_by_id = {item.block_id: item for item in content.blocks}
                 # 部分回退会改变其他 block 的“前文”，旧的重复检测结果已失效。
-                _, review_warnings, _ = review_blocks(content)
+                _, review_warnings, _ = await _in_thread(review_blocks, content)
         loguru_logger.info("report_content_review_completed section={} attempt={} issue_count={} block_count={}",
                            work_item.section_code, review_attempt,
                            len({warning for warnings in review_warnings.values() for warning in warnings}), len(content.blocks))
@@ -2341,7 +2352,8 @@ async def _generate_whole_section_content(
         claims = tuple(claims_by_id[item] for item in block_plan.claim_ids)
         from ...trace.semantic_bindings import render_bound_numbers
 
-        bound_markdown, number_references, number_notices = render_bound_numbers(
+        bound_markdown, number_references, number_notices = await _in_thread(
+            render_bound_numbers,
             content_by_id[block_plan.block_id].markdown, number_contents,
             key=f"{work_item.section_code}:{block_plan.block_id}",
             field_definitions=payload["fieldDefinitions"],

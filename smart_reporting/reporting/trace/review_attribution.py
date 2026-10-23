@@ -297,6 +297,24 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
             values.append((labels_by_fact.get(token[2:-2].split(":")[1]), unit, Decimal(str(value))))
     for unit, numbers in supplemental_number_values(contents).items():
         values.extend((None, unit, number) for number in numbers)
+    # 按（书写单位, 书写精度）建一次“舍入后绝对值 → 所属指标”索引：逐数字遍历全部登记值是
+    # O(数字数×登记值数)，整份报告单次核对约需 9 秒；索引后为查表，判定结果不变。
+    owner_index: dict[tuple[str, Decimal], dict[Decimal, set[str | None]]] = {}
+
+    def owners_of(number: Decimal, written_unit: str, quantum: Decimal) -> set[str | None]:
+        table = owner_index.get((written_unit, quantum))
+        if table is None:
+            table = {}
+            for label, unit, value in values:
+                scales = _unit_scales(unit)
+                if unit != written_unit and (scales is None or written_unit not in scales):
+                    continue
+                converted = value if unit == written_unit else value * scales[unit] / scales[written_unit]
+                # 下降幅度常写成正数：变化额、变化率按绝对值核对。
+                table.setdefault(abs(converted).quantize(quantum, rounding=ROUND_HALF_UP), set()).add(label)
+            owner_index[(written_unit, quantum)] = table
+        return table.get(abs(number), set())
+
     warnings: list[str] = []
     for clause in _CLAUSE_BREAK.split(text):
         wording = _VALUE.sub("，", clause)
@@ -310,15 +328,7 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
             if number == 0:
                 continue
             quantum = Decimal(1).scaleb(-(len(match[1].split(".")[1]) if "." in match[1] else 0))
-            owners: set[str | None] = set()
-            for label, unit, value in values:
-                scales = _unit_scales(unit)
-                if unit != match[2] and (scales is None or match[2] not in scales):
-                    continue
-                converted = value if unit == match[2] else value * scales[unit] / scales[match[2]]
-                # 下降幅度常写成正数：变化额、变化率按绝对值核对。
-                if abs(converted).quantize(quantum, rounding=ROUND_HALF_UP) == abs(number):
-                    owners.add(label)
+            owners = owners_of(number, match[2], quantum)
             if len(owners) == 1 and None not in owners and named[0] not in owners:
                 warnings.append(f"指标数值归属需复核：{named[0]}名下的{match[0]}是{next(iter(owners))}的登记值。"
                                 f"请改用{named[0]}对应的数值引用，或改写主语。")

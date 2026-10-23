@@ -11,6 +11,8 @@ from datetime import date, timedelta
 from decimal import Decimal, localcontext
 from typing import Any
 
+from loguru import logger
+
 from .contracts_v1 import TableDerivationV1, canonical_sha256, validate_json_pointer
 
 _DECIMAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
@@ -313,7 +315,9 @@ def table_derivation_token(
     try:
         resolved = _resolve(derivation, sources)
         return resolved[0] if resolved else None
-    except Exception:
+    except Exception as error:
+        # 绑定失败会使该数字按未核实处理；记录原因便于排查，不中断正文生成。
+        logger.debug("report_table_derivation_unbound reason={}", type(error).__name__)
         return None
 
 
@@ -339,5 +343,6 @@ def resolve_table_derivation(
             if token == legacy:
                 return resolved[1]
         return None
-    except Exception:
+    except Exception as error:
+        logger.debug("report_table_derivation_unresolved reason={}", type(error).__name__)
         return None

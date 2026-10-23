@@ -47,6 +47,9 @@ _WORKFLOW_THREAD_LOCK_WAIT_SECONDS = 2.0
 _WORKFLOW_THREAD_LOCK_RETRY_DELAY_SECONDS = 0.1
 
 
+_SETTLED_RUN_STATUSES = ("completed", "cancelled")
+
+
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
@@ -877,9 +880,14 @@ class ReportingStateRepository:
             )
             await self._insert_command_receipts(connection, receipts)
             status = "failed" if result.state.phase.value == "failed" else "running"
+            # 已由 settle_run 收口为 completed/cancelled 的 run，之后的编辑器命令（保存新版本、
+            # 保留期、来源回收）只改状态载荷，不能把父级 run 退回 running 并清空 finished_at。
             await connection.execute(
                 update(self.runs)
-                .where(self.runs.c.report_run_id == report_run_id)
+                .where(
+                    self.runs.c.report_run_id == report_run_id,
+                    self.runs.c.status.not_in(_SETTLED_RUN_STATUSES),
+                )
                 .values(
                     status=status,
                     updated_at=result.state.updated_at,

@@ -585,9 +585,10 @@ def readable_large_amounts(markdown: str) -> str:
 
 
 # “四项全年合计分别为0元、0元、0元、0元”：逐项相同的数值渲染时合并为“均为0元”，保留首个来源标记。
+# 列举后仍以“和/及/与/或”接续其他项（“分别为10%、10%和20%”）时不是全部相同，不合并。
 _REPEATED_VALUES = re.compile(
     r"分别为(?P<value>-?\d[\d,]*(?:\.\d+)?(?:亿元|万元|元|万人次|人次|床日|%))(?P<marks>(?:\[\[[^\]\r\n]+\]\])*)"
-    r"(?:、(?P=value)(?:\[\[[^\]\r\n]+\]\])*)+(?![\d.,]|、)"
+    r"(?:、(?P=value)(?:\[\[[^\]\r\n]+\]\])*)+(?![\d.,]|、|\s*(?:和|及|与|或|以及))"
 )
 
 
@@ -598,10 +599,12 @@ def collapse_repeated_values(markdown: str) -> str:
 # 模型自写表格常把分隔行写成全左对齐，金额、比率列的位数与小数点对不齐。渲染时全部
 # 单元格都是数值（可带单位、百分号或“—”）的列改为右对齐；已声明对齐方式的列不动。
 _NUMERIC_CELL = re.compile(
-    r"[+\-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:%|‰|亿元|万元|元|万人次|人次|床日|个百分点|亿|万)?"
+    r"[+\-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:%|‰|亿元|万元|元|万人次|人次|床日|个百分点|亿|万|天|倍|例|张|人)?"
     r"|[—–\-]{1,2}|"
 )
 _TABLE_SEPARATOR = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$")
+# 单元格里的加粗与来源标记（“8.9亿元[[claim:a]]”）不影响是否为数值列。
+_CELL_MARKUP = re.compile(r"\*\*|\[\[[^\]\r\n]+\]\]")
 
 
 def _table_cells(line: str) -> list[str]:
@@ -623,7 +626,7 @@ def align_numeric_table_columns(markdown: str) -> str:
             continue
         aligned = [
             "---:" if separator == "---" and any(row[column] for row in rows)
-            and all(_NUMERIC_CELL.fullmatch(row[column].replace("**", "")) for row in rows) else separator
+            and all(_NUMERIC_CELL.fullmatch(_CELL_MARKUP.sub("", row[column])) for row in rows) else separator
             for column, separator in enumerate(separators)
         ]
         lines[index] = "| " + " | ".join(aligned) + " |"
@@ -938,6 +941,45 @@ def _body_tokens(tokens: list[Any]) -> list[Any]:
     return tokens
 
 
+_HTML_TBODY = re.compile(r"<tbody>\n?(?P<rows>.*?)</tbody>", re.DOTALL)
+_HTML_ROW = re.compile(r"<tr>.*?</tr>\n?", re.DOTALL)
+_HTML_TABLE_CELL = re.compile(r"(?P<open><t[hd][^>]*>)(?P<text>[^<]*?)(?P<unit>（[^（）<]{1,12}）)(?P<close></t[hd]>)")
+_TABLE_KEEP_ROWS = 2
+
+
+def _paginate_pdf_tables(body: str) -> str:
+    """PDF 表格分页：首尾各两行不与表格其余部分分开，表头单位不在括号中间折行。
+
+    WeasyPrint 不支持表格行的 ``break-before/after:avoid``，长表拆页时常只剩末行
+    （“2025年12月 0 0”）孤零零落到下一页，或表头加首行孤悬页底。把首尾各两行放进
+    ``break-inside:avoid`` 的独立 tbody；拆分后 ``nth-child`` 的斑马纹按组重新计数，
+    改由显式类名标注偶数行。单元格末尾的单位“（人次）”整体换行，不拆成“（人 / 次）”。
+    """
+
+    def split(match: re.Match[str]) -> str:
+        rows = _HTML_ROW.findall(match["rows"])
+        striped = [
+            row.replace("<tr>", '<tr class="report-row-even">', 1) if index % 2 else row
+            for index, row in enumerate(rows)
+        ]
+        if len(rows) <= 2 * _TABLE_KEEP_ROWS:
+            return f'<tbody class="report-table-keep">\n{"".join(striped)}</tbody>'
+        head, middle, tail = (
+            striped[:_TABLE_KEEP_ROWS], striped[_TABLE_KEEP_ROWS:-_TABLE_KEEP_ROWS], striped[-_TABLE_KEEP_ROWS:]
+        )
+        return (
+            f'<tbody class="report-table-keep">\n{"".join(head)}</tbody>\n'
+            f'<tbody>\n{"".join(middle)}</tbody>\n'
+            f'<tbody class="report-table-keep">\n{"".join(tail)}</tbody>'
+        )
+
+    body = _HTML_TBODY.sub(split, body)
+    return _HTML_TABLE_CELL.sub(
+        lambda match: f'{match["open"]}{match["text"]}<span class="report-unit">{match["unit"]}</span>{match["close"]}',
+        body,
+    )
+
+
 def _semantic_documents(
     body: str,
     *,
@@ -979,7 +1021,7 @@ def _semantic_documents(
         _trace_source_appendix_html(trace_sources) if trace_sources else ""
     )
     shared = (
-        f'{cover}{toc_section}<main class="report-body">{body_title}{body}'
+        f'{cover}{toc_section}<main class="report-body">{body_title}{_paginate_pdf_tables(body)}'
         f"{source_appendix}"
         f'<footer class="report-signature"><p>{organization}</p><p>{generated_date}</p>'
         "</footer></main>"
@@ -1055,7 +1097,8 @@ def _semantic_documents(
         f"{theme['surface']}"
         ";color:"
         f"{theme['primary']}"
-        "}tbody tr:nth-child(even){background:#F9FAFB}"
+        "}tr.report-row-even{background:#F9FAFB}.report-table-keep{break-inside:avoid}"
+        ".report-unit{white-space:nowrap}p:has(+table){break-after:avoid;page-break-after:avoid}"
         ".report-figure{display:block;margin:8mm auto 10mm;break-inside:avoid;"
         "page-break-inside:avoid;break-before:avoid;break-after:avoid;text-align:center}"
         ".report-figure-image{margin:0;break-inside:avoid;break-after:avoid;text-align:center}"

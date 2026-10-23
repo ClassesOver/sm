@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date, timedelta
 from typing import Any, Literal
 
@@ -774,6 +775,7 @@ def _validate_query_contract(
             column=table_requirement.period_column.lower(),
             period=period,
             granularity=table_requirement.period_granularity,
+            exclusive_upper=period_column_has_time(snapshot_table, table_requirement.period_column),
         ):
             raise ReportingError(
                 "report_query_period_invalid", "SQL 必须对每张表包含完整且精确的报表期间约束。"
@@ -952,6 +954,17 @@ def _has_exact_scope_filter(
     return False
 
 
+_TIME_OF_DAY_TYPE = re.compile(r"timestamp|datetime", re.IGNORECASE)
+
+
+def period_column_has_time(table: ModelTable, column: str) -> bool:
+    """期间列带时分秒（DATETIME/TIMESTAMP）时，按日的闭区间上界会漏掉期末当天。"""
+    return any(
+        item.name.lower() == column.lower() and _TIME_OF_DAY_TYPE.search(item.data_type)
+        for item in table.columns
+    )
+
+
 def _has_complete_period_filter(
     expression: exp.Expression,
     *,
@@ -959,10 +972,15 @@ def _has_complete_period_filter(
     column: str,
     period: ReportPeriod,
     granularity: str,
+    exclusive_upper: bool = False,
 ) -> bool:
+    """``exclusive_upper``：期间列带时分秒时，``<= '2025-12-31'``、``BETWEEN … AND '2025-12-31'``
+    与 ``= '2025-12-31'`` 都等于截至当天 00:00:00，期末当天其余记录被静默排除；按日粒度只接受
+    ``< '2026-01-01'`` 半开上界。"""
     where = expression.args.get("where")
     if where is None:
         return False
+    day_exclusive = exclusive_upper and granularity not in {"year", "month"}
     lower = False
     upper = False
     for predicate in _and_predicates(where.this):
@@ -982,7 +1000,8 @@ def _has_complete_period_filter(
                 )
             else:
                 valid = (
-                    _literal_date(predicate.args.get("low")) == period.start
+                    not day_exclusive
+                    and _literal_date(predicate.args.get("low")) == period.start
                     and _literal_date(predicate.args.get("high")) == period.end
                 )
             if not valid:
@@ -995,6 +1014,7 @@ def _has_complete_period_filter(
                 valid_lower, valid_upper = _period_bounds(
                     predicate, right, period=period, granularity=granularity
                 )
+                valid_upper = valid_upper and not (day_exclusive and isinstance(predicate, exp.LTE))
                 if not valid_lower and not valid_upper:
                     return False
                 lower = lower or valid_lower
@@ -1003,6 +1023,7 @@ def _has_complete_period_filter(
                 valid_lower, valid_upper = _reverse_period_bounds(
                     predicate, left, period=period, granularity=granularity
                 )
+                valid_upper = valid_upper and not (day_exclusive and isinstance(predicate, exp.GTE))
                 if not valid_lower and not valid_upper:
                     return False
                 lower = lower or valid_lower
@@ -1029,7 +1050,9 @@ def _has_complete_period_filter(
                 )
             else:
                 valid = (
-                    period.start == period.end and _literal_date(value_expression) == period.start
+                    not day_exclusive
+                    and period.start == period.end
+                    and _literal_date(value_expression) == period.start
                 )
             if not valid:
                 return False

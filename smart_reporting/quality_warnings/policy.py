@@ -59,8 +59,6 @@ _QUALITY_WARNING_CODES: Final[frozenset[str]] = frozenset(
         "report_section_claim_unreferenced",
         "report_section_block_claim_unknown",
         "report_section_block_claims_omitted",
-        "report_section_block_citation_unknown",
-        "report_section_block_chart_unknown",
         "report_section_block_content_review",
         "report_section_block_unverified_numbers",
         "report_section_citation_missing",

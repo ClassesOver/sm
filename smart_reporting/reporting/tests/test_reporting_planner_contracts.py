@@ -1506,6 +1506,20 @@ def test_outline_preserves_analysis_coverage_without_fixed_chapter_limit() -> No
     ]
 
 
+def test_freeze_outline_writes_titles_like_the_report_body() -> None:
+    # 回放：正文把“1-9月”规范为“1—9月”，封面、页眉与文件名仍是“2025年1-9月…报告”。
+    outline = freeze_outline(
+        {
+            "reportType": "comprehensive",
+            "title": "2025年1-9月全院经济运行分析报告",
+            "sections": [{"title": "收入分析(含体检)", "analysisIds": ["analysis_001"]}],
+        },
+        analyses=[{"analysisId": "analysis_001", "managementQuestion": "收入趋势如何"}],
+    )
+    assert outline.title == "2025年1—9月全院经济运行分析报告"
+    assert outline.sections[0].title == "收入分析（含体检）"
+
+
 def test_freeze_outline_derives_focus_from_signed_management_questions() -> None:
     outline = freeze_outline(
         {
@@ -4311,6 +4325,51 @@ def test_period_filter_accepts_exact_typed_date_bounds(sql: str) -> None:
         period=ReportPeriod(start=date(2025, 1, 1), end=date(2025, 12, 31)),
         granularity="date",
     )
+
+
+@pytest.mark.parametrize(
+    ("where", "complete"),
+    [
+        ("data_time BETWEEN '2025-01-01' AND '2025-12-31'", False),
+        ("data_time >= '2025-01-01' AND data_time <= '2025-12-31'", False),
+        ("'2025-12-31' >= data_time AND data_time >= '2025-01-01'", False),
+        ("data_time >= '2025-01-01' AND data_time < '2026-01-01'", True),
+        ("'2026-01-01' > data_time AND '2025-01-01' <= data_time", True),
+    ],
+)
+def test_period_filter_on_datetime_column_requires_exclusive_upper_bound(
+    where: str, complete: bool
+) -> None:
+    from smart_reporting.reporting.workflow.query_pipeline import period_column_has_time
+
+    # DATETIME 列上 “<= '2025-12-31'” 只到期末当天 00:00:00，当天其余记录被静默排除。
+    table = reporting_contract.ModelTable(
+        sourceId="rj",
+        database="rj",
+        name="visits",
+        columns=(
+            reporting_contract.ModelColumn(name="data_time", dataType="DATETIME", nullable=False),
+            reporting_contract.ModelColumn(name="data_date", dataType="DATE", nullable=False),
+        ),
+    )
+    assert period_column_has_time(table, "DATA_TIME") and not period_column_has_time(table, "data_date")
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.workflow.runtime.planning import _period_column_has_time
+
+    snapshots = (SimpleNamespace(tables=(table,)),)
+    requirement_table = SimpleNamespace(table="rj.visits", period_column="data_time")
+    assert _period_column_has_time(snapshots, "rj", requirement_table)  # type: ignore[arg-type]
+    assert not _period_column_has_time(snapshots, "other", requirement_table)  # type: ignore[arg-type]
+    statement = parse_one(f"SELECT SUM(amount) FROM rj.visits WHERE {where}", read="mysql")
+    assert _has_complete_period_filter(
+        statement,
+        alias="visits",
+        column="data_time",
+        period=ReportPeriod(start=date(2025, 1, 1), end=date(2025, 12, 31)),
+        granularity="date",
+        exclusive_upper=True,
+    ) is complete
 
 
 def test_measure_semantics_follow_cte_projection_alias() -> None:

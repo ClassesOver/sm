@@ -8,11 +8,13 @@ import json
 import math
 import os
 import re
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
+from functools import lru_cache, wraps
 from typing import Any
 
 from loguru import logger
@@ -29,6 +31,41 @@ from ..units import unit_scales as _unit_scales
 from .contracts_v1 import TableDerivationV1, TableOperandV1
 from .fact_index import fact_binding_records, merge_binding_records
 from .table_sources import table_semantics
+
+
+def _cached_by_contents(copy: Callable[[Any], Any]) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """按（事实原文, 其余参数）缓存只依赖冻结事实的纯构建结果，并返回副本。
+
+    章节逐块复核、绑定与纠错会对同一批事实反复构建相同的派生值集合；映射参数按内容入键。
+    """
+
+    def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+        cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+        lock = threading.Lock()
+
+        @wraps(function)
+        def wrapper(contents: Iterable[str], *args: Any) -> Any:
+            contents = tuple(contents)
+            key = (contents, *(frozenset(arg.items()) if isinstance(arg, Mapping) else arg for arg in args))
+            with lock:
+                if key in cache:
+                    cache.move_to_end(key)
+                    return copy(cache[key])
+            value = function(contents, *args)
+            with lock:
+                cache[key] = value
+                while len(cache) > 32:
+                    cache.popitem(last=False)
+            return copy(value)
+
+        return wrapper
+
+    return decorate
+
+
+def _copy_value_sets(value: Mapping[str, set[Decimal]]) -> dict[str, set[Decimal]]:
+    return {key: set(items) for key, items in value.items()}
+
 
 # 增减方向词对照：自动纠正、正文复核与 claim 绑定共用同一份，避免各处漏掉不同写法
 # （“跌幅-5%”“上涨-654万元”曾因词表不全原样发布）。
@@ -137,6 +174,7 @@ def _hidden_by_rounding(value: Any, unit: str | None, target: str | None) -> boo
     return converted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == 0
 
 
+@lru_cache(maxsize=8192)
 def _canonical_month_label(label: str) -> str | None:
     """统一有效年月和月初标签，保留数值选择器对应的原始桶索引。"""
     parsed = _parse_period(label)
@@ -349,14 +387,29 @@ def metric_share_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, A
     return shares
 
 
+@lru_cache(maxsize=256)
+def _parsed_fact_bundle(content: str) -> DeterministicAnalysisBundle | None:
+    # 同一批事实文本会被目录、核对、复核各函数反复解析（整份报告单次复核约 500 次）；
+    # 事实模型 frozen，按原文缓存解析结果不改变语义。
+    try:
+        return DeterministicAnalysisBundle.model_validate_json(content)
+    except ValueError:
+        return None
+
+
+@lru_cache(maxsize=256)
+def _fact_bundle_document(content: str) -> dict[str, Any] | None:
+    """仅供本模块只读遍历的 JSON 形态；不向调用方暴露，避免共享可变对象。"""
+    bundle = _parsed_fact_bundle(content)
+    return None if bundle is None else bundle.model_dump(mode="json", by_alias=True)
+
+
 def frozen_fact_bundles(contents: Iterable[str]) -> Iterator[DeterministicAnalysisBundle]:
     """目录与引用解析共用模型校验和字段规范化，忽略非事实文档。"""
     for content in contents:
-        try:
-            bundle = DeterministicAnalysisBundle.model_validate_json(content)
-        except ValueError:
-            continue
-        yield bundle
+        bundle = _parsed_fact_bundle(content)
+        if bundle is not None:
+            yield bundle
 
 
 def _registered_groups(entry: Mapping[str, Any], key: str):
@@ -397,8 +450,11 @@ def _frozen_number_entries(
     contents: Iterable[str],
 ) -> Iterator[tuple[str, Any, str | None, str | None]]:
     """逐项给出 (数值引用, 未舍入原值, 原单位, 显示单位)；目录与复核共用同一来源。"""
-    for bundle in frozen_fact_bundles(contents):
-        document = bundle.model_dump(mode="json", by_alias=True)
+    for content in contents:
+        bundle = _parsed_fact_bundle(content)
+        document = _fact_bundle_document(content)
+        if bundle is None or document is None:
+            continue
         metric_entries = {item["factId"]: item for item in document["metrics"] if item.get("factId")}
         fact_warnings = {item["factId"]: item.get("warnings", ()) for item in (*document["metrics"], *document["comparisons"]) if item.get("factId")}
         for array, fields in (
@@ -645,7 +701,12 @@ def prompt_number_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
 
 
 def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
-    contents = tuple(contents)
+    # 同一章节逐块复核、绑定与纠错会对同一批事实反复建目录；按原文缓存，返回副本供调用方修改。
+    return dict(_frozen_number_catalog(tuple(contents)))
+
+
+@lru_cache(maxsize=64)
+def _frozen_number_catalog(contents: tuple[str, ...]) -> dict[str, str]:
     records = {}
     conflicts = set()
     for bundle in frozen_fact_bundles(contents):
@@ -674,6 +735,7 @@ def frozen_number_catalog(contents: Iterable[str]) -> dict[str, str]:
     return catalog
 
 
+@_cached_by_contents(_copy_value_sets)
 def frozen_number_values(
     contents: Iterable[str], catalog: dict[str, str]
 ) -> dict[str, set[Decimal]]:
@@ -1102,6 +1164,11 @@ def render_frozen_numbers(markdown: str, catalog: dict[str, str], *, annotate=No
 
 
 def supplemental_number_values(contents: Iterable[str]) -> dict[str, set[Decimal]]:
+    return {unit: set(values) for unit, values in _supplemental_number_values(tuple(contents)).items()}
+
+
+@lru_cache(maxsize=64)
+def _supplemental_number_values(contents: tuple[str, ...]) -> dict[str, set[Decimal]]:
     """按补证列元数据或列名中的可信单位登记数值，不从数字大小猜测用途。"""
     known: dict[str, set[Decimal]] = {}
     for content in contents:
@@ -1542,7 +1609,7 @@ class DerivedNumbers:
         derived_from: Mapping[str, str] | None = None,
     ) -> None:
         self._values: dict[str, list[_DerivedValue]] = {}
-        self._sorted: dict[str, list[Decimal]] = {}
+        self._sorted: dict[str, tuple[tuple[_DerivedValue, ...], tuple[Decimal, ...]]] = {}
         self._table_sources = table_sources or {}
         # resource_id → 声明的原始来源 resource_id；仅收录经字节核验的 source.sha256 声明。
         self._derived_from = dict(derived_from or {})
@@ -1690,6 +1757,20 @@ class DerivedNumbers:
         tokens = {derived_reference_token(entry, unit) for entry in matches}
         return matches[0] if matches and None not in tokens and len(tokens) == 1 else None
 
+    def _index(self, unit: str) -> tuple[tuple[_DerivedValue, ...], tuple[Decimal, ...]]:
+        cached = self._sorted.get(unit)
+        if cached is None:
+            # 排序局部副本，成对发布不可变条目和键；读者不会看到原列表排序中的空窗口。
+            entries = tuple(sorted(self._values.get(unit, ()), key=lambda entry: entry.value))
+            cached = (entries, tuple(entry.value for entry in entries))
+            self._sorted[unit] = cached
+        return cached
+
+    def prepare_indexes(self) -> None:
+        """共享缓存发布前构建各单位的索引，后续查询只读。"""
+        for unit in self._values:
+            self._index(unit)
+
     def _matches(
         self,
         number: Decimal,
@@ -1700,13 +1781,9 @@ class DerivedNumbers:
         statement: str | None = None,
         claim: str | None = None,
     ) -> Iterator[_DerivedValue]:
-        entries = self._values.get(unit)
+        entries, keys = self._index(unit)
         if not entries:
             return
-        if unit not in self._sorted:
-            entries.sort(key=lambda entry: entry.value)
-            self._sorted[unit] = [entry.value for entry in entries]
-        keys = self._sorted[unit]
         index = bisect.bisect_left(keys, number - quantum)
         while index < len(keys) and keys[index] <= number + quantum:
             entry = entries[index]
@@ -1989,7 +2066,39 @@ def _short_name(fact: Any) -> str | None:
     return re.split(r"[，,；;]", name, maxsplit=1)[0].strip() or None
 
 
+_DERIVED_CACHE: OrderedDict[tuple[Any, ...], DerivedNumbers] = OrderedDict()
+_DERIVED_CACHE_LOCK = threading.Lock()
+_DERIVED_CACHE_SIZE = 32
+
+
 def derived_number_values(
+    contents: Iterable[str], *, table_sources: Mapping[str, bytes] | None = None,
+) -> DerivedNumbers:
+    """按（事实原文, 表格来源字节摘要）缓存派生数值；章节逐块复核与绑定会反复构建同一结果。
+
+    发布前完成不可变查询索引，可在线程间只读共享；来源字节变化即换键，不会复用旧结果。
+    """
+    contents = tuple(contents)
+    sources = table_sources or {}
+    key = (contents, tuple(sorted(
+        (resource_id, hashlib.sha256(raw).digest() if isinstance(raw, bytes) else type(raw).__name__)
+        for resource_id, raw in sources.items()
+    )))
+    with _DERIVED_CACHE_LOCK:
+        cached = _DERIVED_CACHE.get(key)
+        if cached is not None:
+            _DERIVED_CACHE.move_to_end(key)
+            return cached
+    built = _build_derived_number_values(contents, table_sources=table_sources)
+    built.prepare_indexes()
+    with _DERIVED_CACHE_LOCK:
+        _DERIVED_CACHE[key] = built
+        while len(_DERIVED_CACHE) > _DERIVED_CACHE_SIZE:
+            _DERIVED_CACHE.popitem(last=False)
+    return built
+
+
+def _build_derived_number_values(
     contents: Iterable[str], *, table_sources: Mapping[str, bytes] | None = None,
 ) -> DerivedNumbers:
     """服务端补算模型常写的两数之差与前 N 项合计，供正文核对使用，不进入模型可见目录。
@@ -2301,6 +2410,7 @@ _PROFILE_RATES = (
 )
 
 
+@_cached_by_contents(lambda value: [(names, set(numbers)) for names, numbers in value])
 def profile_rate_values(contents: Iterable[str]) -> list[tuple[tuple[str, ...], set[Decimal]]]:
     """事实告警中 Profile 登记的缺失、零值比例。
 
@@ -2337,11 +2447,24 @@ def _paragraph_at(markdown: str, index: int) -> str:
     return markdown[start + 2 if start >= 0 else 0 : end if end >= 0 else len(markdown)]
 
 
+_STATEMENT_BREAKS = "。！？；;\n"
+_STATEMENT_BREAK = re.compile(r"[。！？；;\n]")
+
+
+def text_after_last_break(text: str, index: int, marks: str = _STATEMENT_BREAKS) -> str:
+    """等价于 re.split(f"[{marks}]", text[:index])[-1]，但不切分、不复制整段前文。"""
+    return text[max(text.rfind(mark, 0, index) for mark in marks) + 1:index]
+
+
+def text_before_next_break(text: str, index: int, pattern: re.Pattern[str] = _STATEMENT_BREAK) -> str:
+    """等价于 pattern.split(text[index:])[0]，但不复制整段后文。"""
+    end = pattern.search(text, index)
+    return text[index:end.start() if end else len(text)]
+
+
 def _statement_at(markdown: str, index: int) -> str:
-    return (
-        re.split(r"[。！？；;\n]", markdown[:index])[-1]
-        + re.split(r"[。！？；;\n]", markdown[index:])[0]
-    )
+    # 只向两侧找最近断句符；逐数字切分整篇正文是 O(数字数×正文长度)。
+    return text_after_last_break(markdown, index) + text_before_next_break(markdown, index)
 
 
 NEUTRAL_DIFFERENCE_PREFIX = re.compile(r"(?:相差|差额|差距)(?:了|约|为|达)?\s*$")
@@ -2440,6 +2563,7 @@ DIRECTED_PLACEHOLDER = re.compile(
 )
 
 
+@_cached_by_contents(dict)
 def positive_directed_placeholders(contents: Iterable[str]) -> dict[str, Decimal]:
     """变化额/变化率占位中登记值确定为正的引用（同一引用出现正负冲突时不计）。"""
     signs: dict[str, set[bool]] = {}
@@ -2518,6 +2642,7 @@ RATE_AS_PERCENT_POINT = re.compile(rf"(?<![\d.,])(?P<number>{_NUMBER})\s*个?百
 _PERCENT_POINT_SUBJECT = re.compile(r"占比|比重|比例|构成|率|增速|增幅|降幅|涨幅|跌幅")
 
 
+@_cached_by_contents(set)
 def registered_change_rates(contents: Iterable[str]) -> set[Decimal]:
     """已登记的变化率幅度：比较事实的同比/环比变化率与相邻两月的变化率。"""
     return {
@@ -2530,6 +2655,7 @@ def registered_change_rates(contents: Iterable[str]) -> set[Decimal]:
     }
 
 
+@_cached_by_contents(set)
 def registered_group_shares(contents: Iterable[str]) -> set[Decimal]:
     """服务端按分组值与合计登记的分组占比（只供核对）。"""
     return {
@@ -2547,7 +2673,7 @@ def percent_point_written_for_rate(
     percents: Sequence[Decimal],
 ) -> bool:
     """“个百分点”的数值只对得上登记变化率、对不上百分点差值且分句不是占比/比率类时返回 True。"""
-    clause = re.split(r"[。；，\n]", text[: match.start()])[-1]
+    clause = text_after_last_break(text, match.start(), "。；，\n")
     if _PERCENT_POINT_SUBJECT.search(clause):
         return False
     number = abs(Decimal(match["number"].replace(",", "")))
@@ -2573,6 +2699,7 @@ def percent_point_written_for_rate(
     )
 
 
+@_cached_by_contents(_copy_value_sets)
 def registered_multiples(
     contents: Iterable[str],
     catalog: dict[str, str],
@@ -2898,7 +3025,7 @@ def replace_unregistered_numbers(
             "",
             _paragraph_at(markdown, start),
             _statement_at(markdown, start),
-            re.split(r"[。！？；;\n]", markdown[:end])[-1],
+            text_after_last_break(markdown, end),
             reference_at(markdown[end:]),
         )
         if verdict in {"registered", "corrected"}:

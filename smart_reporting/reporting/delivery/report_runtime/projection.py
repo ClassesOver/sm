@@ -160,9 +160,9 @@ def build_render_projection(
             )
             return result
         apply("insert_management_overview/1", overview)
-    apply("collapse_repeated_values/1", collapse_repeated_values)
+    apply("collapse_repeated_values/2", collapse_repeated_values)
     apply("readable_large_amounts/1", readable_large_amounts)
-    apply("align_numeric_table_columns/1", align_numeric_table_columns)
+    apply("align_numeric_table_columns/2", align_numeric_table_columns)
     before = _sha256(markdown.encode("utf-8"))
     markdown, citations, trace = _pdf_markdown(
         markdown,

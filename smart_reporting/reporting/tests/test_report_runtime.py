@@ -1342,6 +1342,9 @@ def test_render_collapses_identical_listed_values():
     assert collapse_repeated_values("全年合计分别为0元[[claim:a]]、0元[[claim:b]]、0元、0元。") == "全年合计均为0元[[claim:a]]。"
     assert collapse_repeated_values("分别为0元、0元、5元。") == "分别为0元、0元、5元。"
     assert collapse_repeated_values("分别为10%、10.5%。") == "分别为10%、10.5%。"
+    assert collapse_repeated_values("三项分别为10%、10%和20%。") == "三项分别为10%、10%和20%。"
+    assert collapse_repeated_values("分别为0元、0元及5元") == "分别为0元、0元及5元"
+    assert collapse_repeated_values("分别为0元、0元，合计0元") == "均为0元，合计0元"
 
 
 def test_render_transposes_tall_single_column_server_tables():
@@ -1378,6 +1381,31 @@ def test_model_table_numeric_columns_are_right_aligned():
     # 数值列右对齐；文本列与已声明居中的列不动。
     assert "| --- | ---: | ---: | :---: | --- |" in aligned
     assert align_numeric_table_columns("| a |\n| --- |") == "| a |\n| --- |"
+    # 平均住院日、倍数、例数与带来源标记的单元格同样是数值列。
+    hospital = (
+        "| 科室 | 平均住院日 | 手术例数 | 收入 |\n| --- | --- | --- | --- |\n"
+        "| 内科 | 8.5天 | 1,320例 | 1.20亿元[[claim:a]] |\n| 外科 | 6天 | 980例 | **0.98亿元** |\n"
+    )
+    assert "| --- | ---: | ---: | ---: |" in align_numeric_table_columns(hospital)
+
+
+def test_pdf_tables_keep_edge_rows_together_and_units_whole() -> None:
+    from markdown_it import MarkdownIt
+
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _paginate_pdf_tables
+
+    rows = "".join(f"| 2025年{month}月 | {month} |\n" for month in range(1, 8))
+    rendered = _paginate_pdf_tables(
+        MarkdownIt("commonmark").enable("table").render(f"| 月份 | 实际人次（人次） |\n| --- | ---: |\n{rows}")
+    )
+    # 回放附表：末行“2025年12月”单独落到下一页；首尾各两行放进不可拆分的 tbody。
+    assert rendered.count('<tbody class="report-table-keep">') == 2 and rendered.count("<tbody") == 3
+    assert rendered.count("<tr>") + rendered.count('<tr class="report-row-even">') == 8
+    # 斑马纹按全表行序标注，不随 tbody 分组重新计数。
+    assert rendered.count('class="report-row-even"') == 3
+    assert "实际人次<span class=\"report-unit\">（人次）</span></th>" in rendered
+    short = _paginate_pdf_tables("<table>\n<tbody>\n<tr>\n<td>1</td>\n</tr>\n</tbody>\n</table>")
+    assert short.count("<tbody") == 1 and 'class="report-table-keep"' in short
 
 
 def test_render_shows_large_yuan_amounts_in_readable_units() -> None:
