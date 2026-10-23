@@ -5511,7 +5511,7 @@ def test_data_scope_schema_payload_shrinks_descriptions_to_fit_input_budget(
 
 def test_evidence_decision_request_uses_summary_budget_projection() -> None:
     from smart_reporting.reporting.workflow.runtime.analysis import (
-        _prepare_evidence_decision_request,
+        _project_planner_request,
     )
     from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
         AnalysisEvidenceDecision,
@@ -5540,12 +5540,14 @@ def test_evidence_decision_request_uses_summary_budget_projection() -> None:
             del tools, output_schema
             return sum(len(str(message.content).encode("utf-8")) for message in messages)
 
-    projected = _prepare_evidence_decision_request(
+    projected = _project_planner_request(
         request,
+        purpose="evidence",
         analysis_id="analysis_001",
         agent=SimpleNamespace(model=ByteCountingModel()),
         run_context=RunContext(run_id="run", session_id="session"),
         output_schema=AnalysisEvidenceDecision,
+        strict=False,
     )
 
     serialized = json.dumps(projected, ensure_ascii=False, separators=(",", ":"), default=str)

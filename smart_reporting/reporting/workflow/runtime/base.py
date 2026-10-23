@@ -509,6 +509,7 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "只返回 requiresSupplementalEvidence、reason、missingFacts、codingRequirements，不得生成 script 或任何代码。",
     "需要补证时，codingRequirements 逐项声明当前授权 datasets 中的 datasetId、fields、calculation 和 outputName；不得编造数据集或字段。",
     "固定事实足够时 missingFacts 和 codingRequirements 必须都是空数组，不得为了探索数据而声明缺口。",
+    "deterministicFacts 中带 *View.truncated=true 的 topGroups、bottomGroups、periodValues、correlationDetails 或 correlations.view 只是为控制输入预算省略的明细，完整事实已冻结；不得仅因这些明细被省略而声明缺口。",
     "同一 datasetId、同一维度粒度的多个指标合并为一个 codingRequirement（一个 outputName，fields 同时列出维度列与全部指标列），"
     "不要按指标逐条拆分；可参考 datasets[].columnProfile 的列角色（dimension/measure/period）与基数选择字段。",
 )
@@ -1007,6 +1008,7 @@ class _ReportWorkflowRuntimeBase:
                 "不得补写事实中不存在的月均值或其他派生数字；月均分母必须是实际有数据的月份数，不能固定按12个月计算。",
                 "supplementalEvidence.findings[].view.truncated 为 true 时 rows 只是投影视图，不得当作完整明细；format=ranked_extremes 表示变化指标正负两端极值，format=head_tail 表示原始顺序首尾。",
                 "omittedNumericSums 只汇总未进入 rows 的有限数值，不是全量总值。",
+                "supplementalEvidence.projection.truncatedLists 列出的记录数组只保留前 selectedRowCount 条，原始条数为 rowCount，omittedNumericSums 是被省略记录各数值字段之和；不得把保留部分当作全量或排名。",
                 "完整总量等于 rows 数值与 omittedNumericSums 之和；原始行数以 view.rowCount 为准，完整文件身份以 sourceFile 为准。",
                 "deterministicFacts.metrics[].periodValuesView.truncated 为 true 时，periodValues 只保留期间序列首尾，不能据此判断中间期间缺失或计算全期均值、趋势极值；完整事实身份见 deterministicFactsSource。omittedNumericSums.value 仅为省略序列值之和，不能替代指标 total，尤其不能累加时点值、均值或比率作为业务总量。",
                 "supplementalEvidence 为 null 且 evidenceWarnings 声明补证已放弃时，只能使用 deterministicFacts；不得声称缺失事实已经验证。",
