@@ -242,3 +242,125 @@ def test_summary_trims_pairwise_correlation_table_by_strength():
     assert _byte_count(projected) <= budget
     assert rows[123] in table["rows"] and table["datasets"] == ["dataset-1"]
     assert table["view"]["rowCount"] == 400
+
+
+def test_summary_truncates_nested_record_lists_and_records_original_counts():
+    items = [{"科室": f"科室{index}", "金额": index, "说明": "门诊收入变化" * 5} for index in range(500)]
+    payload = {
+        "supplementalEvidenceSource": {"path": "evidence.json", "sha256": "a" * 64, "size": 1},
+        "supplementalEvidence": {"findings": [{"name": "科室明细", "items": items}]},
+    }
+    original = deepcopy(payload)
+    budget = _byte_count(payload) // 10
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=budget, count_tokens=_byte_count
+    )
+
+    assert payload == original
+    assert _byte_count(projected) <= budget
+    evidence = projected["supplementalEvidence"]
+    kept = evidence["findings"][0]["items"]
+    assert kept == items[: len(kept)] and len(kept) < 500
+    [entry] = evidence["projection"]["truncatedLists"]
+    assert entry["path"] == "findings[0].items"
+    assert entry["rowCount"] == 500 and entry["selectedRowCount"] == len(kept)
+    assert sum(item["金额"] for item in kept) + entry["omittedNumericSums"]["金额"] == sum(range(500))
+    assert evidence["sourceFile"] == payload["supplementalEvidenceSource"]
+
+
+def test_summary_keeps_identity_lists_and_table_lists_whole():
+    table = {"columns": ["a"], "rows": [[1], [2]]}
+    finding = {
+        "name": "收入",
+        "datasets": [f"dataset-{index}" for index in range(30)],
+        "tables": [deepcopy(table) for _ in range(30)],
+        "items": [{"科室": f"科室{index}", "金额": index} for index in range(2000)],
+    }
+    payload = {
+        "supplementalEvidenceSource": {"path": "evidence.json", "sha256": "a" * 64, "size": 1},
+        "supplementalEvidence": {"findings": [finding]},
+    }
+    budget = _byte_count(payload) // 5
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=budget, count_tokens=_byte_count
+    )
+
+    kept = projected["supplementalEvidence"]["findings"][0]
+    assert _byte_count(projected) <= budget
+    assert kept["datasets"] == finding["datasets"]
+    assert kept["tables"] == finding["tables"]
+    assert len(kept["items"]) < 2000
+
+
+def test_summary_skips_list_truncation_that_would_not_save_input():
+    finding = {"name": "收入", "pairs": [{"v": 1}, {"v": 2}]}
+    payload = {
+        "supplementalEvidenceSource": {"path": "evidence.json", "sha256": "a" * 64, "size": 1},
+        "supplementalEvidence": {"findings": [deepcopy(finding) for _ in range(300)]},
+        "deterministicFacts": {"metrics": [{
+            "total": 1,
+            "periodValues": [{"period": str(index), "value": index} for index in range(3000)],
+        }]},
+    }
+    budget = _byte_count(payload) // 2
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=budget, count_tokens=_byte_count
+    )
+
+    assert _byte_count(projected) <= budget
+    evidence = projected["supplementalEvidence"]
+    assert evidence["findings"] == payload["supplementalEvidence"]["findings"]
+    assert "truncatedLists" not in evidence.get("projection", {})
+
+
+def test_summary_truncates_evidence_lists_before_deterministic_groups():
+    items = [{"科室": f"科室{index}", "金额": index, "说明": "门诊收入变化" * 5} for index in range(500)]
+    payload = {
+        "supplementalEvidenceSource": {"path": "evidence.json", "sha256": "a" * 64, "size": 1},
+        "supplementalEvidence": {"findings": [{"name": "科室明细", "items": items}]},
+        "deterministicFacts": {"metrics": [_grouped_metric(index) for index in range(5)]},
+    }
+    budget = _byte_count(payload) // 3
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=budget, count_tokens=_byte_count
+    )
+
+    assert _byte_count(projected) <= budget
+    assert len(projected["supplementalEvidence"]["findings"][0]["items"]) < 500
+    assert projected["deterministicFacts"] == payload["deterministicFacts"]
+
+
+def test_summary_non_strict_returns_smallest_projection_instead_of_raising():
+    payload = {"currentAnalysis": {"managementQuestion": "问题" * 1000}, "supplementalEvidence": None}
+
+    projected = _project_analysis_summary_payload(
+        payload, max_tokens=100, count_tokens=_byte_count, strict=False
+    )
+
+    assert projected == payload
+
+
+def test_summary_only_counts_tables_that_can_shrink():
+    # 200 行的表在首轮 256 行上限下不会变小，只能在后续减半阶段一起压缩。
+    small = {"columns": ["a"], "rows": [[index] for index in range(200)]}
+    large = {"columns": ["a"], "rows": [[index] for index in range(5000)]}
+    payload = {
+        "supplementalEvidenceSource": {"path": "evidence.json", "sha256": "a" * 64, "size": 1},
+        "supplementalEvidence": {"findings": [deepcopy(small) for _ in range(100)] + [large]},
+    }
+    calls = 0
+
+    def count(value):
+        nonlocal calls
+        calls += 1
+        return _byte_count(value)
+
+    budget = 100_000
+    projected = _project_analysis_summary_payload(payload, max_tokens=budget, count_tokens=count)
+
+    assert _byte_count(projected) <= budget
+    assert calls <= 5
