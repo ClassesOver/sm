@@ -1439,6 +1439,8 @@ class _DerivedValue:
     operand_values: tuple[Decimal, ...] = ()
     table_derivation: TableDerivationV1 | None = None
     table_token: str | None = None
+    # 表内差额列单元格：自带符号，只认原值，不按操作数顺序翻转正负。
+    cell: bool = False
 
 
 _RATIO_VERB = r"(?:相当于|为|占|是|达到?)"
@@ -1504,6 +1506,12 @@ def _derived_difference_matches(
     """保留减法的左右顺序；方向词后的正数是幅度，不能把多与少或正负互换。"""
     if entry.difference is None or len(entry.comparison) != 2:
         return False
+    if entry.cell:
+        # 行名与差额列名都已写出；单元格符号即差额符号，幅度写法须带“为负”等方向词另行核对。
+        names_written = all(
+            any(name in claim for name in names) for names in entry.comparison
+        )
+        return names_written and entry.difference.quantize(quantum, rounding=ROUND_HALF_UP) == number
 
     def spans(names):
         found = {match.span() for name in names for match in re.finditer(re.escape(name), claim)}
@@ -1583,7 +1591,17 @@ def _derived_difference_matches(
             and abs(difference).quantize(quantum, rounding=ROUND_HALF_UP) == number
         )
     if re.search("相差|差额|差距|差异", claim):
-        return number >= 0 and abs(difference).quantize(quantum, rounding=ROUND_HALF_UP) == number
+        if number >= 0:
+            return abs(difference).quantize(quantum, rounding=ROUND_HALF_UP) == number
+        # 同级对象的中性差额没有方向，负号不认可；预算与实际的差额按“实际减预算”带符号
+        # （与 budgetComparison.difference 同口径），“差额-3.62亿元”按该符号核对。
+        budget = [
+            any(re.search("预算|计划|目标", name) for name in names) for names in entry.comparison
+        ]
+        if budget.count(True) != 1:
+            return False
+        signed = entry.difference if budget[1] else -entry.difference
+        return signed.quantize(quantum, rounding=ROUND_HALF_UP) == number
     return difference.quantize(quantum, rounding=ROUND_HALF_UP) == number
 
 
@@ -1631,6 +1649,7 @@ class DerivedNumbers:
         fact_ids: tuple[str, ...] = (),
         operand_values: tuple[Decimal, ...] = (),
         table_operands: tuple[TableOperandV1, ...] = (),
+        cell: bool = False,
     ) -> None:
         if not operands or any(not names for names in operands):
             return
@@ -1641,7 +1660,7 @@ class DerivedNumbers:
             targets.append(("万人次", Decimal("0.0001")))
         for target, factor in targets:
             # 前 N 项合计只登记真实符号；差额的两个显示符号仍须按左右操作数和方向复核。
-            for value in {number} if top is not None else {number, -number}:
+            for value in {number} if top is not None or cell else {number, -number}:
                 direction = Decimal(-1) if value != number else Decimal(1)
                 table_derivation = (
                     TableDerivationV1(
@@ -1671,6 +1690,7 @@ class DerivedNumbers:
                         fact_ids=fact_ids,
                         operand_values=tuple(operand * factor for operand in operand_values),
                         table_derivation=table_derivation,
+                        cell=cell,
                     )
                 )
         self._sorted.clear()
@@ -1979,6 +1999,20 @@ def _derive_from_table(
             for row, column, coefficient in items
         )
 
+    # 表内“差额/差值/缺口”列的单元格本身就是登记差额：正文写出行名与列名（“体检业务……
+    # 差额-1.26亿元”）即可按单元格符号核对，不要求再写出被减的预算、实际两列。
+    for column, (unit, numbers) in columns.items():
+        if re.search("差额|差值|缺口", column) and len(numbers) == len(labels):
+            for row_position, (label, number) in enumerate(zip(labels, numbers, strict=True)):
+                if label:
+                    derived.add(
+                        PERCENT_POINT if unit == "%" else unit,
+                        number,
+                        ((label,), (column,)),
+                        periods=periods,
+                        table_operands=cells(((row_position, column, 1),)),
+                        cell=True,
+                    )
     for column, (unit, numbers) in columns.items():
         peers = tuple(
             name
@@ -2886,6 +2920,7 @@ def replace_unregistered_numbers(
         statement: str,
         claim: str,
         reference: str | None = None,
+        suffix: str = "",
     ) -> tuple[str, str, str]:
         """返回 (结论, 数字, 锚点)：registered 按显示精度保留，corrected 改写为服务端补算值，
         percent_point 改写为百分点，missing 替换；锚点仅在唯一来源派生通过时非空。"""
@@ -2944,6 +2979,11 @@ def replace_unregistered_numbers(
                     "decline",
                     lambda: registered_decline_magnitude(
                         number, unit, candidates, prefix=prefix, quantum=quantum
+                    )
+                    # “3.62亿元缺口”：缺口写在幅度之后，与“缺口3.62亿元”同义。
+                    or re.match(r"的?缺口", suffix) is not None
+                    and registered_decline_magnitude(
+                        number, unit, candidates, prefix="缺口", quantum=quantum
                     ),
                 ),
                 (
@@ -3054,6 +3094,7 @@ def replace_unregistered_numbers(
             _statement_at(markdown, match.start()),
             re.split(r"[。！？；;\n]", markdown[: match.end()])[-1],
             reference,
+            re.sub(r"\[\[[^\]\n]+\]\]", "", markdown[match.end() : match.end() + 80])[:3],
         )
         if verdict in {"registered", "corrected"}:
             return written + match[0][len(match["number"]) :] + anchor

@@ -2746,6 +2746,42 @@ def test_ratio_execution_rate_and_explicit_negative_difference_are_verified(text
     assert (replace_unregistered_numbers(text, [chart]) == text) is supported
 
 
+@pytest.mark.parametrize(
+    ("text", "supported"),
+    [
+        # 差额列单元格自带符号：写出行名与列名即可按原值核对。
+        ("总部院区差额-247,710,117元。", True),
+        ("总部院区差额247,710,117元。", False),
+        ("北部院区差额-2.48亿元。", False),
+        # 缺口写在幅度之后与“缺口1.19亿元”同义。
+        ("1.19亿元缺口集中在北部院区。", True),
+        ("1.19亿元集中在北部院区。", False),
+    ],
+)
+def test_signed_difference_cells_and_trailing_gap_word_are_verified(text, supported):
+    chart = _campus_budget_chart()
+    assert (replace_unregistered_numbers(text, [chart]) == text) is supported
+
+
+@pytest.mark.parametrize(
+    ("rows", "text", "supported"),
+    [
+        ([[100, 90]], "全院预算收入100元与实际收入90元，差额-10元。", True),
+        ([[100, 90]], "全院预算收入100元与实际收入90元，差额10元。", True),
+        # 预算差额按“实际减预算”带符号，实际超预算时负号不认可。
+        ([[90, 100]], "全院预算收入90元与实际收入100元，差额-10元。", False),
+    ],
+)
+def test_budget_difference_accepts_actual_minus_budget_sign(rows, text, supported):
+    table = json.dumps({"findings": [{
+        "name": "全院预算与实际收入",
+        "columns": ["预算收入", "实际收入"],
+        "columnMeta": {"预算收入": {"unit": "元"}, "实际收入": {"unit": "元"}},
+        "rows": rows,
+    }]})
+    assert (replace_unregistered_numbers(text, [table]) == text) is supported
+
+
 def test_execution_rate_column_keeps_percent_values_unscaled():
     from smart_reporting.reporting.trace.numeric_text import supplemental_number_values
 
