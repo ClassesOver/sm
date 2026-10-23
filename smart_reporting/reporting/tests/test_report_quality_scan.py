@@ -121,6 +121,19 @@ def test_binding_scan_classifies_missing_numbers_by_heuristic_similarity():
     assert binding["verdicts"]["missing"] == scrubbed.count("待核实") - markdown.count("待核实")
 
 
+def test_binding_scan_skips_server_tables_like_the_publication_chain():
+    # 服务端附表由冻结事实生成、发布链路不对其做正文核对；回放中 36 行附表数值被计为无依据数值。
+    contents = _table_contents()
+    prose = "甲项目金额100.00万元，乙项目40.00万元。"
+    table = (
+        "2025年1—9月支出预算执行汇总\n\n[[table:t1]]\n| 月份 | 预算支出（亿元） |\n| --- | ---: |\n"
+        "| 2025年1月 | 17.43 |\n| 2025年2月 | 147.94 |\n\n[[/table:t1]]\n"
+    )
+    with_table = scan_report_quality(f"{prose}\n\n{table}", contents)
+    assert with_table["binding"]["verdicts"] == scan_report_quality(prose, contents)["binding"]["verdicts"]
+    assert with_table["binding"]["verdicts"].get("missing", 0) == 0
+
+
 @pytest.mark.parametrize("unit", ["%", "百分点", "个百分点", "元/人次"])
 @pytest.mark.parametrize("factor", ["1e4", "1e-4", "1e8", "1e-8"])
 def test_missing_classification_does_not_infer_scale_for_unrelated_units(unit, factor):
