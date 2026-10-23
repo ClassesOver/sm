@@ -482,6 +482,9 @@ def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> 
     for index in range(len(written) - 2, -1, -1):
         if connected[index]:
             group_ends[index] = group_ends[index + 1]
+    role_keys = {name: {_period_key(period) for period in roles.get(name, ())} for name in ('current', 'baseline')}
+    written_keys = {_period_key(match[0]) for match in written}
+    both_roles_written = bool(written_keys & role_keys['current']) and bool(written_keys & role_keys['baseline'])
     previous_role, previous_explicit = None, False
     for index, match in enumerate(written):
         prefix = window[:match.start()]
@@ -523,7 +526,13 @@ def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> 
             else:
                 role = 'baseline' if roles.get('baseline') else 'context'
         else:
-            role = 'current' if roles.get('current') else 'endpoint'
+            # 句中同时写出本期与基期日期时（“2025年9月…，2024年9月为…，变化额…”），未标注
+            # 角色的日期按所属登记窗口归属；只写一个日期时它是本期（“2025年2月增长”须核对）。
+            key = _period_key(match[0])
+            role = next((
+                name for name in ('current', 'baseline')
+                if both_roles_written and key in role_keys[name]
+            ), 'current' if roles.get('current') else 'endpoint')
         previous_role, previous_explicit = role, explicit
         expected = roles.get(role, ())
         if expected and _period_key(match[0]) not in {_period_key(period) for period in expected}:
@@ -776,8 +785,11 @@ def _inheritable_calendars(text: str) -> list[str]:
     return calendars
 
 
-def _reference_local_window(before: str, after: str) -> str | None:
-    """并列引用先继承已写年份，再隔离当前锚点的期间与值。"""
+def _reference_local_window(before: str, after: str, *, comparison: bool = False) -> str | None:
+    """并列引用先继承已写年份，再隔离当前锚点的期间与值。
+
+    comparison：变化额、变化率涉及本期与基期两个期间，继承句中全部日期，而不是最后一个。
+    """
     claim = re.compile(r'\[\[claim:[^\]\r\n]+\]\]')
     if not claim.search(before + after):
         return None
@@ -801,10 +813,50 @@ def _reference_local_window(before: str, after: str) -> str | None:
         _period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local)
     ):
         # “2025年二月…[[claim]]及收入…”仍继承正文前项明确的月份。
-        calendars = _inheritable_calendars(before[:previous[-1].start()])
+        # 紧随前项的括注（“88.55亿元（8,855,158,732元）”）是同一数值的另一写法，继承前项自身的期间。
+        calendars = (
+            [match[0] for match in _PERIOD_TOKEN.finditer(before[:previous[-1].start()]) if _period_key(match[0])]
+            if re.match(r'\s*[（(]', local_before) else _inheritable_calendars(before[:previous[-1].start()])
+        )
         if calendars:
-            local = calendars[-1] + ' ' + local
+            local = ' '.join(dict.fromkeys(calendars) if comparison else calendars[-1:]) + ' ' + local
     return local
+
+
+def _scope_presence_warnings(
+    window: str, scope: Mapping[str, str], reference: Mapping[str, Any] | None,
+) -> list[str]:
+    """登记范围须在引用句中可辨认；只核对能区分对象的范围。
+
+    回放 artifacts3：73 条范围告警几乎都是正确句子。编码字段（RJ402.03）、分组中处处相同的
+    属性（单院 company）、带区分后缀的名称（“心血管内科（一级）”）和日期范围（data_date=
+    2025-07-01 写作“7月”）都不是误归属的证据。
+    """
+    entry = (reference or {}).get("entry") or {}
+    groups = [
+        item.get("groupValues") or {}
+        for key in ("topGroups", "bottomGroups", "groupPopulation")
+        for item in entry.get(key) or ()
+        if isinstance(item, Mapping)
+    ]
+    constant = {
+        key for key in scope
+        if len(groups) > 1 and all(key in group for group in groups)
+        and len({str(group[key]) for group in groups}) == 1
+    }
+    months = {int(month) for month in re.findall(r"(?<!\d)(\d{1,2})\s*月", window)}
+    warnings = []
+    for key, value in scope.items():
+        if not value or value in window or key in constant or key.endswith("_code"):
+            continue
+        period = _period_key(value)
+        if period is not None:
+            if len(period) >= 2 and period[1] in months:
+                continue
+        elif (name := re.sub(r"[（(][^）)]*[）)]$", "", value)) and name in window:
+            continue
+        warnings.append(f"业务范围需复核：当前引用句未体现登记范围 {key}={value}。")
+    return warnings
 
 
 class ClaimStatusChecker:
@@ -848,7 +900,13 @@ def _claim_status_from_body(
         return {"status": "unbound", "warnings": []}
     block_start = markdown.rfind("\n\n", 0, position)
     block_end = markdown.find("\n\n", position)
-    start = max(0, position - window_chars, block_start + 2 if block_start >= 0 else 0)
+    lower = block_start + 2 if block_start >= 0 else 0
+    # 来源与锚点标记不是可见正文：列举句里每个数值后跟约 60 字符的标记，按原始字符截窗会把
+    # 句首的科室、院区截掉。窗口按去掉标记后的可见长度计算。
+    marker_chars = sum(len(item) for item in re.findall(
+        r"\[\[[^\]\r\n]+\]\]", markdown[max(lower, position - 4 * window_chars):position]
+    ))
+    start = max(0, position - window_chars - marker_chars, lower)
     end = min(len(markdown), position + window_chars, block_end if block_end >= 0 else len(markdown))
     before = markdown[start:position]
     after = markdown[position + len(marker):end]
@@ -860,8 +918,11 @@ def _claim_status_from_body(
     window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", statement)
     reference_window = None
     if expected_reference:
+        selector = str(expected_reference.get("selector") or "")
         reference_window = _reference_local_window(
             re.split(r'[。！？;；\n]', before)[-1], re.split(r'[。！？;；\n]', after)[0],
+            comparison=selector in {"change", "changeRate"}
+            or selector.startswith(("periodChanges.", "periodChangeRates.", "cumulativeChanges.")),
         )
     if expected_unit == "个百分点":
         window = _point_plain_text(window)
@@ -884,9 +945,7 @@ def _claim_status_from_body(
             expected_period_roles=expected_period_roles,
             fact_value=fact_value,
         )
-        for key, value in (expected_scope or {}).items():
-            if value and value not in warning_window:
-                warnings.append(f"业务范围需复核：当前引用句未体现登记范围 {key}={value}。")
+        warnings.extend(_scope_presence_warnings(warning_window, expected_scope or {}, expected_reference))
         if not expected_reference:
             from .reference_semantics import scope_exclusion_warnings
 

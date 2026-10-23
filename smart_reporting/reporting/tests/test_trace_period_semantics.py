@@ -383,3 +383,29 @@ def test_stated_month_count_satisfies_monthly_average_window():
     # 极值月份不是统计窗口；紧邻数值写明的月数与完整窗口一致时不告警。
     assert not number_reference_warnings('2025年各月区间为1月10元至3月21元，3个月月均15.33元', reference)
     assert number_reference_warnings('2025年1月至2月月均15.33元', reference)
+
+
+def test_unlabeled_dates_take_the_role_of_their_registered_window():
+    # 回放：“2025年9月…，2024年9月为30.26亿元，变化额为-12.83亿元”中基期未写“较”。
+    roles = {'current': ('2025-09',), 'baseline': ('2024-09',)}
+    statement = '2025年9月预算支出记录值为17.43亿元，2024年9月为30.26亿元，变化额为-12.83亿元'
+    assert not unit_period_warnings(statement, expected_periods=('2025-09', '2024-09'),
+                                    expected_period_roles=roles)
+    # 写明“较”时仍按基期核对。
+    assert unit_period_warnings('2024年9月较2025年9月减少12.83亿元', expected_periods=('2025-09', '2024-09'),
+                                expected_period_roles=roles)
+
+
+def test_parenthetical_restatement_inherits_the_previous_value_period():
+    from smart_reporting.reporting.trace.subject_builder import _reference_local_window
+
+    before = '2025年1—9月为99.12亿元[[claim:a]]，较2024年同期的88.55亿元[[claim:b]]（8,855,158,732元'
+    assert _reference_local_window(before, '）').startswith('2024年9')
+
+
+def test_change_reference_inherits_both_periods_of_its_sentence():
+    from smart_reporting.reporting.trace.subject_builder import _reference_local_window
+
+    before = '2025年9月预算支出为17.43亿元[[claim:a]]，2024年9月为30.26亿元[[claim:b]]，变化额为-12.83亿元'
+    assert _reference_local_window(before, '').startswith('2024年9 ')
+    assert _reference_local_window(before, '', comparison=True).startswith('2025年9 2024年9 ')

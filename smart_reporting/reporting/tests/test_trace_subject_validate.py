@@ -1775,3 +1775,22 @@ def test_claim_anchor_skips_calendar_year_when_value_repeats():
     assert anchor_claims('2025年床位为2025张。', {'calendar': (2025, '张')}) == (
         '2025年床位为2025[[claim:calendar]]张。'
     )
+
+
+def test_scope_presence_ignores_codes_shared_attributes_suffixes_and_month_dates():
+    from smart_reporting.reporting.trace.subject_builder import _scope_presence_warnings
+
+    reference = {"entry": {"topGroups": [
+        {"groupValues": {"company": "瑞金医院", "area": "总部院区", "unit": "肾脏内科一病区"}},
+        {"groupValues": {"company": "瑞金医院", "area": "北部院区", "unit": "消化内科三病区"}},
+    ]}}
+    scope = {
+        "company": "瑞金医院", "area": "总部院区", "unit": "肾脏内科一病区（总部）",
+        "unit_code": "RJ405.02", "data_date": "2025-07-01",
+    }
+    assert not _scope_presence_warnings("总部院区肾脏内科一病区7月582人次", scope, reference)
+    # 写成别的院区、别的月份时仍提示。
+    assert [w for w in _scope_presence_warnings("北部院区肾脏内科一病区8月582人次", scope, reference)] == [
+        "业务范围需复核：当前引用句未体现登记范围 area=总部院区。",
+        "业务范围需复核：当前引用句未体现登记范围 data_date=2025-07-01。",
+    ]

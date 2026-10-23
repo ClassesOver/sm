@@ -139,7 +139,7 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
     if first == last and written_periods[-1] == periods[-1] and (cutoff or '累计' in _affirmative_wording(clause)):
         return []
     # “区间为2月…至7月…，9个月月均…”：月份是极值说明，紧邻数值写明的月数与完整窗口一致。
-    months = re.search(r'(\d{1,3})个(?:自然)?月(?:的)?(?:月均|平均|合计|累计)', clause)
+    months = re.search(r'(\d{1,3})个(?:自然)?月(?:的)?(?:月均|平均|均值|合计|累计|总计)', clause)
     if months and int(months[1]) == len(periods):
         return []
     if written_periods != tuple(periods):
@@ -154,6 +154,8 @@ def _uniform_month_warnings(clause: str, reference: Mapping[str, Any]) -> list[s
         return []  # A changing series is not a claim that every month has this amount.
     # “1—2月平均每月”中的日历“月”不能吞掉“平均每月”的前半部分。
     wording = re.sub(r'(?<![各每])月均|月平均', '', clause.replace('平均每月', ''))
+    if re.search(r'(?:各月|每月|逐月)[^，。；,;]{0,12}?(?:平均|均值)', wording):
+        return []  # “各月成本平均为11.01亿元”说的是平均水平，不是各月相同。
     assertions = [match for match in re.finditer(r'各月|每月|逐月', wording)
                   if not _NEGATED_WORDING.search(wording[:match.start()])]
     if (not assertions or re.search(r'(?:并非|不是|并不|未必)\s*(?:均|都|相同|一样)', wording)
