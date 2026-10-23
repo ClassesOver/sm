@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,6 +39,54 @@ def _usable_width(section: Any) -> int:
     left = section.left_margin if section.left_margin is not None else Mm(31.8)
     right = section.right_margin if section.right_margin is not None else Mm(31.8)
     return Emu(int(page_width - left - right))
+
+
+_HEADER_UNIT = re.compile(r"^(?P<name>[^\n]{2,}?)(?P<unit>（[^（）\n]{1,12}）)$")
+
+
+def _break_before_header_unit(cell: Any) -> None:
+    """表头“实际人次（人次）”在窄列里按字折行成“实际人次（人 / 次）”；Word 没有不换行片段，
+    在单位括号前换行，与 PDF 表头的整体单位换行一致。"""
+    for paragraph in cell.paragraphs:
+        match = _HEADER_UNIT.match(paragraph.text)
+        if match is None or not paragraph.runs:
+            continue
+        first = paragraph.runs[0]
+        for run in paragraph.runs[1:]:
+            run._r.getparent().remove(run._r)
+        first.text = match["name"]
+        first.add_break()
+        first.add_text(match["unit"])
+
+
+_TABLE_EDGE_ROWS = 2
+
+
+def _keep_table_together_at_edges(table: Any) -> None:
+    """与 PDF 分页一致：行不在单元格中间跨页，表名不孤悬页底，首尾各两行不单独落页。
+
+    Word 以段落“与下段同页”把整行与下一行绑定：表头与前两行数据、倒数第二行与末行。
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    rows = list(table.rows)
+    for row in rows:
+        row_properties = row._tr.get_or_add_trPr()
+        if row_properties.find(qn("w:cantSplit")) is None:
+            row_properties.append(OxmlElement("w:cantSplit"))
+    data_rows = len(rows) - 1
+    keep = set(range(min(_TABLE_EDGE_ROWS, data_rows)))  # 表头及首行数据随后续行同页
+    if data_rows > _TABLE_EDGE_ROWS:
+        keep.add(len(rows) - _TABLE_EDGE_ROWS)  # 倒数第二行随末行同页
+    for index in keep:
+        for cell in rows[index].cells:
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.keep_with_next = True
+    previous = table._tbl.getprevious()
+    if previous is not None and previous.tag == qn("w:p"):
+        Paragraph(previous, table._parent).paragraph_format.keep_with_next = True
 
 
 def _fit_image_dimensions(
@@ -503,6 +552,14 @@ def _postprocess_docx(
     ):
         source_appendix_title.style = document.styles["Report Source Appendix"]
         source_appendix_title.paragraph_format.page_break_before = True
+    # 服务端附表标题（PDF 中另起一页、章标题样式）：pandoc 只产出加粗段落，夹在正文末尾。
+    for appendix_tables_title in (
+        item for item in paragraphs
+        if item.text.strip() == "附表" and item.runs and all(run.bold for run in item.runs if run.text.strip())
+    ):
+        appendix_tables_title.style = document.styles["Report Source Appendix"]
+        appendix_tables_title.paragraph_format.page_break_before = True
+        appendix_tables_title.paragraph_format.keep_with_next = True
 
     def marker_index(name: str) -> int:
         return next(
@@ -746,12 +803,14 @@ def _postprocess_docx(
             table_header.set(qn("w:val"), "true")
             row_properties.append(table_header)
             for cell in table.rows[0].cells:
+                _break_before_header_unit(cell)
                 shading = OxmlElement("w:shd")
                 shading.set(qn("w:fill"), str(REPORT_VISUAL_THEME["surface"]).removeprefix("#"))
                 cell._tc.get_or_add_tcPr().append(shading)
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
                         run.font.color.rgb = theme_colors["primary"]
+            _keep_table_together_at_edges(table)
     available_width = _usable_width(sections[-1])
     maximum_height = Mm(180)
     for shape in document.inline_shapes:
