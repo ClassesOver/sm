@@ -8,7 +8,6 @@ from collections.abc import AsyncIterator, Iterator, Mapping
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import fields
-from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from types import MappingProxyType
@@ -19,8 +18,6 @@ import requests
 from agno.compression.manager import CompressionManager
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
-from agno.session.summary import SessionSummary, SessionSummaryManager
-from agno.session.team import TeamSession
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -90,7 +87,6 @@ TASK_EXECUTION_TOOL_NAMES = frozenset(
 CODING_FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
     {"write_script": "source", "run": "code", "edit_script": "patch"}
 )
-SUMMARY_METADATA_KEY = "agentos_rolling_summary"
 COMPRESSIBLE_HISTORY_TOOLS = frozenset(
     {
         "terminal",
@@ -101,14 +97,6 @@ COMPRESSIBLE_HISTORY_TOOLS = frozenset(
         "stop_process",
         "report_analyze_dataset",
     }
-)
-_ADDITIONAL_CONTEXT = re.compile(
-    r"\n*<additional context>.*?</additional context>\s*",
-    re.DOTALL | re.IGNORECASE,
-)
-_SENSITIVE_HISTORY = re.compile(
-    r"(?:authorization\s+token)|授权\s*token|[\"']?token[\"']?\s*[:=]",
-    re.IGNORECASE,
 )
 _EXACT_METADATA_KEYS = frozenset(
     {
@@ -301,16 +289,6 @@ class ToolCompressionResponse(BaseModel):
     key_findings: list[str] = Field(default_factory=list, max_length=8)
 
 
-class RollingSummaryResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    goal: str = Field(default="", max_length=2000)
-    decisions: list[str] = Field(default_factory=list, max_length=20)
-    artifacts: list[str] = Field(default_factory=list, max_length=50)
-    completed: list[str] = Field(default_factory=list, max_length=30)
-    pending: list[str] = Field(default_factory=list, max_length=30)
-
-
 def _message_text(message: Message) -> str:
     content = message.get_content(use_compressed_content=True)
     if isinstance(content, str):
@@ -370,10 +348,6 @@ def _context_composition_bytes(
     return components
 
 
-def _strip_stale_context(content: str) -> str:
-    return _ADDITIONAL_CONTEXT.sub("", content).strip()
-
-
 def _status_value(run: Any) -> str:
     status = getattr(run, "status", None)
     return str(getattr(status, "value", status) or "").lower()
@@ -402,13 +376,6 @@ def _fallback_context_token_count(
     if response_format is not None:
         parts.append(json.dumps(response_format, ensure_ascii=False, default=str))
     return _fallback_token_count("\n".join(parts))
-
-
-def _session_history_runs(session: Any) -> list[Any]:
-    runs = list(getattr(session, "runs", None) or [])
-    if isinstance(session, TeamSession):
-        return [run for run in runs if getattr(run, "parent_run_id", None) is None]
-    return runs
 
 
 def _exact_metadata(content: Any) -> dict[str, Any]:
@@ -2168,203 +2135,6 @@ def projected_task_execution_model(
     if isinstance(input_token_budget, int) and input_token_budget > 0:
         setattr(projected, _PROJECTED_INPUT_TOKEN_BUDGET_ATTR, input_token_budget)
     return projected
-
-
-def _summary_messages(runs: list[Any]) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
-    for run in runs:
-        for message in getattr(run, "messages", None) or []:
-            role = str(getattr(message, "role", "") or "")
-            if role == "user":
-                content = _strip_stale_context(_message_text(message))
-            elif role in {"assistant", "model"}:
-                role = "assistant"
-                content = _message_text(message)
-            else:
-                continue
-            if content and not _SENSITIVE_HISTORY.search(content):
-                messages.append({"role": role, "content": content})
-    return messages
-
-
-def _parse_rolling_summary(response: Any) -> RollingSummaryResponse | None:
-    parsed = getattr(response, "parsed", None)
-    if isinstance(parsed, RollingSummaryResponse):
-        return parsed
-    if isinstance(parsed, dict):
-        try:
-            return RollingSummaryResponse.model_validate(parsed)
-        except ValidationError:
-            pass
-    content = getattr(response, "content", None)
-    if not isinstance(content, str):
-        return None
-    content = content.strip()
-    fenced = re.fullmatch(
-        r"```(?:json)?[ \t]*\r?\n(?P<body>.*)\r?\n```",
-        content,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    if fenced is not None:
-        content = fenced.group("body").strip()
-    try:
-        return RollingSummaryResponse.model_validate_json(content)
-    except ValidationError:
-        return None
-
-
-class RollingSessionSummaryManager(SessionSummaryManager):
-    @staticmethod
-    def source_digest(runs: list[Any]) -> str:
-        payload = [
-            {
-                "runId": str(getattr(run, "run_id", "") or ""),
-                "messages": _summary_messages([run]),
-            }
-            for run in runs
-        ]
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _metadata(session: Any) -> dict[str, Any]:
-        session_data = getattr(session, "session_data", None)
-        if not isinstance(session_data, dict):
-            return {}
-        metadata = session_data.get(SUMMARY_METADATA_KEY)
-        return metadata if isinstance(metadata, dict) else {}
-
-    def _summary_input(self, session: Any) -> tuple[str | None, list[Any], int]:
-        runs = _session_history_runs(session)
-        metadata = self._metadata(session)
-        previous = str(getattr(getattr(session, "summary", None), "summary", "") or "").strip()
-        last_run_id = str(metadata.get("lastSourceRunId") or "")
-        previous_version = int(metadata.get("version") or 0)
-        last_index = next(
-            (
-                index
-                for index, run in enumerate(runs)
-                if str(getattr(run, "run_id", "") or "") == last_run_id
-            ),
-            -1,
-        )
-        valid_previous = bool(
-            previous
-            and not _FORBIDDEN_SUMMARY_CONTENT.search(previous)
-            and last_index >= 0
-            and metadata.get("sourceDigest") == self.source_digest(runs[: last_index + 1])
-        )
-        if not valid_previous:
-            return None, runs, 0
-        return previous, runs[last_index + 1 :], previous_version
-
-    @staticmethod
-    def _request_messages(previous: str | None, new_runs: list[Any]) -> list[Message] | None:
-        messages = _summary_messages(new_runs)
-        if not messages:
-            return None
-        payload = {
-            "previousSummary": previous,
-            "newMessages": messages,
-        }
-        return [
-            Message(
-                role="system",
-                content=(
-                    "更新非权威滚动会话摘要。只输出用户目标、已确认决策、工作区文件、"
-                    "完成事项和待办事项；不得包含或推导权限状态或授权 token。"
-                    "必须只返回符合指定 schema 的 JSON 对象。"
-                ),
-            ),
-            Message(
-                role="user",
-                content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            ),
-        ]
-
-    def _apply_summary(
-        self,
-        session: Any,
-        payload: RollingSummaryResponse,
-        runs: list[Any],
-        previous_version: int,
-    ) -> SessionSummary | None:
-        serialized = payload.model_dump_json(exclude_none=True)
-        if _FORBIDDEN_SUMMARY_CONTENT.search(serialized):
-            return None
-        now = datetime.now(UTC)
-        summary = SessionSummary(summary=serialized, topics=["滚动历史"], updated_at=now)
-        session.summary = summary
-        if not isinstance(getattr(session, "session_data", None), dict):
-            session.session_data = {}
-        latest_run_id = str(getattr(runs[-1], "run_id", "") or "")
-        session.session_data[SUMMARY_METADATA_KEY] = {
-            "version": previous_version + 1,
-            "lastSourceRunId": latest_run_id,
-            "sourceDigest": self.source_digest(runs),
-            "updatedAt": now.isoformat(),
-        }
-        self.summaries_updated = True
-        return summary
-
-    def create_session_summary(self, session, run_metrics=None):
-        previous, new_runs, version = self._summary_input(session)
-        messages = self._request_messages(previous, new_runs)
-        if messages is None:
-            return getattr(session, "summary", None)
-        model = self.model
-        if model is None:
-            return getattr(session, "summary", None)
-        try:
-            response = model.response(messages=messages, response_format=RollingSummaryResponse)
-            payload = _parse_rolling_summary(response)
-        except Exception as error:
-            logger.warning("rolling_summary_failed error_type={}", type(error).__name__)
-            return getattr(session, "summary", None)
-        if payload is None:
-            logger.warning(
-                "rolling_summary_invalid parsed_type={} content_type={}",
-                type(getattr(response, "parsed", None)).__name__,
-                type(getattr(response, "content", None)).__name__,
-            )
-            return getattr(session, "summary", None)
-        return self._apply_summary(
-            session,
-            payload,
-            list(getattr(session, "runs", None) or []),
-            version,
-        ) or getattr(session, "summary", None)
-
-    async def acreate_session_summary(self, session, run_metrics=None):
-        previous, new_runs, version = self._summary_input(session)
-        messages = self._request_messages(previous, new_runs)
-        if messages is None:
-            return getattr(session, "summary", None)
-        model = self.model
-        if model is None:
-            return getattr(session, "summary", None)
-        try:
-            response = await model.aresponse(
-                messages=messages,
-                response_format=RollingSummaryResponse,
-            )
-            payload = _parse_rolling_summary(response)
-        except Exception as error:
-            logger.warning("rolling_summary_failed error_type={}", type(error).__name__)
-            return getattr(session, "summary", None)
-        if payload is None:
-            logger.warning(
-                "rolling_summary_invalid parsed_type={} content_type={}",
-                type(getattr(response, "parsed", None)).__name__,
-                type(getattr(response, "content", None)).__name__,
-            )
-            return getattr(session, "summary", None)
-        return self._apply_summary(
-            session,
-            payload,
-            list(getattr(session, "runs", None) or []),
-            version,
-        ) or getattr(session, "summary", None)
 
 
 def clear_terminal_reasoning(run_output: Any) -> None:

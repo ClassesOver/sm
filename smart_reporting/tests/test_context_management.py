@@ -9,7 +9,6 @@ import requests
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.models.response import ModelResponse
-from agno.session.summary import SessionSummary
 from agno.tools import Function
 from agno.tools.function import FunctionCall
 from loguru import logger
@@ -26,12 +25,9 @@ from smart_reporting.context_management import (
     ContextBudgetController,
     ProjectedOpenAIChat,
     ProtectedCompressionManager,
-    RollingSessionSummaryManager,
-    RollingSummaryResponse,
     TaskExecutionContextHardLimitError,
     TaskExecutionContextProjector,
     ToolCompressionResponse,
-    _parse_rolling_summary,
     clear_terminal_reasoning,
     clear_terminal_session_reasoning,
     projected_task_execution_model,
@@ -1870,156 +1866,6 @@ async def test_compression_preserves_coding_process_continuation_metadata():
     assert compressed["exact"]["$.timeout_seconds"] == 3600
     assert compressed["exact"]["$.outcome"] == "running"
     assert "xxx" not in candidate.compressed_content
-
-
-@pytest.mark.anyio
-async def test_rolling_summary_uses_previous_summary_and_only_new_messages():
-    response = RollingSummaryResponse(
-        goal="生成员工报表",
-        decisions=["输出 PDF"],
-        artifacts=["报表/员工.md"],
-        completed=["完成数据分析"],
-        pending=["渲染 PDF"],
-    )
-    model = SummaryModel(parsed=response)
-    manager = RollingSessionSummaryManager(model=model)
-    first = run(
-        Message(role="user", content="旧请求"),
-        Message(role="assistant", content="旧回答"),
-        run_id="run-1",
-    )
-    second = run(
-        Message(role="user", content="继续生成 PDF"),
-        Message(role="tool", tool_name="odoo.open_record", content='{"snapshotId":"secret"}'),
-        Message(role="assistant", content='旧绑定 token="secret-token"'),
-        Message(role="assistant", content="已准备 Markdown"),
-        run_id="run-2",
-    )
-    session = SimpleNamespace(
-        runs=[first, second],
-        summary=SessionSummary(summary='{"goal":"旧目标"}'),
-        session_data={
-            "agentos_rolling_summary": {
-                "version": 1,
-                "lastSourceRunId": "run-1",
-                "sourceDigest": manager.source_digest([first]),
-            }
-        },
-    )
-
-    result = await manager.acreate_session_summary(session)
-
-    assert result is session.summary
-    assert "JSON" in str(model.requests[0][0].content)
-    request = str(model.requests[0][-1].content)
-    assert "旧目标" in request
-    assert "继续生成 PDF" in request
-    assert "已准备 Markdown" in request
-    assert "旧请求" not in request
-    assert "snapshotId" not in request
-    assert "secret-token" not in request
-    metadata = session.session_data["agentos_rolling_summary"]
-    assert metadata["version"] == 2
-    assert metadata["lastSourceRunId"] == "run-2"
-
-
-def test_rolling_summary_accepts_structured_dict():
-    response = SimpleNamespace(
-        parsed={
-            "goal": "生成员工报表",
-            "decisions": ["输出 PDF"],
-            "artifacts": [],
-            "completed": [],
-            "pending": [],
-        },
-        content=None,
-    )
-
-    result = _parse_rolling_summary(response)
-
-    assert result is not None
-    assert result.goal == "生成员工报表"
-
-
-def test_rolling_summary_accepts_complete_json_fence():
-    content = """```json
-{"goal":"生成员工报表","decisions":[],"artifacts":[],"completed":[],"pending":[]}
-```"""
-
-    result = _parse_rolling_summary(SimpleNamespace(parsed=None, content=content))
-
-    assert result is not None
-    assert result.goal == "生成员工报表"
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        '摘要如下：{"goal":"目标"}',
-        '{"goal":"目标","unexpected":true}',
-    ],
-)
-def test_rolling_summary_rejects_prose_and_unknown_fields(content):
-    response = SimpleNamespace(parsed=None, content=content)
-
-    assert _parse_rolling_summary(response) is None
-
-
-@pytest.mark.anyio
-async def test_rolling_summary_rebuilds_after_history_replacement():
-    response = RollingSummaryResponse(
-        goal="重建目标",
-        decisions=[],
-        artifacts=[],
-        completed=[],
-        pending=[],
-    )
-    model = SummaryModel(parsed=response)
-    manager = RollingSessionSummaryManager(model=model)
-    first = run(Message(role="user", content="被替换的新内容"), run_id="run-1")
-    session = SimpleNamespace(
-        runs=[first],
-        summary=SessionSummary(summary='{"goal":"失效摘要"}'),
-        session_data={
-            "agentos_rolling_summary": {
-                "version": 4,
-                "lastSourceRunId": "run-1",
-                "sourceDigest": "stale-digest",
-            }
-        },
-    )
-
-    await manager.acreate_session_summary(session)
-
-    request = str(model.requests[0][-1].content)
-    assert "失效摘要" not in request
-    assert "被替换的新内容" in request
-    assert session.session_data["agentos_rolling_summary"]["version"] == 1
-
-
-@pytest.mark.anyio
-async def test_rolling_summary_failure_keeps_previous_version():
-    model = SummaryModel(error=RuntimeError("provider unavailable"))
-    manager = RollingSessionSummaryManager(model=model)
-    first = run(Message(role="user", content="旧请求"), run_id="run-1")
-    second = run(Message(role="user", content="新请求"), run_id="run-2")
-    previous = SessionSummary(summary='{"goal":"保留目标"}')
-    metadata = {
-        "version": 2,
-        "lastSourceRunId": "run-1",
-        "sourceDigest": manager.source_digest([first]),
-    }
-    session = SimpleNamespace(
-        runs=[first, second],
-        summary=previous,
-        session_data={"agentos_rolling_summary": metadata.copy()},
-    )
-
-    result = await manager.acreate_session_summary(session)
-
-    assert result is previous
-    assert session.summary is previous
-    assert session.session_data["agentos_rolling_summary"] == metadata
 
 
 def test_terminal_reasoning_is_removed_before_persistence():

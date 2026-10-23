@@ -29,14 +29,10 @@ from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
     bind_reporting_thinking,
-    positive_token_count,
-    reporting_request_input_hard_cap,
     select_reporting_thinking,
 )
 from ...phase import (
-    REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
     _nonnegative_int,
-    reporting_model_route_from_run_context,
 )
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
@@ -112,15 +108,13 @@ from .base import (
     TaskState,
     ValidationError,
     ZoneInfo,
-    _count_request_tokens,
     _frozen_outline,
-    _json_text,
+    _planner_input_token_budget,
+    _planner_request_token_counter,
     _report_machine_terms,
     _reporting_observed_data_facts,
-    _routed_model_copy,
     _sha256_hex,
     _source_warnings_from_state,
-    _structured_request_messages,
     anyio,
     authoritative_citations,
     build_deterministic_analysis_bundle,
@@ -211,25 +205,7 @@ async def _record_successful_repair(
         ).warning("report_knowledge_repair_record_failed")
 
 
-def _analysis_summary_input_token_budget(agent: Any, run_context: RunContext) -> int:
-    """按最终路由模型的已验证窗口收敛摘要请求预算。"""
-
-    model = getattr(agent, "model", None)
-    configured_cap = REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
-    for owner in (model, agent):
-        value = positive_token_count(getattr(owner, "_task_execution_input_token_budget", None))
-        if value is not None:
-            configured_cap = min(configured_cap, value)
-            break
-    route = reporting_model_route_from_run_context(run_context)
-    model_id = route[1] if route is not None else getattr(model, "id", None)
-    hard_cap = reporting_request_input_hard_cap(
-        configured_input_token_cap=configured_cap,
-        model_id=model_id if isinstance(model_id, str) else None,
-        output_tokens=getattr(model, "max_tokens", None),
-    )
-    # 预留四分之一给 provider wire 方言、纠错指令与 tokenizer 版本差异。
-    return hard_cap * 3 // 4
+_analysis_summary_input_token_budget = _planner_input_token_budget
 
 
 def _prepare_analysis_summary_request(
@@ -245,31 +221,13 @@ def _prepare_analysis_summary_request(
         **payload,
         "analysisBlock": {"blockId": f"{analysis_id}:summary"},
     }
-    counting_model = _routed_model_copy(getattr(agent, "model", None), run_context)
-    tokenizer_failed = False
-
-    def count_tokens(candidate: Mapping[str, Any]) -> int:
-        nonlocal tokenizer_failed
-        serialized = _json_text(candidate)
-        if not tokenizer_failed:
-            try:
-                return _count_request_tokens(
-                    counting_model,
-                    _structured_request_messages(
-                        agent, serialized, session_id=f"analysis-summary-budget:{analysis_id}"
-                    ),
-                    AnalysisSummaryDraft,
-                )
-            except Exception as error:
-                # tokenizer 是优化边界，不能成为绕过 hard cap 的降级开关；
-                # UTF-8 字节数对中英文 JSON 均高估 token，作为确定性失败关闭后备。
-                tokenizer_failed = True
-                loguru_logger.bind(
-                    analysis_id=analysis_id,
-                    error_type=type(error).__name__,
-                ).warning("report_analysis_summary_tokenizer_fallback")
-        return len(serialized.encode("utf-8"))
-
+    count_tokens = _planner_request_token_counter(
+        agent,
+        run_context,
+        AnalysisSummaryDraft,
+        session_id=f"analysis-summary-budget:{analysis_id}",
+        fallback_event="report_analysis_summary_tokenizer_fallback",
+    )
     return _project_analysis_summary_payload(
         request,
         max_tokens=_analysis_summary_input_token_budget(agent, run_context),

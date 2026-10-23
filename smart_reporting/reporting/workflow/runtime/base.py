@@ -155,9 +155,13 @@ from ...model_policy import (
     ThinkingRequest,
     apply_reporting_thinking_profile,
     positive_token_count,
+    reporting_request_input_hard_cap,
 )
 from ...models import ReportingError
-from ...phase import reporting_model_route_from_run_context
+from ...phase import (
+    REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
+    reporting_model_route_from_run_context,
+)
 from ...presentation import completed_report_content
 from ...profile import (
     CapabilitySet,
@@ -593,6 +597,63 @@ def _count_request_tokens(
     if token_count is None:
         raise TypeError("count_tokens 未返回正整数")
     return token_count
+
+
+def _planner_input_token_budget(agent: Any, run_context: RunContext) -> int:
+    """按最终路由模型的已验证窗口收敛结构化规划请求预算。"""
+
+    model = getattr(agent, "model", None)
+    configured_cap = REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
+    for owner in (model, agent):
+        value = positive_token_count(getattr(owner, "_task_execution_input_token_budget", None))
+        if value is not None:
+            configured_cap = min(configured_cap, value)
+            break
+    route = reporting_model_route_from_run_context(run_context)
+    model_id = route[1] if route is not None else getattr(model, "id", None)
+    hard_cap = reporting_request_input_hard_cap(
+        configured_input_token_cap=configured_cap,
+        model_id=model_id if isinstance(model_id, str) else None,
+        output_tokens=getattr(model, "max_tokens", None),
+    )
+    # 预留四分之一给 provider wire 方言、纠错指令与 tokenizer 版本差异。
+    return hard_cap * 3 // 4
+
+
+def _planner_request_token_counter(
+    agent: Any,
+    run_context: RunContext,
+    output_schema: type[BaseModel],
+    *,
+    session_id: str,
+    fallback_event: str,
+) -> Callable[[Mapping[str, Any]], int]:
+    """返回按实际请求形态计数的函数；tokenizer 失败后改用 UTF-8 字节数保守上界。"""
+
+    counting_model = _routed_model_copy(getattr(agent, "model", None), run_context)
+    tokenizer_failed = False
+
+    def count_tokens(candidate: Mapping[str, Any]) -> int:
+        nonlocal tokenizer_failed
+        serialized = _json_text(candidate)
+        if not tokenizer_failed:
+            try:
+                return _count_request_tokens(
+                    counting_model,
+                    _structured_request_messages(agent, serialized, session_id=session_id),
+                    output_schema,
+                )
+            except Exception as error:
+                # tokenizer 是优化边界，不能成为绕过 hard cap 的降级开关；
+                # UTF-8 字节数对中英文 JSON 均高估 token，作为确定性失败关闭后备。
+                tokenizer_failed = True
+                loguru_logger.bind(
+                    session_id=session_id,
+                    error_type=type(error).__name__,
+                ).warning(fallback_event)
+        return len(serialized.encode("utf-8"))
+
+    return count_tokens
 
 
 def _validated_entrypoint(value: Any) -> str:

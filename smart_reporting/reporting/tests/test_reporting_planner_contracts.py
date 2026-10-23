@@ -5426,3 +5426,84 @@ def test_analysis_roles_do_not_authorize_new_query_windows() -> None:
     analysis = bundle.analyses[0].model_copy(update={'period_roles': ('current', 'mom')})
     normalized, _ = _normalize_comparison_roles(bundle.model_copy(update={'analyses': (analysis,)}), ('yoy',))
     assert normalized.requirements[0].comparison_roles == ()
+
+
+def _wide_catalog_snapshot(table_count: int) -> reporting_contract.SourceSchemaSnapshot:
+    return reporting_contract.SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="revision-1",
+        schemaHash="a" * 64,
+        tables=tuple(
+            reporting_contract.ModelTable(
+                sourceId="rj",
+                database="rj",
+                name=f"fact_{index:03d}",
+                description="院级经营事实表" * 40,
+                columns=tuple(
+                    reporting_contract.ModelColumn(
+                        name=f"col_{column:02d}",
+                        dataType="DECIMAL(18, 2)",
+                        nullable=True,
+                        description="按科室与月份汇总的业务口径说明" * 20,
+                    )
+                    for column in range(20)
+                ),
+            )
+            for index in range(table_count)
+        ),
+        measureSemantics=(
+            reporting_contract.MeasureSemantic(
+                fieldRef="rj.rj.fact_000.col_00", aggregation="sum"
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("table_count", "configured_budget", "expected_description_chars", "expected_semantics"),
+    [
+        (5, 200_000, None, 1),
+        (5, 100_000, 160, 1),
+        (60, 256 * 1024, 0, 1),
+        # 最紧凑视图仍超限：去掉度量语义后照常返回，由统一 hard cap 报出预算错误。
+        (60, 100_000, 0, 0),
+    ],
+)
+def test_data_scope_schema_payload_shrinks_descriptions_to_fit_input_budget(
+    table_count: int,
+    configured_budget: int,
+    expected_description_chars: int | None,
+    expected_semantics: int,
+) -> None:
+    from smart_reporting.reporting.workflow.runtime.planning import RuntimePlanningMixin
+
+    snapshot = _wide_catalog_snapshot(table_count)
+
+    class ByteCountingModel:
+        id = "unverified-model"
+        max_tokens = None
+        _task_execution_input_token_budget = configured_budget
+
+        def count_tokens(self, messages, tools=None, output_schema=None):
+            del tools, output_schema
+            return sum(len(str(message.content).encode("utf-8")) for message in messages)
+
+    runtime = SimpleNamespace(_data_understanding_agent=SimpleNamespace(model=ByteCountingModel()))
+    base_payload = {"reportGoal": "分析经营情况", "domains": []}
+    schemas = RuntimePlanningMixin._budgeted_data_scope_schemas(
+        runtime, base_payload, (snapshot,), RunContext(run_id="run", session_id="session")
+    )
+
+    tables = schemas[0]["tables"]
+    assert len(tables) == table_count and all(len(table["columns"]) == 20 for table in tables)
+    description = tables[0]["columns"][0]["description"]
+    if expected_description_chars is None:
+        assert description == snapshot.tables[0].columns[0].description
+    else:
+        assert len(description) <= expected_description_chars
+    assert len(schemas[0]["measureSemantics"]) == expected_semantics
+    if expected_semantics:
+        payload_bytes = len(
+            json.dumps({**base_payload, "schemas": schemas}, ensure_ascii=False).encode()
+        )
+        assert payload_bytes <= configured_budget * 3 // 4
