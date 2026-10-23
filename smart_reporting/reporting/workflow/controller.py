@@ -16,13 +16,15 @@ from agno.run.cancel import araise_if_cancelled
 from agno.tools import Toolkit, tool
 from agno.workflow import OnReject
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ...async_utils import complete_cleanup
 from ..contract import (
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
     ReportingWorkflowInput,
+    ReportPeriod,
     ReportRequestEnvelope,
+    ReportRequestOptions,
     parse_reporting_workflow_input,
 )
 from ..models import (
@@ -38,6 +40,7 @@ REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
 REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY = "Reporting MCP 请求指纹"
 REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY = "Reporting MCP 已占用 thread"
 REPORT_PROCESS_LIFECYCLE_DEPENDENCY = "Reporting Process Lifecycle"
+REPORT_REQUEST_PROMPT_STATE_KEY = "report_request_prompt"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
 _THREAD_CLAIM_WAIT_SECONDS = 2.0
@@ -112,6 +115,19 @@ def _external_operation_scope_digest(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _report_option_reason(error: ValueError) -> str:
+    """把报告选项校验错误转成用户可读原因；非结构化错误回退到通用提示。"""
+    details = error.errors() if isinstance(error, ValidationError) else None
+    if not details:
+        return "请选择有效的起止日期、指标范围、篇幅和分析维度"
+    parts: list[str] = []
+    for item in details[:3]:
+        location = ".".join(str(part) for part in item.get("loc", ()) if str(part) != "__root__")
+        message = str(item.get("msg", "")).removeprefix("Value error, ").strip()
+        parts.append(f"{location}：{message}" if location and message else location or message)
+    return "；".join(part for part in parts if part) or "请选择有效的起止日期、指标范围、篇幅和分析维度"
 
 
 class ReviewableWorkflow(Protocol):
@@ -2180,8 +2196,10 @@ class ReportWorkflowToolkit(Toolkit):
                 self.report_workflow_reject,
             ],
             instructions=(
-                "启动新报表只调用无参数的 report_workflow_start；该工具读取当前最后一条"
-                "用户消息并交给 Workflow 首步归一化。"
+                "启动新报表调用 report_workflow_start；从用户对话上下文预填期间、指标范围、"
+                "篇幅和分析维度，最新明确要求优先，已有信息不要求重复输入。"
+                "缺失或冲突的期间留空，不猜测；未指定篇幅预选 brief。"
+                "工具通过 Agno 原生用户输入确认收集修改后才会启动 Workflow。"
                 "任一工具返回普通审核 paused 时，准确展示 review 后必须立即调用 "
                 "report_workflow_approve，由 AgentOS 原生确认收集批准或拒绝；request "
                 "阶段使用 report_workflow_review 收集补充输入。"
@@ -2193,14 +2211,52 @@ class ReportWorkflowToolkit(Toolkit):
         review = self.async_functions["report_workflow_review"]
         for field in review.user_input_schema or []:
             field.value = "" if field.name == "feedback" else None
-
+    @tool(requires_user_input=True)
     async def report_workflow_start(
         self,
+        period_start: str = "",
+        period_end: str = "",
+        domains: list[Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"]] = [],
+        report_length: Literal["brief", "detailed"] = "brief",
+        analysis_dimensions: list[str] = [],
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """将当前用户原文交给报表 Workflow 首步。"""
+        """预填报告选项，等待用户确认或修改后启动报表。
+
+        Args:
+            period_start: 期间开始日期 YYYY-MM-DD；从上下文预填，未知或冲突时留空。
+            period_end: 期间结束日期 YYYY-MM-DD；年月展开为月初至月末，期间范围保留起止。
+            domains: 指标范围（可多选）：income 收入、budget 预算、full_cost 成本、workload 工作量、cost_control 费用管控、funds 资金；只预选用户涉及的范围。
+            report_length: 篇幅：brief 简要版、detailed 详细版；未指定时预选 brief。
+            analysis_dimensions: 分析维度（可多选）：院区、科室、类型等；复制用户提及的业务维度，未指定时用空列表表示按可用数据分析。
+        """
         prompt = self._current_user_prompt(run_context)
         workflow_input = parse_reporting_workflow_input(prompt)
+        try:
+            period = (
+                ReportPeriod.model_validate({"start": period_start, "end": period_end})
+                if period_start or period_end else None
+            )
+            options = ReportRequestOptions(
+                period=period, domains=tuple(domains), reportLength=report_length,
+                analysisDimensions=tuple(analysis_dimensions),
+            )
+            if workflow_input.prompt is not None:
+                workflow_input = workflow_input.model_copy(update={"request_options": options})
+            else:
+                payload = workflow_input.model_dump(mode="json", by_alias=True, exclude_none=True)
+                payload.update(options.model_dump(mode="json", by_alias=True, exclude_none=True))
+                payload["period"] = (period or workflow_input.period).model_dump(mode="json")
+                payload["domains"] = list(options.domains or workflow_input.domains or ())
+                if not payload["domains"]:
+                    payload.pop("domains")
+                workflow_input = ReportingWorkflowInput.model_validate(payload)
+        except ValueError as error:
+            return {"ok": False, "status": "failed", "error": {
+                "code": "report_request_invalid",
+                "message": f"报告选项无效：{_report_option_reason(error)}。请修正后重试。",
+                "retryable": True,
+            }}
         return await self._workflow_result(self.controller.start(workflow_input, run_context))
 
     @staticmethod
@@ -2221,6 +2277,15 @@ class ReportWorkflowToolkit(Toolkit):
             if isinstance(content, str) and content.strip():
                 return content
             break
+        state = run_context.session_state if run_context else None
+        stored = state.get(REPORT_REQUEST_PROMPT_STATE_KEY) if isinstance(state, dict) else None
+        if (
+            isinstance(stored, dict)
+            and stored.get("runId") == run_context.run_id
+            and isinstance(stored.get("prompt"), str)
+            and stored["prompt"].strip()
+        ):
+            return stored["prompt"]
         raise ReportingError("report_request_invalid", "当前消息缺少自然语言报表需求。")
 
     @tool(

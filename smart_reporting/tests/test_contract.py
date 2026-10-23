@@ -8,6 +8,7 @@ from agno.agent import Agent
 from agno.agent._tools import parse_tools
 from agno.db.in_memory import InMemoryDb
 from agno.models.base import Model
+from agno.models.message import Message
 from agno.models.response import ModelResponse
 from agno.run import RunContext
 from agno.run.base import RunStatus
@@ -68,7 +69,6 @@ def test_openai_compatible_role_map_preserves_system_instructions():
 
 
 @pytest.mark.anyio
-@pytest.mark.anyio
 async def test_report_start_tool从当前用户消息启动workflow():
     calls = []
 
@@ -77,43 +77,25 @@ async def test_report_start_tool从当前用户消息启动workflow():
             calls.append((workflow_input.prompt, run_context.session_id))
             return {"ok": True, "status": "completed"}
 
-    model = ScriptedModel(
-        id="scripted-report-start-model",
-        responses=[
-            ModelResponse(
-                tool_calls=[
-                    {
-                        "id": "call-report-start",
-                        "type": "function",
-                        "function": {
-                            "name": "report_workflow_start",
-                            "arguments": "{}",
-                        },
-                    }
-                ]
-            ),
-            ModelResponse(content="报表工作流已启动。"),
-        ],
-    )
-    agent = Agent(
-        id="report-start-test",
-        model=model,
-        tools=[ReportWorkflowToolkit(cast(ReportWorkflowController, FakeController()))],
-        db=InMemoryDb(),
-        telemetry=False,
-    )
     goal = "生成瑞金医院2025年收入、预算、成本和工作量分析报告"
-
-    completed = await agent.arun(
-        goal,
-        run_id="run-report-start",
-        session_id="thread-report-start",
-        user_id="user-report-start",
+    toolkit = ReportWorkflowToolkit(cast(ReportWorkflowController, FakeController()))
+    completed = await toolkit.async_functions["report_workflow_start"].entrypoint(
+        run_context=RunContext(
+            run_id="run-report-start", session_id="thread-report-start",
+            messages=[Message(role="user", content=goal)],
+        ),
     )
-
-    assert completed.status is RunStatus.completed
-    assert completed.content == "报表工作流已启动。"
+    assert completed["status"] == "completed"
     assert calls == [(goal, "thread-report-start")]
+
+
+def confirm_report_options(paused):
+    requirement = paused.active_requirements[0]
+    assert requirement.tool_execution.tool_name == "report_workflow_start"
+    requirement.provide_user_input({
+        "period_start": "2025-01-01", "period_end": "2025-12-31",
+        "domains": [], "report_length": "brief", "analysis_dimensions": [],
+    })
 
 
 @pytest.mark.anyio
@@ -162,6 +144,10 @@ async def test_report_facade把workflow暂停确定性提升为agent原生hitl(m
         run_id="run-report-routing",
         session_id="thread-report-routing",
         user_id="user-report-routing",
+    )
+    confirm_report_options(paused)
+    paused = await agent.acontinue_run(
+        run_id=paused.run_id, session_id=paused.session_id, requirements=paused.requirements,
     )
 
     assert paused.status is RunStatus.paused
@@ -230,6 +216,12 @@ async def test_report_facade流式运行把workflow暂停提升为agent原生hit
             stream_events=True,
         )
     ]
+    initial = events[-1]
+    confirm_report_options(initial)
+    events = [event async for event in agent.acontinue_run(
+        run_id=initial.run_id, session_id=initial.session_id,
+        requirements=initial.requirements, stream=True, stream_events=True,
+    )]
 
     assert len(provider_calls) == 1
     paused_index = next(index for index, event in enumerate(events) if event.event == "RunPaused")
@@ -360,6 +352,10 @@ async def test_report原生确认拒绝后把备注确定性交给workflow(monke
         session_id="thread-report-confirmation-reject",
         user_id="user-report-confirmation-reject",
     )
+    confirm_report_options(paused)
+    paused = await agent.acontinue_run(
+        run_id=paused.run_id, session_id=paused.session_id, requirements=paused.requirements,
+    )
     requirement = paused.active_requirements[0]
     requirement.reject(note="补充异常原因和改进责任人")
 
@@ -407,10 +403,9 @@ def test_toolkit_instructions_are_injected_by_agno():
     }
     assert parsed_tools["report_workflow_review"].requires_user_input is True
     assert parsed_tools["report_workflow_approve"].requires_confirmation is True
-    assert parsed_tools["report_workflow_start"].parameters == {
-        "type": "object",
-        "properties": {},
-        "required": [],
+    assert parsed_tools["report_workflow_start"].requires_user_input is True
+    assert set(parsed_tools["report_workflow_start"].parameters["properties"]) == {
+        "period_start", "period_end", "domains", "report_length", "analysis_dimensions",
     }
 
 

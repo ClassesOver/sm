@@ -412,8 +412,8 @@ class RuntimeDatasetsMixin:
             "datasetContexts": [item.model_dump(mode="json", by_alias=True) for item in contexts],
             "profileCoverageManifest": profile_coverage.model_dump(mode="json", by_alias=True),
             "initialRequirements": state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, []),
-            "reportGoal": envelope.report_goal,
-            "analysisGoal": envelope.report_goal,
+            "reportGoal": envelope.planning_goal,
+            "analysisGoal": envelope.planning_goal,
             "allowedDomains": list(domains),
             "dataShapes": state.get(REPORT_DATA_SHAPES_STATE_KEY, []),
             "warnings": list(profile_warnings),
@@ -629,8 +629,8 @@ class RuntimeDatasetsMixin:
         plan = DetailedAnalysisPlan(
             analyses=tuple(analyses),
             datasetIds=tuple(context.dataset_id for context in contexts),
-            reportGoal=envelope.report_goal,
-            analysisGoal=envelope.report_goal,
+            reportGoal=envelope.planning_goal,
+            analysisGoal=envelope.planning_goal,
             warnings=unique_warnings,
         )
         state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY] = plan.model_dump(mode="json", by_alias=True)
@@ -639,13 +639,13 @@ class RuntimeDatasetsMixin:
         request_context = state.get("report_request_context", {})
         raw_questions = request_context.get("questionSpecs")
         questions = QuestionSet.model_validate(raw_questions) if raw_questions is not None else request_questions(
-            request_context.get("originalGoal", envelope.report_goal),
+            request_context.get("originalGoal", envelope.planning_goal),
         )
         feedback = tuple(item["content"] for item in request_context.get("feedback", ())
                          if isinstance(item, dict) and isinstance(item.get("content"), str))
         frozen_questions = freeze_plan_questions(
             questions, [item.model_dump(mode="json", by_alias=True) for item in plan.analyses],
-            goal=request_context.get("originalGoal", envelope.report_goal), feedback=feedback,
+            goal=request_context.get("originalGoal", envelope.planning_goal), feedback=feedback,
         )
         await self._apply_durable_command(
             run_context,
@@ -674,7 +674,7 @@ class RuntimeDatasetsMixin:
                 },
             ),
         )
-        state.setdefault("report_request_context", {"originalGoal": envelope.report_goal, "feedback": []})[
+        state.setdefault("report_request_context", {"originalGoal": envelope.planning_goal, "feedback": []})[
             "questionSpecs"
         ] = frozen_questions.model_dump(mode="json", by_alias=True)
         self._assert_state_safe(state)

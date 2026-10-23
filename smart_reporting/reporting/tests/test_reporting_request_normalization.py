@@ -12,6 +12,34 @@ from smart_reporting.reporting.workflow.runtime.models import NormalizedReportPr
 
 
 @pytest.mark.anyio
+async def test_confirmed_options_override_inferred_values_and_reach_request_context():
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(return_value=NormalizedReportPrompt(
+        reportType="topic", domains=("budget",),
+        period={"start": "2024-01-01", "end": "2024-12-31"},
+    ))
+    context = SimpleNamespace(session_state={})
+    output = await runtime.normalize_report_request(SimpleNamespace(
+        input={
+            "prompt": "生成2024年预算报告",
+            "requestOptions": {
+                "period": {"start": "2025-02-01", "end": "2025-04-30"},
+                "domains": ["income", "full_cost"],
+                "reportLength": "detailed", "analysisDimensions": ["院区", "类型"],
+            },
+        }, additional_data=None,
+    ), context)
+    assert output.content["period"] == {"start": "2025-02-01", "end": "2025-04-30"}
+    assert output.content["domains"] == ["income", "full_cost"]
+    assert output.content["reportLength"] == "detailed"
+    assert output.content["analysisDimensions"] == ["院区", "类型"]
+    frozen = context.session_state["report_request_context"]
+    assert frozen["reportLength"] == "detailed"
+    assert frozen["analysisDimensions"] == ["院区", "类型"]
+
+
+@pytest.mark.anyio
 async def test_assertion_mode_is_pinned_for_new_runs_and_legacy_resume_is_shadow(monkeypatch):
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime._request_normalizer = object()

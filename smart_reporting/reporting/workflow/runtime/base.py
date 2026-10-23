@@ -663,6 +663,8 @@ class _ReportWorkflowRuntimeBase:
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
                 "只根据用户完整目标及补充说明的业务语义，同时决策 reportType、domains 和分析期间；不得按关键词机械匹配",
+                "requestOptions 是用户已确认的选项，优先于原始目标；不得改写已确认期间、指标范围、篇幅或分析维度",
+                "从目标提取 reportLength（brief 简要版、detailed 详细版）和 analysisDimensions（院区、科室、类型等）；未指定篇幅用 brief，未指定维度返回空列表，沿用数据可用维度",
                 "reportType 表示分析的组织意图，与 domains 数量相互独立；不得根据领域多少反推报告类型",
                 "topic 表示围绕一个聚焦的管理问题、变化机制或专项主题深入分析，即使问题横跨多个领域也仍可返回多个相关 domains",
                 "comprehensive 表示从综合经营视角统筹评价多个管理维度，即使用户明确限定了若干领域也仍是 comprehensive；不得因范围有限降级为 topic",

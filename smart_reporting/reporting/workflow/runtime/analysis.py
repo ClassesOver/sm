@@ -1043,12 +1043,15 @@ class RuntimeAnalysisMixin:
             script_path = f"{root}/charts.py"
             try:
                 envelope = self._envelope(run_context)
-                report_goal = envelope.report_goal
+                report_goal = envelope.planning_goal
+                # 图表数量指令只来自用户原始目标；planning_goal 拼接的确认选项模板不得参与正则匹配。
+                chart_request_goal = envelope.report_goal
                 visualization_mode = envelope.visualization_mode
             except ReportingError:
                 report_goal = ""
+                chart_request_goal = ""
                 visualization_mode = "static"
-            requested_chart_limit = _requested_chart_limit(report_goal, len(section.analysis_ids))
+            requested_chart_limit = _requested_chart_limit(chart_request_goal, len(section.analysis_ids))
             if context.get("max_charts") is not None:
                 requested_chart_limit = min(requested_chart_limit, context["max_charts"]) if requested_chart_limit is not None else context["max_charts"]
             instruction_payload = {
@@ -2457,6 +2460,7 @@ class RuntimeAnalysisMixin:
             envelope = self._envelope(run_context)
             outline = ReportOutline(
                 reportType=envelope.report_type,
+                # 默认标题只从用户原始目标的“生成××报告”措辞提取，确认选项模板不参与。
                 title=default_report_title(envelope.report_goal, envelope.period.start,
                                            envelope.period.end, envelope.report_type),
                 sections=[{

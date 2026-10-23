@@ -158,15 +158,20 @@ class RuntimePlanningMixin:
         assert isinstance(request, ReportPromptInput)
         self._record_request_context(state, request.prompt, feedback)
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
+        options = request.request_options
+        if options is not None:
+            prompt_payload["requestOptions"] = options.model_dump(mode="json", by_alias=True)
         if feedback:
             prompt_payload["supplement"] = feedback
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
-        period = _single_explicit_year(request.prompt, feedback) or normalized.period
+        period = (options.period if options else None) or _single_explicit_year(request.prompt, feedback) or normalized.period
         missing: list[str] = []
         if period is None:
             missing.append(normalized.clarification_question or "请明确唯一的分析期间。")
-        semantic_domains = tuple(dict.fromkeys(normalized.domains))
+        semantic_domains = tuple(dict.fromkeys(
+            options.domains if options and options.domains else normalized.domains
+        ))
         report_type = normalized.report_type
         if report_type is None:
             missing.append(
@@ -186,6 +191,10 @@ class RuntimePlanningMixin:
                 "reportType": report_type,
                 **({"domains": domains} if domains else {}),
                 "period": period.model_dump(mode="json"),
+                "reportLength": options.report_length if options else normalized.report_length,
+                **({"analysisDimensions": list(
+                    options.analysis_dimensions if options else normalized.analysis_dimensions
+                )} if (options and options.analysis_dimensions) or normalized.analysis_dimensions else {}),
             }
         )
         self._record_normalized_request(state, envelope)
@@ -254,6 +263,8 @@ class RuntimePlanningMixin:
                 "primaryDomain": envelope.domains[0] if envelope.domains else None,
                 "period": envelope.period.model_dump(mode="json"),
                 "comparisonRoles": list(envelope.comparison_roles),
+                "reportLength": envelope.report_length,
+                "analysisDimensions": list(envelope.analysis_dimensions or ()),
             }
         )
 
@@ -735,7 +746,7 @@ class RuntimePlanningMixin:
         envelope = self._envelope(run_context)
         snapshots = self._snapshots(run_context)
         base_payload = {
-            "reportGoal": envelope.report_goal,
+            "reportGoal": envelope.planning_goal,
             "period": envelope.period.model_dump(mode="json"),
             "periodWindows": envelope.period_windows().public_dict(),
             "domains": list(envelope.domains or ()),
@@ -773,7 +784,7 @@ class RuntimePlanningMixin:
             plan = _normalize_preferred_typed_period_fields(
                 plan,
                 snapshots,
-                report_goal=envelope.report_goal,
+                report_goal=envelope.planning_goal,
             )
             state = self._state(run_context)
             state[REPORT_DATA_UNDERSTANDING_STATE_KEY] = plan.model_dump(mode="json", by_alias=True)
@@ -1146,7 +1157,7 @@ class RuntimePlanningMixin:
             "requestContext": request_context,
         }
         base_payload = {
-            "reportGoal": envelope.report_goal,
+            "reportGoal": envelope.planning_goal,
             "reportType": envelope.report_type,
             "period": envelope.period.model_dump(mode="json"),
             "outlineContext": outline_context,

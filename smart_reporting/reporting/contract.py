@@ -127,6 +127,10 @@ class ReportRequestEnvelope(StrictModel):
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod
+    report_length: Literal["brief", "detailed"] | None = Field(default=None, alias="reportLength")
+    analysis_dimensions: tuple[str, ...] | None = Field(
+        default=None, alias="analysisDimensions", max_length=20
+    )
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
     schema_input: SchemaInput | None = Field(default=None, alias="schemaInput")
     comparison_roles: tuple[Literal["yoy", "mom"], ...] = Field(
@@ -200,6 +204,24 @@ class ReportRequestEnvelope(StrictModel):
         payload["sourceIds"] = list(self.source_ids or default_source_ids)
         return payload
 
+    @property
+    def planning_goal(self) -> str:
+        """将确认后的要求传给规划和写作，保留原始 reportGoal 供追溯。"""
+        if self.report_length is None and self.analysis_dimensions is None:
+            return self.report_goal
+        length = (
+            "详细版：展开指标变化、比较依据、分维度分析与管理建议"
+            if self.report_length == "detailed"
+            else "简要版：只保留核心结论、关键指标和重点建议，避免重复展开"
+        )
+        dimensions = "、".join(self.analysis_dimensions or ()) or "按数据实际支持的维度分析"
+        return (
+            f"{self.report_goal}\n\n已确认报告选项（与原始描述冲突时以此为准）：\n"
+            f"期间：{self.period.start} 至 {self.period.end}\n"
+            f"指标范围：{'、'.join(self.domains or ())}\n"
+            f"篇幅：{length}\n分析维度：{dimensions}；不补造数据未提供的维度。"
+        )
+
     def period_windows(
         self, *, granularity: Literal["date", "month", "year"] = "date"
     ) -> ReportPeriodWindows:
@@ -234,9 +256,29 @@ class ReportRequestEnvelope(StrictModel):
         return ReportPeriodWindows(windows=tuple(windows))
 
 
+class ReportRequestOptions(StrictModel):
+    """AgentOS 原生输入确认后提交的选项，不由归一化模型覆盖。"""
+
+    period: ReportPeriod | None = None
+    domains: tuple[
+        Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"], ...
+    ] = Field(default=(), max_length=6)
+    report_length: Literal["brief", "detailed"] = Field(default="brief", alias="reportLength")
+    analysis_dimensions: tuple[str, ...] = Field(default=(), alias="analysisDimensions", max_length=20)
+
+    @field_validator("analysis_dimensions")
+    @classmethod
+    def validate_dimensions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(dict.fromkeys(item.strip() for item in value))
+        if any(not item or len(item) > 100 for item in normalized):
+            raise ValueError("分析维度不能为空或超过100字")
+        return normalized
+
+
 class ReportPromptInput(StrictModel):
     version: Literal["1"] = "1"
     prompt: str = Field(min_length=1, max_length=20_000)
+    request_options: ReportRequestOptions | None = Field(default=None, alias="requestOptions")
 
     @field_validator("prompt")
     @classmethod
@@ -249,12 +291,17 @@ class ReportingWorkflowInput(StrictModel):
 
     version: Literal["1"] = "1"
     prompt: str | None = Field(default=None, min_length=1, max_length=20_000)
+    request_options: ReportRequestOptions | None = Field(default=None, alias="requestOptions")
     report_goal: str | None = Field(
         default=None, alias="reportGoal", min_length=1, max_length=20_000
     )
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod | None = None
+    report_length: Literal["brief", "detailed"] | None = Field(default=None, alias="reportLength")
+    analysis_dimensions: tuple[str, ...] | None = Field(
+        default=None, alias="analysisDimensions", max_length=20
+    )
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
     schema_input: SchemaInput | None = Field(default=None, alias="schemaInput")
     comparison_roles: tuple[Literal["yoy", "mom"], ...] | None = Field(
@@ -278,12 +325,16 @@ class ReportingWorkflowInput(StrictModel):
                     self.schema_input,
                     self.comparison_roles,
                     self.file_inputs,
+                    self.report_length,
+                    self.analysis_dimensions,
                 )
             ):
                 raise ValueError("prompt 输入不能混用 Envelope 字段")
             return self
         if self.report_goal is None or self.period is None:
             raise ValueError("必须提供 prompt 或完整 ReportRequestEnvelope")
+        if self.request_options is not None:
+            raise ValueError("requestOptions 仅适用于 prompt 输入")
         ReportRequestEnvelope.from_untrusted(
             self.model_dump(mode="json", by_alias=True, exclude_none=True)
         )

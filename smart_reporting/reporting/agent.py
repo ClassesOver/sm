@@ -128,6 +128,7 @@ from .phase import (
     reporting_visualization_usage_from_run_context,
 )
 from .presentation import completed_report_content as _completed_report_content
+from .request_options import ReportOptionInputField
 from .structured_output.agno_compat import install_agno_structured_output_parser
 from .structured_output.policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
@@ -143,7 +144,11 @@ from .structured_output.wire_schema import (
 from .tools import build_reporting_tools
 from .vision import ReportVisionReviewer
 from .workflow.checkpoint import CheckpointRetryUsage, attach_retry_usage, payload_sha256
-from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
+from .workflow.controller import (
+    REPORT_REQUEST_PROMPT_STATE_KEY,
+    ReportWorkflowController,
+    ReportWorkflowToolkit,
+)
 from .workflow.orchestration import current_planner_request_recorder
 from .workflow.repository import ReportingStateRepository
 from .workflow.runtime.phase_models import MAX_SECTION_CHART_COUNT
@@ -2342,6 +2347,46 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
 
     _report_completion_template: str | None = None
 
+    def get_function_calls_to_run(
+        self,
+        assistant_message: Message,
+        messages: list[Message],
+        functions: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        calls = super().get_function_calls_to_run(assistant_message, messages, functions)
+        for call in calls:
+            if call.function.name != "report_workflow_start":
+                continue
+            context = call.function._run_context
+            if context is not None:
+                prompt = next((
+                    item.content for item in reversed(messages)
+                    if item.role == "user" and isinstance(item.content, str) and item.content.strip()
+                ), None)
+                if prompt is not None:
+                    if context.session_state is None:
+                        context.session_state = {}
+                    context.session_state[REPORT_REQUEST_PROMPT_STATE_KEY] = {
+                        "runId": context.run_id, "prompt": prompt,
+                    }
+            # 在 Agno 创建暂停要求前补齐缺省值。pre_hook 在用户确认后才运行，
+            # 不能用于表单预填，更不能在继续执行时覆盖用户修改。
+            if call.arguments is None:
+                call.arguments = {}
+            for name, value in {
+                "period_start": "", "period_end": "", "domains": [],
+                "report_length": "brief", "analysis_dimensions": [],
+            }.items():
+                call.arguments.setdefault(name, value)
+            call.function.user_input_schema = [
+                ReportOptionInputField(
+                    name=item.name, field_type=item.field_type,
+                    description=item.description, value=item.value,
+                )
+                for item in call.function.user_input_schema or []
+            ]
+        return calls
+
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         return _forced_review_response(
             messages, completion_template=self._report_completion_template
@@ -2965,9 +3010,14 @@ def create_report_agent(
             "checkpoint": None,
             "instructions": [
                 "普通聊天问题直接回答，不调用报表工具；只有用户明确要求生成、分析或导出报表时，才调用"
-                "无参数的 report_workflow_start。该工具会读取受信服务端 Envelope，或把当前"
+                "report_workflow_start，并从用户对话上下文预填 period_start、period_end、domains、"
+                "report_length 和 analysis_dimensions；最新明确要求优先，已有信息不重复询问。"
+                "期间只在能够唯一确定时填 YYYY-MM-DD，月份展开为月初至月末，缺失或冲突则留空；"
+                "domains 只选用户涉及的指标范围，未指定篇幅选 brief，维度未指定用空列表。"
+                "工具会先通过 Agno 原生输入确认让用户选择和修改，确认后才启动 Workflow。"
+                "该工具会读取受信服务端 Envelope，或把当前"
                 "最后一条用户消息按 CLI 相同规则解析为自然语言或 ReportRequestEnvelope JSON，再交给 "
-                "Workflow 首步。不得自行解析期间、改写目标、取数、执行 Reporting "
+                "Workflow 首步。不得改写用户原始目标、取数、执行 Reporting "
                 "或生成报告。Workflow 返回 request 阶段 paused 时，向用户"
                 "展示 clarificationQuestion，并由 report_workflow_review 的 AgentOS 用户输入收集补充原文，"
                 "使 Workflow 首步按官方 HumanReview retry 继续归一化。",
