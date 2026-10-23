@@ -138,6 +138,10 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
         cutoff = re.search(cutoff_pattern, period_prefix)
     if first == last and written_periods[-1] == periods[-1] and (cutoff or '累计' in _affirmative_wording(clause)):
         return []
+    # “区间为2月…至7月…，9个月月均…”：月份是极值说明，紧邻数值写明的月数与完整窗口一致。
+    months = re.search(r'(\d{1,3})个(?:自然)?月(?:的)?(?:月均|平均|合计|累计)', clause)
+    if months and int(months[1]) == len(periods):
+        return []
     if written_periods != tuple(periods):
         return [f"统计期间需复核：当前引用覆盖 {'、'.join(periods)}，与正文限定的统计窗口不一致。"]
     return []

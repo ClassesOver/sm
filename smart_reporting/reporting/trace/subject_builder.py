@@ -344,7 +344,8 @@ def evaluate_subject_status(
 
 
 _PERIOD_TOKEN = re.compile(
-    r"\d{4}\s*[-/年.]\s*\d{1,2}(?:\s*[-/月.]\s*\d{1,2}\s*日?)?"
+    # “1月17,088人次”的 17 是数值，不是日：年月写法的日须带“日/号”。
+    r"\d{4}\s*[-/年.]\s*\d{1,2}(?:\s*[-/.]\s*\d{1,2}(?![\d,])\s*日?|\s*月\s*\d{1,2}\s*[日号])?"
     r"|\d{4}\s*年|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
 )
 _UNIT_TOKENS = ("亿元", "万元", "千元", "个百分点", "%", "‰", "万人次", "人次", "万人", "床日", "床", "张", "次", "人", "元")
@@ -382,11 +383,25 @@ def _expanded_period_wording(window: str) -> str:
         lambda match: f"{match['year']}年{match['start']}月至{match['end_year'] or match['year']}年{match['end']}月",
         window,
     )
+    # “2025年1—9月…较2024年同期”：同期即前文月份范围换成该年，年份仍须与基期一致。
+    ranges = list(re.finditer(r'(\d{4})年(\d{1,2})月至(\d{4})年(\d{1,2})月', window))
+
+    def same_period(match):
+        prior = [item for item in ranges if item.end() <= match.start() and item[1] == item[3]]
+        if not prior:
+            return match[0]
+        return f"{match['year']}年{prior[-1][2]}月至{match['year']}年{prior[-1][4]}月"
+
+    window = re.sub(r'(?P<year>\d{4})\s*年(?=\s*(?:同期|同月))', same_period, window)
     year = None
 
     def expand(match):
         nonlocal year
         key = _period_key(match[0])
+        if key and len(key) == 1 and re.match(r'\s*(?:同期|同月)', window[match.end():]):
+            # “2024年同期/同月”指与本期相同的月份，不是2024全年；只为其后的月份提供年份。
+            year = key[0]
+            return '该年'
         if key and (len(key) >= 2 or re.fullmatch(r'\d{4}\s*年', match[0])):
             year = key[0]
         elif key and year is not None and not re.search(r'去年|上年|次年|翌年|上月|下月', window[max(0, match.start() - 3):match.start()]):
@@ -493,8 +508,19 @@ def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> 
             role = previous_role
         elif index < len(connected) and connected[index]:
             # An unlabeled two-date change is from baseline to current. A
-            # cumulative range start does not redefine its endpoint.
-            role = 'baseline' if roles.get('baseline') else 'context'
+            # cumulative range start does not redefine its endpoint. A range whose
+            # ends equal a registered multi-period window is that window itself
+            # (“2025年1月至9月累计…”), not a change from January to September.
+            ends = (_period_key(match[0]), _period_key(written[group_ends[index]][0]))
+            window_role = next((
+                name for name in ('current', 'baseline')
+                if len(roles.get(name, ())) > 1
+                and ends == (_period_key(roles[name][0]), _period_key(roles[name][-1]))
+            ), None)
+            if window_role is not None:
+                role, explicit = window_role, True
+            else:
+                role = 'baseline' if roles.get('baseline') else 'context'
         else:
             role = 'current' if roles.get('current') else 'endpoint'
         previous_role, previous_explicit = role, explicit
@@ -722,6 +748,33 @@ def _reference_notes_end(text: str) -> int:
     return end
 
 
+_BASELINE_PREFIX = re.compile(r'(?:较于|相较于|相较|较|相比于|对比|比|基期(?:为)?)\s*$')
+
+
+def _inheritable_calendars(text: str) -> list[str]:
+    """可供并列引用继承的日期：“较2024年1—9月的…”“与2024年同期相比”这类基期日期组
+    不是后项的所属期间。"""
+    groups: list[list[re.Match[str]]] = []
+    for match in _PERIOD_TOKEN.finditer(text):
+        if not _period_key(match[0]):
+            continue
+        if groups and re.fullmatch(
+            r'\s*[月日]?\s*(?:至|到|[-~～–—]|、|和|及)\s*', text[groups[-1][-1].end():match.start()]
+        ):
+            groups[-1].append(match)
+        else:
+            groups.append([match])
+    calendars: list[str] = []
+    for group in groups:
+        prefix, suffix = text[:group[0].start()], text[group[-1].end():]
+        baseline = _BASELINE_PREFIX.search(prefix) or (
+            re.search(r'与\s*$', prefix) and re.match(r'\s*[月日]?\s*(?:同期|同月)?\s*相?比', suffix)
+        )
+        if not baseline:
+            calendars.extend(match[0] for match in group)
+    return calendars
+
+
 def _reference_local_window(before: str, after: str) -> str | None:
     """并列引用先继承已写年份，再隔离当前锚点的期间与值。"""
     claim = re.compile(r'\[\[claim:[^\]\r\n]+\]\]')
@@ -742,10 +795,12 @@ def _reference_local_window(before: str, after: str) -> str | None:
     local_after = after[:notes_end] if notes_end else re.split(r'[及和与、，,]', after, maxsplit=1)[0]
     local_after = re.sub(r'\[\[[^\]\r\n]+\]\]', '', local_after)
     local = local_before + local_after
-    if previous and not any(_period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local)):
+    # “较2024年同期…”已写明所属期间（展开为“该年同期”），不能再继承前项的本期月份。
+    if previous and not re.search(r'该年(?:同期|同月)', local) and not any(
+        _period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local)
+    ):
         # “2025年二月…[[claim]]及收入…”仍继承正文前项明确的月份。
-        calendars = [match[0] for match in _PERIOD_TOKEN.finditer(before[:previous[-1].start()])
-                     if _period_key(match[0])]
+        calendars = _inheritable_calendars(before[:previous[-1].start()])
         if calendars:
             local = calendars[-1] + ' ' + local
     return local
