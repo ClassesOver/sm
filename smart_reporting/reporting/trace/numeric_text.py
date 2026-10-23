@@ -1609,7 +1609,7 @@ class DerivedNumbers:
         derived_from: Mapping[str, str] | None = None,
     ) -> None:
         self._values: dict[str, list[_DerivedValue]] = {}
-        self._sorted: dict[str, list[Decimal]] = {}
+        self._sorted: dict[str, tuple[tuple[_DerivedValue, ...], tuple[Decimal, ...]]] = {}
         self._table_sources = table_sources or {}
         # resource_id → 声明的原始来源 resource_id；仅收录经字节核验的 source.sha256 声明。
         self._derived_from = dict(derived_from or {})
@@ -1757,6 +1757,20 @@ class DerivedNumbers:
         tokens = {derived_reference_token(entry, unit) for entry in matches}
         return matches[0] if matches and None not in tokens and len(tokens) == 1 else None
 
+    def _index(self, unit: str) -> tuple[tuple[_DerivedValue, ...], tuple[Decimal, ...]]:
+        cached = self._sorted.get(unit)
+        if cached is None:
+            # 排序局部副本，成对发布不可变条目和键；读者不会看到原列表排序中的空窗口。
+            entries = tuple(sorted(self._values.get(unit, ()), key=lambda entry: entry.value))
+            cached = (entries, tuple(entry.value for entry in entries))
+            self._sorted[unit] = cached
+        return cached
+
+    def prepare_indexes(self) -> None:
+        """共享缓存发布前构建各单位的索引，后续查询只读。"""
+        for unit in self._values:
+            self._index(unit)
+
     def _matches(
         self,
         number: Decimal,
@@ -1767,13 +1781,9 @@ class DerivedNumbers:
         statement: str | None = None,
         claim: str | None = None,
     ) -> Iterator[_DerivedValue]:
-        entries = self._values.get(unit)
+        entries, keys = self._index(unit)
         if not entries:
             return
-        if unit not in self._sorted:
-            entries.sort(key=lambda entry: entry.value)
-            self._sorted[unit] = [entry.value for entry in entries]
-        keys = self._sorted[unit]
         index = bisect.bisect_left(keys, number - quantum)
         while index < len(keys) and keys[index] <= number + quantum:
             entry = entries[index]
@@ -2066,7 +2076,7 @@ def derived_number_values(
 ) -> DerivedNumbers:
     """按（事实原文, 表格来源字节摘要）缓存派生数值；章节逐块复核与绑定会反复构建同一结果。
 
-    构建后只读（惰性排序缓存幂等），可在线程间共享；来源字节变化即换键，不会复用旧结果。
+    发布前完成不可变查询索引，可在线程间只读共享；来源字节变化即换键，不会复用旧结果。
     """
     contents = tuple(contents)
     sources = table_sources or {}
@@ -2080,6 +2090,7 @@ def derived_number_values(
             _DERIVED_CACHE.move_to_end(key)
             return cached
     built = _build_derived_number_values(contents, table_sources=table_sources)
+    built.prepare_indexes()
     with _DERIVED_CACHE_LOCK:
         _DERIVED_CACHE[key] = built
         while len(_DERIVED_CACHE) > _DERIVED_CACHE_SIZE:
