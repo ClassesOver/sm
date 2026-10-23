@@ -947,6 +947,7 @@ class _ReportWorkflowRuntimeBase:
                 "supplementalEvidence.findings[].view.truncated 为 true 时 rows 只是投影视图，不得当作完整明细；format=ranked_extremes 表示变化指标正负两端极值，format=head_tail 表示原始顺序首尾。",
                 "omittedNumericSums 只汇总未进入 rows 的有限数值，不是全量总值。",
                 "完整总量等于 rows 数值与 omittedNumericSums 之和；原始行数以 view.rowCount 为准，完整文件身份以 sourceFile 为准。",
+                "deterministicFacts.metrics[].periodValuesView.truncated 为 true 时，periodValues 只保留期间序列首尾，不能据此判断中间期间缺失或计算全期均值、趋势极值；完整事实身份见 deterministicFactsSource。omittedNumericSums.value 仅为省略序列值之和，不能替代指标 total，尤其不能累加时点值、均值或比率作为业务总量。",
                 "supplementalEvidence 为 null 且 evidenceWarnings 声明补证已放弃时，只能使用 deterministicFacts；不得声称缺失事实已经验证。",
                 "summary 使用可直接进入报告的中文业务表述，不使用 Markdown 标题；warnings 只保留会影响结论解释的事实限制。",
                 # summary 会作为冻结发现进入章节，须与章节正文遵循同一专业审阅与表述要求。

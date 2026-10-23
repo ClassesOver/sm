@@ -571,13 +571,7 @@ def _project_analysis_summary_payload(
     if original_tokens <= max_tokens:
         return original
     raw_evidence = original.get("supplementalEvidence")
-    if not isinstance(raw_evidence, Mapping):
-        raise ReportingError(
-            "report_analysis_summary_context_too_large",
-            "单项分析摘要基础事实超过模型输入预算。",
-            details={"inputTokens": original_tokens, "inputTokenBudget": max_tokens},
-        )
-    raw_findings = raw_evidence.get("findings")
+    raw_findings = raw_evidence.get("findings") if isinstance(raw_evidence, Mapping) else None
     if not isinstance(raw_findings, list):
         raw_findings = list(raw_findings) if isinstance(raw_findings, tuple) else []
     candidates: list[tuple[int | str, ...]] = []
@@ -610,6 +604,15 @@ def _project_analysis_summary_payload(
 
     projected_paths: set[tuple[int | str, ...]] = set()
     row_limit = MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS
+    raw_facts = original.get("deterministicFacts")
+    raw_metrics = raw_facts.get("metrics", []) if isinstance(raw_facts, Mapping) else []
+    series_indices = [
+        index for index, metric in enumerate(raw_metrics)
+        if isinstance(metric, Mapping)
+        and isinstance(metric.get("periodValues"), (list, tuple))
+        and len(metric["periodValues"]) > 2
+    ]
+    project_series = False
 
     def compact_non_tabular(value: Any, *, key: str | None = None) -> Any:
         """压缩摘要中的重复长文本；完整 evidence 文件不受影响。"""
@@ -630,20 +633,41 @@ def _project_analysis_summary_payload(
         return value
 
     def build() -> dict[str, Any]:
-        evidence = deepcopy(dict(raw_evidence))
-        evidence["findings"] = deepcopy(raw_findings)
-        for path in sorted(projected_paths, key=len):
-            parent = at_path(evidence["findings"], path[:-1])
-            parent[path[-1]] = _project_tabular_finding(
-                at_path(raw_findings, path), row_limit=row_limit)
-        evidence["sourceFile"] = deepcopy(original.get("supplementalEvidenceSource"))
-        evidence["projection"] = {
-            "projected": True,
-            "originalFindingCount": len(raw_findings),
-            "projectedFindingCount": len({path[0] for path in projected_paths}),
-            "projectedTableCount": len(projected_paths),
-        }
-        return compact_non_tabular({**original, "supplementalEvidence": evidence})
+        candidate = deepcopy(original)
+        if projected_paths:
+            evidence = candidate["supplementalEvidence"]
+            evidence["findings"] = deepcopy(raw_findings)
+            for path in sorted(projected_paths, key=len):
+                parent = at_path(evidence["findings"], path[:-1])
+                parent[path[-1]] = _project_tabular_finding(
+                    at_path(raw_findings, path), row_limit=row_limit)
+            evidence["sourceFile"] = deepcopy(original.get("supplementalEvidenceSource"))
+            evidence["projection"] = {
+                "projected": True,
+                "originalFindingCount": len(raw_findings),
+                "projectedFindingCount": len({path[0] for path in projected_paths}),
+                "projectedTableCount": len(projected_paths),
+            }
+        if project_series:
+            for index in series_indices:
+                series = raw_metrics[index]["periodValues"]
+                table = _project_tabular_finding({
+                    "columns": ["period", "value"],
+                    "rows": [[item["period"], item["value"]] for item in series],
+                }, row_limit=row_limit)
+                selected = [
+                    {"period": period, "value": value} for period, value in table["rows"]
+                ]
+                # 短序列的投影元数据可能比省略行更大，只采用确实缩小输入的视图。
+                projected_size = len(json.dumps({
+                    "periodValues": selected, "periodValuesView": table["view"],
+                }, ensure_ascii=False))
+                if projected_size >= len(json.dumps({"periodValues": series}, ensure_ascii=False)):
+                    continue
+                metric = candidate["deterministicFacts"]["metrics"][index]
+                metric["periodValues"] = selected
+                metric["periodValuesView"] = table["view"]
+        return compact_non_tabular(candidate)
 
     for path in candidates:
         projected_paths.add(path)
@@ -655,10 +679,30 @@ def _project_analysis_summary_payload(
         candidate = build()
         if count_tokens(candidate) <= max_tokens:
             return candidate
+    # 补证表压缩后仍超限时，再缩减确定性事实的期间序列；总值、指标身份不变。
+    if series_indices:
+        project_series = True
+        row_limit = MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS
+        while True:
+            candidate = build()
+            if count_tokens(candidate) <= max_tokens:
+                return candidate
+            if row_limit == 2:
+                break
+            row_limit = max(2, row_limit // 2)
     candidate = build()
     projected_tokens = count_tokens(candidate)
     if projected_tokens <= max_tokens:
         return candidate
+    component_bytes = {
+        key: len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        for key, value in candidate.items()
+    }
+    logger.warning(
+        "report_analysis_summary_context_too_large analysis_block={} input_tokens={} "
+        "projected_tokens={} input_token_budget={} component_bytes={}",
+        original.get("analysisBlock"), original_tokens, projected_tokens, max_tokens, component_bytes,
+    )
     raise ReportingError(
         "report_analysis_summary_context_too_large",
         "单项分析摘要在保留证据身份和守恒汇总后仍超过模型输入预算。",
@@ -667,6 +711,7 @@ def _project_analysis_summary_payload(
             "projectedTokens": projected_tokens,
             "inputTokenBudget": max_tokens,
             "projectedFindingCount": len({path[0] for path in projected_paths}),
+            "componentBytes": component_bytes,
         },
     )
 
@@ -1461,6 +1506,7 @@ class AnalysisItemWorkflow:
         summary_payload = {
             "currentAnalysis": state.instruction.get("currentAnalysis"),
             "deterministicFacts": (self._model_facts(state) if state.facts is not None else None),
+            "deterministicFactsSource": state.instruction.get("deterministicFactFile"),
             "supplementalEvidence": (
                 state.evidence.model_dump(mode="json", by_alias=True)
                 if state.evidence is not None
