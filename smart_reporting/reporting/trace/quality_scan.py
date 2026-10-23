@@ -137,11 +137,15 @@ def scan_report_quality(
             )
 
     # 无依据数值：按发布链路同一规则核对；missing 结论数与替换出的“待核实”同口径。
-    replace_unregistered_numbers(markdown, contents, on_verdict=on_verdict)
+    # 服务端附表（[[table:…]] 块）由冻结事实生成、不经过正文核对，计入会把表格单元格算成无依据数值。
+    from ..delivery.report_runtime.markdown import _SERVER_TABLE_BLOCK
+
+    checked_markdown = _SERVER_TABLE_BLOCK.sub("", markdown)
+    replace_unregistered_numbers(checked_markdown, contents, on_verdict=on_verdict)
     unregistered = verdicts.get("missing", 0)
     checked = sum(verdicts.values())
     registered = verdicts.get("registered", 0)
-    accuracy = review_content(markdown, contents, field_definitions=field_definitions)
+    accuracy = review_content(checked_markdown, contents, field_definitions=field_definitions)
     readability = readability_warnings(markdown)
     result: dict[str, Any] = {
         "paragraphs": len(paragraphs),
