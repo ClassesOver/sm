@@ -14,6 +14,7 @@ from functools import lru_cache
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
+from smart_reporting.reporting.hospital_operation.deterministic_analysis import _CONCENTRATION_SHARE
 from smart_reporting.reporting.trace.cumulative_changes import registered_cumulative_changes
 from smart_reporting.reporting.trace.numeric_text import format_fact_value
 from smart_reporting.reporting.trace.ratio_proofs import registered_ratio
@@ -116,10 +117,15 @@ def test_equal_numbers_do_not_allow_a_foreign_ratio_scope(value, foreign_scope):
 @property_settings
 @given(weights=st.lists(st.integers(1, 100), min_size=2, max_size=16),
        cutoff=st.integers(1, 18), data=st.data())
+@example(weights=[1, 99], cutoff=1, data=None)
 def test_top_sets_match_competition_rank_oracle_and_ignore_population_order(weights, cutoff, data):
     document = json.loads(group_bundle(weights=weights).model_dump_json(by_alias=True))
     metric = document["metrics"][0]
     proofs, reasons = registered_top_sets(metric, profile_hash="a" * 64)
+    if max(weights) / sum(weights) >= _CONCENTRATION_SHARE:
+        # 单组占比达到集中度阈值时维度告警要求先确认归属口径，不出排名证明（软告警，非失败）。
+        assert reasons == ("ranking_dimension_review_required",)
+        return
     assert not reasons
     expected = {f"科室{index:02d}": weight * 2 for index, weight in enumerate(weights)}
     members = {name for name, value in expected.items()

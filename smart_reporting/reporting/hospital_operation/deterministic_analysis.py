@@ -1007,7 +1007,8 @@ def _fact_total_for_periods(
     if fact.period_aggregation == "last":
         return values[-1]
     if fact.aggregation in {"sum", "count"}:
-        return _finite(sum(values))
+        # 与指标总额同一精确求和（fsum）；普通 sum 的末位误差随期间顺序变化。
+        return _finite(_stable_aggregate(values, "sum"))
     if fact.aggregation == "min":
         return _finite(min(values))
     if fact.aggregation == "max":
