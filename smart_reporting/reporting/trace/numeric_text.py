@@ -1605,10 +1605,16 @@ def _derived_difference_matches(
     return difference.quantize(quantum, rounding=ROUND_HALF_UP) == number
 
 
-def _column_stems(columns: tuple[str, ...]) -> dict[str, str]:
-    """同单位多列去掉共同后缀后的区分词（“预算占比/实际占比”→“预算/实际”）；不唯一时不给。"""
+def _column_stems(columns: tuple[str, ...], *, share_words: bool = False) -> dict[str, str]:
+    """同单位多列去掉共同后缀后的区分词（“预算占比/实际占比”→“预算/实际”）；不唯一时不给。
+
+    share_words 再去掉区分词末尾的“比重/占比/比例”（“占本期总额比重”→“占本期总额”），
+    结果仍须唯一。
+    """
     suffix = os.path.commonprefix([name[::-1] for name in columns])[::-1]
     stems = {name: name[: len(name) - len(suffix)] for name in columns} if suffix else {}
+    if share_words:
+        stems = {name: re.sub(r"(?:比重|占比|比例)$", "", stem) for name, stem in stems.items()}
     if any(len(stem) < 2 for stem in stems.values()) or len(set(stems.values())) != len(stems):
         return {}
     return stems
@@ -1833,6 +1839,11 @@ class DerivedNumbers:
                         (match.start(), match.end(), name)
                         for name, stem in _column_stems(entry.peer_columns).items()
                         for match in re.finditer(re.escape(stem), measure_claim)
+                    ) or sorted(
+                        # “占本期总额的89.00%”对应“占本期总额比重(%)”：再去掉末尾的比重/占比。
+                        (match.start(), match.end(), name)
+                        for name, stem in _column_stems(entry.peer_columns, share_words=True).items()
+                        for match in re.finditer(re.escape(stem), measure_claim)
                     )
                     mentions = stems[:1]
                 # 嵌套列名按最长匹配解释，“医疗收入”不能同时冒充“收入”列。
@@ -1969,6 +1980,28 @@ def derived_reference_resolution(
         },
         "selector": selector,
     }
+
+
+_CATEGORY_SUFFIX = re.compile(r"(?P<stem>.{2,}?)(?:收入|成本|费用|支出)")
+
+
+def _with_category_stems(
+    aliases: list[tuple[str, ...]], labels: list[str | None]
+) -> list[tuple[str, ...]]:
+    """分类行名去掉通用类别词后的简称（“卫生材料成本”写作“卫生材料”）也作行名。
+
+    简称须在本表唯一且不与其他行名相同，否则“药品收入”“药品成本”同表时无法分辨。
+    """
+    stems = [
+        match["stem"] if label and (match := _CATEGORY_SUFFIX.fullmatch(label)) else None
+        for label in labels
+    ]
+    counts = Counter(stem for stem in stems if stem)
+    names = {label for label in labels if label}
+    return [
+        (*row, stem) if stem and counts[stem] == 1 and stem not in names else row
+        for row, stem in zip(aliases, stems, strict=True)
+    ]
 
 
 _TOTAL_ROW = re.compile(r"(?:全院|全部|总)?(?:合计|总计|小计|汇总|总额|总量)")
@@ -2215,10 +2248,10 @@ def _build_derived_number_values(
                 next((cell.strip() for cell in row if isinstance(cell, str) and cell.strip()), None)
                 for row in rows
             ]
-            aliases = [
+            aliases = _with_category_stems([
                 tuple(cell.strip() for cell in row if isinstance(cell, str) and cell.strip())
                 for row in rows
-            ]
+            ], labels)
             table: dict[str, tuple[str, list[Decimal]]] = {}
             column_indices: dict[str, int] = {}
             source_columns_valid = (

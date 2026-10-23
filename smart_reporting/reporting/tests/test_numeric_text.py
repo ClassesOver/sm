@@ -2790,3 +2790,46 @@ def test_execution_rate_column_keeps_percent_values_unscaled():
          "rows": [["总部", 96.72], ["北部", 92.85]]}
     )
     assert Decimal("96.72") in supplemental_number_values([chart])["%"]
+
+
+def _category_share_table(rows):
+    return json.dumps({"findings": [{
+        "name": "收入构成",
+        "columns": ["类别", "金额", "占比"],
+        "columnMeta": {"金额": {"unit": "元"}, "占比": {"unit": "%", "isPercent": True}},
+        "rows": rows,
+    }]})
+
+
+@pytest.mark.parametrize(
+    ("rows", "text", "supported"),
+    [
+        # 回放：“药品、卫生材料合计占49.03%”省略了行名中的“收入”。
+        ([["药品收入", 2618, 27.52], ["卫生材料收入", 2047, 21.51], ["检查收入", 1220, 12.82]],
+         "药品、卫生材料合计占49.03%。", True),
+        ([["药品收入", 2618, 27.52], ["卫生材料收入", 2047, 21.51], ["检查收入", 1220, 12.82]],
+         "药品、卫生材料合计占49.50%。", False),
+        # 同表“药品收入”“药品成本”的简称都是“药品”，不能据简称认定。
+        ([["药品收入", 2618, 27.52], ["药品成本", 2047, 21.51], ["检查收入", 1220, 12.82]],
+         "药品、药品合计占49.03%。", False),
+    ],
+)
+def test_top_sum_accepts_unique_row_names_without_category_word(rows, text, supported):
+    assert (replace_unregistered_numbers(text, [_category_share_table(rows)]) == text) is supported
+
+
+def test_share_column_matches_wording_without_share_word():
+    table = json.dumps({"findings": [{
+        "name": "成本构成",
+        "columns": ["成本构成类别", "本期累计成本金额", "占本期总额比重(%)", "变化率(%)", "贡献占比(%)"],
+        "columnMeta": {"本期累计成本金额": {"unit": "元"}},
+        "rows": [
+            ["人员支出", 3500, 35.318859, 8.6, 26.3],
+            ["卫生材料成本", 2704, 27.283669, 13.4, 30.3],
+            ["药品成本", 2616, 26.39615, 11.5, 25.5],
+            ["其他费用", 911, 9.191573, 24.4, 16.9],
+        ],
+    }]})
+    text = "人员支出、卫生材料、药品三类合计占本期总额的89.00%。"
+    assert replace_unregistered_numbers(text, [table]) == text
+    assert "待核实" in replace_unregistered_numbers("人员支出、卫生材料、药品三类合计占本期总额的88.00%。", [table])

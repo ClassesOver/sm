@@ -841,7 +841,8 @@ def _dimension_concentration_warnings(
             continue
         totals, aliases = _grouped_aggregation(frame, field, (group,), aggregation)
         totals = totals.filter(pl.col("__valid") > 0)
-        if totals.is_empty() or (totals["__value"] < 0).any():
+        # 只有一个取值（单院数据的 company）时没有可比较的组织，“集中”不提供任何信息。
+        if totals.height < 2 or (totals["__value"] < 0).any():
             continue
         overall = float(totals["__value"].sum())
         top = totals.sort(["__value", aliases[0]], descending=[True, False]).row(0, named=True)
