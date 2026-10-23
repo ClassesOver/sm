@@ -10,8 +10,9 @@ fi
 cd "${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
 # 报告渲染：WeasyPrint 出 PDF，pandoc 出 Word，LibreOffice Writer 做 Word 验收；
-# 只有 libreoffice-core 时 LibreOffice 无法加载任何 DOCX。
-render_packages=(libreoffice-writer pandoc fonts-noto-cjk)
+# 只有 libreoffice-core 时 LibreOffice 无法加载任何 DOCX。libharfbuzz-subset0 让 WeasyPrint
+# 用 HarfBuzz 做中文字体子集化（缺失时回退 fontTools，每个字重约 3 秒）。
+render_packages=(libreoffice-writer pandoc fonts-noto-cjk libharfbuzz-subset0)
 missing=()
 for package in "${render_packages[@]}"; do
   dpkg -s "$package" >/dev/null 2>&1 || missing+=("$package")
