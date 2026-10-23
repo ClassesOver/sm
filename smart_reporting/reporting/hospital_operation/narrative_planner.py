@@ -172,21 +172,28 @@ def build_narrative_planning_batches(
             "overflowFindingIds": [item for item in context["overflowFindingIds"] if item in ids],
         }
 
+    cards = context["findings"]
+
+    def fits(start: int, end: int) -> bool:
+        payload = project(cards[start:end])
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()) <= max_bytes
+
+    # 批次序列化体积随纳入的发现单调增长：二分出每批能容纳的最多发现（与逐条追加的贪心
+    # 结果相同），整批序列化次数从 O(发现数²) 降到每批 O(log 发现数)。
     batches = []
-    current: list[dict[str, Any]] = []
-    for card in context["findings"]:
-        proposed = project([*current, card])
-        if len(json.dumps(proposed, ensure_ascii=False, separators=(",", ":")).encode()) > max_bytes:
-            if not current:
-                raise ValueError("单个发现与报告目标已超过提纲规划输入预算")
-            batches.append(project(current))
-            current = []
-            proposed = project([card])
-            if len(json.dumps(proposed, ensure_ascii=False, separators=(",", ":")).encode()) > max_bytes:
-                raise ValueError("单个发现与报告目标已超过提纲规划输入预算")
-        current.append(card)
-    if current:
-        batches.append(project(current))
+    start = 0
+    while start < len(cards):
+        if not fits(start, start + 1):
+            raise ValueError("单个发现与报告目标已超过提纲规划输入预算")
+        low, high = start + 1, len(cards)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if fits(start, middle):
+                low = middle
+            else:
+                high = middle - 1
+        batches.append(project(cards[start:low]))
+        start = low
     return tuple(batches)
 
 
