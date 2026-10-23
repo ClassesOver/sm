@@ -11,12 +11,6 @@ from agno.workflow.types import StepOutput
 from sqlalchemy import create_engine
 
 from smart_reporting.integrations.dingyi_process import _STEP_TITLES, DingyiProcessAdapter
-
-
-def test_reporting_step_titles_are_localized_for_current_workflow_steps():
-    assert _STEP_TITLES["run-analysis-evidence"] == ("完成原子分析与证据冻结", "原子分析与证据已冻结")
-    assert _STEP_TITLES["generate-narrative-outline"] == ("生成叙事大纲", "叙事大纲已生成")
-    assert _STEP_TITLES["run-report-draft"] == ("撰写报告正文", "报告正文已完成")
 from smart_reporting.reporting.tests.test_managed_reporting_workflow import Lifecycle
 from smart_reporting.reporting.workflow.controller import REPORT_PROCESS_LIFECYCLE_DEPENDENCY
 from smart_reporting.reporting.workflow.managed import (
@@ -25,6 +19,12 @@ from smart_reporting.reporting.workflow.managed import (
 )
 from smart_reporting.reporting.workflow.orchestration import _timed_step_executor
 from smart_reporting.reporting.workflow.scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
+
+
+def test_reporting_step_titles_are_localized_for_current_workflow_steps():
+    assert _STEP_TITLES["run-analysis-evidence"] == ("完成原子分析与证据冻结", "原子分析与证据已冻结")
+    assert _STEP_TITLES["generate-narrative-outline"] == ("生成叙事大纲", "叙事大纲已生成")
+    assert _STEP_TITLES["run-report-draft"] == ("撰写报告正文", "报告正文已完成")
 
 
 @pytest.mark.parametrize("stream", [False, True])

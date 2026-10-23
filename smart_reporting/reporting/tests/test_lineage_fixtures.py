@@ -90,6 +90,15 @@ def test_edge_zero_denominator_and_missing_baseline() -> None:
     assert recomputed["branch_e"]["mom_reason"] == "missing_baseline"
     assert recomputed["branch_e"]["current_revenue"] == 0.0
     assert recomputed["branch_e"]["current_revenue_missing_count"] == 1
+    # 与独立手算答案逐值核对（答案与实现分离）；重算未覆盖的人次字段显式列出。
+    unchecked = set()
+    for branch in ("branch_d", "branch_e"):
+        for key, value in manual[branch].items():
+            if key in recomputed[branch]:
+                assert recomputed[branch][key] == value, (branch, key)
+            else:
+                unchecked.add((branch, key))
+    assert unchecked == {("branch_e", "current_visits"), ("branch_e", "current_visits_missing_count")}
 
 
 def test_boundaries_quoting_newline_empty_and_escape() -> None:

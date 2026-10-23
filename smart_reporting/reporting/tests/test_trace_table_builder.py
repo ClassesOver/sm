@@ -25,9 +25,6 @@ def _bundle():
     """两个院区一个月度快照，metricCodes 唯一可定位。"""
 
     fields = ("month", "department", "revenue")
-    semantics = (  # income_total 绑定 revenue
-        None,
-    )
     return build_deterministic_analysis_bundle(
         analysis(fields=("revenue",)),
         (
