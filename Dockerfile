@@ -42,10 +42,13 @@ COPY --from=uv-source /uv /uvx /bin/
 
 WORKDIR /app
 
+# libharfbuzz-subset0：WeasyPrint 用 HarfBuzz 做 PDF 字体子集化；缺失时回退纯 Python 的
+# fontTools，Noto CJK 每个字重约 3 秒，整份报告 PDF 由约 27 秒变约 8 秒。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         fontconfig fonts-liberation fonts-noto-cjk git \
         libcairo2 libmagic1 libpango-1.0-0 libpangoft2-1.0-0 shared-mime-info \
+        libharfbuzz-subset0 \
         graphviz librsvg2-bin pandoc poppler-utils qpdf \
         libreoffice-calc libreoffice-impress libreoffice-writer \
         chromium \
