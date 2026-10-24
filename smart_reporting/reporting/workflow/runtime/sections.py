@@ -61,7 +61,11 @@ from ...trace.numeric_text import (
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
-from ...trace.review_readability import prose_hedge_warnings
+from ...trace.review_readability import (
+    earlier_section_sentences,
+    prose_hedge_warnings,
+    repeated_section_warnings,
+)
 from ...trace.statement_review import STATEMENT_REVIEW_PREFIX, statement_review_warnings
 from ...trace.subject_builder import bind_local_claim_values, build_claim_subject_bindings
 from ...trace.table_builder import build_analysis_tables
@@ -1811,11 +1815,14 @@ async def _generate_section_in_blocks(
     recovery: Mapping[str, Any] | None = None,
     whole_section: bool = False,
     review_notices: dict[str, list[dict[str, Any]]] | None = None,
+    earlier_sections: Sequence[tuple[str, str]] = (),
 ) -> SectionDecision:
     """复用章节规划，按开关整章生成或沿用原有逐块生成。
 
     review_notices 按 blockId 收集纠错后仍残留的复核告警，供章节提交时并入质量告警。
+    earlier_sections 是提纲中排在本章之前、已完成章节的（标题，正文），用于跨章重复比对。
     """
+    earlier_sentences = earlier_section_sentences(earlier_sections)
 
     original_evidence_files = evidence.files
     table_sources = _verified_table_sources(original_evidence_files)
@@ -2075,6 +2082,7 @@ async def _generate_section_in_blocks(
                     review_notices=review_notices, number_contents=number_contents,
                     table_sources=table_sources,
                     allowed_fact_ids=scoped_fact_ids, compact=compact,
+                    earlier_sentences=earlier_sentences,
                 )
                 return retain_source_warnings(result)
             except (ReportingError, TaskExecutionContextHardLimitError) as error:
@@ -2256,6 +2264,7 @@ async def _generate_section_in_blocks(
             review_warnings.extend(repeated_sentence_warnings(
                 content.markdown, (block.markdown for block in blocks), block_number_catalog,
             ))
+            review_warnings.extend(repeated_section_warnings(content.markdown, earlier_sentences, block_number_catalog))
             # 长句与数值堆砌按读者所见（占位换成显示值）度量，同样进入纠错轮次。
             review_warnings.extend(readability_warnings(content.markdown, block_number_catalog))
             review_warnings.extend(prose_hedge_warnings(content.markdown))
@@ -2358,6 +2367,7 @@ async def _generate_whole_section_content(
     table_sources: Mapping[str, bytes] | None = None,
     allowed_fact_ids: set[str] | None = None,
     compact: bool = False,
+    earlier_sentences: Mapping[str, str] | None = None,
 ) -> RenderSectionDecision:
     """一次生成整章正文；引用与顺序始终由已校验规划决定。"""
 
@@ -2453,6 +2463,7 @@ async def _generate_whole_section_content(
                     block.markdown, (earlier.markdown for earlier in candidate.blocks[:position]),
                     section_number_catalog,
                 ),
+                *repeated_section_warnings(block.markdown, earlier_sentences or {}, section_number_catalog),
                 *readability_warnings(block.markdown, section_number_catalog),
                 *prose_hedge_warnings(block.markdown),
             ]
@@ -3050,6 +3061,40 @@ class RuntimeSectionsMixin:
             artifact,
         )
 
+    async def _earlier_section_texts(
+        self, run_context: RunContext, checkpoint: ReportingCheckpoint, section_code: str,
+    ) -> tuple[tuple[str, str], ...]:
+        """提纲中排在本章之前、已完成章节的（标题，正文），供写作时跨章重复比对。
+
+        只是软复核的参照：提纲或产物读取失败时跳过该章，不阻断本章写作。
+        """
+        try:
+            outline = _frozen_outline(self._state(run_context))
+        except ReportingError as error:
+            loguru_logger.warning("report_section_repetition_context_unavailable section={} code={}",
+                                  section_code, error.code)
+            return ()
+        order = [section.code for section in outline.sections]
+        if section_code not in order:
+            return ()
+        titles = {section.code: section.title for section in outline.sections}
+        completed = {item.section_code: item for item in checkpoint.completed_sections}
+        thread_id = self._scope(run_context)["threadId"]
+        texts: list[tuple[str, str]] = []
+        for code in order[:order.index(section_code)]:
+            if code not in completed:
+                continue
+            try:
+                artifact = cast(SectionArtifact, await self._read_identity_model(
+                    thread_id, completed[code].artifact_file, SectionArtifact,
+                ))
+            except (ReportingError, ValidationError) as error:
+                loguru_logger.warning("report_section_repetition_context_unavailable section={} code={}",
+                                      code, getattr(error, "code", type(error).__name__))
+                continue
+            texts.append((titles[code], "\n\n".join(block.markdown for block in artifact.blocks)))
+        return tuple(texts)
+
     async def _run_section_phase(
         self,
         run_context: RunContext,
@@ -3106,6 +3151,7 @@ class RuntimeSectionsMixin:
             )
             checkpoint = await self._persist_reporting_checkpoint(run_context, checkpoint)
             return checkpoint, artifact, None
+        earlier_sections = await self._earlier_section_texts(run_context, checkpoint, work_item.section_code)
         await self._apply_durable_command(
             run_context,
             ReportingCommand(
@@ -3374,6 +3420,7 @@ class RuntimeSectionsMixin:
                             work_item,
                             whole_section=self.section_whole_generation,
                             review_notices=review_notices,
+                            earlier_sections=earlier_sections,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(
@@ -3415,6 +3462,7 @@ class RuntimeSectionsMixin:
                             work_item,
                             whole_section=self.section_whole_generation,
                             review_notices=review_notices,
+                            earlier_sections=earlier_sections,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(
