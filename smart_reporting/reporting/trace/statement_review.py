@@ -41,8 +41,11 @@ def statement_review_warnings(
     resolver = NumberReferenceResolver(contents)
     warnings: list[str] = []
     for reference in references:
-        # 与质量包一致：只核对已登记运算语义的数值引用，补证表推导等不做语句核对。
-        if reference.table_derivation is not None or assertion_request_for_token(reference.token, resolver) is None:
+        # 与质量包一致：核对已登记运算语义的数值引用与能重算的计算引用，补证表推导等不做语句核对。
+        if reference.table_derivation is not None or (
+            not reference.token.startswith("{{calc:")
+            and assertion_request_for_token(reference.token, resolver) is None
+        ):
             continue
         selected = resolver.resolve(reference.token)
         if selected is None:

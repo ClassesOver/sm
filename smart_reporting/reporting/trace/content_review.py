@@ -132,6 +132,13 @@ _HISTORICAL_CLAIM = re.compile(
     r"首次(?:突破|超过|跌破|低于|高于)|创(?!年内|本年|今年|期内|月内)[^。；，,\n]{0,4}?(?:新高|新低)"
 )
 
+# 增速按 growth(本期, 基期) 计算，结果为正表示增长。差额的正负取决于操作数先后
+# （“较预算减少{diff(预算, 实际)}”是正确写法），不按下降词判断方向。
+_FALLING_CALC_GROWTH = re.compile(
+    "(?P<verb>" + "|".join(FALLING_WORDS) + r")(?:了|约|为|达|幅度为)?\s*"
+    r"(?P<token>\{\{calc:growth\([^{}\r\n]*\):[^{}\s]+\}\})"
+)
+
 _INFERENCE = re.compile(
     r"(?:负值|零值|偏低|低点|异常)[^。\n]{0,60}(?:可能(?:源于|反映|存在)|系.{0,25}所致|属正常业务特征)"
     r"|(?:尚未启动(?:采购|合同)|字段未填充有效数值|尚无.{0,12}(?:数据|记录)入账|无实际支出记录|疑似未入账)"
@@ -181,7 +188,20 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         references[marker] = token
         return shown + marker
 
-    marked = render_frozen_numbers(clean, catalog, annotate=annotate)
+    # 能重算的计算引用由下方求值与引用句核对把关，复核文本中只留不含数字的占位：服务端结果
+    # 不是登记值，参与按登记值逐个比对的数字核对会被误报为无依据或归属其他指标。无法求值的
+    # 计算引用与最终渲染一致显示待核实。
+    calc_evaluator = None
+    shown_catalog = catalog
+    if "{{calc:" in clean:
+        from .calc_references import CALC_TOKEN, CalcEvaluator
+
+        calc_evaluator = CalcEvaluator(contents)
+        shown_catalog = dict(catalog)
+        for match in CALC_TOKEN.finditer(clean):
+            if calc_evaluator.evaluate(match[0]) is not None:
+                shown_catalog[match[0]] = "计算结果"
+    marked = render_frozen_numbers(clean, shown_catalog, annotate=annotate)
     number_references: dict[int, str] = {}
     removed = 0
 
@@ -224,7 +244,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     if "{{calc:" in markdown:
         from .calc_references import CALC_TOKEN, CalcEvaluator
 
-        evaluator = CalcEvaluator(contents)
+        evaluator = calc_evaluator or CalcEvaluator(contents)
         aggregations = {
             item.get("factId"): item.get("periodAggregation")
             for document in _documents(contents) for item in document.get("metrics") or ()
@@ -274,6 +294,14 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
             f"方向与登记变化相反：{match['verb']}{shown}。该变化已登记为正值（增加），"
             "请改写为增长/增加，并同步修正前后文的方向判断。"
         )
+    # 最终渲染只改写负值配增长词的一侧；正的计算增速前写下降词会原样发布，须交回模型。
+    for match in _FALLING_CALC_GROWTH.finditer(markdown) if calc_evaluator is not None else ():
+        result = calc_evaluator.evaluate(match["token"])
+        if result is not None and result.value > 0 and not describes_rate_level(markdown[:match.start()]):
+            warnings.append(
+                f"方向与计算结果相反：{match['verb']}{result.text}。增速按 growth(本期, 基期) 计算，结果为正表示增长；"
+                "请改写为增长/增加，或核对两个操作数的先后，并同步修正前后文的方向判断。"
+            )
     bundles = [document for document in documents if document.get("metrics") and isinstance(document.get("analysisId"), str)]
     warnings.extend(_project_ratio_ranking_warnings(text, documents))
     warnings.extend(_project_ratio_value_warnings(text, documents))
