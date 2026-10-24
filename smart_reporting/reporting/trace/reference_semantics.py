@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..hospital_operation.deterministic_analysis import DeterministicMetricFact, _parse_fact_period
+from .comparison_proofs import period_list_text
 from .number_selection import (
     _DAY_PERIOD,
     _PERIOD,
@@ -15,6 +16,8 @@ from .number_selection import (
     _written_period,
 )
 from .review_common import _CLAUSE_BREAK
+
+WINDOW_MISMATCH_PREFIX = "统计期间需复核："
 
 _WORDING = re.compile(r'月均|月平均|平均每月|平均值|均值|单月|累计|合计|总额|总量|总计|汇总')
 _NEGATED_WORDING = re.compile(r'(?:并非|不是|而非|不同于|非|不属于|不代表|不作为|不能称为|不能视为)\s*(?:按|以)?\s*$')
@@ -151,7 +154,7 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
     if months and int(months[1]) == len(periods):
         return []
     if written_periods != tuple(periods):
-        return [f"统计期间需复核：当前引用覆盖 {'、'.join(periods)}，与正文限定的统计窗口不一致。"]
+        return [f"{WINDOW_MISMATCH_PREFIX}当前引用覆盖 {period_list_text(periods)}，与正文限定的统计窗口不一致。"]
     return []
 
 
