@@ -66,3 +66,17 @@ def test_structure_errors_still_carry_the_candidate():
     with pytest.raises(ValidationError) as caught:
         _validator()({'text': GOOD})
     assert caught.value._report_candidate == {'text': GOOD}
+
+
+def test_handwritten_numbers_that_would_become_unverified_are_returned_with_their_sentence():
+    with pytest.raises(ValidationError) as caught:
+        _validator()({'markdown': '本期合计999元，另有888元，' + GOOD})
+    first, second = _validation_issues(caught.value)
+    # 语句按读者所见显示并还原模型原写法，当前数字以【】标出。
+    assert '“999元”没有对应的登记值' in first['message']
+    assert '本期合计【999元】，另有888元，本期合计100元' in first['message']
+    assert '另有【888元】' in second['message'] and '不得写待核实' in second['message']
+
+
+def test_registered_handwritten_numbers_pass():
+    assert _validator()({'markdown': '本期合计100元。'}).markdown == '本期合计100元。'

@@ -288,20 +288,56 @@ def _number_reference_validator(
     field_definitions: Mapping[str, str],
     assertions: Mapping[str, Any] | None,
     handles: NumberHandles | None = None,
+    table_sources: Mapping[str, bytes] | None = None,
 ) -> Callable[[Any], SectionBlockContent | SectionContent]:
-    """正文响应的数值引用关口：无法登记的引用连同原因与可用引用交回模型，在同一调用内纠正。
+    """正文响应的数值关口：会在正文中成为“待核实”的数值，先连同原因交回模型，在同一调用内纠正。
 
-    复用结构化执行器的纠错回路（previousOutput + issues），服务端只诊断、不改写引用。
-    提示使用短编号时先解码再判定，纠错事实再编码为模型所见的短编号。同一 stage 最多因引用
-    退回 _MAX_REFERENCE_REJECTIONS 次，之后放行；残留引用渲染为待核实并记录原因，不阻断章节。
+    覆盖两类：无法登记的数值/计算引用（附同一指标可用引用），以及按最终渲染（含补证表与受控断言）
+    找不到登记依据的手写数字（附所在语句）。复用结构化执行器的纠错回路（previousOutput + issues），
+    服务端只诊断、不改写。提示使用短编号时先解码再判定，纠错事实再编码为模型所见的短编号。
+    同一 stage 最多退回 _MAX_REFERENCE_REJECTIONS 次，之后放行；残留数值渲染为待核实并记录原因，
+    不阻断章节。
     """
-    from ...trace.semantic_bindings import expand_assertion_placeholders
-    from ...trace.value_references import number_reference_failures, reference_failure_message
+    from ...trace.numeric_text import text_after_last_break, text_before_next_break
+    from ...trace.semantic_bindings import expand_assertion_placeholders, render_bound_numbers
+    from ...trace.value_references import (
+        UNREGISTERED_NUMBER_REASON,
+        number_reference_failures,
+        reference_failure_message,
+        unregistered_number_message,
+    )
 
     rejections = 0
 
     def encode(text: str) -> str:
         return handles.encode(text) if handles is not None else text
+
+    def unregistered_numbers(markdown: str) -> list[tuple[str, str]]:
+        # 与最终渲染同一路径试渲染：只取会被替换为待核实的手写数字，引用问题由上面逐项给出。
+        rendered, _references, notices = render_bound_numbers(
+            markdown, number_contents, key="number-gate", field_definitions=field_definitions,
+            table_sources=table_sources, assertions=assertions,
+        )[:3]
+        # 渲染结果已收起锚点，offset 指向替换后“待核实”的末尾；语句中先还原模型的原写法。
+        targets = sorted((
+            notice for notice in notices
+            if notice.reason == UNREGISTERED_NUMBER_REASON and notice.original_text
+            and rendered[max(notice.offset - len("待核实"), 0):notice.offset] == "待核实"
+        ), key=lambda notice: notice.offset)
+        text, cursor, spans = "", 0, []
+        for notice in targets:
+            text += rendered[cursor:notice.offset - len("待核实")]
+            spans.append((notice.original_text, len(text)))
+            text += notice.original_text
+            cursor = notice.offset
+        text += rendered[cursor:]
+        found = []
+        for original, start in spans:
+            # 所在语句按读者所见显示（引用已换成数值），当前数字以【】标出。
+            marked = text[:start] + f"【{original}】" + text[start + len(original):]
+            statement = text_after_last_break(marked, start) + text_before_next_break(marked, start)
+            found.append((original, unregistered_number_message(original, statement[:240])))
+        return found
 
     def validate_response(content: Any) -> SectionBlockContent | SectionContent:
         nonlocal rejections
@@ -325,14 +361,16 @@ def _number_reference_validator(
                 expand_assertion_placeholders(markdown, assertions), number_contents, field_definitions,
             )
             hints = [warning for warning in selection_warnings if "需复核" in warning]
+            issues = [(failure["reference"], reference_failure_message(failure, hints))
+                      for failure in number_reference_failures(aligned, number_contents)]
+            issues.extend(unregistered_numbers(markdown))
             line_errors.extend({
                 "type": PydanticCustomError(
-                    "value_error.number_reference", "{message}",
-                    {"message": encode(reference_failure_message(failure, hints))},
+                    "value_error.number_reference", "{message}", {"message": encode(message)},
                 ),
                 "loc": loc,
-                "input": failure["reference"],
-            } for failure in number_reference_failures(aligned, number_contents))
+                "input": reference,
+            } for reference, message in issues)
         if not line_errors:
             return parsed
         rejections += 1
@@ -2092,7 +2130,7 @@ async def _generate_section_in_blocks(
                     response_validator=_number_reference_validator(
                         SectionBlockContent, number_contents=number_contents,
                         field_definitions=block_payload["fieldDefinitions"], assertions=block_assertions,
-                        handles=handles,
+                        handles=handles, table_sources=table_sources,
                     ),
                     number_handles=handles,
                     attempt_key=f"block-{index}-{block_attempt + 1}",
@@ -2363,7 +2401,7 @@ async def _generate_whole_section_content(
                 response_validator=_number_reference_validator(
                     SectionContent, number_contents=number_contents,
                     field_definitions=payload["fieldDefinitions"], assertions=section_assertions,
-                    handles=handles,
+                    handles=handles, table_sources=table_sources,
                 ),
                 number_handles=handles,
                 attempt_key=f"content-{review_attempt + 1}",

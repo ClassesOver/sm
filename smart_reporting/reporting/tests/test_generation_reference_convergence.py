@@ -214,6 +214,20 @@ async def test_invalid_reference_is_corrected_by_the_model_inside_the_same_stage
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('mode', ['whole', 'blocks'])
+async def test_handwritten_number_is_corrected_by_the_model_inside_the_same_stage(monkeypatch, mode):
+    corrections = []
+    block, notices, calls, source, _ = await _generate(
+        monkeypatch, mode, ['收入999人次。', RAW_RETARGETABLE], corrections=corrections,
+    )
+    _assert_editor_binding_is_current(block, source)
+    # 手写数字在产出关口就交回模型，不再等到渲染时被替换为待核实。
+    assert len(calls) == 2 and notices == []
+    [[issue]] = corrections
+    assert '“999人次”没有对应的登记值' in issue['message']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
 async def test_uncorrected_reference_degrades_to_notice_with_reason(monkeypatch, mode):
     corrections = []
     block, notices, calls, _source, _ = await _generate(monkeypatch, mode, [BAD_REFERENCE], corrections=corrections)

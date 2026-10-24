@@ -16,6 +16,8 @@ REVOKED_SELECTOR = "unverified."
 UNVERIFIED_TEXT = "数值待核实"
 # 模型写了数值目录中不存在的短编号时，解码为该事实名下的未登记引用（见 number_handles）。
 UNKNOWN_FACT = "unknown"
+# 正文手写、在登记数值中找不到依据的数字；渲染时替换为待核实，产出关口据此交回模型。
+UNREGISTERED_NUMBER_REASON = "正文手写的数字没有对应的登记值"
 
 _UNIT_ALIASES = {
     "亿": "亿元", "万": "万元", "％": "%", "百分比": "%", "percent": "%", "pct": "%",
@@ -146,12 +148,23 @@ def reference_failure_message(failure: Mapping[str, Any], hints: Iterable[str] =
     return "".join(parts)
 
 
+def unregistered_number_message(original: str, statement: str) -> str:
+    """交回模型的手写数字纠错事实：原写法与所在语句（语句中的引用已显示为数值）。"""
+    return (
+        f"正文手写的数字“{original}”没有对应的登记值。所在语句：{statement}。"
+        "数字须使用 frozenNumbers 中的引用；完成率、占比、合计、差额等未登记时用 {{calc:...}} 由同句引用计算；"
+        "仍无依据时删去该数字或改写句子。不得手写数字，不得写待核实。"
+    )
+
+
 __all__ = [
     "REVOKED_SELECTOR",
     "UNKNOWN_FACT",
+    "UNREGISTERED_NUMBER_REASON",
     "VALUE_TOKEN",
     "number_reference_failures",
     "reference_failure_message",
     "restore_revoked_references",
+    "unregistered_number_message",
     "value_reference_failure",
 ]
