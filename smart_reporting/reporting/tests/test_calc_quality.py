@@ -64,12 +64,13 @@ async def test_editor_source_card_lists_calc_dataset_and_readable_formula(tmp_pa
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
-@pytest.mark.parametrize(('reference', 'computation'), [
-    (_SUM, 'calc'),
-    ('{{value:fact-aaaaaaaaaaaaaaaa:total:万元}}', 'registered'),
-    ('{{value:fact-aaaaaaaaaaaaaaaa:periodTotals.0-1:万元}}', 'derived'),
+@pytest.mark.parametrize(('reference', 'computation', 'formula_text'), [
+    (_SUM, 'calc', '收入（2025年9月）1,200万元 + 收入（2025年10月）2,400万元 = 3,600.00万元'),
+    ('{{value:fact-aaaaaaaaaaaaaaaa:total:万元}}', 'registered', 'revenue 求和'),
+    # 服务端派生的数写出按登记原值的可验算算式，而不是原始的核对公式。
+    ('{{value:fact-aaaaaaaaaaaaaaaa:periodTotals.0-1:万元}}', 'derived', '9月 1,200万元 + 10月 2,400万元 = 3,600万元'),
 ])
-async def test_editor_reports_how_each_number_was_obtained(tmp_path, reference, computation):
+async def test_editor_reports_how_each_number_was_obtained(tmp_path, reference, computation, formula_text):
     import hashlib
 
     editor, _, context = await _make_editor_with_subject(
@@ -83,6 +84,7 @@ async def test_editor_reports_how_each_number_was_obtained(tmp_path, reference, 
     [subject] = result['subjects']
     # 编辑器据此向读者区分直接登记值与服务端计算的数。
     assert subject['status'] == 'valid' and subject['computation'] == computation
+    assert subject['formulaText'] == formula_text
 
 
 @pytest.mark.anyio

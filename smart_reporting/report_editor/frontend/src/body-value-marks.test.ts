@@ -57,6 +57,15 @@ describe('body value marks', () => {
     expect(computed.card[0]).toBe('∑ 服务端计算：按登记原值计算，与正文一致')
     expect(computed.card).toContain('计算结果：12,450万元')
     expect(computed.card).toContain(`算式：${calc.subjects[0].formulaText}`)
+    // 服务端按登记原值派生的数同样写出可验算的算式；直接登记值仍写“口径”。
+    const derived = validation('valid')
+    derived.subjects[0].computation = 'derived'
+    derived.subjects[0].formulaText = '1月 6,000万元 + 2月 6,450万元 = 12,450万元'
+    const [summed] = findValueMarks(text, derived, sources)
+    expect(summed.card).toContain(`算式：${derived.subjects[0].formulaText}`)
+    expect(plain.card).toContain('口径：sum(营收)')
+    derived.subjects[0].formulaText = '2025年1—9月逐月比较，最高为2025年9月 12,450万元'
+    expect(findValueMarks(text, derived, sources)[0].card).toContain(`取值：${derived.subjects[0].formulaText}`)
     const stale = validation('stale', 12780)
     stale.subjects[0].computation = 'derived'
     const [changed] = findValueMarks('华东营收为 12,780 万元。[[citation:sub-1]]', stale, sources)

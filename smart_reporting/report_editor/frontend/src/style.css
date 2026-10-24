@@ -5122,6 +5122,8 @@ input:disabled, textarea:disabled, select:disabled {
 .report-value-card[data-state="valid"][data-computed="true"] { border-left-color: #2f6db5; }
 .report-value-card[data-state="unverified"] { border-left-color: var(--color-danger); }
 .report-value-card > div:first-child { font-weight: 600; }
+/* 算式优先在空格处换行，不把“1,200万元”拆成两行；过长的中文提示仍可在任意处断行。 */
+.report-value-card > div { word-break: keep-all; overflow-wrap: anywhere; }
 @media print { .report-value-mark, .report-value-mark.report-original-value { text-decoration: none; background: none; } .report-value-mark--unverified { padding: 0; color: inherit; font-size: inherit; } .report-value-mark.report-original-value::after { content: none; } }
 
 /* 触屏：来源入口点击区扩到 44px（全局 border-box），透明边框配负外边距不占行高，可见尺寸仍为 20px。 */

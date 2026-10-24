@@ -574,9 +574,20 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
 
 
 def resolve_number_references(tokens: Iterable[str], contents) -> dict[str, dict[str, Any] | None]:
-    """同一组已核验来源只展开一次，不跨文件组或请求缓存。"""
+    """同一组已核验来源只展开一次，不跨文件组或请求缓存。
+
+    附读者可验算的算式（explanation）供来源卡片展示；计算引用的 formula 本身已是读者算式。
+    """
+    from .reader_formulas import reader_formula
+
     resolver = NumberReferenceResolver(contents)
-    return {token: resolver.resolve(token) for token in tokens}
+    results: dict[str, dict[str, Any] | None] = {}
+    for token in tokens:
+        selected = resolver.resolve(token)
+        if selected is not None and not token.startswith("{{calc:"):
+            selected["explanation"] = reader_formula(selected, reference_fact_ids(token), resolver.entries)
+        results[token] = selected
+    return results
 
 
 def _comparison_baseline_periods(primary, entries, conflicts):

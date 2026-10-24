@@ -130,13 +130,15 @@ function subjectCard(subject: Subject, sources: TraceSources | undefined, writte
   const fact = sources?.facts?.find(item => item.analysisId === ref?.analysisId && item.factId === ref?.factId)
   const computed = computedSubject(subject)
   const source = sourceText(subject, sources)
+  // 服务端计算的数：带等号的写“算式”，逐月比较等取值说明写“取值”；直接登记值写“口径”。
+  const method = subject.formulaText || subject.formula
   return [
     trustHeadline(subject, consistent),
     fact?.name ? `指标：${fact.name}` : '',
     `${computed ? '计算结果' : '登记值'}：${formatRegisteredValue(subject.factValue, subject.unit)}`,
     written ? `正文值：${written}` : '',
     periodListText(subject.periods) ? `期间：${periodListText(subject.periods)}` : '',
-    subject.formulaText || subject.formula ? `${subject.computation === 'calc' ? '算式' : '口径'}：${subject.formulaText || subject.formula}` : '',
+    method ? `${computed ? (method.includes(' = ') ? '算式' : '取值') : '口径'}：${method}` : '',
     source ? `来源：${source}` : '',
     subject.sourceStatus === 'integrity_failed'
       ? '状态：来源身份无法核验；其余来源已独立检查'
