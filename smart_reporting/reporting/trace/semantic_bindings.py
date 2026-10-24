@@ -36,6 +36,7 @@ from .numeric_text import (
     replace_unregistered_numbers,
 )
 from .table_sources import resolve_table_derivation
+from .value_references import value_reference_failure
 
 
 def reference_fact_ids(token: str) -> tuple[str, ...]:
@@ -141,8 +142,8 @@ def render_bound_numbers(
     markdown, _ = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     calc_tokens = {match[0] for match in CALC_TOKEN.finditer(markdown)}
-    if calc_tokens:
-        evaluator = CalcEvaluator(contents)
+    evaluator = CalcEvaluator(contents) if calc_tokens else None
+    if evaluator is not None:
         for token in calc_tokens:
             result = evaluator.evaluate(token)
             # 无法求值的计算引用不进目录，渲染时与未登记引用一样标注待核实。
@@ -157,16 +158,28 @@ def render_bound_numbers(
         counter += 1
         return kind + "-" + hashlib.sha256(f"{key}:{counter}".encode()).hexdigest()[:20]
 
-    def notice(kind: str, text: str = "待核实", *, original_text: str | None = None) -> str:
+    def notice(kind: str, text: str = "待核实", *, original_text: str | None = None,
+               reason: str | None = None) -> str:
         claim_id = identity("review")
         if original_text is not None and len(original_text) > 4096:
             original_text = None  # 附加展示信息超预算不能阻断报告生成。
-        notices.append(ReviewNoticeV1(claimId=claim_id, kind=kind, originalText=original_text))
+        notices.append(ReviewNoticeV1(claimId=claim_id, kind=kind, originalText=original_text,
+                                      reason=reason[:512] if reason else None))
         return text + f"[[claim:{claim_id}]]"
+
+    def unavailable_reference(token: str) -> tuple[str, str | None]:
+        if evaluator is not None and token in calc_tokens:
+            return f"计算引用无法求值：{evaluator.failure(token) or '结果不可用'}", None
+        if token in catalog and catalog[token] != "数值待核实":
+            # 引用本身有效，但正文紧随的单位与登记值不同类：多为模型拿错引用。
+            return "正文所写单位与引用数值的单位不一致", catalog[token]
+        reason, shown, _suggestions = value_reference_failure(token, catalog)
+        return reason, shown
 
     def annotate(token: str, text: str) -> str:
         if token not in catalog or text == "数值待核实":
-            return notice("numeric_unverified", text)
+            reason, shown = unavailable_reference(token)
+            return notice("numeric_unverified", text, original_text=shown, reason=reason)
         claim_id = identity("number")
         references.append((claim_id, token))
         return text + f"[[claim:{claim_id}]]"

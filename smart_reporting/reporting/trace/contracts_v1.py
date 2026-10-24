@@ -556,6 +556,8 @@ class ReviewNoticeV1(StrictModel):
     section_id: str | None = Field(default=None, alias="sectionId", max_length=128)
     kind: Literal["numeric_unverified", "source_review"]
     original_text: str | None = Field(default=None, alias="originalText", max_length=4096)
+    # 无法给出数值的原因（面向读者，不含内部编号），编辑器悬停卡片展示。
+    reason: str | None = Field(default=None, max_length=512)
 
 
 class SubjectBindingV1(StrictModel):

@@ -171,7 +171,7 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
       marks.push({ start: index, end: index + UNVERIFIED.length, state: 'unverified',
         originalText,
         card: [originalText ? `原始值：${originalText}` : '未保存原始值',
-          '状态：待核实，原始值尚未通过来源校验', '请核对数据后改写或删除'] })
+          notice.reason ? `原因：${notice.reason}` : '状态：待核实，原始值尚未通过来源校验', '请核对数据后改写或删除'] })
       continue
     }
     if (isExplanatoryUnverified(text, index)) continue

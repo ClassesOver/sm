@@ -89,7 +89,7 @@ def test_same_fact_described_differently_by_two_analyses_is_not_an_identity_conf
     markdown, warnings = align_number_selections('设备支出合计为{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。',
                                                  [json.dumps(conflicting), *contents()],
                                                  {'actual_equipment': '设备支出'})
-    assert ':unverified:' in markdown and warnings
+    assert ':unverified.' in markdown and warnings
 
 
 def test_date_range_is_not_read_as_its_first_month_when_aligning_selections():
@@ -495,11 +495,11 @@ def test_single_period_value_without_written_period_is_withdrawn():
     token = '{{value:' + fact + ':periodValues.2:元}}'
     wrong = '普通住院业务预算减实际的差额为' + token + '。'
     aligned, warnings = align_number_selections(wrong, [document])
-    assert ':unverified:' in aligned and any('期间缺失' in item for item in warnings)
+    assert ':unverified.' in aligned and any('期间缺失' in item for item in warnings)
     for kept in ('3月实际收入为' + token + '。', '实际收入各月介于{{value:' + fact + ':periodValues.0:元}}至' + token + '。'):
         assert align_number_selections(kept, [document])[0] == kept
     # 没有日期基准的“当月”无法确定冻结序列中的月份。
-    assert ':unverified:' in align_number_selections('当月实际收入为' + token + '。', [document])[0]
+    assert ':unverified.' in align_number_selections('当月实际收入为' + token + '。', [document])[0]
 
 
 def test_metric_share_token_signs_claim_with_both_operand_facts():

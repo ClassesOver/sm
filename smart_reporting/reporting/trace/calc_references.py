@@ -146,23 +146,34 @@ class CalcEvaluator:
             self._values.pop(key, None)
 
     def evaluate(self, token: str) -> CalcResult | None:
+        result = self._run(token)
+        return result if isinstance(result, CalcResult) else None
+
+    def failure(self, token: str) -> str | None:
+        """无法求值的原因（面向读者，不含内部编号）；可求值时返回 None。"""
+        result = self._run(token)
+        return None if isinstance(result, CalcResult) else result
+
+    def _run(self, token: str) -> CalcResult | str:
         match = CALC_TOKEN.fullmatch(token.strip())
         if not match:
-            return None
+            return "计算引用格式无法识别"
         try:
             tree = _parse(match["expr"])
             operands: list[CalcOperand] = []
             with localcontext() as context:
                 context.prec = 50
                 value, unit, formula = self._evaluate(tree, operands)
-        except (_Invalid, ArithmeticError):
-            return None
+        except _Invalid as error:
+            return str(error)
+        except ArithmeticError:
+            return "数值运算溢出"
         display = match["unit"]
         if display == "百分点":
             display = PERCENT_POINT
         target_family = _family(unit)
         if target_family is None or display not in target_family:
-            return None
+            return f"结果单位为{unit}，与所写显示单位{match['unit']}不一致"
         return CalcResult(value, unit, display, tuple(operands), formula)
 
     def _evaluate(self, node: tuple, operands: list[CalcOperand]) -> tuple[Decimal, str, str]:
@@ -170,7 +181,7 @@ class CalcEvaluator:
             _kind, fact_id, field = node
             found = self._values.get((fact_id, field))
             if found is None:
-                raise _Invalid("操作数未登记")
+                raise _Invalid("操作数不是登记数值或存在冲突")
             operands.append(CalcOperand(fact_id, field, found[0], found[1]))
             return found[0], found[1], f"{fact_id}:{field}"
         name, children = node

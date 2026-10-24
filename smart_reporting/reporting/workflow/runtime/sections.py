@@ -2015,7 +2015,7 @@ async def _generate_section_in_blocks(
                 content = first_block_content
             from ...trace.semantic_bindings import expand_assertion_placeholders
 
-            aligned_markdown, _ = align_number_selections(
+            aligned_markdown, selection_warnings = align_number_selections(
                 expand_assertion_placeholders(content.markdown, block_assertions),
                 number_contents, block_payload["fieldDefinitions"],
             )
@@ -2026,8 +2026,11 @@ async def _generate_section_in_blocks(
                 fact_ids=tuple(fact_id for claim in block_claims for fact_id in claim.fact_ids),
                 bound_chart_ids=chart_ids,
             )
-            review_warnings = list(content_review.warnings)
-            accuracy_count = content_review.accuracy_count
+            # 撤销的引用在复核文本里只剩“未登记”，补上对齐时写明的主语与口径，纠错轮次才能改准。
+            review_warnings = list(dict.fromkeys([
+                *(warning for warning in selection_warnings if "需复核" in warning), *content_review.warnings,
+            ]))
+            accuracy_count = content_review.accuracy_count + len(review_warnings) - len(content_review.warnings)
             # 各 block 独立生成，常重复前文的开场与结论；逐句重复同样进入纠错轮次。
             review_warnings.extend(repeated_sentence_warnings(
                 content.markdown, (block.markdown for block in blocks), block_number_catalog,
