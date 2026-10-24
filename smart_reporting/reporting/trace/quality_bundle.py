@@ -33,7 +33,7 @@ from .semantic_bindings import reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1", "statementReview": "1", "scopeWording": "1"}
+SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1", "statementReview": "1", "scopeWording": "1", "calcReferences": "1"}
 
 
 class StatementReview(StrictModel):
@@ -198,12 +198,33 @@ def evaluate_quality_bundle(
                     reasons.append("fact_binding_mismatch")
         if fingerprints[number.claim_id] != number.statement_sha256:
             reasons.append("statement_changed")
+        calc = number.table_derivation is None and number.token.startswith("{{calc:")
         request = (
             assertion_request_for_token(number.token, compiler.resolver)
-            if number.table_derivation is None
+            if number.table_derivation is None and not calc
             else None
         )
-        if number.table_derivation is not None or request is None:
+        if calc:
+            # 计算引用由服务端按冻结原值重算并渲染：能重算即按与数值引用相同的语句核对期间、
+            # 范围与单位；操作数无法重算时仍记为未评估，不当作已核对。
+            selected = None if reasons else compiler.resolver.resolve(number.token)
+            if not reasons and selected is None:
+                reasons.append("operation_semantics_not_evaluated")
+            elif selected is not None:
+                detail = check_claim(
+                    number.claim_id,
+                    selected["value"],
+                    expected_unit=selected["unit"],
+                    expected_periods=selected["periods"],
+                    expected_scope=selected["scope"],
+                    expected_period_roles=selected["period_roles"],
+                    expected_reference=selected,
+                    section_id=subject.locator.section_id,
+                )
+                if detail["status"] != "valid" or detail["warnings"]:
+                    reasons.append("statement_not_supported")
+                    statement_review = StatementReview(numericStatus=detail["status"], warnings=tuple(detail["warnings"]))
+        elif number.table_derivation is not None or request is None:
             # Legacy calculation support is not a complete business proof.
             reasons.append("operation_semantics_not_evaluated")
         elif not reasons:

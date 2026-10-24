@@ -115,11 +115,19 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
     """多月合计/均值必须对应完整窗口；累计截止月与背景月份另行处理。"""
     selector = reference['selector']
     periods: tuple[str, ...] = tuple(reference.get('periods') or ())
-    if (selector not in {'total', 'monthlyAverage', 'monthlyTrend'} and not selector.startswith(('periodTotals.', 'periodAverages.'))
-            or len(periods) < 2 or any(not re.fullmatch(r'\d{4}-\d{2}', period) for period in periods)):
+    entry = reference['entry']
+    if selector == 'calc':
+        # 合计、平均的计算引用与登记合计同理，须写出覆盖全部操作数期间的窗口；比值、差额与增速
+        # 比较两个期间，由期间角色核对。日期继承取首个操作数的事实。
+        if reference.get('operation') not in {'sum', 'avg'} or not reference.get('operandEntries'):
+            return []
+        entry = reference['operandEntries'][0]
+    elif selector not in {'total', 'monthlyAverage', 'monthlyTrend'} and not selector.startswith(('periodTotals.', 'periodAverages.')):
+        return []
+    if len(periods) < 2 or any(not re.fullmatch(r'\d{4}-\d{2}', period) for period in periods):
         return []
     # 沿用数值选择阶段的日期继承和范围解析，避免两套规则解释同一句话。
-    fact = DeterministicMetricFact.model_validate(reference['entry'])
+    fact = DeterministicMetricFact.model_validate(entry)
     # “含一月调整额”说明组成，不能替代正文已经限定的二月统计窗口。
     period_prefix = _INCLUDED_MONTH.sub(' ', prefix)
     period_clause = _INCLUDED_MONTH.sub(' ', clause)

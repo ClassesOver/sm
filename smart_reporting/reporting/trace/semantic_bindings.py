@@ -517,6 +517,9 @@ class NumberReferenceResolver:
                 "scope": scope,
             },
             "selector": "calc",
+            # 语句核对按外层运算区分：合计与平均须写出覆盖全部操作数期间的窗口，比值、差额与增速比较两个期间。
+            "operation": result.formula.split("(", 1)[0],
+            "operandEntries": tuple(view["entry"] for view in views),
         }
 
 
