@@ -196,6 +196,32 @@ async def test_correction_is_scored_after_alignment_and_does_not_restore_unknown
 
 
 BAD_REFERENCE = '本期合计{{value:fact-aaaaaaaaaaaaaaaa:bogus:人次}}。'
+CONTRADICTED_PERIOD = '2024年1—2月合计{{value:fact-aaaaaaaaaaaaaaaa:total:人次}}。'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
+async def test_statement_review_runs_at_writing_time(monkeypatch, mode):
+    from smart_reporting.reporting.trace.statement_review import STATEMENT_REVIEW_PREFIX
+
+    block, notices, calls, source, _ = await _generate(monkeypatch, mode, [CONTRADICTED_PERIOD, RAW_RETARGETABLE])
+    _assert_editor_binding_is_current(block, source)
+    # 编辑器发布后才会提示的引用句问题，写作时就进入纠错轮次。
+    assert len(calls) == 2 and notices == []
+    issues = calls[1]['correction']['issues']
+    issues = issues if isinstance(issues, list) else [item for values in issues.values() for item in values]
+    assert any(item.startswith(STATEMENT_REVIEW_PREFIX) and '所在语句' in item for item in issues)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
+async def test_unfixed_statement_review_is_left_to_the_editor(monkeypatch, mode):
+    from smart_reporting.reporting.trace.statement_review import STATEMENT_REVIEW_PREFIX
+
+    _block, notices, calls, _source, _ = await _generate(monkeypatch, mode, [CONTRADICTED_PERIOD])
+    assert len(calls) == 2
+    # 残留的引用句提醒由发布后编辑器逐条展示，不重复计入块级告警。
+    assert not any(STATEMENT_REVIEW_PREFIX in item['message'] for item in notices)
 
 
 @pytest.mark.anyio

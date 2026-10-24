@@ -62,6 +62,7 @@ from ...trace.numeric_text import (
     replace_unregistered_numbers,
 )
 from ...trace.review_readability import prose_hedge_warnings
+from ...trace.statement_review import STATEMENT_REVIEW_PREFIX, statement_review_warnings
 from ...trace.subject_builder import bind_local_claim_values, build_claim_subject_bindings
 from ...trace.table_builder import build_analysis_tables
 from ..checkpoint import (
@@ -255,6 +256,8 @@ def _block_review_notices(
     """纠错后仍残留的复核告警与“待核实”替换，作为不阻断发布的块级质量告警返回用户。"""
 
     details = {"sectionCode": section_code, "blockId": block_id}
+    # 引用句核对的残留提醒由发布后编辑器逐条展示，这里不重复计入块级告警。
+    warnings = [warning for warning in warnings if not warning.startswith(STATEMENT_REVIEW_PREFIX)]
     notices: list[dict[str, Any]] = [
         {"code": "report_section_block_content_review", "message": warning[:300], "details": details}
         for warning in list(dict.fromkeys(warnings))[:_MAX_BLOCK_REVIEW_NOTICES]
@@ -2214,9 +2217,16 @@ async def _generate_section_in_blocks(
                 fact_ids=tuple(fact_id for claim in block_claims for fact_id in claim.fact_ids),
                 bound_chart_ids=chart_ids,
             )
+            # 发布后编辑器按引用句核对期间、角色与范围；写作时同步核对，纠错轮次才看得到同样的提醒。
+            statement_warnings = await _in_thread(
+                statement_review_warnings, content.markdown, number_contents,
+                field_definitions=block_payload["fieldDefinitions"], table_sources=table_sources,
+                assertions=block_assertions,
+            )
             # 撤销的引用在复核文本里只剩“未登记”，补上对齐时写明的主语与口径，纠错轮次才能改准。
             review_warnings = list(dict.fromkeys([
                 *(warning for warning in selection_warnings if "需复核" in warning), *content_review.warnings,
+                *statement_warnings,
             ]))
             accuracy_count = content_review.accuracy_count + len(review_warnings) - len(content_review.warnings)
             # 各 block 独立生成，常重复前文的开场与结论；逐句重复同样进入纠错轮次。
@@ -2406,6 +2416,14 @@ async def _generate_whole_section_content(
                                            bound_chart_ids=block_chart_ids[block.block_id])
             for block in candidate.blocks
         }
+        # 与分块路径一致：写作时同步发布后的引用句核对，计入准确性问题。
+        statement_warnings = {
+            block.block_id: statement_review_warnings(
+                block.markdown, number_contents, field_definitions=payload["fieldDefinitions"],
+                table_sources=table_sources, assertions=section_assertions,
+            )
+            for block in candidate.blocks
+        }
         style_warnings = {
             block.block_id: [
                 *repeated_sentence_warnings(
@@ -2418,11 +2436,13 @@ async def _generate_whole_section_content(
             for position, block in enumerate(candidate.blocks)
         }
         # 准确性问题优先于可读性问题：比较纠错前后时先比准确性问题数，再比可读性问题数。
-        review_scores = {key: (review.accuracy_count, review.presentation_count + len(style_warnings[key]))
+        review_scores = {key: (review.accuracy_count + len(statement_warnings[key]),
+                               review.presentation_count + len(style_warnings[key]))
                          for key, review in content_reviews.items()}
         review_warnings = {
-            key: [*review.warnings, *style_warnings[key]]
-            for key, review in content_reviews.items() if review.warnings or style_warnings[key]
+            key: [*review.warnings, *statement_warnings[key], *style_warnings[key]]
+            for key, review in content_reviews.items()
+            if review.warnings or statement_warnings[key] or style_warnings[key]
         }
         return review_scores, review_warnings, {
             key: list(review.reference_issues) for key, review in content_reviews.items() if review.reference_issues
