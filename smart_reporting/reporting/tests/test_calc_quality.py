@@ -41,3 +41,22 @@ async def test_calc_sum_whose_window_contradicts_the_statement_needs_review(tmp_
     assert issue is not None and 'statement_not_supported' in issue.reasons
     assert 'operation_semantics_not_evaluated' not in issue.reasons
     assert any('统计期间需复核' in warning for warning in issue.statement_review.warnings)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_editor_source_card_lists_calc_dataset_and_readable_formula(tmp_path):
+    import hashlib
+
+    editor, _, context = await _make_editor_with_subject(
+        tmp_path, include_table=False, number_reference=True, period_table=True,
+        metric_scope={'院区': '北院'}, number_statement=f'2025年9—10月北院收入合计{_SUM}。',
+    )
+    index = await editor.trace.require_index(context)
+    markdown_file = next(file for file in index.files if file.resource_id == index.markdown_file_resource_id)
+    markdown = (await editor.trace._read_registered_file(context, markdown_file, max_bytes=1 << 24)).decode()
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    [subject] = result['subjects']
+    # 导出附录据 datasetIds 列出源文件；计算口径写出各操作数的期间与原值，不显示内部选择器。
+    assert subject['datasetIds'] == ['dataset-url-abc0001']
+    assert subject['formulaText'] == '收入（2025年9月）1,200万元 + 收入（2025年10月）2,400万元 = 3,600.00万元'

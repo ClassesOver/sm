@@ -140,3 +140,21 @@ def test_content_review_returns_falling_wording_on_positive_calc_growth(facts):
     assert review_content(f"药品增速下降为{growth}。", [content]) == []
     gap = _calc(f"diff({ref['budget_drug']},{ref['actual_drug']})", "亿元")
     assert review_content(f"药品实际较预算减少{gap}。", [content]) == []
+
+
+def test_calc_formula_reads_as_arithmetic_with_operand_periods_and_datasets():
+    from .test_number_selection import source
+
+    resolver = NumberReferenceResolver(source())
+    b, a = "fact-bbbbbbbbbbbbbbbb", "fact-aaaaaaaaaaaaaaaa"
+    growth = resolver.resolve(_calc(f"growth({b}:periodValues.1,{b}:periodValues.0)", "%"))
+    assert growth["formula"] == ("(实际总医疗收入（2025年2月）60元 − 实际总医疗收入（2025年1月）40元)"
+                                 " ÷ 实际总医疗收入（2025年1月）40元 × 100% = 50.00%")
+    yoy = resolver.resolve(_calc(f"growth({b}:total,{a}:total)", "%"))
+    assert "（2024年1月至2024年2月）20元" in yoy["formula"]
+    assert yoy["entry"]["datasetIds"] == ["ds-2025", "ds-2024"]
+    # 基期为负时写出绝对值，与求值一致。
+    negative_base = resolver.resolve(_calc(f"growth({b}:total,diff({a}:total,{b}:total))", "%"))
+    assert negative_base["formula"].startswith("(实际总医疗收入（2025年1月至2025年2月）100元 − (")
+    assert " ÷ |(" in negative_base["formula"] and negative_base["formula"].endswith(" = 225.00%")
+

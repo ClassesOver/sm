@@ -53,6 +53,8 @@ class CalcResult:
     display_unit: str
     operands: tuple[CalcOperand, ...]
     formula: str
+    # 读者可读的算式：运算写成四则形式，第 i 个操作数位置为 {i}，由调用方填入指标、期间与原值。
+    expression: str = ""
 
     @property
     def text(self) -> str:
@@ -166,7 +168,7 @@ class CalcEvaluator:
             operands: list[CalcOperand] = []
             with localcontext() as context:
                 context.prec = 50
-                value, unit, formula = self._evaluate(tree, operands)
+                value, unit, formula, expression = self._evaluate(tree, operands)
         except _Invalid as error:
             return str(error)
         except ArithmeticError:
@@ -177,33 +179,37 @@ class CalcEvaluator:
         target_family = _family(unit)
         if target_family is None or display not in target_family:
             return f"结果单位为{unit}，与所写显示单位{match['unit']}不一致"
-        return CalcResult(value, unit, display, tuple(operands), formula)
+        return CalcResult(value, unit, display, tuple(operands), formula, expression)
 
-    def _evaluate(self, node: tuple, operands: list[CalcOperand]) -> tuple[Decimal, str, str]:
+    def _evaluate(self, node: tuple, operands: list[CalcOperand]) -> tuple[Decimal, str, str, str]:
         if node[0] == "ref":
             _kind, fact_id, field = node
             found = self._values.get((fact_id, field))
             if found is None:
                 raise _Invalid("操作数不是登记数值或存在冲突")
             operands.append(CalcOperand(fact_id, field, found[0], found[1]))
-            return found[0], found[1], f"{fact_id}:{field}"
+            return found[0], found[1], f"{fact_id}:{field}", "{" + str(len(operands) - 1) + "}"
         name, children = node
         results = [self._evaluate(child, operands) for child in children]
-        values, unit = _align([(value, unit) for value, unit, _formula in results])
-        formula = f"{name}({', '.join(formula for _value, _unit, formula in results)})"
+        values, unit = _align([(value, unit) for value, unit, _formula, _expression in results])
+        formula = f"{name}({', '.join(formula for _value, _unit, formula, _expression in results)})"
+        parts = [expression if child[0] == "ref" else f"({expression})"
+                 for child, (_value, _unit, _formula, expression) in zip(children, results, strict=True)]
         if name == "sum":
-            return sum(values, Decimal(0)), unit, formula
+            return sum(values, Decimal(0)), unit, formula, " + ".join(parts)
         if name == "avg":
-            return sum(values, Decimal(0)) / len(values), unit, formula
+            return sum(values, Decimal(0)) / len(values), unit, formula, f"({' + '.join(parts)}) ÷ {len(parts)}"
         if name == "diff":
             if unit == PERCENT_POINT:
                 raise _Invalid("百分点不能再求差")
-            return values[0] - values[1], PERCENT_POINT if unit == "%" else unit, formula
+            return values[0] - values[1], PERCENT_POINT if unit == "%" else unit, formula, f"{parts[0]} − {parts[1]}"
         if values[1] == 0:
             raise _Invalid("除数为零")
         if name == "ratio":
-            return values[0] / values[1] * 100, "%", formula
-        return (values[0] - values[1]) / abs(values[1]) * 100, "%", formula
+            return values[0] / values[1] * 100, "%", formula, f"{parts[0]} ÷ {parts[1]} × 100%"
+        base = parts[1] if values[1] > 0 else f"|{parts[1]}|"
+        return ((values[0] - values[1]) / abs(values[1]) * 100, "%", formula,
+                f"({parts[0]} − {parts[1]}) ÷ {base} × 100%")
 
 
 def calc_tokens(markdown: str) -> list[str]:

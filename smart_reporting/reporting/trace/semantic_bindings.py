@@ -43,6 +43,16 @@ def reference_fact_ids(token: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(re.findall(r"fact-[0-9a-f]{16}", token)))
 
 
+def _dataset_ids(entries: Iterable[Mapping[str, Any]]) -> list[str]:
+    """计算引用全部操作数的数据集身份：来源卡片与导出附录据此列出源文件。"""
+    return list(dict.fromkeys(
+        value for entry in entries
+        for value in (*(entry.get(key) for key in ("datasetId", "currentDatasetId", "baselineDatasetId")),
+                      *(entry.get("datasetIds") or ()))
+        if isinstance(value, str) and value
+    ))
+
+
 def statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     return statement_fingerprints(markdown, (claim_id,))[claim_id]
 
@@ -487,13 +497,19 @@ class NumberReferenceResolver:
             if view is None:
                 return None
             views.append(view)
-        formula = result.formula
+        from ..delivery.report_runtime.markdown import _readable_fact_value
+        from .table_builder import _period_display_label
+
+        labels = []
         for operand, view in zip(result.operands, views, strict=True):
-            name = view["entry"].get("displayName") or operand.field
-            formula = formula.replace(
-                f"{operand.fact_id}:{operand.field}",
-                f"{name}({format(operand.value.normalize(), 'f')}{operand.unit})", 1,
-            )
+            entry = view["entry"]
+            # 指标名缺失时用字段名，不向读者显示内部选择器；写出各操作数取值的期间。
+            name = entry.get("displayName") or entry.get("field") or "登记值"
+            span = "至".join(dict.fromkeys(
+                _period_display_label(str(period), entry.get("periodGranularity"))
+                for period in (*view["periods"][:1], *view["periods"][-1:])
+            ))
+            labels.append(f"{name}{f'（{span}）' if span else ''}{_readable_fact_value(float(operand.value), operand.unit)}")
         periods = tuple(dict.fromkeys(period for view in views for period in view["periods"]))
         roles: dict[str, tuple[str, ...]] = {}
         for view in views:
@@ -508,13 +524,14 @@ class NumberReferenceResolver:
             "periods": periods,
             "period_roles": roles,
             "scope": scope,
-            "formula": f"{formula} = {result.text}",
+            "formula": f"{result.expression.format(*labels)} = {result.text}",
             "entry": {
                 "displayName": "、".join(dict.fromkeys(
                     str(view["entry"].get("displayName")) for view in views if view["entry"].get("displayName")
                 )) or None,
                 "aliases": (),
                 "scope": scope,
+                "datasetIds": _dataset_ids(view["entry"] for view in views),
             },
             "selector": "calc",
             # 语句核对按外层运算区分：合计与平均须写出覆盖全部操作数期间的窗口，比值、差额与增速比较两个期间。
