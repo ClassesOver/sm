@@ -1683,7 +1683,8 @@ def test_section_block_stage_instructions_keep_heading_metadata_out_of_markdown(
     assert "<sup>" in instructions
     assert "report_draft_heading_title_too_long" in instructions
     assert "口径纪律" in instructions
-    assert "数据质量优先" in instructions
+    # 数据口径只在改变结论读法时紧跟结论写一句，不再逐章设口径限制段落。
+    assert "数据口径" in instructions and "与本章结论无关的数据质量情况不写" in instructions
     assert "发现—证据—管理动作" in instructions
 
 
