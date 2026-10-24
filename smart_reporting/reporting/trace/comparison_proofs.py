@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any, Literal
@@ -208,6 +209,30 @@ def _comparable_periods(
         )
     except (ValueError, OverflowError, KeyError):
         return False
+
+
+def period_list_text(periods) -> str:
+    """提醒中列出的期间按读者习惯书写：连续月份写成“2024年1—9月”，跨年写成“2024年11月—2025年2月”。
+
+    不是逐月期间（日、年或混合粒度）时保持原样逐项列出。
+    """
+    values = [str(period) for period in periods]
+    parsed = [re.fullmatch(r"(\d{4})-(\d{2})", value) for value in values]
+    if not values or not all(parsed):
+        return "、".join(values)
+    months = [int(match[1]) * 12 + int(match[2]) - 1 for match in parsed if match]
+
+    def label(month: int) -> str:
+        return f"{month // 12}年{month % 12 + 1}月"
+
+    first, last = months[0], months[-1]
+    if months != list(range(first, first + len(months))):
+        return "、".join(label(month) for month in months)
+    if first == last:
+        return label(first)
+    if first // 12 == last // 12:
+        return f"{first // 12}年{first % 12 + 1}—{last % 12 + 1}月"
+    return f"{label(first)}—{label(last)}"
 
 
 def period_window_label(periods) -> str:

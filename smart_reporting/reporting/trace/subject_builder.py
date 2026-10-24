@@ -20,6 +20,7 @@ from ..hospital_operation.deterministic_analysis import (
     _ParsedPeriod,
 )
 from ..units import REPORT_VALUE_UNIT_PATTERN, unit_scales
+from .comparison_proofs import period_list_text
 from .contracts_v1 import (
     FactRefV1,
     SubjectBindingV1,
@@ -536,7 +537,7 @@ def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> 
         previous_role, previous_explicit = role, explicit
         expected = roles.get(role, ())
         if expected and _period_key(match[0]) not in {_period_key(period) for period in expected}:
-            return [f"期间角色与生成时不一致（{labels[role]} {'、'.join(expected)}）"]
+            return [f"期间角色与生成时不一致（{labels[role]} {period_list_text(expected)}）"]
         if expected and role in {'current', 'baseline'} and (current or baseline) and not inherited:
             end = group_ends[index]
             keys = tuple(_period_key(item[0]) for item in written[index:end + 1])
@@ -547,8 +548,11 @@ def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> 
             complete = ((keys[0], keys[-1]) == (expected_keys[0], expected_keys[-1]) if is_range
                         else set(keys) == set(expected_keys))
             if not complete:
-                return [f"期间角色与生成时不一致（{labels[role]}完整窗口 {'、'.join(expected)}）"]
+                return [f"期间角色与生成时不一致（{labels[role]}完整窗口 {period_list_text(expected)}）"]
     return []
+
+
+_PERIOD_TEXT_MISMATCH = "期间文本与生成时不一致"
 
 
 def unit_period_warnings(
@@ -608,7 +612,7 @@ def unit_period_warnings(
         ]
         if expected_keys and any(_period_key(token) not in expected_keys for token in written):
             warnings.append(
-                f"期间文本与生成时不一致（生成时 {'、'.join(expected_periods)}）"
+                f"{_PERIOD_TEXT_MISMATCH}（生成时 {period_list_text(expected_periods)}）"
             )
         elif expected_period_roles:
             warnings.extend(_period_role_warnings(period_window, expected_period_roles))
@@ -951,13 +955,16 @@ def _claim_status_from_body(
 
             warnings.extend(scope_exclusion_warnings(warning_window, expected_scope or {}))
         if expected_reference:
-            from .reference_semantics import number_reference_warnings
+            from .reference_semantics import WINDOW_MISMATCH_PREFIX, number_reference_warnings
 
             prefix = re.split(r'[。！？;；\n]', before)[-1]
             suffix = re.split(r'[。！？;；\n]', after)[0]
             # 同一引用的来源入口可以紧邻 claim；它本身不截断后置括注。
             suffix = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*', '', suffix)
             warnings.extend(number_reference_warnings(prefix, expected_reference, suffix=suffix))
+            if any(warning.startswith(_PERIOD_TEXT_MISMATCH) for warning in warnings):
+                # 写出的期间已与登记期间不符时，统计窗口的提醒说的是同一件事，只保留一条。
+                warnings = [warning for warning in warnings if not warning.startswith(WINDOW_MISMATCH_PREFIX)]
         return {
             "status": "valid",
             "warnings": warnings,

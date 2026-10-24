@@ -10,8 +10,10 @@ from smart_reporting.reporting.trace.statement_review import (
 def test_reference_period_contradicting_the_sentence_is_reported_with_the_sentence():
     warnings = statement_review_warnings('2024年1—2月合计{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。', source())
     assert warnings and all(item.startswith(STATEMENT_REVIEW_PREFIX) for item in warnings)
-    assert any('2025-01、2025-02' in item for item in warnings)
-    assert all('所在语句：2024年1—2月合计100元' in item for item in warnings)
+    # 期间按读者习惯写成“2025年1—2月”；期间已写错时不再重复报统计窗口。
+    [warning] = warnings
+    assert '期间文本与生成时不一致（生成时 2025年1—2月）' in warning
+    assert '所在语句：2024年1—2月合计100元' in warning
 
 
 def test_consistent_sentences_and_unbound_text_pass():
@@ -30,3 +32,14 @@ def test_calc_references_get_the_same_sentence_check_as_the_quality_bundle():
     [period] = statement_review_warnings(f'2024年2月较1月增长{GROWTH}。', source())
     assert '期间文本与生成时不一致' in period
     assert statement_review_warnings(f'2025年1—2月合计{SUM}；2025年2月较1月增长{GROWTH}。', source()) == []
+
+
+def test_period_lists_read_as_calendar_spans():
+    from smart_reporting.reporting.trace.comparison_proofs import period_list_text
+
+    assert period_list_text([f'2024-{month:02d}' for month in range(1, 10)]) == '2024年1—9月'
+    assert period_list_text(['2024-11', '2024-12', '2025-01']) == '2024年11月—2025年1月'
+    assert period_list_text(['2025-09']) == '2025年9月'
+    # 不连续的月份逐项列出；非逐月期间保持原样。
+    assert period_list_text(['2025-01', '2025-03']) == '2025年1月、2025年3月'
+    assert period_list_text(['2025-09-01', '2025-09-02']) == '2025-09-01、2025-09-02'
