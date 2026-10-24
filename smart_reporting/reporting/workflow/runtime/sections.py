@@ -335,13 +335,24 @@ def _number_reference_validator(
 ) -> Callable[[Any], SectionBlockContent | SectionContent]:
     """正文响应的数值关口：会在正文中成为“待核实”的数值，先连同原因交回模型，在同一调用内纠正。
 
-    覆盖三类：无法登记的数值/计算引用（附同一指标可用引用）、不可展开的受控结论（正文会显示为
-    证据不足提示），以及按最终渲染（含补证表与受控断言）找不到登记依据的手写数字（附所在语句）。复用结构化执行器的纠错回路（previousOutput + issues），
-    服务端只诊断、不改写。提示使用短编号时先解码再判定，纠错事实再编码为模型所见的短编号。
+    覆盖：无法登记的数值/计算引用（附同一指标可用引用）、不可展开的受控结论（正文会显示为
+    证据不足提示）、按最终渲染（含补证表与受控断言）找不到登记依据的手写数字（附所在语句），
+    以及最终渲染会静默改写的地方：按句中主语与期间改指的引用、方向词、极值月份、“各月均为<全年合计>”、
+    百分数与百分点、末位差一的手算数和“万人”写法（附会改成什么）。复用结构化执行器的纠错回路
+    （previousOutput + issues），服务端只诊断、不改写。提示使用短编号时先解码再判定，纠错事实再编码为模型所见的短编号。
     同一 stage 最多退回 _MAX_REFERENCE_REJECTIONS 次，之后放行；残留数值渲染为待核实并记录原因，
     不阻断章节。
     """
-    from ...trace.numeric_text import text_after_last_break, text_before_next_break
+    from ...trace.numeric_text import (
+        frozen_number_catalog,
+        text_after_last_break,
+        text_before_next_break,
+    )
+    from ...trace.render_corrections import (
+        MEANING_CHANGING,
+        correction_message,
+        recording_render_corrections,
+    )
     from ...trace.semantic_bindings import (
         ASSERTION_PLACEHOLDER,
         UNAVAILABLE_ASSERTION_TEXT,
@@ -350,23 +361,51 @@ def _number_reference_validator(
         render_bound_numbers,
     )
     from ...trace.value_references import (
+        REVOKED_SELECTOR,
         UNREGISTERED_NUMBER_REASON,
+        VALUE_TOKEN,
         number_reference_failures,
         reference_failure_message,
         unregistered_number_message,
     )
 
     rejections = 0
+    catalog = frozen_number_catalog(number_contents)
 
     def encode(text: str) -> str:
         return handles.encode(text) if handles is not None else text
 
-    def unregistered_numbers(markdown: str) -> list[tuple[str, str]]:
-        # 与最终渲染同一路径试渲染：只取会被替换为待核实的手写数字，引用问题由上面逐项给出。
-        rendered, _references, notices = render_bound_numbers(
-            markdown, number_contents, key="number-gate", field_definitions=field_definitions,
-            table_sources=table_sources, assertions=assertions,
-        )[:3]
+    def retargeted_references(written: str, aligned: str) -> list[tuple[str, str]]:
+        # 对齐按句中主语与期间改用另一个登记值，显示的数字随之改变：交回模型确认，不静默改指。
+        # 同一窗口的等价写法（total 与覆盖全期的 periodTotals）显示值不变，不打扰模型。
+        originals, replacements = list(VALUE_TOKEN.finditer(written)), VALUE_TOKEN.findall(aligned)
+        if len(originals) != len(replacements):
+            return []
+        found = []
+        for match, replacement in zip(originals, replacements, strict=True):
+            if (replacement == match[0] or REVOKED_SELECTOR in replacement
+                    or catalog.get(replacement) == catalog.get(match[0])):
+                continue
+            statement = text_after_last_break(written, match.start()) + text_before_next_break(written, match.start())
+            found.append((match[0], (
+                f"所选引用与句中主语或期间不一致：{match[0]}（{catalog.get(match[0], '未登记')}）按句中写法应为"
+                f"{replacement}（{catalog.get(replacement, '未登记')}），最终渲染会改用后者。请改用该引用，"
+                f"或改写句子使主语与期间与所选引用一致。所在语句：{statement.strip()[:240]}"
+            )))
+        return found
+
+    def rendered_issues(markdown: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        # 与最终渲染同一路径试渲染：会被替换为待核实的手写数字，以及最终渲染会静默改写之处。
+        # 返回（须交回模型的问题，只在本轮已退回时顺带告知的确定性修正）。
+        with recording_render_corrections() as corrections:
+            rendered, _references, notices = render_bound_numbers(
+                markdown, number_contents, key="number-gate", field_definitions=field_definitions,
+                table_sources=table_sources, assertions=assertions,
+            )[:3]
+        found, minor = [], []
+        for correction in dict.fromkeys(corrections):
+            (found if correction.kind in MEANING_CHANGING else minor).append(
+                (correction.original, correction_message(correction)))
         # 渲染结果已收起锚点，offset 指向替换后“待核实”的末尾；语句中先还原模型的原写法。
         targets = sorted((
             notice for notice in notices
@@ -380,13 +419,12 @@ def _number_reference_validator(
             text += notice.original_text
             cursor = notice.offset
         text += rendered[cursor:]
-        found = []
         for original, start in spans:
             # 所在语句按读者所见显示（引用已换成数值），当前数字以【】标出。
             marked = text[:start] + f"【{original}】" + text[start + len(original):]
             statement = text_after_last_break(marked, start) + text_before_next_break(marked, start)
             found.append((original, unregistered_number_message(original, statement[:240])))
-        return found
+        return found, minor
 
     def unavailable_assertions(markdown: str) -> list[tuple[str, str]]:
         # 不可展开的受控结论在正文中显示为固定的证据不足提示，与待核实一样交回模型改写。
@@ -420,25 +458,32 @@ def _number_reference_validator(
                    else [(("blocks", position, "markdown"), block.markdown)
                          for position, block in enumerate(parsed.blocks)])
         line_errors: list[Any] = []
+        minor_errors: list[Any] = []
+
+        def error(loc: tuple[Any, ...], reference: str, message: str) -> dict[str, Any]:
+            return {
+                "type": PydanticCustomError("value_error.number_reference", "{message}", {"message": encode(message)}),
+                "loc": loc,
+                "input": reference,
+            }
+
         for loc, markdown in located:
             # 与最终渲染同一规范化：展开受控断言、对齐引用选择后再判定是否可登记。
-            aligned, selection_warnings = align_number_selections(
-                expand_assertion_placeholders(markdown, assertions), number_contents, field_definitions,
-            )
+            expanded = expand_assertion_placeholders(markdown, assertions)
+            aligned, selection_warnings = align_number_selections(expanded, number_contents, field_definitions)
             hints = [warning for warning in selection_warnings if "需复核" in warning]
             issues = [(failure["reference"], reference_failure_message(failure, hints))
                       for failure in number_reference_failures(aligned, number_contents)]
+            issues.extend(retargeted_references(expanded, aligned))
             issues.extend(unavailable_assertions(markdown))
-            issues.extend(unregistered_numbers(markdown))
-            line_errors.extend({
-                "type": PydanticCustomError(
-                    "value_error.number_reference", "{message}", {"message": encode(message)},
-                ),
-                "loc": loc,
-                "input": reference,
-            } for reference, message in issues)
+            rendered, minor = rendered_issues(markdown)
+            issues.extend(rendered)
+            line_errors.extend(error(loc, reference, message) for reference, message in issues)
+            minor_errors.extend(error(loc, reference, message) for reference, message in minor)
         if not line_errors:
+            # 只有确定性修正时由最终渲染直接完成，不为此多开一轮模型调用。
             return parsed
+        line_errors.extend(minor_errors)
         rejections += 1
         loguru_logger.info("report_number_reference_rejected schema={} failures={} rejection={}",
                            output_schema.__name__, len(line_errors), rejections)

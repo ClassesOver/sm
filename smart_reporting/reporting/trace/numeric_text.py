@@ -30,6 +30,7 @@ from ..units import REPORT_VALUE_UNIT_PATTERN, unit_conversion_scale
 from ..units import unit_scales as _unit_scales
 from .contracts_v1 import TableDerivationV1, TableOperandV1
 from .fact_index import fact_binding_records, merge_binding_records
+from .render_corrections import record_render_correction
 from .table_sources import table_semantics
 
 
@@ -2672,7 +2673,9 @@ def align_placeholder_direction(markdown: str, contents: Iterable[str]) -> str:
         logger.warning(
             "report_direction_wording_aligned verb={} token={}", match["verb"], match["token"]
         )
-        return f"{rising}{match['filler'] or ''}{match['space']}{match['token']}"
+        aligned = f"{rising}{match['filler'] or ''}{match['space']}{match['token']}"
+        record_render_correction("direction", match[0], aligned, match.string, match.start())
+        return aligned
 
     return DIRECTED_PLACEHOLDER.sub(replace, markdown)
 
@@ -3129,6 +3132,12 @@ def replace_unregistered_numbers(
             cell = f"{written}{PERCENT_POINT}"
         else:
             cell = unverified(number_text + unit)
+        if verdict == "corrected" or verdict == "percent_point":
+            record_render_correction(
+                "last_digit" if verdict == "corrected" else "percent_point",
+                number_text + unit, written + (unit if verdict == "corrected" else PERCENT_POINT),
+                markdown, start,
+            )
         markdown = markdown[:start] + cell + markdown[end:]
 
     def replace(match: re.Match[str]) -> str:
@@ -3151,6 +3160,11 @@ def replace_unregistered_numbers(
             reference,
             re.sub(r"\[\[[^\]\n]+\]\]", "", markdown[match.end() : match.end() + 80])[:3],
         )
+        if verdict == "corrected":
+            record_render_correction("last_digit", match[0], written + match[0][len(match["number"]) :],
+                                     markdown, match.start())
+        elif verdict == "percent_point":
+            record_render_correction("percent_point", match[0], f"{written}{PERCENT_POINT}", markdown, match.start())
         if verdict in {"registered", "corrected"}:
             return written + match[0][len(match["number"]) :] + anchor
         return f"{written}{PERCENT_POINT}" if verdict == "percent_point" else unverified(match[0])
@@ -3202,7 +3216,9 @@ def replace_unregistered_numbers(
         ):
             return match[0]
         logger.warning("report_visit_unit_corrected value={}", match[0])
-        return f"{_display_precision(match['number'])}{match['scale'] or ''}人次"
+        corrected = f"{_display_precision(match['number'])}{match['scale'] or ''}人次"
+        record_render_correction("visit_unit", match[0], corrected, match.string, match.start())
+        return corrected
 
     replaced = PERSON_COUNT.sub(replace_persons, replaced)
     rates = registered_change_rates(contents)
@@ -3216,7 +3232,9 @@ def replace_unregistered_numbers(
         ):
             return match[0]
         logger.warning("report_change_rate_unit_corrected value={}", match[0])
-        return f"{_display_precision(match['number'])}%"
+        corrected = f"{_display_precision(match['number'])}%"
+        record_render_correction("rate_unit", match[0], corrected, match.string, match.start())
+        return corrected
 
     replaced = RATE_AS_PERCENT_POINT.sub(replace_rate_points, replaced) if rates else replaced
     multiples = registered_multiples(contents, catalog)
@@ -3366,6 +3384,9 @@ def correct_constant_monthly_totals(markdown: str, contents: Iterable[str]) -> s
         logger.warning(
             "report_constant_monthly_total_corrected value={}{}", match["number"], match["unit"]
         )
+        record_render_correction(
+            "monthly_total", match[0], match["lead"] + written + base, match.string, match.start()
+        )
         return match["lead"] + written + base
 
     return _EACH_MONTH_AMOUNT.sub(replace, markdown)
@@ -3469,6 +3490,7 @@ def _rewrite_extrema_sentence(
     rewritten = f"{before}{subject}{kind}月份为{expected}{after}"
     if rewritten.count("**") % 2:
         rewritten = rewritten.replace("**", "")
+    record_render_correction("extrema", sentence[0], rewritten, segment, sentence.start())
     return segment[: sentence.start()] + rewritten + segment[sentence.end() :]
 
 
