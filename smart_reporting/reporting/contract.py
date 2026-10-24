@@ -234,9 +234,20 @@ class ReportRequestEnvelope(StrictModel):
         return ReportPeriodWindows(windows=tuple(windows))
 
 
+class ReportRequestOptions(StrictModel):
+    period: ReportPeriod | None = None
+    domains: tuple[Literal["income", "budget", "full_cost", "workload", "cost_control", "funds"], ...] = ()
+    report_length: Literal["简要版", "详细版"] = Field(default="简要版", alias="reportLength")
+    analysis_dimensions: tuple[str, ...] = Field(default=(), alias="analysisDimensions", max_length=20)
+
+    def planning_goal(self, goal: str) -> str:
+        return goal + "\n用户已确认的报告设置（优先于原文）：" + self.model_dump_json(by_alias=True)
+
+
 class ReportPromptInput(StrictModel):
     version: Literal["1"] = "1"
     prompt: str = Field(min_length=1, max_length=20_000)
+    request_options: ReportRequestOptions | None = Field(default=None, alias="requestOptions")
 
     @field_validator("prompt")
     @classmethod
@@ -249,6 +260,7 @@ class ReportingWorkflowInput(StrictModel):
 
     version: Literal["1"] = "1"
     prompt: str | None = Field(default=None, min_length=1, max_length=20_000)
+    request_options: ReportRequestOptions | None = Field(default=None, alias="requestOptions")
     report_goal: str | None = Field(
         default=None, alias="reportGoal", min_length=1, max_length=20_000
     )
@@ -285,7 +297,7 @@ class ReportingWorkflowInput(StrictModel):
         if self.report_goal is None or self.period is None:
             raise ValueError("必须提供 prompt 或完整 ReportRequestEnvelope")
         ReportRequestEnvelope.from_untrusted(
-            self.model_dump(mode="json", by_alias=True, exclude_none=True)
+            self.model_dump(mode="json", by_alias=True, exclude_none=True, exclude={"request_options"})
         )
         return self
 
@@ -293,6 +305,7 @@ class ReportingWorkflowInput(StrictModel):
         payload = self.model_dump(mode="json", by_alias=True, exclude_none=True)
         if self.prompt is not None:
             return ReportPromptInput.model_validate(payload)
+        payload.pop("requestOptions", None)
         return ReportRequestEnvelope.from_untrusted(payload)
 
 
