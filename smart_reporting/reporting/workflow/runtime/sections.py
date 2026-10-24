@@ -11,6 +11,7 @@ from functools import partial
 import anyio
 from agno.exceptions import ModelProviderError
 from loguru import logger as loguru_logger
+from pydantic_core import PydanticCustomError
 
 from ....context_management import TaskExecutionContextHardLimitError
 from ...code_agent.failure_policy import fresh_attempt_futile
@@ -263,6 +264,67 @@ def _block_review_notices(
             "details": {**details, "count": replaced},
         })
     return notices
+
+
+_MAX_REFERENCE_REJECTIONS = 2
+
+
+def _number_reference_validator(
+    output_schema: type[SectionBlockContent] | type[SectionContent],
+    *,
+    number_contents: Sequence[str],
+    field_definitions: Mapping[str, str],
+    assertions: Mapping[str, Any] | None,
+) -> Callable[[Any], SectionBlockContent | SectionContent]:
+    """正文响应的数值引用关口：无法登记的引用连同原因与可用引用交回模型，在同一调用内纠正。
+
+    复用结构化执行器的纠错回路（previousOutput + issues），服务端只诊断、不改写引用。
+    同一 stage 最多因引用退回 _MAX_REFERENCE_REJECTIONS 次，之后放行；残留引用渲染为
+    待核实并记录原因，不阻断章节。
+    """
+    from ...trace.semantic_bindings import expand_assertion_placeholders
+    from ...trace.value_references import number_reference_failures, reference_failure_message
+
+    rejections = 0
+
+    def validate_response(content: Any) -> SectionBlockContent | SectionContent:
+        nonlocal rejections
+        candidate = _planner_candidate(content)
+        try:
+            parsed = output_schema.model_validate(candidate)
+        except ValidationError as error:
+            error._report_candidate = candidate  # type: ignore[attr-defined]
+            raise
+        if rejections >= _MAX_REFERENCE_REJECTIONS:
+            return parsed
+        located = ([(("markdown",), parsed.markdown)] if isinstance(parsed, SectionBlockContent)
+                   else [(("blocks", position, "markdown"), block.markdown)
+                         for position, block in enumerate(parsed.blocks)])
+        line_errors: list[Any] = []
+        for loc, markdown in located:
+            # 与最终渲染同一规范化：展开受控断言、对齐引用选择后再判定是否可登记。
+            aligned, selection_warnings = align_number_selections(
+                expand_assertion_placeholders(markdown, assertions), number_contents, field_definitions,
+            )
+            hints = [warning for warning in selection_warnings if "需复核" in warning]
+            line_errors.extend({
+                "type": PydanticCustomError(
+                    "value_error.number_reference", "{message}",
+                    {"message": reference_failure_message(failure, hints)},
+                ),
+                "loc": loc,
+                "input": failure["reference"],
+            } for failure in number_reference_failures(aligned, number_contents))
+        if not line_errors:
+            return parsed
+        rejections += 1
+        loguru_logger.info("report_number_reference_rejected schema={} failures={} rejection={}",
+                           output_schema.__name__, len(line_errors), rejections)
+        error = ValidationError.from_exception_data(output_schema.__name__, line_errors)
+        error._report_candidate = candidate  # type: ignore[attr-defined]
+        raise error
+
+    return validate_response
 
 
 def _bounded_executive_summary(summaries: Sequence[str]) -> str:
@@ -2001,6 +2063,10 @@ async def _generate_section_in_blocks(
                         thinking_request, f"block-{index}"
                     ),
                     section_code=work_item.section_code,
+                    response_validator=_number_reference_validator(
+                        SectionBlockContent, number_contents=number_contents,
+                        field_definitions=block_payload["fieldDefinitions"], assertions=block_assertions,
+                    ),
                     attempt_key=f"block-{index}-{block_attempt + 1}",
                 )
                 if not isinstance(content, SectionBlockContent):
@@ -2265,6 +2331,10 @@ async def _generate_whole_section_content(
                     thinking_request, "content", block_count=len(plan.blocks)
                 ),
                 section_code=work_item.section_code,
+                response_validator=_number_reference_validator(
+                    SectionContent, number_contents=number_contents,
+                    field_definitions=payload["fieldDefinitions"], assertions=section_assertions,
+                ),
                 attempt_key=f"content-{review_attempt + 1}",
             )
             if not isinstance(content, SectionContent):

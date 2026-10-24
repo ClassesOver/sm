@@ -14,7 +14,6 @@ from .numeric_text import (
     text_after_last_break,
     text_before_next_break,
 )
-from .value_references import VALUE_TOKEN, canonical_value_references
 
 _TOKEN = re.compile(r'\{\{value:([^:{}]+):([^:{}]+):([^:{}]*)\}\}')
 _PERIOD = re.compile(r'(?P<year>\d{4})年(?:(?P<start>\d{1,2})月?(?:[—–至到~～-](?:(?P<end_year>\d{4})年)?(?P<end>\d{1,2}))?月)?')
@@ -237,11 +236,9 @@ def _labelled_window_selector(fact, start, end):
 
 def align_number_selections(markdown: str, contents, field_definitions: Mapping[str, str] | None = None):
     """只在主语和统计窗口明确、候选身份唯一时纠正；冲突且无法消歧时撤销引用。"""
-    contents = tuple(contents)
-    if VALUE_TOKEN.search(markdown):
-        markdown = canonical_value_references(markdown, frozen_number_catalog(contents))
     if not _TOKEN.search(markdown):
         return markdown, []
+    contents = tuple(contents)
     facts = {}
     owners = {}
     conflicts = set()

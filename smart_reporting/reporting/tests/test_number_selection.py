@@ -232,4 +232,4 @@ def test_revoked_reference_keeps_value_and_reason_for_the_editor():
     _text, _refs, notices = render_bound_numbers(markdown, source(), key='revoked')
     [notice] = [item for item in notices if item.kind == 'numeric_unverified']
     assert notice.original_text == '40元'
-    assert notice.reason and '撤销' in notice.reason and 'fact-' not in notice.reason
+    assert notice.reason and '不一致' in notice.reason and 'fact-' not in notice.reason
