@@ -210,9 +210,36 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     if any("金额单位待核实" in paragraph and re.search(r"(?:原始元值|按(?:万元|亿元)换算)", paragraph)
            for paragraph in re.split(r"\n\s*\n", text)):
         warnings.append("金额单位断言矛盾：已标注金额单位待核实，不能断言原始值为元或按万元、亿元换算。")
-    for token in re.findall(r"\{\{value:[^{}\r\n]+\}\}", markdown):
+    for token in dict.fromkeys(re.findall(r"\{\{value:[^{}\r\n]+\}\}", markdown)):
         if token not in catalog:
-            warnings.append(f"数值引用未登记：{token}。请选择 frozenNumbers 中的引用；没有对应事实时写待核实。")
+            from .value_references import value_reference_failure
+
+            reason, _shown, suggestions = value_reference_failure(token, catalog)
+            hint = "".join(f"{item}={catalog[item]}；" for item in suggestions)
+            warnings.append(
+                f"数值引用未登记：{token}（{reason}）。" + (f"同一指标可用引用：{hint}" if hint else "")
+                + "请改用 frozenNumbers 中与正文口径一致的引用；所需占比、合计或差额未登记时用 {{calc:...}} "
+                "由登记值计算；仍无依据时改写句子、不写该数值。"
+            )
+    if "{{calc:" in markdown:
+        from .calc_references import CALC_TOKEN, CalcEvaluator
+
+        evaluator = CalcEvaluator(contents)
+        aggregations = {
+            item.get("factId"): item.get("periodAggregation")
+            for document in _documents(contents) for item in document.get("metrics") or ()
+        }
+        for match in CALC_TOKEN.finditer(markdown):
+            result = evaluator.evaluate(match[0])
+            if result is None:
+                warnings.append(
+                    f"计算引用无法求值：{match[0]}（{evaluator.failure(match[0])}）。"
+                    "操作数须是 frozenNumbers 中的引用（去掉外壳与单位），"
+                    "同单位族，除数不为零，显示单位与结果一致（比率、增速写 %，百分数之差写 个百分点）。"
+                )
+            elif len({aggregations.get(item.fact_id) for item in result.operands}) > 1:
+                # 运算只组合已登记数值；操作数的时间汇总口径不同（如预算未声明可按月相加）只提示确认。
+                warnings.append(f"计算引用口径需确认：{match[0]} 的操作数按期间汇总的口径不同，结果解读须说明口径。")
     if '{{value:' in markdown:
         from .reference_semantics import number_reference_warnings
         from .semantic_bindings import NumberReferenceResolver

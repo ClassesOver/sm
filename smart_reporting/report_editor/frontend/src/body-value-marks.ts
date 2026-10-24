@@ -171,7 +171,7 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
       marks.push({ start: index, end: index + UNVERIFIED.length, state: 'unverified',
         originalText,
         card: [originalText ? `原始值：${originalText}` : '未保存原始值',
-          '状态：待核实，原始值尚未通过来源校验', '请核对数据后改写或删除'] })
+          notice.reason ? `原因：${notice.reason}` : '状态：待核实，原始值尚未通过来源校验', '请核对数据后改写或删除'] })
       continue
     }
     if (isExplanatoryUnverified(text, index)) continue
@@ -241,8 +241,9 @@ export const bodyValueMarksPlugin = $prose(createBodyValueMarksPlugin)
 
 export function updateBodyValueMarks(view: EditorView, validation: TraceValidation | null, sources?: TraceSources): void {
   const decorations = documentValueMarks(view.state.doc, validation, sources).flatMap(mark => {
+    // 有原始值时正文显示原始值、收起“待核实”字样，句子照常可读；悬停卡片说明未通过核对。
     const attributes = {
-      class: `report-value-mark report-value-mark--${mark.state}`,
+      class: `report-value-mark report-value-mark--${mark.state}${mark.originalText ? ' report-value-mark--collapsed' : ''}`,
       'data-value-state': mark.state,
       'data-value-card': JSON.stringify(mark.card),
       ...(mark.subjectId ? { 'data-value-subject': mark.subjectId } : {}),
@@ -254,9 +255,10 @@ export function updateBodyValueMarks(view: EditorView, validation: TraceValidati
     const original = Decoration.widget(mark.from, () => {
       const element = document.createElement('span')
       for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value)
+      element.classList.remove('report-value-mark--collapsed')
       element.classList.add('report-original-value')
       element.contentEditable = 'false'
-      element.textContent = `${originalText} · `
+      element.textContent = originalText
       return element
     }, { side: -1 })
     return [original, highlight]

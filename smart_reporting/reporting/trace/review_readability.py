@@ -37,12 +37,17 @@ def _comparable_sentences(markdown: str) -> dict[str, str]:
 
 
 def _displayed(markdown: str, catalog: Mapping[str, str] | None) -> str:
-    """把 {{value:…}} 占位换成冻结显示值，使度量与比较基于读者所见文本。"""
+    """把 {{value:…}}、{{calc:…}} 占位换成显示值，使度量与比较基于读者所见文本。"""
     # 复用 CommonMark 解析，正确处理长围栏、波浪线及缩进代码；行内代码仍是可见正文。
     markdown = trace_body(markdown, mask_inline_code=False)
     if catalog is None:
         return markdown
-    return re.sub(r"\{\{value:[^{}\r\n]+\}\}", lambda match: catalog.get(match[0], "数值待核实"), markdown)
+    # 计算引用在落盘时才求值；度量时用中性占位，不当作待核实。
+    return re.sub(
+        r"\{\{(?:value|calc):[^{}\r\n]+\}\}",
+        lambda match: catalog.get(match[0], "计算值" if match[0].startswith("{{calc:") else "数值待核实"),
+        markdown,
+    )
 
 
 def repeated_sentence_warnings(

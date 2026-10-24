@@ -32,6 +32,8 @@ def test_missing_middle_group_restricts_all_group_proofs(missing):
     metric = bundle.metrics[0]
     assert metric.total == 465 and not metric.warnings
     assert '归属缺失' in metric.group_warnings['department'][0]
+    # 缺失行 15 元占绝对值合计 465 元的 3.23%：正文据此判断限制的实际影响。
+    assert '1 行归属缺失（占 amount 绝对值合计的 3.23%）' in metric.group_warnings['department'][0]
     assert all(group.group_values['department'] not in (None, '   ')
                for group in (*metric.top_groups, *metric.bottom_groups))
     document = json.loads(bundle.model_dump_json(by_alias=True))

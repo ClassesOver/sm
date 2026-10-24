@@ -33,6 +33,16 @@ _RELATIVE_PERIOD = re.compile(r'(次年|翌年|来年|上年|去年|同年|当�
 _YEAR_OFFSETS = {"次年": 1, "翌年": 1, "来年": 1, "上年": -1, "去年": -1, "同年": 0, "当年": 0}
 _MONTH_OFFSETS = {"次月": 1, "翌月": 1, "下月": 1, "上月": -1, "当月": 0, "本月": 0}
 _MONTHLY_WORDING = re.compile(r'月均|月平均|平均每月|各月|每月|逐月')
+# 占比、变化、差额与排名引用表达的是关系，不是指标水平值，不能按句中指标名改套总额。
+_RELATION_SELECTORS = (
+    'metricShare.', 'groupShares.', 'groupContributions.', 'groupGaps.', 'periodChanges.',
+    'periodChangeRates.', 'cumulativeChanges.', 'registeredRatio', 'projectRatio.', 'topGroups.', 'bottomGroups.',
+)
+
+
+def revoked_reference(fact_id: str, selector: str, unit: str) -> str:
+    """撤销引用但保留原选择器，供渲染端说明原因并展示原引用值。"""
+    return '{{value:' + fact_id + ':unverified.' + selector + ':' + unit + '}}'
 
 
 def _monthly_selector(fact, sentence, *, uniform):
@@ -266,14 +276,14 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
             return match[0]
         if match[1] in conflicts:
             warnings.append('数值引用身份冲突：同一事实身份存在不同记录，需复核。')
-            return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
+            return revoked_reference(match[1], match[2], match[3])
         sentence = text_after_last_break(markdown, match.start())
         # 只读本句，防止下一句的日期替当前单期引用提供虚假的期间依据。
         suffix = text_before_next_break(markdown, match.end())
         if (match[2].startswith('periodValues.') and len(original.period_values) > 1
                 and not _has_period_context(sentence + match[0] + suffix, original, len(sentence), catalog)):
             warnings.append('数值引用期间缺失：单期数值所在句未写出期间，已撤销引用，需复核。')
-            return '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
+            return revoked_reference(match[1], match[2], match[3])
         clause = re.split(r'[，,]', sentence)[-1]
         named = list(names.finditer(clause)) if names else []
         monthly = list(_MONTHLY_WORDING.finditer(clause))
@@ -308,10 +318,13 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
                 return match[0]
             warnings.append('数值引用口径不匹配：正文明确限定月度口径，已匹配唯一冻结月均依据。')
             return next(iter(candidates))
-        if not named:
+        if not named or match[2].startswith(_RELATION_SELECTORS):
             return match[0]
         subject = named[-1]
         tail = clause[subject.end():]
+        if re.search(r'占(?!用)|相当于|是.{0,8}的', clause[:subject.start()]):
+            # “甲占乙的X”：句末指标是分母，不是该数值的主语。
+            return match[0]
         # 比率、变化、排名及算式需要各自的选择器，不能套用指标总额。
         if ('{{value:' in tail or re.search(r'同比|环比|增|减|差|缺口|率|占比|比重|最高|最低|均|每月|单笔|单行|排名|第', tail)):
             return match[0]
@@ -374,10 +387,16 @@ def align_number_selections(markdown: str, contents, field_definitions: Mapping[
         # 候选原值一致时并无歧义，取其一而不撤销引用。
         if len(candidates) > 1 and len({raw_values.get(token) for token in candidates}) == 1:
             candidates = {min(candidates): candidates[min(candidates)]}
+        if len(candidates) > 1:
+            # 同名指标的不同期间事实（本期与同期）都满足省略年份的写法时，以模型所选事实为准，
+            # 只纠正其选择器；模型所选事实不在候选中时仍无法消歧。
+            own = {token: fact_id for token, fact_id in candidates.items() if fact_id == match[1]}
+            if len(own) == 1:
+                candidates = own
         if len(candidates) == 1:
             replacement = next(iter(candidates))
         else:
-            replacement = '{{value:' + match[1] + ':unverified:' + match[3] + '}}'
+            replacement = revoked_reference(match[1], match[2], match[3])
         warnings.append(f'数值引用口径不匹配：{subject[0]}的指标、期间或统计方式与所选引用不同。'
                         + ('已匹配唯一冻结依据。' if candidates and len(candidates) == 1 else '缺少唯一匹配依据，需复核。'))
         return replacement

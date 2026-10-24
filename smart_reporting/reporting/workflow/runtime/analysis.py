@@ -15,6 +15,7 @@ from ...hospital_operation.narrative_outline import (
     NarrativeOutline,
     NarrativeOutlineCandidate,
     freeze_narrative_outline,
+    merge_repeated_sections,
     repair_narrative_candidate,
 )
 from ...hospital_operation.narrative_planner import (
@@ -2420,7 +2421,7 @@ class RuntimeAnalysisMixin:
         """模型提出章节候选；服务端冻结，纠错失败后保留确定性发现归属。"""
 
         reason = ""
-        repairs = {"unknown": 0, "duplicate": 0, "reassigned": 0}
+        repairs = {"unknown": 0, "duplicate": 0, "reassigned": 0, "merged": 0}
 
         def repaired(candidate: NarrativeOutlineCandidate, target: FindingGraph) -> NarrativeOutlineCandidate:
             fixed, counts = repair_narrative_candidate(candidate, graph=target)
@@ -2430,13 +2431,19 @@ class RuntimeAnalysisMixin:
                 repairs[key] += value
             return fixed
 
+        def merged(candidate: NarrativeOutlineCandidate) -> NarrativeOutlineCandidate:
+            fixed, count = merge_repeated_sections(candidate, graph=graph)
+            repairs["merged"] += count
+            return fixed
+
         def repair_warnings() -> tuple[dict[str, Any], ...]:
             if not any(repairs.values()):
                 return ()
             return ({
                 "code": "report_narrative_outline_repaired",
                 "message": (f"章节规划中 {repairs['unknown']} 个未知、{repairs['duplicate']} 个重复的发现编号已去除，"
-                            f"{repairs['reassigned']} 个发现已按分析项归入章节；章节划分沿用模型规划。"),
+                            f"{repairs['reassigned']} 个发现已按分析项归入章节，"
+                            f"{repairs['merged']} 个同名或同来源章节已合并；其余章节划分沿用模型规划。"),
             },)
 
         try:
@@ -2503,7 +2510,7 @@ class RuntimeAnalysisMixin:
                     index + 1, len(batches), len(ids),
                 )
             if len(planned) == 1:
-                return freeze_narrative_outline(planned[0], graph=graph, analyses=analyses), repair_warnings()
+                return freeze_narrative_outline(merged(planned[0]), graph=graph, analyses=analyses), repair_warnings()
             # 批次只是主题候选，不能直接拼接成最终章节。共同范围按候选描述，
             # 完整 findingId 目录留给全局规划重新分配，冻结仍逐一核对原始图谱。
             cards = {card.finding_id: card for card in graph.findings}
@@ -2544,7 +2551,7 @@ class RuntimeAnalysisMixin:
                         call_budget=call_budget, attempt=min(attempt, 1),
                         failure_kind="schema_failure" if attempt else None,
                     )
-                    combined = repaired(NarrativeOutlineCandidate.model_validate(candidate), graph)
+                    combined = merged(repaired(NarrativeOutlineCandidate.model_validate(candidate), graph))
                     return freeze_narrative_outline(combined, graph=graph, analyses=analyses), repair_warnings()
                 except (ValueError, ReportingError, ModelProviderError) as error:
                     reason = str(error)[:2000]

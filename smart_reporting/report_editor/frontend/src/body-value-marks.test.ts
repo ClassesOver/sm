@@ -585,6 +585,14 @@ describe('original unverified values', () => {
     expect(mark.card).toContain('未保存原始值')
   })
 
+  it('explains why a notice has no original value', () => {
+    const result = unverifiedOriginal(null)
+    result.reviewNotices![0].reason = '该指标没有登记这种取值方式（统计口径或期间）'
+    const [mark] = findValueMarks(text, result)
+    expect(mark.card).toContain('未保存原始值')
+    expect(mark.card).toContain('原因：该指标没有登记这种取值方式（统计口径或期间）')
+  })
+
   it.each([[false, 1], [false, 2], [true, 2]] as const)('hides ambiguous original values (bound=%s, occurrences=%s)', (bound, occurrences) => {
     expect(findValueMarks(text, unverifiedOriginal('999元', bound, occurrences))[0].originalText).toBeUndefined()
   })
@@ -605,6 +613,7 @@ describe('original unverified values', () => {
   it('renders the original as plain text without writing it into the document', () => {
     const raw = '<img src=x onerror=alert(1)>999元'
     const widget = vi.spyOn(Decoration, 'widget')
+    const inline = vi.spyOn(Decoration, 'inline')
     const view = fakeView(text)
     const before = view.state.doc.toJSON()
     updateBodyValueMarks(view, unverifiedOriginal(raw))
@@ -613,7 +622,12 @@ describe('original unverified values', () => {
     expect(typeof factory).toBe('function')
     if (typeof factory !== 'function') throw new Error('expected widget factory')
     const element = factory(view, () => 1) as HTMLElement
-    expect(element.textContent).toBe(raw + ' · ')
+    // 原始值替代“待核实”显示，句子不被分隔符打断；“待核实”字样随之收起。
+    expect(element.textContent).toBe(raw)
+    expect(element.classList.contains('report-original-value')).toBe(true)
+    expect(element.classList.contains('report-value-mark--collapsed')).toBe(false)
+    const highlight = inline.mock.calls.at(-1)?.[2] as Record<string, string> | undefined
+    expect(highlight?.class).toContain('report-value-mark--collapsed')
     expect(element.querySelector('img')).toBeNull()
     expect(element.contentEditable).toBe('false')
     expect(view.state.doc.toJSON()).toEqual(before)

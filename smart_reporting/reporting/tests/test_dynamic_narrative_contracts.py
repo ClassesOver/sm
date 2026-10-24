@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from smart_reporting.reporting.hospital_operation.narrative_outline import (
     NarrativeOutlineCandidate,
     freeze_narrative_outline,
+    merge_repeated_sections,
 )
 from smart_reporting.reporting.tests.narrative_helpers import finding, graph
 
@@ -199,3 +200,32 @@ def test_cluster_findings_scales_to_large_finding_graphs() -> None:
     groups = cluster_findings(FindingGraph(snapshotHash="a" * 64, findings=cards))
     assert time.perf_counter() - started < 5
     assert sorted(item for group in groups for item in group) == sorted(card.finding_id for card in cards)
+
+
+def test_final_outline_merges_chapters_with_same_title_or_same_analysis_sources():
+    # 回放：跨批次统筹后仍有两个“收入预算执行情况分析”和两个来源相同的支出预算章节。
+    cards = [finding(1), finding(2), finding(3), finding(4, analysisIds=["analysis_003"]), finding(5)]
+    ids = [card.finding_id for card in cards]
+    sections = [
+        {"title": "收入预算执行情况分析", "findingIds": [ids[0]], "maxCharts": 2},
+        {"title": "支出预算执行情况分析", "findingIds": [ids[2]], "priority": "low"},
+        {"title": "收入预算执行情况分析", "findingIds": [ids[1]], "maxCharts": 3},
+        {"title": "支出预算执行与实际支出分析", "findingIds": [ids[3]], "priority": "high"},
+        {"title": "成本运行情况分析", "findingIds": [ids[4]]},
+    ]
+    value = NarrativeOutlineCandidate(title="医院运营分析", snapshotHash="b" * 64, sections=[
+        {"objective": "解释经营变化", "groupingReason": "共同管理问题", **item} for item in sections
+    ])
+
+    repaired, merged = merge_repeated_sections(value, graph=graph(*cards))
+
+    assert merged == 2
+    assert [section.title for section in repaired.sections] == [
+        "收入预算执行情况分析", "支出预算执行情况分析", "成本运行情况分析",
+    ]
+    assert repaired.sections[0].finding_ids == (ids[0], ids[1])
+    assert repaired.sections[0].max_charts == 5
+    assert repaired.sections[1].finding_ids == (ids[2], ids[3])
+    assert repaired.sections[1].priority == "high"
+    frozen = freeze(repaired, cards)
+    assert {fid for section in frozen.sections for fid in section.finding_ids} == set(ids)

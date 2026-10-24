@@ -169,6 +169,49 @@ def repair_narrative_candidate(
     }), counts
 
 
+_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def merge_repeated_sections(
+    candidate: NarrativeOutlineCandidate, *, graph: FindingGraph,
+) -> tuple[NarrativeOutlineCandidate, int]:
+    """最终提纲中同名或分析项来源完全相同的正文章节合并到首次出现处。
+
+    回放中跨批次统筹后仍出现两个“收入预算执行情况分析”、两个支出预算章节：来源分析项
+    相同的章节只会把同一批事实各写一遍。附录章节不参与合并；分批候选不做合并，留给统筹。
+    """
+    cards = {card.finding_id: card for card in graph.findings}
+    count = 0
+    merged: list[NarrativeSectionCandidate] = []
+    keys: dict[tuple[str, Any], int] = {}
+    for section in candidate.sections:
+        if section.narrative_role == "appendix":
+            merged.append(section)
+            continue
+        sources = frozenset(aid for fid in section.finding_ids for aid in cards[fid].analysis_ids)
+        identities = (
+            ("title", normalize_display_title(section.title)),
+            ("sources", (section.narrative_role, sources)),
+        )
+        target = next((keys[key] for key in identities if key in keys), None)
+        if target is None:
+            for key in identities:
+                keys[key] = len(merged)
+            merged.append(section)
+            continue
+        first = merged[target]
+        merged[target] = first.model_copy(update={
+            "finding_ids": (*first.finding_ids, *section.finding_ids),
+            "priority": min(first.priority, section.priority, key=_PRIORITY_RANK.__getitem__),
+            "max_charts": min(20, first.max_charts + section.max_charts),
+            "max_blocks": min(20, first.max_blocks + section.max_blocks),
+        })
+        for key in identities:
+            keys.setdefault(key, target)
+        count += 1
+    return candidate.model_copy(update={"sections": tuple(merged)}), count
+
+
 def freeze_narrative_outline(
     candidate: NarrativeOutlineCandidate,
     *,
@@ -249,4 +292,4 @@ def freeze_narrative_outline(
                             omittedFindings=candidate.omitted_findings, snapshotHash=graph.snapshot_hash)
 
 
-__all__ = ["NarrativeOutline", "NarrativeOutlineCandidate", "NarrativeSection", "NarrativeSectionCandidate", "NarrativeQualityMetrics", "evaluate_narrative_quality", "freeze_narrative_outline"]
+__all__ = ["NarrativeOutline", "NarrativeOutlineCandidate", "NarrativeSection", "NarrativeSectionCandidate", "NarrativeQualityMetrics", "evaluate_narrative_quality", "freeze_narrative_outline", "merge_repeated_sections"]

@@ -2144,7 +2144,8 @@ async def test_section_generation_attaches_response_validator_to_plan_stage(
     )
 
     assert callable(captured["plan"])
-    assert captured["content" if whole_section else "block-1"] is None
+    # 正文阶段挂数值引用关口：无法登记的引用在同一调用内交回模型纠正。
+    assert callable(captured["content" if whole_section else "block-1"])
     assert work_item.evidence[0].summary == "summary"
 
 

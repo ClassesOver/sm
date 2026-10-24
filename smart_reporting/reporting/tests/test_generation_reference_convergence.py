@@ -4,8 +4,10 @@ import hashlib
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from smart_reporting.reporting.model_policy import ThinkingRequest
+from smart_reporting.reporting.structured_output.execution import _validation_issues
 from smart_reporting.reporting.tests.test_content_review import _metric
 from smart_reporting.reporting.tests.test_reporting_fixed_phase_workflows import (
     _context,
@@ -43,7 +45,7 @@ def _source_file(content, *, path='evidence/table.json', **overrides):
     return SectionEvidenceFile(identity=identity, content=content)
 
 
-async def _generate(monkeypatch, mode, outputs, *, project=False):
+async def _generate(monkeypatch, mode, outputs, *, project=False, corrections=None):
     work_item = _revenue_work_item()
     metric = {**_metric(values=(10, 20)), 'displayName': '收入'}
     controlled = outputs in (['USE_ASSERTION'], ['USE_COMPARISON'], ['USE_MONTH_CHANGE'],
@@ -109,15 +111,22 @@ async def _generate(monkeypatch, mode, outputs, *, project=False):
     async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
         if stage == 'plan':
             return SectionPlanOutput.model_validate({'kind': 'render', **plan_payload})
-        text = outputs[min(len(calls), len(outputs) - 1)]
-        if controlled:
-            text = next(item['placeholder'] for item in payload['assertionCatalog']
-                        if item['status'] == 'supported' and item['operation'] == ('monthly_trend' if monthly_trend else 'group_rank' if group_rank else 'share' if group_share else 'monthly_average' if monthly_average else 'difference' if comparison or monthly_change or multi_comparison else 'value')
-                        and (not comparison or item['unit'] == '万元'))
-        calls.append(payload)
-        if mode in {'whole', 'whole_entry'}:
-            return SectionContent.model_validate({'blocks': [{'blockId': 'block_001', 'markdown': text}]})
-        return SectionBlockContent(markdown=text)
+        while True:
+            text = outputs[min(len(calls), len(outputs) - 1)]
+            if controlled:
+                text = next(item['placeholder'] for item in payload['assertionCatalog']
+                            if item['status'] == 'supported' and item['operation'] == ('monthly_trend' if monthly_trend else 'group_rank' if group_rank else 'share' if group_share else 'monthly_average' if monthly_average else 'difference' if comparison or monthly_change or multi_comparison else 'value')
+                            and (not comparison or item['unit'] == '万元'))
+            calls.append(payload)
+            candidate = ({'blocks': [{'blockId': 'block_001', 'markdown': text}]}
+                         if mode in {'whole', 'whole_entry'} else {'markdown': text})
+            if corrections is None:
+                return (SectionContent if mode in {'whole', 'whole_entry'} else SectionBlockContent).model_validate(candidate)
+            # 模拟结构化执行器：响应校验失败时把 issues 回灌给同一模型，再取下一份输出。
+            try:
+                return _kwargs['response_validator'](candidate)
+            except ValidationError as error:
+                corrections.append(_validation_issues(error))
 
     monkeypatch.setattr(sections, '_run_section_stage', fake_stage)
     notices = {}
@@ -182,6 +191,37 @@ async def test_correction_is_scored_after_alignment_and_does_not_restore_unknown
     _assert_editor_binding_is_current(block, source)
     assert len(calls) == 2
     assert notices == []
+
+
+BAD_REFERENCE = '本期合计{{value:fact-aaaaaaaaaaaaaaaa:bogus:人次}}。'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
+async def test_invalid_reference_is_corrected_by_the_model_inside_the_same_stage(monkeypatch, mode):
+    corrections = []
+    block, notices, calls, source, _ = await _generate(
+        monkeypatch, mode, [BAD_REFERENCE, RAW_RETARGETABLE], corrections=corrections,
+    )
+    _assert_editor_binding_is_current(block, source)
+    # 引用问题在产出关口就交回模型改正，后续内容复核不再为它多开一轮。
+    assert len(calls) == 2 and notices == []
+    [[issue]] = corrections
+    assert '{{value:fact-aaaaaaaaaaaaaaaa:total:人次}}=30人次' in issue['message']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
+async def test_uncorrected_reference_degrades_to_notice_with_reason(monkeypatch, mode):
+    corrections = []
+    block, notices, calls, _source, _ = await _generate(monkeypatch, mode, [BAD_REFERENCE], corrections=corrections)
+    # 每个 stage 最多退回两次后放行；内容复核纠错轮同样受限，生成不被阻断。
+    assert len(calls) == 2 * (sections._MAX_REFERENCE_REJECTIONS + 1)
+    assert len(corrections) == 2 * sections._MAX_REFERENCE_REJECTIONS
+    assert '待核实' in block.markdown and not block.number_references
+    [notice] = block.review_notices
+    assert notice.kind == 'numeric_unverified' and '取值方式' in notice.reason
+    assert any(item['code'] == 'report_section_block_unverified_numbers' for item in notices)
 
 
 @pytest.mark.anyio

@@ -11,6 +11,7 @@ from functools import partial
 import anyio
 from agno.exceptions import ModelProviderError
 from loguru import logger as loguru_logger
+from pydantic_core import PydanticCustomError
 
 from ....context_management import TaskExecutionContextHardLimitError
 from ...code_agent.failure_policy import fresh_attempt_futile
@@ -263,6 +264,67 @@ def _block_review_notices(
             "details": {**details, "count": replaced},
         })
     return notices
+
+
+_MAX_REFERENCE_REJECTIONS = 2
+
+
+def _number_reference_validator(
+    output_schema: type[SectionBlockContent] | type[SectionContent],
+    *,
+    number_contents: Sequence[str],
+    field_definitions: Mapping[str, str],
+    assertions: Mapping[str, Any] | None,
+) -> Callable[[Any], SectionBlockContent | SectionContent]:
+    """正文响应的数值引用关口：无法登记的引用连同原因与可用引用交回模型，在同一调用内纠正。
+
+    复用结构化执行器的纠错回路（previousOutput + issues），服务端只诊断、不改写引用。
+    同一 stage 最多因引用退回 _MAX_REFERENCE_REJECTIONS 次，之后放行；残留引用渲染为
+    待核实并记录原因，不阻断章节。
+    """
+    from ...trace.semantic_bindings import expand_assertion_placeholders
+    from ...trace.value_references import number_reference_failures, reference_failure_message
+
+    rejections = 0
+
+    def validate_response(content: Any) -> SectionBlockContent | SectionContent:
+        nonlocal rejections
+        candidate = _planner_candidate(content)
+        try:
+            parsed = output_schema.model_validate(candidate)
+        except ValidationError as error:
+            error._report_candidate = candidate  # type: ignore[attr-defined]
+            raise
+        if rejections >= _MAX_REFERENCE_REJECTIONS:
+            return parsed
+        located = ([(("markdown",), parsed.markdown)] if isinstance(parsed, SectionBlockContent)
+                   else [(("blocks", position, "markdown"), block.markdown)
+                         for position, block in enumerate(parsed.blocks)])
+        line_errors: list[Any] = []
+        for loc, markdown in located:
+            # 与最终渲染同一规范化：展开受控断言、对齐引用选择后再判定是否可登记。
+            aligned, selection_warnings = align_number_selections(
+                expand_assertion_placeholders(markdown, assertions), number_contents, field_definitions,
+            )
+            hints = [warning for warning in selection_warnings if "需复核" in warning]
+            line_errors.extend({
+                "type": PydanticCustomError(
+                    "value_error.number_reference", "{message}",
+                    {"message": reference_failure_message(failure, hints)},
+                ),
+                "loc": loc,
+                "input": failure["reference"],
+            } for failure in number_reference_failures(aligned, number_contents))
+        if not line_errors:
+            return parsed
+        rejections += 1
+        loguru_logger.info("report_number_reference_rejected schema={} failures={} rejection={}",
+                           output_schema.__name__, len(line_errors), rejections)
+        error = ValidationError.from_exception_data(output_schema.__name__, line_errors)
+        error._report_candidate = candidate  # type: ignore[attr-defined]
+        raise error
+
+    return validate_response
 
 
 def _bounded_executive_summary(summaries: Sequence[str]) -> str:
@@ -1056,9 +1118,18 @@ def _section_stage_agent(
             "可另附亿元或万元显示，但不得只写舍入后的大单位金额。",
             "金额默认币种为 CNY（人民币），单位在事实冻结时确定；正文优先选择 frozenNumbers 已登记的元、万元、亿元引用，未提供对应引用的补证表值按下一条规则处理。明确的其他币种或展示单位优先保留；非金额字段或旧事实 unit 为空时，不自行补单位或换算。",
             "已签发补证表列元数据明确单位且 frozenNumbers 未提供对应占位符时，可直接引用对应行列的数值，并按列单位规范换算；必须同时核对分组维度、指标和期间，不得用 topGroups 多维明细替代院区或科室汇总。缺少占位符不代表缺少证据，不得拿相近值替代。已签发补证表同一列的 columnMeta.isPercent=true 时，该列是已计算的百分数，可按对应行直接引用并四舍五入；不得因 frozenNumbers 缺少补证占位符就称其未登记或待核实，不得重新计算或累加出新比例。",
-            "先按 numberGuide 确认指标、期间、粒度和完整分组再选数值引用。rowStatistics 是原始行统计；monthlyStatistics 才是月度统计。已登记零值月份保留；局部最高/最低必须明确子期间。目录未提供的比率不能根据图注或模型摘要推算；只写已登记分子分母，或说明该比率待核实。",
+            "先按 numberGuide 确认指标、期间、粒度和完整分组再选数值引用。rowStatistics 是原始行统计；monthlyStatistics 才是月度统计。已登记零值月份保留；局部最高/最低必须明确子期间。目录未提供的比率不能根据图注或模型摘要推算，按下一条用计算引用由服务端计算。",
             "budgetComparisons 是服务端按同口径事实计算的差额与百分数。表格有对应引用时必须填写，包括零分子的0%；只有百分数引用为空时才写不可计算。负差额写‘差额为负’或‘实际减预算为……’，不得写‘少-……’；零值月份仅称‘记录为零’，不称‘尚无数据’或‘未执行月份’。",
-            "正文中的完成率、同比增速、构成占比与差额一律优先使用 numberGuide 提供的 budgetComparisons、comparisons、metricShares 引用占位符，不得用两个登记数值现场相除或相减得出新数值。metricShares 是该指标占同口径合计的百分比，写“某项占……的X%”时必须使用它；目录没有对应派生引用时，只分别写出分子与分母（或本期与基期）的登记数值，或说明该比率待核实。",
+            "正文中的完成率、同比增速、构成占比与差额一律优先使用 numberGuide 提供的 budgetComparisons、comparisons、metricShares 引用占位符。metricShares 是该指标占同口径合计的百分比，写“某项占……的X%”时必须使用它。",
+            (
+                "目录没有现成派生引用时，不得手算后写数字，改写计算引用 {{calc:运算式:显示单位}}，由服务端按未舍入原值计算并渲染。"
+                "操作数是 frozenNumbers 占位符去掉 {{value: 与末尾单位后的部分，如 {{value:fact-0123456789abcdef:total:亿元}} 写作 fact-0123456789abcdef:total。"
+                "运算：sum(a,b,…) 合计，avg(a,b,…) 平均，diff(a,b) 为 a−b，ratio(a,b) 为 a÷b×100%（完成率、占比），growth(a,b) 为 (a−b)÷|b|×100%（增速）；可嵌套。"
+                "例：完成率 {{calc:ratio(实际事实:total,预算事实:total):%}}；两项合计 {{calc:sum(甲:total,乙:total):亿元}}；"
+                "两项合计完成率 {{calc:ratio(sum(实际甲:total,实际乙:total),sum(预算甲:total,预算乙:total)):%}}；两个百分数之差显示单位写 个百分点。"
+                "写“短少、低于、减少”时用 diff(较大方,较小方) 得正幅度；写“差额为”时用 diff(实际,预算)，负数原样显示。"
+                "操作数只能是同单位族（金额与金额、人次与人次）且同一期间口径的登记值；计算引用渲染后已带单位，其后不再写单位。"
+            ),
             "total 是该事实完整期间的总额；正文写1—10月时必须使用相应 periodTotals 累计引用，不能套用12个月 total。零分子且分母非零时完成率为0%，只有分母为零或缺失时才不能计算。",
             (
                 "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"
@@ -1992,6 +2063,10 @@ async def _generate_section_in_blocks(
                         thinking_request, f"block-{index}"
                     ),
                     section_code=work_item.section_code,
+                    response_validator=_number_reference_validator(
+                        SectionBlockContent, number_contents=number_contents,
+                        field_definitions=block_payload["fieldDefinitions"], assertions=block_assertions,
+                    ),
                     attempt_key=f"block-{index}-{block_attempt + 1}",
                 )
                 if not isinstance(content, SectionBlockContent):
@@ -2006,7 +2081,7 @@ async def _generate_section_in_blocks(
                 content = first_block_content
             from ...trace.semantic_bindings import expand_assertion_placeholders
 
-            aligned_markdown, _ = align_number_selections(
+            aligned_markdown, selection_warnings = align_number_selections(
                 expand_assertion_placeholders(content.markdown, block_assertions),
                 number_contents, block_payload["fieldDefinitions"],
             )
@@ -2017,8 +2092,11 @@ async def _generate_section_in_blocks(
                 fact_ids=tuple(fact_id for claim in block_claims for fact_id in claim.fact_ids),
                 bound_chart_ids=chart_ids,
             )
-            review_warnings = list(content_review.warnings)
-            accuracy_count = content_review.accuracy_count
+            # 撤销的引用在复核文本里只剩“未登记”，补上对齐时写明的主语与口径，纠错轮次才能改准。
+            review_warnings = list(dict.fromkeys([
+                *(warning for warning in selection_warnings if "需复核" in warning), *content_review.warnings,
+            ]))
+            accuracy_count = content_review.accuracy_count + len(review_warnings) - len(content_review.warnings)
             # 各 block 独立生成，常重复前文的开场与结论；逐句重复同样进入纠错轮次。
             review_warnings.extend(repeated_sentence_warnings(
                 content.markdown, (block.markdown for block in blocks), block_number_catalog,
@@ -2253,6 +2331,10 @@ async def _generate_whole_section_content(
                     thinking_request, "content", block_count=len(plan.blocks)
                 ),
                 section_code=work_item.section_code,
+                response_validator=_number_reference_validator(
+                    SectionContent, number_contents=number_contents,
+                    field_definitions=payload["fieldDefinitions"], assertions=section_assertions,
+                ),
                 attempt_key=f"content-{review_attempt + 1}",
             )
             if not isinstance(content, SectionContent):

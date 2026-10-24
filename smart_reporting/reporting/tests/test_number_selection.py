@@ -45,7 +45,7 @@ def test_generic_prose_and_next_sentence_cannot_supply_a_period(before, after):
     token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
     markdown = before + token + after
     aligned, warnings = align_number_selections(markdown, source())
-    assert ':unverified:' in aligned
+    assert ':unverified.' in aligned
     assert any('期间缺失' in warning for warning in warnings)
     text, refs, notices = render_bound_numbers(markdown, source(), key='periodless')
     assert '40元' not in text and '待核实' in text
@@ -151,7 +151,7 @@ def test_single_period_value_requires_real_period_context(template):
     token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
     markdown = template.format(token=token)
     aligned, warnings = align_number_selections(markdown, source())
-    assert ':unverified:' in aligned
+    assert ':unverified.' in aligned
     assert any('期间缺失' in warning for warning in warnings)
     text, refs, notices = render_bound_numbers(markdown, source(), key='period')
     assert '40元' not in text and '待核实' in text
@@ -164,7 +164,7 @@ def test_missing_display_names_does_not_skip_period_validation():
         metric.pop('displayName')
     token = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}'
     aligned, warnings = align_number_selections('收入为' + token + '，随后波动。', [json.dumps(document)])
-    assert ':unverified:' in aligned and warnings
+    assert ':unverified.' in aligned and warnings
 
 
 @pytest.mark.parametrize('period', ['2025年1月', '1月', '2025-01', '2025/01'])
@@ -205,6 +205,31 @@ def test_later_valid_interval_does_not_exempt_an_earlier_copy_of_its_endpoint():
     last = '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.1:元}}'
     markdown = '实际总医疗收入为' + first + '，各月介于' + first + '至' + last + '。'
     aligned, warnings = align_number_selections(markdown, source())
-    assert aligned.count(':unverified:') == 1
+    assert aligned.count(':unverified.') == 1
     assert '各月介于' + first + '至' + last in aligned
     assert warnings
+
+
+def test_ambiguous_same_name_facts_keep_the_model_selected_fact():
+    # 本期与同期同名；省略年份的“1—2月”对两者都成立时，以模型所选事实为准纠正选择器。
+    markdown = '1—2月实际总医疗收入累计为{{value:fact-bbbbbbbbbbbbbbbb:periodTotals.0-8:元}}。'
+    aligned, _warnings = align_number_selections(markdown, source())
+    assert aligned == '1—2月实际总医疗收入累计为{{value:fact-bbbbbbbbbbbbbbbb:periodTotals.0-1:元}}。'
+    assert '100元' in render_bound_numbers(markdown, source(), key='own-fact')[0]
+
+
+@pytest.mark.parametrize('statement', [
+    '实际总医疗收入占预算总医疗收入的{{value:fact-bbbbbbbbbbbbbbbb:metricShare.fact-dddddddddddddddd:%}}。',
+    '2025年1—2月实际总医疗收入占预算总医疗收入的{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。',
+])
+def test_share_wording_does_not_retarget_the_denominator(statement):
+    # 句末指标是分母：不能把占比改套成分母指标的总额，也不能因此撤销引用。
+    assert align_number_selections(statement, source()) == (statement, [])
+
+
+def test_revoked_reference_keeps_value_and_reason_for_the_editor():
+    markdown = '实际总医疗收入为{{value:fact-bbbbbbbbbbbbbbbb:periodValues.0:元}}，随后波动。'
+    _text, _refs, notices = render_bound_numbers(markdown, source(), key='revoked')
+    [notice] = [item for item in notices if item.kind == 'numeric_unverified']
+    assert notice.original_text == '40元'
+    assert notice.reason and '不一致' in notice.reason and 'fact-' not in notice.reason

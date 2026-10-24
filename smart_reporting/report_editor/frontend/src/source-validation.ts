@@ -9,6 +9,50 @@ const NOT_EVALUATED_REASONS = new Set([
   'chart_semantics_unregistered', 'chart_fact_binding_unregistered', 'chart_arrays_unverified',
 ])
 
+// 质量包里只是“系统无法自动判断”的诊断：范围未确认、派生运算未评估、排名上下文缺失、
+// 表格/图表规格未登记。它们不是发现的问题，单独计为“未自动核对”，不计入语义待确认，
+// 也不让状态栏变为待处理；原始诊断仍全部保留。
+const UNEVALUATED_QUALITY_REASONS = new Set([
+  ...NOT_EVALUATED_REASONS,
+  'scope_unknown', 'scope_value_unknown', 'operation_semantics_not_evaluated',
+  'ranking_context_unknown', 'table_registration_unavailable',
+])
+
+export function qualityIssueNotEvaluated(issue: { reasons?: string[] }): boolean {
+  const reasons = issue.reasons ?? []
+  return reasons.length > 0 && reasons.every(reason => UNEVALUATED_QUALITY_REASONS.has(reason))
+}
+
+type QualityIssue = NonNullable<TraceValidation['quality']>['issues'][number]
+
+/** 已由来源核对计入待复核的诊断（数值、表格、图表本身已提示），不再重复计数。 */
+function countedBySourceReview(result: TraceValidation): (issue: QualityIssue) => boolean {
+  const subjects = new Map(result.subjects.map(subject => [subject.subjectId, subject]))
+  const tables = new Map(result.tables?.map(table => [table.tableId, table]) ?? [])
+  const charts = new Map(result.charts?.map(chart => [chart.chartId, chart]) ?? [])
+  return issue => {
+    const subject = issue.subjectId ? subjects.get(issue.subjectId) : undefined
+    const table = issue.subjectId ? tables.get(issue.subjectId) : undefined
+    const chart = issue.subjectId ? charts.get(issue.subjectId) : undefined
+    return Boolean(
+      (issue.code === 'assertion_support_unknown' && subject &&
+        (subject.status !== 'valid' || (subject.warnings?.length ?? 0) > 0)) ||
+      (issue.code === 'table_support_unknown' && table &&
+        (table.dataCheck?.status === 'unknown' || table.cells.stale + table.cells.unbound > 0)) ||
+      (['chart_support_unknown', 'chart_semantic_alignment_unknown'].includes(issue.code) && chart &&
+        (chart.status !== 'valid' || chart.dataCheck?.status !== 'verified' || chart.semanticCheck?.status !== 'verified')),
+    )
+  }
+}
+
+/** 未自动核对的质量诊断条数：只作说明，不代表存在问题；已计入待复核的不重复计数。 */
+export function notEvaluatedQualityCount(result: TraceValidation): number {
+  const quality = result.quality
+  if (!quality || quality.status !== 'evaluated') return 0
+  const counted = countedBySourceReview(result)
+  return quality.issues.filter(issue => qualityIssueNotEvaluated(issue) && !counted(issue)).length
+}
+
 export function checkNeedsReview(check: { status: string; reason?: string; reasons?: string[] } | undefined): boolean {
   if (!check) return true
   if (check.status === 'verified') return false
@@ -32,20 +76,10 @@ export function semanticReviewGroupCount(result: TraceValidation): number {
   const quality = result.quality
   if (!quality || quality.status !== 'evaluated') return 0
   const pending = new Set<number>()
-  const subjects = new Map(result.subjects.map(subject => [subject.subjectId, subject]))
-  const tables = new Map(result.tables?.map(table => [table.tableId, table]) ?? [])
-  const charts = new Map(result.charts?.map(chart => [chart.chartId, chart]) ?? [])
+  const counted = countedBySourceReview(result)
   quality.issues.forEach((issue, index) => {
-    const subject = issue.subjectId ? subjects.get(issue.subjectId) : undefined
-    const table = issue.subjectId ? tables.get(issue.subjectId) : undefined
-    const chart = issue.subjectId ? charts.get(issue.subjectId) : undefined
-    // Already counted in the source review indicator; retain every raw issue.
-    if (issue.code === 'assertion_support_unknown' && subject &&
-      (subject.status !== 'valid' || (subject.warnings?.length ?? 0) > 0)) return
-    if (issue.code === 'table_support_unknown' && table &&
-      (table.dataCheck?.status === 'unknown' || table.cells.stale + table.cells.unbound > 0)) return
-    if (['chart_support_unknown', 'chart_semantic_alignment_unknown'].includes(issue.code) && chart &&
-      (chart.status !== 'valid' || chart.dataCheck?.status !== 'verified' || chart.semanticCheck?.status !== 'verified')) return
+    // Already counted in the source review indicator, or only “not evaluated”; retain every raw issue.
+    if (qualityIssueNotEvaluated(issue) || counted(issue)) return
     pending.add(index)
   })
   let count = 0
@@ -88,6 +122,7 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
   const sourceFailures = result.sourceIssues?.length ?? 0
   const qualityFailed = result.quality?.status === 'failed'
   const semanticGroups = semanticReviewGroupCount(result)
+  const notEvaluated = notEvaluatedQualityCount(result)
   const coverage = result.quality?.questionCoverage
   const hasQuestions = coverage?.required != null && coverage.required > 0
   const answerPending = Boolean(hasQuestions && coverage?.effectiveAnswerRate == null)
@@ -101,6 +136,7 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
     sourceFailures ? `来源异常 ${sourceFailures}` : '',
     qualityFailed ? '语义检查暂不可用' : '',
     semanticGroups ? `语义待确认 ${semanticGroups}组` : '',
+    notEvaluated ? `未自动核对 ${notEvaluated}` : '',
     hasQuestions && coverage ? answerPending ? '回答覆盖待核验' : `已核验回答 ${coverage.answered}/${coverage.required}` : '',
   ].filter(Boolean).join(' · ')
   return { text, state: issues || unverified || reviewTexts || contentWarnings || sourceFailures || qualityFailed || semanticGroups || answerPending || answerIncomplete ? 'stale' : total ? 'valid' : 'unknown' }

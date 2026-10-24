@@ -937,7 +937,9 @@ def test_dimension_concentration_is_reported_at_analysis_level():
 @pytest.mark.parametrize("aggregation,rows,expected", [
     ("count", "A,1\nA,2\nB,1000\n", None),
     ("count", "A,foo\n" * 100 + "B,bar\n", "99.01%"),
-    ("sum", "A,100\nA,100\n", "100.00%"),
+    # 只有一个取值时没有可比较的组织，不告警；有第二个组织时 100% 集中照常告警。
+    ("sum", "A,100\nA,100\n", None),
+    ("sum", "A,100\nB,0\n", "100.00%"),
     ("average", "A,1\nB,1000\n", None),
     ("count_distinct", "A,1\nB,1000\n", None),
     ("sum", "A,100\nB,-1\n", None),

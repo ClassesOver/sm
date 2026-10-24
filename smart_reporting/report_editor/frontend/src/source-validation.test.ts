@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { TraceValidation } from './api'
 import { findValueMarks } from './body-value-marks'
-import { checkNeedsReview, createSourceValidationController, markdownSha256, nextSourceIssue, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
+import { checkNeedsReview, createSourceValidationController, markdownSha256, nextSourceIssue, notEvaluatedQualityCount, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 const validation = (draftSha256: string): TraceValidation => ({
   draftSha256,
@@ -17,13 +17,32 @@ const deferred = <T>() => {
 }
 
 describe('source validation', () => {
-  it('shows unresolved business support even when the source value remains traceable', () => {
+  it('separates diagnostics the checker could not evaluate from findings to confirm', () => {
     const result = validation('draft')
     result.summary.valid = 1
     result.subjects = [{ subjectId: 's1', claimId: 'c1', sectionId: null, status: 'valid', factValue: 20 }]
     result.quality = { status: 'evaluated', allKeyFactsEvaluated: false, inputSha256: 'current', issues: [
       { code: 'assertion_support_unknown', subjectId: 's1', reasons: ['scope_unknown'] },
-      { code: 'assertion_support_unknown', subjectId: 's2', reasons: ['scope_unknown'] },
+      { code: 'assertion_support_unknown', subjectId: 's2', reasons: ['operation_semantics_not_evaluated', 'scope_unknown'] },
+      { code: 'chart_support_unknown', subjectId: 'chart1', reasons: ['interactive_spec_unregistered'] },
+    ] }
+    // 回放：400 余条“范围未确认/运算未评估/图表未核对”曾计入语义待确认，淹没真正的提醒。
+    expect(notEvaluatedQualityCount(result)).toBe(3)
+    expect(semanticReviewGroupCount(result)).toBe(0)
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 未自动核对 3', state: 'valid' })
+    // 只要有一个理由不是“未评估”，仍按语义待确认处理。
+    result.quality.issues[1].reasons = ['scope_unknown', 'statement_not_supported']
+    expect(semanticReviewGroupCount(result)).toBe(1)
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 语义待确认 1组 · 未自动核对 2', state: 'stale' })
+  })
+
+  it('shows unresolved business support even when the source value remains traceable', () => {
+    const result = validation('draft')
+    result.summary.valid = 1
+    result.subjects = [{ subjectId: 's1', claimId: 'c1', sectionId: null, status: 'valid', factValue: 20 }]
+    result.quality = { status: 'evaluated', allKeyFactsEvaluated: false, inputSha256: 'current', issues: [
+      { code: 'assertion_support_unknown', subjectId: 's1', reasons: ['statement_not_supported'] },
+      { code: 'assertion_support_unknown', subjectId: 's2', reasons: ['statement_not_supported'] },
     ], warningLedger: { qualityInputSha256: 'current', originalIssueCount: 2, groups: [{ groupId: 'same-fact', issueIndices: [0, 1] }] } }
     expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 语义待确认 1组', state: 'stale' })
     expect(sourceValidationIssueCount(result)).toBe(0)

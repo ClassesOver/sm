@@ -613,6 +613,27 @@ def _table_cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+# 表头已写单位（“2025年（亿元）”）时，单元格里由数值引用渲染出的同一单位重复，渲染时去掉。
+_HEADER_UNIT = re.compile(r"[（(](亿元|万元|元|万人次|人次|床日|%)[）)]\s*$")
+
+
+def _strip_header_units(header: list[str], rows: list[list[str]]) -> bool:
+    changed = False
+    for column, title in enumerate(header):
+        unit = _HEADER_UNIT.search(title)
+        if unit is None:
+            continue
+        pattern = re.compile(
+            rf"^([+\-−]?(?:\d{{1,3}}(?:,\d{{3}})+|\d+)(?:\.\d+)?){re.escape(unit[1])}"
+            r"(?=(?:\[\[[^\]\r\n]+\]\])*$)"
+        )
+        for row in rows:
+            stripped = pattern.sub(r"\1", row[column])
+            changed |= stripped != row[column]
+            row[column] = stripped
+    return changed
+
+
 def align_numeric_table_columns(markdown: str) -> str:
     lines = markdown.split("\n")
     for index, line in enumerate(lines):
@@ -626,6 +647,10 @@ def align_numeric_table_columns(markdown: str) -> str:
         separators = _table_cells(line)
         if not rows or any(len(row) != len(separators) for row in rows):
             continue
+        header = _table_cells(lines[index - 1])
+        if len(header) == len(separators) and _strip_header_units(header, rows):
+            for offset, row in enumerate(rows, start=1):
+                lines[index + offset] = "| " + " | ".join(row) + " |"
         aligned = [
             "---:" if separator == "---" and any(row[column] for row in rows)
             and all(_NUMERIC_CELL.fullmatch(_CELL_MARKUP.sub("", row[column])) for row in rows) else separator

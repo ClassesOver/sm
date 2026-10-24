@@ -195,7 +195,8 @@ def _mask_calendar_values(text: str) -> str:
 def _decline_prefix() -> str:
     from .numeric_text import FALLING_WORDS
 
-    return rf"(?:{'|'.join(FALLING_WORDS)})(?:\s*(?:了|约|为|达|幅度为))*\s*"
+    # 与 registered_decline_magnitude 同口径：“较预算短少/少1.09亿元”同样是负值的幅度写法。
+    return rf"(?:{'|'.join(FALLING_WORDS)}|短少|(?<![至最不多短])少)(?:\s*(?:了|约|为|达|幅度为))*\s*"
 
 
 _DECLINE_PREFIX = _decline_prefix()
@@ -344,7 +345,8 @@ def evaluate_subject_status(
 
 
 _PERIOD_TOKEN = re.compile(
-    r"\d{4}\s*[-/年.]\s*\d{1,2}(?:\s*[-/月.]\s*\d{1,2}\s*日?)?"
+    # “1月17,088人次”的 17 是数值，不是日：年月写法的日须带“日/号”。
+    r"\d{4}\s*[-/年.]\s*\d{1,2}(?:\s*[-/.]\s*\d{1,2}(?![\d,])\s*日?|\s*月\s*\d{1,2}\s*[日号])?"
     r"|\d{4}\s*年|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
 )
 _UNIT_TOKENS = ("亿元", "万元", "千元", "个百分点", "%", "‰", "万人次", "人次", "万人", "床日", "床", "张", "次", "人", "元")
@@ -382,11 +384,25 @@ def _expanded_period_wording(window: str) -> str:
         lambda match: f"{match['year']}年{match['start']}月至{match['end_year'] or match['year']}年{match['end']}月",
         window,
     )
+    # “2025年1—9月…较2024年同期”：同期即前文月份范围换成该年，年份仍须与基期一致。
+    ranges = list(re.finditer(r'(\d{4})年(\d{1,2})月至(\d{4})年(\d{1,2})月', window))
+
+    def same_period(match):
+        prior = [item for item in ranges if item.end() <= match.start() and item[1] == item[3]]
+        if not prior:
+            return match[0]
+        return f"{match['year']}年{prior[-1][2]}月至{match['year']}年{prior[-1][4]}月"
+
+    window = re.sub(r'(?P<year>\d{4})\s*年(?=\s*(?:同期|同月))', same_period, window)
     year = None
 
     def expand(match):
         nonlocal year
         key = _period_key(match[0])
+        if key and len(key) == 1 and re.match(r'\s*(?:同期|同月)', window[match.end():]):
+            # “2024年同期/同月”指与本期相同的月份，不是2024全年；只为其后的月份提供年份。
+            year = key[0]
+            return '该年'
         if key and (len(key) >= 2 or re.fullmatch(r'\d{4}\s*年', match[0])):
             year = key[0]
         elif key and year is not None and not re.search(r'去年|上年|次年|翌年|上月|下月', window[max(0, match.start() - 3):match.start()]):
@@ -466,6 +482,9 @@ def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> 
     for index in range(len(written) - 2, -1, -1):
         if connected[index]:
             group_ends[index] = group_ends[index + 1]
+    role_keys = {name: {_period_key(period) for period in roles.get(name, ())} for name in ('current', 'baseline')}
+    written_keys = {_period_key(match[0]) for match in written}
+    both_roles_written = bool(written_keys & role_keys['current']) and bool(written_keys & role_keys['baseline'])
     previous_role, previous_explicit = None, False
     for index, match in enumerate(written):
         prefix = window[:match.start()]
@@ -493,10 +512,27 @@ def _period_role_warnings(window: str, roles: Mapping[str, tuple[str, ...]]) -> 
             role = previous_role
         elif index < len(connected) and connected[index]:
             # An unlabeled two-date change is from baseline to current. A
-            # cumulative range start does not redefine its endpoint.
-            role = 'baseline' if roles.get('baseline') else 'context'
+            # cumulative range start does not redefine its endpoint. A range whose
+            # ends equal a registered multi-period window is that window itself
+            # (“2025年1月至9月累计…”), not a change from January to September.
+            ends = (_period_key(match[0]), _period_key(written[group_ends[index]][0]))
+            window_role = next((
+                name for name in ('current', 'baseline')
+                if len(roles.get(name, ())) > 1
+                and ends == (_period_key(roles[name][0]), _period_key(roles[name][-1]))
+            ), None)
+            if window_role is not None:
+                role, explicit = window_role, True
+            else:
+                role = 'baseline' if roles.get('baseline') else 'context'
         else:
-            role = 'current' if roles.get('current') else 'endpoint'
+            # 句中同时写出本期与基期日期时（“2025年9月…，2024年9月为…，变化额…”），未标注
+            # 角色的日期按所属登记窗口归属；只写一个日期时它是本期（“2025年2月增长”须核对）。
+            key = _period_key(match[0])
+            role = next((
+                name for name in ('current', 'baseline')
+                if both_roles_written and key in role_keys[name]
+            ), 'current' if roles.get('current') else 'endpoint')
         previous_role, previous_explicit = role, explicit
         expected = roles.get(role, ())
         if expected and _period_key(match[0]) not in {_period_key(period) for period in expected}:
@@ -722,8 +758,38 @@ def _reference_notes_end(text: str) -> int:
     return end
 
 
-def _reference_local_window(before: str, after: str) -> str | None:
-    """并列引用先继承已写年份，再隔离当前锚点的期间与值。"""
+_BASELINE_PREFIX = re.compile(r'(?:较于|相较于|相较|较|相比于|对比|比|基期(?:为)?)\s*$')
+
+
+def _inheritable_calendars(text: str) -> list[str]:
+    """可供并列引用继承的日期：“较2024年1—9月的…”“与2024年同期相比”这类基期日期组
+    不是后项的所属期间。"""
+    groups: list[list[re.Match[str]]] = []
+    for match in _PERIOD_TOKEN.finditer(text):
+        if not _period_key(match[0]):
+            continue
+        if groups and re.fullmatch(
+            r'\s*[月日]?\s*(?:至|到|[-~～–—]|、|和|及)\s*', text[groups[-1][-1].end():match.start()]
+        ):
+            groups[-1].append(match)
+        else:
+            groups.append([match])
+    calendars: list[str] = []
+    for group in groups:
+        prefix, suffix = text[:group[0].start()], text[group[-1].end():]
+        baseline = _BASELINE_PREFIX.search(prefix) or (
+            re.search(r'与\s*$', prefix) and re.match(r'\s*[月日]?\s*(?:同期|同月)?\s*相?比', suffix)
+        )
+        if not baseline:
+            calendars.extend(match[0] for match in group)
+    return calendars
+
+
+def _reference_local_window(before: str, after: str, *, comparison: bool = False) -> str | None:
+    """并列引用先继承已写年份，再隔离当前锚点的期间与值。
+
+    comparison：变化额、变化率涉及本期与基期两个期间，继承句中全部日期，而不是最后一个。
+    """
     claim = re.compile(r'\[\[claim:[^\]\r\n]+\]\]')
     if not claim.search(before + after):
         return None
@@ -742,13 +808,55 @@ def _reference_local_window(before: str, after: str) -> str | None:
     local_after = after[:notes_end] if notes_end else re.split(r'[及和与、，,]', after, maxsplit=1)[0]
     local_after = re.sub(r'\[\[[^\]\r\n]+\]\]', '', local_after)
     local = local_before + local_after
-    if previous and not any(_period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local)):
+    # “较2024年同期…”已写明所属期间（展开为“该年同期”），不能再继承前项的本期月份。
+    if previous and not re.search(r'该年(?:同期|同月)', local) and not any(
+        _period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local)
+    ):
         # “2025年二月…[[claim]]及收入…”仍继承正文前项明确的月份。
-        calendars = [match[0] for match in _PERIOD_TOKEN.finditer(before[:previous[-1].start()])
-                     if _period_key(match[0])]
+        # 紧随前项的括注（“88.55亿元（8,855,158,732元）”）是同一数值的另一写法，继承前项自身的期间。
+        calendars = (
+            [match[0] for match in _PERIOD_TOKEN.finditer(before[:previous[-1].start()]) if _period_key(match[0])]
+            if re.match(r'\s*[（(]', local_before) else _inheritable_calendars(before[:previous[-1].start()])
+        )
         if calendars:
-            local = calendars[-1] + ' ' + local
+            local = ' '.join(dict.fromkeys(calendars) if comparison else calendars[-1:]) + ' ' + local
     return local
+
+
+def _scope_presence_warnings(
+    window: str, scope: Mapping[str, str], reference: Mapping[str, Any] | None,
+) -> list[str]:
+    """登记范围须在引用句中可辨认；只核对能区分对象的范围。
+
+    回放 artifacts3：73 条范围告警几乎都是正确句子。编码字段（RJ402.03）、分组中处处相同的
+    属性（单院 company）、带区分后缀的名称（“心血管内科（一级）”）和日期范围（data_date=
+    2025-07-01 写作“7月”）都不是误归属的证据。
+    """
+    entry = (reference or {}).get("entry") or {}
+    groups = [
+        item.get("groupValues") or {}
+        for key in ("topGroups", "bottomGroups", "groupPopulation")
+        for item in entry.get(key) or ()
+        if isinstance(item, Mapping)
+    ]
+    constant = {
+        key for key in scope
+        if len(groups) > 1 and all(key in group for group in groups)
+        and len({str(group[key]) for group in groups}) == 1
+    }
+    months = {int(month) for month in re.findall(r"(?<!\d)(\d{1,2})\s*月", window)}
+    warnings = []
+    for key, value in scope.items():
+        if not value or value in window or key in constant or key.endswith("_code"):
+            continue
+        period = _period_key(value)
+        if period is not None:
+            if len(period) >= 2 and period[1] in months:
+                continue
+        elif (name := re.sub(r"[（(][^）)]*[）)]$", "", value)) and name in window:
+            continue
+        warnings.append(f"业务范围需复核：当前引用句未体现登记范围 {key}={value}。")
+    return warnings
 
 
 class ClaimStatusChecker:
@@ -792,7 +900,13 @@ def _claim_status_from_body(
         return {"status": "unbound", "warnings": []}
     block_start = markdown.rfind("\n\n", 0, position)
     block_end = markdown.find("\n\n", position)
-    start = max(0, position - window_chars, block_start + 2 if block_start >= 0 else 0)
+    lower = block_start + 2 if block_start >= 0 else 0
+    # 来源与锚点标记不是可见正文：列举句里每个数值后跟约 60 字符的标记，按原始字符截窗会把
+    # 句首的科室、院区截掉。窗口按去掉标记后的可见长度计算。
+    marker_chars = sum(len(item) for item in re.findall(
+        r"\[\[[^\]\r\n]+\]\]", markdown[max(lower, position - 4 * window_chars):position]
+    ))
+    start = max(0, position - window_chars - marker_chars, lower)
     end = min(len(markdown), position + window_chars, block_end if block_end >= 0 else len(markdown))
     before = markdown[start:position]
     after = markdown[position + len(marker):end]
@@ -804,8 +918,11 @@ def _claim_status_from_body(
     window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", statement)
     reference_window = None
     if expected_reference:
+        selector = str(expected_reference.get("selector") or "")
         reference_window = _reference_local_window(
             re.split(r'[。！？;；\n]', before)[-1], re.split(r'[。！？;；\n]', after)[0],
+            comparison=selector in {"change", "changeRate"}
+            or selector.startswith(("periodChanges.", "periodChangeRates.", "cumulativeChanges.")),
         )
     if expected_unit == "个百分点":
         window = _point_plain_text(window)
@@ -828,9 +945,7 @@ def _claim_status_from_body(
             expected_period_roles=expected_period_roles,
             fact_value=fact_value,
         )
-        for key, value in (expected_scope or {}).items():
-            if value and value not in warning_window:
-                warnings.append(f"业务范围需复核：当前引用句未体现登记范围 {key}={value}。")
+        warnings.extend(_scope_presence_warnings(warning_window, expected_scope or {}, expected_reference))
         if not expected_reference:
             from .reference_semantics import scope_exclusion_warnings
 
