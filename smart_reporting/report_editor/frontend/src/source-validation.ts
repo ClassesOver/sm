@@ -104,7 +104,7 @@ function numericalPlaceholderCount(visibleText: string): number {
   return count
 }
 
-/** 状态栏溯源覆盖摘要：可溯源 x/y · 待复核 n · 待核实 n。只统计，不改变校验结论。 */
+/** 状态栏溯源覆盖摘要：可溯源 x/y（服务端计算 m）· 待复核 n · 待核实 n。只统计，不改变校验结论。 */
 export function sourceCoverageSummary(result: TraceValidation, visibleText: string): { text: string; state: 'valid' | 'stale' | 'unknown' } {
   const warningSubjects = result.subjects.filter(subject => subject.status === 'valid' && (subject.warnings?.length ?? 0) > 0).length
   const table = result.tableSummary
@@ -113,6 +113,9 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
     (table ? table.valid + table.stale + table.unbound : 0) + charts.length
   const uncheckedTableCells = result.tables?.filter(table => table.dataCheck?.status === 'unknown').reduce((sum, table) => sum + table.cells.valid, 0) ?? 0
   const traceable = result.summary.valid - warningSubjects + Math.max(0, (table?.valid ?? 0) - uncheckedTableCells) + charts.filter(chart => chart.status === 'valid' && chart.dataCheck?.status === 'verified' && chart.semanticCheck?.status === 'verified').length
+  // 可溯源的正文数值中，由服务端按登记原值派生或按运算式重算的个数（其余直接取登记值）。
+  const computed = result.subjects.filter(subject => subject.status === 'valid' && !(subject.warnings?.length) &&
+    (subject.computation === 'derived' || subject.computation === 'calc')).length
   const issues = sourceValidationIssueCount(result)
   const unverified = result.reviewNotices !== undefined
     ? result.reviewNotices.filter(notice => notice.kind === 'numeric_unverified').reduce((sum, notice) => sum + notice.occurrences, 0)
@@ -128,7 +131,7 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
   const answerPending = Boolean(hasQuestions && coverage?.effectiveAnswerRate == null)
   const answerIncomplete = Boolean(hasQuestions && coverage && coverage.answered < coverage.required!)
   const text = [
-    total ? `可溯源 ${traceable}/${total}` : '当前内容无精确来源绑定',
+    total ? `可溯源 ${traceable}/${total}${computed ? `（服务端计算 ${computed}）` : ''}` : '当前内容无精确来源绑定',
     issues ? `待复核 ${issues}` : '',
     unverified ? `待核实数值 ${unverified}` : '',
     reviewTexts ? `文字待确认 ${reviewTexts}` : '',

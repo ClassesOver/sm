@@ -26,7 +26,7 @@ describe('trace list csv', () => {
     expect(csv.startsWith('﻿序号,章节,正文语句,来源,指标,正文值,登记值')).toBe(true)
     const lines = csv.slice(1).trim().split('\r\n')
     expect(lines).toHaveLength(3)
-    expect(lines[1]).toBe('1,核心结论,"华东营收为 12,780 万元，增长较快。",正文引用 · 华东营收 #a,华东营收,"12,780万元","12,450万元",2025-01 — 2025-10,营收 求和,需复核,收入台账,1200,,sub-a')
+    expect(lines[1]).toBe('1,核心结论,"华东营收为 12,780 万元，增长较快。",正文引用 · 华东营收 #a,华东营收,"12,780万元","12,450万元",2025年1月、2025年10月,营收 求和,需复核,收入台账,1200,,sub-a')
     expect(lines[2]).toContain(',表格单元格,')
     expect(lines[2]).toContain(',与登记值一致,')
   })

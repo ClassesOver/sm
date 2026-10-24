@@ -1,6 +1,6 @@
 import { createElement, ArrowUpRight, Database, X, CircleCheck, TriangleAlert, Rows3, Undo2 } from 'lucide'
 import type { ReportEditorClient, TraceSources, TraceValidation } from './api'
-import { formatRegisteredValue } from './body-value-marks'
+import { formatRegisteredValue, periodListText } from './body-value-marks'
 import { analysisLabel, citationLabel, datasetLabel } from './evidence-relations'
 import { sourceSubjectStatus } from './source-status'
 
@@ -23,11 +23,6 @@ type Options = {
 }
 
 type ValidationSubject = TraceValidation['subjects'][number]
-
-function periodText(periods: unknown): string {
-  if (Array.isArray(periods)) return periods.filter(item => typeof item === 'string').join(' — ')
-  return typeof periods === 'string' ? periods : ''
-}
 
 /** 文字类来源的核对结论：正文值与登记值对照、期间、口径；只读展示，恢复需用户点击。 */
 function claimVerification(entry: ValidationSubject, restore: (() => boolean) | undefined): HTMLElement {
@@ -56,7 +51,7 @@ function claimVerification(entry: ValidationSubject, restore: (() => boolean) | 
   block.append(values)
   const facts = document.createElement('dl')
   facts.className = 'source-preview-facts'
-  for (const [label, text] of [['期间', periodText(entry.periods)], ['口径', entry.formulaText || entry.formula || '']] as const) {
+  for (const [label, text] of [['期间', periodListText(entry.periods)], ['口径', entry.formulaText || entry.formula || '']] as const) {
     if (!text) continue
     const term = document.createElement('dt')
     term.textContent = label

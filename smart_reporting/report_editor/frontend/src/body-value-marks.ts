@@ -4,6 +4,7 @@ import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/
 import { $prose } from '@milkdown/kit/utils'
 
 import type { TraceSources, TraceValidation } from './api'
+import { datasetLabel } from './evidence-relations'
 import { findProtocolMarkers, groupProtocolMarkers } from './protocol'
 import { isExplanatoryUnverified } from './unverified-text'
 
@@ -16,7 +17,9 @@ export interface ValueMark {
   subjectId?: string
   /** 未获校验通过的原始写法，仅用于编辑器展示。 */
   originalText?: string
-  /** 悬停卡片的逐行说明（指标、登记值、正文值、期间、口径、状态）。 */
+  /** 由服务端按登记原值派生或按运算式重算，而非直接取登记事实。 */
+  computed?: boolean
+  /** 悬停卡片的逐行说明（可信状态、指标、登记值、正文值、期间、口径、来源、状态）。 */
   card: string[]
 }
 
@@ -80,26 +83,68 @@ export function formatRegisteredValue(value: unknown, unit?: string | null): str
   return `${value.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })}${unit ?? ''}`
 }
 
-function periodText(periods: unknown): string {
-  if (Array.isArray(periods)) return periods.filter(item => typeof item === 'string').join('、')
-  return typeof periods === 'string' ? periods : ''
+/**
+ * 期间按读者习惯书写，与服务端 period_list_text 同一规则：连续月份写成“2025年1—9月”，
+ * 跨年写成“2024年11月—2025年2月”，不连续的各段分别列出；不是逐月期间时原样列出。
+ */
+export function periodListText(periods: unknown): string {
+  const values = Array.isArray(periods) ? periods.filter((item): item is string => typeof item === 'string')
+    : typeof periods === 'string' && periods ? [periods] : []
+  const parsed = values.map(value => /^(\d{4})-(0[1-9]|1[0-2])$/.exec(value))
+  if (!values.length || parsed.some(match => !match)) return values.join('、')
+  const runs: number[][] = []
+  for (const match of parsed) {
+    const month = Number(match![1]) * 12 + Number(match![2]) - 1
+    const run = runs.at(-1)
+    if (run && month === run[run.length - 1] + 1) run.push(month)
+    else runs.push([month])
+  }
+  const year = (month: number) => Math.floor(month / 12)
+  const label = (month: number) => `${year(month)}年${month % 12 + 1}月`
+  return runs.map(run => {
+    const [first, last] = [run[0], run[run.length - 1]]
+    if (first === last) return label(first)
+    return year(first) === year(last) ? `${year(first)}年${first % 12 + 1}—${last % 12 + 1}月` : `${label(first)}—${label(last)}`
+  }).join('、')
 }
 
-function subjectCard(subject: Subject, sources: TraceSources | undefined, written?: string): string[] {
+function computedSubject(subject: Subject): boolean {
+  return subject.computation === 'derived' || subject.computation === 'calc'
+}
+
+/** 卡片首行（加粗）：读者一眼可见的可信状态。 */
+function trustHeadline(subject: Subject, consistent: boolean): string {
+  if (!consistent || subject.status !== 'valid' || subject.sourceStatus === 'integrity_failed' || subject.warnings?.length) return '! 需复核'
+  return computedSubject(subject) ? '∑ 服务端计算：按登记原值计算，与正文一致' : '✓ 已核对：与登记值一致'
+}
+
+function sourceText(subject: Subject, sources: TraceSources | undefined): string {
+  const datasets = sources?.datasets ?? []
+  const labels = (subject.datasetIds ?? []).map(id => datasets.find(item => item.datasetId === id))
+    .filter((item): item is NonNullable<typeof item> => !!item).map(item => datasetLabel(item, datasets))
+  return [...new Set(labels)].join('、')
+}
+
+function subjectCard(subject: Subject, sources: TraceSources | undefined, written?: string, consistent = true): string[] {
   const ref = sources?.subjects?.find(item => item.subjectId === subject.subjectId)?.factRefs[0]
   const fact = sources?.facts?.find(item => item.analysisId === ref?.analysisId && item.factId === ref?.factId)
+  const computed = computedSubject(subject)
+  const source = sourceText(subject, sources)
   return [
+    trustHeadline(subject, consistent),
     fact?.name ? `指标：${fact.name}` : '',
-    `登记值：${formatRegisteredValue(subject.factValue, subject.unit)}`,
+    `${computed ? '计算结果' : '登记值'}：${formatRegisteredValue(subject.factValue, subject.unit)}`,
     written ? `正文值：${written}` : '',
-    periodText(subject.periods) ? `期间：${periodText(subject.periods)}` : '',
-    subject.formulaText || subject.formula ? `口径：${subject.formulaText || subject.formula}` : '',
+    periodListText(subject.periods) ? `期间：${periodListText(subject.periods)}` : '',
+    subject.formulaText || subject.formula ? `${subject.computation === 'calc' ? '算式' : '口径'}：${subject.formulaText || subject.formula}` : '',
+    source ? `来源：${source}` : '',
     subject.sourceStatus === 'integrity_failed'
       ? '状态：来源身份无法核验；其余来源已独立检查'
       : subject.status === 'unbound'
       ? '状态：尚未建立有效来源绑定'
       : subject.status === 'valid'
-      ? (subject.warnings?.length ? '状态：数值一致，业务口径需复核' : '状态：与登记值一致')
+      // 一致时首行已写明，不再重复。
+      ? (subject.warnings?.length ? '状态：数值一致，业务口径需复核' : '')
       : '状态：正文已改动，需复核',
     ...(subject.warnings ?? []).map(warning => `提示：${warning}`),
   ].filter(Boolean)
@@ -149,7 +194,8 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
           start, end, subjectId: subject.subjectId,
           state: subject.status === 'valid' && matchesRegistered
             ? (subject.warnings?.length ? 'review' : 'valid') : 'stale',
-          card: subjectCard(subject, sources, written),
+          computed: computedSubject(subject),
+          card: subjectCard(subject, sources, written, matchesRegistered),
         })
       }
     }
@@ -242,9 +288,11 @@ export const bodyValueMarksPlugin = $prose(createBodyValueMarksPlugin)
 export function updateBodyValueMarks(view: EditorView, validation: TraceValidation | null, sources?: TraceSources): void {
   const decorations = documentValueMarks(view.state.doc, validation, sources).flatMap(mark => {
     // 有原始值时正文显示原始值、收起“待核实”字样，句子照常可读；悬停卡片说明未通过核对。
+    const computed = mark.computed && mark.state === 'valid'
     const attributes = {
-      class: `report-value-mark report-value-mark--${mark.state}${mark.originalText ? ' report-value-mark--collapsed' : ''}`,
+      class: `report-value-mark report-value-mark--${mark.state}${computed ? ' report-value-mark--computed' : ''}${mark.originalText ? ' report-value-mark--collapsed' : ''}`,
       'data-value-state': mark.state,
+      ...(computed ? { 'data-value-computed': 'true' } : {}),
       'data-value-card': JSON.stringify(mark.card),
       ...(mark.subjectId ? { 'data-value-subject': mark.subjectId } : {}),
       'aria-label': mark.card.join('；'),
@@ -342,6 +390,7 @@ export function installValueCard(root: HTMLElement): () => void {
       return row
     }))
     card.dataset.state = mark.dataset.valueState ?? ''
+    card.dataset.computed = mark.dataset.valueComputed ?? ''
     card.hidden = !lines.length
     const box = mark.getBoundingClientRect()
     card.style.left = `${Math.max(8, Math.min(window.scrollX + box.left, window.scrollX + window.innerWidth - 300))}px`

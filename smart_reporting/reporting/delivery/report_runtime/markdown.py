@@ -1261,9 +1261,18 @@ _FIXED_FORMULAS = {
 _RATIO_FORMULA = re.compile(r"^(?P<numerator>[^/;]+)/(?P<denominator>[^/;]+); difference=\1-\2$")
 
 
-def readable_formula(formula: str) -> str:
-    """冻结事实的计算口径（sum(revenue) WHERE 院区='东院'）改为读者可读的中文说明。"""
+def readable_formula(formula: str, labels: Mapping[str, str] | None = None) -> str:
+    """冻结事实的计算口径（sum(revenue) WHERE 院区='东院'）改为读者可读的中文说明。
+
+    labels 给出字段的中文名（列说明或登记的指标名）时替换字段名；没有中文名的字段保持原样。
+    """
+    labels = labels or {}
     formula = formula.strip()
+    head, separator, note = formula.rpartition("；")
+    if separator and "'" not in note:
+        # 口径附注（“仅汇总 data_date 最新登记期间”）里的字段同样换成中文名；筛选值里的分号不算附注。
+        note = re.sub(r"[A-Za-z_][A-Za-z0-9_]*", lambda match: labels.get(match[0], match[0]), note)
+        return f"{readable_formula(head, labels)}；{note}"
     if formula in _FIXED_FORMULAS:
         return _FIXED_FORMULAS[formula]
     ratio = _RATIO_FORMULA.match(formula)
@@ -1272,14 +1281,16 @@ def readable_formula(formula: str) -> str:
     # 两个聚合之比（sum(revenue)/sum(visits)）：分子分母分别写成中文聚合口径。
     parts = formula.split("/")
     if len(parts) == 2 and all(_FORMULA.match(part.strip()) and " WHERE " not in part for part in parts):
-        return " ÷ ".join(readable_formula(part) for part in parts)
+        return " ÷ ".join(readable_formula(part, labels) for part in parts)
     match = _FORMULA.match(formula)
     if match is None:
         return formula
-    text = f"{match['field']} {_AGGREGATION_LABELS[match['aggregation']]}"
+    text = f"{labels.get(match['field'], match['field'])} {_AGGREGATION_LABELS[match['aggregation']]}"
     if match["where"]:
-        conditions = [re.sub(r"^\s*([^=]+?)\s*=\s*'(.*)'\s*$", r"\1=\2", part)
-                      for part in match["where"].split(" AND ")]
+        conditions = []
+        for part in match["where"].split(" AND "):
+            condition = re.fullmatch(r"\s*([^=]+?)\s*=\s*'(.*)'\s*", part)
+            conditions.append(f"{labels.get(condition[1], condition[1])}={condition[2]}" if condition else part)
         text += f"（筛选：{'、'.join(conditions)}）"
     return text
 

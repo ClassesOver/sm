@@ -4,7 +4,7 @@ import { Decoration, type EditorView } from '@milkdown/kit/prose/view'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { TraceSources, TraceValidation } from './api'
-import { documentValueMarks, findValueMarks, formatRegisteredValue, installValueCard, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
+import { documentValueMarks, findValueMarks, formatRegisteredValue, installValueCard, periodListText, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 
 const schema = new Schema({
   nodes: { doc: { content: 'block+' }, code_block: { content: 'text*', group: 'block', code: true, toDOM: () => ['pre', ['code', 0]] }, paragraph: { group: 'block', content: 'inline*', toDOM: () => ['p', 0] },
@@ -37,13 +37,66 @@ function fakeView(text: string) {
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks() })
 
 describe('body value marks', () => {
+  it('leads the card with the trust state readers see at a glance', () => {
+    const text = '华东营收为 12,450 万元。[[citation:sub-1]]'
+    const withSource = { ...sources, datasets: [{ datasetId: 'd1', requirementId: 'r1', periodRoles: ['current'], businessLabel: '收入汇总表' }] } as unknown as TraceSources
+    const registered = validation('valid')
+    registered.subjects[0].datasetIds = ['d1']
+    const [plain] = findValueMarks(text, registered, withSource)
+    expect(plain.computed).toBe(false)
+    expect(plain.card[0]).toBe('✓ 已核对：与登记值一致')
+    expect(plain.card).toContain('来源：收入汇总表')
+    // 一致时首行已写明，不再重复一行“状态：与登记值一致”。
+    expect(plain.card.filter(line => line.startsWith('状态：'))).toEqual([])
+    // 服务端按运算式重算的数：单独标注，卡片写出计算结果与算式。
+    const calc = validation('valid')
+    calc.subjects[0].computation = 'calc'
+    calc.subjects[0].formulaText = '药品（2025年1—9月）6,000万元 + 材料（2025年1—9月）6,450万元 = 12,450.00万元'
+    const [computed] = findValueMarks(text, calc, sources)
+    expect(computed.computed).toBe(true)
+    expect(computed.card[0]).toBe('∑ 服务端计算：按登记原值计算，与正文一致')
+    expect(computed.card).toContain('计算结果：12,450万元')
+    expect(computed.card).toContain(`算式：${calc.subjects[0].formulaText}`)
+    const stale = validation('stale', 12780)
+    stale.subjects[0].computation = 'derived'
+    const [changed] = findValueMarks('华东营收为 12,780 万元。[[citation:sub-1]]', stale, sources)
+    expect(changed.card[0]).toBe('! 需复核')
+  })
+
+  it('styles server-computed values apart from registered ones', () => {
+    const inline = vi.spyOn(Decoration, 'inline')
+    const view = fakeView('华东营收为 12,450 万元。[[citation:sub-1]]')
+    const derived = validation('valid')
+    derived.subjects[0].computation = 'derived'
+    updateBodyValueMarks(view, derived, sources)
+    const attributes = inline.mock.calls.at(-1)?.[2] as Record<string, string> | undefined
+    expect(attributes?.class).toContain('report-value-mark--computed')
+    expect(attributes?.['data-value-computed']).toBe('true')
+    // 直接登记值不带计算标记。
+    updateBodyValueMarks(view, validation('valid'), sources)
+    const registered = inline.mock.calls.at(-1)?.[2] as Record<string, string> | undefined
+    expect(registered?.class).not.toContain('report-value-mark--computed')
+  })
+
   it('marks the cited number with its registered value and business name', () => {
     const text = '华东营收为 12,450 万元，同比增长 8.0%。[[citation:sub-1]]'
     const marks = findValueMarks(text, validation('valid'), sources)
     expect(marks).toHaveLength(1)
     expect(text.slice(marks[0].start, marks[0].end)).toBe('12,450 万元')
     expect(marks[0].state).toBe('valid')
-    expect(marks[0].card).toEqual(expect.arrayContaining(['指标：华东营收', '登记值：12,450万元', '期间：2025-01、2025-10']))
+    expect(marks[0].card).toEqual(expect.arrayContaining(['指标：华东营收', '登记值：12,450万元', '期间：2025年1月、2025年10月']))
+  })
+
+  it('writes periods the way readers do', () => {
+    expect(periodListText(Array.from({ length: 9 }, (_, index) => `2025-0${index + 1}`))).toBe('2025年1—9月')
+    expect(periodListText(['2024-11', '2024-12', '2025-01'])).toBe('2024年11月—2025年1月')
+    expect(periodListText(['2025-09'])).toBe('2025年9月')
+    // 同比的本期与基期分段书写；不连续的月份逐项列出；非逐月期间原样列出。
+    expect(periodListText(['2025-01', '2025-02', '2024-01', '2024-02'])).toBe('2025年1—2月、2024年1—2月')
+    expect(periodListText(['2025-01', '2025-03'])).toBe('2025年1月、2025年3月')
+    expect(periodListText(['2025-09-01', '2025-09-02'])).toBe('2025-09-01、2025-09-02')
+    expect(periodListText(['2025-13'])).toBe('2025-13')
+    expect(periodListText(undefined)).toBe('')
   })
 
   it('shows semantic warnings without treating the matching value as an edited number', () => {

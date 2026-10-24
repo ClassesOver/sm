@@ -17,6 +17,17 @@ const deferred = <T>() => {
 }
 
 describe('source validation', () => {
+  it('counts server-computed values among the traceable ones', () => {
+    const result = validation('draft')
+    result.summary.valid = 3
+    result.subjects = [
+      { subjectId: 's1', claimId: 'c1', sectionId: null, status: 'valid', factValue: 20, computation: 'registered' },
+      { subjectId: 's2', claimId: 'c2', sectionId: null, status: 'valid', factValue: 30, computation: 'calc' },
+      { subjectId: 's3', claimId: 'c3', sectionId: null, status: 'valid', factValue: 40, computation: 'derived' },
+    ]
+    expect(sourceCoverageSummary(result, '').text).toBe('可溯源 3/3（服务端计算 2）')
+  })
+
   it('separates diagnostics the checker could not evaluate from findings to confirm', () => {
     const result = validation('draft')
     result.summary.valid = 1

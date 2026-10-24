@@ -5106,6 +5106,8 @@ input:disabled, textarea:disabled, select:disabled {
 /* 数值级溯源标注：虚下划线区分状态，不改变正文字色与排版。 */
 .report-value-mark { text-decoration: underline dotted 1.5px; text-underline-offset: 4px; cursor: help; border-radius: 3px; }
 .report-value-mark--valid { text-decoration-color: #2b7b65; }
+/* 服务端按登记原值计算的数：蓝色虚线，与直接登记值（绿色点线）区分。 */
+.report-value-mark--valid.report-value-mark--computed { text-decoration-color: #2f6db5; text-decoration-style: dashed; }
 .report-value-mark--review, .report-value-mark--stale { text-decoration-color: #b4660d; text-decoration-style: wavy; background: #fff5e3; }
 /* 待核实不打断阅读：无原始值时是低调的小标签；有原始值时正文显示原始值，“待核实”字样收起，
    以虚线和角标提示未通过核对，详情见悬停卡片。打印时同样只印原始值，不带标注。 */
@@ -5116,7 +5118,8 @@ input:disabled, textarea:disabled, select:disabled {
 .report-value-mark:hover { background: #e6f1f8; }
 .report-value-card { position: absolute; z-index: var(--z-popover); max-width: 288px; padding: 10px 12px; border: 1px solid #c7dce8; border-left: 3px solid #2b7b65; border-radius: var(--radius-md); background: var(--color-surface); color: #1f3a4d; box-shadow: 0 10px 30px #193c5a26; font-size: var(--font-size-sm); line-height: 1.7; pointer-events: none; }
 .report-value-card[hidden] { display: none; }
-.report-value-card[data-state="stale"] { border-left-color: #b4660d; }
+.report-value-card[data-state="stale"], .report-value-card[data-state="review"] { border-left-color: #b4660d; }
+.report-value-card[data-state="valid"][data-computed="true"] { border-left-color: #2f6db5; }
 .report-value-card[data-state="unverified"] { border-left-color: var(--color-danger); }
 .report-value-card > div:first-child { font-weight: 600; }
 @media print { .report-value-mark, .report-value-mark.report-original-value { text-decoration: none; background: none; } .report-value-mark--unverified { padding: 0; color: inherit; font-size: inherit; } .report-value-mark.report-original-value::after { content: none; } }
