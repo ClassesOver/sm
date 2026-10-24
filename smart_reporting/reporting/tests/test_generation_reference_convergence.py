@@ -35,6 +35,8 @@ from smart_reporting.task_execution import TaskExecutionScope
 
 RAW_RETARGETABLE = '2025年2月收入{{value:fact-aaaaaaaaaaaaaaaa:total:人次}}。'
 EXPECTED_REFERENCE = '{{value:fact-aaaaaaaaaaaaaaaa:periodValues.1:人次}}'
+# 模型按句中期间选对引用的写法；RAW_RETARGETABLE 靠最终渲染改指，产出关口会先交回模型。
+FIXED = '2025年2月收入' + EXPECTED_REFERENCE + '。'
 
 
 def _source_file(content, *, path='evidence/table.json', **overrides):
@@ -258,7 +260,7 @@ async def test_sentences_repeated_from_earlier_chapters_go_back_for_a_rewrite(mo
 async def test_invalid_reference_is_corrected_by_the_model_inside_the_same_stage(monkeypatch, mode):
     corrections = []
     block, notices, calls, source, _ = await _generate(
-        monkeypatch, mode, [BAD_REFERENCE, RAW_RETARGETABLE], corrections=corrections,
+        monkeypatch, mode, [BAD_REFERENCE, FIXED], corrections=corrections,
     )
     _assert_editor_binding_is_current(block, source)
     # 引用问题在产出关口就交回模型改正，后续内容复核不再为它多开一轮。
@@ -269,10 +271,24 @@ async def test_invalid_reference_is_corrected_by_the_model_inside_the_same_stage
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('mode', ['whole', 'blocks'])
+async def test_retargeted_reference_goes_back_to_the_model_instead_of_silently_changing_the_number(monkeypatch, mode):
+    corrections = []
+    block, notices, calls, source, _ = await _generate(
+        monkeypatch, mode, [RAW_RETARGETABLE, FIXED], corrections=corrections,
+    )
+    _assert_editor_binding_is_current(block, source)
+    # “2025年2月收入”引用了1—2月合计：最终渲染会改指为2月的值，产出关口先交回模型自行改用。
+    assert len(calls) == 2 and notices == []
+    [[issue]] = corrections
+    assert '按句中写法应为' in issue['message'] and f'{EXPECTED_REFERENCE}（20人次）' in issue['message']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
 async def test_handwritten_number_is_corrected_by_the_model_inside_the_same_stage(monkeypatch, mode):
     corrections = []
     block, notices, calls, source, _ = await _generate(
-        monkeypatch, mode, ['收入999人次。', RAW_RETARGETABLE], corrections=corrections,
+        monkeypatch, mode, ['收入999人次。', FIXED], corrections=corrections,
     )
     _assert_editor_binding_is_current(block, source)
     # 手写数字在产出关口就交回模型，不再等到渲染时被替换为待核实。
