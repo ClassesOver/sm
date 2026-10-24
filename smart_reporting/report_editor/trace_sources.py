@@ -1263,10 +1263,11 @@ class ReportEditorTraceService:
                     "unit": expected_unit,
                     "periods": list(expected_periods),
                     "formula": _entry_formula(entry),
-                    # 编辑器核对卡片展示的中文口径，与导出附录同一转换规则。
-                    "formulaText": readable_formula(formula, _formula_labels(
+                    # 编辑器核对卡片展示的中文口径：派生值与对比值写出可验算的算式，
+                    # 其余与导出附录同一转换规则。
+                    "formulaText": (selected or {}).get("explanation") or (readable_formula(formula, _formula_labels(
                         entry, _entry_dataset_ids(entry), column_definitions,
-                    )) if (formula := _entry_formula(entry)) else None,
+                    )) if (formula := _entry_formula(entry)) else None),
                     "scope": _entry_scope(entry),
                     "datasetIds": _entry_dataset_ids(entry),
                 }
