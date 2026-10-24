@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from .value_references import REVOKED_SELECTOR, UNKNOWN_FACT
 
@@ -123,4 +123,17 @@ class NumberHandles:
         return _ASSERT_HANDLE.sub(assertion, text)
 
 
-__all__ = ["NumberHandles"]
+def compact_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
+    """模型可见的数值目录：同一引用身份的各显示单位合并为一项（编码后为 {{N编号}}），值以“｜”分隔。
+
+    模型仍按 {{N编号:单位}} 选用其中一个单位；只改变提示呈现，服务端核对与渲染使用完整目录。
+    """
+    grouped: dict[str, list[str]] = {}
+    for token, text in catalog.items():
+        match = _FULL_VALUE.fullmatch(token)
+        key = "{{value:" + match["fact"] + ":" + match["selector"] + ":}}" if match else token
+        grouped.setdefault(key, []).append(text)
+    return {key: "｜".join(dict.fromkeys(texts)) for key, texts in grouped.items()}
+
+
+__all__ = ["NumberHandles", "compact_catalog"]
