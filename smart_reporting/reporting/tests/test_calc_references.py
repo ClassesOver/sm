@@ -1,6 +1,7 @@
 """写作时计算引用：服务端按冻结原值求值、渲染、放行与溯源。"""
 
 import pytest
+from loguru import logger
 
 from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
     build_deterministic_analysis_bundle,
@@ -111,3 +112,31 @@ def test_content_review_explains_invalid_calc_reference(facts):
     invalid = f"完成率{_calc(f'ratio({ref['actual_drug']},{ref['visits']})', '%')}。"
     assert not any("计算引用" in warning for warning in review_content(valid, [content]))
     assert any("计算引用无法求值" in warning for warning in review_content(invalid, [content]))
+
+
+def test_content_review_does_not_report_valid_calc_references_as_unavailable(facts):
+    content, ref = facts
+    markdown = (f"药品完成率{_calc(f'ratio({ref['actual_drug']},{ref['budget_drug']})', '%')}，"
+                f"较预算短少{_calc(f'diff({ref['budget_drug']},{ref['actual_drug']})', '亿元')}。")
+    messages = []
+    sink = logger.add(lambda message: messages.append(message.record["message"]), level="WARNING")
+    try:
+        warnings = review_content(markdown, [content])
+    finally:
+        logger.remove(sink)
+    # 能重算的计算引用不再按未登记引用记日志，服务端结果也不参与按登记值比对的数字核对。
+    assert not any("report_number_reference_unavailable" in message for message in messages)
+    assert warnings == []
+
+
+def test_content_review_returns_falling_wording_on_positive_calc_growth(facts):
+    content, ref = facts
+    growth = _calc(f"growth({ref['actual_drug']},{ref['actual_material']})", "%")
+    decline = _calc(f"growth({ref['actual_material']},{ref['actual_drug']})", "%")
+    [warning] = review_content(f"药品较材料下降{growth}。", [content])
+    assert warning.startswith("方向与计算结果相反：下降") and "growth(本期, 基期)" in warning
+    # 负增速的负号由最终渲染改写；“增速下降为”描述的是比率水平；差额的方向取决于操作数先后。
+    assert review_content(f"材料较药品下降{decline}。", [content]) == []
+    assert review_content(f"药品增速下降为{growth}。", [content]) == []
+    gap = _calc(f"diff({ref['budget_drug']},{ref['actual_drug']})", "亿元")
+    assert review_content(f"药品实际较预算减少{gap}。", [content]) == []
