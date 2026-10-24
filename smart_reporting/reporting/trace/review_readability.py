@@ -69,6 +69,31 @@ def repeated_sentence_warnings(
     ]
 
 
+def earlier_section_sentences(sections: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """报告中排在前面、已完成章节的句子 → 章节名；已完成章节的数值已渲染，按读者所见比较。"""
+    owners: dict[str, str] = {}
+    for title, markdown in sections:
+        for normalized in _comparable_sentences(_displayed(markdown, None)):
+            owners.setdefault(normalized, title)
+    return owners
+
+
+def repeated_section_warnings(
+    markdown: str, earlier: Mapping[str, str], catalog: Mapping[str, str] | None = None,
+) -> list[str]:
+    """当前 block 与前面章节逐句完全重复时给出软告警（附章节名），交由纠错轮次改写。
+
+    章节默认串行生成，各章只看得到自己的证据：总量、口径说明常在多章原样复述。
+    """
+    if not earlier:
+        return []
+    return [
+        f"与前面“{earlier[normalized]}”一章重复：{original}。请删除，或改为简要引用该章结论，只写本章新增的事实与解读。"
+        for normalized, original in _comparable_sentences(_displayed(markdown, catalog)).items()
+        if normalized in earlier
+    ]
+
+
 _READABLE_SENTENCE_CHARS = 150
 
 

@@ -45,7 +45,7 @@ def _source_file(content, *, path='evidence/table.json', **overrides):
     return SectionEvidenceFile(identity=identity, content=content)
 
 
-async def _generate(monkeypatch, mode, outputs, *, project=False, corrections=None):
+async def _generate(monkeypatch, mode, outputs, *, project=False, corrections=None, earlier_sections=()):
     work_item = _revenue_work_item()
     metric = {**_metric(values=(10, 20)), 'displayName': '收入'}
     controlled = outputs in (['USE_ASSERTION'], ['USE_COMPARISON'], ['USE_MONTH_CHANGE'],
@@ -147,7 +147,8 @@ async def _generate(monkeypatch, mode, outputs, *, project=False, corrections=No
         )
     else:
         result = await sections._generate_section_in_blocks(
-            object(), instruction, evidence, work_item, whole_section=mode == 'whole_entry', **options,
+            object(), instruction, evidence, work_item, whole_section=mode == 'whole_entry',
+            earlier_sections=earlier_sections, **options,
         )
     return result.blocks[0], notices.get('block_001', []), calls, source, bound_source_maps
 
@@ -234,6 +235,22 @@ async def test_model_written_hedges_are_sent_back_for_a_rewrite(monkeypatch, mod
     issues = calls[1]['correction']['issues']
     issues = issues if isinstance(issues, list) else [item for values in issues.values() for item in values]
     assert any('待核实类提示' in item for item in issues)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole_entry', 'blocks'])
+async def test_sentences_repeated_from_earlier_chapters_go_back_for_a_rewrite(monkeypatch, mode):
+    repeated = RAW_RETARGETABLE + '本期门诊收入保持稳定增长，结构持续优化。'
+    # 前面章节已渲染并带锚点；章节默认串行生成，写本章时比对前面已完成章节。
+    earlier = (('收入规模与结构分析', '本期门诊收入保持稳定增长，结构持续优化[[claim:number-1]]。'),)
+    block, notices, calls, source, _ = await _generate(
+        monkeypatch, mode, [repeated, RAW_RETARGETABLE], earlier_sections=earlier,
+    )
+    _assert_editor_binding_is_current(block, source)
+    assert len(calls) == 2 and notices == []
+    issues = calls[1]['correction']['issues']
+    issues = issues if isinstance(issues, list) else [item for values in issues.values() for item in values]
+    assert any(item.startswith('与前面“收入规模与结构分析”一章重复') for item in issues)
 
 
 @pytest.mark.anyio
@@ -404,3 +421,34 @@ async def test_monthly_trend_generation_uses_complete_window_before_review(monke
     assert len(block.number_references) == 1 and len(calls) == 1 and not notices and not block.review_notices
     assert ':monthlyTrend:元}}' in block.number_references[0].token
     assert not any('monthlyTrend' in token for token in calls[0]['frozenNumbers'])
+
+
+@pytest.mark.anyio
+async def test_earlier_completed_chapters_are_read_in_outline_order():
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.hospital_operation.outline import ReportOutline
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.reporting.workflow.runtime.base import REPORT_OUTLINE_STATE_KEY
+
+    outline = ReportOutline(reportType='comprehensive', title='运营分析报告', sections=[
+        {'code': f'section_00{index}', 'sectionNumber': str(index), 'title': title, 'analysisIds': ['analysis_001']}
+        for index, title in enumerate(('收入规模', '预算执行', '成本运行', '数据质量'), start=1)
+    ])
+    state = {REPORT_OUTLINE_STATE_KEY: outline.model_dump(mode='json', by_alias=True)}
+    artifacts = {'file-1': '第一章正文。', 'file-2': None, 'file-4': '第四章正文。'}
+
+    async def read(_thread_id, identity, _model):
+        if artifacts[identity] is None:
+            raise ReportingError('report_artifact_unavailable', '章节产物不可读。')
+        return SimpleNamespace(blocks=(SimpleNamespace(markdown=artifacts[identity]),))
+
+    runtime = SimpleNamespace(_state=lambda _context: state, _scope=lambda _context: {'threadId': 'thread-1'},
+                              _read_identity_model=read)
+    checkpoint = SimpleNamespace(completed_sections=tuple(
+        SimpleNamespace(section_code=f'section_00{index}', artifact_file=f'file-{index}') for index in (4, 2, 1)
+    ))
+    texts = await sections.RuntimeSectionsMixin._earlier_section_texts(runtime, None, checkpoint, 'section_003')
+    # 只取提纲中排在本章之前、已完成的章节；读取失败的章节跳过，不阻断写作；排在后面的章节不参与。
+    assert texts == (('收入规模', '第一章正文。'),)
+    assert await sections.RuntimeSectionsMixin._earlier_section_texts(runtime, None, checkpoint, 'section_009') == ()

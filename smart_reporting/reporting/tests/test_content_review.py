@@ -542,6 +542,26 @@ def test_repeated_sentences_compare_displayed_numbers_not_placeholders():
     assert len(repeated_sentence_warnings(current, earlier, {token: "1,234元"})) == 1
 
 
+def test_sentences_repeated_from_earlier_chapters_name_the_chapter():
+    from smart_reporting.reporting.trace.review_readability import (
+        earlier_section_sentences,
+        repeated_section_warnings,
+    )
+
+    token = "{{value:fact-" + "a" * 16 + ":total:元}}"
+    # 前面章节的数值已渲染并带锚点；当前 block 仍是占位，按显示值比较。
+    earlier = earlier_section_sentences([
+        ("收入规模与结构分析", "本期门诊收入合计为1,234元[[claim:number-1]]，较上期保持稳定。"),
+        ("成本运行情况分析", "注：以上对比涉及不同数据来源，差异未经调节，不据此作归因。"),
+    ])
+    current = (f"本期门诊收入合计为{token}，较上期保持稳定。注：以上对比涉及不同数据来源，差异未经调节，不据此作归因。"
+               "本章新增住院结论较为明确。")
+    warnings = repeated_section_warnings(current, earlier, {token: "1,234元"})
+    assert [warning.split("”一章")[0] for warning in warnings] == ["与前面“收入规模与结构分析", "与前面“成本运行情况分析"]
+    assert repeated_section_warnings("本章新增住院结论较为明确。", earlier) == []
+    assert repeated_section_warnings(current, {}, {token: "1,234元"}) == []
+
+
 def test_percentage_point_differences_must_come_from_two_registered_percentages():
     supplement = json.dumps({"findings": [{"columns": ["year", "share"], "rows": [["2024", 41.7], ["2025", 45.24]],
                                            "columnMeta": {"share": {"unit": "%", "isPercent": True}}}]})
