@@ -29,7 +29,13 @@ from .contracts_v1 import (
     TableTraceV1,
 )
 from .fact_index import fact_pointer
-from .numeric_text import _MONEY_UNITS, PERCENT_POINT, format_fact_value, percent_point_field
+from .numeric_text import (
+    _MONEY_UNITS,
+    PERCENT_POINT,
+    format_fact_value,
+    percent_point_field,
+    primary_display_name,
+)
 
 _TABLE_ID_PATTERN_RULES = "表格 ID 只允许字母数字与 _ . :-"
 
@@ -275,7 +281,7 @@ def _fact_label(
     """
     if label := getattr(fact, "display_name", None):
         # 显示名常带别名（“收入金额，也称医疗收入金额”）；表头只取首个名称。
-        return re.split(r"[，,；;]", label, maxsplit=1)[0].strip() or label
+        return primary_display_name(label) or label
     dataset_id = getattr(fact, "dataset_id", None) or getattr(fact, "current_dataset_id", None)
     sha256 = getattr(fact, "dataset_sha256", None) or getattr(fact, "current_dataset_sha256", None)
     for context in dataset_contexts:

@@ -256,6 +256,8 @@ export interface TraceValidation {
     formulaText?: string | null
     scope?: unknown
     datasetIds?: string[]
+    /** 数值取得方式：直接取登记事实、服务端按登记原值派生，或按运算式由服务端重算。 */
+    computation?: 'registered' | 'derived' | 'calc' | null
   }[]
   summary: { valid: number; stale: number; unbound: number }
   tables?: {

@@ -158,3 +158,20 @@ def test_calc_formula_reads_as_arithmetic_with_operand_periods_and_datasets():
     assert negative_base["formula"].startswith("(实际总医疗收入（2025年1月至2025年2月）100元 − (")
     assert " ÷ |(" in negative_base["formula"] and negative_base["formula"].endswith(" = 225.00%")
 
+
+
+def test_calc_formula_names_operands_without_their_aliases():
+    import json
+
+    from .test_number_selection import source
+
+    documents = [json.loads(item) for item in source()]
+    for document in documents:
+        for metric in document["metrics"]:
+            metric["displayName"] += "，也称医疗收入"
+    resolver = NumberReferenceResolver([json.dumps(document, ensure_ascii=False) for document in documents])
+    b = "fact-bbbbbbbbbbbbbbbb"
+    growth = resolver.resolve(_calc(f"growth({b}:periodValues.1,{b}:periodValues.0)", "%"))
+    # 显示名带别名时算式只写首个名称，与表头一致。
+    assert growth["formula"].startswith("(实际总医疗收入（2025年2月）60元 − 实际总医疗收入（2025年1月）40元)")
+    assert "也称" not in growth["formula"]

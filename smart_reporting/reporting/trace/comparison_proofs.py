@@ -214,25 +214,31 @@ def _comparable_periods(
 def period_list_text(periods) -> str:
     """提醒中列出的期间按读者习惯书写：连续月份写成“2024年1—9月”，跨年写成“2024年11月—2025年2月”。
 
-    不是逐月期间（日、年或混合粒度）时保持原样逐项列出。
+    不连续时各段分别书写（同比的本期与基期写成“2025年1—9月、2024年1—9月”）；
+    不是逐月期间（日、年或混合粒度）时保持原样逐项列出。编辑器卡片按同一规则书写。
     """
     values = [str(period) for period in periods]
-    parsed = [re.fullmatch(r"(\d{4})-(\d{2})", value) for value in values]
+    parsed = [re.fullmatch(r"(\d{4})-(0[1-9]|1[0-2])", value) for value in values]
     if not values or not all(parsed):
         return "、".join(values)
-    months = [int(match[1]) * 12 + int(match[2]) - 1 for match in parsed if match]
+    runs: list[list[int]] = []
+    for month in (int(match[1]) * 12 + int(match[2]) - 1 for match in parsed if match):
+        if runs and month == runs[-1][-1] + 1:
+            runs[-1].append(month)
+        else:
+            runs.append([month])
 
     def label(month: int) -> str:
         return f"{month // 12}年{month % 12 + 1}月"
 
-    first, last = months[0], months[-1]
-    if months != list(range(first, first + len(months))):
-        return "、".join(label(month) for month in months)
-    if first == last:
-        return label(first)
-    if first // 12 == last // 12:
-        return f"{first // 12}年{first % 12 + 1}—{last % 12 + 1}月"
-    return f"{label(first)}—{label(last)}"
+    def span(first: int, last: int) -> str:
+        if first == last:
+            return label(first)
+        if first // 12 == last // 12:
+            return f"{first // 12}年{first % 12 + 1}—{last % 12 + 1}月"
+        return f"{label(first)}—{label(last)}"
+
+    return "、".join(span(run[0], run[-1]) for run in runs)
 
 
 def period_window_label(periods) -> str:

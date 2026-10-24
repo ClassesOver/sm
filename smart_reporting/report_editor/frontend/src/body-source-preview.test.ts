@@ -162,7 +162,7 @@ it('states the verification conclusion and restores the registered value on requ
   expect(verification.textContent).toContain('正文已改动，需复核')
   expect(verification.textContent).toContain('正文当前值12,780万元')
   expect(verification.textContent).toContain('登记值12,450万元')
-  expect(verification.textContent).toContain('期间2025-01 — 2025-10')
+  expect(verification.textContent).toContain('期间2025年1月、2025年10月')
   expect(verification.textContent).toContain('口径营收 求和')
   // 找不到唯一位置时保留来源并提示手动修改，不猜测替换。
   ;(document.querySelector('.source-preview-restore') as HTMLButtonElement).click()

@@ -1,5 +1,5 @@
 import type { TraceSources, TraceValidation } from './api'
-import { formatRegisteredValue } from './body-value-marks'
+import { formatRegisteredValue, periodListText } from './body-value-marks'
 import { datasetLabel, subjectBusinessLabel } from './evidence-relations'
 import { findProtocolMarkers } from './protocol'
 import { sourceSubjectStatus } from './source-status'
@@ -37,14 +37,6 @@ function bodyContext(markdown: string, subjectId: string): { section: string; se
   return { section: stripProtocol(heading), sentence: stripProtocol(markdown.slice(start, marker.start)) }
 }
 
-function periodText(periods: unknown, fallback: string): string {
-  if (Array.isArray(periods)) {
-    const text = periods.filter(item => typeof item === 'string').join(' — ')
-    if (text) return text
-  }
-  return fallback
-}
-
 export function buildTraceListCsv(markdown: string, sources: TraceSources, validation: TraceValidation | null): string {
   const rows: unknown[][] = []
   for (const [index, subject] of (sources.subjects ?? []).entries()) {
@@ -68,7 +60,7 @@ export function buildTraceListCsv(markdown: string, sources: TraceSources, valid
       facts.map(fact => fact.name || fact.label).join('、'),
       draft,
       registered,
-      periodText(entry?.periods, factPeriod),
+      periodListText(entry?.periods) || factPeriod,
       entry?.formulaText || entry?.formula || '',
       status ? STATUS_LABELS[status.status] ?? status.status : '未校验',
       datasets.map(dataset => datasetLabel(dataset, sources.datasets)).join('、'),

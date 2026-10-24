@@ -32,6 +32,7 @@ from .numeric_text import (
     group_large_amounts,
     normalize_signed_wording,
     plain_period_wording,
+    primary_display_name,
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
@@ -41,6 +42,24 @@ from .value_references import UNREGISTERED_NUMBER_REASON, value_reference_failur
 
 def reference_fact_ids(token: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(re.findall(r"fact-[0-9a-f]{16}", token)))
+
+
+# 解析时由服务端按登记原值计算的选择器：期间合计与均值、相邻月变化、占比、预算比较、分组差额等。
+_COMPUTED_SELECTORS = (
+    "periodTotals.", "periodAverages.", "periodChanges.", "periodChangeRates.", "monthlyAverage",
+    "monthlyMinimum", "monthlyMaximum", "monthlyTrend", "metricShare.", "budgetComparison.", "projectRatio.",
+    "groupShares.", "groupGaps.", "groupContributions.", "registeredRatio", "cumulativeChanges.", "topSet.",
+)
+
+
+def reference_computation(token: str, selector: str | None, *, table_derivation: bool = False) -> str:
+    """正文数值的取得方式：registered 直接取登记事实，derived 由服务端按登记原值派生，
+    calc 按模型写出的运算式由服务端重算。供编辑器向读者标出可信状态。"""
+    if token.startswith("{{calc:"):
+        return "calc"
+    if table_derivation or token.startswith("{{derived:") or (selector or "").startswith(_COMPUTED_SELECTORS):
+        return "derived"
+    return "registered"
 
 
 def _dataset_ids(entries: Iterable[Mapping[str, Any]]) -> list[str]:
@@ -512,8 +531,8 @@ class NumberReferenceResolver:
         labels = []
         for operand, view in zip(result.operands, views, strict=True):
             entry = view["entry"]
-            # 指标名缺失时用字段名，不向读者显示内部选择器；写出各操作数取值的期间。
-            name = entry.get("displayName") or entry.get("field") or "登记值"
+            # 指标名只取首个名称（不带“也称…”别名），缺失时用字段名，不向读者显示内部选择器；写出各操作数取值的期间。
+            name = primary_display_name(entry.get("displayName")) or entry.get("field") or "登记值"
             span = "至".join(dict.fromkeys(
                 _period_display_label(str(period), entry.get("periodGranularity"))
                 for period in (*view["periods"][:1], *view["periods"][-1:])

@@ -40,6 +40,8 @@ def test_period_lists_read_as_calendar_spans():
     assert period_list_text([f'2024-{month:02d}' for month in range(1, 10)]) == '2024年1—9月'
     assert period_list_text(['2024-11', '2024-12', '2025-01']) == '2024年11月—2025年1月'
     assert period_list_text(['2025-09']) == '2025年9月'
-    # 不连续的月份逐项列出；非逐月期间保持原样。
+    # 不连续的各段分别书写（同比的本期与基期）；非逐月期间保持原样。
     assert period_list_text(['2025-01', '2025-03']) == '2025年1月、2025年3月'
+    assert period_list_text(['2025-01', '2025-02', '2024-01', '2024-02']) == '2025年1—2月、2024年1—2月'
     assert period_list_text(['2025-09-01', '2025-09-02']) == '2025-09-01、2025-09-02'
+    assert period_list_text(['2025-13']) == '2025-13'

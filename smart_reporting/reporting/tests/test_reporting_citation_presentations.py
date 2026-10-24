@@ -414,6 +414,8 @@ def test_citation_appendix_shows_readable_scope_and_periods() -> None:
     ("actual/budget; difference=actual-budget", "比率 = actual ÷ budget；差额 = actual − budget"),
     # 两个聚合之比：分子分母分别写成中文口径（第 86 轮整稿渲染核查发现附录原样显示）。
     ("sum(revenue)/sum(visits)", "revenue 求和 ÷ visits 求和"),
+    # 口径附注不妨碍主体口径的中文说明。
+    ("sum(budget_expenditure)；仅汇总 data_date 最新登记期间", "budget_expenditure 求和；仅汇总 data_date 最新登记期间"),
     # 未登记的写法原样保留。
     ("自定义口径", "自定义口径"),
 ])
@@ -421,6 +423,21 @@ def test_trace_appendix_methods_are_written_for_readers(formula, expected):
     from smart_reporting.reporting.delivery.report_runtime.markdown import readable_formula
 
     assert readable_formula(formula) == expected
+
+
+def test_formula_fields_are_written_with_their_chinese_names():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import readable_formula
+
+    labels = {"revenue": "医疗收入", "visits": "门诊人次", "campus": "院区", "data_date": "数据日期"}
+    assert readable_formula("sum(revenue)", labels) == "医疗收入 求和"
+    assert readable_formula("sum(revenue)/sum(visits)", labels) == "医疗收入 求和 ÷ 门诊人次 求和"
+    assert readable_formula("sum(revenue) WHERE campus='东院'", labels) == "医疗收入 求和（筛选：院区=东院）"
+    # 附注里的字段同样换成中文名；筛选值里的分号不算附注。
+    assert (readable_formula("sum(revenue)；仅汇总 data_date 最新登记期间", labels)
+            == "医疗收入 求和；仅汇总 数据日期 最新登记期间")
+    assert readable_formula("sum(revenue) WHERE campus='东院；西院'", labels) == "医疗收入 求和（筛选：院区=东院；西院）"
+    # 没有中文名的字段保持原样。
+    assert readable_formula("sum(cost)", labels) == "cost 求和"
 
 
 @pytest.mark.parametrize(("value", "unit", "expected"), [

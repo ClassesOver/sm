@@ -44,7 +44,7 @@ from ..reporting.trace.dataset_service import (
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
 from ..reporting.trace.fact_service import fact_display_unit, fact_display_value, read_fact_document
-from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field
+from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field, primary_display_name
 from ..reporting.workflow.checkpoint import FileIdentity
 from ..workspace import WorkspaceError
 from .capabilities import EditorCapabilities
@@ -68,13 +68,13 @@ def _registered_dataset_file(files: Mapping[str, Any], dataset: Any) -> Any | No
     return files.get(resource_id)
 
 
-def _column_field_definitions(
+def _dataset_column_definitions(
     analysis_context: Mapping[str, Any],
     files: Mapping[str, Any],
     datasets: Sequence[Any],
-) -> dict[str, str]:
-    """列名到中文说明；只采用与已登记数据集快照字节一致的分析上下文。"""
-    definitions: dict[str, str] = {}
+) -> dict[str, dict[str, str]]:
+    """每个已登记数据集的列名到中文说明；只采用与该数据集快照字节一致的分析上下文。"""
+    definitions: dict[str, dict[str, str]] = {}
     for dataset_context in analysis_context.get("datasetContexts", ()):
         if not isinstance(dataset_context, Mapping):
             continue
@@ -98,8 +98,49 @@ def _column_field_definitions(
                     isinstance(name, str) and name.strip()
                     and isinstance(description, str) and description.strip()
                 ):
-                    definitions.setdefault(name.strip(), description.strip())
+                    definitions.setdefault(dataset_id, {}).setdefault(name.strip(), description.strip())
     return definitions
+
+
+def _merged_column_definitions(definitions: Mapping[str, Mapping[str, str]]) -> dict[str, str]:
+    """跨数据集的列名到中文说明；同名列取先登记的说明。"""
+    merged: dict[str, str] = {}
+    for columns in definitions.values():
+        for name, description in columns.items():
+            merged.setdefault(name, description)
+    return merged
+
+
+def _formula_labels(
+    entry: Mapping[str, Any] | None,
+    dataset_ids: Sequence[str],
+    definitions: Mapping[str, Mapping[str, str]],
+) -> dict[str, str]:
+    """口径里的字段写成读者看到的中文名：所属数据集的列说明优先，其次登记的指标名，均只取首个名称。
+
+    同名列在所属数据集间说明不一致时保留原字段名，不张冠李戴。
+    """
+    labels: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for dataset_id in dataset_ids:
+        for name, description in definitions.get(dataset_id, {}).items():
+            if labels.setdefault(name, description) != description:
+                conflicts.add(name)
+    for name in conflicts:
+        labels.pop(name)
+    field, display_name = (entry or {}).get("field"), (entry or {}).get("displayName")
+    if isinstance(field, str) and isinstance(display_name, str) and display_name.strip():
+        labels.setdefault(field, display_name)
+    return {name: primary_display_name(label) or label for name, label in labels.items()}
+
+
+def _column_field_definitions(
+    analysis_context: Mapping[str, Any],
+    files: Mapping[str, Any],
+    datasets: Sequence[Any],
+) -> dict[str, str]:
+    """列名到中文说明；只采用与已登记数据集快照字节一致的分析上下文。"""
+    return _merged_column_definitions(_dataset_column_definitions(analysis_context, files, datasets))
 
 
 def narrative_section_projection(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -359,7 +400,8 @@ class ReportEditorTraceService:
                             *fact.get("datasetIds", ()),
                         ) if dataset_id in registered_dataset_ids
                     ))
-                    name = fact.get("field") or fact.get("code") or (
+                    # 列说明缺失时先用登记的指标名，不向读者显示内部字段名。
+                    name = fact.get("displayName") or fact.get("field") or fact.get("code") or (
                         f'{fact["leftField"]} / {fact["rightField"]}' if kind == "correlation" else None
                     ) or fact.get("fieldRef") or fact["factId"]
                     descriptions = {field_labels[(dataset_id, fact.get("fieldRef"))] for dataset_id in dataset_ids
@@ -824,8 +866,8 @@ class ReportEditorTraceService:
         files: Mapping[str, Any],
         datasets: Sequence[Any],
         analysis_context_file: Mapping[str, Any] | None,
-    ) -> dict[str, str]:
-        """编辑器复核使用与生成阶段相同的列名说明；上下文缺失时不阻断校验。"""
+    ) -> dict[str, dict[str, str]]:
+        """编辑器复核使用与生成阶段相同的列名说明（按数据集）；上下文缺失时不阻断校验。"""
         if analysis_context_file is None:
             return {}
         try:
@@ -844,7 +886,7 @@ class ReportEditorTraceService:
             return {}
         if not isinstance(analysis_context, dict):
             return {}
-        return _column_field_definitions(analysis_context, files, datasets)
+        return _dataset_column_definitions(analysis_context, files, datasets)
 
     # ------------------------------------------------------------------
     # 正文 subject 校验（B6）
@@ -871,6 +913,7 @@ class ReportEditorTraceService:
         from ..reporting.delivery.artifacts_v1 import _TABLE_BLOCK
         from ..reporting.trace.semantic_bindings import (
             bound_number_display,
+            reference_computation,
             reference_fact_ids,
             resolve_number_references,
             statement_fingerprints,
@@ -1092,6 +1135,9 @@ class ReportEditorTraceService:
                 return None
             return shown.text
 
+        column_definitions = await self._column_definitions_for_review(
+            context, files, index.datasets, analysis_context_file
+        )
         number_tokens: dict[tuple[str, ...], set[str]] = {}
         for binding in index.subject_bindings:
             if (binding.number_reference and binding.claim_id and binding.fact_refs
@@ -1200,6 +1246,11 @@ class ReportEditorTraceService:
                     "sourceIssues": [{"resourceId": resource_id, "code": source_failures[resource_id]}
                                      for resource_id in failed_sources],
                     "factValue": fact_value,
+                    # 读者可见的可信状态：直接登记值、服务端派生或按运算式重算。
+                    "computation": reference_computation(
+                        number.token, selected.get("selector") if selected else None,
+                        table_derivation=number.table_derivation is not None,
+                    ) if number is not None else None,
                     "restoreText": restore_text,
                     "warnings": detail["warnings"],
                     "draftValue": detail.get("draftValue"),
@@ -1213,7 +1264,9 @@ class ReportEditorTraceService:
                     "periods": list(expected_periods),
                     "formula": _entry_formula(entry),
                     # 编辑器核对卡片展示的中文口径，与导出附录同一转换规则。
-                    "formulaText": readable_formula(formula) if (formula := _entry_formula(entry)) else None,
+                    "formulaText": readable_formula(formula, _formula_labels(
+                        entry, _entry_dataset_ids(entry), column_definitions,
+                    )) if (formula := _entry_formula(entry)) else None,
                     "scope": _entry_scope(entry),
                     "datasetIds": _entry_dataset_ids(entry),
                 }
@@ -1286,9 +1339,7 @@ class ReportEditorTraceService:
             for chart in charts_payload
             if chart.get("status") in {"valid", "stale"}
         )
-        field_definitions = await self._column_definitions_for_review(
-            context, files, index.datasets, analysis_context_file
-        )
+        field_definitions = _merged_column_definitions(column_definitions)
         warnings = await anyio.to_thread.run_sync(
             partial(
                 review_content,

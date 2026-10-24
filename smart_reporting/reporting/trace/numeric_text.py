@@ -2130,9 +2130,13 @@ def _derive_from_table(
                 )
 
 
+def primary_display_name(name: str | None) -> str:
+    """显示名常带别名（“收入金额，也称医疗收入金额”）；读者可见处只用首个名称。"""
+    return re.split(r"[，,；;]", name or "", maxsplit=1)[0].strip()
+
+
 def _short_name(fact: Any) -> str | None:
-    name = fact.display_name or ""
-    return re.split(r"[，,；;]", name, maxsplit=1)[0].strip() or None
+    return primary_display_name(fact.display_name) or None
 
 
 _DERIVED_CACHE: OrderedDict[tuple[Any, ...], DerivedNumbers] = OrderedDict()
