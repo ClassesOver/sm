@@ -493,6 +493,21 @@ def _summary_rank_column(columns: list[str], rows: list[list[Any]]) -> int | Non
     return None
 
 
+def _conserved_sum(values: list[int | float]) -> int | float:
+    if all(isinstance(value, int) for value in values):
+        return sum(values)
+    total = math.fsum(float(value) for value in values)
+    return int(total) if total.is_integer() else total
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
 def _project_tabular_finding(finding: Mapping[str, Any], *, row_limit: int) -> dict[str, Any]:
     columns = list(finding["columns"])
     rows = [list(row) for row in finding["rows"]]
@@ -532,16 +547,10 @@ def _project_tabular_finding(finding: Mapping[str, Any], *, row_limit: int) -> d
             for index in omitted_indices
             if column_index < len(rows[index])
             for row in (rows[index],)
-            if isinstance(row[column_index], (int, float))
-            and not isinstance(row[column_index], bool)
-            and math.isfinite(float(row[column_index]))
+            if _is_finite_number(row[column_index])
         ]
         if numeric_values:
-            if all(isinstance(value, int) for value in numeric_values):
-                omitted_numeric_sums[column] = sum(numeric_values)
-            else:
-                total = math.fsum(float(value) for value in numeric_values)
-                omitted_numeric_sums[column] = int(total) if total.is_integer() else total
+            omitted_numeric_sums[column] = _conserved_sum(numeric_values)
 
     return {
         **{key: deepcopy(value) for key, value in finding.items() if key != "rows"},
@@ -561,6 +570,7 @@ def _project_tabular_finding(finding: Mapping[str, Any], *, row_limit: int) -> d
 _SUMMARY_GROUP_KEYS = ("topGroups", "bottomGroups")
 _SUMMARY_GROUP_LIMITS = (5, 2, 1, 0)
 _SUMMARY_CORRELATION_LIMITS = (20, 5)
+_SUMMARY_LIST_LIMITS = (20, 5, 1)
 
 
 def _abs_correlation(detail: Any) -> float:
@@ -575,8 +585,12 @@ def _project_analysis_summary_payload(
     *,
     max_tokens: int,
     count_tokens: Callable[[Mapping[str, Any]], int],
+    strict: bool = True,
 ) -> dict[str, Any]:
-    """只投影摘要模型输入；完整 evidence 文件和 durable 状态保持不变。"""
+    """只投影摘要模型输入；完整 evidence 文件和 durable 状态保持不变。
+
+    strict=False 时压不进预算也返回最小投影并告警，由调用方的执行器按 hard cap 把关。
+    """
 
     original = deepcopy(dict(payload))
     original_tokens = count_tokens(original)
@@ -587,11 +601,14 @@ def _project_analysis_summary_payload(
     if not isinstance(raw_findings, list):
         raw_findings = list(raw_findings) if isinstance(raw_findings, tuple) else []
     candidates: list[tuple[int | str, ...]] = []
+    # 含列式表的路径前缀；这些位置的记录不能整体截掉，否则会丢失表的守恒汇总。
+    table_prefixes: set[tuple[int | str, ...]] = set()
 
     def collect(value: Any, path: tuple[int | str, ...]) -> None:
         if isinstance(value, Mapping):
             if (isinstance(value.get("columns"), (list, tuple))
                     and isinstance(value.get("rows"), (list, tuple))):
+                table_prefixes.update(path[:index] for index in range(len(path) + 1))
                 if len(value["rows"]) > 2:
                     candidates.append(path)
             for key, child in value.items():
@@ -606,7 +623,32 @@ def _project_analysis_summary_payload(
             value = value[key]
         return value
 
+    list_paths: list[tuple[int | str, ...]] = []
+
+    def collect_lists(value: Any, path: tuple[int | str, ...]) -> None:
+        # 只截短记录数组（如 items: [{...}]）。标量数组多为数据集、字段等身份信息，
+        # 截短会让模型误认来源；含列式表的数组已由行投影保留守恒汇总，不能整张丢弃。
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                if key not in {"columns", "rows", "columnMeta"}:
+                    collect_lists(child, (*path, key))
+        elif isinstance(value, (list, tuple)):
+            records = (
+                bool(path)
+                and len(value) > _SUMMARY_LIST_LIMITS[-1]
+                and path not in table_prefixes
+                and all(isinstance(item, Mapping) for item in value)
+            )
+            if records:
+                list_paths.append(path)
+            # 记录数组首轮即截到最大上限，之后的元素不会出现在任何候选里。
+            children = value[: _SUMMARY_LIST_LIMITS[0]] if records else value
+            for index, child in enumerate(children):
+                collect_lists(child, (*path, index))
+
     collect(raw_findings, ())
+    collect_lists(raw_findings, ())
+    list_paths.sort(key=len)
     candidates.sort(
         key=lambda path: len(
             json.dumps(at_path(raw_findings, path), ensure_ascii=False, separators=(",", ":"))
@@ -621,6 +663,7 @@ def _project_analysis_summary_payload(
     series_limit: int | None = None
     group_limit: int | None = None
     correlation_limit: int | None = None
+    list_limit: int | None = None
     raw_facts = original.get("deterministicFacts")
     raw_metrics = raw_facts.get("metrics", []) if isinstance(raw_facts, Mapping) else []
     series_indices = [
@@ -682,6 +725,46 @@ def _project_analysis_summary_payload(
                 "projectedFindingCount": len({path[0] for path in projected_paths}),
                 "projectedTableCount": len(projected_paths),
             }
+        if list_limit is not None:
+            evidence = candidate["supplementalEvidence"]
+            truncated_lists = []
+            for path in list_paths:
+                try:
+                    parent = at_path(evidence["findings"], path[:-1])
+                    values = parent[path[-1]]
+                except (KeyError, IndexError, TypeError):
+                    continue  # 所在元素已随上层数组截短。
+                if not isinstance(values, (list, tuple)) or len(values) <= list_limit:
+                    continue
+                omitted = values[list_limit:]
+                sums: dict[str, list[int | float]] = {}
+                for record in omitted:
+                    for field_name, field_value in record.items():
+                        if _is_finite_number(field_value):
+                            sums.setdefault(str(field_name), []).append(field_value)
+                entry = {
+                    "path": "findings" + "".join(
+                        f"[{key}]" if isinstance(key, int) else f".{key}" for key in path
+                    ),
+                    "rowCount": len(values),
+                    "selectedRowCount": list_limit,
+                    "omittedNumericSums": {
+                        field_name: _conserved_sum(numbers)
+                        for field_name, numbers in sums.items()
+                    },
+                }
+                # 截短记录本身也占输入；省下的不比记录多时保留原列表。
+                if len(json.dumps(omitted, ensure_ascii=False, default=str)) <= len(
+                    json.dumps(entry, ensure_ascii=False)
+                ):
+                    continue
+                parent[path[-1]] = list(values[:list_limit])
+                truncated_lists.append(entry)
+            if truncated_lists:
+                evidence["sourceFile"] = deepcopy(original.get("supplementalEvidenceSource"))
+                evidence.setdefault("projection", {"projected": True})["truncatedLists"] = (
+                    truncated_lists
+                )
         if group_limit is not None:
             # topGroups/bottomGroups 已按贡献排序，保留首部即保留最极端的组合。
             for index in group_indices:
@@ -748,17 +831,28 @@ def _project_analysis_summary_payload(
                 metric["periodValuesView"] = table["view"]
         return compact_non_tabular(candidate)
 
+    # 不超过行数上限的表投影后只会多出 view 元数据，逐表尝试只针对能真正变小的表；
+    # 每次尝试都要完整序列化与计数，表多时逐个尝试会把开销放大到平方级。
     for path in candidates:
+        if len(at_path(raw_findings, path)["rows"]) <= row_limit:
+            continue
         projected_paths.add(path)
         candidate = build()
         if count_tokens(candidate) <= max_tokens:
             return candidate
+    projected_paths.update(candidates)
     while projected_paths and row_limit > 2:
         row_limit = max(2, row_limit // 2)
         candidate = build()
         if count_tokens(candidate) <= max_tokens:
             return candidate
-    # 补证表压缩后仍超限时，依次缩减确定性事实的组合明细、相关性明细与期间序列；
+    # 补证先于确定性事实收缩：补证表之后截短补证记录数组。
+    if list_paths:
+        for list_limit in _SUMMARY_LIST_LIMITS:
+            candidate = build()
+            if count_tokens(candidate) <= max_tokens:
+                return candidate
+    # 补证收缩后仍超限时，依次缩减确定性事实的组合明细、相关性明细与期间序列；
     # 总值、指标身份不变，被省略的部分以 *View 标注原始条数。
     if group_indices:
         for group_limit in _SUMMARY_GROUP_LIMITS:
@@ -788,10 +882,14 @@ def _project_analysis_summary_payload(
         for key, value in candidate.items()
     }
     logger.warning(
-        "report_analysis_summary_context_too_large analysis_block={} input_tokens={} "
+        "{} analysis_block={} input_tokens={} "
         "projected_tokens={} input_token_budget={} component_bytes={}",
+        "report_analysis_summary_context_too_large" if strict
+        else "report_analysis_projection_over_budget",
         original.get("analysisBlock"), original_tokens, projected_tokens, max_tokens, component_bytes,
     )
+    if not strict:
+        return candidate
     raise ReportingError(
         "report_analysis_summary_context_too_large",
         "单项分析摘要在保留证据身份和守恒汇总后仍超过模型输入预算。",
