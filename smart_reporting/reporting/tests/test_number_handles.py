@@ -13,7 +13,7 @@ from smart_reporting.reporting.structured_output.execution import _validation_is
 from smart_reporting.reporting.tests.test_number_selection import source
 from smart_reporting.reporting.tests.test_reporting_fixed_phase_workflows import _context
 from smart_reporting.reporting.trace.calc_references import CalcEvaluator
-from smart_reporting.reporting.trace.number_handles import NumberHandles
+from smart_reporting.reporting.trace.number_handles import NumberHandles, compact_catalog
 from smart_reporting.reporting.trace.numeric_text import (
     frozen_number_catalog,
     prompt_number_catalog,
@@ -95,7 +95,9 @@ async def test_section_stage_speaks_handles_to_the_model_and_returns_full_refere
         async def execute(self, instruction, **_kwargs):
             instructions.append(instruction)
             catalog = json.loads(instruction)['frozenNumbers']
-            handle = next(key for key, value in catalog.items() if value == '100元')
+            # 紧凑目录：同一编号的各单位显示值以“｜”分隔，正文写 {{N编号:单位}}。
+            key = next(key for key, value in catalog.items() if '100元' in value.split('｜'))
+            handle = key[:-2] + ':元}}'
             # 模型先写了不存在的编号，按纠错事实改用目录中的编号。
             for markdown in ('本期合计{{N999:元}}。', f'本期合计{handle}。'):
                 try:
@@ -118,8 +120,42 @@ async def test_section_stage_speaks_handles_to_the_model_and_returns_full_refere
         number_handles=handles,
     )
     [instruction] = instructions
-    assert '{{value:' not in instruction and '{{N1:元}}' in instruction
+    assert '{{value:' not in instruction and '"{{N1}}":"' in instruction
     [[issue]] = issues
     assert '{{N999:元}}' in issue['message'] and '编号不存在' in issue['message']
     assert '{{value:' not in issue['message']
     assert content == SectionBlockContent(markdown=f'本期合计{TOTAL}。')
+
+
+def test_compact_catalog_lists_each_identity_once_with_all_units():
+    catalog = {
+        '{{value:fact-bbbbbbbbbbbbbbbb:total:元}}': '100元',
+        '{{value:fact-bbbbbbbbbbbbbbbb:total:万元}}': '0.01万元',
+        '{{value:fact-bbbbbbbbbbbbbbbb:metricShare.fact-dddddddddddddddd:%}}': '71.43%',
+    }
+    compacted = compact_catalog(catalog)
+    assert compacted == {
+        '{{value:fact-bbbbbbbbbbbbbbbb:total:}}': '100元｜0.01万元',
+        '{{value:fact-bbbbbbbbbbbbbbbb:metricShare.fact-dddddddddddddddd:}}': '71.43%',
+    }
+    handles = NumberHandles(catalog)
+    assert handles.encode(json.dumps(compacted, ensure_ascii=False)) == (
+        '{"{{N1}}": "100元｜0.01万元", "{{N2}}": "71.43%"}')
+    # 模型按所列单位写占位符，解码回完整引用。
+    assert handles.decode('{{N1:万元}}') == '{{value:fact-bbbbbbbbbbbbbbbb:total:万元}}'
+
+
+def test_model_number_view_hoists_repeated_meanings_without_touching_the_payload():
+    groups = [{'group': '北院', 'reference': 'r1', 'meaning': '完整分组组合'},
+              {'group': '南院', 'reference': 'r2', 'meaning': '完整分组组合'}]
+    shares = [{'totalFactId': 'fact-1', 'reference': 's1', 'meaning': '占比甲'},
+              {'totalFactId': 'fact-2', 'reference': 's2', 'meaning': '占比乙'}]
+    payload = {'numberGuide': [{'factId': 'fact-0', 'groups': groups, 'metricShares': shares}], 'other': 1}
+    view = sections._model_number_view(payload)
+    [item] = view['numberGuide']
+    assert item['groups'] == [{'group': '北院', 'reference': 'r1'}, {'group': '南院', 'reference': 'r2'}]
+    assert item['groupsMeaning'] == '完整分组组合'
+    # 说明不同则保留逐项说明；服务端读取的列表字段不变。
+    assert item['metricShares'] == shares and 'metricSharesMeaning' not in item
+    assert payload['numberGuide'][0]['groups'] is groups and 'meaning' in groups[0]
+    assert view['other'] == 1

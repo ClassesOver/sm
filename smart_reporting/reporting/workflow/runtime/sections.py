@@ -52,7 +52,7 @@ from ...trace.contracts_v1 import (
 )
 from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
-from ...trace.number_handles import NumberHandles
+from ...trace.number_handles import NumberHandles, compact_catalog
 from ...trace.number_selection import align_number_selections
 from ...trace.numeric_text import (
     frozen_number_catalog,
@@ -272,6 +272,38 @@ def _block_review_notices(
 
 
 _MAX_REFERENCE_REJECTIONS = 2
+
+
+def _model_number_view(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """模型可见的数值视图：目录按引用身份合并显示单位，numberGuide 中逐项相同的 meaning 提到上层。
+
+    只改变提示呈现、不改原载荷：服务端核对、断言目录（按完整目录取允许引用）与渲染仍用完整结构。
+    """
+    view = dict(payload)
+    catalog = payload.get("frozenNumbers")
+    if isinstance(catalog, Mapping) and catalog:
+        view["frozenNumbers"] = compact_catalog(catalog)
+    guide = payload.get("numberGuide")
+    if isinstance(guide, list):
+        compacted = []
+        for item in guide:
+            if not isinstance(item, Mapping):
+                compacted.append(item)
+                continue
+            item = dict(item)
+            for key, entries in list(item.items()):
+                if not (isinstance(entries, list) and len(entries) > 1
+                        and all(isinstance(entry, Mapping) and "meaning" in entry for entry in entries)):
+                    continue
+                meanings = {entry["meaning"] for entry in entries}
+                if len(meanings) != 1:
+                    continue
+                # 分组、占比、预算比较等逐项附同一句说明；提到 <key>Meaning 一次给出，列表结构不变。
+                item[key] = [{name: value for name, value in entry.items() if name != "meaning"} for entry in entries]
+                item[f"{key}Meaning"] = meanings.pop()
+            compacted.append(item)
+        view["numberGuide"] = compacted
+    return view
 
 
 def _decoded_section_content(content: Any, handles: NumberHandles) -> Any:
@@ -1189,7 +1221,7 @@ def _section_stage_agent(
             "月度日期（如2025-11-01）只表示所属月份，不是数据截止时点；其他模型摘要或图表标题中的推测不构成直接证据。不得补写目录中不存在的月均值或派生金额。",
             "月均值必须与正文月份范围一致；完整12个月的均值不得用于1—10月；期末有连续零值月份时优先用 monthlyStatistics.averageBeforeTrailingZeros 并写明月份范围。多个指标各取前N名后并集展示时，分类数量可以超过N，不能据此认定图表超范围。声称各月方向一致前须逐月核对；存在反向月份时明确例外，不写全部一致。",
             "异常或偏低只描述事实；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
-            "frozenNumbers 中的数值必须原样使用对应的 {{N编号:单位}} 占位符（如 {{N12:亿元}}），不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。同一编号的元、万元、亿元等已登记单位都列在 frozenNumbers 中，按需选用；需要元值和亿元同时展示时分别写两个占位符；大额人次可选择万人次占位。",
+            "frozenNumbers 中的数值必须写成 {{N编号:单位}} 占位符（如 {{N12:亿元}}），不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。frozenNumbers 每个编号列出该数值各已登记单位的显示值（以“｜”分隔），单位只能取其中之一；需要元值和亿元同时展示时分别写两个占位符；大额人次可选择万人次占位。",
             "占位符渲染后已带单位，其后不得再写单位（不写“{{N12:亿元}}亿元”）；每个数值写在其所属指标、科室或期间的名下，不得把一个科室或指标的引用写到另一个名下。数字与百分号用半角，百分点写“个百分点”，不写 pp、pct。",
             "reportGoal要求精确原始元值时，已登记元单位的关键金额必须选择元值占位符展示；"
             "可另附亿元或万元显示，但不得只写舍入后的大单位金额。",
@@ -1289,6 +1321,8 @@ async def _run_section_stage(
         thinking_request.failure_kind or "-",
     )
     stage_agent = _section_stage_agent(agent, output_schema, stage, response_validator)
+    if number_handles is not None:
+        payload = _model_number_view(payload)
     instruction = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if number_handles is not None:
         # 提示边界：完整引用换成短编号，模型只需照抄 {{N编号:单位}}，不再抄写内部编号与选择器。
