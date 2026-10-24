@@ -331,14 +331,20 @@ def _number_reference_validator(
 ) -> Callable[[Any], SectionBlockContent | SectionContent]:
     """正文响应的数值关口：会在正文中成为“待核实”的数值，先连同原因交回模型，在同一调用内纠正。
 
-    覆盖两类：无法登记的数值/计算引用（附同一指标可用引用），以及按最终渲染（含补证表与受控断言）
-    找不到登记依据的手写数字（附所在语句）。复用结构化执行器的纠错回路（previousOutput + issues），
+    覆盖三类：无法登记的数值/计算引用（附同一指标可用引用）、不可展开的受控结论（正文会显示为
+    证据不足提示），以及按最终渲染（含补证表与受控断言）找不到登记依据的手写数字（附所在语句）。复用结构化执行器的纠错回路（previousOutput + issues），
     服务端只诊断、不改写。提示使用短编号时先解码再判定，纠错事实再编码为模型所见的短编号。
     同一 stage 最多退回 _MAX_REFERENCE_REJECTIONS 次，之后放行；残留数值渲染为待核实并记录原因，
     不阻断章节。
     """
     from ...trace.numeric_text import text_after_last_break, text_before_next_break
-    from ...trace.semantic_bindings import expand_assertion_placeholders, render_bound_numbers
+    from ...trace.semantic_bindings import (
+        ASSERTION_PLACEHOLDER,
+        UNAVAILABLE_ASSERTION_TEXT,
+        assertion_unavailable_reason,
+        expand_assertion_placeholders,
+        render_bound_numbers,
+    )
     from ...trace.value_references import (
         UNREGISTERED_NUMBER_REASON,
         number_reference_failures,
@@ -378,6 +384,22 @@ def _number_reference_validator(
             found.append((original, unregistered_number_message(original, statement[:240])))
         return found
 
+    def unavailable_assertions(markdown: str) -> list[tuple[str, str]]:
+        # 不可展开的受控结论在正文中显示为固定的证据不足提示，与待核实一样交回模型改写。
+        found = []
+        for placeholder in dict.fromkeys(match[0] for match in ASSERTION_PLACEHOLDER.finditer(markdown)):
+            assertion = (assertions or {}).get(ASSERTION_PLACEHOLDER.fullmatch(placeholder)[1])
+            reason = assertion_unavailable_reason(assertion)
+            if reason is None:
+                continue
+            codes = "、".join(getattr(assertion, "reasons", ()) or ())
+            found.append((placeholder, (
+                f"受控结论引用{placeholder}不可用：{reason}{f'（{codes}）' if codes else ''}，"
+                f"正文会显示为“{UNAVAILABLE_ASSERTION_TEXT}”。请改用 assertionCatalog 中 status 为 supported 的编号"
+                "或 frozenNumbers 中的数值引用；仍无依据时删去该句，不得写待核实。"
+            )))
+        return found
+
     def validate_response(content: Any) -> SectionBlockContent | SectionContent:
         nonlocal rejections
         candidate = _planner_candidate(content)
@@ -402,6 +424,7 @@ def _number_reference_validator(
             hints = [warning for warning in selection_warnings if "需复核" in warning]
             issues = [(failure["reference"], reference_failure_message(failure, hints))
                       for failure in number_reference_failures(aligned, number_contents)]
+            issues.extend(unavailable_assertions(markdown))
             issues.extend(unregistered_numbers(markdown))
             line_errors.extend({
                 "type": PydanticCustomError(

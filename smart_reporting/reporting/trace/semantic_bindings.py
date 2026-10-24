@@ -81,29 +81,37 @@ class BoundNumberDisplay(NamedTuple):
     verified: bool
 
 
+ASSERTION_PLACEHOLDER = re.compile(r"\{\{assert:(assert-[0-9a-f]{64})\}\}")
+UNAVAILABLE_ASSERTION_TEXT = "证据不足，需补充来源或指标口径。"
+
+
+def assertion_unavailable_reason(assertion: Any) -> str | None:
+    """受控结论不能展开为事实片段的原因（面向读者）；可以展开时返回 None。"""
+    if assertion is None:
+        return "受控结论编号不存在"
+    if assertion.status != "supported":
+        return "受控结论证据不足"
+    if not assertion.reference_token and assertion.request.operation != "value":
+        return "受控结论没有可展开的登记数值"
+    return None
+
+
 def expand_assertion_placeholders(
     markdown: str,
     assertions: Mapping[str, Any] | None,
     *,
-    unavailable: Callable[[], str] | None = None,
+    unavailable: Callable[[str], str] | None = None,
 ) -> str:
     """Use the same server fragment before scoring, retry selection and binding."""
 
-    def missing() -> str:
-        return unavailable() if unavailable is not None else "证据不足，需补充来源或指标口径。"
-
     def expand(match: re.Match[str]) -> str:
         assertion = (assertions or {}).get(match[1])
-        if assertion is None or assertion.status != "supported":
-            return missing()
-        reference = assertion.reference_token or (
-            assertion.request.operands[0] if assertion.request.operation == "value" else None
-        )
-        if reference is None:
-            return missing()
+        if (reason := assertion_unavailable_reason(assertion)) is not None:
+            return unavailable(reason) if unavailable is not None else UNAVAILABLE_ASSERTION_TEXT
+        reference = assertion.reference_token or assertion.request.operands[0]
         return assertion.factual_fragment(value_placeholder=reference)
 
-    return re.sub(r"\{\{assert:(assert-[0-9a-f]{64})\}\}", expand, markdown)
+    return ASSERTION_PLACEHOLDER.sub(expand, markdown)
 
 
 def bound_number_display(
@@ -198,7 +206,8 @@ def render_bound_numbers(
     markdown = re.sub(r"\[\[claim:[^\]\n]+\]\]", "", markdown)
     markdown = re.sub("待核实", lambda _: notice("source_review"), markdown)
     markdown = expand_assertion_placeholders(
-        markdown, assertions, unavailable=lambda: notice("source_review", "证据不足，需补充来源或指标口径。")
+        markdown, assertions,
+        unavailable=lambda reason: notice("source_review", UNAVAILABLE_ASSERTION_TEXT, reason=reason),
     )
     markdown = render_frozen_numbers(
         align_placeholder_direction(markdown, contents), catalog, annotate=annotate

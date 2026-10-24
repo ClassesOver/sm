@@ -77,10 +77,17 @@ def test_unknown_scope_and_forged_assertion_do_not_generate_factual_value():
     result = compiler([content]).compile(AssertionRequest(operation="value", operands=(token(),)))
     assert result.status == "unknown" and "scope_unknown" in result.reasons
     assert result.value is None
-    text, refs, _ = render_bound_numbers(
+    text, refs, notices = render_bound_numbers(
         "{{assert:assert-" + "f" * 64 + "}}", [content], key="test"
     )
     assert "证据不足" in text and not refs and "140" not in text
+    # 编辑器复核卡片说明为什么显示证据不足；内部原因代码不展示给读者。
+    assert [(notice.kind, notice.reason) for notice in notices] == [("source_review", "受控结论编号不存在")]
+    _, _, notices = render_bound_numbers(
+        "{{assert:" + result.assertion_id + "}}", [content], key="test",
+        assertions={result.assertion_id: result},
+    )
+    assert [notice.reason for notice in notices] == ["受控结论证据不足"]
 
 
 @pytest.mark.parametrize("scope", [{"院区": " "}, {"": "北院"}, {"院区": "北院", "科室": ""}])

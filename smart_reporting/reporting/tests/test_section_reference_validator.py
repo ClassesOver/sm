@@ -80,3 +80,30 @@ def test_handwritten_numbers_that_would_become_unverified_are_returned_with_thei
 
 def test_registered_handwritten_numbers_pass():
     assert _validator()({'markdown': '本期合计100元。'}).markdown == '本期合计100元。'
+
+
+def test_unavailable_assertions_are_returned_with_reason_and_supported_ones_pass():
+    from smart_reporting.reporting.tests.test_assertion_compiler import compiler, facts, token
+    from smart_reporting.reporting.trace.assertions import AssertionRequest
+
+    supported = compiler([facts(scope={'院区': '北院'})]).compile(
+        AssertionRequest(operation='value', operands=(token(),)))
+    unknown = compiler([facts()]).compile(AssertionRequest(operation='value', operands=(token(),)))
+    assertions = {supported.assertion_id: supported, unknown.assertion_id: unknown}
+    stage = sections._section_stage_agent(
+        Agent(model=ReportingPhaseOpenAIChat(id='test', api_key='test')), SectionBlockContent, 'block-1',
+        response_validator=sections._number_reference_validator(
+            SectionBlockContent, number_contents=[facts(scope={'院区': '北院'})], field_definitions={},
+            assertions=assertions,
+        ),
+    )
+    validate = getattr(stage.model, '_report_response_validator')
+    forged = '{{assert:assert-' + 'f' * 64 + '}}'
+    with pytest.raises(ValidationError) as caught:
+        validate({'markdown': f'结论一：{{{{assert:{unknown.assertion_id}}}}}。结论二：{forged}。'})
+    first, second = (issue['message'] for issue in _validation_issues(caught.value))
+    # 不可展开的受控结论会显示为固定的证据不足提示：附原因交回模型，不留到发布后。
+    assert '受控结论证据不足（scope_unknown' in first and '证据不足，需补充来源或指标口径' in first
+    assert forged in second and '受控结论编号不存在' in second
+    passed = validate({'markdown': f'结论：{{{{assert:{supported.assertion_id}}}}}。'})
+    assert passed.markdown == f'结论：{{{{assert:{supported.assertion_id}}}}}。'
