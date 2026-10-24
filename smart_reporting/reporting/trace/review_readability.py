@@ -106,6 +106,29 @@ def readability_warnings(markdown: str, catalog: Mapping[str, str] | None = None
     return warnings
 
 
+_HEDGE = re.compile(r"待核实|待复核|待确认")
+
+
+def prose_hedge_warnings(markdown: str) -> list[str]:
+    """模型自写的“待核实/待复核/待确认”：只用于写作复核，按 block 汇总一条软告警。
+
+    数据限制只在改变结论读法时紧跟结论说明影响；服务端渲染时插入的占位不经过这里，
+    已发布正文的质量扫描也不调用本函数。
+    """
+    # 引用占位与代码块不是模型写给读者的提示。
+    text = re.sub(r"\{\{[^{}\r\n]*\}\}", "", markdown)
+    text = re.sub(r"(?ms)^\s*```.*?^\s*```", "", text)
+    hits = [line.strip() for line in text.splitlines() if _HEDGE.search(line)]
+    if not hits:
+        return []
+    example = re.sub(r"\[\[[^\]\r\n]+\]\]", "", hits[0])[:40]
+    return [
+        f"正文写了待核实类提示（{len(hits)} 处，如：{example}……）：数据限制只在改变某项结论的读法时，"
+        "紧跟该结论用一句话说明影响和处理（如“三级科室归属缺失较多，科室排名仅作参考”），不复述记录条数、"
+        "最小值等明细，不写“待核实”“待复核”“待确认”，不单设口径限制段落；与本章结论无关的限制删去。"
+    ]
+
+
 _READABLE_PARAGRAPH_CHARS = 360
 
 

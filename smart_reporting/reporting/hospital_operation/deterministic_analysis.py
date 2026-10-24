@@ -1742,6 +1742,22 @@ _DESCRIPTIVE_DATASET_NOTES = frozenset({
 })
 
 
+# 画像的描述性告警（字段相关、零值、分布不均、常量、偏态、均匀分布）不改变任何结论的读法；
+# 交给写作模型只会被逐章复述成口径限制。字段缺失仍保留，它影响排名与占比的读法。
+_PROFILE_DESCRIPTIVE_ALERT = re.compile(
+    r"is highly overall correlated with|has \d+ \([\d.]+%\) zeros|is highly imbalanced|has a constant value"
+    r"|is highly skewed|is uniformly distributed|has unique values"
+)
+
+
+def writer_relevant_warning(warning: str) -> bool:
+    """分析级告警是否交给写作模型：去掉画像描述性告警与方法说明，原始 warnings 仍完整保留。"""
+    if warning in _DESCRIPTIVE_DATASET_NOTES:
+        return False
+    alert = _PROFILE_ALERT.match(warning)
+    return alert is None or not _PROFILE_DESCRIPTIVE_ALERT.search(alert[2])
+
+
 def _fact_quality_warnings(warnings: tuple[str, ...], field: str) -> list[str]:
     """事实只携带与本字段相关的数据缺陷告警。
 

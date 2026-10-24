@@ -22,7 +22,10 @@ from ...delivery.draft_v1 import (
     promote_orphan_h4_headings,
 )
 from ...delivery.report_runtime.markdown import normalize_number_notation
-from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ...hospital_operation.deterministic_analysis import (
+    DeterministicAnalysisBundle,
+    writer_relevant_warning,
+)
 from ...hospital_operation.findings import FindingGraph
 from ...hospital_operation.narrative_outline import NarrativeOutline, NarrativeSection
 from ...hospital_operation.outline import ReportOutlineSection
@@ -58,6 +61,7 @@ from ...trace.numeric_text import (
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
+from ...trace.review_readability import prose_hedge_warnings
 from ...trace.subject_builder import bind_local_claim_values, build_claim_subject_bindings
 from ...trace.table_builder import build_analysis_tables
 from ..checkpoint import (
@@ -232,7 +236,7 @@ _SECTION_BLOCK_OMISSION_MARKER = "[...已省略与当前正文块无关的证据
 _LATER_CORRECTION_ACTIONS = (
     "同比/环比、月均值与分组排名按登记结果改正；数值归属与点名的指标或科室不符时改用该对象的数值引用或改写主语；"
     "referenceIssues 列出当前引用的真实期间、范围和选择器，逐项核对当前分句；多月合计不能充当单月值，"
-    "科室名称须与引用范围一致，找不到对应来源时保留待核实，不得删除告警文字来冒充已核实；"
+    "科室名称须与引用范围一致，找不到对应来源时删去该数值并改写句子，不得保留无依据的数值，也不得改写成已核实的口吻；"
     "历史新高、首次突破等表述改为与对比期的比较；图表编号改用图表标题主题词指代；"
     "小标题压缩为不超过 24 字的主题短语；过长段落按结论、证据、建议拆分；倍数改用已登记的变化率。"
 )
@@ -837,6 +841,22 @@ def _collect_matching_json_leaves(
     return [(path, value)] if matcher.search(str(value).casefold()) else []
 
 
+def _drop_descriptive_warnings(value: Any) -> None:
+    """写作视图去掉不改变结论读法的画像描述性告警与方法说明（就地修改刚解码的副本）。
+
+    冻结证据文件与分析级 warnings 原样保留，质量台账和复核仍使用完整告警。
+    """
+    if isinstance(value, dict):
+        for key, entry in value.items():
+            if key == "warnings" and isinstance(entry, list):
+                entry[:] = [item for item in entry if not isinstance(item, str) or writer_relevant_warning(item)]
+            else:
+                _drop_descriptive_warnings(entry)
+    elif isinstance(value, list):
+        for entry in value:
+            _drop_descriptive_warnings(entry)
+
+
 def _project_json_evidence(
     content: str,
     matcher: re.Pattern[str],
@@ -847,6 +867,7 @@ def _project_json_evidence(
         decoded = json.loads(content)
     except (TypeError, json.JSONDecodeError):
         return None
+    _drop_descriptive_warnings(decoded)
     _, candidates = _collect_json_evidence_candidates(decoded, matcher)
     selected: list[dict[str, Any]] = []
     selected_paths: set[str] = set()
@@ -1241,9 +1262,10 @@ def _section_stage_agent(
                 "禁止无标记切换口径或把不同口径的数值直接相加比较。"
             ),
             (
-                "数据质量优先：facts 或 warnings 出现字段为零、预算为零、期间不一致或不可比声明时，"
-                "只能将其作为软告警写明影响；其他模型写的未入账或数据不完整不能证明数据状态。不得把缺失或不可比数据"
-                "写成确定的经营归因。证据不足时不写原因，也不得自行添加可能原因；需要补核的对象与口径限制在本章末合并为一段说明，不单设‘待核实事项’小节，同一限制只写一次，其他段落不重复‘待核实’‘口径不可混用’等提示。"
+                "数据口径：facts 或 warnings 出现字段为零、预算为零、期间不一致、归属缺失或不可比声明时，只在它改变本章某项结论的读法时写，"
+                "紧跟该结论用一句话说明影响和处理（如“三级科室归属缺失较多，科室排名仅作参考”），不复述记录条数、最小值、字段名等明细，"
+                "不写“待核实”“待复核”“待确认”，不单设口径限制段落或小节；与本章结论无关的数据质量情况不写。本章目标就是说明数据质量时，按影响逐项列出，每项只写一次。"
+                "其他模型写的未入账或数据不完整不能证明数据状态；不得把缺失或不可比数据写成确定的经营归因。证据不足时不写原因，也不得自行添加可能原因。"
             ),
             (
                 "相关性高不证明两套口径等价或可互换；预算为零须逐项核对预算列；超支与差额贡献使用差额列，不能使用实际金额列。结构化绑定的图表会展示，正文不得声称它未引用或已剔除。强结论门槛：‘全院性’‘主要原因’‘核心驱动’等判断必须同时给出覆盖范围、贡献额、"
@@ -2108,7 +2130,7 @@ async def _generate_section_in_blocks(
             "requiredAction": (
                 "只返回当前 block 的完整 Markdown；围绕 objective 解释 claims，"
                 "正文不展示任何内部 ID，每个数字必须来自给定事实。"
-                "只陈述可核对的数据质量事实；模型摘要中的未入账、月份不完整等猜测不能作为已验证原因。没有直接证据时不写原因，限制只在本章数据限制段落说明一次。"
+                "只陈述可核对的数据质量事实；模型摘要中的未入账、月份不完整等猜测不能作为已验证原因。没有直接证据时不写原因；数据限制只在影响本 block 结论时紧跟该结论用一句话说明影响，不写待核实类提示。"
             ),
         }
         # 完整证据只驻留在当前固定 Workflow 内存中；模型按 block 消费带身份的相关视图。
@@ -2203,6 +2225,7 @@ async def _generate_section_in_blocks(
             ))
             # 长句与数值堆砌按读者所见（占位换成显示值）度量，同样进入纠错轮次。
             review_warnings.extend(readability_warnings(content.markdown, block_number_catalog))
+            review_warnings.extend(prose_hedge_warnings(content.markdown))
             # 准确性问题优先：先比准确性问题数，再比可读性（重复、长句）问题数。
             review_score = (accuracy_count, len(review_warnings) - accuracy_count)
             if block_attempt == 1 and review_score > first_block_score:
@@ -2330,7 +2353,7 @@ async def _generate_whole_section_content(
         "requiredAction": (
             "一次返回规划中所有 block 的 blockId 和完整 markdown，围绕各自 objective 与 claims"
             "组织整章正文。各 block 仅解读其 claim 绑定的图表；引用由服务端绑定，不要输出引用字段。"
-            "每个数字必须来自冻结事实；数据质量问题优先说明，业务归因必须有直接证据；证据不足时不写原因；口径限制与需补核事项在章末合并说明一次，不逐段重复待核实提示。"
+            "每个数字必须来自冻结事实；业务归因必须有直接证据；证据不足时不写原因；数据限制只在影响结论时紧跟该结论用一句话说明影响，不复述明细，不写待核实类提示，不单设口径限制段落。"
         ),
     }
     section_number_catalog = payload["frozenNumbers"]
@@ -2390,6 +2413,7 @@ async def _generate_whole_section_content(
                     section_number_catalog,
                 ),
                 *readability_warnings(block.markdown, section_number_catalog),
+                *prose_hedge_warnings(block.markdown),
             ]
             for position, block in enumerate(candidate.blocks)
         }

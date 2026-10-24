@@ -200,6 +200,18 @@ BAD_REFERENCE = '本期合计{{value:fact-aaaaaaaaaaaaaaaa:bogus:人次}}。'
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('mode', ['whole', 'blocks'])
+async def test_model_written_hedges_are_sent_back_for_a_rewrite(monkeypatch, mode):
+    hedged = RAW_RETARGETABLE.replace('。', '，负值明细的性质待核实。')
+    block, notices, calls, source, _ = await _generate(monkeypatch, mode, [hedged, RAW_RETARGETABLE])
+    _assert_editor_binding_is_current(block, source)
+    assert len(calls) == 2 and notices == []
+    issues = calls[1]['correction']['issues']
+    issues = issues if isinstance(issues, list) else [item for values in issues.values() for item in values]
+    assert any('待核实类提示' in item for item in issues)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
 async def test_invalid_reference_is_corrected_by_the_model_inside_the_same_stage(monkeypatch, mode):
     corrections = []
     block, notices, calls, source, _ = await _generate(
