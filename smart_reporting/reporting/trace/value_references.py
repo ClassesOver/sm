@@ -14,6 +14,8 @@ from typing import Any
 VALUE_TOKEN = re.compile(r"\{\{\s*value\s*:[^{}\r\n]+\}\}")
 REVOKED_SELECTOR = "unverified."
 UNVERIFIED_TEXT = "数值待核实"
+# 模型写了数值目录中不存在的短编号时，解码为该事实名下的未登记引用（见 number_handles）。
+UNKNOWN_FACT = "unknown"
 
 _UNIT_ALIASES = {
     "亿": "亿元", "万": "万元", "％": "%", "百分比": "%", "percent": "%", "pct": "%",
@@ -49,6 +51,8 @@ def value_reference_failure(token: str, catalog: Mapping[str, str]) -> tuple[str
     if parts is None:
         return "数值引用格式无法识别", None, []
     fact, selector, unit = parts[1], parts[2], parts[3]
+    if fact == UNKNOWN_FACT:
+        return "引用编号不存在于本章数值目录", None, []
     if selector.startswith(REVOKED_SELECTOR):
         original = "{{value:" + fact + ":" + selector[len(REVOKED_SELECTOR):] + ":" + unit + "}}"
         shown = catalog.get(original)
@@ -85,10 +89,17 @@ def value_reference_failure(token: str, catalog: Mapping[str, str]) -> tuple[str
 def number_reference_failures(markdown: str, contents: Iterable[str]) -> list[dict[str, Any]]:
     """列出正文中无法登记的数值与计算引用，供模型逐项纠正；全部有效时返回空列表。"""
     from .calc_references import CALC_TOKEN, CalcEvaluator
-    from .numeric_text import frozen_number_catalog, text_after_last_break, text_before_next_break
+    from .numeric_text import (
+        frozen_number_catalog,
+        prompt_number_catalog,
+        text_after_last_break,
+        text_before_next_break,
+    )
 
     contents = tuple(contents)
     catalog = frozen_number_catalog(contents)
+    # 可用引用只列模型可见目录中的引用；仅供服务端核对的引用不作为改写候选。
+    visible = prompt_number_catalog(catalog)
     failures: list[dict[str, Any]] = []
 
     def statement(match: re.Match[str]) -> str:
@@ -103,7 +114,7 @@ def number_reference_failures(markdown: str, contents: Iterable[str]) -> list[di
             "reference": restore_revoked_references(match[0]),
             "statement": restore_revoked_references(statement(match)),
             "reason": reason,
-            "candidates": [{"reference": item, "value": catalog[item]} for item in candidates],
+            "candidates": [{"reference": item, "value": catalog[item]} for item in candidates if item in visible],
         }
         if REVOKED_SELECTOR in match[0]:
             failure["currentValue"] = shown
@@ -137,6 +148,7 @@ def reference_failure_message(failure: Mapping[str, Any], hints: Iterable[str] =
 
 __all__ = [
     "REVOKED_SELECTOR",
+    "UNKNOWN_FACT",
     "VALUE_TOKEN",
     "number_reference_failures",
     "reference_failure_message",

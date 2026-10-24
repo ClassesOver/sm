@@ -5,7 +5,8 @@
 核对变成重算，不再解析措辞。
 
 语法：``{{calc:<表达式>:<显示单位>}}``；表达式为 ``op(参数, ...)``，参数是另一个表达式或
-冻结数值引用 ``fact-<16位十六进制>:<字段>``（即 ``{{value:...}}`` 去掉外壳与单位）。
+冻结数值引用 ``fact-<16位十六进制>:<字段>``（即 ``{{value:...}}`` 去掉外壳与单位；模型写短编号 ``N12``，
+提示边界解码为完整引用，见 number_handles）。
 
 - ``sum(a, b, ...)``：同单位族求和；``avg(a, b, ...)``：同单位族平均；
 - ``diff(a, b)``：a − b，两个百分数之差为百分点；
@@ -31,7 +32,7 @@ from .numeric_text import (
 )
 
 CALC_TOKEN = re.compile(r"\{\{calc:(?P<expr>[a-z]+\([^{}\r\n]*\)):(?P<unit>[^:(){},\s]+)\}\}")
-_OPERAND = re.compile(r"(?P<fact>fact-[0-9a-f]{16}):(?P<field>[A-Za-z0-9_.]+)(?::[^,()\s]*)?")
+_OPERAND = re.compile(r"(?P<fact>fact-[0-9a-f]{16}):(?P<field>[A-Za-z0-9_.\-]+)(?::[^,()\s]*)?")
 _OPERATIONS = {"sum": (2, 12), "avg": (2, 12), "diff": (2, 2), "ratio": (2, 2), "growth": (2, 2)}
 _MAX_DEPTH = 4
 _MAX_OPERANDS = 12
@@ -79,6 +80,8 @@ def _parse(expr: str) -> tuple:
             if operands > _MAX_OPERANDS:
                 raise _Invalid("操作数过多")
             return ("ref", operand["fact"], operand["field"])
+        if re.match(r"[Nn]\d+", text[position:]):
+            raise _Invalid("引用编号不存在于本章数值目录")
         name = re.match(r"[a-z]+", text[position:])
         if not name or name[0] not in _OPERATIONS:
             raise _Invalid("未知运算")

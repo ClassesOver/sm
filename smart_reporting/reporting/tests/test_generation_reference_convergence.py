@@ -126,7 +126,9 @@ async def _generate(monkeypatch, mode, outputs, *, project=False, corrections=No
             try:
                 return _kwargs['response_validator'](candidate)
             except ValidationError as error:
-                corrections.append(_validation_issues(error))
+                # 纠错事实以模型所见短编号表述；按同一编号表解码后断言其含义。
+                corrections.append([{**issue, 'message': _kwargs['number_handles'].decode(issue['message'])}
+                                    for issue in _validation_issues(error)])
 
     monkeypatch.setattr(sections, '_run_section_stage', fake_stage)
     notices = {}

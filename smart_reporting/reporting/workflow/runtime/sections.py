@@ -49,6 +49,7 @@ from ...trace.contracts_v1 import (
 )
 from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
+from ...trace.number_handles import NumberHandles
 from ...trace.number_selection import align_number_selections
 from ...trace.numeric_text import (
     frozen_number_catalog,
@@ -269,23 +270,38 @@ def _block_review_notices(
 _MAX_REFERENCE_REJECTIONS = 2
 
 
+def _decoded_section_content(content: Any, handles: NumberHandles) -> Any:
+    """模型输出入口把短编号换回完整引用；服务端其余环节只处理完整引用。"""
+    if isinstance(content, SectionBlockContent):
+        return content.model_copy(update={"markdown": handles.decode(content.markdown)})
+    if isinstance(content, SectionContent):
+        return content.model_copy(update={"blocks": tuple(
+            block.model_copy(update={"markdown": handles.decode(block.markdown)}) for block in content.blocks
+        )})
+    return content
+
+
 def _number_reference_validator(
     output_schema: type[SectionBlockContent] | type[SectionContent],
     *,
     number_contents: Sequence[str],
     field_definitions: Mapping[str, str],
     assertions: Mapping[str, Any] | None,
+    handles: NumberHandles | None = None,
 ) -> Callable[[Any], SectionBlockContent | SectionContent]:
     """正文响应的数值引用关口：无法登记的引用连同原因与可用引用交回模型，在同一调用内纠正。
 
     复用结构化执行器的纠错回路（previousOutput + issues），服务端只诊断、不改写引用。
-    同一 stage 最多因引用退回 _MAX_REFERENCE_REJECTIONS 次，之后放行；残留引用渲染为
-    待核实并记录原因，不阻断章节。
+    提示使用短编号时先解码再判定，纠错事实再编码为模型所见的短编号。同一 stage 最多因引用
+    退回 _MAX_REFERENCE_REJECTIONS 次，之后放行；残留引用渲染为待核实并记录原因，不阻断章节。
     """
     from ...trace.semantic_bindings import expand_assertion_placeholders
     from ...trace.value_references import number_reference_failures, reference_failure_message
 
     rejections = 0
+
+    def encode(text: str) -> str:
+        return handles.encode(text) if handles is not None else text
 
     def validate_response(content: Any) -> SectionBlockContent | SectionContent:
         nonlocal rejections
@@ -295,6 +311,8 @@ def _number_reference_validator(
         except ValidationError as error:
             error._report_candidate = candidate  # type: ignore[attr-defined]
             raise
+        if handles is not None:
+            parsed = _decoded_section_content(parsed, handles)
         if rejections >= _MAX_REFERENCE_REJECTIONS:
             return parsed
         located = ([(("markdown",), parsed.markdown)] if isinstance(parsed, SectionBlockContent)
@@ -310,7 +328,7 @@ def _number_reference_validator(
             line_errors.extend({
                 "type": PydanticCustomError(
                     "value_error.number_reference", "{message}",
-                    {"message": reference_failure_message(failure, hints)},
+                    {"message": encode(reference_failure_message(failure, hints))},
                 ),
                 "loc": loc,
                 "input": failure["reference"],
@@ -1106,14 +1124,14 @@ def _section_stage_agent(
                 else "只在 JSON 的 markdown 字段中撰写当前 block 的完整简体中文 Markdown 正文，不得生成其他 block。"
             ),
             "每个 block 必须完成 objective 对应的事实陈述，不得以‘整体呈’‘分别为’等半句结尾；没有证据的结论直接删去，不逐句写待核实。",
-            "不得输出 H1/H2、图片语法、协议标记或无证据数字；内部 ID 仅可用于 frozenNumbers 提供的数值占位符。",
+            "不得输出 H1/H2、图片语法、协议标记或无证据数字；数值占位符只能使用 frozenNumbers、numberGuide 与 assertionCatalog 中给出的编号，不得自行拼写引用或内部 ID。",
             "管理层正文禁止出现 block、Markdown、CSV、SQL、ACF/PACF、服务端、数据集、字段、x轴/y轴 等实现或验收术语；改写为段落、正文、明细数据、统计相关性、指标、横轴/纵轴。不要解释 harness、生成流程、文件格式或验收过程。",
             "读者是医院领导或财务、业务人员，不是数据技术人员：每段首句先写结论与管理含义，再给关键数字；每章第一个正文段的首句会摘入报告开头的“核心结论”，须是可单独阅读、含关键数字的结论句；财务口径（收入、成本、预算执行、差额、完成率）按财务习惯表述并写清期间与单位；用“1—11月”“11月”等日常说法，不写“月度桶”“登记值”“登记结果”“冻结”“补证”“净额口径”“数值引用”等技术用语；同一口径说明全章只写一次，不复述图表画法、标注位置或图表质量。",
             "月度日期（如2025-11-01）只表示所属月份，不是数据截止时点；其他模型摘要或图表标题中的推测不构成直接证据。不得补写目录中不存在的月均值或派生金额。",
             "月均值必须与正文月份范围一致；完整12个月的均值不得用于1—10月；期末有连续零值月份时优先用 monthlyStatistics.averageBeforeTrailingZeros 并写明月份范围。多个指标各取前N名后并集展示时，分类数量可以超过N，不能据此认定图表超范围。声称各月方向一致前须逐月核对；存在反向月份时明确例外，不写全部一致。",
             "异常或偏低只描述事实；没有入账状态、数据截断等证据时，不推测其原因，也不得断言月份数据不完整。",
-            "frozenNumbers 中的数值必须使用对应 {{value:...}} 占位符，不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。需要元值和亿元同时展示时分别选择两个占位符；大额人次可选择万人次占位。",
-            "占位符渲染后已带单位，其后不得再写单位（不写“{{value:…:亿元}}亿元”）；每个数值写在其所属指标、科室或期间的名下，不得把一个科室或指标的引用写到另一个名下。数字与百分号用半角，百分点写“个百分点”，不写 pp、pct。",
+            "frozenNumbers 中的数值必须原样使用对应的 {{N编号:单位}} 占位符（如 {{N12:亿元}}），不得手抄或换算；服务端在正文落盘前替换为带单位的显示值。同一编号的元、万元、亿元等已登记单位都列在 frozenNumbers 中，按需选用；需要元值和亿元同时展示时分别写两个占位符；大额人次可选择万人次占位。",
+            "占位符渲染后已带单位，其后不得再写单位（不写“{{N12:亿元}}亿元”）；每个数值写在其所属指标、科室或期间的名下，不得把一个科室或指标的引用写到另一个名下。数字与百分号用半角，百分点写“个百分点”，不写 pp、pct。",
             "reportGoal要求精确原始元值时，已登记元单位的关键金额必须选择元值占位符展示；"
             "可另附亿元或万元显示，但不得只写舍入后的大单位金额。",
             "金额默认币种为 CNY（人民币），单位在事实冻结时确定；正文优先选择 frozenNumbers 已登记的元、万元、亿元引用，未提供对应引用的补证表值按下一条规则处理。明确的其他币种或展示单位优先保留；非金额字段或旧事实 unit 为空时，不自行补单位或换算。",
@@ -1123,10 +1141,10 @@ def _section_stage_agent(
             "正文中的完成率、同比增速、构成占比与差额一律优先使用 numberGuide 提供的 budgetComparisons、comparisons、metricShares 引用占位符。metricShares 是该指标占同口径合计的百分比，写“某项占……的X%”时必须使用它。",
             (
                 "目录没有现成派生引用时，不得手算后写数字，改写计算引用 {{calc:运算式:显示单位}}，由服务端按未舍入原值计算并渲染。"
-                "操作数是 frozenNumbers 占位符去掉 {{value: 与末尾单位后的部分，如 {{value:fact-0123456789abcdef:total:亿元}} 写作 fact-0123456789abcdef:total。"
+                "操作数写占位符的编号（不带花括号与单位），如 {{N12:亿元}} 写作 N12。"
                 "运算：sum(a,b,…) 合计，avg(a,b,…) 平均，diff(a,b) 为 a−b，ratio(a,b) 为 a÷b×100%（完成率、占比），growth(a,b) 为 (a−b)÷|b|×100%（增速）；可嵌套。"
-                "例：完成率 {{calc:ratio(实际事实:total,预算事实:total):%}}；两项合计 {{calc:sum(甲:total,乙:total):亿元}}；"
-                "两项合计完成率 {{calc:ratio(sum(实际甲:total,实际乙:total),sum(预算甲:total,预算乙:total)):%}}；两个百分数之差显示单位写 个百分点。"
+                "例（N3、N4 为实际，N7、N8 为对应预算）：完成率 {{calc:ratio(N3,N7):%}}；两项合计 {{calc:sum(N3,N4):亿元}}；"
+                "两项合计完成率 {{calc:ratio(sum(N3,N4),sum(N7,N8)):%}}；两个百分数之差显示单位写 个百分点。"
                 "写“短少、低于、减少”时用 diff(较大方,较小方) 得正幅度；写“差额为”时用 diff(实际,预算)，负数原样显示。"
                 "操作数只能是同单位族（金额与金额、人次与人次）且同一期间口径的登记值；计算引用渲染后已带单位，其后不再写单位。"
             ),
@@ -1200,6 +1218,7 @@ async def _run_section_stage(
     thinking_request: ThinkingRequest,
     section_code: str,
     response_validator: Callable[[Any], Any] | None = None,
+    number_handles: NumberHandles | None = None,
     attempt_key: str = "1",
 ) -> Any:
     loguru_logger.info(
@@ -1210,9 +1229,13 @@ async def _run_section_stage(
         thinking_request.failure_kind or "-",
     )
     stage_agent = _section_stage_agent(agent, output_schema, stage, response_validator)
+    instruction = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if number_handles is not None:
+        # 提示边界：完整引用换成短编号，模型只需照抄 {{N编号:单位}}，不再抄写内部编号与选择器。
+        instruction = number_handles.encode(instruction)
     try:
         result = await ReportingStructuredOutputExecutor(stage_agent).execute(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            instruction,
             routing_context=run_context,
             agent_run_context=run_context,
             # 章节阶段代理明确关闭 history；每次尝试使用独立 session，避免失败响应
@@ -1233,6 +1256,8 @@ async def _run_section_stage(
             f"模型请求失败（HTTP {error.status_code}）：{failure['message']}",
             details={**failure, "retryable": False, "stage": stage},
         ) from error
+    if number_handles is not None:
+        return _decoded_section_content(result.content, number_handles)
     return result.content
 
 
@@ -2052,6 +2077,7 @@ async def _generate_section_in_blocks(
         first_block_score = (0, 0)
         for block_attempt in range(2):
             try:
+                handles = NumberHandles(frozen_number_catalog(number_contents))
                 content = await _run_section_stage(
                     agent,
                     SectionBlockContent,
@@ -2066,7 +2092,9 @@ async def _generate_section_in_blocks(
                     response_validator=_number_reference_validator(
                         SectionBlockContent, number_contents=number_contents,
                         field_definitions=block_payload["fieldDefinitions"], assertions=block_assertions,
+                        handles=handles,
                     ),
+                    number_handles=handles,
                     attempt_key=f"block-{index}-{block_attempt + 1}",
                 )
                 if not isinstance(content, SectionBlockContent):
@@ -2320,6 +2348,7 @@ async def _generate_whole_section_content(
             if request_tokens > input_budget:
                 raise ReportingError("report_section_context_too_large", "整章请求超过当前模型输入预算。",
                                      details={"requestTokens": request_tokens, "inputTokenBudget": input_budget})
+            handles = NumberHandles(frozen_number_catalog(number_contents))
             content = await _run_section_stage(
                 agent,
                 SectionContent,
@@ -2334,7 +2363,9 @@ async def _generate_whole_section_content(
                 response_validator=_number_reference_validator(
                     SectionContent, number_contents=number_contents,
                     field_definitions=payload["fieldDefinitions"], assertions=section_assertions,
+                    handles=handles,
                 ),
+                number_handles=handles,
                 attempt_key=f"content-{review_attempt + 1}",
             )
             if not isinstance(content, SectionContent):
