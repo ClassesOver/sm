@@ -36,7 +36,7 @@ from .numeric_text import (
     replace_unregistered_numbers,
 )
 from .table_sources import resolve_table_derivation
-from .value_references import value_reference_failure
+from .value_references import UNREGISTERED_NUMBER_REASON, value_reference_failure
 
 
 def reference_fact_ids(token: str) -> tuple[str, ...]:
@@ -213,8 +213,10 @@ def render_bound_numbers(
                     )
                 ),
                 contents,
-                missing=lambda: notice("numeric_unverified"),
-                on_unverified=lambda original: notice("numeric_unverified", original_text=original),
+                missing=lambda: notice("numeric_unverified", reason=UNREGISTERED_NUMBER_REASON),
+                on_unverified=lambda original: notice(
+                    "numeric_unverified", original_text=original, reason=UNREGISTERED_NUMBER_REASON,
+                ),
                 references=dict(references),
                 on_derived_anchor=derived_anchor,
                 table_sources=table_sources,

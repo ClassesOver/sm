@@ -233,3 +233,9 @@ def test_revoked_reference_keeps_value_and_reason_for_the_editor():
     [notice] = [item for item in notices if item.kind == 'numeric_unverified']
     assert notice.original_text == '40元'
     assert notice.reason and '不一致' in notice.reason and 'fact-' not in notice.reason
+
+
+def test_handwritten_number_notice_explains_why_it_is_unverified():
+    _text, _refs, notices = render_bound_numbers('本期合计999元。', source(), key='handwritten')
+    [notice] = notices
+    assert notice.original_text == '999元' and notice.reason == '正文手写的数字没有对应的登记值'
