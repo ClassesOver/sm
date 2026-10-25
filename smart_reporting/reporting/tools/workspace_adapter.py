@@ -28,8 +28,6 @@ from ...workspace import (
     WorkspacePathConflict,
     normalize_workspace_path,
 )
-from .context import ReportingFileRef, ReportingToolContext
-from .workspace_port import ReportingWorkspaceError
 
 if TYPE_CHECKING:
     from ..host_workspace import ReportingWorkspaceRouter
@@ -39,88 +37,6 @@ def _validate_reporting_content(content: bytes) -> None:
         raise WorkspaceError("文件内容格式无效，请使用二进制内容后重试。")
     if len(content) > MAX_UPLOAD_BYTES:
         raise WorkspaceError("文件内容超过 200 MiB，请缩小文件后重试。")
-
-
-class ReportingTaskWorkspacePort:
-    """按单个已解析 Task scope 绑定的最小工作区端口。"""
-
-    def __init__(
-        self,
-        service: ReportingWorkspaceRouter,
-        kernel: TaskExecutionKernel,
-        context: ReportingToolContext,
-        scope: Any,
-    ) -> None:
-        self._service = service
-        self._kernel = kernel
-        self.context = context
-        self._scope = scope
-
-    @staticmethod
-    def _normalize(path: str) -> str:
-        try:
-            return normalize_workspace_path(path, allow_root=False)
-        except WorkspaceError as error:
-            raise ReportingWorkspaceError("Reporting 路径无效。") from error
-
-    def _require_output(self, path: str) -> str:
-        normalized = self._normalize(path)
-        if any(item.path == normalized for item in (*self.context.inputs, *self.context.data)):
-            raise ReportingWorkspaceError("Reporting 输入和数据只读。")
-        if not self.context.output_policy.allows(normalized):
-            raise ReportingWorkspaceError("Reporting 写入目标不在输出目录。")
-        return normalized
-
-    async def read_bytes(self, path: str) -> bytes:
-        normalized = self._normalize(path)
-        content, _mime = await self._service.afile_bytes(self.context.thread_id, normalized)
-        return content
-
-    async def read_text(self, path: str) -> str:
-        return (await self.read_bytes(path)).decode("utf-8")
-
-    async def hash_files(self, paths: Sequence[str]) -> tuple[ReportingFileRef, ...]:
-        values = await self._service.abatch_hash_files(
-            self.context.thread_id, [self._normalize(path) for path in paths]
-        )
-        missing = [item["path"] for item in values if item.get("missing") is True]
-        if missing:
-            raise ReportingWorkspaceError(f"Reporting 文件不存在：{', '.join(missing)}")
-        return tuple(
-            ReportingFileRef(path=item["path"], size=item["size"], sha256=item["sha256"])
-            for item in values
-        )
-
-    async def write_text(
-        self,
-        path: str,
-        content: str,
-        *,
-        overwrite: bool = False,
-        expected_sha256: str | None = None,
-    ) -> ReportingFileRef:
-        normalized = self._require_output(path)
-        raw = content.encode("utf-8")
-        _validate_reporting_content(raw)
-        result = await self._kernel.patch(
-            "overwrite" if overwrite else "create",
-            normalized,
-            None,
-            None,
-            False,
-            None,
-            None,
-            content=content,
-            expected_sha256=expected_sha256,
-            _scope=self._scope,
-        )
-        if result.get("ok") is not True:
-            raise ReportingWorkspaceError("Reporting 文件写入失败。")
-        identity = await self._service.ahash_file(self.context.thread_id, normalized)
-        return ReportingFileRef(
-            path=identity["path"], size=identity["size"], sha256=identity["sha256"]
-        )
-
 
 
 class ReportingWorkspaceAdapter:
