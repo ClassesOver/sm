@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any
+
+from loguru import logger
 
 from ..reporting.contract import ReportRequestEnvelope
 from ..reporting.workflow.controller import (
@@ -76,11 +79,21 @@ class ReportingMcpAdapter:
                 prepare=prepare,
                 prepared_input_cleanup=(cleanup_prepared_inputs if request.attachments else None),
             )
-        except BaseException:
+        except BaseException as error:
             # 控制器通常接管 prepare 之后的失败补偿；若异常发生在回调接管前，
             # Adapter 仍负责删除已完成物化的输入，同时避免重复访问已销毁的 workspace。
             if materialization_completed and not cleanup_attempted:
-                await cleanup_prepared_inputs()
+                try:
+                    await cleanup_prepared_inputs()
+                except BaseException as cleanup_error:
+                    if isinstance(cleanup_error, asyncio.CancelledError):
+                        raise
+                    logger.warning(
+                        "report_mcp_input_cleanup_after_start_failure_failed "
+                        "error_type={} original_error_type={}",
+                        type(cleanup_error).__name__,
+                        type(error).__name__,
+                    )
             raise
         return {**result, "operationId": operation_id}
 

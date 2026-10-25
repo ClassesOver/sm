@@ -387,6 +387,92 @@ async def test_url_materializer_reports_operation_cleanup_failure() -> None:
     assert error.value.code == "report_attachment_cleanup_failed"
 
 
+@pytest.mark.anyio
+async def test_batch_cleanup_failure_preserves_original_download_error() -> None:
+    class Workspace(_Workspace):
+        def delete_file(self, thread_id: str, path: str, recursive: bool = False) -> None:
+            raise RuntimeError("workspace delete failed")
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b"{}",
+            extensions={"network_stream": _NetworkStream("93.184.216.34")},
+        )
+
+    materializer = UrlMaterializer(
+        Workspace(), resolver=_public_dns, transport=httpx.MockTransport(handler)
+    )
+
+    with pytest.raises(ReportingError) as error:
+        await materializer.materialize_all(
+            thread_id="thread-1",
+            operation_id="operation-1",
+            attachments=(ReportingUrlAttachment.model_validate(
+                {"url": "https://example.com/input.csv"}
+            ),),
+        )
+
+    assert error.value.code == "report_attachment_type_unsupported"
+
+
+@pytest.mark.anyio
+async def test_batch_cleanup_failure_preserves_cancellation() -> None:
+    started = asyncio.Event()
+    materializer = UrlMaterializer(_Workspace())
+
+    async def materialize(**_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    async def cleanup_operation(_thread_id: str, _operation_id: str) -> None:
+        raise ReportingError("report_attachment_cleanup_failed", "cleanup failed")
+
+    materializer.materialize = materialize  # type: ignore[method-assign]
+    materializer.cleanup_operation = cleanup_operation  # type: ignore[method-assign]
+    task = asyncio.create_task(materializer.materialize_all(
+        thread_id="thread-1",
+        operation_id="operation-1",
+        attachments=(ReportingUrlAttachment.model_validate(
+            {"url": "https://example.com/input.csv"}
+        ),),
+    ))
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.anyio
+async def test_batch_cleanup_propagates_cancellation_arriving_after_download_failure() -> None:
+    cleanup_started = asyncio.Event()
+    materializer = UrlMaterializer(_Workspace())
+
+    async def materialize(**_kwargs):
+        raise ReportingError("report_attachment_download_failed", "download failed")
+
+    async def cleanup_operation(_thread_id: str, _operation_id: str) -> None:
+        cleanup_started.set()
+        await asyncio.Event().wait()
+
+    materializer.materialize = materialize  # type: ignore[method-assign]
+    materializer.cleanup_operation = cleanup_operation  # type: ignore[method-assign]
+    task = asyncio.create_task(materializer.materialize_all(
+        thread_id="thread-1",
+        operation_id="operation-1",
+        attachments=(ReportingUrlAttachment.model_validate(
+            {"url": "https://example.com/input.csv"}
+        ),),
+    ))
+    await cleanup_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 @pytest.mark.parametrize(
     "address",
     ["64:ff9b::a9fe:a9fe", "64:ff9b:1::7f00:1", "::127.0.0.1"],

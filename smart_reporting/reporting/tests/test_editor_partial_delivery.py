@@ -157,8 +157,16 @@ async def test_editor_commits_only_readable_formats_and_can_export_again(
         # A retry from the original editor link rebases onto the retained context.
         persistence_failure = None
         recovered = await editor.export_revision(current, expected_sha256=document.sha256)
-        assert recovered["revision"] == 4
+        assert recovered["revision"] == 3
         assert {label for label in ("pdf", "word") if label in recovered} == set(formats)
+        assert recovered["validation"]["ok"] is (
+            len(formats) == 2 and not asset_copy_failure
+        )
+        assert all(
+            issue.get("code") != "report_artifact_persistence_failed"
+            for issue in recovered["validation"]["issues"]
+        )
+        assert "4" not in repository.durable.payload["reportEditorContexts"]
         assert not list(tmp_path.rglob(".export-*.md"))
         return
     result = await editor.export_revision(current, expected_sha256=document.sha256)

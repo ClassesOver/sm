@@ -619,6 +619,40 @@ async def test_reporting_runtime_retains_tool_output_on_host_workspace(tmp_path:
 
 
 @pytest.mark.anyio
+async def test_reporting_runtime_rejects_tampered_truncated_tool_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from smart_reporting.task_execution import execution as execution_module
+
+    registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
+    router = ReportingWorkspaceRouter(registry)
+    runtime = ReportingTaskRuntime(router, object())
+    scope = SimpleNamespace(
+        external_run_id="report-coding-analysis-1",
+        attempt_no=1,
+        thread_id="workspace-1",
+    )
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+    monkeypatch.setattr(execution_module, "MAX_TOOL_OUTPUT_RESOURCE_BYTES", 8)
+
+    retained = await runtime.bound_tool_result(
+        scope, {"output": "trusted output"}, context, retain=True, preview_bytes=4,
+    )
+    metadata = context.session_state[TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY]["handles"][
+        retained["outputHandle"]
+    ]
+    await router.awrite_bytes(
+        "workspace-1", metadata["path"], b"tampered", overwrite=True
+    )
+
+    with pytest.raises(WorkspaceError, match="内容哈希"):
+        await runtime.read_tool_output_resource(
+            retained["outputHandle"], context, _scope=scope,
+        )
+
+
+@pytest.mark.anyio
 async def test_reporting_runtime_workspace_adapter_inspects_plotly_file(tmp_path: Path) -> None:
     registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
     registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))

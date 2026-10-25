@@ -619,13 +619,66 @@ def unit_period_warnings(
     return warnings
 
 
-def written_period_span(statement: str) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
-    """语句中明确写出的期间首末（与期间文本核对同一抽取规则）；没有或粒度不一时返回 None。"""
-    window = _expanded_period_wording(statement.replace("−", "-").replace("－", "-"))
-    keys = sorted({key for token in _PERIOD_TOKEN.findall(window) if (key := _period_key(token)) is not None})
-    if not keys or len({len(key) for key in keys}) != 1:
+def _period_key_label(key: tuple[int, ...]) -> str:
+    if len(key) == 1:
+        return str(key[0])
+    if len(key) == 2:
+        return f"{key[0]:04d}-{key[1]:02d}"
+    return f"{key[0]:04d}-{key[1]:02d}-{key[2]:02d}"
+
+
+def _continuous_period_keys(
+    first: tuple[int, ...], last: tuple[int, ...],
+) -> tuple[tuple[int, ...], ...] | None:
+    """展开一个明确的连续期间范围；非法、倒序或超长范围不参与替代事实猜测。"""
+    if len(first) != len(last) or len(first) not in {1, 2, 3}:
         return None
-    return keys[0], keys[-1]
+    start = _parse_period(_period_key_label(first))
+    end = _parse_period(_period_key_label(last))
+    if start is None or end is None or start.granularity != end.granularity or start.value > end.value:
+        return None
+    result: list[tuple[int, ...]] = []
+    current = start
+    while current.value <= end.value:
+        result.append(
+            (current.value.year,)
+            if current.granularity == "year"
+            else (current.value.year, current.value.month)
+            if current.granularity == "month"
+            else (current.value.year, current.value.month, current.value.day)
+        )
+        if len(result) > 1200:
+            return None
+        current = _ParsedPeriod(current.label, _next_period(current), current.granularity)
+    return tuple(result)
+
+
+def written_period_keys(statement: str) -> tuple[tuple[int, ...], ...] | None:
+    """返回语句唯一明确期间的完整桶集合。
+
+    单个日期返回一个桶；一个用“至/—”连接的范围展开成完整连续桶。并列日期、两个独立范围、
+    粒度混杂或无效日历均返回 ``None``，避免把多个语义窗口压成全局最小—最大跨度。
+    """
+    window = _expanded_period_wording(statement.replace("−", "-").replace("－", "-"))
+    matches = [match for match in _PERIOD_TOKEN.finditer(window) if _period_key(match[0]) is not None]
+    if not matches:
+        return None
+    keys = tuple(cast(tuple[int, ...], _period_key(match[0])) for match in matches)
+    if len({len(key) for key in keys}) != 1:
+        return None
+    if len(keys) == 1:
+        return _continuous_period_keys(keys[0], keys[0])
+    if len(keys) != 2 or not re.fullmatch(
+        r"\s*[月日]?\s*(?:至|到|[-~～–—])\s*", window[matches[0].end():matches[1].start()]
+    ):
+        return None
+    return _continuous_period_keys(keys[0], keys[1])
+
+
+def written_period_span(statement: str) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    """兼容调用方的首末表示；只接受 ``written_period_keys`` 可唯一确定的连续期间。"""
+    keys = written_period_keys(statement)
+    return (keys[0], keys[-1]) if keys else None
 
 
 def _point_plain_text(text: str) -> str:
@@ -1009,5 +1062,6 @@ __all__ = [
     "unit_period_warnings",
     "value_matches",
     "value_text_variants",
+    "written_period_keys",
     "written_period_span",
 ]

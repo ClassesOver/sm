@@ -13,6 +13,7 @@ from smart_reporting.quality_warnings import (
     CheckScope,
     QualityWarningService,
     TenantScope,
+    WarningEventQuery,
     WarningFinding,
     WarningQuery,
 )
@@ -138,6 +139,20 @@ async def test_successful_rechecks_are_idempotent_and_resolve_only_covered_subje
     events = await service.list_events(tenant=tenant, warning_id=first[0].warning_id)
     assert resolved[0].occurrence_count == 2
     assert [event.event_type for event in events] == ["detected", "rechecked_open", "resolved"]
+    first_page = await service.list_event_page(
+        tenant=tenant,
+        warning_id=first[0].warning_id,
+        query=WarningEventQuery(limit=2),
+    )
+    assert [event.event_type for event in first_page.records] == ["detected", "rechecked_open"]
+    assert first_page.next_cursor
+    second_page = await service.list_event_page(
+        tenant=tenant,
+        warning_id=first[0].warning_id,
+        query=WarningEventQuery(cursor=first_page.next_cursor, limit=2),
+    )
+    assert [event.event_type for event in second_page.records] == ["resolved"]
+    assert second_page.next_cursor is None
 
 
 @pytest.mark.anyio

@@ -6,8 +6,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from .models import TenantScope, WarningDisposition, WarningQuery
-from .repository import _decode_cursor
+from .models import TenantScope, WarningDisposition, WarningEventQuery, WarningQuery
+from .repository import _decode_cursor, _decode_event_cursor
 from .service import QualityWarningService
 
 
@@ -72,12 +72,28 @@ def create_quality_warning_router() -> APIRouter:
         return record
 
     @router.get("/quality-warnings/{warning_id}/events")
-    async def list_quality_warning_events(request: Request, warning_id: UUID):
+    async def list_quality_warning_events(
+        request: Request,
+        warning_id: UUID,
+        cursor: Annotated[str | None, Query(min_length=1, max_length=1024)] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ):
         tenant = _tenant_scope(request)
         service = _service(request)
         if await service.get_warning(tenant=tenant, warning_id=warning_id) is None:
             raise HTTPException(status_code=404, detail="quality_warning_not_found")
-        return {"records": await service.list_events(tenant=tenant, warning_id=warning_id)}
+        if cursor is not None:
+            try:
+                _decode_event_cursor(cursor)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, detail="quality_warning_event_cursor_invalid"
+                ) from None
+        return await service.list_event_page(
+            tenant=tenant,
+            warning_id=warning_id,
+            query=WarningEventQuery(cursor=cursor, limit=limit),
+        )
 
     return router
 
@@ -94,6 +110,11 @@ def _tenant_scope(request: Request) -> TenantScope:
     capability = getattr(request.state, "capability", None)
     database = getattr(capability, "database", None)
     company = getattr(capability, "company", None)
-    if not isinstance(database, str) or not database or not isinstance(company, int):
+    if (
+        not isinstance(database, str)
+        or not database
+        or type(company) is not int
+        or company <= 0
+    ):
         raise HTTPException(status_code=401, detail="quality_warning_capability_required")
     return TenantScope(database_name=database, company_id=str(company))

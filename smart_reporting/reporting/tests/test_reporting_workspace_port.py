@@ -140,9 +140,6 @@ async def test_mock_workspace_rejects_missing_stale_and_invalid_output_paths() -
 @pytest.mark.anyio
 async def test_reporting_workspace_adapter_exposes_async_file_read() -> None:
     class AsyncReadService:
-        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
-            raise AssertionError("异步 Reporting 适配器不得调用同步工作区接口")
-
         async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
             assert (thread_id, path) == ("thread-1", "inputs/source.txt")
             return b"source", "text/plain"
@@ -153,14 +150,12 @@ async def test_reporting_workspace_adapter_exposes_async_file_read() -> None:
         b"source",
         "text/plain",
     )
+    assert not hasattr(adapter, "file_bytes")
 
 
 @pytest.mark.anyio
 async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -> None:
     class AsyncReadService:
-        def read_text(self, *_args: object) -> str:
-            raise AssertionError("异步 Reporting 补丁不得调用同步工作区接口")
-
         async def aread_text(self, thread_id: str, path: str) -> str:
             assert (thread_id, path) == ("thread-1", "analysis/model.py")
             return "value = 1\n"
@@ -184,6 +179,7 @@ async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -
             "expected_sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
         }
     ]
+    assert not hasattr(adapter, "read_text")
 
 
 def _plotly_file_service(content: bytes) -> SimpleNamespace:

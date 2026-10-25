@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import httpcore
 import httpx
 import polars as pl
+from loguru import logger
 
 from ..reporting.models import ReportingError
 from ..workspace import MAX_UPLOAD_BYTES
@@ -169,7 +170,21 @@ class UrlMaterializer:
                 )
             return completed
         except BaseException as error:
-            await self.cleanup_operation(thread_id, operation_id)
+            try:
+                await self.cleanup_operation(thread_id, operation_id)
+            except BaseException as cleanup_error:
+                if isinstance(cleanup_error, asyncio.CancelledError):
+                    raise
+                # Ordinary cleanup failures must not replace the original
+                # download error. Cancellation delivered during cleanup has
+                # already been propagated above.
+                logger.warning(
+                    "report_attachment_cleanup_after_failure_failed operation_id={} "
+                    "error_type={} original_error_type={}",
+                    operation_id,
+                    type(cleanup_error).__name__,
+                    type(error).__name__,
+                )
             if isinstance(error, asyncio.CancelledError):
                 raise
             failure = self._first_reporting_error(error)

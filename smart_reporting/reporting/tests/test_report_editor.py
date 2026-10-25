@@ -1598,12 +1598,17 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     )
 
     if editor_grant_fails:
-        with pytest.raises(RuntimeError, match="editor grant store unavailable"):
-            await service.export_revision(
-                context, expected_sha256=draft_sha, note="运营数据复核后发布",
-                session_capabilities=session_capabilities
-            )
-        # 编辑上下文已提交后签发失败：revision-2 必须完整保留，与已提交状态一致。
+        result = await service.export_revision(
+            context, expected_sha256=draft_sha, note="运营数据复核后发布",
+            session_capabilities=session_capabilities
+        )
+        assert result["pdf"]["downloadUrl"].endswith("/reports/v1/download/download-raw")
+        assert "editor" not in result
+        assert result["validation"] == {"ok": False, "issues": [{
+            "code": "report_editor_grant_unavailable",
+            "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开编辑入口。",
+        }]}
+        # 编辑入口是附加能力；失败时 revision-2 与下载链接均须保留。
         assert "2" in durable.payload["reportEditorContexts"]
         assert (
             await workspace.aread_text(scope.workspace_key, "reports/revision-2/report.md")

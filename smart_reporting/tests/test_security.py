@@ -73,3 +73,17 @@ def test_capability_rejects_tampering_expiry_and_invalid_identity():
             "thread-1",
             now=1200,
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("user", True), ("company", False), ("user", 0), ("company", -1)],
+)
+def test_capability_rejects_boolean_and_non_positive_odoo_ids(field, value):
+    with pytest.raises(CapabilityError, match="identity_invalid"):
+        verify_capability(
+            encode(claims(**{field: value})),
+            SECRET,
+            "thread-1",
+            now=1200,
+        )
