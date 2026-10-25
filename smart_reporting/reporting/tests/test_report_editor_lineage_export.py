@@ -30,7 +30,18 @@ from smart_reporting.reporting.workspace import REPORT_JOBS_STATE_KEY
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure", [None, "render", "commit", "download_grant", "editor_grant"])
+@pytest.mark.parametrize("failure", [
+    None,
+    "render",
+    "commit",
+    "download_grant",
+    "download_grant_missing_pdf",
+    "download_grant_missing_word",
+    "download_grant_changed_pdf",
+    "download_grant_persistence_pdf",
+    "download_grant_persistence_word",
+    "editor_grant",
+])
 async def test_export_revision_rebinds_registered_lineage_and_preserves_transactional_files(
     tmp_path: Path, failure: str | None
 ) -> None:
@@ -173,7 +184,18 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
     editor.state_repository = repository
     snapshot_paths: list[str] = []
     persisted: list[object] = []
-    download_failures = 1 if failure == "download_grant" else 0
+    download_attempts: list[set[str]] = []
+    persistence_calls = 0
+    download_failures = 1 if failure and failure.startswith("download_grant") else 0
+    retry_unavailable_label = {
+        "download_grant_missing_pdf": "pdf",
+        "download_grant_missing_word": "word",
+        "download_grant_changed_pdf": "pdf",
+    }.get(failure)
+    retry_persistence_label = {
+        "download_grant_persistence_pdf": "pdf",
+        "download_grant_persistence_word": "word",
+    }.get(failure)
 
     class ReportTools:
         async def _render_report_pair(
@@ -277,20 +299,41 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             return {"status": "validated", "validation": {"ok": True}}
 
     class Persistence:
-        async def persist(self, **values):
-            persisted.extend(values["artifacts"])
+        async def persist_available(self, **values):
+            nonlocal persistence_calls
+            persistence_calls += 1
+            stored = tuple(
+                artifact
+                for artifact in values["artifacts"]
+                if not (
+                    persistence_calls > 1
+                    and artifact.artifact == retry_persistence_label
+                )
+            )
+            persisted.extend(stored)
+            return stored
 
     class DownloadGrants:
         async def issue(self, **values):
             nonlocal download_failures
+            download_attempts.append({
+                label
+                for label in ("pdf", "word")
+                if values.get(f"{label}_path")
+            })
             assert "2" in repository.durable.payload["reportEditorContexts"]
             if download_failures:
                 download_failures -= 1
                 raise RuntimeError("download grant store unavailable")
+            empty = {
+                f"{label}_{field}": (0 if field == "size" else "")
+                for label in ("pdf", "word")
+                for field in ("path", "size", "sha256")
+            }
             return "download-raw", ReportDownloadGrant(
                 grant_hash="d" * 64,
                 expires_at=datetime(2026, 10, 15, tzinfo=UTC),
-                **values,
+                **{**empty, **values},
             )
 
     class EditorGrants:
@@ -313,6 +356,11 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             "render": "renderer failed",
             "commit": "durable commit failed",
             "download_grant": "download grant store unavailable",
+            "download_grant_missing_pdf": "download grant store unavailable",
+            "download_grant_missing_word": "download grant store unavailable",
+            "download_grant_changed_pdf": "download grant store unavailable",
+            "download_grant_persistence_pdf": "download grant store unavailable",
+            "download_grant_persistence_word": "download grant store unavailable",
         }[failure]
         with pytest.raises(RuntimeError, match=message):
             await editor.export_revision(context, expected_sha256=expected_sha, settings={"sources": True})
@@ -340,16 +388,44 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
     next_context = ReportEditorContext.model_validate(
         repository.durable.payload["reportEditorContexts"]["2"]
     )
-    if failure == "download_grant":
+    if failure and failure.startswith("download_grant"):
         # 已提交 revision 的下载签发失败后，相同请求重试该 revision，不生成 revision-3。
         await workspace.awrite_text(thread_id, draft_path, edited_markdown, overwrite=True)
+        if failure == "download_grant_changed_pdf":
+            await workspace.awrite_bytes(
+                thread_id, "reports/revision-2/report.pdf", b"changed-pdf", overwrite=True
+            )
+        elif retry_unavailable_label is not None:
+            suffix = "pdf" if retry_unavailable_label == "pdf" else "docx"
+            await workspace.adelete_file(thread_id, f"reports/revision-2/report.{suffix}")
         retried = await editor.export_revision(
             context, expected_sha256=expected_sha, settings={"sources": True}
         )
+        expected_formats = {"pdf", "word"} - {
+            label
+            for label in (retry_unavailable_label, retry_persistence_label)
+            if label is not None
+        }
         assert retried["revision"] == 2
-        assert retried["pdf"]["downloadUrl"].endswith(
-            "/reports/v1/download/download-raw"
-        )
+        assert {label for label in ("pdf", "word") if label in retried} == expected_formats
+        assert download_attempts[-1] == expected_formats
+        if retry_unavailable_label is not None:
+            assert retried["validation"]["ok"] is False
+            assert any(
+                issue["code"] == f"report_{retry_unavailable_label}_artifact_unavailable"
+                for issue in retried["validation"]["issues"]
+            )
+        if retry_persistence_label is not None:
+            assert retried["validation"]["ok"] is False
+            assert any(
+                issue["code"] == f"report_{retry_persistence_label}_persistence_failed"
+                for issue in retried["validation"]["issues"]
+            )
+        if failure == "download_grant":
+            assert all(
+                issue["code"] != "report_artifact_persistence_failed"
+                for issue in retried["validation"]["issues"]
+            )
         assert not await workspace.apath_exists(thread_id, "reports/revision-3")
         assert len(snapshot_paths) == 1
     assert next_context.artifact_manifest is not None
@@ -362,6 +438,9 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
     assert next_manifest.charts[0].path == "reports/revision-2/chart-001.png"
     assert (await editor.read_asset(next_context, "chart-001.png"))[0] == chart_bytes
     for suffix, content in (("pdf", b"new-pdf"), ("docx", b"new-word")):
+        label = "pdf" if suffix == "pdf" else "word"
+        if label == retry_unavailable_label:
+            continue
         assert (await workspace.afile_bytes(thread_id, f"reports/revision-2/report.{suffix}"))[
             0
         ] == content

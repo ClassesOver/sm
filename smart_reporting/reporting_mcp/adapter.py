@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any
@@ -85,6 +86,8 @@ class ReportingMcpAdapter:
                 try:
                     await cleanup_prepared_inputs()
                 except BaseException as cleanup_error:
+                    if isinstance(cleanup_error, asyncio.CancelledError):
+                        raise
                     logger.warning(
                         "report_mcp_input_cleanup_after_start_failure_failed "
                         "error_type={} original_error_type={}",

@@ -2378,17 +2378,59 @@ class ReportEditorService:
         render = context.job.get("render")
         if not isinstance(render, dict):
             raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
+        validation = context.job.get("validation") or {}
+        raw_issues = list(validation.get("issues") or ())
+        retryable_issue_codes = {"report_artifact_persistence_failed"}
+        issues = [
+            issue
+            for issue in raw_issues
+            if not (
+                isinstance(issue, Mapping)
+                and issue.get("code") in retryable_issue_codes
+            )
+        ]
+        recovered_retryable_failure = bool(raw_issues) and all(
+            isinstance(issue, Mapping)
+            and issue.get("code") in retryable_issue_codes
+            for issue in raw_issues
+        )
+
+        def add_issue(code: str, message: str) -> None:
+            if any(
+                isinstance(issue, Mapping) and issue.get("code") == code
+                for issue in issues
+            ):
+                return
+            issues.append({"code": code, "message": message})
+
         identities: dict[str, dict[str, Any]] = {}
         for label in ("pdf", "word"):
             registered = render.get(label)
             if not isinstance(registered, dict) or not isinstance(registered.get("path"), str):
                 continue
-            current = await self.workspace.ahash_file(scope.workspace_key, registered["path"])
+            try:
+                current = await self.workspace.ahash_file(
+                    scope.workspace_key, registered["path"]
+                )
+            except (OSError, WorkspaceError) as error:
+                current = {"missing": True}
+                logger.opt(exception=error).warning(
+                    "report_editor_retry_artifact_unavailable report_id={} revision={} "
+                    "artifact={} error_type={}",
+                    context.report_id,
+                    context.revision,
+                    label,
+                    type(error).__name__,
+                )
             if (
                 current.get("missing")
                 or current.get("size") != registered.get("size")
                 or current.get("sha256") != registered.get("sha256")
             ):
+                add_issue(
+                    f"report_{label}_artifact_unavailable",
+                    f"{'PDF' if label == 'pdf' else 'Word'} 产物未生成或身份不可读取。",
+                )
                 continue
             identities[label] = {
                 "path": registered["path"],
@@ -2424,6 +2466,13 @@ class ReportEditorService:
         if callable(persist_available):
             stored = await persist_available(**persist_options)
             stored_labels = {item.artifact for item in stored}
+            for label in identities:
+                if label in stored_labels:
+                    continue
+                add_issue(
+                    f"report_{label}_persistence_failed",
+                    f"{'PDF' if label == 'pdf' else 'Word'} 已生成，但保存下载副本失败。",
+                )
             identities = {
                 label: identity for label, identity in identities.items()
                 if label in stored_labels
@@ -2445,7 +2494,6 @@ class ReportEditorService:
         )
         editor_raw: str | None = None
         editor_expires_at: datetime | None = None
-        issues = list((context.job.get("validation") or {}).get("issues") or ())
         grant_options: dict[str, Any] = (
             {"capabilities": dict(session_capabilities)}
             if session_capabilities is not None else {}
@@ -2475,7 +2523,9 @@ class ReportEditorService:
             editor_expires_at=editor_expires_at,
         )
         result["validation"] = {
-            "ok": bool((context.job.get("validation") or {}).get("ok")) and not issues,
+            "ok": (
+                bool(validation.get("ok")) or recovered_retryable_failure
+            ) and not issues,
             "issues": issues,
         }
         return result

@@ -111,7 +111,10 @@ _SIGNING_CHAIN = {
     "smart_reporting/reporting/workflow/runtime/publication.py": ("_render_and_validate", "publish_report", "_write_trace_index"),
     "smart_reporting/reporting/workflow/runtime/planning.py": ("issue_http_publication",),
     "smart_reporting/reporting/workspace.py": ("_render_report_pair",),
-    "smart_reporting/report_editor/service.py": ("_export_revision",),
+    "smart_reporting/report_editor/service.py": (
+        "_export_revision",
+        "_retry_export_delivery",
+    ),
 }
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 # 门禁内部可以 raise，但其在签发链路上的每个调用点都必须被 except Exception 兜底。

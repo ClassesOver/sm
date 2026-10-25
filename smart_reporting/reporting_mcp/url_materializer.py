@@ -173,9 +173,11 @@ class UrlMaterializer:
             try:
                 await self.cleanup_operation(thread_id, operation_id)
             except BaseException as cleanup_error:
-                # Cleanup is compensating work.  It must never replace the
-                # download failure (especially task cancellation) seen by the
-                # controller.
+                if isinstance(cleanup_error, asyncio.CancelledError):
+                    raise
+                # Ordinary cleanup failures must not replace the original
+                # download error. Cancellation delivered during cleanup has
+                # already been propagated above.
                 logger.warning(
                     "report_attachment_cleanup_after_failure_failed operation_id={} "
                     "error_type={} original_error_type={}",

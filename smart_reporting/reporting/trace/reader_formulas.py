@@ -117,6 +117,14 @@ def _ratio_inputs(
     first, second = (entries.get(str(fact_id)) for fact_id in ids)
     if not isinstance(first, Mapping) or not isinstance(second, Mapping):
         return None
+    expected_codes = (entry.get("numeratorMetric"), entry.get("denominatorMetric"))
+    if any(
+        not isinstance(code, str)
+        or not code
+        or code not in (metric.get("metricCodes") or ())
+        for code, metric in zip(expected_codes, (first, second), strict=True)
+    ):
+        return None
     return first, second
 
 
@@ -141,18 +149,24 @@ def _derived_ratio_formula(
         return None
     numerator, denominator = inputs
     span = _span(resolved.get("periods") or (), entry.get("periodGranularity"))
-    basis = "共同期末" if numerator.get("periodAggregation") == "last" else "同期合计"
+    numerator_basis = (
+        "共同期末" if numerator.get("periodAggregation") == "last" else "同期合计"
+    )
+    denominator_basis = (
+        "共同期末" if denominator.get("periodAggregation") == "last" else "同期合计"
+    )
     numerator_unit = numerator.get("unit")
     denominator_unit = denominator.get("unit")
     numerator_operand = _labelled(
-        _ratio_operand_label(numerator, entries, span, basis),
+        _ratio_operand_label(numerator, entries, span, numerator_basis),
         _amount(entry["numerator"], numerator_unit),
     )
-    denominator_operand = _labelled(
-        _ratio_operand_label(denominator, entries, span, basis),
-        _amount(denominator["total"], denominator_unit),
-    )
     scale = Decimal(str(entry.get("denominatorScale") or 1))
+    aligned_denominator = Decimal(str(entry["denominator"])) / scale
+    denominator_operand = _labelled(
+        _ratio_operand_label(denominator, entries, span, denominator_basis),
+        _amount(aligned_denominator, denominator_unit),
+    )
     comparable_unit = entry.get("unit")
     if scale != 1:
         denominator_operand += (

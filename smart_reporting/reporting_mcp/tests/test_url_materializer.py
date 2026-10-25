@@ -445,6 +445,34 @@ async def test_batch_cleanup_failure_preserves_cancellation() -> None:
         await task
 
 
+@pytest.mark.anyio
+async def test_batch_cleanup_propagates_cancellation_arriving_after_download_failure() -> None:
+    cleanup_started = asyncio.Event()
+    materializer = UrlMaterializer(_Workspace())
+
+    async def materialize(**_kwargs):
+        raise ReportingError("report_attachment_download_failed", "download failed")
+
+    async def cleanup_operation(_thread_id: str, _operation_id: str) -> None:
+        cleanup_started.set()
+        await asyncio.Event().wait()
+
+    materializer.materialize = materialize  # type: ignore[method-assign]
+    materializer.cleanup_operation = cleanup_operation  # type: ignore[method-assign]
+    task = asyncio.create_task(materializer.materialize_all(
+        thread_id="thread-1",
+        operation_id="operation-1",
+        attachments=(ReportingUrlAttachment.model_validate(
+            {"url": "https://example.com/input.csv"}
+        ),),
+    ))
+    await cleanup_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 @pytest.mark.parametrize(
     "address",
     ["64:ff9b::a9fe:a9fe", "64:ff9b:1::7f00:1", "::127.0.0.1"],

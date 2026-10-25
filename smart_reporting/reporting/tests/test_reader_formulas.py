@@ -7,8 +7,10 @@ from decimal import Decimal
 import pytest
 
 from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+    DeterministicAnalysisBundle,
     build_deterministic_analysis_bundle,
 )
+from smart_reporting.reporting.trace.fact_index import assign_fact_ids
 from smart_reporting.reporting.trace.numeric_text import frozen_number_catalog
 from smart_reporting.reporting.trace.semantic_bindings import (
     reference_computation,
@@ -104,6 +106,73 @@ def test_registered_derived_ratio_fields_are_computed_and_explain_their_inputs()
     assert reference_computation(f'{{{{value:{B}:total:元}}}}', 'total') == 'registered'
 
 
+def _latest_period_ratio_document(*, num_unit='元', den_unit='元'):
+    document = ratio_document(num_unit=num_unit, den_unit=den_unit)
+    numerator, denominator = document['metrics']
+    latest_numerator = Decimal(str(numerator['periodValues'][-1]['value']))
+    latest_denominator = Decimal(str(denominator['periodValues'][-1]['value']))
+    numerator['periodValues'] = numerator['periodValues'][-1:]
+    numerator.update(
+        total=float(latest_numerator),
+        average=float(latest_numerator),
+        minimum=float(latest_numerator),
+        maximum=float(latest_numerator),
+        periodStart='2025-02',
+        periodEnd='2025-02',
+    )
+    ratio = document['derivedMetrics'][0]
+    scale = Decimal(str(ratio['denominatorScale']))
+    comparable_denominator = latest_denominator * scale
+    value = latest_numerator / comparable_denominator
+    ratio.update(
+        numerator=float(latest_numerator),
+        denominator=float(comparable_denominator),
+        value=float(value),
+        percentage=float(value * 100),
+        difference=float(latest_numerator - comparable_denominator),
+        periodStart='2025-02',
+        periodEnd='2025-02',
+    )
+    return assign_fact_ids(
+        DeterministicAnalysisBundle.model_validate(document)
+    ).model_dump(mode='json', by_alias=True)
+
+
+@pytest.mark.parametrize(('num_unit', 'den_unit', 'denominator_text'), [
+    ('元', '元', '30元'),
+    ('元', '万元', '30万元（按 ×10000 换算为300,000元）'),
+    ('万元', '元', '30元（按 ×0.0001 换算为0.003万元）'),
+])
+def test_derived_ratio_explanation_uses_aligned_denominator_and_scale(
+    num_unit, den_unit, denominator_text,
+):
+    document = _latest_period_ratio_document(num_unit=num_unit, den_unit=den_unit)
+    ratio = document['derivedMetrics'][0]
+    token = f"{{{{value:{ratio['factId']}:value:}}}}"
+
+    explanation = _explain(token, [json.dumps(document, ensure_ascii=False)])
+
+    assert explanation is not None
+    assert explanation.startswith(
+        f'amount（2025年2月、同期合计）900{num_unit} ÷ '
+        f'visits（2025年2月、同期合计）{denominator_text}'
+    )
+    assert '同期合计）40' not in explanation
+
+
+def test_derived_ratio_labels_each_input_aggregation_policy() -> None:
+    document = ratio_document(den_unit='元')
+    document['metrics'][1]['periodAggregation'] = 'last'
+    ratio = document['derivedMetrics'][0]
+    token = f"{{{{value:{ratio['factId']}:value:}}}}"
+
+    explanation = _explain(token, [json.dumps(document, ensure_ascii=False)])
+
+    assert explanation is not None
+    assert 'amount（2025年1—2月、同期合计）' in explanation
+    assert 'visits（2025年1—2月、共同期末）' in explanation
+
+
 def test_compound_registered_ratio_explains_base_unit_conversion_and_result():
     document = ratio_document(num_unit='万元')
     content = json.dumps(document, ensure_ascii=False)
@@ -115,10 +184,20 @@ def test_compound_registered_ratio_explains_base_unit_conversion_and_result():
     )
 
 
-def test_ratio_formula_falls_back_when_registered_input_identity_is_missing():
+@pytest.mark.parametrize('fault', ['missing', 'reversed', 'duplicate', 'unknown', 'metric_code'])
+def test_ratio_formula_falls_back_when_registered_input_identity_is_invalid(fault):
     document = ratio_document(den_unit='元')
     fact = document['derivedMetrics'][0]
-    fact['inputFactIds'] = []
+    if fault == 'missing':
+        fact['inputFactIds'] = []
+    elif fault == 'reversed':
+        fact['inputFactIds'].reverse()
+    elif fault == 'duplicate':
+        fact['inputFactIds'][1] = fact['inputFactIds'][0]
+    elif fault == 'unknown':
+        fact['inputFactIds'][1] = 'fact-' + 'f' * 16
+    else:
+        document['metrics'][0]['metricCodes'] = ['other']
     content = json.dumps(document, ensure_ascii=False)
     token = f"{{{{value:{fact['factId']}:percentage:%}}}}"
     assert _explain(token, [content]) is None
