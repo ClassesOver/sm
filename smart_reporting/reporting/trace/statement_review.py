@@ -12,9 +12,15 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .assertions import assertion_request_for_token
-from .numeric_text import text_after_last_break, text_before_next_break
+from .comparison_proofs import period_list_text
+from .numeric_text import frozen_number_catalog, text_after_last_break, text_before_next_break
 from .semantic_bindings import NumberReferenceResolver, anchor_bound_numbers, render_bound_numbers
-from .subject_builder import prepare_claim_status
+from .subject_builder import (
+    _PERIOD_TEXT_MISMATCH,
+    _period_key,
+    prepare_claim_status,
+    written_period_span,
+)
 
 STATEMENT_REVIEW_PREFIX = "引用句与登记口径不一致："
 _MARKER = re.compile(r"\[\[[^\]\r\n]+\]\]")
@@ -65,8 +71,45 @@ def statement_review_warnings(
         before = _MARKER.sub("", anchored[:position])
         text = before + _MARKER.sub("", anchored[position:])
         statement = (text_after_last_break(text, len(before)) + text_before_next_break(text, len(before)))[:200]
-        warnings.extend(f"{STATEMENT_REVIEW_PREFIX}{warning} 所在语句：{statement}" for warning in detail["warnings"])
+        for warning in detail["warnings"]:
+            if warning.startswith(_PERIOD_TEXT_MISMATCH):
+                warning += _period_mismatch_hint(reference, selected, statement, resolver, contents)
+            warnings.append(f"{STATEMENT_REVIEW_PREFIX}{warning} 所在语句：{statement}")
     return list(dict.fromkeys(warnings))
+
+
+def _period_mismatch_hint(reference, selected, statement, resolver, contents) -> str:
+    """期间写错时指明是哪个数，并给出同一指标在句中所写期间的登记引用，由模型决定是否改用。
+
+    只在唯一可确定时给候选：同一字段、同一范围与聚合、同一单位，登记期间的首末与句中所写一致，
+    且所有候选取值相同；句中写了多个期间或找不到时只指明数值，不猜测。
+    """
+    hint = f"：“{reference.display_text}”的登记期间与句中所写不同。" if reference.display_text else ""
+    span = written_period_span(statement)
+    match = re.fullmatch(r"\{\{value:(fact-[0-9a-f]{16}):([^:{}]+):([^{}]*)\}\}", reference.token)
+    if span is None or match is None:
+        return hint
+    fact_id, selector, unit = match.groups()
+    entry = selected["entry"]
+    candidates: dict[str, Any] = {}
+    for other_id, other in resolver.entries.items():
+        if (other_id == fact_id or other_id in resolver.conflicts
+                or other.get("fieldRef") != entry.get("fieldRef")
+                or (other.get("scope") or {}) != (entry.get("scope") or {})
+                or other.get("aggregation") != entry.get("aggregation")
+                or other.get("unit") != entry.get("unit")):
+            continue
+        token = f"{{{{value:{other_id}:{selector}:{unit}}}}}"
+        resolved = resolver.resolve(token)
+        keys = sorted(key for period in (resolved or {}).get("periods") or () if (key := _period_key(str(period))))
+        if keys and len({len(key) for key in keys}) == 1 and (keys[0], keys[-1]) == span:
+            candidates[token] = resolved
+    if not candidates or len({str(item["value"]) for item in candidates.values()}) != 1:
+        return hint
+    token, resolved = next(iter(candidates.items()))
+    shown = frozen_number_catalog(contents).get(token)
+    return (hint + f"若要写{period_list_text(resolved['periods'])}，同一指标该期间已登记为 {token}"
+            + (f"（{shown}）" if shown else "") + "。")
 
 
 __all__ = ["STATEMENT_REVIEW_PREFIX", "statement_review_warnings"]

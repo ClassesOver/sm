@@ -14,6 +14,26 @@ def test_reference_period_contradicting_the_sentence_is_reported_with_the_senten
     [warning] = warnings
     assert '期间文本与生成时不一致（生成时 2025年1—2月）' in warning
     assert '所在语句：2024年1—2月合计100元' in warning
+    # 指明是哪个数，并给出同一指标在句中所写期间的登记引用，由模型决定是否改用。
+    assert '“100元”的登记期间与句中所写不同' in warning
+    assert '若要写2024年1—2月，同一指标该期间已登记为 {{value:fact-aaaaaaaaaaaaaaaa:total:元}}（20元）' in warning
+
+
+def test_period_alternative_is_offered_only_when_unambiguous():
+    import json
+
+    # 同一字段在该期间有两个取值不同的登记事实时不猜测，只指明数值。
+    [document] = [json.loads(item) for item in source()]
+    twin = {**document['metrics'][0], 'factId': 'fact-' + 'e' * 16, 'datasetId': 'ds-2024-copy', 'total': 21,
+            'periodValues': [{'period': '2024-01', 'value': 10}, {'period': '2024-02', 'value': 11}]}
+    document['metrics'].append(twin)
+    [warning] = statement_review_warnings('2024年1—2月合计{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。',
+                                          [json.dumps(document)])
+    assert '“100元”的登记期间与句中所写不同' in warning and '若要写' not in warning
+    # 句中写了多个期间时同样不给候选。
+    [warning] = statement_review_warnings(
+        '2024年1月至2025年2月合计{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。', source())
+    assert '若要写' not in warning
 
 
 def test_consistent_sentences_and_unbound_text_pass():
@@ -45,3 +65,4 @@ def test_period_lists_read_as_calendar_spans():
     assert period_list_text(['2025-01', '2025-02', '2024-01', '2024-02']) == '2025年1—2月、2024年1—2月'
     assert period_list_text(['2025-09-01', '2025-09-02']) == '2025-09-01、2025-09-02'
     assert period_list_text(['2025-13']) == '2025-13'
+
