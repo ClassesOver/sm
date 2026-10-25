@@ -247,7 +247,8 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         evaluator = calc_evaluator or CalcEvaluator(contents)
         aggregations = {
             item.get("factId"): item.get("periodAggregation")
-            for document in _documents(contents) for item in document.get("metrics") or ()
+            for document in _documents(contents)
+            for item in (*(document.get("metrics") or ()), *(document.get("breakdowns") or ()))
         }
         for match in CALC_TOKEN.finditer(markdown):
             result = evaluator.evaluate(match[0])

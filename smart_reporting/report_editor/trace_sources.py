@@ -387,11 +387,9 @@ class ReportEditorTraceService:
                     context.report_id, context.revision, entry.analysis_id, error,
                 )
                 continue
-            for kind, key in (
-                ("metric", "metrics"), ("comparison", "comparisons"),
-                ("derived", "derivedMetrics"), ("reconciliation", "reconciliations"),
-                ("correlation", "correlationDetails"),
-            ):
+            from ..reporting.trace.fact_index import FACT_ARRAYS
+
+            for kind, key in FACT_ARRAYS:
                 for fact in document.get(key, ()):
                     if not fact.get("factId"):
                         continue
@@ -849,16 +847,12 @@ class ReportEditorTraceService:
     @staticmethod
     def _locate_fact_pointer(document: Mapping[str, Any], fact_id: str) -> str:
         # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
-        for array_name, prefix in (
-            ("metrics", "/metrics/"),
-            ("comparisons", "/comparisons/"),
-            ("derivedMetrics", "/derivedMetrics/"),
-            ("reconciliations", "/reconciliations/"),
-            ("correlationDetails", "/correlationDetails/"),
-        ):
+        from ..reporting.trace.fact_index import FACT_ARRAYS
+
+        for _, array_name in FACT_ARRAYS:
             for index, item in enumerate(document.get(array_name, ()) or ()):
                 if isinstance(item, dict) and item.get("factId") == fact_id:
-                    return f"{prefix}{index}"
+                    return f"/{array_name}/{index}"
         raise ReportingError("fact_binding_unavailable", "事实 ID 不在该分析中。")
 
     async def _column_definitions_for_review(

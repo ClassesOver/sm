@@ -277,6 +277,10 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
                          or field_definitions.get(str(entry.get("field", ""))))
                 if isinstance(label, str) and len(label) >= 2 and re.search(r"[\u3400-\u9fff]", label):
                     labels_by_fact[entry["factId"]] = label
+        # 维度分组是父指标的一部分：其数值归父指标所有，不能作为“不判定归属”的中性登记值。
+        for entry in document.get("breakdowns") or ():
+            if isinstance(entry, dict) and entry.get("parentFactId") in labels_by_fact:
+                labels_by_fact[entry["factId"]] = labels_by_fact[entry["parentFactId"]]
     labels = set(labels_by_fact.values())
     if len(labels) < 2:
         return []
@@ -397,6 +401,23 @@ def _group_value_attribution_warnings(text: str, documents: list[dict[str, Any]]
     # 指标、比较与派生事实中分组结果以外的登记值：对得上其中任何一个时不判定归属。
     registered: list[tuple[str, set[Decimal]]] = []
     for document in documents:
+        breakdown_tables: dict[tuple[str, str], dict[str, Decimal]] = {}
+        for entry in document.get("breakdowns") or ():
+            # 维度分组：同一父指标、同一维度的各组合计就是一张登记分组表。
+            if (isinstance(entry, dict) and isinstance(entry.get("unit"), str)
+                    and entry.get("parentFactId") and entry.get("breakdownField")
+                    and "current" in (entry.get("periodRoles") or ())
+                    and isinstance(entry.get("total"), (int, float)) and not isinstance(entry.get("total"), bool)):
+                group = (entry.get("scope") or {}).get(entry["breakdownField"])
+                if group:
+                    breakdown_tables.setdefault((entry["parentFactId"], entry["breakdownField"]), {})[str(group)] = (
+                        Decimal(str(entry["total"])))
+                    breakdown_tables[(entry["parentFactId"], entry["breakdownField"])]["__unit__"] = entry["unit"]
+        for groups in breakdown_tables.values():
+            unit = groups.pop("__unit__")
+            if len(groups) >= 2:
+                tables.append((unit, groups))
+        # 分组事实的数值只作为分组表比较，不进“其他登记值”：否则一组的值写在另一组名下时恰好被放行。
         for array in ("metrics", "comparisons", "derivedMetrics", "reconciliations"):
             for entry in document.get(array) or ():
                 if not isinstance(entry, dict) or not isinstance(entry.get("unit"), str):

@@ -72,7 +72,8 @@ def _direct_decomposition_source(
     candidates = [(index, metric) for index, metric in enumerate(payload.get("metrics") or ())
                   if isinstance(metric, Mapping) and metric.get("factId") == fact_id]
     occurrences = sum(
-        1 for collection in ("metrics", "derivedMetrics", "comparisons", "reconciliations", "correlationDetails")
+        1 for collection in ("metrics", "breakdowns", "derivedMetrics", "comparisons", "reconciliations",
+                             "correlationDetails")
         for entry in payload.get(collection) or ()
         if isinstance(entry, Mapping) and entry.get("factId") == fact_id
     )
@@ -217,6 +218,40 @@ def project_analysis_findings(
                 f"已登记 {len(periods)} 个期间值，期间值一致。" if constant else f"已登记 {len(periods)} 个期间值，可用于趋势分析。",
                 priority="low" if constant else "medium", metrics=(str(metric.get("field") or "指标"),),
                 unit=metric.get("unit") if isinstance(metric.get("unit"), str) else None)
+
+    # 维度分组：同一父指标、同一维度的完整分组是一条数值构成发现，来源列出全部分组与父指标。
+    parent_indexes = {metric.get("factId"): index for index, metric in enumerate(payload.get("metrics") or ())
+                      if isinstance(metric, Mapping) and metric.get("factId")}
+    partitions: dict[tuple[str, str], list[tuple[int, Mapping[str, Any]]]] = {}
+    for index, part in enumerate(payload.get("breakdowns") or ()):
+        if (isinstance(part, Mapping) and part.get("parentFactId") in parent_indexes
+                and isinstance(part.get("breakdownField"), str)):
+            partitions.setdefault((part["parentFactId"], part["breakdownField"]), []).append((index, part))
+    for (parent_id, field), parts in partitions.items():
+        parent_index = parent_indexes[parent_id]
+        parent = payload["metrics"][parent_index]
+        label = metric_label(parent)
+        dimension = str(parts[0][1].get("breakdownLabel") or field)
+        groups = "、".join(str((part.get("scope") or {}).get(field)) for _, part in parts)
+        readable = "各组数值、占比与逐月数值" if all(len(part.get("periodValues") or ()) >= 2 for _, part in parts) \
+            else "各组数值与占比"
+        findings.append(FindingCard(
+            findingId=_stable_id(analysis_id, f"/breakdowns/{field}@{parent_id}", snapshot_hash),
+            analysisIds=(analysis_id,), kind="attribution", title=f"{label}按{dimension}构成"[:200],
+            summary=(f"已登记{label}按{dimension}的完整分组（{groups}），各组合计与登记总额闭合，"
+                     f"可引用{readable}；数值构成不证明业务因果。")[:4000],
+            metricCodes=tuple(parent.get("metricCodes") or (analysis_id,)),
+            periodRoles=tuple(parent.get("periodRoles") or ("current",)),
+            periodStart=parent.get("periodStart"), periodEnd=parent.get("periodEnd"),
+            scope=dict(parent.get("scope") or {}), grain=(field,), priority="medium",
+            evidenceLevel="direct_decomposition",
+            impactUnit=parent.get("unit") if isinstance(parent.get("unit"), str) else None,
+            actionability="unknown", citationIds=citation_ids,
+            sourceRefs=(
+                _source(analysis_id, fact_file_path, file_sha256, f"/metrics/{parent_index}"),
+                *(_source(analysis_id, fact_file_path, file_sha256, f"/breakdowns/{index}") for index, _ in parts),
+            ),
+        ))
 
     for index, relation in enumerate(payload.get("reconciliations") or ()):
         if not isinstance(relation, Mapping):

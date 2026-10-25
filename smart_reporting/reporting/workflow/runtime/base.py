@@ -494,6 +494,8 @@ _ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS = (
 
 _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
+    "deterministicFacts.breakdowns 已按业务维度登记同一指标的完整分组：每组合计、占同指标合计的比重、逐月值及月度占比与环比均可直接引用；"
+    "管理问题只需这些维度的构成、占比或分组月度变化时视为固定事实足够，不得为此补证。未列出的维度或需要贡献、排名等其他计算时才声明缺口。",
     _GROUPED_EVIDENCE_INSTRUCTION,
     "datasets[].columnDescriptions 是当前签发 CSV 字段的业务定义；先据此区分合计和分项。"
     "合计/总额字段不得再与它的分项相加，分别比较预算总额与实际总额，再分析各分项差额。"

@@ -14,7 +14,7 @@ from typing import Any
 
 from ..models import ReportingError
 from .contracts_v1 import TRACE_BUDGETS_V1, FactRefV1
-from .fact_index import fact_entry_from_pointer
+from .fact_index import FACT_ARRAYS, fact_entry_from_pointer
 from .numeric_text import PERCENT_POINT
 
 
@@ -55,7 +55,7 @@ def read_fact_document(bundle_bytes: bytes) -> Mapping[str, Any]:
     if not isinstance(document, Mapping):
         raise ReportingError("snapshot_integrity_failed", "事实文件结构无效。")
     fact_ids: set[str] = set()
-    for key in ("metrics", "comparisons", "derivedMetrics", "reconciliations", "correlationDetails"):
+    for _, key in FACT_ARRAYS:
         if key not in document:
             continue
         entries = document[key]
