@@ -340,10 +340,21 @@ def test_oversized_instruction_drops_breakdown_detail_before_failing():
 def test_chart_descriptors_never_bind_rows_from_different_dimensions():
     from smart_reporting.reporting.workflow.runtime.analysis import _breakdown_descriptors
 
-    rows = [item.model_dump(mode="json", by_alias=True) for item in _bundle().breakdowns]
-    paths = [item["dataPath"] for item in _breakdown_descriptors(rows)]
+    payload = _bundle().model_dump(mode="json", by_alias=True)
+    rows = payload["breakdowns"]
+    paths = [item["dataPath"] for item in _breakdown_descriptors(payload)]
     # 两个维度并存：整表按行绑定会把两套分组相加，只能逐组选取。
     assert "breakdowns" not in paths
     assert {f"breakdowns[{index}]" for index in range(len(rows))} <= set(paths)
-    single = [row for row in rows if row["breakdownField"] == "income_type"]
+    single = {**payload, "breakdowns": [row for row in rows if row["breakdownField"] == "income_type"]}
     assert "breakdowns" in [item["dataPath"] for item in _breakdown_descriptors(single)]
+
+
+def test_typed_and_json_partitions_group_the_same_facts():
+    from smart_reporting.reporting.trace.fact_index import breakdown_partition_rows, breakdown_partitions
+
+    bundle = _bundle()
+    typed = {key: [fact.fact_id for fact in groups] for key, groups in breakdown_partitions(bundle).items()}
+    rows = breakdown_partition_rows(bundle.model_dump(mode="json", by_alias=True))
+    assert typed == {key: [row["factId"] for _, row in items] for key, items in rows.items()}
+    assert {field for _, field in typed} == {"income_type", "department"}

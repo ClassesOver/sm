@@ -220,14 +220,11 @@ def project_analysis_findings(
                 unit=metric.get("unit") if isinstance(metric.get("unit"), str) else None)
 
     # 维度分组：同一父指标、同一维度的完整分组是一条数值构成发现，来源列出全部分组与父指标。
+    from ..trace.fact_index import breakdown_partition_rows
+
     parent_indexes = {metric.get("factId"): index for index, metric in enumerate(payload.get("metrics") or ())
                       if isinstance(metric, Mapping) and metric.get("factId")}
-    partitions: dict[tuple[str, str], list[tuple[int, Mapping[str, Any]]]] = {}
-    for index, part in enumerate(payload.get("breakdowns") or ()):
-        if (isinstance(part, Mapping) and part.get("parentFactId") in parent_indexes
-                and isinstance(part.get("breakdownField"), str)):
-            partitions.setdefault((part["parentFactId"], part["breakdownField"]), []).append((index, part))
-    for (parent_id, field), parts in partitions.items():
+    for (parent_id, field), parts in breakdown_partition_rows(payload).items():
         parent_index = parent_indexes[parent_id]
         parent = payload["metrics"][parent_index]
         label = metric_label(parent)

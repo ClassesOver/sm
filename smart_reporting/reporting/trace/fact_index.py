@@ -41,6 +41,37 @@ def bundle_fact_arrays(bundle: DeterministicAnalysisBundle):
         yield kind, array, getattr(bundle, _BUNDLE_ATTRIBUTES[array])
 
 
+def breakdown_partitions(bundle: DeterministicAnalysisBundle) -> dict[tuple[str, str], list[Any]]:
+    """(父指标 factId, 分组字段) → 该维度的完整分组，保持登记顺序。
+
+    维度构成、占比、摘要、数值目录与模型投影共用同一归组：缺 factId、缺分组字段或父指标
+    不在本包 metrics 中的分组不属于任何构成。
+    """
+    parents = {fact.fact_id for fact in bundle.metrics if fact.fact_id}
+    partitions: dict[tuple[str, str], list[Any]] = {}
+    for fact in bundle.breakdowns:
+        if fact.fact_id and fact.breakdown_field and fact.parent_fact_id in parents:
+            partitions.setdefault((fact.parent_fact_id, fact.breakdown_field), []).append(fact)
+    return partitions
+
+
+def shareable_partition(parent: Any, groups: list[Any]) -> bool:
+    """占比按净额以父指标合计为分母：父合计为正、各组非负且不是百分比指标时才登记。"""
+    return parent.unit != "%" and parent.total > 0 and all(group.total >= 0 for group in groups)
+
+
+def breakdown_partition_rows(payload: Mapping[str, Any]) -> dict[tuple[str, str], list[tuple[int, Mapping[str, Any]]]]:
+    """与 breakdown_partitions 同一归组，作用于事实文件 JSON；值为 (breakdowns 下标, 条目)。"""
+    parents = {metric.get("factId") for metric in payload.get("metrics") or ()
+               if isinstance(metric, Mapping) and metric.get("factId")}
+    partitions: dict[tuple[str, str], list[tuple[int, Mapping[str, Any]]]] = {}
+    for index, row in enumerate(payload.get("breakdowns") or ()):
+        if (isinstance(row, Mapping) and row.get("factId") and isinstance(row.get("breakdownField"), str)
+                and row.get("parentFactId") in parents):
+            partitions.setdefault((row["parentFactId"], row["breakdownField"]), []).append((index, row))
+    return partitions
+
+
 def _fact_id(identity: str) -> str:
     return "fact-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 

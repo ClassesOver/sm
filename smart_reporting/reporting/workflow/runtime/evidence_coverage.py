@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ...trace.fact_index import breakdown_partitions, shareable_partition
 from ...trace.numeric_text import budget_comparison_values, project_ratio_values
 
 _BEYOND_FACTS = re.compile(
@@ -96,14 +97,10 @@ def _dimension_mentions(text: str) -> list[str]:
 
 def _shareable_partitions(facts: DeterministicAnalysisBundle) -> dict[str | None, list[list[Any]]]:
     """父指标 → 能登记占比的完整维度（父合计为正、各组非负）；其余维度没有占比可引用。"""
-    totals = {fact.fact_id: fact.total for fact in facts.metrics}
-    grouped: dict[tuple[str | None, str], list[Any]] = {}
-    for fact in facts.breakdowns:
-        if fact.breakdown_field:
-            grouped.setdefault((fact.parent_fact_id, fact.breakdown_field), []).append(fact)
+    parents = {fact.fact_id: fact for fact in facts.metrics}
     partitions: dict[str | None, list[list[Any]]] = {}
-    for (parent, _), groups in grouped.items():
-        if (totals.get(parent) or 0) > 0 and all(group.total >= 0 for group in groups):
+    for (parent, _), groups in breakdown_partitions(facts).items():
+        if shareable_partition(parents[parent], groups):
             partitions.setdefault(parent, []).append(groups)
     return partitions
 
