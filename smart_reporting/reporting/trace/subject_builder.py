@@ -619,6 +619,15 @@ def unit_period_warnings(
     return warnings
 
 
+def written_period_span(statement: str) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    """语句中明确写出的期间首末（与期间文本核对同一抽取规则）；没有或粒度不一时返回 None。"""
+    window = _expanded_period_wording(statement.replace("−", "-").replace("－", "-"))
+    keys = sorted({key for token in _PERIOD_TOKEN.findall(window) if (key := _period_key(token)) is not None})
+    if not keys or len({len(key) for key in keys}) != 1:
+        return None
+    return keys[0], keys[-1]
+
+
 def _point_plain_text(text: str) -> str:
     # Remove paired emphasis only; never concatenate arithmetic or identifier tokens.
     return re.sub(r"(?<![A-Za-z0-9_])(\*\*|__|\*)(?=\S)(.+?)(?<=\S)\1(?![A-Za-z0-9_])", r"\2", text)
@@ -1000,4 +1009,5 @@ __all__ = [
     "unit_period_warnings",
     "value_matches",
     "value_text_variants",
+    "written_period_span",
 ]
