@@ -131,3 +131,14 @@ def test_formula_labels_prefer_column_descriptions_and_skip_conflicting_columns(
     assert _formula_labels(None, [], definitions) == {}
     # 带别名的名称只取首个名称。
     assert _formula_labels({'field': 'income', 'displayName': '收入金额，也称医疗收入金额'}, [], {}) == {'income': '收入金额'}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_server_derived_values_are_evaluated_by_their_sentence(tmp_path):
+    # 服务端派生值与计算引用同一规则：能解析即核对所在语句，不再整体记为“运算语义未评估”。
+    derived = '{{value:fact-aaaaaaaaaaaaaaaa:periodTotals.0-1:万元}}'
+    assert await _subject_issue(tmp_path / 'ok', f'2025年9—10月北院收入合计{derived}。') is None
+    issue = await _subject_issue(tmp_path / 'bad', f'2025年10月北院收入合计{derived}。')
+    assert issue is not None and 'statement_not_supported' in issue.reasons
+    assert 'operation_semantics_not_evaluated' not in issue.reasons

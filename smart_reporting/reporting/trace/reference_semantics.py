@@ -167,6 +167,9 @@ def _uniform_month_warnings(clause: str, reference: Mapping[str, Any]) -> list[s
     wording = re.sub(r'(?<![各每])月均|月平均', '', clause.replace('平均每月', ''))
     if re.search(r'(?:各月|每月|逐月)[^，。；,;]{0,12}?(?:平均|均值)', wording):
         return []  # “各月成本平均为11.01亿元”说的是平均水平，不是各月相同。
+    if (reference.get('selector') in {'monthlyMinimum', 'monthlyMaximum'}
+            and not re.search(r'均为|都为|均是|都是|相同|一样|持平', wording)):
+        return []  # “各月介于8.90亿元至11.68亿元”写的是区间两端，不是各月相同。
     assertions = [match for match in re.finditer(r'各月|每月|逐月', wording)
                   if not _NEGATED_WORDING.search(wording[:match.start()])]
     if (not assertions or re.search(r'(?:并非|不是|并不|未必)\s*(?:均|都|相同|一样)', wording)

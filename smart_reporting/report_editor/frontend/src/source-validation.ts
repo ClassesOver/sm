@@ -47,10 +47,21 @@ function countedBySourceReview(result: TraceValidation): (issue: QualityIssue) =
 
 /** 未自动核对的质量诊断条数：只作说明，不代表存在问题；已计入待复核的不重复计数。 */
 export function notEvaluatedQualityCount(result: TraceValidation): number {
+  const { scope, other } = notEvaluatedQualityBreakdown(result)
+  return scope + other
+}
+
+// 只因数据集未登记统计范围而无法确认的诊断：同一个原因，需业务确认范围及组织映射，不默认全院。
+const SCOPE_ONLY_REASONS = new Set(['scope_unknown', 'scope_value_unknown'])
+
+/** 未自动核对的诊断按原因分开：仅缺统计范围的（待业务确认）与其余未评估的。 */
+export function notEvaluatedQualityBreakdown(result: TraceValidation): { scope: number; other: number } {
   const quality = result.quality
-  if (!quality || quality.status !== 'evaluated') return 0
+  if (!quality || quality.status !== 'evaluated') return { scope: 0, other: 0 }
   const counted = countedBySourceReview(result)
-  return quality.issues.filter(issue => qualityIssueNotEvaluated(issue) && !counted(issue)).length
+  const issues = quality.issues.filter(issue => qualityIssueNotEvaluated(issue) && !counted(issue))
+  const scope = issues.filter(issue => (issue.reasons ?? []).every(reason => SCOPE_ONLY_REASONS.has(reason))).length
+  return { scope, other: issues.length - scope }
 }
 
 export function checkNeedsReview(check: { status: string; reason?: string; reasons?: string[] } | undefined): boolean {
@@ -128,7 +139,7 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
   const sourceFailures = result.sourceIssues?.length ?? 0
   const qualityFailed = result.quality?.status === 'failed'
   const semanticGroups = semanticReviewGroupCount(result)
-  const notEvaluated = notEvaluatedQualityCount(result)
+  const notEvaluated = notEvaluatedQualityBreakdown(result)
   const coverage = result.quality?.questionCoverage
   const hasQuestions = coverage?.required != null && coverage.required > 0
   const answerPending = Boolean(hasQuestions && coverage?.effectiveAnswerRate == null)
@@ -142,7 +153,8 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
     sourceFailures ? `来源异常 ${sourceFailures}` : '',
     qualityFailed ? '语义检查暂不可用' : '',
     semanticGroups ? `语义待确认 ${semanticGroups}组` : '',
-    notEvaluated ? `未自动核对 ${notEvaluated}` : '',
+    notEvaluated.scope ? `范围待确认 ${notEvaluated.scope}` : '',
+    notEvaluated.other ? `未自动核对 ${notEvaluated.other}` : '',
     hasQuestions && coverage ? answerPending ? '回答覆盖待核验' : `已核验回答 ${coverage.answered}/${coverage.required}` : '',
   ].filter(Boolean).join(' · ')
   return { text, state: issues || unverified || reviewTexts || contentWarnings || sourceFailures || qualityFailed || semanticGroups || answerPending || answerIncomplete ? 'stale' : total ? 'valid' : 'unknown' }

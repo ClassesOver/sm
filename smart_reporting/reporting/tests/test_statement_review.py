@@ -66,3 +66,18 @@ def test_period_lists_read_as_calendar_spans():
     assert period_list_text(['2025-09-01', '2025-09-02']) == '2025-09-01、2025-09-02'
     assert period_list_text(['2025-13']) == '2025-13'
 
+
+
+B_MIN = '{{value:fact-bbbbbbbbbbbbbbbb:monthlyMinimum:元}}'
+B_MAX = '{{value:fact-bbbbbbbbbbbbbbbb:monthlyMaximum:元}}'
+
+
+def test_server_derived_values_get_the_same_sentence_check():
+    # 月度极值、期间累计等由服务端派生的数，写作时同样核对所在语句的期间。
+    warnings = statement_review_warnings('2025年1月累计{{value:fact-bbbbbbbbbbbbbbbb:periodTotals.0-1:元}}。', source())
+    assert any('当前引用覆盖 2025年1—2月' in warning for warning in warnings)
+    assert statement_review_warnings('2025年1—2月累计{{value:fact-bbbbbbbbbbbbbbbb:periodTotals.0-1:元}}。', source()) == []
+    # “各月介于最低至最高”写的是区间两端，不是“各月均为同一数值”。
+    assert statement_review_warnings(f'2025年1—2月各月收入介于{B_MIN}至{B_MAX}之间。', source()) == []
+    [uniform] = statement_review_warnings(f'2025年1—2月各月收入均为{B_MAX}。', source())
+    assert '不能表述为各月均为同一数值' in uniform
