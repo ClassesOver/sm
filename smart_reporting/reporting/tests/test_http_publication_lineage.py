@@ -656,7 +656,7 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
 @pytest.mark.anyio
 @pytest.mark.parametrize("fault", [
     "manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot",
-    "lineage_runtime", "editor_snapshot", "editor_context",
+    "lineage_runtime", "editor_snapshot", "editor_context", "editor_scope",
     "table_source_missing", "table_source_changed",
     "quality_record_missing", "quality_record_changed",
 ])
@@ -707,6 +707,9 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
             return await original_write(thread_id, path, content, **kwargs)
 
         monkeypatch.setattr(workspace, "awrite_text", failing_editor_write)
+    elif fault == "editor_scope":
+        # 作用域不一致（调用方 thread 与发布作用域不符）只拒绝编辑上下文。
+        arguments = {**arguments, "caller_thread_id": "another-caller-thread"}
     elif fault == "editor_context":
         monkeypatch.setattr(
             runtime.state_repository,
@@ -729,13 +732,13 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
     assert artifacts.records and grants.records
     assert result["publicationIssues"] and all(item["message"] for item in result["publicationIssues"])
-    if fault in {"editor_snapshot", "editor_context"}:
+    if fault in {"editor_snapshot", "editor_context", "editor_scope"}:
         assert "editor" not in result
-        assert result["publicationIssues"][-1]["code"] == (
-            "report_editor_snapshot_unavailable"
-            if fault == "editor_snapshot"
-            else "report_editor_context_unavailable"
-        )
+        assert result["publicationIssues"][-1]["code"] == {
+            "editor_snapshot": "report_editor_snapshot_unavailable",
+            "editor_context": "report_editor_context_unavailable",
+            "editor_scope": "report_editor_scope_mismatch",
+        }[fault]
         assert "reportEditorContexts" not in durable.payload
     else:
         assert result["editor"]["openUrl"]
@@ -960,3 +963,50 @@ async def test_answer_review_checker_failure_preserves_index_and_downloads(tmp_p
     assert quality.question_coverage["effectiveAnswerRate"] is None
     result = await runtime.issue_http_publication(**arguments)
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("fault", ["word_persistence", "editor_grant", "delivery_record"])
+async def test_editor_delivery_retry_never_blocks_links_on_faults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
+) -> None:
+    """编辑器交付重试（补存、补签、登记重试结果）任一步失败都不阻断已核验格式的下载签发。"""
+    from .test_editor_partial_delivery import delivery_editor
+
+    failing = {"word"}
+    harness = await delivery_editor(tmp_path, ("pdf", "word"), failing)
+    editor, current, document = harness.editor, harness.current, harness.document
+    first = await editor.export_revision(current, expected_sha256=document.sha256)
+    assert first["revision"] == 3 and "word" not in first
+
+    failing.clear()
+    if fault == "word_persistence":
+        failing.add("word")
+    elif fault == "editor_grant":
+        monkeypatch.setattr(editor.editor_grants, "issue", AsyncMock(side_effect=OSError("editor grants down")))
+    else:
+        original_apply = harness.repository.apply
+
+        async def failing_apply(run_id, command, *, expected_version):
+            if command.name == "record_report_editor_delivery":
+                raise RuntimeError("injected delivery record failure")
+            return await original_apply(run_id, command, expected_version=expected_version)
+
+        monkeypatch.setattr(harness.repository, "apply", failing_apply)
+
+    retried = await editor.export_revision(current, expected_sha256=document.sha256)
+
+    assert retried["revision"] == 3 and "pdf" in retried
+    codes = [issue["code"] for issue in retried["validation"]["issues"]]
+    if fault == "word_persistence":
+        assert "word" not in retried and codes == ["report_word_persistence_failed"]
+        assert retried["validation"]["ok"] is False
+    elif fault == "editor_grant":
+        assert "word" in retried and "editor" not in retried
+        assert codes == ["report_editor_grant_unavailable"] and retried["validation"]["ok"] is False
+    else:
+        # 登记失败只影响后续读取到的验收状态；本次补存补签照常完成。
+        assert "word" in retried and retried["validation"] == {"ok": True, "issues": []}
+        assert "reportEditorDeliveries" not in harness.repository.durable.payload
+    assert "4" not in harness.repository.durable.payload["reportEditorContexts"]

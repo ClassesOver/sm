@@ -813,16 +813,20 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
         "http://10.233.32.64:27018/reports/v1/editor/open/editor-raw"
     )
 
-    # 校验仍然失败关闭：dependencies 与 stored 都无法提供 caller thread 时不得签发。
-    with pytest.raises(ReportingError, match="report_editor_scope_mismatch"):
-        await runtime.issue_http_publication(
-            thread_id="reporting-run-workspace-key",
-            caller_thread_id="thread",
-            user_id="7",
-            workflow_session_id="report-session-internal",
-            workflow_run_id="workflow-run",
-            output=content,
-        )
+    # 作用域不一致只拒绝使用编辑上下文：dependencies 与 stored 都无法提供 caller thread 时
+    # 不登记编辑上下文、不签编辑入口，但已核验的 PDF/Word 照常签发并返回原因。
+    events.clear()
+    mismatched = await runtime.issue_http_publication(
+        thread_id="reporting-run-workspace-key",
+        caller_thread_id="thread",
+        user_id="7",
+        workflow_session_id="report-session-internal",
+        workflow_run_id="workflow-run",
+        output=content,
+    )
+    assert events == ["persist", "grant"]
+    assert "editor" not in mismatched and mismatched["pdf"]["downloadUrl"]
+    assert mismatched["publicationIssues"][-1]["code"] == "report_editor_scope_mismatch"
 
 
 @pytest.mark.anyio

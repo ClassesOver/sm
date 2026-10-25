@@ -685,12 +685,16 @@ class TaskExecutionKernel:
         output_sha256 = metadata.get("sha256")
         stored_sha256 = metadata.get("storedSha256")
         # Full legacy resources can still be checked against the original
-        # digest.  A truncated legacy resource has no trustworthy prefix
-        # identity and therefore fails closed.
+        # digest.  A truncated handle written before storedSha256 existed has
+        # no prefix digest: keep it readable for in-flight tasks (length is
+        # still checked above) but mark it unverified instead of failing.
         if not isinstance(stored_sha256, str) and stored_bytes == output_bytes:
             stored_sha256 = output_sha256
         if not isinstance(stored_sha256, str):
-            raise WorkspaceError("output handle 缺少已保存内容哈希。")
+            logger.warning(
+                "task_tool_output_legacy_unverified stored_bytes={} bytes={}", stored_bytes, output_bytes
+            )
+            return raw, {**metadata, "integrity": "legacy_unverified"}
         if hashlib.sha256(raw).hexdigest() != stored_sha256:
             raise WorkspaceError("output handle 已保存内容哈希与受信元数据不一致。")
         return raw, dict(metadata)

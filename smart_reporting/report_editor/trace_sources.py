@@ -1293,6 +1293,7 @@ class ReportEditorTraceService:
                     "computation": reference_computation(
                         number.token, selected.get("selector") if selected else None,
                         table_derivation=number.table_derivation is not None,
+                        entry=selected.get("entry") if selected else None,
                     ) if number is not None else None,
                     "restoreText": restore_text,
                     "warnings": detail["warnings"],
@@ -1328,7 +1329,9 @@ class ReportEditorTraceService:
                     factValue=selected["value"],
                     unit=selected["unit"],
                     periods=list(selected["periods"]),
-                    computation=reference_computation(f"{{{{value:{key}:}}}}", selected.get("selector")),
+                    computation=reference_computation(
+                        f"{{{{value:{key}:}}}}", selected.get("selector"), entry=selected.get("entry"),
+                    ),
                     **_value_view(
                         {**selected["entry"], "formula": selected["formula"], "scope": selected["scope"]}, selected,
                     ),

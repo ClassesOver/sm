@@ -114,6 +114,9 @@ _SIGNING_CHAIN = {
     "smart_reporting/report_editor/service.py": (
         "_export_revision",
         "_retry_export_delivery",
+        "_persist_delivery",
+        "_issue_delivery_grants",
+        "_record_delivery",
     ),
 }
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
