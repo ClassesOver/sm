@@ -900,9 +900,9 @@ async def test_validate_table_sources_cached_per_request_off_thread_and_not_fact
     def table_resolve(*args):
         resolver_threads.append(threading.get_ident())
         return original_table_resolve(*args)
-    def fact_resolve(tokens, sources):
+    def fact_resolve(tokens, sources, **options):
         batches.append(set(tokens))
-        return original_fact_resolve(tokens, sources)
+        return original_fact_resolve(tokens, sources, **options)
     monkeypatch.setattr(editor.workspace, "read_limited_regular_file", read)
     monkeypatch.setattr(table_sources, "resolve_table_derivation", table_resolve)
     monkeypatch.setattr(semantic_bindings, "resolve_number_references", fact_resolve)
@@ -1389,6 +1389,23 @@ def test_frozen_amount_anchor_survives_long_block_and_checks_unit_conversion() -
     assert claim_status(anchored.replace('111.24亿元', '111.25亿元'), 'claim_001', 11123541503, expected_unit='元')['status'] == 'stale'
     missing = anchor_claims('无数值。', {'claim_001': (11123541503, '元')})
     assert claim_status(missing, 'claim_001', 11123541503, expected_unit='元')['status'] == 'stale'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_table_cells_share_the_value_view_of_body_numbers(tmp_path: Path) -> None:
+    # 表格单元格与正文数值走同一解析：登记值、单位、期间、取得方式与口径，编辑器据此显示同样的可信卡片。
+    editor, _, context = await _make_editor_with_subject(tmp_path, period_table=True)
+    index = await editor.trace.require_index(context)
+    markdown_file = next(file for file in index.files if file.resource_id == index.markdown_file_resource_id)
+    markdown = (await editor.trace._read_registered_file(context, markdown_file, max_bytes=1 << 24)).decode()
+    result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    cells = {item["rowLabel"]: item for item in result["tables"][0]["locations"]}
+    assert cells["2025-10"] | {"datasetIds": None} == cells["2025-10"] | {
+        "status": "valid", "factValue": 2400.0, "unit": "万元", "periods": ["2025-10"],
+        "computation": "registered", "formulaText": "revenue 求和", "datasetIds": None,
+    }
+    assert cells["2025-10"]["datasetIds"] == ["dataset-url-abc0001"]
 
 
 @pytest.mark.anyio

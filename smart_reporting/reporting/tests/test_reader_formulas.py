@@ -124,3 +124,15 @@ def test_every_formula_recomputes_to_the_result_it_shows():
             assert abs(_recomputed(explanation) - shown) <= Decimal('0.01'), (token, explanation)
             checked += 1
     assert checked > 50
+
+
+def test_table_cells_resolve_by_their_registered_unit():
+    # 表格单元格只登记事实与选择器：按目录登记的单位取引用，不猜单位（变化率为“%”，金额为“元”）。
+    content, comparison = _yoy_bundle()
+    results = resolve_number_references(
+        (), [content], selectors=[(comparison, 'changeRate'), (comparison, 'change'), (comparison, 'missing')],
+    )
+    rate, change = results[f'{comparison}:changeRate'], results[f'{comparison}:change']
+    assert rate['unit'] == '%' and rate['explanation'].endswith('= 35%')
+    assert change['value'] == 70 and change['explanation'].endswith('= 70元')
+    assert results[f'{comparison}:missing'] is None

@@ -384,6 +384,24 @@ class NumberReferenceResolver:
         self._registered_ratios: dict[str, dict | None] = {}
         self._cumulative_changes: dict[str, dict] = {}
         self._group_contributions: dict[str, dict | None] = {}
+        self._registered_tokens: dict[tuple[str, str], str | None] | None = None
+
+    def registered_token(self, fact_id: str, selector: str) -> str | None:
+        """按登记单位写出的数值引用。表格单元格只登记事实与选择器，单位以目录登记为准，不猜测。"""
+        if self._registered_tokens is None:
+            candidates: dict[tuple[str, str], list[str]] = {}
+            preferred: dict[tuple[str, str], str] = {}
+            for token, matches in self.numbers.items():
+                _, fact, field, _ = token[2:-2].split(":", 3)
+                candidates.setdefault((fact, field), []).append(token)
+                # 显示单位与登记单位相同的写法即原值；百分点等只有一种写法时直接采用。
+                if any((target or "") == (unit or "") for _, unit, target in matches):
+                    preferred.setdefault((fact, field), token)
+            self._registered_tokens = {
+                key: preferred.get(key) or (tokens[0] if len(tokens) == 1 else None)
+                for key, tokens in candidates.items()
+            }
+        return self._registered_tokens.get((fact_id, selector))
 
     def _derived_entries(self, *, legacy: bool = False) -> dict[str, tuple[Any, str]]:
         if self._derived is None:
@@ -573,20 +591,29 @@ def resolve_number_reference(token: str, contents) -> dict[str, Any] | None:
     return NumberReferenceResolver(contents).resolve(token)
 
 
-def resolve_number_references(tokens: Iterable[str], contents) -> dict[str, dict[str, Any] | None]:
+def resolve_number_references(
+    tokens: Iterable[str], contents, *, selectors: Iterable[tuple[str, str]] = (),
+) -> dict[str, dict[str, Any] | None]:
     """同一组已核验来源只展开一次，不跨文件组或请求缓存。
 
     附读者可验算的算式（explanation）供来源卡片展示；计算引用的 formula 本身已是读者算式。
+    selectors 是表格单元格登记的（事实, 选择器）：按登记单位写成数值引用后走同一解析，
+    结果键为“事实:选择器”，正文数值与表格单元格得到同样的登记值、期间与算式。
     """
     from .reader_formulas import reader_formula
 
     resolver = NumberReferenceResolver(contents)
-    results: dict[str, dict[str, Any] | None] = {}
-    for token in tokens:
+
+    def resolve(token: str) -> dict[str, Any] | None:
         selected = resolver.resolve(token)
         if selected is not None and not token.startswith("{{calc:"):
             selected["explanation"] = reader_formula(selected, reference_fact_ids(token), resolver.entries)
-        results[token] = selected
+        return selected
+
+    results: dict[str, dict[str, Any] | None] = {token: resolve(token) for token in tokens}
+    for fact_id, selector in selectors:
+        token = resolver.registered_token(fact_id, selector)
+        results[f"{fact_id}:{selector}"] = resolve(token) if token else None
     return results
 
 

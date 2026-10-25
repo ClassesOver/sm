@@ -26,6 +26,12 @@ describe('source validation', () => {
       { subjectId: 's3', claimId: 'c3', sectionId: null, status: 'valid', factValue: 40, computation: 'derived' },
     ]
     expect(sourceCoverageSummary(result, '').text).toBe('可溯源 3/3（服务端计算 2）')
+    // 表格单元格同一口径：已核对表格中由服务端派生的单元格计入，改动过的不计。
+    const location = { rowKey: 'r', columnKey: 'c', rowIndex: 0, columnIndex: 1, rowLabel: '1月', text: '1', computation: 'derived' as const }
+    result.tables = [{ tableId: 't', cells: { valid: 1, stale: 1, unbound: 0 }, dataCheck: { status: 'verified', scope: 'frozen_cells', reasons: [] },
+      locations: [{ ...location, status: 'valid' }, { ...location, rowKey: 'r2', status: 'stale' }] }]
+    result.tableSummary = { valid: 1, stale: 1, unbound: 0, insertedRows: 0, copiedCells: 0 }
+    expect(sourceCoverageSummary(result, '').text).toContain('（服务端计算 3）')
   })
 
   it('separates diagnostics the checker could not evaluate from findings to confirm', () => {

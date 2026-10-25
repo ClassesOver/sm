@@ -271,7 +271,19 @@ export interface TraceValidation {
   charts?: { chartId: string; imagePath: string | null; status: 'valid' | 'stale' | 'unbound'; semanticCheck?: { status: 'verified' | 'unknown' | 'conflicting'; scope: 'registered_fact_projection'; reasons: string[] }; locationSource?: string | null; dataCheck?: { status: 'verified' | 'unknown'; scope: 'registered_arrays'; reason: string } }[]
 }
 
-export interface TraceTableCellLocation {
+/** 正文数值与表格单元格共用的冻结数值视图：登记值、单位、期间、口径或可验算算式、取得方式与来源数据集。 */
+export interface TraceValueView {
+  factValue?: unknown
+  unit?: string | null
+  periods?: unknown
+  formula?: string | null
+  formulaText?: string | null
+  scope?: unknown
+  datasetIds?: string[]
+  computation?: 'registered' | 'derived' | 'calc' | null
+}
+
+export interface TraceTableCellLocation extends TraceValueView {
   /** 精确位置与业务值状态独立；待复核不阻止查看登记来源。 */
   status?: 'valid' | 'stale'
   rowKey: string

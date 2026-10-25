@@ -4,7 +4,7 @@ import { Decoration, type EditorView } from '@milkdown/kit/prose/view'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { TraceSources, TraceValidation } from './api'
-import { documentValueMarks, findValueMarks, formatRegisteredValue, installValueCard, periodListText, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
+import { documentValueMarks, findValueMarks, formatRegisteredValue, installValueCard, periodListText, restoreRegisteredValue, tableValueMarks, updateBodyValueMarks } from './body-value-marks'
 
 const schema = new Schema({
   nodes: { doc: { content: 'block+' }, code_block: { content: 'text*', group: 'block', code: true, toDOM: () => ['pre', ['code', 0]] }, paragraph: { group: 'block', content: 'inline*', toDOM: () => ['p', 0] },
@@ -70,6 +70,29 @@ describe('body value marks', () => {
     stale.subjects[0].computation = 'derived'
     const [changed] = findValueMarks('华东营收为 12,780 万元。[[citation:sub-1]]', stale, sources)
     expect(changed.card[0]).toBe('! 需复核')
+  })
+
+  it('gives table cells the same trust card as body numbers', () => {
+    const tableSources = { ...sources, subjects: [...sources.subjects!, { subjectId: 'sub-cell', subjectKind: 'table_cell',
+      locator: { tableId: 't1', rowKey: 'period:2025-10', columnKey: '收入' }, factRefs: [{ analysisId: 'a', factId: 'f' }], computationId: null }] } as unknown as TraceSources
+    const location = { rowKey: 'period:2025-10', columnKey: '收入', rowIndex: 1, columnIndex: 1, rowLabel: '10月', text: '2,400',
+      status: 'valid' as const, factValue: 2400, unit: '万元', periods: ['2025-10'], formulaText: '营收 求和', computation: 'registered' as const }
+    const result = { ...validation('valid'), tables: [{ tableId: 't1', cells: { valid: 1, stale: 0, unbound: 0 }, locations: [location] }] }
+    const locate = () => ({ from: 3, to: 8 })
+    const [cell] = tableValueMarks(result, tableSources, locate)
+    // 与正文数值同一卡片：可信状态、指标、登记值、表中值、期间、口径。
+    expect(cell).toMatchObject({ from: 3, to: 8, state: 'valid', subjectId: 'sub-cell', computed: false })
+    expect(cell.card).toEqual(['✓ 已核对：与登记值一致', '指标：华东营收', '登记值：2,400万元', '表中值：2,400', '期间：2025年10月', '口径：营收 求和'])
+    // 表中数值被改动、表格整体核对未通过时同样写明。
+    const [stale] = tableValueMarks({ ...result, tables: [{ ...result.tables[0], locations: [{ ...location, status: 'stale' }] }] }, tableSources, locate)
+    expect(stale.state).toBe('stale')
+    expect(stale.card).toContain('状态：表中数值已改动，需复核')
+    const [review] = tableValueMarks({ ...result, tables: [{ ...result.tables[0], dataCheck: { status: 'unknown', scope: 'frozen_cells', reasons: ['cell_value_mismatch'] } }] }, tableSources, locate)
+    expect(review.state).toBe('review')
+    expect(review.card).toContain('提示：表格整体的数据核对需复核')
+    // 定位不到或没有登记值的单元格不标注，不猜位置。
+    expect(tableValueMarks(result, tableSources, () => null)).toEqual([])
+    expect(tableValueMarks({ ...result, tables: [{ ...result.tables[0], locations: [{ ...location, factValue: undefined }] }] }, tableSources, locate)).toEqual([])
   })
 
   it('styles server-computed values apart from registered ones', () => {
