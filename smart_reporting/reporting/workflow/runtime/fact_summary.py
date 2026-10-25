@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
 
@@ -69,7 +68,7 @@ def deterministic_fact_summary(bundle: DeterministicAnalysisBundle) -> str:
                     value = token(fact.fact_id, f"periodValues.{index}", fact.unit, extreme)
                     if value:
                         parts[-1] += f"，{word}为{_span([periods[index]])}{value}"
-        for label, groups in _dimension_groups(bundle, fact.fact_id).items():
+        for label, groups in _dimension_groups(bundle, fact.fact_id):
             listed = []
             for group in sorted(groups, key=lambda item: -item.total)[:_SUMMARY_GROUPS]:
                 value = token(group.fact_id, "total", group.unit, group.total)
@@ -80,20 +79,22 @@ def deterministic_fact_summary(bundle: DeterministicAnalysisBundle) -> str:
             if listed:
                 more = f"等{len(groups)}组" if len(groups) > len(listed) else ""
                 parts.append(f"{scope}按{label}：" + "、".join(listed) + more)
+        # 同比单独成句：与全期、单月极值同句时，完成校验会把不同长度的期间读成不可比的同比。
+        comparisons = []
         for comparison in bundle.comparisons:
             if comparison.comparison_type != "yoy" or fact.fact_id not in comparison.input_fact_ids[:1]:
                 continue
             change = token(comparison.fact_id, "change", comparison.unit, comparison.change)
             rate = token(comparison.fact_id, "changeRate", "%")
             if change:
-                parts.append(f"同比变化{change}" + (f"（{rate}）" if rate else ""))
+                comparisons.append(f"{scope}{span}{name}较上年同期变化{change}" + (f"（{rate}）" if rate else "") + "。")
         for budget in budgets:
             if budget["actualFactId"] != fact.fact_id or not _full_window(budget["period"], periods):
                 continue
             rate = token(fact.fact_id, f"budgetComparison.{budget['budgetFactId']}.{budget['period']}.percentage", "%")
             if rate:
                 parts.append(f"预算完成率{rate}")
-        lines.append("；".join(parts) + "。")
+        lines.append("；".join(parts) + "。" + "".join(comparisons))
     # 告警随完成记录单独登记，摘要只写数值事实；超长时按整条指标截断，不截半句。
     kept: list[str] = []
     for line in lines:
@@ -132,12 +133,16 @@ def _full_window(period: str, periods: list[str]) -> bool:
     return period in {f"{months[0]}..{months[-1]}", months[-1]} and (len(months) == 1 or ".." in period)
 
 
-def _dimension_groups(bundle: DeterministicAnalysisBundle, parent_id: str | None) -> Mapping[str, list[Any]]:
+def _dimension_groups(bundle: DeterministicAnalysisBundle, parent_id: str | None) -> list[tuple[str, list[Any]]]:
+    """按分组字段归并；不同字段的维度主名称相同时补写字段名，不能把两套分组列在同一名下。"""
     groups: dict[str, list[Any]] = {}
     for fact in bundle.breakdowns:
         if fact.parent_fact_id == parent_id and fact.breakdown_field:
-            groups.setdefault(fact.breakdown_label or fact.breakdown_field, []).append(fact)
-    return groups
+            groups.setdefault(fact.breakdown_field, []).append(fact)
+    labels = {field: items[0].breakdown_label or field for field, items in groups.items()}
+    repeated = {label for label in labels.values() if list(labels.values()).count(label) > 1}
+    return [(f"{labels[field]}（{field}）" if labels[field] in repeated else labels[field], items)
+            for field, items in groups.items()]
 
 
 __all__ = ["deterministic_fact_summary"]

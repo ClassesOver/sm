@@ -601,11 +601,22 @@ def _section_number_context(
         item["factId"]: {entry["budgetFactId"] for key in ("budgetComparisons", "projectRatios")
                          for entry in item.get(key, ())}
                        | {entry["totalFactId"] for entry in item.get("metricShares", ())}
-                       # 父指标条目列出的分组合计/占比引用须留在目录中；分组条目本身只在被选中时展示。
-                       | {group["factId"] for entry in item.get("breakdowns", ()) for group in entry["groups"]}
+        for item in guide
+    }
+    # 父指标条目列出的分组合计与占比引用须留在目录中；分组的其余选择器只在分组被选中时展示。
+    group_tokens = {
+        item["factId"]: {
+            reference for entry in item.get("breakdowns", ()) for group in entry["groups"]
+            for reference in (group.get("total"), group.get("share")) if reference
+        }
         for item in guide
     }
     explicit: set[str] = set()
+
+    def visible_catalog(source: Mapping[str, str], ids: set[str]) -> dict[str, str]:
+        listed = {token for fact_id in ids for token in group_tokens.get(fact_id, ())}
+        return {token: value for token, value in source.items()
+                if token.split(":", 2)[1] in ids or token in listed}
 
     def with_dependencies(ids: set[str]) -> set[str]:
         return ids | {dependency for fact_id in ids for dependency in dependencies.get(fact_id, ())}
@@ -618,8 +629,7 @@ def _section_number_context(
         explicit = set(allowed_fact_ids)
         allowed_fact_ids = with_dependencies(allowed_fact_ids)
         guide = shown(guide, allowed_fact_ids)
-        catalog = {token: value for token, value in catalog.items()
-                   if token.split(":", 2)[1] in allowed_fact_ids}
+        catalog = visible_catalog(catalog, allowed_fact_ids)
     if claims is None:
         # 规划不生成数值占位符；直接展示已格式化数值，避免每个期间/分组反复携带
         # 长引用。factId 仍保留，用于下一阶段绑定结论。未明确选中的维度分组只在父指标条目中概览。
@@ -655,10 +665,7 @@ def _section_number_context(
         return prompt_number_catalog(catalog), frozen_number_guide(contents, catalog, field_definitions=field_definitions)
     # 同比/对账事实也有数值目录，但不在 metric 的 numberGuide 中；显式绑定
     # 的 factId 必须仍保留，不能因此回退到整份无关目录。
-    catalog = {
-        token: value for token, value in prompt_number_catalog(catalog).items()
-        if token.split(":", 2)[1] in selected_ids
-    }
+    catalog = visible_catalog(prompt_number_catalog(catalog), selected_ids)
     return catalog, guide
 
 
@@ -1937,7 +1944,8 @@ async def _generate_section_in_blocks(
             or document.get("analysisId") not in work_item.analysis_ids
         ):
             continue
-        for kind in ("metrics", "derivedMetrics", "comparisons", "reconciliations"):
+        # 维度分组与指标同为可绑定事实；分组另带父指标、维度与组值，模型才能区分各组。
+        for kind in ("metrics", "breakdowns", "derivedMetrics", "comparisons", "reconciliations"):
             for entry in document.get(kind, ()):
                 if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
                     continue
@@ -1963,6 +1971,9 @@ async def _generate_section_in_blocks(
                                 "baselineTotal",
                                 "change",
                                 "changeRate",
+                                "parentFactId",
+                                "breakdownLabel",
+                                "breakdownValue",
                             )
                             if key in entry
                         },

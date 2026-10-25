@@ -294,6 +294,7 @@ def build_deterministic_analysis_bundle(
             population_budget_bytes=remaining_population_bytes,
             allowed_field_refs=selection.allowed_field_refs,
             profile_dimensions=profile_dimensions,
+            breakdown_budget=BREAKDOWN_BUDGET - len(breakdowns),
         )
         remaining_population_bytes -= sum(_group_population_size(fact.group_population)
                                           for fact in dataset_facts if fact.group_population is not None)
@@ -390,6 +391,7 @@ def _dataset_facts(
     population_budget_bytes: int,
     allowed_field_refs: frozenset[str] | None = None,
     profile_dimensions: tuple[Mapping[str, Any], ...] = (),
+    breakdown_budget: int = 0,
 ) -> tuple[
     list[DeterministicMetricFact],
     dict[tuple[str, str], Mapping[str, Any]],
@@ -398,6 +400,7 @@ def _dataset_facts(
 ]:
     facts: list[DeterministicMetricFact] = []
     breakdowns: list[DeterministicMetricFact] = []
+    skipped_dimensions = 0
     selected_semantics: dict[tuple[str, str], Mapping[str, Any]] = {}
     warnings = _coverage_warnings(dataset)
     requested_fields = {field.rsplit(".", 1)[-1].casefold() for field in analysis.fields}
@@ -586,16 +589,24 @@ def _dataset_facts(
             warnings=fact_warnings,
         )
         facts.append(fact)
-        breakdowns.extend(_dimension_breakdowns(
+        fact_breakdowns, skipped = _dimension_breakdowns(
             fact, semantic, dataset=dataset, value_frame=value_frame, scoped_frame=scoped_frame,
             profile_dimensions=profile_dimensions, time_fields=time_fields,
-        ))
+            budget=breakdown_budget - len(breakdowns),
+        )
+        breakdowns.extend(fact_breakdowns)
+        skipped_dimensions += skipped
         selected_semantics[(dataset.dataset_id, field_ref.casefold())] = semantic
+    if skipped_dimensions:
+        warnings.append(f"Dataset {dataset.dataset_id} 的维度分组达到 {BREAKDOWN_BUDGET} 条上限，"
+                        f"另有 {skipped_dimensions} 个指标维度未登记分组；需要时由补充分析计算。")
     return facts, selected_semantics, warnings, breakdowns
 
 
 # 非零分组超过该数时不拆分：完整分组才能闭合登记总额，组数过多也不适合正文逐组书写。
 BREAKDOWN_MAX_GROUPS = 20
+# 单个分析事实包的分组事实上限：控制冻结文件、补证决策与章节提示的体积；超出的维度软告警跳过。
+BREAKDOWN_BUDGET = 300
 
 
 def _dimension_breakdowns(
@@ -607,18 +618,19 @@ def _dimension_breakdowns(
     scoped_frame: pl.DataFrame,
     profile_dimensions: tuple[Mapping[str, Any], ...],
     time_fields: set[str],
-) -> list[DeterministicMetricFact]:
+    budget: int,
+) -> tuple[list[DeterministicMetricFact], int]:
     """求和指标按业务维度的完整分组：每组一条同口径、限定该组取值的事实。
 
     维度沿用下钻能力的同一规则（Profile 维度唯一映射到本表字段，求和指标只拆
     additiveAcross 已确认可加的字段，时点指标不拆期间字段）；期间字段、固定范围字段、
     有归属缺失或高度集中告警的维度不拆。全为零或空值的分组不列出（不影响闭合）；各组合计
-    必须与登记总额闭合，否则整个维度不登记。
+    必须与登记总额闭合，否则整个维度不登记。返回 (分组, 因超出剩余条数而未登记的维度数)。
     """
 
     if (fact.aggregation != "sum" or fact.unit == "%" or fact.cumulative_policy is not None
             or not profile_dimensions):
-        return []
+        return [], 0
     from ..trace.drilldown_builder import _dimensions
 
     additive = {str(item).casefold() for item in semantic.get("additiveAcross", ())}
@@ -626,57 +638,89 @@ def _dimension_breakdowns(
         fact.field_ref, tuple(dataset.frame.columns), profile_dimensions, allowed_fields=additive,
         excluded_field=fact.period_field if fact.period_aggregation == "last" else None,
     )
+    # 分组只带数据集级说明；父指标的期间量级等告警描述的是整体序列，不复制到每一组。
+    caveats = tuple(dict.fromkeys((
+        *dataset.context.source_warnings, *_fact_quality_warnings(dataset.context.quality_warnings, fact.field),
+    )))[:100]
     breakdowns: list[DeterministicMetricFact] = []
+    seen_fields: set[str] = set()
+    skipped = 0
     for dimension in dimensions:
         field = dimension.field
-        if (field in fact.scope or field == fact.period_field or field.casefold() in time_fields
+        # 多个 Profile 维度映射到同一字段时只拆一次。
+        if (field in seen_fields or field in fact.scope or field == fact.period_field
+                or field.casefold() in time_fields
                 or field in dataset.context.period_granularities or _is_period_field_name(field)
                 or _dimension_review_warnings(value_frame, fact.field, (field,), "sum", scope=fact.scope)):
             continue
+        seen_fields.add(field)
         magnitudes = value_frame.group_by(pl.col(field).cast(pl.String).alias("__group")).agg(
             pl.col(fact.field).cast(pl.Float64, strict=False).abs().sum().alias("__magnitude"))
         labels = sorted(magnitudes.filter(pl.col("__magnitude") > 0)["__group"].to_list())
         if not 2 <= len(labels) <= BREAKDOWN_MAX_GROUPS:
             continue
+        if len(breakdowns) + len(labels) > budget:
+            skipped += 1
+            continue
         dimension_label = re.split(r"[；;，,。]", dimension.label, maxsplit=1)[0].strip() or field
-        groups = []
-        for label in labels:
-            group_values = value_frame.filter(pl.col(field).cast(pl.String) == label)
-            group_rows = scoped_frame.filter(pl.col(field).cast(pl.String) == label)
-            total = _aggregate(group_values[fact.field], "sum")
-            if total is None:
-                break
-            numeric = group_values[fact.field].cast(pl.Float64, strict=False).drop_nulls()
-            scope = {**fact.scope, field: label}
-            groups.append(fact.model_copy(update={
-                "breakdown_field": field,
-                "breakdown_label": dimension_label,
-                "breakdown_value": label,
-                "scope": scope,
-                "formula": _formula(fact.field, "sum", scope) + (
-                    f"；仅汇总 {fact.period_field} 最新登记期间" if fact.period_aggregation == "last" else ""
-                ),
-                "total": total,
-                # 原始行统计属于父指标的读法，分组只登记合计与期间序列。
-                "average": None, "minimum": None, "maximum": None,
-                "missing_count": group_values[fact.field].null_count(),
-                "period_missing_count": (group_rows[fact.period_field].null_count()
-                                         if fact.period_field is not None else None),
-                "series_missing_count": group_rows[fact.field].cast(pl.Float64, strict=False).null_count(),
-                "zero_count": int((numeric == 0).sum()),
-                "negative_count": int((numeric < 0).sum()),
-                "period_values": _period_values(
-                    group_rows, fact.field, fact.period_field, "sum",
-                    period_granularity=fact.period_granularity,
-                ),
-                "top_groups": (), "bottom_groups": (), "group_population": None, "group_warnings": {},
-            }))
-        else:
-            # 分组合计与登记总额不闭合时（理论上不应出现）不能当作完整构成。
-            if math.isclose(math.fsum(item.total for item in groups), fact.total,
-                            rel_tol=1e-9, abs_tol=1e-6):
-                breakdowns.extend(groups)
-    return breakdowns
+        try:
+            groups = [
+                _breakdown_fact(fact, field, dimension_label, label, caveats,
+                                value_frame=value_frame, scoped_frame=scoped_frame)
+                for label in labels
+            ]
+        except _NonFiniteMetricError:
+            # 分组子集求和溢出只影响该维度，父指标与其他维度照常登记。
+            continue
+        # 分组合计与登记总额不闭合时（理论上不应出现）不能当作完整构成。
+        if all(item is not None for item in groups) and math.isclose(
+                math.fsum(item.total for item in groups if item is not None), fact.total,
+                rel_tol=1e-9, abs_tol=1e-6):
+            breakdowns.extend(item for item in groups if item is not None)
+    return breakdowns, skipped
+
+
+def _breakdown_fact(
+    fact: DeterministicMetricFact,
+    field: str,
+    dimension_label: str,
+    label: str,
+    caveats: tuple[str, ...],
+    *,
+    value_frame: pl.DataFrame,
+    scoped_frame: pl.DataFrame,
+) -> DeterministicMetricFact | None:
+    group_values = value_frame.filter(pl.col(field).cast(pl.String) == label)
+    group_rows = scoped_frame.filter(pl.col(field).cast(pl.String) == label)
+    total = _aggregate(group_values[fact.field], "sum")
+    if total is None:
+        return None
+    numeric = group_values[fact.field].cast(pl.Float64, strict=False).drop_nulls()
+    scope = {**fact.scope, field: label}
+    return fact.model_copy(update={
+        "breakdown_field": field,
+        "breakdown_label": dimension_label,
+        "breakdown_value": label,
+        "scope": scope,
+        "formula": _formula(fact.field, "sum", scope) + (
+            f"；仅汇总 {fact.period_field} 最新登记期间" if fact.period_aggregation == "last" else ""
+        ),
+        "total": total,
+        # 原始行统计属于父指标的读法，分组只登记合计与期间序列。
+        "average": None, "minimum": None, "maximum": None,
+        "missing_count": group_values[fact.field].null_count(),
+        "period_missing_count": (group_rows[fact.period_field].null_count()
+                                 if fact.period_field is not None else None),
+        "series_missing_count": group_rows[fact.field].cast(pl.Float64, strict=False).null_count(),
+        "zero_count": int((numeric == 0).sum()),
+        "negative_count": int((numeric < 0).sum()),
+        "period_values": _period_values(
+            group_rows, fact.field, fact.period_field, "sum",
+            period_granularity=fact.period_granularity,
+        ),
+        "top_groups": (), "bottom_groups": (), "group_population": None, "group_warnings": {},
+        "warnings": caveats,
+    })
 
 
 def _aggregation(semantic: Mapping[str, Any]) -> Aggregation:

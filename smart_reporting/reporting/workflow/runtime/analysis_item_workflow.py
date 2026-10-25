@@ -1705,9 +1705,12 @@ class AnalysisItemWorkflow:
             self._validate_completion_result(result)
             state.statuses["complete-analysis"] = "completed"
             return StepOutput(content={"status": "accepted", "recovered": True})
+        # 只在判定固定事实足够时由服务端写摘要；声明过缺口（含补证放弃）时由模型如实说明缺口。
         facts_summary = (
             deterministic_fact_summary(state.facts)
             if state.evidence is None and state.facts is not None and self.benchmark_projection is None
+            and state.decision is not None and not state.decision.requires_supplemental_evidence
+            and not state.supplement_abandoned and not state.warnings
             and not state.instruction.get("reviewFeedback") and not state.instruction.get("analysisReworkRequest")
             else ""
         )

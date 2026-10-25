@@ -70,6 +70,10 @@ def facts_cover_analysis(
         return None
     if mentions and not _dimensions_covered(mentions, facts):
         return None
+    # 只说“占比/结构”而未点名维度或已登记分组（“药品收入占医疗收入的比重”）时，
+    # 存在任意分组不能证明问到的那一项已登记，交给模型判断。
+    if "structure" in intents and not mentions and not _names_registered_group(text, facts):
+        return None
     return "固定事实已覆盖" + "、".join(
         {"scale": "规模", "trend": "趋势", "yoy": "同比", "structure": "维度构成", "budget": "预算执行"}[name]
         for name in intents
@@ -98,10 +102,17 @@ def _dimensions_covered(mentions: list[str], facts: DeterministicAnalysisBundle)
 
 
 def _shares_word(mention: str, word: str) -> bool:
-    if len(word) >= 2 and word in mention:
-        return True
+    """点名的维度与登记维度/组值是同一个词，或是登记名称的一部分；多出限定词（“开单科室”）不算。"""
     left, right = _GENERIC_WORDS.sub("", mention), _GENERIC_WORDS.sub("", word)
-    return any(left[index:index + 2] in right for index in range(len(left) - 1))
+    return len(left) >= 2 and (left == right or left in right)
+
+
+def _names_registered_group(text: str, facts: DeterministicAnalysisBundle) -> bool:
+    return any(
+        len(value) >= 2 and value in text
+        for fact in facts.breakdowns
+        for value in (fact.breakdown_value or "",)
+    )
 
 
 __all__ = ["facts_cover_analysis"]

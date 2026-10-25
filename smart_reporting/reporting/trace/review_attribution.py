@@ -277,6 +277,10 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
                          or field_definitions.get(str(entry.get("field", ""))))
                 if isinstance(label, str) and len(label) >= 2 and re.search(r"[\u3400-\u9fff]", label):
                     labels_by_fact[entry["factId"]] = label
+        # 维度分组是父指标的一部分：其数值归父指标所有，不能作为“不判定归属”的中性登记值。
+        for entry in document.get("breakdowns") or ():
+            if isinstance(entry, dict) and entry.get("parentFactId") in labels_by_fact:
+                labels_by_fact[entry["factId"]] = labels_by_fact[entry["parentFactId"]]
     labels = set(labels_by_fact.values())
     if len(labels) < 2:
         return []

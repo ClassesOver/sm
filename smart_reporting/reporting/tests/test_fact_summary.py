@@ -5,10 +5,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from smart_reporting.reporting.trace.numeric_text import frozen_number_catalog, render_frozen_numbers
+from smart_reporting.reporting.trace.numeric_text import (
+    frozen_number_catalog,
+    render_frozen_numbers,
+)
 from smart_reporting.reporting.trace.semantic_bindings import resolve_number_references
 from smart_reporting.reporting.trace.statement_review import statement_review_warnings
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+    AnalysisEvidenceDecision,
     AnalysisItemWorkflow,
     AnalysisSummaryDraft,
     _AnalysisItemState,
@@ -52,6 +56,10 @@ def _completion_workflow(summarize):
     return workflow, complete
 
 
+_SUFFICIENT = AnalysisEvidenceDecision(requiresSupplementalEvidence=False, reason="固定事实足够",
+                                       missingFacts=(), codingRequirements=())
+
+
 @pytest.mark.anyio
 async def test_facts_only_analysis_completes_with_a_server_summary():
     summarize = AsyncMock(side_effect=AssertionError("只用固定事实时不应请求摘要模型"))
@@ -59,6 +67,7 @@ async def test_facts_only_analysis_completes_with_a_server_summary():
     state = _AnalysisItemState(instruction={"currentAnalysisId": "analysis_001",
                                             "currentAnalysis": {"datasetIds": ["current"]}})
     state.facts = _bundle(THREE_MONTHS)
+    state.decision = _SUFFICIENT
     await workflow._complete_analysis(state, None)
     summarize.assert_not_awaited()
     assert _TOKEN.search(complete.await_args.kwargs["summary"])
@@ -77,3 +86,49 @@ async def test_feedback_or_rework_still_uses_the_model_summary(instruction):
     await workflow._complete_analysis(state, None)
     summarize.assert_awaited_once()
     assert complete.await_args.kwargs["summary"] == "按修订意见说明。"
+
+
+@pytest.mark.anyio
+async def test_abandoned_supplement_keeps_the_model_summary_that_states_the_gap():
+    # 判定需要补证、补证又被放弃时，服务端摘要会把未回答的问题写成已回答；仍由模型说明缺口。
+    summarize = AsyncMock(return_value=AnalysisSummaryDraft(summary="缺少科室构成，仅列示合计。", warnings=()))
+    workflow, complete = _completion_workflow(summarize)
+    state = _AnalysisItemState(instruction={"currentAnalysisId": "analysis_001",
+                                            "currentAnalysis": {"datasetIds": ["current"]},
+                                            "deterministicFacts": {"analysisId": "analysis_001"}})
+    state.facts = _bundle(THREE_MONTHS)
+    state.decision = AnalysisEvidenceDecision.model_validate({
+        "requiresSupplementalEvidence": True, "reason": "缺科室构成", "missingFacts": ["科室构成"],
+        "codingRequirements": [{"datasetId": "current", "fields": ["department", "amount"],
+                                "calculation": "按科室汇总", "outputName": "department_total"}],
+    })
+    state.supplement_abandoned = True
+    await workflow._complete_analysis(state, None)
+    summarize.assert_awaited_once()
+
+
+def test_year_over_year_sentence_is_not_rewritten_as_incomparable():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        build_deterministic_analysis_bundle,
+    )
+    from smart_reporting.reporting.tools.analysis_item import (
+        _normalize_analysis_summary_comparability,
+    )
+
+    # 全期、单月极值与同比同句时，完成校验会把“同比”改成“参考对比”；同比须单独成句。
+    from .test_deterministic_analysis import analysis, context, semantic
+
+    def dataset(name):
+        return context(name, semantics=(semantic("amount", unit="元"),)).model_copy(
+            update={"period_granularities": {"month": "month"}})
+
+    bundle = build_deterministic_analysis_bundle(analysis(), (
+        ("current", b"month,department,amount\n2025-01,A,120\n2025-02,A,150\n2025-03,A,90\n",
+         dataset("current"), ("current",)),
+        ("baseline", b"month,department,amount\n2024-01,A,100\n2024-02,A,100\n2024-03,A,100\n",
+         dataset("baseline"), ("yoy",)),
+    ))
+    summary = deterministic_fact_summary(bundle)
+    assert "较上年同期变化" in summary
+    normalized, warnings = _normalize_analysis_summary_comparability(summary)
+    assert normalized == summary and warnings == ()
