@@ -80,9 +80,9 @@
 1. **plan**：结构化输出 `ChartEditPlan`。输入：用户要求（不可信文本）、原图元数据（标题、图注、`AnalysisChart` 语义字段）、原作图数据摘要（列与行数、前若干行）、该分析的签发 `dataDescriptors`、上一轮结果（多轮时）。输出：级别、新 `ChartDraft` 语义字段（标题、altText、visualForm、比较类型等）、新 `dataBindings`（L2）、L3 跳过说明、拟改图注。模型可看原图（`aview_image`），以保持风格一致。
 2. **bind**（仅 L2）：用签发目录校验绑定；不在目录中的绑定一律拒绝使用（安全边界，fail closed），该部分要求按 L3 说明。排序子集范围问题沿用 `_ranked_detail_scope_issues`，作为软告警写入结果。
 3. **materialize**：L1 直接引用原归档 chart-input；L2 由服务端 `chart_inputs` 重新物化到改图工作目录。脚本只能读取这些文件。
-4. **draw**：CodeMode 写 Matplotlib 脚本并执行，输出路径由服务端指定。沿用生成阶段的禁止路径操作检查、执行修复上限（3 次）与报告视觉主题（`REPORT_VISUAL_THEME`）。只认 provider 返回的结构化 `custom_tool_call`，`write_script`/`run` 保持原生 free-form（AGENTS CodeMode 约束）。
+4. **draw**：CodeMode 写 Matplotlib 脚本并执行（实现见 5.3），输出路径由服务端指定。沿用生成阶段的禁止路径操作检查、执行修复上限（3 次）与报告视觉主题（`REPORT_VISUAL_THEME`）。只认 provider 返回的结构化 `custom_tool_call`，`write_script`/`run` 保持原生 free-form（AGENTS CodeMode 约束）。
 5. **inspect**：`inspect_chart_file` 确定性检查（解码、尺寸、空白等，失败即本次改图失败并给出原因）；`aview_image` 视觉审查生成回执。视觉问题为软告警，可触发一次自动修复，修复后仍有问题则带告警交付审阅。
-6. **register**：写入改图登记记录（5.3），返回预览。图注如含数字，必须使用登记数值引用，并用 `statement_review_warnings` 核对，结果作为软告警。
+6. **register**：写入改图登记记录（5.4），返回预览。图注如含数字，必须使用登记数值引用，并用 `statement_review_warnings` 核对，结果作为软告警。
 
 ### 5.3 Coding 实现（复用可视化 Coding Agent）
 
