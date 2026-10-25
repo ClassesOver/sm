@@ -16,7 +16,7 @@ from ..hospital_operation.deterministic_analysis import (
 )
 from .calc_references import CALC_TOKEN, CalcEvaluator
 from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1, TableDerivationV1
-from .fact_index import fact_binding_records, merge_binding_records, merge_frozen_fact
+from .fact_index import FACT_ARRAYS, fact_binding_records, merge_binding_records, merge_frozen_fact
 from .numeric_text import (
     _NUMBER,
     _canonical_month_label,
@@ -361,13 +361,7 @@ class NumberReferenceResolver:
                     record = merged or record
                 records[key] = record
             document = bundle.model_dump(mode="json", by_alias=True)
-            for array in (
-                "metrics",
-                "comparisons",
-                "derivedMetrics",
-                "reconciliations",
-                "correlationDetails",
-            ):
+            for _, array in FACT_ARRAYS:
                 for fact in document.get(array, ()):
                     key = fact.get("factId")
                     if key in self.entries:

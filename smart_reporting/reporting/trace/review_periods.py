@@ -460,7 +460,7 @@ def _registered_value_years(contents: Iterable[str]) -> list[tuple[str, Decimal,
     fact_years: dict[str, frozenset[int] | None] = {}
     fact_periods: dict[str, list[str]] = {}
     for document in _documents(contents):
-        for array in ("metrics", "comparisons", "derivedMetrics", "reconciliations"):
+        for array in ("metrics", "breakdowns", "comparisons", "derivedMetrics", "reconciliations"):
             for entry in document.get(array) or ():
                 if not isinstance(entry, dict) or not isinstance(entry.get("factId"), str):
                     continue

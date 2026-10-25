@@ -6,7 +6,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from ...trace.fact_index import resolve_pointer_value
+from ...trace.fact_index import FACT_ARRAYS, resolve_pointer_value
 from ...trace.numeric_text import (
     budget_comparison_values,
     frozen_fact_bundles,
@@ -15,7 +15,7 @@ from ...trace.numeric_text import (
 from ..checkpoint import SectionWorkItem
 from .phase_models import SectionEvidenceFile
 
-_ATOMIC_ARRAYS = {"metrics", "derivedMetrics", "comparisons", "reconciliations", "correlationDetails", "findings"}
+_ATOMIC_ARRAYS = {array for _, array in FACT_ARRAYS} | {"findings"}
 
 
 def finding_evidence_view(
