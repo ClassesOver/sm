@@ -2,7 +2,6 @@
 
 from .adapter import ReportingMcpAdapter
 from .contracts import (
-    ReportingGetInput,
     ReportingOperationResult,
     ReportingReportRequest,
     ReportingReviewInput,
@@ -11,7 +10,6 @@ from .contracts import (
 from .tools import create_reporting_mcp_tools
 
 __all__ = [
-    "ReportingGetInput",
     "ReportingMcpAdapter",
     "ReportingOperationResult",
     "ReportingReportRequest",

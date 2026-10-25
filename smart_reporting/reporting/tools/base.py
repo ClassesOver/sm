@@ -65,20 +65,6 @@ class ReportingToolRuntime(ReportingTaskRuntime):
 class ReportingToolkitBase(Toolkit):
     """Reporting Toolkit 的统一执行包装、持久化状态与错误回执边界。"""
 
-    @staticmethod
-    def failure(error: Exception, *, retryable: bool = True) -> dict[str, Any]:
-        code = str(getattr(error, "code", "report_tool_failed"))
-        message = str(getattr(error, "message", error))[:1000]
-        details = getattr(error, "details", None)
-        return {
-            "ok": False,
-            "status": "rejected",
-            "code": code,
-            "message": message,
-            "details": details if isinstance(details, dict) else {},
-            "retryable": retryable,
-        }
-
     async def read_file(
         self,
         path: str,

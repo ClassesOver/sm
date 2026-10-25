@@ -15,7 +15,6 @@ from .narrative_outline import (
     NarrativeOutline,
     NarrativeOutlineCandidate,
     NarrativeSectionCandidate,
-    freeze_narrative_outline,
 )
 from .outline import ReportOutline
 
@@ -197,14 +196,6 @@ def build_narrative_planning_batches(
     return tuple(batches)
 
 
-def freeze_planned_sections(
-    candidate: NarrativeOutlineCandidate,
-    graph: FindingGraph,
-    analyses: list[dict[str, str]] | tuple[dict[str, str], ...],
-) -> NarrativeOutline:
-    return freeze_narrative_outline(candidate, graph=graph, analyses=analyses)
-
-
 def build_fallback_narrative_candidate(
     graph: FindingGraph, title: str,
     *, analyses: Sequence[Mapping[str, str]] = (),
@@ -327,7 +318,7 @@ def build_compatible_report_outline(
 
 __all__ = [
     "NarrativeContentBudget", "build_narrative_planning_context", "build_narrative_planning_batches", "cluster_findings",
-    "freeze_planned_sections", "rank_finding", "score_finding_relation",
+    "rank_finding", "score_finding_relation",
     "build_compatible_report_outline",
     "build_fallback_narrative_candidate",
 ]

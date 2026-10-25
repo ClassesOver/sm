@@ -30,7 +30,6 @@ from ..reporting.trace.dataset_service import (
     TraceDatasetFile,
     is_blocked_column,
     read_csv_header,
-    safe_download_filename,
     verified_dataset_snapshot,
 )
 
@@ -460,13 +459,7 @@ def _derived_filename(job: TraceExportJob) -> str:
     return f"{name[:160]}-{job.export_id[:8]}.csv"
 
 
-def derived_download_filename(job: TraceExportJob) -> str:
-    return _derived_filename(job)
-
-
 __all__ = [
     "TraceDerivedExportService",
     "TraceExportJob",
-    "safe_download_filename",
-    "derived_download_filename",
 ]

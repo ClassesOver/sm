@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from agno.run import RunContext
@@ -28,8 +28,6 @@ from ...workspace import (
     WorkspacePathConflict,
     normalize_workspace_path,
 )
-from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
-from .workspace_port import ReportingWorkspaceError
 
 if TYPE_CHECKING:
     from ..host_workspace import ReportingWorkspaceRouter
@@ -41,88 +39,6 @@ def _validate_reporting_content(content: bytes) -> None:
         raise WorkspaceError("文件内容超过 200 MiB，请缩小文件后重试。")
 
 
-class ReportingTaskWorkspacePort:
-    """按单个已解析 Task scope 绑定的最小工作区端口。"""
-
-    def __init__(
-        self,
-        service: ReportingWorkspaceRouter,
-        kernel: TaskExecutionKernel,
-        context: ReportingToolContext,
-        scope: Any,
-    ) -> None:
-        self._service = service
-        self._kernel = kernel
-        self.context = context
-        self._scope = scope
-
-    @staticmethod
-    def _normalize(path: str) -> str:
-        try:
-            return normalize_workspace_path(path, allow_root=False)
-        except WorkspaceError as error:
-            raise ReportingWorkspaceError("Reporting 路径无效。") from error
-
-    def _require_output(self, path: str) -> str:
-        normalized = self._normalize(path)
-        if any(item.path == normalized for item in (*self.context.inputs, *self.context.data)):
-            raise ReportingWorkspaceError("Reporting 输入和数据只读。")
-        if not self.context.output_policy.allows(normalized):
-            raise ReportingWorkspaceError("Reporting 写入目标不在输出目录。")
-        return normalized
-
-    async def read_bytes(self, path: str) -> bytes:
-        normalized = self._normalize(path)
-        content, _mime = await self._service.afile_bytes(self.context.thread_id, normalized)
-        return content
-
-    async def read_text(self, path: str) -> str:
-        return (await self.read_bytes(path)).decode("utf-8")
-
-    async def hash_files(self, paths: Sequence[str]) -> tuple[ReportingFileRef, ...]:
-        values = await self._service.abatch_hash_files(
-            self.context.thread_id, [self._normalize(path) for path in paths]
-        )
-        missing = [item["path"] for item in values if item.get("missing") is True]
-        if missing:
-            raise ReportingWorkspaceError(f"Reporting 文件不存在：{', '.join(missing)}")
-        return tuple(
-            ReportingFileRef(path=item["path"], size=item["size"], sha256=item["sha256"])
-            for item in values
-        )
-
-    async def write_text(
-        self,
-        path: str,
-        content: str,
-        *,
-        overwrite: bool = False,
-        expected_sha256: str | None = None,
-    ) -> ReportingFileRef:
-        normalized = self._require_output(path)
-        raw = content.encode("utf-8")
-        _validate_reporting_content(raw)
-        result = await self._kernel.patch(
-            "overwrite" if overwrite else "create",
-            normalized,
-            None,
-            None,
-            False,
-            None,
-            None,
-            content=content,
-            expected_sha256=expected_sha256,
-            _scope=self._scope,
-        )
-        if result.get("ok") is not True:
-            raise ReportingWorkspaceError("Reporting 文件写入失败。")
-        identity = await self._service.ahash_file(self.context.thread_id, normalized)
-        return ReportingFileRef(
-            path=identity["path"], size=identity["size"], sha256=identity["sha256"]
-        )
-
-
-
 class ReportingWorkspaceAdapter:
     """封装 Reporting 宿主机工作区已有的读写原语。"""
 
@@ -131,17 +47,11 @@ class ReportingWorkspaceAdapter:
 
     normalize_path = staticmethod(normalize_workspace_path)
 
-    def file_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
-        return self._service.file_bytes(thread_id, path)
-
     async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
         return await self._service.afile_bytes(thread_id, path)
 
     async def aread_text(self, thread_id: str, path: str) -> str:
         return await self._service.aread_text(thread_id, path)
-
-    def read_text(self, thread_id: str, path: str) -> str:
-        return self._service.read_text(thread_id, path)
 
     def validate_content(self, content: bytes) -> None:
         _validate_reporting_content(content)
@@ -408,43 +318,3 @@ class ReportingTaskRuntime:
                 await self.cleanup_tool_outputs(scope, run_context)
             return result
 
-    async def context(
-        self,
-        run_context: RunContext | None,
-        *,
-        input_snapshot: Mapping[str, Any],
-        inputs: Sequence[ReportingFileRef] = (),
-        data: Sequence[ReportingFileRef] = (),
-        output_policy: ReportingOutputPolicy,
-    ) -> ReportingToolContext:
-        scope = await self.scope(run_context)
-        return ReportingToolContext(
-            external_run_id=scope.external_run_id,
-            thread_id=scope.thread_id,
-            attempt_no=scope.attempt_no,
-            output_policy=output_policy,
-            input_snapshot=input_snapshot,
-            inputs=tuple(inputs),
-            data=tuple(data),
-        )
-
-    async def workspace_port(
-        self,
-        run_context: RunContext | None,
-        *,
-        input_snapshot: Mapping[str, Any],
-        inputs: Sequence[ReportingFileRef] = (),
-        data: Sequence[ReportingFileRef] = (),
-        output_policy: ReportingOutputPolicy,
-    ) -> ReportingTaskWorkspacePort:
-        scope = await self.scope(run_context)
-        context = ReportingToolContext(
-            external_run_id=scope.external_run_id,
-            thread_id=scope.thread_id,
-            attempt_no=scope.attempt_no,
-            output_policy=output_policy,
-            input_snapshot=input_snapshot,
-            inputs=tuple(inputs),
-            data=tuple(data),
-        )
-        return ReportingTaskWorkspacePort(self._service, self._kernel, context, scope)

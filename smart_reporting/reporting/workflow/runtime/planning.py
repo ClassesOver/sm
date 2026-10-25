@@ -1954,19 +1954,6 @@ def _compile_single_table_queries(
                 continue
             seen_window_ids.add(window.query_window_id)
             row_preserving = requirement.requirement_id in row_preserving_ids
-            projections: list[exp.Expression] = [
-                exp.column(column) for column in requirement.grain_columns
-            ]
-            if row_preserving:
-                projections.extend(exp.column(column) for column in table.measure_columns)
-            else:
-                for measure, semantic in semantic_by_measure.items():
-                    aggregate = _measure_aggregate_expression(
-                        measure,
-                        semantic.aggregation,
-                    )
-                    projections.append(aggregate.as_(measure))
-
             predicates: list[exp.Expression] = [
                 exp.column(table.period_column).between(
                     *_period_bound_expressions(window.period, table.period_granularity)

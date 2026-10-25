@@ -12,7 +12,6 @@ REPORTING_STRUCTURED_MODES_MODEL_ATTR = "_reporting_structured_modes"
 REPORTING_STRUCTURED_REQUEST_MODEL_ATTR = "_reporting_structured_request"
 REPORTING_VERIFIED_STRUCTURED_MODES_MODEL_ATTR = "_reporting_verified_structured_modes"
 
-_QWEN_MODEL_PATTERN = re.compile(r"(?:^|[/\\:_-])qwen(?:\d|[/\\:_-])", re.IGNORECASE)
 _DASHSCOPE_JSON_SCHEMA_QWEN_PATTERN = re.compile(
     r"(?:^|[/\\:_-])qwen3\.(?:7-(?:plus|flash|max)|8-(?:flash|max))(?:$|[/\\:_-])",
     re.IGNORECASE,

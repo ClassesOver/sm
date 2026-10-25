@@ -280,10 +280,6 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
     )
 
 
-def _escape_pointer_token(token: str) -> str:
-    return token.replace("~", "~0").replace("/", "~1")
-
-
 def fact_pointer(bundle: DeterministicAnalysisBundle, fact_id: str) -> str | None:
     """factId → bundle 文件内的 JSON Pointer；未知 ID 返回 None。"""
 

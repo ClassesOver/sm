@@ -260,9 +260,6 @@ if TYPE_CHECKING:
 
 logger = loguru_logger
 
-# 显式期间模式最多为每个需求生成 current、yoy、mom 三条唯一窗口查询；
-# 与物化批次的 100 条硬上限保持一致，防止模型输出服务端必然无法完整审批的需求数。
-MAX_ANALYSIS_REQUIREMENTS = MAX_REPORT_INPUTS // 3
 REPORT_WORKFLOW_INPUT_STATE_KEY = "report_workflow_input"
 REPORT_SCHEMA_SNAPSHOTS_STATE_KEY = "report_schema_snapshots"
 REPORT_DATA_UNDERSTANDING_STATE_KEY = "report_data_understanding"
