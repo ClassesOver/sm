@@ -18,13 +18,27 @@ from typing import Any
 
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 
-_POINTER_KIND_PREFIX = {
-    "metric": "/metrics/",
-    "comparison": "/comparisons/",
-    "derived": "/derivedMetrics/",
-    "reconciliation": "/reconciliations/",
-    "correlation": "/correlationDetails/",
+# (factKind, bundle 数组)：factId 签发、JSON Pointer 定位与绑定目录共用同一份事实数组表。
+# 维度分组事实与父指标同为 metric 语义，存放在独立数组，指针为 /breakdowns/N。
+FACT_ARRAYS = (
+    ("metric", "metrics"),
+    ("metric", "breakdowns"),
+    ("comparison", "comparisons"),
+    ("derived", "derivedMetrics"),
+    ("reconciliation", "reconciliations"),
+    ("correlation", "correlationDetails"),
+)
+_BUNDLE_ATTRIBUTES = {
+    "metrics": "metrics", "breakdowns": "breakdowns", "comparisons": "comparisons",
+    "derivedMetrics": "derived_metrics", "reconciliations": "reconciliations",
+    "correlationDetails": "correlation_details",
 }
+
+
+def bundle_fact_arrays(bundle: DeterministicAnalysisBundle):
+    """按 FACT_ARRAYS 顺序给出 (factKind, 数组名, 条目)。"""
+    for kind, array in FACT_ARRAYS:
+        yield kind, array, getattr(bundle, _BUNDLE_ATTRIBUTES[array])
 
 
 def _fact_id(identity: str) -> str:
@@ -77,6 +91,9 @@ def metric_fact_identity(fact: Any) -> str:
             [item.model_dump(mode="json", by_alias=True) for item in population],
             ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
         ).encode()).hexdigest()
+    breakdown_field = getattr(fact, "breakdown_field", None)
+    if breakdown_field is not None:
+        identity += f"|breakdownField={breakdown_field}"
     period_aggregation = getattr(fact, "period_aggregation", None)
     series_missing_count = getattr(fact, "series_missing_count", None)
     if series_missing_count is not None:
@@ -200,6 +217,20 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
         fact.model_copy(update={"fact_id": _unique(metric_fact_identity(fact))})
         for fact in bundle.metrics
     )
+    breakdowns = []
+    for fact in bundle.breakdowns:
+        # 父指标即去掉分组字段后口径、期间完全相同的唯一登记指标；不唯一时分组无从解读，不登记。
+        parent_scope = {key: value for key, value in fact.scope.items() if key != fact.breakdown_field}
+        parents = [metric.fact_id for metric in metrics
+                   if metric.dataset_id == fact.dataset_id and metric.dataset_sha256 == fact.dataset_sha256
+                   and metric.field_ref == fact.field_ref and metric.aggregation == fact.aggregation
+                   and metric.scope == parent_scope and metric.period_field == fact.period_field
+                   and metric.period_start == fact.period_start and metric.period_end == fact.period_end
+                   and metric.period_aggregation == fact.period_aggregation]
+        if len(parents) == 1:
+            breakdowns.append(fact.model_copy(update={
+                "fact_id": _unique(metric_fact_identity(fact)), "parent_fact_id": parents[0],
+            }))
     comparisons = []
     for fact in bundle.comparisons:
         operands = [
@@ -240,6 +271,7 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
     return bundle.model_copy(
         update={
             "metrics": metrics,
+            "breakdowns": tuple(breakdowns),
             "comparisons": tuple(comparisons),
             "derived_metrics": tuple(derived),
             "reconciliations": tuple(reconciliations),
@@ -255,21 +287,10 @@ def _escape_pointer_token(token: str) -> str:
 def fact_pointer(bundle: DeterministicAnalysisBundle, fact_id: str) -> str | None:
     """factId → bundle 文件内的 JSON Pointer；未知 ID 返回 None。"""
 
-    for index, fact in enumerate(bundle.metrics):
-        if fact.fact_id == fact_id:
-            return f"/metrics/{index}"
-    for index, fact in enumerate(bundle.comparisons):
-        if fact.fact_id == fact_id:
-            return f"/comparisons/{index}"
-    for index, fact in enumerate(bundle.derived_metrics):
-        if fact.fact_id == fact_id:
-            return f"/derivedMetrics/{index}"
-    for index, fact in enumerate(bundle.reconciliations):
-        if fact.fact_id == fact_id:
-            return f"/reconciliations/{index}"
-    for index, fact in enumerate(bundle.correlation_details):
-        if fact.fact_id == fact_id:
-            return f"/correlationDetails/{index}"
+    for _, array, facts in bundle_fact_arrays(bundle):
+        for index, fact in enumerate(facts):
+            if fact.fact_id == fact_id:
+                return f"/{array}/{index}"
     return None
 
 
@@ -347,8 +368,8 @@ def fact_binding_records(bundle: DeterministicAnalysisBundle) -> dict[str, dict[
     return {
         fact.fact_id: {"entry": fact.model_dump(mode="json", by_alias=True),
                        "inputs": inputs.get(fact.fact_id, ()) if fact.fact_id in dependent_ids else ()}
-        for fact in (*bundle.metrics, *bundle.comparisons, *bundle.derived_metrics,
-                     *bundle.reconciliations, *bundle.correlation_details)
+        for _, _, facts in bundle_fact_arrays(bundle)
+        for fact in facts
         if fact.fact_id
     }
 
@@ -409,16 +430,10 @@ def fact_entry_from_pointer(
 ) -> tuple[str, Mapping[str, Any]]:
     """pointer → (factKind, fact 记录)；指针必须落在已知事实数组内。"""
 
-    for kind, prefix in _POINTER_KIND_PREFIX.items():
+    for kind, array_name in FACT_ARRAYS:
+        prefix = f"/{array_name}/"
         if pointer.startswith(prefix) and pointer[len(prefix) :].isdigit():
             index = int(pointer[len(prefix) :])
-            array_name = {
-                "metric": "metrics",
-                "comparison": "comparisons",
-                "derived": "derivedMetrics",
-                "reconciliation": "reconciliations",
-                "correlation": "correlationDetails",
-            }[kind]
             array = document.get(array_name)
             if not isinstance(array, list) or index >= len(array):
                 raise KeyError(pointer)

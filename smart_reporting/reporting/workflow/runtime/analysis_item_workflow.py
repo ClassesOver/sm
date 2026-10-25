@@ -42,6 +42,8 @@ from .analysis_coverage import (
     requirement_output_gaps,
 )
 from .code_generation import CodeGenerationResult
+from .evidence_coverage import facts_cover_analysis
+from .fact_summary import deterministic_fact_summary
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
 MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS = 3
@@ -1208,6 +1210,19 @@ class AnalysisItemWorkflow:
             )
             state.statuses["plan-evidence"] = "completed"
             return StepOutput(content={"status": "durable_completion_recovery"})
+        covered = None if self.benchmark_projection is not None else facts_cover_analysis(
+            state.facts, state.instruction.get("currentAnalysis"), state.instruction,
+        )
+        if covered is not None:
+            # 固定事实明确覆盖分析问题时不请求模型判断；不确定时照常交给模型。
+            logger.bind(analysis_id=state.instruction.get("currentAnalysisId"), reason=covered).info(
+                "report_analysis_evidence_decision_skipped"
+            )
+            state.decision = AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=False, reason=covered, missingFacts=(), codingRequirements=(),
+            )
+            state.statuses["plan-evidence"] = "completed"
+            return StepOutput(content=state.decision.model_dump(mode="json", by_alias=True))
         payload = {
             "currentAnalysis": state.instruction.get("currentAnalysis"),
             "deterministicFacts": self._model_facts(state),
@@ -1690,25 +1705,38 @@ class AnalysisItemWorkflow:
             self._validate_completion_result(result)
             state.statuses["complete-analysis"] = "completed"
             return StepOutput(content={"status": "accepted", "recovered": True})
-        summary_payload = {
-            "currentAnalysis": state.instruction.get("currentAnalysis"),
-            "deterministicFacts": (self._model_facts(state) if state.facts is not None else None),
-            "deterministicFactsSource": state.instruction.get("deterministicFactFile"),
-            "supplementalEvidence": (
-                state.evidence.model_dump(mode="json", by_alias=True)
-                if state.evidence is not None
-                else None
-            ),
-            "supplementalEvidenceSource": (
-                state.evidence_file.model_dump(mode="json", by_alias=True)
-                if state.evidence is not None and state.evidence_file is not None
-                else None
-            ),
-            "reviewFeedback": state.instruction.get("reviewFeedback"),
-            "analysisReworkRequest": state.instruction.get("analysisReworkRequest"),
-            "evidenceWarnings": list(state.warnings),
-        }
-        draft = await self.summarize(summary_payload)
+        facts_summary = (
+            deterministic_fact_summary(state.facts)
+            if state.evidence is None and state.facts is not None and self.benchmark_projection is None
+            and not state.instruction.get("reviewFeedback") and not state.instruction.get("analysisReworkRequest")
+            else ""
+        )
+        if facts_summary:
+            # 只用固定事实时摘要由服务端写成数值引用，不再请求模型转述数字。
+            logger.bind(analysis_id=state.instruction.get("currentAnalysisId")).info(
+                "report_analysis_summary_from_facts"
+            )
+            draft = AnalysisSummaryDraft(summary=facts_summary, warnings=())
+        else:
+            summary_payload = {
+                "currentAnalysis": state.instruction.get("currentAnalysis"),
+                "deterministicFacts": (self._model_facts(state) if state.facts is not None else None),
+                "deterministicFactsSource": state.instruction.get("deterministicFactFile"),
+                "supplementalEvidence": (
+                    state.evidence.model_dump(mode="json", by_alias=True)
+                    if state.evidence is not None
+                    else None
+                ),
+                "supplementalEvidenceSource": (
+                    state.evidence_file.model_dump(mode="json", by_alias=True)
+                    if state.evidence is not None and state.evidence_file is not None
+                    else None
+                ),
+                "reviewFeedback": state.instruction.get("reviewFeedback"),
+                "analysisReworkRequest": state.instruction.get("analysisReworkRequest"),
+                "evidenceWarnings": list(state.warnings),
+            }
+            draft = await self.summarize(summary_payload)
         warnings = list(dict.fromkeys((*draft.warnings, *state.warnings)))
         if state.evidence is not None:
             warnings = list(dict.fromkeys((*warnings, *state.evidence.warnings)))

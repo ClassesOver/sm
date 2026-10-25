@@ -601,22 +601,32 @@ def _section_number_context(
         item["factId"]: {entry["budgetFactId"] for key in ("budgetComparisons", "projectRatios")
                          for entry in item.get(key, ())}
                        | {entry["totalFactId"] for entry in item.get("metricShares", ())}
+                       # 父指标条目列出的分组合计/占比引用须留在目录中；分组条目本身只在被选中时展示。
+                       | {group["factId"] for entry in item.get("breakdowns", ()) for group in entry["groups"]}
         for item in guide
     }
+    explicit: set[str] = set()
 
     def with_dependencies(ids: set[str]) -> set[str]:
         return ids | {dependency for fact_id in ids for dependency in dependencies.get(fact_id, ())}
 
+    def shown(items: list[dict[str, Any]], ids: set[str]) -> list[dict[str, Any]]:
+        return [item for item in items if item.get("factId") in ids
+                and (not item.get("breakdownField") or item["factId"] in explicit)]
+
     if allowed_fact_ids is not None:
+        explicit = set(allowed_fact_ids)
         allowed_fact_ids = with_dependencies(allowed_fact_ids)
-        guide = [item for item in guide if item.get("factId") in allowed_fact_ids]
+        guide = shown(guide, allowed_fact_ids)
         catalog = {token: value for token, value in catalog.items()
                    if token.split(":", 2)[1] in allowed_fact_ids}
     if claims is None:
         # 规划不生成数值占位符；直接展示已格式化数值，避免每个期间/分组反复携带
-        # 长引用。factId 仍保留，用于下一阶段绑定结论。
+        # 长引用。factId 仍保留，用于下一阶段绑定结论。未明确选中的维度分组只在父指标条目中概览。
         planning_guide = []
         for item in guide:
+            if item.get("breakdownField") and item["factId"] not in explicit:
+                continue
             projected = {
                 key: value for key, value in item.items()
                 if key not in {"groups", "rowStatistics"}
@@ -628,15 +638,18 @@ def _section_number_context(
                 }
             planning_guide.append(projected)
         return prompt_number_catalog(catalog), json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
+    explicit |= {fact_id for claim in claims for fact_id in claim.fact_ids}
     fact_ids = with_dependencies({fact_id for claim in claims for fact_id in claim.fact_ids})
     unbound_metrics = {claim.metric_code for claim in claims if not claim.fact_ids}
     selected_ids = with_dependencies(fact_ids | {
         item["factId"] for item in guide
         if item["factId"] in fact_ids
-        or set(item.get("metricCodes", ())).intersection(unbound_metrics)
-        or item.get("metric") in unbound_metrics
+        # 分组与父指标同指标代码；未绑定事实的结论只展开父指标，不把全部分组塞进提示。
+        or (not item.get("breakdownField") and (
+            set(item.get("metricCodes", ())).intersection(unbound_metrics)
+            or item.get("metric") in unbound_metrics))
     })
-    guide = [item for item in guide if item["factId"] in selected_ids]
+    guide = shown(guide, selected_ids)
     if not guide and not fact_ids:
         # 旧证据可能没有 factId/metricCodes，沿用完整目录，不能猜测绑定。
         return prompt_number_catalog(catalog), frozen_number_guide(contents, catalog, field_definitions=field_definitions)
@@ -3784,6 +3797,7 @@ class RuntimeSectionsMixin:
         """
 
         from ...trace.fact_index import (
+            bundle_fact_arrays,
             fact_binding_records,
             fact_entry_from_pointer,
             fact_pointer,
@@ -3821,13 +3835,7 @@ class RuntimeSectionsMixin:
                 bundle = DeterministicAnalysisBundle.model_validate_json(raw)
                 document = bundle.model_dump(mode="json", by_alias=True)
                 binding_records = fact_binding_records(bundle)
-                for fact in (
-                    *bundle.metrics,
-                    *bundle.comparisons,
-                    *bundle.derived_metrics,
-                    *bundle.reconciliations,
-                    *bundle.correlation_details,
-                ):
+                for fact in (fact for _, _, facts in bundle_fact_arrays(bundle) for fact in facts):
                     if fact.fact_id:
                         pointer = fact_pointer(bundle, fact.fact_id)
                         if pointer:

@@ -38,6 +38,7 @@ from ...phase import (
 )
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
+from ...trace.numeric_text import frozen_number_catalog, render_frozen_numbers
 from ..benchmark_variants import (
     BenchmarkProjection,
     BenchmarkVariant,
@@ -755,6 +756,27 @@ _MODEL_FACT_WARNING_COLLECTIONS = (
 )
 
 
+def _model_facing_breakdowns(bundle: DeterministicAnalysisBundle) -> list[dict[str, Any]]:
+    """维度分组按父指标与维度归并：每组只列取值、合计与期间值，口径与告警见父指标。"""
+    partitions: dict[tuple[str | None, str | None], dict[str, Any]] = {}
+    for fact in bundle.breakdowns:
+        field = fact.breakdown_field
+        partition = partitions.setdefault((fact.parent_fact_id, field), {
+            "parentFactId": fact.parent_fact_id,
+            "dimension": fact.breakdown_label or field,
+            "field": field,
+            "unit": fact.unit,
+            "groups": [],
+        })
+        partition["groups"].append({
+            "value": fact.scope.get(field or ""),
+            "factId": fact.fact_id,
+            "total": fact.total,
+            "periodValues": [[item.period, item.value] for item in fact.period_values],
+        })
+    return list(partitions.values())
+
+
 def _model_facing_deterministic_facts(
     bundle: DeterministicAnalysisBundle,
 ) -> dict[str, Any]:
@@ -766,6 +788,8 @@ def _model_facing_deterministic_facts(
     """
 
     projected = bundle.model_dump(mode="json", by_alias=True)
+    if bundle.breakdowns:
+        projected["breakdowns"] = _model_facing_breakdowns(bundle)
     seen_warnings: set[str] = set()
     for collection_key in _MODEL_FACT_WARNING_COLLECTIONS:
         collection = projected.get(collection_key)
@@ -1542,6 +1566,19 @@ class RuntimeAnalysisMixin:
                     ("bottomGroups", ["group", "value"]),
                 )
             )
+        breakdowns = [item for item in payload.get("breakdowns", ()) if isinstance(item, Mapping)]
+        if breakdowns:
+            # 维度构成图按行绑定全部分组，再按 parentFactId 与 breakdownField 取同一指标同一维度。
+            data_descriptors.append({
+                "dataPath": "breakdowns",
+                "fields": ["parentFactId", "breakdownField", "breakdownLabel", "breakdownValue",
+                           "displayName", "total", "unit"],
+                "dataScope": "维度分组合计：按 parentFactId 与 breakdownField 选取同一指标同一维度的完整分组",
+            })
+            data_descriptors.extend(
+                {"dataPath": f"breakdowns[{index}].periodValues", "fields": ["period", "value"]}
+                for index, item in enumerate(breakdowns) if item.get("periodValues")
+            )
         data_descriptors.extend(
             {"dataPath": f"derivedMetrics[{index}]", "fields": sorted(key for key, value in metric.items() if value is None or isinstance(value, (str, int, float, bool)))}
             for index, metric in enumerate(payload.get("derivedMetrics", ()))
@@ -1665,7 +1702,10 @@ class RuntimeAnalysisMixin:
             "factFile": fact_file.model_dump(mode="json", by_alias=True),
             "dataPathBase": "fileRoot",
             "dataDescriptors": data_descriptors,
-            "summary": durable_item.get("summary") if isinstance(durable_item, Mapping) else None,
+            # 固定事实摘要以数值引用写成；图表规划只需读数，渲染为显示值。
+            "summary": render_frozen_numbers(
+                durable_item["summary"], frozen_number_catalog([fact_model.model_dump_json(by_alias=True)]),
+            ) if isinstance(durable_item, Mapping) and isinstance(durable_item.get("summary"), str) else None,
             "metrics": [
                 {
                     "metricIndex": index,
