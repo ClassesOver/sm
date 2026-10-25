@@ -3,9 +3,11 @@ import { Plugin, PluginKey, type Transaction } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import { $prose } from '@milkdown/kit/utils'
 
-import type { TraceSources, TraceValidation } from './api'
+import type { TraceSources, TraceTableCellLocation, TraceValidation } from './api'
+import { findEvidenceTableCell } from './evidence-location'
 import { datasetLabel } from './evidence-relations'
 import { findProtocolMarkers, groupProtocolMarkers } from './protocol'
+import { checkNeedsReview } from './source-validation'
 import { isExplanatoryUnverified } from './unverified-text'
 
 export type ValueMarkState = 'valid' | 'review' | 'stale' | 'unverified'
@@ -24,6 +26,13 @@ export interface ValueMark {
 }
 
 type Subject = TraceValidation['subjects'][number]
+
+/** 卡片所需的数值视图：正文引用与表格单元格同构，由服务端同一解析给出。 */
+type CardView = Pick<Subject, 'status' | 'factValue' | 'unit' | 'periods' | 'formula' | 'formulaText' |
+  'computation' | 'datasetIds' | 'warnings' | 'sourceStatus'> & { subjectId?: string }
+
+/** 数值所在位置：正文句子或表格单元格，决定卡片中“正文值/表中值”的写法。 */
+type ValuePlace = 'body' | 'table'
 
 const UNIT_SCALES: Record<string, Record<string, number>> = {
   money: { 元: 1, 千元: 1e3, 万元: 1e4, 亿元: 1e8 },
@@ -108,24 +117,25 @@ export function periodListText(periods: unknown): string {
   }).join('、')
 }
 
-function computedSubject(subject: Subject): boolean {
+function computedSubject(subject: CardView): boolean {
   return subject.computation === 'derived' || subject.computation === 'calc'
 }
 
 /** 卡片首行（加粗）：读者一眼可见的可信状态。 */
-function trustHeadline(subject: Subject, consistent: boolean): string {
+function trustHeadline(subject: CardView, consistent: boolean): string {
   if (!consistent || subject.status !== 'valid' || subject.sourceStatus === 'integrity_failed' || subject.warnings?.length) return '! 需复核'
   return computedSubject(subject) ? '∑ 服务端计算：按登记原值计算，与正文一致' : '✓ 已核对：与登记值一致'
 }
 
-function sourceText(subject: Subject, sources: TraceSources | undefined): string {
+function sourceText(subject: CardView, sources: TraceSources | undefined): string {
   const datasets = sources?.datasets ?? []
   const labels = (subject.datasetIds ?? []).map(id => datasets.find(item => item.datasetId === id))
     .filter((item): item is NonNullable<typeof item> => !!item).map(item => datasetLabel(item, datasets))
   return [...new Set(labels)].join('、')
 }
 
-function subjectCard(subject: Subject, sources: TraceSources | undefined, written?: string, consistent = true): string[] {
+function valueCard(subject: CardView, sources: TraceSources | undefined, written?: string, consistent = true,
+  place: ValuePlace = 'body'): string[] {
   const ref = sources?.subjects?.find(item => item.subjectId === subject.subjectId)?.factRefs[0]
   const fact = sources?.facts?.find(item => item.analysisId === ref?.analysisId && item.factId === ref?.factId)
   const computed = computedSubject(subject)
@@ -136,7 +146,7 @@ function subjectCard(subject: Subject, sources: TraceSources | undefined, writte
     trustHeadline(subject, consistent),
     fact?.name ? `指标：${fact.name}` : '',
     `${computed ? '计算结果' : '登记值'}：${formatRegisteredValue(subject.factValue, subject.unit)}`,
-    written ? `正文值：${written}` : '',
+    written ? `${place === 'table' ? '表中值' : '正文值'}：${written}` : '',
     periodListText(subject.periods) ? `期间：${periodListText(subject.periods)}` : '',
     method ? `${computed ? (method.includes(' = ') ? '算式' : '取值') : '口径'}：${method}` : '',
     source ? `来源：${source}` : '',
@@ -147,7 +157,7 @@ function subjectCard(subject: Subject, sources: TraceSources | undefined, writte
       : subject.status === 'valid'
       // 一致时首行已写明，不再重复。
       ? (subject.warnings?.length ? '状态：数值一致，业务口径需复核' : '')
-      : '状态：正文已改动，需复核',
+      : `状态：${place === 'table' ? '表中数值' : '正文'}已改动，需复核`,
     ...(subject.warnings ?? []).map(warning => `提示：${warning}`),
   ].filter(Boolean)
 }
@@ -197,7 +207,7 @@ export function findValueMarks(text: string, validation: TraceValidation | null,
           state: subject.status === 'valid' && matchesRegistered
             ? (subject.warnings?.length ? 'review' : 'valid') : 'stale',
           computed: computedSubject(subject),
-          card: subjectCard(subject, sources, written, matchesRegistered),
+          card: valueCard(subject, sources, written, matchesRegistered),
         })
       }
     }
@@ -271,6 +281,40 @@ export function documentValueMarks(doc: ProseNode, validation: TraceValidation |
   })))
 }
 
+type PositionedMark = ValueMark & { from: number; to: number }
+
+/**
+ * 表格单元格的可信标注：与正文数值同一数值视图与卡片。单元格由调用方按表格编号与行列唯一定位
+ * （定位不到返回 null，不猜位置）；表格整体数据核对未通过时，单元格一并标为需复核。
+ */
+export function tableValueMarks(validation: TraceValidation | null, sources: TraceSources | undefined,
+  locate: (tableId: string, location: TraceTableCellLocation) => { from: number; to: number } | null): PositionedMark[] {
+  const marks: PositionedMark[] = []
+  for (const table of validation?.tables ?? []) {
+    const review = table.dataCheck !== undefined && checkNeedsReview(table.dataCheck)
+    for (const location of table.locations ?? []) {
+      if (typeof location.factValue !== 'number') continue
+      const range = locate(table.tableId, location)
+      if (!range || range.from >= range.to) continue
+      const subjectId = sources?.subjects?.find(item => item.subjectKind === 'table_cell' &&
+        item.locator.tableId === table.tableId && item.locator.rowKey === location.rowKey &&
+        item.locator.columnKey === location.columnKey)?.subjectId
+      const consistent = location.status !== 'stale'
+      const view: CardView = {
+        ...location, factValue: location.factValue, subjectId, status: consistent ? 'valid' : 'stale',
+        warnings: review ? ['表格整体的数据核对需复核'] : [],
+      }
+      marks.push({
+        ...range, start: range.from, end: range.to, subjectId,
+        state: consistent ? (review ? 'review' : 'valid') : 'stale',
+        computed: computedSubject(view),
+        card: valueCard(view, sources, location.text, consistent, 'table'),
+      })
+    }
+  }
+  return marks
+}
+
 const key = new PluginKey<DecorationSet>('SMART_REPORT_BODY_VALUE_MARKS')
 
 export function createBodyValueMarksPlugin(): Plugin<DecorationSet> {
@@ -288,7 +332,14 @@ export function createBodyValueMarksPlugin(): Plugin<DecorationSet> {
 export const bodyValueMarksPlugin = $prose(createBodyValueMarksPlugin)
 
 export function updateBodyValueMarks(view: EditorView, validation: TraceValidation | null, sources?: TraceSources): void {
-  const decorations = documentValueMarks(view.state.doc, validation, sources).flatMap(mark => {
+  // 表格单元格在编辑器中按表格编号与行列唯一定位后，与正文数值使用同一套标注与卡片。
+  const cells = tableValueMarks(validation, sources, (tableId, location) => {
+    const target = findEvidenceTableCell(view.dom, tableId, location)
+    if (!target) return null
+    const position = view.state.doc.resolve(view.posAtDOM(target, 0))
+    return { from: position.start(), to: position.end() }
+  })
+  const decorations = [...documentValueMarks(view.state.doc, validation, sources), ...cells].flatMap(mark => {
     // 有原始值时正文显示原始值、收起“待核实”字样，句子照常可读；悬停卡片说明未通过核对。
     const computed = mark.computed && mark.state === 'valid'
     const attributes = {

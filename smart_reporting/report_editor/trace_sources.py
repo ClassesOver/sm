@@ -18,6 +18,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from functools import partial
 from pathlib import Path, PurePosixPath
 from time import perf_counter
 from typing import Any, Protocol
@@ -1144,7 +1145,64 @@ class ReportEditorTraceService:
                     and binding.number_reference.table_derivation is None):
                 source_ids = tuple(sorted({ref.file_resource_id for ref in binding.fact_refs}))
                 number_tokens.setdefault(source_ids, set()).add(binding.number_reference.token)
+        def _cell_selector(cell: Any, entry: dict[str, Any] | None) -> str | None:
+            """表格单元格对应的数值选择器；旧索引把选择器写在行键里（comparison:0:change、period:2025-01）。"""
+            if entry is None:
+                return None
+            if cell.value_selector:
+                return cell.value_selector
+            row_key = cell.row_key
+            if row_key.startswith("comparison:"):
+                return row_key.rsplit(":", 1)[-1]
+            if row_key.startswith("period:"):
+                positions = [index for index, item in enumerate(entry.get("periodValues") or ())
+                             if isinstance(item, dict) and item.get("period") == row_key.removeprefix("period:")]
+                return f"periodValues.{positions[0]}" if len(positions) == 1 else None
+            return row_key
+
+        # 表格单元格只登记事实与选择器；与正文引用并入同一来源组的同一次解析，得到同样的数值视图。
+        table_selectors: dict[tuple[str, ...], set[tuple[str, str]]] = {}
+        table_cell_views: dict[tuple[str, str, str], tuple[tuple[str, ...], str]] = {}
+        for table in index.tables:
+            for cell in table.cells:
+                if cell.computation_id or len(cell.fact_refs) != 1 or not cell.fact_refs[0].fact_key:
+                    continue
+                ref = cell.fact_refs[0]
+                cell_entry = await _fact_entry_of(ref)
+                selector = _cell_selector(cell, cell_entry)
+                if selector is None:
+                    continue
+                table_selectors.setdefault((ref.file_resource_id,), set()).add((ref.fact_key, selector))
+                table_cell_views[(table.table_id, cell.row_key, cell.column_key)] = (
+                    (ref.file_resource_id,), f"{ref.fact_key}:{selector}",
+                )
         number_results: dict[tuple[str, ...], dict[str, Any]] = {}
+
+        async def _resolved_group(source_ids: tuple[str, ...]) -> dict[str, Any]:
+            if source_ids not in number_results:
+                number_results[source_ids] = await anyio.to_thread.run_sync(
+                    partial(
+                        resolve_number_references,
+                        tuple(number_tokens.get(source_ids, ())),
+                        tuple(_json.dumps(bundle_cache[files[resource_id].path]) for resource_id in source_ids),
+                        selectors=tuple(sorted(table_selectors.get(source_ids, ()))),
+                    ),
+                    limiter=self._validation_limiter,
+                )
+            return number_results[source_ids]
+
+        def _value_view(entry: dict[str, Any] | None, selected: dict[str, Any] | None) -> dict[str, Any]:
+            """正文数值与表格单元格共用的冻结摘要：单位、期间、口径或可验算算式、范围与数据集。"""
+            formula = _entry_formula(entry)
+            return {
+                "formula": formula,
+                # 派生值与对比值写出可验算的算式，其余与导出附录同一转换规则。
+                "formulaText": (selected or {}).get("explanation") or (readable_formula(formula, _formula_labels(
+                    entry, _entry_dataset_ids(entry), column_definitions,
+                )) if formula else None),
+                "scope": _entry_scope(entry),
+                "datasetIds": _entry_dataset_ids(entry),
+            }
         for binding in index.subject_bindings:
             if not binding.claim_id or not (binding.fact_refs or (
                 binding.number_reference is not None
@@ -1190,13 +1248,7 @@ class ReportEditorTraceService:
                             and set(ids) == {ref.fact_key for ref in binding.fact_refs}
                             and number.claim_id == binding.claim_id):
                         source_ids = tuple(sorted({ref.file_resource_id for ref in binding.fact_refs}))
-                        if source_ids not in number_results:
-                            number_results[source_ids] = await anyio.to_thread.run_sync(
-                                resolve_number_references, number_tokens[source_ids], tuple(
-                                    _json.dumps(bundle_cache[files[resource_id].path]) for resource_id in source_ids
-                                ), limiter=self._validation_limiter,
-                            )
-                        selected = number_results[source_ids].get(number.token)
+                        selected = (await _resolved_group(source_ids)).get(number.token)
                 fact_value = selected["value"] if selected else None
                 expected_unit = selected["unit"] if selected else None
                 expected_periods = selected["periods"] if selected else ()
@@ -1262,14 +1314,7 @@ class ReportEditorTraceService:
                     # 数据集身份都取自事实登记，不从草稿反推。
                     "unit": expected_unit,
                     "periods": list(expected_periods),
-                    "formula": _entry_formula(entry),
-                    # 编辑器核对卡片展示的中文口径：派生值与对比值写出可验算的算式，
-                    # 其余与导出附录同一转换规则。
-                    "formulaText": (selected or {}).get("explanation") or (readable_formula(formula, _formula_labels(
-                        entry, _entry_dataset_ids(entry), column_definitions,
-                    )) if (formula := _entry_formula(entry)) else None),
-                    "scope": _entry_scope(entry),
-                    "datasetIds": _entry_dataset_ids(entry),
+                    **_value_view(entry, selected),
                 }
             )
 
@@ -1279,6 +1324,24 @@ class ReportEditorTraceService:
             fact_selector_valid_of=_fact_selector_valid_of,
         )
         for table, payload in zip(index.tables, tables_payload, strict=True):
+            # 表格单元格与正文数值同一数值视图：卡片写出登记值、期间、取得方式与可验算算式。
+            for location in payload["locations"]:
+                found = table_cell_views.get((table.table_id, location["rowKey"], location["columnKey"]))
+                if found is None:
+                    continue
+                source_ids, key = found
+                selected = (await _resolved_group(source_ids)).get(key)
+                if selected is None:
+                    continue
+                location.update(
+                    factValue=selected["value"],
+                    unit=selected["unit"],
+                    periods=list(selected["periods"]),
+                    computation=reference_computation(f"{{{{value:{key}:}}}}", selected.get("selector")),
+                    **_value_view(
+                        {**selected["entry"], "formula": selected["formula"], "scope": selected["scope"]}, selected,
+                    ),
+                )
             dataset_ids: list[str] = []
             methods: list[str] = []
             for cell in table.cells:
@@ -1328,8 +1391,6 @@ class ReportEditorTraceService:
             except (ReportingError, UnicodeDecodeError) as error:
                 logger.warning("report_editor_plot_validation_source_unavailable resource_id={} reason={}",
                                resource_id, type(error).__name__)
-
-        from functools import partial
 
         from ..reporting.trace.markdown_body import trace_body
 
