@@ -1157,7 +1157,7 @@ class RuntimePublicationMixin:
                     }
                 )
                 continue
-            for array_name in ("metrics", "derivedMetrics", "comparisons", "reconciliations"):
+            for array_name in ("metrics", "breakdowns", "derivedMetrics", "comparisons", "reconciliations"):
                 for entry in document.get(array_name, ()) or ():
                     fact_id = entry.get("factId") if isinstance(entry, dict) else None
                     if isinstance(fact_id, str):

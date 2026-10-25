@@ -222,3 +222,116 @@ def test_every_breakdown_formula_recomputes_to_the_result_it_shows():
             assert abs(_recomputed(explanation) - shown) <= Decimal("0.01"), (token, explanation)
             checked += 1
     assert checked > 20
+
+
+def test_breakdowns_respect_the_bundle_budget_with_a_soft_warning(monkeypatch):
+    from smart_reporting.reporting.hospital_operation import deterministic_analysis
+
+    # 超出分组条数上限只跳过其余维度并软告警，父指标与已登记分组照常保留。
+    monkeypatch.setattr(deterministic_analysis, "BREAKDOWN_BUDGET", 2)
+    bundle = _bundle()
+    assert len(bundle.breakdowns) == 2 and len(bundle.metrics) == 1
+    assert any("维度分组达到 2 条上限" in warning for warning in bundle.warnings)
+
+
+def test_overflowing_group_sum_skips_only_that_dimension(monkeypatch):
+    from smart_reporting.reporting.hospital_operation import deterministic_analysis
+
+    original = deterministic_analysis._breakdown_fact
+
+    def overflow(fact, field, *args, **kwargs):
+        if field == "income_type":
+            raise deterministic_analysis._NonFiniteMetricError("溢出")
+        return original(fact, field, *args, **kwargs)
+
+    # 某维度的分组求和溢出只跳过该维度，父指标与其他维度照常登记，不让整个分析项失败。
+    monkeypatch.setattr(deterministic_analysis, "_breakdown_fact", overflow)
+    bundle = _bundle()
+    assert len(bundle.metrics) == 1
+    assert {item.breakdown_field for item in bundle.breakdowns} == {"department"}
+
+
+def test_two_profile_dimensions_on_one_column_are_split_once():
+    twin = (*DIMENSIONS, dimension("income_kind", "income_type", "收入类别"))
+    bundle = _bundle(dimensions=twin)
+    assert sorted(item.scope["income_type"] for item in bundle.breakdowns
+                  if item.breakdown_field == "income_type") == ["住院", "门诊"]
+    # 分组只带数据集级说明，不复制父指标的整体序列告警。
+    assert all(len(item.warnings) <= len(bundle.metrics[0].warnings) for item in bundle.breakdowns)
+
+
+def test_parent_dependency_adds_only_group_totals_and_shares_to_the_prompt_catalog():
+    from smart_reporting.reporting.workflow.runtime.sections import _section_number_context
+
+    bundle = _bundle()
+    content = bundle.model_dump_json(by_alias=True)
+    parent = bundle.metrics[0].fact_id
+    visible, _ = _section_number_context([content], {}, allowed_fact_ids={parent})
+    group_tokens = [token for token in visible if token.split(":", 2)[1] != parent]
+    assert group_tokens
+    assert all(token.split(":")[2] in {"total", f"metricShare.{parent}"} for token in group_tokens)
+
+
+def test_evidence_view_adds_the_budget_group_for_a_selected_actual_group():
+    from smart_reporting.reporting.workflow.runtime.finding_evidence import finding_evidence_view
+
+    csv = ("month,budget_type,actual_amount,budget_amount\n2025-01,门诊业务,80,100\n2025-01,住院业务,150,200\n"
+           "2025-02,门诊业务,90,100\n2025-02,住院业务,210,200\n")
+    measures = tuple({**semantic(field, unit="元"), "additiveAcross": ["month", "budget_type"]}
+                     for field in ("actual_amount", "budget_amount"))
+    bundle = _bundle(csv, fields=("month", "budget_type", "actual_amount", "budget_amount"),
+                     dimensions=(dimension("budget_type", "budget_type", "预算业务类型。"),), measures=measures)
+    content = bundle.model_dump_json(by_alias=True)
+    index = next(i for i, item in enumerate(bundle.breakdowns)
+                 if item.field == "actual_amount" and item.scope == {"budget_type": "住院业务"})
+    budget = next(item for item in bundle.breakdowns
+                  if item.field == "budget_amount" and item.scope == {"budget_type": "住院业务"})
+    import hashlib
+    from types import SimpleNamespace
+
+    identity = SimpleNamespace(path="facts/analysis_001.json", sha256=hashlib.sha256(content.encode()).hexdigest())
+    source = SimpleNamespace(identity=identity, content=content, model_copy=lambda update: SimpleNamespace(**update))
+    work_item = SimpleNamespace(finding_ids=("finding_x",), analysis_ids=("analysis_001",), section_code="s1",
+                                finding_summaries=({"findingId": "finding_x", "sourceRefs": [
+                                    {"path": identity.path, "fileSha256": identity.sha256,
+                                     "analysisId": "analysis_001", "pointer": f"/breakdowns/{index}"}]},))
+    _, fact_ids, _ = finding_evidence_view((source,), work_item)
+    assert budget.fact_id in fact_ids
+
+
+def test_calc_mixing_a_group_with_its_parent_is_not_flagged_as_mixed_aggregation():
+    from smart_reporting.reporting.trace.content_review import review_content
+
+    bundle = _bundle()
+    content = bundle.model_dump_json(by_alias=True)
+    parent = bundle.metrics[0].fact_id
+    group = _groups(bundle, "income_type")["住院"].fact_id
+    text = f"门诊收入为{{{{calc:diff({parent}:total,{group}:total):元}}}}。"
+    assert not any("口径需确认" in warning for warning in review_content(text, [content]))
+
+
+def test_group_values_belong_to_their_parent_in_metric_attribution():
+    from smart_reporting.reporting.trace.review_attribution import (
+        _metric_value_attribution_warnings,
+    )
+
+    bundle = _bundle()
+    content = bundle.model_dump_json(by_alias=True)
+    documents = [json.loads(content)]
+    labels = {"amount": "收入金额"}
+    # 只有一个指标时无从判定归属；这里只验证分组值不再是“中性”登记值而豁免检查。
+    assert _metric_value_attribution_warnings("收入金额150元。", [content], documents, labels) == []
+
+
+def test_oversized_instruction_drops_breakdown_detail_before_failing():
+    from smart_reporting.reporting.workflow.runtime.analysis import (
+        _model_facing_deterministic_facts,
+    )
+
+    bundle = _bundle()
+    full = _model_facing_deterministic_facts(bundle)
+    totals = _model_facing_deterministic_facts(bundle, breakdown_detail="totals")
+    none = _model_facing_deterministic_facts(bundle, breakdown_detail="none")
+    assert "periodValues" in full["breakdowns"][0]["groups"][0]
+    assert "periodValues" not in totals["breakdowns"][0]["groups"][0]
+    assert "breakdowns" not in none and none["metrics"] == full["metrics"]

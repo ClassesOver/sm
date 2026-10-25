@@ -35,6 +35,11 @@ def _analysis(step, actions=("汇总",)):
     ("2025年按科室划分的收入结构如何？", "维度构成"),
     # 没有同比事实时同比问题不能视为覆盖。
     ("2025年收入同比变化如何？", None),
+    # 只说“比重”而点名的项目未登记分组时不能视为覆盖；点名已登记的组值可以。
+    ("2025年药品收入占医疗收入的比重如何？", None),
+    ("2025年住院收入占医疗收入的比重如何？", "维度构成"),
+    # 多出限定词的维度（开单科室）不是已拆分的“科室”。
+    ("2025年按开单科室划分的收入结构如何？", None),
 ])
 def test_standard_questions_are_covered_only_by_matching_facts(step, covered):
     reason = facts_cover_analysis(_bundle(THREE_MONTHS), _analysis(step), {})

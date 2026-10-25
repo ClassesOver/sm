@@ -89,10 +89,12 @@ def finding_evidence_view(
                 entry["numeratorFactId"] for entry in ratio_entries
                 if entry["budgetFactId"] in local_ids
             }
-            for index, metric in enumerate(documents[source.identity.path].get("metrics", ())):
-                if isinstance(metric, dict) and metric.get("factId") in dependencies:
-                    values[f"/metrics/{index}"] = metric
-                    fact_ids.add(metric["factId"])
+            # 分组的预算/项目配对事实在 breakdowns 中，与指标一样补齐分母。
+            for array in ("metrics", "breakdowns"):
+                for index, metric in enumerate(documents[source.identity.path].get(array, ())):
+                    if isinstance(metric, dict) and metric.get("factId") in dependencies:
+                        values[f"/{array}/{index}"] = metric
+                        fact_ids.add(metric["factId"])
         content = {"analysisId": documents[source.identity.path].get("analysisId")}
         content["selected"] = [
             {"pointer": pointer, "value": value} for pointer, value in values.items()
