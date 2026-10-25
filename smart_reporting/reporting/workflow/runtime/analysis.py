@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from typing import Literal
 
@@ -152,7 +153,7 @@ from .code_generation import (
 )
 from .datasets import _profile_coverage_instruction_projection
 from .phase_models import ChartDraft, VisualizationPlanDraft
-from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
+from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow, execute_analysis_items
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
     _visualization_thinking_complexity,
@@ -1957,11 +1958,14 @@ class RuntimeAnalysisMixin:
         )
         await self._persist_reporting_checkpoint(run_context, checkpoint)
         if state.pop("_narrative_evidence_only", False):
-            evidence_checkpoint = checkpoint
-            for analysis in detailed_plan.analyses:
-                evidence_checkpoint = await self._run_analysis_item_task(
+            analyses = {analysis.analysis_id: analysis for analysis in detailed_plan.analyses}
+
+            async def run_evidence_item(analysis_id: str) -> StepOutput:
+                analysis = analyses[analysis_id]
+                # 并发分析项各自从最新 durable checkpoint 出发，写回由持久化锁串行合并。
+                await self._run_analysis_item_task(
                     run_context,
-                    checkpoint=evidence_checkpoint,
+                    checkpoint=await self._current_reporting_checkpoint(run_context, checkpoint),
                     revision=revision,
                     sandbox_id=sandbox_id,
                     validation_context_file=validation_context_file,
@@ -1982,6 +1986,17 @@ class RuntimeAnalysisMixin:
                     feedback=feedback,
                     rework_request=None,
                 )
+                return StepOutput(content={"analysisId": analysis_id, "status": "completed"})
+
+            # 补证与章节分析项同一并发契约：parallel 模式下受 analysis_concurrency 限制并发。
+            await execute_analysis_items(
+                tuple(analyses),
+                run_evidence_item,
+                execution_mode=getattr(self, "reporting_execution_mode", "sequential"),
+                limiter=asyncio.Semaphore(getattr(self, "analysis_concurrency", 1)),
+                run_context=run_context,
+            )
+            evidence_checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
             durable_evidence = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
             evidence_checkpoint = await self._restore_or_create_finding_graph(
                 run_context=run_context, checkpoint=evidence_checkpoint,
@@ -3003,6 +3018,15 @@ class RuntimeAnalysisMixin:
         anonymous_trace = [item for item in current.trace if not item.task_id]
         for trace_item in incoming.trace:
             if trace_item.task_id:
+                existing_trace = trace_by_task.get(trace_item.task_id)
+                # 并发任务携带启动时的旧副本；Task 编号按 attempt 确定，已记录结果的
+                # Task 不会重新开始，旧副本里的 started 不能覆盖其他任务写回的结果。
+                if (
+                    trace_item.status == "started"
+                    and existing_trace is not None
+                    and existing_trace.status != "started"
+                ):
+                    continue
                 trace_by_task[trace_item.task_id] = trace_item
             elif trace_item not in anonymous_trace:
                 anonymous_trace.append(trace_item)
