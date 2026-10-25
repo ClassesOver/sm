@@ -498,6 +498,17 @@ def test_extrema_correction_keeps_text_it_cannot_safely_rewrite(text):
     assert correct_period_extrema(text, [_monthly_document()]) == text
 
 
+def test_extremum_named_before_the_month_is_checked_against_that_extremum():
+    from smart_reporting.reporting.trace.numeric_text import period_extrema_warnings
+
+    document = json.loads(_monthly_document())
+    # 极值词在前：2月按前一个“最高”复核（冻结序列最高为4月），不交给后一个“最低”。
+    assert period_extrema_warnings("[[analysis:analysis_001]]收入最高为2月50元，最低为4月120元。", [document]) == [
+        "月度极值陈述需复核：2月被写为最高，冻结月序列的最高月份为4月。"
+    ]
+    assert period_extrema_warnings("[[analysis:analysis_001]]收入最高为4月120元，最低为2月50元。", [document]) == []
+
+
 def test_extrema_correction_needs_a_unique_bundle_for_unmarked_text():
     documents = [_monthly_document(), _monthly_document("analysis_002")]
     assert correct_period_extrema("2月金额为最高值50元。", documents) == "2月金额为最高值50元。"

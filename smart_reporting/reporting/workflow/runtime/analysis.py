@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import Callable, Sequence
 from typing import Literal
 
@@ -754,6 +755,30 @@ _MODEL_FACT_WARNING_COLLECTIONS = (
     "comparisons",
     "reconciliations",
 )
+
+
+def _breakdown_descriptors(breakdowns: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """维度分组的图表数据描述。
+
+    图表绑定只能按路径取值、不能筛选行：整表只有一个指标的一个维度时才按行绑定；
+    否则逐组登记，由图表选取同一 parentFactId 与 breakdownField 的分组，避免混入其他维度。
+    逐组条目与逐月序列只为组数不多的维度登记（多组饼图/折线不可读），控制图表规划输入体积。
+    """
+    fields = ["parentFactId", "breakdownField", "breakdownLabel", "breakdownValue",
+              "displayName", "total", "unit"]
+    sizes = Counter((item.get("parentFactId"), item.get("breakdownField")) for item in breakdowns)
+    descriptors: list[dict[str, Any]] = []
+    if len(sizes) == 1:
+        descriptors.append({"dataPath": "breakdowns", "fields": fields,
+                            "dataScope": "同一指标同一维度的完整分组合计"})
+    for index, item in enumerate(breakdowns):
+        if sizes[(item.get("parentFactId"), item.get("breakdownField"))] > 6:
+            continue
+        if len(sizes) > 1:
+            descriptors.append({"dataPath": f"breakdowns[{index}]", "fields": fields})
+        if item.get("periodValues"):
+            descriptors.append({"dataPath": f"breakdowns[{index}].periodValues", "fields": ["period", "value"]})
+    return descriptors
 
 
 def _model_facing_breakdowns(
@@ -1572,25 +1597,8 @@ class RuntimeAnalysisMixin:
                     ("bottomGroups", ["group", "value"]),
                 )
             )
-        breakdowns = [item for item in payload.get("breakdowns", ()) if isinstance(item, Mapping)]
-        if breakdowns:
-            # 维度构成图按行绑定全部分组，再按 parentFactId 与 breakdownField 取同一指标同一维度。
-            data_descriptors.append({
-                "dataPath": "breakdowns",
-                "fields": ["parentFactId", "breakdownField", "breakdownLabel", "breakdownValue",
-                           "displayName", "total", "unit"],
-                "dataScope": "维度分组合计：按 parentFactId 与 breakdownField 选取同一指标同一维度的完整分组",
-            })
-            # 逐月序列只为组数不多的维度登记（多组折线不可读），控制图表规划输入体积。
-            sizes: dict[tuple[Any, Any], int] = {}
-            for item in breakdowns:
-                key = (item.get("parentFactId"), item.get("breakdownField"))
-                sizes[key] = sizes.get(key, 0) + 1
-            data_descriptors.extend(
-                {"dataPath": f"breakdowns[{index}].periodValues", "fields": ["period", "value"]}
-                for index, item in enumerate(breakdowns)
-                if item.get("periodValues") and sizes[(item.get("parentFactId"), item.get("breakdownField"))] <= 6
-            )
+        data_descriptors.extend(_breakdown_descriptors(
+            [item for item in payload.get("breakdowns", ()) if isinstance(item, Mapping)]))
         data_descriptors.extend(
             {"dataPath": f"derivedMetrics[{index}]", "fields": sorted(key for key, value in metric.items() if value is None or isinstance(value, (str, int, float, bool)))}
             for index, metric in enumerate(payload.get("derivedMetrics", ()))

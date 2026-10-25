@@ -335,3 +335,15 @@ def test_oversized_instruction_drops_breakdown_detail_before_failing():
     assert "periodValues" in full["breakdowns"][0]["groups"][0]
     assert "periodValues" not in totals["breakdowns"][0]["groups"][0]
     assert "breakdowns" not in none and none["metrics"] == full["metrics"]
+
+
+def test_chart_descriptors_never_bind_rows_from_different_dimensions():
+    from smart_reporting.reporting.workflow.runtime.analysis import _breakdown_descriptors
+
+    rows = [item.model_dump(mode="json", by_alias=True) for item in _bundle().breakdowns]
+    paths = [item["dataPath"] for item in _breakdown_descriptors(rows)]
+    # 两个维度并存：整表按行绑定会把两套分组相加，只能逐组选取。
+    assert "breakdowns" not in paths
+    assert {f"breakdowns[{index}]" for index in range(len(rows))} <= set(paths)
+    single = [row for row in rows if row["breakdownField"] == "income_type"]
+    assert "breakdowns" in [item["dataPath"] for item in _breakdown_descriptors(single)]

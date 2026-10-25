@@ -3708,10 +3708,14 @@ def period_extrema_warnings(markdown: str, bundles: Iterable[dict[str, Any]]) ->
                     max(text.rfind(separator, 0, match.start()) for separator in ("。", "；", "\n"))
                     + 1
                 )
-                # “最高为2025年2月X，最低为1月Y”中的2月是前一个极值词的宾语，不是后一个极值词的主语。
-                if re.search(r"(?:最高|最低|峰值|低点)(?:值|月份)?\s*(?:为|是|在|于|[：:])?\s*(?:\d{4}年)?$",
-                             masked[clause_start : match.start()]):
-                    continue
+                # “最高为2025年2月X，最低为1月Y”中的2月是前一个极值词的宾语，不是后一个极值词的主语：
+                # 按前一个极值词复核，不能交给后一个极值词。
+                preceding = re.search(
+                    r"(?P<kind>最高|最低|峰值|低点)(?:值|月份)?\s*(?:为|是|在|于|[：:])?\s*(?:\d{4}年)?$",
+                    masked[clause_start : match.start()],
+                )
+                if preceding:
+                    high = preceding["kind"] in {"最高", "峰值"}
                 local = text[clause_start : match.end()]
                 named_years = set(re.findall(r"(?<!\d)(\d{4})年", local))
                 if named_years and named_years != {labels[0][:4]}:

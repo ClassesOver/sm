@@ -10,7 +10,7 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
 )
 from smart_reporting.reporting.workflow.runtime.evidence_coverage import facts_cover_analysis
 
-from .test_dimension_breakdowns import _bundle
+from .test_dimension_breakdowns import FIELDS, _bundle
 
 THREE_MONTHS = (
     "month,department,income_type,amount\n"
@@ -55,6 +55,23 @@ def test_standard_questions_are_covered_only_by_matching_facts(step, covered):
 ])
 def test_rework_feedback_and_retries_always_ask_the_model(instruction):
     assert facts_cover_analysis(_bundle(THREE_MONTHS), _analysis("2025年收入总体规模如何？"), instruction) is None
+
+
+def test_structure_needs_shareable_groups_for_every_current_metric():
+    from .test_deterministic_analysis import semantic
+
+    measures = (
+        {**semantic("amount", unit="元"), "additiveAcross": ["department", "income_type"]},
+        # 成本未确认可加维度，没有分组：构成问题可能问的是成本，交给模型。
+        {**semantic("cost", unit="元")},
+    )
+    csv = ("month,department,income_type,amount,cost\n2025-01,A,住院,60,1\n"
+           "2025-02,B,门诊,40,2\n2025-03,A,门诊,30,3\n")
+    bundle = _bundle(csv, fields=(*FIELDS, "cost"), measures=measures)
+    assert facts_cover_analysis(bundle, _analysis("2025年按科室划分的结构占比如何？"), {}) is None
+    # 净额有负组时不登记占比，构成不算已覆盖。
+    negative = "month,department,income_type,amount\n2025-01,A,住院,60\n2025-02,B,门诊,-10\n2025-03,A,门诊,30\n"
+    assert facts_cover_analysis(_bundle(negative), _analysis("2025年按科室划分的结构占比如何？"), {}) is None
 
 
 def test_actions_beyond_fixed_facts_ask_the_model():

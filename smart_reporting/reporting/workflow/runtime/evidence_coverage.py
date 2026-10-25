@@ -59,20 +59,23 @@ def facts_cover_analysis(
                if pattern.search(text) or (name == "structure" and mentions)]
     if not intents:
         return None
+    # 无法判断问题针对哪项指标，趋势与构成须对每项当期指标都成立。
+    current = [fact for fact in facts.metrics if "current" in fact.period_roles]
+    partitions = _shareable_partitions(facts)
     available = {
         "scale": True,
-        "trend": any(len(fact.period_values) >= 3 for fact in facts.metrics),
+        "trend": bool(current) and all(len(fact.period_values) >= 3 for fact in current),
         "yoy": any(item.comparison_type == "yoy" for item in facts.comparisons),
-        "structure": bool(facts.breakdowns),
+        "structure": bool(current) and all(fact.fact_id in partitions for fact in current),
         "budget": bool(budget_comparison_values(facts) or project_ratio_values(facts)),
     }
     if not all(available[name] for name in intents):
         return None
-    if mentions and not _dimensions_covered(mentions, facts):
+    if mentions and not all(_dimensions_covered(mentions, partitions[fact.fact_id]) for fact in current):
         return None
     # 只说“占比/结构”而未点名维度或已登记分组（“药品收入占医疗收入的比重”）时，
     # 存在任意分组不能证明问到的那一项已登记，交给模型判断。
-    if "structure" in intents and not mentions and not _names_registered_group(text, facts):
+    if "structure" in intents and not mentions and not _names_registered_group(text, partitions):
         return None
     return "固定事实已覆盖" + "、".join(
         {"scale": "规模", "trend": "趋势", "yoy": "同比", "structure": "维度构成", "budget": "预算执行"}[name]
@@ -91,10 +94,25 @@ def _dimension_mentions(text: str) -> list[str]:
     return mentions
 
 
-def _dimensions_covered(mentions: list[str], facts: DeterministicAnalysisBundle) -> bool:
+def _shareable_partitions(facts: DeterministicAnalysisBundle) -> dict[str | None, list[list[Any]]]:
+    """父指标 → 能登记占比的完整维度（父合计为正、各组非负）；其余维度没有占比可引用。"""
+    totals = {fact.fact_id: fact.total for fact in facts.metrics}
+    grouped: dict[tuple[str | None, str], list[Any]] = {}
+    for fact in facts.breakdowns:
+        if fact.breakdown_field:
+            grouped.setdefault((fact.parent_fact_id, fact.breakdown_field), []).append(fact)
+    partitions: dict[str | None, list[list[Any]]] = {}
+    for (parent, _), groups in grouped.items():
+        if (totals.get(parent) or 0) > 0 and all(group.total >= 0 for group in groups):
+            partitions.setdefault(parent, []).append(groups)
+    return partitions
+
+
+def _dimensions_covered(mentions: list[str], partitions: list[list[Any]]) -> bool:
     vocabulary = {
         word
-        for fact in facts.breakdowns
+        for groups in partitions
+        for fact in groups
         for word in (fact.breakdown_label, fact.breakdown_field, *(fact.scope.values()))
         if word
     }
@@ -107,10 +125,12 @@ def _shares_word(mention: str, word: str) -> bool:
     return len(left) >= 2 and (left == right or left in right)
 
 
-def _names_registered_group(text: str, facts: DeterministicAnalysisBundle) -> bool:
+def _names_registered_group(text: str, partitions: dict[str | None, list[list[Any]]]) -> bool:
     return any(
         len(value) >= 2 and value in text
-        for fact in facts.breakdowns
+        for parent in partitions.values()
+        for groups in parent
+        for fact in groups
         for value in (fact.breakdown_value or "",)
     )
 
