@@ -12,8 +12,6 @@ from typing import Any
 from ..hospital_operation.deterministic_analysis import DeterministicMetricFact
 from .group_ranking import registered_group_rank
 
-TOP_SET_SELECTOR = re.compile(r"topSet\.(rank|items)\.([1-9]\d?|100)$")
-
 
 def _identity(group) -> tuple:
     return tuple(sorted(group.group_values.items()))

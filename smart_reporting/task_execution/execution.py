@@ -421,8 +421,6 @@ class TaskExecutionRuntime:
 
 
 class TaskExecutionKernel:
-    _task_locks = _TASK_TOOL_SCHEDULERS
-
     def __init__(self, service: Any, repository: TaskExecutionRepository):
         # service 是任务的本地工作区（Reporting 宿主机工作区路由），按 thread_id 定位工作区。
         self.service = service

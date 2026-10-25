@@ -117,8 +117,6 @@ def _subject_types(code: str) -> frozenset[str]:
         return frozenset({"section_claim", "section", "report"})
     if "chart" in code:
         return frozenset({"analysis_chart", "section"})
-    if code.startswith("chart_"):
-        return frozenset({"analysis_chart", "section"})
     if code in {"report_section_citation_missing", "report_reference_only_marker_missing"}:
         return frozenset({"section"})
     return frozenset({"section", "report"})

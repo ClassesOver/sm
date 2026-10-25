@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from agno.run import RunContext
@@ -28,7 +28,7 @@ from ...workspace import (
     WorkspacePathConflict,
     normalize_workspace_path,
 )
-from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
+from .context import ReportingFileRef, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
 
 if TYPE_CHECKING:
@@ -131,17 +131,11 @@ class ReportingWorkspaceAdapter:
 
     normalize_path = staticmethod(normalize_workspace_path)
 
-    def file_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
-        return self._service.file_bytes(thread_id, path)
-
     async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
         return await self._service.afile_bytes(thread_id, path)
 
     async def aread_text(self, thread_id: str, path: str) -> str:
         return await self._service.aread_text(thread_id, path)
-
-    def read_text(self, thread_id: str, path: str) -> str:
-        return self._service.read_text(thread_id, path)
 
     def validate_content(self, content: bytes) -> None:
         _validate_reporting_content(content)
@@ -408,43 +402,3 @@ class ReportingTaskRuntime:
                 await self.cleanup_tool_outputs(scope, run_context)
             return result
 
-    async def context(
-        self,
-        run_context: RunContext | None,
-        *,
-        input_snapshot: Mapping[str, Any],
-        inputs: Sequence[ReportingFileRef] = (),
-        data: Sequence[ReportingFileRef] = (),
-        output_policy: ReportingOutputPolicy,
-    ) -> ReportingToolContext:
-        scope = await self.scope(run_context)
-        return ReportingToolContext(
-            external_run_id=scope.external_run_id,
-            thread_id=scope.thread_id,
-            attempt_no=scope.attempt_no,
-            output_policy=output_policy,
-            input_snapshot=input_snapshot,
-            inputs=tuple(inputs),
-            data=tuple(data),
-        )
-
-    async def workspace_port(
-        self,
-        run_context: RunContext | None,
-        *,
-        input_snapshot: Mapping[str, Any],
-        inputs: Sequence[ReportingFileRef] = (),
-        data: Sequence[ReportingFileRef] = (),
-        output_policy: ReportingOutputPolicy,
-    ) -> ReportingTaskWorkspacePort:
-        scope = await self.scope(run_context)
-        context = ReportingToolContext(
-            external_run_id=scope.external_run_id,
-            thread_id=scope.thread_id,
-            attempt_no=scope.attempt_no,
-            output_policy=output_policy,
-            input_snapshot=input_snapshot,
-            inputs=tuple(inputs),
-            data=tuple(data),
-        )
-        return ReportingTaskWorkspacePort(self._service, self._kernel, context, scope)

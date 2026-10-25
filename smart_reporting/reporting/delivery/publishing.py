@@ -179,8 +179,6 @@ class StoredReportArtifact:
 
 
 class DownloadGrantRepository(Protocol):
-    async def put(self, grant: ReportDownloadGrant) -> None: ...
-
     async def get(self, grant_hash: str) -> ReportDownloadGrant | None: ...
 
     async def replace(self, grant: ReportDownloadGrant, *, now: datetime) -> None: ...
@@ -321,12 +319,6 @@ class SqlAlchemyDownloadGrantRepository:
                 )
             )
         await self.cleanup_expired(now=datetime.now(UTC))
-
-    async def put(self, grant: ReportDownloadGrant) -> None:
-        async with self.engine.begin() as connection:
-            await connection.execute(
-                insert(report_download_grants_v2).values(**_grant_values(grant))
-            )
 
     async def replace(self, grant: ReportDownloadGrant, *, now: datetime) -> None:
         """原子替换当前授权，禁止失败插入先撤销上一份可用授权。
