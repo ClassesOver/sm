@@ -8,7 +8,7 @@ import { beforeAll, expect, it } from 'vitest'
 import type { TraceValidation } from './api'
 import { createBodyValueMarksPlugin, documentValueMarks, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 import { markerDecorations } from './protocol-plugin'
-import { nextSourceIssue, notEvaluatedQualityCount, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
+import { nextSourceIssue, notEvaluatedQualityBreakdown, notEvaluatedQualityCount, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 interface ReviewCase {
   id: string; marks: string[]; issues: number; warning?: string; original?: string; canRestore?: boolean
@@ -60,7 +60,10 @@ for (const example of cases) {
       expect(semanticReviewGroupCount(validation)).toBe(0)
       expect(notEvaluatedQualityCount(validation)).toBe(notEvaluated)
       expect(coverage.state).toBe(actionable.length ? 'stale' : 'valid')
-      if (notEvaluated) expect(coverage.text).toContain(`未自动核对 ${notEvaluated}`)
+      const { scope, other } = notEvaluatedQualityBreakdown(validation)
+      expect(scope + other).toBe(notEvaluated)
+      if (scope) expect(coverage.text).toContain(`范围待确认 ${scope}`)
+      if (other) expect(coverage.text).toContain(`未自动核对 ${other}`)
       let after: number | null = null
       const visited: number[] = []
       for (let index = 0; index < actionable.length; index++) {

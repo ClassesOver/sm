@@ -204,9 +204,9 @@ def evaluate_quality_bundle(
             if number.table_derivation is None and not calc
             else None
         )
-        if calc:
-            # 计算引用由服务端按冻结原值重算并渲染：能重算即按与数值引用相同的语句核对期间、
-            # 范围与单位；操作数无法重算时仍记为未评估，不当作已核对。
+        if calc or (number.table_derivation is None and request is None):
+            # 计算引用与服务端派生值（月度极值、期间累计、占比、预算比较等）都由服务端按冻结原值
+            # 计算：能解析即按与数值引用相同的语句核对期间、范围与单位；无法解析时仍记为未评估，不当作已核对。
             selected = None if reasons else compiler.resolver.resolve(number.token)
             if not reasons and selected is None:
                 reasons.append("operation_semantics_not_evaluated")
@@ -224,7 +224,10 @@ def evaluate_quality_bundle(
                 if detail["status"] != "valid" or detail["warnings"]:
                     reasons.append("statement_not_supported")
                     statement_review = StatementReview(numericStatus=detail["status"], warnings=tuple(detail["warnings"]))
-        elif number.table_derivation is not None or request is None:
+                if not selected["scope"]:
+                    # 与已登记运算语义的引用一致：未登记统计范围时不默认全院。
+                    reasons.append("scope_unknown")
+        elif number.table_derivation is not None:
             # Legacy calculation support is not a complete business proof.
             reasons.append("operation_semantics_not_evaluated")
         elif not reasons:

@@ -46,11 +46,12 @@ describe('source validation', () => {
     // 回放：400 余条“范围未确认/运算未评估/图表未核对”曾计入语义待确认，淹没真正的提醒。
     expect(notEvaluatedQualityCount(result)).toBe(3)
     expect(semanticReviewGroupCount(result)).toBe(0)
-    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 未自动核对 3', state: 'valid' })
+    // 仅缺统计范围的诊断是同一个待业务确认的原因，单列为“范围待确认”；其余仍计未自动核对。
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 范围待确认 1 · 未自动核对 2', state: 'valid' })
     // 只要有一个理由不是“未评估”，仍按语义待确认处理。
     result.quality.issues[1].reasons = ['scope_unknown', 'statement_not_supported']
     expect(semanticReviewGroupCount(result)).toBe(1)
-    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 语义待确认 1组 · 未自动核对 2', state: 'stale' })
+    expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 语义待确认 1组 · 范围待确认 1 · 未自动核对 1', state: 'stale' })
   })
 
   it('shows unresolved business support even when the source value remains traceable', () => {
