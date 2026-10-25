@@ -14,6 +14,7 @@
 - 禁止重复完整测试
 - 子agent使用与root一样的模型
 - 不要自己造轮子，agno框架内支持优先
+- Plotly 交互图逻辑已弃用：新功能（含报告编辑器 AI 改图）只产出 Matplotlib 静态图（PNG/JPEG），不得新增或扩展 Plotly、`.plotly.json` companion、`interactiveCharts` 相关代码；存量 Plotly 代码仅为兼容旧报告保留，删除需另行专项处理。
 
 ## CodeMode free-form 协议事实
 
