@@ -84,7 +84,31 @@
 5. **inspect**：`inspect_chart_file` 确定性检查（解码、尺寸、空白等，失败即本次改图失败并给出原因）；`aview_image` 视觉审查生成回执。视觉问题为软告警，可触发一次自动修复，修复后仍有问题则带告警交付审阅。
 6. **register**：写入改图登记记录（5.3），返回预览。图注如含数字，必须使用登记数值引用，并用 `statement_review_warnings` 核对，结果作为软告警。
 
-### 5.3 改图登记（draft 侧车）
+### 5.3 Coding 实现（复用可视化 Coding Agent）
+
+改图的绘图一步就是一次 `task_kind="visualization"` 的 Coding 任务，与报告生成阶段走同一个 `ReportingCodeGenerationRunner`（`workflow/runtime/code_generation.py`），不另写执行器：
+
+1. **依赖注入**：`app.py` 中编辑器与报告运行时同进程，已有 `reporting_code_mode_runtime`；`ChartAIEditService` 构造时注入与可视化章节相同的 `visualization_code_agent_factory`、`code_mode_runtime`、`lsp_manager`、`vision_reviewer`、`coding_task_registry`（在 `bootstrap.py` 已创建，抽出共享构造即可）。未配置视觉审查模型时 runner 本身拒绝运行（`report_code_visual_reviewer_missing`），功能按“不可用”提示。
+2. **任务边界**（`ReportingCodingTaskContext`）：
+   - `workspace_key` / `workspace_root`：该报告 job 的工作区（编辑器 `scope["threadId"]` 对应的 `HostReportingWorkspace`）；
+   - `script_path`：`<revision 目录>/chart-edits/<editId>/chart_edit.py`；
+   - `declared_output_paths`：`<…>/chart-edits/<editId>/chart.png`（只此一个）；
+   - `authorized_read_paths`：本次作图数据（L1 为原图归档的 chart-input 文件，L2 为服务端重新物化的文件），以及原图 PNG（供模型 `view_image` 参照风格）；
+   - `authorized_write_paths`：脚本与输出图；
+   - `code_mode_session_id`：`chart-edit:<editId>`，多轮调整沿用上一轮会话以保留脚本上下文。
+3. **任务输入**（`task_facts`，与可视化章节同构，只增编辑器字段）：
+   - `chartInputs`：作图数据条目（路径、列、行数、来源绑定）；
+   - `visualizationPlan`：由 plan 步骤产出的新 `ChartDraft` 经 `visualization_coding_plan` 投影（标题、altText、visualForm、比较类型、绑定）；
+   - `chartEdit`：`{instruction, level, baseImagePath, previousScriptPath?, skipped}`。用户要求放在这里作为数据，不进系统指令；
+   - `visualizationMode` 固定为 `static`。
+4. **执行与修复**：模型通过原生 free-form `write_script` / `run` 写并运行 Matplotlib 脚本。沿用 `validate_script_source` 的全部预检（禁止内嵌数据、越权路径、动态路径解析、通用数据助手等），以及执行失败修复上限与 `_repair_diagnostic` 诊断格式。脚本只能读授权的 chart-input 文件，数值来自文件而非手写。
+5. **验收**：
+   - runner 内置的视觉审查生成 `ChartVisualInspectionReceipt`；
+   - 运行后执行 `verify_static_chart_inputs_referenced`（脚本未引用作图数据时记软告警，与生成阶段一致）和 `inspect_chart_file`（无法解码、空白即失败）；
+   - 回执、脚本身份、输出图身份写入改图登记。
+6. **plan 步骤与 coding 分离**：plan 用结构化输出模型（与可视化章节规划同一模型路由），只决定“画什么、用哪些数据”；coding 只负责“怎么画”。数据绑定在 coding 前已由服务端校验并物化，coding 阶段无法扩大数据范围。
+
+### 5.4 改图登记（draft 侧车）
 
 与草稿同目录新增 `.chart-edits.json`（与现有 draft origin 记录同一锁 `_draft_lock`、同一写入方式），每条记录：
 
