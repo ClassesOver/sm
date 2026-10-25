@@ -90,9 +90,15 @@ def test_registered_derived_ratio_fields_are_computed_and_explain_their_inputs()
     }
     selected = resolve_number_references(tokens.values(), [content])
     assert all(
-        reference_computation(token, selector) == 'derived'
+        reference_computation(token, selector, entry=selected[token]['entry']) == 'derived'
         for selector, token in tokens.items()
     )
+    # 同名字段属于登记事实本身时（相关系数 value、对账 difference）仍是直接登记值。
+    for selector in ('value', 'difference'):
+        assert reference_computation(
+            f'{{{{value:{B}:{selector}:}}}}', selector, entry={'factId': B, 'leftMetric': 'a'},
+        ) == 'registered'
+
     assert selected[tokens['value']]['explanation'] == (
         'amount（2025年1—2月、同期合计）1,000元 ÷ '
         'visits（2025年1—2月、同期合计）40元 = 25'

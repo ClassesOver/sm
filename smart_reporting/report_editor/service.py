@@ -572,6 +572,35 @@ _EXPORT_JOB_RETENTION_SECONDS = 3600
 _MAX_BUNDLE_BYTES = 30 * 1024 * 1024
 _MAX_BUNDLE_SOURCE_BYTES = 200 * 1024 * 1024
 _BUNDLE_CHUNK_BYTES = 1024 * 1024
+# 只发生在交付阶段的失败：产物已渲染并通过身份核验，重试只需补存下载副本与补签授权。
+_DELIVERY_RETRYABLE_CODES = frozenset({
+    "report_artifact_persistence_failed",
+    "report_pdf_persistence_failed",
+    "report_word_persistence_failed",
+    "report_editor_grant_unavailable",
+})
+
+
+def _delivery_validation(context: ReportEditorContext, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """revision 的当前交付验收：交付重试登记过结果时以登记为准，否则为导出当时的记录。"""
+    deliveries = payload.get("reportEditorDeliveries")
+    record = deliveries.get(str(context.revision)) if isinstance(deliveries, Mapping) else None
+    if (
+        isinstance(record, Mapping)
+        and record.get("contextSha256") == context.digest()
+        and isinstance(record.get("validation"), Mapping)
+    ):
+        return record["validation"]
+    raw = context.job.get("validation")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _delivery_only_failure(validation: Mapping[str, Any]) -> bool:
+    """渲染与验收已完成、只差交付（或交付已完整）时才可直接补签；否则须重新渲染。"""
+    codes = [issue.get("code") for issue in validation.get("issues") or () if isinstance(issue, Mapping)]
+    if not codes:
+        return validation.get("ok") is True
+    return all(code in _DELIVERY_RETRYABLE_CODES for code in codes)
 
 
 @dataclass
@@ -1353,6 +1382,8 @@ class ReportEditorService:
             raise ReportingError("dataset_access_denied", "分享会话不能下载报告原始产物。")
         context = await self._restore(expected)
         await self._ensure_sources_retained(context)
+        durable = await self.state_repository.get(context.workflow_run_id)
+        delivery_payload = durable.payload if durable is not None else {}
 
         identities: dict[str, tuple[int, str]] = {}
 
@@ -1427,8 +1458,7 @@ class ReportEditorService:
                             raise ReportingError("snapshot_integrity_failed", "报告登记产物无法安全读取。") from error
                     if total != expected_size or not secrets.compare_digest(digest.hexdigest(), expected_sha256):
                         raise ReportingError("snapshot_integrity_failed", "报告产物与登记身份不一致。")
-                raw_validation = job.get("validation")
-                validation = raw_validation if isinstance(raw_validation, Mapping) else {}
+                validation = _delivery_validation(context, delivery_payload)
                 metadata = json.dumps({
                     "reportId": context.report_id,
                     "revision": context.revision,
@@ -1911,15 +1941,23 @@ class ReportEditorService:
                     context.revision,
                 )
             elif secrets.compare_digest(latest_sha256, document.sha256):
-                # 上一次导出可能已提交 revision 并持久化产物，却在下载 grant
-                # 签发时失败。相同正文、设置和备注的重试直接为该 revision 补签，
-                # 不再渲染并制造一个内容完全相同的新 revision。
+                # 上一次导出可能已提交 revision，却在保存下载副本或签发授权时失败。
+                # 相同正文、设置和备注的重试只在渲染与验收已完成、仅差交付时直接为该
+                # revision 补存补签；渲染失败、格式缺失或验收未通过时照常重新渲染。
                 if latest.job.get("_editorDeliveryRequest") == delivery_request:
-                    return await self._retry_export_delivery(
-                        latest,
-                        scope=scope,
-                        session_capabilities=session_capabilities,
-                    )
+                    durable = await self.state_repository.get(context.workflow_run_id)
+                    previous = _delivery_validation(latest, durable.payload if durable is not None else {})
+                    if _delivery_only_failure(previous):
+                        return await self._retry_export_delivery(
+                            latest,
+                            scope=scope,
+                            validation=previous,
+                            session_capabilities=session_capabilities,
+                            artifact_persistence=artifact_persistence,
+                            download_grants=download_grants,
+                            editor_grants=editor_grants,
+                            public_base_url=public_base_url,
+                        )
                 # 后续渲染/登记都按 context.job_id 从 run_context 取 job 状态，
                 # 重定基后必须同步换成最新 revision 的 job，否则索引错位。
                 context = latest
@@ -2140,35 +2178,18 @@ class ReportEditorService:
                 thread_id=scope.workspace_key,
                 workflow_run_id=scope.run_id,
             )
-            artifacts = tuple(
-                ReportArtifactSpec(
-                    artifact=cast(Literal["pdf", "word"], label), path=identity["path"],
-                    size=int(identity["size"]), sha256=str(identity["sha256"]),
-                )
-                for label, identity in artifact_identities.items()
-            )
-            persist_options = {
-                "scope": download_scope, "report_id": context.report_id,
-                "revision": next_revision, "artifacts": artifacts,
-            }
+            # 已渲染且身份可读的格式全部登记进 revision；只有保存成功的格式签发下载，
+            # 未保存的格式留待重试补存，不能因一次保存失败从 revision 中丢掉。
+            rendered_identities = dict(artifact_identities)
             persistence_error: Exception | None = None
             try:
-                persist_available = getattr(artifact_persistence, "persist_available", None)
-                if callable(persist_available):
-                    stored_artifacts = await persist_available(**persist_options)
-                    stored_formats = {spec.artifact for spec in stored_artifacts}
-                    if not set(artifact_identities) & stored_formats:
-                        raise ReportingError("report_artifact_unavailable", "报告下载副本均未保存成功。")
-                    for label in tuple(artifact_identities):
-                        if label not in stored_formats:
-                            artifact_identities.pop(label)
-                            validation_ok = False
-                            validation_issues.append({
-                                "code": f"report_{label}_persistence_failed",
-                                "message": f"{'PDF' if label == 'pdf' else 'Word'} 已生成，但保存下载副本失败。",
-                            })
-                else:
-                    await artifact_persistence.persist(**persist_options)
+                artifact_identities, persistence_issues = await self._persist_delivery(
+                    artifact_persistence, download_scope,
+                    report_id=context.report_id, revision=next_revision, identities=artifact_identities,
+                )
+                if persistence_issues:
+                    validation_ok = False
+                    validation_issues.extend(persistence_issues)
             except Exception as error:
                 # Preserve the rendered revision and commit its editor context
                 # before reporting storage failure. A retry can rebase onto it;
@@ -2199,8 +2220,8 @@ class ReportEditorService:
             render_record["markdown"] = {**rendered_markdown, "path": markdown_path}
             for label in ("pdf", "word"):
                 render_record.pop(label, None)
-                if label in artifact_identities:
-                    render_record[label] = artifact_identities[label]
+                if label in rendered_identities:
+                    render_record[label] = rendered_identities[label]
             try:
                 copied = await self._copy_revision_assets(
                     scope.workspace_key,
@@ -2293,36 +2314,13 @@ class ReportEditorService:
                     "report_artifact_persistence_failed",
                     "报告已生成并保留，但下载副本保存失败；请重试导出。",
                 ) from persistence_error
-            download_kwargs = {
-                f"{label}_{field}": identity[field]
-                for label, identity in artifact_identities.items()
-                for field in ("path", "size", "sha256")
-            }
-            raw_download, download_grant = await download_grants.issue(
-                scope=download_scope, report_id=context.report_id, revision=next_revision,
-                **download_kwargs,
-            )
-            grant_options: dict[str, Any] = (
-                {"capabilities": dict(session_capabilities)}
-                if session_capabilities is not None else {}
-            )
-            raw_editor: str | None = None
-            editor_expires_at: datetime | None = None
-            try:
-                raw_editor, editor_expires_at = await editor_grants.issue(
-                    next_context, **grant_options
+            raw_download, download_grant, raw_editor, editor_expires_at, grant_issues = (
+                await self._issue_delivery_grants(
+                    download_grants, editor_grants, download_scope, next_context,
+                    identities=artifact_identities, session_capabilities=session_capabilities,
                 )
-            except Exception as error:  # noqa: BLE001 - 编辑入口失败不能吞掉已签发下载链接
-                lineage_issues.append({
-                    "code": "report_editor_grant_unavailable",
-                    "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开编辑入口。",
-                })
-                logger.opt(exception=error).warning(
-                    "report_editor_export_grant_failed report_id={} revision={} error_type={}",
-                    context.report_id,
-                    next_revision,
-                    type(error).__name__,
-                )
+            )
+            lineage_issues.extend(grant_issues)
         except BaseException:
             await self._delete_export_snapshot(scope.workspace_key, snapshot_path)
             if cleanup_revision:
@@ -2355,63 +2353,138 @@ class ReportEditorService:
             },
         }
 
+    async def _persist_delivery(
+        self,
+        artifact_persistence: Any,
+        download_scope: ReportDownloadScope,
+        *,
+        report_id: str,
+        revision: int,
+        identities: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+        """保存可下载副本：返回实际保存的格式与未保存格式的原因；一种都没保存成功时抛出。"""
+
+        artifacts = tuple(
+            ReportArtifactSpec(
+                artifact=cast(Literal["pdf", "word"], label), path=str(identity["path"]),
+                size=int(identity["size"]), sha256=str(identity["sha256"]),
+            )
+            for label, identity in identities.items()
+        )
+        options = {"scope": download_scope, "report_id": report_id, "revision": revision, "artifacts": artifacts}
+        persist_available = getattr(artifact_persistence, "persist_available", None)
+        if callable(persist_available):
+            stored = {spec.artifact for spec in await persist_available(**options)}
+        else:
+            await artifact_persistence.persist(**options)
+            stored = set(identities)
+        if not stored & set(identities):
+            raise ReportingError("report_artifact_unavailable", "报告下载副本均未保存成功。")
+        issues = [
+            {
+                "code": f"report_{label}_persistence_failed",
+                "message": f"{'PDF' if label == 'pdf' else 'Word'} 已生成，但保存下载副本失败。",
+            }
+            for label in identities
+            if label not in stored
+        ]
+        return {label: dict(identity) for label, identity in identities.items() if label in stored}, issues
+
+    async def _issue_delivery_grants(
+        self,
+        download_grants: Any,
+        editor_grants: Any,
+        download_scope: ReportDownloadScope,
+        context: ReportEditorContext,
+        *,
+        identities: Mapping[str, Mapping[str, Any]],
+        session_capabilities: Mapping[str, object] | None,
+    ) -> tuple[str, Any, str | None, datetime | None, list[dict[str, str]]]:
+        """签发下载授权与编辑入口；编辑入口失败只降级为告警，不影响已签发的下载链接。"""
+
+        raw_download, download_grant = await download_grants.issue(
+            scope=download_scope, report_id=context.report_id, revision=context.revision,
+            **{
+                f"{label}_{field}": identity[field]
+                for label, identity in identities.items()
+                for field in ("path", "size", "sha256")
+            },
+        )
+        grant_options: dict[str, Any] = (
+            {"capabilities": dict(session_capabilities)} if session_capabilities is not None else {}
+        )
+        try:
+            raw_editor, editor_expires_at = await editor_grants.issue(context, **grant_options)
+        except Exception as error:  # noqa: BLE001 - 编辑入口失败不能吞掉已签发下载链接
+            logger.opt(exception=error).warning(
+                "report_editor_export_grant_failed report_id={} revision={} error_type={}",
+                context.report_id,
+                context.revision,
+                type(error).__name__,
+            )
+            return raw_download, download_grant, None, None, [{
+                "code": "report_editor_grant_unavailable",
+                "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开编辑入口。",
+            }]
+        return raw_download, download_grant, raw_editor, editor_expires_at, []
+
+    async def _record_delivery(self, context: ReportEditorContext, validation: Mapping[str, Any]) -> None:
+        """登记交付重试结果；登记失败只影响后续读取到的验收状态，不影响本次已签发的链接。"""
+
+        try:
+            durable = await self.state_repository.get(context.workflow_run_id)
+            if durable is None:
+                raise ReportingError("report_editor_context_missing", "报告编辑上下文不存在。")
+            await self.state_repository.apply(
+                context.workflow_run_id,
+                ReportingCommand(
+                    name="record_report_editor_delivery",
+                    payload={
+                        "revision": context.revision,
+                        "contextSha256": context.digest(),
+                        "validation": dict(validation),
+                    },
+                    commandId=f"editor-delivery:{context.revision}:{uuid4().hex}",
+                ),
+                expected_version=durable.state_version,
+            )
+        except Exception as error:  # noqa: BLE001 - 已签发链接，登记失败仅告警
+            logger.opt(exception=error).warning(
+                "report_editor_delivery_record_failed report_id={} revision={} error_type={}",
+                context.report_id,
+                context.revision,
+                type(error).__name__,
+            )
+
     async def _retry_export_delivery(
         self,
         context: ReportEditorContext,
         *,
         scope: Any,
+        validation: Mapping[str, Any],
         session_capabilities: Mapping[str, object] | None,
+        artifact_persistence: Any,
+        download_grants: Any,
+        editor_grants: Any,
+        public_base_url: str,
     ) -> dict[str, Any]:
-        """为已提交但交付未完成的 revision 重试持久化与授权签发。"""
+        """为已提交、只差交付的 revision 补存下载副本并补签授权；不重新渲染。"""
 
-        artifact_persistence = self.artifact_persistence
-        download_grants = self.download_grants
-        editor_grants = self.editor_grants
-        public_base_url = self.public_base_url
-        if (
-            artifact_persistence is None
-            or download_grants is None
-            or editor_grants is None
-            or public_base_url is None
-        ):
-            raise RuntimeError("报告编辑导出依赖配置不完整")
         render = context.job.get("render")
         if not isinstance(render, dict):
             raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
-        validation = context.job.get("validation") or {}
-        raw_issues = list(validation.get("issues") or ())
-        retryable_issue_codes = {"report_artifact_persistence_failed"}
-        issues = [
-            issue
-            for issue in raw_issues
-            if not (
-                isinstance(issue, Mapping)
-                and issue.get("code") in retryable_issue_codes
-            )
+        # 交付类原因由本次重试重新判定；其余原因（_delivery_only_failure 保证没有）原样保留。
+        issues: list[dict[str, Any]] = [
+            dict(issue) for issue in validation.get("issues") or ()
+            if isinstance(issue, Mapping) and issue.get("code") not in _DELIVERY_RETRYABLE_CODES
         ]
-        recovered_retryable_failure = bool(raw_issues) and all(
-            isinstance(issue, Mapping)
-            and issue.get("code") in retryable_issue_codes
-            for issue in raw_issues
-        )
-
-        def add_issue(code: str, message: str) -> None:
-            if any(
-                isinstance(issue, Mapping) and issue.get("code") == code
-                for issue in issues
-            ):
-                return
-            issues.append({"code": code, "message": message})
-
         identities: dict[str, dict[str, Any]] = {}
         for label in ("pdf", "word"):
             registered = render.get(label)
             if not isinstance(registered, dict) or not isinstance(registered.get("path"), str):
                 continue
             try:
-                current = await self.workspace.ahash_file(
-                    scope.workspace_key, registered["path"]
-                )
+                current = await self.workspace.ahash_file(scope.workspace_key, registered["path"])
             except (OSError, WorkspaceError) as error:
                 current = {"missing": True}
                 logger.opt(exception=error).warning(
@@ -2427,10 +2500,10 @@ class ReportEditorService:
                 or current.get("size") != registered.get("size")
                 or current.get("sha256") != registered.get("sha256")
             ):
-                add_issue(
-                    f"report_{label}_artifact_unavailable",
-                    f"{'PDF' if label == 'pdf' else 'Word'} 产物未生成或身份不可读取。",
-                )
+                issues.append({
+                    "code": f"report_{label}_artifact_unavailable",
+                    "message": f"{'PDF' if label == 'pdf' else 'Word'} 产物未生成或身份不可读取。",
+                })
                 continue
             identities[label] = {
                 "path": registered["path"],
@@ -2447,72 +2520,25 @@ class ReportEditorService:
             thread_id=scope.workspace_key,
             workflow_run_id=scope.run_id,
         )
-        specs = tuple(
-            ReportArtifactSpec(
-                artifact=cast(Literal["pdf", "word"], label),
-                path=identity["path"],
-                size=identity["size"],
-                sha256=identity["sha256"],
-            )
-            for label, identity in identities.items()
-        )
-        persist_options = {
-            "scope": download_scope,
-            "report_id": context.report_id,
-            "revision": context.revision,
-            "artifacts": specs,
-        }
-        persist_available = getattr(artifact_persistence, "persist_available", None)
-        if callable(persist_available):
-            stored = await persist_available(**persist_options)
-            stored_labels = {item.artifact for item in stored}
-            for label in identities:
-                if label in stored_labels:
-                    continue
-                add_issue(
-                    f"report_{label}_persistence_failed",
-                    f"{'PDF' if label == 'pdf' else 'Word'} 已生成，但保存下载副本失败。",
-                )
-            identities = {
-                label: identity for label, identity in identities.items()
-                if label in stored_labels
-            }
-        else:
-            await artifact_persistence.persist(**persist_options)
-        if not identities:
-            raise ReportingError("report_artifact_unavailable", "报告下载副本均未保存成功。")
-        kwargs = {
-            f"{label}_{field}": identity[field]
-            for label, identity in identities.items()
-            for field in ("path", "size", "sha256")
-        }
-        raw_download, download_grant = await download_grants.issue(
-            scope=download_scope,
-            report_id=context.report_id,
-            revision=context.revision,
-            **kwargs,
-        )
-        editor_raw: str | None = None
-        editor_expires_at: datetime | None = None
-        grant_options: dict[str, Any] = (
-            {"capabilities": dict(session_capabilities)}
-            if session_capabilities is not None else {}
-        )
         try:
-            editor_raw, editor_expires_at = await editor_grants.issue(
-                context, **grant_options
+            identities, persistence_issues = await self._persist_delivery(
+                artifact_persistence, download_scope,
+                report_id=context.report_id, revision=context.revision, identities=identities,
             )
-        except Exception as error:  # noqa: BLE001 - 下载已补签，编辑入口仅降级
-            issues.append({
-                "code": "report_editor_grant_unavailable",
-                "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开编辑入口。",
-            })
-            logger.opt(exception=error).warning(
-                "report_editor_export_grant_retry_failed report_id={} revision={} error_type={}",
-                context.report_id,
-                context.revision,
-                type(error).__name__,
+        except Exception as error:
+            raise ReportingError(
+                "report_artifact_persistence_failed",
+                "报告已生成并保留，但下载副本保存失败；请重试导出。",
+            ) from error
+        issues.extend(persistence_issues)
+        raw_download, download_grant, editor_raw, editor_expires_at, grant_issues = (
+            await self._issue_delivery_grants(
+                download_grants, editor_grants, download_scope, context,
+                identities=identities, session_capabilities=session_capabilities,
             )
+        )
+        # 与导出时一致：登记的验收不含编辑入口告警，返回给调用方的包含。
+        await self._record_delivery(context, {"ok": not issues, "issues": issues})
         result = publication_result(
             report_id=context.report_id,
             revision=context.revision,
@@ -2523,10 +2549,8 @@ class ReportEditorService:
             editor_expires_at=editor_expires_at,
         )
         result["validation"] = {
-            "ok": (
-                bool(validation.get("ok")) or recovered_retryable_failure
-            ) and not issues,
-            "issues": issues,
+            "ok": not issues and not grant_issues,
+            "issues": [*issues, *grant_issues],
         }
         return result
 

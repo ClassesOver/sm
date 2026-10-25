@@ -351,7 +351,10 @@ def test_chart_descriptors_never_bind_rows_from_different_dimensions():
 
 
 def test_typed_and_json_partitions_group_the_same_facts():
-    from smart_reporting.reporting.trace.fact_index import breakdown_partition_rows, breakdown_partitions
+    from smart_reporting.reporting.trace.fact_index import (
+        breakdown_partition_rows,
+        breakdown_partitions,
+    )
 
     bundle = _bundle()
     typed = {key: [fact.fact_id for fact in groups] for key, groups in breakdown_partitions(bundle).items()}

@@ -46,8 +46,8 @@ def statement_review_warnings(
     anchored = anchor_bound_numbers(rendered, references, notices)
     check_claim = prepare_claim_status(anchored)
     resolver = NumberReferenceResolver(contents)
-    number_catalog = frozen_number_catalog(contents)
-    alternative_index = _metric_alternative_index(resolver)
+    # 数值目录与替代事实索引只在出现期间不一致时用于给出同期引用；多数章节没有此类问题，按需构建。
+    hint_sources: tuple[Mapping[str, str], Any] | None = None
     warnings: list[str] = []
     for reference in references:
         # 与质量包一致：能由服务端解析的数值引用（含派生值）与计算引用都核对所在语句，补证表推导不做语句核对。
@@ -87,13 +87,14 @@ def statement_review_warnings(
             reference_window = visible_before[-200:] + visible_after[:200]
         for warning in detail["warnings"]:
             if warning.startswith(_PERIOD_TEXT_MISMATCH):
+                if hint_sources is None:
+                    hint_sources = (frozen_number_catalog(contents), _metric_alternative_index(resolver))
                 warning += _period_mismatch_hint(
                     reference,
                     selected,
                     reference_window,
                     resolver,
-                    number_catalog,
-                    alternative_index,
+                    *hint_sources,
                 )
             warnings.append(f"{STATEMENT_REVIEW_PREFIX}{warning} 所在语句：{statement}")
     return list(dict.fromkeys(warnings))

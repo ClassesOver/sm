@@ -598,9 +598,17 @@ class RuntimePlanningMixin:
             stored_scope=stored_scope if isinstance(stored_scope, dict) else None,
         )
         if durable is None or scope.caller_thread_id != caller_thread_id:
-            raise ReportingError(
-                "report_editor_scope_mismatch", "报告编辑上下文与发布作用域不一致。"
-            )
+            # AGENTS：作用域不一致只拒绝使用编辑上下文，不能拒绝签发已核验身份的 PDF/Word。
+            if editor_available:
+                loguru_logger.warning(
+                    "report_editor_scope_mismatch report_id={} revision={} durable_missing={}",
+                    content["reportId"], content["revision"], durable is None,
+                )
+                publication_issues.append({
+                    "code": "report_editor_scope_mismatch",
+                    "message": "报告编辑上下文与发布作用域不一致，PDF/Word 下载链接已签发；本修订不提供编辑入口。",
+                })
+            editor_available = False
         # 下载 grant 本身是 256 bit 随机 bearer 凭证。Scope 仅用于持久化产物身份、
         # 修订撤销和审计，不再作为下载时的调用方权限条件。必须与编辑器导出使用同一
         # 解析作用域：撤销与防回退按 database/company 精确匹配，写死常量会让编辑器

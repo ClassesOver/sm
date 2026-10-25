@@ -1066,6 +1066,27 @@ def apply(
                 "report_editor_context_conflict", "当前报告 revision 已绑定其他编辑上下文。"
             )
         contexts[key] = serialized
+    elif name == "record_report_editor_delivery":
+        # 编辑上下文提交后不可变；交付重试的结果（补存格式、补签授权）单独登记，
+        # 读取方以此覆盖上下文中导出当时的验收记录。
+        from ...report_editor.service import ReportEditorContext
+
+        key = str(arguments.get("revision"))
+        contexts = payload.get("reportEditorContexts", {})
+        validation = arguments.get("validation")
+        registered = contexts.get(key) if isinstance(contexts, dict) else None
+        if (
+            not isinstance(registered, dict)
+            or not isinstance(validation, Mapping)
+            or ReportEditorContext.model_validate(registered).digest() != arguments.get("contextSha256")
+        ):
+            raise ReportingStateError(
+                "report_editor_context_conflict", "交付记录的报告版本身份不一致。"
+            )
+        deliveries = payload.setdefault("reportEditorDeliveries", {})
+        if not isinstance(deliveries, dict):
+            raise ReportingStateError("report_state_invalid", "报告交付记录状态损坏。")
+        deliveries[key] = {"contextSha256": arguments["contextSha256"], "validation": dict(validation)}
     elif name == "set_report_editor_retention":
         from ...report_editor.service import ReportEditorContext
 

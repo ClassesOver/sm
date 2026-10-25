@@ -236,3 +236,35 @@ async def test_task_patch_modes_reject_service_reserved_paths_before_mutation() 
             None, content="forged", _scope=scope,
         )
     repository.increment_mutation.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_legacy_truncated_output_handle_stays_readable_but_unverified() -> None:
+    from smart_reporting.task_execution.execution import TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY
+
+    stored = b"hello"
+
+    class Service:
+        async def afile_bytes(self, _thread_id, _path):
+            return stored, "text/plain"
+
+    kernel = TaskExecutionKernel(Service(), SimpleNamespace())  # type: ignore[arg-type]
+    scope = TaskExecutionRuntime(
+        task=SimpleNamespace(mutation_sequence=0), external_run_id="external-run",
+        internal_run_id="internal-run", owner_user_id="user", thread_id="thread",
+        sandbox_id="sandbox", lease_owner="lease", lease_epoch=1, attempt_no=0,
+    )
+    # 部署前写入的截断输出没有 storedSha256：仍可读取（长度已核对），标记为未核验。
+    metadata = {
+        "task": "external-run", "attempt": 0, "path": "value", "storedBytes": len(stored),
+        "bytes": 10, "sha256": hashlib.sha256(b"hello world").hexdigest(),
+    }
+    run_context = SimpleNamespace(
+        session_state={TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY: {"handles": {"handle-1": metadata}}}
+    )
+    raw, returned = await kernel.read_tool_output_resource("handle-1", run_context, _scope=scope)
+    assert raw == stored and returned["integrity"] == "legacy_unverified"
+    # 带 storedSha256 的新句柄仍严格核对。
+    metadata["storedSha256"] = hashlib.sha256(b"other").hexdigest()
+    with pytest.raises(WorkspaceError, match="哈希"):
+        await kernel.read_tool_output_resource("handle-1", run_context, _scope=scope)

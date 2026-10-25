@@ -172,9 +172,8 @@ class UrlMaterializer:
         except BaseException as error:
             try:
                 await self.cleanup_operation(thread_id, operation_id)
-            except BaseException as cleanup_error:
-                if isinstance(cleanup_error, asyncio.CancelledError):
-                    raise
+            except Exception as cleanup_error:
+                # 只吞普通清理失败；取消、退出信号等 BaseException 照常传播。
                 # Ordinary cleanup failures must not replace the original
                 # download error. Cancellation delivered during cleanup has
                 # already been propagated above.
