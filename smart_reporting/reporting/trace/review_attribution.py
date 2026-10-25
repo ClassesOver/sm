@@ -8,6 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from .fact_index import breakdown_partition_rows
 from .numeric_text import (
     _frozen_number_entries,
     _operand_names,
@@ -401,22 +402,15 @@ def _group_value_attribution_warnings(text: str, documents: list[dict[str, Any]]
     # 指标、比较与派生事实中分组结果以外的登记值：对得上其中任何一个时不判定归属。
     registered: list[tuple[str, set[Decimal]]] = []
     for document in documents:
-        breakdown_tables: dict[tuple[str, str], dict[str, Decimal]] = {}
-        for entry in document.get("breakdowns") or ():
-            # 维度分组：同一父指标、同一维度的各组合计就是一张登记分组表。
-            if (isinstance(entry, dict) and isinstance(entry.get("unit"), str)
-                    and entry.get("parentFactId") and entry.get("breakdownField")
-                    and "current" in (entry.get("periodRoles") or ())
-                    and isinstance(entry.get("total"), (int, float)) and not isinstance(entry.get("total"), bool)):
-                group = (entry.get("scope") or {}).get(entry["breakdownField"])
-                if group:
-                    breakdown_tables.setdefault((entry["parentFactId"], entry["breakdownField"]), {})[str(group)] = (
-                        Decimal(str(entry["total"])))
-                    breakdown_tables[(entry["parentFactId"], entry["breakdownField"])]["__unit__"] = entry["unit"]
-        for groups in breakdown_tables.values():
-            unit = groups.pop("__unit__")
+        # 维度分组：同一父指标、同一维度的各组合计就是一张登记分组表。
+        for (_, field), rows in breakdown_partition_rows(document).items():
+            entries = [entry for _, entry in rows
+                       if isinstance(entry.get("unit"), str) and "current" in (entry.get("periodRoles") or ())
+                       and isinstance(entry.get("total"), (int, float)) and not isinstance(entry.get("total"), bool)
+                       and (entry.get("scope") or {}).get(field)]
+            groups = {str(entry["scope"][field]): Decimal(str(entry["total"])) for entry in entries}
             if len(groups) >= 2:
-                tables.append((unit, groups))
+                tables.append((entries[-1]["unit"], groups))
         # 分组事实的数值只作为分组表比较，不进“其他登记值”：否则一组的值写在另一组名下时恰好被放行。
         for array in ("metrics", "comparisons", "derivedMetrics", "reconciliations"):
             for entry in document.get(array) or ():

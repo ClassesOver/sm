@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 from collections.abc import Callable, Sequence
 from typing import Literal
 
@@ -39,6 +38,7 @@ from ...phase import (
 )
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
+from ...trace.fact_index import breakdown_partition_rows, breakdown_partitions
 from ...trace.numeric_text import frozen_number_catalog, render_frozen_numbers
 from ..benchmark_variants import (
     BenchmarkProjection,
@@ -757,7 +757,7 @@ _MODEL_FACT_WARNING_COLLECTIONS = (
 )
 
 
-def _breakdown_descriptors(breakdowns: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _breakdown_descriptors(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     """维度分组的图表数据描述。
 
     图表绑定只能按路径取值、不能筛选行：整表只有一个指标的一个维度时才按行绑定；
@@ -766,18 +766,19 @@ def _breakdown_descriptors(breakdowns: list[Mapping[str, Any]]) -> list[dict[str
     """
     fields = ["parentFactId", "breakdownField", "breakdownLabel", "breakdownValue",
               "displayName", "total", "unit"]
-    sizes = Counter((item.get("parentFactId"), item.get("breakdownField")) for item in breakdowns)
+    partitions = breakdown_partition_rows(payload)
     descriptors: list[dict[str, Any]] = []
-    if len(sizes) == 1:
+    if len(partitions) == 1 and sum(map(len, partitions.values())) == len(payload.get("breakdowns") or ()):
         descriptors.append({"dataPath": "breakdowns", "fields": fields,
                             "dataScope": "同一指标同一维度的完整分组合计"})
-    for index, item in enumerate(breakdowns):
-        if sizes[(item.get("parentFactId"), item.get("breakdownField"))] > 6:
+    for rows in partitions.values():
+        if len(rows) > 6:
             continue
-        if len(sizes) > 1:
-            descriptors.append({"dataPath": f"breakdowns[{index}]", "fields": fields})
-        if item.get("periodValues"):
-            descriptors.append({"dataPath": f"breakdowns[{index}].periodValues", "fields": ["period", "value"]})
+        for index, item in rows:
+            if len(partitions) > 1:
+                descriptors.append({"dataPath": f"breakdowns[{index}]", "fields": fields})
+            if item.get("periodValues"):
+                descriptors.append({"dataPath": f"breakdowns[{index}].periodValues", "fields": ["period", "value"]})
     return descriptors
 
 
@@ -785,24 +786,25 @@ def _model_facing_breakdowns(
     bundle: DeterministicAnalysisBundle, *, with_periods: bool = True,
 ) -> list[dict[str, Any]]:
     """维度分组按父指标与维度归并：每组只列取值、合计与期间值，口径与告警见父指标。"""
-    partitions: dict[tuple[str | None, str | None], dict[str, Any]] = {}
-    for fact in bundle.breakdowns:
-        field = fact.breakdown_field
-        partition = partitions.setdefault((fact.parent_fact_id, field), {
-            "parentFactId": fact.parent_fact_id,
-            "dimension": fact.breakdown_label or field,
+    return [
+        {
+            "parentFactId": parent_id,
+            "dimension": groups[0].breakdown_label or field,
             "field": field,
-            "unit": fact.unit,
-            "groups": [],
-        })
-        partition["groups"].append({
-            "value": fact.scope.get(field or ""),
-            "factId": fact.fact_id,
-            "total": fact.total,
-            **({"periodValues": [[item.period, item.value] for item in fact.period_values]}
-               if with_periods else {}),
-        })
-    return list(partitions.values())
+            "unit": groups[0].unit,
+            "groups": [
+                {
+                    "value": fact.scope.get(field),
+                    "factId": fact.fact_id,
+                    "total": fact.total,
+                    **({"periodValues": [[item.period, item.value] for item in fact.period_values]}
+                       if with_periods else {}),
+                }
+                for fact in groups
+            ],
+        }
+        for (parent_id, field), groups in breakdown_partitions(bundle).items()
+    ]
 
 
 def _model_facing_deterministic_facts(
@@ -1597,8 +1599,7 @@ class RuntimeAnalysisMixin:
                     ("bottomGroups", ["group", "value"]),
                 )
             )
-        data_descriptors.extend(_breakdown_descriptors(
-            [item for item in payload.get("breakdowns", ()) if isinstance(item, Mapping)]))
+        data_descriptors.extend(_breakdown_descriptors(payload))
         data_descriptors.extend(
             {"dataPath": f"derivedMetrics[{index}]", "fields": sorted(key for key, value in metric.items() if value is None or isinstance(value, (str, int, float, bool)))}
             for index, metric in enumerate(payload.get("derivedMetrics", ()))

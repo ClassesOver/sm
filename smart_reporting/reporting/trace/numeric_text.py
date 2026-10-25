@@ -29,7 +29,12 @@ from ..units import MONEY_UNITS as _MONEY_UNITS
 from ..units import REPORT_VALUE_UNIT_PATTERN, unit_conversion_scale
 from ..units import unit_scales as _unit_scales
 from .contracts_v1 import TableDerivationV1, TableOperandV1
-from .fact_index import fact_binding_records, merge_binding_records
+from .fact_index import (
+    breakdown_partitions,
+    fact_binding_records,
+    merge_binding_records,
+    shareable_partition,
+)
 from .render_corrections import record_render_correction
 from .table_sources import table_semantics
 
@@ -343,13 +348,9 @@ def metric_share_values(bundle: DeterministicAnalysisBundle) -> list[dict[str, A
         if len(totals) == 1:
             shares.extend(_share_entries(part, totals[0]))
     parents = {fact.fact_id: fact for fact in bundle.metrics if fact.fact_id}
-    partitions: dict[tuple[str, str], list[Any]] = {}
-    for part in bundle.breakdowns:
-        if part.fact_id and part.parent_fact_id in parents and part.breakdown_field:
-            partitions.setdefault((part.parent_fact_id, part.breakdown_field), []).append(part)
-    for (parent_id, _), parts in partitions.items():
+    for (parent_id, _), parts in breakdown_partitions(bundle).items():
         total = parents[parent_id]
-        if total.unit == "%" or total.total <= 0 or any(part.total < 0 for part in parts):
+        if not shareable_partition(total, parts):
             continue
         for part in parts:
             shares.extend(_share_entries(part, total))
@@ -1202,9 +1203,8 @@ def _attach_breakdown_summaries(
         return token if catalog.get(token) not in {None, "数值待核实"} else None
 
     partitions: dict[str, dict[str, list[Any]]] = {}
-    for fact in bundle.breakdowns:
-        if fact.fact_id and fact.parent_fact_id and fact.breakdown_field:
-            partitions.setdefault(fact.parent_fact_id, {}).setdefault(fact.breakdown_field, []).append(fact)
+    for (parent_id, field), groups in breakdown_partitions(bundle).items():
+        partitions.setdefault(parent_id, {})[field] = groups
     for item in items:
         dimensions = partitions.get(item["factId"])
         if not dimensions:

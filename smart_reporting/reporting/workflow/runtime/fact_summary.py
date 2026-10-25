@@ -11,6 +11,7 @@ from typing import Any
 
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...trace.comparison_proofs import period_list_text
+from ...trace.fact_index import breakdown_partitions
 from ...trace.numeric_text import (
     _canonical_month_label,
     budget_comparison_values,
@@ -135,10 +136,7 @@ def _full_window(period: str, periods: list[str]) -> bool:
 
 def _dimension_groups(bundle: DeterministicAnalysisBundle, parent_id: str | None) -> list[tuple[str, list[Any]]]:
     """按分组字段归并；不同字段的维度主名称相同时补写字段名，不能把两套分组列在同一名下。"""
-    groups: dict[str, list[Any]] = {}
-    for fact in bundle.breakdowns:
-        if fact.parent_fact_id == parent_id and fact.breakdown_field:
-            groups.setdefault(fact.breakdown_field, []).append(fact)
+    groups = {field: items for (parent, field), items in breakdown_partitions(bundle).items() if parent == parent_id}
     labels = {field: items[0].breakdown_label or field for field, items in groups.items()}
     repeated = {label for label in labels.values() if list(labels.values()).count(label) > 1}
     return [(f"{labels[field]}（{field}）" if labels[field] in repeated else labels[field], items)
