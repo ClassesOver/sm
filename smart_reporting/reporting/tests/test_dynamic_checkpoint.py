@@ -129,6 +129,33 @@ def test_checkpoint_rejects_outline_change_after_narrative_freeze():
         RuntimeAnalysisMixin._merge_reporting_checkpoints(current, incoming)
 
 
+def test_stale_started_trace_does_not_overwrite_a_recorded_result():
+    from smart_reporting.reporting.workflow.checkpoint import ContextTrace
+    from smart_reporting.reporting.workflow.runtime.analysis import RuntimeAnalysisMixin
+
+    def trace(task_id, analysis_id, status):
+        return ContextTrace(phase="analysis", taskId=task_id, workKind="analysis_item",
+                            analysisId=analysis_id, attempt=0, status=status)
+
+    # 并发补证：analysis_002 携带启动时看到的 analysis_001 started 副本写回，
+    # 不能把 analysis_001 已写回的完成结果改回 started。
+    base = dict(revision=1, phase="analysis", outlineHash="a" * 64, profileCoverage=_coverage())
+    current = ReportingCheckpoint(**base, trace=(
+        trace("task-1", "analysis_001", "completed"), trace("task-2", "analysis_002", "started"),
+    ))
+    incoming = ReportingCheckpoint(**base, trace=(
+        trace("task-1", "analysis_001", "started"), trace("task-2", "analysis_002", "completed"),
+    ))
+    merged = RuntimeAnalysisMixin._merge_reporting_checkpoints(current, incoming)
+    assert {item.task_id: item.status for item in merged.trace} == {
+        "task-1": "completed", "task-2": "completed",
+    }
+    # 结果之间仍以后写回者为准（如 failed 之后同一 Task 恢复完成）。
+    failed = ReportingCheckpoint(**base, trace=(trace("task-1", "analysis_001", "failed"),))
+    recovered = ReportingCheckpoint(**base, trace=(trace("task-1", "analysis_001", "completed"),))
+    assert RuntimeAnalysisMixin._merge_reporting_checkpoints(failed, recovered).trace[0].status == "completed"
+
+
 @pytest.mark.parametrize("changed", [None, "work_item_hash", "artifact_file"])
 @pytest.mark.parametrize("retry_counts", [(2, 0), (0, 2)])
 def test_completed_section_restore_preserves_retry_history_and_checks_identity(changed, retry_counts):

@@ -13,6 +13,7 @@ from smart_reporting.reporting.workflow.runtime.reporting_draft_workflow import 
     ReportingAnalysisAndDraftWorkflow,
     ReportingDraftWorkflow,
     build_reporting_draft_steps,
+    execute_analysis_items,
 )
 
 
@@ -479,3 +480,53 @@ async def test_section_failures_keep_original_reporting_error(mode: str) -> None
         await workflow.arun(input={"reportGoal": "目标"}, run_id="run-2", session_id="session-2")
     assert caught_run.value.code == "report_semantic_contract_upgrade_required"
     assert workflow.execution_error is caught_run.value
+
+
+@pytest.mark.anyio
+async def test_parallel_analysis_items_run_concurrently_up_to_the_shared_limit() -> None:
+    # 补证阶段与章节共用同一执行函数：parallel 模式按 limiter 并发，输出保持计划顺序。
+    active = maximum = 0
+    release = asyncio.Event()
+
+    async def analysis(analysis_id):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        if maximum == 2:
+            release.set()
+        await release.wait()
+        active -= 1
+        return _ok(analysis_id)
+
+    outputs = await execute_analysis_items(
+        ["a1", "a2", "a3", "a4"], analysis, execution_mode="parallel",
+        limiter=asyncio.Semaphore(2), run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+    assert maximum == 2
+    assert [output.content for output in outputs] == ["a1", "a2", "a3", "a4"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("mode", "expected_started"), [
+    ("sequential", ["a1", "a2"]),
+    ("parallel", ["a1", "a2", "a3"]),
+])
+async def test_analysis_item_failure_keeps_the_original_error(mode, expected_started) -> None:
+    from smart_reporting.reporting.models import ReportingError
+
+    started: list[str] = []
+
+    async def analysis(analysis_id):
+        started.append(analysis_id)
+        if analysis_id == "a2":
+            raise ReportingError("report_analysis_task_terminal", "分析项 a2 Task 未完成收尾即终止。")
+        return _ok(analysis_id)
+
+    # 顺序模式首个失败即停，不再为后续分析项调用模型；两种模式都按计划顺序上抛原始错误。
+    with pytest.raises(ReportingError) as caught:
+        await execute_analysis_items(
+            ["a1", "a2", "a3"], analysis, execution_mode=mode,
+            limiter=asyncio.Semaphore(3), run_context=RunContext(run_id="run-1", session_id="session-1"),
+        )
+    assert caught.value.code == "report_analysis_task_terminal"
+    assert sorted(started) == expected_started
