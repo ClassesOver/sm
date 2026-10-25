@@ -131,17 +131,11 @@ class ReportingWorkspaceAdapter:
 
     normalize_path = staticmethod(normalize_workspace_path)
 
-    def file_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
-        return self._service.file_bytes(thread_id, path)
-
     async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
         return await self._service.afile_bytes(thread_id, path)
 
     async def aread_text(self, thread_id: str, path: str) -> str:
         return await self._service.aread_text(thread_id, path)
-
-    def read_text(self, thread_id: str, path: str) -> str:
-        return self._service.read_text(thread_id, path)
 
     def validate_content(self, content: bytes) -> None:
         _validate_reporting_content(content)

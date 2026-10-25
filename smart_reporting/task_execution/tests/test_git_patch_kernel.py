@@ -197,3 +197,42 @@ async def test_async_git_patch_kernel_does_not_use_sync_workspace_reads() -> Non
             "expected_sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
         }
     ]
+
+
+@pytest.mark.parametrize("path", [".agentos/state.json", ".agentos/tool-output/value"])
+def test_git_patch_kernel_rejects_service_reserved_paths(path: str) -> None:
+    service = _Workspace({})
+    patch = f"""\
+--- /dev/null
++++ b/{path}
+@@ -0,0 +1 @@
++untrusted
+"""
+
+    with pytest.raises(WorkspaceError, match="服务保留目录"):
+        build_workspace_changes(service, "thread", patch)
+
+
+@pytest.mark.anyio
+async def test_task_patch_modes_reject_service_reserved_paths_before_mutation() -> None:
+    service = _Workspace({})
+    repository = SimpleNamespace(increment_mutation=AsyncMock())
+    kernel = TaskExecutionKernel(service, repository)  # type: ignore[arg-type]
+    scope = TaskExecutionRuntime(
+        task=SimpleNamespace(mutation_sequence=0),
+        external_run_id="external-run",
+        internal_run_id="internal-run",
+        owner_user_id="user",
+        thread_id="thread",
+        sandbox_id="sandbox",
+        lease_owner="lease",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+
+    with pytest.raises(WorkspaceError, match="服务保留目录"):
+        await kernel.patch(
+            "create", ".agentos/tool-output/forged", None, None, False, None,
+            None, content="forged", _scope=scope,
+        )
+    repository.increment_mutation.assert_not_awaited()

@@ -173,6 +173,7 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
     editor.state_repository = repository
     snapshot_paths: list[str] = []
     persisted: list[object] = []
+    download_failures = 1 if failure == "download_grant" else 0
 
     class ReportTools:
         async def _render_report_pair(
@@ -281,8 +282,10 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
 
     class DownloadGrants:
         async def issue(self, **values):
+            nonlocal download_failures
             assert "2" in repository.durable.payload["reportEditorContexts"]
-            if failure == "download_grant":
+            if download_failures:
+                download_failures -= 1
                 raise RuntimeError("download grant store unavailable")
             return "download-raw", ReportDownloadGrant(
                 grant_hash="d" * 64,
@@ -305,12 +308,11 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
     if failure is None:
         editor._lineage_features["exportSources"] = False
     expected_sha = _sha(edited_markdown.encode())
-    if failure:
+    if failure and failure != "editor_grant":
         message = {
             "render": "renderer failed",
             "commit": "durable commit failed",
             "download_grant": "download grant store unavailable",
-            "editor_grant": "editor grant store unavailable",
         }[failure]
         with pytest.raises(RuntimeError, match=message):
             await editor.export_revision(context, expected_sha256=expected_sha, settings={"sources": True})
@@ -318,6 +320,10 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
         result = await editor.export_revision(context, expected_sha256=expected_sha, settings={"sources": True})
         assert result["revision"] == 2
         assert result["pdf"]["downloadUrl"].endswith("/reports/v1/download/download-raw")
+        if failure == "editor_grant":
+            assert "editor" not in result
+            assert result["validation"]["ok"] is False
+            assert result["validation"]["issues"][-1]["code"] == "report_editor_grant_unavailable"
     assert snapshot_paths
     for path in snapshot_paths:
         assert not await workspace.apath_exists(thread_id, path)
@@ -334,6 +340,18 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
     next_context = ReportEditorContext.model_validate(
         repository.durable.payload["reportEditorContexts"]["2"]
     )
+    if failure == "download_grant":
+        # 已提交 revision 的下载签发失败后，相同请求重试该 revision，不生成 revision-3。
+        await workspace.awrite_text(thread_id, draft_path, edited_markdown, overwrite=True)
+        retried = await editor.export_revision(
+            context, expected_sha256=expected_sha, settings={"sources": True}
+        )
+        assert retried["revision"] == 2
+        assert retried["pdf"]["downloadUrl"].endswith(
+            "/reports/v1/download/download-raw"
+        )
+        assert not await workspace.apath_exists(thread_id, "reports/revision-3")
+        assert len(snapshot_paths) == 1
     assert next_context.artifact_manifest is not None
     assert await workspace.aread_text(thread_id, next_context.markdown_path) == edited_markdown
     next_manifest = await editor.trace.load_manifest(next_context)

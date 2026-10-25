@@ -159,3 +159,30 @@ async def test_adapter_cleans_inputs_when_background_start_fails() -> None:
         await adapter.start(_request(), identity=_identity())
 
     assert calls == ["cleanup"]
+
+
+@pytest.mark.anyio
+async def test_adapter_cleanup_failure_preserves_background_start_error() -> None:
+    class Controller:
+        async def start_external_background(self, _payload, **kwargs):
+            await kwargs["prepare"]()
+            raise RuntimeError("queue failed")
+
+    class Materializer:
+        async def materialize_all(self, **_kwargs):
+            return ({
+                "path": "reporting-inputs/op/input.csv",
+                "filename": "input.csv",
+                "size": 8,
+                "sha256": "a" * 64,
+                "mediaType": "text/csv",
+            },)
+
+        async def cleanup_operation(self, _thread_id: str, _operation_id: str) -> None:
+            raise ReportingError("report_attachment_cleanup_failed", "cleanup failed")
+
+    adapter = ReportingMcpAdapter(Controller(), object())  # type: ignore[arg-type]
+    adapter.materializer = Materializer()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue failed"):
+        await adapter.start(_request(), identity=_identity())

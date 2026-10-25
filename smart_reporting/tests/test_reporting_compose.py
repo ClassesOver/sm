@@ -93,6 +93,18 @@ def test_smart_reporting_readme_uses_existing_database_service() -> None:
     assert "docker compose up -d reporting-db" in readme
 
 
+def test_smart_reporting_readme_names_the_production_mcp_surface() -> None:
+    repository_root = Path(__file__).parents[2]
+    readme = (repository_root / "smart_reporting" / "README.md").read_text(encoding="utf-8")
+    mcp_section = readme.split("## Reporting MCP", maxsplit=1)[1].split("\n## ", maxsplit=1)[0]
+
+    assert all(
+        f"`{name}`" in mcp_section
+        for name in ("run_reporting_workflow", "continue_run", "cancel_run")
+    )
+    assert "不在生产 `/mcp` 工具列表中" in mcp_section
+
+
 def test_reporting_compose_public_download_example_uses_published_port() -> None:
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(

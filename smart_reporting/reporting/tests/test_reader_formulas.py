@@ -1,5 +1,6 @@
 """来源卡片的可验算算式：派生值与对比值写出操作数的指标名、期间、带单位的登记原值与结果。"""
 
+import json
 import re
 from decimal import Decimal
 
@@ -9,11 +10,15 @@ from smart_reporting.reporting.hospital_operation.deterministic_analysis import 
     build_deterministic_analysis_bundle,
 )
 from smart_reporting.reporting.trace.numeric_text import frozen_number_catalog
-from smart_reporting.reporting.trace.semantic_bindings import resolve_number_references
+from smart_reporting.reporting.trace.semantic_bindings import (
+    reference_computation,
+    resolve_number_references,
+)
 
 from .test_calc_references import _bundle_content
 from .test_deterministic_analysis import analysis, context, semantic
 from .test_number_selection import source
+from .test_registered_ratio_assertions import ratio_document
 
 B, D = 'fact-' + 'b' * 16, 'fact-' + 'd' * 16
 
@@ -69,6 +74,56 @@ def test_comparison_amounts_and_totals_describe_the_number_shown():
     assert '变化率' not in explain('currentTotal')
 
 
+def test_registered_derived_ratio_fields_are_computed_and_explain_their_inputs():
+    document = ratio_document(den_unit='元')
+    content = json.dumps(document, ensure_ascii=False)
+    fact_id = document['derivedMetrics'][0]['factId']
+    tokens = {
+        'value': f'{{{{value:{fact_id}:value:}}}}',
+        'percentage': f'{{{{value:{fact_id}:percentage:%}}}}',
+        'numerator': f'{{{{value:{fact_id}:numerator:元}}}}',
+        'denominator': f'{{{{value:{fact_id}:denominator:元}}}}',
+        'difference': f'{{{{value:{fact_id}:difference:元}}}}',
+        'registeredRatio': f'{{{{value:{fact_id}:registeredRatio:%}}}}',
+    }
+    selected = resolve_number_references(tokens.values(), [content])
+    assert all(
+        reference_computation(token, selector) == 'derived'
+        for selector, token in tokens.items()
+    )
+    assert selected[tokens['value']]['explanation'] == (
+        'amount（2025年1—2月、同期合计）1,000元 ÷ '
+        'visits（2025年1—2月、同期合计）40元 = 25'
+    )
+    assert selected[tokens['percentage']]['explanation'].endswith('40元 × 100% = 2,500%')
+    assert selected[tokens['numerator']]['explanation'].endswith('1,000元 = 1,000元')
+    assert selected[tokens['denominator']]['explanation'].endswith('40元 = 40元')
+    assert selected[tokens['difference']]['explanation'].endswith('40元 = 960元')
+    assert selected[tokens['registeredRatio']]['explanation'].endswith('40元 × 100% = 2,500%')
+    # 普通登记指标的选择器仍是直接登记值。
+    assert reference_computation(f'{{{{value:{B}:total:元}}}}', 'total') == 'registered'
+
+
+def test_compound_registered_ratio_explains_base_unit_conversion_and_result():
+    document = ratio_document(num_unit='万元')
+    content = json.dumps(document, ensure_ascii=False)
+    fact_id = document['derivedMetrics'][0]['factId']
+    token = f'{{{{value:{fact_id}:registeredRatio:元/人次}}}}'
+    assert _explain(token, [content]) == (
+        'amount（2025年1—2月、同期合计）10,000,000元 ÷ '
+        'visits（2025年1—2月、同期合计）40人次 = 250,000元/人次'
+    )
+
+
+def test_ratio_formula_falls_back_when_registered_input_identity_is_missing():
+    document = ratio_document(den_unit='元')
+    fact = document['derivedMetrics'][0]
+    fact['inputFactIds'] = []
+    content = json.dumps(document, ensure_ascii=False)
+    token = f"{{{{value:{fact['factId']}:percentage:%}}}}"
+    assert _explain(token, [content]) is None
+
+
 def test_row_statistics_and_groups_are_named_for_what_they_are():
     content = _bundle_content()
     catalog = frozen_number_catalog([content])
@@ -101,6 +156,9 @@ def _recomputed(explanation):
     if '× 100%' in left:
         a, b = _amounts(left)[-2:]
         return a / b * 100
+    if ' ÷ ' in left:
+        a, b = _amounts(left)[-2:]
+        return a / b
     if left.startswith('|'):
         a, b = _amounts(left)[-2:]
         return abs(a - b)
@@ -114,7 +172,9 @@ def test_every_formula_recomputes_to_the_result_it_shows():
     # 读者按卡片上的数字手算，必须得到卡片写出的结果（按两位小数显示允许舍入误差）。
     content, _ = _yoy_bundle()
     checked = 0
-    for contents in (source(), [_bundle_content()], [content]):
+    ratio = json.dumps(ratio_document(den_unit='元'), ensure_ascii=False)
+    compound_ratio = json.dumps(ratio_document(num_unit='万元'), ensure_ascii=False)
+    for contents in (source(), [_bundle_content()], [content], [ratio], [compound_ratio]):
         tokens = list(frozen_number_catalog(contents))
         for token, selected in resolve_number_references(tokens, contents).items():
             explanation = (selected or {}).get('explanation') or ''

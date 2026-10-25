@@ -656,6 +656,7 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
 @pytest.mark.anyio
 @pytest.mark.parametrize("fault", [
     "manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot",
+    "lineage_runtime", "editor_snapshot", "editor_context",
     "table_source_missing", "table_source_changed",
     "quality_record_missing", "quality_record_changed",
 ])
@@ -697,20 +698,49 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
             return await original_read(thread_id, path, **kwargs)
 
         monkeypatch.setattr(workspace, "read_limited_regular_file", failing_read)
+    elif fault == "editor_snapshot":
+        original_write = workspace.awrite_text
+
+        async def failing_editor_write(thread_id, path, content, **kwargs):
+            if path == "reports/revision-2/report.md":
+                raise RuntimeError("injected editor snapshot failure")
+            return await original_write(thread_id, path, content, **kwargs)
+
+        monkeypatch.setattr(workspace, "awrite_text", failing_editor_write)
+    elif fault == "editor_context":
+        monkeypatch.setattr(
+            runtime.state_repository,
+            "apply",
+            AsyncMock(side_effect=RuntimeError("injected editor context failure")),
+        )
     else:
+        error = (
+            RuntimeError("injected lineage runtime failure")
+            if fault == "lineage_runtime"
+            else ReportingError("snapshot_integrity_failed", "注入的溯源快照失败。")
+        )
         monkeypatch.setattr(
             trace_revisions, "snapshot_revision_lineage",
-            AsyncMock(side_effect=ReportingError("snapshot_integrity_failed", "注入的溯源快照失败。")),
+            AsyncMock(side_effect=error),
         )
 
     result = await runtime.issue_http_publication(**arguments)
 
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
-    assert result["editor"]["openUrl"]
     assert artifacts.records and grants.records
     assert result["publicationIssues"] and all(item["message"] for item in result["publicationIssues"])
-    context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
-    assert context.artifact_manifest is None
+    if fault in {"editor_snapshot", "editor_context"}:
+        assert "editor" not in result
+        assert result["publicationIssues"][-1]["code"] == (
+            "report_editor_snapshot_unavailable"
+            if fault == "editor_snapshot"
+            else "report_editor_context_unavailable"
+        )
+        assert "reportEditorContexts" not in durable.payload
+    else:
+        assert result["editor"]["openUrl"]
+        context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
+        assert context.artifact_manifest is None
     gate = merge_publication_issues({"formalReleaseAllowed": True, "issues": []}, result["publicationIssues"])
     assert gate["formalReleaseAllowed"] is False and gate["issues"] == result["publicationIssues"]
     app = FastAPI()

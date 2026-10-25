@@ -45,10 +45,34 @@ def reference_fact_ids(token: str) -> tuple[str, ...]:
 
 
 # 解析时由服务端按登记原值计算的选择器：期间合计与均值、相邻月变化、占比、预算比较、分组差额等。
-_COMPUTED_SELECTORS = (
-    "periodTotals.", "periodAverages.", "periodChanges.", "periodChangeRates.", "monthlyAverage",
-    "monthlyMinimum", "monthlyMaximum", "monthlyTrend", "metricShare.", "budgetComparison.", "projectRatio.",
-    "groupShares.", "groupGaps.", "groupContributions.", "registeredRatio", "cumulativeChanges.", "topSet.",
+#
+# 派生指标自身的 value/percentage 等字段同样由服务端从 inputFactIds 计算，不能标成
+# “直接登记”。精确选择器和带参数的前缀分开登记，避免普通选择器因名称前缀相似而误判。
+_COMPUTED_SELECTORS = {
+    "value",
+    "percentage",
+    "numerator",
+    "denominator",
+    "difference",
+    "monthlyAverage",
+    "monthlyMinimum",
+    "monthlyMaximum",
+    "monthlyTrend",
+    "registeredRatio",
+}
+_COMPUTED_SELECTOR_PREFIXES = (
+    "periodTotals.",
+    "periodAverages.",
+    "periodChanges.",
+    "periodChangeRates.",
+    "metricShare.",
+    "budgetComparison.",
+    "projectRatio.",
+    "groupShares.",
+    "groupGaps.",
+    "groupContributions.",
+    "cumulativeChanges.",
+    "topSet.",
 )
 
 
@@ -57,7 +81,10 @@ def reference_computation(token: str, selector: str | None, *, table_derivation:
     calc 按模型写出的运算式由服务端重算。供编辑器向读者标出可信状态。"""
     if token.startswith("{{calc:"):
         return "calc"
-    if table_derivation or token.startswith("{{derived:") or (selector or "").startswith(_COMPUTED_SELECTORS):
+    computed = selector in _COMPUTED_SELECTORS or bool(
+        selector and selector.startswith(_COMPUTED_SELECTOR_PREFIXES)
+    )
+    if table_derivation or token.startswith("{{derived:") or computed:
         return "derived"
     return "registered"
 

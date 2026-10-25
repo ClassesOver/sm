@@ -1881,6 +1881,12 @@ class ReportEditorService:
         }
         if not self._lineage_features["exportSources"]:
             export_settings["sources"] = False
+        delivery_request = {
+            "version": 1,
+            "documentSha256": document.sha256,
+            "settings": export_settings,
+            "note": note,
+        }
         # 编辑链接长期有效，用户可能从旧修订的链接进入。导出过一次会产生更新的
         # revision；若最新 revision 的 Markdown 与当前草稿一致（用户未再改动），
         # 自动以最新 revision 为基准再次导出，实现重复导出的幂等。只有内容确实
@@ -1905,6 +1911,15 @@ class ReportEditorService:
                     context.revision,
                 )
             elif secrets.compare_digest(latest_sha256, document.sha256):
+                # 上一次导出可能已提交 revision 并持久化产物，却在下载 grant
+                # 签发时失败。相同正文、设置和备注的重试直接为该 revision 补签，
+                # 不再渲染并制造一个内容完全相同的新 revision。
+                if latest.job.get("_editorDeliveryRequest") == delivery_request:
+                    return await self._retry_export_delivery(
+                        latest,
+                        scope=scope,
+                        session_capabilities=session_capabilities,
+                    )
                 # 后续渲染/登记都按 context.job_id 从 run_context 取 job 状态，
                 # 重定基后必须同步换成最新 revision 的 job，否则索引错位。
                 context = latest
@@ -2244,6 +2259,7 @@ class ReportEditorService:
                 "ok": validation_ok and not lineage_issues,
                 "issues": [*([] if validation_ok else validation_issues), *lineage_issues],
             }
+            next_job["_editorDeliveryRequest"] = delivery_request
             next_context = ReportEditorContext(
                 reportId=context.report_id,
                 revision=next_revision,
@@ -2290,7 +2306,23 @@ class ReportEditorService:
                 {"capabilities": dict(session_capabilities)}
                 if session_capabilities is not None else {}
             )
-            raw_editor, editor_expires_at = await editor_grants.issue(next_context, **grant_options)
+            raw_editor: str | None = None
+            editor_expires_at: datetime | None = None
+            try:
+                raw_editor, editor_expires_at = await editor_grants.issue(
+                    next_context, **grant_options
+                )
+            except Exception as error:  # noqa: BLE001 - 编辑入口失败不能吞掉已签发下载链接
+                lineage_issues.append({
+                    "code": "report_editor_grant_unavailable",
+                    "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开编辑入口。",
+                })
+                logger.opt(exception=error).warning(
+                    "report_editor_export_grant_failed report_id={} revision={} error_type={}",
+                    context.report_id,
+                    next_revision,
+                    type(error).__name__,
+                )
         except BaseException:
             await self._delete_export_snapshot(scope.workspace_key, snapshot_path)
             if cleanup_revision:
@@ -2322,6 +2354,131 @@ class ReportEditorService:
                 "issues": [*([] if validation_ok else validation_issues), *lineage_issues],
             },
         }
+
+    async def _retry_export_delivery(
+        self,
+        context: ReportEditorContext,
+        *,
+        scope: Any,
+        session_capabilities: Mapping[str, object] | None,
+    ) -> dict[str, Any]:
+        """为已提交但交付未完成的 revision 重试持久化与授权签发。"""
+
+        artifact_persistence = self.artifact_persistence
+        download_grants = self.download_grants
+        editor_grants = self.editor_grants
+        public_base_url = self.public_base_url
+        if (
+            artifact_persistence is None
+            or download_grants is None
+            or editor_grants is None
+            or public_base_url is None
+        ):
+            raise RuntimeError("报告编辑导出依赖配置不完整")
+        render = context.job.get("render")
+        if not isinstance(render, dict):
+            raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
+        identities: dict[str, dict[str, Any]] = {}
+        for label in ("pdf", "word"):
+            registered = render.get(label)
+            if not isinstance(registered, dict) or not isinstance(registered.get("path"), str):
+                continue
+            current = await self.workspace.ahash_file(scope.workspace_key, registered["path"])
+            if (
+                current.get("missing")
+                or current.get("size") != registered.get("size")
+                or current.get("sha256") != registered.get("sha256")
+            ):
+                continue
+            identities[label] = {
+                "path": registered["path"],
+                "size": int(registered["size"]),
+                "sha256": str(registered["sha256"]),
+            }
+        if not identities:
+            raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
+        download_scope = ReportDownloadScope(
+            database=scope.database,
+            user_id=scope.user_id,
+            company_id=scope.company_id,
+            session_id=scope.session_id,
+            thread_id=scope.workspace_key,
+            workflow_run_id=scope.run_id,
+        )
+        specs = tuple(
+            ReportArtifactSpec(
+                artifact=cast(Literal["pdf", "word"], label),
+                path=identity["path"],
+                size=identity["size"],
+                sha256=identity["sha256"],
+            )
+            for label, identity in identities.items()
+        )
+        persist_options = {
+            "scope": download_scope,
+            "report_id": context.report_id,
+            "revision": context.revision,
+            "artifacts": specs,
+        }
+        persist_available = getattr(artifact_persistence, "persist_available", None)
+        if callable(persist_available):
+            stored = await persist_available(**persist_options)
+            stored_labels = {item.artifact for item in stored}
+            identities = {
+                label: identity for label, identity in identities.items()
+                if label in stored_labels
+            }
+        else:
+            await artifact_persistence.persist(**persist_options)
+        if not identities:
+            raise ReportingError("report_artifact_unavailable", "报告下载副本均未保存成功。")
+        kwargs = {
+            f"{label}_{field}": identity[field]
+            for label, identity in identities.items()
+            for field in ("path", "size", "sha256")
+        }
+        raw_download, download_grant = await download_grants.issue(
+            scope=download_scope,
+            report_id=context.report_id,
+            revision=context.revision,
+            **kwargs,
+        )
+        editor_raw: str | None = None
+        editor_expires_at: datetime | None = None
+        issues = list((context.job.get("validation") or {}).get("issues") or ())
+        grant_options: dict[str, Any] = (
+            {"capabilities": dict(session_capabilities)}
+            if session_capabilities is not None else {}
+        )
+        try:
+            editor_raw, editor_expires_at = await editor_grants.issue(
+                context, **grant_options
+            )
+        except Exception as error:  # noqa: BLE001 - 下载已补签，编辑入口仅降级
+            issues.append({
+                "code": "report_editor_grant_unavailable",
+                "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开编辑入口。",
+            })
+            logger.opt(exception=error).warning(
+                "report_editor_export_grant_retry_failed report_id={} revision={} error_type={}",
+                context.report_id,
+                context.revision,
+                type(error).__name__,
+            )
+        result = publication_result(
+            report_id=context.report_id,
+            revision=context.revision,
+            raw_grant=raw_download,
+            grant=download_grant,
+            base_url=public_base_url,
+            editor_raw_grant=editor_raw,
+            editor_expires_at=editor_expires_at,
+        )
+        result["validation"] = {
+            "ok": bool((context.job.get("validation") or {}).get("ok")) and not issues,
+            "issues": issues,
+        }
+        return result
 
     async def _copy_revision_assets(
         self,
