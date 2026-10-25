@@ -44,6 +44,7 @@ from ..reporting.trace.dataset_service import (
     verified_dataset_snapshot,
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
+from ..reporting.trace.fact_index import FACT_ARRAYS
 from ..reporting.trace.fact_service import fact_display_unit, fact_display_value, read_fact_document
 from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field, primary_display_name
 from ..reporting.workflow.checkpoint import FileIdentity
@@ -387,8 +388,6 @@ class ReportEditorTraceService:
                     context.report_id, context.revision, entry.analysis_id, error,
                 )
                 continue
-            from ..reporting.trace.fact_index import FACT_ARRAYS
-
             for kind, key in FACT_ARRAYS:
                 for fact in document.get(key, ()):
                     if not fact.get("factId"):
@@ -847,8 +846,6 @@ class ReportEditorTraceService:
     @staticmethod
     def _locate_fact_pointer(document: Mapping[str, Any], fact_id: str) -> str:
         # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
-        from ..reporting.trace.fact_index import FACT_ARRAYS
-
         for _, array_name in FACT_ARRAYS:
             for index, item in enumerate(document.get(array_name, ()) or ()):
                 if isinstance(item, dict) and item.get("factId") == fact_id:
