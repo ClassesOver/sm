@@ -31,7 +31,7 @@ from loguru import logger
 from pydantic import Field, model_validator
 
 from ..reporting.code_agent.context import ReportingCodingTaskContext
-from ..reporting.contract import StrictModel
+from ..reporting.contract import SHA256_PATTERN, StrictModel
 from ..reporting.host_workspace import HostReportingWorkspace, ReportingWorkspaceRegistry
 from ..reporting.models import ReportingError
 from ..reporting.workflow.runtime.chart_inputs import verify_static_chart_inputs_referenced
@@ -97,7 +97,7 @@ class ChartAIEditRequest(StrictModel):
     previous_edit_id: str | None = Field(
         default=None, alias="previousEditId", min_length=8, max_length=40
     )
-    expected_sha256: str | None = Field(default=None, alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
+    expected_sha256: str | None = Field(default=None, alias="expectedSha256", pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def validate_request(self) -> ChartAIEditRequest:
