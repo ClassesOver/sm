@@ -864,7 +864,10 @@ def _inheritable_calendars(text: str) -> list[str]:
             re.search(r'与\s*$', prefix) and re.match(r'\s*[月日]?\s*(?:同期|同月)?\s*相?比', suffix)
         )
         if not baseline:
-            calendars.extend(match[0] for match in group)
+            # 继承整个日期组及末尾单位，不能把“1月至2月”截成不带“月”的终点。
+            ending = re.match(r'\s*[月日号]', suffix)
+            end = group[-1].end() + (ending.end() if ending else 0)
+            calendars.append(text[group[0].start():end])
     return calendars
 
 
@@ -874,7 +877,8 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
     comparison：变化额、变化率涉及本期与基期两个期间，继承句中全部日期，而不是最后一个。
     """
     claim = re.compile(r'\[\[claim:[^\]\r\n]+\]\]')
-    if not claim.search(before + after):
+    # 单金额句也要区分相对同期的比较背景与当前值归属。
+    if not claim.search(before + after) and not re.search(r'(?:上年|去年)同期', before):
         return None
     # 继承须先于截断：“一月…[[claim]]及二月…”的年份仍属于当前正文。
     before, after = _expanded_period_wording(before + '\0' + after).split('\0', 1)
@@ -890,7 +894,15 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
             r'(?P<period>\d{4}年\d{1,2}月(?:至\d{4}年\d{1,2}月)?同期)', local_before,
         )
         if baseline:
-            local_before = local_before[baseline.start('period'):]
+            result_wording = re.search(
+                r'(?:增长|增加|上升|下降|减少|降低|提高|提升|回升|回落|增|升|降)至|达到',
+                local_before[baseline.end():],
+            )
+            if result_wording:
+                # “较上年同期增长，达到…”中的金额属于本期，基期只是比较背景。
+                local_before = local_before[:baseline.start()] + local_before[baseline.end():]
+            else:
+                local_before = local_before[baseline.start('period'):]
     after = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*', '', after)
     after = re.split(claim, after, maxsplit=1)[0]
     # 当前值紧邻的括注保留；连接词之后已是下一个值的说明。

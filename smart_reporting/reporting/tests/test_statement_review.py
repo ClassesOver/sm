@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from smart_reporting.reporting.tests.test_number_selection import source
 from smart_reporting.reporting.trace.statement_review import (
     STATEMENT_REVIEW_PREFIX,
@@ -233,3 +235,42 @@ def test_relative_yoy_does_not_excuse_wrong_baseline_months_or_year():
 def test_yoy_label_does_not_allow_a_current_fact_as_the_baseline():
     markdown = ('2025年1—2月收入较上年同期的 {{value:fact-bbbbbbbbbbbbbbbb:total:元}} 增长。')
     assert statement_review_warnings(markdown, source())
+
+
+@pytest.mark.parametrize('comparison', [
+    '较上年同期增长，达到', '比去年同期增长至', '较上年同期下降至',
+])
+def test_yoy_background_keeps_the_result_in_the_current_period(comparison):
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    markdown = f'2025年1—2月收入{comparison}{{{{value:fact-bbbbbbbbbbbbbbbb:total:元}}}}。'
+    assert statement_review_warnings(markdown, source()) == []
+    assert review_content_result(markdown, source()).warnings == ()
+
+
+def test_yoy_background_still_rejects_a_baseline_fact_as_the_current_result():
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    markdown = ('2025年1—2月收入较上年同期增长，达到'
+                '{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。')
+    assert statement_review_warnings(markdown, source())
+    assert any('当前引用覆盖 2024年1—2月' in warning
+               for warning in review_content_result(markdown, source()).warnings)
+
+
+@pytest.mark.parametrize('wording', ['上年同期', '去年同期'])
+def test_yoy_current_total_must_cover_the_entire_written_window(wording):
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    document = json.loads(source()[0])
+    current = document['metrics'][1]
+    current['periodEnd'] = '2025-03'
+    current['periodValues'].append({'period': '2025-03', 'value': 50})
+    current['total'] = 150
+    contents = [json.dumps(document)]
+    markdown = (f'2025年1—2月收入较{wording}的 {{{{value:fact-aaaaaaaaaaaaaaaa:total:元}}}} '
+                '增长至 {{value:fact-bbbbbbbbbbbbbbbb:total:元}}。')
+    assert any('当前引用覆盖 2025年1—3月' in warning
+               for warning in statement_review_warnings(markdown, contents))
+    assert any('当前引用覆盖 2025年1—3月' in warning
+               for warning in review_content_result(markdown, contents).warnings)
