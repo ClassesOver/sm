@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import os
 from copy import copy
 from dataclasses import replace
@@ -350,9 +351,11 @@ async def test_finish_task_rejects_identical_failed_gate_until_workspace_progres
 
 
 @pytest.mark.anyio
-async def test_finish_task_rejects_absolute_artifact_paths_without_hashing_or_fake_progress(
+@pytest.mark.parametrize("invalid_path", ["/srv/workspace/report.html", "../report.html"])
+async def test_finish_task_rejects_invalid_artifact_paths_without_hashing_or_fake_progress(
     execution_runtime,
     monkeypatch,
+    invalid_path,
 ):
     runtime = execution_runtime
     runtime.context.session_state[AGENT_PLAN_STATE_KEY] = {"plan": []}
@@ -365,10 +368,9 @@ async def test_finish_task_rejects_absolute_artifact_paths_without_hashing_or_fa
         return await original(thread_id, paths)
 
     monkeypatch.setattr(runtime.workspace, "abatch_hash_files", count_hash)
-    absolute = "/srv/workspace/report.html"
     first = await runtime.kernel.finish_task(
         "done",
-        [absolute],
+        [invalid_path],
         [],
         [],
         runtime.context,
@@ -376,13 +378,13 @@ async def test_finish_task_rejects_absolute_artifact_paths_without_hashing_or_fa
     )
 
     assert first["code"] == "finish_artifact_path_invalid"
-    assert first["details"]["invalidPaths"] == [absolute]
+    assert first["details"]["invalidPaths"] == [invalid_path]
     assert first["requiredActions"] == ["把 details.invalidPaths 改为工作区相对路径。"]
     assert hash_calls == 0
 
     repeated = await runtime.kernel.finish_task(
         "changed summary",
-        [absolute],
+        [invalid_path],
         [],
         [],
         runtime.context,
@@ -391,7 +393,7 @@ async def test_finish_task_rejects_absolute_artifact_paths_without_hashing_or_fa
 
     assert repeated["code"] == "finish_no_progress"
     assert repeated["details"]["failureCode"] == "finish_artifact_path_invalid"
-    assert repeated["details"]["invalidPaths"] == [absolute]
+    assert repeated["details"]["invalidPaths"] == [invalid_path]
     assert hash_calls == 0
 
     relative = await runtime.kernel.finish_task(
@@ -404,6 +406,34 @@ async def test_finish_task_rejects_absolute_artifact_paths_without_hashing_or_fa
     )
     assert relative["code"] == "finish_artifact_missing"
     assert hash_calls == 1
+
+
+@pytest.mark.anyio
+async def test_finish_task_rejects_service_reserved_artifact_paths_before_hashing(
+    execution_runtime, monkeypatch
+) -> None:
+    runtime = execution_runtime
+    runtime.context.session_state[AGENT_PLAN_STATE_KEY] = {"plan": []}
+    hash_calls = 0
+
+    async def unexpected_hash(*_args, **_kwargs):
+        nonlocal hash_calls
+        hash_calls += 1
+        return []
+
+    monkeypatch.setattr(runtime.workspace, "abatch_hash_files", unexpected_hash)
+    result = await runtime.kernel.finish_task(
+        "done",
+        [".agentos/tool-output/forged"],
+        [],
+        [],
+        runtime.context,
+        Function(name="finish_task"),
+    )
+
+    assert result["code"] == "finish_artifact_path_invalid"
+    assert result["details"]["invalidPaths"] == [".agentos/tool-output/forged"]
+    assert hash_calls == 0
 
 
 @pytest.mark.anyio
@@ -474,6 +504,52 @@ async def test_large_tool_output_has_stable_preview_and_exact_handle_reads(execu
     metadata["attempt"] += 1
     with pytest.raises(WorkspaceError, match="不属于当前"):
         await runtime.kernel.read_tool_output(bounded["outputHandle"], 0, 1024, runtime.context)
+
+
+@pytest.mark.anyio
+async def test_multiple_large_tool_fields_are_retained_as_one_bounded_json_resource(
+    execution_runtime,
+) -> None:
+    runtime = execution_runtime
+    scope = await runtime.kernel.scope(runtime.context)
+    original = {"output": "x" * 1_000, "content": "y" * 900}
+
+    bounded = await runtime.kernel.bound_tool_result(
+        scope, original, runtime.context, preview_bytes=100
+    )
+    page = await runtime.kernel.read_tool_output(
+        bounded["outputHandle"], 0, 4_096, runtime.context
+    )
+
+    assert bounded["outputFormat"] == "json"
+    assert "content" not in bounded
+    assert len(json.dumps(bounded, ensure_ascii=False).encode("utf-8")) < 1_000
+    assert json.loads(page["content"]) == original
+
+
+@pytest.mark.anyio
+async def test_retained_tool_output_capacity_stops_at_utf8_boundary(
+    execution_runtime, monkeypatch
+) -> None:
+    runtime = execution_runtime
+    scope = await runtime.kernel.scope(runtime.context)
+    monkeypatch.setattr(execution_module, "MAX_TOOL_OUTPUT_RESOURCE_BYTES", 3)
+
+    bounded = await runtime.kernel.bound_tool_result(
+        scope,
+        {"output": "a你"},
+        runtime.context,
+        retain=True,
+        preview_bytes=64,
+    )
+    page = await runtime.kernel.read_tool_output(
+        bounded["outputHandle"], 0, 3, runtime.context
+    )
+
+    assert bounded["outputStoredBytes"] == 1
+    assert page["content"] == "a"
+    assert page["hasMore"] is False
+    assert page["outputDiscarded"] is True
 
 
 @pytest.mark.anyio

@@ -10,10 +10,10 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import signal
 import stat
-import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,37 +89,115 @@ class ReportingPathMapper:
         return candidate
 
 
-def _open_regular_file(path: Path, max_bytes: int) -> int:
-    """以 O_NOFOLLOW 打开允许大小内的普通文件，返回描述符；调用方负责关闭。"""
+_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+)
+
+
+def _workspace_relative_parts(path: Path, root: Path) -> tuple[str, ...]:
+    """返回已经过业务路径规范化的相对分量，并拒绝根目录本身。"""
 
     try:
-        info = path.lstat()
+        parts = path.relative_to(root).parts
+    except ValueError as error:
+        raise WorkspaceError("工作区路径超出当前运行目录。") from error
+    if not parts:
+        raise WorkspaceError("没有提供工作区路径，请指定文件或目录后重试。")
+    return parts
+
+
+def _open_directory_parts(
+    root: Path,
+    parts: tuple[str, ...],
+    *,
+    create: bool,
+    root_descriptor: int | None = None,
+) -> int:
+    """逐级以 ``dir_fd`` 和 ``O_NOFOLLOW`` 打开目录，返回末级描述符。"""
+
+    try:
+        current = (
+            os.dup(root_descriptor)
+            if root_descriptor is not None
+            else os.open(root, _DIRECTORY_OPEN_FLAGS)
+        )
+    except OSError as error:
+        raise WorkspaceError("工作区根目录已变化或无法访问。") from error
+    try:
+        for part in parts:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+                except OSError as error:
+                    raise WorkspaceError("工作区父路径无法安全创建，请更换路径后重试。") from error
+            try:
+                child = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            except FileNotFoundError:
+                raise
+            except OSError as error:
+                raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。") from error
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _open_parent_directory(
+    path: Path,
+    root: Path,
+    *,
+    create: bool,
+    root_descriptor: int | None = None,
+) -> tuple[int, str]:
+    parts = _workspace_relative_parts(path, root)
+    descriptor = _open_directory_parts(
+        root,
+        parts[:-1],
+        create=create,
+        root_descriptor=root_descriptor,
+    )
+    return descriptor, parts[-1]
+
+
+def _open_regular_file_at(parent: int, name: str, max_bytes: int) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent)
     except FileNotFoundError as error:
         raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
-    if stat.S_ISLNK(info.st_mode):
-        raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
-    if not stat.S_ISREG(info.st_mode):
-        raise WorkspaceError("工作区路径不是普通文件。")
-    if info.st_size > max_bytes:
-        raise WorkspaceError("工作区文件超过读取大小上限。")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
     except OSError as error:
-        # lstat 与 open 之间文件可能被删除或替换为符号链接（O_NOFOLLOW 返回 ELOOP）。
         raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
     try:
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or opened.st_size > max_bytes:
-            raise WorkspaceError("工作区路径不是允许大小的普通文件。")
+        if not stat.S_ISREG(opened.st_mode):
+            raise WorkspaceError("工作区路径不是普通文件。")
+        if opened.st_size > max_bytes:
+            raise WorkspaceError("工作区文件超过读取大小上限。")
     except BaseException:
         os.close(descriptor)
         raise
     return descriptor
 
 
-def _read_regular_file(path: Path, max_bytes: int) -> bytes:
-    descriptor = _open_regular_file(path, max_bytes)
+def _open_regular_file(path: Path, root: Path, max_bytes: int) -> int:
+    """沿固定目录描述符打开普通文件，父目录竞态不能把读取重定向到工作区外。"""
+
+    try:
+        parent, name = _open_parent_directory(path, root, create=False)
+    except FileNotFoundError as error:
+        raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
+    try:
+        return _open_regular_file_at(parent, name, max_bytes)
+    finally:
+        os.close(parent)
+
+
+def _read_regular_file_at(parent: int, name: str, max_bytes: int) -> bytes:
+    descriptor = _open_regular_file_at(parent, name, max_bytes)
     try:
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             content = stream.read(max_bytes + 1)
@@ -132,10 +210,24 @@ def _read_regular_file(path: Path, max_bytes: int) -> bytes:
     return content
 
 
-def _hash_regular_file(path: Path, max_bytes: int) -> tuple[int, str]:
+def _read_regular_file(path: Path, root: Path, max_bytes: int) -> bytes:
+    descriptor = _open_regular_file(path, root, max_bytes)
+    try:
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            content = stream.read(max_bytes + 1)
+    except OSError as error:
+        raise WorkspaceError("工作区文件已变化或无法读取，请重试。") from error
+    finally:
+        os.close(descriptor)
+    if len(content) > max_bytes:
+        raise WorkspaceError("工作区文件超过读取大小上限。")
+    return content
+
+
+def _hash_regular_file(path: Path, root: Path, max_bytes: int) -> tuple[int, str]:
     """分块计算普通文件的大小与 sha256，不把整个文件读入内存。"""
 
-    descriptor = _open_regular_file(path, max_bytes)
+    descriptor = _open_regular_file(path, root, max_bytes)
     digest = hashlib.sha256()
     size = 0
     try:
@@ -152,22 +244,106 @@ def _hash_regular_file(path: Path, max_bytes: int) -> tuple[int, str]:
 
 
 def _ensure_directory(path: Path, root: Path) -> None:
-    relative = path.relative_to(root)
-    current = root
-    for part in relative.parts:
-        current = current / part
+    parts = path.relative_to(root).parts
+    descriptor = _open_directory_parts(root, parts, create=True)
+    os.close(descriptor)
+
+
+def _path_exists(path: Path, root: Path) -> bool:
+    try:
+        parent, name = _open_parent_directory(path, root, create=False)
+    except FileNotFoundError:
+        return False
+    try:
         try:
-            info = current.lstat()
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
         except FileNotFoundError:
-            try:
-                current.mkdir(mode=0o700)
-                continue
-            except FileExistsError:
-                # 并发执行可能在 lstat 与 mkdir 之间建好同一路径；按现有路径重新校验，
-                # 仍拒绝符号链接或非目录。
-                info = current.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
+            return False
+        return not stat.S_ISLNK(info.st_mode)
+    finally:
+        os.close(parent)
+
+
+def _move_workspace_path(source: Path, destination: Path, root: Path) -> None:
+    try:
+        source_parent, source_name = _open_parent_directory(
+            source, root, create=False
+        )
+    except FileNotFoundError as error:
+        raise WorkspaceError("待移动的工作区路径不存在。") from error
+    destination_parent: int | None = None
+    try:
+        try:
+            source_info = os.stat(
+                source_name, dir_fd=source_parent, follow_symlinks=False
+            )
+        except FileNotFoundError as error:
+            raise WorkspaceError("待移动的工作区路径不存在。") from error
+        if stat.S_ISLNK(source_info.st_mode) or not (
+            stat.S_ISREG(source_info.st_mode) or stat.S_ISDIR(source_info.st_mode)
+        ):
+            raise WorkspaceError("工作区路径不是普通文件或目录。")
+        destination_parent, destination_name = _open_parent_directory(
+            destination, root, create=True
+        )
+        try:
+            os.stat(
+                destination_name,
+                dir_fd=destination_parent,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise WorkspacePathConflict("移动目标已经存在，请更换路径。")
+        try:
+            os.rename(
+                source_name,
+                destination_name,
+                src_dir_fd=source_parent,
+                dst_dir_fd=destination_parent,
+            )
+        except FileExistsError as error:
+            raise WorkspacePathConflict("移动目标已经存在，请更换路径。") from error
+        except OSError as error:
+            raise WorkspaceError("工作区路径移动失败，请重新检查源和目标。") from error
+    finally:
+        if destination_parent is not None:
+            os.close(destination_parent)
+        os.close(source_parent)
+
+
+def _delete_workspace_path(path: Path, root: Path, *, recursive: bool) -> None:
+    try:
+        parent, name = _open_parent_directory(path, root, create=False)
+    except FileNotFoundError:
+        return
+    try:
+        try:
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(info.st_mode):
+            raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
+        if stat.S_ISDIR(info.st_mode):
+            if recursive:
+                if not shutil.rmtree.avoids_symlink_attacks:
+                    raise WorkspaceError("当前平台不支持安全递归删除工作区目录。")
+                shutil.rmtree(name, dir_fd=parent)
+            else:
+                os.rmdir(name, dir_fd=parent)
+            return
+        if not stat.S_ISREG(info.st_mode):
+            raise WorkspaceError("工作区路径不是普通文件或目录。")
+        os.unlink(name, dir_fd=parent)
+    except FileNotFoundError:
+        return
+    except WorkspaceError:
+        raise
+    except OSError as error:
+        raise WorkspaceError("工作区路径删除失败，请重新检查目标。") from error
+    finally:
+        os.close(parent)
 
 
 def _write_regular_file(
@@ -179,33 +355,70 @@ def _write_regular_file(
     expected_sha256: str | None,
 ) -> None:
     validate_workspace_content(content)
-    _ensure_directory(path.parent, root)
-    if path.is_symlink():
-        raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
-    if path.exists():
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode):
-            raise WorkspaceError("目标路径不是普通文件，请更换文件路径后重试。")
-        if not overwrite:
-            raise WorkspacePathConflict("目标文件已经存在，请重新读取后再覆盖。")
-        if expected_sha256 is not None:
-            current = hashlib.sha256(_read_regular_file(path, MAX_DOWNLOAD_BYTES)).hexdigest()
-            if not hmac.compare_digest(current, expected_sha256):
-                raise WorkspacePathConflict("目标文件哈希已变化，请重新读取后重试。")
-    elif overwrite and expected_sha256 is not None:
-        raise WorkspacePathConflict("覆盖目标不存在，请重新读取后重试。")
-
-    descriptor, temporary = tempfile.mkstemp(prefix=".reporting-", dir=path.parent)
+    parent, name = _open_parent_directory(path, root, create=True)
+    temporary: str | None = None
     try:
+        try:
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        except OSError as error:
+            raise WorkspaceError("目标路径已变化或无法访问，请重试。") from error
+        if info is not None:
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                raise WorkspaceError("目标路径不是普通文件，请更换文件路径后重试。")
+            if not overwrite:
+                raise WorkspacePathConflict("目标文件已经存在，请重新读取后再覆盖。")
+            if expected_sha256 is not None:
+                current = hashlib.sha256(
+                    _read_regular_file_at(parent, name, MAX_DOWNLOAD_BYTES)
+                ).hexdigest()
+                if not hmac.compare_digest(current, expected_sha256):
+                    raise WorkspacePathConflict("目标文件哈希已变化，请重新读取后重试。")
+        elif overwrite and expected_sha256 is not None:
+            raise WorkspacePathConflict("覆盖目标不存在，请重新读取后重试。")
+
+        for _attempt in range(10):
+            candidate = f".reporting-{secrets.token_hex(12)}"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent,
+                )
+                temporary = candidate
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise WorkspaceError("无法创建工作区临时文件，请稍后重试。")
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        if overwrite:
+            os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        else:
+            try:
+                os.link(
+                    temporary,
+                    name,
+                    src_dir_fd=parent,
+                    dst_dir_fd=parent,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as error:
+                raise WorkspacePathConflict(
+                    "目标文件已经存在，请重新读取后再覆盖。"
+                ) from error
+            os.unlink(temporary, dir_fd=parent)
+        temporary = None
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        if temporary is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary, dir_fd=parent)
+        os.close(parent)
 
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -294,7 +507,9 @@ class HostReportingWorkspace:
         relative = self.paths.normalize(path)
         target = self.paths.to_host_path(relative)
         content = await anyio.to_thread.run_sync(
-            lambda: _read_regular_file(target, MAX_DOWNLOAD_BYTES)
+            lambda: _read_regular_file(
+                target, self.identity.root, MAX_DOWNLOAD_BYTES
+            )
         )
         return content, mimetypes.guess_type(relative)[0] or "application/octet-stream"
 
@@ -311,47 +526,26 @@ class HostReportingWorkspace:
 
     async def apath_exists(self, _thread_id: str, path: str) -> bool:
         target = self.paths.to_host_path(path)
-        return await anyio.to_thread.run_sync(lambda: target.exists() and not target.is_symlink())
+        return await anyio.to_thread.run_sync(
+            lambda: _path_exists(target, self.identity.root)
+        )
 
     async def amove_files(self, _thread_id: str, source: str, destination: str) -> None:
         source_path = self.paths.to_host_path(source)
         destination_path = self.paths.to_host_path(destination)
-
-        def move() -> None:
-            try:
-                source_info = source_path.lstat()
-            except FileNotFoundError as error:
-                raise WorkspaceError("待移动的工作区路径不存在。") from error
-            if stat.S_ISLNK(source_info.st_mode):
-                raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
-            if destination_path.exists() or destination_path.is_symlink():
-                raise WorkspacePathConflict("移动目标已经存在，请更换路径。")
-            _ensure_directory(destination_path.parent, self.identity.root)
-            os.replace(source_path, destination_path)
-
-        await anyio.to_thread.run_sync(move)
+        await anyio.to_thread.run_sync(
+            lambda: _move_workspace_path(
+                source_path, destination_path, self.identity.root
+            )
+        )
 
     async def adelete_file(self, _thread_id: str, path: str, recursive: bool = False) -> None:
         target = self.paths.to_host_path(path)
-
-        def delete() -> None:
-            try:
-                info = target.lstat()
-            except FileNotFoundError:
-                return
-            if stat.S_ISLNK(info.st_mode):
-                raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
-            if stat.S_ISDIR(info.st_mode):
-                if recursive:
-                    shutil.rmtree(target)
-                else:
-                    target.rmdir()
-                return
-            if not stat.S_ISREG(info.st_mode):
-                raise WorkspaceError("工作区路径不是普通文件或目录。")
-            target.unlink()
-
-        await anyio.to_thread.run_sync(delete)
+        await anyio.to_thread.run_sync(
+            lambda: _delete_workspace_path(
+                target, self.identity.root, recursive=recursive
+            )
+        )
 
     async def adelete_registered_file(
         self, _thread_id: str, path: str, *, size: int, sha256: str
@@ -439,7 +633,9 @@ class HostReportingWorkspace:
         max_bytes: int,
     ) -> bytes:
         target = self.paths.to_host_path(path)
-        return await anyio.to_thread.run_sync(lambda: _read_regular_file(target, max_bytes))
+        return await anyio.to_thread.run_sync(
+            lambda: _read_regular_file(target, self.identity.root, max_bytes)
+        )
 
     async def aiter_regular_file_chunks(
         self,
@@ -452,7 +648,9 @@ class HostReportingWorkspace:
         """按块读取普通文件，不把整个文件读入内存；打开校验与 read_limited_regular_file 相同。"""
 
         target = self.paths.to_host_path(path)
-        descriptor = await anyio.to_thread.run_sync(lambda: _open_regular_file(target, max_bytes))
+        descriptor = await anyio.to_thread.run_sync(
+            lambda: _open_regular_file(target, self.identity.root, max_bytes)
+        )
         total = 0
         try:
             while True:
@@ -473,7 +671,9 @@ class HostReportingWorkspace:
         relative = self.paths.normalize(path)
         target = self.paths.to_host_path(relative)
         size, sha256 = await anyio.to_thread.run_sync(
-            lambda: _hash_regular_file(target, MAX_DOWNLOAD_BYTES)
+            lambda: _hash_regular_file(
+                target, self.identity.root, MAX_DOWNLOAD_BYTES
+            )
         )
         return {"path": relative, "size": size, "sha256": sha256}
 
@@ -605,31 +805,37 @@ class HostReportingWorkspace:
                         persisted, _mime = await self.afile_bytes(thread_id, item["destination"])
                         if persisted != item["original"]:
                             raise WorkspaceError("变更集移动校验失败，请重新检查目标文件。")
-            except Exception as error:
-                rollback_failed = False
-                for item in reversed(completed):
-                    try:
-                        operation = item["operation"]
-                        if operation == "create":
-                            await self.adelete_file(thread_id, item["path"])
-                        elif operation == "update":
-                            await self.awrite_bytes(
-                                thread_id,
-                                item["path"],
-                                item["original"],
-                                overwrite=True,
-                            )
-                        elif operation == "delete":
-                            await self.awrite_bytes(
-                                thread_id,
-                                item["path"],
-                                item["original"],
-                                overwrite=False,
-                            )
-                        else:
-                            await self.amove_files(thread_id, item["destination"], item["path"])
-                    except Exception:
-                        rollback_failed = True
+            except BaseException as error:
+                async def rollback() -> bool:
+                    rollback_failed = False
+                    for item in reversed(completed):
+                        try:
+                            operation = item["operation"]
+                            if operation == "create":
+                                await self.adelete_file(thread_id, item["path"])
+                            elif operation == "update":
+                                await self.awrite_bytes(
+                                    thread_id,
+                                    item["path"],
+                                    item["original"],
+                                    overwrite=True,
+                                )
+                            elif operation == "delete":
+                                await self.awrite_bytes(
+                                    thread_id,
+                                    item["path"],
+                                    item["original"],
+                                    overwrite=False,
+                                )
+                            else:
+                                await self.amove_files(
+                                    thread_id, item["destination"], item["path"]
+                                )
+                        except Exception:
+                            rollback_failed = True
+                    return rollback_failed
+
+                rollback_failed = await complete_cleanup(rollback())
                 if rollback_failed:
                     raise WorkspaceError(
                         "变更集执行失败且未能完整回滚，请重新检查所有目标文件。"
