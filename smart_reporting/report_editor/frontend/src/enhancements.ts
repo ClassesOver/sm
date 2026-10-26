@@ -152,20 +152,29 @@ export function createFocusModeController(
   return { setFocus, dispose: () => window.removeEventListener('keydown', listener) }
 }
 
-export function createImagePreview(editor: HTMLElement) {
+export interface ImagePreviewOptions {
+  /** 点击「AI 改图」时回调当前预览的图片；未提供时不显示入口。 */
+  onChartEdit?: (img: HTMLImageElement) => void
+}
+
+export function createImagePreview(editor: HTMLElement, options: ImagePreviewOptions = {}) {
   const modal = createModal({ root: document.body, overlayClass: 'image-preview', closeClass: 'image-preview-close', closeLabel: '关闭图片预览', label: '图片预览', variant: 'media', content: `
     <figure><img alt=""><figcaption></figcaption></figure>
+    ${options.onChartEdit ? '<div class="image-preview-actions"><button type="button" class="image-preview-chart-ai">AI 改图</button></div>' : ''}
   ` })
   const dialog = modal.overlay
   const image = dialog.querySelector<HTMLImageElement>('img')!
   const caption = dialog.querySelector<HTMLElement>('figcaption')!
   const close = modal.closeButton!
+  const chartAIButton = dialog.querySelector<HTMLButtonElement>('.image-preview-chart-ai')
+  let current: HTMLImageElement | null = null
   const isPreviewable = (target: EventTarget | null): target is HTMLImageElement =>
     target instanceof HTMLImageElement && !target.classList.contains('interactive-chart-fallback')
   const prepareImage = (target: HTMLImageElement) => {
     if (isPreviewable(target)) target.tabIndex = 0
   }
   const show = (target: HTMLImageElement) => {
+    current = target
     image.src = target.getAttribute('src') ?? ''
     // figcaption 承载说明文字时 img 置空 alt，避免读屏器重复朗读同一文本
     image.alt = ''
@@ -174,9 +183,16 @@ export function createImagePreview(editor: HTMLElement) {
     modal.open(close)
   }
   const hide = () => {
+    current = null
     modal.close()
   }
   close.addEventListener('click', hide)
+  chartAIButton?.addEventListener('click', () => {
+    // 预览是只读弹层；改图面板接管焦点前先收起预览。
+    const target = current
+    hide()
+    if (target) options.onChartEdit?.(target)
+  })
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) hide()
   })

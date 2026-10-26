@@ -145,6 +145,9 @@ TraceMediaTypeV1 = Literal[
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/json",
     "text/csv",
+    # 编辑器 AI 改图登记其生成脚本（ChartTraceV1.scriptFileResourceId）。
+    # 旧版本读取器不识别该类型时按契约降级丢弃整份索引，不阻断签发。
+    "text/x-python",
 ]
 
 #: 事实文件内容类别：确定性 facts bundle / 补充分析证据 / 作图数据（chart-input/v1）。

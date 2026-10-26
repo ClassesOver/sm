@@ -204,17 +204,31 @@ async def rebuild_edited_manifest(
     markdown_path: str,
     markdown: str,
     target_revision: int,
+    edited_charts: Mapping[str, ChartArtifact] | None = None,
 ) -> ReportArtifactManifest:
-    """Rebuild edited structure using authoritative marker/image/table parsers."""
+    """Rebuild edited structure using authoritative marker/image/table parsers.
+
+    ``edited_charts`` 登记编辑器 AI 改图产物：键为正文中绑定的图片路径，
+    值为服务端按改图登记核验身份后构造的 ChartArtifact（renderer 固定
+    matplotlib，无交互规格）。未登记且不在其中的图片仍拒绝。
+    """
     current = await workspace.ahash_file(thread_id, markdown_path)
     markdown_file = ArtifactFile(path=markdown_path, mediaType="text/markdown", size=current["size"], sha256=current["sha256"])
+    registered_datasets = {chart.path: chart.dataset_ids for chart in manifest.charts}
+    if edited_charts:
+        registered_datasets = {
+            **registered_datasets,
+            **{path: chart.dataset_ids for path, chart in edited_charts.items()},
+        }
     bindings = _markdown_image_bindings(
         markdown, markdown_path,
         {citation.citation_id: citation.dataset_id for citation in manifest.citations},
         # 编辑把图片与 citation 标记拆到不同段落时，已登记图表沿用登记的 Dataset。
-        registered_datasets={chart.path: chart.dataset_ids for chart in manifest.charts},
+        registered_datasets=registered_datasets,
     )
     known = {chart.path: chart for chart in manifest.charts}
+    if edited_charts:
+        known = {**known, **dict(edited_charts)}
     charts = []
     for path in sorted(bindings):
         chart = known.get(path)

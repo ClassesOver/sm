@@ -30,7 +30,12 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..async_utils import complete_cleanup
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
+from ..reporting.delivery.artifacts_v1 import (
+    ArtifactFile,
+    ChartArtifact,
+    _image_media_type,
+    _markdown_image_bindings,
+)
 from ..reporting.delivery.publishing import (
     ReportArtifactSpec,
     ReportDownloadScope,
@@ -38,6 +43,13 @@ from ..reporting.delivery.publishing import (
 )
 from ..reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from ..reporting.models import ReportingError
+from ..reporting.trace.chart_subjects import freeze_chart_presentations
+from ..reporting.trace.contracts_v1 import (
+    ChartTraceV1,
+    RevisionTraceIndexV1,
+    TraceFileRefV1,
+    derive_resource_id,
+)
 from ..reporting.workflow.management_overview import (
     ManagementOverview,
     management_overview_projection,
@@ -48,6 +60,11 @@ from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from ..workspace import WorkspaceError, WorkspacePathConflict
 from .capabilities import EditorCapabilities
+from .chart_edits import (
+    CHART_EDITS_DIR,
+    chart_edit_summary,
+    load_chart_edit_records,
+)
 from .trace_retention import source_lifecycle, source_lifecycle_lock
 from .trace_revisions import (
     rebuild_edited_manifest,
@@ -1121,7 +1138,8 @@ class ReportEditorService:
     @source_lifecycle
     async def read_asset(self, expected: ReportEditorContext, path: str) -> tuple[bytes, str]:
         context = await self._source_context(expected)
-        if "/" not in path and path not in {".", ".."}:
+        # 正文图片按修订目录相对引用：原图是文件名，AI 改图结果是 chart-edits/<editId>/chart.png。
+        if ("/" not in path and path not in {".", ".."}) or path.startswith(f"{CHART_EDITS_DIR}/"):
             path = str(PurePosixPath(context.markdown_path).parent / path)
         render = context.job.get("render")
         images = render.get("images") if isinstance(render, dict) else None
@@ -1144,6 +1162,10 @@ class ReportEditorService:
                 None,
             )
         if not isinstance(registered, dict):
+            # 改图登记中的图片：同一 report/revision 的登记记录、哈希一致的 PNG/JPEG
+            # 也放行（AI 改图产物与原图同一登记身份规则）。
+            registered = await self._chart_edit_asset(context, path)
+        if not isinstance(registered, dict):
             raise ReportingError("report_editor_asset_missing", "报告资源不存在。")
         content, media_type = await self.workspace.afile_bytes(context.scope["threadId"], path)
         if media_type not in {"image/png", "image/jpeg"} and not (
@@ -1155,6 +1177,29 @@ class ReportEditorService:
         ).hexdigest() != registered.get("sha256"):
             raise ReportingError("report_editor_asset_changed", "报告资源已变化。")
         return content, media_type
+
+    async def _chart_edit_asset(
+        self, context: ReportEditorContext, path: str
+    ) -> dict[str, Any] | None:
+        """在改图登记中查找图片身份；登记损坏时按未登记处理，不放大为 500。"""
+
+        try:
+            records = await load_chart_edit_records(
+                self.workspace, context.scope["threadId"], context.markdown_path
+            )
+        except Exception as error:  # noqa: BLE001 - 读取失败等同未登记，原错误进日志
+            logger.warning(
+                "report_editor_chart_edit_assets_unavailable report_id={} revision={} "
+                "error_type={}",
+                context.report_id,
+                context.revision,
+                type(error).__name__,
+            )
+            return None
+        for record in records:
+            if record.image.path == path:
+                return record.image.as_identity()
+        return None
 
     @source_lifecycle
     async def interactive_charts(self, expected: ReportEditorContext) -> dict[str, str]:
@@ -2022,6 +2067,31 @@ class ReportEditorService:
                         manifest=artifact_manifest,
                         index=trace_index,
                     )
+                    # AGENTS：改图登记读取或身份校验失败只降级对应追溯数据，不阻断
+                    # 渲染与签发；原因写入 issues。正文引用了改图但登记不可用时，
+                    # rebuild 会按未登记图表拒绝，整体追溯随之降级（同样非阻断）。
+                    try:
+                        edited_charts, edited_index = await self._chart_edit_lineage(
+                            source_context,
+                            markdown=document.markdown,
+                            markdown_path=snapshot_path,
+                            manifest=artifact_manifest,
+                            index=trace_index,
+                        )
+                    except Exception as error:  # noqa: BLE001 - 改图追溯降级，导出继续
+                        edited_charts, edited_index = {}, None
+                        reason = (
+                            error.message if isinstance(error, ReportingError) else type(error).__name__
+                        )
+                        lineage_issues.append({
+                            "code": "report_editor_chart_edit_lineage_unavailable",
+                            "message": f"AI 改图追溯不可用（{reason}），新版本按未改图登记追溯。"[:500],
+                        })
+                        logger.opt(exception=error).warning(
+                            "report_editor_chart_edit_lineage_dropped report_id={} base_revision={}",
+                            context.report_id,
+                            context.revision,
+                        )
                     rebuilt = await rebuild_edited_manifest(
                         self.workspace,
                         scope.workspace_key,
@@ -2030,8 +2100,13 @@ class ReportEditorService:
                         markdown_path=snapshot_path,
                         markdown=document.markdown,
                         target_revision=next_revision,
+                        edited_charts=edited_charts,
                     )
                     render_manifest = rebuilt.model_dump(mode="json", by_alias=True)
+                    if edited_index is not None:
+                        # 增强索引携带改图文件与图表追溯；validate、来源附录、
+                        # path_map 与 snapshot 全部使用同一份索引。
+                        trace_index = edited_index
                 if trace_index is not None:
                     validation = await self.trace.validate(
                         source_context,
@@ -2553,6 +2628,150 @@ class ReportEditorService:
             "issues": [*issues, *grant_issues],
         }
         return result
+
+    async def _chart_edit_lineage(
+        self,
+        source_context: ReportEditorContext,
+        *,
+        markdown: str,
+        markdown_path: str,
+        manifest: Any,
+        index: RevisionTraceIndexV1,
+    ) -> tuple[dict[str, ChartArtifact], RevisionTraceIndexV1 | None]:
+        """把草稿正文引用的 AI 改图登记转换为导出追溯数据。
+
+        返回 ``(edited_charts, edited_index)``：edited_charts 以正文中绑定的
+        图片路径（工作区相对）为键，值为新图 ChartArtifact（路径为源 revision
+        路径，由 snapshot 阶段按 path_map 随迁）；edited_index 追加改图脚本/
+        新图文件引用并替换对应 ChartTraceV1（同一 chartId 延续原图，数据集与
+        作图数据引用不变，transformNotes 记录改图说明）。无改图时返回
+        ``({}, None)``。任何身份不一致抛 ``snapshot_integrity_failed``，
+        由调用方按非阻断契约降级，不得阻断签发。
+        """
+
+        thread_id = source_context.scope["threadId"]
+        records = await load_chart_edit_records(
+            self.workspace, thread_id, source_context.markdown_path
+        )
+        if not records:
+            return {}, None
+        files = {item.resource_id: item for item in index.files}
+        traces_by_chart = {item.chart_id: item for item in index.chart_traces}
+        charts_by_id = {item.chart_id: item for item in manifest.charts}
+        edited_registered = {
+            record.image.path: traces_by_chart[record.chart_id].dataset_ids
+            for record in records
+            if record.chart_id in traces_by_chart
+        }
+        bindings = _markdown_image_bindings(
+            markdown,
+            markdown_path,
+            {citation.citation_id: citation.dataset_id for citation in manifest.citations},
+            registered_datasets={
+                chart.path: chart.dataset_ids for chart in manifest.charts
+            } | edited_registered,
+        )
+        referenced = set(bindings)
+        edited_charts: dict[str, ChartArtifact] = {}
+        new_files: list[TraceFileRefV1] = []
+        new_traces: list[ChartTraceV1] = []
+        known_paths = {item.path for item in index.files}
+        for record in records:
+            if record.image.path not in referenced:
+                continue
+            trace = traces_by_chart.get(record.chart_id)
+            original = charts_by_id.get(record.chart_id)
+            if trace is None or original is None:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"改图登记引用未登记图表：{record.chart_id}",
+                )
+            if original.path in referenced:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    "同一图表同时引用原图与改图，无法登记改图追溯。",
+                )
+            if [item.path for item in record.plot_data_files] != [
+                files[resource_id].path
+                for resource_id in trace.plot_data_file_resource_ids
+            ]:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"改图登记作图数据与追溯索引不一致：{record.chart_id}",
+                )
+            media_type = _image_media_type(record.image.path)
+            for ref in (record.image, record.script):
+                current = await self.workspace.ahash_file(thread_id, ref.path)
+                if (
+                    current.get("missing")
+                    or current.get("size") != ref.size
+                    or current.get("sha256") != ref.sha256
+                ):
+                    raise ReportingError(
+                        "snapshot_integrity_failed",
+                        f"改图登记文件身份已变化：{ref.path}",
+                    )
+            edited_charts[record.image.path] = ChartArtifact(
+                path=record.image.path,
+                media_type=media_type,
+                size=record.image.size,
+                sha256=record.image.sha256,
+                chart_id=record.chart_id,
+                dataset_ids=trace.dataset_ids,
+                renderer="matplotlib",
+            )
+            if record.image.path not in known_paths:
+                new_files.append(
+                    TraceFileRefV1(
+                        resource_id=derive_resource_id(record.image.path),
+                        path=record.image.path,
+                        media_type=media_type,
+                        size=record.image.size,
+                        sha256=record.image.sha256,
+                    )
+                )
+                known_paths.add(record.image.path)
+            if record.script.path not in known_paths:
+                new_files.append(
+                    TraceFileRefV1(
+                        resource_id=derive_resource_id(record.script.path),
+                        path=record.script.path,
+                        media_type="text/x-python",
+                        size=record.script.size,
+                        sha256=record.script.sha256,
+                    )
+                )
+                known_paths.add(record.script.path)
+            notes = [f"编辑器 AI 改图：{chart_edit_summary(record.instruction)}"]
+            notes.extend(
+                f"跳过：{item.request}——{item.reason}" for item in record.skipped
+            )
+            new_traces.append(
+                ChartTraceV1(
+                    chart_id=record.chart_id,
+                    presentation_sha256=None,
+                    image_file_resource_id=derive_resource_id(record.image.path),
+                    plot_data_file_resource_ids=trace.plot_data_file_resource_ids,
+                    dataset_ids=trace.dataset_ids,
+                    transform_notes=tuple(notes),
+                    script_file_resource_id=derive_resource_id(record.script.path),
+                )
+            )
+        if not edited_charts:
+            return {}, None
+        replaced = {item.chart_id: item for item in new_traces}
+        chart_traces = tuple(
+            replaced.get(item.chart_id, item) for item in index.chart_traces
+        )
+        augmented = index.model_copy(
+            update={"files": (*index.files, *new_files), "chart_traces": chart_traces}
+        )
+        # 新图注指纹按当前草稿正文冻结；重新校验保证追加的文件引用闭环。
+        augmented = freeze_chart_presentations(augmented, markdown)
+        augmented = RevisionTraceIndexV1.model_validate(
+            augmented.model_dump(mode="json", by_alias=True)
+        )
+        return edited_charts, augmented
 
     async def _copy_revision_assets(
         self,
