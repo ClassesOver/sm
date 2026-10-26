@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any, Literal, cast
 
@@ -386,6 +387,24 @@ def _expanded_period_wording(window: str) -> str:
         window,
     )
     # “2025年1—9月…较2024年同期”：同期即前文月份范围换成该年，年份仍须与基期一致。
+    def relative_same_period(match):
+        # 只继承同一句明确给出的本期窗口，不从冻结事实反推正文年份。
+        sentence = re.split(r'[。！？；;\n]', window[:match.start()])[-1]
+        calendars = _inheritable_calendars(sentence)
+        prior = list(re.finditer(
+            r'(\d{4})年(\d{1,2})月(?:至(\d{4})年(\d{1,2})月)?', calendars[-1] if calendars else ''
+        ))
+        if not prior:
+            return match[0]
+        anchor = prior[-1]
+        if (anchor[3] and anchor[3] != anchor[1]) or int(anchor[1]) <= 1:
+            return match[0]
+        year = int(anchor[1]) - 1
+        return f'{year}年{anchor[2]}月' + (
+            f'至{year}年{anchor[4]}月' if anchor[4] else ''
+        ) + '同期'
+
+    window = re.sub(r'(?:上年|去年)同期', relative_same_period, window)
     ranges = list(re.finditer(r'(\d{4})年(\d{1,2})月至(\d{4})年(\d{1,2})月', window))
 
     def same_period(match):
@@ -846,9 +865,51 @@ def _inheritable_calendars(text: str) -> list[str]:
         baseline = _BASELINE_PREFIX.search(prefix) or (
             re.search(r'与\s*$', prefix) and re.match(r'\s*[月日]?\s*(?:同期|同月)?\s*相?比', suffix)
         )
+        baseline = baseline or re.match(r'\s*[月日]?\s*(?:同期|同月)', suffix)
         if not baseline:
-            calendars.extend(match[0] for match in group)
+            # 继承整个日期组及末尾单位，不能把“1月至2月”截成不带“月”的终点。
+            ending = re.match(r'\s*[月日号]', suffix)
+            end = group[-1].end() + (ending.end() if ending else 0)
+            calendars.append(text[group[0].start():end])
     return calendars
+
+
+_CALENDAR_WINDOW = r'\d{4}年\d{1,2}月(?:至\d{4}年\d{1,2}月)?'
+_COMPARISON_WINDOW = re.compile(
+    rf'(?:(?:较于|相较于|相较|较|相比于|对比|比|与|基期(?:为)?)\s*'
+    rf'(?P<period>{_CALENDAR_WINDOW})(?:同期|同月)?|(?P<relative>{_CALENDAR_WINDOW})(?:同期|同月))'
+)
+
+
+@dataclass(frozen=True)
+class ReferencePeriodContext:
+    current_window: str | None
+    baseline_window: str | None
+    reference_role: Literal['current', 'baseline']
+
+
+def _reference_period_context(before: str, local_before: str) -> ReferencePeriodContext:
+    """解析已展开日期的引用归属：显式角色优先，再区分基期定语与比较后的断言。"""
+    calendars = _inheritable_calendars(before)
+    baselines = list(_COMPARISON_WINDOW.finditer(before))
+    local_baselines = list(_COMPARISON_WINDOW.finditer(local_before))
+    tail = local_before[local_baselines[-1].end():] if local_baselines else local_before
+    explicit = list(re.finditer(r'本期|当前期|报告期|基期|去年|上年', tail))
+    role: Literal['current', 'baseline'] = 'current'
+    if explicit:
+        role = 'baseline' if explicit[-1][0] in {'基期', '去年', '上年'} else 'current'
+    elif local_baselines:
+        # “同期的/同期为”直接修饰基期值；“后为/至/到/相比”已经进入比较结果。
+        wording = _NUMBER_UNIT_RE.sub('', tail).strip()
+        attached = re.fullmatch(r'(?:的|为|是)?', wording) or (
+            wording.startswith('的') and not re.search(r'后|至|到|相比', wording)
+        )
+        role = 'baseline' if attached else 'current'
+    return ReferencePeriodContext(
+        current_window=calendars[-1] if calendars else None,
+        baseline_window=(baselines[-1]['period'] or baselines[-1]['relative']) if baselines else None,
+        reference_role=role,
+    )
 
 
 def _reference_local_window(before: str, after: str, *, comparison: bool = False) -> str | None:
@@ -857,7 +918,8 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
     comparison：变化额、变化率涉及本期与基期两个期间，继承句中全部日期，而不是最后一个。
     """
     claim = re.compile(r'\[\[claim:[^\]\r\n]+\]\]')
-    if not claim.search(before + after):
+    # 单金额句也要区分相对同期的比较背景与当前值归属。
+    if not claim.search(before + after) and not re.search(r'(?:上年|去年)同期', before):
         return None
     # 继承须先于截断：“一月…[[claim]]及二月…”的年份仍属于当前正文。
     before, after = _expanded_period_wording(before + '\0' + after).split('\0', 1)
@@ -867,6 +929,11 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
     # 前一锚点后的日期括注属于前值；当前前缀从括注之后开始。
     if previous:
         local_before = local_before[_reference_notes_end(local_before):]
+    if not comparison:
+        context = _reference_period_context(before, local_before)
+        period = context.baseline_window if context.reference_role == 'baseline' else context.current_window
+        if context.baseline_window and period:
+            local_before = period + ' ' + re.sub(_CALENDAR_WINDOW + r'(?:同期|同月)?', '', local_before)
     after = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*', '', after)
     after = re.split(claim, after, maxsplit=1)[0]
     # 当前值紧邻的括注保留；连接词之后已是下一个值的说明。

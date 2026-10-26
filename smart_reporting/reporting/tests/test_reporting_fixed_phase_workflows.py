@@ -1870,7 +1870,7 @@ async def test_section_plan_supplies_frozen_fact_catalog_and_corrects_alias(monk
         if stage == "plan":
             assert payload["factCatalog"] == [
                 {
-                    "analysisId": "analysis_001",
+                        "analysisIds": ["analysis_001"],
                     "kind": "metrics",
                     "factId": fact_id,
                     "field": "amount",
@@ -3384,6 +3384,7 @@ async def test_visualization_without_deadline_keeps_repairing() -> None:
     [
         ("report_capability_state_invalid", False),
         ("report_workspace_capability_missing", False),
+        ("report_section_context_too_large", False),
         ("report_section_citation_missing", True),
     ],
 )
@@ -4200,3 +4201,174 @@ async def test_block_harness_invalid_response_uses_only_a_valid_previous_draft(m
         assert result.blocks[0].markdown == original
         assert result.blocks[0].citation_ids == ("citation_001",)
         assert any("analysis_001" in item["message"] for item in notices["block_1"])
+
+
+@pytest.mark.parametrize('compact', [False, True])
+def test_section_planning_guide_keeps_monthly_decision_values(compact):
+    fact = {
+        'factId': 'fact-aaaaaaaaaaaaaaaa',
+        'datasetId': 'current', 'field': 'amount', 'aggregation': 'sum',
+        'metricCodes': ['revenue'], 'unit': '元', 'total': 450,
+        'datasetSha256': 'a' * 64, 'fieldRef': 'hospital.revenue.amount',
+        'periodRoles': ['current'], 'formula': 'sum(amount)', 'periodAggregation': 'sum',
+        'periodGranularity': 'month', 'periodStart': '2025-01', 'periodEnd': '2025-05',
+        'periodValues': [{'period': f'2025-{index:02}', 'value': value}
+                         for index, value in enumerate([100, 80, 90, 70, 110], 1)],
+        'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+    }
+    group = {**fact, 'factId': 'fact-bbbbbbbbbbbbbbbb', 'parentFactId': fact['factId'],
+             'breakdownField': 'department', 'breakdownLabel': '科室', 'breakdownValue': '内科',
+             'scope': {'department': '内科'}}
+    contents = (json.dumps({'analysisId': 'analysis_001', 'metrics': [fact], 'breakdowns': [group]}),)
+    catalog, guide = reporting_sections._section_number_context(
+        contents, {}, allowed_fact_ids={fact['factId'], group['factId']}, compact=compact,
+    )
+    selected = next(item for item in guide if item['factId'] == group['factId'])
+    assert selected['total']['reference'] == '450元'
+    assert [row[:2] for row in selected['monthly']['rows']] == [
+        [f'2025-{index:02}', f'{value}元'] for index, value in enumerate([100, 80, 90, 70, 110], 1)
+    ]
+    statistics = guide[0]['monthlyStatistics']
+    assert statistics['prefixTotals']
+    assert statistics['prefixAverages']
+    assert statistics['monthOverMonth']
+    totals = statistics['prefixTotals']
+    if compact:
+        totals = [dict(zip(totals['columns'], row, strict=True)) for row in totals['rows']]
+    assert [item['reference'] for item in totals] == ['100元', '180元', '270元', '340元', '450元']
+    assert catalog  # 完整数值目录保留，正文仍按结论读取。
+
+
+@pytest.mark.anyio
+async def test_section_stage_context_limit_preserves_metrics_and_stops_fresh_attempts(monkeypatch):
+    from smart_reporting.context_management import TaskExecutionContextHardLimitError
+    from smart_reporting.reporting.code_agent.failure_policy import fresh_attempt_futile
+
+    metrics = {'input_token_hard_cap': 200, 'projected_estimated_tokens': 300}
+    execute = AsyncMock(side_effect=TaskExecutionContextHardLimitError('too large', metrics=metrics))
+    monkeypatch.setattr(reporting_sections.ReportingStructuredOutputExecutor, 'execute', execute)
+    agent = Agent(model=ReportingPhaseOpenAIChat(id='qwen3.8-flash'))
+    with pytest.raises(ReportingError) as caught:
+        await reporting_sections._run_section_stage(
+            agent, SectionPlanOutput, 'plan', {},
+            scope=TaskExecutionScope('task', 'user', 'thread', 'sandbox', 'section'),
+            run_context=_context(), section_code='section_001',
+            thinking_request=ThinkingRequest(operation='section_planning', complexity='standard'),
+        )
+    assert caught.value.code == 'report_section_context_too_large'
+    assert caught.value.details['projected_estimated_tokens'] == 300
+    assert caught.value.details['retryable'] is False
+    assert fresh_attempt_futile(caught.value)
+    execute.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('difference', [None, 'total', 'scope', 'datasetSha256', 'periodValues'])
+async def test_section_plan_merges_only_identical_facts_and_retains_analysis_owners(monkeypatch, difference):
+    work = _revenue_work_item().model_copy(update={'analysis_ids': ('analysis_001', 'analysis_002')})
+    fact = {'factId': 'fact-aaaaaaaaaaaaaaaa', 'field': 'amount', 'unit': '元', 'total': 100}
+    other = {**fact}
+    if difference:
+        other[difference] = {'total': 101, 'scope': {'area': '北院'}, 'datasetSha256': 'b' * 64,
+                             'periodValues': [{'period': '2025-01', 'value': 100}]}[difference]
+    documents = [json.dumps({'analysisId': analysis_id, 'metrics': [entry]})
+                 for analysis_id, entry in (('analysis_001', fact), ('analysis_002', other))]
+    evidence = SectionEvidenceBundle(sectionCode=work.section_code, files=tuple(
+        SectionEvidenceFile(identity=work.evidence[0].evidence_files[0], content=content)
+        for content in documents
+    ), factSummaries=())
+    captured = []
+
+    class PlanCaptured(Exception):
+        pass
+
+    async def capture(_agent, _schema, _stage, payload, **_kwargs):
+        captured.extend(payload['factCatalog'])
+        raise PlanCaptured
+
+    monkeypatch.setattr(reporting_sections, '_run_section_stage', capture)
+    with pytest.raises(PlanCaptured):
+        await reporting_sections._generate_section_in_blocks(
+            object(), {'sectionGoal': {}}, evidence, work,
+            scope=TaskExecutionScope('task', 'user', 'thread', 'sandbox', 'section'),
+            run_context=_context(),
+            thinking_request=ThinkingRequest(operation='section_generation', complexity='standard'),
+        )
+    assert all('analysisId' not in item for item in captured)
+    if difference is None:
+        assert len(captured) == 1
+        assert captured[0]['analysisIds'] == ['analysis_001', 'analysis_002']
+    else:
+        assert len(captured) == 2
+        assert [item['analysisIds'] for item in captured] == [['analysis_001'], ['analysis_002']]
+
+
+def test_section_context_exhaustion_is_not_an_infrastructure_failure():
+    from smart_reporting.reporting.code_agent.failure_policy import POLICIES, fresh_attempt_futile
+
+    error = ReportingError('report_section_context_too_large', '输入规模超限。')
+    assert not POLICIES[error.code].infrastructure
+    assert POLICIES[error.code].retry_same_payload is False
+    assert fresh_attempt_futile(error)
+
+
+def test_planning_shared_definitions_preserve_every_month_and_do_not_mutate_input():
+    original = {'numberGuide': [{'factId': f'fact-{key * 16}', 'monthly': {
+        'columns': ['period', 'value'],
+        'rows': [[f'2025-{month:02}', value] for month, value in enumerate([100, 80, 90, 70, 110], 1)],
+    }} for key in ('a', 'b')]}
+    original['factCatalog'] = [{'factId': f'fact-{key * 16}', 'analysisIds': [f'analysis_{key}']}
+                               for key in ('a', 'b')]
+    before = json.dumps(original)
+    compact = reporting_sections._compact_planning_payload(original)
+    assert compact['$defs']
+
+    def expand(value):
+        if isinstance(value, dict):
+            if set(value) == {'$ref'}:
+                return expand(compact['$defs'][value['$ref'].removeprefix('#/$defs/')])
+            return {key: expand(child) for key, child in value.items()}
+        return [expand(child) for child in value] if isinstance(value, list) else value
+
+    assert expand(compact['numberGuide']) == original['numberGuide']
+    facts = expand(compact['factCatalog'])
+    assert [dict(zip(facts['columns'], row, strict=True)) for row in facts['rows']] == original['factCatalog']
+    assert json.dumps(original) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('budget,projection', [(250, 'full'), (150, 'compact'), (50, 'unavailable')])
+async def test_section_planning_compacts_only_when_required_by_budget(monkeypatch, budget, projection):
+    work = _revenue_work_item()
+    fact = {'factId': 'fact-aaaaaaaaaaaaaaaa', 'field': 'amount', 'unit': '元', 'total': 100}
+    evidence = SectionEvidenceBundle(sectionCode=work.section_code, files=(
+        SectionEvidenceFile(identity=work.evidence[0].evidence_files[0], content=json.dumps({
+            'analysisId': work.analysis_ids[0], 'metrics': [fact],
+        })),
+    ), factSummaries=())
+    captured = []
+
+    class PlanCaptured(Exception):
+        pass
+
+    async def capture(_agent, _schema, _stage, payload, **_kwargs):
+        captured.append(payload)
+        raise PlanCaptured
+
+    monkeypatch.setattr(reporting_sections, '_section_block_input_token_budget', lambda *args, **kwargs: budget)
+    monkeypatch.setattr(reporting_sections, '_section_request_tokens',
+                        lambda _agent, payload, *args, **kwargs: 100 if payload.get('contextProjection') else 200)
+    monkeypatch.setattr(reporting_sections, '_run_section_stage', capture)
+    expected = ReportingError if projection == 'unavailable' else PlanCaptured
+    with pytest.raises(expected) as caught:
+        await reporting_sections._generate_section_in_blocks(
+            object(), {'sectionGoal': {}}, evidence, work,
+            scope=TaskExecutionScope('task', 'user', 'thread', 'sandbox', 'section'),
+            run_context=_context(),
+            thinking_request=ThinkingRequest(operation='section_generation', complexity='standard'),
+        )
+    if projection == 'unavailable':
+        assert caught.value.code == 'report_section_context_too_large'
+        assert captured == []
+    else:
+        assert captured[0].get('contextProjection', 'full') == projection

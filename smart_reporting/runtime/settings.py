@@ -259,12 +259,12 @@ class AgentSettings:
         report_context_token_budget = _positive_int(
             values,
             "AGENT_REPORT_CONTEXT_TOKEN_BUDGET",
-            1048576,
+            512 * 1024,
         )
         report_output_token_reserve = _positive_int(
             values,
             "AGENT_REPORT_OUTPUT_TOKEN_RESERVE",
-            393216,
+            max(1, report_context_token_budget // 8),
         )
         if report_output_token_reserve >= report_context_token_budget:
             raise ValueError(

@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from smart_reporting.reporting.tests.test_number_selection import source
 from smart_reporting.reporting.trace.statement_review import (
     STATEMENT_REVIEW_PREFIX,
@@ -210,3 +212,101 @@ def test_server_derived_values_get_the_same_sentence_check():
     assert statement_review_warnings(f'2025年1—2月各月收入介于{B_MIN}至{B_MAX}之间。', source()) == []
     [uniform] = statement_review_warnings(f'2025年1—2月各月收入均为{B_MAX}。', source())
     assert '不能表述为各月均为同一数值' in uniform
+
+
+def test_relative_yoy_baseline_is_checked_against_previous_year_window():
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    markdown = ('2025年1—2月收入较上年同期的 {{value:fact-aaaaaaaaaaaaaaaa:total:元}} '
+                '增长至 {{value:fact-bbbbbbbbbbbbbbbb:total:元}}。')
+    for wording in ('上年同期', '去年同期'):
+        text = markdown.replace('上年同期', wording)
+        assert statement_review_warnings(text, source()) == []
+        review = review_content_result(text, source())
+        assert not any('统计期间需复核' in warning for warning in review.warnings)
+
+
+def test_relative_yoy_does_not_excuse_wrong_baseline_months_or_year():
+    for label in ('2025年1—3月', '2026年1—2月'):
+        markdown = f'{label}收入较上年同期的 {{{{value:fact-aaaaaaaaaaaaaaaa:total:元}}}} 增长。'
+        assert statement_review_warnings(markdown, source())
+
+
+def test_yoy_label_does_not_allow_a_current_fact_as_the_baseline():
+    markdown = ('2025年1—2月收入较上年同期的 {{value:fact-bbbbbbbbbbbbbbbb:total:元}} 增长。')
+    assert statement_review_warnings(markdown, source())
+
+
+@pytest.mark.parametrize('comparison', [
+    '较上年同期增长，达到', '比去年同期增长至', '较上年同期下降至',
+    '较上年同期增长后为', '较上年同期增加到', '与上年同期相比，达到',
+    '较上年同期，其中本期达到',
+])
+def test_yoy_background_keeps_the_result_in_the_current_period(comparison):
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    markdown = f'2025年1—2月收入{comparison}{{{{value:fact-bbbbbbbbbbbbbbbb:total:元}}}}。'
+    assert statement_review_warnings(markdown, source()) == []
+    assert review_content_result(markdown, source()).warnings == ()
+
+
+def test_yoy_background_still_rejects_a_baseline_fact_as_the_current_result():
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    markdown = ('2025年1—2月收入较上年同期增长，达到'
+                '{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。')
+    assert statement_review_warnings(markdown, source())
+    assert any('当前引用覆盖 2024年1—2月' in warning
+               for warning in review_content_result(markdown, source()).warnings)
+
+
+@pytest.mark.parametrize('fact_id,valid', [('a' * 16, True), ('b' * 16, False)])
+def test_explicit_baseline_role_takes_priority_over_result_verbs(fact_id, valid):
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    markdown = ('2025年1—2月收入较上年同期，其中基期达到'
+                f'{{{{value:fact-{fact_id}:total:元}}}}。')
+    assert bool(statement_review_warnings(markdown, source())) is not valid
+    assert bool(review_content_result(markdown, source()).warnings) is not valid
+
+
+def test_relative_yoy_anchor_excludes_an_explicit_baseline_in_an_earlier_comparison():
+    from smart_reporting.reporting.trace.subject_builder import _expanded_period_wording
+
+    expanded = _expanded_period_wording('2025年1—2月收入较2024年1—2月下降，成本较上年同期增长')
+    assert expanded.endswith('成本较2024年1月至2024年2月同期增长')
+
+
+def test_multiple_comparisons_review_each_baseline_against_the_current_window():
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    document = json.loads(source()[0])
+    document['metrics'].append({
+        **document['metrics'][0], 'factId': 'fact-' + 'e' * 16,
+        'field': 'cost', 'fieldRef': 'db.table.cost', 'displayName': '成本金额',
+        'metricCodes': ['cost'], 'formula': 'SUM(cost)',
+    })
+    markdown = ('2025年1—2月收入较2024年1—2月下降，成本较上年同期的'
+                '{{value:fact-eeeeeeeeeeeeeeee:total:元}}增长至'
+                '{{value:fact-cccccccccccccccc:total:元}}。')
+    contents = [json.dumps(document)]
+    assert statement_review_warnings(markdown, contents) == []
+    assert review_content_result(markdown, contents).warnings == ()
+
+
+@pytest.mark.parametrize('wording', ['上年同期', '去年同期'])
+def test_yoy_current_total_must_cover_the_entire_written_window(wording):
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    document = json.loads(source()[0])
+    current = document['metrics'][1]
+    current['periodEnd'] = '2025-03'
+    current['periodValues'].append({'period': '2025-03', 'value': 50})
+    current['total'] = 150
+    contents = [json.dumps(document)]
+    markdown = (f'2025年1—2月收入较{wording}的 {{{{value:fact-aaaaaaaaaaaaaaaa:total:元}}}} '
+                '增长至 {{value:fact-bbbbbbbbbbbbbbbb:total:元}}。')
+    assert any('当前引用覆盖 2025年1—3月' in warning
+               for warning in statement_review_warnings(markdown, contents))
+    assert any('当前引用覆盖 2025年1—3月' in warning
+               for warning in review_content_result(markdown, contents).warnings)

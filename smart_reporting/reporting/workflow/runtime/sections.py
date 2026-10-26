@@ -48,6 +48,7 @@ from ...trace.contracts_v1 import (
     ChartTraceV1,
     ComputationRecordV1,
     TableTraceV1,
+    canonical_sha256,
     derive_resource_id,
 )
 from ...trace.fact_service import fact_display_unit, fact_display_value
@@ -548,9 +549,11 @@ def _estimated_section_tokens(value: str) -> int:
     return (ascii_characters + 3) // 4 + len(value) - ascii_characters
 
 
-def _section_block_input_token_budget(agent: Any, run_context: RunContext) -> int:
+def _section_block_input_token_budget(
+    agent: Any, run_context: RunContext, *, default_budget: int | None = _SECTION_BLOCK_DEFAULT_INPUT_TOKEN_BUDGET,
+) -> int:
     model = getattr(agent, "model", None)
-    configured_cap = _SECTION_BLOCK_DEFAULT_INPUT_TOKEN_BUDGET
+    configured_cap = default_budget
     for owner in (model, agent):
         value = positive_token_count(getattr(owner, "_task_execution_input_token_budget", None))
         if value is not None:
@@ -565,10 +568,13 @@ def _section_block_input_token_budget(agent: Any, run_context: RunContext) -> in
     )
 
 
-def _section_request_tokens(agent: Any, payload: Mapping[str, Any], run_context: RunContext) -> int:
+def _section_request_tokens(
+    agent: Any, payload: Mapping[str, Any], run_context: RunContext, *,
+    stage: str = "content", output_schema: type[Any] = SectionContent,
+) -> int:
     """按最终路由计入系统约束和输出 schema；tokenizer 不可用时保守估算。"""
 
-    stage_agent = _section_stage_agent(agent, SectionContent, "content") if callable(getattr(agent, "deep_copy", None)) else agent
+    stage_agent = _section_stage_agent(agent, output_schema, stage) if callable(getattr(agent, "deep_copy", None)) else agent
     messages = _structured_request_messages(
         stage_agent, _json_text(payload), session_id="section-content-budget"
     )
@@ -576,14 +582,19 @@ def _section_request_tokens(agent: Any, payload: Mapping[str, Any], run_context:
         return _count_request_tokens(
             _routed_model_copy(getattr(stage_agent, "model", None), run_context),
             messages,
-            SectionContent,
+            output_schema,
         )
     except Exception as error:
         # 计数器不可用时退回字节估算；记录以便发现路由或模型配置问题。
         loguru_logger.debug("report_section_token_count_fallback reason={}", type(error).__name__)
     return sum(len(str(message.content).encode("utf-8")) for message in messages) + len(
-        _json_text(SectionContent.model_json_schema()).encode("utf-8")
+        _json_text(output_schema.model_json_schema()).encode("utf-8")
     )
+
+
+def _planning_table(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    columns = list(dict.fromkeys(column for row in records for column in row))
+    return {"columns": columns, "rows": [[row.get(column) for column in columns] for row in records]}
 
 
 def _section_number_context(
@@ -592,6 +603,7 @@ def _section_number_context(
     *,
     claims: Sequence[Any] | None = None,
     allowed_fact_ids: set[str] | None = None,
+    compact: bool = False,
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """模型只消费当前结论的数值视图，完整目录仍用于服务端校验。"""
 
@@ -641,13 +653,17 @@ def _section_number_context(
                 key: value for key, value in item.items()
                 if key not in {"groups", "rowStatistics"}
             }
-            if "monthlyStatistics" in projected:
-                projected["monthlyStatistics"] = {
-                    key: value for key, value in projected["monthlyStatistics"].items()
-                    if key not in {"prefixTotals", "monthOverMonth"}
-                }
             planning_guide.append(projected)
-        return prompt_number_catalog(catalog), json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
+        planning_guide = json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
+        if compact:
+            # 只压缩重复键，不抽样月份或删除累计节点；异常与阶段变化仍可供规划决策。
+            for item in planning_guide:
+                statistics = item.get("monthlyStatistics", {})
+                for key in ("prefixTotals", "prefixAverages", "monthOverMonth"):
+                    rows = statistics.get(key)
+                    if rows:
+                        statistics[key] = _planning_table(rows)
+        return prompt_number_catalog(catalog), planning_guide
     explicit |= {fact_id for claim in claims for fact_id in claim.fact_ids}
     fact_ids = with_dependencies({fact_id for claim in claims for fact_id in claim.fact_ids})
     unbound_metrics = {claim.metric_code for claim in claims if not claim.fact_ids}
@@ -667,6 +683,59 @@ def _section_number_context(
     # 的 factId 必须仍保留，不能因此回退到整份无关目录。
     catalog = visible_catalog(prompt_number_catalog(catalog), selected_ids)
     return catalog, guide
+
+
+def _compact_planning_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """按 JSON Pointer 共享重复值；保留所有月份、累计节点和事实身份，不进行信号抽样。"""
+    payload = dict(payload)
+    if payload.get('factCatalog'):
+        payload['factCatalog'] = _planning_table(payload['factCatalog'])
+    counts: dict[str, int] = {}
+    sizes: dict[str, int] = {}
+
+    def signature(value: Any) -> str | None:
+        if not isinstance(value, (str, list, dict)):
+            return None
+        encoded = _json_text(value).encode('utf-8')
+        return canonical_sha256(value) if len(encoded) >= 64 else None
+
+    def collect(value: Any) -> None:
+        key = signature(value)
+        if key is not None:
+            counts[key] = counts.get(key, 0) + 1
+            sizes[key] = len(_json_text(value).encode('utf-8'))
+        if isinstance(value, dict):
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(payload)
+    names: dict[str, str] = {}
+    definitions: dict[str, Any] = {}
+
+    def descend(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: project(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [project(child) for child in value]
+        return value
+
+    def project(value: Any) -> Any:
+        key = signature(value)
+        if key is not None and (counts[key] - 1) * sizes[key] > counts[key] * 32 + 32:
+            if key not in names:
+                name = f'd{len(names)}'
+                names[key] = name
+                definitions[name] = descend(value)
+            return {'$ref': f'#/$defs/{names[key]}'}
+        return descend(value)
+
+    projected = descend(dict(payload))
+    projected['$defs'] = definitions
+    projected['contextEncoding'] = '输入中的 $ref 使用 JSON Pointer 指向本输入 $defs 中的完整原值；规划前读取引用值。'
+    return projected
 
 
 def _controlled_assertions(contents: Sequence[str], payload: dict[str, Any], policy: Any) -> dict:
@@ -1335,6 +1404,7 @@ def _section_stage_agent(
                 "操作数只能是同单位族（金额与金额、人次与人次）且同一期间口径的登记值；计算引用渲染后已带单位，其后不再写单位。"
             ),
             "total 是该事实完整期间的总额；正文写1—10月时必须使用相应 periodTotals 累计引用，不能套用12个月 total。零分子且分母非零时完成率为0%，只有分母为零或缺失时才不能计算。",
+            "同比必须分别复核本期与上年同期的年份及月份窗口；‘2025年1—9月较上年同期’的基期是2024年1—9月。服务器告警需结合当前数值的比较角色复核，不得为消除告警把正确基期引用替换成本期引用；错年、错月及同比环比混用仍须纠正。",
             (
                 "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"
                 "H3/H4 必须是不超过 40 个中文字符的短标题，并独占一个物理行。"
@@ -1436,6 +1506,16 @@ async def _run_section_stage(
             user_id=scope.owner_user_id,
             thinking_request=thinking_request,
         )
+    except TaskExecutionContextHardLimitError as error:
+        loguru_logger.error(
+            "report_section_context_budget_exceeded section={} stage={} metrics={}",
+            section_code, stage, error.metrics,
+        )
+        raise ReportingError(
+            "report_section_context_too_large",
+            "章节请求及输出协议超过当前模型输入预算。",
+            details={"stage": stage, "retryable": False, **error.metrics},
+        ) from error
     except ModelProviderError as error:
         from ...models import reporting_failure
 
@@ -1951,7 +2031,8 @@ async def _generate_section_in_blocks(
                     continue
                 fact_catalog.append(
                     {
-                        "analysisId": document["analysisId"],
+                        "analysisIds": [document["analysisId"]],
+                        "factSha256": canonical_sha256({"kind": kind, "entry": entry}),
                         "kind": kind,
                         **{
                             key: entry[key]
@@ -1981,6 +2062,21 @@ async def _generate_section_in_blocks(
                 )
     if scoped_fact_ids is not None:
         fact_catalog = [item for item in fact_catalog if item["factId"] in scoped_fact_ids]
+    # 完整冻结事实哈希包含数据集、范围与逐月值；不以精简投影相等代替事实相同。
+    unique_facts: dict[str, dict[str, Any]] = {}
+    for item in fact_catalog:
+        signature = item["factSha256"]
+        if signature in unique_facts:
+            previous = unique_facts[signature]
+            owners = previous["analysisIds"]
+            for analysis_id in item["analysisIds"]:
+                if analysis_id not in owners:
+                    owners.append(analysis_id)
+        else:
+            unique_facts[signature] = item
+    fact_catalog = list(unique_facts.values())
+    for item in fact_catalog:
+        item.pop("factSha256")  # 哈希只用于服务端判等，不让模型复述完整指纹。
     known_fact_ids = {item["factId"] for item in fact_catalog}
     number_contents = tuple(item.content for item in original_evidence_files)
     plan_payload = {
@@ -2000,6 +2096,7 @@ async def _generate_section_in_blocks(
             "claim.factIds 必须原样复制 factCatalog 中支持结论的 factId，"
             "不得自行编造 fact_001 等编号；没有支持该结论的登记事实时不填 factIds。"
             "动态章节的 claim.findingIds 必须从当前分配的发现中选择，不得引用其他章节发现。"
+            "月度明细与累计节点用于发现反转、异常及阶段变化；紧凑表的 columns 声明每列含义。"
         ),
         "requiredOutputShape": {
             "kind": "render",
@@ -2037,6 +2134,26 @@ async def _generate_section_in_blocks(
         plan_payload["recovery"] = dict(recovery)
     previous_output: dict[str, Any] | None = None
     for plan_call in range(1, _MAX_PLAN_REFERENCE_CORRECTIONS + 2):
+        input_budget = _section_block_input_token_budget(agent, run_context, default_budget=None)
+        request_tokens = _section_request_tokens(agent, plan_payload, run_context, stage="plan", output_schema=plan_schema)
+        if request_tokens > input_budget and plan_payload.get("contextProjection") != "compact":
+            plan_payload["numberGuide"] = _section_number_context(
+                number_contents, instruction_payload.get("fieldDefinitions", {}),
+                allowed_fact_ids=scoped_fact_ids, compact=True,
+            )[1]
+            plan_payload["contextProjection"] = "compact"
+            plan_payload = _compact_planning_payload(plan_payload)
+            request_tokens = _section_request_tokens(agent, plan_payload, run_context, stage="plan", output_schema=plan_schema)
+        loguru_logger.info(
+            "report_section_plan_budget section={} projection={} input_tokens={} input_budget={}",
+            work_item.section_code, plan_payload.get("contextProjection", "full"), request_tokens, input_budget,
+        )
+        if request_tokens > input_budget:
+            raise ReportingError(
+                "report_section_context_too_large", "章节规划完整月度信号经无损压缩后仍超过输入预算。",
+                details={"stage": "plan", "requestTokens": request_tokens, "inputTokenBudget": input_budget,
+                         "retryable": False},
+            )
         planned = await _run_section_stage(
             agent,
             plan_schema,

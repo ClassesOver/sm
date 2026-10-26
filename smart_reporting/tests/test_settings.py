@@ -62,8 +62,8 @@ def test_settings_defaults():
     assert current.report_vision_model == "qwen3.6-flash"
     assert current.model_timeout_seconds == 900
     assert current.tracing_enabled is False
-    assert current.report_context_token_budget == 1048576
-    assert current.report_output_token_reserve == 393216
+    assert current.report_context_token_budget == 512 * 1024
+    assert current.report_output_token_reserve == 64 * 1024
     assert current.report_analysis_concurrency == 1
     assert current.report_section_concurrency == 1
     assert current.report_section_whole_generation is True
@@ -76,6 +76,20 @@ def test_settings_defaults():
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
     assert current.report_public_base_url is None
+
+
+@pytest.mark.parametrize("context_budget", [256 * 1024, 512 * 1024, 1024 * 1024])
+@pytest.mark.parametrize("output_reserve", [None, "", "  "])
+def test_report_output_reserve_defaults_to_one_eighth_of_context_budget(
+    context_budget, output_reserve
+):
+    environ = {"AGENT_REPORT_CONTEXT_TOKEN_BUDGET": str(context_budget)}
+    if output_reserve is not None:
+        environ["AGENT_REPORT_OUTPUT_TOKEN_RESERVE"] = output_reserve
+
+    current = settings(environ)
+
+    assert current.report_output_token_reserve == context_budget // 8
 
 
 def test_runtime_directory_defaults_allow_environment_overrides(tmp_path: Path) -> None:
@@ -496,7 +510,7 @@ def test_unused_generic_token_budget_settings_do_not_block_startup():
     # 相互校验阻止启动。
     current = settings(AGENT_CONTEXT_TOKEN_BUDGET="1000", AGENT_OUTPUT_TOKEN_RESERVE="5000")
 
-    assert current.report_context_token_budget == 1048576
+    assert current.report_context_token_budget == 512 * 1024
     assert not hasattr(current, "context_token_budget")
 
 
