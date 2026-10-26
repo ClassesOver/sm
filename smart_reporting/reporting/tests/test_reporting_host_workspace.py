@@ -332,6 +332,57 @@ async def test_host_workspace_moves_and_deletes_directories(tmp_path: Path) -> N
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("source_is_directory", [False, True])
+async def test_host_workspace_move_never_replaces_target_created_after_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_is_directory: bool,
+) -> None:
+    workspace = _host_workspace(tmp_path)
+    if source_is_directory:
+        await workspace.awrite_text("workspace-1", "staging/report.md", "source")
+        source = "staging"
+        destination = "reports/revision-1"
+    else:
+        await workspace.awrite_text("workspace-1", "staging/report.md", "source")
+        source = "staging/report.md"
+        destination = "reports/report.md"
+    original = host_workspace_module._rename_noreplace_at
+
+    def create_competing_target(*args, **kwargs):
+        destination_parent = args[2]
+        destination_name = args[3]
+        if source_is_directory:
+            host_workspace_module.os.mkdir(destination_name, dir_fd=destination_parent)
+        else:
+            descriptor = host_workspace_module.os.open(
+                destination_name,
+                host_workspace_module.os.O_WRONLY
+                | host_workspace_module.os.O_CREAT
+                | host_workspace_module.os.O_EXCL,
+                0o600,
+                dir_fd=destination_parent,
+            )
+            with host_workspace_module.os.fdopen(descriptor, "wb") as stream:
+                stream.write(b"competing")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        host_workspace_module, "_rename_noreplace_at", create_competing_target
+    )
+
+    with pytest.raises(WorkspacePathConflict, match="移动目标已经存在"):
+        await workspace.amove_files("workspace-1", source, destination)
+
+    assert (workspace.identity.root / source).exists()
+    target = workspace.identity.root / destination
+    if source_is_directory:
+        assert target.is_dir() and list(target.iterdir()) == []
+    else:
+        assert target.read_bytes() == b"competing"
+
+
+@pytest.mark.anyio
 async def test_host_workspace_rejects_symlink_file(tmp_path: Path) -> None:
     workspace = _host_workspace(tmp_path)
     outside = tmp_path / "outside.json"

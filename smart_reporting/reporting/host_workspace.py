@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
+import errno
 import hashlib
 import hmac
 import json
@@ -92,6 +94,20 @@ class ReportingPathMapper:
 _DIRECTORY_OPEN_FLAGS = (
     os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 )
+_RENAME_NOREPLACE = 1
+try:
+    _RENAMEAT2 = ctypes.CDLL(None, use_errno=True).renameat2
+except AttributeError:
+    _RENAMEAT2 = None
+else:
+    _RENAMEAT2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    _RENAMEAT2.restype = ctypes.c_int
 
 
 def _workspace_relative_parts(path: Path, root: Path) -> tuple[str, ...]:
@@ -264,6 +280,51 @@ def _path_exists(path: Path, root: Path) -> bool:
         os.close(parent)
 
 
+def _rename_noreplace_at(
+    source_parent: int,
+    source_name: str,
+    destination_parent: int,
+    destination_name: str,
+    *,
+    source_is_directory: bool,
+) -> None:
+    """Atomically move a directory entry without replacing a concurrent target."""
+
+    if _RENAMEAT2 is not None:
+        result = _RENAMEAT2(
+            source_parent,
+            os.fsencode(source_name),
+            destination_parent,
+            os.fsencode(destination_name),
+            _RENAME_NOREPLACE,
+        )
+        if result == 0:
+            return
+        error_number = ctypes.get_errno()
+        if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+            raise FileExistsError(error_number, os.strerror(error_number))
+        raise OSError(error_number, os.strerror(error_number))
+
+    if source_is_directory:
+        raise WorkspaceError("当前平台不支持安全的原子目录移动。")
+    try:
+        os.link(
+            source_name,
+            destination_name,
+            src_dir_fd=source_parent,
+            dst_dir_fd=destination_parent,
+            follow_symlinks=False,
+        )
+    except FileExistsError:
+        raise
+    try:
+        os.unlink(source_name, dir_fd=source_parent)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(destination_name, dir_fd=destination_parent)
+        raise
+
+
 def _move_workspace_path(source: Path, destination: Path, root: Path) -> None:
     try:
         source_parent, source_name = _open_parent_directory(
@@ -297,11 +358,12 @@ def _move_workspace_path(source: Path, destination: Path, root: Path) -> None:
         else:
             raise WorkspacePathConflict("移动目标已经存在，请更换路径。")
         try:
-            os.rename(
+            _rename_noreplace_at(
+                source_parent,
                 source_name,
+                destination_parent,
                 destination_name,
-                src_dir_fd=source_parent,
-                dst_dir_fd=destination_parent,
+                source_is_directory=stat.S_ISDIR(source_info.st_mode),
             )
         except FileExistsError as error:
             raise WorkspacePathConflict("移动目标已经存在，请更换路径。") from error
