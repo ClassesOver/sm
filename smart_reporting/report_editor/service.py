@@ -31,7 +31,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..async_utils import complete_cleanup
 from ..reporting.contract import SHA256_PATTERN
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
+from ..reporting.delivery.artifacts_v1 import (
+    ArtifactFile,
+    ChartArtifact,
+    _image_media_type,
+    _markdown_image_bindings,
+)
 from ..reporting.delivery.publishing import (
     ReportArtifactSpec,
     ReportDownloadScope,
@@ -39,6 +44,13 @@ from ..reporting.delivery.publishing import (
 )
 from ..reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from ..reporting.models import ReportingError
+from ..reporting.trace.chart_subjects import freeze_chart_presentations
+from ..reporting.trace.contracts_v1 import (
+    ChartTraceV1,
+    RevisionTraceIndexV1,
+    TraceFileRefV1,
+    derive_resource_id,
+)
 from ..reporting.workflow.management_overview import (
     ManagementOverview,
     management_overview_projection,
@@ -49,6 +61,11 @@ from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from ..workspace import WorkspaceError, WorkspacePathConflict
 from .capabilities import EditorCapabilities
+from .chart_edits import (
+    CHART_EDITS_DIR,
+    chart_edit_summary,
+    load_chart_edit_records,
+)
 from .trace_retention import source_lifecycle, source_lifecycle_lock
 from .trace_revisions import (
     rebuild_edited_manifest,
@@ -573,6 +590,35 @@ _EXPORT_JOB_RETENTION_SECONDS = 3600
 _MAX_BUNDLE_BYTES = 30 * 1024 * 1024
 _MAX_BUNDLE_SOURCE_BYTES = 200 * 1024 * 1024
 _BUNDLE_CHUNK_BYTES = 1024 * 1024
+# 只发生在交付阶段的失败：产物已渲染并通过身份核验，重试只需补存下载副本与补签授权。
+_DELIVERY_RETRYABLE_CODES = frozenset({
+    "report_artifact_persistence_failed",
+    "report_pdf_persistence_failed",
+    "report_word_persistence_failed",
+    "report_editor_grant_unavailable",
+})
+
+
+def _delivery_validation(context: ReportEditorContext, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """revision 的当前交付验收：交付重试登记过结果时以登记为准，否则为导出当时的记录。"""
+    deliveries = payload.get("reportEditorDeliveries")
+    record = deliveries.get(str(context.revision)) if isinstance(deliveries, Mapping) else None
+    if (
+        isinstance(record, Mapping)
+        and record.get("contextSha256") == context.digest()
+        and isinstance(record.get("validation"), Mapping)
+    ):
+        return record["validation"]
+    raw = context.job.get("validation")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _delivery_only_failure(validation: Mapping[str, Any]) -> bool:
+    """渲染与验收已完成、只差交付（或交付已完整）时才可直接补签；否则须重新渲染。"""
+    codes = [issue.get("code") for issue in validation.get("issues") or () if isinstance(issue, Mapping)]
+    if not codes:
+        return validation.get("ok") is True
+    return all(code in _DELIVERY_RETRYABLE_CODES for code in codes)
 
 
 @dataclass
@@ -1093,7 +1139,8 @@ class ReportEditorService:
     @source_lifecycle
     async def read_asset(self, expected: ReportEditorContext, path: str) -> tuple[bytes, str]:
         context = await self._source_context(expected)
-        if "/" not in path and path not in {".", ".."}:
+        # 正文图片按修订目录相对引用：原图是文件名，AI 改图结果是 chart-edits/<editId>/chart.png。
+        if ("/" not in path and path not in {".", ".."}) or path.startswith(f"{CHART_EDITS_DIR}/"):
             path = str(PurePosixPath(context.markdown_path).parent / path)
         render = context.job.get("render")
         images = render.get("images") if isinstance(render, dict) else None
@@ -1116,6 +1163,10 @@ class ReportEditorService:
                 None,
             )
         if not isinstance(registered, dict):
+            # 改图登记中的图片：同一 report/revision 的登记记录、哈希一致的 PNG/JPEG
+            # 也放行（AI 改图产物与原图同一登记身份规则）。
+            registered = await self._chart_edit_asset(context, path)
+        if not isinstance(registered, dict):
             raise ReportingError("report_editor_asset_missing", "报告资源不存在。")
         content, media_type = await self.workspace.afile_bytes(context.scope["threadId"], path)
         if media_type not in {"image/png", "image/jpeg"} and not (
@@ -1127,6 +1178,29 @@ class ReportEditorService:
         ).hexdigest() != registered.get("sha256"):
             raise ReportingError("report_editor_asset_changed", "报告资源已变化。")
         return content, media_type
+
+    async def _chart_edit_asset(
+        self, context: ReportEditorContext, path: str
+    ) -> dict[str, Any] | None:
+        """在改图登记中查找图片身份；登记损坏时按未登记处理，不放大为 500。"""
+
+        try:
+            records = await load_chart_edit_records(
+                self.workspace, context.scope["threadId"], context.markdown_path
+            )
+        except Exception as error:  # noqa: BLE001 - 读取失败等同未登记，原错误进日志
+            logger.warning(
+                "report_editor_chart_edit_assets_unavailable report_id={} revision={} "
+                "error_type={}",
+                context.report_id,
+                context.revision,
+                type(error).__name__,
+            )
+            return None
+        for record in records:
+            if record.image.path == path:
+                return record.image.as_identity()
+        return None
 
     @source_lifecycle
     async def interactive_charts(self, expected: ReportEditorContext) -> dict[str, str]:
@@ -1354,6 +1428,8 @@ class ReportEditorService:
             raise ReportingError("dataset_access_denied", "分享会话不能下载报告原始产物。")
         context = await self._restore(expected)
         await self._ensure_sources_retained(context)
+        durable = await self.state_repository.get(context.workflow_run_id)
+        delivery_payload = durable.payload if durable is not None else {}
 
         identities: dict[str, tuple[int, str]] = {}
 
@@ -1428,8 +1504,7 @@ class ReportEditorService:
                             raise ReportingError("snapshot_integrity_failed", "报告登记产物无法安全读取。") from error
                     if total != expected_size or not secrets.compare_digest(digest.hexdigest(), expected_sha256):
                         raise ReportingError("snapshot_integrity_failed", "报告产物与登记身份不一致。")
-                raw_validation = job.get("validation")
-                validation = raw_validation if isinstance(raw_validation, Mapping) else {}
+                validation = _delivery_validation(context, delivery_payload)
                 metadata = json.dumps({
                     "reportId": context.report_id,
                     "revision": context.revision,
@@ -1882,6 +1957,12 @@ class ReportEditorService:
         }
         if not self._lineage_features["exportSources"]:
             export_settings["sources"] = False
+        delivery_request = {
+            "version": 1,
+            "documentSha256": document.sha256,
+            "settings": export_settings,
+            "note": note,
+        }
         # 编辑链接长期有效，用户可能从旧修订的链接进入。导出过一次会产生更新的
         # revision；若最新 revision 的 Markdown 与当前草稿一致（用户未再改动），
         # 自动以最新 revision 为基准再次导出，实现重复导出的幂等。只有内容确实
@@ -1906,6 +1987,23 @@ class ReportEditorService:
                     context.revision,
                 )
             elif secrets.compare_digest(latest_sha256, document.sha256):
+                # 上一次导出可能已提交 revision，却在保存下载副本或签发授权时失败。
+                # 相同正文、设置和备注的重试只在渲染与验收已完成、仅差交付时直接为该
+                # revision 补存补签；渲染失败、格式缺失或验收未通过时照常重新渲染。
+                if latest.job.get("_editorDeliveryRequest") == delivery_request:
+                    durable = await self.state_repository.get(context.workflow_run_id)
+                    previous = _delivery_validation(latest, durable.payload if durable is not None else {})
+                    if _delivery_only_failure(previous):
+                        return await self._retry_export_delivery(
+                            latest,
+                            scope=scope,
+                            validation=previous,
+                            session_capabilities=session_capabilities,
+                            artifact_persistence=artifact_persistence,
+                            download_grants=download_grants,
+                            editor_grants=editor_grants,
+                            public_base_url=public_base_url,
+                        )
                 # 后续渲染/登记都按 context.job_id 从 run_context 取 job 状态，
                 # 重定基后必须同步换成最新 revision 的 job，否则索引错位。
                 context = latest
@@ -1970,6 +2068,31 @@ class ReportEditorService:
                         manifest=artifact_manifest,
                         index=trace_index,
                     )
+                    # AGENTS：改图登记读取或身份校验失败只降级对应追溯数据，不阻断
+                    # 渲染与签发；原因写入 issues。正文引用了改图但登记不可用时，
+                    # rebuild 会按未登记图表拒绝，整体追溯随之降级（同样非阻断）。
+                    try:
+                        edited_charts, edited_index = await self._chart_edit_lineage(
+                            source_context,
+                            markdown=document.markdown,
+                            markdown_path=snapshot_path,
+                            manifest=artifact_manifest,
+                            index=trace_index,
+                        )
+                    except Exception as error:  # noqa: BLE001 - 改图追溯降级，导出继续
+                        edited_charts, edited_index = {}, None
+                        reason = (
+                            error.message if isinstance(error, ReportingError) else type(error).__name__
+                        )
+                        lineage_issues.append({
+                            "code": "report_editor_chart_edit_lineage_unavailable",
+                            "message": f"AI 改图追溯不可用（{reason}），新版本按未改图登记追溯。"[:500],
+                        })
+                        logger.opt(exception=error).warning(
+                            "report_editor_chart_edit_lineage_dropped report_id={} base_revision={}",
+                            context.report_id,
+                            context.revision,
+                        )
                     rebuilt = await rebuild_edited_manifest(
                         self.workspace,
                         scope.workspace_key,
@@ -1978,8 +2101,13 @@ class ReportEditorService:
                         markdown_path=snapshot_path,
                         markdown=document.markdown,
                         target_revision=next_revision,
+                        edited_charts=edited_charts,
                     )
                     render_manifest = rebuilt.model_dump(mode="json", by_alias=True)
+                    if edited_index is not None:
+                        # 增强索引携带改图文件与图表追溯；validate、来源附录、
+                        # path_map 与 snapshot 全部使用同一份索引。
+                        trace_index = edited_index
                 if trace_index is not None:
                     validation = await self.trace.validate(
                         source_context,
@@ -2126,35 +2254,18 @@ class ReportEditorService:
                 thread_id=scope.workspace_key,
                 workflow_run_id=scope.run_id,
             )
-            artifacts = tuple(
-                ReportArtifactSpec(
-                    artifact=cast(Literal["pdf", "word"], label), path=identity["path"],
-                    size=int(identity["size"]), sha256=str(identity["sha256"]),
-                )
-                for label, identity in artifact_identities.items()
-            )
-            persist_options = {
-                "scope": download_scope, "report_id": context.report_id,
-                "revision": next_revision, "artifacts": artifacts,
-            }
+            # 已渲染且身份可读的格式全部登记进 revision；只有保存成功的格式签发下载，
+            # 未保存的格式留待重试补存，不能因一次保存失败从 revision 中丢掉。
+            rendered_identities = dict(artifact_identities)
             persistence_error: Exception | None = None
             try:
-                persist_available = getattr(artifact_persistence, "persist_available", None)
-                if callable(persist_available):
-                    stored_artifacts = await persist_available(**persist_options)
-                    stored_formats = {spec.artifact for spec in stored_artifacts}
-                    if not set(artifact_identities) & stored_formats:
-                        raise ReportingError("report_artifact_unavailable", "报告下载副本均未保存成功。")
-                    for label in tuple(artifact_identities):
-                        if label not in stored_formats:
-                            artifact_identities.pop(label)
-                            validation_ok = False
-                            validation_issues.append({
-                                "code": f"report_{label}_persistence_failed",
-                                "message": f"{'PDF' if label == 'pdf' else 'Word'} 已生成，但保存下载副本失败。",
-                            })
-                else:
-                    await artifact_persistence.persist(**persist_options)
+                artifact_identities, persistence_issues = await self._persist_delivery(
+                    artifact_persistence, download_scope,
+                    report_id=context.report_id, revision=next_revision, identities=artifact_identities,
+                )
+                if persistence_issues:
+                    validation_ok = False
+                    validation_issues.extend(persistence_issues)
             except Exception as error:
                 # Preserve the rendered revision and commit its editor context
                 # before reporting storage failure. A retry can rebase onto it;
@@ -2185,8 +2296,8 @@ class ReportEditorService:
             render_record["markdown"] = {**rendered_markdown, "path": markdown_path}
             for label in ("pdf", "word"):
                 render_record.pop(label, None)
-                if label in artifact_identities:
-                    render_record[label] = artifact_identities[label]
+                if label in rendered_identities:
+                    render_record[label] = rendered_identities[label]
             try:
                 copied = await self._copy_revision_assets(
                     scope.workspace_key,
@@ -2245,6 +2356,7 @@ class ReportEditorService:
                 "ok": validation_ok and not lineage_issues,
                 "issues": [*([] if validation_ok else validation_issues), *lineage_issues],
             }
+            next_job["_editorDeliveryRequest"] = delivery_request
             next_context = ReportEditorContext(
                 reportId=context.report_id,
                 revision=next_revision,
@@ -2278,20 +2390,13 @@ class ReportEditorService:
                     "report_artifact_persistence_failed",
                     "报告已生成并保留，但下载副本保存失败；请重试导出。",
                 ) from persistence_error
-            download_kwargs = {
-                f"{label}_{field}": identity[field]
-                for label, identity in artifact_identities.items()
-                for field in ("path", "size", "sha256")
-            }
-            raw_download, download_grant = await download_grants.issue(
-                scope=download_scope, report_id=context.report_id, revision=next_revision,
-                **download_kwargs,
+            raw_download, download_grant, raw_editor, editor_expires_at, grant_issues = (
+                await self._issue_delivery_grants(
+                    download_grants, editor_grants, download_scope, next_context,
+                    identities=artifact_identities, session_capabilities=session_capabilities,
+                )
             )
-            grant_options: dict[str, Any] = (
-                {"capabilities": dict(session_capabilities)}
-                if session_capabilities is not None else {}
-            )
-            raw_editor, editor_expires_at = await editor_grants.issue(next_context, **grant_options)
+            lineage_issues.extend(grant_issues)
         except BaseException:
             await self._delete_export_snapshot(scope.workspace_key, snapshot_path)
             if cleanup_revision:
@@ -2323,6 +2428,351 @@ class ReportEditorService:
                 "issues": [*([] if validation_ok else validation_issues), *lineage_issues],
             },
         }
+
+    async def _persist_delivery(
+        self,
+        artifact_persistence: Any,
+        download_scope: ReportDownloadScope,
+        *,
+        report_id: str,
+        revision: int,
+        identities: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+        """保存可下载副本：返回实际保存的格式与未保存格式的原因；一种都没保存成功时抛出。"""
+
+        artifacts = tuple(
+            ReportArtifactSpec(
+                artifact=cast(Literal["pdf", "word"], label), path=str(identity["path"]),
+                size=int(identity["size"]), sha256=str(identity["sha256"]),
+            )
+            for label, identity in identities.items()
+        )
+        options = {"scope": download_scope, "report_id": report_id, "revision": revision, "artifacts": artifacts}
+        persist_available = getattr(artifact_persistence, "persist_available", None)
+        if callable(persist_available):
+            stored = {spec.artifact for spec in await persist_available(**options)}
+        else:
+            await artifact_persistence.persist(**options)
+            stored = set(identities)
+        if not stored & set(identities):
+            raise ReportingError("report_artifact_unavailable", "报告下载副本均未保存成功。")
+        issues = [
+            {
+                "code": f"report_{label}_persistence_failed",
+                "message": f"{'PDF' if label == 'pdf' else 'Word'} 已生成，但保存下载副本失败。",
+            }
+            for label in identities
+            if label not in stored
+        ]
+        return {label: dict(identity) for label, identity in identities.items() if label in stored}, issues
+
+    async def _issue_delivery_grants(
+        self,
+        download_grants: Any,
+        editor_grants: Any,
+        download_scope: ReportDownloadScope,
+        context: ReportEditorContext,
+        *,
+        identities: Mapping[str, Mapping[str, Any]],
+        session_capabilities: Mapping[str, object] | None,
+    ) -> tuple[str, Any, str | None, datetime | None, list[dict[str, str]]]:
+        """签发下载授权与编辑入口；编辑入口失败只降级为告警，不影响已签发的下载链接。"""
+
+        raw_download, download_grant = await download_grants.issue(
+            scope=download_scope, report_id=context.report_id, revision=context.revision,
+            **{
+                f"{label}_{field}": identity[field]
+                for label, identity in identities.items()
+                for field in ("path", "size", "sha256")
+            },
+        )
+        grant_options: dict[str, Any] = (
+            {"capabilities": dict(session_capabilities)} if session_capabilities is not None else {}
+        )
+        try:
+            raw_editor, editor_expires_at = await editor_grants.issue(context, **grant_options)
+        except Exception as error:  # noqa: BLE001 - 编辑入口失败不能吞掉已签发下载链接
+            logger.opt(exception=error).warning(
+                "report_editor_export_grant_failed report_id={} revision={} error_type={}",
+                context.report_id,
+                context.revision,
+                type(error).__name__,
+            )
+            return raw_download, download_grant, None, None, [{
+                "code": "report_editor_grant_unavailable",
+                "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开编辑入口。",
+            }]
+        return raw_download, download_grant, raw_editor, editor_expires_at, []
+
+    async def _record_delivery(self, context: ReportEditorContext, validation: Mapping[str, Any]) -> None:
+        """登记交付重试结果；登记失败只影响后续读取到的验收状态，不影响本次已签发的链接。"""
+
+        try:
+            durable = await self.state_repository.get(context.workflow_run_id)
+            if durable is None:
+                raise ReportingError("report_editor_context_missing", "报告编辑上下文不存在。")
+            await self.state_repository.apply(
+                context.workflow_run_id,
+                ReportingCommand(
+                    name="record_report_editor_delivery",
+                    payload={
+                        "revision": context.revision,
+                        "contextSha256": context.digest(),
+                        "validation": dict(validation),
+                    },
+                    commandId=f"editor-delivery:{context.revision}:{uuid4().hex}",
+                ),
+                expected_version=durable.state_version,
+            )
+        except Exception as error:  # noqa: BLE001 - 已签发链接，登记失败仅告警
+            logger.opt(exception=error).warning(
+                "report_editor_delivery_record_failed report_id={} revision={} error_type={}",
+                context.report_id,
+                context.revision,
+                type(error).__name__,
+            )
+
+    async def _retry_export_delivery(
+        self,
+        context: ReportEditorContext,
+        *,
+        scope: Any,
+        validation: Mapping[str, Any],
+        session_capabilities: Mapping[str, object] | None,
+        artifact_persistence: Any,
+        download_grants: Any,
+        editor_grants: Any,
+        public_base_url: str,
+    ) -> dict[str, Any]:
+        """为已提交、只差交付的 revision 补存下载副本并补签授权；不重新渲染。"""
+
+        render = context.job.get("render")
+        if not isinstance(render, dict):
+            raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
+        # 交付类原因由本次重试重新判定；其余原因（_delivery_only_failure 保证没有）原样保留。
+        issues: list[dict[str, Any]] = [
+            dict(issue) for issue in validation.get("issues") or ()
+            if isinstance(issue, Mapping) and issue.get("code") not in _DELIVERY_RETRYABLE_CODES
+        ]
+        identities: dict[str, dict[str, Any]] = {}
+        for label in ("pdf", "word"):
+            registered = render.get(label)
+            if not isinstance(registered, dict) or not isinstance(registered.get("path"), str):
+                continue
+            try:
+                current = await self.workspace.ahash_file(scope.workspace_key, registered["path"])
+            except (OSError, WorkspaceError) as error:
+                current = {"missing": True}
+                logger.opt(exception=error).warning(
+                    "report_editor_retry_artifact_unavailable report_id={} revision={} "
+                    "artifact={} error_type={}",
+                    context.report_id,
+                    context.revision,
+                    label,
+                    type(error).__name__,
+                )
+            if (
+                current.get("missing")
+                or current.get("size") != registered.get("size")
+                or current.get("sha256") != registered.get("sha256")
+            ):
+                issues.append({
+                    "code": f"report_{label}_artifact_unavailable",
+                    "message": f"{'PDF' if label == 'pdf' else 'Word'} 产物未生成或身份不可读取。",
+                })
+                continue
+            identities[label] = {
+                "path": registered["path"],
+                "size": int(registered["size"]),
+                "sha256": str(registered["sha256"]),
+            }
+        if not identities:
+            raise ReportingError("report_artifact_unavailable", "报告文件身份不可读取。")
+        download_scope = ReportDownloadScope(
+            database=scope.database,
+            user_id=scope.user_id,
+            company_id=scope.company_id,
+            session_id=scope.session_id,
+            thread_id=scope.workspace_key,
+            workflow_run_id=scope.run_id,
+        )
+        try:
+            identities, persistence_issues = await self._persist_delivery(
+                artifact_persistence, download_scope,
+                report_id=context.report_id, revision=context.revision, identities=identities,
+            )
+        except Exception as error:
+            raise ReportingError(
+                "report_artifact_persistence_failed",
+                "报告已生成并保留，但下载副本保存失败；请重试导出。",
+            ) from error
+        issues.extend(persistence_issues)
+        raw_download, download_grant, editor_raw, editor_expires_at, grant_issues = (
+            await self._issue_delivery_grants(
+                download_grants, editor_grants, download_scope, context,
+                identities=identities, session_capabilities=session_capabilities,
+            )
+        )
+        # 与导出时一致：登记的验收不含编辑入口告警，返回给调用方的包含。
+        await self._record_delivery(context, {"ok": not issues, "issues": issues})
+        result = publication_result(
+            report_id=context.report_id,
+            revision=context.revision,
+            raw_grant=raw_download,
+            grant=download_grant,
+            base_url=public_base_url,
+            editor_raw_grant=editor_raw,
+            editor_expires_at=editor_expires_at,
+        )
+        result["validation"] = {
+            "ok": not issues and not grant_issues,
+            "issues": [*issues, *grant_issues],
+        }
+        return result
+
+    async def _chart_edit_lineage(
+        self,
+        source_context: ReportEditorContext,
+        *,
+        markdown: str,
+        markdown_path: str,
+        manifest: Any,
+        index: RevisionTraceIndexV1,
+    ) -> tuple[dict[str, ChartArtifact], RevisionTraceIndexV1 | None]:
+        """把草稿正文引用的 AI 改图登记转换为导出追溯数据。
+
+        返回 ``(edited_charts, edited_index)``：edited_charts 以正文中绑定的
+        图片路径（工作区相对）为键，值为新图 ChartArtifact（路径为源 revision
+        路径，由 snapshot 阶段按 path_map 随迁）；edited_index 追加改图脚本/
+        新图文件引用并替换对应 ChartTraceV1（同一 chartId 延续原图，数据集与
+        作图数据引用不变，transformNotes 记录改图说明）。无改图时返回
+        ``({}, None)``。任何身份不一致抛 ``snapshot_integrity_failed``，
+        由调用方按非阻断契约降级，不得阻断签发。
+        """
+
+        thread_id = source_context.scope["threadId"]
+        records = await load_chart_edit_records(
+            self.workspace, thread_id, source_context.markdown_path
+        )
+        if not records:
+            return {}, None
+        files = {item.resource_id: item for item in index.files}
+        traces_by_chart = {item.chart_id: item for item in index.chart_traces}
+        charts_by_id = {item.chart_id: item for item in manifest.charts}
+        edited_registered = {
+            record.image.path: traces_by_chart[record.chart_id].dataset_ids
+            for record in records
+            if record.chart_id in traces_by_chart
+        }
+        bindings = _markdown_image_bindings(
+            markdown,
+            markdown_path,
+            {citation.citation_id: citation.dataset_id for citation in manifest.citations},
+            registered_datasets={
+                chart.path: chart.dataset_ids for chart in manifest.charts
+            } | edited_registered,
+        )
+        referenced = set(bindings)
+        edited_charts: dict[str, ChartArtifact] = {}
+        new_files: list[TraceFileRefV1] = []
+        new_traces: list[ChartTraceV1] = []
+        known_paths = {item.path for item in index.files}
+        for record in records:
+            if record.image.path not in referenced:
+                continue
+            trace = traces_by_chart.get(record.chart_id)
+            original = charts_by_id.get(record.chart_id)
+            if trace is None or original is None:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"改图登记引用未登记图表：{record.chart_id}",
+                )
+            if original.path in referenced:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    "同一图表同时引用原图与改图，无法登记改图追溯。",
+                )
+            if [item.path for item in record.plot_data_files] != [
+                files[resource_id].path
+                for resource_id in trace.plot_data_file_resource_ids
+            ]:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"改图登记作图数据与追溯索引不一致：{record.chart_id}",
+                )
+            media_type = _image_media_type(record.image.path)
+            for ref in (record.image, record.script):
+                current = await self.workspace.ahash_file(thread_id, ref.path)
+                if (
+                    current.get("missing")
+                    or current.get("size") != ref.size
+                    or current.get("sha256") != ref.sha256
+                ):
+                    raise ReportingError(
+                        "snapshot_integrity_failed",
+                        f"改图登记文件身份已变化：{ref.path}",
+                    )
+            edited_charts[record.image.path] = ChartArtifact(
+                path=record.image.path,
+                media_type=media_type,
+                size=record.image.size,
+                sha256=record.image.sha256,
+                chart_id=record.chart_id,
+                dataset_ids=trace.dataset_ids,
+                renderer="matplotlib",
+            )
+            if record.image.path not in known_paths:
+                new_files.append(
+                    TraceFileRefV1(
+                        resource_id=derive_resource_id(record.image.path),
+                        path=record.image.path,
+                        media_type=media_type,
+                        size=record.image.size,
+                        sha256=record.image.sha256,
+                    )
+                )
+                known_paths.add(record.image.path)
+            if record.script.path not in known_paths:
+                new_files.append(
+                    TraceFileRefV1(
+                        resource_id=derive_resource_id(record.script.path),
+                        path=record.script.path,
+                        media_type="text/x-python",
+                        size=record.script.size,
+                        sha256=record.script.sha256,
+                    )
+                )
+                known_paths.add(record.script.path)
+            notes = [f"编辑器 AI 改图：{chart_edit_summary(record.instruction)}"]
+            notes.extend(
+                f"跳过：{item.request}——{item.reason}" for item in record.skipped
+            )
+            new_traces.append(
+                ChartTraceV1(
+                    chart_id=record.chart_id,
+                    presentation_sha256=None,
+                    image_file_resource_id=derive_resource_id(record.image.path),
+                    plot_data_file_resource_ids=trace.plot_data_file_resource_ids,
+                    dataset_ids=trace.dataset_ids,
+                    transform_notes=tuple(notes),
+                    script_file_resource_id=derive_resource_id(record.script.path),
+                )
+            )
+        if not edited_charts:
+            return {}, None
+        replaced = {item.chart_id: item for item in new_traces}
+        chart_traces = tuple(
+            replaced.get(item.chart_id, item) for item in index.chart_traces
+        )
+        augmented = index.model_copy(
+            update={"files": (*index.files, *new_files), "chart_traces": chart_traces}
+        )
+        # 新图注指纹按当前草稿正文冻结；重新校验保证追加的文件引用闭环。
+        augmented = freeze_chart_presentations(augmented, markdown)
+        augmented = RevisionTraceIndexV1.model_validate(
+            augmented.model_dump(mode="json", by_alias=True)
+        )
+        return edited_charts, augmented
 
     async def _copy_revision_assets(
         self,

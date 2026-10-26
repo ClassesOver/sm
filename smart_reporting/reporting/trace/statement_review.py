@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -17,8 +18,9 @@ from .semantic_bindings import NumberReferenceResolver, anchor_bound_numbers, re
 from .subject_builder import (
     _PERIOD_TEXT_MISMATCH,
     _period_key,
+    _reference_local_window,
     prepare_claim_status,
-    written_period_span,
+    written_period_keys,
 )
 
 STATEMENT_REVIEW_PREFIX = "引用句与登记口径不一致："
@@ -44,6 +46,8 @@ def statement_review_warnings(
     anchored = anchor_bound_numbers(rendered, references, notices)
     check_claim = prepare_claim_status(anchored)
     resolver = NumberReferenceResolver(contents)
+    # 数值目录与替代事实索引只在出现期间不一致时用于给出同期引用；多数章节没有此类问题，按需构建。
+    hint_sources: tuple[Mapping[str, str], Any] | None = None
     warnings: list[str] = []
     for reference in references:
         # 与质量包一致：能由服务端解析的数值引用（含派生值）与计算引用都核对所在语句，补证表推导不做语句核对。
@@ -63,47 +67,140 @@ def statement_review_warnings(
         )
         if not detail["warnings"]:
             continue
-        position = anchored.find(f"[[claim:{reference.claim_id}]]")
-        before = _MARKER.sub("", anchored[:position])
-        text = before + _MARKER.sub("", anchored[position:])
-        statement = (text_after_last_break(text, len(before)) + text_before_next_break(text, len(before)))[:200]
+        marker = f"[[claim:{reference.claim_id}]]"
+        position = anchored.find(marker)
+        raw_before = text_after_last_break(anchored, position)
+        raw_after = text_before_next_break(anchored, position + len(marker))
+        visible_before = _MARKER.sub("", raw_before)
+        visible_after = _MARKER.sub("", raw_after)
+        statement = _claim_centered_text(visible_before, visible_after)
+        selector = str(selected.get("selector") or "")
+        reference_window = _reference_local_window(
+            raw_before,
+            raw_after,
+            comparison=selector in {"change", "changeRate"}
+            or selector.startswith(("periodChanges.", "periodChangeRates.", "cumulativeChanges.")),
+        )
+        if reference_window is None:
+            # 与 ClaimStatusChecker 相同，以当前引用为中心取可见正文；不能从长句左端截 200 字，
+            # 否则会拿远离当前数值的背景期间推荐替代事实。
+            reference_window = visible_before[-200:] + visible_after[:200]
         for warning in detail["warnings"]:
             if warning.startswith(_PERIOD_TEXT_MISMATCH):
-                warning += _period_mismatch_hint(reference, selected, statement, resolver, contents)
+                if hint_sources is None:
+                    hint_sources = (frozen_number_catalog(contents), _metric_alternative_index(resolver))
+                warning += _period_mismatch_hint(
+                    reference,
+                    selected,
+                    reference_window,
+                    resolver,
+                    *hint_sources,
+                )
             warnings.append(f"{STATEMENT_REVIEW_PREFIX}{warning} 所在语句：{statement}")
     return list(dict.fromkeys(warnings))
 
 
-def _period_mismatch_hint(reference, selected, statement, resolver, contents) -> str:
+def _claim_centered_text(before: str, after: str, *, limit: int = 200) -> str:
+    """展示当前引用附近的语句，短句保持原样，长句始终保留紧邻引用的两侧正文。"""
+    if len(before) + len(after) <= limit:
+        return before + after
+    right = after[: min(len(after), limit // 2)]
+    left = before[-(limit - len(right)):]
+    if len(left) + len(right) < limit:
+        right = after[: limit - len(left)]
+    return left + right
+
+
+def _metric_alternative_semantics(entry: Mapping[str, Any]) -> str | None:
+    """跨期间可替换的基础指标语义；比较/派生事实宁可不推荐，也不按字段名猜测。"""
+    if (
+        not isinstance(entry.get("fieldRef"), str)
+        or not isinstance(entry.get("aggregation"), str)
+        or entry.get("comparisonType") is not None
+        or entry.get("inputFactIds")
+        or entry.get("kind") is not None
+        or entry.get("code") is not None
+    ):
+        return None
+    identity = {
+        "field": entry.get("field"),
+        "fieldRef": entry.get("fieldRef"),
+        "aggregation": entry.get("aggregation"),
+        "unit": entry.get("unit"),
+        "scope": entry.get("scope") or {},
+        "formula": entry.get("formula"),
+        "metricCodes": entry.get("metricCodes") or [],
+        "periodGranularity": entry.get("periodGranularity"),
+        "periodAggregation": entry.get("periodAggregation"),
+        "periodField": entry.get("periodField"),
+        "cumulativePolicy": entry.get("cumulativePolicy"),
+    }
+    return json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _metric_alternative_index(resolver: NumberReferenceResolver) -> dict[str, tuple[tuple[str, Any], ...]]:
+    grouped: dict[str, list[tuple[str, Any]]] = {}
+    for fact_id, entry in resolver.entries.items():
+        if (
+            not isinstance(fact_id, str)
+            or not re.fullmatch(r"fact-[0-9a-f]{16}", fact_id)
+            or fact_id in resolver.conflicts
+            or (semantics := _metric_alternative_semantics(entry)) is None
+        ):
+            continue
+        grouped.setdefault(semantics, []).append((fact_id, entry))
+    return {
+        semantics: tuple(sorted(entries, key=lambda item: item[0]))
+        for semantics, entries in grouped.items()
+    }
+
+
+def _resolved_period_keys(resolved: Mapping[str, Any]) -> tuple[tuple[int, ...], ...] | None:
+    keys = tuple(
+        key
+        for period in resolved.get("periods") or ()
+        if (key := _period_key(str(period))) is not None
+    )
+    if not keys or len(keys) != len(resolved.get("periods") or ()) or len({len(key) for key in keys}) != 1:
+        return None
+    return tuple(sorted(dict.fromkeys(keys)))
+
+
+def _period_mismatch_hint(
+    reference,
+    selected,
+    statement,
+    resolver,
+    number_catalog: Mapping[str, str],
+    alternative_index: Mapping[str, tuple[tuple[str, Any], ...]],
+) -> str:
     """期间写错时指明是哪个数，并给出同一指标在句中所写期间的登记引用，由模型决定是否改用。
 
-    只在唯一可确定时给候选：同一字段、同一范围与聚合、同一单位，登记期间的首末与句中所写一致，
-    且所有候选取值相同；句中写了多个期间或找不到时只指明数值，不猜测。
+    只在唯一可确定时给候选：同一基础指标的完整业务语义、同一选择器，登记期间的完整桶集合与
+    当前引用附近唯一连续期间一致。比较/派生事实、多个期间窗口、稀疏期间或多身份候选均不猜测。
     """
     hint = f"：“{reference.display_text}”的登记期间与句中所写不同。" if reference.display_text else ""
-    span = written_period_span(statement)
+    written_keys = written_period_keys(statement)
     match = re.fullmatch(r"\{\{value:(fact-[0-9a-f]{16}):([^:{}]+):([^{}]*)\}\}", reference.token)
-    if span is None or match is None:
+    if written_keys is None or match is None:
         return hint
     fact_id, selector, unit = match.groups()
     entry = selected["entry"]
+    semantics = _metric_alternative_semantics(entry)
+    if semantics is None:
+        return hint
     candidates: dict[str, Any] = {}
-    for other_id, other in resolver.entries.items():
-        if (other_id == fact_id or other_id in resolver.conflicts
-                or other.get("fieldRef") != entry.get("fieldRef")
-                or (other.get("scope") or {}) != (entry.get("scope") or {})
-                or other.get("aggregation") != entry.get("aggregation")
-                or other.get("unit") != entry.get("unit")):
+    for other_id, _other in alternative_index.get(semantics, ()):
+        if other_id == fact_id:
             continue
         token = f"{{{{value:{other_id}:{selector}:{unit}}}}}"
         resolved = resolver.resolve(token)
-        keys = sorted(key for period in (resolved or {}).get("periods") or () if (key := _period_key(str(period))))
-        if keys and len({len(key) for key in keys}) == 1 and (keys[0], keys[-1]) == span:
+        if resolved is not None and _resolved_period_keys(resolved) == written_keys:
             candidates[token] = resolved
-    if not candidates or len({str(item["value"]) for item in candidates.values()}) != 1:
+    if len(candidates) != 1:
         return hint
     token, resolved = next(iter(candidates.items()))
-    shown = frozen_number_catalog(contents).get(token)
+    shown = number_catalog.get(token)
     return (hint + f"若要写{period_list_text(resolved['periods'])}，同一指标该期间已登记为 {token}"
             + (f"（{shown}）" if shown else "") + "。")
 

@@ -1,5 +1,7 @@
 """写作时同步发布后的引用句核对：同一检查、同一参数，附所在语句交回模型。"""
 
+import json
+
 from smart_reporting.reporting.tests.test_number_selection import source
 from smart_reporting.reporting.trace.statement_review import (
     STATEMENT_REVIEW_PREFIX,
@@ -20,8 +22,6 @@ def test_reference_period_contradicting_the_sentence_is_reported_with_the_senten
 
 
 def test_period_alternative_is_offered_only_when_unambiguous():
-    import json
-
     # 同一字段在该期间有两个取值不同的登记事实时不猜测，只指明数值。
     [document] = [json.loads(item) for item in source()]
     twin = {**document['metrics'][0], 'factId': 'fact-' + 'e' * 16, 'datasetId': 'ds-2024-copy', 'total': 21,
@@ -34,6 +34,135 @@ def test_period_alternative_is_offered_only_when_unambiguous():
     [warning] = statement_review_warnings(
         '2024年1月至2025年2月合计{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。', source())
     assert '若要写' not in warning
+
+
+def test_period_alternative_requires_one_fact_identity_even_when_values_are_equal():
+    [document] = [json.loads(item) for item in source()]
+    twin = {
+        **document['metrics'][0],
+        'factId': 'fact-' + 'e' * 16,
+        'datasetId': 'ds-2024-copy',
+    }
+    document['metrics'].append(twin)
+
+    [warning] = statement_review_warnings(
+        '2024年1—2月合计{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。',
+        [json.dumps(document)],
+    )
+
+    assert '“100元”的登记期间与句中所写不同' in warning
+    assert '若要写' not in warning
+
+
+def test_period_alternative_never_flattens_sparse_or_independent_windows():
+    [document] = [json.loads(item) for item in source()]
+    sparse = document['metrics'][0]
+    sparse['periodEnd'] = '2024-03'
+    sparse['periodValues'] = [
+        {'period': '2024-01', 'value': 9},
+        {'period': '2024-03', 'value': 11},
+    ]
+    cross_year = {
+        **sparse,
+        'factId': 'fact-' + 'e' * 16,
+        'datasetId': 'ds-cross-year',
+        'periodStart': '2024-01',
+        'periodEnd': '2025-02',
+        'periodValues': [
+            {'period': f'{year}-{month:02d}', 'value': 1}
+            for year, months in ((2024, range(1, 13)), (2025, range(1, 3)))
+            for month in months
+        ],
+        'total': 14,
+    }
+    document['metrics'].append(cross_year)
+    contents = [json.dumps(document)]
+
+    [sparse_warning] = statement_review_warnings(
+        '2024年1—3月合计{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。', contents,
+    )
+    [windows_warning] = statement_review_warnings(
+        '2024年1—2月与2025年1—2月合计{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。',
+        contents,
+    )
+
+    assert '若要写' not in sparse_warning
+    assert '若要写' not in windows_warning
+
+
+def test_period_alternative_requires_the_same_metric_time_semantics():
+    [document] = [json.loads(item) for item in source()]
+    selected = document['metrics'][1]
+    selected.update({
+        'periodAggregation': 'last',
+        'periodField': 'closed_month',
+        'cumulativePolicy': {
+            'version': '1',
+            'reset': 'calendar_year_zero',
+            'observation': 'closed_month_end',
+            'changes': 'signed_snapshot_delta',
+        },
+    })
+
+    [warning] = statement_review_warnings(
+        '2024年1—2月累计快照为{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。',
+        [json.dumps(document)],
+    )
+
+    assert '“100元”的登记期间与句中所写不同' in warning
+    assert '若要写' not in warning
+
+
+def test_period_alternative_never_substitutes_a_different_comparison_type():
+    from smart_reporting.reporting.tests.test_reader_formulas import _yoy_bundle
+
+    content, fact_id = _yoy_bundle()
+    document = json.loads(content)
+    mom = {
+        **document['comparisons'][0],
+        'factId': 'fact-' + 'e' * 16,
+        'comparisonType': 'mom',
+        'periodStart': '2024-01',
+        'periodEnd': '2024-02',
+        'currentTotal': 999,
+    }
+    document['comparisons'].append(mom)
+
+    [warning] = statement_review_warnings(
+        f'2024年1—2月合计{{{{value:{fact_id}:currentTotal:元}}}}。',
+        [json.dumps(document)],
+    )
+
+    assert '“270元”的登记期间与句中所写不同' in warning
+    assert '若要写' not in warning
+
+
+def test_period_alternative_uses_the_period_nearest_a_reference_in_a_long_sentence():
+    [document] = [json.loads(item) for item in source()]
+    candidate = {
+        **document['metrics'][0],
+        'factId': 'fact-' + 'e' * 16,
+        'datasetId': 'ds-2023',
+        'periodStart': '2023-01',
+        'periodEnd': '2023-02',
+        'periodValues': [
+            {'period': '2023-01', 'value': 14},
+            {'period': '2023-02', 'value': 16},
+        ],
+        'total': 30,
+    }
+    document['metrics'].append(candidate)
+    markdown = (
+        '2024年1—2月是历史背景，' + '背景说明' * 60
+        + '，2023年1—2月合计{{value:fact-bbbbbbbbbbbbbbbb:total:元}}。'
+    )
+
+    [warning] = statement_review_warnings(markdown, [json.dumps(document)])
+
+    assert '若要写2023年1—2月' in warning
+    assert '{{value:fact-eeeeeeeeeeeeeeee:total:元}}（30元）' in warning
+    assert '若要写2024年1—2月' not in warning
+    assert '所在语句：' in warning and '2023年1—2月合计100元' in warning
 
 
 def test_consistent_sentences_and_unbound_text_pass():

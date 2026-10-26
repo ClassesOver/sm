@@ -44,6 +44,7 @@ from ..reporting.trace.dataset_service import (
     verified_dataset_snapshot,
 )
 from ..reporting.trace.drilldown_service import TraceDrilldownService
+from ..reporting.trace.fact_index import FACT_ARRAYS
 from ..reporting.trace.fact_service import fact_display_unit, fact_display_value, read_fact_document
 from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field, primary_display_name
 from ..reporting.workflow.checkpoint import FileIdentity
@@ -387,11 +388,7 @@ class ReportEditorTraceService:
                     context.report_id, context.revision, entry.analysis_id, error,
                 )
                 continue
-            for kind, key in (
-                ("metric", "metrics"), ("comparison", "comparisons"),
-                ("derived", "derivedMetrics"), ("reconciliation", "reconciliations"),
-                ("correlation", "correlationDetails"),
-            ):
+            for kind, key in FACT_ARRAYS:
                 for fact in document.get(key, ()):
                     if not fact.get("factId"):
                         continue
@@ -849,16 +846,10 @@ class ReportEditorTraceService:
     @staticmethod
     def _locate_fact_pointer(document: Mapping[str, Any], fact_id: str) -> str:
         # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
-        for array_name, prefix in (
-            ("metrics", "/metrics/"),
-            ("comparisons", "/comparisons/"),
-            ("derivedMetrics", "/derivedMetrics/"),
-            ("reconciliations", "/reconciliations/"),
-            ("correlationDetails", "/correlationDetails/"),
-        ):
+        for _, array_name in FACT_ARRAYS:
             for index, item in enumerate(document.get(array_name, ()) or ()):
                 if isinstance(item, dict) and item.get("factId") == fact_id:
-                    return f"{prefix}{index}"
+                    return f"/{array_name}/{index}"
         raise ReportingError("fact_binding_unavailable", "事实 ID 不在该分析中。")
 
     async def _column_definitions_for_review(
@@ -1302,6 +1293,7 @@ class ReportEditorTraceService:
                     "computation": reference_computation(
                         number.token, selected.get("selector") if selected else None,
                         table_derivation=number.table_derivation is not None,
+                        entry=selected.get("entry") if selected else None,
                     ) if number is not None else None,
                     "restoreText": restore_text,
                     "warnings": detail["warnings"],
@@ -1337,7 +1329,9 @@ class ReportEditorTraceService:
                     factValue=selected["value"],
                     unit=selected["unit"],
                     periods=list(selected["periods"]),
-                    computation=reference_computation(f"{{{{value:{key}:}}}}", selected.get("selector")),
+                    computation=reference_computation(
+                        f"{{{{value:{key}:}}}}", selected.get("selector"), entry=selected.get("entry"),
+                    ),
                     **_value_view(
                         {**selected["entry"], "formula": selected["formula"], "scope": selected["scope"]}, selected,
                     ),
@@ -1972,6 +1966,8 @@ class ReportEditorTraceService:
                     "plotDataFileCount": len(trace.plot_data_file_resource_ids),
                     "plotDataKind": "chart_input",
                     "transformNotes": list(trace.transform_notes),
+                    # imagePath 供编辑器把正文图片定位到登记图表（AI 改图入口）。
+                    "imagePath": files[trace.image_file_resource_id].path,
                     "imageSize": files[trace.image_file_resource_id].size,
                 }
                 for trace in index.chart_traces

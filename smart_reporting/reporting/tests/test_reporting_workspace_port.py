@@ -27,7 +27,6 @@ from smart_reporting.reporting.tools.mock_workspace import (
 )
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
 from smart_reporting.reporting.tools.workspace_adapter import (
-    ReportingTaskWorkspacePort,
     ReportingWorkspaceAdapter,
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
@@ -139,65 +138,8 @@ async def test_mock_workspace_rejects_missing_stale_and_invalid_output_paths() -
 
 
 @pytest.mark.anyio
-async def test_production_port_treats_data_as_readonly() -> None:
-    content = b"source"
-    data_ref = ReportingFileRef(
-        path="data/source.csv",
-        size=len(content),
-        sha256=hashlib.sha256(content).hexdigest(),
-    )
-    context = ReportingToolContext(
-        external_run_id="report-run-1",
-        thread_id="thread-1",
-        attempt_no=1,
-        output_policy=ReportingOutputPolicy(roots=("output",)),
-        input_snapshot={},
-        data=(data_ref,),
-    )
-    port = ReportingTaskWorkspacePort(
-        SimpleNamespace(),  # type: ignore[arg-type]
-        SimpleNamespace(),  # type: ignore[arg-type]
-        context,
-        SimpleNamespace(),
-    )
-
-    with pytest.raises(ReportingWorkspaceError, match="只读"):
-        await port.write_text("data/source.csv", "changed")
-
-
-@pytest.mark.anyio
-async def test_production_port_reads_through_async_workspace_api() -> None:
-    class AsyncReadService:
-        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
-            raise AssertionError("异步 Reporting 端口不得调用同步工作区接口")
-
-        async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
-            assert (thread_id, path) == ("thread-1", "inputs/source.txt")
-            return b"source", "text/plain"
-
-    context = ReportingToolContext(
-        external_run_id="report-run-1",
-        thread_id="thread-1",
-        attempt_no=1,
-        output_policy=ReportingOutputPolicy(roots=("output",)),
-        input_snapshot={},
-    )
-    port = ReportingTaskWorkspacePort(
-        AsyncReadService(),  # type: ignore[arg-type]
-        SimpleNamespace(),  # type: ignore[arg-type]
-        context,
-        SimpleNamespace(),
-    )
-
-    assert await port.read_bytes("inputs/source.txt") == b"source"
-
-
-@pytest.mark.anyio
 async def test_reporting_workspace_adapter_exposes_async_file_read() -> None:
     class AsyncReadService:
-        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
-            raise AssertionError("异步 Reporting 适配器不得调用同步工作区接口")
-
         async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
             assert (thread_id, path) == ("thread-1", "inputs/source.txt")
             return b"source", "text/plain"
@@ -208,14 +150,12 @@ async def test_reporting_workspace_adapter_exposes_async_file_read() -> None:
         b"source",
         "text/plain",
     )
+    assert not hasattr(adapter, "file_bytes")
 
 
 @pytest.mark.anyio
 async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -> None:
     class AsyncReadService:
-        def read_text(self, *_args: object) -> str:
-            raise AssertionError("异步 Reporting 补丁不得调用同步工作区接口")
-
         async def aread_text(self, thread_id: str, path: str) -> str:
             assert (thread_id, path) == ("thread-1", "analysis/model.py")
             return "value = 1\n"
@@ -239,6 +179,7 @@ async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -
             "expected_sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
         }
     ]
+    assert not hasattr(adapter, "read_text")
 
 
 def _plotly_file_service(content: bytes) -> SimpleNamespace:
@@ -319,30 +260,6 @@ async def test_reporting_tool_reads_through_async_workspace_api() -> None:
     )
 
     assert result["content"] == "source"
-
-
-@pytest.mark.anyio
-async def test_production_port_rejects_missing_hash_target() -> None:
-    class MissingService:
-        async def abatch_hash_files(self, _thread_id: str, paths: list[str]):
-            return [{"path": path, "missing": True} for path in paths]
-
-    context = ReportingToolContext(
-        external_run_id="report-run-1",
-        thread_id="thread-1",
-        attempt_no=1,
-        output_policy=ReportingOutputPolicy(roots=("output",)),
-        input_snapshot={},
-    )
-    port = ReportingTaskWorkspacePort(
-        MissingService(),  # type: ignore[arg-type]
-        SimpleNamespace(),  # type: ignore[arg-type]
-        context,
-        SimpleNamespace(),
-    )
-
-    with pytest.raises(ReportingWorkspaceError, match="missing.txt"):
-        await port.hash_files(("inputs/missing.txt",))
 
 
 @pytest.mark.anyio

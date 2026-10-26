@@ -37,11 +37,13 @@ from .models import (
     CheckContext,
     CheckScope,
     QualityWarningEvent,
+    QualityWarningEventPage,
     QualityWarningPage,
     QualityWarningRecord,
     TenantScope,
     WarningCheck,
     WarningDisposition,
+    WarningEventQuery,
     WarningFinding,
     WarningQuery,
     warning_fingerprint,
@@ -160,6 +162,10 @@ class QualityWarningRepository(Protocol):
     async def list_events(
         self, *, tenant: TenantScope, warning_id: UUID
     ) -> tuple[QualityWarningEvent, ...]: ...
+
+    async def list_event_page(
+        self, *, tenant: TenantScope, warning_id: UUID, query: WarningEventQuery
+    ) -> QualityWarningEventPage: ...
 
 
 class SqlAlchemyQualityWarningRepository:
@@ -336,6 +342,10 @@ class SqlAlchemyQualityWarningRepository:
     async def list_events(
         self, *, tenant: TenantScope, warning_id: UUID
     ) -> tuple[QualityWarningEvent, ...]:
+        # Preserve the existing repository/service contract for internal callers.
+        # The HTTP endpoint uses ``list_event_page`` and is therefore bounded;
+        # silently truncating this compatibility method at the page default would
+        # lose historical events for callers that still expect the full tuple.
         statement = (
             select(quality_warning_events_v1)
             .where(
@@ -343,11 +353,45 @@ class SqlAlchemyQualityWarningRepository:
                 quality_warning_events_v1.c.company_id == tenant.company_id,
                 quality_warning_events_v1.c.warning_id == warning_id,
             )
-            .order_by(quality_warning_events_v1.c.occurred_at, quality_warning_events_v1.c.event_id)
+            .order_by(
+                quality_warning_events_v1.c.occurred_at,
+                quality_warning_events_v1.c.event_id,
+            )
         )
         async with self.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
         return tuple(_event_from_row(row) for row in rows)
+
+    async def list_event_page(
+        self, *, tenant: TenantScope, warning_id: UUID, query: WarningEventQuery
+    ) -> QualityWarningEventPage:
+        conditions = [
+            quality_warning_events_v1.c.database_name == tenant.database_name,
+            quality_warning_events_v1.c.company_id == tenant.company_id,
+            quality_warning_events_v1.c.warning_id == warning_id,
+        ]
+        if query.cursor is not None:
+            occurred_at, event_id = _decode_event_cursor(query.cursor)
+            conditions.append(
+                or_(
+                    quality_warning_events_v1.c.occurred_at > occurred_at,
+                    and_(
+                        quality_warning_events_v1.c.occurred_at == occurred_at,
+                        quality_warning_events_v1.c.event_id > event_id,
+                    ),
+                )
+            )
+        statement = (
+            select(quality_warning_events_v1)
+            .where(*conditions)
+            .order_by(quality_warning_events_v1.c.occurred_at, quality_warning_events_v1.c.event_id)
+            .limit(query.limit + 1)
+        )
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        records = tuple(_event_from_row(row) for row in rows[: query.limit])
+        next_cursor = _encode_event_cursor(records[-1]) if len(rows) > query.limit else None
+        return QualityWarningEventPage(records=records, next_cursor=next_cursor)
 
     async def _upsert_open_warning(
         self,
@@ -673,3 +717,27 @@ def _decode_cursor(value: str) -> tuple[datetime, UUID]:
     if observed_at.tzinfo is None:
         raise ValueError("质量告警分页游标无效。")
     return observed_at, warning_id
+
+
+def _encode_event_cursor(record: QualityWarningEvent) -> str:
+    value = json.dumps(
+        {
+            "occurredAt": record.occurred_at.isoformat(),
+            "eventId": str(record.event_id),
+        },
+        separators=(",", ":"),
+    )
+    return base64.urlsafe_b64encode(value.encode("ascii")).decode("ascii").rstrip("=")
+
+
+def _decode_event_cursor(value: str) -> tuple[datetime, UUID]:
+    try:
+        payload = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        decoded = json.loads(payload.decode("ascii"))
+        occurred_at = datetime.fromisoformat(str(decoded["occurredAt"]))
+        event_id = UUID(str(decoded["eventId"]))
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("质量告警事件分页游标无效。") from error
+    if occurred_at.tzinfo is None:
+        raise ValueError("质量告警事件分页游标无效。")
+    return occurred_at, event_id

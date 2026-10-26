@@ -79,7 +79,9 @@ def verify_capability(
     odoo_session = claims.get("odoo_session")
     if not isinstance(database, str) or not database:
         raise CapabilityError("capability_identity_invalid")
-    if not isinstance(user, int) or not isinstance(company, int):
+    # ``bool`` is an ``int`` subclass in Python, but JSON true/false are not
+    # valid Odoo identities.  IDs are positive database identifiers.
+    if type(user) is not int or type(company) is not int or user <= 0 or company <= 0:
         raise CapabilityError("capability_identity_invalid")
     if (
         not isinstance(odoo_session, str)

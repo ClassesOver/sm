@@ -8,6 +8,7 @@ export interface ReportDocument {
   csrfToken?: string
   interactiveCharts?: Record<string, string>
   visualTheme?: ReportVisualTheme
+  chartAiEnabled?: boolean
   lineageFeatures?: {
     panel: boolean
     download: boolean
@@ -197,8 +198,56 @@ export interface TraceChartInfo {
   plotDataFileCount: number
   plotDataKind: string
   transformNotes: string[]
+  /** 工作区相对路径；编辑器据此把正文图片定位到登记图表。 */
+  imagePath: string
   imageSize: number
 }
+
+export interface ChartAIAvailability {
+  available: boolean
+  reason?: string
+  chartId?: string
+}
+
+export interface ChartAIEditRequest {
+  instruction: string
+  baseImagePath?: string
+  baseTitle?: string
+  baseAltText?: string
+  previousEditId?: string
+  expectedSha256?: string
+}
+
+export interface ChartAIEditChanges {
+  title?: string | null
+  altText?: string | null
+  visualForm?: string | null
+  plotDataUnchanged: boolean
+}
+
+export interface ChartAIEditSuccess {
+  status: 'succeeded'
+  editId: string
+  chartId: string
+  imagePath: string
+  /** 新图在正文中的引用形式（相对修订目录）。 */
+  imageSrc: string
+  level: string[]
+  changes: ChartAIEditChanges
+  warnings: string[]
+  skipped: { request: string; reason: string }[]
+  visualInspection: { format?: string; width?: number; height?: number; reviewed: boolean }
+}
+
+export interface ChartAIEditState {
+  editId: string
+  chartId: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  stage?: string
+  error?: { code: string; message: string; status?: number; skipped?: { request: string; reason: string }[] }
+}
+
+export type ChartAIEditResult = ChartAIEditSuccess & { status: 'succeeded' }
 
 export interface TracePlotDataPreview {
   fileResourceId: string
@@ -538,6 +587,41 @@ export class ReportEditorClient {
     signal?: AbortSignal,
   ): Promise<{ available: boolean; computations?: TraceComputationInfo[] }> {
     return this.request('/api/computations', { signal })
+  }
+
+  chartAiAvailability(chartId: string, signal?: AbortSignal): Promise<ChartAIAvailability> {
+    return this.request<ChartAIAvailability>(
+      `/api/charts/${encodeURIComponent(chartId)}/ai-edits/availability`,
+      { signal },
+    )
+  }
+
+  startChartAiEdit(
+    chartId: string,
+    payload: ChartAIEditRequest,
+  ): Promise<{ editId: string; status: string; requestId?: string }> {
+    return this.request(`/api/charts/${encodeURIComponent(chartId)}/ai-edits`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  chartAiEditStatus(chartId: string, editId: string): Promise<ChartAIEditState> {
+    return this.request<ChartAIEditState>(
+      `/api/charts/${encodeURIComponent(chartId)}/ai-edits/${encodeURIComponent(editId)}`,
+    )
+  }
+
+  /** 已登记改图的图表归属：正文图片已替换为改图结果时据此继续改图。 */
+  chartEditRecord(editId: string): Promise<{ editId: string; chartId: string; imagePath: string }> {
+    return this.request(`/api/chart-edits/${encodeURIComponent(editId)}`)
+  }
+
+  async cancelChartAiEdit(chartId: string, editId: string): Promise<void> {
+    await this.request(
+      `/api/charts/${encodeURIComponent(chartId)}/ai-edits/${encodeURIComponent(editId)}/cancel`,
+      { method: 'POST' },
+    )
   }
 
   async computationDetail(

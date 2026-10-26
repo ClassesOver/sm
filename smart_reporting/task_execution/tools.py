@@ -18,6 +18,14 @@ class _PatchOperation:
     path: str
 
 
+def assert_task_workspace_path(path: str) -> str:
+    """Reject service-owned workspace state from model-authored file changes."""
+
+    if path == ".agentos" or path.startswith(".agentos/"):
+        raise WorkspaceError(".agentos 是服务保留目录，任务工具不能修改。")
+    return path
+
+
 def _unified_diff_path(value: str) -> str:
     if value == "/dev/null":
         return value
@@ -196,7 +204,12 @@ def _normalized_patch_inputs(
 ) -> tuple[str, list[tuple[_PatchOperation, str]]]:
     normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
     paths = [
-        (operation, service.normalize_path(operation.path, allow_root=False))
+        (
+            operation,
+            assert_task_workspace_path(
+                service.normalize_path(operation.path, allow_root=False)
+            ),
+        )
         for operation in parse_unified_diff(normalized)
     ]
     return normalized, paths

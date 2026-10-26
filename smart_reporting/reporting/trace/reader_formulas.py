@@ -107,6 +107,127 @@ def _window_sum(entry: Mapping[str, Any], window: Sequence[str]) -> Decimal:
     )
 
 
+def _ratio_inputs(
+    entry: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], Mapping[str, Any]] | None:
+    """返回派生比率登记的两个精确输入；身份不完整时不猜指标。"""
+    ids = entry.get("inputFactIds") or ()
+    if entry.get("kind") != "ratio" or len(ids) != 2 or len(set(ids)) != 2:
+        return None
+    first, second = (entries.get(str(fact_id)) for fact_id in ids)
+    if not isinstance(first, Mapping) or not isinstance(second, Mapping):
+        return None
+    expected_codes = (entry.get("numeratorMetric"), entry.get("denominatorMetric"))
+    if any(
+        not isinstance(code, str)
+        or not code
+        or code not in (metric.get("metricCodes") or ())
+        for code, metric in zip(expected_codes, (first, second), strict=True)
+    ):
+        return None
+    return first, second
+
+
+def _ratio_operand_label(
+    metric: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]], span: str, basis: str,
+) -> str:
+    qualification = "、".join(item for item in (span, basis) if item)
+    name = _name(metric, entries)
+    return f"{name}（{qualification}）" if qualification else name
+
+
+def _derived_ratio_formula(
+    resolved: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]],
+) -> str | None:
+    """普通 derivedMetrics 字段按其两个登记输入写出可验算算式。"""
+    selector = resolved["selector"]
+    if selector not in {"value", "percentage", "numerator", "denominator", "difference"}:
+        return None
+    entry = resolved["entry"]
+    inputs = _ratio_inputs(entry, entries)
+    if inputs is None:
+        return None
+    numerator, denominator = inputs
+    span = _span(resolved.get("periods") or (), entry.get("periodGranularity"))
+    numerator_basis = (
+        "共同期末" if numerator.get("periodAggregation") == "last" else "同期合计"
+    )
+    denominator_basis = (
+        "共同期末" if denominator.get("periodAggregation") == "last" else "同期合计"
+    )
+    numerator_unit = numerator.get("unit")
+    denominator_unit = denominator.get("unit")
+    numerator_operand = _labelled(
+        _ratio_operand_label(numerator, entries, span, numerator_basis),
+        _amount(entry["numerator"], numerator_unit),
+    )
+    scale = Decimal(str(entry.get("denominatorScale") or 1))
+    aligned_denominator = Decimal(str(entry["denominator"])) / scale
+    denominator_operand = _labelled(
+        _ratio_operand_label(denominator, entries, span, denominator_basis),
+        _amount(aligned_denominator, denominator_unit),
+    )
+    comparable_unit = entry.get("unit")
+    if scale != 1:
+        denominator_operand += (
+            f"（按 ×{format(scale.normalize(), 'f')} 换算为"
+            f"{_amount(entry['denominator'], comparable_unit)}）"
+        )
+    result_unit = resolved.get("unit")
+    if selector == "numerator":
+        return numerator_operand + f" = {_amount(resolved['value'], result_unit or numerator_unit)}"
+    if selector == "denominator":
+        return denominator_operand + f" = {_amount(resolved['value'], result_unit or denominator_unit)}"
+    result = f" = {_amount(resolved['value'], result_unit)}"
+    if selector == "difference":
+        return f"{numerator_operand} − {denominator_operand}" + result
+    if selector == "percentage":
+        return f"{numerator_operand} ÷ {denominator_operand} × 100%" + result
+    return f"{numerator_operand} ÷ {denominator_operand}" + result
+
+
+def _registered_ratio_formula(
+    resolved: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]],
+) -> str | None:
+    """已核验 registeredRatio 使用 proof 中实际参与运算的基础单位值。"""
+    if resolved.get("selector") != "registeredRatio":
+        return None
+    entry = resolved["entry"]
+    inputs = _ratio_inputs(entry, entries)
+    proof = resolved.get("_registered_ratio_proof")
+    if inputs is None or not isinstance(proof, Mapping):
+        return None
+    numerator, denominator = inputs
+    span = _span(proof.get("periods") or (), entry.get("periodGranularity"))
+    basis = "共同期末" if proof.get("policy") == "last" else "同期合计"
+    unit = proof.get("unit")
+    if unit == "%":
+        from .ratio_proofs import _base_unit
+
+        numerator_base = _base_unit(numerator.get("unit"))
+        denominator_base = _base_unit(denominator.get("unit"))
+        if numerator_base is None or denominator_base is None:
+            return None
+        numerator_unit, denominator_unit = numerator_base[0], denominator_base[0]
+    elif isinstance(unit, str) and "/" in unit:
+        numerator_unit, denominator_unit = unit.split("/", 1)
+    else:
+        return None
+    numerator_operand = _labelled(
+        _ratio_operand_label(numerator, entries, span, basis),
+        _amount(proof["numeratorValue"], numerator_unit),
+    )
+    denominator_operand = _labelled(
+        _ratio_operand_label(denominator, entries, span, basis),
+        _amount(proof["denominatorValue"], denominator_unit),
+    )
+    percent = " × 100%" if unit == "%" else ""
+    return (
+        f"{numerator_operand} ÷ {denominator_operand}{percent}"
+        f" = {_amount(resolved['value'], resolved.get('unit'))}"
+    )
+
+
 def reader_formula(
     resolved: Mapping[str, Any], ids: Sequence[str], entries: Mapping[str, Mapping[str, Any]],
 ) -> str | None:
@@ -130,6 +251,12 @@ def _reader_formula(
     values = entry.get("periodValues") or ()
     roles = resolved.get("period_roles") or {}
 
+    if selector == "registeredRatio":
+        return _registered_ratio_formula(resolved, entries)
+    if entry.get("kind") == "ratio" and selector in {
+        "value", "percentage", "numerator", "denominator", "difference",
+    }:
+        return _derived_ratio_formula(resolved, entries)
     if selector in _ROW_STATISTICS and entry.get("aggregation"):
         rows = "最新登记期间各条记录" if entry.get("periodAggregation") == "last" else "各条记录"
         return f"{name}{rows}中的{_ROW_STATISTICS[selector]}"

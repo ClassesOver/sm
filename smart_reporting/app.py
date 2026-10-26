@@ -31,6 +31,7 @@ from .report_editor import (
     ReportEditorService,
     SqlAlchemyReportEditorRepository,
     create_report_editor_ai_service,
+    create_report_editor_chart_ai_service,
     create_report_editor_router,
 )
 from .reporting.agent import create_report_agent
@@ -250,6 +251,27 @@ report_editor = ReportEditorService(
     lineage_export_sources_enabled=settings.report_lineage_export_sources_enabled,
 )
 report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
+# 编辑器 AI 改图（REPORT_EDITOR_CHART_AI_ENABLED，默认关闭）：与可视化章节复用
+# 同一 code agent 工厂、CodeMode runtime、LSP、视觉审查与任务注册表；未配置
+# 视觉审查模型时服务构造仍成功，可用性接口按 vision_missing 提示不可用。
+report_editor_chart_ai = None
+if settings.report_editor_chart_ai_enabled:
+    from .reporting.workflow.runtime.code_generation import ReportingCodeGenerationRunner
+
+    report_editor_chart_ai = create_report_editor_chart_ai_service(
+        editor=report_editor,
+        workspace_registry=reporting_workspace_registry,
+        model=reporting_agent_template.model,
+        runner=ReportingCodeGenerationRunner(
+            report_runtime.visualization_code_agent_factory,
+            reporting_code_mode_runtime,
+            lsp_manager=reporting_lsp_process_manager,
+            registry=report_runtime.coding_task_registry,
+            vision_reviewer=report_runtime.vision_reviewer,
+        ),
+        hourly_limit=settings.report_editor_chart_ai_hourly_limit,
+        timeout_seconds=float(settings.report_editor_chart_ai_timeout_seconds),
+    )
 report_workflow = report_runtime.workflow()
 dingyi_process = DingyiProcessAdapter(agent_database.sync_engine)
 report_workflow_controller = ReportWorkflowController(
@@ -285,6 +307,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             report_editor_grants,
             editor=report_editor,
             ai=report_editor_ai,
+            chart_ai=report_editor_chart_ai,
             cookie_secure=bool(
                 settings.report_public_base_url
                 and settings.report_public_base_url.startswith("https://")
@@ -302,6 +325,8 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("startup", report_editor_repository.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
     application.router.add_event_handler("shutdown", report_editor.aclose)
+    if report_editor_chart_ai is not None:
+        application.router.add_event_handler("shutdown", report_editor_chart_ai.aclose)
     return application
 
 

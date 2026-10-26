@@ -38,6 +38,8 @@ from ...phase import (
 )
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
+from ...trace.fact_index import breakdown_partition_rows, breakdown_partitions
+from ...trace.numeric_text import frozen_number_catalog, render_frozen_numbers
 from ..benchmark_variants import (
     BenchmarkProjection,
     BenchmarkVariant,
@@ -755,8 +757,60 @@ _MODEL_FACT_WARNING_COLLECTIONS = (
 )
 
 
+def _breakdown_descriptors(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """维度分组的图表数据描述。
+
+    图表绑定只能按路径取值、不能筛选行：整表只有一个指标的一个维度时才按行绑定；
+    否则逐组登记，由图表选取同一 parentFactId 与 breakdownField 的分组，避免混入其他维度。
+    逐组条目与逐月序列只为组数不多的维度登记（多组饼图/折线不可读），控制图表规划输入体积。
+    """
+    fields = ["parentFactId", "breakdownField", "breakdownLabel", "breakdownValue",
+              "displayName", "total", "unit"]
+    partitions = breakdown_partition_rows(payload)
+    descriptors: list[dict[str, Any]] = []
+    if len(partitions) == 1 and sum(map(len, partitions.values())) == len(payload.get("breakdowns") or ()):
+        descriptors.append({"dataPath": "breakdowns", "fields": fields,
+                            "dataScope": "同一指标同一维度的完整分组合计"})
+    for rows in partitions.values():
+        if len(rows) > 6:
+            continue
+        for index, item in rows:
+            if len(partitions) > 1:
+                descriptors.append({"dataPath": f"breakdowns[{index}]", "fields": fields})
+            if item.get("periodValues"):
+                descriptors.append({"dataPath": f"breakdowns[{index}].periodValues", "fields": ["period", "value"]})
+    return descriptors
+
+
+def _model_facing_breakdowns(
+    bundle: DeterministicAnalysisBundle, *, with_periods: bool = True,
+) -> list[dict[str, Any]]:
+    """维度分组按父指标与维度归并：每组只列取值、合计与期间值，口径与告警见父指标。"""
+    return [
+        {
+            "parentFactId": parent_id,
+            "dimension": groups[0].breakdown_label or field,
+            "field": field,
+            "unit": groups[0].unit,
+            "groups": [
+                {
+                    "value": fact.scope.get(field),
+                    "factId": fact.fact_id,
+                    "total": fact.total,
+                    **({"periodValues": [[item.period, item.value] for item in fact.period_values]}
+                       if with_periods else {}),
+                }
+                for fact in groups
+            ],
+        }
+        for (parent_id, field), groups in breakdown_partitions(bundle).items()
+    ]
+
+
 def _model_facing_deterministic_facts(
     bundle: DeterministicAnalysisBundle,
+    *,
+    breakdown_detail: Literal["full", "totals", "none"] = "full",
 ) -> dict[str, Any]:
     """投影模型所需事实，隐藏校验元数据并去重重复告警。
 
@@ -766,6 +820,9 @@ def _model_facing_deterministic_facts(
     """
 
     projected = bundle.model_dump(mode="json", by_alias=True)
+    projected.pop("breakdowns", None)
+    if bundle.breakdowns and breakdown_detail != "none":
+        projected["breakdowns"] = _model_facing_breakdowns(bundle, with_periods=breakdown_detail == "full")
     seen_warnings: set[str] = set()
     for collection_key in _MODEL_FACT_WARNING_COLLECTIONS:
         collection = projected.get(collection_key)
@@ -1542,6 +1599,7 @@ class RuntimeAnalysisMixin:
                     ("bottomGroups", ["group", "value"]),
                 )
             )
+        data_descriptors.extend(_breakdown_descriptors(payload))
         data_descriptors.extend(
             {"dataPath": f"derivedMetrics[{index}]", "fields": sorted(key for key, value in metric.items() if value is None or isinstance(value, (str, int, float, bool)))}
             for index, metric in enumerate(payload.get("derivedMetrics", ()))
@@ -1665,7 +1723,10 @@ class RuntimeAnalysisMixin:
             "factFile": fact_file.model_dump(mode="json", by_alias=True),
             "dataPathBase": "fileRoot",
             "dataDescriptors": data_descriptors,
-            "summary": durable_item.get("summary") if isinstance(durable_item, Mapping) else None,
+            # 固定事实摘要以数值引用写成；图表规划只需读数，渲染为显示值。
+            "summary": render_frozen_numbers(
+                durable_item["summary"], frozen_number_catalog([fact_model.model_dump_json(by_alias=True)]),
+            ) if isinstance(durable_item, Mapping) and isinstance(durable_item.get("summary"), str) else None,
             "metrics": [
                 {
                     "metricIndex": index,
@@ -3922,6 +3983,18 @@ class RuntimeAnalysisMixin:
             }
             instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
             instruction_bytes = len(instruction.encode("utf-8"))
+            for breakdown_detail in ("totals", "none"):
+                if instruction_bytes <= MAX_REPORT_INSTRUCTION_BYTES or not deterministic_facts.breakdowns:
+                    break
+                # 维度分组是可选视图：超出输入边界时先去掉分组逐月值，再去掉分组；冻结事实文件完整保留。
+                instruction_payload["deterministicFacts"] = _model_facing_deterministic_facts(
+                    deterministic_facts, breakdown_detail=breakdown_detail,
+                )
+                instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
+                instruction_bytes = len(instruction.encode("utf-8"))
+                loguru_logger.warning(
+                    "report_analysis_breakdowns_compacted analysis={} detail={}", analysis_id, breakdown_detail,
+                )
             if instruction_bytes > MAX_REPORT_INSTRUCTION_BYTES:
                 raise ReportingError(
                     "report_analysis_context_too_large",

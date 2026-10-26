@@ -16,7 +16,7 @@ from ..hospital_operation.deterministic_analysis import (
 )
 from .calc_references import CALC_TOKEN, CalcEvaluator
 from .contracts_v1 import NumberReferenceV1, ReviewNoticeV1, TableDerivationV1
-from .fact_index import fact_binding_records, merge_binding_records, merge_frozen_fact
+from .fact_index import FACT_ARRAYS, fact_binding_records, merge_binding_records, merge_frozen_fact
 from .numeric_text import (
     _NUMBER,
     _canonical_month_label,
@@ -45,19 +45,60 @@ def reference_fact_ids(token: str) -> tuple[str, ...]:
 
 
 # 解析时由服务端按登记原值计算的选择器：期间合计与均值、相邻月变化、占比、预算比较、分组差额等。
-_COMPUTED_SELECTORS = (
-    "periodTotals.", "periodAverages.", "periodChanges.", "periodChangeRates.", "monthlyAverage",
-    "monthlyMinimum", "monthlyMaximum", "monthlyTrend", "metricShare.", "budgetComparison.", "projectRatio.",
-    "groupShares.", "groupGaps.", "groupContributions.", "registeredRatio", "cumulativeChanges.", "topSet.",
+# 精确选择器和带参数的前缀分开登记，避免普通选择器因名称前缀相似而误判。
+_COMPUTED_SELECTORS = {
+    "monthlyAverage",
+    "monthlyMinimum",
+    "monthlyMaximum",
+    "monthlyTrend",
+}
+# 派生指标自身的 value/percentage 等字段由服务端从 inputFactIds 计算，不能标成“直接登记”；
+# 但相关系数的 value、对账的 difference 等同名字段是登记事实本身，按事实类型区分，不按名称。
+_DERIVED_METRIC_SELECTORS = {
+    "value",
+    "percentage",
+    "numerator",
+    "denominator",
+    "difference",
+    "registeredRatio",
+}
+_COMPUTED_SELECTOR_PREFIXES = (
+    "periodTotals.",
+    "periodAverages.",
+    "periodChanges.",
+    "periodChangeRates.",
+    "metricShare.",
+    "budgetComparison.",
+    "projectRatio.",
+    "groupShares.",
+    "groupGaps.",
+    "groupContributions.",
+    "cumulativeChanges.",
+    "topSet.",
 )
 
 
-def reference_computation(token: str, selector: str | None, *, table_derivation: bool = False) -> str:
+def reference_computation(
+    token: str,
+    selector: str | None,
+    *,
+    table_derivation: bool = False,
+    entry: Mapping[str, Any] | None = None,
+) -> str:
     """正文数值的取得方式：registered 直接取登记事实，derived 由服务端按登记原值派生，
-    calc 按模型写出的运算式由服务端重算。供编辑器向读者标出可信状态。"""
+    calc 按模型写出的运算式由服务端重算。供编辑器向读者标出可信状态。
+
+    ``entry`` 是引用解析到的事实条目；只有派生指标（登记分子、分母指标）的字段按派生计。
+    """
     if token.startswith("{{calc:"):
         return "calc"
-    if table_derivation or token.startswith("{{derived:") or (selector or "").startswith(_COMPUTED_SELECTORS):
+    derived_metric = isinstance(entry, Mapping) and "numeratorMetric" in entry
+    computed = (
+        selector in _COMPUTED_SELECTORS
+        or bool(selector and selector.startswith(_COMPUTED_SELECTOR_PREFIXES))
+        or (derived_metric and selector in _DERIVED_METRIC_SELECTORS)
+    )
+    if table_derivation or token.startswith("{{derived:") or computed:
         return "derived"
     return "registered"
 
@@ -361,13 +402,7 @@ class NumberReferenceResolver:
                     record = merged or record
                 records[key] = record
             document = bundle.model_dump(mode="json", by_alias=True)
-            for array in (
-                "metrics",
-                "comparisons",
-                "derivedMetrics",
-                "reconciliations",
-                "correlationDetails",
-            ):
+            for _, array in FACT_ARRAYS:
                 for fact in document.get(array, ()):
                     key = fact.get("factId")
                     if key in self.entries:

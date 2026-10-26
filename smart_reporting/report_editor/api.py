@@ -23,6 +23,7 @@ from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
+from .chart_ai import ChartAIEditRequest
 from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
 from .trace_retention import SourceFileResponse
 
@@ -114,6 +115,7 @@ def create_report_editor_router(
     *,
     editor: Any | None = None,
     ai: Any | None = None,
+    chart_ai: Any | None = None,
     cookie_secure: bool = True,
     allowed_origin: str | None = None,
     static_dir: str | Path | None = None,
@@ -256,6 +258,10 @@ def create_report_editor_router(
             feature_reader = getattr(editor, "lineage_features", None)
             if callable(feature_reader):
                 result["lineageFeatures"] = feature_reader()
+            # AI 改图入口可见性：仅在装配了改图服务时暴露开关；缺省视为关闭，
+            # 前端据此隐藏入口而不是点击后报错。
+            if chart_ai is not None:
+                result["chartAiEnabled"] = True
             source_revision = getattr(document, "source_revision", None)
             if source_revision is not None:
                 result["sourceRevision"] = source_revision
@@ -994,10 +1000,130 @@ def create_report_editor_router(
                     _editor_http_error(error)
                 return StreamingResponse(stream, media_type="text/markdown")
 
+        if chart_ai is not None:
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits/availability",
+                include_in_schema=False,
+            )
+            async def read_chart_ai_availability(
+                report_id: str,
+                revision: int,
+                chart_id: str,
+                request: Request,
+            ) -> dict[str, object]:
+                session, context = await _read_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await chart_ai.availability(context, session, chart_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits",
+                include_in_schema=False,
+            )
+            async def start_chart_ai_edit(
+                report_id: str,
+                revision: int,
+                chart_id: str,
+                payload: ChartAIEditRequest,
+                request: Request,
+            ) -> JSONResponse:
+                session, _editor_context = await _write_session_context(
+                    grants,
+                    editor,
+                    request,
+                    report_id=report_id,
+                    revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                request_id = _request_id(request.headers.get("x-request-id"))
+                try:
+                    started = await chart_ai.start_edit(
+                        _editor_context,
+                        session,
+                        chart_id,
+                        payload,
+                    )
+                except ReportingError as error:
+                    _editor_http_error(error, request_id=request_id)
+                return JSONResponse({**started, "requestId": request_id or started["editId"]}, status_code=202)
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/chart-edits/{edit_id}",
+                include_in_schema=False,
+            )
+            async def read_chart_edit_record(
+                report_id: str,
+                revision: int,
+                edit_id: str,
+                request: Request,
+            ) -> dict[str, object]:
+                # 正文图片已替换为改图结果时，前端据此找回所属图表继续改图。
+                _raw_session, context = await _read_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await chart_ai.edit_record(context, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits/{edit_id}",
+                include_in_schema=False,
+            )
+            async def read_chart_ai_edit(
+                report_id: str,
+                revision: int,
+                chart_id: str,
+                edit_id: str,
+                request: Request,
+            ) -> dict[str, object]:
+                _raw_session, context = await _read_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    status = chart_ai.edit_status(context, chart_id, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+                failure = status.get("error")
+                if isinstance(failure, dict):
+                    status = {
+                        **status,
+                        "error": {**failure, "status": _editor_error_status(str(failure.get("code", "")))},
+                    }
+                return status
+
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits/{edit_id}/cancel",
+                include_in_schema=False,
+            )
+            async def cancel_chart_ai_edit(
+                report_id: str,
+                revision: int,
+                chart_id: str,
+                edit_id: str,
+                request: Request,
+            ) -> dict[str, object]:
+                context = await _write_context(
+                    grants,
+                    editor,
+                    request,
+                    report_id=report_id,
+                    revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                try:
+                    return chart_ai.cancel_edit(context, chart_id, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
     return router
 
 
-async def _write_context(
+async def _write_session_context(
     grants: ReportEditorGrantService,
     editor: Any,
     request: Request,
@@ -1005,7 +1131,8 @@ async def _write_context(
     report_id: str,
     revision: int,
     allowed_origin: str | None,
-) -> Any:
+) -> tuple[Any, Any]:
+    """写操作：校验 Origin 与 CSRF 后返回 (session, context)，会话只查一次。"""
     raw_session = request.cookies.get(EDITOR_SESSION_COOKIE, "")
     origin = request.headers.get("origin", "")
     # 本地/反向代理访问时，页面 origin 可能与配置的公开地址不同（例如
@@ -1024,9 +1151,24 @@ async def _write_context(
         session = await grants.lookup_session(raw_session)
         if session.report_id != report_id or session.revision != revision:
             raise ReportingError("report_editor_scope_mismatch", "报告编辑会话作用域不一致。")
-        return await editor.context_for_session(session)
+        return session, await editor.context_for_session(session)
     except ReportingError as error:
         _editor_http_error(error)
+
+
+async def _write_context(
+    grants: ReportEditorGrantService,
+    editor: Any,
+    request: Request,
+    *,
+    report_id: str,
+    revision: int,
+    allowed_origin: str | None,
+) -> Any:
+    _session, context = await _write_session_context(
+        grants, editor, request, report_id=report_id, revision=revision, allowed_origin=allowed_origin
+    )
+    return context
 
 
 async def _read_context(
@@ -1055,17 +1197,16 @@ async def _read_session_context(
     report_id: str,
     revision: int,
 ) -> tuple[Any, Any]:
-    """来源类路由使用：返回 (session, context)，权限决策需要 session 能力。"""
+    """来源类路由使用：返回 (session, context)，权限决策需要 session 能力；会话只查一次。"""
 
-    _raw_session, context = await _read_context(
-        grants, editor, request, report_id=report_id, revision=revision
-    )
     raw_session = request.cookies.get(EDITOR_SESSION_COOKIE, "")
     try:
         session = await grants.lookup_session(raw_session)
+        if session.report_id != report_id or session.revision != revision:
+            raise ReportingError("report_editor_scope_mismatch", "报告编辑会话作用域不一致。")
+        return session, await editor.context_for_session(session)
     except ReportingError as error:
         _editor_http_error(error)
-    return session, context
 
 
 def _origin(value: str) -> str:
@@ -1092,6 +1233,16 @@ def _editor_error_status(code: str) -> int:
         return 429
     if code == "report_editor_export_timeout":
         return 504
+    if code == "report_editor_chart_ai_busy":
+        return 409
+    if code == "report_editor_chart_ai_rate_limited":
+        return 429
+    if code == "report_editor_chart_ai_timeout":
+        return 504
+    if code == "report_editor_chart_ai_missing":
+        return 404
+    if code.startswith("report_editor_chart_ai_"):
+        return 400
     if code == "report_editor_session_expired":
         return 410
     if code.startswith("report_editor_ai_"):

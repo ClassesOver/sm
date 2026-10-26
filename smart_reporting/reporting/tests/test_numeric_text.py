@@ -489,11 +489,24 @@ def test_extrema_correction_rewrites_unmarked_block_readably(text, expected):
         "1—3月中，3月收入最高。",  # 子期间范围：改写会丢失范围语义
         "2024年2月收入最高。",  # 其他年份不属于该序列
         "4月收入最高，2月最低。",  # 与冻结序列一致
+        # 极值词在前、月份在后：4月属于“最高”，不能被下一分句的“最低”接走。
+        "收入最高为4月80元，最低为2月50元。",
         "2月金额为最高值；2月收入也最高。",  # 无法唯一定位，留给软告警
     ],
 )
 def test_extrema_correction_keeps_text_it_cannot_safely_rewrite(text):
     assert correct_period_extrema(text, [_monthly_document()]) == text
+
+
+def test_extremum_named_before_the_month_is_checked_against_that_extremum():
+    from smart_reporting.reporting.trace.numeric_text import period_extrema_warnings
+
+    document = json.loads(_monthly_document())
+    # 极值词在前：2月按前一个“最高”复核（冻结序列最高为4月），不交给后一个“最低”。
+    assert period_extrema_warnings("[[analysis:analysis_001]]收入最高为2月50元，最低为4月120元。", [document]) == [
+        "月度极值陈述需复核：2月被写为最高，冻结月序列的最高月份为4月。"
+    ]
+    assert period_extrema_warnings("[[analysis:analysis_001]]收入最高为4月120元，最低为2月50元。", [document]) == []
 
 
 def test_extrema_correction_needs_a_unique_bundle_for_unmarked_text():

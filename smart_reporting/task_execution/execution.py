@@ -32,7 +32,7 @@ from .repository_impl import (
     TaskExecutionTask,
     utcnow,
 )
-from .tools import abuild_workspace_changes
+from .tools import abuild_workspace_changes, assert_task_workspace_path
 
 TASK_EXECUTION_DEPENDENCY = "AgentOS 任务执行"
 TASK_EXECUTION_FINISH_FAILURE_STATE_KEY = "agentos_task_execution_finish_failure"
@@ -546,6 +546,7 @@ class TaskExecutionKernel:
                     "bytes": len(raw),
                     "storedBytes": stored_bytes,
                     "sha256": hashlib.sha256(raw).hexdigest(),
+                    "storedSha256": hashlib.sha256(raw[:stored_bytes]).hexdigest(),
                 }
                 handles[handle] = metadata
                 task_state["bytes"] = int(task_state.get("bytes", 0)) + stored_bytes
@@ -682,9 +683,19 @@ class TaskExecutionKernel:
             raise WorkspaceError("output handle 已保存内容长度与受信元数据不一致。")
         output_bytes = int(metadata.get("bytes", -1))
         output_sha256 = metadata.get("sha256")
-        if stored_bytes == output_bytes and (
-            not isinstance(output_sha256, str) or hashlib.sha256(raw).hexdigest() != output_sha256
-        ):
+        stored_sha256 = metadata.get("storedSha256")
+        # Full legacy resources can still be checked against the original
+        # digest.  A truncated handle written before storedSha256 existed has
+        # no prefix digest: keep it readable for in-flight tasks (length is
+        # still checked above) but mark it unverified instead of failing.
+        if not isinstance(stored_sha256, str) and stored_bytes == output_bytes:
+            stored_sha256 = output_sha256
+        if not isinstance(stored_sha256, str):
+            logger.warning(
+                "task_tool_output_legacy_unverified stored_bytes={} bytes={}", stored_bytes, output_bytes
+            )
+            return raw, {**metadata, "integrity": "legacy_unverified"}
+        if hashlib.sha256(raw).hexdigest() != stored_sha256:
             raise WorkspaceError("output handle 已保存内容哈希与受信元数据不一致。")
         return raw, dict(metadata)
 
@@ -982,6 +993,10 @@ class TaskExecutionKernel:
         _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         scope = _scope or await self.scope(run_context)
+        if path is not None:
+            path = assert_task_workspace_path(
+                normalize_workspace_path(path, allow_root=False)
+            )
         if mode == "patch":
             if not isinstance(patch, str) or not patch.strip():
                 raise WorkspaceError("patch 模式必须提供完整补丁。")
@@ -1041,6 +1056,13 @@ class TaskExecutionKernel:
             ]
         else:
             raise WorkspaceError("patch mode 只支持 create、overwrite、replace 或 patch。")
+        for change in changes:
+            change_path = change.get("path")
+            if not isinstance(change_path, str):
+                raise WorkspaceError("补丁变更缺少工作区路径。")
+            assert_task_workspace_path(
+                normalize_workspace_path(change_path, allow_root=False)
+            )
         if not changes:
             return {
                 "ok": False,

@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from smart_reporting.quality_warnings import (
     CheckContext,
     CheckScope,
+    QualityWarningEvent,
+    QualityWarningEventPage,
     QualityWarningPage,
     QualityWarningRecord,
     QualityWarningService,
@@ -132,6 +134,73 @@ async def test_quality_warning_list_uses_capability_tenant_and_defaults_to_open(
 
     assert response.status_code == 200
     assert response.json()["records"][0]["warning_id"] == str(record.warning_id)
+
+
+@pytest.mark.anyio
+async def test_quality_warning_events_are_cursor_paginated() -> None:
+    from smart_reporting.quality_warnings.api import create_quality_warning_router
+
+    tenant = TenantScope(database_name="hospital", company_id="42")
+    warning_id = uuid4()
+    record = QualityWarningRecord(
+        warning_id=warning_id,
+        tenant=tenant,
+        domain="reporting",
+        rule_code="report_metric_definition_incomplete",
+        subject_type="metric",
+        subject_id="income_summary_total",
+        fingerprint="a" * 64,
+        status="open",
+        severity="warning",
+        message="指标定义不完整。",
+        details={},
+        first_observed_at=datetime.now(UTC),
+        last_observed_at=datetime.now(UTC),
+        resolved_at=None,
+        occurrence_count=1,
+        last_check_id="analysis-1",
+        version=1,
+    )
+    event = QualityWarningEvent(
+        event_id=uuid4(), warning_id=warning_id, tenant=tenant,
+        event_type="detected", check_id="analysis-1",
+        occurred_at=datetime.now(UTC), details={},
+    )
+
+    class Service:
+        async def list_warning_page(self, **_kwargs):
+            raise AssertionError("warning list is not used by the event endpoint")
+
+        async def get_warning(self, *, tenant, warning_id):
+            return record
+
+        async def list_event_page(self, *, tenant, warning_id, query):
+            assert query.limit == 1 and query.cursor is None
+            return QualityWarningEventPage(records=(event,), next_cursor="next")
+
+    application = FastAPI()
+    application.state.agentos_context = SimpleNamespace(quality_warning_service=Service())
+
+    @application.middleware("http")
+    async def capability(request, call_next):
+        request.state.capability = SimpleNamespace(database="hospital", company=42)
+        return await call_next(request)
+
+    application.include_router(create_quality_warning_router())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/quality-warnings/{warning_id}/events?limit=1")
+        malformed = await client.get(
+            f"/quality-warnings/{warning_id}/events?cursor=not-a-cursor"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "records": [event.model_dump(mode="json")], "next_cursor": "next"
+    }
+    assert malformed.status_code == 400
+    assert malformed.json() == {"detail": "quality_warning_event_cursor_invalid"}
 
 
 @pytest.mark.anyio

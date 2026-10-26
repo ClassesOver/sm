@@ -168,3 +168,20 @@ async def test_claims_without_fact_ids_skip_verification() -> None:
         harness, "thread", checkpoint, (artifact,)
     )
     assert issues == [] and warnings == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_breakdown_fact_ids_are_known_to_the_publication_gate() -> None:
+    # 维度分组是可绑定事实：claim 引用分组 factId 不能被判为未知事实。
+    group_id = "fact-" + "2" * 16
+    document = json.loads(_fact_file_bytes("fact-" + "1" * 16, total=3600.0))
+    document["breakdowns"] = [{**document["metrics"][0], "factId": group_id, "total": 1200.0,
+                               "parentFactId": "fact-" + "1" * 16}]
+    harness = _GateHarness({"facts/analysis_001.json": json.dumps(document, ensure_ascii=False).encode()})
+    checkpoint = _checkpoint({"analysis_001": FileIdentity(path="facts/analysis_001.json", size=1, sha256="a" * 64)})
+    artifact = _artifact((_claim("claim-1", 1200.0, fact_ids=(group_id,)),))
+    issues, warnings = await RuntimePublicationMixin._verify_claim_fact_bindings(
+        harness, "thread", checkpoint, (artifact,)
+    )
+    assert issues == [] and warnings == []

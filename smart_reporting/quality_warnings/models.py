@@ -148,6 +148,16 @@ class QualityWarningEvent(_FrozenModel):
     details: dict[str, JsonValue]
 
 
+class WarningEventQuery(_FrozenModel):
+    cursor: Annotated[str, Field(min_length=1, max_length=1_024)] | None = None
+    limit: Annotated[int, Field(ge=1, le=100)] = 50
+
+
+class QualityWarningEventPage(_FrozenModel):
+    records: tuple[QualityWarningEvent, ...]
+    next_cursor: str | None = None
+
+
 class WarningNotice(_FrozenModel):
     """阶段内产生的不可变告警通知，不包含租户或持久化状态。"""
 

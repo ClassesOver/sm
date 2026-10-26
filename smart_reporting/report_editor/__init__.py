@@ -1,5 +1,6 @@
 from .ai import ReportEditorAIService, create_report_editor_ai_service
 from .api import EDITOR_SESSION_COOKIE, create_report_editor_router
+from .chart_ai import ChartAIEditService, create_report_editor_chart_ai_service
 from .repository import SqlAlchemyReportEditorRepository
 from .service import (
     InMemoryReportEditorRepository,
@@ -12,6 +13,7 @@ from .service import (
 
 __all__ = [
     "EDITOR_SESSION_COOKIE",
+    "ChartAIEditService",
     "InMemoryReportEditorRepository",
     "ReportEditorContext",
     "ReportEditorAIService",
@@ -21,5 +23,6 @@ __all__ = [
     "ReportEditorSession",
     "SqlAlchemyReportEditorRepository",
     "create_report_editor_ai_service",
+    "create_report_editor_chart_ai_service",
     "create_report_editor_router",
 ]

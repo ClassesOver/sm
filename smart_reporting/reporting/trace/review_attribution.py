@@ -8,6 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from .fact_index import breakdown_partition_rows
 from .numeric_text import (
     _frozen_number_entries,
     _operand_names,
@@ -277,6 +278,10 @@ def _metric_value_attribution_warnings(text: str, contents: Iterable[str], docum
                          or field_definitions.get(str(entry.get("field", ""))))
                 if isinstance(label, str) and len(label) >= 2 and re.search(r"[\u3400-\u9fff]", label):
                     labels_by_fact[entry["factId"]] = label
+        # 维度分组是父指标的一部分：其数值归父指标所有，不能作为“不判定归属”的中性登记值。
+        for entry in document.get("breakdowns") or ():
+            if isinstance(entry, dict) and entry.get("parentFactId") in labels_by_fact:
+                labels_by_fact[entry["factId"]] = labels_by_fact[entry["parentFactId"]]
     labels = set(labels_by_fact.values())
     if len(labels) < 2:
         return []
@@ -397,6 +402,16 @@ def _group_value_attribution_warnings(text: str, documents: list[dict[str, Any]]
     # 指标、比较与派生事实中分组结果以外的登记值：对得上其中任何一个时不判定归属。
     registered: list[tuple[str, set[Decimal]]] = []
     for document in documents:
+        # 维度分组：同一父指标、同一维度的各组合计就是一张登记分组表。
+        for (_, field), rows in breakdown_partition_rows(document).items():
+            entries = [entry for _, entry in rows
+                       if isinstance(entry.get("unit"), str) and "current" in (entry.get("periodRoles") or ())
+                       and isinstance(entry.get("total"), (int, float)) and not isinstance(entry.get("total"), bool)
+                       and (entry.get("scope") or {}).get(field)]
+            groups = {str(entry["scope"][field]): Decimal(str(entry["total"])) for entry in entries}
+            if len(groups) >= 2:
+                tables.append((entries[-1]["unit"], groups))
+        # 分组事实的数值只作为分组表比较，不进“其他登记值”：否则一组的值写在另一组名下时恰好被放行。
         for array in ("metrics", "comparisons", "derivedMetrics", "reconciliations"):
             for entry in document.get(array) or ():
                 if not isinstance(entry, dict) or not isinstance(entry.get("unit"), str):

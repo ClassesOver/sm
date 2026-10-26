@@ -13,7 +13,7 @@ from pydantic import ConfigDict, Field
 from sqlglot import exp
 
 from ....report_editor.service import ReportEditorContext
-from ....workspace import WorkspaceError, WorkspacePathConflict
+from ....workspace import WorkspacePathConflict
 from ...delivery.artifacts_v1 import ArtifactFile, ReportArtifactManifest
 from ...structured_output import StructuredOutputCallBudget
 from ...trace.contracts_v1 import RevisionTraceIndexV1, derive_resource_id
@@ -420,130 +420,164 @@ class RuntimePlanningMixin:
                         raise ReportingError(
                             "report_trace_index_invalid", "报告追溯索引与发布身份不一致。"
                         )
-            except (ReportingError, ValidationError, ValueError, OSError, WorkspaceError) as error:
+            except Exception as error:  # noqa: BLE001 - 溯源是附加能力，任意故障均不得阻断签发
                 _drop_lineage(error)
         source_markdown = PurePosixPath(content["markdownPath"])
         revision_directory = f"revision-{content['revision']}"
-        revision_markdown = (
+        default_revision_markdown = (
             source_markdown
             if source_markdown.parent.name == revision_directory
             else source_markdown.parent / revision_directory / source_markdown.name
         )
-        editor_job = deepcopy(content["editorJob"])
-        path_map: dict[str, str] = {}
-        if revision_markdown != source_markdown:
-            markdown = await self.workspace_service.aread_text(thread_id, str(source_markdown))
-            if await self.workspace_service.apath_exists(thread_id, str(revision_markdown)):
-                existing = await self.workspace_service.aread_text(
-                    thread_id, str(revision_markdown)
-                )
-                if existing != markdown:
-                    raise ReportingError(
-                        "report_editor_revision_conflict",
-                        "当前报告 revision 已存在不同的 Markdown 快照。",
-                    )
-            else:
-                await self.workspace_service.awrite_text(
-                    thread_id, str(revision_markdown), markdown
-                )
-            source_root = source_markdown.parent
-            target_root = revision_markdown.parent
 
-            async def _copy_asset(source_path: str) -> str | None:
-                try:
-                    relative = PurePosixPath(source_path).relative_to(source_root)
-                except ValueError:
-                    return None
-                target_path = str(target_root / relative)
-                if target_path == source_path:
-                    return target_path
-                if not await self.workspace_service.apath_exists(thread_id, source_path):
-                    return None
-                content_bytes, _ = await self.workspace_service.afile_bytes(thread_id, source_path)
-                # 发布可能重放：先直接写入（首次发布无额外往返）；目标已存在时与 Markdown
-                # 快照同语义，内容一致即复用，不一致视为 revision 冲突。
-                try:
-                    await self.workspace_service.awrite_bytes(thread_id, target_path, content_bytes)
-                except WorkspacePathConflict:
-                    existing_bytes, _ = await self.workspace_service.afile_bytes(
-                        thread_id, target_path
+        async def _prepare_editor_snapshot() -> tuple[PurePosixPath, dict[str, Any]]:
+            """准备可选编辑快照；失败由调用方降级，不能影响 PDF/Word 签发。"""
+
+            revision_markdown = default_revision_markdown
+            editor_job = deepcopy(content["editorJob"])
+            path_map: dict[str, str] = {}
+            if revision_markdown != source_markdown:
+                markdown = await self.workspace_service.aread_text(
+                    thread_id, str(source_markdown)
+                )
+                if await self.workspace_service.apath_exists(
+                    thread_id, str(revision_markdown)
+                ):
+                    existing = await self.workspace_service.aread_text(
+                        thread_id, str(revision_markdown)
                     )
-                    if existing_bytes != content_bytes:
+                    if existing != markdown:
                         raise ReportingError(
                             "report_editor_revision_conflict",
-                            "当前报告 revision 已存在不同的资源快照。",
-                        ) from None
-                path_map[source_path] = target_path
-                return target_path
+                            "当前报告 revision 已存在不同的 Markdown 快照。",
+                        )
+                else:
+                    await self.workspace_service.awrite_text(
+                        thread_id, str(revision_markdown), markdown
+                    )
+                source_root = source_markdown.parent
+                target_root = revision_markdown.parent
 
-            render = editor_job.get("render") or {}
-            images = render.get("images") if isinstance(render, dict) else None
-            if isinstance(images, list):
-                for image in images:
-                    if isinstance(image, dict):
-                        await _copy_asset(image.get("path", ""))
+                async def _copy_asset(source_path: str) -> str | None:
+                    try:
+                        relative = PurePosixPath(source_path).relative_to(source_root)
+                    except ValueError:
+                        return None
+                    target_path = str(target_root / relative)
+                    if target_path == source_path:
+                        return target_path
+                    if not await self.workspace_service.apath_exists(thread_id, source_path):
+                        return None
+                    content_bytes, _ = await self.workspace_service.afile_bytes(
+                        thread_id, source_path
+                    )
+                    try:
+                        await self.workspace_service.awrite_bytes(
+                            thread_id, target_path, content_bytes
+                        )
+                    except WorkspacePathConflict:
+                        existing_bytes, _ = await self.workspace_service.afile_bytes(
+                            thread_id, target_path
+                        )
+                        if existing_bytes != content_bytes:
+                            raise ReportingError(
+                                "report_editor_revision_conflict",
+                                "当前报告 revision 已存在不同的资源快照。",
+                            ) from None
+                    path_map[source_path] = target_path
+                    return target_path
 
-            interactive = editor_job.get("interactiveCharts")
-            if isinstance(interactive, dict):
-                for spec in interactive.values():
-                    if isinstance(spec, dict):
-                        await _copy_asset(spec.get("path", ""))
+                render = editor_job.get("render") or {}
+                images = render.get("images") if isinstance(render, dict) else None
+                if isinstance(images, list):
+                    for image in images:
+                        if isinstance(image, dict):
+                            await _copy_asset(image.get("path", ""))
 
-            def _remap_paths(obj: Any) -> Any:
-                if isinstance(obj, dict):
-                    return {
-                        path_map.get(key, key): _remap_paths(value) for key, value in obj.items()
-                    }
-                if isinstance(obj, list):
-                    return [_remap_paths(item) for item in obj]
-                if isinstance(obj, str) and obj in path_map:
-                    return path_map[obj]
-                return obj
+                interactive = editor_job.get("interactiveCharts")
+                if isinstance(interactive, dict):
+                    for spec in interactive.values():
+                        if isinstance(spec, dict):
+                            await _copy_asset(spec.get("path", ""))
 
-            editor_job = _remap_paths(editor_job)
-        if source_manifest is not None and manifest_identity is not None:
-            from ....report_editor.trace_revisions import snapshot_revision_lineage
+                def _remap_paths(obj: Any) -> Any:
+                    if isinstance(obj, dict):
+                        return {
+                            path_map.get(key, key): _remap_paths(value)
+                            for key, value in obj.items()
+                        }
+                    if isinstance(obj, list):
+                        return [_remap_paths(item) for item in obj]
+                    if isinstance(obj, str) and obj in path_map:
+                        return path_map[obj]
+                    return obj
 
-            target_manifest_path = str(revision_markdown.parent / PurePosixPath(manifest_identity.path).name)
-            source_root = source_markdown.parent
-            target_root = revision_markdown.parent
-            source_paths = [chart.path for chart in source_manifest.charts]
-            source_paths.extend(
-                chart.interactive_spec.path for chart in source_manifest.charts
-                if chart.interactive_spec is not None
-            )
-            if source_index is not None:
-                source_paths.extend(str(item.path) for item in source_index.files)
-            for source_path in source_paths:
-                if source_path == str(source_markdown):
-                    path_map[source_path] = str(revision_markdown)
-                    continue
-                try:
-                    relative = PurePosixPath(source_path).relative_to(source_root)
-                except ValueError:
-                    relative = PurePosixPath("trace-resources") / source_path
-                path_map.setdefault(source_path, str(target_root / relative))
-            try:
-                _relocated_manifest, relocated_identity = await snapshot_revision_lineage(
-                    self.workspace_service,
-                    thread_id,
-                    manifest=source_manifest,
-                    index=source_index,
-                    markdown_file=ArtifactFile(
-                        path=str(revision_markdown),
-                        mediaType="text/markdown",
-                        size=source_manifest.markdown.size,
-                        sha256=source_manifest.markdown.sha256,
-                    ),
-                    target_revision=int(content["revision"]),
-                    path_map=path_map,
-                    manifest_path=target_manifest_path,
+                editor_job = _remap_paths(editor_job)
+            if source_manifest is not None and manifest_identity is not None:
+                from ....report_editor.trace_revisions import snapshot_revision_lineage
+
+                target_manifest_path = str(
+                    revision_markdown.parent / PurePosixPath(manifest_identity.path).name
                 )
-            except (ReportingError, ValidationError, ValueError, OSError, WorkspaceError) as error:
-                _drop_lineage(error)
-            else:
-                content["artifactManifestPath"] = relocated_identity.path
-                content["artifactManifest"] = relocated_identity.model_dump(mode="json", by_alias=True)
+                source_root = source_markdown.parent
+                target_root = revision_markdown.parent
+                source_paths = [chart.path for chart in source_manifest.charts]
+                source_paths.extend(
+                    chart.interactive_spec.path
+                    for chart in source_manifest.charts
+                    if chart.interactive_spec is not None
+                )
+                if source_index is not None:
+                    source_paths.extend(str(item.path) for item in source_index.files)
+                for source_path in source_paths:
+                    if source_path == str(source_markdown):
+                        path_map[source_path] = str(revision_markdown)
+                        continue
+                    try:
+                        relative = PurePosixPath(source_path).relative_to(source_root)
+                    except ValueError:
+                        relative = PurePosixPath("trace-resources") / source_path
+                    path_map.setdefault(source_path, str(target_root / relative))
+                try:
+                    _relocated_manifest, relocated_identity = await snapshot_revision_lineage(
+                        self.workspace_service,
+                        thread_id,
+                        manifest=source_manifest,
+                        index=source_index,
+                        markdown_file=ArtifactFile(
+                            path=str(revision_markdown),
+                            mediaType="text/markdown",
+                            size=source_manifest.markdown.size,
+                            sha256=source_manifest.markdown.sha256,
+                        ),
+                        target_revision=int(content["revision"]),
+                        path_map=path_map,
+                        manifest_path=target_manifest_path,
+                    )
+                except Exception as error:  # noqa: BLE001 - 溯源故障只降级来源能力
+                    _drop_lineage(error)
+                else:
+                    content["artifactManifestPath"] = relocated_identity.path
+                    content["artifactManifest"] = relocated_identity.model_dump(
+                        mode="json", by_alias=True
+                    )
+            return revision_markdown, editor_job
+
+        editor_available = True
+        try:
+            revision_markdown, editor_job = await _prepare_editor_snapshot()
+        except Exception as error:  # noqa: BLE001 - 编辑快照是附加交付项
+            editor_available = False
+            revision_markdown = default_revision_markdown
+            editor_job = deepcopy(content["editorJob"])
+            loguru_logger.warning(
+                "report_editor_snapshot_failed report_id={} revision={} error_type={}",
+                content["reportId"], content["revision"], type(error).__name__,
+            )
+            publication_issues.append({
+                "code": "report_editor_snapshot_unavailable",
+                "message": "编辑快照准备失败，PDF/Word 下载链接已签发；本修订暂不提供编辑入口。",
+            })
         content["editorJob"] = editor_job
         durable = await self.state_repository.get(workflow_run_id)
         stored_scope = (
@@ -564,9 +598,17 @@ class RuntimePlanningMixin:
             stored_scope=stored_scope if isinstance(stored_scope, dict) else None,
         )
         if durable is None or scope.caller_thread_id != caller_thread_id:
-            raise ReportingError(
-                "report_editor_scope_mismatch", "报告编辑上下文与发布作用域不一致。"
-            )
+            # AGENTS：作用域不一致只拒绝使用编辑上下文，不能拒绝签发已核验身份的 PDF/Word。
+            if editor_available:
+                loguru_logger.warning(
+                    "report_editor_scope_mismatch report_id={} revision={} durable_missing={}",
+                    content["reportId"], content["revision"], durable is None,
+                )
+                publication_issues.append({
+                    "code": "report_editor_scope_mismatch",
+                    "message": "报告编辑上下文与发布作用域不一致，PDF/Word 下载链接已签发；本修订不提供编辑入口。",
+                })
+            editor_available = False
         # 下载 grant 本身是 256 bit 随机 bearer 凭证。Scope 仅用于持久化产物身份、
         # 修订撤销和审计，不再作为下载时的调用方权限条件。必须与编辑器导出使用同一
         # 解析作用域：撤销与防回退按 database/company 精确匹配，写死常量会让编辑器
@@ -600,25 +642,42 @@ class RuntimePlanningMixin:
                 for suffix in ("Path", "Size", "Sha256"):
                     content.pop(f"{spec.artifact}{suffix}", None)
                 publication_issues.append({"code": "report_format_persistence_failed", "message": f"{'PDF' if spec.artifact == 'pdf' else 'Word'} 持久化失败，其他已保存格式仍可下载。"})
-        editor_context = ReportEditorContext(
-            reportId=content["reportId"],
-            revision=content["revision"],
-            jobId=content["jobId"],
-            workflowRunId=workflow_run_id,
-            markdownPath=str(revision_markdown),
-            artifactManifest=content.get("artifactManifest"),
-            job=content["editorJob"],
-            scope=scope.as_state(),
-        )
-        await self.state_repository.apply(
-            workflow_run_id,
-            ReportingCommand(
-                name="set_report_editor_context",
-                payload={"context": editor_context.model_dump(mode="json", by_alias=True)},
-                commandId=f"editor-context:{content['revision']}:{editor_context.digest()}",
-            ),
-            expected_version=durable.state_version,
-        )
+        editor_context: ReportEditorContext | None = None
+        if editor_available:
+            try:
+                editor_context = ReportEditorContext(
+                    reportId=content["reportId"],
+                    revision=content["revision"],
+                    jobId=content["jobId"],
+                    workflowRunId=workflow_run_id,
+                    markdownPath=str(revision_markdown),
+                    artifactManifest=content.get("artifactManifest"),
+                    job=content["editorJob"],
+                    scope=scope.as_state(),
+                )
+                await self.state_repository.apply(
+                    workflow_run_id,
+                    ReportingCommand(
+                        name="set_report_editor_context",
+                        payload={
+                            "context": editor_context.model_dump(mode="json", by_alias=True)
+                        },
+                        commandId=(
+                            f"editor-context:{content['revision']}:{editor_context.digest()}"
+                        ),
+                    ),
+                    expected_version=durable.state_version,
+                )
+            except Exception as error:  # noqa: BLE001 - 编辑上下文不能阻断下载签发
+                editor_context = None
+                loguru_logger.warning(
+                    "report_editor_context_failed report_id={} revision={} error_type={}",
+                    content["reportId"], content["revision"], type(error).__name__,
+                )
+                publication_issues.append({
+                    "code": "report_editor_context_unavailable",
+                    "message": "编辑上下文保存失败，PDF/Word 下载链接已签发；本修订暂不提供编辑入口。",
+                })
         self._release_workspace(thread_id)
         # 产物已经落库，签发失败后的重试可以直接复用持久化身份。
         raw, grant = await download_grants.issue(
@@ -634,18 +693,19 @@ class RuntimePlanningMixin:
         )
         editor_raw: str | None = None
         editor_expires_at: datetime | None = None
-        try:
-            editor_raw, editor_expires_at = await editor_grants.issue(editor_context)
-        except Exception as error:
-            # 编辑入口是附加交付项；下载凭证已签发，不能因编辑授权失败丢弃下载链接。
-            loguru_logger.warning(
-                "report_editor_grant_failed report_id={} revision={} error_type={}",
-                content["reportId"], content["revision"], type(error).__name__,
-            )
-            publication_issues.append({
-                "code": "report_editor_grant_unavailable",
-                "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开报告编辑入口。",
-            })
+        if editor_context is not None:
+            try:
+                editor_raw, editor_expires_at = await editor_grants.issue(editor_context)
+            except Exception as error:
+                # 编辑入口是附加交付项；下载凭证已签发，不能因编辑授权失败丢弃下载链接。
+                loguru_logger.warning(
+                    "report_editor_grant_failed report_id={} revision={} error_type={}",
+                    content["reportId"], content["revision"], type(error).__name__,
+                )
+                publication_issues.append({
+                    "code": "report_editor_grant_unavailable",
+                    "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开报告编辑入口。",
+                })
         result = publication_result(
             report_id=content["reportId"],
             revision=content["revision"],
