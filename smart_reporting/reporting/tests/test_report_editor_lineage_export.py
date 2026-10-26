@@ -891,9 +891,9 @@ async def test_export_revision_registers_table_edit_and_still_issues_links(
     issue，已核验身份的 PDF/Word 照常签发下载链接。
     """
     from smart_reporting.report_editor.chart_edits import (
+        TableEditRecord,
         append_table_edit_record,
         chart_edits_registry_path,
-        TableEditRecord,
     )
     from smart_reporting.reporting.trace.table_builder import build_table_trace
 

@@ -227,6 +227,7 @@ export interface TableTemplateApplyRequest {
   instruction?: string
   baseBody?: string
   previousEditId?: string
+  expectedSha256?: string
 }
 
 export interface TableAIEditState {
@@ -236,6 +237,7 @@ export interface TableAIEditState {
   stage?: string
   markdown?: string
   newTableId?: string
+  baseCaption?: string | null
   analysisId?: string
   review?: {
     columns: string[]
@@ -686,6 +688,10 @@ export class ReportEditorClient {
 
   tableEditRecord(editId: string): Promise<{ editId: string; tableId: string; newTableId: string; markdown: string }> {
     return this.request(`/api/table-edits/${encodeURIComponent(editId)}`)
+  }
+
+  tableEditRecordByTableId(tableId: string): Promise<{ editId: string; tableId: string; newTableId: string; markdown: string }> {
+    return this.request(`/api/table-edits/by-table/${encodeURIComponent(tableId)}`)
   }
 
   startChartAiEdit(

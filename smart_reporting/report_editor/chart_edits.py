@@ -73,6 +73,9 @@ class ChartEditRecord(StrictModel):
     base_image_sha256: str = Field(alias="baseImageSha256", pattern=SHA256_PATTERN)
     instruction: str = Field(min_length=1, max_length=2000)
     level: tuple[Literal["L1", "L2"], ...] = Field(min_length=1, max_length=4)
+    data_origin: Literal["original", "rebound", "template"] = Field(
+        default="original", alias="dataOrigin"
+    )
     image: ChartEditFileRef
     script: ChartEditFileRef
     plot_data_files: tuple[ChartEditFileRef, ...] = Field(
@@ -158,8 +161,8 @@ def chart_edit_image_src(markdown_path: str, edit_id: str) -> str:
     return relative.as_posix()
 
 
-def _parse_registry(content: bytes) -> tuple[tuple[ChartEditRecord, ...], tuple[TableEditRecord, ...]]:
-    """严格解析登记文件；损坏时抛 ``ValueError``，由调用方决定降级方式。"""
+def _parse_registry_payload(content: bytes) -> dict[str, Any]:
+    """解析共享侧车外壳，不在这里耦合校验改图与改表记录。"""
 
     try:
         payload = json.loads(content)
@@ -167,6 +170,10 @@ def _parse_registry(content: bytes) -> tuple[tuple[ChartEditRecord, ...], tuple[
         raise ValueError("改图登记不是合法 JSON") from error
     if not isinstance(payload, dict) or payload.get("version") != CHART_EDITS_REGISTRY_VERSION:
         raise ValueError("改图登记版本不识别")
+    return payload
+
+
+def _parse_chart_records(payload: dict[str, Any]) -> tuple[ChartEditRecord, ...]:
     records_raw = payload.get("records")
     if not isinstance(records_raw, list):
         raise ValueError("改图登记记录缺失")
@@ -180,10 +187,17 @@ def _parse_registry(content: bytes) -> tuple[tuple[ChartEditRecord, ...], tuple[
             raise ValueError("改图登记 editId 重复")
         seen.add(record.edit_id)
         records.append(record)
+    return tuple(records)
+
+
+def _parse_table_records(payload: dict[str, Any]) -> tuple[TableEditRecord, ...]:
     table_edits: list[TableEditRecord] = []
     seen_tables: set[str] = set()
     # tableEdits 为 §14 追加键：旧登记文件没有该键时视为空。
-    for raw in payload.get("tableEdits") or ():
+    table_edits_raw = payload.get("tableEdits", [])
+    if not isinstance(table_edits_raw, list):
+        raise ValueError("改表登记记录缺失")
+    for raw in table_edits_raw:
         if not isinstance(raw, dict):
             raise ValueError("改表登记记录损坏")
         record = TableEditRecord.model_validate(raw)
@@ -191,15 +205,22 @@ def _parse_registry(content: bytes) -> tuple[tuple[ChartEditRecord, ...], tuple[
             raise ValueError("改表登记 editId 重复")
         seen_tables.add(record.edit_id)
         table_edits.append(record)
-    return tuple(records), tuple(table_edits)
+    return tuple(table_edits)
+
+
+def _parse_registry(content: bytes) -> tuple[tuple[ChartEditRecord, ...], tuple[TableEditRecord, ...]]:
+    """严格解析完整登记；仅供确实同时需要两类记录的调用方使用。"""
+
+    payload = _parse_registry_payload(content)
+    return _parse_chart_records(payload), _parse_table_records(payload)
 
 
 def parse_chart_edit_records(content: bytes) -> tuple[ChartEditRecord, ...]:
-    return _parse_registry(content)[0]
+    return _parse_chart_records(_parse_registry_payload(content))
 
 
 def parse_table_edit_records(content: bytes) -> tuple[TableEditRecord, ...]:
-    return _parse_registry(content)[1]
+    return _parse_table_records(_parse_registry_payload(content))
 
 
 def encode_chart_edit_records(
@@ -246,10 +267,14 @@ async def append_chart_edit_record(
     """在已有登记上原子追加一条记录；调用方必须持有对应草稿锁。"""
 
     path = chart_edits_registry_path(markdown_path)
-    records, table_edits = await _load_registry(workspace, thread_id, markdown_path)
+    payload = await _load_registry_payload(workspace, thread_id, markdown_path)
+    records = _parse_chart_records(payload)
     if any(item.edit_id == record.edit_id for item in records):
         raise ReportingError("snapshot_integrity_failed", "改图登记 editId 已存在。")
-    encoded = encode_chart_edit_records((*records, record), table_edits)
+    payload["records"] = [
+        item.model_dump(mode="json", by_alias=True) for item in (*records, record)
+    ]
+    encoded = _encode_registry_payload(payload)
     await _rewrite_registry(workspace, thread_id, path, encoded)
 
 
@@ -259,21 +284,31 @@ async def append_table_edit_record(
     """在已有登记上原子追加一条改表记录；调用方必须持有对应草稿锁。"""
 
     path = chart_edits_registry_path(markdown_path)
-    records, table_edits = await _load_registry(workspace, thread_id, markdown_path)
+    payload = await _load_registry_payload(workspace, thread_id, markdown_path)
+    table_edits = _parse_table_records(payload)
     if any(item.edit_id == record.edit_id for item in table_edits):
         raise ReportingError("snapshot_integrity_failed", "改表登记 editId 已存在。")
-    encoded = encode_chart_edit_records(records, (*table_edits, record))
+    payload["tableEdits"] = [
+        item.model_dump(mode="json", by_alias=True) for item in (*table_edits, record)
+    ]
+    encoded = _encode_registry_payload(payload)
     await _rewrite_registry(workspace, thread_id, path, encoded)
 
 
-async def _load_registry(
+async def _load_registry_payload(
     workspace: Any, thread_id: str, markdown_path: str
-) -> tuple[tuple[ChartEditRecord, ...], tuple[TableEditRecord, ...]]:
+) -> dict[str, Any]:
     path = chart_edits_registry_path(markdown_path)
     if not await workspace.apath_exists(thread_id, path):
-        return (), ()
+        return {"version": CHART_EDITS_REGISTRY_VERSION, "records": [], "tableEdits": []}
     content, _media_type = await workspace.afile_bytes(thread_id, path)
-    return _parse_registry(content)
+    return _parse_registry_payload(content)
+
+
+def _encode_registry_payload(payload: dict[str, Any]) -> bytes:
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
 
 
 async def _rewrite_registry(workspace: Any, thread_id: str, path: str, encoded: bytes) -> None:

@@ -803,13 +803,13 @@ try {
       const marker = table?.previousElementSibling?.textContent?.match(/\[\[table:([A-Za-z0-9_.:-]+)\]\]/)
       if (!table || !marker) return
       // 改表面板按需加载：与改图面板同策略，入口不进首屏 chunk（构建预算契约）。
-      void import('./table-ai-edit').then(({ createTableAIEdit }) => {
+      void import('./table-ai-edit').then(({ createTableAIEdit, tableBodyMarkdown }) => {
         tableAIController ??= createTableAIEdit({
           view: evidenceView,
           client,
           hooks: { onReplaced: () => status('已替换为 AI 改表结果，正在自动保存…', 'dirty') },
         })
-        tableAIController.open(marker[1], table.outerHTML)
+        tableAIController.open(marker[1], tableBodyMarkdown(getEditorMarkdown(), marker[1]))
       })
     })
   }

@@ -272,7 +272,7 @@ if settings.report_editor_chart_ai_enabled:
         ),
         hourly_limit=settings.report_editor_chart_ai_hourly_limit,
         timeout_seconds=float(settings.report_editor_chart_ai_timeout_seconds),
-        )
+    )
 report_editor_table_ai = None
 if settings.report_editor_table_ai_enabled:
     report_editor_table_ai = create_report_editor_table_ai_service(

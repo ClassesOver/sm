@@ -3,6 +3,7 @@ import { TABLE_PROTOCOL_EDIT_META } from './protocol-plugin'
 import { buttonClasses } from './button'
 import { createModal } from './modal'
 import type { EditorTemplateInfo, ReportEditorClient, TableAIEditState } from './api'
+import { markdownSha256 } from './source-validation'
 
 const TABLE_MARKER = /^\[\[table:([A-Za-z0-9_.:-]+)\]\]$/
 const CLOSE_MARKER = /^\[\[\/table:([A-Za-z0-9_.:-]+)\]\]$/
@@ -35,7 +36,11 @@ function tableNodes(view: EditorView, markdown: string): ReturnType<typeof view.
     const parse = (line: string) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(value => value.trim().replace(/\\([|`*_{}\[\]<>])/g, '$1'))
     const headerCells = parse(tableLines[0])
     const data = tableLines.slice(2).map(parse)
-    const rows = [row.create(null, headerCells.map(value => header.create(null, value ? view.state.schema.text(value) : undefined))), ...data.map(values => row.create(null, values.map(value => cell.create(null, value ? view.state.schema.text(value) : undefined))))]
+    const content = (value: string) => paragraph.create(null, value ? view.state.schema.text(value) : undefined)
+    const rows = [
+      row.create(null, headerCells.map(value => header.create(null, content(value)))),
+      ...data.map(values => row.create(null, values.map(value => cell.create(null, content(value))))),
+    ]
     nodes.push(table.create(null, rows))
   } else {
     tableLines.forEach(line => nodes.push(paragraph.create(null, view.state.schema.text(line))))
@@ -45,7 +50,12 @@ function tableNodes(view: EditorView, markdown: string): ReturnType<typeof view.
 }
 
 /** Replace one server-owned table protocol block in a single undoable transaction. */
-export function replaceTableProtocolBlock(view: EditorView, tableId: string, markdown: string): boolean {
+export function replaceTableProtocolBlock(
+  view: EditorView,
+  tableId: string,
+  markdown: string,
+  existingCaption?: string | null,
+): boolean {
   let from: number | null = null
   let to: number | null = null
   view.state.doc.descendants((node, pos) => {
@@ -64,8 +74,25 @@ export function replaceTableProtocolBlock(view: EditorView, tableId: string, mar
   const replacementTableId = replacementMarkers?.[1]
   if (!replacementTableId) return false
   const nodes = tableNodes(view, markdown)
-  view.dispatch(view.state.tr.replaceWith(from, to, nodes).setMeta(TABLE_PROTOCOL_EDIT_META, { tableId: replacementTableId }))
+  let replaceFrom = from as number
+  const replaceTo = to as number
+  // 服务端表题属于协议表格块，位于开始标记的紧邻上一段。替换包含新表题时一并
+  // 覆盖旧表题，避免多轮改表把 caption 逐次堆叠在正文里。
+  const replacementHasCaption = markdown.slice(0, markdown.indexOf(replacementMarkers[0])).trim().length > 0
+  if (replacementHasCaption && existingCaption) {
+    const before = view.state.doc.resolve(replaceFrom).nodeBefore
+    if (before?.isTextblock && before.textContent.trim() === existingCaption.trim()) {
+      replaceFrom -= before.nodeSize
+    }
+  }
+  view.dispatch(view.state.tr.replaceWith(replaceFrom, replaceTo, nodes).setMeta(TABLE_PROTOCOL_EDIT_META, { tableId: replacementTableId }))
   return true
+}
+
+/** Extract the exact table body used by the server's table identity check. */
+export function tableBodyMarkdown(markdown: string, tableId: string): string {
+  const escaped = tableId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^\\[\\[table:${escaped}\\]\\]\\n(.*?)\\n\\n?\\[\\[/table:${escaped}\\]\\]$`, 'ms').exec(markdown)?.[1] ?? ''
 }
 
 export interface TableAIEditController { open(tableId: string, baseBody?: string): void; dispose(): void }
@@ -87,7 +114,7 @@ export function createTableAIEdit(options: {
       if (state.status === 'succeeded' || state.status === 'failed' || state.status === 'cancelled') return state
     }
   }
-  const input = async (tableId: string, baseBody: string, previousEditId?: string, note = '') => {
+  const input = async (tableId: string, targetTableId: string, baseBody: string, previousEditId?: string, note = '') => {
     body().replaceChildren(text(note))
     const area = document.createElement('textarea')
     area.id = 'table-ai-input'; area.maxLength = 2000; area.rows = 3
@@ -96,13 +123,13 @@ export function createTableAIEdit(options: {
     const templateRoot = document.createElement('div'); templateRoot.className = 'table-ai-templates'; body().append(templateRoot)
     const templates = await options.client.tableTemplates(tableId).catch(() => ({ templates: [] as EditorTemplateInfo[] }))
     templates.templates.forEach(item => {
-      const node = button(item.name, 'secondary', () => void runTemplate(tableId, item.templateId, baseBody, previousEditId), 'table-ai-template')
+      const node = button(item.name, 'secondary', () => void runTemplate(tableId, targetTableId, item.templateId, baseBody, previousEditId), 'table-ai-template')
       node.disabled = !item.available; node.title = item.reason ?? ''; templateRoot.append(node)
     })
-    body().append(button('生成改表', 'primary', () => { const instruction = area.value.trim(); if (instruction) void runEdit(tableId, instruction, baseBody, previousEditId) }))
+    body().append(button('生成改表', 'primary', () => { const instruction = area.value.trim(); if (instruction) void runEdit(tableId, targetTableId, instruction, baseBody, previousEditId) }))
     if (!disposed) modal.open(area)
   }
-  const review = (tableId: string, result: TableAIEditState, baseBody: string, instruction: string) => {
+  const review = (tableId: string, targetTableId: string, result: TableAIEditState, baseBody: string, instruction: string) => {
     body().replaceChildren(text(`要求：${instruction}`))
     // 逐格审阅（设计稿 §14.1）：新增/标注/未变着色；点击数据格查看来源。
     const grid = document.createElement('table')
@@ -151,11 +178,18 @@ export function createTableAIEdit(options: {
     detail.textContent = '点击数据格查看该格的来源事实。'
     body().append(detail)
     ;(result.warnings ?? []).forEach(warning => { const item = document.createElement('p'); item.setAttribute('role', 'alert'); item.append(text(warning)); body().append(item) })
-    body().append(button('接受替换', 'primary', () => { if (!result.markdown || !replaceTableProtocolBlock(options.view, tableId, result.markdown)) { options.hooks?.onError?.('report_editor_table_ai_target_missing'); return }; options.hooks?.onReplaced?.(result.editId); modal.close() }))
-    body().append(button('继续调整', 'secondary', () => void input(tableId, result.markdown ?? baseBody, result.editId, '已基于上一轮结果继续调整。')))
+    body().append(button('接受替换', 'primary', () => { if (!result.markdown || !replaceTableProtocolBlock(options.view, targetTableId, result.markdown, result.baseCaption)) { options.hooks?.onError?.('report_editor_table_ai_target_missing'); return }; options.hooks?.onReplaced?.(result.editId); modal.close() }))
+    body().append(button('继续调整', 'secondary', () => void input(tableId, targetTableId, baseBody, result.editId, '已基于上一轮结果继续调整。')))
     body().append(button('放弃', 'quiet', () => modal.close()))
   }
-  const runEdit = async (tableId: string, instruction: string, baseBody: string, previousEditId?: string) => { body().replaceChildren(text('正在准备表格改动…')); try { const started = await options.client.startTableAiEdit(tableId, { instruction, baseBody, previousEditId }); const result = await poll(tableId, started.editId); if (result.status === 'succeeded') review(tableId, result, baseBody, instruction); else await input(tableId, baseBody, previousEditId, result.error?.message ?? '改表未完成，原表保持不变。') } catch { await input(tableId, baseBody, previousEditId, '改表请求失败，原表保持不变。') } }
-  const runTemplate = async (tableId: string, templateId: string, baseBody: string, previousEditId?: string) => { body().replaceChildren(text('正在套用预制模板…')); try { const started = await options.client.startTableTemplateEdit(tableId, { templateId, baseBody, previousEditId }); const result = await poll(tableId, started.editId); if (result.status === 'succeeded') review(tableId, result, baseBody, `套用模板：${templateId}`); else await input(tableId, baseBody, previousEditId, result.error?.message ?? '模板未完成，原表保持不变。') } catch { await input(tableId, baseBody, previousEditId, '模板请求失败，原表保持不变。') } }
-  return { open(tableId, baseBody = '') { void input(tableId, baseBody) }, dispose() { disposed = true; modal.remove() } }
+  const runEdit = async (tableId: string, targetTableId: string, instruction: string, baseBody: string, previousEditId?: string) => { body().replaceChildren(text('正在准备表格改动…')); try { const expectedSha256 = await markdownSha256(baseBody); const started = await options.client.startTableAiEdit(tableId, { instruction, baseBody, previousEditId, expectedSha256 }); const result = await poll(tableId, started.editId); if (result.status === 'succeeded') review(tableId, targetTableId, result, baseBody, instruction); else await input(tableId, targetTableId, baseBody, previousEditId, result.error?.message ?? '改表未完成，原表保持不变。') } catch { await input(tableId, targetTableId, baseBody, previousEditId, '改表请求失败，原表保持不变。') } }
+  const runTemplate = async (tableId: string, targetTableId: string, templateId: string, baseBody: string, previousEditId?: string) => { body().replaceChildren(text('正在套用预制模板…')); try { const expectedSha256 = await markdownSha256(baseBody); const started = await options.client.startTableTemplateEdit(tableId, { templateId, baseBody, previousEditId, expectedSha256 }); const result = await poll(tableId, started.editId); if (result.status === 'succeeded') review(tableId, targetTableId, result, baseBody, `套用模板：${templateId}`); else await input(tableId, targetTableId, baseBody, previousEditId, result.error?.message ?? '模板未完成，原表保持不变。') } catch { await input(tableId, targetTableId, baseBody, previousEditId, '模板请求失败，原表保持不变。') } }
+  return {
+    open(targetTableId, baseBody = '') {
+      void options.client.tableEditRecordByTableId(targetTableId)
+        .then(record => input(targetTableId, targetTableId, baseBody, record.editId))
+        .catch(() => input(targetTableId, targetTableId, baseBody))
+    },
+    dispose() { disposed = true; modal.remove() },
+  }
 }

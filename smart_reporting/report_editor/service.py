@@ -32,9 +32,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..async_utils import complete_cleanup
 from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.artifacts_v1 import (
+    _TABLE_BLOCK,
     ArtifactFile,
     ChartArtifact,
-    _TABLE_BLOCK,
     _image_media_type,
     _markdown_image_bindings,
 )
@@ -2686,7 +2686,7 @@ class ReportEditorService:
         traces_by_chart = {item.chart_id: item for item in index.chart_traces}
         charts_by_id = {item.chart_id: item for item in manifest.charts}
         edited_registered = {
-            record.image.path: traces_by_chart[record.chart_id].dataset_ids
+            record.image.path: record.chart.dataset_ids
             for record in records
             if record.chart_id in traces_by_chart
         }
@@ -2718,43 +2718,40 @@ class ReportEditorService:
                     "snapshot_integrity_failed",
                     "同一图表同时引用原图与改图，无法登记改图追溯。",
                 )
-            is_l2 = "L2" in record.level
-            if not is_l2 and [item.path for item in record.plot_data_files] != [
-                files[resource_id].path
-                for resource_id in trace.plot_data_file_resource_ids
-            ]:
+            data_origin = (
+                "rebound"
+                if record.data_origin == "original" and "L2" in record.level
+                else record.data_origin
+            )
+            materialized_data = data_origin != "original"
+            try:
+                original_plot_paths = [
+                    files[resource_id].path
+                    for resource_id in trace.plot_data_file_resource_ids
+                ]
+            except KeyError as error:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"原图作图数据登记不完整：{record.chart_id}",
+                ) from error
+            if not materialized_data and [
+                item.path for item in record.plot_data_files
+            ] != original_plot_paths:
                 raise ReportingError(
                     "snapshot_integrity_failed",
                     f"改图登记作图数据与追溯索引不一致：{record.chart_id}",
                 )
-            if is_l2:
-                # L2：新物化的作图数据逐个核验身份，来源必须仍是本报告登记的分析事实。
+            if materialized_data:
+                # 新物化数据必须能从当前 revision 的冻结事实确定性重建；仅凭
+                # analysisId 相同不足以证明路径、哈希、选择器和内容没有被替换。
+                await self._verify_chart_edit_plot_data(
+                    thread_id,
+                    record=record,
+                    trace=trace,
+                    index=index,
+                    data_origin=data_origin,
+                )
                 for data_ref in record.plot_data_files:
-                    current = await self.workspace.ahash_file(thread_id, data_ref.path)
-                    if (
-                        current.get("missing")
-                        or current.get("size") != data_ref.size
-                        or current.get("sha256") != data_ref.sha256
-                    ):
-                        raise ReportingError(
-                            "snapshot_integrity_failed",
-                            f"改图换绑作图数据身份已变化：{data_ref.path}",
-                        )
-                    content, _media = await self.workspace.afile_bytes(thread_id, data_ref.path)
-                    try:
-                        payload = json.loads(content)
-                    except ValueError as error:
-                        raise ReportingError(
-                            "snapshot_integrity_failed", "改图换绑作图数据无法解析。"
-                        ) from error
-                    source = payload.get("source") if isinstance(payload, dict) else None
-                    if not isinstance(source, dict) or not {
-                        entry.analysis_id for entry in index.fact_files
-                    } & {source.get("analysisId")}:
-                        raise ReportingError(
-                            "snapshot_integrity_failed",
-                            "改图换绑作图数据来源不在本报告事实登记中。",
-                        )
                     if data_ref.path not in known_paths:
                         new_files.append(
                             TraceFileRefV1(
@@ -2784,7 +2781,7 @@ class ReportEditorService:
                 size=record.image.size,
                 sha256=record.image.sha256,
                 chart_id=record.chart_id,
-                dataset_ids=trace.dataset_ids,
+                dataset_ids=record.chart.dataset_ids,
                 renderer="matplotlib",
             )
             if record.image.path not in known_paths:
@@ -2810,7 +2807,7 @@ class ReportEditorService:
                 )
                 known_paths.add(record.script.path)
             notes = [f"编辑器 AI 改图：{chart_edit_summary(record.instruction)}"]
-            if is_l2:
+            if data_origin == "rebound":
                 notes.append(
                     "换绑数据："
                     + "；".join(
@@ -2818,6 +2815,8 @@ class ReportEditorService:
                         for item in record.data_bindings
                     )
                 )
+            elif data_origin == "template":
+                notes.append(f"预制模板：{record.chart.visual_form}")
             notes.extend(
                 f"跳过：{item.request}——{item.reason}" for item in record.skipped
             )
@@ -2828,9 +2827,10 @@ class ReportEditorService:
                     image_file_resource_id=derive_resource_id(record.image.path),
                     plot_data_file_resource_ids=(
                         tuple(derive_resource_id(item.path) for item in record.plot_data_files)
-                        if is_l2 else trace.plot_data_file_resource_ids
+                        if materialized_data else trace.plot_data_file_resource_ids
                     ),
-                    dataset_ids=trace.dataset_ids,
+                    dataset_ids=record.chart.dataset_ids,
+                    fact_refs=trace.fact_refs,
                     transform_notes=tuple(notes),
                     script_file_resource_id=derive_resource_id(record.script.path),
                 )
@@ -2850,6 +2850,201 @@ class ReportEditorService:
             augmented.model_dump(mode="json", by_alias=True)
         )
         return edited_charts, augmented
+
+    async def _verify_chart_edit_plot_data(
+        self,
+        thread_id: str,
+        *,
+        record: Any,
+        trace: ChartTraceV1,
+        index: RevisionTraceIndexV1,
+        data_origin: str,
+    ) -> None:
+        """Verify editor-materialized chart inputs against registered frozen facts."""
+
+        indexed_files = {item.resource_id: item for item in index.files}
+        fact_files = {
+            entry.analysis_id: indexed_files.get(entry.file_resource_id)
+            for entry in index.fact_files
+            if entry.content_kind == "deterministic_bundle"
+        }
+        documents: dict[str, Any] = {}
+        identities: dict[str, Any] = {}
+        payloads: list[dict[str, Any]] = []
+        contents: list[bytes] = []
+        for data_ref in record.plot_data_files:
+            expected_prefix = f"{PurePosixPath(record.image.path).parent.as_posix()}/"
+            if not data_ref.path.startswith(expected_prefix):
+                raise ReportingError(
+                    "snapshot_integrity_failed", "改图作图数据不在本次改图目录中。"
+                )
+            current = await self.workspace.ahash_file(thread_id, data_ref.path)
+            if (
+                current.get("missing")
+                or current.get("size") != data_ref.size
+                or current.get("sha256") != data_ref.sha256
+            ):
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"改图作图数据身份已变化：{data_ref.path}",
+                )
+            content, _media = await self.workspace.afile_bytes(thread_id, data_ref.path)
+            try:
+                payload = json.loads(content)
+            except ValueError as error:
+                raise ReportingError(
+                    "snapshot_integrity_failed", "改图作图数据无法解析。"
+                ) from error
+            if not isinstance(payload, dict) or payload.get("schema") != "chart-input/v1":
+                raise ReportingError("snapshot_integrity_failed", "改图作图数据格式无效。")
+            source = payload.get("source")
+            analysis_id = source.get("analysisId") if isinstance(source, dict) else None
+            identity = fact_files.get(analysis_id)
+            if identity is None or not isinstance(source, dict):
+                raise ReportingError(
+                    "snapshot_integrity_failed", "改图作图数据来源不在本报告事实登记中。"
+                )
+            source_sha256 = (
+                source.get("factFileSha256")
+                if data_origin == "template"
+                else source.get("sha256")
+            )
+            if source.get("path") != identity.path or source_sha256 != identity.sha256:
+                raise ReportingError(
+                    "snapshot_integrity_failed", "改图作图数据来源身份与事实登记不一致。"
+                )
+            if identity.path not in documents:
+                fact_content, _media = await self.workspace.afile_bytes(thread_id, identity.path)
+                if (
+                    len(fact_content) != identity.size
+                    or hashlib.sha256(fact_content).hexdigest() != identity.sha256
+                ):
+                    raise ReportingError("snapshot_integrity_failed", "改图来源事实身份已变化。")
+                try:
+                    documents[identity.path] = json.loads(fact_content)
+                except ValueError as error:
+                    raise ReportingError("snapshot_integrity_failed", "改图来源事实无法解析。") from error
+                identities[identity.path] = identity
+            payloads.append(payload)
+            contents.append(content)
+
+        registered_dataset_ids = {item.dataset_id for item in index.datasets}
+        if not set(record.chart.dataset_ids).issubset(registered_dataset_ids):
+            raise ReportingError("snapshot_integrity_failed", "改图数据集不在本报告登记范围内。")
+
+        if data_origin == "rebound":
+            from ..reporting.workflow.runtime.chart_inputs import materialize_chart_inputs
+            from ..reporting.workflow.runtime.phase_models import ChartDataBinding
+
+            try:
+                bindings = tuple(ChartDataBinding.model_validate(item) for item in record.data_bindings)
+            except ValueError as error:
+                raise ReportingError("snapshot_integrity_failed", "改图换绑登记无效。") from error
+            if len(bindings) != len(payloads) or not bindings:
+                raise ReportingError("snapshot_integrity_failed", "改图换绑与作图数据数量不一致。")
+            facts_by_analysis: dict[str, dict[str, Any]] = {}
+            for binding, payload in zip(bindings, payloads, strict=True):
+                identity = identities.get(binding.fact_path)
+                source = payload["source"]
+                if identity is None or (
+                    source.get("analysisId") != binding.analysis_id
+                    or source.get("path") != binding.fact_path
+                    or source.get("dataPath") != binding.data_path
+                    or payload.get("role") != binding.role
+                ):
+                    raise ReportingError("snapshot_integrity_failed", "改图换绑与来源登记不一致。")
+                entry = facts_by_analysis.setdefault(
+                    binding.analysis_id,
+                    {
+                        "analysisId": binding.analysis_id,
+                        "factFile": {
+                            "path": identity.path,
+                            "size": identity.size,
+                            "sha256": identity.sha256,
+                        },
+                        "dataDescriptors": [],
+                    },
+                )
+                entry["dataDescriptors"].append(
+                    {"dataPath": binding.data_path, "fields": list(binding.fields)}
+                )
+            plan = type("_Plan", (), {"charts": (
+                type("_Chart", (), {"chart_id": record.chart_id, "data_bindings": bindings})(),
+            )})()
+            rebuilt = materialize_chart_inputs(
+                plan,
+                tuple(facts_by_analysis.values()),
+                documents,
+                output_root="verification",
+            )
+            if rebuilt.fallback_chart_ids or [item.content for item in rebuilt.files] != contents:
+                raise ReportingError("snapshot_integrity_failed", "改图换绑作图数据无法从冻结事实重建。")
+            return
+
+        if data_origin != "template" or len(payloads) != 1:
+            raise ReportingError("snapshot_integrity_failed", "改图数据来源类型无效。")
+        payload = payloads[0]
+        source = payload["source"]
+        identity = identities[source["path"]]
+        if (
+            source.get("factFileResourceId") != identity.resource_id
+            or source.get("factFilePath") != identity.path
+            or source.get("factFileSha256") != identity.sha256
+        ):
+            raise ReportingError("snapshot_integrity_failed", "图表模板事实身份与登记不一致。")
+        pointers = source.get("dataPaths")
+        if not isinstance(pointers, list) or not pointers or not all(
+            isinstance(pointer, str) and pointer.startswith("/") for pointer in pointers
+        ):
+            raise ReportingError("snapshot_integrity_failed", "图表模板事实定位无效。")
+        from ..reporting.trace.fact_index import resolve_pointer_value
+
+        try:
+            for pointer in pointers:
+                resolve_pointer_value(documents[identity.path], pointer)
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            raise ReportingError("snapshot_integrity_failed", "图表模板事实定位越界。") from error
+        from ..reporting.hospital_operation.deterministic_analysis import (
+            DeterministicAnalysisBundle,
+        )
+        from .chart_templates import template_rows
+
+        expected_bindings = tuple(
+            {
+                "analysisId": source.get("analysisId"),
+                "factPath": identity.path,
+                "dataPath": pointer,
+                "templateId": payload.get("templateId"),
+            }
+            for pointer in pointers
+        )
+        if tuple(record.data_bindings) != expected_bindings:
+            raise ReportingError("snapshot_integrity_failed", "图表模板数据绑定与事实定位不一致。")
+
+        try:
+            bundle = DeterministicAnalysisBundle.model_validate(documents[identity.path])
+            rows, expected_pointers, reason = template_rows(
+                str(payload.get("templateId", "")), bundle, trace.fact_refs
+            )
+        except ValueError as error:
+            raise ReportingError("snapshot_integrity_failed", "图表模板事实无法重建。") from error
+        columns = sorted({key for row in rows for key in row})
+        expected_rows = [[row.get(column) for column in columns] for row in rows]
+        expected_data_path = expected_pointers[0] if len(expected_pointers) == 1 else ""
+        if (
+            reason
+            or not rows
+            or payload.get("chartId") != record.chart_id
+            or payload.get("role") != f"template:{payload.get('templateId')}"
+            or payload.get("columns") != columns
+            or payload.get("rows") != expected_rows
+            or payload.get("rowCount") != len(rows)
+            or pointers != expected_pointers
+            or source.get("dataPath") != expected_data_path
+        ):
+            raise ReportingError(
+                "snapshot_integrity_failed", "图表模板作图数据无法从冻结事实重建。"
+            )
 
     async def _table_edit_lineage(
         self,

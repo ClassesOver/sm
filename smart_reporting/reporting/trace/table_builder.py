@@ -98,6 +98,15 @@ def build_table_trace(
 
     facts_by_code: dict[str, Any] = {}
     selected_fact_ids = spec.get("factIds", {})
+    if not isinstance(selected_fact_ids, Mapping):
+        selected_fact_ids = {}
+    # 编辑器规格按不可变 factId 选择列；部分旧 bundle 没有 metricCodes，
+    # 此时列别名可回退到 field，但仍由 factId 唯一锁定事实。
+    facts_by_id = {fact.fact_id: fact for fact in bundle.metrics if fact.fact_id}
+    for code in metric_codes:
+        selected = selected_fact_ids.get(code)
+        if selected in facts_by_id:
+            facts_by_code[code] = facts_by_id[selected]
     for fact in bundle.metrics:
         for code in fact.metric_codes:
             if code not in metric_codes:
@@ -105,7 +114,7 @@ def build_table_trace(
             if code in selected_fact_ids and fact.fact_id != selected_fact_ids[code]:
                 continue
             # 同一 code 多个 fact（多数据集/多范围）时拒绝装配，避免猜。
-            if code in facts_by_code:
+            if code in facts_by_code and facts_by_code[code] is not fact:
                 raise ReportingError(
                     "request_invalid",
                     f"指标 {code} 在分析中存在多条事实，表格装配需要更精确的规格。",
@@ -638,10 +647,7 @@ def build_group_edit_table(
         raise ReportingError("request_invalid", "构成表至少需要一组维度分组。")
     ordered = sorted(groups, key=lambda item: -item.total)
     parent_label = _fact_label(parent, dataset_contexts, metric_descriptions)
-    breakdown_label = (
-        next(iter({group.scope.get(group.breakdown_field, "") for group in ordered}), "")
-        or "维度"
-    )
+    breakdown_label = ordered[0].breakdown_label or ordered[0].breakdown_field or "维度"
     value_unit = _table_display_unit(parent.unit, [item.total for item in ordered] + [parent.total])
     value_column = f"{parent_label}（{value_unit or '数值'}）"
     column_keys = [value_column]

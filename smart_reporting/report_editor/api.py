@@ -24,8 +24,8 @@ from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
 from .chart_ai import ChartAIEditRequest, ChartTemplateApplyRequest
-from .table_ai import TableAIEditRequest, TableTemplateApplyRequest
 from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
+from .table_ai import TableAIEditRequest, TableTemplateApplyRequest
 from .trace_retention import SourceFileResponse
 
 EDITOR_SESSION_COOKIE = "report_editor_session"
@@ -1262,6 +1262,23 @@ def create_report_editor_router(
                 )
                 try:
                     return table_ai.cancel_edit(context, table_id, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/table-edits/by-table/{table_id}",
+                include_in_schema=False,
+            )
+            async def read_table_edit_record_by_table_id(
+                report_id: str, revision: int, table_id: str, request: Request,
+            ) -> dict[str, object]:
+                """Resolve an accepted replacement marker back to its original table."""
+
+                _raw_session, context = await _read_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await table_ai.edit_record_by_table_id(context, table_id)
                 except ReportingError as error:
                     _editor_http_error(error)
 

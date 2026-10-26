@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 import re
+import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,8 +28,8 @@ from agno.agent import Agent
 from loguru import logger
 from pydantic import Field, model_validator
 
-from ..reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ..reporting.contract import StrictModel
+from ..reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ..reporting.models import ReportingError
 from ..reporting.trace.fact_index import breakdown_partitions, shareable_partition
 from ..reporting.trace.numeric_text import budget_comparison_values
@@ -37,9 +38,9 @@ from ..reporting.trace.table_builder import (
     _analysis_table_periods,
     _fact_label,
     _table_display_unit,
+    build_budget_edit_table,
     build_comparison_edit_table,
     build_group_edit_table,
-    build_budget_edit_table,
     build_table_trace,
 )
 from .capabilities import EditorCapabilities
@@ -47,7 +48,6 @@ from .chart_edits import (
     ChartEditSkipped,
     TableEditRecord,
     append_table_edit_record,
-    chart_edit_summary,
     load_table_edit_records,
 )
 from .service import ReportEditorContext, ReportEditorService
@@ -173,6 +173,9 @@ class TableTemplateApplyRequest(StrictModel):
     previous_edit_id: str | None = Field(
         default=None, alias="previousEditId", min_length=8, max_length=40
     )
+    expected_sha256: str | None = Field(
+        default=None, alias="expectedSha256", pattern=r"^[0-9a-f]{64}$"
+    )
 
     @model_validator(mode="after")
     def validate_request(self) -> TableTemplateApplyRequest:
@@ -202,6 +205,15 @@ class _TableEditJob:
     @property
     def key(self) -> tuple[str, int, str]:
         return (self.report_id, self.revision, self.table_id)
+
+
+@dataclass(frozen=True)
+class _ResolvedTable:
+    context: ReportEditorContext
+    bundle: DeterministicAnalysisBundle
+    trace: Any
+    analysis_id: str
+    original_table_id: str
 
 
 def _table_ai_error(code: str, message: str, **details: Any) -> ReportingError:
@@ -267,7 +279,7 @@ class TableAIEditService:
                     for template in _TABLE_TEMPLATES
                 ],
             }
-        _context, bundle, _trace, _analysis_id = resolved
+        bundle = resolved.bundle
         entries = []
         for template in _TABLE_TEMPLATES:
             available, why = _template_availability(template["templateId"], bundle)
@@ -276,7 +288,7 @@ class TableAIEditService:
 
     async def _check(
         self, expected: ReportEditorContext, session: Any, table_id: str
-    ) -> tuple[str | None, tuple[ReportEditorContext, DeterministicAnalysisBundle, Any, str] | None]:
+    ) -> tuple[str | None, _ResolvedTable | None]:
         """可用性判定与装配共用一次来源上下文与事实文件加载。"""
 
         if EditorCapabilities.of(getattr(session, "capabilities", None)).restricted:
@@ -296,18 +308,43 @@ class TableAIEditService:
         self, context: ReportEditorContext, table_id: str
     ) -> (
         dict[str, str]
-        | tuple[ReportEditorContext, DeterministicAnalysisBundle, Any, str]
+        | _ResolvedTable
     ):
         """解析表格的追溯登记与所属分析的冻结事实文件。
 
-        返回 ``{"reason": ...}`` 表示不可用判定；四元组
-        ``(context, bundle, table_trace, analysis_id)`` 表示可用。
+        返回 ``{"reason": ...}`` 表示不可用判定；``_ResolvedTable`` 同时保留
+        当前表格 trace 与最初登记的 tableId，供已接受的新表继续编辑。
         """
 
         manifest, index = await self.editor.trace.load_manifest_and_index(context)
         if manifest is None or index is None:
             return {"reason": "facts_missing"}
+        original_table_id = table_id
         trace = next((item for item in index.tables if item.table_id == table_id), None)
+        if trace is None:
+            try:
+                records = await load_table_edit_records(
+                    self.editor.workspace, context.scope["threadId"], context.markdown_path
+                )
+            except ValueError as error:
+                raise _table_ai_error(
+                    "report_editor_table_ai_missing", "改表登记不可读取。"
+                ) from error
+            edited = next(
+                (item for item in reversed(records) if item.new_table_id == table_id), None
+            )
+            if edited is not None:
+                original_table_id = edited.table_id
+                original = next(
+                    (item for item in index.tables if item.table_id == original_table_id), None
+                )
+                if original is not None:
+                    candidate = type(original).model_validate(edited.table_trace)
+                    if candidate.table_id != table_id:
+                        raise _table_ai_error(
+                            "snapshot_integrity_failed", "改表登记 tableId 不一致。"
+                        )
+                    trace = candidate
         if trace is None:
             return {"reason": "unknown_table"}
         if not trace.cells:
@@ -317,6 +354,8 @@ class TableAIEditService:
         }
         if not analysis_ids:
             return {"reason": "table_unbound"}
+        if len(analysis_ids) != 1:
+            return {"reason": "facts_ambiguous"}
         fact_files = {
             entry.analysis_id: entry for entry in index.fact_files
             if entry.content_kind == "deterministic_bundle"
@@ -354,7 +393,7 @@ class TableAIEditService:
             raise _table_ai_error(
                 "snapshot_integrity_failed", "事实文件与分析登记不一致。"
             )
-        return context, bundle, trace, entry.analysis_id
+        return _ResolvedTable(context, bundle, trace, entry.analysis_id, original_table_id)
 
     async def edit_record(self, expected: ReportEditorContext, edit_id: str) -> dict[str, Any]:
         """已登记改表的表格归属：正文表格已替换为改表结果时，据此继续改表。"""
@@ -369,6 +408,31 @@ class TableAIEditService:
         record = next((item for item in records if item.edit_id == edit_id), None)
         if record is None:
             raise _table_ai_error("report_editor_table_ai_missing", "改表登记不存在。")
+        return self._edit_record_payload(record)
+
+    async def edit_record_by_table_id(
+        self, expected: ReportEditorContext, table_id: str
+    ) -> dict[str, Any]:
+        """Resolve an accepted edited table marker back to its immutable edit record."""
+
+        context = await self.editor._source_context(expected)
+        try:
+            records = await load_table_edit_records(
+                self.editor.workspace, context.scope["threadId"], context.markdown_path
+            )
+        except ValueError as error:
+            raise _table_ai_error(
+                "report_editor_table_ai_missing", "改表登记不可读取。"
+            ) from error
+        record = next(
+            (item for item in reversed(records) if item.new_table_id == table_id), None
+        )
+        if record is None:
+            raise _table_ai_error("report_editor_table_ai_missing", "改表登记不存在。")
+        return self._edit_record_payload(record)
+
+    @staticmethod
+    def _edit_record_payload(record: TableEditRecord) -> dict[str, Any]:
         return {
             "editId": record.edit_id,
             "tableId": record.table_id,
@@ -426,7 +490,8 @@ class TableAIEditService:
                 _TABLE_UNAVAILABLE_REASONS.get(reason, "AI 改表当前不可用。"),
                 reason=reason,
             )
-        context = resolved[0]
+        context = resolved.context
+        canonical_table_id = resolved.original_table_id
         running = [job for job in self._jobs.values() if not job.task.done()]
         if any(job.key == (expected.report_id, expected.revision, table_id) for job in running):
             raise _table_ai_error("report_editor_table_ai_busy", "这张表已有改表任务在进行，请等待完成。")
@@ -437,20 +502,40 @@ class TableAIEditService:
                 "report_editor_table_ai_rate_limited",
                 f"改表次数已达每小时上限（{self.hourly_limit} 次），请稍后再试。",
             )
-        edit_id = f"tedit-{uuid4().hex[:16]}"
-        self._hourly.setdefault(user_id, []).append(time.monotonic())
         base_body = (getattr(payload, "base_body", None) or "")[:MAX_TABLE_AI_BASE_BODY_CHARS]
         expected_sha256 = getattr(payload, "expected_sha256", None)
-        if expected_sha256 is not None and base_body:
-            if hashlib.sha256(base_body.encode("utf-8")).hexdigest() != expected_sha256:
+        if expected_sha256 is None and base_body:
+            expected_sha256 = hashlib.sha256(base_body.encode("utf-8")).hexdigest()
+        async with self.editor._draft_lock(context):
+            _path, current_markdown, _document_sha = await self.editor._read_revision_markdown(
+                context
+            )
+            current_body = _table_body_for_id(current_markdown, table_id)
+            if current_body is None:
+                raise _table_ai_error(
+                    "report_editor_table_ai_target_missing", "当前草稿中已找不到这张表，请重新载入。"
+                )
+            current_sha256 = hashlib.sha256(current_body.encode("utf-8")).hexdigest()
+            if expected_sha256 is None or not secrets.compare_digest(
+                current_sha256, expected_sha256
+            ):
                 raise _table_ai_error(
                     "report_editor_table_ai_base_changed", "表格与提交时的版本不一致，请重试。"
                 )
+            if base_body and not secrets.compare_digest(
+                hashlib.sha256(base_body.encode("utf-8")).hexdigest(), expected_sha256
+            ):
+                raise _table_ai_error(
+                    "report_editor_table_ai_base_changed", "表格与提交时的版本不一致，请重试。"
+                )
+        edit_id = f"tedit-{uuid4().hex[:16]}"
+        self._hourly.setdefault(user_id, []).append(time.monotonic())
         task = asyncio.create_task(
             self._guarded_edit(
-                resolved, table_id, edit_id,
+                resolved, canonical_table_id, edit_id,
                 instruction=instruction, template_id=template_id,
-                base_body=base_body, previous_edit_id=payload.previous_edit_id,
+                base_body=current_body, previous_edit_id=payload.previous_edit_id,
+                current_table_id=table_id, expected_body_sha256=current_sha256,
             ),
             name=f"report-editor-table-ai:{edit_id}",
         )
@@ -538,7 +623,7 @@ class TableAIEditService:
 
     async def _guarded_edit(
         self,
-        resolved: tuple[ReportEditorContext, DeterministicAnalysisBundle, Any, str],
+        resolved: _ResolvedTable,
         table_id: str,
         edit_id: str,
         *,
@@ -546,6 +631,8 @@ class TableAIEditService:
         template_id: str | None,
         base_body: str,
         previous_edit_id: str | None,
+        current_table_id: str,
+        expected_body_sha256: str,
     ) -> dict[str, Any]:
         job = self._jobs[edit_id]
         started = time.monotonic()
@@ -556,6 +643,8 @@ class TableAIEditService:
                     resolved, table_id, edit_id,
                     instruction=instruction, template_id=template_id,
                     base_body=base_body, previous_edit_id=previous_edit_id,
+                    current_table_id=current_table_id,
+                    expected_body_sha256=expected_body_sha256,
                 )
         except TimeoutError as error:
             if not deadline.expired():
@@ -603,7 +692,7 @@ class TableAIEditService:
 
     async def _run_edit(
         self,
-        resolved: tuple[ReportEditorContext, DeterministicAnalysisBundle, Any, str],
+        resolved: _ResolvedTable,
         table_id: str,
         edit_id: str,
         *,
@@ -611,9 +700,14 @@ class TableAIEditService:
         template_id: str | None,
         base_body: str,
         previous_edit_id: str | None,
+        current_table_id: str,
+        expected_body_sha256: str,
     ) -> dict[str, Any]:
         job = self._jobs[edit_id]
-        source_context, bundle, trace, analysis_id = resolved
+        source_context = resolved.context
+        bundle = resolved.bundle
+        trace = resolved.trace
+        analysis_id = resolved.analysis_id
         thread_id = source_context.scope["threadId"]
         # 多轮：底稿 = 上一轮改表的新表 Markdown；首轮 = 前端提交的当前表体（仅对比展示）。
         previous_markdown: str | None = None
@@ -706,6 +800,18 @@ class TableAIEditService:
             userId=source_context.scope.get("userId", ""),
         )
         async with self.editor._draft_lock(source_context):
+            _path, current_markdown, _document_sha = await self.editor._read_revision_markdown(
+                source_context
+            )
+            current_body = _table_body_for_id(current_markdown, current_table_id)
+            if current_body is None or not secrets.compare_digest(
+                hashlib.sha256(current_body.encode("utf-8")).hexdigest(),
+                expected_body_sha256,
+            ):
+                raise _table_ai_error(
+                    "report_editor_table_ai_base_changed",
+                    "生成期间表格已被修改，本次结果未登记，请重试。",
+                )
             await append_table_edit_record(
                 self.editor.workspace, thread_id, source_context.markdown_path, record
             )
@@ -717,6 +823,7 @@ class TableAIEditService:
             "analysisId": analysis_id,
             "newTableId": new_table_id,
             "markdown": rendered.markdown,
+            "baseCaption": _table_caption(getattr(trace, "origin_markdown", None)),
             "review": _review_payload(old_body or "", rendered.markdown, rendered.trace),
             "warnings": warnings,
             "skipped": [{"request": item.request, "reason": item.reason} for item in skipped],
@@ -765,15 +872,12 @@ class _RenderedTable:
     warnings: list[str]
 
 
-def _bundle_resource_id(
-    resolved: tuple[ReportEditorContext, DeterministicAnalysisBundle, Any, str]
-) -> str:
+def _bundle_resource_id(resolved: _ResolvedTable) -> str:
     """事实文件 resource_id 从登记单元格的 FactRef 还原（装载时已核验）。"""
 
-    context, _bundle, trace, _analysis_id = resolved
-    for cell in trace.cells:
+    for cell in resolved.trace.cells:
         for ref in cell.fact_refs:
-            if ref.analysis_id == _analysis_id:
+            if ref.analysis_id == resolved.analysis_id:
                 return ref.file_resource_id
     raise _table_ai_error("snapshot_integrity_failed", "表格事实来源登记不完整。")
 
@@ -809,7 +913,7 @@ def _validate_and_render(
             display_units[code] = _table_display_unit(
                 fact.unit, [item.value for item in fact.period_values] or [fact.total]
             )
-            labels[code] = column.label or f"{_fact_label(fact)}（{display_units[code] or '数值'}）"
+            labels[code] = column.label or f"{_fact_label(fact, ())}（{display_units[code] or '数值'}）"
         if len(set(labels.values())) != len(labels):
             labels = {code: f"{labels[code]} · {code}" for code in codes}
         builder_spec: dict[str, Any] = {
@@ -1008,7 +1112,7 @@ def _fact_catalog(bundle: DeterministicAnalysisBundle, trace: Any) -> dict[str, 
     metrics = [
         {
             "factId": fact.fact_id,
-            "label": _fact_label(fact),
+            "label": _fact_label(fact, ()),
             "unit": fact.unit,
             "periods": [item.period for item in fact.period_values][:_MAX_TEMPLATE_CATALOG_PERIODS],
         }
@@ -1049,6 +1153,28 @@ def _table_body(markdown: str) -> str:
         re.MULTILINE | re.DOTALL,
     )
     return match.group(2) if match else ""
+
+
+def _table_caption(markdown: str | None) -> str | None:
+    """Return the server-rendered caption immediately preceding a table marker."""
+
+    if not markdown:
+        return None
+    match = re.search(r"(?:^|\n)([^\n]+)\n\n\[\[table:[^\]\r\n]+\]\]", markdown)
+    return match.group(1).strip() if match else None
+
+
+def _table_body_for_id(markdown: str, table_id: str) -> str | None:
+    """Return the exact registered table body from the current draft."""
+
+    for match in re.finditer(
+        r"^\[\[table:([^\]\r\n]+)\]\]\n(.*?)\n\n?\[\[/table:\1\]\]$",
+        markdown,
+        re.MULTILINE | re.DOTALL,
+    ):
+        if match.group(1) == table_id:
+            return match.group(2)
+    return None
 
 
 def _parse_table_grid(body: str) -> list[list[str]]:
@@ -1160,6 +1286,7 @@ _TABLE_UNAVAILABLE_REASONS = {
     "unknown_table": "表格不在当前版本的登记中。",
     "table_unbound": "这张表没有登记单元格事实绑定（或来自旧报告），无法改表。",
     "facts_missing": "该分析的事实文件不在登记中，AI 改表不可用。",
+    "facts_ambiguous": "该表跨越多个分析，暂不支持 AI 改表。",
     "unavailable": "AI 改表当前不可用。",
 }
 

@@ -1,9 +1,10 @@
 import { Schema } from '@milkdown/kit/prose/model'
-import { EditorState } from '@milkdown/kit/prose/state'
+import { EditorState, Plugin } from '@milkdown/kit/prose/state'
 import { EditorView } from '@milkdown/kit/prose/view'
+import { history, redo, undo } from '@milkdown/kit/prose/history'
 import { describe, expect, it } from 'vitest'
 
-import { markerDecorations, PROTOCOL_CARET_ANCHOR } from './protocol-plugin'
+import { markerDecorations, PROTOCOL_CARET_ANCHOR, protocolMarkerTransactionAllowed, TABLE_PROTOCOL_EDIT_META } from './protocol-plugin'
 
 const schema = new Schema({
   nodes: { doc: { content: 'block+' }, paragraph: { group: 'block', content: 'inline*', toDOM: () => ['p', 0] },
@@ -54,5 +55,24 @@ describe('protocol marker caret anchors', () => {
     }
     expect(activeTexts(secondStart)).toEqual(['[[citation:sub-2]]'])
     expect(activeTexts(null)).toEqual([])
+  })
+})
+
+describe('table marker replacement history', () => {
+  it('allows the exact paired marker change to undo and redo', () => {
+    const before = schema.node('doc', null, [paragraph(schema.text('[[table:old]]')), paragraph(schema.text('内容')), paragraph(schema.text('[[/table:old]]'))])
+    let state = EditorState.create({
+      schema,
+      doc: before,
+      plugins: [history(), new Plugin({ filterTransaction: protocolMarkerTransactionAllowed })],
+    })
+    const dispatch = (transaction: Parameters<typeof state.apply>[0]) => { state = state.apply(transaction) }
+    const after = schema.node('doc', null, [paragraph(schema.text('[[table:new]]')), paragraph(schema.text('内容')), paragraph(schema.text('[[/table:new]]'))])
+    dispatch(state.tr.replaceWith(0, state.doc.content.size, after.content).setMeta(TABLE_PROTOCOL_EDIT_META, { tableId: 'new' }))
+    expect(state.doc.textContent).toContain('table:new')
+    expect(undo(state, dispatch)).toBe(true)
+    expect(state.doc.textContent).toContain('table:old')
+    expect(redo(state, dispatch)).toBe(true)
+    expect(state.doc.textContent).toContain('table:new')
   })
 })
