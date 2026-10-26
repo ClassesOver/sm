@@ -507,6 +507,25 @@ class TaskExecutionKernel:
             else:
                 result = {"output": serialized, "outputFormat": "json"}
                 key = "output"
+        if len(raw) > preview_bytes and key is not None:
+            previewed = {**result, key: self._preview_text(raw, preview_bytes)}
+            previewed_size = len(
+                json.dumps(
+                    previewed,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            )
+            # Replacing only the largest text field is insufficient when a
+            # tool returns several large fields.  Retain the complete JSON as
+            # one resource so the visible envelope stays bounded and no field
+            # is silently exposed without a corresponding handle.
+            if previewed_size > preview_bytes + 512:
+                result = {"output": serialized, "outputFormat": "json"}
+                key = "output"
+                raw = serialized.encode("utf-8")
         if len(raw) <= preview_bytes and not retain:
             return result
         truncated = len(raw) > preview_bytes
@@ -538,7 +557,12 @@ class TaskExecutionKernel:
                 tasks = root.setdefault("tasks", {})
                 task_state = tasks.setdefault(scope.external_run_id, {"bytes": 0, "handles": []})
                 remaining = max(0, MAX_TASK_TOOL_OUTPUT_BYTES - int(task_state.get("bytes", 0)))
-                stored_bytes = min(len(raw), MAX_TOOL_OUTPUT_RESOURCE_BYTES, remaining)
+                stored_limit = min(len(raw), MAX_TOOL_OUTPUT_RESOURCE_BYTES, remaining)
+                # ``read_tool_output`` paginates UTF-8 text.  Persist only a
+                # complete prefix so a capacity boundary cannot strand an
+                # unreadable partial code point at the end of every page.
+                stored = raw[:stored_limit].decode("utf-8", errors="ignore").encode("utf-8")
+                stored_bytes = len(stored)
                 metadata = {
                     "task": scope.external_run_id,
                     "attempt": scope.attempt_no,
@@ -546,7 +570,7 @@ class TaskExecutionKernel:
                     "bytes": len(raw),
                     "storedBytes": stored_bytes,
                     "sha256": hashlib.sha256(raw).hexdigest(),
-                    "storedSha256": hashlib.sha256(raw[:stored_bytes]).hexdigest(),
+                    "storedSha256": hashlib.sha256(stored).hexdigest(),
                 }
                 handles[handle] = metadata
                 task_state["bytes"] = int(task_state.get("bytes", 0)) + stored_bytes
@@ -555,7 +579,7 @@ class TaskExecutionKernel:
                 if stored_bytes:
                     await self.service.aensure_directory(scope.thread_id, path.rsplit("/", 1)[0])
                     await self.service.awrite_bytes(
-                        scope.thread_id, path, raw[:stored_bytes], overwrite=True
+                        scope.thread_id, path, stored, overwrite=True
                     )
             except Exception:
                 async with scheduler.state():
@@ -642,6 +666,12 @@ class TaskExecutionKernel:
             "offset": offset,
             "nextOffset": end,
             "content": content,
+            # Legacy truncated handles written before ``storedSha256`` cannot
+            # authenticate the retained prefix.  ``read_tool_output_resource``
+            # marks that compatibility path explicitly; keep the marker on the
+            # public response so callers do not mistake the full-output digest
+            # below for verification of the bytes they just read.
+            "integrity": metadata.get("integrity", "verified"),
             "storedBytes": stored_bytes,
             "outputBytes": metadata["bytes"],
             "outputSha256": metadata["sha256"],
@@ -1268,7 +1298,9 @@ class TaskExecutionKernel:
         invalid_paths: list[str] = []
         for path in artifact_paths:
             try:
-                normalize_workspace_path(path, allow_root=False)
+                assert_task_workspace_path(
+                    normalize_workspace_path(path, allow_root=False)
+                )
             except WorkspaceError:
                 invalid_paths.append(path)
         if invalid_paths:

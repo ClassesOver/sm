@@ -157,6 +157,111 @@ async def test_successful_rechecks_are_idempotent_and_resolve_only_covered_subje
 
 @pytest.mark.anyio
 @pytest.mark.integration
+async def test_replayed_empty_check_cannot_resolve_warning_created_later(
+    quality_warning_service,
+) -> None:
+    service, tenant = quality_warning_service
+    scope = _scope("income_summary_total")
+
+    await service.record_successful_check(
+        tenant=tenant,
+        check_scope=scope,
+        findings=(),
+        context=CheckContext(check_id="empty-check"),
+    )
+    detected = await service.record_successful_check(
+        tenant=tenant,
+        check_scope=scope,
+        findings=(_finding(),),
+        context=CheckContext(check_id="later-check"),
+    )
+    replayed = await service.record_successful_check(
+        tenant=tenant,
+        check_scope=scope,
+        findings=(),
+        context=CheckContext(check_id="empty-check"),
+    )
+
+    open_records = await service.list_warnings(tenant=tenant, query=WarningQuery())
+    events = await service.list_events(tenant=tenant, warning_id=detected[0].warning_id)
+    assert replayed == ()
+    assert [record.warning_id for record in open_records] == [detected[0].warning_id]
+    assert [event.event_type for event in events] == ["detected"]
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_replayed_detecting_check_does_not_reopen_resolved_warning(
+    quality_warning_service,
+) -> None:
+    service, tenant = quality_warning_service
+    scope = _scope("income_summary_total")
+    finding = _finding()
+
+    detected = await service.record_successful_check(
+        tenant=tenant,
+        check_scope=scope,
+        findings=(finding,),
+        context=CheckContext(check_id="detect-check"),
+    )
+    await service.record_successful_check(
+        tenant=tenant,
+        check_scope=scope,
+        findings=(),
+        context=CheckContext(check_id="resolve-check"),
+    )
+    replayed = await service.record_successful_check(
+        tenant=tenant,
+        check_scope=scope,
+        findings=(finding,),
+        context=CheckContext(check_id="detect-check"),
+    )
+
+    resolved = await service.list_warnings(tenant=tenant, query=WarningQuery(status="resolved"))
+    events = await service.list_events(tenant=tenant, warning_id=detected[0].warning_id)
+    assert [record.warning_id for record in replayed] == [detected[0].warning_id]
+    assert [record.warning_id for record in resolved] == [detected[0].warning_id]
+    assert [event.event_type for event in events] == ["detected", "resolved"]
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_older_revision_first_arrival_cannot_override_newer_check(
+    quality_warning_service,
+) -> None:
+    service, tenant = quality_warning_service
+    scope = _scope("income_summary_total")
+
+    detected = await service.record_successful_check(
+        tenant=tenant,
+        check_scope=scope,
+        findings=(_finding(),),
+        context=CheckContext(
+            check_id="revision-2",
+            report_run_id="run-a",
+            revision=2,
+        ),
+    )
+    stale = await service.record_successful_check(
+        tenant=tenant,
+        check_scope=scope,
+        findings=(),
+        context=CheckContext(
+            check_id="revision-1-first-arrival",
+            report_run_id="run-a",
+            revision=1,
+        ),
+    )
+
+    open_records = await service.list_warnings(tenant=tenant, query=WarningQuery())
+    events = await service.list_events(tenant=tenant, warning_id=detected[0].warning_id)
+    assert stale == ()
+    assert [record.warning_id for record in open_records] == [detected[0].warning_id]
+    assert [event.event_type for event in events] == ["detected"]
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
 async def test_warning_history_is_tenant_isolated_and_parallel_rechecks_aggregate(
     quality_warning_service,
 ) -> None:

@@ -47,13 +47,17 @@ def deterministic_fact_summary(bundle: DeterministicAnalysisBundle) -> str:
             continue
         name = primary_display_name(fact.display_name) or fact.field
         periods = [item.period for item in fact.period_values]
-        stock = fact.period_aggregation == "last"
-        span = _span(periods[-1:] if stock else periods)
-        word = "" if stock else {"sum": "合计", "count": "计数"}.get(fact.aggregation, "")
+        level_series = fact.period_aggregation == "last" or fact.cumulative_policy is not None
+        span = _span(periods[-1:] if level_series else periods)
+        word = "" if level_series else {"sum": "合计", "count": "计数"}.get(fact.aggregation, "")
         # 固定范围（如“全院”）写进每个分句：引用句核对按分句检查登记范围。
         scope = "、".join(fact.scope.values())
         parts = [f"{scope}{span}{name}{word}{total}"]
-        average = token(fact.fact_id, "monthlyAverage", fact.unit, fact.total / max(len(periods), 1))
+        average = (
+            None
+            if level_series
+            else token(fact.fact_id, "monthlyAverage", fact.unit, fact.total / max(len(periods), 1))
+        )
         if average and periods:
             values = [item.value for item in fact.period_values]
             if len(set(values)) == 1:

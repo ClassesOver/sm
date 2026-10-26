@@ -264,6 +264,12 @@ async def test_legacy_truncated_output_handle_stays_readable_but_unverified() ->
     )
     raw, returned = await kernel.read_tool_output_resource("handle-1", run_context, _scope=scope)
     assert raw == stored and returned["integrity"] == "legacy_unverified"
+    page = await kernel.read_tool_output(
+        "handle-1", 0, len(stored), run_context, _scope=scope
+    )
+    assert page["content"] == "hello"
+    assert page["integrity"] == "legacy_unverified"
+    assert page["outputDiscarded"] is True
     # 带 storedSha256 的新句柄仍严格核对。
     metadata["storedSha256"] = hashlib.sha256(b"other").hexdigest()
     with pytest.raises(WorkspaceError, match="哈希"):

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import json
@@ -331,6 +332,57 @@ async def test_host_workspace_moves_and_deletes_directories(tmp_path: Path) -> N
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("source_is_directory", [False, True])
+async def test_host_workspace_move_never_replaces_target_created_after_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_is_directory: bool,
+) -> None:
+    workspace = _host_workspace(tmp_path)
+    if source_is_directory:
+        await workspace.awrite_text("workspace-1", "staging/report.md", "source")
+        source = "staging"
+        destination = "reports/revision-1"
+    else:
+        await workspace.awrite_text("workspace-1", "staging/report.md", "source")
+        source = "staging/report.md"
+        destination = "reports/report.md"
+    original = host_workspace_module._rename_noreplace_at
+
+    def create_competing_target(*args, **kwargs):
+        destination_parent = args[2]
+        destination_name = args[3]
+        if source_is_directory:
+            host_workspace_module.os.mkdir(destination_name, dir_fd=destination_parent)
+        else:
+            descriptor = host_workspace_module.os.open(
+                destination_name,
+                host_workspace_module.os.O_WRONLY
+                | host_workspace_module.os.O_CREAT
+                | host_workspace_module.os.O_EXCL,
+                0o600,
+                dir_fd=destination_parent,
+            )
+            with host_workspace_module.os.fdopen(descriptor, "wb") as stream:
+                stream.write(b"competing")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        host_workspace_module, "_rename_noreplace_at", create_competing_target
+    )
+
+    with pytest.raises(WorkspacePathConflict, match="移动目标已经存在"):
+        await workspace.amove_files("workspace-1", source, destination)
+
+    assert (workspace.identity.root / source).exists()
+    target = workspace.identity.root / destination
+    if source_is_directory:
+        assert target.is_dir() and list(target.iterdir()) == []
+    else:
+        assert target.read_bytes() == b"competing"
+
+
+@pytest.mark.anyio
 async def test_host_workspace_rejects_symlink_file(tmp_path: Path) -> None:
     workspace = _host_workspace(tmp_path)
     outside = tmp_path / "outside.json"
@@ -574,6 +626,46 @@ async def test_host_workspace_applies_create_update_and_delete_changes(tmp_path:
 
 
 @pytest.mark.anyio
+async def test_apply_changes_rolls_back_completed_writes_before_propagating_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _host_workspace(tmp_path)
+    await workspace.awrite_bytes("workspace-1", "a.txt", b"before-a")
+    await workspace.awrite_bytes("workspace-1", "b.txt", b"before-b")
+    original_write = workspace.awrite_bytes
+    calls = 0
+
+    async def cancel_second_write(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise asyncio.CancelledError
+        return await original_write(*args, **kwargs)
+
+    monkeypatch.setattr(workspace, "awrite_bytes", cancel_second_write)
+    changes = [
+        {
+            "operation": "update",
+            "path": "a.txt",
+            "content": "after-a",
+            "expected_sha256": hashlib.sha256(b"before-a").hexdigest(),
+        },
+        {
+            "operation": "update",
+            "path": "b.txt",
+            "content": "after-b",
+            "expected_sha256": hashlib.sha256(b"before-b").hexdigest(),
+        },
+    ]
+
+    with pytest.raises(asyncio.CancelledError):
+        await workspace.aapply_changes("workspace-1", changes)
+
+    assert await workspace.aread_text("workspace-1", "a.txt") == "before-a"
+    assert await workspace.aread_text("workspace-1", "b.txt") == "before-b"
+
+
+@pytest.mark.anyio
 async def test_reporting_runtime_retains_tool_output_on_host_workspace(tmp_path: Path) -> None:
     registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
     registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
@@ -767,16 +859,16 @@ async def test_host_write_locks_are_released_after_use(tmp_path: Path) -> None:
 
 
 def test_ensure_directory_tolerates_concurrent_creation(tmp_path, monkeypatch):
-    """并发脚本执行在 lstat 与 mkdir 之间建好同一目录时，不应抛 FileExistsError。"""
+    """并发脚本抢先通过同一父目录描述符建目录时不应失败。"""
     from smart_reporting.reporting.host_workspace import _ensure_directory
 
-    original = Path.mkdir
+    original = host_workspace_module.os.mkdir
 
-    def racing_mkdir(self, *args, **kwargs):
-        original(self, *args, **kwargs)  # 另一个执行者抢先创建
-        return original(self, *args, **kwargs)
+    def racing_mkdir(path, *args, **kwargs):
+        original(path, *args, **kwargs)  # 另一个执行者抢先创建
+        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "mkdir", racing_mkdir)
+    monkeypatch.setattr(host_workspace_module.os, "mkdir", racing_mkdir)
     _ensure_directory(tmp_path / ".reporting-exits" / "nested", tmp_path)
     assert (tmp_path / ".reporting-exits" / "nested").is_dir()
 
@@ -787,13 +879,45 @@ def test_ensure_directory_rejects_symlink_created_concurrently(tmp_path, monkeyp
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir()
 
-    def racing_symlink(self, *args, **kwargs):
-        self.symlink_to(outside, target_is_directory=True)
-        raise FileExistsError(str(self))
+    def racing_symlink(path, *args, dir_fd=None, **kwargs):
+        host_workspace_module.os.symlink(
+            outside, path, target_is_directory=True, dir_fd=dir_fd
+        )
+        raise FileExistsError(str(path))
 
-    monkeypatch.setattr(Path, "mkdir", racing_symlink)
+    monkeypatch.setattr(host_workspace_module.os, "mkdir", racing_symlink)
     with pytest.raises(WorkspaceError):
         _ensure_directory(tmp_path / "linked", tmp_path)
+
+
+@pytest.mark.anyio
+async def test_read_keeps_parent_directory_identity_during_symlink_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _host_workspace(tmp_path)
+    root = workspace.identity.root
+    await workspace.awrite_bytes("workspace-1", "safe/value.txt", b"inside")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "value.txt").write_bytes(b"outside")
+    real_open = host_workspace_module.os.open
+    swapped = False
+
+    def racing_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "value.txt" and not swapped:
+            swapped = True
+            (root / "safe").rename(root / "safe-original")
+            (root / "safe").symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(host_workspace_module.os, "open", racing_open)
+
+    content, _media_type = await workspace.afile_bytes(
+        "workspace-1", "safe/value.txt"
+    )
+
+    assert content == b"inside"
 
 
 @pytest.mark.anyio

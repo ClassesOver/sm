@@ -38,6 +38,14 @@ def create_quality_warning_router() -> APIRouter:
     ):
         tenant = _tenant_scope(request)
         service = _service(request)
+        if any(
+            value is not None and (value.tzinfo is None or value.utcoffset() is None)
+            for value in (first_observed_after, last_observed_before)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="quality_warning_time_filter_timezone_required",
+            )
         if cursor is not None:
             # 游标由客户端回传，格式错误属于请求错误而不是服务端异常。
             try:
@@ -110,11 +118,6 @@ def _tenant_scope(request: Request) -> TenantScope:
     capability = getattr(request.state, "capability", None)
     database = getattr(capability, "database", None)
     company = getattr(capability, "company", None)
-    if (
-        not isinstance(database, str)
-        or not database
-        or type(company) is not int
-        or company <= 0
-    ):
+    if not isinstance(database, str) or not database or type(company) is not int or company <= 0:
         raise HTTPException(status_code=401, detail="quality_warning_capability_required")
     return TenantScope(database_name=database, company_id=str(company))

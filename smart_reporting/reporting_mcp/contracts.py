@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from ..reporting.contract import ReportPeriod, SchemaInput
 from ..reporting.hospital_operation.domains import DomainCode
@@ -73,10 +73,24 @@ class ReportingPublishedReport(StrictModel):
     report_id: str = Field(alias="reportId", min_length=1, max_length=128)
     report_title: str | None = Field(default=None, alias="reportTitle")
     revision: int = Field(ge=0)
-    pdf: ReportingArtifactLink
-    word: ReportingArtifactLink
+    pdf: ReportingArtifactLink | None = None
+    word: ReportingArtifactLink | None = None
     editor: ReportingEditorLink | None = None
     publication_gate: dict[str, Any] | None = Field(default=None, alias="publicationGate")
+
+    @model_validator(mode="after")
+    def require_downloadable_artifact(self) -> ReportingPublishedReport:
+        if self.pdf is None and self.word is None:
+            raise ValueError("已发布报告必须至少包含一个可下载格式。")
+        return self
+
+
+class ReportingOperationError(StrictModel):
+    code: str = Field(min_length=1, max_length=128)
+    message: str = Field(max_length=1000)
+    retryable: bool
+    stage: str | None = Field(default=None, max_length=128)
+    status_code: int | None = Field(default=None, alias="statusCode")
 
 
 class ReportingOperationResult(StrictModel):
@@ -85,3 +99,12 @@ class ReportingOperationResult(StrictModel):
     status: Literal["running", "paused", "completed", "cancelled", "failed"]
     review: ReportReviewSnapshot | None = None
     report: ReportingPublishedReport | None = None
+    error: ReportingOperationError | None = None
+
+    @model_validator(mode="after")
+    def require_failure_details(self) -> ReportingOperationResult:
+        if self.status == "failed" and self.error is None:
+            raise ValueError("失败的报表操作必须包含错误详情。")
+        if self.status != "failed" and self.error is not None:
+            raise ValueError("非失败报表操作不得包含错误详情。")
+        return self

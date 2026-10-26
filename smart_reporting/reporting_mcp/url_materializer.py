@@ -417,18 +417,33 @@ class UrlMaterializer:
         delete = getattr(self.workspace, "delete_file", None)
         if not callable(delete):
             return
-        try:
-            await asyncio.to_thread(
+        deletion = asyncio.create_task(
+            asyncio.to_thread(
                 delete,
                 thread_id,
                 f"reporting-inputs/{operation_id}",
                 True,
             )
-        except Exception as error:
-            raise ReportingError(
-                "report_attachment_cleanup_failed",
-                "报表附件目录清理失败。",
-            ) from error
+        )
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(deletion)
+                break
+            except asyncio.CancelledError as error:
+                # ``to_thread`` cannot stop a deletion that has already begun.
+                # Repeated cancellation must not let the operation id be reused
+                # while that old deletion can still remove a retry's files.
+                cancellation = cancellation or error
+            except Exception as error:
+                if cancellation is not None:
+                    raise cancellation from error
+                raise ReportingError(
+                    "report_attachment_cleanup_failed",
+                    "报表附件目录清理失败。",
+                ) from error
+        if cancellation is not None:
+            raise cancellation
 
     @classmethod
     def _first_reporting_error(cls, error: BaseException) -> ReportingError | None:

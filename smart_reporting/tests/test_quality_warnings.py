@@ -19,6 +19,7 @@ from smart_reporting.quality_warnings import (
     QualityWarningService,
     TenantScope,
     WarningFinding,
+    WarningQuery,
     warning_fingerprint,
 )
 
@@ -78,6 +79,23 @@ def test_warning_finding_rejects_sensitive_details(details: dict[str, object]) -
             message="指标定义不完整。",
             details=details,
         )
+
+
+def test_warning_finding_rejects_source_phase_larger_than_database_column() -> None:
+    with pytest.raises(ValidationError):
+        WarningFinding(
+            rule_code="report_metric_definition_incomplete",
+            subject_type="metric",
+            subject_id="income_summary_total",
+            message="指标定义不完整。",
+            sourcePhase="p" * 65,
+        )
+
+
+@pytest.mark.parametrize("field", ["first_observed_after", "last_observed_before"])
+def test_warning_query_rejects_naive_time_filters(field: str) -> None:
+    with pytest.raises(ValidationError, match="必须包含时区"):
+        WarningQuery(**{field: datetime(2026, 1, 1)})
 
 
 def test_tenant_scope_is_an_internal_contract_not_http_query_model() -> None:
@@ -162,9 +180,13 @@ async def test_quality_warning_events_are_cursor_paginated() -> None:
         version=1,
     )
     event = QualityWarningEvent(
-        event_id=uuid4(), warning_id=warning_id, tenant=tenant,
-        event_type="detected", check_id="analysis-1",
-        occurred_at=datetime.now(UTC), details={},
+        event_id=uuid4(),
+        warning_id=warning_id,
+        tenant=tenant,
+        event_type="detected",
+        check_id="analysis-1",
+        occurred_at=datetime.now(UTC),
+        details={},
     )
 
     class Service:
@@ -191,14 +213,10 @@ async def test_quality_warning_events_are_cursor_paginated() -> None:
         transport=httpx.ASGITransport(app=application), base_url="http://test"
     ) as client:
         response = await client.get(f"/quality-warnings/{warning_id}/events?limit=1")
-        malformed = await client.get(
-            f"/quality-warnings/{warning_id}/events?cursor=not-a-cursor"
-        )
+        malformed = await client.get(f"/quality-warnings/{warning_id}/events?cursor=not-a-cursor")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "records": [event.model_dump(mode="json")], "next_cursor": "next"
-    }
+    assert response.json() == {"records": [event.model_dump(mode="json")], "next_cursor": "next"}
     assert malformed.status_code == 400
     assert malformed.json() == {"detail": "quality_warning_event_cursor_invalid"}
 
@@ -270,3 +288,29 @@ async def test_quality_warning_list_rejects_malformed_cursor_as_bad_request() ->
 
     assert response.status_code == 400
     assert response.json() == {"detail": "quality_warning_cursor_invalid"}
+
+
+@pytest.mark.anyio
+async def test_quality_warning_list_rejects_naive_time_filter_at_http_boundary() -> None:
+    from smart_reporting.quality_warnings.api import create_quality_warning_router
+
+    class Service:
+        async def list_warning_page(self, *, tenant, query):
+            raise AssertionError("naive time filter must not reach the repository")
+
+    application = FastAPI()
+    application.state.agentos_context = SimpleNamespace(quality_warning_service=Service())
+
+    @application.middleware("http")
+    async def capability(request, call_next):
+        request.state.capability = SimpleNamespace(database="hospital", company=42)
+        return await call_next(request)
+
+    application.include_router(create_quality_warning_router())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get("/quality-warnings?firstObservedAfter=2026-01-01T00:00:00")
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "quality_warning_time_filter_timezone_required"}

@@ -12,6 +12,7 @@ from smart_reporting.reporting.contract import StrictModel
 
 _IDENTITY_MAX_LENGTH = 128
 _TENANT_MAX_LENGTH = 256
+_SOURCE_PHASE_MAX_LENGTH = 64
 _MESSAGE_MAX_LENGTH = 2_000
 _DETAILS_MAX_BYTES = 16 * 1024
 _SENSITIVE_DETAIL_KEYWORDS = frozenset(
@@ -32,6 +33,7 @@ _FINGERPRINT_DETAIL_KEYS = frozenset(
 )
 
 NonEmptyIdentity = Annotated[str, Field(min_length=1, max_length=_IDENTITY_MAX_LENGTH)]
+SourcePhaseIdentity = Annotated[str, Field(min_length=1, max_length=_SOURCE_PHASE_MAX_LENGTH)]
 WarningDisposition = Literal["informational", "quality_warning", "review_required"]
 
 
@@ -81,8 +83,8 @@ class WarningFinding(_FrozenModel):
     subject_id: NonEmptyIdentity
     severity: Literal["warning"] = "warning"
     disposition: WarningDisposition = "quality_warning"
-    source_phase: NonEmptyIdentity = Field(default="legacy", alias="sourcePhase")
-    source_phases: tuple[NonEmptyIdentity, ...] = Field(default=(), alias="sourcePhases")
+    source_phase: SourcePhaseIdentity = Field(default="legacy", alias="sourcePhase")
+    source_phases: tuple[SourcePhaseIdentity, ...] = Field(default=(), alias="sourcePhases")
     message: Annotated[str, Field(min_length=1, max_length=_MESSAGE_MAX_LENGTH)]
     details: dict[str, JsonValue] = Field(default_factory=dict)
 
@@ -114,6 +116,13 @@ class WarningQuery(_FrozenModel):
     last_observed_before: datetime | None = None
     cursor: Annotated[str, Field(min_length=1, max_length=1_024)] | None = None
     limit: Annotated[int, Field(ge=1, le=100)] = 50
+
+    @field_validator("first_observed_after", "last_observed_before")
+    @classmethod
+    def _time_filters_are_aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("告警时间过滤条件必须包含时区。")
+        return value
 
 
 class QualityWarningRecord(_FrozenModel):
@@ -166,7 +175,7 @@ class WarningNotice(_FrozenModel):
     subject_id: NonEmptyIdentity = Field(alias="subjectId")
     message: Annotated[str, Field(min_length=1, max_length=_MESSAGE_MAX_LENGTH)]
     details: dict[str, JsonValue] = Field(default_factory=dict)
-    source_phase: NonEmptyIdentity = Field(alias="sourcePhase")
+    source_phase: SourcePhaseIdentity = Field(alias="sourcePhase")
 
     @field_validator("details")
     @classmethod
