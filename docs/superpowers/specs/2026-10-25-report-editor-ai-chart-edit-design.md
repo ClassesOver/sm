@@ -1,6 +1,6 @@
 # 报告编辑器 AI 指导改图设计
 
-> 状态：设计稿（2026-10-25）。范围只含 Matplotlib 静态图；Plotly 交互图逻辑已弃用（见 AGENTS.md），本设计不产出、不扩展任何 Plotly / `.plotly.json` / `interactiveCharts` 内容。
+> 状态：设计稿（2026-10-25）；P1 已实现（见文末「实现状态」）。范围只含 Matplotlib 静态图；Plotly 交互图逻辑已弃用（见 AGENTS.md），本设计不产出、不扩展任何 Plotly / `.plotly.json` / `interactiveCharts` 内容。
 
 ## 1. 目标
 
@@ -250,3 +250,17 @@
 - **图模板走固定脚本**：模板脚本随代码发布，参数只有作图数据路径、列映射、标题与主题。只套模板、不加要求时不调用 Coding Agent，服务端直接执行模板脚本，结果确定、速度快。带补充要求时以模板脚本为起点交给 Coding Agent 修改（5.3 的同一任务边界）。
 - **表模板**：直接是预置的 `TableEditSpec`，套用后服务端确定性渲染，无需模型；带补充要求时由模型在模板规格上修改。
 - 模板脚本与模板规格各有单测，覆盖缺数据置灰、子集标注、单位换算与主题一致性。
+
+## 15. 实现状态（2026-10-25 更新）
+
+**P1（L1 呈现类改图全链路）已实现并通过测试**；P2（L2 换绑）、P3（多轮体验与快捷指令推荐）按分期待做，§14 表格 AI 改与预制模板另行实施。
+
+| 环节 | 实现 |
+| --- | --- |
+| 登记侧车 | `report_editor/chart_edits.py`：`draft/.chart-edits.json` 原子读写、`chart-edits/<editId>/` 不可变产物目录、记录模型与损坏解析 |
+| 服务 | `report_editor/chart_ai.py`：`ChartAIEditService`（可用性判定 → plan 分级 → materialize → draw → inspect → register），plan 用 Agno 结构化输出（`ChartEditPlan`），L2/L3 逐条跳过说明；draw 复用 `ReportingCodeGenerationRunner`（仅 Matplotlib、free-form write_script/run、3 类预检沿用） |
+| 接口 | `api.py`：POST/GET/cancel `/api/charts/{chart_id}/ai-edits…` + availability；`asset` 放行扩展到改图登记图片（哈希一致 PNG/JPEG）；错误码映射（busy 409、rate_limited 429、timeout 504 等） |
+| 配置 | `REPORT_EDITOR_CHART_AI_ENABLED`（默认关闭）+ 每小时限额 + 单次超时（`runtime/settings.py`）；`app.py` 装配（与可视化章节同 runner/runtime/LSP/视觉审查单例） |
+| 导出与追溯 | `service._chart_edit_lineage`：正文引用的改图登记 → `ChartArtifact`（`edited_charts` 传入 `rebuild_edited_manifest`）+ 增强索引（新图/脚本 `TraceFileRefV1`、`ChartTraceV1` 含 `scriptFileResourceId` 与"编辑器 AI 改图"transformNotes，图注指纹按草稿正文重新冻结）；登记损坏/身份变化 → issue `report_editor_chart_edit_lineage_unavailable` 并整体追溯降级，PDF/Word 照常签发（非阻断契约已在 AGENTS 登记） |
+| 前端 | `chart-ai-edit.ts`（懒加载 chunk）：图片预览「AI 改图」入口 → 输入面板（快捷指令）→ 进度轮询（可取消）→ 对比审阅卡（变更清单/软告警/跳过说明）→ 接受替换（单次 Milkdown 事务改图片节点 + 图注段落，撤销一步恢复）；`api.ts` 增加改图端点；错误文案与样式随附 |
+| 测试 | 后端 `test_report_editor_chart_ai.py`（9 例：登记往返、happy path、L2/L3 跳过、busy/限流/取消/超时、asset 放行与拒绝、API CSRF/状态码）+ `test_report_editor_lineage_export.py::test_export_revision_registers_ai_chart_edit_and_still_issues_links`（成功登记进 manifest/ChartTraceV1 + 2 类故障注入照常签发）；前端 `chart-ai-edit.test.ts`（10 例），全量 Vitest 704 例与 tsc/build/预算契约通过 |

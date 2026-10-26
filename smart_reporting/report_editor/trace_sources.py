@@ -1966,6 +1966,8 @@ class ReportEditorTraceService:
                     "plotDataFileCount": len(trace.plot_data_file_resource_ids),
                     "plotDataKind": "chart_input",
                     "transformNotes": list(trace.transform_notes),
+                    # imagePath 供编辑器把正文图片定位到登记图表（AI 改图入口）。
+                    "imagePath": files[trace.image_file_resource_id].path,
                     "imageSize": files[trace.image_file_resource_id].size,
                 }
                 for trace in index.chart_traces

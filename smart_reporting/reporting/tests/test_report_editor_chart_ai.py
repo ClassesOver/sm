@@ -1,0 +1,817 @@
+"""报告编辑器 AI 改图：登记侧车、可用性、任务生命周期与 asset 放行。
+
+导出登记（改图进入新 revision 的 manifest 与追溯索引）及其非阻断故障注入
+在 ``test_report_editor_lineage_export.py`` 中覆盖。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import io
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from PIL import Image
+
+from smart_reporting.report_editor import (
+    ReportEditorGrantService,
+)
+from smart_reporting.report_editor.chart_ai import (
+    CHART_AI_STAGES,
+    ChartAIEditRequest,
+    ChartAIEditService,
+    ChartEditPlan,
+    chart_edit_image_src,
+)
+from smart_reporting.report_editor.chart_edits import (
+    ChartEditSkipped,
+    chart_edits_registry_path,
+    encode_chart_edit_records,
+    load_chart_edit_records,
+    parse_chart_edit_records,
+)
+from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile, ChartArtifact
+from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
+from smart_reporting.reporting.tests.test_trace_subject_validate import _make_editor_with_subject
+from smart_reporting.reporting.trace.contracts_v1 import (
+    ChartTraceV1,
+    TraceFileRefV1,
+    derive_resource_id,
+)
+from smart_reporting.reporting.trace.index_builder import encode_trace_index
+from smart_reporting.reporting.workflow.checkpoint import (
+    ChartVisualInspectionIssue,
+    ChartVisualInspectionReceipt,
+)
+from smart_reporting.reporting.workflow.state import ReportingCommand, ReportingRunState, apply
+
+_SCRIPT_MARKER = "# chart-edit generated script\nPLOT = 'chart-001.chart-input.json'\n"
+
+
+def _sha(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _png_bytes() -> bytes:
+    # 非纯色：确定性检查会把空白图判定为 report_chart_blank。
+    image = Image.new("RGB", (64, 48), (30, 64, 175))
+    for x in range(64):
+        for y in range(48):
+            if (x // 8 + y // 8) % 2 == 0:
+                image.putpixel((x, y), (240, 244, 250))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+async def _make_editor_with_chart(tmp_path: Path):
+    """带登记图表（chart_001 + chart-input）的编辑器 fixture，结构对齐导出用例。"""
+
+    editor, grants, original = await _make_editor_with_subject(tmp_path)
+    thread_id = original.scope["threadId"]
+    workspace = editor.workspace
+    index = await editor.trace.load_index(original)
+    assert index is not None
+    chart_path = "reports/revision-1/chart-001.png"
+    chart_bytes = _png_bytes()
+    chart = ChartArtifact(
+        path=chart_path,
+        mediaType="image/png",
+        size=len(chart_bytes),
+        sha256=_sha(chart_bytes),
+        chartId="chart_001",
+        datasetIds=("dataset-url-abc0001",),
+    )
+    await workspace.awrite_bytes(thread_id, chart_path, chart_bytes)
+    plot_path = "reports/revision-1/chart-001.chart-input.json"
+    plot_bytes = (
+        b'{"schema":"chart-input/v1","chartId":"chart_001","role":"measure",'
+        b'"source":{"analysisId":"analysis_001","path":"reports/revision-1/x.json",'
+        b'"dataPath":"/metrics/0"},'
+        b'"columns":["period","revenue"],"rows":[["2025-09",3600]],"rowCount":1}'
+    )
+    await workspace.awrite_bytes(thread_id, plot_path, plot_bytes)
+    header = (
+        '# Revenue report\n\n<a id="report-section-section_002"></a>\n'
+        "## 1 Report\n\n[[section:section_002]]\n[[analysis:analysis_001]]\n\n"
+    )
+    footer = "\n\n![Revenue](chart-001.png) [[citation:citation_001]]\n"
+    markdown = header + "Revenue 3600 [[claim:claim-1]]" + footer
+    markdown_file = ArtifactFile(
+        path=original.markdown_path,
+        mediaType="text/markdown",
+        size=len(markdown.encode()),
+        sha256=_sha(markdown.encode()),
+    )
+    await workspace.awrite_text(thread_id, original.markdown_path, markdown, overwrite=True)
+    files = tuple(
+        item.model_copy(update={"size": markdown_file.size, "sha256": markdown_file.sha256})
+        if item.resource_id == index.markdown_file_resource_id
+        else item
+        for item in index.files
+    )
+    index = index.model_copy(
+        update={
+            "files": (
+                *files,
+                TraceFileRefV1(
+                    resourceId=derive_resource_id(chart_path),
+                    path=chart_path,
+                    mediaType="image/png",
+                    size=chart.size,
+                    sha256=chart.sha256,
+                ),
+                TraceFileRefV1(
+                    resourceId=derive_resource_id(plot_path),
+                    path=plot_path,
+                    mediaType="application/json",
+                    size=len(plot_bytes),
+                    sha256=_sha(plot_bytes),
+                ),
+            ),
+            "chart_traces": (
+                ChartTraceV1(
+                    chartId="chart_001",
+                    imageFileResourceId=derive_resource_id(chart_path),
+                    plotDataFileResourceIds=(derive_resource_id(plot_path),),
+                    datasetIds=chart.dataset_ids,
+                ),
+            ),
+        }
+    )
+    await workspace.awrite_bytes(
+        thread_id,
+        "reports/revision-1/trace-index-v1.json",
+        encode_trace_index(index),
+        overwrite=True,
+    )
+    await workspace.adelete_file(thread_id, original.artifact_manifest.path)
+    manifest_identity = await register_trace_manifest(workspace, thread_id, index)
+    original = original.model_copy(update={"artifact_manifest": manifest_identity})
+    manifest = await editor.trace.load_manifest(original)
+    assert manifest is not None
+    manifest = manifest.model_copy(update={"charts": (chart,)})
+    manifest_bytes = manifest.model_dump_json(by_alias=True).encode()
+    await workspace.awrite_bytes(thread_id, manifest_identity.path, manifest_bytes, overwrite=True)
+    manifest_identity = manifest_identity.model_copy(update={"size": len(manifest_bytes), "sha256": _sha(manifest_bytes)})
+    job = {
+        **original.job,
+        "render": {
+            "markdown": {
+                "path": original.markdown_path,
+                "size": markdown_file.size,
+                "sha256": markdown_file.sha256,
+            },
+            "images": [
+                {"path": chart_path, "size": chart.size, "sha256": chart.sha256}
+            ],
+        },
+    }
+    context = original.model_copy(update={"job": job, "artifact_manifest": manifest_identity})
+    durable = ReportingRunState.initial(
+        report_run_id=context.workflow_run_id,
+        external_run_id="external-1",
+        thread_id="caller-thread",
+        owner_user_id="user-1",
+        payload={"reportEditorContexts": {"1": context.model_dump(mode="json", by_alias=True)}},
+    )
+    editor.state_repository = _StateRepository(durable)
+    return SimpleNamespace(
+        editor=editor,
+        grants=grants,
+        context=context,
+        workspace=workspace,
+        thread_id=thread_id,
+        chart=chart,
+        chart_bytes=chart_bytes,
+        chart_path=chart_path,
+        plot_path=plot_path,
+        plot_bytes=plot_bytes,
+        markdown=markdown,
+    )
+
+
+class _StateRepository:
+    def __init__(self, durable: ReportingRunState) -> None:
+        self.durable = durable
+
+    async def get(self, _run_id: str):
+        return self.durable
+
+    async def apply(self, _run_id: str, command: ReportingCommand, *, expected_version: int):
+        self.durable = apply(self.durable, command, expected_version=expected_version).state
+
+
+class FakeRunner:
+    """按任务边界写出脚本与新图的 runner 替身；vision_reviewer 必须非空。"""
+
+    vision_reviewer = object()
+
+    def __init__(
+        self,
+        png: bytes,
+        *,
+        gate: asyncio.Event | None = None,
+        receipts: tuple[ChartVisualInspectionReceipt, ...] | None = None,
+    ) -> None:
+        self.png = png
+        self.gate = gate
+        self.receipts = receipts
+        self.calls: list[tuple[object, dict, object]] = []
+
+    async def run(self, task_context, workspace, task_facts, *, run_context, diagnostic=None):
+        self.calls.append((task_context, dict(task_facts), diagnostic))
+        if self.gate is not None:
+            await asyncio.wait_for(self.gate.wait(), timeout=5)
+        # 修复轮脚本与产物已存在，真实 write_script 支持覆盖；替身同样覆盖写。
+        await workspace.awrite_bytes(
+            task_context.workspace_key,
+            task_context.script_path,
+            _SCRIPT_MARKER.encode(),
+            overwrite=True,
+        )
+        output = task_context.declared_output_paths[0]
+        await workspace.awrite_bytes(task_context.workspace_key, output, self.png, overwrite=True)
+        if self.receipts is None:
+            receipt = ChartVisualInspectionReceipt(
+                sourcePath=output, sha256=_sha(self.png), reviewed=True, requiresRevision=False,
+                modelId="fake-vision-model",
+            )
+            receipts = (receipt,)
+        else:
+            receipts = self.receipts
+        return SimpleNamespace(
+            script_file={"path": task_context.script_path},
+            execution_receipt=SimpleNamespace(output_files=()),
+            visual_inspection_receipts=receipts,
+            visual_repair_diagnostic=None,
+        )
+
+
+def _planner(level=("L1",), *, title="收入（横向）", alt_text="收入按期间横向对比",
+             visual_form="横向条形图", skipped=()):
+    async def plan(_request):
+        return ChartEditPlan(
+            level=level,
+            title=title,
+            altText=alt_text,
+            visualForm=visual_form,
+            drawInstruction="把柱状图改成横向条形图并按数值降序",
+            skipped=skipped,
+        )
+
+    return plan
+
+
+def _service(fixture: SimpleNamespace, runner: FakeRunner, planner=None, **kwargs) -> ChartAIEditService:
+    return ChartAIEditService(
+        editor=fixture.editor,
+        workspace_registry=fixture.editor.workspace_registry,
+        planner=planner or _planner(),
+        runner=runner,
+        timeout_seconds=kwargs.pop("timeout_seconds", 15),
+        **kwargs,
+    )
+
+
+async def _await_edit(service: ChartAIEditService, context, chart_id: str, edit_id: str) -> dict:
+    for _ in range(400):
+        status = service.edit_status(context, chart_id, edit_id)
+        if status["status"] in {"succeeded", "failed", "cancelled"}:
+            return status
+        await asyncio.sleep(0.02)
+    raise AssertionError("改图任务未在预期时间内结束")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_edit_happy_path_registers_record_and_serves_asset(tmp_path: Path) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    service = _service(fixture, runner)
+    session = SimpleNamespace(capabilities=None)
+
+    availability = await service.availability(fixture.context, session, "chart_001")
+    assert availability["available"] is True
+
+    started = await service.start_edit(
+        fixture.context,
+        session,
+        "chart_001",
+        ChartAIEditRequest(
+            instruction="改成横向条形图并按金额降序",
+            baseImagePath=fixture.chart_path,
+            baseTitle="收入",
+            baseAltText="收入对比",
+            expectedSha256=_sha(fixture.chart_bytes),
+        ),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    assert status["status"] == "succeeded"
+    assert status["level"] == ["L1"]
+    assert status["changes"]["plotDataUnchanged"] is True
+    assert status["warnings"] == []
+
+    records = await load_chart_edit_records(
+        fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+    )
+    assert [record.edit_id for record in records] == [started["editId"]]
+    record = records[0]
+    assert record.chart_id == "chart_001"
+    assert record.base_image_path == fixture.chart_path
+    assert record.image.path == f"reports/revision-1/chart-edits/{record.edit_id}/chart.png"
+    assert record.script.path == f"reports/revision-1/chart-edits/{record.edit_id}/chart_edit.py"
+    assert [item.path for item in record.plot_data_files] == [fixture.plot_path]
+    assert record.chart.title == "收入（横向）"
+    assert chart_edit_image_src(
+        fixture.context.markdown_path, record.edit_id
+    ) == f"chart-edits/{record.edit_id}/chart.png"
+
+    task_context, task_facts, diagnostic = runner.calls[0]
+    assert diagnostic is None
+    assert task_context.task_kind == "visualization"
+    assert task_context.declared_output_paths == (record.image.path,)
+    assert set(task_context.authorized_read_paths) == {
+        fixture.plot_path,
+        fixture.chart_path,
+    }
+    assert task_facts["visualizationMode"] == "static"
+    assert task_facts["chartEdit"]["level"] == ["L1"]
+    assert task_facts["chartInputs"][0]["columns"] == ["period", "revenue"]
+
+    # 改图图片经登记身份放行；脚本与未登记路径不通过 asset 接口放行。
+    content, media_type = await fixture.editor.read_asset(fixture.context, record.image.path)
+    assert media_type == "image/png" and content == fixture.chart_bytes
+    with pytest.raises(ReportingError, match="report_editor_asset_missing"):
+        await fixture.editor.read_asset(fixture.context, record.script.path)
+    with pytest.raises(ReportingError, match="report_editor_asset_missing"):
+        await fixture.editor.read_asset(fixture.context, "reports/revision-1/chart-edits/other.png")
+
+    # 底图被替换后（expectedSha256 与登记身份不一致）任务失败并返回原因。
+    rejected = await service.start_edit(
+        fixture.context,
+        session,
+        "chart_001",
+        ChartAIEditRequest(
+            instruction="再改一次",
+            baseImagePath=fixture.chart_path,
+            expectedSha256="0" * 64,
+        ),
+    )
+    rejected_status = await _await_edit(
+        service, fixture.context, "chart_001", rejected["editId"]
+    )
+    assert rejected_status["status"] == "failed"
+    assert rejected_status["error"]["code"] == "report_editor_chart_ai_base_changed"
+    # 失败的改图不产生登记记录。
+    records_after = await load_chart_edit_records(
+        fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+    )
+    assert [record.edit_id for record in records_after] == [started["editId"]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_edit_l3_requirements_are_skipped_with_reasons(tmp_path: Path) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    skipped = (
+        ChartEditSkipped(request="加入明年预测", reason="预测数据未登记，不作估算。"),
+        ChartEditSkipped(request="按科室拆分", reason="该维度未拆分，可在重新生成报告时增加此分析。"),
+    )
+    service = _service(fixture, runner, planner=_planner(level=(), skipped=skipped))
+    session = SimpleNamespace(capabilities=None)
+
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="加预测并按科室拆分"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+
+    assert status["status"] == "failed"
+    assert status["error"]["code"] == "report_editor_chart_ai_skipped"
+    assert {item["reason"] for item in status["error"]["skipped"]} == {
+        item.reason for item in skipped
+    }
+    # 未产出任何改图登记，runner 未执行。
+    assert runner.calls == []
+    records = await load_chart_edit_records(
+        fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+    )
+    assert records == ()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_edit_l2_not_supported_is_reported_as_skip(tmp_path: Path) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    # plan 仍给出 L1 可执行部分（换标题），L2 部分由服务端补跳过说明。
+    service = _service(fixture, runner, planner=_planner(level=("L1", "L2")))
+    session = SimpleNamespace(capabilities=None)
+
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="换成按收入类型的维度"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+
+    assert status["status"] == "succeeded"
+    assert status["level"] == ["L1"]
+    assert len(status["skipped"]) == 1
+    assert "暂未开放" in status["skipped"][0]["reason"]
+    # L1 仍执行：作图数据不变。
+    task_context, task_facts, _ = runner.calls[0]
+    assert [item["path"] for item in task_facts["chartInputs"]] == [fixture.plot_path]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_edit_single_flight_busy_and_hourly_rate_limit(tmp_path: Path) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    gate = asyncio.Event()
+    runner = FakeRunner(fixture.chart_bytes, gate=gate)
+    service = _service(fixture, runner, hourly_limit=1)
+    session = SimpleNamespace(capabilities=None)
+    request = ChartAIEditRequest(instruction="改成横向条形图")
+
+    first = await service.start_edit(fixture.context, session, "chart_001", request)
+    status = service.edit_status(fixture.context, "chart_001", first["editId"])
+    assert status["status"] == "running"
+    assert status["stage"] in CHART_AI_STAGES
+
+    with pytest.raises(ReportingError, match="report_editor_chart_ai_busy"):
+        await service.start_edit(fixture.context, session, "chart_001", request)
+
+    # 取消运行中的改图；原图与登记不受影响。
+    cancelled = service.cancel_edit(fixture.context, "chart_001", first["editId"])
+    assert cancelled["status"] == "cancelled"
+    final = await _await_edit(service, fixture.context, "chart_001", first["editId"])
+    assert final["status"] == "cancelled"
+    records = await load_chart_edit_records(
+        fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+    )
+    assert records == ()
+    await service.aclose()
+
+    # 每小时次数上限按用户计数：第一次发起已计入窗口，重新发起受限。
+    with pytest.raises(ReportingError, match="report_editor_chart_ai_rate_limited"):
+        await service.start_edit(fixture.context, session, "chart_001", request)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_edit_timeout_returns_reason_and_keeps_original(tmp_path: Path) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    gate = asyncio.Event()
+    runner = FakeRunner(fixture.chart_bytes, gate=gate)
+    service = _service(fixture, runner, timeout_seconds=0.1)
+    session = SimpleNamespace(capabilities=None)
+
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="改成横向条形图"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+
+    assert status["status"] == "failed"
+    assert status["error"]["code"] == "report_editor_chart_ai_timeout"
+    records = await load_chart_edit_records(
+        fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+    )
+    assert records == ()
+    # 超时后同图可再次发起（无遗留运行任务）。
+    gate.set()
+    retry = FakeRunner(fixture.chart_bytes)
+    retry_service = _service(fixture, retry)
+    again = await retry_service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="改成横向条形图"),
+    )
+    final = await _await_edit(retry_service, fixture.context, "chart_001", again["editId"])
+    assert final["status"] == "succeeded"
+    await retry_service.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_availability_reports_missing_plot_data_and_unknown_chart(
+    tmp_path: Path,
+) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    service = _service(fixture, runner)
+    session = SimpleNamespace(capabilities=None)
+
+    unknown = await service.availability(fixture.context, session, "chart_404")
+    assert unknown == {"available": False, "reason": "unknown_chart"}
+
+    restricted = SimpleNamespace(capabilities={"download_original": False})
+    read_only = await service.availability(fixture.context, restricted, "chart_001")
+    assert read_only == {"available": False, "reason": "read_only"}
+
+    with pytest.raises(ReportingError, match="report_editor_chart_ai_unavailable"):
+        await service.start_edit(
+            fixture.context, session, "chart_404",
+            ChartAIEditRequest(instruction="改图"),
+        )
+
+    no_vision = ChartAIEditService(
+        editor=fixture.editor,
+        workspace_registry=fixture.editor.workspace_registry,
+        planner=_planner(),
+        runner=SimpleNamespace(vision_reviewer=None),
+    )
+    missing_vision = await no_vision.availability(fixture.context, session, "chart_001")
+    assert missing_vision == {"available": False, "reason": "vision_missing"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_read_asset_rejects_changed_chart_edit_and_corrupt_registry(
+    tmp_path: Path,
+) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    service = _service(fixture, runner)
+    session = SimpleNamespace(capabilities=None)
+
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="改成横向条形图"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    assert status["status"] == "succeeded"
+    records = await load_chart_edit_records(
+        fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+    )
+    image_path = records[0].image.path
+
+    # 落盘文件被替换：哈希与登记身份不一致 → report_editor_asset_changed。
+    await fixture.workspace.awrite_bytes(
+        fixture.thread_id, image_path, fixture.chart_bytes + b"x", overwrite=True
+    )
+    with pytest.raises(ReportingError, match="report_editor_asset_changed"):
+        await fixture.editor.read_asset(fixture.context, image_path)
+
+    # 登记损坏：按未登记处理（404），不放大为 500。
+    await fixture.workspace.awrite_bytes(
+        fixture.thread_id,
+        chart_edits_registry_path(fixture.context.markdown_path),
+        b"not-json",
+        overwrite=True,
+    )
+    with pytest.raises(ReportingError, match="report_editor_asset_missing"):
+        await fixture.editor.read_asset(fixture.context, image_path)
+
+
+def test_chart_edit_registry_roundtrip_rejects_duplicates_and_corruption() -> None:
+    from smart_reporting.report_editor.chart_edits import (
+        ChartEditChartMeta,
+        ChartEditFileRef,
+        ChartEditRecord,
+    )
+
+    record = ChartEditRecord(
+        editId="cedit-0123456789abcdef",
+        chartId="chart_001",
+        baseImagePath="reports/revision-1/chart-001.png",
+        baseImageSha256=_sha(b"base"),
+        instruction="改成横向条形图",
+        level=["L1"],
+        image=ChartEditFileRef(path="reports/revision-1/chart-edits/cedit-0123456789abcdef/chart.png",
+                               size=3, sha256=_sha(b"abc")),
+        script=ChartEditFileRef(path="reports/revision-1/chart-edits/cedit-0123456789abcdef/chart_edit.py",
+                                size=3, sha256=_sha(b"abc")),
+        plotDataFiles=[ChartEditFileRef(path="reports/revision-1/chart-001.chart-input.json",
+                                        size=3, sha256=_sha(b"abc"))],
+        chart=ChartEditChartMeta(title="收入", altText="收入对比", visualForm="横向条形图",
+                                 datasetIds=["dataset-url-abc0001"]),
+        createdAt="2026-10-25T00:00:00+00:00",
+        userId="user-1",
+    )
+    parsed = parse_chart_edit_records(encode_chart_edit_records((record,)))
+    assert parsed == (record,)
+
+    with pytest.raises(ValueError):
+        parse_chart_edit_records(b"{not json")
+    with pytest.raises(ValueError):
+        parse_chart_edit_records(b'{"version": 99, "records": []}')
+    duplicate = encode_chart_edit_records((record, record))
+    with pytest.raises(ValueError):
+        parse_chart_edit_records(duplicate)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_routes_require_csrf_and_map_status_codes() -> None:
+    """API 冒烟：路由注册、写保护（CSRF/Origin）与任务状态错误码映射。"""
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from smart_reporting.report_editor.api import create_report_editor_router
+    from smart_reporting.report_editor.service import InMemoryReportEditorRepository
+
+    class Editor:
+        async def context_for_session(self, session):
+            return SimpleNamespace(report_id=session.report_id, revision=session.revision)
+
+    class ChartAI:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+            self.cancelled: list[str] = []
+
+        async def availability(self, context, session, chart_id):
+            return {"available": True, "chartId": chart_id}
+
+        async def start_edit(self, context, session, chart_id, request):
+            self.started.append(chart_id)
+            return {"editId": "cedit-0123456789abcdef", "status": "queued"}
+
+        def edit_status(self, context, chart_id, edit_id):
+            if edit_id == "cedit-missing":
+                raise ReportingError(
+                    "report_editor_chart_ai_missing", "改图任务不存在或已过期。"
+                )
+            return {"editId": edit_id, "chartId": chart_id, "status": "succeeded"}
+
+        def cancel_edit(self, context, chart_id, edit_id):
+            self.cancelled.append(edit_id)
+            return {"editId": edit_id, "status": "cancelled"}
+
+    repository = InMemoryReportEditorRepository()
+    grants = ReportEditorGrantService(repository, secret="s" * 32)
+    chart_ai = ChartAI()
+    app = FastAPI()
+    app.include_router(
+        create_report_editor_router(
+            grants, editor=Editor(), chart_ai=chart_ai, cookie_secure=False,
+            allowed_origin="https://reports.example.com",
+        )
+    )
+    base = "/reports/v1/editor/report-1/1/api/charts/chart_001/ai-edits"
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="https://reports.example.com"
+    ) as client:
+        await client.get("/reports/v1/editor/open/nonexistent", follow_redirects=False)
+        # 会话 cookie 指向 report-1/1 后再获取 CSRF。
+        from datetime import UTC, datetime, timedelta
+
+        from smart_reporting.report_editor.service import ReportEditorSession
+
+        await repository.put_session(
+            hashlib.sha256(b"session-1").hexdigest(),
+            ReportEditorSession(
+                report_id="report-1",
+                revision=1,
+                workflow_run_id="report-1",
+                context_sha256="0" * 64,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+        )
+        client.cookies.set("report_editor_session", "session-1")
+        csrf = grants.csrf_token("session-1")
+
+        availability = await client.get(f"{base}/availability")
+        assert availability.status_code == 200
+        assert availability.json() == {"available": True, "chartId": "chart_001"}
+
+        # 写操作：缺 CSRF/Origin → 403；带齐 → 202。
+        assert (await client.post(base, json={"instruction": "改成横向条形图"})).status_code == 403
+        started = await client.post(
+            base,
+            json={"instruction": "改成横向条形图"},
+            headers={"Origin": "https://reports.example.com", "X-CSRF-Token": csrf},
+        )
+        assert started.status_code == 202
+        assert started.json()["editId"] == "cedit-0123456789abcdef"
+
+        status = await client.get(f"{base}/cedit-0123456789abcdef")
+        assert status.status_code == 200
+        assert status.json()["status"] == "succeeded"
+        missing = await client.get(f"{base}/cedit-missing")
+        assert missing.status_code == 404
+
+        cancelled = await client.post(
+            f"{base}/cedit-0123456789abcdef/cancel",
+            headers={"Origin": "https://reports.example.com", "X-CSRF-Token": csrf},
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json() == {"editId": "cedit-0123456789abcdef", "status": "cancelled"}
+
+    assert chart_ai.started == ["chart_001"]
+    assert chart_ai.cancelled == ["cedit-0123456789abcdef"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_visual_issues_are_soft_warnings_and_trigger_one_repair(
+    tmp_path: Path,
+) -> None:
+    """设计稿 §5.2/§8：视觉问题只出软告警不阻断；requiresRevision 触发一次自动修复，
+    修复后仍有问题则带告警交付审阅。"""
+
+    def receipt(requires_revision: bool) -> ChartVisualInspectionReceipt:
+        return ChartVisualInspectionReceipt(
+            sourcePath="reports/revision-1/chart-edits/x/chart.png",
+            sha256=_sha(b"img"),
+            inspectionMode="vision",
+            visualReviewStatus="passed",
+            modelId="fake-vision-model",
+            reviewed=True,
+            requiresRevision=requires_revision,
+            issues=(
+                ChartVisualInspectionIssue(
+                    category="legend_occlusion",
+                    severity="warning",
+                    description="图例遮挡了柱体标签。",
+                ),
+            ),
+        )
+
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes, receipts=(receipt(True),))
+    service = _service(fixture, runner)
+    session = SimpleNamespace(capabilities=None)
+
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="调整图例位置"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+
+    # 两次执行：首轮 requiresRevision → 一次自动修复（带诊断）；修复后仍带问题 → 交付。
+    assert len(runner.calls) == 2
+    assert runner.calls[0][2] is None
+    assert runner.calls[1][2] == {
+        "code": "report_visual_review_failed",
+        "message": "视觉审查发现问题，请在不改变数据与输出路径的前提下修复图表。",
+    }
+    assert status["status"] == "succeeded"
+    assert status["warnings"] == ["视觉审查（warning）：legend_occlusion - 图例遮挡了柱体标签。"]
+    assert status["visualInspection"]["reviewed"] is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_previous_edit_id_must_belong_to_same_chart(tmp_path: Path) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    service = _service(fixture, runner)
+    session = SimpleNamespace(capabilities=None)
+
+    # 用非法 previousEditId（不属于该图/不存在）发起：任务失败且不执行 runner。
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="继续调整", previousEditId="cedit-doesnotexist1"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    assert status["status"] == "failed"
+    assert status["error"]["code"] == "report_editor_chart_ai_missing"
+    assert runner.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_multi_round_edit_uses_previous_result_as_base(tmp_path: Path) -> None:
+    """多轮调整：previousEditId 指向同图上一轮成功改图时，以其新图为底图继续。"""
+
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    service = _service(fixture, runner)
+    session = SimpleNamespace(capabilities=None)
+
+    first = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="改成横向条形图"),
+    )
+    first_status = await _await_edit(service, fixture.context, "chart_001", first["editId"])
+    assert first_status["status"] == "succeeded"
+
+    second = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(
+            instruction="把数值标签放大",
+            previousEditId=first["editId"],
+            expectedSha256=_sha(fixture.chart_bytes),
+        ),
+    )
+    second_status = await _await_edit(service, fixture.context, "chart_001", second["editId"])
+    assert second_status["status"] == "succeeded"
+    assert second_status["editId"] != first["editId"]
+
+    records = await load_chart_edit_records(
+        fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+    )
+    assert [record.edit_id for record in records] == [first["editId"], second["editId"]]
+    second_record = records[1]
+    assert second_record.base_image_path == first_status["imagePath"]
+    assert second_record.base_image_sha256 == records[0].image.sha256
+    # 第二轮的授权读取以第一轮新图为底图，仍包含原作图数据。
+    task_context = runner.calls[1][0]
+    assert first_status["imagePath"] in task_context.authorized_read_paths
+    assert fixture.plot_path in task_context.authorized_read_paths

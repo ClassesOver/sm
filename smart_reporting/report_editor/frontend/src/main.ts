@@ -777,7 +777,25 @@ try {
     `${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown,
     documentState.sourceRevision ?? Number(revision),
   )
-  createImagePreview(shell.editor)
+  let chartAIController: ReturnType<typeof import('./chart-ai-edit').createChartAIEdit> | null = null
+  createImagePreview(shell.editor, {
+    onChartEdit: documentState.chartAiEnabled
+      ? (img) => {
+          // 改图面板按需加载：入口默认不进入首屏 chunk（构建预算契约）。
+          void import('./chart-ai-edit').then(({ createChartAIEdit }) => {
+            chartAIController ??= createChartAIEdit({
+              view: evidenceView,
+              client,
+              basePath,
+              hooks: {
+                onReplaced: () => status('已替换为 AI 改图结果，正在自动保存…', 'dirty'),
+              },
+            })
+            chartAIController.open(img)
+          })
+        }
+      : undefined,
+  })
   updateOutline(crepe.editor.action(outline()))
   scheduleSourceValidation()
   const linkedSubject = linkedSubjectFromSearch(window.location.search)

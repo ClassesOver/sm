@@ -5171,3 +5171,211 @@ input:disabled, textarea:disabled, select:disabled {
 /* 来源目录底部的溯源清单下载入口。 */
 .evidence-trace-list-download { width: 100%; margin: 10px 0 0; min-height: 36px; }
 .evidence-trace-list-download[hidden] { display: none; }
+
+/* 图片预览底部的 AI 改图入口（功能关闭时不渲染）。 */
+.image-preview-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+  cursor: default;
+}
+
+.image-preview-chart-ai {
+  min-height: 34px;
+  padding: 6px 16px;
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: var(--radius-md);
+  background: rgb(255 255 255 / 12%);
+  color: #f2f8fc;
+  cursor: pointer;
+  font-size: var(--font-size-md);
+}
+
+.image-preview-chart-ai:hover {
+  border-color: rgb(255 255 255 / 65%);
+  background: rgb(255 255 255 / 22%);
+}
+
+.image-preview-chart-ai:focus-visible {
+  outline: 3px solid var(--focus-ring, #8fc7f0);
+  outline-offset: 2px;
+}
+
+/* AI 改图面板（设计稿 §3/§10）：输入 → 进度 → 对比审阅。 */
+.chart-ai-edit-card {
+  max-width: min(960px, 94vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.chart-ai-subtitle {
+  margin: 2px 0 0;
+  color: var(--color-text-muted, #5b7183);
+  font-size: var(--font-size-md);
+}
+
+.chart-ai-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.chart-ai-current {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.chart-ai-current img {
+  width: 220px;
+  max-width: 40%;
+  height: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.chart-ai-current-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--color-ink, #1d2c3a);
+  font-size: var(--font-size-md);
+  overflow-wrap: anywhere;
+}
+
+.chart-ai-label {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+}
+
+.chart-ai-body textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  font: inherit;
+  resize: vertical;
+}
+
+.chart-ai-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chart-ai-chip {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.chart-ai-chip:hover {
+  border-color: var(--color-border-strong);
+  background: #f2f7fb;
+}
+
+.chart-ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.chart-ai-hint {
+  color: var(--color-text-muted, #5b7183);
+  font-size: var(--font-size-sm);
+}
+
+.chart-ai-note {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-soft);
+  border-left: 3px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink, #1d2c3a);
+  font-size: var(--font-size-md);
+}
+
+.chart-ai-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chart-ai-stage {
+  margin: 0;
+  color: var(--color-ink, #1d2c3a);
+  font-size: var(--font-size-lg, 16px);
+  font-weight: 600;
+}
+
+/* 前后对比：窄屏上下排列（设计稿 §3）。 */
+.chart-ai-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.chart-ai-compare-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.chart-ai-compare-item figcaption {
+  color: var(--color-text-muted, #5b7183);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.chart-ai-compare-item img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+@media (max-width: 720px) {
+  .chart-ai-compare {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chart-ai-changes,
+.chart-ai-warnings,
+.chart-ai-skipped {
+  margin: 0;
+  padding-left: 20px;
+  font-size: var(--font-size-md);
+}
+
+.chart-ai-changes li,
+.chart-ai-skipped li {
+  margin: 2px 0;
+  color: var(--color-ink, #1d2c3a);
+}
+
+.chart-ai-warnings li {
+  margin: 2px 0;
+  color: #8a5a00;
+}
+
+.chart-ai-unavailable p {
+  margin: 0 0 10px;
+  color: var(--color-ink, #1d2c3a);
+}

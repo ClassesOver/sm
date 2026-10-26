@@ -93,6 +93,17 @@ class EditorAIRewritePayload(BaseModel):
     action: str = Field(min_length=1, max_length=32)
 
 
+class EditorChartAIEditPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    instruction: str = Field(min_length=1, max_length=2000)
+    base_image_path: str | None = Field(default=None, alias="baseImagePath", max_length=1024)
+    base_title: str | None = Field(default=None, alias="baseTitle", max_length=200)
+    base_alt_text: str | None = Field(default=None, alias="baseAltText", max_length=200)
+    previous_edit_id: str | None = Field(default=None, alias="previousEditId", min_length=8, max_length=40)
+    expected_sha256: str | None = Field(default=None, alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
+
+
 class EditorEventPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -113,6 +124,7 @@ def create_report_editor_router(
     *,
     editor: Any | None = None,
     ai: Any | None = None,
+    chart_ai: Any | None = None,
     cookie_secure: bool = True,
     allowed_origin: str | None = None,
     static_dir: str | Path | None = None,
@@ -255,6 +267,10 @@ def create_report_editor_router(
             feature_reader = getattr(editor, "lineage_features", None)
             if callable(feature_reader):
                 result["lineageFeatures"] = feature_reader()
+            # AI 改图入口可见性：仅在装配了改图服务时暴露开关；缺省视为关闭，
+            # 前端据此隐藏入口而不是点击后报错。
+            if chart_ai is not None:
+                result["chartAiEnabled"] = True
             source_revision = getattr(document, "source_revision", None)
             if source_revision is not None:
                 result["sourceRevision"] = source_revision
@@ -993,6 +1009,113 @@ def create_report_editor_router(
                     _editor_http_error(error)
                 return StreamingResponse(stream, media_type="text/markdown")
 
+        if chart_ai is not None:
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits/availability",
+                include_in_schema=False,
+            )
+            async def read_chart_ai_availability(
+                report_id: str,
+                revision: int,
+                chart_id: str,
+                request: Request,
+            ) -> dict[str, object]:
+                _raw_session, context = await _read_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                session, _context = await _read_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await chart_ai.availability(context, session, chart_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits",
+                include_in_schema=False,
+            )
+            async def start_chart_ai_edit(
+                report_id: str,
+                revision: int,
+                chart_id: str,
+                payload: EditorChartAIEditPayload,
+                request: Request,
+            ) -> JSONResponse:
+                _context = await _write_context(
+                    grants,
+                    editor,
+                    request,
+                    report_id=report_id,
+                    revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                session, _editor_context = await _read_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                request_id = _request_id(request.headers.get("x-request-id"))
+                try:
+                    started = await chart_ai.start_edit(
+                        _editor_context,
+                        session,
+                        chart_id,
+                        payload,
+                    )
+                except ReportingError as error:
+                    _editor_http_error(error, request_id=request_id)
+                return JSONResponse({**started, "requestId": request_id or started["editId"]}, status_code=202)
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits/{edit_id}",
+                include_in_schema=False,
+            )
+            async def read_chart_ai_edit(
+                report_id: str,
+                revision: int,
+                chart_id: str,
+                edit_id: str,
+                request: Request,
+            ) -> dict[str, object]:
+                _raw_session, context = await _read_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    status = chart_ai.edit_status(context, chart_id, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+                failure = status.get("error")
+                if isinstance(failure, dict):
+                    status = {
+                        **status,
+                        "error": {**failure, "status": _editor_error_status(str(failure.get("code", "")))},
+                    }
+                return status
+
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits/{edit_id}/cancel",
+                include_in_schema=False,
+            )
+            async def cancel_chart_ai_edit(
+                report_id: str,
+                revision: int,
+                chart_id: str,
+                edit_id: str,
+                request: Request,
+            ) -> dict[str, object]:
+                context = await _write_context(
+                    grants,
+                    editor,
+                    request,
+                    report_id=report_id,
+                    revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                try:
+                    return chart_ai.cancel_edit(context, chart_id, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
     return router
 
 
@@ -1091,6 +1214,16 @@ def _editor_error_status(code: str) -> int:
         return 429
     if code == "report_editor_export_timeout":
         return 504
+    if code == "report_editor_chart_ai_busy":
+        return 409
+    if code == "report_editor_chart_ai_rate_limited":
+        return 429
+    if code == "report_editor_chart_ai_timeout":
+        return 504
+    if code == "report_editor_chart_ai_missing":
+        return 404
+    if code.startswith("report_editor_chart_ai_"):
+        return 400
     if code == "report_editor_session_expired":
         return 410
     if code.startswith("report_editor_ai_"):
