@@ -3384,6 +3384,7 @@ async def test_visualization_without_deadline_keeps_repairing() -> None:
     [
         ("report_capability_state_invalid", False),
         ("report_workspace_capability_missing", False),
+        ("report_section_context_too_large", False),
         ("report_section_citation_missing", True),
     ],
 )
@@ -4200,3 +4201,88 @@ async def test_block_harness_invalid_response_uses_only_a_valid_previous_draft(m
         assert result.blocks[0].markdown == original
         assert result.blocks[0].citation_ids == ("citation_001",)
         assert any("analysis_001" in item["message"] for item in notices["block_1"])
+
+
+def test_section_planning_guide_defers_monthly_rows_but_keeps_group_identity():
+    fact = {
+        'factId': 'fact-aaaaaaaaaaaaaaaa',
+        'datasetId': 'current', 'field': 'amount', 'aggregation': 'sum',
+        'metricCodes': ['revenue'], 'unit': '元', 'total': 100,
+        'datasetSha256': 'a' * 64, 'fieldRef': 'hospital.revenue.amount',
+        'periodRoles': ['current'], 'formula': 'sum(amount)', 'periodAggregation': 'sum',
+        'periodGranularity': 'month', 'periodStart': '2025-01', 'periodEnd': '2025-02',
+        'periodValues': [{'period': '2025-01', 'value': 40}, {'period': '2025-02', 'value': 60}],
+        'missingCount': 0, 'zeroCount': 0, 'negativeCount': 0,
+    }
+    group = {**fact, 'factId': 'fact-bbbbbbbbbbbbbbbb', 'parentFactId': fact['factId'],
+             'breakdownField': 'department', 'breakdownLabel': '科室', 'breakdownValue': '内科',
+             'scope': {'department': '内科'}}
+    contents = (json.dumps({'analysisId': 'analysis_001', 'metrics': [fact], 'breakdowns': [group]}),)
+    catalog, guide = reporting_sections._section_number_context(
+        contents, {}, allowed_fact_ids={fact['factId'], group['factId']},
+    )
+    selected = next(item for item in guide if item['factId'] == group['factId'])
+    assert selected['total']['reference'] == '100元'
+    assert selected['monthly']['rowCount'] == 2
+    assert selected['monthly']['rowsDeferred'] is True
+    assert 'rows' not in selected['monthly']
+    assert 'prefixAverages' not in guide[0].get('monthlyStatistics', {})
+    assert catalog  # 完整数值目录保留，正文仍按结论读取。
+
+
+@pytest.mark.anyio
+async def test_section_stage_context_limit_preserves_metrics_and_stops_fresh_attempts(monkeypatch):
+    from smart_reporting.context_management import TaskExecutionContextHardLimitError
+    from smart_reporting.reporting.code_agent.failure_policy import fresh_attempt_futile
+
+    metrics = {'input_token_hard_cap': 200, 'projected_estimated_tokens': 300}
+    execute = AsyncMock(side_effect=TaskExecutionContextHardLimitError('too large', metrics=metrics))
+    monkeypatch.setattr(reporting_sections.ReportingStructuredOutputExecutor, 'execute', execute)
+    agent = Agent(model=ReportingPhaseOpenAIChat(id='qwen3.8-flash'))
+    with pytest.raises(ReportingError) as caught:
+        await reporting_sections._run_section_stage(
+            agent, SectionPlanOutput, 'plan', {},
+            scope=TaskExecutionScope('task', 'user', 'thread', 'sandbox', 'section'),
+            run_context=_context(), section_code='section_001',
+            thinking_request=ThinkingRequest(operation='section_planning', complexity='standard'),
+        )
+    assert caught.value.code == 'report_section_context_too_large'
+    assert caught.value.details['projected_estimated_tokens'] == 300
+    assert caught.value.details['retryable'] is False
+    assert fresh_attempt_futile(caught.value)
+    execute.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('other_total', [100, 101])
+async def test_section_plan_merges_only_identical_facts_and_retains_analysis_owners(monkeypatch, other_total):
+    work = _revenue_work_item().model_copy(update={'analysis_ids': ('analysis_001', 'analysis_002')})
+    fact = {'factId': 'fact-aaaaaaaaaaaaaaaa', 'field': 'amount', 'unit': '元', 'total': 100}
+    documents = [json.dumps({'analysisId': analysis_id, 'metrics': [{**fact, 'total': total}]})
+                 for analysis_id, total in (('analysis_001', 100), ('analysis_002', other_total))]
+    evidence = SectionEvidenceBundle(sectionCode=work.section_code, files=tuple(
+        SectionEvidenceFile(identity=work.evidence[0].evidence_files[0], content=content)
+        for content in documents
+    ), factSummaries=())
+    captured = []
+
+    class PlanCaptured(Exception):
+        pass
+
+    async def capture(_agent, _schema, _stage, payload, **_kwargs):
+        captured.extend(payload['factCatalog'])
+        raise PlanCaptured
+
+    monkeypatch.setattr(reporting_sections, '_run_section_stage', capture)
+    with pytest.raises(PlanCaptured):
+        await reporting_sections._generate_section_in_blocks(
+            object(), {'sectionGoal': {}}, evidence, work,
+            scope=TaskExecutionScope('task', 'user', 'thread', 'sandbox', 'section'),
+            run_context=_context(),
+            thinking_request=ThinkingRequest(operation='section_generation', complexity='standard'),
+        )
+    if other_total == 100:
+        assert len(captured) == 1
+        assert captured[0]['analysisIds'] == ['analysis_001', 'analysis_002']
+    else:
+        assert [item['total'] for item in captured] == [100, 101]

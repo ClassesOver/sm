@@ -386,6 +386,23 @@ def _expanded_period_wording(window: str) -> str:
         window,
     )
     # “2025年1—9月…较2024年同期”：同期即前文月份范围换成该年，年份仍须与基期一致。
+    def relative_same_period(match):
+        # 只继承同一句明确给出的本期窗口，不从冻结事实反推正文年份。
+        prior = list(re.finditer(
+            r'(\d{4})年(\d{1,2})月(?:至(\d{4})年(\d{1,2})月)?', window[:match.start()]
+        ))
+        if not prior:
+            return match[0]
+        anchor = prior[-1]
+        if (re.search(r'[。！？；;\n]', window[anchor.end():match.start()])
+                or (anchor[3] and anchor[3] != anchor[1]) or int(anchor[1]) <= 1):
+            return match[0]
+        year = int(anchor[1]) - 1
+        return f'{year}年{anchor[2]}月' + (
+            f'至{year}年{anchor[4]}月' if anchor[4] else ''
+        ) + '同期'
+
+    window = re.sub(r'(?:上年|去年)同期', relative_same_period, window)
     ranges = list(re.finditer(r'(\d{4})年(\d{1,2})月至(\d{4})年(\d{1,2})月', window))
 
     def same_period(match):
@@ -867,6 +884,13 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
     # 前一锚点后的日期括注属于前值；当前前缀从括注之后开始。
     if previous:
         local_before = local_before[_reference_notes_end(local_before):]
+    if not comparison:
+        baseline = re.search(
+            r'(?:较于|相较于|相较|较|相比于|对比|比|基期(?:为)?)\s*'
+            r'(?P<period>\d{4}年\d{1,2}月(?:至\d{4}年\d{1,2}月)?同期)', local_before,
+        )
+        if baseline:
+            local_before = local_before[baseline.start('period'):]
     after = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*', '', after)
     after = re.split(claim, after, maxsplit=1)[0]
     # 当前值紧邻的括注保留；连接词之后已是下一个值的说明。

@@ -644,7 +644,14 @@ def _section_number_context(
             if "monthlyStatistics" in projected:
                 projected["monthlyStatistics"] = {
                     key: value for key, value in projected["monthlyStatistics"].items()
-                    if key not in {"prefixTotals", "monthOverMonth"}
+                    if key not in {"prefixTotals", "prefixAverages", "monthOverMonth"}
+                }
+            if isinstance(projected.get("monthly"), dict):
+                monthly = projected["monthly"]
+                projected["monthly"] = {
+                    **{key: value for key, value in monthly.items() if key != "rows"},
+                    "rowCount": len(monthly.get("rows", ())),
+                    "rowsDeferred": True,
                 }
             planning_guide.append(projected)
         return prompt_number_catalog(catalog), json.loads(render_frozen_numbers(_json_text(planning_guide), catalog))
@@ -1335,6 +1342,7 @@ def _section_stage_agent(
                 "操作数只能是同单位族（金额与金额、人次与人次）且同一期间口径的登记值；计算引用渲染后已带单位，其后不再写单位。"
             ),
             "total 是该事实完整期间的总额；正文写1—10月时必须使用相应 periodTotals 累计引用，不能套用12个月 total。零分子且分母非零时完成率为0%，只有分母为零或缺失时才不能计算。",
+            "同比必须分别复核本期与上年同期的年份及月份窗口；‘2025年1—9月较上年同期’的基期是2024年1—9月。服务器告警需结合当前数值的比较角色复核，不得为消除告警把正确基期引用替换成本期引用；错年、错月及同比环比混用仍须纠正。",
             (
                 "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"
                 "H3/H4 必须是不超过 40 个中文字符的短标题，并独占一个物理行。"
@@ -1436,6 +1444,16 @@ async def _run_section_stage(
             user_id=scope.owner_user_id,
             thinking_request=thinking_request,
         )
+    except TaskExecutionContextHardLimitError as error:
+        loguru_logger.error(
+            "report_section_context_budget_exceeded section={} stage={} metrics={}",
+            section_code, stage, error.metrics,
+        )
+        raise ReportingError(
+            "report_section_context_too_large",
+            "章节请求及输出协议超过当前模型输入预算。",
+            details={"stage": stage, "retryable": False, **error.metrics},
+        ) from error
     except ModelProviderError as error:
         from ...models import reporting_failure
 
@@ -1981,6 +1999,19 @@ async def _generate_section_in_blocks(
                 )
     if scoped_fact_ids is not None:
         fact_catalog = [item for item in fact_catalog if item["factId"] in scoped_fact_ids]
+    # 同一冻结事实可被多个分析复用，只合并除 analysisId 外完全相同的条目。
+    # 保留全部分析身份；相同 factId 但内容不同的条目不在提示投影中消解冲突。
+    unique_facts: dict[str, dict[str, Any]] = {}
+    for item in fact_catalog:
+        signature = _json_text({key: value for key, value in item.items() if key != "analysisId"})
+        if signature in unique_facts:
+            previous = unique_facts[signature]
+            owners = previous.setdefault("analysisIds", [previous["analysisId"]])
+            if item["analysisId"] not in owners:
+                owners.append(item["analysisId"])
+        else:
+            unique_facts[signature] = item
+    fact_catalog = list(unique_facts.values())
     known_fact_ids = {item["factId"] for item in fact_catalog}
     number_contents = tuple(item.content for item in original_evidence_files)
     plan_payload = {
@@ -2000,6 +2031,7 @@ async def _generate_section_in_blocks(
             "claim.factIds 必须原样复制 factCatalog 中支持结论的 factId，"
             "不得自行编造 fact_001 等编号；没有支持该结论的登记事实时不填 factIds。"
             "动态章节的 claim.findingIds 必须从当前分配的发现中选择，不得引用其他章节发现。"
+            "numberGuide.monthly.rowsDeferred=true 表示逐月明细留待正文按结论读取，完整证据仍已冻结，不能据此声明缺证或请求补证。"
         ),
         "requiredOutputShape": {
             "kind": "render",

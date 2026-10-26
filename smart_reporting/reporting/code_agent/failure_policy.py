@@ -44,6 +44,8 @@ POLICIES = MappingProxyType(
         "report_task_cancelled": _INFRA,
         "report_task_timeout": _INFRA,
         "report_model_provider_unavailable": _INFRA,
+        # 确定性投影耗尽：章节内先尝试缩减/按块生成，剩余超限不得原样开新 attempt。
+        "report_section_context_too_large": _INFRA,
         "report_phase_artifact_changed": _FATAL,
         "report_capability_invalid": FailurePolicy(visualization="fatal", infrastructure=True),
         "report_task_lease_conflict": FailurePolicy(visualization="fatal", infrastructure=True),

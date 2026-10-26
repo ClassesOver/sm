@@ -210,3 +210,26 @@ def test_server_derived_values_get_the_same_sentence_check():
     assert statement_review_warnings(f'2025年1—2月各月收入介于{B_MIN}至{B_MAX}之间。', source()) == []
     [uniform] = statement_review_warnings(f'2025年1—2月各月收入均为{B_MAX}。', source())
     assert '不能表述为各月均为同一数值' in uniform
+
+
+def test_relative_yoy_baseline_is_checked_against_previous_year_window():
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    markdown = ('2025年1—2月收入较上年同期的 {{value:fact-aaaaaaaaaaaaaaaa:total:元}} '
+                '增长至 {{value:fact-bbbbbbbbbbbbbbbb:total:元}}。')
+    for wording in ('上年同期', '去年同期'):
+        text = markdown.replace('上年同期', wording)
+        assert statement_review_warnings(text, source()) == []
+        review = review_content_result(text, source())
+        assert not any('统计期间需复核' in warning for warning in review.warnings)
+
+
+def test_relative_yoy_does_not_excuse_wrong_baseline_months_or_year():
+    for label in ('2025年1—3月', '2026年1—2月'):
+        markdown = f'{label}收入较上年同期的 {{{{value:fact-aaaaaaaaaaaaaaaa:total:元}}}} 增长。'
+        assert statement_review_warnings(markdown, source())
+
+
+def test_yoy_label_does_not_allow_a_current_fact_as_the_baseline():
+    markdown = ('2025年1—2月收入较上年同期的 {{value:fact-bbbbbbbbbbbbbbbb:total:元}} 增长。')
+    assert statement_review_warnings(markdown, source())

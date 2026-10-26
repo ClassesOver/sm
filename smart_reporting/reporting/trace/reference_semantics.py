@@ -134,6 +134,12 @@ def _monthly_window_warnings(prefix: str, clause: str, reference: Mapping[str, A
     # “含一月调整额”说明组成，不能替代正文已经限定的二月统计窗口。
     period_prefix = _INCLUDED_MONTH.sub(' ', prefix)
     period_clause = _INCLUDED_MONTH.sub(' ', clause)
+    if re.search(r'(?:上年|去年)同期', period_prefix):
+        from .subject_builder import _reference_local_window
+
+        # 与编辑器相同：先展开相对同期，再隔离当前值；后一个本期值不能继承前值的基期。
+        before = re.sub(r'\{\{value:[^{}\r\n]+\}\}', '[[claim:previous]]', period_prefix)
+        period_prefix = _reference_local_window(before, '[[claim:current]]') or period_prefix
     written = _written_period(period_prefix, fact)
     if not written or written.re is not _PERIOD or not written['start']:
         return []
@@ -189,6 +195,7 @@ def _uniform_month_warnings(clause: str, reference: Mapping[str, Any]) -> list[s
 
 def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix: str = '') -> list[str]:
     """复核当前引用前的断言及紧邻后置限定，不跨入下一分句或引用。"""
+    reference_prefix = prefix
     boundaries = list(re.finditer(r'\{\{value:[^{}\r\n]+\}\}|\[\[claim:[^\]\r\n]+\]\]', prefix))
     rank_prefix = prefix[boundaries[-1].end():] if boundaries else prefix
     next_metric_clause = prefix[boundaries[-1].end():] if boundaries else ''
@@ -208,7 +215,7 @@ def number_reference_warnings(prefix: str, reference: Mapping[str, Any], suffix:
     entry = reference['entry']
     selector = reference['selector']
     warnings = scope_exclusion_warnings(rank_prefix + ' ' + qualifier, reference.get('scope') or {})
-    warnings.extend(_monthly_window_warnings(prefix, clause, reference))
+    warnings.extend(_monthly_window_warnings(reference_prefix + ' ' + qualifier, clause, reference))
     from .top_sets import top_set_wording_warnings
 
     warnings.extend(top_set_wording_warnings(rank_prefix + " " + qualifier, reference))
