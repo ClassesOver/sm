@@ -1948,15 +1948,55 @@ class ReportEditorTraceService:
     # 图表来源（B3 第二增量）
     # ------------------------------------------------------------------
 
+    async def _chart_edit_summaries(self, context: Any) -> dict[str, dict[str, Any]]:
+        """按 chartId 聚合改图登记摘要（P3：快捷指令按图形推荐 + 改图历史展示）。
+
+        登记不存在视为空；损坏只降级该展示数据并告警，不影响来源面板其余内容。
+        """
+
+        from .chart_edits import load_chart_edit_records
+
+        try:
+            records = await load_chart_edit_records(
+                self._workspace, context.scope["threadId"], context.markdown_path
+            )
+        except ValueError as error:
+            logger.warning(
+                "chart_edit_history_unavailable report={} revision={} error={}",
+                context.report_id, context.revision, error,
+            )
+            return {}
+        summaries: dict[str, dict[str, Any]] = {}
+        for record in records:
+            entry = summaries.setdefault(
+                record.chart_id, {"visualForm": None, "editCount": 0, "history": []}
+            )
+            entry["editCount"] += 1
+            # 最新成功的改图决定当前图形形态；按登记追加顺序取最后一条。
+            entry["visualForm"] = record.chart.visual_form
+            entry["history"].append(
+                {
+                    "editId": record.edit_id,
+                    "instruction": record.instruction[:200],
+                    "level": list(record.level),
+                    "createdAt": record.created_at,
+                }
+            )
+        for entry in summaries.values():
+            entry["history"] = entry["history"][-20:][::-1]
+        return summaries
+
     async def charts(self, context: Any) -> dict[str, Any]:
         """当前 revision 登记了来源的图表清单（有 ChartTraceV1 的图）。"""
 
         index = await self.require_index(context)
         files = {item.resource_id: item for item in index.files}
         datasets = {item.dataset_id for item in index.datasets}
-        return {
-            "available": True,
-            "charts": [
+        edit_summaries = await self._chart_edit_summaries(context)
+        charts_payload = []
+        for trace in index.chart_traces:
+            summary = edit_summaries.get(trace.chart_id, {})
+            charts_payload.append(
                 {
                     "chartId": trace.chart_id,
                     "datasetIds": list(trace.dataset_ids),
@@ -1969,10 +2009,12 @@ class ReportEditorTraceService:
                     # imagePath 供编辑器把正文图片定位到登记图表（AI 改图入口）。
                     "imagePath": files[trace.image_file_resource_id].path,
                     "imageSize": files[trace.image_file_resource_id].size,
+                    # AI 改图摘要：visualForm 供快捷指令按图形推荐，editCount 供入口提示。
+                    "visualForm": summary.get("visualForm"),
+                    "editCount": summary.get("editCount", 0),
                 }
-                for trace in index.chart_traces
-            ],
-        }
+            )
+        return {"available": True, "charts": charts_payload}
 
     async def chart_source(
         self,
@@ -2036,6 +2078,10 @@ class ReportEditorTraceService:
             "computationId": trace.computation_id,
             "image": {"size": image_ref.size, "sha256": image_ref.sha256},
             "plotData": plot_tables,
+            # AI 改图历史（P3）：登记成功过的改图记录，最新在前；正文未引用的记录同样列出。
+            "editHistory": (await self._chart_edit_summaries(context))
+            .get(trace.chart_id, {})
+            .get("history", []),
         }
         encoded = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
         if len(encoded) > TRACE_BUDGETS_V1["preview_max_response_bytes"]:

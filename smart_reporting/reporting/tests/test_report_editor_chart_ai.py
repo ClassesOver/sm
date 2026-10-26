@@ -252,7 +252,7 @@ class FakeRunner:
 
 
 def _planner(level=("L1",), *, title="收入（横向）", alt_text="收入按期间横向对比",
-             visual_form="横向条形图", skipped=()):
+             visual_form="横向条形图", skipped=(), data_bindings=()):
     async def plan(_request):
         return ChartEditPlan(
             level=level,
@@ -260,6 +260,7 @@ def _planner(level=("L1",), *, title="收入（横向）", alt_text="收入按�
             altText=alt_text,
             visualForm=visual_form,
             drawInstruction="把柱状图改成横向条形图并按数值降序",
+            dataBindings=data_bindings,
             skipped=skipped,
         )
 
@@ -284,6 +285,37 @@ async def _await_edit(service: ChartAIEditService, context, chart_id: str, edit_
             return status
         await asyncio.sleep(0.02)
     raise AssertionError("改图任务未在预期时间内结束")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_edit_history_and_visual_form_surface_in_sources(tmp_path: Path) -> None:
+    """P3：改图后来源面板能看到历史与当前图形形态，供快捷指令按图形推荐。"""
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    service = _service(fixture, runner)
+    session = SimpleNamespace(capabilities=None)
+
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="改成横向条形图", baseTitle="收入", baseAltText="收入对比"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    assert status["status"] == "succeeded"
+
+    charts = await fixture.editor.trace.charts(fixture.context)
+    chart = next(item for item in charts["charts"] if item["chartId"] == "chart_001")
+    assert chart["editCount"] == 1
+    assert chart["visualForm"] == "横向条形图"
+
+    detail = await fixture.editor.trace.chart_source(fixture.context, "chart_001")
+    assert [item["editId"] for item in detail["editHistory"]] == [started["editId"]]
+    assert detail["editHistory"][0]["level"] == ["L1"]
+    assert detail["editHistory"][0]["instruction"].startswith("改成横向条形图")
+
+    # 无改图的图表面板不出现历史噪音。
+    empty = await fixture.editor.trace._chart_edit_summaries(fixture.context)
+    assert empty["chart_001"]["editCount"] == 1
 
 
 @pytest.mark.anyio
@@ -422,10 +454,92 @@ async def test_chart_ai_edit_l2_not_supported_is_reported_as_skip(tmp_path: Path
     assert status["status"] == "succeeded"
     assert status["level"] == ["L1"]
     assert len(status["skipped"]) == 1
-    assert "暂未开放" in status["skipped"][0]["reason"]
+    assert "换绑数据未使用" in status["skipped"][0]["reason"]
     # L1 仍执行：作图数据不变。
     task_context, task_facts, _ = runner.calls[0]
     assert [item["path"] for item in task_facts["chartInputs"]] == [fixture.plot_path]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_edit_l2_rebinds_registered_data_and_reports_change(tmp_path: Path) -> None:
+    """L2 成功路径：planner 选中签发目录中的同分析绑定，物化新作图数据并如实登记。"""
+    from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
+
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    binding = ChartDataBinding(
+        analysisId="analysis_001",
+        factPath=f"报表/智能分析/report-1/facts/revision-1/analysis_001.json",
+        dataPath="metrics[0].periodValues",
+        fields=("period", "value"),
+        role="main",
+    )
+    service = _service(
+        fixture, runner,
+        planner=_planner(level=("L2",), data_bindings=(binding,)),
+    )
+    session = SimpleNamespace(capabilities=None)
+
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="换成按期间的月度趋势"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    assert status["status"] == "succeeded", status
+    assert status["level"] == ["L2"]
+    assert status["skipped"] == []
+    assert status["changes"]["plotDataUnchanged"] is False
+    assert status["changes"]["dataBindingsAdded"][0]["dataPath"] == "metrics[0].periodValues"
+
+    records = await load_chart_edit_records(
+        fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+    )
+    record = records[0]
+    assert record.level == ("L2",)
+    new_plot = record.plot_data_files[0]
+    assert new_plot.path != fixture.plot_path
+    stored, _ = await fixture.workspace.afile_bytes(fixture.thread_id, new_plot.path)
+    import json as _json
+    payload = _json.loads(stored)
+    assert payload["schema"] == "chart-input/v1"
+    assert payload["source"]["dataPath"] == "metrics[0].periodValues"
+    assert payload["rows"] == [["2025-09", 3600.0]]
+    # 授权读取路径包含新物化数据而不是原图作图数据。
+    task_context, task_facts, _ = runner.calls[0]
+    assert new_plot.path in task_context.authorized_read_paths
+    assert fixture.plot_path not in task_context.authorized_read_paths
+    assert [item["path"] for item in task_facts["chartInputs"]] == [new_plot.path]
+    assert task_facts["visualizationPlan"]["charts"][0]["dataBindings"][0]["dataPath"] == "metrics[0].periodValues"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_edit_l2_rejects_cross_analysis_and_unknown_bindings(tmp_path: Path) -> None:
+    """跨分析或不在签发目录中的绑定不使用，按跳过说明返回且不执行绘图。"""
+    from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
+
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    forged = ChartDataBinding(
+        analysisId="analysis_999",
+        factPath="报表/智能分析/report-1/facts/revision-1/analysis_001.json",
+        dataPath="metrics[0]",
+        fields=("total", "unit"),
+        role="main",
+    )
+    service = _service(fixture, runner, planner=_planner(level=("L2",), data_bindings=(forged,)))
+    session = SimpleNamespace(capabilities=None)
+
+    started = await service.start_edit(
+        fixture.context, session, "chart_001",
+        ChartAIEditRequest(instruction="换成别的分析的数据"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    assert status["status"] == "failed"
+    assert status["error"]["code"] == "report_editor_chart_ai_skipped"
+    assert "换绑数据未使用" in status["error"]["skipped"][0]["reason"]
+    assert runner.calls == []
 
 
 @pytest.mark.anyio

@@ -22,7 +22,9 @@ from ..reporting.models import ReportingError
 CHART_EDITS_REGISTRY_VERSION = 1
 CHART_EDITS_DIR = "chart-edits"
 CHART_EDIT_ID_PATTERN = re.compile(r"^cedit-[0-9a-z]{8,32}$")
+TABLE_EDIT_ID_PATTERN = re.compile(r"^tedit-[0-9a-z]{8,32}$")
 _MAX_CHART_EDIT_FIELDS = 100
+_MAX_TABLE_EDIT_MARKDOWN_CHARS = 128 * 1024
 
 
 class ChartEditFileRef(StrictModel):
@@ -104,6 +106,36 @@ class ChartEditRecord(StrictModel):
         return self
 
 
+class TableEditRecord(StrictModel):
+    """一条已成功执行的 AI 改表登记（设计稿 §14.1，与改图同一侧车）。
+
+    ``markdown`` 是服务端装配的新表完整块（含 ``[[table:newTableId]]`` 协议
+    标记与表题）；``body_sha256`` 是按导出清单同一规则（``_TABLE_BLOCK`` 捕获
+    的表体）计算的哈希，接受后正文块体必须与之一致才登记追溯。单元格取值
+    全部来自 ``table_trace``（TableTraceV1）逐格绑定的冻结事实。
+    """
+
+    edit_id: str = Field(alias="editId", pattern=TABLE_EDIT_ID_PATTERN.pattern)
+    table_id: str = Field(alias="tableId", min_length=1, max_length=128)
+    analysis_id: str = Field(alias="analysisId", min_length=1, max_length=128)
+    new_table_id: str = Field(alias="newTableId", min_length=1, max_length=128)
+    instruction: str = Field(min_length=1, max_length=2000)
+    body_sha256: str = Field(alias="bodySha256", pattern=SHA256_PATTERN)
+    markdown: str = Field(min_length=1, max_length=_MAX_TABLE_EDIT_MARKDOWN_CHARS)
+    table_trace: dict[str, Any] = Field(alias="tableTrace", default_factory=dict)
+    warnings: tuple[str, ...] = Field(default=(), max_length=_MAX_CHART_EDIT_FIELDS)
+    skipped: tuple[ChartEditSkipped, ...] = Field(default=(), max_length=20)
+    status: Literal["succeeded"] = "succeeded"
+    created_at: str = Field(alias="createdAt", min_length=1, max_length=64)
+    user_id: str = Field(alias="userId", min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_record(self) -> TableEditRecord:
+        if self.new_table_id == self.table_id:
+            raise ValueError("改表新 tableId 不能与原表相同")
+        return self
+
+
 def chart_edits_registry_path(markdown_path: str) -> str:
     source = PurePosixPath(markdown_path)
     return str(source.parent / "draft" / ".chart-edits.json")
@@ -126,7 +158,7 @@ def chart_edit_image_src(markdown_path: str, edit_id: str) -> str:
     return relative.as_posix()
 
 
-def parse_chart_edit_records(content: bytes) -> tuple[ChartEditRecord, ...]:
+def _parse_registry(content: bytes) -> tuple[tuple[ChartEditRecord, ...], tuple[TableEditRecord, ...]]:
     """严格解析登记文件；损坏时抛 ``ValueError``，由调用方决定降级方式。"""
 
     try:
@@ -148,13 +180,36 @@ def parse_chart_edit_records(content: bytes) -> tuple[ChartEditRecord, ...]:
             raise ValueError("改图登记 editId 重复")
         seen.add(record.edit_id)
         records.append(record)
-    return tuple(records)
+    table_edits: list[TableEditRecord] = []
+    seen_tables: set[str] = set()
+    # tableEdits 为 §14 追加键：旧登记文件没有该键时视为空。
+    for raw in payload.get("tableEdits") or ():
+        if not isinstance(raw, dict):
+            raise ValueError("改表登记记录损坏")
+        record = TableEditRecord.model_validate(raw)
+        if record.edit_id in seen_tables:
+            raise ValueError("改表登记 editId 重复")
+        seen_tables.add(record.edit_id)
+        table_edits.append(record)
+    return tuple(records), tuple(table_edits)
 
 
-def encode_chart_edit_records(records: tuple[ChartEditRecord, ...]) -> bytes:
+def parse_chart_edit_records(content: bytes) -> tuple[ChartEditRecord, ...]:
+    return _parse_registry(content)[0]
+
+
+def parse_table_edit_records(content: bytes) -> tuple[TableEditRecord, ...]:
+    return _parse_registry(content)[1]
+
+
+def encode_chart_edit_records(
+    records: tuple[ChartEditRecord, ...],
+    table_edits: tuple[TableEditRecord, ...] = (),
+) -> bytes:
     payload = {
         "version": CHART_EDITS_REGISTRY_VERSION,
         "records": [record.model_dump(mode="json", by_alias=True) for record in records],
+        "tableEdits": [record.model_dump(mode="json", by_alias=True) for record in table_edits],
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
@@ -173,16 +228,55 @@ async def load_chart_edit_records(
     return parse_chart_edit_records(content)
 
 
+async def load_table_edit_records(
+    workspace: Any, thread_id: str, markdown_path: str
+) -> tuple[TableEditRecord, ...]:
+    """读取改表登记；不存在视为空，损坏抛 ``ValueError``。"""
+
+    path = chart_edits_registry_path(markdown_path)
+    if not await workspace.apath_exists(thread_id, path):
+        return ()
+    content, _media_type = await workspace.afile_bytes(thread_id, path)
+    return parse_table_edit_records(content)
+
+
 async def append_chart_edit_record(
     workspace: Any, thread_id: str, markdown_path: str, record: ChartEditRecord
 ) -> None:
     """在已有登记上原子追加一条记录；调用方必须持有对应草稿锁。"""
 
     path = chart_edits_registry_path(markdown_path)
-    records = await load_chart_edit_records(workspace, thread_id, markdown_path)
+    records, table_edits = await _load_registry(workspace, thread_id, markdown_path)
     if any(item.edit_id == record.edit_id for item in records):
         raise ReportingError("snapshot_integrity_failed", "改图登记 editId 已存在。")
-    encoded = encode_chart_edit_records((*records, record))
+    encoded = encode_chart_edit_records((*records, record), table_edits)
+    await _rewrite_registry(workspace, thread_id, path, encoded)
+
+
+async def append_table_edit_record(
+    workspace: Any, thread_id: str, markdown_path: str, record: TableEditRecord
+) -> None:
+    """在已有登记上原子追加一条改表记录；调用方必须持有对应草稿锁。"""
+
+    path = chart_edits_registry_path(markdown_path)
+    records, table_edits = await _load_registry(workspace, thread_id, markdown_path)
+    if any(item.edit_id == record.edit_id for item in table_edits):
+        raise ReportingError("snapshot_integrity_failed", "改表登记 editId 已存在。")
+    encoded = encode_chart_edit_records(records, (*table_edits, record))
+    await _rewrite_registry(workspace, thread_id, path, encoded)
+
+
+async def _load_registry(
+    workspace: Any, thread_id: str, markdown_path: str
+) -> tuple[tuple[ChartEditRecord, ...], tuple[TableEditRecord, ...]]:
+    path = chart_edits_registry_path(markdown_path)
+    if not await workspace.apath_exists(thread_id, path):
+        return (), ()
+    content, _media_type = await workspace.afile_bytes(thread_id, path)
+    return _parse_registry(content)
+
+
+async def _rewrite_registry(workspace: Any, thread_id: str, path: str, encoded: bytes) -> None:
     # 追加写入与覆盖写共用工作区层的原子替换与每路径写锁。
     await workspace.awrite_bytes(thread_id, path, encoded, overwrite=True)
     # 回读确认登记已持久化，避免静默丢失改图身份。

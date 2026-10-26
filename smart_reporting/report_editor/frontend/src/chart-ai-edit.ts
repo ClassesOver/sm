@@ -34,6 +34,22 @@ const QUICK_COMMANDS = [
   '图例移到图表下方',
 ]
 
+// P3：快捷指令按图形推荐——已知当前形态时优先给出“从该形态出发”的常用调整，
+// 形态未知（未改图的原始图）回落到默认指令集。
+const QUICK_COMMANDS_BY_FORM: [RegExp, string[]][] = [
+  [/条形|柱状/, ['在图上显示数值标签', '按数值降序重新排列', '改成横向条形图', '只保留金额最大的前 5 组，其余合并为“其他”并标注为子集']],
+  [/折线|趋势/, ['标注最高和最低的月份', '平滑折线并加粗', '改成柱状图对比各期', '在图上显示数值标签']],
+  [/饼|构成|占比/, ['按占比从大到小排序', '只保留占比最大的前 5 项，其余合并为“其他”并标注为子集', '改成排序条形图', '在扇区外侧显示百分比']],
+]
+
+export function quickCommandsForForm(visualForm?: string | null): string[] {
+  if (!visualForm) return QUICK_COMMANDS
+  for (const [pattern, commands] of QUICK_COMMANDS_BY_FORM) {
+    if (pattern.test(visualForm)) return [...new Set([...commands, ...QUICK_COMMANDS])].slice(0, QUICK_COMMANDS.length)
+  }
+  return QUICK_COMMANDS
+}
+
 const MAX_INSTRUCTION_CHARS = 2000
 
 export function chartAiUnavailableReason(reason?: string): string {
@@ -175,6 +191,7 @@ interface EditTarget {
   imagePath: string
   title: string
   altText: string
+  visualForm?: string | null
   previousEditId?: string
 }
 
@@ -247,9 +264,13 @@ export function createChartAIEdit(options: {
       // 已接受过的改图：按登记找回所属图表，以该改图为底图继续调整。
       const editId = chartEditIdFromSrc(src, basePath)
       const record = editId ? await client.chartEditRecord(editId) : null
+      const charts = record ? [] : (await client.charts()).charts ?? []
+      const matched = record ? null : matchChartForImage(charts, src, basePath)
       const chart = record
         ? { chartId: record.chartId, imagePath: record.imagePath }
-        : matchChartForImage((await client.charts()).charts ?? [], src, basePath)
+        : matched
+          ? { chartId: matched.chartId, imagePath: matched.imagePath }
+          : null
       if (!chart) return { error: '这张图不在当前版本的登记图表中，无法改图。' }
       const availability = await client.chartAiAvailability(chart.chartId)
       if (!availability.available) {
@@ -261,6 +282,7 @@ export function createChartAIEdit(options: {
         imagePath: chart.imagePath,
         title: baseTitleOf(img),
         altText,
+        visualForm: matched?.visualForm ?? null,
         ...(record ? { previousEditId: record.editId } : {}),
       }
     } catch {
@@ -294,7 +316,7 @@ export function createChartAIEdit(options: {
     if (note) body.querySelector<HTMLElement>('.chart-ai-note')!.textContent = note
     const textarea = body.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
     const quick = body.querySelector<HTMLElement>('.chart-ai-quick')!
-    for (const command of QUICK_COMMANDS) {
+    for (const command of quickCommandsForForm(current.visualForm)) {
       const chip = document.createElement('button')
       chip.type = 'button'
       chip.className = 'chart-ai-chip'
@@ -307,6 +329,28 @@ export function createChartAIEdit(options: {
       quick.append(chip)
     }
     const submit = body.querySelector<HTMLButtonElement>('[data-action="submit"]')!
+    const chartTemplates = (client as ReportEditorClient & {
+      chartTemplates?: (chartId: string) => Promise<{ templates: { templateId: string; name: string; available: boolean; reason?: string }[] }>
+    }).chartTemplates
+    if (typeof chartTemplates === 'function') {
+      void chartTemplates.call(client, current.chartId).then((catalog) => {
+        const templates = document.createElement('div')
+        templates.className = 'chart-ai-templates'
+        templates.setAttribute('role', 'group')
+        templates.setAttribute('aria-label', '预制图模板')
+        for (const item of catalog.templates) {
+          const control = document.createElement('button')
+          control.type = 'button'
+          control.className = 'chart-ai-chip chart-ai-template'
+          control.textContent = item.name
+          control.disabled = !item.available
+          control.title = item.reason ?? ''
+          control.addEventListener('click', () => void runTemplate(current, item.templateId, textarea.value.trim()))
+          templates.append(control)
+        }
+        submit.parentElement?.before(templates)
+      }).catch(() => undefined)
+    }
     submit.addEventListener('click', () => {
       const instruction = textarea.value.trim()
       if (!instruction) {
@@ -316,6 +360,40 @@ export function createChartAIEdit(options: {
       void runEdit(current, instruction)
     })
     if (!dismissed) ensureModal().open(textarea)
+  }
+
+  async function runTemplate(current: EditTarget, templateId: string, instruction: string) {
+    const body = bodyOf()
+    cancelled = false
+    body.innerHTML = '<p role="status">正在套用预制图模板…</p>'
+    try {
+      const started = await client.startChartTemplateEdit(current.chartId, {
+        templateId,
+        ...(instruction ? { instruction } : {}),
+        ...(current.imagePath ? { baseImagePath: current.imagePath } : {}),
+        ...(current.title ? { baseTitle: current.title } : {}),
+        ...(current.altText ? { baseAltText: current.altText } : {}),
+        ...(current.previousEditId ? { previousEditId: current.previousEditId } : {}),
+      })
+      runningEditId = started.editId
+      for (;;) {
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+        if (cancelled) return
+        const state = await client.chartAiEditStatus(current.chartId, runningEditId)
+        if (state.status === 'succeeded') {
+          renderReviewPhase(current, state as unknown as ChartAIEditSuccess, `套用模板：${templateId}`)
+          return
+        }
+        if (state.status === 'failed' || state.status === 'cancelled') {
+          renderInputPhase(current, state.error?.message ?? '模板未完成，原图保持不变。')
+          return
+        }
+      }
+    } catch {
+      renderInputPhase(current, '模板请求失败，原图保持不变。')
+    } finally {
+      runningEditId = null
+    }
   }
 
   async function runEdit(current: EditTarget, instruction: string) {
@@ -402,7 +480,16 @@ export function createChartAIEdit(options: {
     if (result.changes.title) changes.push(`标题改为「${result.changes.title}」`)
     if (result.changes.altText) changes.push(`图注改为「${result.changes.altText}」`)
     if (result.changes.visualForm) changes.push(`图形改为「${result.changes.visualForm}」`)
-    changes.push(result.changes.plotDataUnchanged ? '作图数据未变（数值与原图一致）' : '作图数据有变化')
+    if (result.changes.plotDataUnchanged) {
+      changes.push('作图数据未变（数值与原图一致）')
+    } else {
+      const added = result.changes.dataBindingsAdded ?? []
+      changes.push(
+        added.length
+          ? `作图数据换绑：${added.map(item => `${item.dataPath}（${item.fields.join('、')}）`).join('；')}`
+          : '作图数据有变化',
+      )
+    }
     body.innerHTML = `
       <div class="chart-ai-compare" role="group" aria-label="改图前后对比">
         <figure class="chart-ai-compare-item">
@@ -466,6 +553,7 @@ export function createChartAIEdit(options: {
           previousEditId: result.editId,
           title: result.changes.title ?? current.title,
           altText: result.changes.altText ?? current.altText,
+          visualForm: result.changes.visualForm ?? current.visualForm,
         },
         `已基于上一轮结果（${instruction.slice(0, 40)}${instruction.length > 40 ? '…' : ''}）继续调整。`,
       )

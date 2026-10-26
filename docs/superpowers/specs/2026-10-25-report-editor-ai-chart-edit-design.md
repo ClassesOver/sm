@@ -251,16 +251,22 @@
 - **表模板**：直接是预置的 `TableEditSpec`，套用后服务端确定性渲染，无需模型；带补充要求时由模型在模板规格上修改。
 - 模板脚本与模板规格各有单测，覆盖缺数据置灰、子集标注、单位换算与主题一致性。
 
-## 15. 实现状态（2026-10-25 更新）
+## 15. 实现状态（2026-10-26 更新）
 
-**P1（L1 呈现类改图全链路）已实现并通过测试**；P2（L2 换绑）、P3（多轮体验与快捷指令推荐）按分期待做，§14 表格 AI 改与预制模板另行实施。
+**§14 的表格 AI 改与预制模板已实现并接入编辑器；图模板已实现并接入图表 AI 改组件；P2 的 L2 换绑与 P3 的快捷指令按图形推荐、改图历史来源面板展示均已实现。** 设计稿各分期（P1/P2/P3、§14）全部落地。
 
 | 环节 | 实现 |
 | --- | --- |
-| 登记侧车 | `report_editor/chart_edits.py`：`draft/.chart-edits.json` 原子读写、`chart-edits/<editId>/` 不可变产物目录、记录模型与损坏解析 |
-| 服务 | `report_editor/chart_ai.py`：`ChartAIEditService`（可用性判定 → plan 分级 → materialize → draw → inspect → register），plan 用 Agno 结构化输出（`ChartEditPlan`），L2/L3 逐条跳过说明；draw 复用 `ReportingCodeGenerationRunner`（仅 Matplotlib、free-form write_script/run、3 类预检沿用） |
-| 接口 | `api.py`：POST/GET/cancel `/api/charts/{chart_id}/ai-edits…` + availability；`asset` 放行扩展到改图登记图片（哈希一致 PNG/JPEG）；错误码映射（busy 409、rate_limited 429、timeout 504 等） |
-| 配置 | `REPORT_EDITOR_CHART_AI_ENABLED`（默认关闭）+ 每小时限额 + 单次超时（`runtime/settings.py`）；`app.py` 装配（与可视化章节同 runner/runtime/LSP/视觉审查单例） |
-| 导出与追溯 | `service._chart_edit_lineage`：正文引用的改图登记 → `ChartArtifact`（`edited_charts` 传入 `rebuild_edited_manifest`）+ 增强索引（新图/脚本 `TraceFileRefV1`、`ChartTraceV1` 含 `scriptFileResourceId` 与"编辑器 AI 改图"transformNotes，图注指纹按草稿正文重新冻结）；登记损坏/身份变化 → issue `report_editor_chart_edit_lineage_unavailable` 并整体追溯降级，PDF/Word 照常签发（非阻断契约已在 AGENTS 登记） |
-| 前端 | `chart-ai-edit.ts`（懒加载 chunk）：图片预览「AI 改图」入口 → 输入面板（快捷指令）→ 进度轮询（可取消）→ 对比审阅卡（变更清单/软告警/跳过说明）→ 接受替换（单次 Milkdown 事务改图片节点 + 图注段落，撤销一步恢复）；`api.ts` 增加改图端点；错误文案与样式随附 |
-| 测试 | 后端 `test_report_editor_chart_ai.py`（9 例：登记往返、happy path、L2/L3 跳过、busy/限流/取消/超时、asset 放行与拒绝、API CSRF/状态码）+ `test_report_editor_lineage_export.py::test_export_revision_registers_ai_chart_edit_and_still_issues_links`（成功登记进 manifest/ChartTraceV1 + 2 类故障注入照常签发）；前端 `chart-ai-edit.test.ts`（10 例），全量 Vitest 704 例与 tsc/build/预算契约通过 |
+| 改图登记侧车 | `report_editor/chart_edits.py`：`draft/.chart-edits.json` 同时保存 `records` 与 `tableEdits`，严格解析并原子写入；改图产物位于 `chart-edits/<editId>/` |
+| 改图与图模板 | `report_editor/chart_ai.py` + `chart_templates.py`：L1 改图、L2 换绑与多轮调整；四种固定 Matplotlib 模板确定性执行，补充要求复用 Coding Agent |
+| L2 换绑（P2） | `ChartEditPlan.dataBindings` 复用 `ChartDataBinding`；服务端从当前图所属分析的冻结事实文件构建签发目录（`_registered_bindings`），规划只能逐字选择目录内绑定；选中后经 `materialize_chart_inputs` 物化到 `chart-edits/<editId>/`，越界绑定降为跳过说明。多轮调整沿用上一轮换绑数据；导出追溯对 L2 新数据逐文件核验身份并把 `ChartTraceV1.plotDataFileResourceIds` 重指到随迁文件，transformNotes 记录换绑说明 |
+| P3 体验 | 多轮调整沿用上一轮结果与换绑数据；`charts()` 返回 `visualForm`/`editCount`，快捷指令按当前图形形态优先推荐（条形/柱、折线/趋势、饼/构成），未知形态回落默认集；`chart_source()` 返回 `editHistory`（最新在前，≤20 条），来源面板图表页在状态区展示「AI 改图历史」 |
+| 改表与表模板 | `report_editor/table_ai.py` + `table_builder.py`：Agno 结构化 `TableEditPlan` / `TableEditSpec`，按冻结事实校验指标、期间、同比、构成和预算绑定；同源确定性渲染 `TableTraceV1` 与 Markdown；提供构成表、同比对比表、预算执行表、月度明细表 |
+| 接口与配置 | `api.py` 提供图/表可用性、模板目录、AI 改、模板套用、状态轮询、取消与登记查询；`runtime/settings.py` 与 `app.py` 增加表格 AI 配置及生命周期关闭；图/表服务默认关闭并按环境灰度 |
+| 导出与追溯 | `service.py`：改表登记核验正文表体 SHA、`TableTraceV1`、FactRef 与事实文件身份；改图/改表索引异常均写 `lineage_issues`，已生成且身份可读的 PDF/Word 照常签发 |
+| 前端组件 | `chart-ai-edit.ts` 图 AI 改控制器（模板目录、L2 数据变更摘要、按图形推荐快捷指令）；`table-ai-edit.ts` 表 AI 改控制器（模板置灰、逐格审阅、点击数据格查看来源 FactRef、接受/放弃/继续调整；懒加载不进首屏 chunk）；`evidence-pages.ts` 图表页展示改图历史；协议插件增加表格服务端审阅事务元数据；样式随附（模板置灰、三色审阅、来源详情） |
+| 验证 | 后端全量 7354 通过（3 个 `test_trace_period_semantics` 失败经 stash 验证为分支既有，与编辑器改动无关）；编辑器 focused 53 例通过（含 L2 成功/拒绝/多轮、导出换绑随迁、历史与形态透出、逐格来源）；前端 54 例通过；TypeScript、生产构建和 bundle budget 通过（改表面板懒加载不进首屏） |
+
+导出与追溯补充：改表后原表 `TableTraceV1` 保留在新 revision 索引中（subject 绑定仍指向原表，正文块缺失按软性 unbound 评估），新表 trace 追加登记并携带 `originMarkdown`；改表登记损坏/表体变化只丢弃改表追溯（manifest 按正文内容寻址照常签发），L2 换绑作图数据身份变化整链降级——两者的故障注入用例（`test_export_revision_registers_table_edit_and_still_issues_links`、`test_export_revision_registers_l2_chart_edit_plot_data`）已登记进 AGENTS 非阻断契约清单。
+
+当前边界：L2 仅支持同一分析已签发目录内的换绑（跨分析、未登记与伪造绑定一律跳过说明）；浏览器端模板/换绑的完整黑盒冒烟仍需真实编辑会话（`REPORT_EDITOR_TABLE_ID` / `REPORT_EDITOR_CHART_ID`）；分支既有的期间语义测试失败（`test_trace_period_semantics` 3 例）不属于本设计范围，待该分支单独修复。

@@ -23,6 +23,26 @@ function caretAnchor(): HTMLElement {
   return anchor
 }
 
+export const TABLE_PROTOCOL_EDIT_META = 'SMART_REPORT_TABLE_PROTOCOL_EDIT'
+
+function tableProtocolMarkersOnlyChanged(before: string, after: string, tableId: string): boolean {
+  const beforeMarkers = findProtocolMarkers(before)
+    .filter(marker => marker.kind === 'table' || marker.kind === 'table-close')
+  const afterMarkers = findProtocolMarkers(after)
+    .filter(marker => marker.kind === 'table' || marker.kind === 'table-close')
+  if (beforeMarkers.length !== afterMarkers.length || beforeMarkers.length < 2) return false
+  const changed = beforeMarkers
+    .map((marker, index) => ({ before: marker, after: afterMarkers[index] }))
+    .filter(pair => pair.before.raw !== pair.after.raw)
+  const target = afterMarkers.filter(marker => marker.value === tableId)
+  return target.length === 2 &&
+    target[0].kind === 'table' && target[1].kind === 'table-close' &&
+    changed.length === 2 &&
+    changed.every(pair => pair.after.value === tableId) &&
+    changed.some(pair => pair.after.kind === 'table') &&
+    changed.some(pair => pair.after.kind === 'table-close')
+}
+
 export function markerDecorations(doc: ProseNode, sources?: TraceSources, active: number | null = null): DecorationSet {
   const decorations: Decoration[] = []
   doc.descendants((node, position) => {
@@ -88,7 +108,10 @@ export const protocolMarkerPlugin = $prose(() => {
     },
     filterTransaction: (transaction, state) =>
       !transaction.docChanged ||
-      protocolMarkersUnchanged(state.doc.textContent, transaction.doc.textContent),
+      protocolMarkersUnchanged(state.doc.textContent, transaction.doc.textContent) ||
+      (transaction.getMeta(TABLE_PROTOCOL_EDIT_META) as { tableId?: string } | undefined)?.tableId !== undefined &&
+        tableProtocolMarkersOnlyChanged(state.doc.textContent, transaction.doc.textContent,
+          String((transaction.getMeta(TABLE_PROTOCOL_EDIT_META) as { tableId: string }).tableId)),
     props: {
       transformCopied: slice => new Slice(stripCopiedMarkers(slice.content), slice.openStart, slice.openEnd),
       decorations: (state) => protocolMarkerPluginKey.getState(state) ?? DecorationSet.empty,

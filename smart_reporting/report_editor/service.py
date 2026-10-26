@@ -34,6 +34,7 @@ from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.artifacts_v1 import (
     ArtifactFile,
     ChartArtifact,
+    _TABLE_BLOCK,
     _image_media_type,
     _markdown_image_bindings,
 )
@@ -48,6 +49,7 @@ from ..reporting.trace.chart_subjects import freeze_chart_presentations
 from ..reporting.trace.contracts_v1 import (
     ChartTraceV1,
     RevisionTraceIndexV1,
+    TableTraceV1,
     TraceFileRefV1,
     derive_resource_id,
 )
@@ -65,6 +67,7 @@ from .chart_edits import (
     CHART_EDITS_DIR,
     chart_edit_summary,
     load_chart_edit_records,
+    load_table_edit_records,
 )
 from .trace_retention import source_lifecycle, source_lifecycle_lock
 from .trace_revisions import (
@@ -2093,11 +2096,32 @@ class ReportEditorService:
                             context.report_id,
                             context.revision,
                         )
+                    try:
+                        edited_tables, table_index = await self._table_edit_lineage(
+                            source_context,
+                            markdown=document.markdown,
+                            manifest=artifact_manifest,
+                            index=edited_index or trace_index,
+                        )
+                    except Exception as error:  # noqa: BLE001 - 改表追溯降级，导出继续
+                        edited_tables, table_index = {}, None
+                        reason = error.message if isinstance(error, ReportingError) else type(error).__name__
+                        lineage_issues.append({
+                            "code": "report_editor_table_edit_lineage_unavailable",
+                            "message": f"AI 改表追溯不可用（{reason}），新版本按原表追溯。"[:500],
+                        })
+                        logger.opt(exception=error).warning(
+                            "report_editor_table_edit_lineage_dropped report_id={} base_revision={}",
+                            context.report_id, context.revision,
+                        )
+                    if edited_tables:
+                        table_index = table_index or trace_index
+
                     rebuilt = await rebuild_edited_manifest(
                         self.workspace,
                         scope.workspace_key,
                         manifest=artifact_manifest,
-                        index=trace_index,
+                        index=edited_index or table_index or trace_index,
                         markdown_path=snapshot_path,
                         markdown=document.markdown,
                         target_revision=next_revision,
@@ -2108,6 +2132,8 @@ class ReportEditorService:
                         # 增强索引携带改图文件与图表追溯；validate、来源附录、
                         # path_map 与 snapshot 全部使用同一份索引。
                         trace_index = edited_index
+                    if table_index is not None:
+                        trace_index = table_index
                 if trace_index is not None:
                     validation = await self.trace.validate(
                         source_context,
@@ -2692,7 +2718,8 @@ class ReportEditorService:
                     "snapshot_integrity_failed",
                     "同一图表同时引用原图与改图，无法登记改图追溯。",
                 )
-            if [item.path for item in record.plot_data_files] != [
+            is_l2 = "L2" in record.level
+            if not is_l2 and [item.path for item in record.plot_data_files] != [
                 files[resource_id].path
                 for resource_id in trace.plot_data_file_resource_ids
             ]:
@@ -2700,6 +2727,45 @@ class ReportEditorService:
                     "snapshot_integrity_failed",
                     f"改图登记作图数据与追溯索引不一致：{record.chart_id}",
                 )
+            if is_l2:
+                # L2：新物化的作图数据逐个核验身份，来源必须仍是本报告登记的分析事实。
+                for data_ref in record.plot_data_files:
+                    current = await self.workspace.ahash_file(thread_id, data_ref.path)
+                    if (
+                        current.get("missing")
+                        or current.get("size") != data_ref.size
+                        or current.get("sha256") != data_ref.sha256
+                    ):
+                        raise ReportingError(
+                            "snapshot_integrity_failed",
+                            f"改图换绑作图数据身份已变化：{data_ref.path}",
+                        )
+                    content, _media = await self.workspace.afile_bytes(thread_id, data_ref.path)
+                    try:
+                        payload = json.loads(content)
+                    except ValueError as error:
+                        raise ReportingError(
+                            "snapshot_integrity_failed", "改图换绑作图数据无法解析。"
+                        ) from error
+                    source = payload.get("source") if isinstance(payload, dict) else None
+                    if not isinstance(source, dict) or not {
+                        entry.analysis_id for entry in index.fact_files
+                    } & {source.get("analysisId")}:
+                        raise ReportingError(
+                            "snapshot_integrity_failed",
+                            "改图换绑作图数据来源不在本报告事实登记中。",
+                        )
+                    if data_ref.path not in known_paths:
+                        new_files.append(
+                            TraceFileRefV1(
+                                resource_id=derive_resource_id(data_ref.path),
+                                path=data_ref.path,
+                                media_type="application/json",
+                                size=data_ref.size,
+                                sha256=data_ref.sha256,
+                            )
+                        )
+                        known_paths.add(data_ref.path)
             media_type = _image_media_type(record.image.path)
             for ref in (record.image, record.script):
                 current = await self.workspace.ahash_file(thread_id, ref.path)
@@ -2744,6 +2810,14 @@ class ReportEditorService:
                 )
                 known_paths.add(record.script.path)
             notes = [f"编辑器 AI 改图：{chart_edit_summary(record.instruction)}"]
+            if is_l2:
+                notes.append(
+                    "换绑数据："
+                    + "；".join(
+                        f"{item.get('analysisId')}:{item.get('dataPath')}"
+                        for item in record.data_bindings
+                    )
+                )
             notes.extend(
                 f"跳过：{item.request}——{item.reason}" for item in record.skipped
             )
@@ -2752,7 +2826,10 @@ class ReportEditorService:
                     chart_id=record.chart_id,
                     presentation_sha256=None,
                     image_file_resource_id=derive_resource_id(record.image.path),
-                    plot_data_file_resource_ids=trace.plot_data_file_resource_ids,
+                    plot_data_file_resource_ids=(
+                        tuple(derive_resource_id(item.path) for item in record.plot_data_files)
+                        if is_l2 else trace.plot_data_file_resource_ids
+                    ),
                     dataset_ids=trace.dataset_ids,
                     transform_notes=tuple(notes),
                     script_file_resource_id=derive_resource_id(record.script.path),
@@ -2773,6 +2850,70 @@ class ReportEditorService:
             augmented.model_dump(mode="json", by_alias=True)
         )
         return edited_charts, augmented
+
+    async def _table_edit_lineage(
+        self,
+        source_context: ReportEditorContext,
+        *,
+        markdown: str,
+        manifest: Any,
+        index: RevisionTraceIndexV1,
+    ) -> tuple[dict[str, TableTraceV1], RevisionTraceIndexV1 | None]:
+        """把正文引用的 AI 改表登记核验后替换进 revision 追溯索引。
+
+        表格登记只允许使用同一报告修订已冻结的 FactRef；登记正文块、表体哈希、
+        tableTrace 结构和每个 FactRef 的文件资源都必须闭环。身份失败只由导出
+        调用方降级为 lineage issue，不能阻断已生成的 PDF/Word。
+        """
+        thread_id = source_context.scope["threadId"]
+        records = await load_table_edit_records(
+            self.workspace, thread_id, source_context.markdown_path
+        )
+        if not records:
+            return {}, None
+        blocks = {
+            match.group(1): match.group(2)
+            for match in _TABLE_BLOCK.finditer(markdown)
+        }
+        known_files = {item.resource_id: item for item in index.files}
+        known_tables = {item.table_id: item for item in index.tables}
+        selected: dict[str, TableTraceV1] = {}
+        for record in records:
+            body = blocks.get(record.new_table_id)
+            if body is None:
+                continue
+            digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+            if digest != record.body_sha256:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"改表登记表体身份已变化：{record.new_table_id}",
+                )
+            trace = TableTraceV1.model_validate(record.table_trace)
+            if trace.table_id != record.new_table_id:
+                raise ReportingError("snapshot_integrity_failed", "改表追溯 tableId 不一致。")
+            if record.table_id not in known_tables:
+                raise ReportingError("snapshot_integrity_failed", f"改表原表未登记：{record.table_id}")
+            for cell in trace.cells:
+                for ref in cell.fact_refs:
+                    file_ref = known_files.get(ref.file_resource_id)
+                    if file_ref is None or ref.analysis_id != record.analysis_id:
+                        raise ReportingError("snapshot_integrity_failed", "改表 FactRef 越过当前报告登记范围。")
+                    current = await self.workspace.ahash_file(thread_id, file_ref.path)
+                    if current.get("size") != file_ref.size or current.get("sha256") != file_ref.sha256:
+                        raise ReportingError("snapshot_integrity_failed", "改表事实文件身份已变化。")
+            selected[record.new_table_id] = trace
+        if not selected:
+            return {}, None
+        # 原表 trace 保留：subject 绑定仍按 locator 指向原表（生成时冻结），
+        # 正文块已被替换只把该表评估为软性 unbound，不删除登记。新表 trace
+        # 追加进索引；同一 newTableId 已存在（重复登记）时以最新为准。
+        kept = {item.table_id: item for item in index.tables}
+        kept.update(selected)
+        augmented = index.model_copy(update={"tables": tuple(kept.values())})
+        augmented = RevisionTraceIndexV1.model_validate(
+            augmented.model_dump(mode="json", by_alias=True)
+        )
+        return selected, augmented
 
     async def _copy_revision_assets(
         self,

@@ -524,3 +524,268 @@ def build_analysis_tables(
                 tables.append(part)
     return tuple(tables)
 
+
+# ---------------------------------------------------------------------------
+# 编辑器 AI 改表装配（设计稿 2026-10-25 §14.1）
+#
+# 与生成阶段同源：单元格逐格绑定 FactRef，数字全部是登记值；模板与模型
+# 输出的 TableEditSpec 经编辑器服务校验后调用这里的纯装配器，不经过模型
+# 手写 Markdown。
+# ---------------------------------------------------------------------------
+
+
+def build_comparison_edit_table(
+    bundle: DeterministicAnalysisBundle,
+    comparisons: Sequence[Any],
+    selectors: Sequence[str],
+    *,
+    table_id: str,
+    caption: str | None,
+    fact_file_resource_id: str,
+    dataset_contexts: Sequence[Mapping[str, Any]] = (),
+    metric_descriptions: Mapping[str, str] | None = None,
+) -> tuple[TableTraceV1, str]:
+    """同比/环比对比表：行 = 比较事实，列 = currentTotal/baselineTotal/change/changeRate 子集。"""
+
+    if not comparisons or not selectors:
+        raise ReportingError("request_invalid", "对比表至少需要一行比较事实与一列选择器。")
+    types = {fact.comparison_type for fact in comparisons}
+    metric_names = {metric.field_ref: _fact_label(metric, dataset_contexts, metric_descriptions)
+                    for metric in bundle.metrics}
+
+    def label_of(fact: Any) -> str:
+        return metric_names.get(fact.field_ref) or _fact_label(
+            fact, dataset_contexts, metric_descriptions
+        )
+
+    names = [label_of(fact) for fact in comparisons]
+    metric_labels = set(names)
+    metric_label = next(iter(metric_labels)) if len(metric_labels) == 1 else "数值"
+    baseline_word = ("同期" if types == {"yoy"} else "上期" if types == {"mom"} else "基期")
+    rate_word = ("同比增幅" if types == {"yoy"} else "环比增幅" if types == {"mom"} else "变化率")
+    # 百分数指标的变化是百分点差值，不能称“变化额”。
+    change_word = "变化" if all(fact.unit == "%" for fact in comparisons) else "变化额"
+    wording = {
+        "currentTotal": ("本期" + metric_label, None),
+        "baselineTotal": (baseline_word + metric_label, None),
+        "change": (metric_label + change_word, None),
+        "changeRate": (rate_word, "%"),
+    }
+    column_keys = [wording[selector][0] for selector in selectors]
+    if len(set(column_keys)) != len(column_keys):
+        raise ReportingError("request_invalid", "对比表列标签重复，请调整选择器组合。")
+    rows: list[list[str]] = []
+    cells: list[TableCellBindingV1] = []
+    row_keys: list[str] = []
+    for index, fact in enumerate(comparisons):
+        row_key = f"comparison:{index}"
+        row_keys.append(row_key)
+        row = [names[index]]
+        for selector in selectors:
+            value = fact.model_dump(mode="json", by_alias=True)[selector]
+            unit = ("%" if selector == "changeRate"
+                    else PERCENT_POINT if percent_point_field(selector, fact.unit) else fact.unit)
+            display_unit = (
+                _table_display_unit(unit, (fact.current_total, fact.baseline_total, fact.change))
+                if selector in {"currentTotal", "baselineTotal", "change"} else unit
+            )
+            row.append(
+                "—" if value is None
+                else _scaled_number(value, unit, display_unit) + display_unit
+                if display_unit != unit and display_unit
+                else _format_number(value, unit) + (unit or "")
+            )
+            cells.append(TableCellBindingV1(
+                rowKey=row_key, columnKey=wording[selector][0],
+                valueSelector=selector,
+                factRefs=(FactRefV1(
+                    analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
+                    jsonPointer=fact_pointer(bundle, fact.fact_id) or "",
+                    factKind="comparison", factKey=fact.fact_id,
+                ),),
+            ))
+        rows.append(row)
+    trace = TableTraceV1(
+        tableId=_normalize_table_id(table_id),
+        rowKeys=tuple(row_keys),
+        columnKeys=tuple(column_keys),
+        cells=tuple(cells),
+    )
+    return trace, render_table_markdown(
+        trace.table_id, column_keys, rows, caption=caption
+    )
+
+
+def build_group_edit_table(
+    bundle: DeterministicAnalysisBundle,
+    parent: Any,
+    groups: Sequence[Any],
+    *,
+    table_id: str,
+    caption: str | None,
+    share: bool,
+    fact_file_resource_id: str,
+    dataset_contexts: Sequence[Mapping[str, Any]] = (),
+    metric_descriptions: Mapping[str, str] | None = None,
+) -> tuple[TableTraceV1, str]:
+    """构成表：行 = 维度分组（降序）+ 合计行，列 = 数值（可选占比）。
+
+    占比列由服务端按固定规则（分组值 ÷ 父指标合计）计算，单元格同时绑定
+    分组事实与父指标事实（valueSelector 为空，登记值可逐格还原）。
+    """
+
+    if not groups:
+        raise ReportingError("request_invalid", "构成表至少需要一组维度分组。")
+    ordered = sorted(groups, key=lambda item: -item.total)
+    parent_label = _fact_label(parent, dataset_contexts, metric_descriptions)
+    breakdown_label = (
+        next(iter({group.scope.get(group.breakdown_field, "") for group in ordered}), "")
+        or "维度"
+    )
+    value_unit = _table_display_unit(parent.unit, [item.total for item in ordered] + [parent.total])
+    value_column = f"{parent_label}（{value_unit or '数值'}）"
+    column_keys = [value_column]
+    if share:
+        column_keys.append("占比")
+    if caption is None:
+        caption = f"{parent_label}按{breakdown_label}构成"
+    row_keys: list[str] = []
+    cells: list[TableCellBindingV1] = []
+    rows: list[list[str]] = []
+    parent_ref = FactRefV1(
+        analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
+        jsonPointer=fact_pointer(bundle, parent.fact_id) or "",
+        factKind="metric", factKey=parent.fact_id,
+    )
+
+    def group_label(group: Any) -> str:
+        return group.scope.get(group.breakdown_field) or group.display_name or group.field
+
+    for group in ordered:
+        row_key = f"group:{group.fact_id}"
+        row_keys.append(row_key)
+        row = [group_label(group)]
+        row.append(
+            _scaled_number(group.total, group.unit, value_unit)
+            if value_unit != group.unit and value_unit
+            else _format_number(group.total, group.unit)
+        )
+        cells.append(TableCellBindingV1(
+            rowKey=row_key, columnKey=value_column, valueSelector="total",
+            factRefs=(FactRefV1(
+                analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
+                jsonPointer=fact_pointer(bundle, group.fact_id) or "",
+                factKind="metric", factKey=group.fact_id,
+            ),),
+        ))
+        if share:
+            row.append(_percentage_text(group.total, parent.total))
+            cells.append(TableCellBindingV1(
+                rowKey=row_key, columnKey="占比", valueSelector=None,
+                factRefs=(cells[-1].fact_refs[0], parent_ref),
+            ))
+        rows.append(row)
+    # 合计行只能绑定已登记的父指标合计事实。
+    row_keys.append("total")
+    total_row = ["合计"]
+    total_row.append(
+        _scaled_number(parent.total, parent.unit, value_unit)
+        if value_unit != parent.unit and value_unit
+        else _format_number(parent.total, parent.unit)
+    )
+    cells.append(TableCellBindingV1(
+        rowKey="total", columnKey=value_column, valueSelector="total",
+        factRefs=(parent_ref,),
+    ))
+    if share:
+        total_row.append("100.0%")
+        cells.append(TableCellBindingV1(
+            rowKey="total", columnKey="占比", valueSelector=None, factRefs=(parent_ref,),
+        ))
+    rows.append(total_row)
+    trace = TableTraceV1(
+        tableId=_normalize_table_id(table_id),
+        rowKeys=tuple(row_keys),
+        columnKeys=tuple(column_keys),
+        cells=tuple(cells),
+    )
+    return trace, render_table_markdown(trace.table_id, column_keys, rows, caption=caption)
+
+
+def _percentage_text(numerator: float, denominator: float) -> str:
+    if not denominator:
+        return "—"
+    return f"{numerator / denominator * 100:.1f}%"
+
+
+def build_budget_edit_table(
+    bundle: DeterministicAnalysisBundle,
+    budgets: Sequence[Mapping[str, Any]],
+    *,
+    table_id: str,
+    caption: str | None,
+    fact_file_resource_id: str,
+    dataset_contexts: Sequence[Mapping[str, Any]] = (),
+    metric_descriptions: Mapping[str, str] | None = None,
+) -> tuple[TableTraceV1, str]:
+    """预算执行表：行 = 预算/实际成对事实，列 = 预算、实际、差额、完成率。
+
+    预算与实际列绑定各自事实的登记合计；差额与完成率由服务端按固定规则
+    从两个登记值计算（与数值目录 budgetComparison 同一算法），单元格同时
+    绑定两个事实。
+    """
+
+    facts = {fact.fact_id: fact for fact in (*bundle.metrics, *bundle.breakdowns)
+             if fact.fact_id}
+    rows: list[list[str]] = []
+    cells: list[TableCellBindingV1] = []
+    row_keys: list[str] = []
+    for index, entry in enumerate(budgets):
+        actual = facts.get(entry["actualFactId"])
+        budget = facts.get(entry["budgetFactId"])
+        if actual is None or budget is None:
+            raise ReportingError("request_invalid", "预算执行表引用的事实不在冻结登记中。")
+        row_key = f"budget:{index}"
+        row_keys.append(row_key)
+        label = _fact_label(actual, dataset_contexts, metric_descriptions)
+        unit = actual.unit
+        display_unit = _table_display_unit(unit, (actual.total, budget.total))
+        row = [label]
+        for fact, value in ((budget, budget.total), (actual, actual.total)):
+            row.append(
+                _scaled_number(value, unit, display_unit) + display_unit
+                if display_unit != unit and display_unit
+                else _format_number(value, unit) + (unit or "")
+            )
+            cells.append(TableCellBindingV1(
+                rowKey=row_key, columnKey="预算" if fact is budget else "实际",
+                valueSelector="total",
+                factRefs=(FactRefV1(
+                    analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
+                    jsonPointer=fact_pointer(bundle, fact.fact_id) or "",
+                    factKind="metric", factKey=fact.fact_id,
+                ),),
+            ))
+        refs = (cells[-1].fact_refs[0], cells[-2].fact_refs[0])
+        difference = actual.total - budget.total
+        row.append(_format_number(difference, unit) + (unit or ""))
+        cells.append(TableCellBindingV1(
+            rowKey=row_key, columnKey="差额（实际－预算）", valueSelector=None, factRefs=refs,
+        ))
+        row.append(_percentage_text(actual.total, budget.total))
+        cells.append(TableCellBindingV1(
+            rowKey=row_key, columnKey="完成率", valueSelector=None, factRefs=refs,
+        ))
+        rows.append(row)
+    if not rows:
+        raise ReportingError("request_invalid", "预算执行表至少需要一对预算/实际事实。")
+    trace = TableTraceV1(
+        tableId=_normalize_table_id(table_id),
+        rowKeys=tuple(row_keys),
+        columnKeys=("预算", "实际", "差额（实际－预算）", "完成率"),
+        cells=tuple(cells),
+    )
+    return trace, render_table_markdown(
+        trace.table_id, trace.column_keys, rows, caption=caption
+    )
+

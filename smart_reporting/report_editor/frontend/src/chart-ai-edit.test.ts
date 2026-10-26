@@ -8,6 +8,7 @@ import {
   chartEditIdFromSrc,
   createChartAIEdit,
   matchChartForImage,
+  quickCommandsForForm,
 } from './chart-ai-edit'
 
 const chart: TraceChartInfo = {
@@ -20,6 +21,19 @@ const chart: TraceChartInfo = {
   imagePath: 'reports/revision-1/chart-001.png',
   imageSize: 10,
 }
+
+describe('quickCommandsForForm', () => {
+  it('按当前图形形态优先推荐对应快捷指令，未知形态回落默认集', () => {
+    const bar = quickCommandsForForm('横向条形图')
+    expect(bar[0]).toBe('在图上显示数值标签')
+    expect(bar).toContain('改成横向条形图')
+    const line = quickCommandsForForm('月度趋势折线图')
+    expect(line[0]).toBe('标注最高和最低的月份')
+    const fallback = quickCommandsForForm(null)
+    expect(fallback).toEqual(quickCommandsForForm())
+    expect(fallback[0]).toContain('条形图')
+  })
+})
 
 describe('matchChartForImage', () => {
   it('按后缀唯一匹配正文图片', () => {

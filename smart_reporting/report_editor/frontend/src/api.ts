@@ -9,6 +9,8 @@ export interface ReportDocument {
   interactiveCharts?: Record<string, string>
   visualTheme?: ReportVisualTheme
   chartAiEnabled?: boolean
+  tableAiEnabled?: boolean
+  templatesEnabled?: boolean
   lineageFeatures?: {
     panel: boolean
     download: boolean
@@ -201,12 +203,55 @@ export interface TraceChartInfo {
   /** 工作区相对路径；编辑器据此把正文图片定位到登记图表。 */
   imagePath: string
   imageSize: number
+  /** AI 改图后的当前图形形态（未改图或旧图无此信息时为空）。 */
+  visualForm?: string | null
+  /** 该图成功登记过的 AI 改图次数。 */
+  editCount?: number
 }
 
 export interface ChartAIAvailability {
   available: boolean
   reason?: string
   chartId?: string
+}
+
+export interface TableAIEditRequest {
+  instruction: string
+  baseBody?: string
+  previousEditId?: string
+  expectedSha256?: string
+}
+
+export interface TableTemplateApplyRequest {
+  templateId: string
+  instruction?: string
+  baseBody?: string
+  previousEditId?: string
+}
+
+export interface TableAIEditState {
+  editId: string
+  tableId: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  stage?: string
+  markdown?: string
+  newTableId?: string
+  analysisId?: string
+  review?: {
+    columns: string[]
+    rows: { label: string; cells: { text: string; status: string; column: string; source?: { analysisId: string; factIds: string[]; selector: string | null } }[] }[]
+    flagged: { row: string; text: string }[]
+  }
+  warnings?: string[]
+  skipped?: { request: string; reason: string }[]
+  error?: { code: string; message: string; status?: number }
+}
+
+export interface EditorTemplateInfo {
+  templateId: string
+  name: string
+  available: boolean
+  reason?: string
 }
 
 export interface ChartAIEditRequest {
@@ -223,6 +268,8 @@ export interface ChartAIEditChanges {
   altText?: string | null
   visualForm?: string | null
   plotDataUnchanged: boolean
+  /** L2 换绑后新增的数据绑定摘要（analysisId/dataPath/fields）。 */
+  dataBindingsAdded?: { analysisId: string; dataPath: string; fields: string[] }[]
 }
 
 export interface ChartAIEditSuccess {
@@ -261,6 +308,13 @@ export interface TracePlotDataPreview {
   source?: Record<string, unknown> | null
 }
 
+export interface ChartEditHistoryItem {
+  editId: string
+  instruction: string
+  level: string[]
+  createdAt: string
+}
+
 export interface TraceChartSource {
   available: boolean
   chartId: string
@@ -269,6 +323,8 @@ export interface TraceChartSource {
   computationId: string | null
   image: { size: number; sha256: string }
   plotData: TracePlotDataPreview[]
+  /** AI 改图历史（最新在前）；无改图时为空数组。 */
+  editHistory?: ChartEditHistoryItem[]
 }
 
 export interface TraceValidation {
@@ -589,11 +645,47 @@ export class ReportEditorClient {
     return this.request('/api/computations', { signal })
   }
 
-  chartAiAvailability(chartId: string, signal?: AbortSignal): Promise<ChartAIAvailability> {
+  async chartAiAvailability(chartId: string, signal?: AbortSignal): Promise<ChartAIAvailability> {
     return this.request<ChartAIAvailability>(
       `/api/charts/${encodeURIComponent(chartId)}/ai-edits/availability`,
       { signal },
     )
+  }
+
+  async chartTemplates(chartId: string, signal?: AbortSignal): Promise<{ chartId: string; templates: EditorTemplateInfo[] }> {
+    return this.request(`/api/charts/${encodeURIComponent(chartId)}/templates`, { signal })
+  }
+
+  async startChartTemplateEdit(chartId: string, payload: { templateId: string; instruction?: string; baseImagePath?: string; baseTitle?: string; baseAltText?: string; previousEditId?: string; expectedSha256?: string }): Promise<{ editId: string; status: string }> {
+    return this.request(`/api/charts/${encodeURIComponent(chartId)}/template-edits`, { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  async tableAiAvailability(tableId: string, signal?: AbortSignal): Promise<{ available: boolean; reason?: string; tableId?: string }> {
+    return this.request(`/api/tables/${encodeURIComponent(tableId)}/ai-edits/availability`, { signal })
+  }
+
+  async tableTemplates(tableId: string, signal?: AbortSignal): Promise<{ tableId: string; templates: EditorTemplateInfo[] }> {
+    return this.request(`/api/tables/${encodeURIComponent(tableId)}/templates`, { signal })
+  }
+
+  async startTableAiEdit(tableId: string, payload: TableAIEditRequest): Promise<{ editId: string; status: string }> {
+    return this.request(`/api/tables/${encodeURIComponent(tableId)}/ai-edits`, { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  async startTableTemplateEdit(tableId: string, payload: TableTemplateApplyRequest): Promise<{ editId: string; status: string }> {
+    return this.request(`/api/tables/${encodeURIComponent(tableId)}/template-edits`, { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  async tableAiEditStatus(tableId: string, editId: string): Promise<TableAIEditState> {
+    return this.request(`/api/tables/${encodeURIComponent(tableId)}/ai-edits/${encodeURIComponent(editId)}`)
+  }
+
+  async cancelTableAiEdit(tableId: string, editId: string): Promise<void> {
+    await this.request(`/api/tables/${encodeURIComponent(tableId)}/ai-edits/${encodeURIComponent(editId)}/cancel`, { method: 'POST' })
+  }
+
+  tableEditRecord(editId: string): Promise<{ editId: string; tableId: string; newTableId: string; markdown: string }> {
+    return this.request(`/api/table-edits/${encodeURIComponent(editId)}`)
   }
 
   startChartAiEdit(
