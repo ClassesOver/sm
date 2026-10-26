@@ -192,6 +192,39 @@ async def test_url_materializer_waits_for_blocking_upload_before_cancel_cleanup(
     assert events == ["upload", "delete"]
 
 
+@pytest.mark.anyio
+async def test_cleanup_waits_for_blocking_delete_before_propagating_cancel() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class Workspace(_Workspace):
+        def delete_file(self, thread_id: str, path: str, recursive: bool = False) -> None:
+            started.set()
+            release.wait(timeout=1)
+            super().delete_file(thread_id, path, recursive)
+
+    workspace = Workspace()
+    materializer = UrlMaterializer(workspace)
+    task = asyncio.create_task(
+        materializer.cleanup_operation("thread-1", "operation-1")
+    )
+    await asyncio.to_thread(started.wait, 1)
+
+    task.cancel()
+    await asyncio.sleep(0.02)
+    assert not task.done()
+    task.cancel()
+    await asyncio.sleep(0.02)
+    assert not task.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert workspace.deletes == [
+        ("thread-1", "reporting-inputs/operation-1", True)
+    ]
+
+
 def test_url_materializer_rejects_non_https() -> None:
     with pytest.raises(ReportingError) as error:
         UrlMaterializer._validate_url("http://example.com/file.csv")

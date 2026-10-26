@@ -63,9 +63,20 @@ def facts_cover_analysis(
     # 无法判断问题针对哪项指标，趋势与构成须对每项当期指标都成立。
     current = [fact for fact in facts.metrics if "current" in fact.period_roles]
     partitions = _shareable_partitions(facts)
+    current_partitions = {
+        fact.fact_id: partitions[fact.fact_id]
+        for fact in current
+        if fact.fact_id in partitions
+    }
     available = {
         "scale": True,
-        "trend": bool(current) and all(len(fact.period_values) >= 3 for fact in current),
+        # 时点值与累计快照不能直接解释为期间流量趋势；交给模型按登记政策判断。
+        "trend": bool(current) and all(
+            len(fact.period_values) >= 3
+            and fact.period_aggregation != "last"
+            and fact.cumulative_policy is None
+            for fact in current
+        ),
         "yoy": any(item.comparison_type == "yoy" for item in facts.comparisons),
         "structure": bool(current) and all(fact.fact_id in partitions for fact in current),
         "budget": bool(budget_comparison_values(facts) or project_ratio_values(facts)),
@@ -76,7 +87,11 @@ def facts_cover_analysis(
         return None
     # 只说“占比/结构”而未点名维度或已登记分组（“药品收入占医疗收入的比重”）时，
     # 存在任意分组不能证明问到的那一项已登记，交给模型判断。
-    if "structure" in intents and not mentions and not _names_registered_group(text, partitions):
+    if (
+        "structure" in intents
+        and not mentions
+        and not _names_registered_group(text, current_partitions)
+    ):
         return None
     return "固定事实已覆盖" + "、".join(
         {"scale": "规模", "trend": "趋势", "yoy": "同比", "structure": "维度构成", "budget": "预算执行"}[name]

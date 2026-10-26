@@ -579,7 +579,19 @@ class RuntimePlanningMixin:
                 "message": "编辑快照准备失败，PDF/Word 下载链接已签发；本修订暂不提供编辑入口。",
             })
         content["editorJob"] = editor_job
-        durable = await self.state_repository.get(workflow_run_id)
+        try:
+            durable = await self.state_repository.get(workflow_run_id)
+        except Exception as error:  # noqa: BLE001 - 状态读取只影响编辑入口，不能阻断下载签发
+            durable = None
+            editor_available = False
+            loguru_logger.warning(
+                "report_editor_context_read_failed report_id={} revision={} error_type={}",
+                content["reportId"], content["revision"], type(error).__name__,
+            )
+            publication_issues.append({
+                "code": "report_editor_context_unavailable",
+                "message": "报告编辑上下文读取失败，PDF/Word 下载链接已签发；本修订暂不提供编辑入口。",
+            })
         stored_scope = (
             durable.payload.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
             if durable is not None and isinstance(durable.payload, dict)

@@ -136,6 +136,14 @@ def _ratio_operand_label(
     return f"{name}（{qualification}）" if qualification else name
 
 
+def _ratio_input_basis(metric: Mapping[str, Any]) -> str:
+    """按输入事实的真实时间与行聚合口径描述比率操作数。"""
+    if metric.get("periodAggregation") == "last":
+        return "共同期末"
+    aggregation = _AGGREGATION_WORDS.get(metric.get("aggregation"), "登记值")
+    return f"同期{aggregation}"
+
+
 def _derived_ratio_formula(
     resolved: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]],
 ) -> str | None:
@@ -149,12 +157,8 @@ def _derived_ratio_formula(
         return None
     numerator, denominator = inputs
     span = _span(resolved.get("periods") or (), entry.get("periodGranularity"))
-    numerator_basis = (
-        "共同期末" if numerator.get("periodAggregation") == "last" else "同期合计"
-    )
-    denominator_basis = (
-        "共同期末" if denominator.get("periodAggregation") == "last" else "同期合计"
-    )
+    numerator_basis = _ratio_input_basis(numerator)
+    denominator_basis = _ratio_input_basis(denominator)
     numerator_unit = numerator.get("unit")
     denominator_unit = denominator.get("unit")
     numerator_operand = _labelled(
@@ -199,7 +203,6 @@ def _registered_ratio_formula(
         return None
     numerator, denominator = inputs
     span = _span(proof.get("periods") or (), entry.get("periodGranularity"))
-    basis = "共同期末" if proof.get("policy") == "last" else "同期合计"
     unit = proof.get("unit")
     if unit == "%":
         from .ratio_proofs import _base_unit
@@ -214,11 +217,11 @@ def _registered_ratio_formula(
     else:
         return None
     numerator_operand = _labelled(
-        _ratio_operand_label(numerator, entries, span, basis),
+        _ratio_operand_label(numerator, entries, span, _ratio_input_basis(numerator)),
         _amount(proof["numeratorValue"], numerator_unit),
     )
     denominator_operand = _labelled(
-        _ratio_operand_label(denominator, entries, span, basis),
+        _ratio_operand_label(denominator, entries, span, _ratio_input_basis(denominator)),
         _amount(proof["denominatorValue"], denominator_unit),
     )
     percent = " × 100%" if unit == "%" else ""

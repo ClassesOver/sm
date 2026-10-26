@@ -8,11 +8,13 @@ from agno.workflow import Workflow
 from fastmcp import FastMCP
 from pydantic import ValidationError
 
+from smart_reporting.reporting_mcp.adapter import ReportingMcpAdapter
 from smart_reporting.reporting_mcp.contracts import (
     ReportingOperationResult,
     ReportingReportRequest,
     ReportingStartInput,
 )
+from smart_reporting.reporting_mcp.identity import McpRequestIdentity
 from smart_reporting.reporting_mcp.tools import create_reporting_mcp_tools
 
 
@@ -118,6 +120,105 @@ def test_completed_operation_contract_includes_editor_and_no_html_preview() -> N
         "https://reports.example.com/reports/v1/editor/open/token"
     )
     assert "html" not in result.report.model_dump(mode="json")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("artifact", ["pdf", "word"])
+async def test_reporting_get_preserves_single_format_partial_delivery(
+    artifact: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Controller:
+        async def get_external(self, **_values):
+            return {
+                "ok": True,
+                "status": "completed",
+                "report": {
+                    "reportId": "report-1",
+                    "revision": 1,
+                    artifact: {
+                        "downloadUrl": f"https://reports.example.com/report.{artifact}",
+                        "expiresAt": "2026-10-09T00:00:00Z",
+                        "size": 12,
+                        "sha256": "a" * 64,
+                    },
+                },
+            }
+
+    identity = McpRequestIdentity(
+        database="odoo",
+        user_id="7",
+        company_id="11",
+        thread_id="thread-1",
+    )
+    monkeypatch.setattr(
+        "smart_reporting.reporting_mcp.tools.require_mcp_identity",
+        lambda _thread_id: identity,
+    )
+    adapter = ReportingMcpAdapter(Controller(), object())  # type: ignore[arg-type]
+    tools = {tool.__name__: tool for tool in create_reporting_mcp_tools(adapter)}
+
+    result = await tools["reporting_get"](
+        operationId="operation-1",
+        threadId="thread-1",
+    )
+
+    assert result.report is not None
+    assert getattr(result.report, artifact) is not None
+    assert getattr(result.report, "word" if artifact == "pdf" else "pdf") is None
+
+
+@pytest.mark.anyio
+async def test_reporting_get_preserves_failed_operation_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Controller:
+        async def get_external(self, **_values):
+            return {
+                "ok": False,
+                "status": "failed",
+                "error": {
+                    "code": "report_model_provider_unavailable",
+                    "message": "provider unavailable",
+                    "retryable": True,
+                    "stage": "analyze",
+                    "statusCode": 503,
+                },
+            }
+
+    identity = McpRequestIdentity(
+        database="odoo",
+        user_id="7",
+        company_id="11",
+        thread_id="thread-1",
+    )
+    monkeypatch.setattr(
+        "smart_reporting.reporting_mcp.tools.require_mcp_identity",
+        lambda _thread_id: identity,
+    )
+    adapter = ReportingMcpAdapter(Controller(), object())  # type: ignore[arg-type]
+    tools = {tool.__name__: tool for tool in create_reporting_mcp_tools(adapter)}
+
+    result = await tools["reporting_get"](
+        operationId="operation-1",
+        threadId="thread-1",
+    )
+
+    assert result.error is not None
+    assert result.error.code == "report_model_provider_unavailable"
+    assert result.error.status_code == 503
+
+
+def test_completed_operation_contract_rejects_report_without_downloads() -> None:
+    with pytest.raises(ValidationError, match="至少包含一个可下载格式"):
+        ReportingOperationResult.model_validate(
+            {
+                "ok": True,
+                "operationId": "operation-1",
+                "status": "completed",
+                "report": {"reportId": "report-1", "revision": 1},
+            }
+        )
 
 
 @pytest.mark.anyio

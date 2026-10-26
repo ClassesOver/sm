@@ -22,6 +22,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     and_,
+    func,
     insert,
     or_,
     select,
@@ -93,6 +94,39 @@ quality_warnings_v1 = Table(
         "status",
         "last_observed_at",
         "warning_id",
+    ),
+)
+quality_warning_checks_v1 = Table(
+    "quality_warning_checks_v1",
+    _metadata,
+    Column("check_record_id", Uuid(as_uuid=True), primary_key=True),
+    Column("database_name", String(256), nullable=False),
+    Column("company_id", String(256), nullable=False),
+    Column("domain", String(128), nullable=False),
+    Column("rule_code", String(128), nullable=False),
+    Column("subject_type", String(128), nullable=False),
+    Column("check_id", String(256), nullable=False),
+    Column("completed_at", DateTime(timezone=True), nullable=False),
+    Column("report_run_id", String(256)),
+    Column("revision", Integer),
+    UniqueConstraint(
+        "database_name",
+        "company_id",
+        "domain",
+        "rule_code",
+        "subject_type",
+        "check_id",
+        name="uq_quality_warning_checks_v1_identity",
+    ),
+    Index(
+        "ix_quality_warning_checks_v1_run_revision",
+        "database_name",
+        "company_id",
+        "domain",
+        "rule_code",
+        "subject_type",
+        "report_run_id",
+        "revision",
     ),
 )
 quality_warning_events_v1 = Table(
@@ -219,7 +253,6 @@ class SqlAlchemyQualityWarningRepository:
     ) -> tuple[QualityWarningRecord, ...]:
         if not checks:
             raise ValueError("成功检查批次不能为空。")
-        now = datetime.now(UTC)
         try:
             async with self.engine.begin() as connection:
                 ordered_checks = tuple(
@@ -238,10 +271,30 @@ class SqlAlchemyQualityWarningRepository:
                         text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
                         {"scope": _scope_lock_key(tenant, check.check_scope)},
                     )
+                # Timestamps must follow the same serialization order as mutations.
+                # A timestamp captured before a connection or advisory lock wait can
+                # otherwise move last_observed_at and event cursors backwards.
+                now = datetime.now(UTC)
                 records: list[QualityWarningRecord] = []
                 found_by_check: list[tuple[WarningCheck, set[tuple[str, str]]]] = []
                 for check in ordered_checks:
                     deduplicated = _deduplicate_findings(check.findings)
+                    claimed = await self._claim_successful_check(
+                        connection,
+                        tenant=tenant,
+                        check=check,
+                        now=now,
+                    )
+                    if not claimed:
+                        records.extend(
+                            await self._records_for_replayed_check(
+                                connection,
+                                tenant=tenant,
+                                check=check,
+                                findings=deduplicated,
+                            )
+                        )
+                        continue
                     found_identity_keys: set[tuple[str, str]] = set()
                     for finding in deduplicated:
                         fingerprint = warning_fingerprint(finding)
@@ -277,6 +330,101 @@ class SqlAlchemyQualityWarningRepository:
                 type(error).__name__,
             )
             raise
+        return tuple(records)
+
+    @staticmethod
+    async def _claim_successful_check(
+        connection: AsyncConnection,
+        *,
+        tenant: TenantScope,
+        check: WarningCheck,
+        now: datetime,
+    ) -> bool:
+        """Persist completion before applying a check so every replay is a no-op.
+
+        The insert and warning mutations share the surrounding transaction. A
+        rollback therefore removes the claim as well, while an empty successful
+        check remains durable and cannot later resolve warnings created by a newer
+        check.
+        """
+
+        scope = check.check_scope
+        if check.context.report_run_id is not None and check.context.revision is not None:
+            latest_revision = await connection.scalar(
+                select(func.max(quality_warning_checks_v1.c.revision)).where(
+                    quality_warning_checks_v1.c.database_name == tenant.database_name,
+                    quality_warning_checks_v1.c.company_id == tenant.company_id,
+                    quality_warning_checks_v1.c.domain == scope.domain,
+                    quality_warning_checks_v1.c.rule_code == scope.rule_code,
+                    quality_warning_checks_v1.c.subject_type == scope.subject_type,
+                    quality_warning_checks_v1.c.report_run_id == check.context.report_run_id,
+                    quality_warning_checks_v1.c.revision.is_not(None),
+                )
+            )
+            if latest_revision is not None and check.context.revision < int(latest_revision):
+                logger.info(
+                    "quality_warning_check_stale check_id={} revision={} latest_revision={}",
+                    check.context.check_id,
+                    check.context.revision,
+                    latest_revision,
+                )
+                return False
+        inserted_id = await connection.scalar(
+            postgresql_insert(quality_warning_checks_v1)
+            .values(
+                check_record_id=uuid4(),
+                database_name=tenant.database_name,
+                company_id=tenant.company_id,
+                domain=scope.domain,
+                rule_code=scope.rule_code,
+                subject_type=scope.subject_type,
+                check_id=check.context.check_id,
+                completed_at=now,
+                report_run_id=check.context.report_run_id,
+                revision=check.context.revision,
+            )
+            .on_conflict_do_nothing(constraint="uq_quality_warning_checks_v1_identity")
+            .returning(quality_warning_checks_v1.c.check_record_id)
+        )
+        if inserted_id is None:
+            logger.info(
+                "quality_warning_check_replayed check_id={} rule_code={} subject_type={}",
+                check.context.check_id,
+                scope.rule_code,
+                scope.subject_type,
+            )
+            return False
+        return True
+
+    @staticmethod
+    async def _records_for_replayed_check(
+        connection: AsyncConnection,
+        *,
+        tenant: TenantScope,
+        check: WarningCheck,
+        findings: Sequence[WarningFinding],
+    ) -> tuple[QualityWarningRecord, ...]:
+        """Return current matching rows without replaying any historical mutation."""
+
+        records: list[QualityWarningRecord] = []
+        for finding in findings:
+            identity = _identity_values(
+                tenant,
+                check.check_scope,
+                finding,
+                warning_fingerprint(finding),
+            )
+            row = (
+                (
+                    await connection.execute(
+                        select(quality_warnings_v1).where(*_identity_conditions(identity))
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is not None:
+                records.append(_record_from_row(row))
         return tuple(records)
 
     async def list_warnings(

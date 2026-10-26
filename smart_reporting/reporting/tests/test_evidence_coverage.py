@@ -74,6 +74,72 @@ def test_structure_needs_shareable_groups_for_every_current_metric():
     assert facts_cover_analysis(_bundle(negative), _analysis("2025年按科室划分的结构占比如何？"), {}) is None
 
 
+def test_named_group_must_be_registered_for_a_current_fact():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        build_deterministic_analysis_bundle,
+    )
+
+    from .test_deterministic_analysis import analysis, context, semantic
+    from .test_dimension_breakdowns import DIMENSIONS
+
+    declaration = {
+        **semantic("amount", unit="元"),
+        "additiveAcross": ["month", "department", "income_type"],
+    }
+
+    def dataset(dataset_id):
+        return context(
+            dataset_id,
+            fields=FIELDS,
+            semantics=(declaration,),
+        ).model_copy(update={"period_granularities": {"month": "month"}})
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis().model_copy(update={"series_granularity": "month"}),
+        (
+            (
+                "current",
+                "month,department,income_type,amount\n"
+                "2025-01,A,住院,60\n2025-01,B,门诊,40\n".encode(),
+                dataset("current"),
+                ("current",),
+            ),
+            (
+                "baseline",
+                "month,department,income_type,amount\n"
+                "2024-01,C,药品,70\n2024-01,D,检查,30\n".encode(),
+                dataset("baseline"),
+                ("yoy",),
+            ),
+        ),
+        profile_dimensions=DIMENSIONS,
+    )
+
+    assert facts_cover_analysis(
+        bundle, _analysis("2025年药品收入占医疗收入的比重如何？"), {},
+    ) is None
+    assert facts_cover_analysis(
+        bundle, _analysis("2025年住院收入占医疗收入的比重如何？"), {},
+    ).endswith("维度构成")
+
+
+def test_level_and_cumulative_snapshots_do_not_prove_a_flow_trend():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
+
+    from .test_cumulative_changes import cumulative_document
+    from .test_frozen_time_aggregation import frozen_bundle
+
+    stock = frozen_bundle(additive=("department",), months=(1, 2, 3), comparison=False)
+    cumulative = DeterministicAnalysisBundle.model_validate(cumulative_document())
+
+    for facts in (stock, cumulative):
+        assert facts_cover_analysis(
+            facts, _analysis("2025年收入月度走势如何？", ()), {},
+        ) is None
+
+
 def test_actions_beyond_fixed_facts_ask_the_model():
     facts = _bundle(THREE_MONTHS)
     assert facts_cover_analysis(facts, _analysis("2025年收入总体规模如何？", ("汇总", "异常识别")), {}) is None

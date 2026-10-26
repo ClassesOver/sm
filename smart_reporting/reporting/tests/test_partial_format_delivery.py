@@ -15,6 +15,7 @@ from smart_reporting.reporting.delivery.publishing import (
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.runtime.publication import RuntimePublicationMixin
 from smart_reporting.reporting.workspace import WorkspaceReportService
+from smart_reporting.workspace import WorkspaceError
 
 from .test_http_publication_lineage import _publication_fixture
 from .test_reporting_integration import _report_pair_identities, _ReportPairService
@@ -94,6 +95,136 @@ async def test_workspace_pair_promotes_only_identity_checked_successful_format(
     assert service.fs.moves
     report._delete_report_path.assert_any_await(
         "reports/.revision-1.test.tmp", context, recursive=True
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failed", ["pdf", "word"])
+async def test_workspace_pair_retains_other_format_when_final_identity_fails(
+    monkeypatch: pytest.MonkeyPatch, failed: str,
+) -> None:
+    import uuid
+
+    identities = _report_pair_identities()
+    final_paths = {
+        "pdf": "reports/revision-1/report.pdf",
+        "word": "reports/revision-1/report.docx",
+    }
+    identities[final_paths[failed]]["sha256"] = "changed"
+    service = _ReportPairService(identities)
+    service.adelete_file = AsyncMock()
+    report = WorkspaceReportService(service)
+    context = RunContext(run_id="run", session_id="thread", session_state={})
+    job = {"jobId": "job-1", "sources": []}
+    monkeypatch.setattr(uuid, "uuid4", lambda: SimpleNamespace(hex="test"))
+    monkeypatch.setattr(report, "_load_job", lambda *_args: job)
+    monkeypatch.setattr(report, "_job_status", AsyncMock(return_value={}))
+    monkeypatch.setattr(report, "_delete_report_path", AsyncMock())
+    staged_paths = {
+        "pdf": "reports/.revision-1.test.tmp/report.pdf",
+        "word": "reports/.revision-1.test.tmp/report.docx",
+    }
+    render = {
+        "markdown": {"path": "report.md", "size": 1, "sha256": "markdown"},
+        "images": [],
+        **{
+            label: {**identities[path], "path": path}
+            for label, path in staged_paths.items()
+        },
+    }
+    report._run_report_runtime = AsyncMock(side_effect=[
+        {"status": "rendered", "render": render},
+        {
+            "ok": True,
+            "status": "validated",
+            "issues": [],
+            "pdfPath": staged_paths["pdf"],
+            "pdfSha256": "pdf",
+            "wordPath": staged_paths["word"],
+            "wordSha256": "word",
+        },
+    ])
+
+    result = await report._render_report_pair(
+        "job-1",
+        "report.md",
+        final_paths["pdf"],
+        artifact_manifest=None,
+        run_context=context,
+    )
+
+    available = "word" if failed == "pdf" else "pdf"
+    assert result["status"] == "validation_failed"
+    assert result["validation"]["ok"] is False
+    assert result["validation"]["status"] == "validation_failed"
+    assert [item["code"] for item in result["validation"]["issues"]] == [
+        f"report_{failed}_artifact_unavailable"
+    ]
+    assert result[f"{available}Path"] == final_paths[available]
+    assert f"{failed}Path" not in result
+    assert f"{failed}Path" not in result["validation"]
+    assert f"{failed}Sha256" not in result["validation"]
+    assert result["validation"][f"{available}Path"] == final_paths[available]
+    stored_job = context.session_state["report_jobs"]["job-1"]
+    assert available in stored_job["render"] and failed not in stored_job["render"]
+    service.adelete_file.assert_awaited_once_with("thread", final_paths[failed])
+    assert not any(
+        call.args[0] == "reports/revision-1"
+        for call in report._delete_report_path.await_args_list
+    )
+
+
+@pytest.mark.anyio
+async def test_workspace_pair_cleans_revision_when_all_final_identities_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import uuid
+
+    identities = _report_pair_identities()
+    final_paths = {
+        "pdf": "reports/revision-1/report.pdf",
+        "word": "reports/revision-1/report.docx",
+    }
+    for path in final_paths.values():
+        identities[path]["sha256"] = "changed"
+    service = _ReportPairService(identities)
+    service.adelete_file = AsyncMock()
+    report = WorkspaceReportService(service)
+    context = RunContext(run_id="run", session_id="thread", session_state={})
+    job = {"jobId": "job-1", "sources": []}
+    monkeypatch.setattr(uuid, "uuid4", lambda: SimpleNamespace(hex="test"))
+    monkeypatch.setattr(report, "_load_job", lambda *_args: job)
+    monkeypatch.setattr(report, "_job_status", AsyncMock(return_value={}))
+    monkeypatch.setattr(report, "_delete_report_path", AsyncMock())
+    staged_paths = {
+        "pdf": "reports/.revision-1.test.tmp/report.pdf",
+        "word": "reports/.revision-1.test.tmp/report.docx",
+    }
+    report._run_report_runtime = AsyncMock(side_effect=[
+        {
+            "status": "rendered",
+            "render": {
+                label: {**identities[path], "path": path}
+                for label, path in staged_paths.items()
+            },
+        },
+        {"ok": True, "issues": []},
+    ])
+
+    with pytest.raises(WorkspaceError, match="没有可读取身份的格式"):
+        await report._render_report_pair(
+            "job-1",
+            "report.md",
+            final_paths["pdf"],
+            artifact_manifest=None,
+            run_context=context,
+        )
+
+    assert {call.args[1] for call in service.adelete_file.await_args_list} == set(
+        final_paths.values()
+    )
+    report._delete_report_path.assert_any_await(
+        "reports/revision-1", context, recursive=True
     )
 
 

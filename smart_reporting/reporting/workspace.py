@@ -713,12 +713,55 @@ class WorkspaceReportService:
                 )
             await self.service.amove_files(thread_id, staging_relative, final_directory_relative)
             published = True
+            verified_outputs: dict[str, tuple[str, str]] = {}
+            final_identity_issues: list[dict[str, str]] = []
             for key, (_, final_path) in outputs.items():
-                current = await self.service.ahash_file(thread_id, final_path)
-                if current.get("sha256") != render[key].get("sha256") or current.get("size") != render[key].get("size"):
-                    raise WorkspaceError("双格式报告发布身份校验失败。")
+                try:
+                    current = await self.service.ahash_file(thread_id, final_path)
+                except Exception as error:
+                    current = {"missing": True}
+                    loguru_logger.warning(
+                        "report_final_artifact_unavailable format={} error_type={}",
+                        key,
+                        type(error).__name__,
+                    )
+                if (
+                    current.get("missing")
+                    or current.get("sha256") != render[key].get("sha256")
+                    or current.get("size") != render[key].get("size")
+                ):
+                    # 最终目录中的单个格式未通过身份复核时只隔离该文件；另一格式已经
+                    # 独立核验，仍须进入后续持久化与签发。删除失败则无法保证调用方不会
+                    # 把未核验文件当作实际产物，交给外层清理整个 revision。
+                    try:
+                        await self.service.adelete_file(thread_id, final_path)
+                    except Exception as error:
+                        raise WorkspaceError("报告失败格式无法安全隔离。") from error
+                    render.pop(key, None)
+                    for suffix in ("Path", "Sha256", "Size"):
+                        validation.pop(f"{key}{suffix}", None)
+                    final_identity_issues.append({
+                        "code": f"report_{key}_artifact_unavailable",
+                        "message": (
+                            f"{'PDF' if key == 'pdf' else 'Word'} 产物发布后身份不可读取，"
+                            "其他已核验格式已保留。"
+                        ),
+                    })
+                    continue
                 validation[f"{key}Path"] = final_path
                 render[key]["path"] = final_path
+                verified_outputs[key] = outputs[key]
+            if not verified_outputs:
+                raise WorkspaceError("报告发布后没有可读取身份的格式。")
+            if final_identity_issues:
+                raw_issues = validation.get("issues")
+                validation["issues"] = [
+                    *(raw_issues if isinstance(raw_issues, list) else []),
+                    *final_identity_issues,
+                ]
+                validation["ok"] = False
+                validation["status"] = "validation_failed"
+            outputs = verified_outputs
             # 完整 render 只在同一次受控验收中使用；durable job 已分别持有文档上下文、
             # 引用和页面布局。这里只保存后续状态查询与 revision 清理所需的产物身份，
             # 避免重复结构挤占 48 KiB 的会话状态边界。

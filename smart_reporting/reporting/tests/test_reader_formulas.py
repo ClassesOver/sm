@@ -179,6 +179,62 @@ def test_derived_ratio_labels_each_input_aggregation_policy() -> None:
     assert 'visits（2025年1—2月、共同期末）' in explanation
 
 
+@pytest.mark.parametrize(('aggregation', 'basis'), [
+    ('sum', '同期合计'),
+    ('count', '同期计数'),
+    ('count_distinct', '同期去重计数'),
+    ('average', '同期平均值'),
+    ('min', '同期最小值'),
+    ('max', '同期最大值'),
+])
+def test_derived_ratio_explanation_names_the_registered_input_aggregation(
+    aggregation, basis,
+):
+    document = ratio_document(den_unit='元')
+    document['metrics'][0]['aggregation'] = aggregation
+    ratio = document['derivedMetrics'][0]
+    token = f"{{{{value:{ratio['factId']}:value:}}}}"
+
+    explanation = _explain(token, [json.dumps(document, ensure_ascii=False)])
+
+    assert explanation is not None
+    assert f'amount（2025年1—2月、{basis}）' in explanation
+
+
+def test_average_ratio_built_from_source_is_not_described_as_a_sum():
+    raw = (
+        b'month,department,amount,visits\n'
+        b'2025-01,A,10,2\n2025-01,B,20,4\n2025-02,A,90,6\n'
+    )
+    declarations = (
+        semantic('amount', 'average', unit='元'),
+        semantic('visits', 'average', unit='人次'),
+    )
+    dataset = context(
+        'current', fields=('month', 'department', 'amount', 'visits'), semantics=declarations,
+    ).model_copy(update={'period_granularities': {'month': 'month'}})
+    definitions = (
+        {'code': 'num', 'aggregation': 'average', 'fieldRef': declarations[0]['fieldRef']},
+        {'code': 'den', 'aggregation': 'average', 'fieldRef': declarations[1]['fieldRef']},
+        {'code': 'ratio', 'kind': 'ratio', 'aggregation': 'ratio',
+         'numeratorMetric': 'num', 'denominatorMetric': 'den'},
+    )
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=('amount', 'visits')).model_copy(update={'series_granularity': 'month'}),
+        (('current', raw, dataset, ('current',)),),
+        profile_metrics=definitions,
+    )
+    ratio = bundle.derived_metrics[0]
+    token = f'{{{{value:{ratio.fact_id}:value:}}}}'
+
+    explanation = _explain(token, [bundle.model_dump_json(by_alias=True)])
+
+    assert explanation == (
+        'amount（2025年1—2月、同期平均值）40元 ÷ '
+        'visits（2025年1—2月、同期平均值）4人次 = 10'
+    )
+
+
 def test_compound_registered_ratio_explains_base_unit_conversion_and_result():
     document = ratio_document(num_unit='万元')
     content = json.dumps(document, ensure_ascii=False)

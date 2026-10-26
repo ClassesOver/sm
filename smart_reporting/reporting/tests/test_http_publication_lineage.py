@@ -656,7 +656,7 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
 @pytest.mark.anyio
 @pytest.mark.parametrize("fault", [
     "manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot",
-    "lineage_runtime", "editor_snapshot", "editor_context", "editor_scope",
+    "lineage_runtime", "editor_snapshot", "editor_context", "editor_state_read", "editor_scope",
     "table_source_missing", "table_source_changed",
     "quality_record_missing", "quality_record_changed",
 ])
@@ -710,6 +710,12 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     elif fault == "editor_scope":
         # 作用域不一致（调用方 thread 与发布作用域不符）只拒绝编辑上下文。
         arguments = {**arguments, "caller_thread_id": "another-caller-thread"}
+    elif fault == "editor_state_read":
+        monkeypatch.setattr(
+            runtime.state_repository,
+            "get",
+            AsyncMock(side_effect=RuntimeError("injected editor state read failure")),
+        )
     elif fault == "editor_context":
         monkeypatch.setattr(
             runtime.state_repository,
@@ -732,11 +738,12 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
     assert artifacts.records and grants.records
     assert result["publicationIssues"] and all(item["message"] for item in result["publicationIssues"])
-    if fault in {"editor_snapshot", "editor_context", "editor_scope"}:
+    if fault in {"editor_snapshot", "editor_context", "editor_state_read", "editor_scope"}:
         assert "editor" not in result
         assert result["publicationIssues"][-1]["code"] == {
             "editor_snapshot": "report_editor_snapshot_unavailable",
             "editor_context": "report_editor_context_unavailable",
+            "editor_state_read": "report_editor_context_unavailable",
             "editor_scope": "report_editor_scope_mismatch",
         }[fault]
         assert "reportEditorContexts" not in durable.payload
