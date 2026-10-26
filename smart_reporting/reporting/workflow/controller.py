@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -31,7 +30,11 @@ from ..models import (
     ReportWorkflowControl,
     reporting_failure,
 )
-from .scope import REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY, REPORT_WORKFLOW_SCOPE_DEPENDENCY
+from .scope import (
+    REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY,
+    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
+    digest_values,
+)
 from .state import ReportingStateError
 
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
@@ -106,12 +109,7 @@ def reporting_external_operation_id(
 def _external_operation_scope_digest(
     *, database: str, company_id: str, user_id: str, thread_id: str
 ) -> str:
-    payload = json.dumps(
-        [database, company_id, user_id, thread_id],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
+    return digest_values(database, company_id, user_id, thread_id)
 
 
 class ReviewableWorkflow(Protocol):

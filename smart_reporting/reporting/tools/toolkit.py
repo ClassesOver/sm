@@ -217,29 +217,24 @@ class ReportingToolkit(
             )
         self._finish_function = registered_finish_function
         self.async_functions.pop("finish_task", None)
-        for name, description, parameters, entrypoint in (
-            (
-                "apply_analysis_patch",
-                "使用标准 unified diff 原子修改当前 Task 签发的 analysis 文件；已有文件的并发基线由工作区在提交锁内自动复核。",
-                analysis_patch_parameters,
-                self.apply_analysis_patch,
-            ),
-        ):
-            self.register(
-                Function(
-                    name=name,
-                    description=description,
-                    parameters=(
-                        parameters()
-                        if phase != "section"
-                        else {"type": "object", "properties": {}, "additionalProperties": False}
-                    ),
-                    strict=True,
-                    entrypoint=entrypoint,
-                    pre_hook=_reset_stop_after_tool_call,
-                    post_hook=_stop_after_nonretryable_tool_call,
-                )
+        self.register(
+            Function(
+                name="apply_analysis_patch",
+                description=(
+                    "使用标准 unified diff 原子修改当前 Task 签发的 analysis 文件；"
+                    "已有文件的并发基线由工作区在提交锁内自动复核。"
+                ),
+                parameters=(
+                    analysis_patch_parameters()
+                    if phase != "section"
+                    else {"type": "object", "properties": {}, "additionalProperties": False}
+                ),
+                strict=True,
+                entrypoint=self.apply_analysis_patch,
+                pre_hook=_reset_stop_after_tool_call,
+                post_hook=_stop_after_nonretryable_tool_call,
             )
+        )
 
         self.register(
             Function(

@@ -19,9 +19,11 @@ import pandas as pd
 import polars as pl
 from data_profiling import ProfileReport
 from data_profiling import __version__ as DATA_PROFILING_VERSION
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 from statsmodels.tools.sm_exceptions import SingularMatrixWarning
 from statsmodels.tsa.stattools import acf, adfuller, pacf
+
+from .schema import HospitalOperationSchema
 
 MAX_PROFILE_MODEL_VIEW_BYTES = 12 * 1024
 MAX_PROFILE_HIGHLIGHTS = 10
@@ -63,8 +65,8 @@ _REDUNDANT_VARIABLE_KEYS = frozenset(
 )
 
 
-class AnalysisModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+class AnalysisModel(HospitalOperationSchema):
+    """医院运营域内共享的冻结模型基类（见 schema.HospitalOperationSchema）。"""
 
 
 class FieldStatistic(AnalysisModel):

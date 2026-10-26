@@ -6,7 +6,9 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
+
+from smart_reporting.reporting.contract import StrictModel
 
 _IDENTITY_MAX_LENGTH = 128
 _TENANT_MAX_LENGTH = 256
@@ -33,8 +35,8 @@ NonEmptyIdentity = Annotated[str, Field(min_length=1, max_length=_IDENTITY_MAX_L
 WarningDisposition = Literal["informational", "quality_warning", "review_required"]
 
 
-class _FrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+class _FrozenModel(StrictModel):
+    """与 reporting.contract.StrictModel 同一冻结契约的域内别名。"""
 
 
 class TenantScope(_FrozenModel):

@@ -5,9 +5,9 @@ from copy import copy
 from typing import Any, Literal
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
-from ...contract import FIELD_REF_PATTERN, MeasureSemantic, ReportPeriod
+from ...contract import FIELD_REF_PATTERN, MeasureSemantic, ReportPeriod, StrictModel
 from ...data_sources import MAX_REPORT_INPUTS
 from ..query_pipeline import QueryRequirement
 
@@ -20,8 +20,8 @@ def _contains_forbidden_derivation(value: str) -> bool:
     return _FORBIDDEN_DERIVATION_PATTERN.search(value) is not None
 
 
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+class _StrictModel(StrictModel):
+    """与 contract.StrictModel 同一冻结契约的模块内别名。"""
 
 
 class NormalizedReportPrompt(_StrictModel):

@@ -112,6 +112,43 @@ def _analysis_context_projection(
 
 
 class RuntimeProfileMixin:
+    async def _load_trusted_analysis_context(
+        self, scope: Any, parameters: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """validationContextFile → analysisContextFile 的受信读取链，供 Profile 查询工具共用。"""
+        validation_context = await self._read_trusted_json(
+            thread_id=scope.thread_id,
+            identity=parameters.get("validationContextFile"),
+            identity_code="report_profile_context_changed",
+            structure_code="report_profile_context_invalid",
+        )
+        return await self._read_trusted_json(
+            thread_id=scope.thread_id,
+            identity=validation_context.get("analysisContextFile"),
+            identity_code="report_analysis_context_changed",
+            structure_code="report_analysis_context_invalid",
+        )
+
+    @staticmethod
+    def _require_dataset_context(
+        analysis_context: Mapping[str, Any], dataset_id: str
+    ) -> dict[str, Any]:
+        raw_contexts = analysis_context.get("datasetContexts")
+        matches = (
+            [
+                item
+                for item in raw_contexts
+                if isinstance(item, dict) and item.get("datasetId") == dataset_id
+            ]
+            if isinstance(raw_contexts, list)
+            else []
+        )
+        if len(matches) != 1:
+            raise ReportingError(
+                "report_profile_dataset_unknown", "datasetId 不属于当前受信分析上下文。"
+            )
+        return matches[0]
+
     async def read_profile_pointer(
         self,
         datasetId: str,
@@ -144,33 +181,8 @@ class RuntimeProfileMixin:
             task_kinds=frozenset({"analysis_item"}),
         )
         self._require_current_analysis_dataset(contract, datasetId)
-        validation_context = await self._read_trusted_json(
-            thread_id=scope.thread_id,
-            identity=parameters.get("validationContextFile"),
-            identity_code="report_profile_context_changed",
-            structure_code="report_profile_context_invalid",
-        )
-        analysis_context = await self._read_trusted_json(
-            thread_id=scope.thread_id,
-            identity=validation_context.get("analysisContextFile"),
-            identity_code="report_analysis_context_changed",
-            structure_code="report_analysis_context_invalid",
-        )
-        raw_contexts = analysis_context.get("datasetContexts")
-        matches = (
-            [
-                item
-                for item in raw_contexts
-                if isinstance(item, dict) and item.get("datasetId") == datasetId
-            ]
-            if isinstance(raw_contexts, list)
-            else []
-        )
-        if len(matches) != 1:
-            raise ReportingError(
-                "report_profile_dataset_unknown", "datasetId 不属于当前受信分析上下文。"
-            )
-        dataset_context = matches[0]
+        analysis_context = await self._load_trusted_analysis_context(scope, parameters)
+        dataset_context = self._require_dataset_context(analysis_context, datasetId)
         profile_model_view = dataset_context.get("profileModelView")
         if not isinstance(profile_model_view, dict):
             raise ReportingError(
@@ -303,33 +315,8 @@ class RuntimeProfileMixin:
             task_kinds=frozenset({"analysis_item"}),
         )
         self._require_current_analysis_dataset(contract, datasetId)
-        validation_context = await self._read_trusted_json(
-            thread_id=scope.thread_id,
-            identity=parameters.get("validationContextFile"),
-            identity_code="report_profile_context_changed",
-            structure_code="report_profile_context_invalid",
-        )
-        analysis_context = await self._read_trusted_json(
-            thread_id=scope.thread_id,
-            identity=validation_context.get("analysisContextFile"),
-            identity_code="report_analysis_context_changed",
-            structure_code="report_analysis_context_invalid",
-        )
-        raw_contexts = analysis_context.get("datasetContexts")
-        matches = (
-            [
-                item
-                for item in raw_contexts
-                if isinstance(item, dict) and item.get("datasetId") == datasetId
-            ]
-            if isinstance(raw_contexts, list)
-            else []
-        )
-        if len(matches) != 1:
-            raise ReportingError(
-                "report_profile_dataset_unknown", "datasetId 不属于当前受信分析上下文。"
-            )
-        dataset_context = matches[0]
+        analysis_context = await self._load_trusted_analysis_context(scope, parameters)
+        dataset_context = self._require_dataset_context(analysis_context, datasetId)
         profile = await self._read_trusted_json(
             thread_id=scope.thread_id,
             identity=dataset_context.get("profileFile"),
@@ -442,18 +429,7 @@ class RuntimeProfileMixin:
             run_context=run_context,
             task_kinds=frozenset({"analysis_item", "visualization_section"}),
         )
-        validation_context = await self._read_trusted_json(
-            thread_id=scope.thread_id,
-            identity=parameters.get("validationContextFile"),
-            identity_code="report_profile_context_changed",
-            structure_code="report_profile_context_invalid",
-        )
-        analysis_context = await self._read_trusted_json(
-            thread_id=scope.thread_id,
-            identity=validation_context.get("analysisContextFile"),
-            identity_code="report_analysis_context_changed",
-            structure_code="report_analysis_context_invalid",
-        )
+        analysis_context = await self._load_trusted_analysis_context(scope, parameters)
         projection = _analysis_context_projection(analysis_context, contract)
         try:
             value = expression.search(projection)

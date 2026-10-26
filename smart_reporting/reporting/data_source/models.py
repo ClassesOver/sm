@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
+from ..contract import SHA256_PATTERN, StrictModel
 from ..models import ReportingError
 
 CONFIG_FILE_NAME = "report-data-sources.json"
@@ -116,8 +117,8 @@ class DataSourceAdapter(Protocol):
     async def aclose(self) -> None: ...
 
 
-class ShapeModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+class ShapeModel(StrictModel):
+    """与 reporting.contract.StrictModel 同一冻结契约的域内别名。"""
 
 
 class TopValue(ShapeModel):
@@ -191,7 +192,7 @@ class TableDataShape(ShapeModel):
 class DataShape(ShapeModel):
     source_id: str = Field(alias="sourceId", min_length=1, max_length=64)
     metadata_revision: str = Field(alias="metadataRevision", min_length=1, max_length=128)
-    schema_hash: str = Field(alias="schemaHash", pattern=r"^[0-9a-f]{64}$")
+    schema_hash: str = Field(alias="schemaHash", pattern=SHA256_PATTERN)
     statistics_version: str = Field(alias="statisticsVersion", pattern=r"^1$")
     query_count: int = Field(alias="queryCount", ge=1)
     period_start: str = Field(alias="periodStart", pattern=r"^\d{4}-\d{2}-\d{2}$")

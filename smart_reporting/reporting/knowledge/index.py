@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
 from loguru import logger
+
+from ..contract import SHA256_PATTERN
 
 _DYNAMIC_KIND: Final = "repair"
 _STATIC_KIND: Final = "static"
@@ -78,9 +81,7 @@ class KnowledgeDocument:
         ):
             raise ValueError("修复知识必须包含 workspace、任务、错误码和源码哈希")
         source_sha256 = self.source_sha256 or ""
-        if len(source_sha256) != 64 or any(
-            char not in "0123456789abcdef" for char in source_sha256
-        ):
+        if re.fullmatch(SHA256_PATTERN, source_sha256) is None:
             raise ValueError("source_sha256 必须是小写 SHA-256")
 
     @property

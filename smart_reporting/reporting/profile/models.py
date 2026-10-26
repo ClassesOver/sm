@@ -9,9 +9,9 @@ from pathlib import Path
 from string import Formatter
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
-from ..contract import CumulativeSnapshotPolicy, MeasureSemantic
+from ..contract import SHA256_PATTERN, CumulativeSnapshotPolicy, MeasureSemantic, StrictModel
 
 PROFILE_DIRECTORY_NAME = "reporting_profiles"
 DEFAULT_ORGANIZATION_NAME = "上海鼎医信息技术有限公司"
@@ -36,8 +36,8 @@ PROFILE_FIELD_REF_PATTERN = (
 )
 
 
-class ProfileModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+class ProfileModel(StrictModel):
+    """与 reporting.contract.StrictModel 同一冻结契约的域内别名。"""
 
 
 class ProfileMeasureSemantic(MeasureSemantic):
@@ -322,7 +322,7 @@ class ProfileLayerRef(ProfileModel):
 class EffectiveReportingProfile(ProfileModel):
     profile_id: str = Field(alias="profileId", pattern=PROFILE_ID_PATTERN)
     revision: str = Field(min_length=1, max_length=128)
-    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=r"^[0-9a-f]{64}$")
+    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
     layers: tuple[ProfileLayerRef, ...] = Field(min_length=1, max_length=100)
     dimensions: tuple[EffectiveDimension, ...] = Field(default=(), max_length=500)
     metrics: tuple[EffectiveMetric, ...] = Field(default=(), max_length=1_000)

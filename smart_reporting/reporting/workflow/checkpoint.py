@@ -14,6 +14,7 @@ from pydantic import Field, field_validator, model_validator
 from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
 from ..delivery.draft_v1 import ReportDraftBlock
 from ..models import ReportingError
+from .scope import digest_values
 
 
 class FileIdentity(StrictModel):
@@ -106,13 +107,9 @@ class ProfileReadReceipt(StrictModel):
         snapshot_hash: str,
         purpose: str,
     ) -> ProfileReadReceipt:
-        payload = json.dumps(
-            [dataset_id, profile_pointer, snapshot_hash],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        digest = digest_values(dataset_id, profile_pointer, snapshot_hash)
         return cls(
-            receiptId=f"profile-read-{hashlib.sha256(payload).hexdigest()[:24]}",
+            receiptId=f"profile-read-{digest[:24]}",
             datasetId=dataset_id,
             profilePointer=profile_pointer,
             snapshotHash=snapshot_hash,
@@ -128,13 +125,9 @@ class ProfileReadReceipt(StrictModel):
         snapshot_hash: str,
         purpose: str,
     ) -> ProfileReadReceipt:
-        payload = json.dumps(
-            [dataset_id, "jmespath", query, snapshot_hash],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        digest = digest_values(dataset_id, "jmespath", query, snapshot_hash)
         return cls(
-            receiptId=f"profile-read-{hashlib.sha256(payload).hexdigest()[:24]}",
+            receiptId=f"profile-read-{digest[:24]}",
             datasetId=dataset_id,
             query=query,
             snapshotHash=snapshot_hash,
