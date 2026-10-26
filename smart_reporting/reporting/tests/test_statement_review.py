@@ -239,6 +239,8 @@ def test_yoy_label_does_not_allow_a_current_fact_as_the_baseline():
 
 @pytest.mark.parametrize('comparison', [
     '较上年同期增长，达到', '比去年同期增长至', '较上年同期下降至',
+    '较上年同期增长后为', '较上年同期增加到', '与上年同期相比，达到',
+    '较上年同期，其中本期达到',
 ])
 def test_yoy_background_keeps_the_result_in_the_current_period(comparison):
     from smart_reporting.reporting.trace.content_review import review_content_result
@@ -256,6 +258,40 @@ def test_yoy_background_still_rejects_a_baseline_fact_as_the_current_result():
     assert statement_review_warnings(markdown, source())
     assert any('当前引用覆盖 2024年1—2月' in warning
                for warning in review_content_result(markdown, source()).warnings)
+
+
+@pytest.mark.parametrize('fact_id,valid', [('a' * 16, True), ('b' * 16, False)])
+def test_explicit_baseline_role_takes_priority_over_result_verbs(fact_id, valid):
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    markdown = ('2025年1—2月收入较上年同期，其中基期达到'
+                f'{{{{value:fact-{fact_id}:total:元}}}}。')
+    assert bool(statement_review_warnings(markdown, source())) is not valid
+    assert bool(review_content_result(markdown, source()).warnings) is not valid
+
+
+def test_relative_yoy_anchor_excludes_an_explicit_baseline_in_an_earlier_comparison():
+    from smart_reporting.reporting.trace.subject_builder import _expanded_period_wording
+
+    expanded = _expanded_period_wording('2025年1—2月收入较2024年1—2月下降，成本较上年同期增长')
+    assert expanded.endswith('成本较2024年1月至2024年2月同期增长')
+
+
+def test_multiple_comparisons_review_each_baseline_against_the_current_window():
+    from smart_reporting.reporting.trace.content_review import review_content_result
+
+    document = json.loads(source()[0])
+    document['metrics'].append({
+        **document['metrics'][0], 'factId': 'fact-' + 'e' * 16,
+        'field': 'cost', 'fieldRef': 'db.table.cost', 'displayName': '成本金额',
+        'metricCodes': ['cost'], 'formula': 'SUM(cost)',
+    })
+    markdown = ('2025年1—2月收入较2024年1—2月下降，成本较上年同期的'
+                '{{value:fact-eeeeeeeeeeeeeeee:total:元}}增长至'
+                '{{value:fact-cccccccccccccccc:total:元}}。')
+    contents = [json.dumps(document)]
+    assert statement_review_warnings(markdown, contents) == []
+    assert review_content_result(markdown, contents).warnings == ()
 
 
 @pytest.mark.parametrize('wording', ['上年同期', '去年同期'])

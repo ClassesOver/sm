@@ -24,6 +24,7 @@ class FailurePolicy:
     # 基础设施与部署配置类失败：任务本身已无法继续（取消、超时、租约、工作区），
     # 或运行时装配缺失。即使在最后一次 fresh attempt 也不得降级为零图成稿。
     infrastructure: bool = False
+    retry_same_payload: bool = True
 
 
 _FATAL = FailurePolicy("fatal", "fatal")
@@ -45,7 +46,7 @@ POLICIES = MappingProxyType(
         "report_task_timeout": _INFRA,
         "report_model_provider_unavailable": _INFRA,
         # 确定性投影耗尽：章节内先尝试缩减/按块生成，剩余超限不得原样开新 attempt。
-        "report_section_context_too_large": _INFRA,
+        "report_section_context_too_large": FailurePolicy("fatal", "fatal", retry_same_payload=False),
         "report_phase_artifact_changed": _FATAL,
         "report_capability_invalid": FailurePolicy(visualization="fatal", infrastructure=True),
         "report_task_lease_conflict": FailurePolicy(visualization="fatal", infrastructure=True),
@@ -77,15 +78,15 @@ POLICIES = MappingProxyType(
 
 
 def fresh_attempt_futile(error: BaseException) -> bool:
-    """基础设施/部署配置类失败：重开 fresh attempt 同样无法修复，必须立即停止重试。
+    """基础设施故障或不可原样重试的输入规模问题，不再开相同的 fresh attempt。
 
     分析项、可视化章节与章节成稿的 fresh attempt 循环统一以此为准。
     """
 
-    return (
-        isinstance(error, ReportingError)
-        and POLICIES.get(error.code, FailurePolicy()).infrastructure
-    )
+    if not isinstance(error, ReportingError):
+        return False
+    policy = POLICIES.get(error.code, FailurePolicy())
+    return policy.infrastructure or not policy.retry_same_payload
 
 
 def final_attempt_degradable(error: BaseException) -> bool:
