@@ -61,6 +61,7 @@ from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from ..workspace import WorkspaceError, WorkspacePathConflict
 from .capabilities import EditorCapabilities
 from .chart_edits import (
+    CHART_EDITS_DIR,
     chart_edit_summary,
     load_chart_edit_records,
 )
@@ -1137,7 +1138,8 @@ class ReportEditorService:
     @source_lifecycle
     async def read_asset(self, expected: ReportEditorContext, path: str) -> tuple[bytes, str]:
         context = await self._source_context(expected)
-        if "/" not in path and path not in {".", ".."}:
+        # 正文图片按修订目录相对引用：原图是文件名，AI 改图结果是 chart-edits/<editId>/chart.png。
+        if ("/" not in path and path not in {".", ".."}) or path.startswith(f"{CHART_EDITS_DIR}/"):
             path = str(PurePosixPath(context.markdown_path).parent / path)
         render = context.job.get("render")
         images = render.get("images") if isinstance(render, dict) else None

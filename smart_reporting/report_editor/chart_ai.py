@@ -20,6 +20,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
@@ -56,6 +57,11 @@ _CHART_EDIT_JOB_RETENTION_SECONDS = 3600
 CHART_EDIT_SCRIPT_MAX_BYTES = 4 * 1024 * 1024
 _MAX_PLOT_DATA_FILES = 50
 _PREVIEW_ROWS = 3
+# 自动修复只在剩余时间足够完成一次绘图与检查时进行；不够则带视觉告警交付首轮结果。
+_REPAIR_MIN_SECONDS = 30.0
+_INSPECT_RESERVE_SECONDS = 15.0
+# 计划未改图形时，绘图与登记都写“保持原图形”，不留空。
+_KEEP_VISUAL_FORM = "保持原图形"
 
 CHART_AI_STAGES = ("queued", "plan", "materialize", "draw", "inspect", "register")
 
@@ -91,7 +97,7 @@ class ChartAIEditRequest(StrictModel):
     previous_edit_id: str | None = Field(
         default=None, alias="previousEditId", min_length=8, max_length=40
     )
-    expected_sha256: str | None = Field(default=None, alias="expectedSha256")
+    expected_sha256: str | None = Field(default=None, alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_request(self) -> ChartAIEditRequest:
@@ -162,25 +168,48 @@ class ChartAIEditService:
     ) -> dict[str, Any]:
         """按钮置灰原因判定；只读会话、无作图数据、来源过期等均为不可用。"""
 
+        reason, _resolved = await self._check(expected, session, chart_id)
+        if reason is not None:
+            return {"available": False, "reason": reason}
+        return {"available": True, "chartId": chart_id}
+
+    async def _check(
+        self, expected: ReportEditorContext, session: Any, chart_id: str
+    ) -> tuple[str | None, tuple[ReportEditorContext, Any, Any, Any] | None]:
+        """可用性判定与图表解析共用一次来源上下文与清单加载；返回 (不可用原因, 解析结果)。"""
+
         if EditorCapabilities.of(getattr(session, "capabilities", None)).restricted:
-            return {"available": False, "reason": "read_only"}
+            return "read_only", None
         if self.runner is None or self.planner is None:
-            return {"available": False, "reason": "unconfigured"}
+            return "unconfigured", None
         if getattr(self.runner, "vision_reviewer", None) is None:
             # 未配置视觉审查模型时 runner 拒绝运行可视化任务，功能按不可用提示。
-            return {"available": False, "reason": "vision_missing"}
+            return "vision_missing", None
         try:
             context = await self.editor._source_context(expected)
         except ReportingError as error:
             if error.code == "snapshot_expired":
-                return {"available": False, "reason": "snapshot_expired"}
+                return "snapshot_expired", None
             raise
-        chart = await self._resolve_chart(context, chart_id)
-        if isinstance(chart, dict):
-            return {"available": False, "reason": chart["reason"]}
-        _context, manifest_chart, trace, _index = chart
-        del manifest_chart, trace
-        return {"available": True, "chartId": chart_id}
+        resolved = await self._resolve_chart(context, chart_id)
+        if isinstance(resolved, dict):
+            return resolved["reason"], None
+        return None, resolved
+
+    async def edit_record(self, expected: ReportEditorContext, edit_id: str) -> dict[str, Any]:
+        """已登记改图的图表归属：正文图片已替换为改图结果时，据此继续在同一图表上改图。"""
+
+        context = await self.editor._source_context(expected)
+        try:
+            records = await load_chart_edit_records(
+                self.editor.workspace, context.scope["threadId"], context.markdown_path
+            )
+        except ValueError as error:
+            raise _chart_ai_error("report_editor_chart_ai_missing", "改图登记不可读取。") from error
+        record = next((item for item in records if item.edit_id == edit_id), None)
+        if record is None:
+            raise _chart_ai_error("report_editor_chart_ai_missing", "改图登记不存在。")
+        return {"editId": record.edit_id, "chartId": record.chart_id, "imagePath": record.image.path}
 
     async def start_edit(
         self,
@@ -201,15 +230,15 @@ class ChartAIEditService:
             raise _chart_ai_error(
                 "report_editor_chart_ai_instruction_too_large", "改图要求过长，请拆分为多次调整。"
             )
-        context = await self.editor._restore(expected)
-        availability = await self.availability(expected, session, chart_id)
-        if not availability.get("available"):
-            reason = str(availability.get("reason", "unavailable"))
+        reason, resolved = await self._check(expected, session, chart_id)
+        if reason is not None or resolved is None:
+            reason = reason or "unavailable"
             raise _chart_ai_error(
                 "report_editor_chart_ai_unavailable",
                 _UNAVAILABLE_REASON_MESSAGES.get(reason, "AI 改图当前不可用。"),
                 reason=reason,
             )
+        context = resolved[0]
         running = [job for job in self._jobs.values() if not job.task.done()]
         key = (expected.report_id, expected.revision, chart_id)
         if any(job.key == key for job in running):
@@ -224,9 +253,7 @@ class ChartAIEditService:
         edit_id = f"cedit-{uuid4().hex[:16]}"
         self._hourly.setdefault(user_id, []).append(time.monotonic())
         task = asyncio.create_task(
-            self._guarded_edit(
-                expected, session, chart_id, request, edit_id, instruction=instruction
-            ),
+            self._guarded_edit(resolved, chart_id, request, edit_id, instruction=instruction),
             name=f"report-editor-chart-ai:{edit_id}",
         )
         job = _ChartEditJob(
@@ -318,8 +345,7 @@ class ChartAIEditService:
 
     async def _guarded_edit(
         self,
-        expected: ReportEditorContext,
-        session: Any,
+        resolved: tuple[ReportEditorContext, Any, Any, Any],
         chart_id: str,
         request: ChartAIEditRequest,
         edit_id: str,
@@ -328,13 +354,24 @@ class ChartAIEditService:
     ) -> dict[str, Any]:
         job = self._jobs[edit_id]
         started = time.monotonic()
-        del session
+        deadline = asyncio.timeout(self.timeout_seconds)
         try:
-            result = await asyncio.wait_for(
-                self._run_edit(expected, chart_id, request, edit_id, instruction=instruction),
-                timeout=self.timeout_seconds,
-            )
-        except TimeoutError:
+            async with deadline:
+                result = await self._run_edit(
+                    resolved, chart_id, request, edit_id,
+                    instruction=instruction, deadline=started + self.timeout_seconds,
+                )
+        except TimeoutError as error:
+            if not deadline.expired():
+                # 执行器内部的超时不是整次改图超时，按一般失败如实报告。
+                job.error = {"code": "report_editor_chart_ai_failed", "message": "改图执行失败，原图不受影响。"}
+                logger.opt(exception=error).error(
+                    "report_editor_chart_ai_failed report_id={} revision={} chart_id={} edit_id={} "
+                    "elapsed_ms={} error_type={}",
+                    job.report_id, job.revision, chart_id, edit_id,
+                    round((time.monotonic() - started) * 1000), type(error).__name__,
+                )
+                raise _from_error_dict(job.error) from error
             job.error = {
                 "code": "report_editor_chart_ai_timeout",
                 "message": f"改图超过 {int(self.timeout_seconds)} 秒上限，已取消；原图不受影响。",
@@ -433,24 +470,18 @@ class ChartAIEditService:
 
     async def _run_edit(
         self,
-        expected: ReportEditorContext,
+        resolved: tuple[ReportEditorContext, Any, Any, Any],
         chart_id: str,
         request: ChartAIEditRequest,
         edit_id: str,
         *,
         instruction: str,
+        deadline: float,
     ) -> dict[str, Any]:
         job = self._jobs[edit_id]
         job.stage = "plan"
-        source_context = await self.editor._source_context(expected)
-        resolved = await self._resolve_chart(source_context, chart_id)
-        if isinstance(resolved, dict):
-            raise _chart_ai_error(
-                "report_editor_chart_ai_unavailable",
-                _UNAVAILABLE_REASON_MESSAGES.get(resolved["reason"], "AI 改图当前不可用。"),
-                reason=resolved["reason"],
-            )
-        _context, chart_artifact, trace, index = resolved
+        # 启动时已解析的来源上下文与清单直接沿用，不在后台任务中重复加载与核验。
+        source_context, chart_artifact, trace, index = resolved
         thread_id = source_context.scope["threadId"]
         workspace: HostReportingWorkspace = self.editor.workspace.workspace(thread_id)
         identity = self.workspace_registry.get(thread_id)
@@ -504,6 +535,7 @@ class ChartAIEditService:
         base_alt = (request.base_alt_text or "").strip() or "（原图注未提供）"
         new_title = plan.title or base_title
         new_alt = plan.alt_text or base_alt
+        visual_form = plan.visual_form or _KEEP_VISUAL_FORM
         task_facts = {
             "visualizationMode": "static",
             "chartInputs": [dict(entry) for entry in plot_entries],
@@ -516,7 +548,7 @@ class ChartAIEditService:
                         "interactivePath": None,
                         "title": new_title,
                         "altText": new_alt,
-                        "visualForm": plan.visual_form or "chart",
+                        "visualForm": visual_form,
                     }
                 ],
                 "warnings": [],
@@ -542,24 +574,16 @@ class ChartAIEditService:
         result = await self.runner.run(
             task_context, workspace, task_facts, run_context=run_context
         )
+        warnings: list[str] = []
         # 视觉问题为软告警，可触发一次自动修复；修复后仍有问题则带告警交付审阅。
-        if any(
-            receipt.requires_revision for receipt in result.visual_inspection_receipts
-        ):
-            result = await self.runner.run(
-                task_context,
-                workspace,
-                task_facts,
-                run_context=run_context,
-                diagnostic={
-                    "code": "report_visual_review_failed",
-                    "message": "视觉审查发现问题，请在不改变数据与输出路径的前提下修复图表。",
-                },
+        if any(receipt.requires_revision for receipt in result.visual_inspection_receipts):
+            result = await self._repair(
+                task_context, workspace, task_facts, run_context, result,
+                thread_id=thread_id, paths=(output_path, script_path), deadline=deadline, warnings=warnings,
             )
 
         job.stage = "inspect"
         inspection = await workspace.inspect_chart_file(thread_id, output_path)
-        warnings: list[str] = []
         for receipt in result.visual_inspection_receipts:
             for issue in receipt.issues:
                 warnings.append(
@@ -584,7 +608,7 @@ class ChartAIEditService:
         )
         for chart in unresolved:
             warnings.append(f"图表 {chart} 的作图数据未被脚本直接引用，请人工核对数值来源。")
-        warnings.extend(_caption_number_warnings(new_alt, plot_entries))
+        warnings.extend(_caption_number_warnings(new_alt, plot_files))
 
         job.stage = "register"
         image_identity = await workspace.ahash_file(thread_id, output_path)
@@ -610,7 +634,7 @@ class ChartAIEditService:
             chart=ChartEditChartMeta(
                 title=new_title,
                 altText=new_alt,
-                visualForm=plan.visual_form or "",
+                visualForm=visual_form,
                 datasetIds=tuple(trace.dataset_ids),
             ),
             visualInspectionReceipt=(
@@ -649,6 +673,52 @@ class ChartAIEditService:
                 "reviewed": bool(result.visual_inspection_receipts),
             },
         }
+
+    async def _repair(
+        self,
+        task_context: ReportingCodingTaskContext,
+        workspace: HostReportingWorkspace,
+        task_facts: Mapping[str, Any],
+        run_context: RunContext,
+        first: Any,
+        *,
+        thread_id: str,
+        paths: tuple[str, ...],
+        deadline: float,
+        warnings: list[str],
+    ) -> Any:
+        """视觉审查要求修改时自动修复一次；时间不足或修复失败时恢复首轮产物并带告警交付。"""
+
+        # 预留与下限按单次超时缩放，较短的超时配置下仍能修复。
+        reserve = min(_INSPECT_RESERVE_SECONDS, self.timeout_seconds * 0.1)
+        remaining = deadline - time.monotonic() - reserve
+        if remaining < min(_REPAIR_MIN_SECONDS, self.timeout_seconds * 0.25):
+            warnings.append("视觉审查发现问题，剩余时间不足，未自动修复；可在审阅中继续调整。")
+            return first
+        # 修复与首轮写同一输出路径：先保留首轮产物，修复中断时写回，避免留下半成品。
+        snapshots = {path: (await workspace.afile_bytes(thread_id, path))[0] for path in paths}
+        assert self.runner is not None
+        try:
+            async with asyncio.timeout(remaining):
+                return await self.runner.run(
+                    task_context,
+                    workspace,
+                    task_facts,
+                    run_context=run_context,
+                    diagnostic={
+                        "code": "report_visual_review_failed",
+                        "message": "视觉审查发现问题，请在不改变数据与输出路径的前提下修复图表。",
+                    },
+                )
+        except Exception as error:  # noqa: BLE001 - 修复是附加步骤，失败时交付首轮结果
+            logger.opt(exception=error).warning(
+                "report_editor_chart_ai_repair_failed task_id={} error_type={}",
+                task_context.task_id, type(error).__name__,
+            )
+            for path, content in snapshots.items():
+                await workspace.awrite_bytes(thread_id, path, content, overwrite=True)
+            warnings.append("视觉审查发现问题，自动修复未完成，已保留首轮结果；可在审阅中继续调整。")
+            return first
 
     async def _resolve_base_image(
         self,
@@ -787,8 +857,13 @@ def _chart_input_entry(content: bytes, ref: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping) or payload.get("schema") != "chart-input/v1":
         raise _chart_ai_error("snapshot_integrity_failed", "作图数据文件版本不识别。")
     rows = payload.get("rows")
-    preview = [dict(row) for row in (rows or [])[:_PREVIEW_ROWS] if isinstance(row, Mapping)]
     columns = [str(column) for column in (payload.get("columns") or ())]
+    # chart-input/v1 的行是与 columns 对齐的数组；旧文件可能是对象行，两种都还原为字段映射。
+    preview = [
+        dict(row) if isinstance(row, Mapping) else dict(zip(columns, row, strict=False))
+        for row in (rows or [])[:_PREVIEW_ROWS]
+        if isinstance(row, (Mapping, list))
+    ]
     entry = {
         "chartId": str(payload.get("chartId", "")),
         "role": str(payload.get("role", "")),
@@ -838,25 +913,36 @@ def _bindings_from_plot_files(plot_files: list[SimpleNamespace]) -> list[dict[st
     return bindings
 
 
-def _caption_number_warnings(alt_text: str, entries: list[dict[str, Any]]) -> list[str]:
-    """图注中的数字必须能从登记作图数据还原；否则软告警。"""
+def _caption_number_warnings(alt_text: str, plot_files: list[SimpleNamespace]) -> list[str]:
+    """图注中的数字必须能从登记作图数据（全部行）还原；按图注写出的小数位比较，否则软告警。"""
 
-    numbers = set(re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", alt_text))
+    # 年、月、日、季度等期间写法不是数值。
+    numbers = re.findall(r"(?<![\d.,])\d+(?:,\d{3})*(?:\.\d+)?(?![\d.,]*[年月日季周号期])", alt_text)
     if not numbers:
         return []
-    values: set[str] = set()
-    for entry in entries:
-        for row in entry.get("preview", ()):
-            for value in row.values():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    values.add(f"{value:n}")
-                    values.add(str(value))
-                elif isinstance(value, str):
-                    values.add(value)
-    missing = sorted(
-        number for number in numbers
-        if number not in values and number.replace(",", "") not in values
-    )
+    values: set[Decimal] = set()
+    for item in plot_files:
+        try:
+            payload = json.loads(item.content)
+        except ValueError:
+            continue
+        rows = payload.get("rows") if isinstance(payload, Mapping) else None
+        for row in rows or ():
+            cells = row.values() if isinstance(row, Mapping) else row if isinstance(row, list) else ()
+            for value in cells:
+                if isinstance(value, bool):
+                    continue
+                try:
+                    values.add(Decimal(str(value).replace(",", "")))
+                except (InvalidOperation, ValueError):
+                    continue
+    missing = []
+    for number in dict.fromkeys(numbers):
+        written = Decimal(number.replace(",", ""))
+        exponent = written.as_tuple().exponent
+        step = Decimal(1).scaleb(exponent if isinstance(exponent, int) else 0)
+        if not any(_rounds_to(value, step, written) for value in values):
+            missing.append(number)
     if not missing:
         return []
     return [
@@ -864,6 +950,13 @@ def _caption_number_warnings(alt_text: str, entries: list[dict[str, Any]]) -> li
         + "、".join(missing[:5])
         + " 未在登记作图数据中找到，请人工核对。"
     ]
+
+
+def _rounds_to(value: Decimal, step: Decimal, written: Decimal) -> bool:
+    try:
+        return value.is_finite() and value.quantize(step) == written
+    except InvalidOperation:
+        return False
 
 
 _UNAVAILABLE_REASON_MESSAGES = {

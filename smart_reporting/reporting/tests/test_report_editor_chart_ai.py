@@ -815,3 +815,89 @@ async def test_chart_ai_multi_round_edit_uses_previous_result_as_base(tmp_path: 
     task_context = runner.calls[1][0]
     assert first_status["imagePath"] in task_context.authorized_read_paths
     assert fixture.plot_path in task_context.authorized_read_paths
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_keeps_visual_form_and_serves_relative_src_for_re_edit(tmp_path: Path) -> None:
+    """不换图形的改图（计划未给 visualForm）照常登记；接受后正文相对引用可读，并能据登记找回图表。"""
+    from smart_reporting.report_editor.chart_ai import _KEEP_VISUAL_FORM
+
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+    service = _service(fixture, runner, planner=_planner(visual_form=None, title=None, alt_text=None))
+    session = SimpleNamespace(capabilities=None)
+    started = await service.start_edit(
+        fixture.context, session, "chart_001", ChartAIEditRequest(instruction="在图上显示数值标签"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    assert status["status"] == "succeeded"
+    assert runner.calls[0][1]["visualizationPlan"]["charts"][0]["visualForm"] == _KEEP_VISUAL_FORM
+    # 正文写入的是修订目录相对路径 chart-edits/<editId>/chart.png，浏览器按此请求资源。
+    assert status["imageSrc"].startswith("chart-edits/")
+    content, media_type = await fixture.editor.read_asset(fixture.context, status["imageSrc"])
+    assert media_type == "image/png" and content == fixture.chart_bytes
+    record = await service.edit_record(fixture.context, started["editId"])
+    assert record == {"editId": started["editId"], "chartId": "chart_001", "imagePath": status["imagePath"]}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_failed_repair_keeps_first_result_and_internal_timeout_is_not_edit_timeout(
+    tmp_path: Path,
+) -> None:
+    fixture = await _make_editor_with_chart(tmp_path)
+    receipt = ChartVisualInspectionReceipt(
+        sourcePath="reports/revision-1/chart-edits/x/chart.png", sha256=_sha(b"img"),
+        inspectionMode="vision", visualReviewStatus="passed", modelId="fake-vision-model",
+        reviewed=True, requiresRevision=True,
+    )
+
+    class RepairFails(FakeRunner):
+        async def run(self, task_context, workspace, task_facts, *, run_context, diagnostic=None):
+            if diagnostic is not None:
+                self.calls.append((task_context, dict(task_facts), diagnostic))
+                await workspace.awrite_bytes(
+                    task_context.workspace_key, task_context.declared_output_paths[0], b"partial",
+                    overwrite=True,
+                )
+                raise RuntimeError("repair crashed")
+            return await super().run(task_context, workspace, task_facts, run_context=run_context)
+
+    runner = RepairFails(fixture.chart_bytes, receipts=(receipt,))
+    service = _service(fixture, runner)
+    session = SimpleNamespace(capabilities=None)
+    started = await service.start_edit(
+        fixture.context, session, "chart_001", ChartAIEditRequest(instruction="调整图例"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    # 修复失败：首轮产物写回，带告警交付，不让整次改图失败。
+    assert status["status"] == "succeeded" and len(runner.calls) == 2
+    assert any("自动修复未完成" in warning for warning in status["warnings"])
+    content, _ = await fixture.editor.read_asset(fixture.context, status["imageSrc"])
+    assert content == fixture.chart_bytes
+
+    class InnerTimeout(FakeRunner):
+        async def run(self, *args, **kwargs):
+            raise TimeoutError("provider read timeout")
+
+    service = _service(fixture, InnerTimeout(fixture.chart_bytes))
+    started = await service.start_edit(
+        fixture.context, session, "chart_001", ChartAIEditRequest(instruction="调整图例"),
+    )
+    status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+    assert status["error"]["code"] == "report_editor_chart_ai_failed"
+
+
+def test_caption_numbers_are_checked_against_all_rows_at_written_precision() -> None:
+    from smart_reporting.report_editor.chart_ai import _caption_number_warnings
+
+    rows = [[f"2025-{month:02d}", 3600 + month * 0.4] for month in range(1, 13)]
+    content = (
+        b'{"schema":"chart-input/v1","columns":["period","revenue"],"rows":'
+        + str(rows).replace("'", '"').encode() + b"}"
+    )
+    files = [SimpleNamespace(content=content)]
+    # 12 月的值（第 12 行）按图注写出的精度比较：3604.8 写作 3,605 与 3604.8 都可还原。
+    assert _caption_number_warnings("12月收入3,605元，峰值3604.8元", files) == []
+    assert _caption_number_warnings("收入达到9999元", files) == ["图注中的数字 9999 未在登记作图数据中找到，请人工核对。"]

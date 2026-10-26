@@ -78,6 +78,16 @@ export function matchChartForImage(
   return matches.length === 1 ? matches[0] : null
 }
 
+/** 正文图片已是 AI 改图结果（chart-edits/<editId>/chart.png）时返回 editId。 */
+export function chartEditIdFromSrc(src: string, basePath = ''): string | null {
+  const candidates = [src.replace(/\\/g, '/'), workspacePathFromSrc(src, basePath) ?? '']
+  for (const value of candidates) {
+    const matched = /(?:^|\/)chart-edits\/(cedit-[0-9a-z]{8,32})\/[^/]+$/.exec(value)
+    if (matched) return matched[1]
+  }
+  return null
+}
+
 interface CaptionTarget {
   from: number
   to: number
@@ -94,32 +104,55 @@ export function findChartCaptionParagraph(doc: ProseMirrorNode, posAfter: number
   return { from: posAfter, to: posAfter + node.nodeSize, prefix: matched[0] }
 }
 
+const isImageNode = (node: ProseMirrorNode | null | undefined): node is ProseMirrorNode =>
+  !!node && (node.type.name === 'image' || node.type.name === 'image-block')
+
+/** 图片节点位置；行内图片（与引用标记同段）的图注段落在所在段落之后。 */
+function locateImage(view: EditorView, img: HTMLImageElement) {
+  const doc = view.state.doc
+  const pos = view.posAtDOM(img, 0)
+  const direct = doc.nodeAt(pos)
+  if (isImageNode(direct)) {
+    const blockEnd = direct.isInline ? doc.resolve(pos).after() : pos + direct.nodeSize
+    return { from: pos, node: direct, blockEnd }
+  }
+  const resolved = doc.resolve(pos)
+  if (!resolved.depth) return null
+  const from = resolved.before()
+  const node = doc.nodeAt(from)
+  return isImageNode(node) ? { from, node, blockEnd: from + node.nodeSize } : null
+}
+
+export interface ChartReplacementText {
+  title: string | null
+  altText: string | null
+}
+
 /**
- * 接受替换：一次事务修改图片节点（src/caption）与图注段落，保证撤销一步恢复原图。
- * 返回是否已提交事务；找不到对应图片节点时返回 false。
+ * 接受替换：一次事务修改图片节点（src 与替代文本）与随后的“图表：/图注：”段落，保证撤销一步恢复原图。
+ * “图表：”段落写标题，“图注：”段落写图注；返回是否已提交事务，找不到对应图片节点时返回 false。
  */
 export function applyChartReplacement(
   view: EditorView,
   img: HTMLImageElement,
   imageSrc: string,
-  altText: string | null,
+  text: ChartReplacementText,
 ): boolean {
-  const pos = view.posAtDOM(img, 0)
-  const resolved = view.state.doc.resolve(pos)
-  const from = resolved.depth ? resolved.before() : pos
-  const node = view.state.doc.nodeAt(from)
-  if (!node) return false
+  const located = locateImage(view, img)
+  if (!located) return false
+  const { from, node, blockEnd } = located
+  const { title, altText } = text
   const tr = view.state.tr
   if (node.type.name === 'image-block') {
     tr.setNodeMarkup(from, undefined, { ...node.attrs, src: imageSrc, caption: altText ?? node.attrs.caption })
-  } else if (node.type.name === 'image') {
-    tr.setNodeMarkup(from, undefined, { ...node.attrs, src: imageSrc, alt: altText ?? node.attrs.alt })
   } else {
-    return false
+    tr.setNodeMarkup(from, undefined, { ...node.attrs, src: imageSrc, alt: altText ?? node.attrs.alt })
   }
-  if (altText !== null) {
-    const caption = findChartCaptionParagraph(view.state.doc, from + node.nodeSize)
-    if (caption) tr.insertText(`${caption.prefix}${altText}`, caption.from, caption.to)
+  const caption = findChartCaptionParagraph(view.state.doc, blockEnd)
+  const captionText = caption?.prefix.startsWith('图表') ? title : altText
+  if (caption && captionText !== null) {
+    // 只替换段落内文本，保留段落节点本身。
+    tr.insertText(`${caption.prefix}${captionText}`, caption.from + 1, caption.to - 1)
   }
   view.dispatch(tr)
   return true
@@ -159,6 +192,8 @@ export function createChartAIEdit(options: {
   let target: EditTarget | null = null
   let runningEditId: string | null = null
   let cancelled = false
+  // 用户关闭了窗口：后台结果不再重新打开窗口抢焦点。
+  let dismissed = false
 
   const ensureModal = () => {
     if (modal) return modal
@@ -179,6 +214,7 @@ export function createChartAIEdit(options: {
       `,
       onRequestClose: () => {
         cancelled = true
+        dismissed = true
         if (runningEditId && target) {
           void client.cancelChartAiEdit(target.chartId, runningEditId).catch(() => undefined)
         }
@@ -208,9 +244,12 @@ export function createChartAIEdit(options: {
     const src = img.getAttribute('src') ?? ''
     const altText = img.alt || baseTitleOf(img)
     try {
-      const result = await client.charts()
-      const charts = result.charts ?? []
-      const chart = matchChartForImage(charts, src, basePath)
+      // 已接受过的改图：按登记找回所属图表，以该改图为底图继续调整。
+      const editId = chartEditIdFromSrc(src, basePath)
+      const record = editId ? await client.chartEditRecord(editId) : null
+      const chart = record
+        ? { chartId: record.chartId, imagePath: record.imagePath }
+        : matchChartForImage((await client.charts()).charts ?? [], src, basePath)
       if (!chart) return { error: '这张图不在当前版本的登记图表中，无法改图。' }
       const availability = await client.chartAiAvailability(chart.chartId)
       if (!availability.available) {
@@ -222,6 +261,7 @@ export function createChartAIEdit(options: {
         imagePath: chart.imagePath,
         title: baseTitleOf(img),
         altText,
+        ...(record ? { previousEditId: record.editId } : {}),
       }
     } catch {
       return { error: '无法获取图表登记信息，请稍后重试。' }
@@ -275,7 +315,7 @@ export function createChartAIEdit(options: {
       }
       void runEdit(current, instruction)
     })
-    ensureModal().open(textarea)
+    if (!dismissed) ensureModal().open(textarea)
   }
 
   async function runEdit(current: EditTarget, instruction: string) {
@@ -309,6 +349,10 @@ export function createChartAIEdit(options: {
         ...(current.previousEditId ? { previousEditId: current.previousEditId } : {}),
       })
       runningEditId = startedResponse.editId
+      if (cancelled) {
+        // 服务端返回编号前已取消：补发取消请求，避免后台任务继续占用该图与额度。
+        void client.cancelChartAiEdit(current.chartId, runningEditId).catch(() => undefined)
+      }
       let transientFailures = 0
       for (;;) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
@@ -323,6 +367,7 @@ export function createChartAIEdit(options: {
         }
         const stageLabel = STAGE_LABELS[String(state.stage ?? 'queued')] ?? STAGE_LABELS.queued
         stage.textContent = `${stageLabel}（${Math.round((performance.now() - started) / 1000)} 秒）`
+        if (dismissed) return
         if (state.status === 'succeeded') {
           renderReviewPhase(current, state as unknown as ChartAIEditSuccess, instruction)
           return
@@ -340,12 +385,12 @@ export function createChartAIEdit(options: {
           return
         }
       }
-      if (cancelled) {
+      if (cancelled && !dismissed) {
         renderInputPhase(current, '已取消本次改图，原图保持不变。')
       }
     } catch (error) {
       hooks?.onError?.(error instanceof Error ? error.message : 'report_editor_chart_ai_failed')
-      renderInputPhase(current, '改图请求失败，请稍后重试；原图保持不变。')
+      if (!dismissed) renderInputPhase(current, '改图请求失败，请稍后重试；原图保持不变。')
     } finally {
       runningEditId = null
     }
@@ -398,12 +443,10 @@ export function createChartAIEdit(options: {
       skipped.append(entry)
     }
     body.querySelector<HTMLButtonElement>('[data-action="accept"]')!.addEventListener('click', () => {
-      const replaced = applyChartReplacement(
-        view,
-        current.img,
-        result.imageSrc,
-        result.changes.altText ?? null,
-      )
+      const replaced = applyChartReplacement(view, current.img, result.imageSrc, {
+        title: result.changes.title ?? null,
+        altText: result.changes.altText ?? null,
+      })
       if (!replaced) {
         hooks?.onError?.('report_editor_chart_ai_target_missing')
         renderInputPhase(current, '未能在正文中定位这张图（页面可能已变化），请重新打开后重试。')
@@ -431,6 +474,7 @@ export function createChartAIEdit(options: {
 
   return {
     open(img: HTMLImageElement) {
+      dismissed = false
       const body = bodyOf()
       body.innerHTML = `
         <div class="chart-ai-progress" role="status" aria-live="polite">
@@ -439,6 +483,7 @@ export function createChartAIEdit(options: {
       `
       ensureModal().open()
       void resolveTarget(img).then((resolved) => {
+        if (dismissed) return
         if ('error' in resolved) {
           body.innerHTML = `
             <div class="chart-ai-unavailable" role="alert">

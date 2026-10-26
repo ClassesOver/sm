@@ -612,6 +612,11 @@ export class ReportEditorClient {
     )
   }
 
+  /** 已登记改图的图表归属：正文图片已替换为改图结果时据此继续改图。 */
+  chartEditRecord(editId: string): Promise<{ editId: string; chartId: string; imagePath: string }> {
+    return this.request(`/api/chart-edits/${encodeURIComponent(editId)}`)
+  }
+
   async cancelChartAiEdit(chartId: string, editId: string): Promise<void> {
     await this.request(
       `/api/charts/${encodeURIComponent(chartId)}/ai-edits/${encodeURIComponent(editId)}/cancel`,
