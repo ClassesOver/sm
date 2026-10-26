@@ -30,6 +30,7 @@ from ...hospital_operation.findings import FindingGraph
 from ...hospital_operation.narrative_outline import NarrativeOutline, NarrativeSection
 from ...hospital_operation.outline import ReportOutlineSection
 from ...model_policy import (
+    REPORTING_SECTION_OUTPUT_TOKEN_LIMIT,
     ThinkingFailureKind,
     ThinkingRequest,
     positive_token_count,
@@ -551,6 +552,7 @@ def _estimated_section_tokens(value: str) -> int:
 
 def _section_block_input_token_budget(
     agent: Any, run_context: RunContext, *, default_budget: int | None = _SECTION_BLOCK_DEFAULT_INPUT_TOKEN_BUDGET,
+    output_tokens: int | None = None,
 ) -> int:
     model = getattr(agent, "model", None)
     configured_cap = default_budget
@@ -564,7 +566,14 @@ def _section_block_input_token_budget(
     return reporting_request_input_hard_cap(
         configured_input_token_cap=configured_cap,
         model_id=model_id if isinstance(model_id, str) else None,
-        output_tokens=getattr(model, "max_tokens", None),
+        output_tokens=(
+            output_tokens if output_tokens is not None
+            else min(
+                positive_token_count(getattr(model, "max_tokens", None))
+                or REPORTING_SECTION_OUTPUT_TOKEN_LIMIT,
+                REPORTING_SECTION_OUTPUT_TOKEN_LIMIT,
+            )
+        ),
     )
 
 

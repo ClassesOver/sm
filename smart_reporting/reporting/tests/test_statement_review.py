@@ -277,6 +277,15 @@ def test_relative_yoy_anchor_excludes_an_explicit_baseline_in_an_earlier_compari
     assert expanded.endswith('成本较2024年1月至2024年2月同期增长')
 
 
+def test_relative_yoy_baseline_does_not_change_following_shorthand_current_month():
+    markdown = (
+        '2025年1—2月收入较上年同期增长，其中2月收入为'
+        '{{value:fact-bbbbbbbbbbbbbbbb:periodValues.1:元}}。'
+    )
+
+    assert statement_review_warnings(markdown, source()) == []
+
+
 def test_multiple_comparisons_review_each_baseline_against_the_current_window():
     from smart_reporting.reporting.trace.content_review import review_content_result
 

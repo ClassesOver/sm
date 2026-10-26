@@ -18,6 +18,7 @@ from ..integrations.model_config import reasoning_transport_fields
 from ..model_routing import TaskComplexity, log_thinking_selection
 
 ReportingReasoningEffort = Literal["low", "high", "max"]
+REPORTING_SECTION_OUTPUT_TOKEN_LIMIT = 32 * 1024
 REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR = "_reporting_vllm_thinking_budget"
 ThinkingOperation = Literal[
     "request_normalization",

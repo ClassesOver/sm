@@ -83,6 +83,7 @@ from .code_agent.protocol import (
 from .host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .instructions import build_report_agent_instructions
 from .model_policy import (
+    REPORTING_SECTION_OUTPUT_TOKEN_LIMIT,
     REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR,
     ReportingReasoningEffort,
     ReportingThinkingProfile,
@@ -198,7 +199,6 @@ _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # SectionDecision JSON 结束前被截断。可视化允许 128K、逐章正文允许 32K；实际请求
 # 取该上限、AGENT_REPORT_OUTPUT_TOKEN_RESERVE 与模型已验证单次输出上限的最小值。
 _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
-_REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 32 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Agent 仍保留既有一次同 run continuation，
 # 这里与 900 秒模型请求配置保持一致，避免长结构化规划请求在上游返回前被截断。
@@ -1824,7 +1824,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         if task_kind == "visualization_section":
             output_limit = _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT
         elif task_kind == "section":
-            output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
+            output_limit = REPORTING_SECTION_OUTPUT_TOKEN_LIMIT
         else:
             output_limit = None
         request_model.max_tokens = clamp_reporting_output_tokens(

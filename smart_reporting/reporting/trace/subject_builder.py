@@ -423,6 +423,16 @@ def _expanded_period_wording(window: str) -> str:
             # “2024年同期/同月”指与本期相同的月份，不是2024全年；只为其后的月份提供年份。
             year = key[0]
             return '该年'
+        if key and len(key) == 1 and year is not None:
+            prefix = window[:match.start()]
+            if re.search(r'\d{4}年\d{1,2}月至\d{4}年\d{1,2}月同期', prefix):
+                current_periods = _inheritable_calendars(prefix)
+                current = list(re.finditer(
+                    r'(\d{4})年\d{1,2}月(?:至\d{4}年\d{1,2}月)?',
+                    current_periods[-1] if current_periods else '',
+                ))
+                if current:
+                    year = int(current[-1][1])
         if key and (len(key) >= 2 or re.fullmatch(r'\d{4}\s*年', match[0])):
             year = key[0]
         elif key and year is not None and not re.search(r'去年|上年|次年|翌年|上月|下月', window[max(0, match.start() - 3):match.start()]):

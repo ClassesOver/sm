@@ -1201,6 +1201,27 @@ def test_section_block_input_budget_uses_final_routed_model() -> None:
     assert reporting_sections._section_block_input_token_budget(agent, context) == 224 * 1024
 
 
+def test_section_block_input_budget_uses_section_request_output_limit() -> None:
+    context = _context()
+    context.dependencies = {
+        REPORTING_TASK_DEPENDENCY: {
+            REPORTING_MODEL_TIER_DEPENDENCY_KEY: "fast",
+            REPORTING_MODEL_ID_DEPENDENCY_KEY: "qwen3.8-flash",
+        }
+    }
+    agent = SimpleNamespace(
+        model=SimpleNamespace(
+            id="qwen3.8-flash",
+            max_tokens=64 * 1024,
+            _task_execution_input_token_budget=448 * 1024,
+        )
+    )
+
+    assert reporting_sections._section_block_input_token_budget(
+        agent, context, output_tokens=32 * 1024
+    ) == 224 * 1024
+
+
 def _plan_stage_validator(work_item: SectionWorkItem) -> object:
     stage = reporting_sections._section_stage_agent(
         Agent(model=ReportingPhaseOpenAIChat(id="test", api_key="test")),
