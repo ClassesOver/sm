@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from ...workspace import (
     MAX_DOWNLOAD_BYTES,
 )
+from ..contract import SHA256_PATTERN
 from ..models import ReportingError
 
 DOWNLOAD_GRANT_TTL = timedelta(days=30)
@@ -627,7 +628,7 @@ class ReportDownloadGrantService:
         for path, size, digest in formats:
             if all(value is None for value in (path, size, digest)):
                 continue
-            if not isinstance(path, str) or not path or isinstance(size, bool) or not isinstance(size, int) or size <= 0 or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            if not isinstance(path, str) or not path or isinstance(size, bool) or not isinstance(size, int) or size <= 0 or not isinstance(digest, str) or re.fullmatch(SHA256_PATTERN, digest) is None:
                 raise ReportingError("report_artifact_invalid", "报告格式身份必须完整。")
         current = _utc_datetime(now or datetime.now(UTC))
         raw = secrets.token_urlsafe(32)
@@ -690,7 +691,7 @@ class ReportArtifactPersistenceService:
             if (
                 spec.size <= 0
                 or spec.size > MAX_DOWNLOAD_BYTES
-                or re.fullmatch(r"[0-9a-f]{64}", spec.sha256) is None
+                or re.fullmatch(SHA256_PATTERN, spec.sha256) is None
             ):
                 raise ReportingError("report_artifact_invalid", "报告产物身份无效。")
             relative = self.workspace_service.normalize_path(

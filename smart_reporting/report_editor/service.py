@@ -30,6 +30,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..async_utils import complete_cleanup
+from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.artifacts_v1 import (
     ArtifactFile,
     ChartArtifact,
@@ -1444,7 +1445,7 @@ class ReportEditorService:
                 sha256 = str(raw["sha256"])
             except (KeyError, TypeError, ValueError, WorkspaceError) as error:
                 raise ReportingError("snapshot_integrity_failed", "报告产物登记身份无效。") from error
-            if size < 1 or size > _MAX_BUNDLE_SOURCE_BYTES or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            if size < 1 or size > _MAX_BUNDLE_SOURCE_BYTES or not re.fullmatch(SHA256_PATTERN, sha256):
                 raise ReportingError("snapshot_integrity_failed", "报告产物登记身份无效。")
             identity = (size, sha256)
             previous = identities.setdefault(path, identity)

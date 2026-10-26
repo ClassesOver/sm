@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from ...task_execution import abuild_workspace_changes, parse_unified_diff
 from ...workspace import WorkspaceError, WorkspacePathConflict, normalize_workspace_path
+from ..contract import SHA256_PATTERN
 from ..models import ReportingError
 from ..workflow.checkpoint import FileIdentity
 from ..workflow.state import ReportingRunState
@@ -498,7 +499,7 @@ class RuntimeAnalysisMixin:
             expected_sha256 = change.get("expected_sha256")
             if change.get("operation") == "update" and (
                 not isinstance(expected_sha256, str)
-                or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+                or re.fullmatch(SHA256_PATTERN, expected_sha256) is None
             ):
                 raise ReportingError(
                     "report_analysis_write_intent_invalid",

@@ -21,6 +21,7 @@ from ...task_execution import (
     MAX_TOOL_OUTPUT_READ_BYTES,
 )
 from ...workspace import WorkspaceError, normalize_workspace_path
+from ..contract import SHA256_PATTERN
 from ..models import ReportingError
 from ..phase import ReportingPhase, ReportingTaskKind, reporting_phase_allows_tool
 from ..workflow.checkpoint import FileIdentity
@@ -345,7 +346,7 @@ class ReportingToolkitBase(Toolkit):
             or not isinstance(identity.get("size"), int)
             or identity["size"] <= 0
             or not isinstance(identity.get("sha256"), str)
-            or re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is None
+            or re.fullmatch(SHA256_PATTERN, identity["sha256"]) is None
         ):
             raise ReportingError(identity_code, "受信 JSON 文件身份缺失或无效。")
         content, _mime = await self.runtime.workspace.afile_bytes(thread_id, identity["path"])

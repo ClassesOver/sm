@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from ..contract import SourceSchemaSnapshot
+from ..contract import SHA256_PATTERN, SourceSchemaSnapshot
 from ..data_source.models import DataShape
 from ..models import ReportingError
 from .models import EffectiveReportingProfile, ProfileModel, parse_field_ref
@@ -22,7 +22,7 @@ class Capability(ProfileModel):
 
 
 class CapabilitySet(ProfileModel):
-    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=r"^[0-9a-f]{64}$")
+    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
     capabilities: tuple[Capability, ...] = Field(max_length=2_000)
 
 

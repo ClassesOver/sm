@@ -19,6 +19,7 @@ from fastapi.responses import (
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
@@ -41,7 +42,7 @@ class EditorTraceValidatePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     markdown: str = Field(max_length=10 * 1024 * 1024)
-    draft_sha256: str = Field(alias="draftSha256", pattern=r"^[0-9a-f]{64}$")
+    draft_sha256: str = Field(alias="draftSha256", pattern=SHA256_PATTERN)
 
 
 class EditorTraceDrilldownPayload(BaseModel):
@@ -58,14 +59,14 @@ class EditorWritePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     markdown: str = Field(max_length=10 * 1024 * 1024)
-    expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
 
 
 class EditorRestorePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     markdown: str | None = Field(default=None, max_length=10 * 1024 * 1024)
-    expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
 
 
 class EditorExportSettings(BaseModel):
@@ -82,7 +83,7 @@ class EditorExportSettings(BaseModel):
 class EditorExportPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
     settings: EditorExportSettings | None = None
     note: str | None = Field(default=None, max_length=200)
 

@@ -13,6 +13,7 @@ from agno.run import RunContext
 from pydantic import ValidationError
 
 from ...workspace import WorkspaceError, normalize_workspace_path
+from ..contract import SHA256_PATTERN
 from ..delivery.draft_v1 import ReportDraftBlock, validate_report_draft_blocks
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -572,8 +573,7 @@ class RuntimeSectionsMixin:
                 or any(not isinstance(item, str) for item in metrics)
                 or not isinstance(profile_datasets, list)
                 or not isinstance(plan_hash, str)
-                or len(plan_hash) != 64
-                or any(character not in "0123456789abcdef" for character in plan_hash)
+                or re.fullmatch(SHA256_PATTERN, plan_hash) is None
             ):
                 raise ReportingError(
                     "report_analysis_rework_invalid",
@@ -596,8 +596,7 @@ class RuntimeSectionsMixin:
                     or not isinstance(row_count, int)
                     or row_count < 0
                     or not isinstance(snapshot_hash, str)
-                    or len(snapshot_hash) != 64
-                    or any(character not in "0123456789abcdef" for character in snapshot_hash)
+                    or re.fullmatch(SHA256_PATTERN, snapshot_hash) is None
                 ):
                     raise ReportingError(
                         "report_analysis_rework_invalid",

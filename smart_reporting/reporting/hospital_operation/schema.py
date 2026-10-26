@@ -1,5 +1,6 @@
 """医院运营领域结构化数据的基础模型。"""
 
+
 from pydantic import BaseModel, ConfigDict
 
 

@@ -47,13 +47,14 @@ class ReportingWorkflowScope:
         }
 
 
-def _scope_digest(kind: str, values: tuple[str, ...]) -> str:
-    payload = json.dumps(
-        [kind, *values],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+def digest_values(*values: str) -> str:
+    """作用域/回执共用的稳定列表摘要；序列化口径不得改变（值会持久化）。"""
+    payload = json.dumps(list(values), ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _scope_digest(kind: str, values: tuple[str, ...]) -> str:
+    return digest_values(kind, *values)
 
 
 def reporting_scope_keys(

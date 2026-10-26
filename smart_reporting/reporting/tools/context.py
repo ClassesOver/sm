@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any
 
 from ...workspace import WorkspaceError, normalize_workspace_path
+from ..contract import SHA256_PATTERN
 
 
 def _freeze(value: Any) -> Any:
@@ -36,7 +37,7 @@ class ReportingFileRef:
             raise ValueError("Reporting 文件路径必须是规范化相对路径。")
         if isinstance(self.size, bool) or not isinstance(self.size, int) or self.size < 0:
             raise ValueError("Reporting 文件大小无效。")
-        if re.fullmatch(r"[0-9a-f]{64}", self.sha256) is None:
+        if re.fullmatch(SHA256_PATTERN, self.sha256) is None:
             raise ValueError("Reporting 文件 SHA-256 无效。")
 
 

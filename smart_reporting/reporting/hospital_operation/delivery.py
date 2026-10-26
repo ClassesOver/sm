@@ -7,9 +7,8 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
+from ..contract import SHA256_PATTERN  # noqa: E402  (保持模块级常量导出)
 from .schema import HospitalOperationSchema
-
-SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 SourcePolicy = Literal["csv", "source_compare", "source_explicit"]
 

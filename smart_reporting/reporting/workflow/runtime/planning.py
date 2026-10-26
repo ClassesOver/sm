@@ -870,14 +870,12 @@ class RuntimePlanningMixin:
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
-                payload["correction"] = {
-                    "attempt": attempt,
-                    "validationFeedback": _compact_validation_feedback(validation_feedback),
-                    "instruction": (
-                        "修正所有 issues；直接替换错误值，不把修正说明或标记写入字段；"
-                        "返回完整 JSON，不返回补丁、解释或 Markdown"
-                    ),
-                }
+                payload["correction"] = _planner_correction_payload(
+                    attempt,
+                    validation_feedback,
+                    "修正所有 issues；直接替换错误值，不把修正说明或标记写入字段；"
+                    "返回完整 JSON，不返回补丁、解释或 Markdown",
+                )
             output = await self._run_planner(
                 self._data_understanding_agent,
                 payload,
@@ -903,14 +901,11 @@ class RuntimePlanningMixin:
             self._assert_state_safe(state)
             return StepOutput(content=plan)
 
-        diagnostic = {
-            "previousOutput": _bounded_rejected_value(previous_output),
-            "validationFeedback": _compact_validation_feedback(validation_feedback),
-        }
-        raise ReportingError(
+        raise _planner_diagnostic_error(
             "report_data_understanding_invalid",
-            "数据理解计划连续五次未通过校验。最后一次诊断："
-            + _json_text(diagnostic),
+            "数据理解计划连续五次未通过校验。最后一次诊断：",
+            previous_output,
+            validation_feedback,
         )
 
     async def prepare_data_profile(
@@ -1100,14 +1095,12 @@ class RuntimePlanningMixin:
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
-                payload["correction"] = {
-                    "attempt": attempt,
-                    "validationFeedback": _compact_validation_feedback(validation_feedback),
-                    "instruction": (
-                        "逐项修正 issues，并重新返回 candidateFieldRefs 的完整分类；"
-                        "不得删除候选、增加字段、返回补丁或解释性 Markdown"
-                    ),
-                }
+                payload["correction"] = _planner_correction_payload(
+                    attempt,
+                    validation_feedback,
+                    "逐项修正 issues，并重新返回 candidateFieldRefs 的完整分类；"
+                    "不得删除候选、增加字段、返回补丁或解释性 Markdown",
+                )
             try:
                 proposal = await self._run_planner(
                     self._measure_semantic_agent,
@@ -1168,14 +1161,11 @@ class RuntimePlanningMixin:
                 continue
             return StepOutput(content=proposal)
 
-        diagnostic = {
-            "previousOutput": _bounded_rejected_value(previous_output),
-            "validationFeedback": _compact_validation_feedback(validation_feedback),
-        }
-        raise ReportingError(
+        raise _planner_diagnostic_error(
             "report_measure_semantic_proposal_invalid",
-            "指标语义候选连续五次未通过校验。最后一次诊断："
-            + _json_text(diagnostic),
+            "指标语义候选连续五次未通过校验。最后一次诊断：",
+            previous_output,
+            validation_feedback,
         )
 
     async def commit_measure_semantics(
@@ -1286,17 +1276,16 @@ class RuntimePlanningMixin:
         for attempt in range(1, 6):
             payload: dict[str, Any] = dict(base_payload)
             if validation_feedback is not None:
-                payload["correction"] = {
-                    "attempt": attempt,
-                    "previousOutput": previous_output,
-                    "allowedPaths": list(allowed_paths),
-                    "validationFeedback": _compact_validation_feedback(validation_feedback),
-                    "instruction": (
-                        "修正全部 issues 并返回完整 ReportOutlineProposal；sections 每项只能包含 "
-                        "title 和 analysisIds，不得包含 code 或 focus；每个章节必须引用已注册 "
-                        "analysisId；不返回正文、解释或 Markdown"
-                    ),
-                }
+                correction = _planner_correction_payload(
+                    attempt,
+                    validation_feedback,
+                    "修正全部 issues 并返回完整 ReportOutlineProposal；sections 每项只能包含 "
+                    "title 和 analysisIds，不得包含 code 或 focus；每个章节必须引用已注册 "
+                    "analysisId；不返回正文、解释或 Markdown",
+                )
+                correction["previousOutput"] = previous_output
+                correction["allowedPaths"] = list(allowed_paths)
+                payload["correction"] = correction
             try:
                 output = await self._run_planner(
                     self._outline_agent,
@@ -1373,14 +1362,10 @@ class RuntimePlanningMixin:
             except ValueError:
                 outline = None
         if outline is None:
-            raise ReportingError(
+            raise _planner_exhausted_error(
                 "report_outline_invalid",
-                "报告提纲连续五次未通过校验。最后一次反馈："
-                + json.dumps(
-                    _compact_validation_feedback(validation_feedback),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
+                "报告提纲连续五次未通过校验。最后一次反馈：",
+                validation_feedback,
             )
         state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
         state[REPORT_OUTLINE_HASH_STATE_KEY] = payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
@@ -1492,15 +1477,13 @@ class RuntimePlanningMixin:
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
-                correction: dict[str, Any] = {
-                    "attempt": attempt,
-                    "validationFeedback": _compact_validation_feedback(validation_feedback),
-                    "instruction": (
-                        "修正所有 issues；直接替换错误值，不把修正说明或标记写入字段；"
-                        "返回完整 AnalysisBundle JSON，不返回补丁、解释或 Markdown；"
-                        "存在 previousOutput 时只能修改 allowedMutationPaths，其他字段必须原样保留"
-                    ),
-                }
+                correction = _planner_correction_payload(
+                    attempt,
+                    validation_feedback,
+                    "修正所有 issues；直接替换错误值，不把修正说明或标记写入字段；"
+                    "返回完整 AnalysisBundle JSON，不返回补丁、解释或 Markdown；"
+                    "存在 previousOutput 时只能修改 allowedMutationPaths，其他字段必须原样保留",
+                )
                 if previous_output is not None:
                     correction["previousOutput"] = previous_output
                     correction["allowedMutationPaths"] = list(allowed_mutation_paths)
@@ -1631,14 +1614,10 @@ class RuntimePlanningMixin:
                         payload_sha256(output_payload),
                         payload_sha256(_compact_validation_feedback(validation_feedback)),
                     )
-                    raise ReportingError(
+                    raise _planner_exhausted_error(
                         "report_analysis_plan_invalid",
-                        "分析计划纠错连续两次没有进展。最后一次反馈："
-                        + json.dumps(
-                            _compact_validation_feedback(validation_feedback),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
+                        "分析计划纠错连续两次没有进展。最后一次反馈：",
+                        validation_feedback,
                     )
                 last_semantic_correction_signature = correction_signature
                 previous_output = output_payload
@@ -1654,14 +1633,10 @@ class RuntimePlanningMixin:
             bundle = output
             break
         if bundle is None:
-            raise ReportingError(
+            raise _planner_exhausted_error(
                 "report_analysis_plan_invalid",
-                "分析计划连续五次未通过校验。最后一次反馈："
-                + json.dumps(
-                    _compact_validation_feedback(validation_feedback),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
+                "分析计划连续五次未通过校验。最后一次反馈：",
+                validation_feedback,
             )
         bundle = bundle.model_copy(
             update={
@@ -1700,6 +1675,9 @@ class RuntimePlanningMixin:
             table.table for requirement in requirements for table in requirement.tables
         }
         envelope = self._envelope(run_context)
+        row_preserving_ids = tuple(
+            state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+        )
         base_payload = {
             "requirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
             # requirements 已包含每张表的期间字段和粒度；SQL planner 只需列名、类型
@@ -1722,7 +1700,7 @@ class RuntimePlanningMixin:
                     "requirementId": requirement_id,
                     "mode": "row_preserving_conflict_probe",
                 }
-                for requirement_id in state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+                for requirement_id in row_preserving_ids
             ],
         }
         sources = {item.id: item for item in self._sources(run_context)}
@@ -1733,15 +1711,13 @@ class RuntimePlanningMixin:
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
-                payload["correction"] = {
-                    "attempt": attempt,
-                    "validationFeedback": _compact_validation_feedback(validation_feedback),
-                    "instruction": (
-                        "修正所有 issues；只覆盖每个 requirementId 的 requirementPeriodWindows 中唯一期间窗口，返回完整 SQL 批次 JSON，"
-                        "每个查询只使用所属 periodRole 的精确窗口；直接替换错误值，不把修正说明或标记写入字段；"
-                        "不返回补丁、解释或 Markdown"
-                    ),
-                }
+                payload["correction"] = _planner_correction_payload(
+                    attempt,
+                    validation_feedback,
+                    "修正所有 issues；只覆盖每个 requirementId 的 requirementPeriodWindows 中唯一期间窗口，返回完整 SQL 批次 JSON，"
+                    "每个查询只使用所属 periodRole 的精确窗口；直接替换错误值，不把修正说明或标记写入字段；"
+                    "不返回补丁、解释或 Markdown",
+                )
             try:
                 output = await self._run_planner(
                     self._sql_agent,
@@ -1772,9 +1748,7 @@ class RuntimePlanningMixin:
                 snapshots=snapshots,
                 envelope=envelope,
                 requirements=requirements,
-                row_preserving_requirement_ids=tuple(
-                    state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
-                ),
+                row_preserving_requirement_ids=row_preserving_ids,
                 data_shapes=data_shapes,
             )
             if issues:
@@ -1793,9 +1767,7 @@ class RuntimePlanningMixin:
                 requirements,
                 snapshots=snapshots,
                 envelope=envelope,
-                row_preserving_requirement_ids=tuple(
-                    state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
-                ),
+                row_preserving_requirement_ids=row_preserving_ids,
             )
             if compiled is not None:
                 compiled_approved, compilation_issues = _approve_generated_queries(
@@ -1804,9 +1776,7 @@ class RuntimePlanningMixin:
                     snapshots=snapshots,
                     envelope=envelope,
                     requirements=requirements,
-                    row_preserving_requirement_ids=tuple(
-                        state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
-                    ),
+                    row_preserving_requirement_ids=row_preserving_ids,
                     data_shapes=data_shapes,
                 )
                 if not compilation_issues:
@@ -1818,14 +1788,10 @@ class RuntimePlanningMixin:
                         len(requirements),
                     )
                     return StepOutput(content={"queries": state[REPORT_APPROVED_QUERIES_STATE_KEY]})
-            raise ReportingError(
+            raise _planner_exhausted_error(
                 "report_query_batch_invalid",
-                "SQL 批次连续五次未通过校验。最后一次反馈："
-                + json.dumps(
-                    _compact_validation_feedback(validation_feedback),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
+                "SQL 批次连续五次未通过校验。最后一次反馈：",
+                validation_feedback,
             )
         state[REPORT_APPROVED_QUERIES_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in approved
@@ -3244,6 +3210,45 @@ def _compact_validation_feedback(value: dict[str, Any] | None) -> dict[str, Any]
     return compact
 
 
+def _planner_correction_payload(
+    attempt: int,
+    validation_feedback: dict[str, Any],
+    instruction: str,
+) -> dict[str, Any]:
+    """五个 planner 纠错循环共用的 correction 回灌形状；额外键由调用方按各自契约补充。"""
+    return {
+        "attempt": attempt,
+        "validationFeedback": _compact_validation_feedback(validation_feedback),
+        "instruction": instruction,
+    }
+
+
+def _planner_exhausted_error(
+    code: str, message: str, validation_feedback: dict[str, Any] | None
+) -> ReportingError:
+    return ReportingError(
+        code, message + _json_text(_compact_validation_feedback(validation_feedback))
+    )
+
+
+def _planner_diagnostic_error(
+    code: str,
+    message: str,
+    previous_output: Any,
+    validation_feedback: dict[str, Any] | None,
+) -> ReportingError:
+    return ReportingError(
+        code,
+        message
+        + _json_text(
+            {
+                "previousOutput": _bounded_rejected_value(previous_output),
+                "validationFeedback": _compact_validation_feedback(validation_feedback),
+            }
+        ),
+    )
+
+
 def _row_preserving_requirement_ids(
     requirements: tuple[QueryRequirement, ...],
     profile: EffectiveReportingProfile,
@@ -3679,7 +3684,7 @@ def _period_encoding_choices(table: ModelTable) -> list[dict[str, str]]:
         granularity = None
         name = column.name.lower()
         description = column.description.lower()
-        if re.match(r"^(?:DATE|DATETIME|TIMESTAMP)\b", data_type):
+        if _TYPED_PERIOD_TYPE.match(data_type):
             granularity = "date"
         elif (
             data_type.startswith("YEAR")
@@ -3789,9 +3794,7 @@ def _normalize_preferred_typed_period_fields(
             ),
             None,
         )
-        if current is None or re.match(
-            r"^(?:DATE|DATETIME|TIMESTAMP)\b", current.data_type.strip().upper()
-        ):
+        if current is None or _TYPED_PERIOD_TYPE.match(current.data_type.strip().upper()):
             normalized.append(selected)
             continue
         preferred = _preferred_typed_period_column(
