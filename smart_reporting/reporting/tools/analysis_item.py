@@ -725,6 +725,7 @@ class RuntimeAnalysisMixin:
         chartIds: list[str] | None = None,
         run_context: RunContext | None = None,
         _execution_receipt: Any = None,
+        _server_computation_record: Any = None,
     ) -> dict[str, Any]:
         """把不可变固定事实直接绑定为 evidence，并结束对应的独立 Task。
 
@@ -866,15 +867,15 @@ class RuntimeAnalysisMixin:
                 run_context=run_context,
                 requirements=planned if isinstance(planned, Mapping) else {},
                 execution_receipt=_execution_receipt,
+                server_computation_record=_server_computation_record,
             )
-            computation_receipt = self._computation_execution_receipt(
-                run_context, _execution_receipt
-            )
-            if computation_record is not None and computation_receipt is not None:
+            computation_receipt = self._computation_execution_receipt(run_context, _execution_receipt)
+            if computation_record is not None:
                 payload["computationRecord"] = computation_record
-                payload["computationScriptFile"] = computation_receipt.source_file.model_dump(
-                    mode="json", by_alias=True
-                )
+                if computation_receipt is not None:
+                    payload["computationScriptFile"] = computation_receipt.source_file.model_dump(
+                        mode="json", by_alias=True
+                    )
             if isinstance(durable_item, dict):
                 # durable 恢复重放没有执行回执；计算记录是服务端在首次完成时构造的，
                 # 沿用原值参与全等比对，避免恢复被误判为 payload 冲突。
@@ -947,11 +948,14 @@ class RuntimeAnalysisMixin:
         run_context: RunContext | None,
         requirements: Mapping[str, Any],
         execution_receipt: Any = None,
+        server_computation_record: Any = None,
     ) -> dict[str, Any] | None:
         """服务端构造 ComputationRecordV1（B4）；不可得时返回 None，不伪造。"""
 
         from ..trace.computation_service import build_supplemental_computation_record
 
+        if isinstance(server_computation_record, Mapping):
+            return dict(server_computation_record)
         receipt = self._computation_execution_receipt(run_context, execution_receipt)
         if receipt is None:
             return None

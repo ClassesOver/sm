@@ -813,6 +813,51 @@ async def test_chart_ai_availability_reports_missing_plot_data_and_unknown_chart
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("mismatch", [None, "sha256", "size", "path", "ambiguous"])
+async def test_chart_ai_resolves_revision_local_id_by_unique_image_identity(
+    tmp_path: Path, monkeypatch, mismatch: str | None,
+) -> None:
+    fixture = await _make_editor_with_chart(tmp_path, template_ready=True)
+    manifest, index = await fixture.editor.trace.load_manifest_and_index(fixture.context)
+    chart_id = "section_001__income_monthly_trend"
+    index = index.model_copy(update={"chart_traces": (
+        index.chart_traces[0].model_copy(update={"chart_id": chart_id}),
+    )})
+    chart = manifest.charts[0]
+    if mismatch == "ambiguous":
+        manifest = manifest.model_copy(update={"charts": (
+            chart, chart.model_copy(update={"chart_id": "chart_002"}),
+        )})
+    elif mismatch is not None:
+        value = {"sha256": "0" * 64, "size": chart.size + 1, "path": "other/chart.png"}[mismatch]
+        manifest = manifest.model_copy(update={"charts": (chart.model_copy(update={mismatch: value}),)})
+
+    async def load(_context):
+        return manifest, index
+
+    monkeypatch.setattr(fixture.editor.trace, "load_manifest_and_index", load)
+    service = _service(fixture, FakeRunner(fixture.chart_bytes))
+    session = SimpleNamespace(capabilities=None)
+    availability = await service.availability(fixture.context, session, chart_id)
+    templates = await service.templates(fixture.context, session, chart_id)
+    if mismatch is None:
+        assert availability == {"available": True, "chartId": chart_id}
+        assert any(item["available"] for item in templates["templates"])
+        started = await service.start_edit(
+            fixture.context, session, chart_id, ChartAIEditRequest(instruction="改成横向条形图"),
+        )
+        result = await _await_edit(service, fixture.context, chart_id, started["editId"])
+        assert result["status"] == "succeeded", result
+        records = await load_chart_edit_records(fixture.workspace, fixture.thread_id, fixture.context.markdown_path)
+        assert records[-1].chart_id == chart_id
+    else:
+        assert availability == {"available": False, "reason": "unknown_chart"}
+        assert not any(item["available"] for item in templates["templates"])
+    await service.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_read_asset_rejects_changed_chart_edit_and_corrupt_registry(
     tmp_path: Path,
 ) -> None:

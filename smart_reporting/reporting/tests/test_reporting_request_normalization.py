@@ -12,6 +12,21 @@ from smart_reporting.reporting.workflow.runtime.models import NormalizedReportPr
 
 
 @pytest.mark.anyio
+async def test_normalization_preserves_semantically_interpreted_section_count():
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(return_value=NormalizedReportPrompt(
+        reportType='topic', domains=('income',), sectionCount=1,
+    ))
+    context = SimpleNamespace(session_state={})
+    output = await runtime.normalize_report_request(
+        SimpleNamespace(input='分析2025年收入，所有内容放在同一个章内', additional_data=None), context,
+    )
+    assert output.content['sectionCount'] == 1
+    assert context.session_state['report_request_context']['sectionCount'] == 1
+
+
+@pytest.mark.anyio
 async def test_assertion_mode_is_pinned_for_new_runs_and_legacy_resume_is_shadow(monkeypatch):
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime._request_normalizer = object()

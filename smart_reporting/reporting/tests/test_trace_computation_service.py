@@ -9,14 +9,37 @@ import pytest
 from smart_reporting.reporting.code_agent.context import ExecutionReceipt
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.trace.computation_service import (
+    build_standard_supplemental_computation_record,
     build_supplemental_computation_record,
     detect_computation_cycles,
     expand_computation_chain,
 )
-from smart_reporting.reporting.trace.contracts_v1 import FactRefV1
+from smart_reporting.reporting.trace.contracts_v1 import FactRefV1, derive_resource_id
 
 SCRIPT = {"path": "报表/智能分析/run1/evidence/analysis_001/attempt-1/supplement.py", "size": 10, "sha256": "a" * 64}
 EVIDENCE = {"path": "报表/智能分析/run1/evidence/analysis_001/attempt-1/supplement.json", "size": 20, "sha256": "b" * 64}
+
+
+def test_standard_record_has_no_script_and_keeps_input_output_identity() -> None:
+    record = build_standard_supplemental_computation_record(
+        analysis_id="analysis_001",
+        dataset_ids=("dataset-url-abc0001",),
+        input_files=(
+            {"path": "data/income.csv", "size": 30, "sha256": "c" * 64},
+        ),
+        evidence_file=EVIDENCE,
+        method="group_summary",
+        method_version="standard-supplemental-v1",
+        parameters={"outputName": "income_by_unit"},
+        execution_id="execution-1",
+        finding_count=1,
+    )
+
+    assert record.script_file_resource_id is None
+    assert record.method == "group_summary"
+    assert record.method_version == "standard-supplemental-v1"
+    assert record.parameters["inputFiles"][0]["sha256"] == "c" * 64
+    assert record.output_fact_refs[0].file_resource_id == derive_resource_id(EVIDENCE["path"])
 
 
 def _record(analysis_id="analysis_001", finding_count=3, **overrides):

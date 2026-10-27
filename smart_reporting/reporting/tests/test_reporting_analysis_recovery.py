@@ -200,13 +200,64 @@ async def test_workflow_receipt_builds_computation_record_with_production_bindin
 
 
 @pytest.mark.anyio
+async def test_server_computation_record_is_durable_and_replayed_without_script_identity() -> None:
+    toolkit, stored = _recovery_toolkit()
+    durable = await toolkit._durable_state(None)
+    durable.payload["analysisItems"] = {}
+    toolkit._apply_durable = AsyncMock(return_value=durable)
+    evidence = "报表/智能分析/run-1/evidence/analysis_001/attempt-2/evidence.json"
+    record = {
+        "computationId": "comp-" + "e" * 16,
+        "executionId": "standard-1234567890abcdef",
+        "method": "supplemental_standard_group_summary",
+        "methodVersion": "standard-supplemental-v1",
+        "scriptFileResourceId": None,
+    }
+    args = {
+        "analysisId": "analysis_001",
+        "summary": "收入同比增长。",
+        "datasetIds": ["dataset-1"],
+        "evidencePaths": [evidence],
+        "citationIds": ["citation-1"],
+        "profileReadReceiptIds": [],
+        "warnings": [],
+    }
+    context = RunContext(run_id="run-1", session_id="session-1")
+
+    first = await toolkit.complete_analysis_item(
+        **args, run_context=context, _server_computation_record=record
+    )
+
+    assert first["ok"] is True
+    payload = toolkit._apply_durable.await_args.kwargs["payload"]
+    assert payload["computationRecord"] == record
+    assert "computationScriptFile" not in payload
+
+    stored.update(payload)
+    stored.pop("chartIds", None)
+    durable.payload["analysisItems"] = {"analysis_001": stored}
+    toolkit._ensure_registered_analysis_evidence = AsyncMock(
+        return_value=(durable, [])
+    )
+    recovered = await toolkit.complete_analysis_item(**args, run_context=context)
+
+    assert recovered["ok"] is True, recovered
+    assert recovered["status"] == "accepted"
+    toolkit._apply_durable.assert_awaited_once()
+
+
+@pytest.mark.anyio
 async def test_recovery_replay_keeps_server_built_computation_record() -> None:
     """恢复重放没有执行回执；durable 中服务端构造的计算记录不能让全等比对失败。"""
 
     toolkit, stored = _recovery_toolkit()
-    receipt, _evidence, script = _receipt_and_paths()
-    stored["computationRecord"] = {"computationId": "comp-" + "d" * 16, "executionId": "exec-2"}
-    stored["computationScriptFile"] = script
+    stored["computationRecord"] = {
+        "computationId": "comp-" + "d" * 16,
+        "executionId": "standard-1234567890abcdef",
+        "method": "supplemental_standard_group_summary",
+        "scriptFileResourceId": None,
+    }
+    stored["computationScriptFile"] = None
     recovered = {
         key: stored[key]
         for key in (
@@ -222,3 +273,4 @@ async def test_recovery_replay_keeps_server_built_computation_record() -> None:
     assert result["ok"] is True
     assert result["status"] == "accepted"
     toolkit._apply_durable.assert_not_awaited()
+    assert stored["computationScriptFile"] is None

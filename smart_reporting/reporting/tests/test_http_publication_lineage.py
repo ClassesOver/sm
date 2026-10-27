@@ -37,8 +37,10 @@ from smart_reporting.reporting.host_workspace import (
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.trace.contracts_v1 import (
+    FactRefV1,
     RevisionTraceIndexV1,
     SubjectBindingV1,
+    TableTraceV1,
     derive_resource_id,
 )
 from smart_reporting.reporting.trace.index_builder import build_csv_trace_index, encode_trace_index
@@ -135,7 +137,7 @@ def _identity(path: str, content: bytes, media_type: str) -> ArtifactFile:
 
 
 async def _publication_fixture(
-    tmp_path: Path, *, forged: str | None = None, table_source: bool = False,
+    tmp_path: Path, *, forged: str | None = None, table_source: bool = False, source_cell: bool = False, denominator: bool = False, population: bool = False,
     quality_record: bool = False,
 ):
     dependencies = {
@@ -168,6 +170,16 @@ async def _publication_fixture(
     table_source_path = "evidence/table.json"
     if table_source:
         files[table_source_path] = table_bytes
+    denominator_path = "facts/denominator.json"
+    if denominator:
+        files[denominator_path] = b'{"analysisId":"analysis_001","metrics":[{"factId":"fact-aaaaaaaaaaaaaaaa","total":200}]}'
+    if population:
+        from .test_semantic_quantity import _proven_catalog
+
+        proven_sources = _proven_catalog().sources
+        table_bytes = proven_sources['trf-' + 'b' * 20]
+        files[table_source_path] = table_bytes
+        files[denominator_path] = proven_sources['trf-' + 'a' * 20]
     if quality_record:
         files["reports/quality-bundle-v1.json"] = b'{"version":"1","mode":"shadow"}'
     for path, content in files.items():
@@ -219,6 +231,48 @@ async def _publication_fixture(
                 },
             },
         })
+        if denominator:
+            proof = subject.number_reference.table_derivation.model_copy(update={
+                "denominator_fact": FactRefV1(
+                    analysisId="analysis_001", fileResourceId=derive_resource_id(denominator_path),
+                    jsonPointer="/metrics/0", factKind="metric", factKey="fact-aaaaaaaaaaaaaaaa",
+                ),
+            })
+            subject = subject.model_copy(update={"number_reference": subject.number_reference.model_copy(
+                update={"table_derivation": proof},
+            )})
+        if population:
+            from smart_reporting.reporting.trace.contracts_v1 import (
+                TableDerivationV1,
+                canonical_sha256,
+            )
+            from smart_reporting.reporting.trace.table_sources import (
+                resolve_table_derivation,
+                table_derivation_token,
+            )
+
+            parent = json.loads(files[denominator_path])
+            proof = TableDerivationV1.model_validate({
+                'unit': '元', 'operands': [{
+                    'fileResourceId': table_resource_id, 'tablePointer': '/findings/0',
+                    'rowIndex': row, 'columnIndex': 1, 'coefficient': '1',
+                } for row in (0, 1)],
+                'populationFact': {'analysisId': parent['analysisId'],
+                    'fileResourceId': derive_resource_id(denominator_path), 'jsonPointer': '/metrics/0',
+                    'factKind': 'metric', 'factKey': parent['metrics'][0]['factId']},
+                'populationProofSha256': canonical_sha256(json.loads(table_bytes)['findings'][0]['populationProof']),
+                'topSelection': 'items', 'topLimit': 2,
+            })
+            proof_sources = {table_resource_id: table_bytes,
+                             derive_resource_id(denominator_path): files[denominator_path]}
+            token = table_derivation_token(proof, proof_sources)
+            assert token and resolve_table_derivation(token, proof, proof_sources)['value'] == 90
+            subject = subject.model_copy(update={
+                'fact_refs': (proof.population_fact,),
+                'number_reference': subject.number_reference.model_copy(update={
+                    'token': token, 'table_derivation': proof, 'display_text': '90元',
+                }),
+            })
         table_source_identity = _identity(
             table_source_path, table_bytes, "application/json"
         )
@@ -232,8 +286,18 @@ async def _publication_fixture(
         revision=1,
         workflow_run_id="workflow-run",
         markdown_file=_identity("reports/report.md", markdown, "text/markdown"),
-        table_source_files=() if table_source_identity is None else (table_source_identity,),
+        table_source_files=(() if table_source_identity is None else (table_source_identity,))
+        + ((_identity(denominator_path, files[denominator_path], "application/json"),) if denominator or population else ()),
+        fact_files=({"analysis_001": _identity(denominator_path, files[denominator_path], "application/json")}
+                    if denominator or population else None),
         subject_bindings=() if subject is None else (subject,),
+        server_table_traces=(() if not source_cell else (TableTraceV1.model_validate({
+            "tableId": "table-source-cell", "rowKeys": ["source-row:0"], "columnKeys": ["收入"],
+            "cells": [{"rowKey": "source-row:0", "columnKey": "收入", "sourceCell": {
+                "fileResourceId": table_resource_id, "tablePointer": "/tables/0",
+                "rowIndex": 0, "columnIndex": 1, "coefficient": "1",
+            }}],
+        }),)),
         computation_files=(_identity("reports/quality-bundle-v1.json",
                                       files["reports/quality-bundle-v1.json"], "application/json"),)
         if quality_record else (),
@@ -343,7 +407,7 @@ async def _publication_fixture(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate", "runtime_state", "write", "read"])
+@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate", "runtime_state", "quality_source_selection", "write", "read"])
 async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch, fault):
     from smart_reporting.reporting.trace import quality_bundle
 
@@ -370,6 +434,10 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
         def fail(*_args, **_kwargs):
             raise RuntimeError("injected quality evaluation failure")
         monkeypatch.setattr(quality_bundle, {"evaluate": "evaluate_quality_bundle", "chart_evaluate": "evaluate_chart_quality", "table_evaluate": "evaluate_table_quality", "semantic_evaluate": "evaluate_semantic_alignment", "overview_evaluate": "build_management_overview"}[fault], fail)
+    elif fault == "quality_source_selection":
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("injected quality source dependency failure")
+        monkeypatch.setattr(publication_module, "_quality_source_ids", fail)
     elif fault in {"write", "read"}:
         workspace = runtime.workspace_service
         original = workspace.awrite_bytes if fault == "write" else workspace.read_limited_regular_file
@@ -657,7 +725,7 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
 @pytest.mark.parametrize("fault", [
     "manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot",
     "lineage_runtime", "editor_snapshot", "editor_context", "editor_state_read", "editor_scope",
-    "table_source_missing", "table_source_changed",
+    "table_source_missing", "table_source_changed", "source_cell_missing", "source_cell_changed", "denominator_missing", "denominator_changed", "population_missing", "population_changed",
     "quality_record_missing", "quality_record_changed",
 ])
 async def test_http_publication_never_blocks_links_on_lineage_faults(
@@ -666,9 +734,9 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     from smart_reporting.report_editor import trace_revisions
     from smart_reporting.reporting.workflow.runtime.base import merge_publication_issues
 
-    table_source_fault = fault.startswith("table_source_")
+    table_source_fault = fault.startswith(("table_source_", "source_cell_", "denominator_", "population_"))
     runtime, arguments, scope, durable, artifacts, grants, files, index = await _publication_fixture(
-        tmp_path, table_source=table_source_fault, quality_record=fault.startswith("quality_record_"),
+        tmp_path, table_source=table_source_fault, source_cell=fault.startswith("source_cell_"), denominator=fault.startswith("denominator_"), population=fault.startswith("population_"), quality_record=fault.startswith("quality_record_"),
     )
     manifest_path = arguments["output"]["artifactManifest"]["path"]
     workspace = runtime.workspace_service
@@ -679,11 +747,14 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
         else:
             await workspace.awrite_bytes(scope.workspace_key, "reports/quality-bundle-v1.json", b"{}", overwrite=True)
     elif table_source_fault:
-        source_path = "evidence/table.json"
+        source_path = "facts/denominator.json" if fault.startswith(("denominator_", "population_")) else "evidence/table.json"
         source_id = derive_resource_id(source_path)
         assert any(file.resource_id == source_id for file in index.files)
-        assert index.subject_bindings[0].number_reference.table_derivation.operands[0].file_resource_id == source_id
-        if fault == "table_source_missing":
+        derivation = index.subject_bindings[0].number_reference.table_derivation
+        assert (derivation.denominator_fact.file_resource_id if fault.startswith("denominator_")
+                else derivation.population_fact.file_resource_id if fault.startswith("population_")
+                else derivation.operands[0].file_resource_id) == source_id
+        if fault in {"table_source_missing", "source_cell_missing", "denominator_missing", "population_missing"}:
             await workspace.adelete_file(scope.workspace_key, source_path)
         else:
             await workspace.awrite_bytes(scope.workspace_key, source_path, b"{}", overwrite=True)

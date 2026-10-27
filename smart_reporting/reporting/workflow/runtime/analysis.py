@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from typing import Literal
 
 from agno.exceptions import ModelProviderError
+from loguru import logger
 
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...code_agent.failure_policy import fresh_attempt_futile
@@ -38,6 +39,7 @@ from ...phase import (
 )
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
+from ...trace.computation_service import build_standard_supplemental_computation_record
 from ...trace.fact_index import breakdown_partition_rows, breakdown_partitions
 from ...trace.numeric_text import frozen_number_catalog, render_frozen_numbers
 from ..benchmark_variants import (
@@ -61,6 +63,7 @@ from .analysis_item_workflow import (
     EvidenceDecision,
     SupplementalEvidence,
     _project_analysis_summary_payload,
+    empty_supplemental_evidence_error,
     supplemental_evidence_schema_error,
     validate_supplemental_evidence,
 )
@@ -156,6 +159,13 @@ from .code_generation import (
 from .datasets import _profile_coverage_instruction_projection
 from .phase_models import ChartDraft, VisualizationPlanDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow, execute_analysis_items
+from .standard_supplemental import (
+    StandardSupplementalRequest,
+    StandardSupplementalSpec,
+    build_standard_population_proof,
+    frozen_period_total,
+    run_standard_supplemental,
+)
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
     _visualization_thinking_complexity,
@@ -2493,6 +2503,7 @@ class RuntimeAnalysisMixin:
     async def _plan_narrative_outline(
         self, *, graph: FindingGraph, title: str, report_goal: str,
         analyses: list[dict[str, str]], run_context: RunContext,
+        max_sections: int | None = None,
     ) -> tuple[NarrativeOutline, tuple[dict[str, Any], ...]]:
         """模型提出章节候选；服务端冻结，纠错失败后保留确定性发现归属。"""
 
@@ -2530,6 +2541,8 @@ class RuntimeAnalysisMixin:
             )
             planned = []
             for index, context in enumerate(batches):
+                if max_sections is not None:
+                    context["sectionCount"] = max_sections
                 ids = {item["findingId"] for item in context["findings"]}
                 batch_graph = graph.model_copy(update={
                     "findings": tuple(card for card in graph.findings if card.finding_id in ids),
@@ -2586,7 +2599,8 @@ class RuntimeAnalysisMixin:
                     index + 1, len(batches), len(ids),
                 )
             if len(planned) == 1:
-                return freeze_narrative_outline(merged(planned[0]), graph=graph, analyses=analyses), repair_warnings()
+                return freeze_narrative_outline(merged(planned[0]), graph=graph, analyses=analyses,
+                                                max_sections=max_sections), repair_warnings()
             # 批次只是主题候选，不能直接拼接成最终章节。共同范围按候选描述，
             # 完整 findingId 目录留给全局规划重新分配，冻结仍逐一核对原始图谱。
             cards = {card.finding_id: card for card in graph.findings}
@@ -2599,6 +2613,7 @@ class RuntimeAnalysisMixin:
                                    "grain": first.grain, "scope": first.scope})
             global_context = {
                 "reportGoal": report_goal, "snapshotHash": graph.snapshot_hash,
+                **({"sectionCount": max_sections} if max_sections is not None else {}),
                 "findings": [{"findingId": card.finding_id} for card in graph.findings],
                 "proposedSections": topics,
                 "appendixFindingIds": [item for candidate in planned for item in candidate.appendix_finding_ids],
@@ -2628,7 +2643,8 @@ class RuntimeAnalysisMixin:
                         failure_kind="schema_failure" if attempt else None,
                     )
                     combined = merged(repaired(NarrativeOutlineCandidate.model_validate(candidate), graph))
-                    return freeze_narrative_outline(combined, graph=graph, analyses=analyses), repair_warnings()
+                    return freeze_narrative_outline(combined, graph=graph, analyses=analyses,
+                                                    max_sections=max_sections), repair_warnings()
                 except (ValueError, ReportingError, ModelProviderError) as error:
                     reason = str(error)[:2000]
                     if isinstance(error, ReportingError) and error.code == "report_planner_context_budget_exceeded":
@@ -2639,7 +2655,8 @@ class RuntimeAnalysisMixin:
         except (ValueError, ReportingError, ModelProviderError) as error:
             reason = str(error)[:2000]
         fallback = build_fallback_narrative_candidate(graph, title, analyses=analyses)
-        return freeze_narrative_outline(fallback, graph=graph, analyses=analyses), ({
+        return freeze_narrative_outline(fallback, graph=graph, analyses=analyses,
+                                        max_sections=max_sections), ({
             "code": "report_narrative_planning_degraded",
             "message": f"章节规划纠错未通过，已使用确定性发现分组：{reason}",
         },)
@@ -2707,6 +2724,7 @@ class RuntimeAnalysisMixin:
             graph=graph, title=legacy_outline.title,
             report_goal=self._envelope(run_context).report_goal,
             analyses=analyses, run_context=run_context,
+            max_sections=self._envelope(run_context).section_count,
         )
         if any(section.narrative_role == "appendix" for section in narrative.sections):
             # 此时尚未绑定最终目录/启动章节。复用冻结分析产物构造与渲染阶段
@@ -3185,29 +3203,87 @@ class RuntimeAnalysisMixin:
         except ValidationError as error:
             raise ReportingError("report_phase_artifact_invalid", "阶段产物结构无效。") from error
 
+    async def _write_immutable_artifact_with_ownership(
+        self,
+        thread_id: str,
+        path: str,
+        content: bytes,
+    ) -> tuple[FileIdentity, bool]:
+        self.workspace_service.validate_content(content)
+        digest = await _sha256_hex(content)
+        current = (await self.workspace_service.abatch_hash_files(thread_id, [path]))[0]
+        if current.get("missing") is not True:
+            if current.get("size") == len(content) and current.get("sha256") == digest:
+                return FileIdentity.model_validate(current), False
+            raise ReportingError(
+                "report_artifact_file_changed", "当前 revision 的服务端产物已存在但身份不同。"
+            )
+        relative = self.workspace_service.normalize_path(path, allow_root=False)
+        try:
+            await self.workspace_service.awrite_bytes(thread_id, relative, content)
+        except Exception:
+            # A concurrent writer may have atomically created this exact immutable artifact.
+            current = (await self.workspace_service.abatch_hash_files(thread_id, [relative]))[0]
+            if current.get("size") == len(content) and current.get("sha256") == digest:
+                return FileIdentity.model_validate(current), False
+            raise
+        return FileIdentity(path=relative, size=len(content), sha256=digest), True
+
     async def _write_immutable_artifact(
         self,
         thread_id: str,
         path: str,
         content: bytes,
     ) -> FileIdentity:
-        self.workspace_service.validate_content(content)
-        digest = await _sha256_hex(content)
-        current = (await self.workspace_service.abatch_hash_files(thread_id, [path]))[0]
-        if current.get("missing") is not True:
-            if current.get("size") == len(content) and current.get("sha256") == digest:
-                return FileIdentity.model_validate(current)
-            raise ReportingError(
-                "report_artifact_file_changed", "当前 revision 的服务端产物已存在但身份不同。"
-            )
-        relative = self.workspace_service.normalize_path(path, allow_root=False)
-        await self.workspace_service.awrite_bytes(thread_id, relative, content)
+        identity, _created = await self._write_immutable_artifact_with_ownership(
+            thread_id, path, content
+        )
         stored = await self.workspace_service.read_limited_regular_file(
-            thread_id, relative, max_bytes=len(content)
+            thread_id, identity.path, max_bytes=len(content)
         )
         if stored != content:
             raise ReportingError("report_artifact_file_changed", "服务端产物写入后发生变化。")
-        return FileIdentity(path=relative, size=len(content), sha256=digest)
+        return identity
+
+    async def _write_verified_standard_supplemental_evidence(
+        self,
+        thread_id: str,
+        path: str,
+        content: bytes,
+        current_analysis: Mapping[str, Any],
+    ) -> tuple[FileIdentity, SupplementalEvidence, bool]:
+        identity: FileIdentity | None = None
+        created = False
+        try:
+            identity, created = await self._write_immutable_artifact_with_ownership(
+                thread_id, path, content
+            )
+            stored_content = await self._read_identity_bytes(thread_id, identity)
+            if stored_content != content:
+                raise ReportingError(
+                    "report_phase_artifact_changed",
+                    "标准补证 evidence 写入后内容发生变化。",
+                )
+            evidence = validate_supplemental_evidence(stored_content, current_analysis)
+            if (empty := empty_supplemental_evidence_error(evidence)) is not None:
+                raise empty
+            return identity, evidence, created
+        except Exception:
+            if created and identity is not None:
+                try:
+                    await self.workspace_service.adelete_registered_file(
+                        thread_id,
+                        identity.path,
+                        size=len(content),
+                        sha256=hashlib.sha256(content).hexdigest(),
+                    )
+                except Exception as cleanup_error:
+                    logger.bind(
+                        analysis_id=current_analysis.get("analysisId"),
+                        path=path,
+                        error_type=type(cleanup_error).__name__,
+                    ).warning("report_analysis_standard_evidence_cleanup_failed")
+            raise
 
     async def _load_or_create_reporting_checkpoint(
         self,
@@ -3681,6 +3757,165 @@ class RuntimeAnalysisMixin:
                 max_bytes=32 * 1024 * 1024,
             )
 
+        async def run_standard_supplemental_path(*, spec: StandardSupplementalSpec, state: Any, run_context: RunContext) -> Mapping[str, Any]:
+            """Execute and sign one fully authorized standard computation."""
+            started_at = time.monotonic()
+            decision = state.decision
+            if len(decision.coding_requirements) != 1:
+                raise ReportingError(
+                    "report_analysis_standard_unsupported",
+                    "标准补证首期只支持单项结构化计算，转入脚本路径。",
+                )
+            requirement = decision.coding_requirements[0]
+            datasets = state.instruction.get("datasets") or ()
+            dataset = next(
+                (
+                    item
+                    for item in datasets
+                    if isinstance(item, Mapping)
+                    and item.get("datasetId") == requirement.dataset_id
+                ),
+                None,
+            )
+            if not isinstance(dataset, Mapping):
+                raise ReportingError(
+                    "report_analysis_standard_dataset_missing",
+                    "标准补证数据集不在当前分析授权中。",
+                )
+            try:
+                identity = FileIdentity.model_validate(
+                    {key: dataset.get(key) for key in ("path", "size", "sha256")}
+                )
+            except Exception as error:
+                raise ReportingError(
+                    "report_analysis_standard_dataset_invalid",
+                    "标准补证数据集身份无效。",
+                ) from error
+            thread_id = str(self._scope(parent_run_context)["threadId"])
+            content = await self._read_identity_bytes(
+                thread_id, identity, max_bytes=32 * 1024 * 1024
+            )
+            fact_by_id = {
+                item.fact_id: item
+                for item in (state.facts.metrics if state.facts is not None else ())
+                if item.fact_id
+            }
+            parent = fact_by_id.get(spec.parent_fact_id)
+            baseline = (
+                fact_by_id.get(spec.baseline_parent_fact_id)
+                if spec.baseline_parent_fact_id
+                else None
+            )
+            if parent is None:
+                raise ReportingError(
+                    "report_analysis_standard_parent_fact_missing",
+                    "标准补证引用的冻结父指标不存在。",
+                )
+            request = StandardSupplementalRequest(
+                operation=spec.operation,
+                datasetId=requirement.dataset_id,
+                outputName=requirement.output_name,
+                measureField=spec.measure_field,
+                measureUnit=getattr(parent, "unit", None),
+                dimensionField=spec.dimension_field,
+                periodField=spec.period_field,
+                periodGranularity=getattr(parent, "period_granularity", None),
+                currentPeriods=spec.current_periods,
+                baselinePeriods=spec.baseline_periods,
+                parentTotal=frozen_period_total(parent, spec.current_periods),
+                baselineParentTotal=(
+                    frozen_period_total(baseline or parent, spec.baseline_periods)
+                    if spec.operation == "period_comparison"
+                    else None
+                ),
+                scope=dict(getattr(parent, "scope", {}) or {}),
+            )
+            raw_payload = run_standard_supplemental(
+                analysis_id=str(state.instruction.get("currentAnalysisId")),
+                dataset_ids=(requirement.dataset_id,),
+                authorized_fields=tuple(dataset.get("columns") or ()),
+                csv_content=content,
+                request=request,
+            )
+            population_proof = None
+            try:
+                population_proof = build_standard_population_proof(
+                    csv_content=content, dataset_sha256=identity.sha256,
+                    request=request, parent_fact=parent, finding=raw_payload["findings"][0],
+                )
+            except Exception as error:
+                logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
+                            error_type=type(error).__name__).warning("report_standard_population_proof_unavailable")
+            if population_proof is not None:
+                raw_payload["findings"][0]["populationProof"] = population_proof
+            evidence_content = json.dumps(
+                raw_payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            ).encode()
+            # Validate before writing so malformed machine output cannot leave a signed path.
+            evidence = validate_supplemental_evidence(
+                evidence_content, state.instruction.get("currentAnalysis") or {}
+            )
+            if (empty := empty_supplemental_evidence_error(evidence)) is not None:
+                raise empty
+            evidence_path = AnalysisItemWorkflow._evidence_path(state)
+            current_analysis = state.instruction.get("currentAnalysis") or {}
+            evidence_file: FileIdentity | None = None
+            evidence_created = False
+            try:
+                evidence_file, evidence, evidence_created = (
+                    await self._write_verified_standard_supplemental_evidence(
+                        thread_id, evidence_path, evidence_content, current_analysis
+                    )
+                )
+                execution_id = (
+                    "standard-"
+                    + hashlib.sha256(
+                        (identity.sha256 + evidence_file.sha256).encode()
+                    ).hexdigest()[:16]
+                )
+                record = build_standard_supplemental_computation_record(
+                    analysis_id=str(state.instruction.get("currentAnalysisId")),
+                    dataset_ids=(requirement.dataset_id,),
+                    input_files=(identity.model_dump(mode="json", by_alias=True),),
+                    evidence_file=evidence_file.model_dump(mode="json", by_alias=True),
+                    method=f"supplemental_standard_{spec.operation}",
+                    method_version="standard-supplemental-v1",
+                    parameters={**request.model_dump(mode="json", by_alias=True),
+                                **({"populationProofs": [population_proof]} if population_proof else {})},
+                    execution_id=execution_id,
+                    finding_count=sum(len(item.get("rows", ())) for item in evidence.findings),
+                )
+            except Exception:
+                if evidence_created and evidence_file is not None:
+                    try:
+                        await self.workspace_service.adelete_registered_file(
+                            thread_id,
+                            evidence_file.path,
+                            size=len(evidence_content),
+                            sha256=hashlib.sha256(evidence_content).hexdigest(),
+                        )
+                    except Exception as cleanup_error:
+                        logger.bind(
+                            analysis_id=state.instruction.get("currentAnalysisId"),
+                            path=evidence_path,
+                            error_type=type(cleanup_error).__name__,
+                        ).warning("report_analysis_standard_evidence_cleanup_failed")
+                raise
+            logger.bind(
+                analysis_id=state.instruction.get("currentAnalysisId"),
+                operation=spec.operation,
+                evidence_bytes=len(evidence_content),
+                warning_count=len(evidence.warnings),
+            ).info(
+                "report_analysis_standard_path_completed duration_ms={}",
+                max(0, round((time.monotonic() - started_at) * 1000)),
+            )
+            return {
+                "evidence": evidence,
+                "evidenceFile": evidence_file,
+                "computationRecord": record.model_dump(mode="json", by_alias=True),
+            }
+
         workflow_kwargs: dict[str, Any] = {
             "decide_evidence": decide_evidence,
             "run_code": run_code,
@@ -3689,6 +3924,8 @@ class RuntimeAnalysisMixin:
             "complete": toolkit.complete_analysis_item,
             "read_dataset": read_dataset,
         }
+        if getattr(self, "standard_supplemental_enabled", False):
+            workflow_kwargs["run_standard_supplemental"] = run_standard_supplemental_path
         if knowledge_index is not None:
             workflow_kwargs["record_successful_repair"] = record_successful_repair
         workflow = AnalysisItemWorkflow(

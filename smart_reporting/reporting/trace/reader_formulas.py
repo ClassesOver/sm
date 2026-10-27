@@ -254,6 +254,13 @@ def _reader_formula(
     values = entry.get("periodValues") or ()
     roles = resolved.get("period_roles") or {}
 
+    if selector.startswith(("groupMissingShares.", "seriesGroupMissingShares.")):
+        field = selector.split(".", 1)[1]
+        key = "seriesGroupMissingness" if selector.startswith("seriesGroupMissingShares.") else "groupMissingness"
+        stat = entry[key][field]
+        span = _span(resolved.get("periods") or (), granularity)
+        return (f"{span} {field} 归属缺失行{name}绝对值合计 {_amount(stat['absoluteMissingValue'], unit)}"
+                f" ÷ 同范围{name}绝对值合计 {_amount(stat['absoluteTotalValue'], unit)} × 100%" + result)
     if selector == "registeredRatio":
         return _registered_ratio_formula(resolved, entries)
     if entry.get("kind") == "ratio" and selector in {

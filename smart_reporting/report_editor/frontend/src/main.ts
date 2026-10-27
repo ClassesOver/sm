@@ -54,7 +54,7 @@ import {
 import { activateProtocolMarker, deactivateProtocolMarker, protocolMarkerElement, protocolMarkerPlugin, updateProtocolSourceLabels } from './protocol-plugin'
 import { createBodySourcePreview } from './body-source-preview'
 import { editReviewMode, editReviewObserver, type EditReviewMode } from './edit-review'
-import { evidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
+import { evidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceTableId, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
 import { restoreProtocolMarkers } from './protocol'
 import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
@@ -800,8 +800,8 @@ try {
   if (documentState.tableAiEnabled) {
     shell.editor.addEventListener('dblclick', (event) => {
       const table = (event.target as HTMLElement).closest('table')
-      const marker = table?.previousElementSibling?.textContent?.match(/\[\[table:([A-Za-z0-9_.:-]+)\]\]/)
-      if (!table || !marker) return
+      const tableId = table && findEvidenceTableId(shell.editor, table)
+      if (!tableId) return
       // 改表面板按需加载：与改图面板同策略，入口不进首屏 chunk（构建预算契约）。
       void import('./table-ai-edit').then(({ createTableAIEdit, tableBodyMarkdown }) => {
         tableAIController ??= createTableAIEdit({
@@ -809,7 +809,7 @@ try {
           client,
           hooks: { onReplaced: () => status('已替换为 AI 改表结果，正在自动保存…', 'dirty') },
         })
-        tableAIController.open(marker[1], tableBodyMarkdown(getEditorMarkdown(), marker[1]))
+        tableAIController.open(tableId, tableBodyMarkdown(getEditorMarkdown(), tableId))
       })
     })
   }

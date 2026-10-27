@@ -144,6 +144,30 @@ async def test_chart_quality_rechecks_both_identity_and_frozen_projection(tmp_pa
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['none', 'image_changed', 'caption_changed'])
+async def test_static_chart_keeps_one_honest_review_reason_and_checks_identity(tmp_path, fault):
+    _, _, _, index, markdown, sources, _ = await chart_case(tmp_path)
+    chart = index.chart_traces[0]
+    if fault == 'image_changed':
+        sources[chart.image_file_resource_id] += b' changed'
+    elif fault == 'caption_changed':
+        markdown += '\n\n![another](chart-001.png)'
+    quality = evaluate_quality_bundle(index, markdown, sources,
+                                     authorization_scope_hash='a' * 64, interactive_charts={})
+    check = quality.chart_checks[chart.chart_id]
+    assert check.status == 'unknown'
+    assert check.reason == {
+        'none': 'static_image_not_evaluated',
+        'image_changed': 'chart_source_unavailable',
+        'caption_changed': 'chart_presentation_changed',
+    }[fault]
+    assert quality.semantic_checks[chart.chart_id].status == 'unknown'
+    assert quality.all_key_facts_evaluated is False
+    issues = [issue for issue in quality.issues if issue.subject_id == chart.chart_id]
+    assert [issue.code for issue in issues] == ['chart_support_unknown']
+
+
+@pytest.mark.anyio
 async def test_live_editor_does_not_reuse_previous_array_pass(tmp_path, monkeypatch):
     editor, workspace, context, index, markdown, sources, mapping = await chart_case(tmp_path)
     monkeypatch.setattr(editor.trace, "require_index", AsyncMock(return_value=index))

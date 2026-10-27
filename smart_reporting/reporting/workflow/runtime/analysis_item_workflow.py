@@ -27,7 +27,10 @@ from pydantic import (
 
 from ...code_agent.context import ExecutionReceipt
 from ...code_agent.failure_policy import recovery_for
-from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ...hospital_operation.deterministic_analysis import (
+    DeterministicAnalysisBundle,
+    metric_period_key,
+)
 from ...models import ReportingError
 from ..benchmark_variants import (
     BenchmarkProjection,
@@ -44,6 +47,7 @@ from .analysis_coverage import (
 from .code_generation import CodeGenerationResult
 from .evidence_coverage import facts_cover_analysis
 from .fact_summary import deterministic_fact_summary
+from .standard_supplemental import StandardSupplementalSpec
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
 MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS = 3
@@ -254,6 +258,9 @@ class AnalysisCodingRequirement(_StrictModel):
     fields: tuple[str, ...] = Field(min_length=1, max_length=100)
     calculation: str = Field(min_length=1, max_length=2_000)
     output_name: str = Field(alias="outputName", min_length=1, max_length=128)
+    standard_computation: StandardSupplementalSpec | None = Field(
+        default=None, alias="standardComputation", exclude_if=lambda value: value is None
+    )
 
     @field_validator("fields")
     @classmethod
@@ -261,6 +268,16 @@ class AnalysisCodingRequirement(_StrictModel):
         if any(not item.strip() for item in value) or len(value) != len(set(value)):
             raise ValueError("补证计算字段必须非空且不能重复")
         return value
+
+    @model_validator(mode="after")
+    def validate_standard_computation_fields(self) -> AnalysisCodingRequirement:
+        spec = self.standard_computation
+        if spec is not None:
+            required = {spec.measure_field, spec.dimension_field, spec.period_field}
+            missing = required - set(self.fields)
+            if missing:
+                raise ValueError(f"standardComputation 字段不在 requirement.fields 中: {sorted(missing)}")
+        return self
 
 
 class AnalysisEvidenceDecision(_StrictModel):
@@ -318,7 +335,9 @@ EvidenceDecision = AnalysisEvidenceDecision | LegacyAnalysisEvidenceDecision
 
 
 def _validate_coding_requirements(
-    decision: EvidenceDecision, datasets: Any, current_analysis: Any
+    decision: EvidenceDecision,
+    datasets: Any,
+    current_analysis: Any,
 ) -> None:
     if isinstance(decision, LegacyAnalysisEvidenceDecision):
         return
@@ -366,6 +385,8 @@ def _validate_coding_requirements(
                     "outputName": requirement.output_name,
                 },
             )
+        # Unsupported standard semantics are handled by the route selector, which
+        # leaves this authorized requirement available to the Python fallback.
 
 
 class AnalysisSummaryDraft(_StrictModel):
@@ -907,6 +928,7 @@ def _project_analysis_summary_payload(
 
 DecideEvidence = Callable[[Mapping[str, Any]], Awaitable[EvidenceDecision]]
 RunAnalysisCode = Callable[..., Awaitable[CodeGenerationResult]]
+RunStandardSupplemental = Callable[..., Awaitable[Mapping[str, Any]]]
 Summarize = Callable[[Mapping[str, Any]], Awaitable[AnalysisSummaryDraft]]
 ToolCall = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -930,6 +952,7 @@ class _AnalysisItemState:
     recovery: _DurableAnalysisCompletion | None = None
     script_file: FileIdentity | None = None
     execution_receipt: ExecutionReceipt | None = None
+    server_computation_record: dict[str, Any] | None = None
     repair_diagnostic: Mapping[str, Any] | None = None
     failure: Exception | None = None
     warnings: list[str] = field(default_factory=list)
@@ -951,6 +974,7 @@ class AnalysisItemWorkflow:
         complete: ToolCall,
         record_successful_repair: Callable[[Mapping[str, Any], FileIdentity], Awaitable[None]]
         | None = None,
+        run_standard_supplemental: RunStandardSupplemental | None = None,
         benchmark_projection: BenchmarkProjection | None = None,
         read_dataset: Callable[[FileIdentity], Awaitable[bytes]] | None = None,
     ) -> None:
@@ -963,6 +987,7 @@ class AnalysisItemWorkflow:
         self.read_file = read_file
         self.complete = complete
         self.record_successful_repair = record_successful_repair
+        self.run_standard_supplemental = run_standard_supplemental
         self.benchmark_projection = benchmark_projection
 
     async def run(
@@ -1277,6 +1302,54 @@ class AnalysisItemWorkflow:
             raise ReportingError(
                 "report_analysis_evidence_decision_invalid", "补充 evidence 决策无效。"
             )
+        if self.run_standard_supplemental is None:
+            logger.bind(
+                analysis_id=state.instruction.get("currentAnalysisId"), reason="disabled",
+            ).info("report_analysis_standard_preflight reason=disabled")
+            standard_spec = None
+        else:
+            standard_spec = self._standard_spec(state)
+        if standard_spec is not None and self.run_standard_supplemental is not None:
+            try:
+                result = await self.run_standard_supplemental(
+                    spec=standard_spec,
+                    state=state,
+                    run_context=run_context,
+                )
+                evidence = result.get("evidence")
+                evidence_file = result.get("evidenceFile")
+                computation = result.get("computationRecord")
+                if not isinstance(evidence, SupplementalEvidence):
+                    raise ReportingError("report_analysis_standard_result_invalid", "服务端标准补证结果结构无效。")
+                if not isinstance(evidence_file, FileIdentity):
+                    raise ReportingError("report_analysis_standard_result_invalid", "服务端标准补证缺少 evidence 身份。")
+                if not isinstance(computation, Mapping):
+                    raise ReportingError("report_analysis_standard_result_invalid", "服务端标准补证缺少计算回执。")
+                state.evidence = evidence
+                state.evidence_file = evidence_file
+                state.server_computation_record = dict(computation)
+                state.failure = None
+                state.statuses["execute-script"] = "completed"
+                return StepOutput(content={"status": "executed", "method": computation.get("method")})
+            except ReportingError as error:
+                state.warnings.append(f"report_analysis_standard_fallback: {error.code}: {error.message}")
+                logger.warning(
+                    "report_analysis_standard_fallback analysis_id={} code={}",
+                    state.instruction.get("currentAnalysisId"), error.code,
+                )
+            except Exception as error:
+                # 服务端路径是可选优化；未知执行/结构异常必须回退到现有脚本路径。
+                state.warnings.append(
+                    "report_analysis_standard_fallback: "
+                    f"{type(error).__name__}: 服务端标准补证执行失败。"
+                )
+                logger.warning(
+                    "report_analysis_standard_fallback analysis_id={} error_type={}",
+                    state.instruction.get("currentAnalysisId"), type(error).__name__,
+                )
+            state.evidence = None
+            state.evidence_file = None
+            state.server_computation_record = None
         script_path = self._script_path(state)
         previous_sha256 = state.script_file.sha256 if state.script_file is not None else None
         try:
@@ -1390,6 +1463,79 @@ class AnalysisItemWorkflow:
         return facts
 
     @staticmethod
+    def _standard_spec(state: _AnalysisItemState) -> StandardSupplementalSpec | None:
+        def unavailable(reason: str) -> None:
+            logger.bind(
+                analysis_id=state.instruction.get("currentAnalysisId"), reason=reason,
+            ).info("report_analysis_standard_preflight reason={}", reason)
+            return None
+
+        decision = state.decision
+        if not isinstance(decision, AnalysisEvidenceDecision):
+            return unavailable("decision_unsupported")
+        requirements = decision.coding_requirements
+        if len(requirements) != 1:
+            return unavailable("multiple_or_missing_requirements")
+        requirement = requirements[0]
+        spec = requirement.standard_computation
+        if spec is None or state.facts is None:
+            return unavailable("spec_or_facts_missing")
+        facts = {item.fact_id: item for item in state.facts.metrics if item.fact_id}
+
+        def supported(fact: Any, periods: tuple[str, ...]) -> bool:
+            if (
+                fact is None
+                or fact.dataset_id != requirement.dataset_id
+                or fact.field != spec.measure_field
+                or getattr(fact, "period_field", None) != spec.period_field
+                or getattr(fact, "aggregation", None) != "sum"
+                or getattr(fact, "period_aggregation", None) != "sum"
+                or getattr(fact, "cumulative_policy", None) is not None
+            ):
+                return False
+            available = {getattr(item, "period", None) for item in getattr(fact, "period_values", ())}
+            keys = [metric_period_key(label, getattr(fact, "period_granularity", None)) for label in periods]
+            return (set(periods).issubset(available) and None not in keys
+                    and len(keys) == len(set(keys))
+                    and len({key[0] for key in keys if key is not None}) == 1)
+
+        parent = facts.get(spec.parent_fact_id)
+        if not supported(parent, spec.current_periods):
+            return unavailable("parent_semantics_or_periods_unsupported")
+        baseline = facts.get(spec.baseline_parent_fact_id) if spec.baseline_parent_fact_id else parent
+        if spec.operation == "period_comparison" and not supported(baseline, spec.baseline_periods):
+            return unavailable("baseline_semantics_or_periods_unsupported")
+        if spec.operation == "period_comparison":
+            current_key = metric_period_key(spec.current_periods[0], getattr(parent, "period_granularity", None))
+            baseline_key = metric_period_key(spec.baseline_periods[0], getattr(baseline, "period_granularity", None))
+            if current_key is None or baseline_key is None or current_key[0] != baseline_key[0]:
+                return unavailable("comparison_period_grain_mismatch")
+        parent_scope = getattr(parent, "scope", {}) or {}
+        baseline_scope = getattr(baseline, "scope", {}) or {}
+        if not isinstance(parent_scope, Mapping) or not isinstance(baseline_scope, Mapping):
+            return unavailable("scope_invalid")
+        if spec.operation == "period_comparison" and parent_scope != baseline_scope:
+            return unavailable("comparison_scope_mismatch")
+        dataset = next(
+            (
+                item
+                for item in (state.instruction.get("datasets") or ())
+                if isinstance(item, Mapping)
+                and item.get("datasetId") == requirement.dataset_id
+            ),
+            None,
+        )
+        dataset_columns = set(dataset.get("columns") or ()) if isinstance(dataset, Mapping) else set()
+        if not set(parent_scope).issubset(dataset_columns):
+            return unavailable("scope_columns_missing")
+        if not set(parent_scope).issubset(requirement.fields):
+            return unavailable("scope_fields_not_authorized")
+        logger.bind(
+            analysis_id=state.instruction.get("currentAnalysisId"), reason="eligible",
+        ).info("report_analysis_standard_preflight reason=eligible")
+        return spec
+
+    @staticmethod
     def _signed_script_file(result: CodeGenerationResult, script_path: str) -> FileIdentity:
         if (
             not isinstance(result, CodeGenerationResult)
@@ -1411,6 +1557,22 @@ class AnalysisItemWorkflow:
         if state.failure is not None:
             state.statuses["validate-evidence"] = "retrying"
             return StepOutput(content={"status": "skipped_after_script_error"})
+        if state.evidence is not None and state.server_computation_record is not None:
+            failed_reconciliations = [
+                str(item["name"])
+                for item in state.evidence.reconciliations
+                if item["passed"] is False
+            ]
+            if failed_reconciliations:
+                state.warnings.append(
+                    "report_analysis_evidence_reconciliation_warning: "
+                    f"补充 evidence 业务对账未通过：{'、'.join(failed_reconciliations)}。"
+                )
+            quality_warnings = await self._evidence_quality_warnings(state, state.evidence, run_context)
+            state.statuses["validate-evidence"] = "completed"
+            return StepOutput(content={"status": "validated", "evidencePath": self._evidence_path(state), **(
+                {"qualityWarnings": quality_warnings} if quality_warnings else {}
+            )})
         try:
             content = await self._read_supplemental_evidence(state, run_context)
             current_analysis = state.instruction.get("currentAnalysis")
@@ -1754,6 +1916,9 @@ class AnalysisItemWorkflow:
             # 回执已在 load-evidence 步骤与补证文件身份核对一致；服务端据此登记计算记录，
             # 模型工具 schema 不暴露该参数，无法伪造。
             _execution_receipt=state.execution_receipt if state.evidence is not None else None,
+            _server_computation_record=(
+                state.server_computation_record if state.evidence is not None else None
+            ),
         )
         self._validate_completion_result(result)
         if (

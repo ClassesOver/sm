@@ -204,6 +204,7 @@ class AgentSettings:
     report_lineage_download_enabled: bool = True
     report_lineage_drilldown_enabled: bool = True
     report_lineage_export_sources_enabled: bool = True
+    report_standard_supplemental_enabled: bool = True
     # 单个可视化章节的墙钟截止（秒）：超时后不再开启新的修复或 fresh attempt，
     # 直接零图降级，保证最难主题也能在报告总时限内交付。
     report_visualization_section_deadline_seconds: int = 900
@@ -407,6 +408,9 @@ class AgentSettings:
             ),
             report_lineage_export_sources_enabled=_flag(
                 values.get("AGENT_REPORT_LINEAGE_EXPORT_SOURCES_ENABLED"), default=True
+            ),
+            report_standard_supplemental_enabled=_flag(
+                values.get("AGENT_REPORT_STANDARD_SUPPLEMENTAL_ENABLED"), default=True
             ),
             reporting_execution_mode=reporting_execution_mode,
             report_editor_export_timeout_seconds=_positive_int(

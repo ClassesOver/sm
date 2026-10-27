@@ -229,3 +229,26 @@ def test_final_outline_merges_chapters_with_same_title_or_same_analysis_sources(
     assert repaired.sections[1].priority == "high"
     frozen = freeze(repaired, cards)
     assert {fid for section in frozen.sections for fid in section.finding_ids} == set(ids)
+@pytest.mark.parametrize('limit', [1, 2, None])
+def test_requested_section_limit_preserves_findings_and_their_evidence_levels(limit):
+    from smart_reporting.reporting.tests.narrative_helpers import finding, graph
+
+    cards = (finding(1), finding(2, evidenceLevel='business_hypothesis', priority='low'),
+             finding(3, evidenceLevel='statistical_relation', priority='low'))
+    source = graph(*cards)
+    proposal = NarrativeOutlineCandidate(
+        title='收入分析', snapshotHash=source.snapshot_hash,
+        sections=[{'title': '收入规模', 'findingIds': [cards[0].finding_id],
+                   'objective': '分析收入规模', 'groupingReason': '收入主题'},
+                  {'title': '口径限制', 'findingIds': [cards[1].finding_id],
+                   'objective': '说明口径', 'groupingReason': '限制', 'narrativeRole': 'limitation'}],
+        appendixFindingIds=[cards[2].finding_id],
+    )
+    result = freeze_narrative_outline(proposal, graph=source,
+        analyses=[{'analysisId': f'analysis_{i:03d}'} for i in range(1, 4)], max_sections=limit)
+    assert len(result.sections) == (limit or 3)
+    assigned = [fid for section in result.sections for fid in section.finding_ids]
+    assert len(assigned) == len(set(assigned)) == 3
+    assert set(assigned) == {c.finding_id for c in cards}
+    assert source.findings[1].evidence_level == 'business_hypothesis'
+    assert source.findings[2].evidence_level == 'statistical_relation'

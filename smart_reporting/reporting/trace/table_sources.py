@@ -80,6 +80,12 @@ def _structured_periods(node: Mapping[str, Any]) -> tuple[str, ...] | None:
             return ()
         if any(_period_key(value) is None for value in values):
             return ()
+        grain = node.get('periodGranularity', node.get('period_granularity'))
+        if grain is not None:
+            width = {'year': 4, 'month': 7, 'day': 10}.get(grain)
+            if width is None or any(len(value) < width for value in values):
+                return ()
+            values = [value[:width] for value in values]
         return tuple(dict.fromkeys(values))
     return None
 
@@ -181,6 +187,8 @@ def _column_unit(table: dict[str, Any], column: str) -> str | None:
 
 
 def _shape(operands: tuple, rows: list, unit: str) -> bool:
+    if len(operands) == 1:
+        return Decimal(operands[0].coefficient) > 0 and unit != '个百分点'
     positive = {(op.row_index, op.column_index) for op in operands if Decimal(op.coefficient) > 0}
     negative = {(op.row_index, op.column_index) for op in operands if Decimal(op.coefficient) < 0}
     if len(operands) == 2 and len(positive) == len(negative) == 1:
@@ -226,6 +234,11 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
                 or operand.row_index < 0 or operand.column_index < 0):
             return None
     derivation = TableDerivationV1.model_validate(raw_derivation)
+    if any((derivation.population_fact, derivation.population_proof_sha256,
+            derivation.top_selection, derivation.top_limit)):
+        return _resolve_population(derivation, sources)
+    if derivation.denominator_fact is not None:
+        return _resolve_share(derivation, sources)
     operands = derivation.operands
     identities = {(op.file_resource_id, op.table_pointer) for op in operands}
     if len(identities) != 1 or len({(op.row_index, op.column_index) for op in operands}) != len(operands):
@@ -305,7 +318,163 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
         "entry": {"displayName": names[0] if names else None, "aliases": (),
                   "scope": semantics["scope"]},
         "selector": "tableDerived",
+        "operandViews": tuple({
+            **{key: value for key, value in operand.items() if key != 'fileResourceId'},
+            'sourceSha256': digest,
+        } for operand in raw_derivation['operands']),
     }
+
+
+def derivation_resource_ids(derivation: TableDerivationV1) -> tuple[str, ...]:
+    """完整来源依赖；分母事实也是必须核验与保留的原始文件。"""
+    return tuple(dict.fromkeys((
+        *(operand.file_resource_id for operand in derivation.operands),
+        *((derivation.denominator_fact.file_resource_id,) if derivation.denominator_fact else ()),
+        *((derivation.population_fact.file_resource_id,) if derivation.population_fact else ()),
+    )))
+
+
+def _resolve_population(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tuple[str, dict] | None:
+    """重读冻结表及父事实，完整总体证明随导出/编辑继续可核验。"""
+    from .subject_builder import fact_periods
+
+    ref = derivation.population_fact
+    if (ref is None or not derivation.population_proof_sha256
+            or not derivation.top_selection or not derivation.top_limit
+            or ref.fact_kind != 'metric' or not ref.fact_key):
+        return None
+    identities = {(op.file_resource_id, op.table_pointer) for op in derivation.operands}
+    if len(identities) != 1:
+        return None
+    resource, pointer = next(iter(identities))
+    document = json.loads(sources[resource], parse_float=Decimal, object_pairs_hook=_object)
+    table = _pointer(document, pointer)
+    proof = table.get('populationProof') if isinstance(table, dict) else None
+    if not isinstance(proof, dict) or canonical_sha256(proof) != derivation.population_proof_sha256:
+        return None
+    parent_raw = sources[ref.file_resource_id]
+    parent_document = json.loads(parent_raw, parse_float=Decimal, object_pairs_hook=_object)
+    parent = _pointer(parent_document, ref.json_pointer)
+    if (not isinstance(parent, dict) or parent_document.get('analysisId') != ref.analysis_id
+            or parent.get('factId') != ref.fact_key or proof.get('populationFactId') != ref.fact_key
+            or proof.get('version') != 'standard-population-v1'
+            or proof.get('completePopulation') is not True or proof.get('invalidRowCount') != 0
+            or proof.get('tablePointer') != pointer or parent.get('aggregation') != 'sum'
+            or parent.get('periodAggregation') not in {None, 'sum'}
+            or parent.get('cumulativePolicy') is not None
+            or proof.get('datasetSha256') != parent.get('datasetSha256')
+            or proof.get('datasetId') != parent.get('datasetId')
+            or proof.get('measureField') != parent.get('field')
+            or proof.get('unit') != parent.get('unit') or proof.get('scope') != parent.get('scope')
+            or _structured_periods({**proof, 'periodGranularity': parent.get('periodGranularity')})
+            != tuple(fact_periods(parent))):
+        return None
+    semantics = table_semantics(document, table)
+    if (not isinstance(table.get('scope', document.get('scope')), dict)
+            or semantics['scope'] != parent.get('scope')
+            or tuple(semantics['periods']) != tuple(fact_periods(parent))):
+        return None
+    columns, rows = table.get('columns'), table.get('rows')
+    if not isinstance(columns, list) or not isinstance(rows, list) or not rows:
+        return None
+    dimension = proof.get('dimensionField')
+    measure = proof.get('measureField') if proof.get('measureField') in columns else 'value'
+    if dimension not in columns or measure not in columns:
+        return None
+    dimension_index, measure_index = columns.index(dimension), columns.index(measure)
+    if any(not isinstance(row, list) or len(row) != len(columns) for row in rows):
+        return None
+    labels = [row[dimension_index] for row in rows]
+    if (any(not isinstance(label, str) or not label for label in labels)
+            or len(set(labels)) != len(labels) or sorted(labels) != proof.get('members')
+            or len(labels) != proof.get('memberCount')
+            or hashlib.sha256(json.dumps(sorted(labels), ensure_ascii=False,
+                separators=(',', ':')).encode()).hexdigest() != proof.get('membersSha256')
+            or _column_unit(table, measure) != proof.get('unit')):
+        return None
+    values = [_number(row[measure_index]) for row in rows]
+    total = _number(parent.get('total'))
+    if (any(value is None for value in values) or total is None
+            or abs(sum(values) - total) > max(Decimal('1e-9'), abs(total) * Decimal('1e-12'))
+            or derivation.top_limit > len(rows)):
+        return None
+    ordered = sorted(range(len(rows)), key=lambda index: (-values[index], labels[index]))
+    selected = ordered[:derivation.top_limit]
+    if derivation.top_selection == 'rank':
+        threshold = values[selected[-1]]
+        selected = [index for index in ordered if values[index] >= threshold]
+    if (set(selected) != {op.row_index for op in derivation.operands}
+            or any(op.column_index != measure_index for op in derivation.operands)):
+        return None
+    linear = derivation.model_copy(update={'population_fact': None,
+        'population_proof_sha256': None, 'top_selection': None, 'top_limit': None})
+    resolved = _resolve(linear, sources)
+    if resolved is None:
+        return None
+    token, view = resolved
+    return '{{tableDerived:v2:' + canonical_sha256({
+        'ruleVersion': 'table-population/1', 'valueToken': token,
+        'populationProofSha256': derivation.population_proof_sha256,
+        'populationSourceSha256': hashlib.sha256(parent_raw).hexdigest(),
+        'topSelection': derivation.top_selection, 'topLimit': derivation.top_limit,
+    }) + '}}', {**view, 'populationProof': proof, 'topSelection': derivation.top_selection,
+               'topLimit': derivation.top_limit}
+
+
+def _resolve_share(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tuple[str, dict] | None:
+    """表格分子 / 精确冻结事实total；不从金额相等推断对象或期间。"""
+    from .subject_builder import fact_periods
+
+    ref = derivation.denominator_fact
+    if ref is None or derivation.unit != '%' or ref.fact_kind != 'metric' or not ref.fact_key:
+        return None
+    raw = sources[ref.file_resource_id]
+    document = json.loads(raw, parse_float=Decimal, object_pairs_hook=_object)
+    entry = _pointer(document, ref.json_pointer)
+    if (not isinstance(entry, dict) or document.get('analysisId') != ref.analysis_id
+            or entry.get('factId') != ref.fact_key or entry.get('aggregation') != 'sum'
+            or entry.get('periodAggregation') not in {None, 'sum'}
+            or entry.get('cumulativePolicy') is not None):
+        return None
+    total = _number(entry.get('total'))
+    unit = entry.get('unit')
+    if total is None or total == 0 or unit not in _UNITS or unit in {'%', '‰'}:
+        return None
+    numerator = derivation.model_copy(update={'unit': unit, 'denominator_fact': None})
+    for operand in derivation.operands:
+        table_document = json.loads(sources[operand.file_resource_id], parse_float=Decimal,
+                                    object_pairs_hook=_object)
+        table = _pointer(table_document, operand.table_pointer)
+        if not isinstance(table.get('scope', table_document.get('scope')), dict):
+            return None
+    resolved = _resolve(numerator, sources)
+    if resolved is None:
+        return None
+    numerator_token, view = resolved
+    periods = tuple(fact_periods(entry))
+    if (not periods or not view['periods'] or tuple(view['periods']) != periods
+            or not isinstance(entry.get('scope'), dict) or view['scope'] != entry['scope']):
+        return None
+    with localcontext() as context:
+        context.prec = 64
+        # Recompute from source decimals rather than a rounded percentage cell.
+        numerator_value = Decimal(0)
+        for operand in derivation.operands:
+            table = _pointer(json.loads(sources[operand.file_resource_id], parse_float=Decimal,
+                                        object_pairs_hook=_object), operand.table_pointer)
+            numerator_value += _number(table['rows'][operand.row_index][operand.column_index]) * Decimal(operand.coefficient)
+        value = float(numerator_value / total * 100)
+    if not math.isfinite(value):
+        return None
+    token = '{{tableDerived:v2:' + canonical_sha256({
+        'ruleVersion': 'table-fact-share/1', 'numeratorToken': numerator_token,
+        'denominatorFact': {key: value for key, value in ref.model_dump(mode='json', by_alias=True).items()
+                            if key != 'fileResourceId'},
+        'denominatorSha256': hashlib.sha256(raw).hexdigest(),
+    }) + '}}'
+    return token, {**view, 'value': value, 'unit': '%', 'selector': 'tableDerived',
+                   'formula': f'({view["formula"]}) / ({total}) * 100',
+                   'denominatorFact': ref.model_dump(mode='json', by_alias=True)}
 
 
 def table_derivation_token(
@@ -335,7 +504,7 @@ def resolve_table_derivation(
         # original identity; snapshot migration explicitly verifies then upgrades.
         if not token.startswith("{{tableDerived:v2:"):
             legacy = "{{tableDerived:" + canonical_sha256({
-                "derivation": derivation.model_dump(mode="json", by_alias=True),
+                "derivation": derivation.model_dump(mode="json", by_alias=True, exclude_none=True),
                 "sources": {operand.file_resource_id: hashlib.sha256(
                     sources[operand.file_resource_id]
                 ).hexdigest() for operand in derivation.operands},
@@ -346,3 +515,52 @@ def resolve_table_derivation(
     except Exception as error:
         logger.debug("report_table_derivation_unresolved reason={}", type(error).__name__)
         return None
+
+
+def resolve_source_cell(operand: Any, sources: Mapping[str, bytes]) -> dict[str, Any] | None:
+    """读取调用方已核验身份的原始单元格。"""
+    try:
+        document = json.loads(sources[operand.file_resource_id], object_pairs_hook=_object)
+        return source_cell_view(operand, document)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def source_cell_view(operand: Any, document: Any) -> dict[str, Any] | None:
+    """已核验来源的直接视图；不猜维度、单位、期间或排名算法。"""
+    try:
+        if operand.coefficient != '1':
+            return None
+        table = _pointer(document, operand.table_pointer)
+        if not isinstance(table, dict):
+            return None
+        columns, rows = table.get('columns'), table.get('rows')
+        if (not isinstance(columns, list) or not isinstance(rows, list)
+                or not all(isinstance(column, str) and column for column in columns)
+                or len(columns) != len(set(columns))):
+            return None
+        row = rows[operand.row_index]
+        if not isinstance(row, list) or len(row) != len(columns):
+            return None
+        value = row[operand.column_index]
+        if not (value is None or isinstance(value, (str, bool, int, float))):
+            return None
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        metadata = table.get('columnMeta', {})
+        meta = metadata.get(columns[operand.column_index], {}) if isinstance(metadata, dict) else {}
+        # 原表展示不从标题里的年份猜统计窗口；缺少结构化范围就如实未知。
+        semantic_keys = {'periodStart', 'periodEnd', 'period_start', 'period_end',
+                         'periodGranularity', 'period_granularity', 'periods',
+                         'periodRoles', 'period_roles', 'scope'}
+        semantic_document = {key: item for key, item in document.items() if key in semantic_keys}
+        semantic_table = {key: item for key, item in table.items() if key in semantic_keys}
+        return {'value': value, 'unit': meta.get('unit') if isinstance(meta, dict) else None,
+                'column': columns[operand.column_index], **table_semantics(semantic_document, semantic_table)}
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+def source_cell_text(value: Any) -> str:
+    """原样展示冻结值，单位只保留来源显式元数据。"""
+    return '—' if value is None else str(value)

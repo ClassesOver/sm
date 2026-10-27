@@ -1,7 +1,7 @@
 import { Schema } from '@milkdown/kit/prose/model'
 import { EditorState } from '@milkdown/kit/prose/state'
 import { describe, expect, it } from 'vitest'
-import { createEvidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
+import { createEvidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceTableId, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
 
 describe('protocol marker lookup', () => {
   it('matches section and citation markers exactly instead of by substring', () => {
@@ -56,6 +56,15 @@ describe('evidence table target', () => {
     element.innerHTML = html
     return element
   }
+
+  it('resolves the editable table through Milkdown wrappers and ignores its drag preview', () => {
+    const element = root(markup.replace('<table>', '<div class="milkdown-table-block"><div class="drag-preview" contenteditable="false"><table></table></div><div class="handle"></div><div class="table-wrapper"><div class="handle"></div><table>') + '</div></div>')
+    const table = element.querySelector<HTMLTableElement>('.table-wrapper table')!
+    expect(findEvidenceTableId(element, table)).toBe('tbl-1')
+    expect(findEvidenceTableId(element, element.querySelector('table')!)).toBeNull()
+    element.insertAdjacentHTML('beforeend', markup)
+    expect(findEvidenceTableId(element, table)).toBeNull()
+  })
 
   it.each([false, true])('uses current row metadata with table wrapper=%s', wrapped => {
     const element = root(wrapped ? markup.replace('<table>', '<div class="tableWrapper"><table>').replace('</table>', '</table></div>') : markup)

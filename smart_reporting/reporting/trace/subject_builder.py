@@ -41,7 +41,7 @@ def bind_table_subjects(index: Any) -> Any:
     for table in index.tables:
         for cell in table.cells:
             locator = (table.table_id, cell.row_key, cell.column_key)
-            if locator in locators or not cell.fact_refs:
+            if locator in locators or not (cell.fact_refs or cell.source_cell):
                 continue
             fingerprint = canonical_sha256({
                 "tableId": table.table_id, **cell.model_dump(mode="json", by_alias=True),
@@ -52,7 +52,7 @@ def bind_table_subjects(index: Any) -> Any:
                     tableId=table.table_id, rowKey=cell.row_key, columnKey=cell.column_key,
                 ),
                 subjectSha256=fingerprint, factRefs=cell.fact_refs,
-                computationId=cell.computation_id,
+                computationId=cell.computation_id, sourceCell=cell.source_cell,
             ))
             locators.add(locator)
     return index.model_copy(update={"subject_bindings": tuple(bindings)})
@@ -100,6 +100,10 @@ def build_claim_subject_bindings(
                         factKind={"comparisons": "comparison", "derivedMetrics": "derived",
                                   "reconciliations": "reconciliation", "correlationDetails": "correlation"}.get(pointer.split("/")[1], pointer_kind),
                     ))
+                if table_derived:
+                    for ref in (number.table_derivation.denominator_fact, number.table_derivation.population_fact):
+                        if ref is not None and ref not in refs:
+                            refs.append(ref)
                 subject_id = _subject_id(section_code, number.claim_id)
                 if subject_id in used_ids:
                     continue
@@ -672,6 +676,16 @@ def _continuous_period_keys(
     return tuple(result)
 
 
+def written_period_mentions(statement: str) -> tuple[tuple[int, ...], ...]:
+    """提取明确日期及连续范围，不把并列窗口合并成一个范围。"""
+    window = _expanded_period_wording(statement.replace("−", "-").replace("－", "-"))
+    matches = [match for match in _PERIOD_TOKEN.finditer(window) if _period_key(match[0]) is not None]
+    keys = [cast(tuple[int, ...], _period_key(match[0])) for match in matches]
+    for left, right in zip(matches, matches[1:]):
+        keys.extend(written_period_keys(window[left.start():right.end()]) or ())
+    return tuple(dict.fromkeys(keys))
+
+
 def written_period_keys(statement: str) -> tuple[tuple[int, ...], ...] | None:
     """返回语句唯一明确期间的完整桶集合。
 
@@ -793,6 +807,7 @@ def claim_status(
     expected_period_roles: Mapping[str, tuple[str, ...]] | None = None,
     expected_scope: Mapping[str, str] | None = None,
     expected_reference: Mapping[str, Any] | None = None,
+    semantic_receipt: Any = None,
     section_id: str | None = None,
 ) -> dict[str, Any]:
     """单个引用校验；整篇多引用校验使用 ClaimStatusChecker 复用正文解析。"""
@@ -805,6 +820,7 @@ def claim_status(
         expected_period_roles=expected_period_roles,
         expected_scope=expected_scope,
         expected_reference=expected_reference,
+        semantic_receipt=semantic_receipt,
         section_id=section_id,
     )
 
@@ -1015,6 +1031,7 @@ def _claim_status_from_body(
     expected_period_roles: Mapping[str, tuple[str, ...]] | None = None,
     expected_scope: Mapping[str, str] | None = None,
     expected_reference: Mapping[str, Any] | None = None,
+    semantic_receipt: Any = None,
     section_id: str | None = None,
 ) -> dict[str, Any]:
     sections = list(re.finditer(r"\[\[section:([^\]\r\n]+)\]\]", markdown))
@@ -1094,6 +1111,12 @@ def _claim_status_from_body(
             if any(warning.startswith(_PERIOD_TEXT_MISMATCH) for warning in warnings):
                 # 写出的期间已与登记期间不符时，统计窗口的提醒说的是同一件事，只保留一条。
                 warnings = [warning for warning in warnings if not warning.startswith(WINDOW_MISMATCH_PREFIX)]
+        from .claim_semantics import semantic_warnings
+
+        warnings = semantic_warnings(
+            markdown, claim_id, semantic_receipt, expected_scope or {}, expected_periods, warnings,
+            reference=expected_reference,
+        )
         return {
             "status": "valid",
             "warnings": warnings,

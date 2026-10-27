@@ -795,3 +795,70 @@ def build_budget_edit_table(
         trace.table_id, trace.column_keys, rows, caption=caption
     )
 
+
+
+def build_supplemental_tables(
+    document: Mapping[str, Any], *, file_resource_id: str, dataset_ids: Sequence[str] = (),
+) -> tuple[tuple[TableTraceV1, str], ...]:
+    """完整发布冻结 findings 中的结构化表；不从列名推断指标与计算规则。"""
+    import hashlib
+
+    from .contracts_v1 import TableOperandV1
+    from .table_sources import source_cell_text, source_cell_view
+
+    tables: list[tuple[TableTraceV1, str]] = []
+
+    def walk(node: Any, pointer: str) -> None:
+        if isinstance(node, list):
+            for index, child in enumerate(node):
+                walk(child, f'{pointer}/{index}')
+        elif isinstance(node, Mapping):
+            if node.get('metricScopeRejected') is True:
+                return
+            if isinstance(node.get('columns'), list) and isinstance(node.get('rows'), list):
+                columns, source_rows = node['columns'], node['rows']
+                if (not columns or not source_rows or len(columns) > 200
+                        or not all(isinstance(column, str) and column.strip() and len(column) <= 128 for column in columns)
+                        or len(columns) != len(set(columns))
+                        or any(not isinstance(row, list) or len(row) != len(columns) for row in source_rows)):
+                    return
+                # 宽表拆列时重复来源首列，保留读者逐行对照；没有任何业务列名推断。
+                column_groups = ([list(range(len(columns)))] if len(columns) <= 5 else
+                                 [[0, *range(offset, min(offset + 4, len(columns)))]
+                                  for offset in range(1, len(columns), 4)])
+                for selected_columns in column_groups:
+                    labels = [columns[column] for column in selected_columns]
+                    limit = min(1000, 2000 // len(labels))
+                    for offset in range(0, len(source_rows), limit):
+                        cells, rows, keys = [], [], []
+                        for index in range(offset, min(offset + limit, len(source_rows))):
+                            key = f'source-row:{index}'
+                            keys.append(key)
+                            row = [f'第{index + 1}行']
+                            for column in selected_columns:
+                                operand = TableOperandV1(fileResourceId=file_resource_id, tablePointer=pointer,
+                                                         rowIndex=index, columnIndex=column, coefficient='1')
+                                selected = source_cell_view(operand, document)
+                                if selected is None:
+                                    return
+                                row.append(source_cell_text(selected['value']))
+                                cells.append(TableCellBindingV1(
+                                    rowKey=key, columnKey=columns[column], sourceCell=operand,
+                                    datasetIds=dataset_ids or document.get("datasetIds", ()),
+                                ))
+                            rows.append(row)
+                        identity = hashlib.sha256(f'{file_resource_id}|{pointer}|{selected_columns}|{offset}'.encode()).hexdigest()[:20]
+                        table_id = f'table-supplemental-{identity}'
+                        caption = node.get('title') or node.get('name')
+                        markdown = render_table_markdown(table_id, labels, rows,
+                                                         caption=caption if isinstance(caption, str) else None)
+                        trace = TableTraceV1(tableId=table_id, rowKeys=keys, columnKeys=labels,
+                                             cells=cells, originMarkdown=markdown)
+                        tables.append((trace, markdown))
+                return
+            for key, child in node.items():
+                escaped = str(key).replace('~', '~0').replace('/', '~1')
+                walk(child, f'{pointer}/{escaped}')
+
+    walk(document.get('findings'), '/findings')
+    return tuple(tables)

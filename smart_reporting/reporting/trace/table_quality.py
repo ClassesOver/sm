@@ -253,6 +253,19 @@ def evaluate_table_quality(
                 rows = dict(zip(table.row_keys, frozen[1:], strict=True))
                 for cell in table.cells:
                     text = rows[cell.row_key][table.column_keys.index(cell.column_key) + 1]
+                    if cell.source_cell is not None:
+                        from .table_sources import source_cell_text, source_cell_view
+
+                        source = documents.get(cell.source_cell.file_resource_id)
+                        if source is None:
+                            reasons.append("cell_source_unavailable")
+                            continue
+                        selected = source_cell_view(cell.source_cell, source)
+                        if selected is None or text != source_cell_text(selected['value']):
+                            reasons.append("cell_value_or_unit_unverified")
+                        else:
+                            checked += 1
+                        continue
                     if len(cell.fact_refs) != 1:
                         reasons.append("cell_fact_binding_unavailable")
                         continue

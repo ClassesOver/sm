@@ -217,6 +217,7 @@ def freeze_narrative_outline(
     *,
     graph: FindingGraph,
     analyses: list[dict[str, str]] | tuple[dict[str, str], ...],
+    max_sections: int | None = None,
 ) -> NarrativeOutline:
     if candidate.snapshot_hash != graph.snapshot_hash:
         raise ValueError("章节提纲快照与发现图谱快照不一致")
@@ -286,6 +287,21 @@ def freeze_narrative_outline(
             maxCharts=0,
             maxBlocks=2,
         ))
+    if max_sections is not None and len(sections) > max_sections:
+        tail = sections[max_sections - 1:]
+        first = next((section for section in tail if section.narrative_role == "management_finding"), tail[0])
+        # 合并展示容器，不改写发现卡片的范围、期间、证据等级或来源身份。
+        combined = NarrativeSection.model_validate({
+            **first.model_dump(mode="python"),
+            "finding_ids": tuple(fid for section in tail for fid in section.finding_ids),
+            "analysis_ids": tuple(dict.fromkeys(aid for section in tail for aid in section.analysis_ids)),
+            "objective": "在章内分别展开各管理主题与证据限制，保持每项发现的口径和证据等级。",
+            "grouping_reason": f"按用户指定的{max_sections}章约束合并，保留全部发现及来源。",
+            "priority": min((section.priority for section in tail), key=_PRIORITY_RANK.__getitem__),
+            "max_charts": min(20, sum(section.max_charts for section in tail)),
+            "max_blocks": min(20, sum(section.max_blocks for section in tail)),
+        })
+        sections = [*sections[:max_sections - 1], combined]
     sections = [section.model_copy(update={"code": f"section_{index:03d}", "section_number": str(index)})
                 for index, section in enumerate(sections, 1)]
     return NarrativeOutline(title=normalize_display_title(candidate.title), sections=tuple(sections), appendixFindingIds=appendix,

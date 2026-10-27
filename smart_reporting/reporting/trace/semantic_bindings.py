@@ -71,6 +71,8 @@ _COMPUTED_SELECTOR_PREFIXES = (
     "budgetComparison.",
     "projectRatio.",
     "groupShares.",
+    "groupMissingShares.",
+    "seriesGroupMissingShares.",
     "groupGaps.",
     "groupContributions.",
     "cumulativeChanges.",
@@ -567,6 +569,8 @@ class NumberReferenceResolver:
 
     def _resolve_calc(self, token: str) -> dict[str, Any] | None:
         """计算引用的核对视图：与派生引用同构，公式写出各操作数的指标名与冻结原值。"""
+        from .calc_references import _parse
+
         result = CalcEvaluator(self._contents).evaluate(token)
         if result is None:
             return None
@@ -618,6 +622,13 @@ class NumberReferenceResolver:
             # 语句核对按外层运算区分：合计与平均须写出覆盖全部操作数期间的窗口，比值、差额与增速比较两个期间。
             "operation": result.formula.split("(", 1)[0],
             "operandEntries": tuple(view["entry"] for view in views),
+            # 语义复核保留嵌套运算及每个操作数的角色，不能用期间并集或公共范围替代。
+            "expressionTree": _parse(CALC_TOKEN.fullmatch(token.strip())["expr"]),
+            "operandViews": tuple({
+                "factId": operand.fact_id, "selector": operand.field,
+                "scope": view["scope"], "periods": view["periods"],
+                "periodRoles": view.get("period_roles", {}),
+            } for operand, view in zip(result.operands, views, strict=True)),
         }
 
 
@@ -728,7 +739,7 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
         period_roles["endpoint"] = (periods[-1],)
     elif primary.get("periodAggregation") == "last" and (
         selector in {"total", "average", "minimum", "maximum"}
-        or selector.startswith(("topGroups.", "bottomGroups.", "groupShares.", "groupGaps.", "topSet."))
+        or selector.startswith(("topGroups.", "bottomGroups.", "groupShares.", "groupGaps.", "topSet.", "groupMissingShares."))
     ):
         selected_periods = primary.get("periodValues", ())[-1:]
     if selected_periods is not None:
@@ -758,7 +769,11 @@ def _resolved_number_reference(token, ids, entries, selected_value, conflicts):
         return format(Decimal(str(value)).normalize(), "f")
 
     formula = primary.get("formula")
-    if selector.startswith("groupContributions."):
+    if selector.startswith(("groupMissingShares.", "seriesGroupMissingShares.")):
+        key = "seriesGroupMissingness" if selector.startswith("seriesGroupMissingShares.") else "groupMissingness"
+        stat = primary[key][selector.split(".", 1)[1]]
+        formula = f"({operand(stat['absoluteMissingValue'])}) / ({operand(stat['absoluteTotalValue'])}) * 100"
+    elif selector.startswith("groupContributions."):
         formula = "同一结构化分组本期值减去已换算基期值，再除以完整总体有符号净差额乘百分之百"
     elif selector.startswith("topSet."):
         formula = f"完整冻结分组总体按 {selector} 选择成员后求和"

@@ -72,6 +72,7 @@ def test_settings_defaults():
     assert current.report_lineage_download_enabled is True
     assert current.report_lineage_drilldown_enabled is True
     assert current.report_lineage_export_sources_enabled is True
+    assert current.report_standard_supplemental_enabled is True
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
@@ -128,6 +129,7 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_REPORT_LINEAGE_DOWNLOAD_ENABLED="false",
         AGENT_REPORT_LINEAGE_DRILLDOWN_ENABLED="false",
         AGENT_REPORT_LINEAGE_EXPORT_SOURCES_ENABLED="false",
+        AGENT_REPORT_STANDARD_SUPPLEMENTAL_ENABLED="true",
     )
 
     assert current.enable_tool_result_compression is False
@@ -150,6 +152,7 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.report_lineage_download_enabled is False
     assert current.report_lineage_drilldown_enabled is False
     assert current.report_lineage_export_sources_enabled is False
+    assert current.report_standard_supplemental_enabled is True
 
 
 @pytest.mark.parametrize("value", ["0", "6", "invalid"])
@@ -162,6 +165,11 @@ def test_report_section_concurrency_is_bounded(value):
 def test_report_section_whole_generation_flag(value, expected):
     current = settings(AGENT_REPORT_SECTION_WHOLE_GENERATION=value)
     assert current.report_section_whole_generation is expected
+
+
+def test_standard_supplemental_is_enabled_by_default_and_can_be_disabled():
+    assert settings().report_standard_supplemental_enabled is True
+    assert settings(AGENT_REPORT_STANDARD_SUPPLEMENTAL_ENABLED="false").report_standard_supplemental_enabled is False
 
 
 @pytest.mark.parametrize("value", ["0", "5", "invalid"])

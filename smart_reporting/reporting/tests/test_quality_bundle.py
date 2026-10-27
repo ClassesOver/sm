@@ -375,3 +375,28 @@ async def test_shadow_comparison_recomputes_dependencies_for_current_statement(
             context, wrong_rank, hashlib.sha256(wrong_rank.encode()).hexdigest()
         )
         assert validation["quality"]["issues"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+@pytest.mark.parametrize('fault', ['none', 'missing', 'tampered'])
+async def test_registered_table_calculation_is_reviewed_without_blanket_unknown(tmp_path, fault):
+    from smart_reporting.reporting.tests.test_trace_subject_validate import (
+        _make_editor_with_table_derivation,
+    )
+    editor, context, _, _ = await _make_editor_with_table_derivation(tmp_path)
+    index = await editor.trace.require_index(context)
+    raw = {file.resource_id: await editor.trace._read_registered_file(context, file, max_bytes=16*1024*1024)
+           for file in index.files}
+    markdown = raw[index.markdown_file_resource_id].decode()
+    source_id = index.subject_bindings[0].number_reference.table_derivation.operands[0].file_resource_id
+    if fault == 'missing':
+        raw.pop(source_id)
+    elif fault == 'tampered':
+        raw[source_id] += b' '
+    quality = evaluate_quality_bundle(index, markdown, raw, authorization_scope_hash='c'*64)
+    issues = [issue for issue in quality.issues if issue.subject_id == index.subject_bindings[0].subject_id]
+    if fault == 'none':
+        assert not issues
+    else:
+        assert issues and 'source_unavailable' in issues[0].reasons

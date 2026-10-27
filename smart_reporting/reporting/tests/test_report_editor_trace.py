@@ -14,6 +14,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from urllib.parse import quote
 
 import pytest
@@ -1427,6 +1428,32 @@ async def test_facts_listing_and_fact_detail_with_inputs(tmp_path: Path) -> None
     assert source_facts["fact-" + "a" * 16]["displayValue"] == metric["displayValue"]
     assert metric["displayValue"] == 3600.0
     assert metric["inputFactRefs"] == ()  # metric 是叶子
+
+
+@pytest.mark.anyio
+async def test_fact_detail_uses_deterministic_file_when_supplement_precedes_it(tmp_path, monkeypatch):
+    from smart_reporting.reporting.trace.contracts_v1 import (
+        FactFileEntryV1, RevisionTraceIndexV1, TraceFileRefV1, derive_resource_id,
+    )
+
+    editor, _, workspace = await _make_editor(tmp_path, with_fact_file=True)
+    context = _context()
+    await editor.read_document(context)
+    index = await editor.trace.require_index(context)
+    path, raw = 'evidence/supplement.json', b'{"findings": []}'
+    await workspace.awrite_bytes(context.scope['threadId'], path, raw)
+    file = TraceFileRefV1(resourceId=derive_resource_id(path), path=path,
+                         mediaType='application/json', size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    index = index.model_copy(update={
+        'files': (*index.files, file),
+        'fact_files': (FactFileEntryV1(analysisId='analysis_001', fileResourceId=file.resource_id,
+                                     contentKind='supplemental_evidence'), *index.fact_files),
+    })
+    index = RevisionTraceIndexV1.model_validate(index.model_dump(by_alias=True))
+    monkeypatch.setattr(editor.trace, 'require_index', AsyncMock(return_value=index))
+    detail = await editor.trace.fact_detail(context, 'analysis_001', 'fact-' + 'a' * 16)
+    assert detail['factKind'] == 'metric'
+    assert detail['displayValue'] == 3600.0
 
 
 @pytest.mark.anyio

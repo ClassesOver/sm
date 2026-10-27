@@ -59,6 +59,7 @@ def build_supplemental_computation_record(
         )
         for index in range(max(finding_count, 0))
     )
+
     if not output_refs:
         # 无 findings 的执行仍需至少一个输出锚点：指向 findings 数组本身，
         # 读取层按空结果处理，不伪造数值。
@@ -98,6 +99,67 @@ def build_supplemental_computation_record(
         ),
         verification="not_checked",
         reproducibility="reproducible" if environment else "limited",
+    )
+
+
+def build_standard_supplemental_computation_record(
+    *,
+    analysis_id: str,
+    dataset_ids: Sequence[str],
+    input_files: Sequence[Mapping[str, Any]],
+    evidence_file: Mapping[str, Any],
+    method: str,
+    method_version: str,
+    parameters: Mapping[str, Any],
+    execution_id: str,
+    finding_count: int,
+) -> ComputationRecordV1:
+    """Build server-computation trace without inventing a script identity."""
+
+    output_refs = tuple(
+        FactRefV1(
+            analysisId=analysis_id,
+            fileResourceId=_resource_id(evidence_file),
+            jsonPointer=f"/findings/0/rows/{index}",
+            factKind="supplemental_finding",
+        )
+        for index in range(max(finding_count, 0))
+    )
+    if not output_refs:
+        output_refs = (
+            FactRefV1(
+                analysisId=analysis_id,
+                fileResourceId=_resource_id(evidence_file),
+                jsonPointer="/findings",
+                factKind="supplemental_finding",
+            ),
+        )
+    input_identities = [
+        {key: item[key] for key in ("path", "size", "sha256") if key in item}
+        for item in input_files
+    ]
+    identity = "|".join(
+        (
+            analysis_id,
+            method,
+            method_version,
+            execution_id,
+            str(evidence_file.get("path", "")),
+            str(evidence_file.get("sha256", "")),
+        )
+    )
+    return ComputationRecordV1(
+        computationId="comp-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16],
+        method=method,
+        methodVersion=method_version,
+        parameters={**dict(parameters), "inputFiles": input_identities},
+        inputDatasetIds=tuple(dict.fromkeys(dataset_ids))[:100],
+        scriptFileResourceId=None,
+        executionId=execution_id,
+        outputFactRefs=output_refs,
+        limitations=("服务端确定性计算；verification 未经独立复算。",),
+        verification="not_checked",
+        reproducibility="limited",
     )
 
 
@@ -259,6 +321,7 @@ def expand_computation_chain(
 
 __all__ = [
     "build_supplemental_computation_record",
+    "build_standard_supplemental_computation_record",
     "detect_computation_cycles",
     "expand_computation_chain",
 ]

@@ -49,7 +49,9 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisEvidenceDecision,
     AnalysisItemWorkflow,
     AnalysisSummaryDraft,
+    SupplementalEvidence,
     _AnalysisItemState,
+    _validate_coding_requirements,
 )
 from smart_reporting.reporting.workflow.runtime.base import (
     REPORT_ARTIFACTS_STATE_KEY,
@@ -69,6 +71,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionEvidenceBundle,
     SectionEvidenceFile,
     SectionPlanOutput,
+    SectionSemanticReview,
     VisualizationPlanDraft,
 )
 from smart_reporting.reporting.workflow.runtime.section_workflow import SectionWorkflow
@@ -293,6 +296,327 @@ def _analysis_state_with_requirement(
             }
         ),
     )
+
+
+def _standard_analysis_state() -> _AnalysisItemState:
+    state = _analysis_state_with_requirement(fields=("department", "income", "period"))
+    state.decision = AnalysisEvidenceDecision.model_validate(
+        {
+            "requiresSupplementalEvidence": True,
+            "reason": "需要标准分组补证",
+            "missingFacts": ["完整分组"],
+            "codingRequirements": [
+                {
+                    "datasetId": "dataset_001",
+                    "fields": ["department", "income", "period"],
+                    "calculation": "按部门汇总收入",
+                    "outputName": "department_income",
+                    "standardComputation": {
+                        "operation": "group_summary",
+                        "measureField": "income",
+                        "dimensionField": "department",
+                        "periodField": "period",
+                        "currentPeriods": ["2026-01"],
+                        "parentFactId": "fact-1234567890abcdef",
+                    },
+                }
+            ],
+        }
+    )
+    state.facts = SimpleNamespace(
+        metrics=[
+            SimpleNamespace(
+                fact_id="fact-1234567890abcdef",
+                dataset_id="dataset_001",
+                field="income",
+                total=1.0,
+                period_field="period",
+                aggregation="sum",
+                period_aggregation="sum",
+                cumulative_policy=None,
+                period_values=(SimpleNamespace(period="2026-01", value=1.0),),
+            )
+        ]
+    )
+    return state
+
+
+def _validate_standard_state(state: _AnalysisItemState) -> None:
+    _validate_coding_requirements(
+        state.decision,
+        state.instruction["datasets"],
+        state.instruction["currentAnalysis"],
+    )
+
+
+def _replace_standard_spec(state: _AnalysisItemState, **updates) -> None:
+    requirement = state.decision.coding_requirements[0]
+    spec = requirement.standard_computation.model_copy(update=updates)
+    replacement = requirement.model_copy(update={"standard_computation": spec})
+    state.decision = state.decision.model_copy(update={"coding_requirements": (replacement,)})
+
+
+def test_standard_parent_fact_rejects_unsupported_semantics_and_missing_periods():
+    state = _standard_analysis_state()
+    state.facts.metrics[0].aggregation = "average"
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+    state = _standard_analysis_state()
+    state.facts.metrics[0].cumulative_policy = "year_to_date"
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+    state = _standard_analysis_state()
+    _replace_standard_spec(state, current_periods=("2026-02",))
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+
+@pytest.mark.parametrize("period_aggregation", [None, "last"])
+def test_standard_route_requires_confirmed_time_additivity(period_aggregation):
+    state = _standard_analysis_state()
+    state.facts.metrics[0].period_aggregation = period_aggregation
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+
+def test_standard_period_comparison_rejects_month_against_year():
+    state = _standard_analysis_state()
+    state.facts.metrics[0].period_values += (SimpleNamespace(period="2025", value=1.0),)
+    _replace_standard_spec(state, operation="period_comparison", baseline_periods=("2025",))
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+
+def test_standard_period_comparison_rejects_explicit_missing_or_mismatched_baseline():
+    state = _standard_analysis_state()
+    _replace_standard_spec(
+        state, operation="period_comparison", baseline_periods=("2025-12",)
+    )
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+
+def test_standard_route_rejects_scope_not_present_in_authorized_dataset():
+    state = _standard_analysis_state()
+    state.facts.metrics[0].scope = {"area": "north"}
+
+    _validate_standard_state(state)
+
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+
+def test_standard_route_requires_scope_field_in_requirement_authorization():
+    state = _standard_analysis_state()
+    state.facts.metrics[0].scope = {"area": "north"}
+    state.instruction["datasets"][0]["columns"].append("area")
+
+    _validate_standard_state(state)
+
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+    requirement = state.decision.coding_requirements[0]
+    state.decision = state.decision.model_copy(
+        update={"coding_requirements": (requirement.model_copy(update={"fields": (*requirement.fields, "area")}),)}
+    )
+
+    _validate_standard_state(state)
+
+    assert AnalysisItemWorkflow._standard_spec(state) is not None
+
+
+def test_standard_period_comparison_rejects_mismatched_parent_scopes():
+    state = _standard_analysis_state()
+    _replace_standard_spec(
+        state,
+        operation="period_comparison",
+        baseline_periods=("2025-12",),
+    )
+    state.facts.metrics[0].period_values += (SimpleNamespace(period="2025-12", value=1.0),)
+    baseline = SimpleNamespace(
+        fact_id="fact-baseline",
+        dataset_id="dataset_001",
+        field="income",
+        period_field="period",
+        aggregation="sum",
+        period_aggregation="sum",
+        cumulative_policy=None,
+        period_values=(SimpleNamespace(period="2025-12", value=1.0),),
+        scope={"area": "north"},
+    )
+    state.facts.metrics.append(baseline)
+    _replace_standard_spec(
+        state,
+        operation="period_comparison",
+        baseline_periods=("2025-12",),
+        baseline_parent_fact_id="fact-baseline",
+    )
+
+    _validate_standard_state(state)
+
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+    state = _standard_analysis_state()
+    _replace_standard_spec(
+        state,
+        operation="period_comparison",
+        baseline_periods=("2025-12",),
+        baseline_parent_fact_id="fact-missing-123456",
+    )
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+    state = _standard_analysis_state()
+    baseline = SimpleNamespace(
+        fact_id="fact-baseline-123456",
+        dataset_id="other_dataset",
+        field="income",
+        period_field="period",
+        aggregation="sum",
+        period_aggregation="sum",
+        cumulative_policy=None,
+        period_values=(SimpleNamespace(period="2025-12", value=1.0),),
+    )
+    state.facts.metrics.append(baseline)
+    _replace_standard_spec(
+        state,
+        operation="period_comparison",
+        baseline_periods=("2025-12",),
+        baseline_parent_fact_id=baseline.fact_id,
+    )
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+
+def test_standard_period_comparison_can_use_same_frozen_parent_fact():
+    state = _standard_analysis_state()
+    state.facts.metrics[0].period_values = (
+        SimpleNamespace(period="2026-01", value=1.0),
+        SimpleNamespace(period="2025-12", value=1.0),
+    )
+    _replace_standard_spec(
+        state, operation="period_comparison", baseline_periods=("2025-12",)
+    )
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is not None
+
+
+def test_standard_period_comparison_rejects_mismatched_period_field():
+    state = _standard_analysis_state()
+    state.facts.metrics[0].period_field = "month"
+    _validate_standard_state(state)
+    assert AnalysisItemWorkflow._standard_spec(state) is None
+
+
+def _standard_evidence() -> SupplementalEvidence:
+    return SupplementalEvidence.model_validate(
+        {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset_001"],
+            "findings": [
+                {"name": "department_income", "columns": ["department", "value"], "rows": [["A", 1.0]]}
+            ],
+            "reconciliations": [{"name": "department_income_total", "passed": True}],
+            "warnings": [],
+        }
+    )
+
+
+@pytest.mark.anyio
+async def test_standard_supplemental_route_skips_code_generation() -> None:
+    run_code = AsyncMock(side_effect=AssertionError("标准路由不应生成脚本"))
+    computation = {"computationId": "comp-1234567890abcdef", "method": "supplemental_standard_group_summary"}
+
+    async def run_standard_supplemental(**_kwargs):
+        return {
+            "evidence": _standard_evidence(),
+            "evidenceFile": FileIdentity(path="analysis/analysis_001/supplement.json", size=2, sha256="a" * 64),
+            "computationRecord": computation,
+        }
+
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(),
+        run_code=run_code,
+        summarize=AsyncMock(),
+        read_file=AsyncMock(),
+        complete=AsyncMock(),
+        run_standard_supplemental=run_standard_supplemental,
+    )
+    state = _standard_analysis_state()
+
+    result = await workflow._execute_script(state, _context())
+
+    assert result.content["status"] == "executed", (result.content, state.failure)
+    assert state.server_computation_record == computation
+    assert state.evidence_file is not None
+    run_code.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_standard_supplemental_failure_falls_back_to_signed_script() -> None:
+    run_code = AsyncMock(
+        return_value=CodeGenerationResult(
+            script_file=FileIdentity(path="analysis/analysis_001/supplement.py", size=1, sha256="b" * 64),
+            execution_receipt=_execution_receipt(
+                "analysis/analysis_001/supplement.py", 1, "b" * 64,
+                ("analysis/analysis_001/supplement.json",),
+            ),
+        )
+    )
+
+    async def run_standard_supplemental(**_kwargs):
+        raise ReportingError("report_analysis_standard_failed", "标准计算失败")
+
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(),
+        run_code=run_code,
+        summarize=AsyncMock(),
+        read_file=AsyncMock(),
+        complete=AsyncMock(),
+        run_standard_supplemental=run_standard_supplemental,
+    )
+    state = _standard_analysis_state()
+
+    result = await workflow._execute_script(state, _context())
+
+    assert result.content["status"] == "executed"
+    assert state.server_computation_record is None
+    assert any("report_analysis_standard_fallback" in warning for warning in state.warnings)
+    run_code.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_unsupported_parent_fact_semantics_skip_server_route_and_use_script():
+    run_code = AsyncMock(
+        return_value=CodeGenerationResult(
+            script_file=FileIdentity(path="analysis/analysis_001/supplement.py", size=1, sha256="b" * 64),
+            execution_receipt=_execution_receipt(
+                "analysis/analysis_001/supplement.py", 1, "b" * 64,
+                ("analysis/analysis_001/supplement.json",),
+            ),
+        )
+    )
+    run_standard_supplemental = AsyncMock(
+        side_effect=AssertionError("不支持的冻结父事实必须直接走脚本")
+    )
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(),
+        run_code=run_code,
+        summarize=AsyncMock(),
+        read_file=AsyncMock(),
+        complete=AsyncMock(),
+        run_standard_supplemental=run_standard_supplemental,
+    )
+    state = _standard_analysis_state()
+    state.facts.metrics[0].aggregation = "average"
+
+    result = await workflow._execute_script(state, _context())
+
+    assert result.content["status"] == "executed"
+    assert "standardComputation" in str(run_code.await_args.kwargs["task_facts"])
+    run_standard_supplemental.assert_not_awaited()
+    run_code.assert_awaited_once()
 
 
 def test_analysis_candidate_projection_includes_validated_coding_requirements() -> None:
@@ -1431,6 +1755,8 @@ async def test_section_generation_switch_preserves_blocks_and_references(
     }
 
     async def fake_stage(agent, schema, stage, payload, **kwargs):
+        if stage == 'semantics':
+            return SectionSemanticReview(interpretations=())
         stages.append(stage)
         assert payload["numberGuide"][0]["total"]["reference"] == (
             "100元" if stage == "plan" else "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
@@ -1519,6 +1845,8 @@ async def test_section_generation_switch_preserves_blocks_and_references(
 )
 async def test_whole_section_rejects_missing_duplicate_or_extra_blocks(monkeypatch, block_ids):
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         return SectionContent.model_validate(
             {
                 "blocks": [
@@ -3484,6 +3812,8 @@ async def test_section_semantic_review_corrects_once_and_stays_soft(monkeypatch)
 
     calls = []
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         payload = args[3]
         calls.append(dict(payload))
         text = "预算累计6,062,600人次。" if len(calls) == 1 else "预算累计{{value:fact-aaaaaaaaaaaaaaaa:periodTotals.0-9:人次}}。"
@@ -3516,6 +3846,8 @@ async def test_reference_review_harness_supplies_exact_metadata_to_model_correct
     token = '{{value:fact-aaaaaaaaaaaaaaaa:monthlyAverage:人次}}'
 
     async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == 'semantics':
+            return SectionSemanticReview(interpretations=())
         if stage == 'plan':
             return SectionPlanOutput.model_validate({'kind': 'render', 'sectionCode': 'section_001',
                 'blocks': [{'blockId': 'block_001', 'objective': '收入', 'claimIds': ['claim_001']}],
@@ -3564,6 +3896,8 @@ async def test_residual_review_warnings_are_collected_as_soft_block_notices(monk
     from .test_content_review import _metric
 
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         return SectionContent.model_validate({"blocks": [{"blockId": "block_1", "markdown": "预算累计6,062,600人次。"}]})
 
     monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
@@ -3615,6 +3949,8 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
     ])
 
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         calls.append(dict(args[3]))
         texts = next(outputs)
         return SectionContent.model_validate({"blocks": [
@@ -3658,6 +3994,8 @@ async def test_whole_section_correction_only_replaces_blocks_with_issues(monkeyp
     ])
 
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         texts = next(outputs)
         return SectionContent.model_validate({"blocks": [
             {"blockId": block_id, "markdown": text} for block_id, text in texts.items()
@@ -3689,6 +4027,8 @@ async def test_whole_section_correction_that_adds_issues_is_reverted(monkeypatch
     outputs = iter([{"block_1": _FIRST_WITH_ISSUE}, {"block_1": _WORSE_CORRECTION}])
 
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         return SectionContent.model_validate({"blocks": [
             {"blockId": block_id, "markdown": text} for block_id, text in next(outputs).items()
         ]})
@@ -3718,6 +4058,8 @@ async def test_correction_that_fixes_accuracy_is_kept_despite_new_readability_is
     outputs = iter([{"block_1": "门诊收入为999元。"}, {"block_1": fixed}])
 
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         return SectionContent.model_validate({"blocks": [
             {"blockId": block_id, "markdown": text} for block_id, text in next(outputs).items()
         ]})
@@ -3766,6 +4108,8 @@ async def test_block_correction_that_adds_issues_is_reverted(monkeypatch):
 async def test_section_semantic_correction_provider_failure_keeps_previous_content(monkeypatch, failure):
     calls = []
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         calls.append(args[3])
         if len(calls) > 1:
             if failure == "context_hard_limit":
@@ -3800,6 +4144,8 @@ async def test_block_semantic_correction_provider_failure_keeps_previous_content
             "claims": [_plan_claim("claim_1")]}
 
     async def fake_stage(agent, schema, stage, payload, **kwargs):
+        if stage == 'semantics':
+            return SectionSemanticReview(interpretations=())
         stages.append(stage)
         if stage == "plan":
             return SectionPlanOutput.model_validate({"kind": "render", **plan})
@@ -4059,6 +4405,8 @@ async def _run_correction_harness(monkeypatch, outputs):
     responses = iter(outputs)
 
     async def fake_stage(*args, **kwargs):
+        if args[2] == 'semantics':
+            return SectionSemanticReview(interpretations=())
         calls.append(dict(args[3]))
         response = next(responses)
         if isinstance(response, list):
@@ -4149,6 +4497,8 @@ async def test_block_harness_prioritizes_facts_over_internal_labels(monkeypatch,
     outputs = iter([first, corrected])
 
     async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == 'semantics':
+            return SectionSemanticReview(interpretations=())
         if stage == "plan":
             return SectionPlanOutput.model_validate({"kind": "render", "sectionCode": "section_001",
                 "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
@@ -4172,6 +4522,8 @@ async def test_block_harness_invalid_response_uses_only_a_valid_previous_draft(m
     original = _FIRST_WITH_ISSUE
 
     async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
+        if stage == 'semantics':
+            return SectionSemanticReview(interpretations=())
         if stage == "plan":
             return SectionPlanOutput.model_validate({"kind": "render", "sectionCode": "section_001",
                 "blocks": [{"blockId": "block_1", "objective": "收入", "claimIds": ["claim_1"]}],

@@ -25,6 +25,7 @@ from .contracts_v1 import (
     canonical_json_bytes,
     derive_resource_id,
 )
+from .table_sources import derivation_resource_ids
 
 if TYPE_CHECKING:
     pass
@@ -165,10 +166,10 @@ def build_csv_trace_index(
     # supplemental_evidence 类事实文件条目，使 ComputationRecord 的
     # outputFactRefs 通过契约的 analysis↔文件一致性校验。同一文件去重。
     seen_paths = {item.path for item in files}
-    supplemental_evidence: dict[str, str] = {}
+    supplemental_evidence: dict[tuple[str, str], None] = {}
     for record in computations:
         for ref in record.output_fact_refs:
-            supplemental_evidence.setdefault(ref.analysis_id, ref.file_resource_id)
+            supplemental_evidence.setdefault((ref.analysis_id, ref.file_resource_id), None)
 
     def _identity_fields(identity: Any) -> tuple[str, int, str]:
         if isinstance(identity, Mapping):
@@ -189,7 +190,10 @@ def build_csv_trace_index(
                 sha256=sha_value,
             )
         )
-    used_table_sources: set[str] = set()
+    used_table_sources: set[str] = {
+        cell.source_cell.file_resource_id for table in server_table_traces for cell in table.cells
+        if cell.source_cell is not None
+    }
     parsed_subjects: list[SubjectBindingV1] = []
     for raw_subject in subject_bindings:
         try:
@@ -198,10 +202,12 @@ def build_csv_trace_index(
             logger.warning("report_table_subject_invalid error={}", str(error)[:300])
             continue
         parsed_subjects.append(subject)
+        if subject.source_cell is not None:
+            used_table_sources.add(subject.source_cell.file_resource_id)
         number = subject.number_reference
         if number is not None and number.table_derivation is not None:
             used_table_sources.update(
-                operand.file_resource_id for operand in number.table_derivation.operands
+                derivation_resource_ids(number.table_derivation)
             )
 
     # Table sources are independent of computation records. Only referenced frozen
@@ -291,11 +297,17 @@ def build_csv_trace_index(
 
     final_subjects: list[SubjectBindingV1] = []
     for subject in parsed_subjects:
+        if subject.source_cell is not None and subject.source_cell.file_resource_id in invalid_source_ids:
+            continue
         number = subject.number_reference
         derivation = None if number is None else number.table_derivation
         if derivation is not None and any(
-            operand.file_resource_id in invalid_source_ids for operand in derivation.operands
+            resource_id in invalid_source_ids for resource_id in derivation_resource_ids(derivation)
         ):
+            # 分母/总体事实是原运算的必要条件；不能移除运算后冒充普通指标值。
+            if derivation.denominator_fact is not None or derivation.population_fact is not None:
+                logger.warning("report_table_subject_dropped subject_id={}", subject.subject_id)
+                continue
             if subject.fact_refs:
                 number = number.model_copy(update={"table_derivation": None})
                 subject = subject.model_copy(update={"number_reference": number})
@@ -305,9 +317,9 @@ def build_csv_trace_index(
         final_subjects.append(subject)
 
     resource_ids = {item.resource_id for item in files}
-    for analysis_id, file_resource_id in supplemental_evidence.items():
-        if file_resource_id in resource_ids and analysis_id not in {
-            entry.analysis_id for entry in fact_entries
+    for analysis_id, file_resource_id in supplemental_evidence:
+        if file_resource_id in resource_ids and (analysis_id, file_resource_id) not in {
+            (entry.analysis_id, entry.file_resource_id) for entry in fact_entries
         }:
             fact_entries.append(
                 FactFileEntryV1(
@@ -318,6 +330,11 @@ def build_csv_trace_index(
             )
     from .subject_builder import bind_table_subjects
 
+    # 来源身份损坏只丢弃对应单元格绑定，不影响其他表和下载产物。
+    server_table_traces = tuple(table.model_copy(update={"cells": tuple(
+        cell for cell in table.cells
+        if cell.source_cell is None or cell.source_cell.file_resource_id not in invalid_source_ids
+    )}) for table in server_table_traces)
     index = RevisionTraceIndexV1(
         reportId=report_id,
         revision=revision,

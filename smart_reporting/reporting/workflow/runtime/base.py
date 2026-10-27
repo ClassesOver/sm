@@ -452,7 +452,7 @@ _ANALYSIS_CODE_EXISTING_FACTS_INSTRUCTION = (
 
 _ANALYSIS_CODE_COMMON_INSTRUCTIONS = (
     "脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
-    "使用单向线性数据流；所有后续读取的局部变量必须在进入条件分支前初始化，并确保每个分支都赋值。",
+    "允许使用函数、循环、条件分支和局部算法组织计算，但不得改变授权路径、输出契约或计算目标。",
     "每个 CSV 只能使用同一 datasets[] 项声明的 columns；不得改用 currentAnalysis.fields、其他 Dataset 字段或为了验证假设读取未签发数据。",
     "evidencePath 的 JSON 结构、null、行编码和对账语义以 outputContract 为准；analysisId 和 datasetIds 由固定 Workflow 注入，脚本不得输出。",
     "构成分析必须计算分项合计与总量差异，对账成功才把 passed 写为 true；不得猜测、补齐或替换缺失值。",
@@ -511,6 +511,11 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "deterministicFacts 中带 *View.truncated=true 的 topGroups、bottomGroups、periodValues、correlationDetails 或 correlations.view 只是为控制输入预算省略的明细，完整事实已冻结；不得仅因这些明细被省略而声明缺口。",
     "同一 datasetId、同一维度粒度的多个指标合并为一个 codingRequirement（一个 outputName，fields 同时列出维度列与全部指标列），"
     "不要按指标逐条拆分；可参考 datasets[].columnProfile 的列角色（dimension/measure/period）与基数选择字段。",
+    "当且仅当缺口完全属于标准补证的 group_summary 或 period_comparison，且字段、期间、维度和冻结父指标事实均明确时，"
+    "在对应 codingRequirement 中填写 standardComputation；parentFactId 和 baselineParentFactId 必须逐字引用 deterministicFacts.metrics 中已有 factId，"
+    "fields 必须同时列出父事实 scope 的全部字段，且每个字段必须已经存在于同一授权 datasets[].columns；"
+    "若固定范围字段未投影，不得编造字段或仅凭 SQL 过滤声明标准补证，改用脚本路径。"
+    "不得填写 parentTotal 数值，不得猜测父指标或跨 dataset 组合。比率、统计模型、复杂归因和语义不完整的需求不要填写 standardComputation，交给脚本路径。",
 )
 
 
@@ -712,6 +717,7 @@ class _ReportWorkflowRuntimeBase:
         reporting_execution_mode: str = "sequential",
         section_whole_generation: bool = True,
         trace_registration_enabled: bool = True,
+        standard_supplemental_enabled: bool = False,
         visualization_section_deadline_seconds: int = VISUALIZATION_SECTION_DEADLINE_SECONDS,
         visualization_total_deadline_seconds: int = VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     ):
@@ -752,6 +758,7 @@ class _ReportWorkflowRuntimeBase:
         self.report_public_base_url = report_public_base_url
         self.report_completion_template = report_completion_template
         self.trace_registration_enabled = trace_registration_enabled
+        self.standard_supplemental_enabled = standard_supplemental_enabled
         self.state_repository = state_repository
         if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
             raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
@@ -798,6 +805,7 @@ class _ReportWorkflowRuntimeBase:
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
                 "只根据用户完整目标及补充说明的业务语义，同时决策 reportType、domains 和分析期间；不得按关键词机械匹配",
+                "用户明确限定一级章节数量时，将数量写入 sectionCount；章内小节不计入，未限定数量则返回null，不自行设默认数量。",
                 "reportType 表示分析的组织意图，与 domains 数量相互独立；不得根据领域多少反推报告类型",
                 "topic 表示围绕一个聚焦的管理问题、变化机制或专项主题深入分析，即使问题横跨多个领域也仍可返回多个相关 domains",
                 "comprehensive 表示从综合经营视角统筹评价多个管理维度，即使用户明确限定了若干领域也仍是 comprehensive；不得因范围有限降级为 topic",
@@ -903,6 +911,9 @@ class _ReportWorkflowRuntimeBase:
             ),
             stage_instructions=(
                 "依据 planningContext.findings 的已核验发现动态组织章节，不按领域固定生成空章。",
+                "优先遵守 planningContext.reportGoal 明确指定的一级章节数量，将相关发现合并为章内小节；"
+                "数据限制随所属主题说明，不额外拆章，也不能为满足章节数量删减发现或改变其证据等级。",
+                "planningContext.sectionCount 若非空，是请求解析阶段已确认的章节数量约束，不得被主题分组或附录另起章节覆盖。",
                 "新提纲按管理问题自然形成章节，合并同主题发现并保留全部已登记发现的去向。",
                 "只提交中文标题、findingIds、章节目标、分组理由、叙事角色和内容预算。",
                 "findingIds 必须逐字复制已登记身份；所有发现必须归属章节、附录或有具体理由的遗漏项。",

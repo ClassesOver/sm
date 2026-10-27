@@ -489,6 +489,7 @@ class ReportEditorTraceService:
                         for ref in subject.fact_refs
                     ],
                     "computationId": subject.computation_id,
+                    "sourceCell": subject.source_cell.model_dump(mode="json", by_alias=True) if subject.source_cell else None,
                 }
                 for subject in index.subject_bindings
             ],
@@ -813,7 +814,8 @@ class ReportEditorTraceService:
 
         index = await self.require_index(context)
         entry = next(
-            (item for item in index.fact_files if item.analysis_id == analysis_id),
+            (item for item in index.fact_files
+             if item.analysis_id == analysis_id and item.content_kind == "deterministic_bundle"),
             None,
         )
         if entry is None:
@@ -915,7 +917,10 @@ class ReportEditorTraceService:
             prepare_claim_status,
             value_matches,
         )
-        from ..reporting.trace.table_sources import resolve_table_derivation
+        from ..reporting.trace.table_sources import (
+            derivation_resource_ids,
+            resolve_table_derivation,
+        )
 
         started = perf_counter()
         actual_draft_sha256 = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
@@ -933,7 +938,7 @@ class ReportEditorTraceService:
         source_failures: dict[str, str] = {}
 
         async def _table_sources_of(derivation: Any) -> dict[str, bytes]:
-            source_ids = {operand.file_resource_id for operand in derivation.operands}
+            source_ids = set(derivation_resource_ids(derivation))
             result: dict[str, bytes] = {}
             for resource_id in source_ids:
                 file_ref = files.get(resource_id)
@@ -1253,6 +1258,7 @@ class ReportEditorTraceService:
                 expected_period_roles=selected['period_roles'] if selected else None,
                 expected_scope=_entry_scope(entry),
                 expected_reference=selected,
+                semantic_receipt=number.semantic_receipt if number else None,
                 section_id=binding.locator.section_id,
             )
             if number is not None:
@@ -1265,7 +1271,7 @@ class ReportEditorTraceService:
                     detail["comparable"] = False
             dependency_ids = {ref.file_resource_id for ref in binding.fact_refs}
             if number is not None and number.table_derivation is not None:
-                dependency_ids.update(op.file_resource_id for op in number.table_derivation.operands)
+                dependency_ids.update(derivation_resource_ids(number.table_derivation))
             failed_sources = sorted(dependency_ids & source_failures.keys())
             if failed_sources:
                 detail["warnings"].append("来源身份无法核验；已拒绝使用对应数据，其余来源继续校验。")
@@ -1274,6 +1280,9 @@ class ReportEditorTraceService:
                 restore_text = await _legacy_restore_text(number, selected)
             status = detail["status"]
             summary[status] += 1
+            from ..reporting.trace.claim_semantics import semantic_receipt_status
+
+            receipt = number.semantic_receipt if number else None
             subjects.append(
                 {
                     "subjectId": binding.subject_id,
@@ -1297,6 +1306,11 @@ class ReportEditorTraceService:
                     ) if number is not None else None,
                     "restoreText": restore_text,
                     "warnings": detail["warnings"],
+                    "semanticCheck": {
+                        "method": receipt.method,
+                        "status": semantic_receipt_status(markdown, binding.claim_id, receipt),
+                        "interpretation": receipt.interpretation.model_dump(mode='json', by_alias=True),
+                    } if receipt and selected and not failed_sources else None,
                     "draftValue": detail.get("draftValue"),
                     "draftUnit": detail.get("draftUnit"),
                     "draftPeriods": detail.get("draftPeriods"),
@@ -1310,14 +1324,43 @@ class ReportEditorTraceService:
                 }
             )
 
+        direct_source_documents: dict[str, Any] = {}
+
+        async def _source_cell_of(operand: Any) -> dict[str, Any] | None:
+            from types import SimpleNamespace
+
+            from ..reporting.trace.table_sources import _object, source_cell_view
+
+            try:
+                sources = await _table_sources_of(SimpleNamespace(operands=(operand,), denominator_fact=None))
+                resource_id = operand.file_resource_id
+                if resource_id not in direct_source_documents:
+                    direct_source_documents[resource_id] = json.loads(sources[resource_id], object_pairs_hook=_object)
+                return source_cell_view(operand, direct_source_documents[resource_id])
+            except Exception as error:
+                logger.warning("source_validation_table_cell_unavailable reason={}", type(error).__name__)
+                return None
+
         tables_payload, table_summary = await self._evaluate_tables(
             index, context, markdown, _fact_value_of, _TABLE_BLOCK, value_matches,
             fact_unit_of=_fact_unit_of,
-            fact_selector_valid_of=_fact_selector_valid_of,
+            fact_selector_valid_of=_fact_selector_valid_of, source_cell_of=_source_cell_of,
         )
         for table, payload in zip(index.tables, tables_payload, strict=True):
             # 表格单元格与正文数值同一数值视图：卡片写出登记值、期间、取得方式与可验算算式。
+            direct_cells = {(cell.row_key, cell.column_key): cell for cell in table.cells
+                            if cell.source_cell is not None}
             for location in payload["locations"]:
+                direct = direct_cells.get((location['rowKey'], location['columnKey']))
+                if direct is not None:
+                    selected = await _source_cell_of(direct.source_cell)
+                    if selected is not None:
+                        location.update(factValue=selected['value'], unit=selected['unit'],
+                                        periods=list(selected['periods']), scope=selected['scope'],
+                                        datasetIds=list(direct.dataset_ids),
+                                        computation={'method': 'frozen_source_cell',
+                                                     'explanation': '冻结补证表原始单元格；数值身份核验不代表业务期间或分析角色已确认。'})
+                    continue
                 found = table_cell_views.get((table.table_id, location["rowKey"], location["columnKey"]))
                 if found is None:
                     continue
@@ -1612,6 +1655,7 @@ class ReportEditorTraceService:
         *,
         fact_unit_of: Any = None,
         fact_selector_valid_of: Any = None,
+        source_cell_of: Any = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """表格身份重判（计划 6.1）：排序不失效，改值 stale，插删行/删块 unbound。
 
@@ -1757,6 +1801,11 @@ class ReportEditorTraceService:
                             if fact_unit_of is not None:
                                 unit = await fact_unit_of(ref, selector)
                             break
+                    if cell.source_cell is not None and source_cell_of is not None:
+                        selected = await source_cell_of(cell.source_cell)
+                        if selected is not None:
+                            from ..reporting.trace.table_sources import source_cell_text
+                            value, unit = source_cell_text(selected['value']), None
                     frozen_values.append((cell, value, unit))
                 for cell, fact_value, fact_unit in frozen_values:
                     row = row_by_key.get(cell.row_key)
@@ -1775,6 +1824,7 @@ class ReportEditorTraceService:
                         "valid" if missing_unchanged or (
                             fact_value is not None and (
                                 row[column] == "—" if fact_value == "—"
+                                else row[column] == fact_value if cell.source_cell is not None
                                 else matches_fact_value(row[column], fact_value, fact_unit, cell.column_key)
                             )
                         ) else "stale"

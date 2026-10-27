@@ -1,0 +1,25 @@
+{
+  "authorization": {
+    "datasetIds": [
+      "dataset-benchmark"
+    ],
+    "fields": [
+      "period",
+      "department",
+      "amount"
+    ]
+  },
+  "operation": "group_summary",
+  "datasetId": "dataset-benchmark",
+  "outputName": "income_by_unit",
+  "measureField": "amount",
+  "dimensionField": "department",
+  "periodField": "period",
+  "currentPeriods": [
+    "2025-01",
+    "2025-02"
+  ],
+  "baselinePeriods": [],
+  "parentTotal": 2000000,
+  "baselineParentTotal": null
+}
