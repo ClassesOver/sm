@@ -801,16 +801,13 @@ def create_report_editor_router(
             payload: EditorTraceExportPayload,
             request: Request,
         ) -> JSONResponse:
-            context = await _write_context(
+            session, context = await _write_session_context(
                 grants,
                 editor,
                 request,
                 report_id=report_id,
                 revision=revision,
                 allowed_origin=allowed_origin,
-            )
-            session, _context = await _read_session_context(
-                grants, editor, request, report_id=report_id, revision=revision
             )
             request_id = _request_id(request.headers.get("x-request-id"))
             try:
@@ -888,7 +885,7 @@ def create_report_editor_router(
             payload: EditorExportPayload,
             request: Request,
         ) -> JSONResponse:
-            context = await _write_context(
+            session, context = await _write_session_context(
                 grants,
                 editor,
                 request,
@@ -898,9 +895,6 @@ def create_report_editor_router(
             )
             request_id = _request_id(request.headers.get("x-request-id"))
             try:
-                session, _ = await _read_session_context(
-                    grants, editor, request, report_id=report_id, revision=revision
-                )
                 export_options: dict[str, object] = {
                     "expected_sha256": payload.expected_sha256,
                     "request_id": request_id,

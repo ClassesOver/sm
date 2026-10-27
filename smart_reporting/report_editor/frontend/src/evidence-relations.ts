@@ -119,11 +119,6 @@ export function subjectLabel(subjectId: string, tail = 0): string {
   return `${SUBJECT_LABEL_PREFIX}${subjectShortId(subjectId, tail)}`
 }
 
-/** 从引用显示名取回短号（显示名由 subjectLabel 生成）；不是引用显示名时返回 undefined。 */
-export function subjectShortFromLabel(label: string): string | undefined {
-  return label.startsWith(`${SUBJECT_LABEL_PREFIX}#`) ? label.slice(SUBJECT_LABEL_PREFIX.length) : undefined
-}
-
 /**
  * 同一修订内引用短号互不相同所需的末尾位数（0 表示前 6 位已可区分）：
  * ID 前缀相同的引用若都只取前 6 位会显示成同名，页签、目录与关系中无法区分。
@@ -135,12 +130,6 @@ export function subjectShortTail(subjectIds: readonly string[]): number {
     if (new Set(ids.map((id) => subjectShortId(id, tail))).size === ids.length) return tail
   }
   return longest
-}
-
-/** 按修订内全部引用一次性确定短号尾长，返回各引用的显示名生成器（目录与直接打开引用共用）。 */
-export function subjectLabelsFor(subjectIds: readonly string[]): (subjectId: string) => string {
-  const tail = subjectShortTail(subjectIds)
-  return (subjectId) => subjectLabel(subjectId, tail)
 }
 
 const businessLabelCache = new WeakMap<TraceSources, Map<string, string>>()

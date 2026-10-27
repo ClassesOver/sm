@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReportEditorClient, TraceChartInfo } from './api'
 import {
@@ -156,8 +156,6 @@ describe('chartEditIdFromSrc', () => {
   })
 })
 
-type StatusQueue = Array<Record<string, unknown>>
-
 function fakeClient(overrides: Partial<Record<string, unknown>> = {}) {
   const calls: Record<string, unknown[]> = {}
   const client = {
@@ -205,8 +203,6 @@ function fakeViewForController() {
     dispatch: vi.fn(),
   } as unknown as Parameters<typeof createChartAIEdit>[0]['view']
 }
-
-const IMG_SRC = 'http://localhost/asset/reports/revision-1/chart-001.png'
 
 function mountEditorWithImage(): HTMLImageElement {
   document.body.innerHTML = '<div id="editor"><img src="/b/asset/reports/revision-1/chart-001.png" alt="收入对比"></div>'

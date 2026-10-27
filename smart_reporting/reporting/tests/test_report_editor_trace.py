@@ -2164,7 +2164,8 @@ async def test_validate_marks_deleted_chart_unbound_and_keeps_present_chart(
 
 def test_column_definitions_skip_dataset_whose_file_is_not_registered() -> None:
     from smart_reporting.report_editor.trace_sources import (
-        _column_field_definitions,
+        _dataset_column_definitions,
+        _merged_column_definitions,
         _registered_dataset_file,
     )
 
@@ -2181,9 +2182,11 @@ def test_column_definitions_skip_dataset_whose_file_is_not_registered() -> None:
         "sha256": "a" * 64,
         "schema": {"tables": [{"columns": [{"name": "open_beds", "description": "实际开放床日"}]}]},
     }]}
-    assert _column_field_definitions(context, files, (missing,)) == {}
+    assert _dataset_column_definitions(context, files, (missing,)) == {}
     matched = SimpleNamespace(dataset_id="ds-1", file_resource_id="file-1")
-    assert _column_field_definitions(context, files, (matched,)) == {"open_beds": "实际开放床日"}
+    definitions = _dataset_column_definitions(context, files, (matched,))
+    assert definitions == {"ds-1": {"open_beds": "实际开放床日"}}
+    assert _merged_column_definitions(definitions) == {"open_beds": "实际开放床日"}
 
 
 @pytest.mark.anyio

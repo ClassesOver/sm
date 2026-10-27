@@ -40,6 +40,7 @@ from ..reporting.workflow.runtime.chart_inputs import (
     verify_static_chart_inputs_referenced,
 )
 from ..reporting.workflow.runtime.phase_models import ChartDataBinding
+from ._edit_jobs import prune_finished_jobs, prune_hourly_window
 from .capabilities import EditorCapabilities
 from .chart_edits import (
     ChartEditChartMeta,
@@ -490,22 +491,14 @@ class ChartAIEditService:
         return {"editId": edit_id, "status": "cancelled"}
 
     def _prune_jobs(self) -> None:
-        now = time.monotonic()
-        for edit_id, job in list(self._jobs.items()):
-            if job.task.done():
-                if job.finished_at is None:
-                    job.finished_at = now
-                if now - job.finished_at > _CHART_EDIT_JOB_RETENTION_SECONDS:
-                    del self._jobs[edit_id]
+        prune_finished_jobs(
+            self._jobs,
+            now=time.monotonic(),
+            retention_seconds=_CHART_EDIT_JOB_RETENTION_SECONDS,
+        )
 
     def _prune_hourly(self, user_id: str) -> None:
-        window = [
-            stamp for stamp in self._hourly.get(user_id, ()) if time.monotonic() - stamp < 3600
-        ]
-        if window:
-            self._hourly[user_id] = window
-        else:
-            self._hourly.pop(user_id, None)
+        prune_hourly_window(self._hourly, user_id, now=time.monotonic())
 
     async def aclose(self) -> None:
         for job in list(self._jobs.values()):

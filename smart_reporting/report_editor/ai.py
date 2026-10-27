@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
-from typing import Any, Literal
+from typing import Any
 
 from agno.agent import Agent
 from loguru import logger
@@ -11,7 +11,6 @@ from ..reporting.models import ReportingError
 from .service import ReportEditorContext
 
 MAX_AI_SELECTION_CHARS = 12_000
-ReportEditorAIAction = Literal["polish", "shorten", "expand", "professional"]
 
 _PROTOCOL_MARKER = re.compile(r"\[\[(?:section|citation|analysis|claim|/?table):[A-Za-z0-9_.:-]{1,128}\]\]")
 # 编辑器以 Markdown 序列化选区，协议标记会被转义为 \[\[section:x\_1]]。

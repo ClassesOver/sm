@@ -846,7 +846,7 @@ def _reference_notes_end(text: str) -> int:
 _BASELINE_PREFIX = re.compile(r'(?:较于|相较于|相较|较|相比于|对比|比|基期(?:为)?)\s*$')
 
 
-def _inheritable_calendars(text: str) -> list[str]:
+def _inheritable_calendars(text: str, *, include_baseline: bool = False) -> list[str]:
     """可供并列引用继承的日期：“较2024年1—9月的…”“与2024年同期相比”这类基期日期组
     不是后项的所属期间。"""
     groups: list[list[re.Match[str]]] = []
@@ -866,7 +866,7 @@ def _inheritable_calendars(text: str) -> list[str]:
             re.search(r'与\s*$', prefix) and re.match(r'\s*[月日]?\s*(?:同期|同月)?\s*相?比', suffix)
         )
         baseline = baseline or re.match(r'\s*[月日]?\s*(?:同期|同月)', suffix)
-        if not baseline:
+        if not baseline or include_baseline:
             # 继承整个日期组及末尾单位，不能把“1月至2月”截成不带“月”的终点。
             ending = re.match(r'\s*[月日号]', suffix)
             end = group[-1].end() + (ending.end() if ending else 0)
@@ -930,9 +930,18 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
     if previous:
         local_before = local_before[_reference_notes_end(local_before):]
     if not comparison:
-        context = _reference_period_context(before, local_before)
+        restatement = bool(previous and re.match(r'\s*[（(]', local_before))
+        explicit_parenthetical_period = restatement and any(
+            _period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local_before)
+        )
+        context_before, context_local = before, local_before
+        if restatement:
+            # 未闭合括注是紧邻前值的同值重述，沿用前一引用自身的本期/基期归属。
+            context_before = before[:previous[-1].start()]
+            context_local = context_before[previous[-2].end():] if len(previous) > 1 else context_before
+        context = _reference_period_context(context_before, context_local)
         period = context.baseline_window if context.reference_role == 'baseline' else context.current_window
-        if context.baseline_window and period:
+        if period and (context.baseline_window or restatement) and not explicit_parenthetical_period:
             local_before = period + ' ' + re.sub(_CALENDAR_WINDOW + r'(?:同期|同月)?', '', local_before)
     after = re.sub(r'^(?:\s*\[\[citation:[^\]\r\n]+\]\])*', '', after)
     after = re.split(claim, after, maxsplit=1)[0]
@@ -946,11 +955,7 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
         _period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local)
     ):
         # “2025年二月…[[claim]]及收入…”仍继承正文前项明确的月份。
-        # 紧随前项的括注（“88.55亿元（8,855,158,732元）”）是同一数值的另一写法，继承前项自身的期间。
-        calendars = (
-            [match[0] for match in _PERIOD_TOKEN.finditer(before[:previous[-1].start()]) if _period_key(match[0])]
-            if re.match(r'\s*[（(]', local_before) else _inheritable_calendars(before[:previous[-1].start()])
-        )
+        calendars = _inheritable_calendars(before[:previous[-1].start()], include_baseline=comparison)
         if calendars:
             local = ' '.join(dict.fromkeys(calendars) if comparison else calendars[-1:]) + ' ' + local
     return local

@@ -43,6 +43,7 @@ from ..reporting.trace.table_builder import (
     build_group_edit_table,
     build_table_trace,
 )
+from ._edit_jobs import prune_finished_jobs, prune_hourly_window
 from .capabilities import EditorCapabilities
 from .chart_edits import (
     ChartEditSkipped,
@@ -63,8 +64,6 @@ _MAX_COMPARISON_ROWS = 50
 _MAX_GROUPS = 200
 _MAX_TEMPLATE_CATALOG_METRICS = 30
 _MAX_TEMPLATE_CATALOG_PERIODS = 24
-
-TABLE_AI_STAGES = ("queued", "plan", "validate", "render", "register")
 
 _FACT_ID_PATTERN = r"^fact-[0-9a-f]{16}$"
 
@@ -442,20 +441,14 @@ class TableAIEditService:
         }
 
     def _prune_jobs(self) -> None:
-        now = time.monotonic()
-        for edit_id, job in list(self._jobs.items()):
-            if job.task.done():
-                if job.finished_at is None:
-                    job.finished_at = now
-                if now - job.finished_at > _TABLE_EDIT_JOB_RETENTION_SECONDS:
-                    del self._jobs[edit_id]
+        prune_finished_jobs(
+            self._jobs,
+            now=time.monotonic(),
+            retention_seconds=_TABLE_EDIT_JOB_RETENTION_SECONDS,
+        )
 
     def _prune_hourly(self, user_id: str) -> None:
-        window = [stamp for stamp in self._hourly.get(user_id, ()) if time.monotonic() - stamp < 3600]
-        if window:
-            self._hourly[user_id] = window
-        else:
-            self._hourly.pop(user_id, None)
+        prune_hourly_window(self._hourly, user_id, now=time.monotonic())
 
     async def _start(
         self,

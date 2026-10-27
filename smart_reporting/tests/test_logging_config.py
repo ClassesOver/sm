@@ -104,11 +104,19 @@ def test_configure_file_logging_writes_root_and_agno_logs(tmp_path):
             logging.getLogger(name).setLevel(level)
 
 
-def test_configure_file_logging_rebinds_uvicorn_loggers_once_after_reset(tmp_path):
+@pytest.mark.parametrize(
+    "inherited_level", [logging.INFO, logging.WARNING], ids=["info", "after-warning-server"]
+)
+def test_configure_file_logging_rebinds_uvicorn_loggers_once_after_reset(
+    tmp_path, monkeypatch, inherited_level
+):
     path = tmp_path / "logs" / "agentos.log"
     root = logging.getLogger()
     original_root_level = root.level
     logger_names = ("uvicorn", "uvicorn.error", "uvicorn.access")
+    # 浏览器服务器的 WARNING 配置可能由前序测试遗留。
+    for name in logger_names:
+        monkeypatch.setattr(logging.getLogger(name), "level", inherited_level)
     original_states = {
         name: (
             list(logging.getLogger(name).handlers),
@@ -122,6 +130,10 @@ def test_configure_file_logging_rebinds_uvicorn_loggers_once_after_reset(tmp_pat
         item for item in root.handlers if getattr(item, "_smart_reporting_file_handler", False)
     )
     try:
+        assert all(logging.getLogger(name).level == inherited_level for name in logger_names)
+        # 本用例验证 handler 重绑；INFO 是测试前提，不应由应用覆盖宿主级别。
+        for name in logger_names:
+            logging.getLogger(name).setLevel(logging.INFO)
         # Uvicorn 的 dictConfig 会在应用导入后重置这些 named logger。
         for name in logger_names:
             logging.getLogger(name).handlers.clear()
@@ -154,3 +166,4 @@ def test_configure_file_logging_rebinds_uvicorn_loggers_once_after_reset(tmp_pat
             current.handlers[:] = handlers
             current.setLevel(level)
             current.propagate = propagate
+    assert all(logging.getLogger(name).level == inherited_level for name in logger_names)

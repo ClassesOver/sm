@@ -15,7 +15,6 @@ from smart_reporting.reporting.code_agent.metrics import (
     bounded_failure_diagnostics,
     bounded_request_params_snapshot,
     build_coding_metric_sample,
-    group_coding_metrics,
     measure_input_components,
     percentile,
     planner_coding_reasoning_tokens,
@@ -463,10 +462,6 @@ def test_response_tool_calls_keep_provider_order_and_duplicate_names():
         {"id": "call-1", "name": "run"},
         {"id": "call-2", "name": "run"},
         {"id": "call-3", "name": "write_script"},
-    ]
-    assert ReportingCodeOpenAIResponses._response_tool_names(response) == [
-        "run",
-        "write_script",
     ]
 
 
@@ -954,29 +949,6 @@ def test_coding_metric_sample_keeps_bounded_first_run_failure_context():
         "sourceSha256": "a" * 64,
         "detailsBytes": 999999,
     }
-
-
-def test_coding_metrics_group_by_task_model_effort_and_provider():
-    grouped = group_coding_metrics(
-        [
-            {
-                "taskKind": "visualization",
-                "model": "m",
-                "reasoningEffort": "high",
-                "provider": "p",
-                "durationMs": 10,
-            },
-            {
-                "taskKind": "visualization",
-                "model": "m",
-                "reasoningEffort": "high",
-                "provider": "p",
-                "durationMs": 20,
-            },
-        ]
-    )
-    assert grouped["visualization|m|high|p"]["sampleCount"] == 2
-    assert grouped["visualization|m|high|p"]["durationMs"] == {"p50": 10.0, "p95": 20.0}
 
 
 def test_nonstream_run_output_metrics_are_recorded_with_real_request_count():

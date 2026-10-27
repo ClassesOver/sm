@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { TraceValidation } from './api'
 import { findValueMarks } from './body-value-marks'
-import { checkNeedsReview, createSourceValidationController, markdownSha256, nextSourceIssue, notEvaluatedQualityCount, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
+import { checkNeedsReview, createSourceValidationController, markdownSha256, nextSourceIssue, notEvaluatedQualityBreakdown, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 const validation = (draftSha256: string): TraceValidation => ({
   draftSha256,
@@ -44,7 +44,7 @@ describe('source validation', () => {
       { code: 'chart_support_unknown', subjectId: 'chart1', reasons: ['interactive_spec_unregistered'] },
     ] }
     // 回放：400 余条“范围未确认/运算未评估/图表未核对”曾计入语义待确认，淹没真正的提醒。
-    expect(notEvaluatedQualityCount(result)).toBe(3)
+    expect(notEvaluatedQualityBreakdown(result)).toEqual({ scope: 1, other: 2 })
     expect(semanticReviewGroupCount(result)).toBe(0)
     // 仅缺统计范围的诊断是同一个待业务确认的原因，单列为“范围待确认”；其余仍计未自动核对。
     expect(sourceCoverageSummary(result, '')).toEqual({ text: '可溯源 1/1 · 范围待确认 1 · 未自动核对 2', state: 'valid' })
