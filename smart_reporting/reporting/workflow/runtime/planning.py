@@ -118,6 +118,7 @@ from .validation import (
     _normalize_duplicate_requirements,
     _normalize_requirement_columns,
     _normalize_requirement_columns_in_payload,
+    _normalize_requirement_metric_codes,
     _normalize_requirement_periods,
     _normalize_unsafe_multi_table_requirements,
     _resolve_requirement_comparison_roles,
@@ -1551,6 +1552,7 @@ class RuntimePlanningMixin:
             assert isinstance(output, AnalysisBundle)
             output, _ = _apply_bundle_normalizers(
                 output,
+                lambda bundle: _normalize_requirement_metric_codes(bundle, snapshots, profile.metrics),
                 lambda bundle: _normalize_requirement_columns(bundle, snapshots),
                 lambda bundle: _normalize_requirement_periods(
                     bundle, self._data_understanding(run_context)
@@ -1565,9 +1567,12 @@ class RuntimePlanningMixin:
                     # 严格 Schema。纠错基线必须先应用与当前候选相同的确定性列规范化，
                     # 否则服务端自身删除的别名字段会被误判为模型越权修改。
                     previous_output = _normalize_requirement_columns_in_payload(
-                        previous_output, snapshots
+                        previous_output, snapshots, profile.metrics
                     )
                 else:
+                    previous_bundle, _ = _normalize_requirement_metric_codes(
+                        previous_bundle, snapshots, profile.metrics
+                    )
                     normalized_previous, _previous_column_repairs = _normalize_requirement_columns(
                         previous_bundle, snapshots
                     )

@@ -6,6 +6,10 @@ from functools import partial
 
 from loguru import logger
 
+from ...hospital_operation.professional_review import (
+    BUDGET_CALCULATION_CONDITION,
+    review_professional_content,
+)
 from .base import (
     DOMAIN_CODES,
     MAX_REPORT_INPUTS,
@@ -524,7 +528,15 @@ class RuntimeDatasetsMixin:
             if len(referenced_contexts) > 1:
                 actions.append("校验跨数据集期间、粒度和口径的可比性")
 
-            item_warnings = (*usage.warnings, *tuple(
+            professional_issues = review_professional_content(initial_item.description)
+            professional_warnings = tuple(issue.message for issue in professional_issues)
+            unverified_budget_rate = any(
+                issue.code == "professional_unverified_budget_rate"
+                for issue in professional_issues
+            )
+            if unverified_budget_rate:
+                actions.insert(0, BUDGET_CALCULATION_CONDITION)
+            item_warnings = (*usage.warnings, *professional_warnings, *tuple(
                 dict.fromkeys(
                     warning
                     for context in referenced_contexts
@@ -532,6 +544,7 @@ class RuntimeDatasetsMixin:
                 )
             ))
             plan_warnings.extend(usage.warnings)
+            plan_warnings.extend(professional_warnings)
             profile_coverages = tuple(
                 coverage
                 for context in referenced_contexts
@@ -580,6 +593,8 @@ class RuntimeDatasetsMixin:
                 recommended_charts.append("预算、合同与付款转化漏斗图")
             recommended_charts = list(dict.fromkeys(recommended_charts))[:12]
             description = initial_item.description.rstrip("。？?")
+            if unverified_budget_rate:
+                description = "预算口径核实与可独立分析事项"
             analyses.append(
                 DetailedAnalysisItem(
                     analysisName=initial_item.analysis_name,
@@ -617,6 +632,7 @@ class RuntimeDatasetsMixin:
                     recommendedCharts=tuple(recommended_charts),
                     suggestedSection=(description or domain)[:128],
                     completionConditions=(
+                        BUDGET_CALCULATION_CONDITION,
                         "核验全部绑定数据集的路径、大小和 SHA-256",
                         "deterministicFacts 覆盖当前管理问题时立即且只调用一次 "
                         "complete_analysis_item，evidencePaths 传空数组",

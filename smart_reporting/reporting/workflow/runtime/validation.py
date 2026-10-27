@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from ...profile.models import EffectiveMetric
 from ..query_pipeline import _exact_constant_numeric_columns
 from .base import (
     AnalysisBundle,
@@ -496,6 +497,62 @@ def _normalize_analysis_bundle_grain(
     return normalized_bundle, repairs
 
 
+def _normalize_requirement_metric_code_values(
+    requirement: QueryRequirement,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    metrics: tuple[EffectiveMetric, ...],
+) -> tuple[QueryRequirement, dict[str, str]]:
+    """只将唯一的 Profile code 映射为同源同表的已批准物理指标。"""
+    refs_by_code: dict[str, set[str | None]] = {}
+    for metric in metrics:
+        refs_by_code.setdefault(metric.code.casefold(), set()).add(
+            metric.field_ref.casefold() if metric.field_ref else None
+        )
+    approved = {item.field_ref.casefold() for snapshot in snapshots
+                for item in snapshot.measure_semantics}
+    tables = []
+    replacements: dict[str, str] = {}
+    for table in requirement.tables:
+        matches = [model for snapshot in snapshots for model in snapshot.tables
+                   if model.source_id == requirement.source_id
+                   and f'{model.database}.{model.name}'.casefold() == table.table.casefold()]
+        if len(matches) != 1:
+            tables.append(table)
+            continue
+        columns = {column.name.casefold(): column for column in matches[0].columns}
+        prefix = f'{requirement.source_id}.{table.table}.'.casefold()
+        measures = []
+        for value in table.measure_columns:
+            refs = refs_by_code.get(value.casefold(), set())
+            replacement = value
+            if value.casefold() not in columns and len(refs) == 1:
+                ref = next(iter(refs))
+                if ref and ref.startswith(prefix) and ref in approved:
+                    leaf = ref[len(prefix):]
+                    column = columns.get(leaf)
+                    if column and _NUMERIC_MEASURE_TYPE_PATTERN.match(column.data_type):
+                        replacement = column.name.lower()
+                        replacements[value] = replacement
+            measures.append(replacement)
+        tables.append(table.model_copy(update={'measure_columns': tuple(dict.fromkeys(measures))}))
+    return requirement.model_copy(update={'tables': tuple(tables)}), replacements
+
+
+def _normalize_requirement_metric_codes(
+    bundle: AnalysisBundle,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    metrics: tuple[EffectiveMetric, ...],
+) -> tuple[AnalysisBundle, list[dict[str, Any]]]:
+    requirements = []
+    repairs = []
+    for requirement in bundle.requirements:
+        normalized, replacements = _normalize_requirement_metric_code_values(requirement, snapshots, metrics)
+        requirements.append(normalized)
+        if replacements:
+            repairs.append({'requirementId': requirement.requirement_id, 'replacements': replacements})
+    return (_rebuilt_bundle(bundle.analyses, requirements), repairs) if repairs else (bundle, [])
+
+
 def _normalize_requirement_columns(
     bundle: AnalysisBundle,
     snapshots: tuple[SourceSchemaSnapshot, ...],
@@ -624,6 +681,7 @@ def _normalize_requirement_column_values(
 def _normalize_requirement_columns_in_payload(
     payload: dict[str, Any],
     snapshots: tuple[SourceSchemaSnapshot, ...],
+    metrics: tuple[EffectiveMetric, ...] = (),
 ) -> dict[str, Any]:
     requirements = payload.get("requirements")
     if not isinstance(requirements, list):
@@ -636,8 +694,9 @@ def _normalize_requirement_columns_in_payload(
             requirement = QueryRequirement.model_validate(candidate)
         except ValidationError:
             continue
+        requirement, replacements = _normalize_requirement_metric_code_values(requirement, snapshots, metrics)
         normalized, repair = _normalize_requirement_column_values(requirement, snapshots)
-        if repair is None:
+        if repair is None and not replacements:
             continue
         normalized_requirements[index] = normalized.model_dump(mode="json", by_alias=True)
         changed = True

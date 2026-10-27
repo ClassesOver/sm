@@ -1880,6 +1880,7 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     expected_domain: str,
     scoped: bool,
     purpose_catalog: str | None,
+    budget_gap: bool = False,
 ) -> None:
     context = DatasetAnalysisContext(
         profileFile=AnalysisFileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
@@ -1981,6 +1982,12 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
         },
     }
     runtime: Any = object.__new__(RuntimeDatasetsMixin)
+    if budget_gap:
+        item = state[REPORT_ANALYSIS_PLAN_STATE_KEY][0]
+        item['description'] = '全年预算口径待核实，仍计算执行率，仅供参考。'
+        state[REPORT_ANALYSIS_PLAN_STATE_KEY].append({
+            **item, 'code': 'independent_income', 'description': '分析实际收入趋势',
+        })
     if scoped:
         from dataclasses import replace
 
@@ -2018,6 +2025,20 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     )
 
     analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
+    from smart_reporting.reporting.hospital_operation.professional_review import (
+        BUDGET_CALCULATION_CONDITION,
+    )
+
+    assert BUDGET_CALCULATION_CONDITION in analysis.completion_conditions
+    if budget_gap:
+        plan = DetailedAnalysisPlan.model_validate(output.content)
+        assert len(plan.analyses) == 2
+        assert any('预算分母' in warning for warning in analysis.limitations)
+        assert any('预算分母' in warning for warning in plan.warnings)
+        assert all('预算分母' not in warning for warning in plan.analyses[1].limitations)
+        assert analysis.actions[0] == BUDGET_CALCULATION_CONDITION
+        assert BUDGET_CALCULATION_CONDITION not in plan.analyses[1].actions
+        assert analysis.suggested_section == '预算口径核实与可独立分析事项'
     assert analysis.domain == expected_domain
     selected_purpose = purpose_catalog if scoped else {
         "income": "收入多维分析", "full_cost": "成本多维分析",
@@ -2053,6 +2074,14 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
         "并保存最小补充 evidence" in analysis.completion_conditions
     )
     assert "按 analysisId 完成 CSV 复算并保存可复现证据" not in analysis.completion_conditions
+
+
+@pytest.mark.anyio
+async def test_unverified_budget_rate_warns_without_dropping_independent_analysis():
+    await test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv_for_fact_gaps(
+        requested_domain='income', expected_domain='income', scoped=False,
+        purpose_catalog=None, budget_gap=True,
+    )
 
 
 async def _run_failing_analysis_item(monkeypatch, error: ReportingError, *, traces=(), rework=None) -> AsyncMock:
