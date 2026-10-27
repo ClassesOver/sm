@@ -1,5 +1,5 @@
 import { Fragment, Slice, type Node as ProseNode } from '@milkdown/kit/prose/model'
-import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
+import { Plugin, PluginKey, type EditorState, type Transaction } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import { $prose } from '@milkdown/kit/utils'
 
@@ -21,6 +21,52 @@ function caretAnchor(): HTMLElement {
   const anchor = document.createElement('span')
   anchor.className = 'report-protocol-caret-anchor'
   return anchor
+}
+
+export const TABLE_PROTOCOL_EDIT_META = 'SMART_REPORT_TABLE_PROTOCOL_EDIT'
+
+function tableProtocolMarkersOnlyChanged(before: string, after: string, tableId: string): boolean {
+  const beforeMarkers = findProtocolMarkers(before)
+    .filter(marker => marker.kind === 'table' || marker.kind === 'table-close')
+  const afterMarkers = findProtocolMarkers(after)
+    .filter(marker => marker.kind === 'table' || marker.kind === 'table-close')
+  if (beforeMarkers.length !== afterMarkers.length || beforeMarkers.length < 2) return false
+  const changed = beforeMarkers
+    .map((marker, index) => ({ before: marker, after: afterMarkers[index] }))
+    .filter(pair => pair.before.raw !== pair.after.raw)
+  const target = afterMarkers.filter(marker => marker.value === tableId)
+  return target.length === 2 &&
+    target[0].kind === 'table' && target[1].kind === 'table-close' &&
+    changed.length === 2 &&
+    changed.every(pair => pair.after.value === tableId) &&
+    changed.some(pair => pair.after.kind === 'table') &&
+    changed.some(pair => pair.after.kind === 'table-close')
+}
+
+function tableProtocolMarkerPairChanged(before: string, after: string): boolean {
+  const beforeMarkers = findProtocolMarkers(before).filter(marker => marker.kind === 'table' || marker.kind === 'table-close')
+  const afterMarkers = findProtocolMarkers(after).filter(marker => marker.kind === 'table' || marker.kind === 'table-close')
+  if (beforeMarkers.length !== afterMarkers.length) return false
+  const changed = beforeMarkers.map((marker, index) => ({ before: marker, after: afterMarkers[index] }))
+    .filter(pair => pair.before.raw !== pair.after.raw)
+  return changed.length === 2 &&
+    changed[0].before.value === changed[1].before.value &&
+    changed[0].after.value === changed[1].after.value &&
+    new Set(changed.map(pair => pair.before.kind)).size === 2 &&
+    new Set(changed.map(pair => pair.after.kind)).size === 2
+}
+
+export function protocolMarkerTransactionAllowed(transaction: Transaction, state: EditorState): boolean {
+  if (!transaction.docChanged || protocolMarkersUnchanged(state.doc.textContent, transaction.doc.textContent)) return true
+  const tableEdit = transaction.getMeta(TABLE_PROTOCOL_EDIT_META) as { tableId?: string } | undefined
+  if (tableEdit?.tableId !== undefined && tableProtocolMarkersOnlyChanged(
+    state.doc.textContent, transaction.doc.textContent, String(tableEdit.tableId),
+  )) return true
+  // prosemirror-history marks undo/redo transactions with its stable PluginKey name.
+  // Only the exact paired table-marker transition is accepted, so history cannot
+  // use this exception to mutate any other protected protocol marker.
+  return transaction.getMeta('history$') !== undefined &&
+    tableProtocolMarkerPairChanged(state.doc.textContent, transaction.doc.textContent)
 }
 
 export function markerDecorations(doc: ProseNode, sources?: TraceSources, active: number | null = null): DecorationSet {
@@ -86,9 +132,7 @@ export const protocolMarkerPlugin = $prose(() => {
         return transaction.docChanged || registered || activeMeta ? markerDecorations(transaction.doc, sources, active) : previous
       },
     },
-    filterTransaction: (transaction, state) =>
-      !transaction.docChanged ||
-      protocolMarkersUnchanged(state.doc.textContent, transaction.doc.textContent),
+    filterTransaction: protocolMarkerTransactionAllowed,
     props: {
       transformCopied: slice => new Slice(stripCopiedMarkers(slice.content), slice.openStart, slice.openEnd),
       decorations: (state) => protocolMarkerPluginKey.getState(state) ?? DecorationSet.empty,

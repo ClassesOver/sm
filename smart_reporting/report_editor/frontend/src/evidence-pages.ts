@@ -2202,6 +2202,15 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
     p.textContent = noteText
     notes.append(p)
   }
+  // AI 改图历史（P3）：最新在前；正文未引用的记录同样列出，接受状态以当前图为准。
+  const historyValue = makeStatusRow(info, 'AI 改图历史', 'chart-edit-history')
+  for (const entry of source.editHistory ?? []) {
+    const item = document.createElement('p')
+    item.className = 'evidence-transform-note'
+    item.textContent = `${entry.createdAt.slice(0, 19).replace('T', ' ')} · ${entry.level.join('+')} · ${entry.instruction}`
+    historyValue.append(item)
+  }
+  if (!historyValue.childElementCount) historyValue.textContent = '未改图'
 
   const plotBox = document.createElement('div')
   plotBox.className = 'evidence-plots'

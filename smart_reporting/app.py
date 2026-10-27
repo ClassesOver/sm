@@ -33,6 +33,7 @@ from .report_editor import (
     create_report_editor_ai_service,
     create_report_editor_chart_ai_service,
     create_report_editor_router,
+    create_report_editor_table_ai_service,
 )
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
@@ -272,6 +273,14 @@ if settings.report_editor_chart_ai_enabled:
         hourly_limit=settings.report_editor_chart_ai_hourly_limit,
         timeout_seconds=float(settings.report_editor_chart_ai_timeout_seconds),
     )
+report_editor_table_ai = None
+if settings.report_editor_table_ai_enabled:
+    report_editor_table_ai = create_report_editor_table_ai_service(
+        editor=report_editor,
+        model=reporting_agent_template.model,
+        hourly_limit=settings.report_editor_table_ai_hourly_limit,
+        timeout_seconds=float(settings.report_editor_table_ai_timeout_seconds),
+    )
 report_workflow = report_runtime.workflow()
 dingyi_process = DingyiProcessAdapter(agent_database.sync_engine)
 report_workflow_controller = ReportWorkflowController(
@@ -308,6 +317,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             editor=report_editor,
             ai=report_editor_ai,
             chart_ai=report_editor_chart_ai,
+            table_ai=report_editor_table_ai,
             cookie_secure=bool(
                 settings.report_public_base_url
                 and settings.report_public_base_url.startswith("https://")
@@ -327,6 +337,8 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("shutdown", report_editor.aclose)
     if report_editor_chart_ai is not None:
         application.router.add_event_handler("shutdown", report_editor_chart_ai.aclose)
+    if report_editor_table_ai is not None:
+        application.router.add_event_handler("shutdown", report_editor_table_ai.aclose)
     return application
 
 

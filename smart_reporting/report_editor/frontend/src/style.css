@@ -5379,3 +5379,123 @@ input:disabled, textarea:disabled, select:disabled {
   margin: 0 0 10px;
   color: var(--color-ink, #1d2c3a);
 }
+
+/* 预制图模板快捷区（§14.2）：与快捷指令同一行布局，缺数据置灰。 */
+.chart-ai-templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.chart-ai-template:disabled {
+  color: var(--color-text-muted, #5b6b7a);
+  background: var(--color-bg-soft, #f8fafc);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* AI 改表面板（§14.1）：模板目录与逐格审阅。 */
+.table-ai-templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.table-ai-template {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.table-ai-template:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  background: #f2f7fb;
+}
+
+.table-ai-template:disabled {
+  color: var(--color-text-muted, #5b6b7a);
+  background: var(--color-bg-soft, #f8fafc);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.table-ai-review {
+  width: 100%;
+  margin: 8px 0;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.table-ai-review th,
+.table-ai-review td {
+  border: 1px solid var(--color-border-soft);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.table-ai-review th {
+  background: var(--color-bg-soft, #f8fafc);
+  color: var(--color-text-muted, #5b6b7a);
+  font-weight: 600;
+}
+
+.table-ai-cell {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: right;
+}
+
+.table-ai-review th[scope='row'] .table-ai-cell,
+.table-ai-cell:first-child {
+  text-align: left;
+}
+
+.table-ai-cell:hover,
+.table-ai-cell:focus-visible {
+  background: #f2f7fb;
+  outline: 2px solid var(--color-accent-soft, #56b4e9);
+  outline-offset: -2px;
+}
+
+/* 三色审阅（§14.1）：新增 / 标注 / 未变；changed 为值有变化的补充态。 */
+.table-ai-cell-added {
+  background: #edf5fc;
+}
+
+.table-ai-cell-changed {
+  background: #f5f3ff;
+}
+
+.table-ai-cell-flagged {
+  background: #fffbeb;
+}
+
+.table-ai-source-detail {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-soft);
+  border-left: 3px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted, #5b6b7a);
+  font-size: var(--font-size-sm);
+}
+
+@media (max-width: 720px) {
+  .table-ai-review {
+    display: block;
+    overflow-x: auto;
+  }
+}

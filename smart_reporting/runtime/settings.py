@@ -224,6 +224,10 @@ class AgentSettings:
     report_editor_chart_ai_hourly_limit: int = 20
     # 单次改图墙钟超时（秒），超时取消并返回原因，原图不受影响。
     report_editor_chart_ai_timeout_seconds: int = 180
+    # 编辑器 AI 改表与预制表模板；默认关闭，按环境灰度。
+    report_editor_table_ai_enabled: bool = False
+    report_editor_table_ai_hourly_limit: int = 20
+    report_editor_table_ai_timeout_seconds: int = 120
     # 报表完成时返回给调用方的 markdown 模板；未设置时使用默认紧凑格式。
     # 可用变量：{report_title}、{editor_url}、{pdf_url}、{word_url}、{actions}
     report_completion_template: str | None = None
@@ -424,6 +428,21 @@ class AgentSettings:
                 values,
                 "AGENT_REPORT_EDITOR_CHART_AI_TIMEOUT_SECONDS",
                 180,
+                maximum=900,
+            ),
+            report_editor_table_ai_enabled=_flag(
+                values.get("AGENT_REPORT_EDITOR_TABLE_AI_ENABLED"), default=False
+            ),
+            report_editor_table_ai_hourly_limit=_positive_int(
+                values,
+                "AGENT_REPORT_EDITOR_TABLE_AI_HOURLY_LIMIT",
+                20,
+                maximum=1000,
+            ),
+            report_editor_table_ai_timeout_seconds=_positive_int(
+                values,
+                "AGENT_REPORT_EDITOR_TABLE_AI_TIMEOUT_SECONDS",
+                120,
                 maximum=900,
             ),
             report_visualization_section_deadline_seconds=_positive_int(

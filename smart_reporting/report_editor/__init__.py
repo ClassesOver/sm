@@ -10,6 +10,12 @@ from .service import (
     ReportEditorService,
     ReportEditorSession,
 )
+from .table_ai import (
+    TableAIEditRequest,
+    TableAIEditService,
+    TableTemplateApplyRequest,
+    create_report_editor_table_ai_service,
+)
 
 __all__ = [
     "EDITOR_SESSION_COOKIE",
@@ -22,7 +28,11 @@ __all__ = [
     "ReportEditorService",
     "ReportEditorSession",
     "SqlAlchemyReportEditorRepository",
+    "TableAIEditRequest",
+    "TableAIEditService",
+    "TableTemplateApplyRequest",
     "create_report_editor_ai_service",
     "create_report_editor_chart_ai_service",
+    "create_report_editor_table_ai_service",
     "create_report_editor_router",
 ]

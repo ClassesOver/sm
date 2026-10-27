@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from agno.run import RunContext
@@ -876,6 +876,350 @@ async def test_export_revision_registers_ai_chart_edit_and_still_issues_links(
     chart_source = await editor.trace_chart_source(committed, session, "chart_001")
     assert chart_source["plotData"][0]["columns"] == ["period", "revenue"]
     assert chart_source["plotData"][0]["rows"] == [["2025-09", 3600]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("fault", [None, "registry_corrupt", "body_changed"])
+async def test_export_revision_registers_table_edit_and_still_issues_links(
+    tmp_path: Path, fault: str | None
+) -> None:
+    """AI 改表导出登记与非阻断故障注入（AGENTS 契约：登记损坏/表体变化照常签发）。
+
+    成功路径：新表块进入新 manifest（按正文重算哈希）与 TableTraceV1
+    （含 originMarkdown），原表 trace 不再保留。故障路径：追溯降级为
+    issue，已核验身份的 PDF/Word 照常签发下载链接。
+    """
+    from smart_reporting.report_editor.chart_edits import (
+        TableEditRecord,
+        append_table_edit_record,
+        chart_edits_registry_path,
+    )
+    from smart_reporting.reporting.trace.table_builder import build_table_trace
+
+    editor, grants, original = await _make_editor_with_subject(tmp_path)
+    thread_id = original.scope["threadId"]
+    workspace = editor.workspace
+    fact_path = "报表/智能分析/report-1/facts/revision-1/analysis_001.json"
+    fact_ref = derive_resource_id(fact_path)
+
+    trace, new_markdown = build_table_trace(
+        # 直接复用冻结 bundle 装配新表：期间行 + 合计行，列绑定指标事实。
+        __import__("smart_reporting.reporting.hospital_operation.deterministic_analysis", fromlist=["DeterministicAnalysisBundle"]).DeterministicAnalysisBundle.model_validate_json(
+            (await workspace.afile_bytes(thread_id, fact_path))[0]
+        ),
+        {
+            "tableId": "tbl-1-e0000001",
+            "metricCodes": ["income_total"],
+            "columnLabels": {"income_total": "收入（万元）"},
+            "factIds": {"income_total": "fact-" + "a" * 16},
+            "rows": [
+                {"key": "period:2025-09", "label": "2025年9月", "period": "2025-09"},
+                {"key": "total", "label": "合计"},
+            ],
+            "caption": "改表后的分期间收入",
+        },
+        fact_file_resource_id=fact_ref,
+    )
+    from smart_reporting.reporting.delivery.artifacts_v1 import _TABLE_BLOCK
+
+    body_match = _TABLE_BLOCK.search(new_markdown)
+    assert body_match is not None
+    body_sha256 = hashlib.sha256(body_match.group(2).encode("utf-8")).hexdigest()
+    record = TableEditRecord(
+        editId="tedit-" + "0" * 16,
+        tableId="tbl-1",
+        analysisId="analysis_001",
+        newTableId="tbl-1-e0000001",
+        instruction="改成期间加合计的明细表",
+        bodySha256=body_sha256,
+        markdown=new_markdown,
+        tableTrace=trace.model_copy(
+            update={"origin_markdown": new_markdown}
+        ).model_dump(mode="json", by_alias=True),
+        createdAt=datetime.now(UTC).isoformat(),
+        userId="user-1",
+    )
+    await append_table_edit_record(workspace, thread_id, original.markdown_path, record)
+
+    original_markdown = await workspace.aread_text(thread_id, original.markdown_path)
+    old_block = _TABLE_BLOCK.search(original_markdown)
+    assert old_block is not None
+    draft_markdown = original_markdown[: old_block.start()] + new_markdown + original_markdown[old_block.end():]
+    if fault == "body_changed":
+        # 接受后正文表体被手工改值：登记哈希不再匹配，追溯按契约降级。
+        draft_markdown = draft_markdown.replace("3,600", "9,999", 1)
+        draft_markdown = draft_markdown.replace("3600", "9999", 1)
+    await workspace.awrite_text(thread_id, "reports/revision-1/draft/report.md", draft_markdown)
+    if fault == "registry_corrupt":
+        await workspace.awrite_bytes(
+            thread_id,
+            chart_edits_registry_path(original.markdown_path),
+            b'{"version":1,"records":[broken',
+            overwrite=True,
+        )
+    for suffix, content in (("pdf", b"old-pdf"), ("docx", b"old-word")):
+        await workspace.awrite_bytes(thread_id, f"reports/revision-1/report.{suffix}", content)
+    markdown_identity = _identity(original.markdown_path, original_markdown.encode())
+    context = original.model_copy(update={"job": {
+        **original.job,
+        "render": {
+            "pdf": _identity("reports/revision-1/report.pdf", b"old-pdf"),
+            "word": _identity("reports/revision-1/report.docx", b"old-word"),
+            "markdown": markdown_identity,
+        },
+    }})
+    durable = ReportingRunState.initial(
+        report_run_id=context.workflow_run_id,
+        external_run_id="external-1",
+        thread_id="caller-thread",
+        owner_user_id="user-1",
+        payload={"reportEditorContexts": {"1": context.model_dump(mode="json", by_alias=True)}},
+    )
+    editor.state_repository = _StateRepository(durable, failure=None)
+
+    class ReportTools:
+        async def _render_report_pair(
+            self, actual_job_id, markdown_path, output_path, *, artifact_manifest,
+            management_overview=None, run_context,
+        ):
+            snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
+            await workspace.awrite_bytes(thread_id, output_path, b"new-pdf")
+            await workspace.awrite_bytes(thread_id, "reports/revision-2/report.docx", b"new-word")
+            run_context.session_state[REPORT_JOBS_STATE_KEY][actual_job_id]["render"] = {
+                "pdf": _identity(output_path, b"new-pdf"),
+                "word": _identity("reports/revision-2/report.docx", b"new-word"),
+                "markdown": _identity(markdown_path, snapshot),
+                "images": [],
+            }
+            return {"status": "validated", "validation": {"ok": True}}
+
+    class Persistence:
+        async def persist_available(self, **values):
+            return values["artifacts"]
+
+    class DownloadGrants:
+        async def issue(self, **values):
+            return "download-raw", ReportDownloadGrant(
+                grant_hash="d" * 64, expires_at=datetime(2026, 10, 15, tzinfo=UTC), **values
+            )
+
+    class EditorGrants:
+        async def issue(self, issued_context):
+            return "editor-raw", datetime(2026, 10, 15, tzinfo=UTC)
+
+    editor.report_tools = ReportTools()
+    editor.artifact_persistence = Persistence()
+    editor.download_grants = DownloadGrants()
+    editor.editor_grants = EditorGrants()
+    editor.public_base_url = "https://reports.example.com"
+
+    result = await editor.export_revision(
+        context, expected_sha256=_sha(draft_markdown.encode())
+    )
+
+    assert result["revision"] == 2
+    assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+    committed = ReportEditorContext.model_validate(
+        editor.state_repository.durable.payload["reportEditorContexts"]["2"]
+    )
+    if fault is not None:
+        # 非阻断：改表登记损坏/表体变化只丢弃改表追溯并返回原因。表格在
+        # manifest 中按正文内容寻址，不需要登记通道，产物与索引照常签发。
+        assert result["validation"]["ok"] is False
+        codes = [issue["code"] for issue in result["validation"]["issues"]]
+        assert "report_editor_table_edit_lineage_unavailable" in codes
+        degraded_index = await editor.trace.load_index(committed)
+        assert degraded_index is not None
+        assert "tbl-1-e0000001" not in {item.table_id for item in degraded_index.tables}
+        return
+    assert result["validation"]["ok"] is True
+    next_index = await editor.trace.load_index(committed)
+    assert next_index is not None
+    table_ids = {item.table_id for item in next_index.tables}
+    assert "tbl-1-e0000001" in table_ids
+    # 原表 trace 保留（subject 绑定仍指向它，正文块缺失按软性 unbound 评估）。
+    assert "tbl-1" in table_ids
+    new_table = next(item for item in next_index.tables if item.table_id == "tbl-1-e0000001")
+    assert new_table.origin_markdown is not None
+    assert new_table.origin_markdown.startswith("改表后的分期间收入")
+    next_manifest = await editor.trace.load_manifest(committed)
+    assert next_manifest is not None
+    assert {item.table_id for item in next_manifest.tables} == {"tbl-1-e0000001"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("fault", [None, "l2_plot_changed"])
+async def test_export_revision_registers_l2_chart_edit_plot_data(
+    tmp_path: Path, fault: str | None
+) -> None:
+    """L2 换绑导出：新物化作图数据进入新 revision 追溯，ChartTraceV1 指向新文件。
+
+    故障注入（AGENTS 契约）：换绑作图数据身份变化时追溯降级为 issue，
+    已核验身份的 PDF/Word 照常签发下载链接。
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from smart_reporting.report_editor.chart_ai import (
+        ChartAIEditRequest,
+        ChartAIEditService,
+    )
+    from smart_reporting.report_editor.chart_edits import load_chart_edit_records
+    from smart_reporting.reporting.tests.test_report_editor_chart_ai import (
+        FakeRunner,
+        _make_editor_with_chart,
+        _planner,
+    )
+    from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
+
+    fixture = await _make_editor_with_chart(tmp_path)
+    editor = fixture.editor
+    workspace = fixture.workspace
+    thread_id = fixture.thread_id
+    context = fixture.context
+    session = SimpleNamespace(capabilities=None)
+    binding = ChartDataBinding(
+        analysisId="analysis_001",
+        factPath="报表/智能分析/report-1/facts/revision-1/analysis_001.json",
+        dataPath="metrics[0].periodValues",
+        fields=("period", "value"),
+        role="main",
+    )
+    service = ChartAIEditService(
+        editor=editor,
+        workspace_registry=editor.workspace_registry,
+        planner=_planner(level=("L2",), data_bindings=(binding,)),
+        runner=FakeRunner(fixture.chart_bytes),
+    )
+    started = await service.start_edit(
+        context, session, "chart_001",
+        ChartAIEditRequest(
+            instruction="换成按期间的月度趋势",
+            baseImagePath=fixture.chart_path,
+            baseTitle="收入",
+            baseAltText="收入对比",
+            expectedSha256=fixture.chart.sha256,
+        ),
+    )
+    for _ in range(400):
+        status = service.edit_status(context, "chart_001", started["editId"])
+        if status["status"] in {"succeeded", "failed"}:
+            break
+        await asyncio.sleep(0.02)
+    assert status["status"] == "succeeded", status
+    await service.aclose()
+    records = await load_chart_edit_records(workspace, thread_id, context.markdown_path)
+    record = records[0]
+    assert record.level == ("L2",)
+    new_plot = record.plot_data_files[0]
+    assert new_plot.path != fixture.plot_path
+    new_src = f"chart-edits/{record.edit_id}/chart.png"
+
+    header = (
+        '# Revenue report\n\n<a id="report-section-section_002"></a>\n'
+        "## 1 Report\n\n[[section:section_002]]\n[[analysis:analysis_001]]\n\n"
+    )
+    edited_markdown = (
+        header
+        + "Revenue 3600 [[claim:claim-1]]"
+        + f"\n\n![Revenue]({new_src}) [[citation:citation_001]]\n"
+    )
+    await workspace.awrite_text(thread_id, "reports/revision-1/draft/report.md", edited_markdown)
+    if fault == "l2_plot_changed":
+        # 换绑作图数据在登记后被篡改：导出按契约降级追溯，不阻断签发。
+        content, _ = await workspace.afile_bytes(thread_id, new_plot.path)
+        await workspace.awrite_bytes(thread_id, new_plot.path, content + b"tampered", overwrite=True)
+    for suffix, content in (("pdf", b"old-pdf"), ("docx", b"old-word")):
+        await workspace.awrite_bytes(thread_id, f"reports/revision-1/report.{suffix}", content)
+    context = context.model_copy(update={"job": {
+        **context.job,
+        "render": {
+            **context.job["render"],
+            "pdf": _identity("reports/revision-1/report.pdf", b"old-pdf"),
+            "word": _identity("reports/revision-1/report.docx", b"old-word"),
+        },
+    }})
+    editor.state_repository.durable.payload["reportEditorContexts"]["1"] = (
+        context.model_dump(mode="json", by_alias=True)
+    )
+
+    class ReportTools:
+        async def _render_report_pair(
+            self, actual_job_id, markdown_path, output_path, *, artifact_manifest,
+            management_overview=None, run_context,
+        ):
+            snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
+            await workspace.awrite_bytes(thread_id, output_path, b"new-pdf")
+            await workspace.awrite_bytes(thread_id, "reports/revision-2/report.docx", b"new-word")
+            run_context.session_state[REPORT_JOBS_STATE_KEY][actual_job_id]["render"] = {
+                "pdf": _identity(output_path, b"new-pdf"),
+                "word": _identity("reports/revision-2/report.docx", b"new-word"),
+                "markdown": _identity(markdown_path, snapshot),
+                "images": [{
+                    "path": record.image.path,
+                    "size": record.image.size,
+                    "sha256": record.image.sha256,
+                }],
+            }
+            return {"status": "validated", "validation": {"ok": True}}
+
+    class Persistence:
+        async def persist_available(self, **values):
+            return values["artifacts"]
+
+    class DownloadGrants:
+        async def issue(self, **values):
+            return "download-raw", ReportDownloadGrant(
+                grant_hash="d" * 64, expires_at=datetime(2026, 10, 15, tzinfo=UTC), **values
+            )
+
+    class EditorGrants:
+        async def issue(self, issued_context):
+            return "editor-raw", datetime(2026, 10, 15, tzinfo=UTC)
+
+    editor.report_tools = ReportTools()
+    editor.artifact_persistence = Persistence()
+    editor.download_grants = DownloadGrants()
+    editor.editor_grants = EditorGrants()
+    editor.public_base_url = "https://reports.example.com"
+
+    result = await editor.export_revision(
+        context, expected_sha256=_sha(edited_markdown.encode())
+    )
+    assert result["revision"] == 2
+    assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+    committed = ReportEditorContext.model_validate(
+        editor.state_repository.durable.payload["reportEditorContexts"]["2"]
+    )
+    if fault == "l2_plot_changed":
+        assert result["validation"]["ok"] is False
+        codes = [issue["code"] for issue in result["validation"]["issues"]]
+        assert "report_editor_chart_edit_lineage_unavailable" in codes
+        assert committed.artifact_manifest is None
+        return
+    assert result["validation"]["ok"] is True
+    next_index = await editor.trace.load_index(committed)
+    assert next_index is not None
+    new_trace = next_index.chart_traces[0]
+    migrated_plot_path = (
+        "reports/revision-2/"
+        + PurePosixPath(new_plot.path).relative_to("reports/revision-1").as_posix()
+    )
+    expected_resource = derive_resource_id(migrated_plot_path)
+    assert new_trace.plot_data_file_resource_ids == (expected_resource,)
+    assert any(
+        note.startswith("换绑数据：")
+        for note in new_trace.transform_notes
+    )
+    # 新作图数据文件已随迁至新 revision，内容与登记身份一致。
+    assert await workspace.apath_exists(thread_id, migrated_plot_path)
+    migrated, _ = await workspace.afile_bytes(thread_id, migrated_plot_path)
+    import json as _json
+    payload = _json.loads(migrated)
+    assert payload["source"]["dataPath"] == "metrics[0].periodValues"
+    assert payload["rows"] == [["2025-09", 3600.0]]
 
 
 def _identity(path: str, content: bytes) -> dict[str, object]:

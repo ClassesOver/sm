@@ -23,8 +23,9 @@ from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
-from .chart_ai import ChartAIEditRequest
+from .chart_ai import ChartAIEditRequest, ChartTemplateApplyRequest
 from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
+from .table_ai import TableAIEditRequest, TableTemplateApplyRequest
 from .trace_retention import SourceFileResponse
 
 EDITOR_SESSION_COOKIE = "report_editor_session"
@@ -116,6 +117,7 @@ def create_report_editor_router(
     editor: Any | None = None,
     ai: Any | None = None,
     chart_ai: Any | None = None,
+    table_ai: Any | None = None,
     cookie_secure: bool = True,
     allowed_origin: str | None = None,
     static_dir: str | Path | None = None,
@@ -262,6 +264,10 @@ def create_report_editor_router(
             # 前端据此隐藏入口而不是点击后报错。
             if chart_ai is not None:
                 result["chartAiEnabled"] = True
+            if table_ai is not None:
+                result["tableAiEnabled"] = True
+            if chart_ai is not None or table_ai is not None:
+                result["templatesEnabled"] = True
             source_revision = getattr(document, "source_revision", None)
             if source_revision is not None:
                 result["sourceRevision"] = source_revision
@@ -1071,6 +1077,40 @@ def create_report_editor_router(
                     _editor_http_error(error)
 
             @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/templates",
+                include_in_schema=False,
+            )
+            async def read_chart_templates(
+                report_id: str, revision: int, chart_id: str, request: Request,
+            ) -> dict[str, object]:
+                session, context = await _read_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await chart_ai.templates(context, session, chart_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/template-edits",
+                include_in_schema=False,
+            )
+            async def start_chart_template_edit(
+                report_id: str, revision: int, chart_id: str,
+                payload: ChartTemplateApplyRequest, request: Request,
+            ) -> JSONResponse:
+                session, context = await _write_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                request_id = _request_id(request.headers.get("x-request-id"))
+                try:
+                    started = await chart_ai.start_template(context, session, chart_id, payload)
+                except ReportingError as error:
+                    _editor_http_error(error, request_id=request_id)
+                return JSONResponse({**started, "requestId": request_id or started["editId"]}, status_code=202)
+
+            @router.get(
                 "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/ai-edits/{edit_id}",
                 include_in_schema=False,
             )
@@ -1117,6 +1157,143 @@ def create_report_editor_router(
                 )
                 try:
                     return chart_ai.cancel_edit(context, chart_id, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+        if table_ai is not None:
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/tables/{table_id}/ai-edits/availability",
+                include_in_schema=False,
+            )
+            async def read_table_ai_availability(
+                report_id: str, revision: int, table_id: str, request: Request,
+            ) -> dict[str, object]:
+                session, context = await _read_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await table_ai.availability(context, session, table_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/tables/{table_id}/templates",
+                include_in_schema=False,
+            )
+            async def read_table_templates(
+                report_id: str, revision: int, table_id: str, request: Request,
+            ) -> dict[str, object]:
+                session, context = await _read_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await table_ai.templates(context, session, table_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/tables/{table_id}/ai-edits",
+                include_in_schema=False,
+            )
+            async def start_table_ai_edit(
+                report_id: str, revision: int, table_id: str,
+                payload: TableAIEditRequest, request: Request,
+            ) -> JSONResponse:
+                session, context = await _write_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                request_id = _request_id(request.headers.get("x-request-id"))
+                try:
+                    started = await table_ai.start_edit(context, session, table_id, payload)
+                except ReportingError as error:
+                    _editor_http_error(error, request_id=request_id)
+                return JSONResponse({**started, "requestId": request_id or started["editId"]}, status_code=202)
+
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/tables/{table_id}/template-edits",
+                include_in_schema=False,
+            )
+            async def start_table_template_edit(
+                report_id: str, revision: int, table_id: str,
+                payload: TableTemplateApplyRequest, request: Request,
+            ) -> JSONResponse:
+                session, context = await _write_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                request_id = _request_id(request.headers.get("x-request-id"))
+                try:
+                    started = await table_ai.start_template(context, session, table_id, payload)
+                except ReportingError as error:
+                    _editor_http_error(error, request_id=request_id)
+                return JSONResponse({**started, "requestId": request_id or started["editId"]}, status_code=202)
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/tables/{table_id}/ai-edits/{edit_id}",
+                include_in_schema=False,
+            )
+            async def read_table_ai_edit(
+                report_id: str, revision: int, table_id: str, edit_id: str, request: Request,
+            ) -> dict[str, object]:
+                _raw_session, context = await _read_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    status = table_ai.edit_status(context, table_id, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+                failure = status.get("error")
+                if isinstance(failure, dict):
+                    status = {**status, "error": {**failure, "status": _editor_error_status(str(failure.get("code", "")))}}
+                return status
+
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/tables/{table_id}/ai-edits/{edit_id}/cancel",
+                include_in_schema=False,
+            )
+            async def cancel_table_ai_edit(
+                report_id: str, revision: int, table_id: str, edit_id: str, request: Request,
+            ) -> dict[str, object]:
+                context = await _write_context(
+                    grants, editor, request, report_id=report_id, revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                try:
+                    return table_ai.cancel_edit(context, table_id, edit_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/table-edits/by-table/{table_id}",
+                include_in_schema=False,
+            )
+            async def read_table_edit_record_by_table_id(
+                report_id: str, revision: int, table_id: str, request: Request,
+            ) -> dict[str, object]:
+                """Resolve an accepted replacement marker back to its original table."""
+
+                _raw_session, context = await _read_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await table_ai.edit_record_by_table_id(context, table_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.get(
+                "/reports/v1/editor/{report_id}/{revision}/api/table-edits/{edit_id}",
+                include_in_schema=False,
+            )
+            async def read_table_edit_record(
+                report_id: str, revision: int, edit_id: str, request: Request,
+            ) -> dict[str, object]:
+                _raw_session, context = await _read_context(
+                    grants, editor, request, report_id=report_id, revision=revision
+                )
+                try:
+                    return await table_ai.edit_record(context, edit_id)
                 except ReportingError as error:
                     _editor_http_error(error)
 
@@ -1241,6 +1418,16 @@ def _editor_error_status(code: str) -> int:
         return 504
     if code == "report_editor_chart_ai_missing":
         return 404
+    if code == "report_editor_table_ai_busy":
+        return 409
+    if code == "report_editor_table_ai_rate_limited":
+        return 429
+    if code == "report_editor_table_ai_timeout":
+        return 504
+    if code == "report_editor_table_ai_missing":
+        return 404
+    if code.startswith("report_editor_table_ai_"):
+        return 400
     if code.startswith("report_editor_chart_ai_"):
         return 400
     if code == "report_editor_session_expired":

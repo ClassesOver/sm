@@ -13,6 +13,52 @@ const browserType = process.env.REPORT_EDITOR_BROWSER === 'firefox' ? firefox : 
 const browser = await browserType.launch({ headless: process.env.HEADLESS !== '0' })
 const allowMutation = process.env.REPORT_EDITOR_ALLOW_MUTATION === '1'
 
+async function runTemplateSmoke(page) {
+  const tableId = process.env.REPORT_EDITOR_TABLE_ID
+  const chartId = process.env.REPORT_EDITOR_CHART_ID
+  if (!tableId && !chartId) return
+  const result = await page.evaluate(async ({ tableId, chartId }) => {
+    const basePath = window.location.pathname.replace(/\/$/, '')
+    const request = async (path) => {
+      const response = await fetch(`${basePath}${path}`, { credentials: 'same-origin' })
+      const payload = await response.json()
+      return { status: response.status, payload }
+    }
+    const output = {}
+    if (tableId) {
+      const response = await request(`/api/tables/${encodeURIComponent(tableId)}/templates`)
+      if (!response.payload || !Array.isArray(response.payload.templates)) {
+        throw new Error(`表模板目录格式无效：${response.status}`)
+      }
+      output.tableTemplates = response.payload.templates
+      const marker = document.querySelector(`.report-table-marker[data-marker-value="${CSS.escape(tableId)}"]`)
+      const table = marker?.closest('p')?.nextElementSibling?.matches('table')
+        ? marker.closest('p').nextElementSibling
+        : null
+      if (table) {
+        table.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+        await new Promise(resolve => setTimeout(resolve, 150))
+        output.tablePanelVisible = Boolean(document.querySelector('.table-ai-edit-card'))
+      }
+    }
+    if (chartId) {
+      const response = await request(`/api/charts/${encodeURIComponent(chartId)}/templates`)
+      if (!response.payload || !Array.isArray(response.payload.templates)) {
+        throw new Error(`图模板目录格式无效：${response.status}`)
+      }
+      output.chartTemplates = response.payload.templates
+    }
+    return output
+  }, { tableId, chartId })
+  if (result.tableTemplates && result.tableTemplates.some(item => item.available === false && !item.reason)) {
+    throw new Error('表模板缺数据置灰时缺少原因')
+  }
+  if (result.chartTemplates && result.chartTemplates.some(item => item.available === false && !item.reason)) {
+    throw new Error('图模板缺数据置灰时缺少原因')
+  }
+  if (result.tablePanelVisible === false) throw new Error('表格 AI 改面板未打开')
+  console.log(JSON.stringify({ templateSmoke: 'passed', ...result }))
+}
 async function runMutationSmoke(page) {
   const result = await page.evaluate(async () => {
     const basePath = window.location.pathname.replace(/\/$/, '')
@@ -119,6 +165,7 @@ try {
     }
     console.log(JSON.stringify(result))
     if (viewport.width === 1280) {
+      await runTemplateSmoke(page)
       await page.locator('[data-action="sources"]').click()
       await page.locator('.evidence-shell:not([hidden])').waitFor({ state: 'visible' })
       await page.locator('.evidence-directory-item').first().waitFor({ state: 'visible', timeout: 10_000 })
