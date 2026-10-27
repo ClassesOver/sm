@@ -707,8 +707,7 @@ def _append_time_series_statistics(
     series_payload: dict[str, Any] = {}
     raw_variables = profile.get("variables")
     variables: Mapping[str, Any] = raw_variables if isinstance(raw_variables, Mapping) else {}
-    numeric_fields: list[str] = []
-    numeric_fields = [
+    numeric_fields: list[str] = [
         field
         for field, variable in variables.items()
         if isinstance(field, str)

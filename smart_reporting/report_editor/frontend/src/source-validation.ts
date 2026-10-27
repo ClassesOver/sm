@@ -45,12 +45,6 @@ function countedBySourceReview(result: TraceValidation): (issue: QualityIssue) =
   }
 }
 
-/** 未自动核对的质量诊断条数：只作说明，不代表存在问题；已计入待复核的不重复计数。 */
-export function notEvaluatedQualityCount(result: TraceValidation): number {
-  const { scope, other } = notEvaluatedQualityBreakdown(result)
-  return scope + other
-}
-
 // 只因数据集未登记统计范围而无法确认的诊断：同一个原因，需业务确认范围及组织映射，不默认全院。
 const SCOPE_ONLY_REASONS = new Set(['scope_unknown', 'scope_value_unknown'])
 

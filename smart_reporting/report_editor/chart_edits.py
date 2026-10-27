@@ -208,33 +208,12 @@ def _parse_table_records(payload: dict[str, Any]) -> tuple[TableEditRecord, ...]
     return tuple(table_edits)
 
 
-def _parse_registry(content: bytes) -> tuple[tuple[ChartEditRecord, ...], tuple[TableEditRecord, ...]]:
-    """严格解析完整登记；仅供确实同时需要两类记录的调用方使用。"""
-
-    payload = _parse_registry_payload(content)
-    return _parse_chart_records(payload), _parse_table_records(payload)
-
-
 def parse_chart_edit_records(content: bytes) -> tuple[ChartEditRecord, ...]:
     return _parse_chart_records(_parse_registry_payload(content))
 
 
 def parse_table_edit_records(content: bytes) -> tuple[TableEditRecord, ...]:
     return _parse_table_records(_parse_registry_payload(content))
-
-
-def encode_chart_edit_records(
-    records: tuple[ChartEditRecord, ...],
-    table_edits: tuple[TableEditRecord, ...] = (),
-) -> bytes:
-    payload = {
-        "version": CHART_EDITS_REGISTRY_VERSION,
-        "records": [record.model_dump(mode="json", by_alias=True) for record in records],
-        "tableEdits": [record.model_dump(mode="json", by_alias=True) for record in table_edits],
-    }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
 
 
 async def load_chart_edit_records(

@@ -279,7 +279,6 @@ describe('report editor visual hierarchy', () => {
         <button data-action="pdf">PDF</button>
       </nav>`,
     )
-    const save = document.querySelector('[data-action="save"]')!
     const pdf = document.querySelector('[data-action="pdf"]')!
 
     expect(specifiedResolved('.report-actions button[data-action="save"]', 'background')).toBe('rgb(11, 79, 138)')

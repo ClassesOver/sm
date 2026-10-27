@@ -153,6 +153,13 @@ async def test_editor_real_dual_export_preserves_edited_and_restored_snapshot(tm
         assert validation["subjects"][0]["status"] == source_status
         assert validation["charts"][0]["status"] == source_status
         assert validation["tableSummary"]["valid"] == 48
+        # income_total 无单位：数值匹配不代表单位核验通过，软告警不能误标有效。
+        assert validation["tables"][0]["dataCheck"] == {
+            "status": "unknown",
+            "scope": "frozen_cells",
+            "reasons": ["cell_value_or_unit_unverified"],
+            "checkedCells": 0,
+        }
         pdf = root / f"reports/revision-{revision}/report.pdf"
         word = pdf.with_suffix(".docx")
         reader = pypdf.PdfReader(pdf)
@@ -165,16 +172,28 @@ async def test_editor_real_dual_export_preserves_edited_and_restored_snapshot(tm
             assert "数据来源附录" in text
             assert ("状态：待复核" if revision == 2 else "状态：有效") in text
             citation_appendix = text.split("实际引用附录", 1)[1].split("数据来源附录", 1)[0]
-            assert ("状态：待复核" if revision == 2 else "状态：有效") in citation_appendix
-            if revision == 2:
-                assert "状态：有效" not in citation_appendix
+            # 引用聚合整个数据集，恢复正文后表格单位告警仍在，签发不受影响。
+            assert "状态：待复核" in citation_appendix
+            assert "状态：有效" not in citation_appendix
             assert "[[claim:" not in text and "[[table:" not in text
             assert '<a id="report-section-' not in text
             assert ("图表：编辑后收入快照" if revision == 2 else "图表：冻结收入快照") + " [数据来源 002]" in text
         assert len(reader.pages) >= 4
-        data_tables = [item for item in word_document.tables if [cell.text for cell in item.rows[0].cells] == ["", "income_total"]]
-        assert len(data_tables) == 1
-        assert len(data_tables[0].rows) == 49
+        # 渲染投影将高单列服务端表按6条记录转为横表；冻结正文仍保持原表。
+        data_tables = word_document.tables
+        assert len(data_tables) == 8
+        rendered_records = []
+        for data_table in data_tables:
+            assert len(data_table.rows) == 2
+            labels = [cell.text for cell in data_table.rows[0].cells]
+            values = [cell.text for cell in data_table.rows[1].cells]
+            assert labels[0] == ""
+            assert values[0] == "income_total"
+            assert len(labels) == len(values) == 7
+            rendered_records.extend([label, value] for label, value in zip(labels[1:], values[1:]))
+        # 有序全量比对同时防止重复、丢失及记录与数值错绑，覆盖编辑版与恢复版。
+        assert rendered_records == records
+        assert all(pdf_text.count(label) == 1 for label, _value in records)
         assert len(word_document.inline_shapes) == 1
         assert "PAGEREF report_section_end_2" in word_document.sections[-1].footer._element.xml
         assert "SECTIONPAGES" not in word_document.sections[-1].footer._element.xml

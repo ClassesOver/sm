@@ -28,9 +28,10 @@ from smart_reporting.report_editor.chart_ai import (
     chart_edit_image_src,
 )
 from smart_reporting.report_editor.chart_edits import (
+    CHART_EDITS_REGISTRY_VERSION,
     ChartEditSkipped,
+    _encode_registry_payload,
     chart_edits_registry_path,
-    encode_chart_edit_records,
     load_chart_edit_records,
     parse_chart_edit_records,
 )
@@ -890,14 +891,20 @@ def test_chart_edit_registry_roundtrip_rejects_duplicates_and_corruption() -> No
         createdAt="2026-10-25T00:00:00+00:00",
         userId="user-1",
     )
-    parsed = parse_chart_edit_records(encode_chart_edit_records((record,)))
+    payload = {
+        "version": CHART_EDITS_REGISTRY_VERSION,
+        "records": [record.model_dump(mode="json", by_alias=True)],
+        "tableEdits": [],
+    }
+    parsed = parse_chart_edit_records(_encode_registry_payload(payload))
     assert parsed == (record,)
 
     with pytest.raises(ValueError):
         parse_chart_edit_records(b"{not json")
     with pytest.raises(ValueError):
         parse_chart_edit_records(b'{"version": 99, "records": []}')
-    duplicate = encode_chart_edit_records((record, record))
+    payload["records"].append(payload["records"][0])
+    duplicate = _encode_registry_payload(payload)
     with pytest.raises(ValueError):
         parse_chart_edit_records(duplicate)
 

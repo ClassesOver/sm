@@ -834,14 +834,6 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         return [dict(item) for item in getattr(self, "_code_request_metrics", ())]
 
     @staticmethod
-    def _response_tool_names(response: Any) -> list[str]:
-        names: list[str] = []
-        for call in ReportingCodeOpenAIResponses._response_tool_calls(response):
-            if call["name"] not in names:
-                names.append(call["name"])
-        return names
-
-    @staticmethod
     def _response_tool_calls(response: Any) -> list[dict[str, str]]:
         calls: list[dict[str, str]] = []
         for call in getattr(response, "tool_calls", None) or ():

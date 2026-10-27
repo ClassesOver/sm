@@ -8,7 +8,7 @@ import { beforeAll, expect, it } from 'vitest'
 import type { TraceValidation } from './api'
 import { createBodyValueMarksPlugin, documentValueMarks, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 import { markerDecorations } from './protocol-plugin'
-import { nextSourceIssue, notEvaluatedQualityBreakdown, notEvaluatedQualityCount, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
+import { nextSourceIssue, notEvaluatedQualityBreakdown, semanticReviewGroupCount, sourceCoverageSummary, sourceValidationIssueCount } from './source-validation'
 
 interface ReviewCase {
   id: string; marks: string[]; issues: number; warning?: string; original?: string; canRestore?: boolean
@@ -58,7 +58,6 @@ for (const example of cases) {
       // 范围未确认、运算未评估只计“未自动核对”，不计语义待确认，也不使状态栏变为待处理。
       const notEvaluated = example.notEvaluated ?? 0
       expect(semanticReviewGroupCount(validation)).toBe(0)
-      expect(notEvaluatedQualityCount(validation)).toBe(notEvaluated)
       expect(coverage.state).toBe(actionable.length ? 'stale' : 'valid')
       const { scope, other } = notEvaluatedQualityBreakdown(validation)
       expect(scope + other).toBe(notEvaluated)
@@ -88,7 +87,8 @@ for (const example of cases) {
         expect(documentValueMarks(view.state.doc, replay.restored!.validation).every(mark => mark.state === 'valid')).toBe(true)
         expect(sourceValidationIssueCount(replay.restored!.validation)).toBe(0)
         expect(semanticReviewGroupCount(replay.restored!.validation)).toBe(0)
-        expect(notEvaluatedQualityCount(replay.restored!.validation)).toBe(example.restoredNotEvaluated ?? 0)
+        const restoredCounts = notEvaluatedQualityBreakdown(replay.restored!.validation)
+        expect(restoredCounts.scope + restoredCounts.other).toBe(example.restoredNotEvaluated ?? 0)
         expect(sourceCoverageSummary(replay.restored!.validation, view.state.doc.textContent).state).toBe('valid')
         expect(nextSourceIssue(view.dom, null, element => view.posAtDOM(element, 0), replay.restored!.validation)).toBeNull()
       }

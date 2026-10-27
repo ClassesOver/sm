@@ -278,7 +278,6 @@ class _AsyncRWLock:
         self._readers = 0
         self._writer = False
         self._writer_owner: asyncio.Task[Any] | None = None
-        self._writer_depth = 0
         self._waiting_writers = 0
         self._leases = 0
 
@@ -307,11 +306,7 @@ class _AsyncRWLock:
             # Reporting 专用工具可能在外层 Agno hook 持锁后委托通用 Workspace
             # 工具。两层调用属于同一个 Task，应复用已有写锁；其他 Task 仍必须
             # 等待最外层退出，不能借嵌套调用绕过任务级串行边界。
-            self._writer_depth += 1
-            try:
-                yield
-            finally:
-                self._writer_depth -= 1
+            yield
             return
         async with self._condition:
             self._waiting_writers += 1
@@ -319,7 +314,6 @@ class _AsyncRWLock:
                 await self._condition.wait_for(lambda: not self._writer and self._readers == 0)
                 self._writer = True
                 self._writer_owner = owner
-                self._writer_depth = 1
             finally:
                 self._waiting_writers -= 1
                 self._condition.notify_all()
@@ -327,7 +321,6 @@ class _AsyncRWLock:
             yield
         finally:
             async with self._condition:
-                self._writer_depth -= 1
                 self._writer_owner = None
                 self._writer = False
                 self._condition.notify_all()

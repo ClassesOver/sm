@@ -651,16 +651,3 @@ def summarize_coding_metrics(samples: Iterable[Mapping[str, Any]]) -> dict[str, 
         },
         "unknownFields": sorted(unknown_fields),
     }
-
-
-def group_coding_metrics(samples: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """按任务类型、模型、推理档位和 provider 汇总 Coding 样本。"""
-
-    groups: dict[str, list[Mapping[str, Any]]] = {}
-    for sample in samples:
-        key = "|".join(
-            str(sample.get(field) or "unknown")
-            for field in ("taskKind", "model", "reasoningEffort", "provider")
-        )
-        groups.setdefault(key, []).append(sample)
-    return {key: summarize_coding_metrics(rows) for key, rows in sorted(groups.items())}

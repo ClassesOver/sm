@@ -333,6 +333,7 @@ async def test_shared_fact_dependencies_expand_in_batches_with_real_backend(
     bundle["derivedMetrics"] = [
         {"factId": key, "code": f"ratio_{position}", "kind": "ratio",
          "numeratorMetric": "shared_income", "denominatorMetric": "shared_income",
+         "inputFactIds": leaves,
          "value": 1.0, "unit": "倍", "warnings": []}
         for position, key in enumerate(derived)
     ]
@@ -370,9 +371,6 @@ async def test_shared_fact_dependencies_expand_in_batches_with_real_backend(
                 await page.goto(f"{base_url}/reports/v1/editor/open/{raw}")
                 await page.locator('button[data-action="sources"]').click()
                 await page.locator(".evidence-directory-item").filter(has_text="正文引用").click()
-                await page.get_by_role("button", name="展开", exact=True).click()
-                # 批次坐标与节点数量断言针对 2D DOM；默认关系图仍为 3D。
-                await page.get_by_role("button", name="切换到 2D 关系图", exact=True).click()
                 await expect(page.locator(".evidence-node")).to_have_count(3)
                 positions = "nodes => Object.fromEntries(nodes.map(node => [node.dataset.evidenceNode, [node.style.left, node.style.top]]))"
                 original = await page.locator(".evidence-node").evaluate_all(positions)
@@ -620,7 +618,6 @@ async def test_real_chart_sources_page_recover_and_restore_browser_state(
                 await expect(main_table.locator("tr:has(td)")).to_have_count(1)
                 await expect(main_table.locator("tr:has(td)")).to_have_text("P211021")
                 await expect(page.locator(".evidence-plot-range").last).to_have_text("共 2 行 · 当前页无预览记录")
-                await page.get_by_role("button", name="展开", exact=True).click()
                 await page.get_by_role("button", name="切换到关系列表", exact=True).click()
                 # 关系列表与来源目录使用同一显示名：文件名 → 业务名称 → 数据集 ID。
                 dataset = index.datasets[0]
@@ -669,6 +666,7 @@ async def test_real_branch_integrity_failure_preserves_graph_and_recovers(
     bundle["derivedMetrics"] = [{
         "factId": derived, "code": "income_ratio", "kind": "ratio",
         "numeratorMetric": "income_total", "denominatorMetric": "income_total",
+        "inputFactIds": [leaf],
         "value": 1.0, "unit": "倍", "warnings": [],
     }]
     content = json.dumps(bundle, ensure_ascii=False).encode("utf-8")
@@ -704,9 +702,6 @@ async def test_real_branch_integrity_failure_preserves_graph_and_recovers(
                 exchange = await page.request.get(f"{base_url}/reports/v1/editor/open/{raw}")
                 assert exchange.status == 200
                 await page.goto(f"{base_url}/reports/v1/editor/{context.report_id}/1?subject={subject.subject_id}")
-                await page.get_by_role("button", name="展开", exact=True).click()
-                # 关系图默认 3D；该回放检查 2D DOM 节点坐标与恢复契约，显式切换模式。
-                await page.get_by_role("button", name="切换到 2D 关系图", exact=True).click()
                 await expect(page.locator(".evidence-node")).to_have_count(2)
                 positions = "nodes => Object.fromEntries(nodes.map(node => [node.dataset.evidenceNode, [node.style.left, node.style.top]]))"
                 original = await page.locator(".evidence-node").evaluate_all(positions)
@@ -808,12 +803,11 @@ async def test_high_fanout_graph_keeps_positions_and_last_node_accessible(
                 await page.locator(".evidence-directory-item").filter(has_text="正文引用").first.click()
                 started = time.monotonic()
                 await page.locator(".evidence-subject-links button").filter(has_text="事实").click()
-                # 该规模回放断言 2D 卡片坐标；产品默认模式仍为 3D。
-                await page.get_by_role("button", name="切换到 2D 关系图", exact=True).click()
-                await expect(page.locator(".evidence-node")).to_have_count(301, timeout=15000)
+                # 300 条文本引用外，还有登记的数据集和两个表格单元格引用。
+                await expect(page.locator(".evidence-node")).to_have_count(304, timeout=15000)
                 load_seconds = time.monotonic() - started
-                await expect(page.locator(".evidence-relations-note")).to_contain_text("已加载 301 个节点 · 局部关系")
-                assert await page.locator(".evidence-graph-edge").count() == 300
+                await expect(page.locator(".evidence-relations-note")).to_contain_text("已加载 304 个节点 · 局部关系")
+                assert await page.locator(".evidence-graph-edge").count() == 303
                 positions = "nodes => Object.fromEntries(nodes.map(node => [node.dataset.evidenceNode, [parseFloat(node.style.left), parseFloat(node.style.top)]]))"
                 original = await page.locator(".evidence-node").evaluate_all(positions)
                 values = list(original.values())
@@ -859,7 +853,7 @@ async def test_high_fanout_graph_keeps_positions_and_last_node_accessible(
                 await page.get_by_role("button", name="返回详情", exact=True).click()
                 await expect(page.get_by_role("button", name="查看关系图", exact=True)).to_be_focused()
                 assert errors == []
-                print(f"high-fanout: browser={evidence_browser_engine} nodes=301 edges=300 load={load_seconds:.3f}s preview={preview_seconds:.3f}s")
+                print(f"high-fanout: browser={evidence_browser_engine} nodes=304 edges=303 load={load_seconds:.3f}s preview={preview_seconds:.3f}s")
             finally:
                 await browser.close()
     finally:
@@ -1116,10 +1110,13 @@ async def test_same_fact_subject_tasks_keep_anchor_identity_with_real_backend(
                 await expect(page.locator('[data-evidence="back"]')).to_be_disabled()
                 await expect(page.locator('.evidence-tab-stage')).to_have_text(["事实", "引用"])
                 await page.goto(f"{url}?subject={subjects[0].subject_id}")
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
+                # 深链重新定位到引用；已有任务与事实页历史仍保留。
+                await page.locator(".evidence-subject-links").wait_for()
                 await expect(page.locator(".evidence-tab-name")).to_have_count(2)
                 await expect(page.locator('.evidence-tab[aria-selected="true"]')).to_have_attribute("data-evidence-tab", first_key)
                 await expect(page.locator('[data-evidence="back"]')).to_be_enabled()
+                await page.locator('[data-evidence="back"]').click()
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 await page.locator('[data-evidence="back"]').click()
                 await page.locator(".evidence-subject-links").wait_for()
                 roots = await page.evaluate("""() => {
@@ -1264,8 +1261,10 @@ async def test_same_keys_in_two_reports_keep_browser_history_isolated(
                 await page.locator(".evidence-subject-links").wait_for()
 
                 await page.goto(f"{urls[0]}?subject={subject_id}")
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
+                await page.locator(".evidence-subject-links").wait_for()
                 await expect(page.locator('[data-evidence="back"]')).to_be_enabled()
+                await page.locator('[data-evidence="back"]').click()
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 await expect(page.locator(".evidence-tab-name")).to_have_count(1)
                 await page.goto(f"{urls[1]}?subject={subject_id}")
                 await page.locator(".evidence-subject-links").wait_for()
@@ -1701,7 +1700,7 @@ async def test_editor_repeated_export_creates_sequential_revisions(
     frontend_built: None,
     browser_available: None,
 ) -> None:
-    """连续点击导出 PDF，验证生成 revision 2 与 revision 3。"""
+    """连续编辑并导出 PDF，验证新内容生成 revision 2 与 revision 3。"""
     editor, grants, context = await _make_editor_with_subject(tmp_path)
     thread_id = context.scope["threadId"]
     workspace = editor.workspace
@@ -1736,10 +1735,17 @@ async def test_editor_repeated_export_creates_sequential_revisions(
         async def apply(self, _run_id: str, command, *, expected_version: int):
             assert expected_version == durable.state_version
             payload = durable.payload.copy()
-            payload["reportEditorContexts"] = {
-                **payload.get("reportEditorContexts", {}),
-                str(command.payload["context"]["revision"]): command.payload["context"],
-            }
+            if command.name == "set_report_editor_context":
+                payload["reportEditorContexts"] = {
+                    **payload.get("reportEditorContexts", {}),
+                    str(command.payload["context"]["revision"]): command.payload["context"],
+                }
+            else:
+                assert command.name == "record_report_editor_delivery"
+                payload["reportEditorDeliveries"] = {
+                    **payload.get("reportEditorDeliveries", {}),
+                    str(command.payload["revision"]): command.payload,
+                }
             durable.state_version += 1
             durable.payload = payload
 
@@ -1814,7 +1820,7 @@ async def test_editor_repeated_export_creates_sequential_revisions(
                         "name": "report_editor_session",
                         "value": session_value,
                         "domain": "127.0.0.1",
-                        "path": "/",
+                        "path": f"/reports/v1/editor/{context.report_id}/{context.revision}",
                     }
                 ]
             )
@@ -1826,6 +1832,18 @@ async def test_editor_repeated_export_creates_sequential_revisions(
             )
 
             for expected_revision in (2, 3):
+                if expected_revision == 3:
+                    latest_context = context.model_validate(durable.payload["reportEditorContexts"]["2"])
+                    latest_raw, _ = await grants.issue(latest_context)
+                    latest_page = await page.goto(f"{base_url}/reports/v1/editor/open/{latest_raw}")
+                    assert latest_page is not None and latest_page.status == 200
+                    await page.wait_for_function(
+                        "() => document.querySelector('.save-state-label')?.textContent.includes('已保存')",
+                    )
+                    await page.locator("#report-editor .ProseMirror").click()
+                    await page.keyboard.press("Control+End")
+                    await page.keyboard.press("Enter")
+                    await page.keyboard.insert_text("第二次导出的新增内容。")
                 await page.locator('button[data-action="pdf"]').click()
                 overlay = page.locator(".export-panel")
                 await overlay.wait_for(state="visible", timeout=30000)
@@ -1834,6 +1852,11 @@ async def test_editor_repeated_export_creates_sequential_revisions(
                 assert await revision_label.text_content() == f"版本 {expected_revision} 已生成"
                 await overlay.locator("button.export-panel-close").click()
                 await overlay.wait_for(state="hidden", timeout=5000)
+
+            latest = await workspace.aread_text(
+                thread_id, durable.payload["reportEditorContexts"]["3"]["markdownPath"],
+            )
+            assert "第二次导出的新增内容。" in latest
 
             await browser.close()
     finally:
@@ -2180,18 +2203,18 @@ async def test_editor_history_restore_recovers_image_asset(
             await history_overlay.wait_for(state="hidden", timeout=5000)
 
             # 恢复后编辑器区域应出现图片元素且加载成功。
-            img = page.locator("#report-editor img").first
+            img = page.locator("#report-editor img[src]").first
             await img.wait_for(state="visible", timeout=15000)
             assert await img.get_attribute("src") is not None
             await page.wait_for_function(
-                "() => { const img = document.querySelector('#report-editor img'); "
+                "() => { const img = document.querySelector('#report-editor img[src]'); "
                 "return img?.complete && img.naturalWidth === 80 && img.naturalHeight === 40; }",
                 timeout=15000,
             )
             # 刷新后仍从持久化的历史来源读取图片，而非仅靠内存中的恢复状态。
             await page.reload()
             await page.wait_for_function(
-                "() => document.querySelector('#report-editor img')?.naturalWidth === 80",
+                "() => document.querySelector('#report-editor img[src]')?.naturalWidth === 80",
                 timeout=15000,
             )
 
@@ -2210,11 +2233,11 @@ async def test_editor_ai_accept_and_undo_revalidate_claim(
     """通过可见 AI 工具应用改值，撤销后重新取得有效来源。"""
     from smart_reporting.report_editor.ai import ReportEditorAIService
 
-    editor, grants, context = await _make_editor_with_subject(tmp_path)
+    # 本用例只核对文本 claim，避免默认表格的单位待核实掩盖 AI 改值状态。
+    editor, grants, context = await _make_editor_with_subject(tmp_path, include_table=False)
     thread_id = context.scope["threadId"]
     original = "本期收入3600万元。"
-    markdown = await editor.workspace.aread_text(thread_id, context.markdown_path)
-    markdown += f"\n{original}[[claim:claim-1]]\n"
+    markdown = f"# 报告\n\n{original}[[claim:claim-1]]\n"
     await editor.workspace.awrite_text(thread_id, "reports/revision-1/draft/report.md", markdown)
     calls = []
 
