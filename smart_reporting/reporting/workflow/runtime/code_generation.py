@@ -267,6 +267,43 @@ class ReportingCodeGenerationRunner:
         self.failure_artifact_recorder = failure_artifact_recorder
         self.compact_continuation = compact_continuation
 
+    async def run_standard_visualization(
+        self, task_context: ReportingCodingTaskContext, workspace: HostReportingWorkspace,
+        source: str, task_facts: Mapping[str, Any],
+    ) -> CodeGenerationResult:
+        """Use the same execution, image review and submission gates as Coding."""
+        async with self.registry.bind(task_context, workspace) as binding:
+            toolkit = ReportingCodeModeToolkit(
+                binding, self.code_mode_runtime, vision_reviewer=self.vision_reviewer,
+                lsp_manager=self.lsp_manager,
+                visualization_plan=task_facts.get('visualizationPlan'),
+            )
+            try:
+                await toolkit.refresh_delivery_state()
+                for operation in (
+                    lambda: toolkit.write_script(source),
+                    toolkit.run_script,
+                    lambda: toolkit.view_image(paths=list(task_context.declared_output_paths)),
+                    toolkit.submit_script,
+                ):
+                    result = await operation()
+                    if result.get('ok') is not True:
+                        raise ReportingError(
+                            'report_standard_visualization_failed',
+                            '标准可视化未通过执行或视觉验收，转入 Coding 路径。',
+                            details=result,
+                        )
+                receipt = binding.execution_receipt
+                if receipt is None:
+                    raise ReportingError('report_standard_visualization_failed', '标准可视化缺少执行回执。')
+                await toolkit.require_current_receipt(receipt)
+                return CodeGenerationResult(
+                    script_file=receipt.source_file, execution_receipt=receipt,
+                    visual_inspection_receipts=tuple(binding.visual_inspection_receipts.values()),
+                )
+            finally:
+                await self.code_mode_runtime.shutdown(task_context.code_mode_session_id)
+
     async def run(
         self,
         task_context: ReportingCodingTaskContext,

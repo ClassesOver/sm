@@ -1353,7 +1353,20 @@ class RuntimeAnalysisMixin:
                             ),
                             **_visualization_repair_facts(task_facts, chart_inputs, coding_facts),
                         }
-                        result = await code_runner().run(
+                        standard_result = None
+                        if diagnostic is None and chart_inputs is not None and benchmark_projection is None:
+                            from .standard_visualization import standard_visualization_script
+
+                            source = standard_visualization_script(plan, chart_inputs)
+                            if source is not None:
+                                try:
+                                    standard_result = await code_runner().run_standard_visualization(
+                                        coding_context, task_workspace, source, facts_payload,
+                                    )
+                                    logger.info('report_standard_visualization_completed charts={}', len(plan.charts))
+                                except Exception as error:
+                                    logger.warning('report_standard_visualization_fallback error={}', type(error).__name__)
+                        result = standard_result or await code_runner().run(
                             coding_context,
                             task_workspace,
                             facts_payload,
