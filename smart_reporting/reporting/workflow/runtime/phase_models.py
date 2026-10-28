@@ -379,6 +379,26 @@ class StandardChartStep(StrictModel):
         return self
 
 
+class StandardChartWaterfall(StrictModel):
+    value_field: str = Field(alias='valueField', min_length=1, max_length=200)
+    absolute_labels: tuple[str, ...] = Field(alias='absoluteLabels', min_length=1, max_length=60,
+        description='绑定绝对值起点/小计/终点的冻结标签；必须含首项，后续绝对值须与前项累计对账。其他项视为有符号增减。')
+    increase_color: str = Field(default='#36856b', alias='increaseColor', pattern=r'^#[0-9a-fA-F]{6}$')
+    decrease_color: str = Field(default='#b55d68', alias='decreaseColor', pattern=r'^#[0-9a-fA-F]{6}$')
+    absolute_color: str = Field(default='#3066a3', alias='absoluteColor', pattern=r'^#[0-9a-fA-F]{6}$')
+    connectors: bool = True
+
+
+class StandardChartDistribution(StrictModel):
+    value_field: str = Field(alias='valueField', min_length=1, max_length=200)
+    group_field: str = Field(alias='groupField', min_length=1, max_length=200)
+    group_labels: tuple[str, ...] = Field(default=(), alias='groupLabels', max_length=24,
+        description='当前全部分组的显式顺序，保留组内所有绑定样本。')
+    orientation: Literal['vertical', 'horizontal'] = 'vertical'
+    whisker_iqr: float = Field(default=1.5, alias='whiskerIqr', gt=0, le=5, allow_inf_nan=False)
+    show_fliers: bool = Field(default=True, alias='showFliers')
+
+
 class StandardChartEncoding(StrictModel):
     x_field: str = Field(alias='xField', min_length=1, max_length=200)
     y_field: str = Field(alias='yField', min_length=1, max_length=200)
@@ -624,6 +644,10 @@ class ChartDraft(StrictModel):
         description='按顺序执行最多8步view/derivation，可多维分组→分组累计/同比/滚动→透视；不能与standardView/standardDerivations混用。')
     standard_encoding: StandardChartEncoding | None = Field(default=None, alias='standardEncoding',
         description='scatter/bubble显式绑定数值xField/yField，可用groupField或colorField、sizeField；heatmap用文本xField/yField及数值valueField。单位来自冻结元数据。')
+    standard_waterfall: StandardChartWaterfall | None = Field(default=None, alias='standardWaterfall',
+        description='waterfall绑定有符号valueField及absoluteLabels起点/小计/终点；后续绝对值必须与累计对账，禁止补造或截取贡献项。')
+    standard_distribution: StandardChartDistribution | None = Field(default=None, alias='standardDistribution',
+        description='boxplot绑定长表groupField及原始样本valueField；最多480样本、24组，由Matplotlib计算线性四分位和IQR须，不从汇总均值伪造分布。')
     standard_bands: tuple[StandardChartBand, ...] = Field(default=(), alias='standardBands', max_length=8,
         description='折线范围带：series绑定中心值，lowerField/upperField绑定同单位冻结上下界；只显示已有范围，不自动估算置信区间。')
     standard_label_fields: tuple[str, ...] = Field(

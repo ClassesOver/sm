@@ -2,6 +2,50 @@
 
 以下保留各轮验证记录；当前能力及限制以首节为准。
 
+## 瀑布贡献链与原始样本箱线图（2026-10-28）
+
+新增`visualForm=waterfall`与`standardWaterfall`，使用绑定长表的唯一冻结标签及有符号度量列。`absoluteLabels`必须包含首项，显式区分起点/小计/终点与其他增减项；后续绝对值须与此前累计按1e-12相对容差对账，不隐式重置累计。累计用标准库`Fraction`保留输入浮点数的精确贡献，最终转回坐标时拒绝溢出或非零增减完全不可见的情况。没有终点标签不会补造总额；小计不重复计入后续累计。支持零、负贡献和负数起点/终点。
+
+`increaseColor/decreaseColor/absoluteColor`分别控制角色颜色，`connectors`控制连接线；按`standardStyle.points`的度量名+冻结标签覆盖某个贡献的颜色。标注显示原始增减值或绝对值，位置对应累计端点，避免把累计值误称为单项贡献；负数保留有符号柱高。瀑布仅支持明确可加度量与线性单轴，百分比、缺失贡献、排序/TopN/标签截取和逐系列几何替换回退Coding。最多60项。
+
+```json
+{
+  "visualForm": "waterfall",
+  "standardLabelField": "项目",
+  "standardValueFields": ["金额"],
+  "standardWaterfall": {
+    "valueField": "金额",
+    "absoluteLabels": ["期初", "小计", "期末"],
+    "increaseColor": "#36856b", "decreaseColor": "#b55d68", "absoluteColor": "#3066a3",
+    "connectors": true
+  }
+}
+```
+
+新增`visualForm=boxplot`与`standardDistribution`，`groupField`为冻结文本分组，`valueField`每行必须代表一个已绑定的原始样本，不能用汇总均值/总额冒充分布。最多480行、24组；`groupLabels`只调整所有当前分组的完整顺序，不删除样本。`orientation=vertical/horizontal`控制方向；支持登记单位换算、百分数尺度、log/symlog、按冻结组名设置系列颜色/线型及图例别名（用于分类标签）。
+
+使用Matplotlib的`boxplot_stats`与`bxp`，线性插值四分位、默认`whiskerIqr=1.5`倍IQR须，拒绝不可表示的四分位/IQR溢出。每组分类标签显示有效样本数n；单样本、相同值样本保持退化箱体，不添加抖动或假观测。缺失须`allowNulls=true`，仅排除未知样本并注明，不补零；整组无样本则回退。`showFliers=false`才隐藏异常点，明确写入图下说明，统计仍使用全部有效样本；显示异常点时不能用marker=none静默隐藏。
+
+```json
+{
+  "visualForm": "boxplot",
+  "standardValueFields": ["收入"],
+  "standardDistribution": {
+    "groupField": "院区", "valueField": "收入", "groupLabels": ["东院", "西院"],
+    "orientation": "horizontal", "whiskerIqr": 1.5, "showFliers": true
+  },
+  "standardAxes": {"allowNulls": true, "scale": "symlog", "linearThreshold": 1}
+}
+```
+
+两类图复用标准画布/排版/来源说明与`values/peak/trough/point/range`标注，箱线标注明确称“中位数”；高亮仅加文本框，不制造额外样本点。暂不支持多轴、参考线、辅助字段或冻结行摘要。规划器及Coding指令要求绑定全部类别和度量字段，保留作用域及原输入SHA；标准统计脚本仅在出现这些图形时加入，旧图编译结果保持逐字节一致。
+
+`--suite statistics`新增48场景，3个种子×3个量级×4类配置共36张成图，另12个预期回退。独立检查每根瀑布柱的起点/有符号高度/横坐标/颜色、连接线位置与端点，以及箱线四分位/中位数/须/异常点/样本数/颜色；横向分组轴也检查刻度重叠。独立四分位预期使用排序与插值，不调用Matplotlib统计函数。7个故意错误的几何/颜色预期被识别。
+
+新增31项测试分批通过，并定向回归189项旧绘图、逐图路由、编码和计划模型测试，本轮220项通过；包含真实Pydantic计划序列化→授权字段物化→绘图、混合旧图/瀑布/箱线批量执行，以及正式源码门禁和输入篡改拒绝。3模块mypy、Ruff、diff检查通过。原384场景及OS报告16图重新编译与既有已执行脚本一致，不重复完整回归；新48场景使用最终统计渲染器及扩展独立审计回放。`--suite all`现有432场景：326成图、101预检回退、2身份拒绝、2布局修复、1schema拒绝。
+
+仍未标准化：小提琴密度估计、预先汇总分位数输入、堆叠双轴、断轴/显式刻度范围、大数据分页，以及真实线上自动规划与审美验收。当前验证仍为离线人工参数回放，不能宣称线上模型命中率，尚未部署。其余能力与历史证据见下节。
+
 ## 数值坐标、热力矩阵与冻结范围带（2026-10-28）
 
 新增`standardEncoding`和`standardBands`，与既有数据变换、SHA256身份核验、标准画布、独立图形校验及逐图Coding回退共用流程。规划器和Coding指令同步更新：编码使用的坐标、类别、面积、颜色、观测标签、范围上下界必须进入`dataBindings`，不能只绑定中心值。

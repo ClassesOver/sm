@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from scripts.standard_visualization_geometry_cases import geometry_cases
 from scripts.standard_visualization_pipeline_cases import pipeline_cases
+from scripts.standard_visualization_statistics_cases import statistics_cases
 from scripts.standard_visualization_stress_cases import extended_cases
 from smart_reporting.reporting.workflow.runtime.chart_inputs import (
     ChartInputFile,
@@ -26,12 +27,14 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     StandardChartBand,
     StandardChartCanvas,
     StandardChartDerivation,
+    StandardChartDistribution,
     StandardChartEncoding,
     StandardChartPresentation,
     StandardChartSource,
     StandardChartStep,
     StandardChartStyle,
     StandardChartView,
+    StandardChartWaterfall,
 )
 from smart_reporting.reporting.workflow.runtime.standard_visualization import (
     standard_visualization_script,
@@ -39,7 +42,8 @@ from smart_reporting.reporting.workflow.runtime.standard_visualization import (
 
 MODELS = {'standard_canvas': StandardChartCanvas, 'standard_style': StandardChartStyle,
           'standard_presentation': StandardChartPresentation, 'standard_axes': StandardChartAxes,
-          'standard_view': StandardChartView, 'standard_encoding': StandardChartEncoding}
+          'standard_view': StandardChartView, 'standard_encoding': StandardChartEncoding,
+          'standard_waterfall': StandardChartWaterfall, 'standard_distribution': StandardChartDistribution}
 LIST_MODELS = {'standard_annotations': StandardChartAnnotation, 'standard_sources': StandardChartSource,
                'standard_derivations': StandardChartDerivation, 'standard_steps': StandardChartStep,
                'standard_bands': StandardChartBand}
@@ -50,6 +54,9 @@ matplotlib.use("Agg")
 from matplotlib.figure import Figure
 from matplotlib.text import Text, Annotation
 original_save = Figure.savefig
+parameters = json.loads(Path("parameters.json").read_text())
+horizontal = (parameters["visual_form"] == "barh" or parameters["visual_form"] in {"boxplot", "箱线图"}
+              and parameters.get("standard_distribution", {}).get("orientation") == "horizontal")
 
 def capture(fig, *args, **kwargs):
     drawn = set()
@@ -74,13 +81,11 @@ def capture(fig, *args, **kwargs):
     for ax in fig.axes:
         for text in ax.texts:
             if isinstance(text, Annotation) and re.match(r"^(?:(?:峰值|谷值|重点) |[^:]+: )?[+-]?0\\.0+(?![0-9])", text.get_text()):
-                horizontal = json.loads(Path("parameters.json").read_text())["visual_form"] == "barh"
                 value = text.xy[0 if horizontal else 1]
                 if math.isfinite(float(value)) and value != 0:
                     rounded.append(text.get_text()[:100])
     audit = {"outsideCanvas": outside, "roundedToZeroCandidates": rounded,
              "axes": len(fig.axes), "size": list(fig.get_size_inches()), "dpi": fig.dpi}
-    horizontal = json.loads(Path("parameters.json").read_text())["visual_form"] == "barh"
     collisions = []
     for ax in fig.axes:
         if getattr(ax, "_standard_colorbar", False):
@@ -96,7 +101,6 @@ def capture(fig, *args, **kwargs):
     mismatches = []
     expectations = json.loads(Path("expectations.json").read_text()) if Path("expectations.json").exists() else {}
     from matplotlib.colors import to_hex
-    horizontal = json.loads(Path("parameters.json").read_text())["visual_form"] == "barh"
     for expected in expectations.get("series", []):
         artists = [artist for ax in fig.axes for artist in (ax.lines if expected["kind"] == "line" else ax.containers)
                    if artist.get_label() == expected["name"]]
@@ -170,6 +174,46 @@ def capture(fig, *args, **kwargs):
                 if found: mismatches.append("filled_missing_band:" + expected["name"])
             elif not found or not same_value(min(found),low) or not same_value(max(found),high):
                 mismatches.append("wrong_band_bounds:" + expected["name"])
+    for expected in expectations.get("waterfalls", []):
+        artists = [artist for ax in fig.axes for artist in ax.containers if getattr(artist,"_standard_waterfall",False)]
+        if len(artists)!=1:
+            mismatches.append("missing_waterfall")
+            continue
+        actual = [(bar.get_y(),bar.get_height()) for bar in artists[0]]
+        if len(actual)!=len(expected["starts"]) or any(not same_value(start,wanted_start) or not same_value(height,wanted_height)
+            for (start,height),wanted_start,wanted_height in zip(actual,expected["starts"],expected["heights"])):
+            mismatches.append("wrong_waterfall_levels")
+        if "colors" in expected and [to_hex(bar.get_facecolor()) for bar in artists[0]] != expected["colors"]:
+            mismatches.append("wrong_waterfall_colors")
+        if "positions" in expected and any(not same_value(bar.get_x()+bar.get_width()/2,position) for bar,position in zip(artists[0],expected["positions"])):
+            mismatches.append("wrong_waterfall_positions")
+        connectors = [line for ax in fig.axes for line in ax.lines if getattr(line,"_standard_connector",False)]
+        if "connectors" in expected and (len(connectors)!=len(expected["connectors"]) or any(not same_value(line.get_ydata()[0],value) or not same_value(line.get_ydata()[1],value) for line,value in zip(connectors,expected["connectors"]))):
+            mismatches.append("wrong_waterfall_connectors")
+        for index,line in enumerate(connectors):
+            width = artists[0][index].get_width()
+            if not same_value(line.get_xdata()[0],index+width/2) or not same_value(line.get_xdata()[1],index+1-width/2):
+                mismatches.append("wrong_waterfall_connector_positions")
+    for expected in expectations.get("boxes", []):
+        boxes = [patch for ax in fig.axes for patch in ax.patches if getattr(patch,"_standard_box_group",None)==expected["name"]]
+        parts = [line for ax in fig.axes for line in ax.lines if getattr(line,"_standard_box_part",(None,None))[0]==expected["name"]]
+        coordinate = 0 if expected.get("horizontal") else 1
+        if len(boxes)!=1:
+            mismatches.append("missing_box:"+expected["name"])
+            continue
+        coords = boxes[0].get_path().vertices[:,coordinate]
+        medians = [line for line in parts if line._standard_box_part[1]=="medians"]
+        median = (medians[0].get_xdata() if coordinate==0 else medians[0].get_ydata())[0] if len(medians)==1 else float("nan")
+        whiskers = [line for line in parts if line._standard_box_part[1]=="whiskers"]
+        tips = [(line.get_xdata() if coordinate==0 else line.get_ydata())[-1] for line in whiskers]
+        if len(tips)!=2 or any(not same_value(a,b) for a,b in zip([min(coords),median,max(coords),*tips],expected["statistics"])):
+            mismatches.append("wrong_box_statistics:"+expected["name"])
+        fliers = [value for line in parts if line._standard_box_part[1]=="fliers" for value in (line.get_xdata() if coordinate==0 else line.get_ydata())]
+        if sorted(fliers)!=sorted(expected["fliers"]):
+            if len(fliers)!=len(expected["fliers"]) or any(not same_value(a,b) for a,b in zip(sorted(fliers),sorted(expected["fliers"]))):
+                mismatches.append("wrong_box_fliers:"+expected["name"])
+        if "color" in expected and to_hex(boxes[0].get_facecolor())!=expected["color"]:
+            mismatches.append("wrong_box_color:"+expected["name"])
     visible_text = "\\n".join(text.get_text() for text in drawn if text.get_visible())
     for text in expectations.get("texts", []):
         if text not in visible_text:
@@ -390,7 +434,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
-    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'all'], default='basic')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -401,6 +445,8 @@ def main():
         cases.extend(pipeline_cases())
     if args.suite in {'geometry', 'all'}:
         cases.extend(geometry_cases())
+    if args.suite in {'statistics', 'all'}:
+        cases.extend(statistics_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []

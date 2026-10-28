@@ -30,6 +30,11 @@ from .standard_chart_presentation import (
     prepare_standard_presentation,
     valid_standard_metadata,
 )
+from .standard_chart_statistics import (
+    STATISTICS_DISPATCH,
+    STATISTICS_SCRIPT,
+    prepare_statistical_chart,
+)
 from .standard_chart_transform import (
     StandardChartTransformationError,
     apply_standard_chart_steps,
@@ -93,6 +98,15 @@ def _encoded_configuration(chart, document, original_document, form, label, sour
             [], None, None, None, [], axes.model_dump(), [], None, policy)
 
 
+def _statistical_configuration(chart, document, original, form, label, source, canvas, style, presentation, axes, selected):
+    try:
+        policy = prepare_statistical_chart(chart, document, original, form, label, canvas, style, presentation, axes, selected)
+    except StandardChartEncodingError as error:
+        _reject(error.code, error.parameter, str(error), '保留贡献链或组内原始样本，检查登记单位、绝对值对账及缺失策略。')
+    return (source.path, source.sha256, chart.source_path, chart.title, form, label,
+            [], None, None, None, [], axes.model_dump(), [], None, policy)
+
+
 def _standard_visualization_script(
     plan: VisualizationPlanDraft, inputs: ChartInputMaterialization,
 ) -> str | None:
@@ -118,6 +132,10 @@ def _standard_visualization_script(
                 'summary-bars': 'summary-bars', '单行指标对比图': 'summary-bars'}.get(chart.visual_form)
         form = {'scatter': 'scatter', '散点图': 'scatter', 'bubble': 'bubble', '气泡图': 'bubble',
                 'heatmap': 'heatmap', '热力图': 'heatmap'}.get(chart.visual_form, form)
+        form = {'waterfall': 'waterfall', '瀑布图': 'waterfall', 'boxplot': 'boxplot', '箱线图': 'boxplot'}.get(chart.visual_form, form)
+        if ((getattr(chart, 'standard_waterfall', None) is not None and form != 'waterfall')
+                or (getattr(chart, 'standard_distribution', None) is not None and form != 'boxplot')):
+            _reject('standard_statistics_form_conflict', 'standardWaterfall/standardDistribution', '统计参数与图形不匹配。', '瀑布用waterfall，原始样本分布用boxplot；不能忽略统计参数。')
         entries = [entry for entry in inputs.entries if entry['chartId'] == chart.chart_id]
         if form is None:
             _reject('standard_form_unsupported', 'visualForm', '图形类型尚未标准化。', '使用已支持的图形类型，或仅对该图使用Coding。')
@@ -187,6 +205,9 @@ def _standard_visualization_script(
             return None
         explicit_label = getattr(chart, 'standard_label_field', None)
         encoding = getattr(chart, 'standard_encoding', None)
+        distribution = getattr(chart, 'standard_distribution', None)
+        if form == 'boxplot' and distribution is not None and explicit_label is None:
+            explicit_label = distribution.group_field
         if form == 'heatmap' and encoding is not None and explicit_label is None:
             explicit_label = encoding.x_field
         label = explicit_label or ('period' if 'period' in columns else 'label' if 'label' in columns else None)
@@ -227,6 +248,10 @@ def _standard_visualization_script(
         labels = [row[label_index] for row in rows]
         if any(not isinstance(value, str) or not value for value in labels):
             return None
+        if form in {'waterfall', 'boxplot'}:
+            configs.append(_statistical_configuration(chart, document, original_document, form, label,
+                            source, canvas, style, presentation, axes, selected))
+            continue
         if form in {'scatter', 'bubble', 'heatmap'}:
             configs.append(_encoded_configuration(chart, document, original_document, form, label,
                             source, canvas, style, presentation, axes, selected))
@@ -475,9 +500,12 @@ def _standard_visualization_script(
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
                         axes.model_dump(), metas, total_field, canvas_policy))
+    has_statistics = any(config[4] in {'waterfall', 'boxplot'} for config in configs)
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
-            + '\n' + PRESENTATION_SCRIPT + _LAYOUT + ENCODING_SCRIPT + _ADVANCED + _BODY)
+            + '\n' + PRESENTATION_SCRIPT + _LAYOUT + ENCODING_SCRIPT + _ADVANCED
+            + (STATISTICS_SCRIPT if has_statistics else '')
+            + _BODY.replace('__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else ''))
 
 
 _LAYOUT = '''def standard_series_name(artist, policy):
@@ -955,7 +983,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
     if form in {"scatter", "bubble", "heatmap"}:
         render_encoded_chart(payload, canvas, form, title, output_path)
         continue
-    canvas["band_data"] = standard_band_data(payload, canvas)
+__STATISTICAL_DISPATCH__    canvas["band_data"] = standard_band_data(payload, canvas)
     label_index = columns.index(label_column)
     labels = list(dict.fromkeys(row[label_index] for row in payload["rows"]))
     if category_column:

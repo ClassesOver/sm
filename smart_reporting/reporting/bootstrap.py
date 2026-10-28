@@ -131,6 +131,8 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
     "standardEncoding须按冻结列绘制真实数值X/Y、比例气泡面积或分类热力矩阵；颜色/面积不可被主题或高亮重写。"
     "缺失观测和单元保留掩码，不能补零；热力矩阵不能转置或暗中聚合重复单元。"
     "standardBands上下界逐行读取已绑定列，按登记单位换算并保持缺失断带，不能估算区间或越过原范围。",
+    "standardWaterfall必须区分冻结绝对值与有符号增减，不排序截取贡献链，小计/终点与累计对账且不得隐式重置。"
+    "standardDistribution仅用绑定的原始组内样本，由Matplotlib绘线性四分位/IQR箱线；缺失不补零，注明有效n，隐藏异常点须说明。",
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[4:6],
     *_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS,
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[9:11],
