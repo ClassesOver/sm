@@ -285,6 +285,29 @@ class StandardChartSource(StrictModel):
     category_value: str | None = Field(default=None, alias='categoryValue', max_length=200)
 
 
+class StandardChartCanvas(StrictModel):
+    size_mode: Literal['auto', 'fixed'] = Field(default='auto', alias='sizeMode')
+    width: float = Field(default=12, ge=4, le=20, allow_inf_nan=False, description='英寸')
+    height: float = Field(default=7, ge=3, le=24, allow_inf_nan=False, description='英寸')
+    dpi: int = Field(default=150, ge=72, le=240)
+    layout: Literal['tight', 'constrained', 'manual'] = 'tight'
+    crop: Literal['canvas', 'tight'] = 'canvas'
+    padding: float = Field(default=.25, ge=0, le=1, allow_inf_nan=False)
+    left: float = Field(default=.12, ge=0, le=.45, allow_inf_nan=False)
+    right: float = Field(default=.94, ge=.55, le=1, allow_inf_nan=False)
+    bottom: float = Field(default=.16, ge=0, le=.45, allow_inf_nan=False)
+    top: float = Field(default=.90, ge=.55, le=1, allow_inf_nan=False)
+    label_wrap: int = Field(default=14, alias='labelWrap', ge=6, le=40)
+    tick_font_size: int = Field(default=9, alias='tickFontSize', ge=8, le=16)
+    legend_position: Literal['auto', 'inside', 'outside'] = Field(default='auto', alias='legendPosition')
+
+    @model_validator(mode='after')
+    def validate_pixel_budget(self) -> StandardChartCanvas:
+        if self.width * self.height * self.dpi ** 2 > 24_000_000:
+            raise ValueError('标准画布不能超过2400万像素')
+        return self
+
+
 class ChartDraft(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
@@ -325,6 +348,10 @@ class ChartDraft(StrictModel):
     standard_axes: StandardChartAxes = Field(
         default_factory=StandardChartAxes, alias='standardAxes',
         description='显式轴策略：dual用rightFields指定右轴系列；panels逐系列共享横轴分面；log只允许严格正数折线；zoom用冻结标签zoomStart/zoomEnd选择局部放大，主图保持完整。',
+    )
+    standard_canvas: StandardChartCanvas = Field(
+        default_factory=StandardChartCanvas, alias='standardCanvas',
+        description='统一画布：width/height单位英寸，dpi、自动/固定尺寸、布局、裁切、留白、换行、字号及图例位置。固定尺寸且crop=canvas时导出像素由尺寸乘DPI确定。',
     )
     standard_sources: tuple[StandardChartSource, ...] = Field(
         default=(), alias='standardSources', max_length=8,

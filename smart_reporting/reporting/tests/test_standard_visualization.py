@@ -455,6 +455,56 @@ def test_layout_wraps_labels_and_separates_colliding_annotation_text(tmp_path, m
         close('all')
 
 
+@pytest.mark.parametrize('mode,layout', [('single', 'tight'), ('dual', 'constrained'), ('panels', 'manual')])
+def test_standard_canvas_fixed_export_has_exact_pixels(tmp_path, monkeypatch, mode, layout):
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import (
+        StandardChartAxes,
+        StandardChartCanvas,
+    )
+
+    plan, document = complex_fixture('line')
+    plan.charts[0].standard_axes = StandardChartAxes(
+        mode=mode, rightFields=('budget',) if mode == 'dual' else (),
+    )
+    plan.charts[0].standard_canvas = StandardChartCanvas(
+        sizeMode='fixed', width=8, height=5, dpi=100, layout=layout, crop='canvas',
+        left=.2, right=.9, bottom=.2, top=.85, tickFontSize=11, labelWrap=10,
+    )
+    inputs = materialization(document)
+    (tmp_path / 'input.json').write_bytes(inputs.files[0].content)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    try:
+        exec(standard_visualization_script(plan, inputs), {})
+        with Image.open(tmp_path / 'chart.png') as image:
+            assert image.size == (800, 500)
+        fig = plt.gcf()
+        assert fig.dpi == 100
+        assert fig.axes[-1].get_xticklabels()[0].get_fontsize() == 11
+        if layout == 'manual':
+            assert fig.subplotpars.left == .2
+            assert fig.subplotpars.bottom == .2
+    finally:
+        close('all')
+
+
+@pytest.mark.parametrize('options', [
+    {'dpi': 500}, {'width': 100}, {'height': float('nan')},
+    {'width': 20, 'height': 24, 'dpi': 240}, {'labelWrap': 0},
+])
+def test_standard_canvas_rejects_invalid_or_oversized_configuration(options):
+    from pydantic import ValidationError
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartCanvas
+
+    with pytest.raises(ValidationError):
+        StandardChartCanvas.model_validate(options)
+
+
 @pytest.mark.parametrize('form', ['bar', 'line', 'barh'])
 def test_standard_template_executes_and_rejects_changed_input(tmp_path, form):
     plan, inputs = fixture(form)

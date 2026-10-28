@@ -6,7 +6,7 @@ import math
 
 from ...units import unit_conversion_scale
 from .chart_inputs import ChartInputMaterialization
-from .phase_models import StandardChartAxes, VisualizationPlanDraft
+from .phase_models import StandardChartAxes, StandardChartCanvas, VisualizationPlanDraft
 from .standard_chart_alignment import align_chart_sources
 
 
@@ -20,6 +20,7 @@ def standard_visualization_script(
     auxiliary = {}
     displays = {}
     for chart in plan.charts:
+        canvas = getattr(chart, 'standard_canvas', StandardChartCanvas())
         if chart.renderer != 'matplotlib' or chart.interactive_path:
             return None
         form = {'line': 'line', '折线图': 'line', '多系列折线图': 'line',
@@ -242,28 +243,51 @@ def standard_visualization_script(
         configs.append((source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
-                        axes.model_dump(), metas, total_field))
+                        axes.model_dump(), metas, total_field, canvas.model_dump()))
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + _LAYOUT + _ADVANCED + _BODY)
 
 
-_LAYOUT = '''def finish_standard_layout(fig):
+_LAYOUT = '''def create_standard_canvas(policy, labels, form, panels=1):
+    width, height = policy["width"], policy["height"]
+    if policy["size_mode"] == "auto":
+        if form == "barh":
+            height = min(24, max(height, len(labels) * .42))
+        else:
+            width = min(20, max(width, len(labels) * .45))
+        height = min(24, max(height, panels * 2.5))
+    if width * height * policy["dpi"] ** 2 > 24000000:
+        raise ValueError("standard_canvas_pixel_budget_exceeded")
+    return {"figsize": (width, height), "dpi": policy["dpi"],
+            "layout": "constrained" if policy["layout"] == "constrained" else None}
+
+def save_standard_canvas(fig, output_path, policy):
+    fig.savefig(output_path, dpi=policy["dpi"],
+                bbox_inches="tight" if policy["crop"] == "tight" else None,
+                pad_inches=policy["padding"])
+
+def finish_standard_layout(fig, policy):
     import textwrap
     from matplotlib.text import Annotation
     for ax in fig.axes:
         for axis, ticks, setter in ((ax.xaxis, ax.get_xticks(), ax.set_xticks),
                                     (ax.yaxis, ax.get_yticks(), ax.set_yticks)):
             texts = [tick.get_text() for tick in axis.get_ticklabels()]
-            if any(len(text) > 14 for text in texts):
-                setter(ticks, [textwrap.fill(text, width=14, break_long_words=True) for text in texts])
+            if any(len(text) > policy["label_wrap"] for text in texts):
+                setter(ticks, [textwrap.fill(text, width=policy["label_wrap"], break_long_words=True) for text in texts])
             for tick in axis.get_ticklabels():
-                tick.set_fontsize(9)
+                tick.set_fontsize(policy["tick_font_size"])
         legend = ax.get_legend()
-        if legend is not None and len(legend.get_texts()) > 3:
+        if legend is not None and (policy["legend_position"] == "outside" or
+                                  policy["legend_position"] == "auto" and len(legend.get_texts()) > 3):
             legend.set_bbox_to_anchor((1.01, 1))
             legend.set_loc("upper left")
-    fig.tight_layout()
+    if policy["layout"] == "tight":
+        fig.tight_layout(pad=max(.5, policy["padding"]))
+    elif policy["layout"] == "manual":
+        fig.subplots_adjust(left=policy["left"], right=policy["right"],
+                            bottom=policy["bottom"], top=policy["top"])
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
     annotations = [text for ax in fig.axes for text in ax.texts if isinstance(text, Annotation)]
@@ -285,7 +309,7 @@ _LAYOUT = '''def finish_standard_layout(fig):
 '''
 
 
-_ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, form, title, output_path, annotations):
+_ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, form, title, output_path, annotations, canvas):
     import math
     import matplotlib.pyplot as plt
     mode = policy["mode"]
@@ -294,11 +318,11 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
     positions = list(range(len(labels)))
     if mode == "panels":
         fig, panels = plt.subplots(len(series), 1, sharex=True, squeeze=False,
-                                   figsize=(10, max(6, 2.5 * len(series))), dpi=150)
+                                   **create_standard_canvas(canvas, labels, form, len(series)))
         axes = [panel[0] for panel in panels]
         targets = axes
     else:
-        fig, primary = plt.subplots(figsize=(11, 7), dpi=150)
+        fig, primary = plt.subplots(**create_standard_canvas(canvas, labels, form))
         axes = [primary]
         secondary = primary.twinx() if mode == "dual" else None
         if secondary is not None:
@@ -376,8 +400,8 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         inset.set_title("局部放大 · " + metadata[0]["unit"], fontsize=9)
         axes[0].axvspan(first - .2, last + .2, color="#f59e0b", alpha=.1)
     fig.suptitle(title)
-    finish_standard_layout(fig)
-    fig.savefig(output_path, bbox_inches="tight", pad_inches=.25)
+    finish_standard_layout(fig, canvas)
+    save_standard_canvas(fig, output_path, canvas)
     plt.close(fig)
 
 '''
@@ -391,7 +415,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 plt.rcParams["font.sans-serif"] = ["Noto Sans CJK SC", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
-for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent, annotations, axes_policy, metadata, total_field in CONFIGS:
+for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent, annotations, axes_policy, metadata, total_field, canvas in CONFIGS:
     with open(input_path, "rb") as handle:
         raw = handle.read()
     if hashlib.sha256(raw).hexdigest() != digest:
@@ -417,16 +441,14 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         names = value_columns
         series = [[row[columns.index(column)] for row in payload["rows"]] for column in names]
     if axes_policy["mode"] != "single" or axes_policy["scale"] != "linear":
-        render_advanced(labels, names, series, metadata, axes_policy, form, title, output_path, annotations)
+        render_advanced(labels, names, series, metadata, axes_policy, form, title, output_path, annotations, canvas)
         continue
     if unit == "%" and is_percent is False:
         series = [[value * 100 for value in values] for values in series]
     if input_path in DISPLAYS:
         factor, unit = DISPLAYS[input_path]
         series = [[value * factor for value in values] for values in series]
-    width = min(18, max(10, len(labels) * .45)) if form != "barh" else 12
-    height = min(20, max(6, len(labels) * .42)) if form == "barh" else 7
-    fig, ax = plt.subplots(figsize=(width, height), dpi=150)
+    fig, ax = plt.subplots(**create_standard_canvas(canvas, labels, form))
     positions = list(range(len(labels)))
     if form == "stacked-area":
         ax.stackplot(positions, *series, labels=names)
@@ -508,7 +530,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
                         fontsize=8, arrowprops={"arrowstyle": "-", "color": "#64748b"})
     ax.set_title(title)
     ax.spines[["top", "right"]].set_visible(False)
-    finish_standard_layout(fig)
-    fig.savefig(output_path, bbox_inches="tight", pad_inches=.25)
+    finish_standard_layout(fig, canvas)
+    save_standard_canvas(fig, output_path, canvas)
     plt.close(fig)
 '''

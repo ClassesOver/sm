@@ -1,5 +1,21 @@
 # 标准可视化
 
+## 标准画布参数
+
+所有标准图统一使用ChartDraft.standardCanvas，配置随计划保存并写入执行脚本，最终由既有脚本身份回执绑定；不另造未验证的画布验收回执。示例：
+
+```json
+{"sizeMode":"fixed","width":12,"height":7,"dpi":150,"layout":"tight","crop":"canvas","padding":0.25,"labelWrap":14,"tickFontSize":9,"legendPosition":"auto"}
+```
+
+- sizeMode：auto根据标签/分面数扩展画布；fixed严格采用width/height（英寸）。默认auto、12×7、150DPI。
+- layout：tight、constrained、manual；manual使用left/right/bottom/top归一化留白，默认0.12/0.94/0.16/0.90。
+- crop：canvas保留完整画布（默认）；tight显式紧裁切，导出像素不保证等于width×DPI。padding控制tight裁切导出留白（英寸）。
+- labelWrap：6—40字符，默认14；tickFontSize：8—16点，默认9；legendPosition：auto/inside/outside。
+- 尺寸范围4—20×3—24英寸，DPI72—240；声明尺寸及自动扩展后的画布均限制2400万像素。自动扩展超预算会转Coding，不静默降低DPI。
+
+279项作图/投影/工作流回归通过；单轴、双轴、分面固定8×5英寸100DPI实际PNG均为800×500像素，手动留白和字号有断言。mypy、Ruff通过，尚未部署。
+
 ## 视觉质量修复闭环
 
 标准路线失败后优先将原始visual_repair_diagnostic传入Coding回退；没有视觉诊断时使用现有受限执行故障摘要，保留脚本路径、错误和可用stderr。修复不重新进入相同标准模板，沿用原工作流的生成/修复次数限制和独立视觉审查，不因图表不合格阻止已有PDF/Word链接签发。
