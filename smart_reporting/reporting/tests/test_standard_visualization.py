@@ -264,6 +264,99 @@ def test_advanced_axes_reject_unverifiable_or_misleading_settings(fault):
     assert standard_visualization_script(plan, materialization(document)) is None
 
 
+def test_exact_multisource_alignment_preserves_order_and_rejects_missing_labels(tmp_path):
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartSource
+    from smart_reporting.reporting.workflow.runtime.standard_chart_alignment import (
+        align_chart_sources,
+    )
+
+    documents = [
+        {'columns': ['period', 'value'], 'rows': [['Jan', 1], ['Feb', 2]],
+         'columnMeta': {'value': {'unit': '元'}}},
+        {'columns': ['period', 'value'], 'rows': [['Feb', 20], ['Jan', 10]],
+         'columnMeta': {'value': {'unit': '元'}}},
+    ]
+    files = tuple(ChartInputFile(f'input-{i}.json', json.dumps(doc).encode())
+                  for i, doc in enumerate(documents))
+    entries = tuple({'chartId': 'chart_001', 'path': file.path, 'sha256': file.sha256} for file in files)
+    selections = tuple(StandardChartSource(sourceIndex=i, labelField='period', valueField='value',
+                                          seriesName=f'series{i}') for i in range(2))
+    document, identities = align_chart_sources(entries, files, selections)
+    assert document['rows'] == [['Jan', 1, 10], ['Feb', 2, 20]]
+    assert identities == [(file.path, file.sha256) for file in files]
+    plan, _ = fixture('line')
+    plan.charts[0].standard_sources = selections
+    script = standard_visualization_script(plan, ChartInputMaterialization(files=files, entries=entries))
+    assert script is not None
+    for file in files:
+        (tmp_path / file.path).write_bytes(file.content)
+    (tmp_path / 'draw.py').write_text(script)
+    completed = subprocess.run([sys.executable, 'draw.py'], cwd=tmp_path, capture_output=True)
+    assert completed.returncode == 0, completed.stderr.decode()
+    (tmp_path / files[1].path).write_text('{}')
+    completed = subprocess.run([sys.executable, 'draw.py'], cwd=tmp_path, capture_output=True)
+    assert completed.returncode != 0
+    assert b'aligned chart input identity changed' in completed.stderr
+    documents[1]['rows'].pop()
+    changed = ChartInputFile(files[1].path, json.dumps(documents[1]).encode())
+    entries[1]['sha256'] = changed.sha256
+    assert align_chart_sources(entries, (files[0], changed), selections) is None
+
+
+def test_stacked_total_and_auxiliary_labels_preserve_distinct_semantics(tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartAnnotation
+
+    plan, document = complex_fixture('stacked-total')
+    document['columns'].append('share')
+    document['rows'][0].append(.3)
+    document['rows'][1].append(.7)
+    document['columnMeta']['share'] = {'unit': '%', 'isPercent': False}
+    plan.charts[0].standard_value_fields = ('actual', 'budget')
+    plan.charts[0].standard_label_fields = ('share',)
+    plan.charts[0].standard_annotations = (StandardChartAnnotation(kind='values', series='actual'),)
+    inputs = materialization(document)
+    (tmp_path / 'input.json').write_bytes(inputs.files[0].content)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    try:
+        script = standard_visualization_script(plan, inputs)
+        assert script is not None
+        exec(script, {})
+        axes = plt.gcf().axes[0]
+        assert list(axes.lines[0].get_ydata()) == [30, 70]
+        assert '服务端求和' in axes.lines[0].get_label()
+        assert 'share: 30.00%' in axes.texts[0].get_text()
+        assert axes.texts[0].get_text().startswith('10.00元')
+    finally:
+        close('all')
+
+
+def test_display_unit_conversion_uses_registered_scale(tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+
+    plan, _ = fixture('bar')
+    plan.charts[0].standard_display_unit = '亿元'
+    document = {'columns': ['label', 'value'], 'rows': [['A', 100_000_000], ['B', 200_000_000]],
+                'columnMeta': {'value': {'unit': '元'}}}
+    inputs = materialization(document)
+    (tmp_path / 'input.json').write_bytes(inputs.files[0].content)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    try:
+        exec(standard_visualization_script(plan, inputs), {})
+        axes = plt.gcf().axes[0]
+        assert [bar.get_height() for bar in axes.patches] == [1, 2]
+        assert axes.get_ylabel() == '亿元'
+    finally:
+        close('all')
+    plan.charts[0].standard_display_unit = '人次'
+    assert standard_visualization_script(plan, inputs) is None
+
+
 @pytest.mark.parametrize('form', ['bar', 'line', 'barh'])
 def test_standard_template_executes_and_rejects_changed_input(tmp_path, form):
     plan, inputs = fixture(form)

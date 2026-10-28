@@ -276,6 +276,13 @@ class StandardChartAxes(StrictModel):
     zoom_end: str | None = Field(default=None, alias='zoomEnd', max_length=200)
 
 
+class StandardChartSource(StrictModel):
+    source_index: int = Field(alias='sourceIndex', ge=0, le=7)
+    label_field: str = Field(alias='labelField', min_length=1, max_length=200)
+    value_field: str = Field(alias='valueField', min_length=1, max_length=200)
+    series_name: str = Field(alias='seriesName', min_length=1, max_length=200)
+
+
 class ChartDraft(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
@@ -316,6 +323,18 @@ class ChartDraft(StrictModel):
     standard_axes: StandardChartAxes = Field(
         default_factory=StandardChartAxes, alias='standardAxes',
         description='显式轴策略：dual用rightFields指定右轴系列；panels逐系列共享横轴分面；log只允许严格正数折线；zoom用冻结标签zoomStart/zoomEnd选择局部放大，主图保持完整。',
+    )
+    standard_sources: tuple[StandardChartSource, ...] = Field(
+        default=(), alias='standardSources', max_length=8,
+        description='多来源作图显式选择：sourceIndex按本图chart-input顺序从0计数，labelField/valueField必须是来源现有列，seriesName为唯一图例名称。标签集合必须完全一致，单位只从冻结元数据读取。',
+    )
+    standard_label_fields: tuple[str, ...] = Field(
+        default=(), alias='standardLabelFields', max_length=3,
+        description='数值标注附带的冻结辅助列，如占比、差额、预算；必须为同表已登记单位的有限数值列，不改变坐标轴。',
+    )
+    standard_display_unit: str | None = Field(
+        default=None, alias='standardDisplayUnit', max_length=30,
+        description='单轴图显示单位，如元转亿元；必须由服务端登记单位换算，不能提交自由倍率。',
     )
     data_bindings: tuple[ChartDataBinding, ...] = Field(
         alias="dataBindings", min_length=1, max_length=100

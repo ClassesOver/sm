@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import math
 
+from ...units import unit_conversion_scale
 from .chart_inputs import ChartInputMaterialization
 from .phase_models import StandardChartAxes, VisualizationPlanDraft
+from .standard_chart_alignment import align_chart_sources
 
 
 def standard_visualization_script(
@@ -14,6 +16,9 @@ def standard_visualization_script(
     if inputs.fallback_chart_ids or not plan.charts:
         return None
     configs = []
+    aligned = {}
+    auxiliary = {}
+    displays = {}
     for chart in plan.charts:
         if chart.renderer != 'matplotlib' or chart.interactive_path:
             return None
@@ -21,15 +26,25 @@ def standard_visualization_script(
                 'bar': 'bar', '柱状图': 'bar', '分组柱状图': 'bar',
                 'barh': 'barh', '横向条形图': 'barh',
                 'stacked-bar': 'stacked-bar', '堆叠柱状图': 'stacked-bar',
-                'stacked-area': 'stacked-area', '堆叠面积图': 'stacked-area'}.get(chart.visual_form)
+                'stacked-area': 'stacked-area', '堆叠面积图': 'stacked-area',
+                'stacked-total': 'stacked-total', '堆叠柱合计折线图': 'stacked-total'}.get(chart.visual_form)
         entries = [entry for entry in inputs.entries if entry['chartId'] == chart.chart_id]
-        if form is None or len(entries) != 1:
+        if form is None or not entries:
             return None
         entry = entries[0]
         source = next((item for item in inputs.files if item.path == entry['path']), None)
         if source is None or source.sha256 != entry['sha256']:
             return None
         document = json.loads(source.content)
+        selections = getattr(chart, 'standard_sources', ())
+        if len(entries) > 1:
+            alignment = align_chart_sources(entries, inputs.files, selections)
+            if alignment is None:
+                return None
+            document, identities = alignment
+            aligned[source.path] = (document, identities)
+        elif selections:
+            return None
         columns, rows = document['columns'], document['rows']
         if (not isinstance(columns, list) or not columns
                 or any(not isinstance(column, str) or not column for column in columns)
@@ -73,6 +88,28 @@ def standard_visualization_script(
             return None
         axes = getattr(chart, 'standard_axes', StandardChartAxes())
         advanced = axes.mode != 'single' or axes.scale != 'linear'
+        display_unit = getattr(chart, 'standard_display_unit', None)
+        if display_unit:
+            scales = [unit_conversion_scale(meta.get('unit'), display_unit) for meta in metas]
+            if advanced or None in scales or len(set(scales)) != 1:
+                return None
+            scale = scales[0]
+            assert scale is not None
+            displays[source.path] = (float(scale), display_unit)
+        auxiliary_fields = tuple(getattr(chart, 'standard_label_fields', ()))
+        if auxiliary_fields:
+            if (advanced or len(auxiliary_fields) != len(set(auxiliary_fields))
+                    or not set(auxiliary_fields).issubset(columns)):
+                return None
+            for field in auxiliary_fields:
+                meta = metadata.get(field, {})
+                if not isinstance(meta, dict) or not meta.get('unit') or any(
+                    not isinstance(row[columns.index(field)], (int, float))
+                    or isinstance(row[columns.index(field)], bool)
+                    or not math.isfinite(row[columns.index(field)]) for row in rows
+                ):
+                    return None
+            auxiliary[source.path] = auxiliary_fields
         right = tuple(axes.right_fields)
         if (axes.mode != 'dual' and right) or (axes.mode != 'zoom' and (axes.zoom_start or axes.zoom_end)):
             return None
@@ -109,7 +146,7 @@ def standard_visualization_script(
             or len({(meta.get('unit'), meta.get('isPercent')) for meta in metas}) != 1
         ):
             return None
-        if form in {'line', 'stacked-bar', 'stacked-area'} and len(values) > 1:
+        if form in {'line', 'stacked-bar', 'stacked-area', 'stacked-total'} and len(values) > 1:
             windows = [meta.get('periods') for meta in metas]
             if any(window != windows[0] for window in windows):
                 return None
@@ -127,7 +164,7 @@ def standard_visualization_script(
             return None
         if len(set(labels)) > 60:
             return None
-        if form in {'stacked-bar', 'stacked-area'} and any(
+        if form in {'stacked-bar', 'stacked-area', 'stacked-total'} and any(
             row[columns.index(column)] < 0 for row in rows for column in values
         ):
             return None
@@ -170,7 +207,9 @@ def standard_visualization_script(
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
                         axes.model_dump(), metas))
-    return 'CONFIGS = ' + repr(configs) + '\n' + _ADVANCED + _BODY
+    return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
+            + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
+            + '\n' + _ADVANCED + _BODY)
 
 
 _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, form, title, output_path, annotations):
@@ -285,6 +324,13 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
     if hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError("chart input identity changed")
     payload = json.loads(raw)
+    if input_path in ALIGNED:
+        payload, dependencies = ALIGNED[input_path]
+        for dependency_path, dependency_digest in dependencies:
+            with open(dependency_path, "rb") as handle:
+                dependency_raw = handle.read()
+            if hashlib.sha256(dependency_raw).hexdigest() != dependency_digest:
+                raise ValueError("aligned chart input identity changed")
     columns = payload["columns"]
     label_index = columns.index(label_column)
     labels = list(dict.fromkeys(row[label_index] for row in payload["rows"]))
@@ -302,6 +348,9 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         continue
     if unit == "%" and is_percent is False:
         series = [[value * 100 for value in values] for values in series]
+    if input_path in DISPLAYS:
+        factor, unit = DISPLAYS[input_path]
+        series = [[value * factor for value in values] for values in series]
     fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
     positions = list(range(len(labels)))
     if form == "stacked-area":
@@ -312,7 +361,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         for index, (name, values) in enumerate(zip(names, series, strict=True)):
             if form == "line":
                 ax.plot(positions, values, marker="o", label=name)
-            elif form == "stacked-bar":
+            elif form in {"stacked-bar", "stacked-total"}:
                 ax.bar(positions, values, bottom=bottom, label=name)
                 bottom = [left + right for left, right in zip(bottom, values, strict=True)]
             else:
@@ -321,6 +370,9 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
                     ax.barh(offsets, values, height=width, label=name)
                 else:
                     ax.bar(offsets, values, width=width, label=name)
+    if form == "stacked-total":
+        totals = [math.fsum(values[index] for values in series) for index in positions]
+        ax.plot(positions, totals, marker="o", color="black", label="分项合计（服务端求和）")
     if form == "barh":
         ax.set_yticks(positions, labels)
         ax.invert_yaxis()
@@ -328,7 +380,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
     else:
         ax.set_xticks(positions, labels, rotation=45, ha="right")
         ax.set_ylabel(unit or "")
-    if len(series) > 1:
+    if len(series) > 1 or form == "stacked-total":
         ax.legend(frameon=False)
     for annotation_index, (kind, series_index, first, last) in enumerate(annotations):
         if kind == "range":
@@ -353,13 +405,25 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
             value = values[index]
             coordinate = index
             height = value
-            if form in {"stacked-bar", "stacked-area"}:
+            if form in {"stacked-bar", "stacked-area", "stacked-total"}:
                 height += sum(previous[index] for previous in series[:series_index])
             elif form in {"bar", "barh"}:
                 coordinate = index - 0.4 + 0.4 / len(series) + series_index * 0.8 / len(series)
             xy = (height, coordinate) if form == "barh" else (coordinate, height)
             prefix = {"peak": "峰值 ", "trough": "谷值 ", "point": "重点 "}.get(kind, "")
-            ax.annotate(f"{prefix}{value:,.2f}{unit or ''}", xy,
+            auxiliary_text = []
+            for field in AUXILIARY.get(input_path, ()):
+                matching = [row for row in payload["rows"] if row[label_index] == labels[index]
+                            and (not category_column or row[category_index] == names[series_index])]
+                if len(matching) != 1:
+                    raise ValueError("annotation row is ambiguous")
+                meta = payload["columnMeta"][field]
+                auxiliary_value = matching[0][columns.index(field)]
+                if meta["unit"] == "%" and meta.get("isPercent") is False:
+                    auxiliary_value *= 100
+                auxiliary_text.append(f"{field}: {auxiliary_value:,.2f}{meta['unit']}")
+            suffix = " · " + " / ".join(auxiliary_text) if auxiliary_text else ""
+            ax.annotate(f"{prefix}{value:,.2f}{unit or ''}{suffix}", xy,
                         xytext=(8, 8 + annotation_index * 8), textcoords="offset points",
                         fontsize=8, arrowprops={"arrowstyle": "-", "color": "#64748b"})
     ax.set_title(title)

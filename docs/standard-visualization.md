@@ -1,5 +1,15 @@
 # 标准可视化
 
+## 多来源、组合图与联合标注增强
+
+`standardSources` 显式选择本图各chart-input的sourceIndex、labelField、valueField和唯一seriesName。所有来源均须被选择，分别校验SHA256；标签集合完全一致、各来源无重复标签、数值有限且单位元数据明确时，按第一来源行序对齐。不同顺序允许，缺少标签或缺少单位拒绝；脚本运行再次核验每个原文件。当前不从旧产物缺失的单位元数据反推授权，因此不能宣称历史门诊双来源图已自动完整命中。
+
+`visualForm=stacked-total`（或堆叠柱合计折线图）输出非负分项堆叠及服务端逐点求和折线，图例明确标识求和；它不冒充独立总额来源，尚不能完整复现原报告的“分项＋独立总额”双来源图。
+
+`standardLabelFields` 最多3个同表辅助数值列，附加到values/point/peak/trough标注，例如金额柱旁显示占比；各字段需有冻结单位和有限值，按同一行/分类唯一定位，不改变坐标轴。高级轴与辅助列联合标注暂不组合。`standardDisplayUnit` 可显式选择单轴显示单位，换算倍率来自服务端单位表，拒绝金额转人次等不兼容转换。
+
+本轮56项作图测试及211项投影/工作流回归通过；多来源重排、次来源篡改拒绝、求和曲线、联合百分比标签、元转亿元都有数值断言。用户报告院区成本图已以冻结输入实际重画联合标注PNG；未重新统计整报告覆盖率，未部署。
+
 章节作图在授权 chart-input 物化后优先预检标准静态模板；整组均支持才进入标准路径，任一图不支持则整组走原 Coding 路线。失败日志为 `report_standard_visualization_fallback`，成功日志为 `report_standard_visualization_completed`。
 
 支持 visualForm 为 line/折线图/多系列折线图、bar/柱状图/分组柱状图、barh/横向条形图、stacked-bar/堆叠柱状图、stacked-area/堆叠面积图。每图绑定一个已校验来源，最多60个标签、8个系列、480行。
