@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from loguru import logger
 
@@ -18,6 +18,12 @@ from .phase_models import (
     VisualizationPlanDraft,
 )
 from .standard_chart_alignment import align_chart_sources
+from .standard_chart_encoding import (
+    ENCODING_SCRIPT,
+    StandardChartEncodingError,
+    prepare_bands,
+    prepare_encoded_chart,
+)
 from .standard_chart_presentation import (
     PRESENTATION_SCRIPT,
     order_standard_rows,
@@ -72,12 +78,27 @@ def standard_visualization_script(plan: VisualizationPlanDraft, inputs: ChartInp
     return standard_visualization_preflight(plan, inputs).source
 
 
+def _encoded_configuration(chart, document, original_document, form, label, source, canvas, style, presentation, axes, selected):
+    encoding = getattr(chart, 'standard_encoding', None)
+    if encoding is None:
+        _reject('standard_encoding_required', 'standardEncoding', '散点/气泡/热力图须显式声明编码字段。', '绑定X/Y、大小或热力值的冻结字段，不自动猜测坐标。')
+    expected = encoding.value_field if form == 'heatmap' and encoding else encoding.y_field if encoding else None
+    if selected and tuple(selected) != (expected,):
+        _reject('standard_encoding_selection_conflict', 'standardValueFields', '编码只允许选定主Y或热力值字段。', 'X/颜色/大小及上下界通过显式编码参数绑定。')
+    try:
+        policy = prepare_encoded_chart(chart, document, original_document, form, label, canvas, style, presentation, axes)
+    except StandardChartEncodingError as error:
+        _reject(error.code, error.parameter, str(error), '检查显式编码、登记单位、标签及缺失策略，不能填零或改变冻结值。')
+    return (source.path, source.sha256, chart.source_path, chart.title, form, label,
+            [], None, None, None, [], axes.model_dump(), [], None, policy)
+
+
 def _standard_visualization_script(
     plan: VisualizationPlanDraft, inputs: ChartInputMaterialization,
 ) -> str | None:
     if inputs.fallback_chart_ids or not plan.charts:
         _reject('standard_input_unavailable', 'chartInputs', '图表缺少可用的物化输入或计划为空。', '为对应图补齐数据绑定，或只将该图交由Coding。')
-    configs = []
+    configs: list[tuple[Any, ...]] = []
     aligned = {}
     auxiliary = {}
     displays = {}
@@ -95,6 +116,8 @@ def _standard_visualization_script(
                 'stacked-area': 'stacked-area', '堆叠面积图': 'stacked-area',
                 'stacked-total': 'stacked-total', '堆叠柱合计折线图': 'stacked-total',
                 'summary-bars': 'summary-bars', '单行指标对比图': 'summary-bars'}.get(chart.visual_form)
+        form = {'scatter': 'scatter', '散点图': 'scatter', 'bubble': 'bubble', '气泡图': 'bubble',
+                'heatmap': 'heatmap', '热力图': 'heatmap'}.get(chart.visual_form, form)
         entries = [entry for entry in inputs.entries if entry['chartId'] == chart.chart_id]
         if form is None:
             _reject('standard_form_unsupported', 'visualForm', '图形类型尚未标准化。', '使用已支持的图形类型，或仅对该图使用Coding。')
@@ -139,7 +162,7 @@ def _standard_visualization_script(
         if len(entries) > 1 or selections:
             alignment = align_chart_sources(entries, inputs.files, selections,
                                             selected_labels=source_labels or (() if has_transform else getattr(chart, 'standard_labels', ())),
-                                            allow_nulls=axes.allow_nulls)
+                                            allow_nulls=axes.allow_nulls, max_labels=480 if form in {'scatter', 'bubble'} else 60)
             if alignment is None:
                 _reject('standard_source_alignment_failed', 'standardSources', '来源标签、单位、身份或来源使用范围不满足对齐要求。', '显式指定月份规范化、合计排除及共同窗口；检查重复标签、单位和所有绑定来源。')
             document, identities = alignment
@@ -163,14 +186,25 @@ def _standard_visualization_script(
                 or any(not isinstance(row, list) or len(row) != len(columns) for row in rows)):
             return None
         explicit_label = getattr(chart, 'standard_label_field', None)
+        encoding = getattr(chart, 'standard_encoding', None)
+        if form == 'heatmap' and encoding is not None and explicit_label is None:
+            explicit_label = encoding.x_field
         label = explicit_label or ('period' if 'period' in columns else 'label' if 'label' in columns else None)
         if label is not None and label not in columns:
             _reject('standard_label_missing', 'standardLabelField', '显式标签列不在转换后的数据中。', '使用转换后存在的冻结标签列。')
         if label is None:
             text_columns = [column for column in columns
-                            if all(isinstance(row[columns.index(column)], str) for row in rows)]
+                            if all(isinstance(row[columns.index(column)], str) for row in rows)
+                            and not (form in {'scatter', 'bubble'} and encoding is not None and column == encoding.group_field)]
             if len(text_columns) == 1:
                 label = text_columns[0]
+        if label is None and form in {'scatter', 'bubble'}:
+            if (getattr(chart, 'standard_labels', ()) or presentation.order.mode != 'source'
+                    or presentation.order.limit is not None):
+                _reject('standard_scatter_label_required', 'standardLabelField', '匿名观测不能按虚构标签选择、排序或截取。', '提供冻结标签列后再声明显示窗口/排序。')
+            configs.append(_encoded_configuration(chart, document, original_document, form, None,
+                            source, canvas, style, presentation, axes, selected))
+            continue
         if label is None:
             _reject('standard_label_ambiguous', 'standardLabelField', '无法唯一确定标签列。', '显式指定冻结标签列standardLabelField。')
         label_index = columns.index(label)
@@ -193,6 +227,14 @@ def _standard_visualization_script(
         labels = [row[label_index] for row in rows]
         if any(not isinstance(value, str) or not value for value in labels):
             return None
+        if form in {'scatter', 'bubble', 'heatmap'}:
+            configs.append(_encoded_configuration(chart, document, original_document, form, label,
+                            source, canvas, style, presentation, axes, selected))
+            continue
+        if encoding is not None:
+            _reject('standard_encoding_form_conflict', 'standardEncoding', '字段编码仅用于scatter/bubble/heatmap。', '折线范围使用standardBands；其他图继续用standardValueFields。')
+        if any(item.row_label or item.end_row_label for item in getattr(chart, 'standard_annotations', ())):
+            _reject('standard_annotation_row_coordinate_invalid', 'standardAnnotations', '矩阵行标签仅适用于热力图。', '普通图使用series/label绑定标注。')
         other_columns = [column for column in columns if column != label]
         category_columns = [column for column in other_columns
                             if all(isinstance(row[columns.index(column)], str) for row in rows)]
@@ -417,13 +459,25 @@ def _standard_visualization_script(
         canvas_policy['advanced'] = advanced
         canvas_policy['axis_factors'] = axis_factors
         canvas_policy['axis_units'] = axis_units
+        try:
+            factors = [axis_factors[i] if advanced or axes.left_display_unit else displays.get(source.path, (1, None))[0]
+                       for i in range(len(values))]
+            factors = [factor * (100 if meta.get('unit') == '%' and meta.get('isPercent') is False else 1)
+                       for factor, meta in zip(factors, metas, strict=True)]
+            canvas_policy['band_specs'] = prepare_bands(chart, document, values, form, category, factors, axes)
+            notes = [(item['label'] or item['series'])+f"：{item['missing_count']}行范围缺失，未补零"
+                     for item in canvas_policy['band_specs'] if item['missing_count']]
+            if notes:
+                prepared['source_note'] = '\n'.join([*([prepared['source_note']] if prepared['source_note'] else []), *notes])
+        except StandardChartEncodingError as error:
+            _reject(error.code, error.parameter, str(error), '仅绑定同单位、同期间的冻结上下界；不自动估计范围。')
         configs.append((source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
                         axes.model_dump(), metas, total_field, canvas_policy))
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
-            + '\n' + PRESENTATION_SCRIPT + _LAYOUT + _ADVANCED + _BODY)
+            + '\n' + PRESENTATION_SCRIPT + _LAYOUT + ENCODING_SCRIPT + _ADVANCED + _BODY)
 
 
 _LAYOUT = '''def standard_series_name(artist, policy):
@@ -458,7 +512,13 @@ def apply_standard_style(fig, policy):
     fig.set_facecolor(style["background"])
     for ax in all_axes:
         ax.set_facecolor(style["background"])
+        if getattr(ax, "_standard_colorbar", False):
+            ax.tick_params(labelsize=policy["tick_font_size"])
+            ax.yaxis.label.set_fontsize(style["axis_font_size"])
+            continue
         for artist in [*ax.lines, *ax.containers, *ax.collections]:
+            if getattr(artist, "_standard_band", False):
+                continue
             name = standard_series_name(artist, policy)
             if name is None:
                 continue
@@ -466,7 +526,8 @@ def apply_standard_style(fig, policy):
             color = standard_series_color(name, policy)
             targets = artist.patches if isinstance(artist, BarContainer) else [artist]
             for target in targets:
-                target.set_color(color)
+                if not getattr(artist, "_standard_keep_colors", False):
+                    target.set_color(color)
                 target.set_alpha(item.get("alpha", 1))
                 if isinstance(artist, BarContainer):
                     target.set_hatch(item.get("hatch", ""))
@@ -493,9 +554,23 @@ def apply_standard_style(fig, policy):
                     ax.scatter([artist.get_xdata()[index]], [artist.get_ydata()[index]],
                                s=point["marker_size"] ** 2, color=point["color"],
                                edgecolors="white", linewidths=1, zorder=6)
+                elif getattr(artist, "_standard_scatter", False):
+                    from matplotlib.colors import to_rgba
+                    import numpy as np
+                    count = len(artist.get_offsets())
+                    colors = artist.get_facecolors()
+                    colors = np.tile(colors, (count, 1)) if len(colors) == 1 else colors.copy()
+                    colors[index] = to_rgba(point["color"])
+                    artist.set_facecolors(colors)
+                    if policy.get("special_form") != "bubble":
+                        sizes = artist.get_sizes()
+                        sizes = np.full(count, sizes[0]) if len(sizes) == 1 else sizes.copy()
+                        sizes[index] = point["marker_size"] ** 2
+                        artist.set_sizes(sizes)
         ax.grid(False)
         if style["grid"] != "none":
-            ax.grid(axis=style["grid"], alpha=style["grid_alpha"], linestyle="--", color="#94a3b8", linewidth=.7)
+            ax.grid(axis=style["grid"], which="minor" if policy.get("special_form") == "heatmap" else "major",
+                    alpha=style["grid_alpha"], linestyle="--", color="#94a3b8", linewidth=.7)
         ax.set_axisbelow(True)
         ax.title.set_fontsize(style["title_font_size"])
         if style["theme"] == "report":
@@ -520,8 +595,12 @@ def apply_standard_style(fig, policy):
             location = style["legend_location"]
             if location == "auto":
                 location = ("upper left" if ax is fig.axes[0] else "upper right") if len(fig.axes) > 1 else "best"
+            legend_options = {}
+            if policy.get("special_form") in {"scatter", "bubble"}:
+                legend_options = dict(handles=ax.get_legend().legend_handles,
+                                      labels=[text.get_text() for text in ax.get_legend().get_texts()])
             ax.legend(frameon=False, loc=location,
-                      ncols=style["legend_columns"], fontsize=style["legend_font_size"])
+                      ncols=style["legend_columns"], fontsize=style["legend_font_size"], **legend_options)
             for text in ax.get_legend().get_texts():
                 for name, item in overrides.items():
                     if item.get("label") and text.get_text() in (name, name + " · 左轴", name + " · 右轴"):
@@ -572,6 +651,17 @@ def place_standard_legends(fig, policy):
             if standard_series_name(container, policy) is not None:
                 bars.extend(patch.get_window_extent() for patch in container.patches
                             if math.isfinite(patch.get_width()) and math.isfinite(patch.get_height()))
+        for collection in ax.collections:
+            if not getattr(collection, "_standard_scatter", False):
+                continue
+            import numpy as np
+            offsets = np.ma.filled(collection.get_offsets(), np.nan)
+            sizes = collection.get_sizes()
+            for index, (x, y) in enumerate(offsets):
+                if math.isfinite(x) and math.isfinite(y):
+                    px, py = ax.transData.transform((x,y))
+                    radius = math.sqrt(sizes[index if len(sizes) > 1 else 0])/2*fig.dpi/72
+                    bars.append(Bbox.from_bounds(px-radius,py-radius,2*radius,2*radius))
         best = None
         for location in ("upper right", "upper left", "lower right", "lower left", "upper center", "lower center"):
             legend.set_loc(location)
@@ -594,7 +684,9 @@ def finish_standard_layout(fig, policy):
     apply_standard_style(fig, policy)
     finish_standard_presentation(fig, policy)
     for ax in fig.axes:
-        if not policy["horizontal"]:
+        if getattr(ax, "_standard_colorbar", False):
+            continue
+        if policy.get("categorical_x", not policy["horizontal"]):
             ticks, texts = ax.get_xticks(), ax.get_xticklabels()
             if len(texts) > policy["max_category_ticks"]:
                 import math
@@ -604,7 +696,8 @@ def finish_standard_layout(fig, policy):
         for axis, ticks, setter in ((ax.xaxis, ax.get_xticks(), ax.set_xticks),
                                     (ax.yaxis, ax.get_yticks(), ax.set_yticks)):
             texts = [tick.get_text() for tick in axis.get_ticklabels()]
-            is_category_axis = axis is (ax.yaxis if policy["horizontal"] else ax.xaxis)
+            is_category_axis = ((axis is ax.xaxis and policy.get("categorical_x", not policy["horizontal"])) or
+                                (axis is ax.yaxis and policy.get("categorical_y", policy["horizontal"])))
             if is_category_axis and any(len(text) > policy["label_wrap"] for text in texts):
                 setter(ticks, [textwrap.fill(text, width=policy["label_wrap"], break_long_words=True) for text in texts])
             for tick in axis.get_ticklabels():
@@ -658,10 +751,15 @@ def finish_standard_layout(fig, policy):
         else:
             raise ValueError("standard_chart_layout_unresolved: 标注重叠，请减少密度或调整布局")
     for ax in fig.axes:
-        texts = ax.get_yticklabels() if policy["horizontal"] else ax.get_xticklabels()
-        boxes = [text.get_window_extent(renderer) for text in texts if text.get_visible()]
-        if any(left.overlaps(right) for index, left in enumerate(boxes) for right in boxes[index + 1:]):
-            raise ValueError("standard_chart_layout_unresolved: 分类标签重叠，请扩大画布或减少标签密度")
+        if getattr(ax, "_standard_colorbar", False):
+            continue
+        for axis, categorical in ((ax.xaxis, policy.get("categorical_x", not policy["horizontal"])),
+                                  (ax.yaxis, policy.get("categorical_y", policy["horizontal"]))):
+            if not categorical:
+                continue
+            boxes = [text.get_window_extent(renderer) for text in axis.get_ticklabels() if text.get_visible()]
+            if any(left.overlaps(right) for index, left in enumerate(boxes) for right in boxes[index + 1:]):
+                raise ValueError("standard_chart_layout_unresolved: 分类标签重叠，请扩大画布或减少标签密度")
 
 '''
 
@@ -697,6 +795,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
     for index, (name, values, target, meta) in enumerate(zip(names, series, targets, metadata, strict=True)):
         side = "右轴" if mode == "dual" and name in policy["right_fields"] else "左轴"
         caption = f"{name} · {side}" if mode == "dual" else name
+        draw_standard_bands(target, canvas, [name], positions)
         visible = list(range(len(labels)))
         if form == "barh":
             visible = [i for i in visible if math.isfinite(values[i])]
@@ -790,6 +889,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         first = labels.index(policy["zoom_start"])
         last = labels.index(policy["zoom_end"])
         inset = axes[0].inset_axes(policy["zoom_bounds"])
+        draw_standard_bands(inset, canvas, names, positions[first:last+1], first, last)
         local_values = []
         for index, values in enumerate(series):
             if geometries[index] == "bar":
@@ -802,6 +902,9 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
                 artist = inset.plot(positions[first:last + 1], values[first:last + 1], marker="o", color=colors(index), label=names[index])[0]
             artist._standard_labels = labels[first:last + 1]
             local_values.extend(value for value in values[first:last + 1] if math.isfinite(value))
+        for band in canvas.get("band_data", []):
+            local_values.extend(value for value in [*band["lower"][first:last+1], *band["upper"][first:last+1]]
+                                if math.isfinite(value))
         if not local_values:
             raise ValueError("standard_chart_empty_zoom")
         low, high = min(local_values), max(local_values)
@@ -849,6 +952,10 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
             if hashlib.sha256(dependency_raw).hexdigest() != dependency_digest:
                 raise ValueError("aligned chart input identity changed")
     columns = payload["columns"]
+    if form in {"scatter", "bubble", "heatmap"}:
+        render_encoded_chart(payload, canvas, form, title, output_path)
+        continue
+    canvas["band_data"] = standard_band_data(payload, canvas)
     label_index = columns.index(label_column)
     labels = list(dict.fromkeys(row[label_index] for row in payload["rows"]))
     if category_column:
@@ -870,6 +977,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         factor, unit = DISPLAYS[input_path]
         series = [[value * factor for value in values] for values in series]
     fig, ax = plt.subplots(**create_standard_canvas(canvas, labels, form))
+    draw_standard_bands(ax, canvas, names, positions=list(range(len(labels))))
     positions = list(range(len(labels)))
     if form == "stacked-area":
         ax.stackplot(positions, *series, labels=names)

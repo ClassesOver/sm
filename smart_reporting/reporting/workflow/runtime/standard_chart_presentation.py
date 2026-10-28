@@ -200,7 +200,13 @@ def standard_annotation(ax, text, xy, canvas, number, color=None, highlight=Fals
         arrowprops={"arrowstyle": "-", "color": color, "lw": .7} if style["annotation_leader"] else None)
     annotation._standard_custom_position = True
     if spec["highlight"] or highlight:
-        ax.scatter([xy[0]], [xy[1]], s=85, color=color, edgecolors="white", linewidths=1.5, zorder=6)
+        if canvas.get("special_form") == "heatmap":
+            from matplotlib.patches import Rectangle
+            ax.add_patch(Rectangle((xy[0]-.48,xy[1]-.48),.96,.96,fill=False,edgecolor=color,linewidth=2))
+        elif canvas.get("special_form") in {"scatter", "bubble"}:
+            annotation.set_bbox(dict(boxstyle="round,pad=.2",fc="white",ec=color,lw=.8))
+        else:
+            ax.scatter([xy[0]], [xy[1]], s=85, color=color, edgecolors="white", linewidths=1.5, zorder=6)
     return annotation
 
 def finish_standard_presentation(fig, canvas):

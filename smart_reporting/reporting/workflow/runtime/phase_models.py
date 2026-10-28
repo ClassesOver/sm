@@ -266,6 +266,8 @@ class StandardChartAnnotation(StrictModel):
     series: str | None = Field(default=None, max_length=200)
     label: str | None = Field(default=None, max_length=200)
     end_label: str | None = Field(default=None, alias='endLabel', max_length=200)
+    row_label: str | None = Field(default=None, alias='rowLabel', max_length=200)
+    end_row_label: str | None = Field(default=None, alias='endRowLabel', max_length=200)
     color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
     highlight: bool = False
     position: Literal['auto', 'above', 'below', 'left', 'right'] = 'auto'
@@ -375,6 +377,45 @@ class StandardChartStep(StrictModel):
         if (self.view is None) == (self.derivation is None):
             raise ValueError('每步必须且只能声明view或derivation')
         return self
+
+
+class StandardChartEncoding(StrictModel):
+    x_field: str = Field(alias='xField', min_length=1, max_length=200)
+    y_field: str = Field(alias='yField', min_length=1, max_length=200)
+    value_field: str | None = Field(default=None, alias='valueField', max_length=200)
+    size_field: str | None = Field(default=None, alias='sizeField', max_length=200)
+    color_field: str | None = Field(default=None, alias='colorField', max_length=200)
+    group_field: str | None = Field(default=None, alias='groupField', max_length=200)
+    x_labels: tuple[str, ...] = Field(default=(), alias='xLabels', max_length=60,
+                                    description='热力图当前全部X标签的显式顺序，不能隐式丢弃类别。')
+    y_labels: tuple[str, ...] = Field(default=(), alias='yLabels', max_length=60,
+                                    description='热力图当前全部Y标签的显式顺序，不能隐式丢弃类别。')
+    x_caption: str | None = Field(default=None, alias='xCaption', max_length=60)
+    y_caption: str | None = Field(default=None, alias='yCaption', max_length=60)
+    color_caption: str | None = Field(default=None, alias='colorCaption', max_length=60)
+    size_caption: str | None = Field(default=None, alias='sizeCaption', max_length=60)
+    x_display_unit: str | None = Field(default=None, alias='xDisplayUnit', max_length=30)
+    y_display_unit: str | None = Field(default=None, alias='yDisplayUnit', max_length=30)
+    color_display_unit: str | None = Field(default=None, alias='colorDisplayUnit', max_length=30)
+    x_scale: Literal['linear', 'log', 'symlog'] = Field(default='linear', alias='xScale')
+    x_linear_threshold: float = Field(default=1, alias='xLinearThreshold', gt=0, allow_inf_nan=False)
+    color_map: Literal['viridis', 'cividis', 'Blues', 'RdBu_r', 'YlGnBu'] = Field(default='viridis', alias='colorMap')
+    color_scale: Literal['linear', 'log', 'symlog'] = Field(default='linear', alias='colorScale')
+    color_linear_threshold: float = Field(default=1, alias='colorLinearThreshold', gt=0, allow_inf_nan=False)
+    color_center: float | None = Field(default=None, alias='colorCenter', allow_inf_nan=False,
+                                       description='线性色标的显示单位中点，如正负值RdBu_r设0；必须位于实际最小/最大值之间。')
+    max_area: float = Field(default=600, alias='maxArea', ge=100, le=1600, allow_inf_nan=False,
+                            description='气泡最大面积，单位points²；面积与冻结sizeField成比例，零值面积为0。')
+    show_values: bool = Field(default=False, alias='showValues', description='热力图显示已有单元值，最多60项；缺失单元保持空白。')
+
+
+class StandardChartBand(StrictModel):
+    series: str = Field(min_length=1, max_length=200)
+    lower_field: str = Field(alias='lowerField', min_length=1, max_length=200)
+    upper_field: str = Field(alias='upperField', min_length=1, max_length=200)
+    label: str | None = Field(default=None, max_length=60)
+    alpha: float = Field(default=.18, ge=.05, le=.5, allow_inf_nan=False)
+    color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
 
 
 class StandardChartSeriesStyle(StrictModel):
@@ -581,6 +622,10 @@ class ChartDraft(StrictModel):
     )
     standard_steps: tuple[StandardChartStep, ...] = Field(default=(), alias='standardSteps', max_length=8,
         description='按顺序执行最多8步view/derivation，可多维分组→分组累计/同比/滚动→透视；不能与standardView/standardDerivations混用。')
+    standard_encoding: StandardChartEncoding | None = Field(default=None, alias='standardEncoding',
+        description='scatter/bubble显式绑定数值xField/yField，可用groupField或colorField、sizeField；heatmap用文本xField/yField及数值valueField。单位来自冻结元数据。')
+    standard_bands: tuple[StandardChartBand, ...] = Field(default=(), alias='standardBands', max_length=8,
+        description='折线范围带：series绑定中心值，lowerField/upperField绑定同单位冻结上下界；只显示已有范围，不自动估算置信区间。')
     standard_label_fields: tuple[str, ...] = Field(
         default=(), alias='standardLabelFields', max_length=3,
         description='数值标注附带的冻结辅助列，如占比、差额、预算；必须为同表已登记单位的有限数值列，不改变坐标轴。',

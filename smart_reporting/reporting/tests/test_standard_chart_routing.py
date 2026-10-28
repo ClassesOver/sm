@@ -88,7 +88,7 @@ async def test_mixed_routes_keep_good_charts_standard_and_sign_final_execution(
     tmp_path, monkeypatch, failure
 ):
     monkeypatch.chdir(tmp_path)
-    plan, inputs, context = setup(tmp_path, ["line", "scatter", "bar"])
+    plan, inputs, context = setup(tmp_path, ["line", "violin", "bar"])
     calls = []
 
     async def execute(ctx, source):
@@ -197,7 +197,7 @@ async def test_mixed_routes_keep_good_charts_standard_and_sign_final_execution(
 def test_preflight_provides_actionable_diagnostic(tmp_path, fault, code):
     plan, inputs, _ = setup(tmp_path, ["line"])
     if fault == "form":
-        plan.charts[0].visual_form = "scatter"
+        plan.charts[0].visual_form = "violin"
     elif fault == "identity":
         inputs.entries[0]["sha256"] = "0" * 64
     else:

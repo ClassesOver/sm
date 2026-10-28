@@ -2,6 +2,42 @@
 
 以下保留各轮验证记录；当前能力及限制以首节为准。
 
+## 数值坐标、热力矩阵与冻结范围带（2026-10-28）
+
+新增`standardEncoding`和`standardBands`，与既有数据变换、SHA256身份核验、标准画布、独立图形校验及逐图Coding回退共用流程。规划器和Coding指令同步更新：编码使用的坐标、类别、面积、颜色、观测标签、范围上下界必须进入`dataBindings`，不能只绑定中心值。
+
+| 图形 | 标准参数与边界 |
+|---|---|
+| `scatter` | `xField/yField`为登记单位的数值，使用真实数值X/Y；可选`groupField`（最多8类）或`colorField`连续颜色，两者互斥。最多480行；无标签列时仍可绘制，但指定观测标注、逐点样式、标签窗口及排序须有唯一冻结`standardLabelField`。 |
+| `bubble` | 同散点，另须`sizeField`；面积与原非负数值成正比，`maxArea`仅调整最大面积（100—1600点²）。零面积保持零，不设虚假最小气泡；全零/非零面积小于1点²时回退其他视图。高亮和逐系列点型不能改变面积或连续颜色。 |
+| `heatmap` | 长表的两个不同文本维度`xField/yField`与一个数值`valueField`；最大480网格单元、每轴60类。`xLabels/yLabels`可声明所有现存类别的完整顺序；重复单元须先显式分组，不能暗中求和。缺失组合/值须`allowNulls=true`，显示灰色掩码，真实零值保持原颜色。 |
+| 折线范围带 | `standardBands:[{series,lowerField,upperField,label?,color?,alpha?}]`，最多8条；只使用冻结上下界，支持single/dual/panels/zoom，单位可换算、期间须相同，百分数/小数尺度自动归一，上下界须包含中心值。缺失上下界须同时为空且显式`allowNulls=true`，保持断带并在图下注明；全缺失时不显示虚假范围图例。不能自动估计置信区间。 |
+
+散点分别用`xDisplayUnit/yDisplayUnit`设置可登记换算的轴单位，`xCaption/yCaption`设置说明；Y轴沿用`standardAxes.scale/linearThreshold`，X轴用`xScale/xLinearThreshold`，支持linear/log/symlog，普通对数拒绝零负值。连续颜色使用`colorDisplayUnit/colorCaption`及`colorMap`（viridis/cividis/Blues/RdBu_r/YlGnBu）、`colorScale`、`colorLinearThreshold`；线性`colorCenter`必须严格位于数据最小/最大值之间，适合围绕零的发散色标。`sizeCaption`设置面积含义说明。
+
+热力`showValues`最多60个数值标签，最终布局检查每个标签是否容纳在单元内；密集矩阵应关闭逐值文字。point用`label+rowLabel`定位冻结单元，range再给`endLabel+endRowLabel`框选矩形；高亮描边保留数值颜色。散点标注定位真实数值坐标，高亮文本框保留气泡面积和颜色。缺失观测使用联合掩码，不补零；连续色标轴不参与类别刻度变换。散点/气泡/热力当前只支持单图单坐标系，不组合双轴/分面/局部放大。
+
+```json
+{
+  "visualForm": "bubble",
+  "standardLabelField": "科室",
+  "standardValueFields": ["收入"],
+  "standardEncoding": {
+    "xField": "人次", "yField": "收入", "sizeField": "样本量", "groupField": "院区",
+    "xDisplayUnit": "万人次", "yDisplayUnit": "万元",
+    "xCaption": "就诊量", "yCaption": "医疗收入", "sizeCaption": "样本量", "maxArea": 600
+  }
+}
+```
+
+新增`--suite geometry`，包含3个随机种子×3个量级（1e-10/1/1e10）的散点/气泡、稀疏/稠密矩阵和四类轴范围带，以及12个异常案例：84场景中72张实际成图、12个预期回退。独立校验核对每个点的坐标/面积/连续色值及颜色、矩阵方向/掩码/零值/色标范围、范围带每个横坐标的上下界与断点，不只检查文件存在。故意篡改预期坐标、面积、矩阵方向、缺失掩码、上下界和调色板的6项负例均被识别。另验证480点及100点多来源输入通过正式源码门禁，不把全部观测数值内嵌到脚本。
+
+`--suite all`现有384个换数据案例：290成图、89预检回退、2身份拒绝、2布局修复、1schema拒绝，均符合各自预期。最终编译结果与实际执行脚本逐字节一致或保持相同拒绝路线，缺失范围说明修改后只重放受影响源码的案例。原OS报告16图全部回归通过，59项登记资源身份核验、21份作图输入值不变，保留原图对比PDF。
+
+新增47项测试与原329项相关测试合计376项通过；另外扩展到计划模型、输入投影和固定阶段工作流260项通过，共636项。修正旧计划模型快照遗漏标准参数字段的问题，保留原业务元数据断言；新增真实Pydantic计划序列化→授权字段物化→气泡绘图检查。本轮4模块mypy及Ruff检查通过。离线回放是人工参数+独立几何/数值核验，不能据此声称线上模型自动命中率或独立视觉模型验收已通过；尚未部署。
+
+尚未标准化的主要缺口：箱线/小提琴等分布统计图、瀑布图、堆叠双轴、断轴/显式刻度范围、大数据分页，以及真实线上自动规划与审美验收。复杂参数不支持时只回退对应图，其他图继续使用标准路线；产物下载签发保持原非阻断契约。
+
 ## 多维变换与时间计算流水线（2026-10-28）
 
 新增`standardSteps`，按声明顺序执行最多8步，每步只能包含`view`或`derivation`；不能与旧`standardView/standardDerivations`混用。每一步使用上一步的列及登记单位，保留服务端计算的转换记录和`bound_input_rows_only`范围。原输入SHA256仍在执行前重新核验，不覆盖原文件。派生列不得复用原始列名或前面步骤曾生成的列名，即使该列在中间视图被丢弃。步骤失败返回`standard_transformation_failed`与`standardSteps[index]`，方便定向修正。

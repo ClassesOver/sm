@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
+from scripts.standard_visualization_geometry_cases import geometry_cases
 from scripts.standard_visualization_pipeline_cases import pipeline_cases
 from scripts.standard_visualization_stress_cases import extended_cases
 from smart_reporting.reporting.workflow.runtime.chart_inputs import (
@@ -22,8 +23,10 @@ from smart_reporting.reporting.workflow.runtime.chart_inputs import (
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     StandardChartAnnotation,
     StandardChartAxes,
+    StandardChartBand,
     StandardChartCanvas,
     StandardChartDerivation,
+    StandardChartEncoding,
     StandardChartPresentation,
     StandardChartSource,
     StandardChartStep,
@@ -36,9 +39,10 @@ from smart_reporting.reporting.workflow.runtime.standard_visualization import (
 
 MODELS = {'standard_canvas': StandardChartCanvas, 'standard_style': StandardChartStyle,
           'standard_presentation': StandardChartPresentation, 'standard_axes': StandardChartAxes,
-          'standard_view': StandardChartView}
+          'standard_view': StandardChartView, 'standard_encoding': StandardChartEncoding}
 LIST_MODELS = {'standard_annotations': StandardChartAnnotation, 'standard_sources': StandardChartSource,
-               'standard_derivations': StandardChartDerivation, 'standard_steps': StandardChartStep}
+               'standard_derivations': StandardChartDerivation, 'standard_steps': StandardChartStep,
+               'standard_bands': StandardChartBand}
 AUDITOR = '''import json, runpy, math, re
 from pathlib import Path
 import matplotlib
@@ -79,12 +83,15 @@ def capture(fig, *args, **kwargs):
     horizontal = json.loads(Path("parameters.json").read_text())["visual_form"] == "barh"
     collisions = []
     for ax in fig.axes:
-        ticks = ax.get_yticklabels() if horizontal else ax.get_xticklabels()
-        boxes = [(tick.get_text(), tick.get_window_extent(renderer)) for tick in ticks if tick in drawn and tick.get_visible()]
-        for index, (left_text, left) in enumerate(boxes):
-            for right_text, right in boxes[index + 1:]:
-                if left.overlaps(right):
-                    collisions.append([left_text, right_text])
+        if getattr(ax, "_standard_colorbar", False):
+            continue
+        tick_groups = [ax.get_xticklabels(), ax.get_yticklabels()] if json.loads(Path("parameters.json").read_text())["visual_form"] == "heatmap" else [ax.get_yticklabels() if horizontal else ax.get_xticklabels()]
+        for ticks in tick_groups:
+            boxes = [(tick.get_text(), tick.get_window_extent(renderer)) for tick in ticks if tick in drawn and tick.get_visible()]
+            for index, (left_text, left) in enumerate(boxes):
+                for right_text, right in boxes[index + 1:]:
+                    if left.overlaps(right):
+                        collisions.append([left_text, right_text])
     audit["categoryTickCollisions"] = collisions
     mismatches = []
     expectations = json.loads(Path("expectations.json").read_text()) if Path("expectations.json").exists() else {}
@@ -105,6 +112,64 @@ def capture(fig, *args, **kwargs):
             actual_colors = [to_hex(bar.get_facecolor()) for bar in artist]
             if actual_colors != expected["colors"]:
                 mismatches.append("wrong_colors:" + expected["name"])
+    import numpy as np
+    def same_value(actual, wanted):
+        if wanted is None:
+            return bool(np.ma.is_masked(actual) or math.isnan(float(actual)))
+        return not np.ma.is_masked(actual) and math.isclose(float(actual), wanted, rel_tol=1e-10, abs_tol=0)
+    def check_color(artist, expected):
+        if "colorMap" in expected and artist.get_cmap().name != expected["colorMap"]:
+            mismatches.append("wrong_color_map:" + expected["name"])
+        for key, attribute in (("colorMin", "vmin"), ("colorMax", "vmax")):
+            if key in expected and not same_value(getattr(artist.norm, attribute), expected[key]):
+                mismatches.append("wrong_color_range:" + expected["name"])
+        if "colorCenter" in expected and not math.isclose(float(artist.norm(expected["colorCenter"])), .5):
+            mismatches.append("wrong_color_center:" + expected["name"])
+    for expected in expectations.get("observations", []):
+        artists = [artist for ax in fig.axes for artist in ax.collections
+                   if getattr(artist, "_standard_scatter", False) and artist.get_label() == expected["name"]]
+        if len(artists) != 1:
+            mismatches.append("missing_observations:" + expected["name"])
+            continue
+        artist = artists[0]
+        offsets = artist.get_offsets()
+        wanted = expected["offsets"]
+        if len(offsets) != len(wanted) or any(not all(same_value(a,b) for a,b in zip(pair, row))
+                                              for pair,row in zip(offsets,wanted)):
+            mismatches.append("wrong_observation_coordinates:" + expected["name"])
+        for key, actual in (("sizes", artist.get_sizes()), ("colorValues", artist.get_array())):
+            if key in expected and (actual is None or len(actual) != len(expected[key])
+                                    or any(not same_value(a,b) for a,b in zip(actual,expected[key]))):
+                mismatches.append("wrong_observation_" + key + ":" + expected["name"])
+        if "colorValues" in expected:
+            expected_colors = artist.get_cmap()(artist.norm(expected["colorValues"]))
+            if not np.allclose(artist.get_facecolors(), expected_colors, rtol=1e-9, atol=1e-12):
+                mismatches.append("wrong_mapped_colors:" + expected["name"])
+        check_color(artist, expected)
+    for expected in expectations.get("matrices", []):
+        artists = [artist for ax in fig.axes for artist in ax.images if artist.get_label() == expected["name"]]
+        if len(artists) != 1:
+            mismatches.append("missing_matrix:" + expected["name"])
+            continue
+        artist = artists[0]
+        actual, wanted = artist.get_array(), expected["values"]
+        if actual.shape != (len(wanted),len(wanted[0])) or any(
+            not same_value(actual[y,x],value) for y,row in enumerate(wanted) for x,value in enumerate(row)):
+            mismatches.append("wrong_matrix_or_mask:" + expected["name"])
+        check_color(artist,expected)
+    for expected in expectations.get("bands", []):
+        artists = [artist for ax in fig.axes for artist in ax.collections
+                   if getattr(artist, "_standard_band", False) and artist.get_label() == expected["name"]]
+        if len(artists) != 1:
+            mismatches.append("missing_band:" + expected["name"])
+            continue
+        vertices = [pair for path in artists[0].get_paths() for pair in path.vertices if np.isfinite(pair).all()]
+        for index,(low,high) in enumerate(zip(expected["lower"],expected["upper"])):
+            found = [y for x,y in vertices if abs(x-index)<1e-9]
+            if low is None:
+                if found: mismatches.append("filled_missing_band:" + expected["name"])
+            elif not found or not same_value(min(found),low) or not same_value(max(found),high):
+                mismatches.append("wrong_band_bounds:" + expected["name"])
     visible_text = "\\n".join(text.get_text() for text in drawn if text.get_visible())
     for text in expectations.get("texts", []):
         if text not in visible_text:
@@ -325,7 +390,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
-    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'all'], default='basic')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -334,6 +399,8 @@ def main():
         cases.extend(extended_cases())
     if args.suite in {'pipelines', 'all'}:
         cases.extend(pipeline_cases())
+    if args.suite in {'geometry', 'all'}:
+        cases.extend(geometry_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []

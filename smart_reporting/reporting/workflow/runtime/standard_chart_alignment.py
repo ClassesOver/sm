@@ -6,7 +6,7 @@ from .standard_chart_presentation import valid_standard_metadata
 from .standard_chart_transform import month_label
 
 
-def align_chart_sources(entries, files, selections, *, selected_labels=(), allow_nulls=False):
+def align_chart_sources(entries, files, selections, *, selected_labels=(), allow_nulls=False, max_labels=60):
     if not entries or not selections or len(selections) > 8:
         return None
     names = [selection.series_name for selection in selections]
@@ -58,7 +58,7 @@ def align_chart_sources(entries, files, selections, *, selected_labels=(), allow
                 return None
             pairs = [(label, value) for label, value in zip(current_labels, values, strict=True) if label in selected_labels]
             current_labels, values = map(list, zip(*pairs, strict=True))
-        if (not 1 <= len(current_labels) <= 60
+        if (not 1 <= len(current_labels) <= max_labels
                 or any(not isinstance(label, str) or not label for label in current_labels)
                 or len(set(current_labels)) != len(current_labels)
                 or any(not (allow_nulls and value is None) and (
