@@ -27,8 +27,18 @@ def align_chart_sources(entries, files, selections):
         rows = document.get('rows', [])
         if (len(set(source_columns)) != len(source_columns)
                 or selection.label_field not in source_columns
-                or selection.value_field not in source_columns or not 1 <= len(rows) <= 60
+                or selection.value_field not in source_columns or not 1 <= len(rows) <= 480
                 or any(not isinstance(row, list) or len(row) != len(source_columns) for row in rows)):
+            return None
+        category_field = getattr(selection, 'category_field', None)
+        category_value = getattr(selection, 'category_value', None)
+        if (category_field is None) != (category_value is None):
+            return None
+        if category_field is not None:
+            if category_field not in source_columns:
+                return None
+            rows = [row for row in rows if row[source_columns.index(category_field)] == category_value]
+        if not 1 <= len(rows) <= 60:
             return None
         label_index = source_columns.index(selection.label_field)
         value_index = source_columns.index(selection.value_field)

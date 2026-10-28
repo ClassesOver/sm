@@ -357,6 +357,71 @@ def test_display_unit_conversion_uses_registered_scale(tmp_path, monkeypatch):
     assert standard_visualization_script(plan, inputs) is None
 
 
+@pytest.mark.parametrize('kind', ['summary', 'window', 'independent_total'])
+def test_report_gap_templates_render_exact_frozen_views(tmp_path, monkeypatch, kind):
+    import matplotlib.pyplot as plt
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartSource
+
+    plan, document = complex_fixture('bar')
+    chart = plan.charts[0]
+    if kind == 'summary':
+        chart.visual_form = 'summary-bars'
+        chart.standard_value_fields = ('budget', 'actual')
+        document = {'columns': ['budget', 'actual', 'difference'], 'rows': [[100, 80, -20]],
+                    'columnMeta': {field: {'unit': '元'} for field in ('budget', 'actual', 'difference')}}
+        inputs = materialization(document)
+    elif kind == 'window':
+        chart.standard_labels = ('2025-02',)
+        inputs = materialization(document)
+    else:
+        chart.visual_form = 'stacked-total'
+        chart.standard_total_field = 'total'
+        chart.standard_sources = tuple(StandardChartSource.model_validate(item) for item in [
+            {'sourceIndex': 0, 'labelField': 'period', 'valueField': 'value', 'seriesName': 'A',
+             'categoryField': 'department', 'categoryValue': 'A'},
+            {'sourceIndex': 0, 'labelField': 'period', 'valueField': 'value', 'seriesName': 'B',
+             'categoryField': 'department', 'categoryValue': 'B'},
+            {'sourceIndex': 1, 'labelField': 'period', 'valueField': 'value', 'seriesName': 'total'},
+        ])
+        _, first = complex_fixture('line', long=True)
+        second = {'columns': ['period', 'value'], 'rows': [['2025-02', 70], ['2025-01', 30]],
+                  'columnMeta': {'value': {'unit': '元'}}}
+        files = tuple(ChartInputFile(f'input-{i}.json', json.dumps(doc).encode())
+                      for i, doc in enumerate((first, second)))
+        entries = tuple({'chartId': chart.chart_id, 'path': file.path, 'sha256': file.sha256} for file in files)
+        inputs = ChartInputMaterialization(files=files, entries=entries)
+    for source in inputs.files:
+        (tmp_path / source.path).write_bytes(source.content)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    try:
+        script = standard_visualization_script(plan, inputs)
+        assert script is not None
+        exec(script, {})
+        axes = plt.gcf().axes[0]
+        if kind == 'summary':
+            assert [bar.get_height() for bar in axes.patches] == [100, 80]
+            assert [tick.get_text() for tick in axes.get_xticklabels()] == ['budget', 'actual']
+        elif kind == 'window':
+            assert [bar.get_height() for bar in axes.patches] == [30, 40]
+            assert [tick.get_text() for tick in axes.get_xticklabels()] == ['2025-02']
+        else:
+            assert list(axes.lines[0].get_ydata()) == [30, 70]
+            assert len(axes.patches) == 4
+            assert '独立冻结总额' in axes.lines[0].get_label()
+            second['rows'][0][1] = 71
+            changed = ChartInputFile(files[1].path, json.dumps(second).encode())
+            entries[1]['sha256'] = changed.sha256
+            assert standard_visualization_script(plan, ChartInputMaterialization(
+                files=(files[0], changed), entries=entries,
+            )) is None
+        assert (tmp_path / 'chart.png').exists()
+    finally:
+        close('all')
+
+
 @pytest.mark.parametrize('form', ['bar', 'line', 'barh'])
 def test_standard_template_executes_and_rejects_changed_input(tmp_path, form):
     plan, inputs = fixture(form)

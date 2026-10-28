@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from itertools import combinations
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,15 +52,17 @@ def main():
             document = json.loads(raw)
             metadata = document.get('columnMeta', {})
             fields = [column for column in document['columns'] if metadata.get(column, {}).get('unit')]
-            selections = [()] + [(column,) for column in fields]
+            selections = [('bar', ())] + [('bar', (column,)) for column in fields]
+            if len(document['rows']) == 1:
+                selections.extend(('summary-bars', pair) for pair in combinations(fields, 2))
             source = ChartInputFile('input.json', raw)
             inputs = ChartInputMaterialization(files=(source,), entries=({
                 'chartId': trace['chartId'], 'path': source.path, 'sha256': source.sha256,
             },))
-            for selected in selections:
+            for form, selected in selections:
                 chart = SimpleNamespace(
                     chart_id=trace['chartId'], renderer='matplotlib', interactive_path=None,
-                    visual_form='bar', source_path='chart.png', title='冻结输入模板覆盖回放',
+                    visual_form=form, source_path='chart.png', title='冻结输入模板覆盖回放',
                     standard_value_fields=selected,
                 )
                 script = standard_visualization_script(SimpleNamespace(charts=(chart,)), inputs)
@@ -72,7 +75,7 @@ def main():
                 completed = subprocess.run([sys.executable, 'render.py'], cwd=folder, capture_output=True)
                 if completed.returncode:
                     raise RuntimeError(completed.stderr.decode()[-2000:])
-                record['candidates'].append({'valueFields': selected, 'inputSha256': source.sha256,
+                record['candidates'].append({'visualForm': form, 'valueFields': selected, 'inputSha256': source.sha256,
                                              'image': str(folder / 'chart.png')})
                 record['covered'] = True
             if not record['covered']:

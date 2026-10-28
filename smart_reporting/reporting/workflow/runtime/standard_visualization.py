@@ -27,7 +27,8 @@ def standard_visualization_script(
                 'barh': 'barh', '横向条形图': 'barh',
                 'stacked-bar': 'stacked-bar', '堆叠柱状图': 'stacked-bar',
                 'stacked-area': 'stacked-area', '堆叠面积图': 'stacked-area',
-                'stacked-total': 'stacked-total', '堆叠柱合计折线图': 'stacked-total'}.get(chart.visual_form)
+                'stacked-total': 'stacked-total', '堆叠柱合计折线图': 'stacked-total',
+                'summary-bars': 'summary-bars', '单行指标对比图': 'summary-bars'}.get(chart.visual_form)
         entries = [entry for entry in inputs.entries if entry['chartId'] == chart.chart_id]
         if form is None or not entries:
             return None
@@ -36,6 +37,24 @@ def standard_visualization_script(
         if source is None or source.sha256 != entry['sha256']:
             return None
         document = json.loads(source.content)
+        selected = tuple(getattr(chart, 'standard_value_fields', ()))
+        if form == 'summary-bars':
+            original_columns = document.get('columns', [])
+            original_rows = document.get('rows', [])
+            original_meta = document.get('columnMeta', {})
+            if (len(original_rows) != 1 or len(selected) < 2
+                    or len(set(selected)) != len(selected) or not set(selected).issubset(original_columns)):
+                return None
+            selected_meta = [original_meta.get(column, {}) for column in selected]
+            if (any(not meta.get('unit') for meta in selected_meta)
+                    or any(meta != selected_meta[0] for meta in selected_meta)):
+                return None
+            document = {'columns': ['label', 'value'],
+                        'rows': [[column, original_rows[0][original_columns.index(column)]] for column in selected],
+                        'columnMeta': {'value': selected_meta[0]}}
+            aligned[source.path] = (document, [(source.path, source.sha256)])
+            selected = ('value',)
+            form = 'bar'
         selections = getattr(chart, 'standard_sources', ())
         if len(entries) > 1:
             alignment = align_chart_sources(entries, inputs.files, selections)
@@ -61,6 +80,15 @@ def standard_visualization_script(
         if label is None:
             return None
         label_index = columns.index(label)
+        selected_labels = tuple(getattr(chart, 'standard_labels', ()))
+        if selected_labels:
+            if (len(set(selected_labels)) != len(selected_labels)
+                    or not set(selected_labels).issubset(row[label_index] for row in rows)):
+                return None
+            rows = [row for row in rows if row[label_index] in selected_labels]
+            document = {**document, 'rows': rows}
+            dependencies = aligned.get(source.path, (None, [(source.path, source.sha256)]))[1]
+            aligned[source.path] = (document, dependencies)
         labels = [row[label_index] for row in rows]
         if any(not isinstance(value, str) or not value for value in labels):
             return None
@@ -69,7 +97,6 @@ def standard_visualization_script(
                             if all(isinstance(row[columns.index(column)], str) for row in rows)]
         category = category_columns[0] if len(category_columns) == 1 else None
         values = [column for column in other_columns if column != category]
-        selected = tuple(getattr(chart, 'standard_value_fields', ()))
         if selected:
             if len(set(selected)) != len(selected) or not set(selected).issubset(values):
                 return None
@@ -168,6 +195,15 @@ def standard_visualization_script(
             row[columns.index(column)] < 0 for row in rows for column in values
         ):
             return None
+        total_field = getattr(chart, 'standard_total_field', None)
+        if total_field is not None:
+            if form != 'stacked-total' or category or total_field not in values or len(values) < 2:
+                return None
+            if any(not math.isclose(
+                math.fsum(row[columns.index(column)] for column in values if column != total_field),
+                row[columns.index(total_field)], rel_tol=1e-12, abs_tol=1e-9,
+            ) for row in rows):
+                return None
         annotation_names = categories if category else values
         annotation_labels = list(dict.fromkeys(labels))
         annotations: list[tuple[str, int | None, int | None, int | None]] = []
@@ -206,7 +242,7 @@ def standard_visualization_script(
         configs.append((source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
-                        axes.model_dump(), metas))
+                        axes.model_dump(), metas, total_field))
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + _ADVANCED + _BODY)
@@ -318,7 +354,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 plt.rcParams["font.sans-serif"] = ["Noto Sans CJK SC", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
-for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent, annotations, axes_policy, metadata in CONFIGS:
+for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent, annotations, axes_policy, metadata, total_field in CONFIGS:
     with open(input_path, "rb") as handle:
         raw = handle.read()
     if hashlib.sha256(raw).hexdigest() != digest:
@@ -359,6 +395,8 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         bottom = [0.0] * len(labels)
         width = 0.8 / len(series)
         for index, (name, values) in enumerate(zip(names, series, strict=True)):
+            if name == total_field:
+                continue
             if form == "line":
                 ax.plot(positions, values, marker="o", label=name)
             elif form in {"stacked-bar", "stacked-total"}:
@@ -371,8 +409,10 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
                 else:
                     ax.bar(offsets, values, width=width, label=name)
     if form == "stacked-total":
-        totals = [math.fsum(values[index] for values in series) for index in positions]
-        ax.plot(positions, totals, marker="o", color="black", label="分项合计（服务端求和）")
+        totals = (series[names.index(total_field)] if total_field else
+                  [math.fsum(values[index] for values in series) for index in positions])
+        caption = total_field + "（独立冻结总额，已对账）" if total_field else "分项合计（服务端求和）"
+        ax.plot(positions, totals, marker="o", color="black", label=caption)
     if form == "barh":
         ax.set_yticks(positions, labels)
         ax.invert_yaxis()
@@ -405,8 +445,9 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
             value = values[index]
             coordinate = index
             height = value
-            if form in {"stacked-bar", "stacked-area", "stacked-total"}:
-                height += sum(previous[index] for previous in series[:series_index])
+            if form in {"stacked-bar", "stacked-area", "stacked-total"} and names[series_index] != total_field:
+                height += sum(previous[index] for previous_name, previous in zip(names[:series_index], series[:series_index], strict=True)
+                              if previous_name != total_field)
             elif form in {"bar", "barh"}:
                 coordinate = index - 0.4 + 0.4 / len(series) + series_index * 0.8 / len(series)
             xy = (height, coordinate) if form == "barh" else (coordinate, height)

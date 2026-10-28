@@ -281,6 +281,8 @@ class StandardChartSource(StrictModel):
     label_field: str = Field(alias='labelField', min_length=1, max_length=200)
     value_field: str = Field(alias='valueField', min_length=1, max_length=200)
     series_name: str = Field(alias='seriesName', min_length=1, max_length=200)
+    category_field: str | None = Field(default=None, alias='categoryField', max_length=200)
+    category_value: str | None = Field(default=None, alias='categoryValue', max_length=200)
 
 
 class ChartDraft(StrictModel):
@@ -335,6 +337,14 @@ class ChartDraft(StrictModel):
     standard_display_unit: str | None = Field(
         default=None, alias='standardDisplayUnit', max_length=30,
         description='单轴图显示单位，如元转亿元；必须由服务端登记单位换算，不能提交自由倍率。',
+    )
+    standard_labels: tuple[str, ...] = Field(
+        default=(), alias='standardLabels', max_length=60,
+        description='显式选择的冻结横轴标签，必须唯一且全部存在；按原输入顺序显示，不从标题推断窗口。',
+    )
+    standard_total_field: str | None = Field(
+        default=None, alias='standardTotalField', max_length=200,
+        description='stacked-total指定独立总额系列；须与每个标签的其他分项合计对账，不能重复计入堆叠。',
     )
     data_bindings: tuple[ChartDataBinding, ...] = Field(
         alias="dataBindings", min_length=1, max_length=100
