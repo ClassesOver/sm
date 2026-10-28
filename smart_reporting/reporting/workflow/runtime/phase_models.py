@@ -266,11 +266,16 @@ class StandardChartAnnotation(StrictModel):
     series: str | None = Field(default=None, max_length=200)
     label: str | None = Field(default=None, max_length=200)
     end_label: str | None = Field(default=None, alias='endLabel', max_length=200)
+    color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
+    highlight: bool = False
+    position: Literal['auto', 'above', 'below', 'left', 'right'] = 'auto'
+    caption: str | None = Field(default=None, max_length=60, description='参考线或重点标注的业务简称；数值仍从冻结数据生成')
 
 
 class StandardChartAxes(StrictModel):
     mode: Literal['single', 'dual', 'panels', 'zoom'] = 'single'
     scale: Literal['linear', 'log'] = 'linear'
+    zero_baseline: bool = Field(default=False, alias='zeroBaseline')
     right_fields: tuple[str, ...] = Field(default=(), alias='rightFields', max_length=8)
     zoom_start: str | None = Field(default=None, alias='zoomStart', max_length=200)
     zoom_end: str | None = Field(default=None, alias='zoomEnd', max_length=200)
@@ -309,9 +314,73 @@ class StandardChartSeriesStyle(StrictModel):
     hatch: Literal['', '/', '//', '\\', 'x', '.', '+', '-'] = ''
 
 
+class StandardChartPointStyle(StrictModel):
+    series: str = Field(min_length=1, max_length=200)
+    label: str = Field(min_length=1, max_length=200)
+    color: str = Field(pattern=r'^#[0-9a-fA-F]{6}$')
+    marker_size: int = Field(default=8, alias='markerSize', ge=3, le=16)
+
+
+class StandardChartOrder(StrictModel):
+    mode: Literal['source', 'reverse', 'label', 'value', 'explicit'] = 'source'
+    field: str | None = Field(default=None, max_length=200)
+    descending: bool = False
+    labels: tuple[str, ...] = Field(default=(), max_length=60)
+    limit: int | None = Field(default=None, ge=1, le=60)
+    exclude_missing: bool = Field(default=False, alias='excludeMissing')
+
+    @model_validator(mode='after')
+    def validate_order(self) -> StandardChartOrder:
+        if (self.mode == 'value') != (self.field is not None):
+            raise ValueError('数值排序必须且只能指定一个冻结字段')
+        if self.exclude_missing and self.mode != 'value':
+            raise ValueError('排除空值仅适用于明确的数值排序')
+        if (self.mode == 'explicit') != bool(self.labels):
+            raise ValueError('显式排序必须且只能提供标签顺序')
+        if self.descending and self.mode not in {'value', 'label'}:
+            raise ValueError('降序仅适用于数值或标签排序')
+        return self
+
+
+class StandardChartLabelFormat(StrictModel):
+    field: str | None = Field(default=None, max_length=200)
+    numerator: str | None = Field(default=None, max_length=200)
+    denominator: str | None = Field(default=None, max_length=200)
+    caption: str | None = Field(default=None, max_length=40)
+    display_unit: str | None = Field(default=None, alias='displayUnit', max_length=30)
+    decimals: int = Field(default=2, ge=0, le=6)
+    show_sign: bool = Field(default=False, alias='showSign')
+    series: tuple[str, ...] = Field(default=(), max_length=8, description='辅助标注限定系列；空表示全部系列')
+
+    @model_validator(mode='after')
+    def validate_value_binding(self) -> StandardChartLabelFormat:
+        if self.field is not None:
+            if self.numerator is not None or self.denominator is not None:
+                raise ValueError('标注只能选择冻结字段或显式分子/分母之一')
+        elif not self.numerator or not self.denominator:
+            raise ValueError('比率标注必须指定冻结分子和分母')
+        return self
+
+
+class StandardChartSummary(StandardChartLabelFormat):
+    label: str | None = Field(default=None, max_length=200, description='多行表中唯一冻结标签；单行表可省略')
+    color: str = Field(default='#475569', pattern=r'^#[0-9a-fA-F]{6}$')
+
+
+class StandardChartPresentation(StrictModel):
+    subtitle: str | None = Field(default=None, max_length=300)
+    source_note: str | None = Field(default=None, alias='sourceNote', max_length=500)
+    label_mode: Literal['source', 'month'] = Field(default='source', alias='labelMode')
+    order: StandardChartOrder = Field(default_factory=StandardChartOrder)
+    label_formats: tuple[StandardChartLabelFormat, ...] = Field(default=(), alias='labelFormats', max_length=3)
+    summaries: tuple[StandardChartSummary, ...] = Field(default=(), max_length=4)
+
+
 class StandardChartStyle(StrictModel):
-    palette: Literal['tab10', 'Set2', 'Dark2', 'Paired', 'viridis', 'cividis'] = 'tab10'
+    palette: Literal['report', 'tab10', 'Set2', 'Dark2', 'Paired', 'viridis', 'cividis'] = 'report'
+    theme: Literal['report', 'classic'] = 'report'
     series: tuple[StandardChartSeriesStyle, ...] = Field(default=(), max_length=8)
+    points: tuple[StandardChartPointStyle, ...] = Field(default=(), max_length=60)
     background: str = Field(default='#ffffff', pattern=r'^#[0-9a-fA-F]{6}$')
     grid: Literal['none', 'x', 'y', 'both'] = 'y'
     grid_alpha: float = Field(default=.2, alias='gridAlpha', ge=0, le=.8, allow_inf_nan=False)
@@ -326,11 +395,16 @@ class StandardChartStyle(StrictModel):
     annotation_offset_x: int = Field(default=8, alias='annotationOffsetX', ge=-120, le=120)
     annotation_offset_y: int = Field(default=8, alias='annotationOffsetY', ge=-120, le=120)
     value_margin: float = Field(default=.1, alias='valueMargin', ge=0, le=.5, allow_inf_nan=False)
+    bar_group_width: float = Field(default=.64, alias='barGroupWidth', ge=.3, le=.9, allow_inf_nan=False)
+    annotation_leader: bool = Field(default=False, alias='annotationLeader')
+    annotation_color: Literal['series', 'neutral'] = Field(default='series', alias='annotationColor')
 
     @model_validator(mode='after')
     def unique_series(self) -> StandardChartStyle:
         if len({item.series for item in self.series}) != len(self.series):
             raise ValueError('系列样式名称不能重复')
+        if len({(item.series, item.label) for item in self.points}) != len(self.points):
+            raise ValueError('同一系列标签的样式不能重复')
         return self
 
 
@@ -405,6 +479,10 @@ class ChartDraft(StrictModel):
     standard_style: StandardChartStyle = Field(
         default_factory=StandardChartStyle, alias='standardStyle',
         description='可自由组合的标准表现参数：调色板、按冻结系列名称设置颜色/线型/线宽/点型/透明度/柱纹理、网格、字号、标签旋转、图例列数与位置、数值精度、标注偏移和值轴留白；不改变冻结数据。可与画布、双轴、分面、局部放大和标注组合。超出标准能力使用Coding路线。',
+    )
+    standard_presentation: StandardChartPresentation = Field(
+        default_factory=StandardChartPresentation, alias='standardPresentation',
+        description='报告排版：subtitle副标题/sourceNote来源说明；labelMode=month简写月份；order明确排序、前N项及缺失值排除；labelFormats为冻结辅助字段指定单位/简称/精度，或按同单位冻结numerator/denominator计算百分比；summaries绑定冻结行的字段生成摘要徽章，不接受模型编造数值。',
     )
     standard_sources: tuple[StandardChartSource, ...] = Field(
         default=(), alias='standardSources', max_length=8,

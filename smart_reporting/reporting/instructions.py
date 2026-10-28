@@ -112,7 +112,11 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
         "优先组合标准图参数满足业务需求：standardSources绑定多来源，standardValueFields选择系列，"
         "standardAxes选择双轴、分面、对数或局部放大，standardAnnotations绑定冻结点值和区间，"
         "standardCanvas控制尺寸、分辨率和布局，standardStyle控制配色、逐系列线型/点型/柱纹理、"
-        "网格、图例、字号、精度和标注偏移。按数据密度与阅读目标主动调整参数，不必只使用默认值。"
+        "网格、图例、字号、精度和标注偏移；standardStyle.points可按系列+冻结标签设置逐柱/逐点颜色。"
+        "使用默认report主题统一文字层级、柔和配色和简洁标注；预算与实际保持蓝/橙，跨图同一业务系列颜色一致。"
+        "standardPresentation声明副标题、来源说明、排序、带单位的辅助标注和冻结值摘要；"
+        "比率标注只能显式绑定同单位冻结分子/分母，由服务端计算，不能编写数值。"
+        "标准峰谷标注可设置color/highlight，减少重复值标注和引导箭头；按数据密度与阅读目标主动调整参数。"
         "系列名称和标签必须来自绑定数据，显示精度不改变底层数值；不要用自编数值或文案补造事实。"
         "标准参数无法表达的复杂需求由Coding路径实现，并保留独立视觉检查。"
     ),

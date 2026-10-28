@@ -1,5 +1,39 @@
 # 标准可视化
 
+## 报告主题与真实报告缺口补齐（2026-10-28）
+
+标准图默认使用 `standardStyle.theme=report` 与 `palette=report`：深色标题、柔和蓝/橙/绿系列色、淡网格、细边框、白边数据点和无箭头数值标注。`classic` 可保留传统文字样式，其他Matplotlib调色板仍可选。`barGroupWidth` 控制柱组宽度（0.3—0.9，默认0.64），模型可显式调颜色、密度、线条和画布。
+
+逐系列颜色按完整冻结名称绑定，支持含 `（非病区）`、` · ` 的业务名称；不会再用字符串切割猜测系列。`standardStyle.points` 按 `{series,label,color,markerSize}` 指定单柱/单点颜色，排序后仍绑定原标签。预算/实际单行对比可分别为蓝/橙；`standardAnnotations` 支持 `color`、`highlight`、`position`、`caption`，可做峰值绿、谷值红、指定参考线配色。峰谷/重点已有专用标注时，values不再重复输出同一点。
+
+`standardPresentation` 标准化副标题、来源脚注、月份标签、排序、辅助标注与摘要徽章。标题/副标题/脚注会按画布宽度换行，tight和constrained布局为文本保留空间。参考线说明沿参考线定位到图边，避免覆盖柱体。
+
+```json
+{
+  "standardPresentation": {
+    "subtitle":"2025年1—9月累计｜单位：亿元、%",
+    "sourceNote":"数据来源：收入预算执行汇总。",
+    "order":{"mode":"value","field":"完成率(%)","limit":10,"excludeMissing":true},
+    "labelFormats":[
+      {"field":"预算合计","caption":"预算","displayUnit":"亿元"},
+      {"field":"实际合计","caption":"实际","displayUnit":"亿元"}
+    ]
+  },
+  "standardStyle": {
+    "theme":"report","palette":"report","annotationLeader":false,
+    "series":[{"series":"完成率(%)","color":"#4d9a69"}]
+  }
+}
+```
+
+order支持source/reverse/label/value/explicit；数值排序必须指定现有列，`excludeMissing` 仅显式排除排序字段为null的行，其他非有限值拒绝，不填零。`limit` 是明确的视图子集，不改变原文件；计划与图注仍应说明子集范围。`labelMode=month` 仅用于同一年、每月唯一的ISO期间；跨年或重复月份拒绝。`standardAxes.zeroBaseline` 显式保留线性轴零基线，对数轴不接受。
+
+`labelFormats` 最多3项，可指定已有字段、简称、显示单位、精度、正号及限定系列。也可指定同单位冻结 `numerator/denominator`，由服务端计算百分比；分母必须大于0，缺失单位、混合单位、零分母均回退，不接受模型提供比例数值。`summaries` 最多4项，复用字段/显示格式并增加 `label` 唯一行选择和 `color`，在图头显示预算差额、完成率等徽章。单行转置图的摘要读取转置前冻结行；辅助预算/实际金额能独立换算亿元，不再沿用百分比轴单位。
+
+单位缺口在数据投影层修复：`metrics[n].periodValues.value` 只继承该已核验指标自身的unit/isPercent，不从标题、字段名、邻近指标或模型推断。历史chart-input本身不修改；离线对比工具保留原字节，并从同包已登记size/SHA256的对应事实重新物化新输入，逐项断言columns/rows不变，记录新增元数据来源。
+
+复现入口：`PYTHONPATH=. python scripts/replay_standard_visualization_comparison.py ARCHIVE OUTPUT [PREVIOUS_COMPARISON_FOLDER]`。生成9页原图/新版对照PDF、逐图PNG、概览、参数、执行脚本与replay.json；传入上一版目录时另生成优化前后PDF/PNG。该工具针对上传的revision-2报告选择参数，未保存原始计划，因此是人工选参离线回放，不能当作线上命中率。修复后的元数据投影下9/9实际生成PNG；旧输入原样仍有2张因缺少单位拒绝。已有独立视觉审查和Coding回退保持不变，尚未部署。
+
 ## 标准画布参数
 
 所有标准图统一使用ChartDraft.standardCanvas，配置随计划保存并写入执行脚本，最终由既有脚本身份回执绑定；不另造未验证的画布验收回执。示例：

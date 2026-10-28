@@ -9,10 +9,16 @@ from .chart_inputs import ChartInputMaterialization
 from .phase_models import (
     StandardChartAxes,
     StandardChartCanvas,
+    StandardChartPresentation,
     StandardChartStyle,
     VisualizationPlanDraft,
 )
 from .standard_chart_alignment import align_chart_sources
+from .standard_chart_presentation import (
+    PRESENTATION_SCRIPT,
+    order_standard_rows,
+    prepare_standard_presentation,
+)
 
 
 def standard_visualization_script(
@@ -27,6 +33,7 @@ def standard_visualization_script(
     for chart in plan.charts:
         canvas = getattr(chart, 'standard_canvas', StandardChartCanvas())
         style = getattr(chart, 'standard_style', StandardChartStyle())
+        presentation = getattr(chart, 'standard_presentation', StandardChartPresentation())
         if chart.renderer != 'matplotlib' or chart.interactive_path:
             return None
         form = {'line': 'line', '折线图': 'line', '多系列折线图': 'line',
@@ -44,6 +51,7 @@ def standard_visualization_script(
         if source is None or source.sha256 != entry['sha256']:
             return None
         document = json.loads(source.content)
+        original_document = document
         selected = tuple(getattr(chart, 'standard_value_fields', ()))
         if form == 'summary-bars':
             original_columns = document.get('columns', [])
@@ -94,6 +102,13 @@ def standard_visualization_script(
                 return None
             rows = [row for row in rows if row[label_index] in selected_labels]
             document = {**document, 'rows': rows}
+            dependencies = aligned.get(source.path, (None, [(source.path, source.sha256)]))[1]
+            aligned[source.path] = (document, dependencies)
+        ordered = order_standard_rows(document, label, presentation.order)
+        if ordered is None:
+            return None
+        if ordered['rows'] != rows:
+            document, rows = ordered, ordered['rows']
             dependencies = aligned.get(source.path, (None, [(source.path, source.sha256)]))[1]
             aligned[source.path] = (document, dependencies)
         labels = [row[label_index] for row in rows]
@@ -148,6 +163,8 @@ def standard_visualization_script(
         if (axes.mode != 'dual' and right) or (axes.mode != 'zoom' and (axes.zoom_start or axes.zoom_end)):
             return None
         if advanced:
+            if axes.zero_baseline and axes.scale == 'log':
+                return None
             if category or form not in {'line', 'bar'} or any(not meta.get('unit') for meta in metas):
                 return None
             if axes.mode == 'dual' and (
@@ -248,42 +265,69 @@ def standard_visualization_script(
             return None
         if any(item.series not in annotation_names for item in style.series):
             return None
+        if any(item.series not in annotation_names or item.label not in annotation_labels for item in style.points):
+            return None
+        if category and any((item.label, item.series) not in keys for item in style.points):
+            return None
+        prepared = prepare_standard_presentation(presentation, document, original_document,
+                                                 label, annotation_names, annotation_labels, category)
+        if prepared is None:
+            return None
         canvas_policy = canvas.model_dump()
         canvas_policy['style'] = style.model_dump()
+        canvas_policy['presentation'] = prepared
+        canvas_policy['annotation_specs'] = [item.model_dump() for item in getattr(chart, 'standard_annotations', ())]
+        canvas_policy['series_names'] = annotation_names
+        canvas_policy['labels'] = annotation_labels
+        canvas_policy['zero_baseline'] = axes.zero_baseline
+        canvas_policy['total_field'] = total_field
         configs.append((source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
                         axes.model_dump(), metas, total_field, canvas_policy))
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
-            + '\n' + _LAYOUT + _ADVANCED + _BODY)
+            + '\n' + PRESENTATION_SCRIPT + _LAYOUT + _ADVANCED + _BODY)
 
 
-_LAYOUT = '''def apply_standard_style(fig, policy):
+_LAYOUT = '''def standard_series_name(artist, policy):
+    label = artist.get_label()
+    for name in policy["series_names"]:
+        if label in (name, name + " · 左轴", name + " · 右轴", name + "（独立冻结总额，已对账）"):
+            return name
+    return "分项合计" if label == "分项合计（服务端求和）" else None
+
+def standard_series_color(name, policy):
+    import matplotlib.pyplot as plt
+    overrides = {item["series"]: item for item in policy["style"]["series"]}
+    if overrides.get(name, {}).get("color"):
+        return overrides[name]["color"]
+    if name == policy["total_field"] or name == "分项合计":
+        return "#1f2937"
+    index = policy["series_names"].index(name)
+    if policy["style"]["palette"] == "report":
+        return ["#3066a3", "#dc884d", "#36856b", "#b55d68", "#8573a6", "#58a3ae", "#b49b53", "#718096"][index % 8]
+    palette = plt.get_cmap(policy["style"]["palette"])
+    return palette(index / max(1, len(policy["series_names"]) - 1) if palette.N > 20 else index)
+
+def apply_standard_style(fig, policy):
     from matplotlib.container import BarContainer
     from matplotlib.text import Annotation
     import matplotlib.pyplot as plt
     style = policy["style"]
     overrides = {item["series"]: item for item in style["series"]}
-    names = []
     all_axes = list(fig.axes)
     for ax in fig.axes:
         all_axes.extend(ax.child_axes)
-    for ax in all_axes:
-        for artist in [*ax.lines, *ax.containers, *ax.collections]:
-            name = artist.get_label().split(" · ")[0].split("（")[0]
-            if name and not name.startswith("_") and name not in names:
-                names.append(name)
-    palette = plt.get_cmap(style["palette"])
     fig.set_facecolor(style["background"])
     for ax in all_axes:
         ax.set_facecolor(style["background"])
         for artist in [*ax.lines, *ax.containers, *ax.collections]:
-            name = artist.get_label().split(" · ")[0].split("（")[0]
-            if name not in names or name.startswith("_"):
+            name = standard_series_name(artist, policy)
+            if name is None:
                 continue
             item = overrides.get(name, {})
-            color = item.get("color") or palette(names.index(name) / max(1, len(names) - 1) if palette.N > 20 else names.index(name))
+            color = standard_series_color(name, policy)
             targets = artist.patches if isinstance(artist, BarContainer) else [artist]
             for target in targets:
                 target.set_color(color)
@@ -296,17 +340,43 @@ _LAYOUT = '''def apply_standard_style(fig, policy):
                     target.set_linestyle(item.get("line_style", "-"))
                     target.set_marker(item.get("marker", "o"))
                     target.set_markersize(item.get("marker_size", 5))
+                    if style["theme"] == "report":
+                        target.set_markeredgecolor("white")
+                        target.set_markeredgewidth(.8)
+            for point in style["points"]:
+                if point["series"] != name:
+                    continue
+                index = policy["labels"].index(point["label"])
+                if isinstance(artist, BarContainer):
+                    artist.patches[index].set_facecolor(point["color"])
+                    artist.patches[index].set_edgecolor(point["color"])
+                elif artist in ax.lines:
+                    ax.scatter([artist.get_xdata()[index]], [artist.get_ydata()[index]],
+                               s=point["marker_size"] ** 2, color=point["color"],
+                               edgecolors="white", linewidths=1, zorder=6)
         ax.grid(False)
         if style["grid"] != "none":
-            ax.grid(axis=style["grid"], alpha=style["grid_alpha"], linestyle="--")
+            ax.grid(axis=style["grid"], alpha=style["grid_alpha"], linestyle="--", color="#94a3b8", linewidth=.7)
         ax.set_axisbelow(True)
         ax.title.set_fontsize(style["title_font_size"])
+        if style["theme"] == "report":
+            ax.title.set_fontweight("bold")
+            ax.title.set_color("#1e293b")
+            ax.tick_params(axis="both", length=0, pad=8, colors="#475569")
+            for key, spine in ax.spines.items():
+                spine.set_color("#cbd5e1")
+                spine.set_linewidth(.7)
+                if key == "top" or key == "right" and len(fig.axes) == 1:
+                    spine.set_visible(False)
         ax.xaxis.label.set_fontsize(style["axis_font_size"])
         ax.yaxis.label.set_fontsize(style["axis_font_size"])
         for tick in ax.get_xticklabels():
             tick.set_rotation(style["label_rotation"])
             tick.set_ha("right" if style["label_rotation"] > 0 else "left" if style["label_rotation"] < 0 else "center")
         ax.margins(**({"x": style["value_margin"]} if policy["horizontal"] else {"y": style["value_margin"]}))
+        if policy["zero_baseline"]:
+            low, high = ax.get_xlim() if policy["horizontal"] else ax.get_ylim()
+            (ax.set_xlim if policy["horizontal"] else ax.set_ylim)(min(low, 0), max(high, 0))
         if ax.get_legend() is not None:
             location = style["legend_location"]
             if location == "auto":
@@ -315,7 +385,7 @@ _LAYOUT = '''def apply_standard_style(fig, policy):
                       ncols=style["legend_columns"], fontsize=style["legend_font_size"])
         for text in ax.texts:
             text.set_fontsize(style["annotation_font_size"])
-            if isinstance(text, Annotation):
+            if isinstance(text, Annotation) and not getattr(text, "_standard_custom_position", False):
                 text.set_position((style["annotation_offset_x"], style["annotation_offset_y"]))
     if fig._suptitle is not None:
         fig._suptitle.set_fontsize(style["title_font_size"])
@@ -343,6 +413,7 @@ def finish_standard_layout(fig, policy):
     import textwrap
     from matplotlib.text import Annotation
     apply_standard_style(fig, policy)
+    finish_standard_presentation(fig, policy)
     for ax in fig.axes:
         for axis, ticks, setter in ((ax.xaxis, ax.get_xticks(), ax.set_xticks),
                                     (ax.yaxis, ax.get_yticks(), ax.set_yticks)):
@@ -357,10 +428,16 @@ def finish_standard_layout(fig, policy):
             legend.set_bbox_to_anchor((1.01, 1))
             legend.set_loc("upper left")
     if policy["layout"] == "tight":
-        fig.tight_layout(pad=max(.5, policy["padding"]))
+        reserved = policy["presentation"]
+        top, bottom = reserved["header_bottom"], reserved["footer_top"]
+        fig.tight_layout(pad=max(.7, policy["padding"]), rect=(.02, bottom, .98, top))
     elif policy["layout"] == "manual":
         fig.subplots_adjust(left=policy["left"], right=policy["right"],
                             bottom=policy["bottom"], top=policy["top"])
+    elif policy["layout"] == "constrained":
+        reserved = policy["presentation"]
+        fig.get_layout_engine().set(rect=(.02, reserved["footer_top"], .96,
+            reserved["header_bottom"] - reserved["footer_top"]))
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
     annotations = [text for ax in fig.axes for text in ax.texts if isinstance(text, Annotation)]
@@ -408,14 +485,15 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         caption = f"{name} · {side}" if mode == "dual" else name
         if form == "bar" and not (mode == "dual" and side == "右轴"):
             members = [i for i, item in enumerate(targets) if item is target]
-            width = 0.8 / len(members)
-            offsets = [position - .4 + width / 2 + members.index(index) * width for position in positions]
+            group_width = canvas["style"]["bar_group_width"]
+            width = group_width / len(members)
+            offsets = [position - group_width / 2 + width / 2 + members.index(index) * width for position in positions]
             target.bar(offsets, values, width=width, color=colors(index), label=caption)
         else:
             target.plot(positions, values, marker="o", color=colors(index), label=caption)
         target.set_ylabel(f"{side} · {meta['unit']}" if mode == "dual" else meta["unit"])
         target.set_yscale(policy["scale"])
-        target.set_xticks(positions, labels, rotation=45, ha="right")
+        target.set_xticks(positions, standard_label_names(labels, canvas), rotation=45, ha="right")
         if mode == "panels":
             target.set_title(f"{name}（独立纵轴）", fontsize=10)
     for target in axes:
@@ -426,29 +504,36 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
     for number, (kind, series_index, first, last) in enumerate(annotations):
         if kind == "range":
             for target in axes:
-                target.axvspan(first - .4, last + .4, alpha=.12, color="#f59e0b")
+                target.axvspan(first - .4, last + .4, alpha=.12, color=canvas["annotation_specs"][number]["color"] or "#e8ae53")
             continue
         target = targets[series_index]
         values = series[series_index]
         unit = metadata[series_index]["unit"]
         if kind == "reference":
-            target.axhline(values[first], color="#b45309", linestyle="--")
-            target.text(.01, .98 - number * .05, f"参考 {labels[first]}: {values[first]:,.{precision}f}{unit}",
-                        transform=target.transAxes, va="top", fontsize=8)
+            color = canvas["annotation_specs"][number]["color"] or "#b55d68"
+            target.axhline(values[first], color=color, linestyle="--", linewidth=1.2)
+            caption = canvas["annotation_specs"][number]["caption"] or f"参考 {labels[first]}"
+            target.text(.99, values[first], f"{caption}: {values[first]:,.{precision}f}{unit}",
+                        transform=target.get_yaxis_transform(), va="bottom", ha="right", fontsize=8, color=color,
+                        bbox={"fc": "white", "ec": "none", "pad": 2})
             continue
         indexes = ([first] if kind == "point" else
                    [index for index, value in enumerate(values) if kind == "values" or
                     value == (max(values) if kind == "peak" else min(values))])
         for index in indexes:
+            if kind == "values" and not standard_values_label_visible(index, series_index, annotations, series):
+                continue
             coordinate = index
             if form == "bar" and not (mode == "dual" and names[series_index] in policy["right_fields"]):
                 members = [i for i, item in enumerate(targets) if item is target]
-                width = .8 / len(members)
-                coordinate = index - .4 + width / 2 + members.index(series_index) * width
-            target.annotate(f"{names[series_index]}: {values[index]:,.{precision}f}{unit}",
-                            (coordinate, values[index]), xytext=(6, 8 + number * 6),
-                            textcoords="offset points", fontsize=8,
-                            arrowprops={"arrowstyle": "-"})
+                group_width = canvas["style"]["bar_group_width"]
+                width = group_width / len(members)
+                coordinate = index - group_width / 2 + width / 2 + members.index(series_index) * width
+            extra = canvas["presentation"]["extras"].get((labels[index], names[series_index]), "")
+            caption = canvas["annotation_specs"][number]["caption"] or names[series_index]
+            text = f"{caption}: {values[index]:,.{precision}f}{unit}" + (" · " + extra if extra else "")
+            standard_annotation(target, text, (coordinate, values[index]), canvas, number,
+                                standard_series_color(names[series_index], canvas))
     if mode == "zoom":
         first = labels.index(policy["zoom_start"])
         last = labels.index(policy["zoom_end"])
@@ -456,8 +541,9 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         local_values = []
         for index, values in enumerate(series):
             if form == "bar":
-                width = .8 / len(series)
-                offsets = [position - .4 + width / 2 + index * width for position in positions]
+                group_width = canvas["style"]["bar_group_width"]
+                width = group_width / len(series)
+                offsets = [position - group_width / 2 + width / 2 + index * width for position in positions]
                 inset.bar(offsets, values, width=width, color=colors(index), label=names[index])
             else:
                 inset.plot(positions, values, marker="o", color=colors(index), label=names[index])
@@ -470,7 +556,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
             inset.set_ylim(low / 1.2, high * 1.2)
         else:
             inset.set_ylim(low - padding, high + padding)
-        inset.set_xticks(positions[first:last + 1], labels[first:last + 1], rotation=45, fontsize=7)
+        inset.set_xticks(positions[first:last + 1], standard_label_names(labels, canvas)[first:last + 1], rotation=45, fontsize=7)
         inset.set_title("局部放大 · " + metadata[0]["unit"], fontsize=9)
         axes[0].axvspan(first - .2, last + .2, color="#f59e0b", alpha=.1)
     fig.suptitle(title)
@@ -529,17 +615,18 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         ax.stackplot(positions, *series, labels=names)
     else:
         bottom = [0.0] * len(labels)
-        width = 0.8 / len(series)
+        group_width = canvas["style"]["bar_group_width"]
+        width = group_width / len(series)
         for index, (name, values) in enumerate(zip(names, series, strict=True)):
             if name == total_field:
                 continue
             if form == "line":
                 ax.plot(positions, values, marker="o", label=name)
             elif form in {"stacked-bar", "stacked-total"}:
-                ax.bar(positions, values, bottom=bottom, label=name)
+                ax.bar(positions, values, width=group_width, bottom=bottom, label=name)
                 bottom = [left + right for left, right in zip(bottom, values, strict=True)]
             else:
-                offsets = [position - 0.4 + width / 2 + index * width for position in positions]
+                offsets = [position - group_width / 2 + width / 2 + index * width for position in positions]
                 if form == "barh":
                     ax.barh(offsets, values, height=width, label=name)
                 else:
@@ -550,18 +637,18 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         caption = total_field + "（独立冻结总额，已对账）" if total_field else "分项合计（服务端求和）"
         ax.plot(positions, totals, marker="o", color="black", label=caption)
     if form == "barh":
-        ax.set_yticks(positions, labels)
+        ax.set_yticks(positions, standard_label_names(labels, canvas))
         ax.invert_yaxis()
         ax.set_xlabel(unit or "")
     else:
-        ax.set_xticks(positions, labels, rotation=45, ha="right")
+        ax.set_xticks(positions, standard_label_names(labels, canvas), rotation=45, ha="right")
         ax.set_ylabel(unit or "")
     if len(series) > 1 or form == "stacked-total":
         ax.legend(frameon=False)
     for annotation_index, (kind, series_index, first, last) in enumerate(annotations):
         if kind == "range":
             span = ax.axhspan if form == "barh" else ax.axvspan
-            span(first - 0.4, last + 0.4, color="#f59e0b", alpha=0.12)
+            span(first - 0.4, last + 0.4, color=canvas["annotation_specs"][annotation_index]["color"] or "#e8ae53", alpha=0.12)
             continue
         values = series[series_index]
         finite = [value for value in values if math.isfinite(value)]
@@ -569,15 +656,23 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
             continue
         if kind == "reference":
             draw = ax.axvline if form == "barh" else ax.axhline
-            draw(values[first], linestyle="--", color="#b45309", alpha=0.8)
-            ax.text(0.01, 0.98 - annotation_index * 0.05,
-                    f"参考 {labels[first]} · {names[series_index]}: {values[first]:,.{precision}f}{unit or ''}",
-                    transform=ax.transAxes, va="top", fontsize=8)
+            color = canvas["annotation_specs"][annotation_index]["color"] or "#b55d68"
+            draw(values[first], linestyle="--", color=color, alpha=0.8, linewidth=1.2)
+            caption = canvas["annotation_specs"][annotation_index]["caption"] or f"参考 {labels[first]} · {names[series_index]}"
+            text = f"{caption}: {values[first]:,.{precision}f}{unit or ''}"
+            if form == "barh":
+                ax.text(values[first], 1.02, text, transform=ax.get_xaxis_transform(),
+                        va="bottom", fontsize=8, color=color, bbox={"fc": "white", "ec": "none", "pad": 2})
+            else:
+                ax.text(.99, values[first], text, transform=ax.get_yaxis_transform(),
+                        va="bottom", ha="right", fontsize=8, color=color, bbox={"fc": "white", "ec": "none", "pad": 2})
             continue
         indexes = ([first] if kind == "point" else
                    [index for index, value in enumerate(values) if math.isfinite(value) and
                     (kind == "values" or value == (max(finite) if kind == "peak" else min(finite)))])
         for index in indexes:
+            if kind == "values" and not standard_values_label_visible(index, series_index, annotations, series):
+                continue
             value = values[index]
             coordinate = index
             height = value
@@ -585,9 +680,12 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
                 height += sum(previous[index] for previous_name, previous in zip(names[:series_index], series[:series_index], strict=True)
                               if previous_name != total_field)
             elif form in {"bar", "barh"}:
-                coordinate = index - 0.4 + 0.4 / len(series) + series_index * 0.8 / len(series)
+                coordinate = index - group_width / 2 + group_width / (2 * len(series)) + series_index * group_width / len(series)
             xy = (height, coordinate) if form == "barh" else (coordinate, height)
             prefix = {"peak": "峰值 ", "trough": "谷值 ", "point": "重点 "}.get(kind, "")
+            caption = canvas["annotation_specs"][annotation_index]["caption"]
+            if caption:
+                prefix = caption + " "
             auxiliary_text = []
             for field in AUXILIARY.get(input_path, ()):
                 matching = [row for row in payload["rows"] if row[label_index] == labels[index]
@@ -600,9 +698,15 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
                     auxiliary_value *= 100
                 auxiliary_text.append(f"{field}: {auxiliary_value:,.{precision}f}{meta['unit']}")
             suffix = " · " + " / ".join(auxiliary_text) if auxiliary_text else ""
-            ax.annotate(f"{prefix}{value:,.{precision}f}{unit or ''}{suffix}", xy,
-                        xytext=(8, 8 + annotation_index * 8), textcoords="offset points",
-                        fontsize=8, arrowprops={"arrowstyle": "-", "color": "#64748b"})
+            extra = canvas["presentation"]["extras"].get((labels[index], names[series_index]), "")
+            if extra:
+                suffix += " · " + extra
+            color = standard_series_color(names[series_index], canvas) if canvas["style"]["annotation_color"] == "series" else "#475569"
+            point = next((item for item in canvas["style"]["points"] if item["series"] == names[series_index] and item["label"] == labels[index]), None)
+            if point is not None:
+                color = point["color"]
+            standard_annotation(ax, f"{prefix}{value:,.{precision}f}{unit or ''}{suffix}", xy,
+                                canvas, annotation_index, color)
     ax.set_title(title)
     ax.spines[["top", "right"]].set_visible(False)
     finish_standard_layout(fig, canvas)
