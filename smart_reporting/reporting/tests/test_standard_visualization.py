@@ -126,6 +126,20 @@ def test_percentage_display_uses_frozen_scale(tmp_path, monkeypatch):
         close('all')
 
 
+@pytest.mark.parametrize('selected', [('医疗收入金额',), ('占比',), ('foreign',)])
+def test_explicit_selection_supports_chinese_labels_without_implicit_auxiliary_projection(selected):
+    plan, _ = fixture('barh')
+    plan.charts[0].standard_value_fields = selected
+    document = {'columns': ['收入类型', '医疗收入金额', '同范围总额', '占比'],
+                'rows': [['甲', 30, 100, 30], ['乙', 70, 100, 70]],
+                'columnMeta': {'医疗收入金额': {'unit': '元'}, '同范围总额': {'unit': '元'},
+                               '占比': {'unit': '%', 'isPercent': True}}}
+    script = standard_visualization_script(plan, materialization(document))
+    assert (script is not None) == (selected != ('foreign',))
+    plan.charts[0].standard_value_fields = ()
+    assert standard_visualization_script(plan, materialization(document)) is None
+
+
 @pytest.mark.parametrize('form', ['bar', 'line', 'barh'])
 def test_standard_template_executes_and_rejects_changed_input(tmp_path, form):
     plan, inputs = fixture(form)

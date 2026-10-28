@@ -39,6 +39,11 @@ def standard_visualization_script(
             return None
         label = 'period' if 'period' in columns else 'label' if 'label' in columns else None
         if label is None:
+            text_columns = [column for column in columns
+                            if all(isinstance(row[columns.index(column)], str) for row in rows)]
+            if len(text_columns) == 1:
+                label = text_columns[0]
+        if label is None:
             return None
         label_index = columns.index(label)
         labels = [row[label_index] for row in rows]
@@ -49,7 +54,12 @@ def standard_visualization_script(
                             if all(isinstance(row[columns.index(column)], str) for row in rows)]
         category = category_columns[0] if len(category_columns) == 1 else None
         values = [column for column in other_columns if column != category]
-        if not 1 <= len(values) <= 8 or (category and (label != 'period' or values != ['value'])):
+        selected = tuple(getattr(chart, 'standard_value_fields', ()))
+        if selected:
+            if len(set(selected)) != len(selected) or not set(selected).issubset(values):
+                return None
+            values = list(selected)
+        if not 1 <= len(values) <= 8 or (category and (label != 'period' or len(values) != 1)):
             return None
         if any(not isinstance(row[columns.index(column)], (int, float))
                or isinstance(row[columns.index(column)], bool)
@@ -114,7 +124,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
     if category_column:
         category_index = columns.index(category_column)
         names = list(dict.fromkeys(row[category_index] for row in payload["rows"]))
-        cells = {(row[label_index], row[category_index]): row[columns.index("value")]
+        cells = {(row[label_index], row[category_index]): row[columns.index(value_columns[0])]
                  for row in payload["rows"]}
         series = [[cells.get((label, name), float("nan")) for label in labels] for name in names]
     else:

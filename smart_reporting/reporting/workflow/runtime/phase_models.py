@@ -290,6 +290,10 @@ class ChartDraft(StrictModel):
     aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
     comparability: Literal["strict", "reference_only"] = "strict"
     visual_form: str = Field(alias="visualForm", min_length=1, max_length=200)
+    standard_value_fields: tuple[str, ...] = Field(
+        default=(), alias="standardValueFields", max_length=8,
+        description="标准静态图明确选择的数值列，必须来自绑定的chart-input；可排除同表辅助排名/占比列。空数组按全部数值列预检。",
+    )
     data_bindings: tuple[ChartDataBinding, ...] = Field(
         alias="dataBindings", min_length=1, max_length=100
     )
