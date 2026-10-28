@@ -320,14 +320,61 @@ class StandardChartView(StrictModel):
     value_fields: tuple[str, ...] = Field(alias='valueFields', min_length=1, max_length=8)
     series_field: str | None = Field(default=None, alias='seriesField', max_length=200)
     series_values: tuple[str, ...] = Field(default=(), alias='seriesValues', max_length=8)
+    group_by: tuple[str, ...] = Field(default=(), alias='groupBy', max_length=2,
+                                     description='group的附加维度，与labelField组成最多三维分组；保留各维度原列，不拼接标签。')
+    aggregation: Literal['sum', 'mean', 'weighted_mean'] = 'sum'
+    weight_field: str | None = Field(default=None, alias='weightField', max_length=200)
+
+    @model_validator(mode='after')
+    def validate_aggregation(self) -> StandardChartView:
+        if (self.aggregation == 'weighted_mean') != bool(self.weight_field):
+            raise ValueError('加权平均必须且只能指定冻结权重字段')
+        if self.kind == 'pivot' and (self.group_by or self.aggregation != 'sum' or self.weight_field):
+            raise ValueError('pivot仅透视唯一单元，不声明分组聚合')
+        if len(set((self.label_field, *self.group_by))) != 1 + len(self.group_by):
+            raise ValueError('分组维度不能重复')
+        return self
 
 
 class StandardChartDerivation(StrictModel):
-    kind: Literal['ratio_percent', 'difference', 'mom_percent']
+    kind: Literal['ratio_percent', 'difference', 'mom_percent', 'yoy_percent',
+                  'cumulative_sum', 'rolling_sum', 'rolling_mean']
     name: str = Field(min_length=1, max_length=200)
     numerator: str = Field(min_length=1, max_length=200)
     denominator: str | None = Field(default=None, max_length=200)
     label_field: str | None = Field(default=None, alias='labelField', max_length=200)
+    group_by: tuple[str, ...] = Field(default=(), alias='groupBy', max_length=3)
+    window: int | None = Field(default=None, ge=1, le=60)
+    min_periods: int | None = Field(default=None, alias='minPeriods', ge=1, le=60)
+    reset: Literal['none', 'year'] = 'none'
+
+    @model_validator(mode='after')
+    def validate_window(self) -> StandardChartDerivation:
+        rolling = self.kind in {'rolling_sum', 'rolling_mean'}
+        if rolling != (self.window is not None):
+            raise ValueError('滚动运算必须且只能指定window')
+        if self.min_periods is not None and (not rolling or self.min_periods > (self.window or 0)):
+            raise ValueError('minPeriods仅适用于滚动运算且不能大于window')
+        if self.reset != 'none' and self.kind != 'cumulative_sum':
+            raise ValueError('按年重置仅适用于累计')
+        if self.kind in {'ratio_percent', 'difference'} and (self.group_by or self.label_field):
+            raise ValueError('同行二元运算不能指定时间或分组维度')
+        if self.kind not in {'ratio_percent', 'difference'} and (not self.label_field or self.denominator):
+            raise ValueError('时间运算须指定labelField且不能指定denominator')
+        if len(set(self.group_by)) != len(self.group_by) or self.label_field in self.group_by:
+            raise ValueError('时间分组维度重复或包含期间列')
+        return self
+
+
+class StandardChartStep(StrictModel):
+    view: StandardChartView | None = None
+    derivation: StandardChartDerivation | None = None
+
+    @model_validator(mode='after')
+    def validate_step(self) -> StandardChartStep:
+        if (self.view is None) == (self.derivation is None):
+            raise ValueError('每步必须且只能声明view或derivation')
+        return self
 
 
 class StandardChartSeriesStyle(StrictModel):
@@ -522,14 +569,18 @@ class ChartDraft(StrictModel):
         default=(), alias='standardSources', max_length=8,
         description='多来源作图显式选择：sourceIndex按本图chart-input顺序从0计数，labelField/valueField必须是来源现有列，seriesName为唯一图例名称。标签集合必须完全一致，单位只从冻结元数据读取。',
     )
+    standard_source_labels: tuple[str, ...] = Field(default=(), alias='standardSourceLabels', max_length=60,
+        description='standardSources显式共同输入窗口，须包含计算需要的历史；有数据变换时standardLabels只选择最终展示窗口。')
     standard_label_field: str | None = Field(default=None, alias='standardLabelField', max_length=200,
                                            description='显式标签列；忽略未选择的其他文本辅助列，视图转换后仍须存在。')
     standard_view: StandardChartView | None = Field(default=None, alias='standardView',
-        description='group按labelField对valueFields求和（仅绑定输入行）；pivot以seriesField的seriesValues将一个度量透视为系列，不合并重复单元或填零。')
+        description='group按labelField及可选groupBy分组，对valueFields做sum/mean/weighted_mean（须weightField）；只处理绑定输入行。pivot以seriesField的seriesValues将一个度量透视为系列，不合并重复单元或填零。')
     standard_derivations: tuple[StandardChartDerivation, ...] = Field(
         default=(), alias='standardDerivations', max_length=8,
-        description='视图后计算新列：ratio_percent/difference要求同单位numerator/denominator；mom_percent指定numerator/labelField并验证月份连续。name不得覆盖原列，缺失基数保留null。',
+        description='视图后计算新列：同单位ratio_percent/difference；按labelField及groupBy计算mom_percent/yoy_percent/cumulative_sum/rolling_sum/rolling_mean。滚动须window，minPeriods默认完整窗口；累计reset=year显式按年重置。name不得覆盖原列，缺失保留null。',
     )
+    standard_steps: tuple[StandardChartStep, ...] = Field(default=(), alias='standardSteps', max_length=8,
+        description='按顺序执行最多8步view/derivation，可多维分组→分组累计/同比/滚动→透视；不能与standardView/standardDerivations混用。')
     standard_label_fields: tuple[str, ...] = Field(
         default=(), alias='standardLabelFields', max_length=3,
         description='数值标注附带的冻结辅助列，如占比、差额、预算；必须为同表已登记单位的有限数值列，不改变坐标轴。',

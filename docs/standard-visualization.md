@@ -2,6 +2,47 @@
 
 以下保留各轮验证记录；当前能力及限制以首节为准。
 
+## 多维变换与时间计算流水线（2026-10-28）
+
+新增`standardSteps`，按声明顺序执行最多8步，每步只能包含`view`或`derivation`；不能与旧`standardView/standardDerivations`混用。每一步使用上一步的列及登记单位，保留服务端计算的转换记录和`bound_input_rows_only`范围。原输入SHA256仍在执行前重新核验，不覆盖原文件。派生列不得复用原始列名或前面步骤曾生成的列名，即使该列在中间视图被丢弃。步骤失败返回`standard_transformation_failed`与`standardSteps[index]`，方便定向修正。
+
+分组`view.kind=group`以`labelField`为主维度、`groupBy`为最多两个附加维度，保留三个维度的原列，不拼接业务标签。`aggregation=sum`继续复用冻结事实的可加指标聚合；`mean`使用标准库`statistics.mean`；`weighted_mean`必须声明有登记单位的非负`weightField`，用标准库`Fraction`对输入浮点数精确计算乘积/和/比值后转回float，避免中间溢出、最小非零值提前归零或极小权重的有效贡献被丢弃。零总权重返回null。分组操作要求度量输入完整且有限；不能把缺失项默认为0。百分比只能求均值或加权平均，不允许求和；原百分数/小数尺度保持不变。均值或加权平均的业务标题应明确其含义，不能称为总额。
+
+`derivation`以`numerator`指定冻结/前步度量，时间运算必须给`labelField`，可用`groupBy`隔离最多三个业务维度：
+
+| kind | 行为与边界 |
+|---|---|
+| `yoy_percent` | 按同组去年同月匹配，支持不连续历史；没有去年同月或基数非正时为null，不拿相邻行替代。 |
+| `mom_percent` | 同组连续月环比；首月或缺失/非正基数为null。 |
+| `cumulative_sum` | 从绑定的首月累计，默认跨年连续；`reset=year`才按年重置。遇到未知值后保持未知，直到显式年度重置。不能把年中起始样本称为完整年初至今累计。 |
+| `rolling_sum` / `rolling_mean` | 必须声明`window`（1—60月）；默认完整有效窗口，早期/缺失窗口为null。`minPeriods`可显式减少最低有效样本数，计算只使用该窗口内已知值，不填零。 |
+
+除同比外，时间操作要求同组月份连续；所有时间操作拒绝同月重复观测和非有限值。累计/滚动求和不能用于百分比，百分比滚动均值保留原比例尺度。同行差额/比率也会传播缺失操作数。
+
+多来源历史窗口与展示窗口分开：`standardSourceLabels`在`standardSources`对齐阶段选共同输入窗口，须使用来源归一化后的标签并保留计算所需历史；有数据变换时，`standardLabels`只在计算后选展示窗口，避免先裁掉同比/滚动基数。仍不自动外连接、补齐或猜测缺失的来源月份；未使用变换的旧参数保持原有共同窗口行为。
+
+示例：按月与院区汇总→计算完成率→分院区滚动均值→透视成两条系列。
+
+```json
+{
+  "standardLabelField": "月份",
+  "standardValueFields": ["东院", "西院"],
+  "standardAxes": {"allowNulls": true},
+  "standardSteps": [
+    {"view": {"kind": "group", "labelField": "月份", "groupBy": ["院区"], "valueFields": ["收入", "预算"]}},
+    {"derivation": {"kind": "ratio_percent", "name": "完成率", "numerator": "收入", "denominator": "预算"}},
+    {"derivation": {"kind": "rolling_mean", "name": "平滑完成率", "numerator": "完成率", "labelField": "月份", "groupBy": ["院区"], "window": 3}},
+    {"view": {"kind": "pivot", "labelField": "月份", "seriesField": "院区", "seriesValues": ["东院", "西院"], "valueFields": ["平滑完成率"]}}
+  ]
+}
+```
+
+新增`--suite pipelines`，由`scripts/standard_visualization_pipeline_cases.py`提供独立预期：3个随机种子×3个量级×8类运算，另有6个异常回退案例。78场景中72个实际成图并逐值核对、6个预期回退；加权平均案例显式按月份排序后定向复验。原122基础及100扩展场景也重新运行，三组共300场景：218成图、77预检回退、2身份拒绝、2布局修复、1schema拒绝，全部符合各自预期。`--suite all`包含这300个场景，默认basic仍为原122个。
+
+本轮50项新增测试覆盖多维键碰撞、百分比尺度、零/非法权重、极端量级和次正规数、稀疏同比、分组隔离、累计缺失传播/年度重置、完整/显式部分滚动窗口、乱序换数据、流水线命名保护、步骤诊断、来源历史窗口及原始身份篡改；分批合计329项相关测试通过，3模块mypy、Ruff及diff检查通过。生成参数指令与Coding回退指令同步支持这些操作。仍为离线验证，线上模型自动规划与独立视觉模型未实测，尚未部署。
+
+剩余主要能力缺口：更多统计图形、堆叠双轴、断轴/显式刻度范围、大数据自动分页，以及真实线上自动命中与审美验收。流水线不提供任意表达式、隐式补值或未经声明的自动聚合。
+
 ## 逐图路由、诊断与复杂组合（2026-10-28）
 
 生产章节工作流使用`run_standard_chart_routes`。全部支持时仍执行一次标准脚本；混合计划或批量标准执行失败时，按图隔离预检与执行，只把不支持/验收失败的图交给Coding。组件脚本分别校验身份，最终组合脚本重新核验所有chart-input和组件SHA256、在独立命名空间执行，并重新走执行、看图、提交及当前回执核验。单图组件的旧回执不能代替最终回执。最终视觉诊断明确指向某张图时，允许一次只修复该图的Coding重试；无法定位的整体错误仍由原工作流处理。旧交互计划保留原兼容路线，不把JSON companion送进图片审查；没有新增Plotly能力。

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
+from scripts.standard_visualization_pipeline_cases import pipeline_cases
 from scripts.standard_visualization_stress_cases import extended_cases
 from smart_reporting.reporting.workflow.runtime.chart_inputs import (
     ChartInputFile,
@@ -25,6 +26,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     StandardChartDerivation,
     StandardChartPresentation,
     StandardChartSource,
+    StandardChartStep,
     StandardChartStyle,
     StandardChartView,
 )
@@ -36,7 +38,7 @@ MODELS = {'standard_canvas': StandardChartCanvas, 'standard_style': StandardChar
           'standard_presentation': StandardChartPresentation, 'standard_axes': StandardChartAxes,
           'standard_view': StandardChartView}
 LIST_MODELS = {'standard_annotations': StandardChartAnnotation, 'standard_sources': StandardChartSource,
-               'standard_derivations': StandardChartDerivation}
+               'standard_derivations': StandardChartDerivation, 'standard_steps': StandardChartStep}
 AUDITOR = '''import json, runpy, math, re
 from pathlib import Path
 import matplotlib
@@ -323,13 +325,15 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
-    parser.add_argument('--suite', choices=['basic', 'extended', 'all'], default='basic')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
-    cases = ([*cases_from_report(args.baseline), *synthetic_cases()] if args.suite != 'extended' else [])
-    if args.suite != 'basic':
+    cases = ([*cases_from_report(args.baseline), *synthetic_cases()] if args.suite in {'basic', 'all'} else [])
+    if args.suite in {'extended', 'all'}:
         cases.extend(extended_cases())
+    if args.suite in {'pipelines', 'all'}:
+        cases.extend(pipeline_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []

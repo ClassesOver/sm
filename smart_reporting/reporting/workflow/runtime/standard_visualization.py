@@ -24,7 +24,11 @@ from .standard_chart_presentation import (
     prepare_standard_presentation,
     valid_standard_metadata,
 )
-from .standard_chart_transform import transform_chart_document
+from .standard_chart_transform import (
+    StandardChartTransformationError,
+    apply_standard_chart_steps,
+    transform_chart_document,
+)
 
 
 @dataclass(frozen=True)
@@ -125,18 +129,30 @@ def _standard_visualization_script(
             selected = ('value',)
             form = 'bar'
         selections = getattr(chart, 'standard_sources', ())
+        view = getattr(chart, 'standard_view', None)
+        derivations = getattr(chart, 'standard_derivations', ())
+        steps = getattr(chart, 'standard_steps', ())
+        has_transform = view is not None or bool(derivations) or bool(steps)
+        source_labels = getattr(chart, 'standard_source_labels', ())
+        if source_labels and not selections:
+            _reject('standard_source_window_without_selection', 'standardSourceLabels', '输入窗口需要显式来源列选择。', '声明standardSources，或仅使用standardLabels选择最终展示窗口。')
         if len(entries) > 1 or selections:
             alignment = align_chart_sources(entries, inputs.files, selections,
-                                            selected_labels=getattr(chart, 'standard_labels', ()),
+                                            selected_labels=source_labels or (() if has_transform else getattr(chart, 'standard_labels', ())),
                                             allow_nulls=axes.allow_nulls)
             if alignment is None:
                 _reject('standard_source_alignment_failed', 'standardSources', '来源标签、单位、身份或来源使用范围不满足对齐要求。', '显式指定月份规范化、合计排除及共同窗口；检查重复标签、单位和所有绑定来源。')
             document, identities = alignment
             aligned[source.path] = (document, identities)
-        view = getattr(chart, 'standard_view', None)
-        derivations = getattr(chart, 'standard_derivations', ())
-        if view is not None or derivations:
-            document = transform_chart_document(document, view, derivations)
+        if steps and (view is not None or derivations):
+            _reject('standard_pipeline_order_ambiguous', 'standardSteps', '不能混用新流水线和旧视图/计算参数。', '将所有view/derivation按执行顺序放入standardSteps。')
+        if view is not None or derivations or steps:
+            try:
+                document = (apply_standard_chart_steps(document, steps) if steps else
+                            transform_chart_document(document, view, derivations))
+            except StandardChartTransformationError as error:
+                _reject('standard_transformation_failed', f'standardSteps[{error.step_index}]',
+                        error.reason, '检查该步的输入列、登记单位、分组维度及月份；按声明顺序修正，禁止补零或覆盖原字段。')
             dependencies = aligned.get(source.path, (None, [(source.path, source.sha256)]))[1]
             aligned[source.path] = (document, dependencies)
         columns, rows = document['columns'], document['rows']

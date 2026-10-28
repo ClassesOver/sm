@@ -126,7 +126,7 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
     "逐字使用 chartInputs[].path（或回退图的 factFile.path）、visualizationPlan.charts 和输出路径。",
     "standardChartPreflight是标准模板预检诊断；脚本尚不存在时这是首次生成任务，"
     "应结合完整计划和授权数据生成源码，不要假定已有脚本可读。",
-    "计划中的standardView/standardDerivations须从冻结输入按声明执行分组、透视或计算，"
+    "计划中的standardSteps或standardView/standardDerivations须从冻结输入按声明顺序执行分组、透视或计算，"
     "不得把预先算好的数值写死在脚本中；保留声明的范围、缺失值、显示单位和系列geometry。",
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[4:6],
     *_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS,
