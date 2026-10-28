@@ -674,6 +674,13 @@ class StandardChartCanvas(StrictModel):
         return self
 
 
+class StandardChartPagination(StrictModel):
+    page_size: int = Field(alias='pageSize', ge=1, le=60, strict=True,
+        description='每页冻结类别数；宿主展开为独立登记图，覆盖全部绑定类别，不截掉末页。')
+    max_pages: int = Field(default=20, alias='maxPages', ge=1, le=20, strict=True,
+        description='允许生成的最多页数；超限整图回退，不只保留前几页。')
+
+
 class ChartDraft(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
@@ -719,6 +726,8 @@ class ChartDraft(StrictModel):
         description='数值轴显示范围/刻度/格式，数值按显示单位填写；left/right/x/zoom/panels显式定位，默认不得裁切数据，缩小显示须outOfRange=annotate且说明超界。')
     standard_break: StandardChartAxisBreak | None = Field(default=None, alias='standardBreak',
         description='线性单值轴双区间断轴，显式省略区间并画断轴标记；保留完整数据，默认不隐藏省略区间或外界数据。支持纵向柱线/堆叠/范围带和barh横向分组柱图；不与standardDomains或多轴组合。')
+    standard_pagination: StandardChartPagination | None = Field(default=None, alias='standardPagination',
+        description='宽表单轴bar/barh按完整冻结类别顺序自动拆页；宿主生成每页独立身份、图片与报告引用，统一数值范围/系列颜色。不可在单图模板中忽略该参数；超限或不支持组合整图回退。')
     standard_canvas: StandardChartCanvas = Field(
         default_factory=StandardChartCanvas, alias='standardCanvas',
         description='统一画布：width/height单位英寸，dpi、自动/固定尺寸、布局、裁切、留白、换行、字号及图例位置。固定尺寸且crop=canvas时导出像素由尺寸乘DPI确定。',

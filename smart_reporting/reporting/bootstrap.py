@@ -126,6 +126,10 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
     "逐字使用 chartInputs[].path（或回退图的 factFile.path）、visualizationPlan.charts 和输出路径。",
     "standardChartPreflight是标准模板预检诊断；脚本尚不存在时这是首次生成任务，"
     "应结合完整计划和授权数据生成源码，不要假定已有脚本可读。",
+    "stacked-bar/stacked-total配合dual/rightFields时，左侧分项正负分离堆叠、右侧字段仅画折线，按各轴登记单位换算。"
+    "总额只对左侧分项求净和或读取已对账冻结总额，右侧指标和总额不能重复堆叠；缺失右轴值保留断点。",
+    "standardPagination由宿主原子展开为预算内的全部独立图页，每页保留完整原绑定、统一全表范围与系列颜色并标注页号。"
+    "未展开的分页计划不能被忽略或只交付前几页；不得用TopN冒充分页，不支持的形状明确回退。",
     "计划中的standardSteps或standardView/standardDerivations须从冻结输入按声明顺序执行分组、透视或计算，"
     "不得把预先算好的数值写死在脚本中；保留声明的范围、缺失值、显示单位和系列geometry。",
     "standardEncoding须按冻结列绘制真实数值X/Y、比例气泡面积或分类热力矩阵；颜色/面积不可被主题或高亮重写。"

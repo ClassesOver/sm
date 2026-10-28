@@ -3,6 +3,7 @@
 import math
 from typing import Any
 
+from .standard_chart_dual_stack import dual_stack_profiles
 from .standard_chart_encoding import fail
 from .standard_chart_statistics import waterfall_levels
 
@@ -17,6 +18,8 @@ def _values(document, index, factor, indexes=None):
 
 
 def _legacy_profiles(config, document, display):
+    if config[14].get("dual_stack"):
+        return dual_stack_profiles(config, document)
     _, _, _, _, form, label, fields, category, _, _, _, axes, metadata, total, policy = config
     rows, columns = document["rows"], document["columns"]
     names = policy["series_names"]

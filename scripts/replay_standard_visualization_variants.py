@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from scripts.standard_visualization_box_summary_cases import summary_cases
 from scripts.standard_visualization_break_cases import break_cases
 from scripts.standard_visualization_domain_cases import domain_cases
+from scripts.standard_visualization_dual_stack_cases import dual_stack_cases
 from scripts.standard_visualization_geometry_cases import geometry_cases
 from scripts.standard_visualization_horizontal_break_cases import horizontal_break_cases
 from scripts.standard_visualization_pipeline_cases import pipeline_cases
@@ -510,7 +511,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
-    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'breaks', 'summaries', 'horizontal-breaks', 'all'], default='basic')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'breaks', 'summaries', 'horizontal-breaks', 'dual-stack', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -531,6 +532,8 @@ def main():
         cases.extend(summary_cases())
     if args.suite in {'horizontal-breaks', 'all'}:
         cases.extend(horizontal_break_cases())
+    if args.suite in {'dual-stack', 'all'}:
+        cases.extend(dual_stack_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []

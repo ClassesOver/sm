@@ -21,6 +21,7 @@ from .standard_chart_alignment import align_chart_sources
 from .standard_chart_box_summary import prepare_box_summary, summary_statistics_script
 from .standard_chart_breaks import BREAK_DISPATCH, BREAK_SCRIPT, prepare_standard_break
 from .standard_chart_domains import DOMAIN_SCRIPT, prepare_standard_domains
+from .standard_chart_dual_stack import DUAL_STACK_DISPATCH, DUAL_STACK_SCRIPT, prepare_dual_stack
 from .standard_chart_encoding import (
     ENCODING_SCRIPT,
     StandardChartEncodingError,
@@ -122,6 +123,8 @@ def _standard_visualization_script(
     auxiliary = {}
     displays = {}
     for chart in plan.charts:
+        if getattr(chart, 'standard_pagination', None) is not None:
+            _reject('standard_pagination_not_expanded', 'standardPagination', '分页计划须先在宿主展开为独立图表。', '先物化并展开全部分页，再逐图执行标准模板。')
         canvas = getattr(chart, 'standard_canvas', StandardChartCanvas())
         style = getattr(chart, 'standard_style', StandardChartStyle())
         presentation = getattr(chart, 'standard_presentation', StandardChartPresentation())
@@ -289,7 +292,8 @@ def _standard_visualization_script(
             values = list(selected)
         if not 1 <= len(values) <= 8 or (category and (label != 'period' or len(values) != 1)):
             _reject('standard_series_shape_unsupported', 'standardValueFields/standardView', '系列数量或长表结构超出标准范围。', '显式选取最多8个度量；用pivot转为宽表或group汇总后展示。')
-        nullable = axes.allow_nulls and form in {'line', 'bar', 'barh'} and not category
+        dual_stack = axes.mode == 'dual' and form in {'stacked-bar', 'stacked-total'}
+        nullable = axes.allow_nulls and (form in {'line', 'bar', 'barh'} or dual_stack) and not category
         if any(not (nullable and row[columns.index(column)] is None) and (
                not isinstance(row[columns.index(column)], (int, float))
                or isinstance(row[columns.index(column)], bool)
@@ -305,7 +309,7 @@ def _standard_visualization_script(
             _reject('standard_metadata_invalid', 'columnMeta', '度量单位或百分比尺度元数据类型无效。', '从对应冻结事实重新物化元数据，不从标题猜测单位。')
         mixed = any(item.geometry != 'auto' for item in style.series)
         advanced = axes.mode != 'single' or axes.scale != 'linear' or mixed
-        if mixed and form not in {'line', 'bar'}:
+        if mixed and form not in {'line', 'bar'} and not dual_stack:
             return None
         if axes.panel_limit is not None and (axes.mode != 'panels' or form != 'barh'):
             return None
@@ -338,7 +342,7 @@ def _standard_visualization_script(
             displays[source.path] = (axis_factors[0], axes.left_display_unit)
         auxiliary_fields = tuple(getattr(chart, 'standard_label_fields', ()))
         if auxiliary_fields:
-            if (advanced or len(auxiliary_fields) != len(set(auxiliary_fields))
+            if (advanced and not dual_stack or len(auxiliary_fields) != len(set(auxiliary_fields))
                     or not set(auxiliary_fields).issubset(columns)):
                 return None
             for field in auxiliary_fields:
@@ -356,7 +360,7 @@ def _standard_visualization_script(
         if advanced:
             if axes.zero_baseline and axes.scale == 'log':
                 return None
-            if (category or form not in {'line', 'bar', 'barh'}
+            if (category or form not in {'line', 'bar', 'barh'} and not dual_stack
                     or form == 'barh' and axes.mode != 'panels'
                     or any(not meta.get('unit') for meta in metas)):
                 return None
@@ -408,12 +412,12 @@ def _standard_visualization_script(
             _reject('standard_labels_duplicate', 'standardLabelField/standardView', '标签重复且没有可用的长表分类。', '显式用group汇总或pivot透视；不要任意丢弃重复行。')
         if len(set(labels)) > 60:
             _reject('standard_label_capacity_exceeded', 'standardLabels/standardPresentation.order', '单图超过60个标签。', '显式选择业务窗口、TopN或汇总视图；不得静默丢弃数据。')
-        if form in {'stacked-bar', 'stacked-area', 'stacked-total'} and any(
+        if form in {'stacked-bar', 'stacked-area', 'stacked-total'} and not dual_stack and any(
             row[columns.index(column)] < 0 for row in rows for column in values
         ):
             _reject('standard_negative_stack_unsupported', 'visualForm', '标准堆叠图暂不支持负数构成。', '采用分组柱图展示正负值，或用Coding实现发散堆叠。')
         total_field = getattr(chart, 'standard_total_field', None)
-        if form in {'stacked-bar', 'stacked-area', 'stacked-total'}:
+        if form in {'stacked-bar', 'stacked-area', 'stacked-total'} and not dual_stack:
             try:
                 totals_to_check = (
                     [math.fsum(row[columns.index(values[0])] for row in rows if row[label_index] == name)
@@ -424,7 +428,7 @@ def _standard_visualization_script(
                 return None
             if any(not math.isfinite(value) for value in totals_to_check):
                 return None
-        if total_field is not None:
+        if total_field is not None and not dual_stack:
             if form != 'stacked-total' or category or total_field not in values or len(values) < 2:
                 return None
             if any(not math.isclose(
@@ -512,10 +516,15 @@ def _standard_visualization_script(
                 prepared['source_note'] = '\n'.join([*([prepared['source_note']] if prepared['source_note'] else []), *notes])
         except StandardChartEncodingError as error:
             _reject(error.code, error.parameter, str(error), '仅绑定同单位、同期间的冻结上下界；不自动估计范围。')
-        configs.append((source.path, source.sha256, chart.source_path, chart.title,
+        config = (source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
-                        axes.model_dump(), metas, total_field, canvas_policy))
+                        axes.model_dump(), metas, total_field, canvas_policy)
+        try:
+            prepare_dual_stack(chart, config, document)
+        except StandardChartEncodingError as error:
+            _reject(error.code, error.parameter, str(error), '左侧仅用可加且完整的分项；右侧字段独立换算并排除于左侧总额。')
+        configs.append(config)
     for chart, config in zip(plan.charts, configs, strict=True):
         if getattr(chart, 'standard_domains', None) is None and getattr(chart, 'standard_break', None) is None:
             continue
@@ -532,6 +541,7 @@ def _standard_visualization_script(
     statistics_script = summary_statistics_script(STATISTICS_SCRIPT) if summary_profiles else STATISTICS_SCRIPT
     has_domains = any('domains' in config[14] for config in configs)
     has_breaks = any('broken_axis' in config[14] for config in configs)
+    has_dual_stacks = any('dual_stack' in config[14] for config in configs)
     has_horizontal_breaks = any('broken_axis' in config[14] and config[4] == 'barh' for config in configs)
     break_script = BREAK_SCRIPT
     break_dispatch = BREAK_DISPATCH
@@ -551,6 +561,9 @@ def _standard_visualization_script(
         layout = layout.replace('    if policy["layout"] == "tight":',
                                 '    if policy.get("broken_axis"):\n        layout_standard_break(fig, policy)\n    elif policy["layout"] == "tight":')
     body = _BODY.replace('__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else '')
+    if has_dual_stacks:
+        boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
+        body = body.replace(boundary, DUAL_STACK_DISPATCH + boundary)
     if has_breaks:
         boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
         body = body.replace(boundary, break_dispatch + boundary)
@@ -558,6 +571,7 @@ def _standard_visualization_script(
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + PRESENTATION_SCRIPT + layout + ENCODING_SCRIPT + _ADVANCED
             + (statistics_script if has_statistics else '')
+            + (DUAL_STACK_SCRIPT if has_dual_stacks else '')
             + (break_script if has_breaks else '')
             + (DOMAIN_SCRIPT if has_domains else '')
             + body)

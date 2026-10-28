@@ -162,6 +162,7 @@ from .code_generation import (
 from .datasets import _profile_coverage_instruction_projection
 from .phase_models import ChartDraft, VisualizationPlanDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow, execute_analysis_items
+from .standard_chart_pagination import prepare_standard_paginated_plan
 from .standard_supplemental import (
     StandardSupplementalRequest,
     StandardSupplementalSpec,
@@ -172,6 +173,7 @@ from .standard_supplemental import (
 )
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
+    _validate_visualization_plan_bindings,
     _visualization_thinking_complexity,
 )
 from .visualization_section_workflow import (
@@ -1221,19 +1223,28 @@ class RuntimeAnalysisMixin:
                                 "report_structured_output_invalid",
                                 "可视化 planner 返回了错误的 benchmark 输出类型。",
                             )
+
+                        async def finalize_plan(candidate: VisualizationPlanDraft) -> VisualizationPlanDraft:
+                            scoped = _section_scoped_chart_ids(
+                                _limit_requested_charts(candidate, report_goal, len(section.analysis_ids),
+                                                        max_charts=context.get("max_charts")), section_code)
+                            scoped = _validate_visualization_plan_bindings(scoped, request)
+                            limit = _requested_chart_limit(report_goal, len(section.analysis_ids))
+                            if context.get("max_charts") is not None:
+                                limit = min(limit, context["max_charts"]) if limit is not None else context["max_charts"]
+                            binding = task_context.dependencies.get("AgentOS 任务执行") if isinstance(task_context.dependencies, Mapping) else None
+                            pagination_task_id = (binding.get("externalRunId") if isinstance(binding, Mapping) else None) or task_id
+                            return await prepare_standard_paginated_plan(scoped, facts, self._run_workspace(run_context),
+                                thread_id=str(pagination_task_id), output_root=_visualization_chart_input_root(root), max_charts=limit)
+
                         if visualization_plan_adapter is not None:
-                            return _section_scoped_chart_ids(
-                                _limit_requested_charts(visualization_plan_adapter(output, request),
-                                                        report_goal, len(section.analysis_ids), max_charts=context.get("max_charts")), section_code
-                            )
+                            return await finalize_plan(visualization_plan_adapter(output, request))
                         if not isinstance(output, VisualizationPlanDraft):
                             raise ReportingError(
                                 "report_structured_output_invalid",
                                 "可视化 planner 返回了错误的结构化结果类型。",
                             )
-                        return _section_scoped_chart_ids(
-                            _limit_requested_charts(output, report_goal, len(section.analysis_ids), max_charts=context.get("max_charts")), section_code
-                        )
+                        return await finalize_plan(output)
 
                     def code_runner() -> ReportingCodeGenerationRunner:
                         nonlocal code_runner_instance

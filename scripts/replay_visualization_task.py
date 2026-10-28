@@ -806,6 +806,29 @@ async def apply_replay_chart_inputs(
     )
     if materialized is None or not materialized.files:
         return False
+    if any(chart.standard_pagination for chart in plan.charts):
+        from smart_reporting.reporting.workflow.runtime.standard_chart_pagination import (
+            expand_standard_pagination,
+        )
+
+        original_plan = plan
+        plan = expand_standard_pagination(plan, materialized)
+        if plan != original_plan:
+            # Frozen planner identity is checked before host-derived pages are added.
+            # Every derived page receives full input materialization and explicit output authority.
+            facts["standardPaginationExpansion"] = {
+                "originalCharts": len(original_plan.charts), "expandedCharts": len(plan.charts),
+                "originalPlanSha256": hashlib.sha256(original_plan.model_dump_json(by_alias=True).encode()).hexdigest(),
+            }
+            facts["visualizationPlan"] = plan.model_dump(mode="json", by_alias=True)
+            page_paths = {chart.source_path for chart in plan.charts}
+            task["authorized_write_paths"] = sorted(set(task["authorized_write_paths"]) | page_paths)
+            task["declared_output_paths"] = sorted(set(task["declared_output_paths"]) | page_paths)
+            materialized = await prepare_chart_inputs(
+                plan, raw_facts, workspace, thread_id="replay", output_root=f"{script_parent}-chart-inputs",
+            )
+            if materialized is None or not materialized.files:
+                return False
     fallback_facts = (
         visualization_coding_facts(
             raw_facts, plan=fallback_plan(plan, materialized.fallback_chart_ids)
@@ -1655,6 +1678,27 @@ async def main(
                     result_payload["plannerRequestMetrics"] = (
                         replay_model_request_metrics(planner_model)
                     )
+            if standard_routes:
+                from scripts.standard_visualization_replay_evidence import (
+                    collect_standard_replay_evidence,
+                )
+
+                try:
+                    result_payload["standardReplayEvidence"] = await collect_standard_replay_evidence(
+                        plan=plan, inputs=inputs, result=result, workspace=workspace,
+                        task_id=task.task_id,
+                        planner_origin=("coding_only" if coding_only_link is not None else
+                                        "live_model" if planner_model is not None else "persisted_plan"),
+                        planner_request_metrics=replay_model_request_metrics(planner_model),
+                    )
+                except Exception as evidence_error:
+                    # Evidence collection cannot turn actual generated artifacts into a failed export.
+                    result_payload["standardReplayEvidence"] = {
+                        "schemaVersion": 1, "status": "unavailable",
+                        "onlineEndToEndValidated": False,
+                        "onlineAcceptedStandardFraction": None,
+                        "diagnostic": {"errorType": type(evidence_error).__name__},
+                    }
             write_replay_result(output_path, result_payload)
             return 0
         except Exception as error:
@@ -1802,14 +1846,12 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     if args.check_standard_readiness:
-        checks = {key: bool(os.environ.get(key)) for key in ('OPENAI_API_KEY', 'OPENAI_BASE_URL')}
-        readiness = {'status': 'configured_not_probed' if all(checks.values()) else 'blocked_missing_model_configuration',
-                     'configurationPresence': checks, 'modelRequestsExecuted': 0,
-                     'onlinePlannerValidated': False, 'codingRepairValidated': False,
-                     'independentVisualReviewValidated': False}
+        from scripts.standard_visualization_replay_evidence import standard_replay_readiness
+
+        readiness = standard_replay_readiness(os.environ)
         write_replay_result(args.output, readiness)
         print(json.dumps(readiness, ensure_ascii=False))
-        raise SystemExit(0 if all(checks.values()) else 2)
+        raise SystemExit(0 if readiness['status'] == 'configured_not_probed' else 2)
     if not any((args.run_id, args.payload, args.benchmark_bundle, args.planner_request, args.trace_id)):
         parser.error('必须提供回放来源；仅检查模型配置时使用--check-standard-readiness。')
     if args.validate_only and args.payload is None and args.benchmark_bundle is None:
