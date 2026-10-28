@@ -81,3 +81,25 @@ ChartDraft.standardAnnotations 最多10条，支持 values（系列数值）、p
 可复现入口：`PYTHONPATH=. python scripts/replay_standard_visualization.py ARCHIVE --output OUTPUT`。Python 3.14以下读取zstd ZIP需要zstandard。报告保存在OUTPUT/replay.json，包含逐图覆盖、明确列选择、输入摘要与实际PNG路径；不向线上发送请求。
 
 PR146 审查定向回归168项通过；标准出图及工作流218项通过，另补5项执行门禁测试；发布非阻断契约86项通过。实际模板执行验证三种PNG输出及输入篡改拒绝。三个运行时模块mypy、Ruff和diff检查通过。尚未进行生产模型端到端报告验收。
+# 模型可组合的标准表现参数
+
+`ChartDraft.standardStyle` 已加入模型输出 schema，并在可视化规划指令中要求根据阅读目标主动调参。参数可与 `standardCanvas`、`standardAxes`、多来源和冻结标注组合；不更改输入字节、数据数值、单位或期间。
+
+```json
+{
+  "standardCanvas": {"sizeMode":"fixed","width":12,"height":7,"dpi":150,"legendPosition":"outside"},
+  "standardStyle": {
+    "palette":"Dark2","background":"#ffffff","grid":"y","gridAlpha":0.2,
+    "titleFontSize":16,"axisFontSize":11,"labelRotation":0,
+    "legendColumns":2,"legendFontSize":10,"legendLocation":"upper left",
+    "decimals":1,"annotationFontSize":10,"annotationOffsetX":8,"annotationOffsetY":16,
+    "valueMargin":0.15,
+    "series":[{"series":"actual","color":"#0072b2","lineStyle":"--","lineWidth":3,"marker":"s","markerSize":6,"alpha":0.9,"hatch":"//"}]
+  },
+  "standardAxes":{"mode":"zoom","zoomStart":"2025-01","zoomEnd":"2025-03","zoomBounds":[0.08,0.5,0.4,0.35]}
+}
+```
+
+示例中的系列名、期间必须替换为真实绑定列及冻结标签。`series` 最多8项且名称唯一；未知系列回退Coding，避免模型以为样式已应用。颜色限六位HEX；线型、点型、纹理、调色板为枚举，数值参数有范围且不能为NaN/Inf。`zoomBounds` 是主图相对坐标 `[left,bottom,width,height]`，必须完整处于主图内。主图和局部图复用系列颜色/线型，双轴默认左右图例；外置图例由画布参数控制。柱纹理仅作用于柱、线型点型仅作用于线，精度仅控制标注文案。值轴留白不改变局部放大的冻结范围。
+
+复杂需求通过组合参数表达，标准路线仍不覆盖任意图形。标注避让目前检查文字之间的碰撞，不能保证避开局部图、曲线或所有其他元素；模型可调整局部图位置、画布、标注偏移和密度，并继续经独立视觉检查。无法表达或视觉检查失败时沿用Coding修复。

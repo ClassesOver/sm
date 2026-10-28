@@ -6,7 +6,12 @@ import math
 
 from ...units import unit_conversion_scale
 from .chart_inputs import ChartInputMaterialization
-from .phase_models import StandardChartAxes, StandardChartCanvas, VisualizationPlanDraft
+from .phase_models import (
+    StandardChartAxes,
+    StandardChartCanvas,
+    StandardChartStyle,
+    VisualizationPlanDraft,
+)
 from .standard_chart_alignment import align_chart_sources
 
 
@@ -21,6 +26,7 @@ def standard_visualization_script(
     displays = {}
     for chart in plan.charts:
         canvas = getattr(chart, 'standard_canvas', StandardChartCanvas())
+        style = getattr(chart, 'standard_style', StandardChartStyle())
         if chart.renderer != 'matplotlib' or chart.interactive_path:
             return None
         form = {'line': 'line', '折线图': 'line', '多系列折线图': 'line',
@@ -240,16 +246,82 @@ def standard_visualization_script(
         if sum(len(annotation_labels) if item[0] in {'values', 'peak', 'trough'} else 1
                for item in annotations) > 60:
             return None
+        if any(item.series not in annotation_names for item in style.series):
+            return None
+        canvas_policy = canvas.model_dump()
+        canvas_policy['style'] = style.model_dump()
         configs.append((source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
-                        axes.model_dump(), metas, total_field, canvas.model_dump()))
+                        axes.model_dump(), metas, total_field, canvas_policy))
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + _LAYOUT + _ADVANCED + _BODY)
 
 
-_LAYOUT = '''def create_standard_canvas(policy, labels, form, panels=1):
+_LAYOUT = '''def apply_standard_style(fig, policy):
+    from matplotlib.container import BarContainer
+    from matplotlib.text import Annotation
+    import matplotlib.pyplot as plt
+    style = policy["style"]
+    overrides = {item["series"]: item for item in style["series"]}
+    names = []
+    all_axes = list(fig.axes)
+    for ax in fig.axes:
+        all_axes.extend(ax.child_axes)
+    for ax in all_axes:
+        for artist in [*ax.lines, *ax.containers, *ax.collections]:
+            name = artist.get_label().split(" · ")[0].split("（")[0]
+            if name and not name.startswith("_") and name not in names:
+                names.append(name)
+    palette = plt.get_cmap(style["palette"])
+    fig.set_facecolor(style["background"])
+    for ax in all_axes:
+        ax.set_facecolor(style["background"])
+        for artist in [*ax.lines, *ax.containers, *ax.collections]:
+            name = artist.get_label().split(" · ")[0].split("（")[0]
+            if name not in names or name.startswith("_"):
+                continue
+            item = overrides.get(name, {})
+            color = item.get("color") or palette(names.index(name) / max(1, len(names) - 1) if palette.N > 20 else names.index(name))
+            targets = artist.patches if isinstance(artist, BarContainer) else [artist]
+            for target in targets:
+                target.set_color(color)
+                target.set_alpha(item.get("alpha", 1))
+                if isinstance(artist, BarContainer):
+                    target.set_hatch(item.get("hatch", ""))
+                    target.set_edgecolor(color)
+                elif artist in ax.lines:
+                    target.set_linewidth(item.get("line_width", 2))
+                    target.set_linestyle(item.get("line_style", "-"))
+                    target.set_marker(item.get("marker", "o"))
+                    target.set_markersize(item.get("marker_size", 5))
+        ax.grid(False)
+        if style["grid"] != "none":
+            ax.grid(axis=style["grid"], alpha=style["grid_alpha"], linestyle="--")
+        ax.set_axisbelow(True)
+        ax.title.set_fontsize(style["title_font_size"])
+        ax.xaxis.label.set_fontsize(style["axis_font_size"])
+        ax.yaxis.label.set_fontsize(style["axis_font_size"])
+        for tick in ax.get_xticklabels():
+            tick.set_rotation(style["label_rotation"])
+            tick.set_ha("right" if style["label_rotation"] > 0 else "left" if style["label_rotation"] < 0 else "center")
+        ax.margins(**({"x": style["value_margin"]} if policy["horizontal"] else {"y": style["value_margin"]}))
+        if ax.get_legend() is not None:
+            location = style["legend_location"]
+            if location == "auto":
+                location = ("upper left" if ax is fig.axes[0] else "upper right") if len(fig.axes) > 1 else "best"
+            ax.legend(frameon=False, loc=location,
+                      ncols=style["legend_columns"], fontsize=style["legend_font_size"])
+        for text in ax.texts:
+            text.set_fontsize(style["annotation_font_size"])
+            if isinstance(text, Annotation):
+                text.set_position((style["annotation_offset_x"], style["annotation_offset_y"]))
+    if fig._suptitle is not None:
+        fig._suptitle.set_fontsize(style["title_font_size"])
+
+def create_standard_canvas(policy, labels, form, panels=1):
+    policy["horizontal"] = form == "barh"
     width, height = policy["width"], policy["height"]
     if policy["size_mode"] == "auto":
         if form == "barh":
@@ -270,6 +342,7 @@ def save_standard_canvas(fig, output_path, policy):
 def finish_standard_layout(fig, policy):
     import textwrap
     from matplotlib.text import Annotation
+    apply_standard_style(fig, policy)
     for ax in fig.axes:
         for axis, ticks, setter in ((ax.xaxis, ax.get_xticks(), ax.set_xticks),
                                     (ax.yaxis, ax.get_yticks(), ax.set_yticks)):
@@ -313,6 +386,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
     import math
     import matplotlib.pyplot as plt
     mode = policy["mode"]
+    precision = canvas["style"]["decimals"]
     series = [[value * (100 if meta.get("unit") == "%" and meta.get("isPercent") is False else 1)
                for value in values] for values, meta in zip(raw_series, metadata, strict=True)]
     positions = list(range(len(labels)))
@@ -359,7 +433,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         unit = metadata[series_index]["unit"]
         if kind == "reference":
             target.axhline(values[first], color="#b45309", linestyle="--")
-            target.text(.01, .98 - number * .05, f"参考 {labels[first]}: {values[first]:,.2f}{unit}",
+            target.text(.01, .98 - number * .05, f"参考 {labels[first]}: {values[first]:,.{precision}f}{unit}",
                         transform=target.transAxes, va="top", fontsize=8)
             continue
         indexes = ([first] if kind == "point" else
@@ -371,22 +445,22 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
                 members = [i for i, item in enumerate(targets) if item is target]
                 width = .8 / len(members)
                 coordinate = index - .4 + width / 2 + members.index(series_index) * width
-            target.annotate(f"{names[series_index]}: {values[index]:,.2f}{unit}",
+            target.annotate(f"{names[series_index]}: {values[index]:,.{precision}f}{unit}",
                             (coordinate, values[index]), xytext=(6, 8 + number * 6),
                             textcoords="offset points", fontsize=8,
                             arrowprops={"arrowstyle": "-"})
     if mode == "zoom":
         first = labels.index(policy["zoom_start"])
         last = labels.index(policy["zoom_end"])
-        inset = axes[0].inset_axes([.56, .5, .4, .4])
+        inset = axes[0].inset_axes(policy["zoom_bounds"])
         local_values = []
         for index, values in enumerate(series):
             if form == "bar":
                 width = .8 / len(series)
                 offsets = [position - .4 + width / 2 + index * width for position in positions]
-                inset.bar(offsets, values, width=width, color=colors(index))
+                inset.bar(offsets, values, width=width, color=colors(index), label=names[index])
             else:
-                inset.plot(positions, values, marker="o", color=colors(index))
+                inset.plot(positions, values, marker="o", color=colors(index), label=names[index])
             local_values.extend(values[first:last + 1])
         low, high = min(local_values), max(local_values)
         padding = (high - low) * .1 or abs(high) * .1 or 1
@@ -416,6 +490,7 @@ import matplotlib.pyplot as plt
 plt.rcParams["font.sans-serif"] = ["Noto Sans CJK SC", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent, annotations, axes_policy, metadata, total_field, canvas in CONFIGS:
+    precision = canvas["style"]["decimals"]
     with open(input_path, "rb") as handle:
         raw = handle.read()
     if hashlib.sha256(raw).hexdigest() != digest:
@@ -496,7 +571,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
             draw = ax.axvline if form == "barh" else ax.axhline
             draw(values[first], linestyle="--", color="#b45309", alpha=0.8)
             ax.text(0.01, 0.98 - annotation_index * 0.05,
-                    f"参考 {labels[first]} · {names[series_index]}: {values[first]:,.2f}{unit or ''}",
+                    f"参考 {labels[first]} · {names[series_index]}: {values[first]:,.{precision}f}{unit or ''}",
                     transform=ax.transAxes, va="top", fontsize=8)
             continue
         indexes = ([first] if kind == "point" else
@@ -523,9 +598,9 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
                 auxiliary_value = matching[0][columns.index(field)]
                 if meta["unit"] == "%" and meta.get("isPercent") is False:
                     auxiliary_value *= 100
-                auxiliary_text.append(f"{field}: {auxiliary_value:,.2f}{meta['unit']}")
+                auxiliary_text.append(f"{field}: {auxiliary_value:,.{precision}f}{meta['unit']}")
             suffix = " · " + " / ".join(auxiliary_text) if auxiliary_text else ""
-            ax.annotate(f"{prefix}{value:,.2f}{unit or ''}{suffix}", xy,
+            ax.annotate(f"{prefix}{value:,.{precision}f}{unit or ''}{suffix}", xy,
                         xytext=(8, 8 + annotation_index * 8), textcoords="offset points",
                         fontsize=8, arrowprops={"arrowstyle": "-", "color": "#64748b"})
     ax.set_title(title)

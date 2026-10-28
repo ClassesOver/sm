@@ -274,6 +274,19 @@ class StandardChartAxes(StrictModel):
     right_fields: tuple[str, ...] = Field(default=(), alias='rightFields', max_length=8)
     zoom_start: str | None = Field(default=None, alias='zoomStart', max_length=200)
     zoom_end: str | None = Field(default=None, alias='zoomEnd', max_length=200)
+    zoom_bounds: tuple[
+        Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
+        Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
+        Annotated[float, Field(ge=.15, le=.8, allow_inf_nan=False)],
+        Annotated[float, Field(ge=.15, le=.8, allow_inf_nan=False)],
+    ] = Field(default=(.56, .5, .4, .4), alias='zoomBounds', description='局部图在主图内的相对位置与尺寸[left,bottom,width,height]，可调整以避开重点标注。')
+
+    @model_validator(mode='after')
+    def validate_zoom_bounds(self) -> StandardChartAxes:
+        left, bottom, width, height = self.zoom_bounds
+        if left + width > 1 or bottom + height > 1:
+            raise ValueError('局部放大画布须位于主图内')
+        return self
 
 
 class StandardChartSource(StrictModel):
@@ -283,6 +296,42 @@ class StandardChartSource(StrictModel):
     series_name: str = Field(alias='seriesName', min_length=1, max_length=200)
     category_field: str | None = Field(default=None, alias='categoryField', max_length=200)
     category_value: str | None = Field(default=None, alias='categoryValue', max_length=200)
+
+
+class StandardChartSeriesStyle(StrictModel):
+    series: str = Field(min_length=1, max_length=200)
+    color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
+    line_style: Literal['-', '--', '-.', ':'] = Field(default='-', alias='lineStyle')
+    line_width: float = Field(default=2, alias='lineWidth', ge=.5, le=6, allow_inf_nan=False)
+    marker: Literal['o', 's', '^', 'D', 'x', '.', 'none'] = 'o'
+    marker_size: float = Field(default=5, alias='markerSize', ge=1, le=12, allow_inf_nan=False)
+    alpha: float = Field(default=1, ge=.2, le=1, allow_inf_nan=False)
+    hatch: Literal['', '/', '//', '\\', 'x', '.', '+', '-'] = ''
+
+
+class StandardChartStyle(StrictModel):
+    palette: Literal['tab10', 'Set2', 'Dark2', 'Paired', 'viridis', 'cividis'] = 'tab10'
+    series: tuple[StandardChartSeriesStyle, ...] = Field(default=(), max_length=8)
+    background: str = Field(default='#ffffff', pattern=r'^#[0-9a-fA-F]{6}$')
+    grid: Literal['none', 'x', 'y', 'both'] = 'y'
+    grid_alpha: float = Field(default=.2, alias='gridAlpha', ge=0, le=.8, allow_inf_nan=False)
+    title_font_size: int = Field(default=14, alias='titleFontSize', ge=10, le=24)
+    axis_font_size: int = Field(default=10, alias='axisFontSize', ge=8, le=18)
+    label_rotation: int = Field(default=45, alias='labelRotation', ge=-90, le=90)
+    legend_columns: int = Field(default=1, alias='legendColumns', ge=1, le=8)
+    legend_font_size: int = Field(default=9, alias='legendFontSize', ge=8, le=16)
+    legend_location: Literal['auto', 'best', 'upper left', 'upper right', 'lower left', 'lower right', 'upper center', 'lower center'] = Field(default='auto', alias='legendLocation')
+    decimals: int = Field(default=2, ge=0, le=6)
+    annotation_font_size: int = Field(default=8, alias='annotationFontSize', ge=8, le=16)
+    annotation_offset_x: int = Field(default=8, alias='annotationOffsetX', ge=-120, le=120)
+    annotation_offset_y: int = Field(default=8, alias='annotationOffsetY', ge=-120, le=120)
+    value_margin: float = Field(default=.1, alias='valueMargin', ge=0, le=.5, allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def unique_series(self) -> StandardChartStyle:
+        if len({item.series for item in self.series}) != len(self.series):
+            raise ValueError('系列样式名称不能重复')
+        return self
 
 
 class StandardChartCanvas(StrictModel):
@@ -352,6 +401,10 @@ class ChartDraft(StrictModel):
     standard_canvas: StandardChartCanvas = Field(
         default_factory=StandardChartCanvas, alias='standardCanvas',
         description='统一画布：width/height单位英寸，dpi、自动/固定尺寸、布局、裁切、留白、换行、字号及图例位置。固定尺寸且crop=canvas时导出像素由尺寸乘DPI确定。',
+    )
+    standard_style: StandardChartStyle = Field(
+        default_factory=StandardChartStyle, alias='standardStyle',
+        description='可自由组合的标准表现参数：调色板、按冻结系列名称设置颜色/线型/线宽/点型/透明度/柱纹理、网格、字号、标签旋转、图例列数与位置、数值精度、标注偏移和值轴留白；不改变冻结数据。可与画布、双轴、分面、局部放大和标注组合。超出标准能力使用Coding路线。',
     )
     standard_sources: tuple[StandardChartSource, ...] = Field(
         default=(), alias='standardSources', max_length=8,

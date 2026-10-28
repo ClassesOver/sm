@@ -108,6 +108,14 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
 REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
     "图表计划、脚本生成、执行、检查和提交均由固定 Workflow 编排。",
     "结构化生成器只返回 VisualizationPlanDraft，不返回 Python 源码或工作区操作。",
+    (
+        "优先组合标准图参数满足业务需求：standardSources绑定多来源，standardValueFields选择系列，"
+        "standardAxes选择双轴、分面、对数或局部放大，standardAnnotations绑定冻结点值和区间，"
+        "standardCanvas控制尺寸、分辨率和布局，standardStyle控制配色、逐系列线型/点型/柱纹理、"
+        "网格、图例、字号、精度和标注偏移。按数据密度与阅读目标主动调整参数，不必只使用默认值。"
+        "系列名称和标签必须来自绑定数据，显示精度不改变底层数值；不要用自编数值或文案补造事实。"
+        "标准参数无法表达的复杂需求由Coding路径实现，并保留独立视觉检查。"
+    ),
     "Coding Agent 首次只提交完整 Python 源码；修复时由 Workflow 先读取签发脚本，再启动 fresh Agent 提交完整修复源码，patch 由 Workflow 构造。",
 ]
 

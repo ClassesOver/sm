@@ -521,6 +521,110 @@ def test_standard_template_executes_and_rejects_changed_input(tmp_path, form):
     assert b'identity changed' in completed.stderr
 
 
+@pytest.mark.parametrize('form,mode', [
+    ('line', 'single'), ('bar', 'single'), ('barh', 'single'),
+    ('stacked-bar', 'single'), ('stacked-area', 'single'),
+    ('line', 'dual'), ('bar', 'panels'), ('line', 'zoom'),
+])
+def test_model_can_combine_style_with_complex_layout_without_changing_values(tmp_path, monkeypatch, form, mode):
+    import matplotlib.colors as colors
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import (
+        StandardChartAnnotation,
+        StandardChartAxes,
+        StandardChartStyle,
+    )
+
+    plan, document = complex_fixture(form)
+    chart = plan.charts[0]
+    chart.standard_axes = StandardChartAxes(mode=mode, rightFields=['budget'] if mode == 'dual' else [],
+                                           zoomBounds=[.08, .5, .4, .35],
+                                           zoomStart='2025-01' if mode == 'zoom' else None,
+                                           zoomEnd='2025-02' if mode == 'zoom' else None)
+    chart.standard_annotations = (StandardChartAnnotation(kind='peak', series='actual'),)
+    chart.standard_style = StandardChartStyle.model_validate({
+        'palette': 'cividis', 'background': '#fafafa', 'grid': 'both',
+        'labelRotation': 0, 'legendColumns': 2, 'decimals': 0,
+        'annotationOffsetX': 15, 'annotationOffsetY': 20, 'annotationFontSize': 12,
+        'titleFontSize': 18, 'series': [
+            {'series': 'actual', 'color': '#cc3311', 'lineStyle': '--',
+             'lineWidth': 3, 'marker': 's', 'alpha': .7, 'hatch': '//'},
+        ],
+    })
+    inputs = materialization(document)
+    original = inputs.files[0].content
+    (tmp_path / 'input.json').write_bytes(original)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    saved = []
+    savefig = Figure.savefig
+
+    def capture_savefig(figure, *args, **kwargs):
+        saved.append(figure)
+        return savefig(figure, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', capture_savefig)
+    try:
+        script = standard_visualization_script(plan, inputs)
+        assert script is not None
+        exec(script, {})
+        fig = saved[-1]
+        ax = fig.axes[0]
+        assert colors.to_hex(fig.get_facecolor()) == '#fafafa'
+        assert fig.axes[-1].get_xticklabels()[0].get_rotation() == 0
+        assert ax.texts[0].get_fontsize() == 12
+        assert ax.texts[0].get_position() == (15, 20)
+        assert '30元' in ax.texts[0].get_text()
+        if form == 'line':
+            line = ax.lines[0]
+            assert list(line.get_ydata()) == [10, 30]
+            assert colors.to_hex(line.get_color()) == '#cc3311'
+            assert line.get_linestyle() == '--'
+            assert line.get_marker() == 's'
+            assert line.get_linewidth() == 3
+            if mode == 'zoom':
+                inset_line = ax.child_axes[0].lines[0]
+                assert colors.to_hex(inset_line.get_color()) == '#cc3311'
+                assert list(inset_line.get_ydata()) == [10, 30]
+                inset = ax.child_axes[0].get_position()
+                parent = ax.get_position()
+                assert (inset.x0 - parent.x0) / parent.width == pytest.approx(.08)
+        elif form != 'stacked-area':
+            bars = ax.containers[0].patches
+            assert [bar.get_width() if form == 'barh' else bar.get_height() for bar in bars] == [10, 30]
+            assert bars[0].get_hatch() == '//'
+            assert colors.to_hex(bars[0].get_facecolor()) == '#cc3311'
+        assert (tmp_path / 'input.json').read_bytes() == original
+        assert (tmp_path / 'chart.png').stat().st_size > 1000
+    finally:
+        close('all')
+
+
+def test_unknown_series_style_falls_back_instead_of_silently_ignoring_model_choice():
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartStyle
+
+    plan, inputs = fixture()
+    plan.charts[0].standard_style = StandardChartStyle.model_validate({'series': [{'series': 'invented'}]})
+    assert standard_visualization_script(plan, inputs) is None
+
+
+@pytest.mark.parametrize('options', [
+    {'series': [{'series': 'value', 'color': 'red; code'}]},
+    {'series': [{'series': 'value'}, {'series': 'value'}]},
+    {'annotationOffsetY': 10000}, {'decimals': -1}, {'valueMargin': float('nan')},
+])
+def test_style_schema_rejects_invalid_parameters(options):
+    from pydantic import ValidationError
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartStyle
+
+    with pytest.raises(ValidationError):
+        StandardChartStyle.model_validate(options)
+
+
 @pytest.mark.parametrize('fault', ['complex', 'identity', 'fallback', 'renderer'])
 def test_unsupported_or_unverified_inputs_do_not_select_standard_route(fault):
     plan, inputs = fixture()
