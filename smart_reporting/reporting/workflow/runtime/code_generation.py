@@ -291,7 +291,7 @@ class ReportingCodeGenerationRunner:
                         raise ReportingError(
                             'report_standard_visualization_failed',
                             '标准可视化未通过执行或视觉验收，转入 Coding 路径。',
-                            details=result,
+                            details={**result, 'standardDiagnostic': getattr(binding, 'visual_repair_diagnostic', None)},
                         )
                 receipt = binding.execution_receipt
                 if receipt is None:

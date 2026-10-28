@@ -245,7 +245,44 @@ def standard_visualization_script(
                         axes.model_dump(), metas, total_field))
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
-            + '\n' + _ADVANCED + _BODY)
+            + '\n' + _LAYOUT + _ADVANCED + _BODY)
+
+
+_LAYOUT = '''def finish_standard_layout(fig):
+    import textwrap
+    from matplotlib.text import Annotation
+    for ax in fig.axes:
+        for axis, ticks, setter in ((ax.xaxis, ax.get_xticks(), ax.set_xticks),
+                                    (ax.yaxis, ax.get_yticks(), ax.set_yticks)):
+            texts = [tick.get_text() for tick in axis.get_ticklabels()]
+            if any(len(text) > 14 for text in texts):
+                setter(ticks, [textwrap.fill(text, width=14, break_long_words=True) for text in texts])
+            for tick in axis.get_ticklabels():
+                tick.set_fontsize(9)
+        legend = ax.get_legend()
+        if legend is not None and len(legend.get_texts()) > 3:
+            legend.set_bbox_to_anchor((1.01, 1))
+            legend.set_loc("upper left")
+    fig.tight_layout()
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    annotations = [text for ax in fig.axes for text in ax.texts if isinstance(text, Annotation)]
+    placed = []
+    for annotation in annotations:
+        for attempt in range(16):
+            # Exclude the leader line: only text glyph bounds define collisions.
+            from matplotlib.text import Text
+            bounds = Text.get_window_extent(annotation, renderer).expanded(1.04, 1.12)
+            if not any(bounds.overlaps(previous) for previous in placed):
+                placed.append(bounds)
+                break
+            x, y = annotation.get_position()
+            annotation.set_position((x, y + 12))
+            annotation.update_positions(renderer)
+        else:
+            raise ValueError("standard_chart_layout_unresolved: 标注重叠，请减少密度或调整布局")
+
+'''
 
 
 _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, form, title, output_path, annotations):
@@ -339,8 +376,8 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         inset.set_title("局部放大 · " + metadata[0]["unit"], fontsize=9)
         axes[0].axvspan(first - .2, last + .2, color="#f59e0b", alpha=.1)
     fig.suptitle(title)
-    fig.tight_layout()
-    fig.savefig(output_path)
+    finish_standard_layout(fig)
+    fig.savefig(output_path, bbox_inches="tight", pad_inches=.25)
     plt.close(fig)
 
 '''
@@ -387,7 +424,9 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
     if input_path in DISPLAYS:
         factor, unit = DISPLAYS[input_path]
         series = [[value * factor for value in values] for values in series]
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
+    width = min(18, max(10, len(labels) * .45)) if form != "barh" else 12
+    height = min(20, max(6, len(labels) * .42)) if form == "barh" else 7
+    fig, ax = plt.subplots(figsize=(width, height), dpi=150)
     positions = list(range(len(labels)))
     if form == "stacked-area":
         ax.stackplot(positions, *series, labels=names)
@@ -469,7 +508,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
                         fontsize=8, arrowprops={"arrowstyle": "-", "color": "#64748b"})
     ax.set_title(title)
     ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    fig.savefig(output_path)
+    finish_standard_layout(fig)
+    fig.savefig(output_path, bbox_inches="tight", pad_inches=.25)
     plt.close(fig)
 '''

@@ -422,6 +422,39 @@ def test_report_gap_templates_render_exact_frozen_views(tmp_path, monkeypatch, k
         close('all')
 
 
+def test_layout_wraps_labels_and_separates_colliding_annotation_text(tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+    from matplotlib.text import Annotation, Text
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartAnnotation
+
+    plan, _ = fixture('barh')
+    label = '这是一个需要换行显示的非常长的业务条线名称'
+    document = {'columns': ['label', 'value'], 'rows': [[label, 100], ['其他业务', 50]],
+                'columnMeta': {'value': {'unit': '元'}}}
+    plan.charts[0].standard_annotations = (
+        StandardChartAnnotation(kind='values'),
+        StandardChartAnnotation(kind='peak'),
+    )
+    inputs = materialization(document)
+    (tmp_path / 'input.json').write_bytes(inputs.files[0].content)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    try:
+        exec(standard_visualization_script(plan, inputs), {})
+        fig = plt.gcf()
+        fig.canvas.draw()
+        axes = fig.axes[0]
+        assert '\n' in axes.get_yticklabels()[0].get_text()
+        assert [bar.get_width() for bar in axes.patches] == [100, 50]
+        annotations = [text for text in axes.texts if isinstance(text, Annotation)]
+        boxes = [Text.get_window_extent(text, fig.canvas.get_renderer()) for text in annotations]
+        assert not any(left.overlaps(right) for index, left in enumerate(boxes) for right in boxes[index + 1:])
+    finally:
+        close('all')
+
+
 @pytest.mark.parametrize('form', ['bar', 'line', 'barh'])
 def test_standard_template_executes_and_rejects_changed_input(tmp_path, form):
     plan, inputs = fixture(form)
@@ -459,7 +492,9 @@ async def test_standard_execution_keeps_all_existing_gates(monkeypatch, failed_s
     from smart_reporting.reporting.workflow.runtime import code_generation as module
 
     receipt = SimpleNamespace(source_file='signed-script')
-    binding = SimpleNamespace(execution_receipt=receipt, visual_inspection_receipts={})
+    review = {'code': 'visual_review_failed', 'details': {'issues': ['label_overlap']}}
+    binding = SimpleNamespace(execution_receipt=receipt, visual_inspection_receipts={},
+                              visual_repair_diagnostic=review)
 
     @asynccontextmanager
     async def bind(*args):
@@ -477,8 +512,9 @@ async def test_standard_execution_keeps_all_existing_gates(monkeypatch, failed_s
     runner.lsp_manager = None
     context = SimpleNamespace(declared_output_paths=('chart.png',), code_mode_session_id='session')
     if failed_stage:
-        with pytest.raises(module.ReportingError, match='标准可视化'):
+        with pytest.raises(module.ReportingError, match='标准可视化') as captured:
             await runner.run_standard_visualization(context, object(), 'source', {})
+        assert captured.value.details['standardDiagnostic'] == review
         toolkit.require_current_receipt.assert_not_called()
     else:
         result = await runner.run_standard_visualization(context, object(), 'source', {})

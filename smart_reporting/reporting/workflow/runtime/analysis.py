@@ -173,6 +173,9 @@ from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
     _visualization_thinking_complexity,
 )
+from .visualization_section_workflow import (
+    _repair_diagnostic as _visualization_failure_diagnostic,
+)
 
 __all__ = ["RuntimeAnalysisMixin"]
 
@@ -1366,6 +1369,13 @@ class RuntimeAnalysisMixin:
                                     logger.info('report_standard_visualization_completed charts={}', len(plan.charts))
                                 except Exception as error:
                                     logger.warning('report_standard_visualization_fallback error={}', type(error).__name__)
+                                    standard_diagnostic = (
+                                        error.details.get('standardDiagnostic')
+                                        if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
+                                        else None
+                                    )
+                                    diagnostic = (standard_diagnostic if isinstance(standard_diagnostic, Mapping)
+                                                  else _visualization_failure_diagnostic(plan, error, script_path))
                         result = standard_result or await code_runner().run(
                             coding_context,
                             task_workspace,
