@@ -360,7 +360,7 @@ def test_month_followed_by_value_is_not_a_day():
     # 后项未写期间时继承前文本期，不继承“较…”引出的基期日期组。
     ('实际收入较2024年1—9月的84.93亿元[[claim:a]]增长12.06%', None),
     ('与2024年同期相比增加10.56亿元[[claim:a]]，增幅11.93%', None),
-    ('2025年1—9月收入95.14亿元[[claim:a]]，增幅12.02%', '2025年9'),
+    ('2025年1—9月收入95.14亿元[[claim:a]]，增幅12.02%', '2025年1月至2025年9月'),
 ])
 def test_parallel_reference_does_not_inherit_baseline_calendar(before, inherited):
     from smart_reporting.reporting.trace.subject_builder import _reference_local_window
@@ -396,16 +396,43 @@ def test_unlabeled_dates_take_the_role_of_their_registered_window():
                                 expected_period_roles=roles)
 
 
-def test_parenthetical_restatement_inherits_the_previous_value_period():
+@pytest.mark.parametrize('before,after,expected', [
+    ('2025年1—9月为99.12亿元[[claim:a]]，较2024年同期的88.55亿元[[claim:b]]（8,855,158,732元',
+     '）', '2024年1月至2024年9月 （8,855,158,732元）'),
+    ('2025年9月为99.12亿元[[claim:a]]，较2024年9月的88.55亿元[[claim:b]]（8,855,158,732元',
+     '）', '2024年9月 （8,855,158,732元）'),
+    ('2025年1—9月为99.12亿元[[claim:a]]（9,912,000,000元',
+     '）', '2025年1月至2025年9月 （9,912,000,000元）'),
+    ('2025年1—9月为99.12亿元[[claim:a]]，较2024年同期增加10.57亿元[[claim:b]]（1,057,000,000元',
+     '）', '2025年1月至2025年9月 （1,057,000,000元）'),
+])
+def test_parenthetical_restatement_inherits_the_previous_value_period(before, after, expected):
     from smart_reporting.reporting.trace.subject_builder import _reference_local_window
 
-    before = '2025年1—9月为99.12亿元[[claim:a]]，较2024年同期的88.55亿元[[claim:b]]（8,855,158,732元'
-    assert _reference_local_window(before, '）').startswith('2024年9')
+    assert _reference_local_window(before, after) == expected
 
 
 def test_change_reference_inherits_both_periods_of_its_sentence():
     from smart_reporting.reporting.trace.subject_builder import _reference_local_window
 
     before = '2025年9月预算支出为17.43亿元[[claim:a]]，2024年9月为30.26亿元[[claim:b]]，变化额为-12.83亿元'
-    assert _reference_local_window(before, '').startswith('2024年9 ')
-    assert _reference_local_window(before, '', comparison=True).startswith('2025年9 2024年9 ')
+    assert _reference_local_window(before, '') == '2024年9月 ，变化额为-12.83亿元'
+    assert _reference_local_window(before, '', comparison=True) == '2025年9月 2024年9月 ，变化额为-12.83亿元'
+
+
+@pytest.mark.parametrize('period', ['2024年9月', '2025年8月'])
+def test_parenthetical_explicit_period_overrides_previous_value_period(period):
+    from smart_reporting.reporting.trace.subject_builder import _reference_local_window
+
+    before = '2025年9月收入99.12亿元[[claim:a]]（' + period + '为88.55亿元'
+    assert _reference_local_window(before, '）') == '（' + period + '为88.55亿元）'
+
+
+def test_yoy_change_reference_inherits_both_complete_windows():
+    from smart_reporting.reporting.trace.subject_builder import _reference_local_window
+
+    before = '2025年1—9月收入99.12亿元[[claim:a]]，较2024年同期的88.55亿元[[claim:b]]增加10.57亿元'
+    assert _reference_local_window(before, '', comparison=True) == (
+        '2025年1月至2025年9月 2024年1月至2024年9月 增加10.57亿元'
+    )
+    assert _reference_local_window(before, '') == '2025年1月至2025年9月 增加10.57亿元'

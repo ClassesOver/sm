@@ -509,13 +509,20 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "需要补证时，codingRequirements 逐项声明当前授权 datasets 中的 datasetId、fields、calculation 和 outputName；不得编造数据集或字段。",
     "固定事实足够时 missingFacts 和 codingRequirements 必须都是空数组，不得为了探索数据而声明缺口。",
     "deterministicFacts 中带 *View.truncated=true 的 topGroups、bottomGroups、periodValues、correlationDetails 或 correlations.view 只是为控制输入预算省略的明细，完整事实已冻结；不得仅因这些明细被省略而声明缺口。",
-    "同一 datasetId、同一维度粒度的多个指标合并为一个 codingRequirement（一个 outputName，fields 同时列出维度列与全部指标列），"
+    "优先从 standardComputationCandidates 选择与真实缺口的指标、维度、期间和运算完全一致的候选，"
+    "在 codingRequirement 填 standardCandidateId、候选的 datasetId 和完整 fields，outputName 自定但不得重复；无需抄写 standardComputation。"
+    "候选只表示可计算，不代表需要补证；不得为了命中标准路径改变问题、期间或补证目标。"
+    "多个受支持指标或维度分别声明 codingRequirement，服务端会整组批量计算。"
+    "没有匹配候选时仍可填写明确的 standardComputation；复杂需求照常交给脚本。",
+    "只有不属于标准补证的同一 datasetId、同一维度粒度多个指标才合并为一个 codingRequirement（一个 outputName，fields 同时列出维度列与全部指标列），"
     "不要按指标逐条拆分；可参考 datasets[].columnProfile 的列角色（dimension/measure/period）与基数选择字段。",
-    "当且仅当缺口完全属于标准补证的 group_summary 或 period_comparison，且字段、期间、维度和冻结父指标事实均明确时，"
+    "当且仅当缺口完全属于标准补证的 group_summary、group_period_series、cross_group_summary、period_comparison 或 group_ratio，且字段、期间、维度和冻结父指标事实均明确时，"
+    "group_period_series 输出逐期分组趋势；cross_group_summary 输出两个授权维度的交叉构成，须带 secondaryDimensionField。优先选择目录中对应候选。"
     "在对应 codingRequirement 中填写 standardComputation；parentFactId 和 baselineParentFactId 必须逐字引用 deterministicFacts.metrics 中已有 factId，"
-    "fields 必须同时列出父事实 scope 的全部字段，且每个字段必须已经存在于同一授权 datasets[].columns；"
-    "若固定范围字段未投影，不得编造字段或仅凭 SQL 过滤声明标准补证，改用脚本路径。"
-    "不得填写 parentTotal 数值，不得猜测父指标或跨 dataset 组合。比率、统计模型、复杂归因和语义不完整的需求不要填写 standardComputation，交给脚本路径。",
+    "fields 必须包含计算字段及 CSV 中已投影的父事实 scope 字段；未投影 scope 只有在服务端核验签发物化查询的 sqlHash 和精确等值条件后才会自动授权，"
+    "不得编造范围字段、自由倍率或根据提示中的 SQL 文本自行声明授权。"
+    "group_ratio 还必须引用 derivedMetrics 中已有 ratioFactId、denominatorField 和 denominatorParentFactId；只能使用该比率事实冻结的有序分子分母，不能任意配对指标。"
+    "不得填写 parentTotal 数值，不得猜测父指标或跨 dataset 组合。未登记比率、统计模型、复杂归因和语义不完整的需求不要填写 standardComputation，交给脚本路径。",
 )
 
 
@@ -717,7 +724,7 @@ class _ReportWorkflowRuntimeBase:
         reporting_execution_mode: str = "sequential",
         section_whole_generation: bool = True,
         trace_registration_enabled: bool = True,
-        standard_supplemental_enabled: bool = False,
+        standard_supplemental_enabled: bool = True,
         visualization_section_deadline_seconds: int = VISUALIZATION_SECTION_DEADLINE_SECONDS,
         visualization_total_deadline_seconds: int = VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     ):

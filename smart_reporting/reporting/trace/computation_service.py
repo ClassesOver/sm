@@ -113,18 +113,22 @@ def build_standard_supplemental_computation_record(
     parameters: Mapping[str, Any],
     execution_id: str,
     finding_count: int,
+    finding_row_counts: Sequence[int] | None = None,
 ) -> ComputationRecordV1:
     """Build server-computation trace without inventing a script identity."""
 
-    output_refs = tuple(
-        FactRefV1(
-            analysisId=analysis_id,
-            fileResourceId=_resource_id(evidence_file),
-            jsonPointer=f"/findings/0/rows/{index}",
-            factKind="supplemental_finding",
-        )
-        for index in range(max(finding_count, 0))
-    )
+    counts = tuple(finding_row_counts) if finding_row_counts is not None else (max(finding_count, 0),)
+    if any(count < 0 for count in counts) or sum(counts) != max(finding_count, 0):
+        raise ValueError("标准补证 finding 行数与输出计数不一致")
+    pointers = ([f"/findings/{index}" for index in range(len(counts))]
+                if sum(counts) > 500 else
+                [f"/findings/{index}/rows/{row}" for index, count in enumerate(counts) for row in range(count)])
+    output_refs = tuple(FactRefV1(
+        analysisId=analysis_id, fileResourceId=_resource_id(evidence_file),
+        jsonPointer=pointer, factKind="supplemental_finding",
+    ) for pointer in pointers)
+    if finding_row_counts is not None:
+        parameters = {**parameters, "findingRowCounts": list(counts)}
     if not output_refs:
         output_refs = (
             FactRefV1(

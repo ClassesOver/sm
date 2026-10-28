@@ -64,6 +64,75 @@ def test_group_summary_emits_complete_population_rank_share_and_reconciliation()
     assert validated.findings[0]["rows"] == finding["rows"]
 
 
+def test_group_ratio_emits_operands_difference_ratio_and_dual_reconciliation():
+    csv = (
+        b"period,department,actual,budget\n"
+        b"2025-01,A,80,10\n"
+        b"2025-01,B,0,0\n"
+    )
+    ratio_request = StandardSupplementalRequest(
+        operation="group_ratio",
+        datasetId="dataset-current",
+        outputName="department_completion",
+        measureField="actual",
+        denominatorField="budget",
+        measureUnit="元",
+        dimensionField="department",
+        periodField="period",
+        currentPeriods=("2025-01",),
+        parentTotal=80,
+        denominatorParentTotal=10,
+        denominatorScale=10,
+        ratioFactId="fact-ratio",
+    )
+
+    payload = run_standard_supplemental(
+        analysis_id="analysis_001",
+        dataset_ids=("dataset-current",),
+        authorized_fields=("period", "department", "actual", "budget"),
+        csv_content=csv,
+        request=ratio_request,
+    )
+
+    finding = payload["findings"][0]
+    assert finding["columns"] == [
+        "department", "numerator", "denominator", "difference", "ratio",
+    ]
+    assert finding["rows"] == [
+        ["A", 80.0, 100.0, -20.0, 0.8],
+        ["B", 0.0, 0.0, 0.0, None],
+    ]
+    assert finding["columnMeta"] == {
+        "ratio": {"unit": "%", "isPercent": False},
+        "numerator": {"unit": "元"},
+        "denominator": {"unit": "元"},
+        "difference": {"unit": "元"},
+    }
+    assert payload["reconciliations"] == [
+        {"name": "department_completion_numerator_total", "passed": True, "left": 80.0, "right": 80.0},
+        {"name": "department_completion_denominator_total", "passed": True, "left": 10.0, "right": 10.0},
+    ]
+    assert any("分母为零" in warning for warning in payload["warnings"])
+
+
+def test_group_ratio_keeps_one_sided_group_unknown_instead_of_zero():
+    payload = run_standard_supplemental(
+        analysis_id="analysis_001",
+        dataset_ids=("dataset-current",),
+        authorized_fields=("period", "department", "actual", "budget"),
+        csv_content=b"period,department,actual,budget\n2025-01,A,,10\n",
+        request=StandardSupplementalRequest(
+            operation="group_ratio", datasetId="dataset-current", outputName="completion",
+            measureField="actual", denominatorField="budget", dimensionField="department",
+            periodField="period", currentPeriods=("2025-01",), parentTotal=0,
+            denominatorParentTotal=10, denominatorScale=1, ratioFactId="fact-ratio",
+        ),
+    )
+
+    assert payload["findings"][0]["rows"] == [["A", None, 10.0, None, None]]
+    assert any("缺少分子" in warning for warning in payload["warnings"])
+
+
 @pytest.mark.parametrize("operation", ["group_summary", "period_comparison"])
 @pytest.mark.parametrize("values", [
     ("10000000000000000", "1", "-10000000000000000"),
@@ -212,6 +281,46 @@ def test_group_summary_applies_frozen_parent_scope():
 
     assert payload["findings"][0]["rows"] == [["A", 60.0, 1, 1.0]]
     assert payload["reconciliations"][0]["passed"] is True
+
+
+def test_group_summary_accepts_server_verified_query_bound_scope_without_csv_column():
+    scoped_request = request(parent_total=100.0).model_copy(update={
+        "scope": {"income_nature": "开单收入"},
+        "query_bound_scope_fields": ("income_nature",),
+        "current_periods": ("2025-01",),
+    })
+    csv = b"period,department,amount\n2025-01,A,60\n2025-01,B,40\n"
+
+    payload = run_standard_supplemental(
+        analysis_id="analysis_001",
+        dataset_ids=("dataset-current",),
+        authorized_fields=("period", "department", "amount"),
+        csv_content=csv,
+        request=scoped_request,
+        authorized_query_scope={"income_nature": "开单收入"},
+    )
+
+    assert payload["findings"][0]["scope"] == {"income_nature": "开单收入"}
+    assert payload["findings"][0]["rows"] == [
+        ["A", 60.0, 1, 0.6], ["B", 40.0, 2, 0.4],
+    ]
+    assert payload["reconciliations"][0]["passed"] is True
+
+
+def test_query_bound_scope_cannot_be_self_authorized_by_request():
+    scoped_request = request(parent_total=100.0).model_copy(update={
+        "scope": {"income_nature": "开单收入"},
+        "query_bound_scope_fields": ("income_nature",),
+        "current_periods": ("2025-01",),
+    })
+
+    with pytest.raises(ValueError, match="查询固定范围"):
+        run_standard_supplemental(
+            analysis_id="analysis_001", dataset_ids=("dataset-current",),
+            authorized_fields=("period", "department", "amount"),
+            csv_content=b"period,department,amount\n2025-01,A,100\n",
+            request=scoped_request,
+        )
 
 
 def test_summarize_timings_reports_percentiles_without_claiming_model_speedup():

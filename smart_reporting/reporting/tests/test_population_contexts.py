@@ -61,3 +61,41 @@ def test_model_metadata_or_conflicting_identity_does_not_authorize_population(fa
     elif fault == 'output_identity':
         record['outputFactRefs'][0]['fileResourceId']=derive_resource_id('foreign.json')
     assert not _verified_population_contexts(work,sources)
+
+
+def test_registered_batch_preserves_each_table_population_proof():
+    from copy import deepcopy
+
+    from smart_reporting.reporting.workflow.runtime.sections import _verified_population_contexts
+
+    work, sources, proof = registered_population()
+    item = work.evidence[0]
+    resource, raw = next(iter(sources.items()))
+    document = json.loads(raw)
+    other = deepcopy(document['findings'][0])
+    other['name'] = 'second-group-summary'
+    other['populationProof']['tablePointer'] = '/findings/1'
+    document['findings'].append(other)
+    raw = json.dumps(document, ensure_ascii=False).encode()
+    identity = FileIdentity(path=item.evidence_files[0].path, size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    parameters = dict(item.computation_record['parameters'])
+    inputs = parameters.pop('inputFiles')
+    parameters.pop('populationProofs')
+    execution = 'standard-' + hashlib.sha256((inputs[0]['sha256'] + identity.sha256).encode()).hexdigest()[:16]
+    row_counts = tuple(len(table['rows']) for table in document['findings'])
+    record = build_standard_supplemental_computation_record(
+        analysis_id=item.analysis_id, dataset_ids=item.dataset_ids, input_files=inputs,
+        evidence_file=identity.model_dump(by_alias=True), method='supplemental_standard_batch',
+        method_version='standard-supplemental-v1', execution_id=execution,
+        parameters={'computations': [parameters, {**parameters, 'outputName': other['name']}],
+                    'populationProofs': [proof, other['populationProof']]},
+        finding_count=sum(row_counts), finding_row_counts=row_counts,
+    )
+    item.evidence_files = (identity,)
+    item.computation_record = record.model_dump(mode='json', by_alias=True)
+    contexts = _verified_population_contexts(work, {resource: raw})
+    assert set(contexts[resource]) == {'/findings/0', '/findings/1'}
+    assert contexts[resource]['/findings/1'] == other['populationProof']
+    item.computation_record['parameters']['populationProofs'][1]['members'] = ['forged']
+    contexts = _verified_population_contexts(work, {resource: raw})
+    assert set(contexts[resource]) == {'/findings/0'}

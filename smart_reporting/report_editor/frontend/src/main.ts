@@ -1,3 +1,4 @@
+import { createAssetAIActions } from './asset-ai-actions'
 import { bodySourceLinksPlugin, updateBodySourceLinks } from './body-source-links'
 import { bodyValueMarksPlugin, installValueCard, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 import '@milkdown/crepe/theme/common/prosemirror.css'
@@ -779,38 +780,31 @@ try {
   )
   let chartAIController: ReturnType<typeof import('./chart-ai-edit').createChartAIEdit> | null = null
   let tableAIController: import('./table-ai-edit').TableAIEditController | null = null
-  createImagePreview(shell.editor, {
-    onChartEdit: documentState.chartAiEnabled
-      ? (img) => {
-          // 改图面板按需加载：入口默认不进入首屏 chunk（构建预算契约）。
-          void import('./chart-ai-edit').then(({ createChartAIEdit }) => {
-            chartAIController ??= createChartAIEdit({
-              view: evidenceView,
-              client,
-              basePath,
-              hooks: {
-                onReplaced: () => status('已替换为 AI 改图结果，正在自动保存…', 'dirty'),
-              },
-            })
-            chartAIController.open(img)
-          })
-        }
-      : undefined,
-  })
-  if (documentState.tableAiEnabled) {
-    shell.editor.addEventListener('dblclick', (event) => {
-      const table = (event.target as HTMLElement).closest('table')
-      const tableId = table && findEvidenceTableId(shell.editor, table)
-      if (!tableId) return
-      // 改表面板按需加载：与改图面板同策略，入口不进首屏 chunk（构建预算契约）。
-      void import('./table-ai-edit').then(({ createTableAIEdit, tableBodyMarkdown }) => {
-        tableAIController ??= createTableAIEdit({
-          view: evidenceView,
-          client,
-          hooks: { onReplaced: () => status('已替换为 AI 改表结果，正在自动保存…', 'dirty') },
-        })
-        tableAIController.open(tableId, tableBodyMarkdown(getEditorMarkdown(), tableId))
+  const openChartAI = documentState.chartAiEnabled ? (img: HTMLImageElement) => {
+    void import('./chart-ai-edit').then(({ createChartAIEdit }) => {
+      chartAIController ??= createChartAIEdit({
+        view: evidenceView, client, basePath,
+        hooks: { onReplaced: () => status('已替换为 AI 改图结果，正在自动保存…', 'dirty') },
       })
+      chartAIController.open(img)
+    }).catch(() => status('无法加载 AI 改图面板，请稍后重试', 'error'))
+  } : undefined
+  const openTableAI = documentState.tableAiEnabled ? (tableId: string) => {
+    void import('./table-ai-edit').then(({ createTableAIEdit, tableBodyMarkdown }) => {
+      tableAIController ??= createTableAIEdit({
+        view: evidenceView, client,
+        hooks: { onReplaced: () => status('已替换为 AI 改表结果，正在自动保存…', 'dirty') },
+      })
+      tableAIController.open(tableId, tableBodyMarkdown(getEditorMarkdown(), tableId))
+    }).catch(() => status('无法加载 AI 改表面板，请稍后重试', 'error'))
+  } : undefined
+  createImagePreview(shell.editor, { onChartEdit: openChartAI })
+  createAssetAIActions(shell.editor, { onChartEdit: openChartAI, onTableEdit: openTableAI })
+  if (openTableAI) {
+    shell.editor.addEventListener('dblclick', (event) => {
+      const table = event.target instanceof Element ? event.target.closest('table') : null
+      const tableId = table && findEvidenceTableId(shell.editor, table)
+      if (tableId) openTableAI(tableId)
     })
   }
   updateOutline(crepe.editor.action(outline()))
