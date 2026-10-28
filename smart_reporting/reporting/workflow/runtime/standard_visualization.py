@@ -99,20 +99,56 @@ def standard_visualization_script(
             row[columns.index(column)] < 0 for row in rows for column in values
         ):
             return None
+        annotation_names = categories if category else values
+        annotation_labels = list(dict.fromkeys(labels))
+        annotations: list[tuple[str, int | None, int | None, int | None]] = []
+        first: int | None
+        for specification in getattr(chart, 'standard_annotations', ()):
+            kind = specification.kind
+            if kind == 'range':
+                if (specification.series is not None or specification.label not in annotation_labels
+                        or specification.end_label not in annotation_labels):
+                    return None
+                first = annotation_labels.index(specification.label)
+                last = annotation_labels.index(specification.end_label)
+                if first > last:
+                    return None
+                annotations.append((kind, None, first, last))
+                continue
+            name = specification.series
+            if name is None and len(annotation_names) == 1:
+                name = annotation_names[0]
+            if name not in annotation_names or specification.end_label is not None:
+                return None
+            if kind in {'point', 'reference'}:
+                if specification.label not in annotation_labels:
+                    return None
+                first = annotation_labels.index(specification.label)
+                if category and (specification.label, name) not in keys:
+                    return None
+            elif kind in {'values', 'peak', 'trough'} and specification.label is None:
+                first = None
+            else:
+                return None
+            annotations.append((kind, annotation_names.index(name), first, None))
+        if sum(len(annotation_labels) if item[0] in {'values', 'peak', 'trough'} else 1
+               for item in annotations) > 60:
+            return None
         configs.append((source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
-                        metas[0].get('isPercent')))
+                        metas[0].get('isPercent'), annotations))
     return 'CONFIGS = ' + repr(configs) + '\n' + _BODY
 
 
 _BODY = '''import hashlib
 import json
+import math
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 plt.rcParams["font.sans-serif"] = ["Noto Sans CJK SC", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
-for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent in CONFIGS:
+for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent, annotations in CONFIGS:
     with open(input_path, "rb") as handle:
         raw = handle.read()
     if hashlib.sha256(raw).hexdigest() != digest:
@@ -160,6 +196,38 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         ax.set_ylabel(unit or "")
     if len(series) > 1:
         ax.legend(frameon=False)
+    for annotation_index, (kind, series_index, first, last) in enumerate(annotations):
+        if kind == "range":
+            span = ax.axhspan if form == "barh" else ax.axvspan
+            span(first - 0.4, last + 0.4, color="#f59e0b", alpha=0.12)
+            continue
+        values = series[series_index]
+        finite = [value for value in values if math.isfinite(value)]
+        if not finite:
+            continue
+        if kind == "reference":
+            draw = ax.axvline if form == "barh" else ax.axhline
+            draw(values[first], linestyle="--", color="#b45309", alpha=0.8)
+            ax.text(0.01, 0.98 - annotation_index * 0.05,
+                    f"参考 {labels[first]} · {names[series_index]}: {values[first]:,.2f}{unit or ''}",
+                    transform=ax.transAxes, va="top", fontsize=8)
+            continue
+        indexes = ([first] if kind == "point" else
+                   [index for index, value in enumerate(values) if math.isfinite(value) and
+                    (kind == "values" or value == (max(finite) if kind == "peak" else min(finite)))])
+        for index in indexes:
+            value = values[index]
+            coordinate = index
+            height = value
+            if form in {"stacked-bar", "stacked-area"}:
+                height += sum(previous[index] for previous in series[:series_index])
+            elif form in {"bar", "barh"}:
+                coordinate = index - 0.4 + 0.4 / len(series) + series_index * 0.8 / len(series)
+            xy = (height, coordinate) if form == "barh" else (coordinate, height)
+            prefix = {"peak": "峰值 ", "trough": "谷值 ", "point": "重点 "}.get(kind, "")
+            ax.annotate(f"{prefix}{value:,.2f}{unit or ''}", xy,
+                        xytext=(8, 8 + annotation_index * 8), textcoords="offset points",
+                        fontsize=8, arrowprops={"arrowstyle": "-", "color": "#64748b"})
     ax.set_title(title)
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()

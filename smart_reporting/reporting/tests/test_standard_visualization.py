@@ -140,6 +140,54 @@ def test_explicit_selection_supports_chinese_labels_without_implicit_auxiliary_p
     assert standard_visualization_script(plan, materialization(document)) is None
 
 
+@pytest.mark.parametrize('form', ['line', 'bar', 'barh', 'stacked-bar', 'stacked-area'])
+def test_annotations_use_frozen_values_and_correct_series_coordinates(tmp_path, monkeypatch, form):
+    import matplotlib.pyplot as plt
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartAnnotation
+
+    plan, document = complex_fixture(form)
+    plan.charts[0].standard_annotations = tuple(StandardChartAnnotation.model_validate(item) for item in [
+        {'kind': 'peak', 'series': 'budget'},
+        {'kind': 'trough', 'series': 'actual'},
+        {'kind': 'point', 'series': 'actual', 'label': '2025-02'},
+        {'kind': 'reference', 'series': 'actual', 'label': '2025-01'},
+        {'kind': 'range', 'label': '2025-01', 'endLabel': '2025-02'},
+    ])
+    inputs = materialization(document)
+    (tmp_path / 'input.json').write_bytes(inputs.files[0].content)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    try:
+        script = standard_visualization_script(plan, inputs)
+        assert script is not None
+        exec(script, {})
+        axes = plt.gcf().axes[0]
+        peak = next(text for text in axes.texts if text.get_text().startswith('峰值'))
+        assert peak.get_text() == '峰值 40.00元'
+        expected_height = 70 if form.startswith('stacked') else 40
+        assert peak.xy[0 if form == 'barh' else 1] == expected_height
+        assert any('参考 2025-01' in text.get_text() and '10.00元' in text.get_text() for text in axes.texts)
+        assert (tmp_path / 'chart.png').read_bytes().startswith(b'\x89PNG')
+    finally:
+        close('all')
+
+
+@pytest.mark.parametrize('specification', [
+    {'kind': 'point', 'series': 'foreign', 'label': '2025-01'},
+    {'kind': 'point', 'series': 'actual', 'label': 'unknown'},
+    {'kind': 'range', 'label': '2025-02', 'endLabel': '2025-01'},
+    {'kind': 'peak'},
+])
+def test_unbound_annotations_fall_back(specification):
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartAnnotation
+
+    plan, document = complex_fixture('line')
+    plan.charts[0].standard_annotations = (StandardChartAnnotation.model_validate(specification),)
+    assert standard_visualization_script(plan, materialization(document)) is None
+
+
 @pytest.mark.parametrize('form', ['bar', 'line', 'barh'])
 def test_standard_template_executes_and_rejects_changed_input(tmp_path, form):
     plan, inputs = fixture(form)

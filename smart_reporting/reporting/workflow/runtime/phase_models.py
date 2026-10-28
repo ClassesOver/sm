@@ -261,6 +261,13 @@ class ChartDataBinding(StrictModel):
         return value
 
 
+class StandardChartAnnotation(StrictModel):
+    kind: Literal['values', 'peak', 'trough', 'point', 'reference', 'range']
+    series: str | None = Field(default=None, max_length=200)
+    label: str | None = Field(default=None, max_length=200)
+    end_label: str | None = Field(default=None, alias='endLabel', max_length=200)
+
+
 class ChartDraft(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
@@ -293,6 +300,10 @@ class ChartDraft(StrictModel):
     standard_value_fields: tuple[str, ...] = Field(
         default=(), alias="standardValueFields", max_length=8,
         description="标准静态图明确选择的数值列，必须来自绑定的chart-input；可排除同表辅助排名/占比列。空数组按全部数值列预检。",
+    )
+    standard_annotations: tuple[StandardChartAnnotation, ...] = Field(
+        default=(), alias='standardAnnotations', max_length=10,
+        description='标准图标注：values数值、peak峰值、trough谷值、point重点、reference以冻结点值为参考线、range重点区间。series必须是已选数值列或长表分类；label/endLabel逐字引用标签。不接受模型编写数值。',
     )
     data_bindings: tuple[ChartDataBinding, ...] = Field(
         alias="dataBindings", min_length=1, max_length=100
