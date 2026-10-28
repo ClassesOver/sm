@@ -145,6 +145,7 @@ class CodeGenerationResult:
     execution_receipt: ExecutionReceipt
     visual_inspection_receipts: tuple[ChartVisualInspectionReceipt, ...] = ()
     visual_repair_diagnostic: Mapping[str, Any] | None = None
+    standard_chart_routes: tuple[Mapping[str, Any], ...] = ()
 
 
 class ReportingCodeGenerationRunner:
@@ -182,9 +183,14 @@ class ReportingCodeGenerationRunner:
             "visualizationDataContract",
             "missingCharts",
             "chartInputs",
+            "standardChartPreflight",
         ):
             if key in task_facts:
                 projected[key] = task_facts[key]
+        if 'standardChartPreflight' in task_facts:
+            for key in ('visualizationPlan', 'visualizationWorkspace', 'visualizationFacts'):
+                if key in task_facts:
+                    projected[key] = task_facts[key]
         current_analysis = task_facts.get("currentAnalysis")
         if isinstance(current_analysis, Mapping):
             projected["currentAnalysis"] = {
@@ -967,6 +973,10 @@ class ReportingCodeGenerationRunner:
                 "toolMessage": pending_validation.get("message"),
             }
         safe: dict[str, Any] = {}
+        for field in ('chartId', 'parameter', 'suggestion'):
+            value = details.get(field)
+            if isinstance(value, str) and value:
+                safe[field] = value[:MAX_DIAGNOSTIC_MESSAGE_LENGTH]
         issue_summary = details.get("issueSummary")
         if isinstance(issue_summary, str) and issue_summary:
             safe["issueSummary"] = issue_summary[:MAX_DIAGNOSTIC_OUTPUT_LENGTH]

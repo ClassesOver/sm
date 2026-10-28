@@ -11,6 +11,7 @@ from loguru import logger
 
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...code_agent.failure_policy import fresh_attempt_futile
+from ...delivery.draft_v1 import ReportChartRegistration
 from ...hospital_operation.finding_projection import build_finding_graph
 from ...hospital_operation.findings import FindingGraph
 from ...hospital_operation.narrative_outline import (
@@ -634,7 +635,7 @@ def _visualization_registration_payload(chart: ChartDraft) -> dict[str, Any]:
     return chart.model_dump(
         mode="json",
         by_alias=True,
-        exclude={"visual_form", "data_bindings"},
+        include=set(ReportChartRegistration.model_fields),
     )
 
 
@@ -1358,24 +1359,26 @@ class RuntimeAnalysisMixin:
                         }
                         standard_result = None
                         if diagnostic is None and chart_inputs is not None and benchmark_projection is None:
-                            from .standard_visualization import standard_visualization_script
+                            from .standard_chart_routing import run_standard_chart_routes
 
-                            source = standard_visualization_script(plan, chart_inputs)
-                            if source is not None:
-                                try:
-                                    standard_result = await code_runner().run_standard_visualization(
-                                        coding_context, task_workspace, source, facts_payload,
-                                    )
-                                    logger.info('report_standard_visualization_completed charts={}', len(plan.charts))
-                                except Exception as error:
-                                    logger.warning('report_standard_visualization_fallback error={}', type(error).__name__)
-                                    standard_diagnostic = (
-                                        error.details.get('standardDiagnostic')
-                                        if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
-                                        else None
-                                    )
-                                    diagnostic = (standard_diagnostic if isinstance(standard_diagnostic, Mapping)
-                                                  else _visualization_failure_diagnostic(plan, error, script_path))
+                            try:
+                                standard_result = await run_standard_chart_routes(
+                                    code_runner(), coding_context, task_workspace, plan,
+                                    chart_inputs, facts_payload, task_context,
+                                )
+                                routes = getattr(standard_result, 'standard_chart_routes', ())
+                                logger.info('report_visualization_routes_completed charts={} standard={} coding={}',
+                                            len(plan.charts), sum(item['route'] == 'standard' for item in routes),
+                                            sum(item['route'] == 'coding' for item in routes))
+                            except Exception as error:
+                                logger.warning('report_standard_visualization_fallback error={}', type(error).__name__)
+                                standard_diagnostic = (
+                                    error.details.get('standardDiagnostic')
+                                    if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
+                                    else None
+                                )
+                                diagnostic = (standard_diagnostic if isinstance(standard_diagnostic, Mapping)
+                                              else _visualization_failure_diagnostic(plan, error, script_path))
                         result = standard_result or await code_runner().run(
                             coding_context,
                             task_workspace,

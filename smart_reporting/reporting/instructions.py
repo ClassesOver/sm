@@ -121,6 +121,8 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
         "必须给衍生列新名称并在standardValueFields选择；首月及非正基数保留缺失，不推断既有未登记比例的单位。"
         "多来源日期格式不一致时显式设置各来源labelMode=month，excludedLabels排除合计，standardLabels选择共同窗口。"
         "standardAxes.allowNulls=true保留折线/柱图的缺失空位；leftDisplayUnit/rightDisplayUnit分别设置登记单位换算。"
+        "含零/负值且量级悬殊时可使用standardAxes.scale=symlog，并以linearThreshold声明显示单位下的线性区间。"
+        "逐系列geometry可与panels或zoom组合；自动画布只在测量到布局失败时有限扩大重试，固定画布保持声明尺寸。"
         "barh配合mode=panels及panelLimit实现各系列独立排序前N项；standardPresentation.order.mode=max_abs与fields按多列最大绝对值排序。"
         "standardStyle.series的geometry=line/bar可组合共享轴柱线图，label仅修改图例显示名称，series仍引用冻结列名。"
         "比率标注只能显式绑定同单位冻结分子/分母，由服务端计算，不能编写数值。"

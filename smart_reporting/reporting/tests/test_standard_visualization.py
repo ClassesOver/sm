@@ -576,7 +576,13 @@ def test_model_can_combine_style_with_complex_layout_without_changing_values(tmp
         assert colors.to_hex(fig.get_facecolor()) == '#fafafa'
         assert fig.axes[-1].get_xticklabels()[0].get_rotation() == 0
         assert ax.texts[0].get_fontsize() == 12
-        assert ax.texts[0].get_position() == (15, 20)
+        assert ax.texts[0].get_position()[0] == 15
+        assert ax.texts[0].get_position()[1] >= 20
+        from matplotlib.text import Text
+        renderer = fig.canvas.get_renderer()
+        bounds = Text.get_window_extent(ax.texts[0], renderer)
+        assert all(not bounds.overlaps(other.get_legend().get_window_extent(renderer))
+                   for other in fig.axes if other.get_legend() is not None)
         assert '30元' in ax.texts[0].get_text()
         if form == 'line':
             line = ax.lines[0]

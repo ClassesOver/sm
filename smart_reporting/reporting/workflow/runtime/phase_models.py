@@ -274,7 +274,9 @@ class StandardChartAnnotation(StrictModel):
 
 class StandardChartAxes(StrictModel):
     mode: Literal['single', 'dual', 'panels', 'zoom'] = 'single'
-    scale: Literal['linear', 'log'] = 'linear'
+    scale: Literal['linear', 'log', 'symlog'] = 'linear'
+    linear_threshold: float = Field(default=1, alias='linearThreshold', gt=0, allow_inf_nan=False,
+                                    description='symlog在显示单位下零点附近的线性区间阈值。')
     zero_baseline: bool = Field(default=False, alias='zeroBaseline')
     right_fields: tuple[str, ...] = Field(default=(), alias='rightFields', max_length=8)
     allow_nulls: bool = Field(default=False, alias='allowNulls', description='折线/普通柱图保留null为空位，不补零；堆叠不支持。')

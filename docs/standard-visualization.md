@@ -1,5 +1,35 @@
 # 标准可视化
 
+以下保留各轮验证记录；当前能力及限制以首节为准。
+
+## 逐图路由、诊断与复杂组合（2026-10-28）
+
+生产章节工作流使用`run_standard_chart_routes`。全部支持时仍执行一次标准脚本；混合计划或批量标准执行失败时，按图隔离预检与执行，只把不支持/验收失败的图交给Coding。组件脚本分别校验身份，最终组合脚本重新核验所有chart-input和组件SHA256、在独立命名空间执行，并重新走执行、看图、提交及当前回执核验。单图组件的旧回执不能代替最终回执。最终视觉诊断明确指向某张图时，允许一次只修复该图的Coding重试；无法定位的整体错误仍由原工作流处理。旧交互计划保留原兼容路线，不把JSON companion送进图片审查；没有新增Plotly能力。
+
+`standard_visualization_preflight`返回`source/diagnostic`，常见失败有稳定code、parameter、message与suggestion：图形不支持、输入缺失/身份变化、标签歧义、选列错误、非法数值/空系列、来源对齐、单位换算/同轴量纲、普通对数含零负数、重复标签、负堆叠及标签/标注容量等。标准预检失败属于首次Coding生成，诊断随`standardChartPreflight`传入并保留完整作用域计划；已有脚本执行/视觉失败才使用修复诊断，避免误读不存在的脚本。结果记录`standard_chart_routes`，组合脚本保留`CHART_ROUTES`，日志区分standard/coding数量。
+
+柱线混合可与panels/zoom组合。新增`standardAxes.scale="symlog"`及正数`linearThreshold`，用于同时含零、负值和悬殊量级的数据，阈值以显示单位表达。局部图只绘制声明窗口，保留完整边缘柱体，逐点颜色按窗口内原标签绑定。数字轴不再应用类别标签换行，避免破坏对数数学刻度。
+
+自动图例在候选位置按数据点、柱体及其他图例遮挡情况选择位置；标注避让图例和子图标题。只有明确测量到`standard_chart_layout_unresolved`，且`sizeMode=auto`时，最多扩大画布重试两次；保留DPI、裁切/布局策略及2400万像素预算，不改变固定画布、不吞掉身份或语义失败。图例避让是几何启发式，仍不能替代独立视觉审查或保证美观。
+
+修复图表登记投影：按`ReportChartRegistration`字段白名单生成归档请求，避免标准参数被登记接口当作多余字段拒绝；完整作图参数仍保留在计划及签名脚本。
+
+线上验证复用既有回放工具，不另建模型调用框架：
+
+```bash
+# 仅检查当前进程配置；缺少配置返回2，不调用模型、不打印凭据值。
+PYTHONPATH=. python scripts/replay_visualization_task.py --check-standard-readiness --output readiness.json
+
+# 实际自动规划→标准路线/逐图Coding→独立视觉与回执验收。
+PYTHONPATH=. python scripts/replay_visualization_task.py --benchmark-bundle BUNDLE --variant candidate --standard-routes --output online.json
+```
+
+`--standard-routes`为明确的验证模式：candidate planner加入生产标准参数指令，执行复用生产路由，结果记录逐图路线与`routeCounts`；不与默认benchmark结果混计。缺少物化输入不能将普通Coding回放标为标准命中。当前环境未配置模型接口地址及凭据，readiness实际返回`blocked_missing_model_configuration`、模型请求0次，线上自动命中/Coding修复/独立视觉验收均未验证。
+
+本轮22项新增测试覆盖混合计划、单图/最终视觉失败隔离、批量失败隔离、组件篡改、全部支持快路径、旧兼容路径、诊断、柱线分面/局部图、symlog、窗口颜色/边缘柱体、有限自动调参及线上入口；合计482项定向测试通过（分批运行，失败修复后定向复验），5模块mypy、Ruff与diff检查通过。原222场景保持146成图/71预检回退/2身份拒绝/2布局修复/1schema拒绝；后续刻度与局部图修复另定向回归32个高级轴场景，24成图、8预期回退。新增7个合成复杂组合场景均通过实际系列数值与几何审计；OS报告16张图再次全部通过原来源离线回放。以上回放不等同于线上自动命中或完整审美验收。
+
+仍未标准化：多维/多步数据变换、加权平均/累计/同比/滚动窗口、更多统计图形、堆叠双轴、断轴与显式轴刻度范围、大数据自动分页等。身份、单位和来源核验边界继续保留。
+
 ## OS报告缺口标准化（2026-10-28）
 
 新增参数覆盖本报告此前需要改绑、裁月、拆图或替代图形的情况：

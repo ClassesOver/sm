@@ -158,12 +158,17 @@ def test_visualization_task_signs_both_plotly_outputs() -> None:
 
 
 def test_visualization_registration_drops_coding_only_plan_fields() -> None:
-    chart = ChartDraft.model_validate(_draft_payload())
+    chart = ChartDraft.model_validate(_draft_payload(
+        standardValueFields=['actual'], standardLabelField='科室',
+        standardView={'kind': 'group', 'labelField': '科室', 'valueFields': ['actual']},
+        standardAxes={'scale': 'symlog'},
+    ))
 
     payload = runtime_analysis._visualization_registration_payload(chart)
 
     assert "visualForm" not in payload
     assert "dataBindings" not in payload
+    assert not any(key.startswith('standard') for key in payload)
     assert ReportChartRegistration.model_validate(payload).chart_id == "income-trend"
 
 

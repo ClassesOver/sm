@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
+from typing import NoReturn
 
 from loguru import logger
 
@@ -25,22 +27,52 @@ from .standard_chart_presentation import (
 from .standard_chart_transform import transform_chart_document
 
 
-def standard_visualization_script(
+@dataclass(frozen=True)
+class StandardVisualizationPreflight:
+    source: str | None
+    diagnostic: dict | None = None
+
+
+class _Unsupported(ValueError):
+    def __init__(self, code, parameter, message, suggestion):
+        self.diagnostic = dict(code=code, parameter=parameter, message=message, suggestion=suggestion)
+        super().__init__(message)
+
+
+def _reject(code, parameter, message, suggestion) -> NoReturn:
+    raise _Unsupported(code, parameter, message, suggestion)
+
+
+def standard_visualization_preflight(
     plan: VisualizationPlanDraft, inputs: ChartInputMaterialization,
-) -> str | None:
-    """Malformed or numerically unsupported frozen data must leave Coding available."""
+) -> StandardVisualizationPreflight:
     try:
-        return _standard_visualization_script(plan, inputs)
+        source = _standard_visualization_script(plan, inputs)
+        return StandardVisualizationPreflight(source, None if source else dict(
+            code='standard_parameter_combination_unsupported', parameter='standardChart',
+            message='当前数据或参数组合无法由标准模板表达。',
+            suggestion='保留冻结输入与业务目标，交由Coding生成该图；其他图独立选择路线。'))
+    except _Unsupported as error:
+        return StandardVisualizationPreflight(None, error.diagnostic)
     except (KeyError, TypeError, ValueError, OverflowError) as error:
         logger.warning('report_standard_visualization_preflight_fallback error={}', type(error).__name__)
-        return None
+        return StandardVisualizationPreflight(None, dict(
+            code='standard_input_or_transformation_invalid', parameter='chartInputs/standardView/standardDerivations',
+            message='冻结输入结构或声明的数据转换未通过预检。',
+            suggestion='检查列名、转换操作、月份连续性、重复单元及登记单位；不要补造数据。',
+            errorType=type(error).__name__))
+
+
+def standard_visualization_script(plan: VisualizationPlanDraft, inputs: ChartInputMaterialization) -> str | None:
+    """Compatibility API; production routing uses the structured preflight result."""
+    return standard_visualization_preflight(plan, inputs).source
 
 
 def _standard_visualization_script(
     plan: VisualizationPlanDraft, inputs: ChartInputMaterialization,
 ) -> str | None:
     if inputs.fallback_chart_ids or not plan.charts:
-        return None
+        _reject('standard_input_unavailable', 'chartInputs', '图表缺少可用的物化输入或计划为空。', '为对应图补齐数据绑定，或只将该图交由Coding。')
     configs = []
     aligned = {}
     auxiliary = {}
@@ -51,7 +83,7 @@ def _standard_visualization_script(
         presentation = getattr(chart, 'standard_presentation', StandardChartPresentation())
         axes = getattr(chart, 'standard_axes', StandardChartAxes())
         if chart.renderer != 'matplotlib' or chart.interactive_path:
-            return None
+            _reject('standard_renderer_unsupported', 'renderer', '标准模板只输出Matplotlib静态图。', '使用matplotlib与静态PNG/JPEG输出。')
         form = {'line': 'line', '折线图': 'line', '多系列折线图': 'line',
                 'bar': 'bar', '柱状图': 'bar', '分组柱状图': 'bar',
                 'barh': 'barh', '横向条形图': 'barh',
@@ -60,12 +92,14 @@ def _standard_visualization_script(
                 'stacked-total': 'stacked-total', '堆叠柱合计折线图': 'stacked-total',
                 'summary-bars': 'summary-bars', '单行指标对比图': 'summary-bars'}.get(chart.visual_form)
         entries = [entry for entry in inputs.entries if entry['chartId'] == chart.chart_id]
-        if form is None or not entries:
-            return None
+        if form is None:
+            _reject('standard_form_unsupported', 'visualForm', '图形类型尚未标准化。', '使用已支持的图形类型，或仅对该图使用Coding。')
+        if not entries:
+            _reject('standard_input_missing', 'chartInputs', '未找到本图绑定的物化数据。', '补齐本图chart-input绑定。')
         entry = entries[0]
         source = next((item for item in inputs.files if item.path == entry['path']), None)
         if source is None or source.sha256 != entry['sha256']:
-            return None
+            _reject('standard_input_identity_mismatch', 'chartInputs.sha256', '输入身份与登记不一致。', '重新物化并核验原始来源，禁止绕过身份核验。')
         document = json.loads(source.content)
         if not isinstance(document, dict):
             return None
@@ -96,7 +130,7 @@ def _standard_visualization_script(
                                             selected_labels=getattr(chart, 'standard_labels', ()),
                                             allow_nulls=axes.allow_nulls)
             if alignment is None:
-                return None
+                _reject('standard_source_alignment_failed', 'standardSources', '来源标签、单位、身份或来源使用范围不满足对齐要求。', '显式指定月份规范化、合计排除及共同窗口；检查重复标签、单位和所有绑定来源。')
             document, identities = alignment
             aligned[source.path] = (document, identities)
         view = getattr(chart, 'standard_view', None)
@@ -115,14 +149,14 @@ def _standard_visualization_script(
         explicit_label = getattr(chart, 'standard_label_field', None)
         label = explicit_label or ('period' if 'period' in columns else 'label' if 'label' in columns else None)
         if label is not None and label not in columns:
-            return None
+            _reject('standard_label_missing', 'standardLabelField', '显式标签列不在转换后的数据中。', '使用转换后存在的冻结标签列。')
         if label is None:
             text_columns = [column for column in columns
                             if all(isinstance(row[columns.index(column)], str) for row in rows)]
             if len(text_columns) == 1:
                 label = text_columns[0]
         if label is None:
-            return None
+            _reject('standard_label_ambiguous', 'standardLabelField', '无法唯一确定标签列。', '显式指定冻结标签列standardLabelField。')
         label_index = columns.index(label)
         selected_labels = tuple(getattr(chart, 'standard_labels', ()))
         if selected_labels:
@@ -152,27 +186,27 @@ def _standard_visualization_script(
         values = [column for column in other_columns if column != category]
         if selected:
             if len(set(selected)) != len(selected) or not set(selected).issubset(values):
-                return None
+                _reject('standard_field_selection_invalid', 'standardValueFields', '选定字段重复或不在可用度量中。', '检查视图转换后的列名与新衍生列名称。')
             values = list(selected)
         if not 1 <= len(values) <= 8 or (category and (label != 'period' or len(values) != 1)):
-            return None
+            _reject('standard_series_shape_unsupported', 'standardValueFields/standardView', '系列数量或长表结构超出标准范围。', '显式选取最多8个度量；用pivot转为宽表或group汇总后展示。')
         nullable = axes.allow_nulls and form in {'line', 'bar', 'barh'} and not category
         if any(not (nullable and row[columns.index(column)] is None) and (
                not isinstance(row[columns.index(column)], (int, float))
                or isinstance(row[columns.index(column)], bool)
                or not math.isfinite(row[columns.index(column)])) for row in rows for column in values):
-            return None
+            _reject('standard_values_invalid', 'standardAxes.allowNulls/standardValueFields', '选定系列含缺失、非有限或非数值数据。', '普通柱线图可显式allowNulls=true保留缺失；NaN/Inf/布尔值必须修复来源。')
         if any(all(row[columns.index(column)] is None for row in rows) for column in values):
-            return None
+            _reject('standard_series_empty', 'standardValueFields', '选定系列全部缺失。', '提供有依据的数据或移除空系列，不补零。')
         metadata = document.get('columnMeta') or {}
         if not isinstance(metadata, dict):
             return None
         metas = [metadata.get(column, {}) for column in values]
         if any(not valid_standard_metadata(meta) for meta in metas):
-            return None
+            _reject('standard_metadata_invalid', 'columnMeta', '度量单位或百分比尺度元数据类型无效。', '从对应冻结事实重新物化元数据，不从标题猜测单位。')
         mixed = any(item.geometry != 'auto' for item in style.series)
         advanced = axes.mode != 'single' or axes.scale != 'linear' or mixed
-        if mixed and (form not in {'line', 'bar'} or axes.mode in {'panels', 'zoom'}):
+        if mixed and form not in {'line', 'bar'}:
             return None
         if axes.panel_limit is not None and (axes.mode != 'panels' or form != 'barh'):
             return None
@@ -185,7 +219,7 @@ def _standard_visualization_script(
             requested = requested or (getattr(chart, 'standard_display_unit', None) if advanced else None)
             factor = unit_conversion_scale(meta.get('unit'), requested) if requested else 1
             if factor is None:
-                return None
+                _reject('standard_unit_conversion_invalid', 'standardDisplayUnit/standardAxes', '请求的显示单位无法由登记单位换算。', '仅使用同维度的登记单位，复合单位不可降维。')
             axis_factors.append(float(factor))
             axis_units.append(requested or meta.get('unit'))
         display_unit = getattr(chart, 'standard_display_unit', None)
@@ -238,14 +272,14 @@ def _standard_visualization_script(
                       [[index] for index in range(len(values))])
             if any(len({(axis_units[index], metas[index].get('isPercent'))
                         for index in group}) != 1 for group in groups):
-                return None
+                _reject('standard_axis_units_incompatible', 'standardAxes', '同轴度量单位或百分比尺度不一致。', '显式统一显示单位，或将不同量纲放到双轴/分面。')
             windows = [meta.get('periods') for meta in metas]
             if any(window != windows[0] for window in windows):
                 return None
             if axes.scale == 'log' and (form != 'line' or any(
                 row[columns.index(column)] is not None and row[columns.index(column)] <= 0 for row in rows for column in values
             )):
-                return None
+                _reject('standard_log_domain_invalid', 'standardAxes.scale', '普通对数轴要求严格正数折线。', '含零或负值时使用symlog并明确linearThreshold，或采用分面/局部放大。')
             if axes.mode == 'zoom' and (
                 axes.zoom_start not in labels or axes.zoom_end not in labels
                 or labels.index(axes.zoom_start) > labels.index(axes.zoom_end)
@@ -272,13 +306,13 @@ def _standard_visualization_script(
             if form != 'line' and len(keys) != len(set(labels)) * len(categories):
                 return None
         elif len(set(labels)) != len(labels):
-            return None
+            _reject('standard_labels_duplicate', 'standardLabelField/standardView', '标签重复且没有可用的长表分类。', '显式用group汇总或pivot透视；不要任意丢弃重复行。')
         if len(set(labels)) > 60:
-            return None
+            _reject('standard_label_capacity_exceeded', 'standardLabels/standardPresentation.order', '单图超过60个标签。', '显式选择业务窗口、TopN或汇总视图；不得静默丢弃数据。')
         if form in {'stacked-bar', 'stacked-area', 'stacked-total'} and any(
             row[columns.index(column)] < 0 for row in rows for column in values
         ):
-            return None
+            _reject('standard_negative_stack_unsupported', 'visualForm', '标准堆叠图暂不支持负数构成。', '采用分组柱图展示正负值，或用Coding实现发散堆叠。')
         total_field = getattr(chart, 'standard_total_field', None)
         if form in {'stacked-bar', 'stacked-area', 'stacked-total'}:
             try:
@@ -345,7 +379,7 @@ def _standard_visualization_script(
                             if axes.mode == 'panels' and form == 'barh' and axes.panel_limit else len(annotation_labels))
         if sum(annotation_count if item[0] in {'values', 'peak', 'trough'} else 1
                for item in annotations) > 60:
-            return None
+            _reject('standard_annotation_capacity_exceeded', 'standardAnnotations', '可见标注超过60项预算。', '保留重点/峰谷标注，或显式选择TopN、窗口、分图。')
         if any(item.series not in annotation_names for item in style.series):
             return None
         if any(item.series not in annotation_names or item.label not in annotation_labels for item in style.points):
@@ -503,6 +537,41 @@ def save_standard_canvas(fig, output_path, policy):
                 bbox_inches="tight" if policy["crop"] == "tight" else None,
                 pad_inches=policy["padding"])
 
+def place_standard_legends(fig, policy):
+    if policy["style"]["legend_location"] != "auto" or policy["legend_position"] == "outside":
+        return
+    import math
+    from matplotlib.transforms import Bbox
+    for ax in fig.axes:
+        legend = ax.get_legend()
+        if legend is None or policy["legend_position"] == "auto" and len(legend.get_texts()) > 3:
+            continue
+        points, bars = [], []
+        for line in ax.lines:
+            if standard_series_name(line, policy) is None:
+                continue
+            points.extend(ax.transData.transform((x, y)) for x, y in zip(line.get_xdata(), line.get_ydata())
+                          if math.isfinite(x) and math.isfinite(y))
+        for container in ax.containers:
+            if standard_series_name(container, policy) is not None:
+                bars.extend(patch.get_window_extent() for patch in container.patches
+                            if math.isfinite(patch.get_width()) and math.isfinite(patch.get_height()))
+        best = None
+        for location in ("upper right", "upper left", "lower right", "lower left", "upper center", "lower center"):
+            legend.set_loc(location)
+            fig.canvas.draw()
+            bounds = legend.get_window_extent(fig.canvas.get_renderer())
+            if not fig.bbox.contains(bounds.x0, bounds.y0) or not fig.bbox.contains(bounds.x1, bounds.y1):
+                continue
+            score = sum(bounds.contains(x, y) for x, y in points)
+            score += sum(Bbox.intersection(bounds, bar) is not None for bar in bars)
+            score += 10 * sum(bounds.overlaps(other.get_legend().get_window_extent(fig.canvas.get_renderer()))
+                              for other in fig.axes if other is not ax and other.get_legend() is not None)
+            if best is None or score < best[0]:
+                best = (score, location)
+        if best is not None:
+            legend.set_loc(best[1])
+
 def finish_standard_layout(fig, policy):
     import textwrap
     from matplotlib.text import Annotation
@@ -519,7 +588,8 @@ def finish_standard_layout(fig, policy):
         for axis, ticks, setter in ((ax.xaxis, ax.get_xticks(), ax.set_xticks),
                                     (ax.yaxis, ax.get_yticks(), ax.set_yticks)):
             texts = [tick.get_text() for tick in axis.get_ticklabels()]
-            if any(len(text) > policy["label_wrap"] for text in texts):
+            is_category_axis = axis is (ax.yaxis if policy["horizontal"] else ax.xaxis)
+            if is_category_axis and any(len(text) > policy["label_wrap"] for text in texts):
                 setter(ticks, [textwrap.fill(text, width=policy["label_wrap"], break_long_words=True) for text in texts])
             for tick in axis.get_ticklabels():
                 tick.set_fontsize(policy["tick_font_size"])
@@ -540,6 +610,8 @@ def finish_standard_layout(fig, policy):
         fig.get_layout_engine().set(rect=(.02, reserved["footer_top"], .96,
             reserved["header_bottom"] - reserved["footer_top"]))
     fig.canvas.draw()
+    place_standard_legends(fig, policy)
+    fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
     if policy["crop"] == "canvas":
         for ax in fig.axes:
@@ -549,13 +621,16 @@ def finish_standard_layout(fig, policy):
                 if bounds.x0 < 0 or bounds.y0 < 0 or bounds.x1 > fig.bbox.width or bounds.y1 > fig.bbox.height:
                     raise ValueError("standard_chart_layout_unresolved: 图例超出画布，请增加右侧留白或使用自适应布局")
     annotations = [text for ax in fig.axes for text in ax.texts if isinstance(text, Annotation)]
+    obstacles = [ax.get_legend().get_window_extent(renderer).expanded(1.02, 1.05)
+                 for ax in fig.axes if ax.get_legend() is not None]
+    obstacles.extend(ax.title.get_window_extent(renderer) for ax in fig.axes if ax.title.get_text())
     placed = []
     for annotation in annotations:
         for attempt in range(16):
             # Exclude the leader line: only text glyph bounds define collisions.
             from matplotlib.text import Text
             bounds = Text.get_window_extent(annotation, renderer).expanded(1.04, 1.12)
-            if not any(bounds.overlaps(previous) for previous in placed):
+            if not any(bounds.overlaps(previous) for previous in [*placed, *obstacles]):
                 if policy["crop"] == "canvas" and (bounds.x0 < 0 or bounds.y0 < 0 or
                         bounds.x1 > fig.bbox.width or bounds.y1 > fig.bbox.height):
                     raise ValueError("standard_chart_layout_unresolved: 标注超出画布，请扩大尺寸或调整位置")
@@ -619,6 +694,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
             target.set_yticks(range(len(visible)), [formatted_labels[i] for i in visible])
             target.invert_yaxis()
             target.set_xlabel(meta["unit"])
+            target.set_xscale(policy["scale"], **({"linthresh": policy["linear_threshold"]} if policy["scale"] == "symlog" else {}))
         elif geometries[index] == "bar":
             members = [i for i, item in enumerate(targets) if item is target and geometries[i] == "bar"]
             group_width = canvas["style"]["bar_group_width"]
@@ -630,7 +706,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         visible_indexes.append(visible)
         if form != "barh":
             target.set_ylabel(f"{side} · {meta['unit']}" if mode == "dual" else meta["unit"])
-            target.set_yscale(policy["scale"])
+            target.set_yscale(policy["scale"], **({"linthresh": policy["linear_threshold"]} if policy["scale"] == "symlog" else {}))
             target.set_xticks(positions, standard_label_names(labels, canvas), rotation=45, ha="right")
         if mode == "panels":
             alias = overrides.get(name, {}).get("label") or name
@@ -644,6 +720,11 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         target.grid(axis="y", linestyle="--", alpha=.2)
         if policy["scale"] == "log":
             target.set_ylabel(target.get_ylabel() + "（对数刻度）")
+        elif policy["scale"] == "symlog":
+            if form == "barh":
+                target.set_xlabel(target.get_xlabel() + "（对称对数刻度）")
+            else:
+                target.set_ylabel(target.get_ylabel() + "（对称对数刻度）")
     visible_series = [[value if i in visible_indexes[j] else float("nan") for i, value in enumerate(values)]
                       for j, values in enumerate(series)]
     for number, (kind, series_index, first, last) in enumerate(annotations):
@@ -695,23 +776,28 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         inset = axes[0].inset_axes(policy["zoom_bounds"])
         local_values = []
         for index, values in enumerate(series):
-            if form == "bar":
+            if geometries[index] == "bar":
                 group_width = canvas["style"]["bar_group_width"]
-                width = group_width / len(series)
-                offsets = [position - group_width / 2 + width / 2 + index * width for position in positions]
-                inset.bar(offsets, values, width=width, color=colors(index), label=names[index])
+                members = [i for i, geometry in enumerate(geometries) if geometry == "bar"]
+                width = group_width / len(members)
+                offsets = [position - group_width / 2 + width / 2 + members.index(index) * width for position in positions[first:last + 1]]
+                artist = inset.bar(offsets, values[first:last + 1], width=width, color=colors(index), label=names[index])
             else:
-                inset.plot(positions, values, marker="o", color=colors(index), label=names[index])
+                artist = inset.plot(positions[first:last + 1], values[first:last + 1], marker="o", color=colors(index), label=names[index])[0]
+            artist._standard_labels = labels[first:last + 1]
             local_values.extend(value for value in values[first:last + 1] if math.isfinite(value))
         if not local_values:
             raise ValueError("standard_chart_empty_zoom")
         low, high = min(local_values), max(local_values)
         padding = (high - low) * .1 or abs(high) * .1 or 1
-        inset.set_xlim(first - .2, last + .2)
+        edge = canvas["style"]["bar_group_width"] / 2 + .08 if "bar" in geometries else .2
+        inset.set_xlim(first - edge, last + edge)
         if policy["scale"] == "log":
             inset.set_yscale("log")
             inset.set_ylim(low / 1.2, high * 1.2)
         else:
+            if policy["scale"] == "symlog":
+                inset.set_yscale("symlog", linthresh=policy["linear_threshold"])
             inset.set_ylim(low - padding, high + padding)
         inset.set_xticks(positions[first:last + 1], standard_label_names(labels, canvas)[first:last + 1], rotation=45, fontsize=7)
         inset.set_title("局部放大 · " + metadata[0]["unit"], fontsize=9)

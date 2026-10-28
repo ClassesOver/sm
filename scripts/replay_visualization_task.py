@@ -77,6 +77,8 @@ from smart_reporting.reporting.workflow.runtime.base import (
     _ANALYSIS_CODE_LEGACY_INSTRUCTIONS,
 )
 from smart_reporting.reporting.workflow.runtime.chart_inputs import (
+    ChartInputFile,
+    ChartInputMaterialization,
     fallback_plan,
     prepare_chart_inputs,
 )
@@ -217,6 +219,7 @@ async def run_frozen_benchmark_planner(
     variant: BenchmarkVariant,
     model: OpenAIChat,
     metrics_sink: list[dict] | None = None,
+    standard_routes: bool = False,
 ) -> tuple[dict, list[dict], dict]:
     """执行冻结章节的 planner，并返回可直接交给现有 Coding replay 的 payload。"""
 
@@ -226,6 +229,7 @@ async def run_frozen_benchmark_planner(
         task_kind=manifest.task_kind,
         variant=variant,
         planner_request=payloads["plannerRequest"],
+        standard_visualization=standard_routes,
     )
     coding_payload = payloads["executionContext"].get("codingPayload")
     task = coding_payload.get("task") if isinstance(coding_payload, dict) else None
@@ -1192,8 +1196,11 @@ async def main(
     disable_history_summary: bool = False,
     disable_metadata_budget: bool = False,
     chart_inputs: bool = True,
+    standard_routes: bool = False,
 ) -> int:
     configure_application_logging(debug=False)
+    if standard_routes and (task_kind != 'visualization' or not chart_inputs or benchmark_variant is BenchmarkVariant.LEGACY):
+        raise ValueError('standard-routes仅支持开启chart-inputs的candidate可视化回放。')
     if benchmark_extract_dir is not None:
         if not trace_id or not trace_identity or not acceptance_path or not model_config_path:
             raise ValueError(
@@ -1440,6 +1447,7 @@ async def main(
                         variant=benchmark_variant,
                         model=planner_model,
                         metrics_sink=planner_metrics,
+                        **({'standard_routes': True} if standard_routes else {}),
                     ),
                     seconds=remaining_wall_timeout(),
                 )
@@ -1571,24 +1579,45 @@ async def main(
                     )
 
                 output_preflight = validate_analysis_output
-            phase = "coding"
-            result = await run_with_wall_timeout(
-                runner.run(
+            phase = "standard-routes" if standard_routes else "coding"
+            replay_context = RunContext(run_id=f'{task.task_kind}-replay',
+                                        session_id=f'{task.task_kind}-replay', session_state={})
+            if standard_routes:
+                from smart_reporting.reporting.workflow.runtime.standard_chart_routing import (
+                    run_standard_chart_routes,
+                )
+
+                if not chart_inputs_applied:
+                    raise ValueError('standard-routes需要成功物化chart-input，不能将普通Coding回放记为标准命中。')
+                plan = VisualizationPlanDraft.model_validate(payload['facts']['visualizationPlan'])
+                entries = tuple(payload['facts']['chartInputs'])
+                files = []
+                for path in sorted({entry['path'] for entry in entries}):
+                    raw, _mime = await workspace.afile_bytes(task.task_id, path)
+                    files.append(ChartInputFile(path, raw))
+                bound_ids = {entry['chartId'] for entry in entries}
+                inputs = ChartInputMaterialization(files=tuple(files), entries=entries,
+                    fallback_chart_ids=frozenset(chart.chart_id for chart in plan.charts if chart.chart_id not in bound_ids))
+                execution = run_standard_chart_routes(runner, task, workspace, plan, inputs, payload['facts'], replay_context)
+            else:
+                execution = runner.run(
                     task,
                     workspace,
                     payload["facts"],
-                    run_context=RunContext(
-                        run_id=f"{task.task_kind}-replay",
-                        session_id=f"{task.task_kind}-replay",
-                        session_state={},
-                    ),
+                    run_context=replay_context,
                     output_preflight=output_preflight,
-                ),
+                )
+            result = await run_with_wall_timeout(
+                execution,
                 seconds=remaining_wall_timeout(),
             )
             result_payload = {
                 "status": "passed",
                 "chartInputs": chart_inputs_applied,
+                "standardRoutes": standard_routes,
+                "standardChartRoutes": list(getattr(result, 'standard_chart_routes', ())),
+                "routeCounts": {route: sum(item['route'] == route for item in getattr(result, 'standard_chart_routes', ()))
+                                for route in ('standard', 'coding')},
                 "compactContinuation": compact_continuation,
                 "historySummaryEnabled": not disable_history_summary,
                 "metadataBudgetEnabled": not disable_metadata_budget,
@@ -1698,7 +1727,9 @@ async def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=False)
+    parser.add_argument('--check-standard-readiness', action='store_true',
+                        help='只检查当前进程模型配置是否存在；不读取或输出凭据值、不调用模型。')
     source.add_argument("--run-id")
     source.add_argument("--payload", type=Path)
     source.add_argument("--benchmark-bundle", type=Path)
@@ -1744,6 +1775,8 @@ if __name__ == "__main__":
         help="V2 对照：candidate 可视化是否预物化 chart-input（默认与生产一致为 on）。",
     )
     parser.add_argument("--variant", choices=("legacy", "candidate"))
+    parser.add_argument('--standard-routes', action='store_true',
+                        help='启用生产标准预检、逐图回退与最终视觉/回执验收；planner使用生产标准参数指令。')
     parser.add_argument(
         "--coding-only-payload",
         type=Path,
@@ -1768,6 +1801,17 @@ if __name__ == "__main__":
         help="只校验 bundle payload 和输入身份，不创建模型或执行 Coding Agent。",
     )
     args = parser.parse_args()
+    if args.check_standard_readiness:
+        checks = {key: bool(os.environ.get(key)) for key in ('OPENAI_API_KEY', 'OPENAI_BASE_URL')}
+        readiness = {'status': 'configured_not_probed' if all(checks.values()) else 'blocked_missing_model_configuration',
+                     'configurationPresence': checks, 'modelRequestsExecuted': 0,
+                     'onlinePlannerValidated': False, 'codingRepairValidated': False,
+                     'independentVisualReviewValidated': False}
+        write_replay_result(args.output, readiness)
+        print(json.dumps(readiness, ensure_ascii=False))
+        raise SystemExit(0 if all(checks.values()) else 2)
+    if not any((args.run_id, args.payload, args.benchmark_bundle, args.planner_request, args.trace_id)):
+        parser.error('必须提供回放来源；仅检查模型配置时使用--check-standard-readiness。')
     if args.validate_only and args.payload is None and args.benchmark_bundle is None:
         parser.error("--validate-only 必须与 --payload 或 --benchmark-bundle 一起使用")
     if args.validate_only and args.prepare_only is not None:
@@ -1836,4 +1880,5 @@ if __name__ == "__main__":
         disable_history_summary=args.disable_history_summary,
         disable_metadata_budget=args.disable_metadata_budget,
         chart_inputs=args.chart_inputs == "on",
+        standard_routes=args.standard_routes,
     )))
