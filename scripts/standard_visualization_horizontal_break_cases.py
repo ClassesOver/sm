@@ -37,7 +37,7 @@ def horizontal_break_cases():
                 params = parameters("barh", standard_value_fields=["actual", "budget"],
                     standard_display_unit="万元", standard_break=spec,
                     standard_axes={"allowNulls": mode == "missing"},
-                    standard_annotations=[{"kind": "values", "series": "actual", "position": "left" if mode=="negative" else "right"}],
+                    standard_annotations=[{"kind": "values", "series": "actual", "position": "auto" if mode=="negative" else "right"}],
                     standard_style={"labelRotation": 0, "barGroupWidth": .8, "grid": "x", "points": [{"series": "actual", "label": labels[1], "color": "#b55d68"}]},
                     standard_canvas={"sizeMode": "fixed", "width": 16, "height": 8, "dpi": 100,
                         "layout": {3: "tight", 17: "constrained", 51: "manual"}[seed]})
