@@ -18,6 +18,7 @@ from .phase_models import (
     VisualizationPlanDraft,
 )
 from .standard_chart_alignment import align_chart_sources
+from .standard_chart_domains import DOMAIN_SCRIPT, prepare_standard_domains
 from .standard_chart_encoding import (
     ENCODING_SCRIPT,
     StandardChartEncodingError,
@@ -500,11 +501,28 @@ def _standard_visualization_script(
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
                         axes.model_dump(), metas, total_field, canvas_policy))
+    for chart, config in zip(plan.charts, configs, strict=True):
+        if getattr(chart, 'standard_domains', None) is None:
+            continue
+        path = config[0]
+        document = (aligned[path][0] if path in aligned else
+                    json.loads(next(source.content for source in inputs.files if source.path == path)))
+        try:
+            prepare_standard_domains(chart, config, document, displays.get(path, (1, None)))
+        except StandardChartEncodingError as error:
+            _reject(error.code, error.parameter, str(error), '范围与刻度使用显示单位；保留所有数据或明确声明并说明显示裁切。')
     has_statistics = any(config[4] in {'waterfall', 'boxplot'} for config in configs)
+    has_domains = any('domains' in config[14] for config in configs)
+    layout = _LAYOUT
+    if has_domains:
+        layout = layout.replace('if isinstance(text, Annotation)]', 'if isinstance(text, Annotation) and text.get_visible()]')
+        layout = layout.replace('    finish_standard_presentation(fig, policy)',
+                                '    apply_standard_domains(fig, policy)\n    finish_standard_presentation(fig, policy)')
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
-            + '\n' + PRESENTATION_SCRIPT + _LAYOUT + ENCODING_SCRIPT + _ADVANCED
+            + '\n' + PRESENTATION_SCRIPT + layout + ENCODING_SCRIPT + _ADVANCED
             + (STATISTICS_SCRIPT if has_statistics else '')
+            + (DOMAIN_SCRIPT if has_domains else '')
             + _BODY.replace('__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else ''))
 
 

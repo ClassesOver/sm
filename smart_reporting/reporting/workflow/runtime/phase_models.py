@@ -274,6 +274,50 @@ class StandardChartAnnotation(StrictModel):
     caption: str | None = Field(default=None, max_length=60, description='参考线或重点标注的业务简称；数值仍从冻结数据生成')
 
 
+class StandardChartAxisDomain(StrictModel):
+    minimum: float | None = Field(default=None, alias='min', strict=True, allow_inf_nan=False)
+    maximum: float | None = Field(default=None, alias='max', strict=True, allow_inf_nan=False)
+    ticks: tuple[Annotated[float, Field(strict=True, allow_inf_nan=False)], ...] = Field(default=(), max_length=16)
+    tick_format: Literal['auto', 'number', 'scientific'] = Field(default='auto', alias='tickFormat')
+    decimals: int | None = Field(default=None, ge=0, le=6)
+    out_of_range: Literal['reject', 'annotate'] = Field(default='reject', alias='outOfRange',
+        description='默认拒绝裁切数据；annotate显式允许缩小显示范围，并注明超界图形端点数量；底层值保持不变。')
+
+    @model_validator(mode='after')
+    def validate_domain(self) -> StandardChartAxisDomain:
+        if self.minimum is not None and self.maximum is not None and self.minimum >= self.maximum:
+            raise ValueError('轴范围min必须小于max')
+        if len(set(self.ticks)) != len(self.ticks) or any(a >= b for a,b in zip(self.ticks,self.ticks[1:])):
+            raise ValueError('数值刻度须严格递增且唯一')
+        if any(self.minimum is not None and value < self.minimum or self.maximum is not None and value > self.maximum for value in self.ticks):
+            raise ValueError('刻度必须在声明范围内')
+        if self.minimum is None and self.maximum is None and not self.ticks and self.tick_format == 'auto' and self.decimals is None:
+            raise ValueError('轴参数至少指定范围、刻度或格式')
+        return self
+
+
+class StandardChartPanelDomain(StrictModel):
+    series: str = Field(min_length=1, max_length=200)
+    domain: StandardChartAxisDomain
+
+
+class StandardChartDomains(StrictModel):
+    left: StandardChartAxisDomain | None = Field(default=None, description='单轴/左轴值域；横向图作用于数值X轴；panels作为各面板默认值域。均使用换算后的显示单位。')
+    right: StandardChartAxisDomain | None = Field(default=None, description='仅dual右侧值轴，使用右轴显示单位。')
+    x: StandardChartAxisDomain | None = Field(default=None, description='仅scatter/bubble的数值X轴；类别轴不可设数值范围。')
+    zoom: StandardChartAxisDomain | None = Field(default=None, description='仅zoom局部子图的值轴；不改变主图。')
+    panels: tuple[StandardChartPanelDomain, ...] = Field(default=(), max_length=8,
+        description='仅panels按冻结系列名覆盖独立值域。')
+
+    @model_validator(mode='after')
+    def validate_targets(self) -> StandardChartDomains:
+        if not any((self.left,self.right,self.x,self.zoom,self.panels)):
+            raise ValueError('至少声明一个数值轴参数')
+        if len({item.series for item in self.panels}) != len(self.panels):
+            raise ValueError('同面板不能重复设置值域')
+        return self
+
+
 class StandardChartAxes(StrictModel):
     mode: Literal['single', 'dual', 'panels', 'zoom'] = 'single'
     scale: Literal['linear', 'log', 'symlog'] = 'linear'
@@ -614,6 +658,8 @@ class ChartDraft(StrictModel):
         default_factory=StandardChartAxes, alias='standardAxes',
         description='显式轴策略：dual用rightFields指定右轴系列；panels逐系列共享横轴分面；log只允许严格正数折线；zoom用冻结标签zoomStart/zoomEnd选择局部放大，主图保持完整。',
     )
+    standard_domains: StandardChartDomains | None = Field(default=None, alias='standardDomains',
+        description='数值轴显示范围/刻度/格式，数值按显示单位填写；left/right/x/zoom/panels显式定位，默认不得裁切数据，缩小显示须outOfRange=annotate且说明超界。')
     standard_canvas: StandardChartCanvas = Field(
         default_factory=StandardChartCanvas, alias='standardCanvas',
         description='统一画布：width/height单位英寸，dpi、自动/固定尺寸、布局、裁切、留白、换行、字号及图例位置。固定尺寸且crop=canvas时导出像素由尺寸乘DPI确定。',

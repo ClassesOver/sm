@@ -133,6 +133,8 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
     "standardBands上下界逐行读取已绑定列，按登记单位换算并保持缺失断带，不能估算区间或越过原范围。",
     "standardWaterfall必须区分冻结绝对值与有符号增减，不排序截取贡献链，小计/终点与累计对账且不得隐式重置。"
     "standardDistribution仅用绑定的原始组内样本，由Matplotlib绘线性四分位/IQR箱线；缺失不补零，注明有效n，隐藏异常点须说明。",
+    "standardDomains以显示单位控制指定数值轴的范围、刻度和格式；保留原始坐标、范围带和堆叠总高，不按范围裁掉输入行或将超界值压成边界值。"
+    "仅outOfRange=annotate允许裁切显示，必须注明超界数量，隐藏图外数值标注；左右轴、各分面和局部轴保持独立，不截取类别轴。",
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[4:6],
     *_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS,
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[9:11],

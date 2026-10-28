@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
+from scripts.standard_visualization_domain_cases import domain_cases
 from scripts.standard_visualization_geometry_cases import geometry_cases
 from scripts.standard_visualization_pipeline_cases import pipeline_cases
 from scripts.standard_visualization_statistics_cases import statistics_cases
@@ -28,6 +29,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     StandardChartCanvas,
     StandardChartDerivation,
     StandardChartDistribution,
+    StandardChartDomains,
     StandardChartEncoding,
     StandardChartPresentation,
     StandardChartSource,
@@ -43,7 +45,8 @@ from smart_reporting.reporting.workflow.runtime.standard_visualization import (
 MODELS = {'standard_canvas': StandardChartCanvas, 'standard_style': StandardChartStyle,
           'standard_presentation': StandardChartPresentation, 'standard_axes': StandardChartAxes,
           'standard_view': StandardChartView, 'standard_encoding': StandardChartEncoding,
-          'standard_waterfall': StandardChartWaterfall, 'standard_distribution': StandardChartDistribution}
+          'standard_waterfall': StandardChartWaterfall, 'standard_distribution': StandardChartDistribution,
+          'standard_domains': StandardChartDomains}
 LIST_MODELS = {'standard_annotations': StandardChartAnnotation, 'standard_sources': StandardChartSource,
                'standard_derivations': StandardChartDerivation, 'standard_steps': StandardChartStep,
                'standard_bands': StandardChartBand}
@@ -214,6 +217,26 @@ def capture(fig, *args, **kwargs):
                 mismatches.append("wrong_box_fliers:"+expected["name"])
         if "color" in expected and to_hex(boxes[0].get_facecolor())!=expected["color"]:
             mismatches.append("wrong_box_color:"+expected["name"])
+    for expected in expectations.get("domains", []):
+        target=fig.axes[expected.get("index",0)]
+        if expected.get("inset"):
+            target=target.child_axes[0]
+        domain_horizontal=expected["coordinate"]=="x"
+        limits=target.get_xlim() if domain_horizontal else target.get_ylim()
+        if any(not same_value(actual,wanted) for actual,wanted in zip(limits,expected["limits"])):
+            mismatches.append("wrong_domain_limits:"+expected["coordinate"])
+        if "ticks" in expected:
+            ticks=target.get_xticks() if domain_horizontal else target.get_yticks()
+            if len(ticks)!=len(expected["ticks"]) or any(not same_value(a,b) for a,b in zip(ticks,expected["ticks"])):
+                mismatches.append("wrong_domain_ticks:"+expected["coordinate"])
+        if "tickLabels" in expected:
+            labels=target.get_xticklabels() if domain_horizontal else target.get_yticklabels()
+            if [text.get_text() for text in labels]!=expected["tickLabels"]:
+                mismatches.append("wrong_domain_format:"+expected["coordinate"])
+        axis=target.xaxis if domain_horizontal else target.yaxis
+        boxes=[text.get_window_extent(renderer) for value,text in zip(axis.get_ticklocs(),axis.get_ticklabels()) if text.get_visible() and limits[0]<=value<=limits[1]]
+        if any(left.overlaps(right) for i,left in enumerate(boxes) for right in boxes[i+1:]):
+            mismatches.append("overlapping_domain_ticks:"+expected["coordinate"])
     visible_text = "\\n".join(text.get_text() for text in drawn if text.get_visible())
     for text in expectations.get("texts", []):
         if text not in visible_text:
@@ -434,7 +457,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
-    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'all'], default='basic')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -447,6 +470,8 @@ def main():
         cases.extend(geometry_cases())
     if args.suite in {'statistics', 'all'}:
         cases.extend(statistics_cases())
+    if args.suite in {'domains', 'all'}:
+        cases.extend(domain_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []
