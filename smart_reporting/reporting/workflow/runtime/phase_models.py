@@ -277,6 +277,12 @@ class StandardChartAxes(StrictModel):
     scale: Literal['linear', 'log'] = 'linear'
     zero_baseline: bool = Field(default=False, alias='zeroBaseline')
     right_fields: tuple[str, ...] = Field(default=(), alias='rightFields', max_length=8)
+    allow_nulls: bool = Field(default=False, alias='allowNulls', description='折线/普通柱图保留null为空位，不补零；堆叠不支持。')
+    left_display_unit: str | None = Field(default=None, alias='leftDisplayUnit', max_length=30)
+    right_display_unit: str | None = Field(default=None, alias='rightDisplayUnit', max_length=30)
+    panel_limit: int | None = Field(default=None, alias='panelLimit', ge=1, le=60,
+                                   description='仅barh+panels，各系列独立按数值排序取前N项。')
+    panel_descending: bool = Field(default=True, alias='panelDescending')
     zoom_start: str | None = Field(default=None, alias='zoomStart', max_length=200)
     zoom_end: str | None = Field(default=None, alias='zoomEnd', max_length=200)
     zoom_bounds: tuple[
@@ -301,10 +307,31 @@ class StandardChartSource(StrictModel):
     series_name: str = Field(alias='seriesName', min_length=1, max_length=200)
     category_field: str | None = Field(default=None, alias='categoryField', max_length=200)
     category_value: str | None = Field(default=None, alias='categoryValue', max_length=200)
+    label_mode: Literal['exact', 'month'] = Field(default='exact', alias='labelMode')
+    excluded_labels: tuple[str, ...] = Field(default=(), alias='excludedLabels', max_length=60)
+
+
+class StandardChartView(StrictModel):
+    """Explicit transformations of identity-checked rows, never model supplied data."""
+    kind: Literal['group', 'pivot']
+    label_field: str = Field(alias='labelField', min_length=1, max_length=200)
+    value_fields: tuple[str, ...] = Field(alias='valueFields', min_length=1, max_length=8)
+    series_field: str | None = Field(default=None, alias='seriesField', max_length=200)
+    series_values: tuple[str, ...] = Field(default=(), alias='seriesValues', max_length=8)
+
+
+class StandardChartDerivation(StrictModel):
+    kind: Literal['ratio_percent', 'difference', 'mom_percent']
+    name: str = Field(min_length=1, max_length=200)
+    numerator: str = Field(min_length=1, max_length=200)
+    denominator: str | None = Field(default=None, max_length=200)
+    label_field: str | None = Field(default=None, alias='labelField', max_length=200)
 
 
 class StandardChartSeriesStyle(StrictModel):
     series: str = Field(min_length=1, max_length=200)
+    label: str | None = Field(default=None, max_length=200)
+    geometry: Literal['auto', 'line', 'bar'] = 'auto'
     color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
     line_style: Literal['-', '--', '-.', ':'] = Field(default='-', alias='lineStyle')
     line_width: float = Field(default=2, alias='lineWidth', ge=.5, le=6, allow_inf_nan=False)
@@ -322,7 +349,8 @@ class StandardChartPointStyle(StrictModel):
 
 
 class StandardChartOrder(StrictModel):
-    mode: Literal['source', 'reverse', 'label', 'value', 'explicit'] = 'source'
+    mode: Literal['source', 'reverse', 'label', 'value', 'max_abs', 'explicit'] = 'source'
+    fields: tuple[str, ...] = Field(default=(), max_length=8)
     field: str | None = Field(default=None, max_length=200)
     descending: bool = False
     labels: tuple[str, ...] = Field(default=(), max_length=60)
@@ -331,13 +359,15 @@ class StandardChartOrder(StrictModel):
 
     @model_validator(mode='after')
     def validate_order(self) -> StandardChartOrder:
+        if (self.mode == 'max_abs') != bool(self.fields):
+            raise ValueError('最大绝对值排序必须且只能指定冻结字段集合')
         if (self.mode == 'value') != (self.field is not None):
             raise ValueError('数值排序必须且只能指定一个冻结字段')
         if self.exclude_missing and self.mode != 'value':
             raise ValueError('排除空值仅适用于明确的数值排序')
         if (self.mode == 'explicit') != bool(self.labels):
             raise ValueError('显式排序必须且只能提供标签顺序')
-        if self.descending and self.mode not in {'value', 'label'}:
+        if self.descending and self.mode not in {'value', 'label', 'max_abs'}:
             raise ValueError('降序仅适用于数值或标签排序')
         return self
 
@@ -489,6 +519,14 @@ class ChartDraft(StrictModel):
     standard_sources: tuple[StandardChartSource, ...] = Field(
         default=(), alias='standardSources', max_length=8,
         description='多来源作图显式选择：sourceIndex按本图chart-input顺序从0计数，labelField/valueField必须是来源现有列，seriesName为唯一图例名称。标签集合必须完全一致，单位只从冻结元数据读取。',
+    )
+    standard_label_field: str | None = Field(default=None, alias='standardLabelField', max_length=200,
+                                           description='显式标签列；忽略未选择的其他文本辅助列，视图转换后仍须存在。')
+    standard_view: StandardChartView | None = Field(default=None, alias='standardView',
+        description='group按labelField对valueFields求和（仅绑定输入行）；pivot以seriesField的seriesValues将一个度量透视为系列，不合并重复单元或填零。')
+    standard_derivations: tuple[StandardChartDerivation, ...] = Field(
+        default=(), alias='standardDerivations', max_length=8,
+        description='视图后计算新列：ratio_percent/difference要求同单位numerator/denominator；mom_percent指定numerator/labelField并验证月份连续。name不得覆盖原列，缺失基数保留null。',
     )
     standard_label_fields: tuple[str, ...] = Field(
         default=(), alias='standardLabelFields', max_length=3,

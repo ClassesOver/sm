@@ -3,10 +3,11 @@ import json
 import math
 
 from .standard_chart_presentation import valid_standard_metadata
+from .standard_chart_transform import month_label
 
 
-def align_chart_sources(entries, files, selections):
-    if len(entries) < 2 or not selections or len(selections) > 8:
+def align_chart_sources(entries, files, selections, *, selected_labels=(), allow_nulls=False):
+    if not entries or not selections or len(selections) > 8:
         return None
     names = [selection.series_name for selection in selections]
     if len(names) != len(set(names)) or 'period' in names:
@@ -42,16 +43,27 @@ def align_chart_sources(entries, files, selections):
             if category_field not in source_columns:
                 return None
             rows = [row for row in rows if row[source_columns.index(category_field)] == category_value]
-        if not 1 <= len(rows) <= 60:
-            return None
         label_index = source_columns.index(selection.label_field)
         value_index = source_columns.index(selection.value_field)
+        rows = [row for row in rows if row[label_index] not in getattr(selection, 'excluded_labels', ())]
         current_labels = [row[label_index] for row in rows]
         values = [row[value_index] for row in rows]
-        if (any(not isinstance(label, str) or not label for label in current_labels)
+        if getattr(selection, 'label_mode', 'exact') == 'month':
+            try:
+                current_labels = [month_label(label) for label in current_labels]
+            except ValueError:
+                return None
+        if selected_labels:
+            if len(set(selected_labels)) != len(selected_labels) or not set(selected_labels).issubset(current_labels):
+                return None
+            pairs = [(label, value) for label, value in zip(current_labels, values, strict=True) if label in selected_labels]
+            current_labels, values = map(list, zip(*pairs, strict=True))
+        if (not 1 <= len(current_labels) <= 60
+                or any(not isinstance(label, str) or not label for label in current_labels)
                 or len(set(current_labels)) != len(current_labels)
-                or any(not isinstance(value, (int, float)) or isinstance(value, bool)
-                       or not math.isfinite(value) for value in values)):
+                or any(not (allow_nulls and value is None) and (
+                    not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(value)) for value in values)):
             return None
         if labels is None:
             labels = current_labels

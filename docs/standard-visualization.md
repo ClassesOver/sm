@@ -1,5 +1,30 @@
 # 标准可视化
 
+## OS报告缺口标准化（2026-10-28）
+
+新增参数覆盖本报告此前需要改绑、裁月、拆图或替代图形的情况：
+
+- `standardLabelField`：明确标签列，多文本辅助列不会被误判成长表分类。
+- `standardView`：`group`按`labelField`对`valueFields`求和，复用冻结事实的`additive_group_totals`；只汇总绑定行，拒绝缺失/非有限数和百分比求和。`pivot`用`seriesField`及显式`seriesValues`将一个度量透视成多个系列；重复或缺失单元不合并、不填零。
+- `standardDerivations`：新列名`name`与`numerator/denominator`声明同单位`ratio_percent`或`difference`；`mom_percent`指定`numerator/labelField`，验证连续ISO月份后计算环比。衍生列不得覆盖原字段，首月和非正基数保留缺失。不会为原未登记比例猜单位。
+- `standardPresentation.order={mode:"max_abs",fields:[...],descending:true}`：按多列最大绝对值排序，支持正负变化额；要求度量单位/比例尺度一致。
+- `standardSources[].labelMode="month"`显式将ISO日/月标签规范为年月，`excludedLabels`明确排除合计，`standardLabels`选择共同窗口；重复月份、缺月和未使用绑定来源仍拒绝。
+- `standardAxes.allowNulls=true`允许折线/普通柱图保留缺失空位和说明；不会补零，不应用于堆叠。`leftDisplayUnit/rightDisplayUnit`分别使用登记换算，不能提交自由倍率。
+- `standardStyle.series[].geometry="bar"|"line"`组合共享轴柱线图；`label`仅替换图例显示名称，冻结系列身份和数值审计不变。
+- 横向柱图配合`standardAxes={mode:"panels",panelLimit:10,panelDescending:true}`，一张图各指标独立排序TopN，逐柱颜色仍绑定冻结标签；标注预算按实际可见行计数。可见峰谷标注以该面板实际展示范围为准。
+
+所有派生视图登记转换参数和`bound_input_rows_only`范围，运行前仍核验每份原始输入SHA256；保留原数据，不覆盖原文件。模型指令与结构化schema同步开放这些参数，标准路线继续保留Coding修复及独立视觉检查。
+
+可复现回放：
+
+```bash
+PYTHONPATH=. python scripts/replay_os_standard_visualization.py REPORT.tar.xz OUTPUT
+```
+
+回放校验原包59项登记资源的size/SHA256、21份图表输入；缺失单位仅由对应登记事实重新物化，逐项确认columns/rows不变。16张图全部在原来源绑定上生成一张标准图，通过独立数值/颜色、可见文本边界及类别标签碰撞检查：包括11类×两期间透视、原3来源月度对齐、12个月缺失值双轴、项目明细分组和汇总比率、同图双面板独立Top10，以及同轴柱线组合。不再用裁月、改绑、拆图或替代图形计作覆盖。保留原图/标准图对照PDF、逐图PNG、参数、独立预期与审计。回放失败返回非零状态。
+
+原有222场景重新执行后仍全部符合各自预期：146成图、71预检回退、2身份拒绝、2布局修复、1schema拒绝。新增22项转换/复杂图契约测试，包括换业务标签、乱序数据及1e-12至1e20量级，累计本轮268项相关测试通过；5模块mypy、Ruff及diff检查通过。以上是离线人工选参回放，不代表线上模型自动命中或独立视觉验收通过，也不承诺任意新数据自动可用。
+
 ## 扩大覆盖至222场景（2026-10-28）
 
 回放CLI增加 `--suite basic|extended|all`（默认basic）。extended在独立的 `scripts/standard_visualization_stress_cases.py` 中声明100个新场景及预期：2/3/8来源各自随机打乱后按原标签对齐；缺标签、重复、空元数据、布尔数值、未使用来源、重复系列名、期间/百分比尺度不一致；主/次来源执行前被改动；百分比小数与百分数、元/万元/亿元换算、复合单位不能错误降维；闰日/跨年/重复月份/非法日期/Unicode非逐字一致标签；2/4系列×双轴/分面/对数/局部放大×正数/零/负数/混合单位；排序后的逐柱颜色、执行率、冻结摘要；长表缺口；布局/图例组合；20/30/60个平坦值标注及标注超预算、过小画布。

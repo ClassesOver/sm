@@ -22,6 +22,7 @@ from .standard_chart_presentation import (
     prepare_standard_presentation,
     valid_standard_metadata,
 )
+from .standard_chart_transform import transform_chart_document
 
 
 def standard_visualization_script(
@@ -48,6 +49,7 @@ def _standard_visualization_script(
         canvas = getattr(chart, 'standard_canvas', StandardChartCanvas())
         style = getattr(chart, 'standard_style', StandardChartStyle())
         presentation = getattr(chart, 'standard_presentation', StandardChartPresentation())
+        axes = getattr(chart, 'standard_axes', StandardChartAxes())
         if chart.renderer != 'matplotlib' or chart.interactive_path:
             return None
         form = {'line': 'line', '折线图': 'line', '多系列折线图': 'line',
@@ -89,14 +91,20 @@ def _standard_visualization_script(
             selected = ('value',)
             form = 'bar'
         selections = getattr(chart, 'standard_sources', ())
-        if len(entries) > 1:
-            alignment = align_chart_sources(entries, inputs.files, selections)
+        if len(entries) > 1 or selections:
+            alignment = align_chart_sources(entries, inputs.files, selections,
+                                            selected_labels=getattr(chart, 'standard_labels', ()),
+                                            allow_nulls=axes.allow_nulls)
             if alignment is None:
                 return None
             document, identities = alignment
             aligned[source.path] = (document, identities)
-        elif selections:
-            return None
+        view = getattr(chart, 'standard_view', None)
+        derivations = getattr(chart, 'standard_derivations', ())
+        if view is not None or derivations:
+            document = transform_chart_document(document, view, derivations)
+            dependencies = aligned.get(source.path, (None, [(source.path, source.sha256)]))[1]
+            aligned[source.path] = (document, dependencies)
         columns, rows = document['columns'], document['rows']
         if (not isinstance(columns, list) or not columns
                 or any(not isinstance(column, str) or not column for column in columns)
@@ -104,7 +112,10 @@ def _standard_visualization_script(
                 or not 1 <= len(rows) <= 480
                 or any(not isinstance(row, list) or len(row) != len(columns) for row in rows)):
             return None
-        label = 'period' if 'period' in columns else 'label' if 'label' in columns else None
+        explicit_label = getattr(chart, 'standard_label_field', None)
+        label = explicit_label or ('period' if 'period' in columns else 'label' if 'label' in columns else None)
+        if label is not None and label not in columns:
+            return None
         if label is None:
             text_columns = [column for column in columns
                             if all(isinstance(row[columns.index(column)], str) for row in rows)]
@@ -136,6 +147,8 @@ def _standard_visualization_script(
         category_columns = [column for column in other_columns
                             if all(isinstance(row[columns.index(column)], str) for row in rows)]
         category = category_columns[0] if len(category_columns) == 1 else None
+        if explicit_label:
+            category = None
         values = [column for column in other_columns if column != category]
         if selected:
             if len(set(selected)) != len(selected) or not set(selected).issubset(values):
@@ -143,9 +156,13 @@ def _standard_visualization_script(
             values = list(selected)
         if not 1 <= len(values) <= 8 or (category and (label != 'period' or len(values) != 1)):
             return None
-        if any(not isinstance(row[columns.index(column)], (int, float))
+        nullable = axes.allow_nulls and form in {'line', 'bar', 'barh'} and not category
+        if any(not (nullable and row[columns.index(column)] is None) and (
+               not isinstance(row[columns.index(column)], (int, float))
                or isinstance(row[columns.index(column)], bool)
-               or not math.isfinite(row[columns.index(column)]) for row in rows for column in values):
+               or not math.isfinite(row[columns.index(column)])) for row in rows for column in values):
+            return None
+        if any(all(row[columns.index(column)] is None for row in rows) for column in values):
             return None
         metadata = document.get('columnMeta') or {}
         if not isinstance(metadata, dict):
@@ -153,16 +170,39 @@ def _standard_visualization_script(
         metas = [metadata.get(column, {}) for column in values]
         if any(not valid_standard_metadata(meta) for meta in metas):
             return None
-        axes = getattr(chart, 'standard_axes', StandardChartAxes())
-        advanced = axes.mode != 'single' or axes.scale != 'linear'
+        mixed = any(item.geometry != 'auto' for item in style.series)
+        advanced = axes.mode != 'single' or axes.scale != 'linear' or mixed
+        if mixed and (form not in {'line', 'bar'} or axes.mode in {'panels', 'zoom'}):
+            return None
+        if axes.panel_limit is not None and (axes.mode != 'panels' or form != 'barh'):
+            return None
+        if axes.right_display_unit and axes.mode != 'dual':
+            return None
+        axis_units = []
+        axis_factors = []
+        for field, meta in zip(values, metas, strict=True):
+            requested = axes.right_display_unit if field in axes.right_fields else axes.left_display_unit
+            requested = requested or (getattr(chart, 'standard_display_unit', None) if advanced else None)
+            factor = unit_conversion_scale(meta.get('unit'), requested) if requested else 1
+            if factor is None:
+                return None
+            axis_factors.append(float(factor))
+            axis_units.append(requested or meta.get('unit'))
         display_unit = getattr(chart, 'standard_display_unit', None)
         if display_unit:
             scales = [unit_conversion_scale(meta.get('unit'), display_unit) for meta in metas]
-            if advanced or None in scales or len(set(scales)) != 1:
+            if not advanced and (None in scales or len(set(scales)) != 1):
                 return None
-            scale = scales[0]
-            assert scale is not None
-            displays[source.path] = (float(scale), display_unit)
+            if not advanced:
+                scale = scales[0]
+                assert scale is not None
+                displays[source.path] = (float(scale), display_unit)
+        if not advanced and axes.left_display_unit:
+            if display_unit:
+                return None
+            if len(set(axis_factors)) != 1 or len(set(axis_units)) != 1:
+                return None
+            displays[source.path] = (axis_factors[0], axes.left_display_unit)
         auxiliary_fields = tuple(getattr(chart, 'standard_label_fields', ()))
         if auxiliary_fields:
             if (advanced or len(auxiliary_fields) != len(set(auxiliary_fields))
@@ -183,7 +223,9 @@ def _standard_visualization_script(
         if advanced:
             if axes.zero_baseline and axes.scale == 'log':
                 return None
-            if category or form not in {'line', 'bar'} or any(not meta.get('unit') for meta in metas):
+            if (category or form not in {'line', 'bar', 'barh'}
+                    or form == 'barh' and axes.mode != 'panels'
+                    or any(not meta.get('unit') for meta in metas)):
                 return None
             if axes.mode == 'dual' and (
                 not right or len(right) != len(set(right))
@@ -194,14 +236,14 @@ def _standard_visualization_script(
                       [[index for index, value in enumerate(values) if value not in right],
                        [values.index(value) for value in right]] if axes.mode == 'dual' else
                       [[index] for index in range(len(values))])
-            if any(len({(metas[index].get('unit'), metas[index].get('isPercent'))
+            if any(len({(axis_units[index], metas[index].get('isPercent'))
                         for index in group}) != 1 for group in groups):
                 return None
             windows = [meta.get('periods') for meta in metas]
             if any(window != windows[0] for window in windows):
                 return None
             if axes.scale == 'log' and (form != 'line' or any(
-                row[columns.index(column)] <= 0 for row in rows for column in values
+                row[columns.index(column)] is not None and row[columns.index(column)] <= 0 for row in rows for column in values
             )):
                 return None
             if axes.mode == 'zoom' and (
@@ -264,6 +306,8 @@ def _standard_visualization_script(
         for specification in getattr(chart, 'standard_annotations', ()):
             kind = specification.kind
             if kind == 'range':
+                if axes.mode == 'panels' and form == 'barh':
+                    return None
                 if (specification.series is not None or specification.label not in annotation_labels
                         or specification.end_label not in annotation_labels):
                     return None
@@ -282,6 +326,14 @@ def _standard_visualization_script(
                 if specification.label not in annotation_labels:
                     return None
                 first = annotation_labels.index(specification.label)
+                if not category and rows[first][columns.index(name)] is None:
+                    return None
+                if axes.mode == 'panels' and form == 'barh' and axes.panel_limit is not None:
+                    visible = sorted((i for i in range(len(rows)) if rows[i][columns.index(name)] is not None),
+                                     key=lambda i: rows[i][columns.index(name)],
+                                     reverse=axes.panel_descending)[:axes.panel_limit]
+                    if first not in visible:
+                        return None
                 if category and (specification.label, name) not in keys:
                     return None
             elif kind in {'values', 'peak', 'trough'} and specification.label is None:
@@ -289,7 +341,9 @@ def _standard_visualization_script(
             else:
                 return None
             annotations.append((kind, annotation_names.index(name), first, None))
-        if sum(len(annotation_labels) if item[0] in {'values', 'peak', 'trough'} else 1
+        annotation_count = (min(len(annotation_labels), axes.panel_limit)
+                            if axes.mode == 'panels' and form == 'barh' and axes.panel_limit else len(annotation_labels))
+        if sum(annotation_count if item[0] in {'values', 'peak', 'trough'} else 1
                for item in annotations) > 60:
             return None
         if any(item.series not in annotation_names for item in style.series):
@@ -310,6 +364,9 @@ def _standard_visualization_script(
         canvas_policy['labels'] = annotation_labels
         canvas_policy['zero_baseline'] = axes.zero_baseline
         canvas_policy['total_field'] = total_field
+        canvas_policy['advanced'] = advanced
+        canvas_policy['axis_factors'] = axis_factors
+        canvas_policy['axis_units'] = axis_units
         configs.append((source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
@@ -375,7 +432,10 @@ def apply_standard_style(fig, policy):
             for point in style["points"]:
                 if point["series"] != name:
                     continue
-                index = policy["labels"].index(point["label"])
+                drawn_labels = getattr(artist, "_standard_labels", policy["labels"])
+                if point["label"] not in drawn_labels:
+                    continue
+                index = drawn_labels.index(point["label"])
                 if isinstance(artist, BarContainer):
                     artist.patches[index].set_facecolor(point["color"])
                     artist.patches[index].set_edgecolor(point["color"])
@@ -412,6 +472,11 @@ def apply_standard_style(fig, policy):
                 location = ("upper left" if ax is fig.axes[0] else "upper right") if len(fig.axes) > 1 else "best"
             ax.legend(frameon=False, loc=location,
                       ncols=style["legend_columns"], fontsize=style["legend_font_size"])
+            for text in ax.get_legend().get_texts():
+                for name, item in overrides.items():
+                    if item.get("label") and text.get_text() in (name, name + " · 左轴", name + " · 右轴"):
+                        text.set_text(text.get_text().replace(name, item["label"], 1))
+                        break
         for text in ax.texts:
             text.set_fontsize(style["annotation_font_size"])
             if isinstance(text, Annotation) and not getattr(text, "_standard_custom_position", False):
@@ -515,13 +580,19 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
     import matplotlib.pyplot as plt
     mode = policy["mode"]
     precision = canvas["style"]["decimals"]
-    series = [[value * (100 if meta.get("unit") == "%" and meta.get("isPercent") is False else 1)
-               for value in values] for values, meta in zip(raw_series, metadata, strict=True)]
+    series = [[value * (100 if meta.get("unit") == "%" and meta.get("isPercent") is False else 1) * factor
+               for value in values] for values, meta, factor in zip(raw_series, metadata, canvas["axis_factors"], strict=True)]
+    metadata = [{**meta, "unit": unit} for meta, unit in zip(metadata, canvas["axis_units"], strict=True)]
+    overrides = {item["series"]: item for item in canvas["style"]["series"]}
+    geometries = [overrides.get(name, {}).get("geometry", "auto") for name in names]
+    geometries = [("line" if form == "line" or mode == "dual" and name in policy["right_fields"] else "bar")
+                  if geometry == "auto" else geometry for name, geometry in zip(names, geometries, strict=True)]
     positions = list(range(len(labels)))
     if mode == "panels":
-        fig, panels = plt.subplots(len(series), 1, sharex=True, squeeze=False,
+        fig, panels = plt.subplots(1 if form == "barh" else len(series), len(series) if form == "barh" else 1,
+                                   sharex=form != "barh", squeeze=False,
                                    **create_standard_canvas(canvas, labels, form, len(series)))
-        axes = [panel[0] for panel in panels]
+        axes = list(panels.flat)
         targets = axes
     else:
         fig, primary = plt.subplots(**create_standard_canvas(canvas, labels, form))
@@ -531,27 +602,50 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
             axes.append(secondary)
         targets = [secondary if name in policy["right_fields"] else primary for name in names]
     colors = plt.get_cmap("tab10")
+    visible_indexes = []
     for index, (name, values, target, meta) in enumerate(zip(names, series, targets, metadata, strict=True)):
         side = "右轴" if mode == "dual" and name in policy["right_fields"] else "左轴"
         caption = f"{name} · {side}" if mode == "dual" else name
-        if form == "bar" and not (mode == "dual" and side == "右轴"):
-            members = [i for i, item in enumerate(targets) if item is target]
+        visible = list(range(len(labels)))
+        if form == "barh":
+            visible = [i for i in visible if math.isfinite(values[i])]
+            visible.sort(key=lambda i: values[i], reverse=policy["panel_descending"])
+            if policy["panel_limit"] is not None:
+                visible = visible[:policy["panel_limit"]]
+            drawn_labels = [labels[i] for i in visible]
+            artist = target.barh(range(len(visible)), [values[i] for i in visible], label=caption)
+            artist._standard_labels = drawn_labels
+            formatted_labels = standard_label_names(labels, canvas)
+            target.set_yticks(range(len(visible)), [formatted_labels[i] for i in visible])
+            target.invert_yaxis()
+            target.set_xlabel(meta["unit"])
+        elif geometries[index] == "bar":
+            members = [i for i, item in enumerate(targets) if item is target and geometries[i] == "bar"]
             group_width = canvas["style"]["bar_group_width"]
             width = group_width / len(members)
             offsets = [position - group_width / 2 + width / 2 + members.index(index) * width for position in positions]
             target.bar(offsets, values, width=width, color=colors(index), label=caption)
         else:
             target.plot(positions, values, marker="o", color=colors(index), label=caption)
-        target.set_ylabel(f"{side} · {meta['unit']}" if mode == "dual" else meta["unit"])
-        target.set_yscale(policy["scale"])
-        target.set_xticks(positions, standard_label_names(labels, canvas), rotation=45, ha="right")
+        visible_indexes.append(visible)
+        if form != "barh":
+            target.set_ylabel(f"{side} · {meta['unit']}" if mode == "dual" else meta["unit"])
+            target.set_yscale(policy["scale"])
+            target.set_xticks(positions, standard_label_names(labels, canvas), rotation=45, ha="right")
         if mode == "panels":
-            target.set_title(f"{name}（独立纵轴）", fontsize=10)
+            alias = overrides.get(name, {}).get("label") or name
+            target.set_title(alias + ("（独立排序）" if form == "barh" else "（独立纵轴）"), fontsize=10)
+        missing = [labels[i] for i, value in enumerate(values) if not math.isfinite(value)]
+        if missing:
+            target.text(.01, .02 + .035 * index, name + " 缺失（保留空位）: " + "、".join(missing),
+                        transform=target.transAxes, fontsize=7, color="#64748b")
     for target in axes:
         target.legend(frameon=False, loc="upper left" if target is axes[0] else "upper right")
         target.grid(axis="y", linestyle="--", alpha=.2)
         if policy["scale"] == "log":
             target.set_ylabel(target.get_ylabel() + "（对数刻度）")
+    visible_series = [[value if i in visible_indexes[j] else float("nan") for i, value in enumerate(values)]
+                      for j, values in enumerate(series)]
     for number, (kind, series_index, first, last) in enumerate(annotations):
         if kind == "range":
             for target in axes:
@@ -560,8 +654,17 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
         target = targets[series_index]
         values = series[series_index]
         unit = metadata[series_index]["unit"]
+        visible = visible_indexes[series_index]
+        finite = [values[i] for i in visible if math.isfinite(values[i])]
+        if not finite:
+            continue
         if kind == "reference":
             color = canvas["annotation_specs"][number]["color"] or "#b55d68"
+            if form == "barh":
+                target.axvline(values[first], color=color, linestyle="--", linewidth=1.2)
+                target.text(values[first], 1.01, f"参考 {format_standard_number(values[first], precision)}{unit}",
+                            transform=target.get_xaxis_transform(), fontsize=8)
+                continue
             target.axhline(values[first], color=color, linestyle="--", linewidth=1.2)
             caption = canvas["annotation_specs"][number]["caption"] or f"参考 {labels[first]}"
             target.text(.99, values[first], f"{caption}: {format_standard_number(values[first], precision)}{unit}",
@@ -569,21 +672,22 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
                         bbox={"fc": "white", "ec": "none", "pad": 2})
             continue
         indexes = ([first] if kind == "point" else
-                   [index for index, value in enumerate(values) if kind == "values" or
-                    value == (max(values) if kind == "peak" else min(values))])
+                   [index for index in visible if math.isfinite(values[index]) and (kind == "values" or
+                    values[index] == (max(finite) if kind == "peak" else min(finite)))])
         for index in indexes:
-            if kind == "values" and not standard_values_label_visible(index, series_index, annotations, series):
+            if kind == "values" and not standard_values_label_visible(index, series_index, annotations, visible_series):
                 continue
             coordinate = index
-            if form == "bar" and not (mode == "dual" and names[series_index] in policy["right_fields"]):
-                members = [i for i, item in enumerate(targets) if item is target]
+            if form != "barh" and geometries[series_index] == "bar":
+                members = [i for i, item in enumerate(targets) if item is target and geometries[i] == "bar"]
                 group_width = canvas["style"]["bar_group_width"]
                 width = group_width / len(members)
                 coordinate = index - group_width / 2 + width / 2 + members.index(series_index) * width
             extra = canvas["presentation"]["extras"].get((labels[index], names[series_index]), "")
-            caption = canvas["annotation_specs"][number]["caption"] or names[series_index]
+            caption = canvas["annotation_specs"][number]["caption"] or overrides.get(names[series_index], {}).get("label") or names[series_index]
             text = f"{caption}: {format_standard_number(values[index], precision)}{unit}" + (" · " + extra if extra else "")
-            standard_annotation(target, text, (coordinate, values[index]), canvas, number,
+            xy = (values[index], visible.index(index)) if form == "barh" else (coordinate, values[index])
+            standard_annotation(target, text, xy, canvas, number,
                                 standard_series_color(names[series_index], canvas))
     if mode == "zoom":
         first = labels.index(policy["zoom_start"])
@@ -598,7 +702,9 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
                 inset.bar(offsets, values, width=width, color=colors(index), label=names[index])
             else:
                 inset.plot(positions, values, marker="o", color=colors(index), label=names[index])
-            local_values.extend(values[first:last + 1])
+            local_values.extend(value for value in values[first:last + 1] if math.isfinite(value))
+        if not local_values:
+            raise ValueError("standard_chart_empty_zoom")
         low, high = min(local_values), max(local_values)
         padding = (high - low) * .1 or abs(high) * .1 or 1
         inset.set_xlim(first - .2, last + .2)
@@ -651,8 +757,9 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         series = [[cells.get((label, name), float("nan")) for label in labels] for name in names]
     else:
         names = value_columns
-        series = [[row[columns.index(column)] for row in payload["rows"]] for column in names]
-    if axes_policy["mode"] != "single" or axes_policy["scale"] != "linear":
+        series = [[row[columns.index(column)] if row[columns.index(column)] is not None else float("nan")
+                   for row in payload["rows"]] for column in names]
+    if canvas["advanced"]:
         render_advanced(labels, names, series, metadata, axes_policy, form, title, output_path, annotations, canvas)
         continue
     if unit == "%" and is_percent is False:
@@ -696,6 +803,11 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
         ax.set_ylabel(unit or "")
     if len(series) > 1 or form == "stacked-total":
         ax.legend(frameon=False)
+    for index, (name, values) in enumerate(zip(names, series, strict=True)):
+        missing = [labels[i] for i, value in enumerate(values) if not math.isfinite(value)]
+        if missing and axes_policy["allow_nulls"]:
+            ax.text(.01, .02 + .035 * index, name + " 缺失（保留空位）: " + "、".join(missing),
+                    transform=ax.transAxes, fontsize=7, color="#64748b")
     for annotation_index, (kind, series_index, first, last) in enumerate(annotations):
         if kind == "range":
             span = ax.axhspan if form == "barh" else ax.axvspan

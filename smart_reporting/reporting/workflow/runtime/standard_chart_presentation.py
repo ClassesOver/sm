@@ -19,7 +19,22 @@ def order_standard_rows(document, label, policy):
     if any(not isinstance(row[position], str) or not row[position] for row in rows):
         return None
     labels = list(dict.fromkeys(row[position] for row in rows))
-    if policy.mode == 'value':
+    if policy.mode == 'max_abs':
+        if (len(labels) != len(rows) or len(set(policy.fields)) != len(policy.fields)
+                or not set(policy.fields).issubset(columns)):
+            return None
+        metadata = document.get('columnMeta') or {}
+        metas = [metadata.get(field, {}) for field in policy.fields]
+        if any(not valid_standard_metadata(meta) or not meta.get('unit') for meta in metas):
+            return None
+        if len({(meta['unit'], meta.get('isPercent')) for meta in metas}) != 1:
+            return None
+        indexes = [columns.index(field) for field in policy.fields]
+        if any(not _finite(row[index]) for row in rows for index in indexes):
+            return None
+        rows = sorted(rows, key=lambda row: max(abs(row[index]) for index in indexes), reverse=policy.descending)
+        labels = [row[position] for row in rows]
+    elif policy.mode == 'value':
         if policy.field not in columns or len(labels) != len(rows):
             return None
         index = columns.index(policy.field)

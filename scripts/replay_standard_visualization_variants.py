@@ -22,17 +22,21 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     StandardChartAnnotation,
     StandardChartAxes,
     StandardChartCanvas,
+    StandardChartDerivation,
     StandardChartPresentation,
     StandardChartSource,
     StandardChartStyle,
+    StandardChartView,
 )
 from smart_reporting.reporting.workflow.runtime.standard_visualization import (
     standard_visualization_script,
 )
 
 MODELS = {'standard_canvas': StandardChartCanvas, 'standard_style': StandardChartStyle,
-          'standard_presentation': StandardChartPresentation, 'standard_axes': StandardChartAxes}
-LIST_MODELS = {'standard_annotations': StandardChartAnnotation, 'standard_sources': StandardChartSource}
+          'standard_presentation': StandardChartPresentation, 'standard_axes': StandardChartAxes,
+          'standard_view': StandardChartView}
+LIST_MODELS = {'standard_annotations': StandardChartAnnotation, 'standard_sources': StandardChartSource,
+               'standard_derivations': StandardChartDerivation}
 AUDITOR = '''import json, runpy, math, re
 from pathlib import Path
 import matplotlib
