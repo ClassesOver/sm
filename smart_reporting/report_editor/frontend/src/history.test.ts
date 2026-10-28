@@ -385,7 +385,7 @@ describe('createHistoryController', () => {
   })
 
   it('reuses the fetched revision list for load-more within the same filter', async () => {
-    const fetchPage = vi.fn(async (limit: number, offset: number) => {
+    const fetchPage = vi.fn(async (_limit: number, offset: number) => {
       const items = Array.from({ length: 5 }, (_, index) => ({
         revision: offset + index + 1,
         sha256: 'a'.repeat(64),
@@ -403,7 +403,7 @@ describe('createHistoryController', () => {
   })
 
   it('refetches when the loader is called from the first page again', async () => {
-    const fetchPage = vi.fn(async (limit: number, offset: number) => {
+    const fetchPage = vi.fn(async (_limit: number, offset: number) => {
       const items = Array.from({ length: 5 }, (_, index) => ({
         revision: offset + index + 1,
         sha256: 'a'.repeat(64),

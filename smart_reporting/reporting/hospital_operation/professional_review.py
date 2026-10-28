@@ -13,7 +13,13 @@ from decimal import Decimal
 from typing import Literal
 
 ReviewStage = Literal["analysis", "outline", "draft"]
-PROFESSIONAL_REVIEW_VERSION = "3"
+PROFESSIONAL_REVIEW_VERSION = "4"
+
+BUDGET_CALCULATION_CONDITION = (
+    "涉及预算执行率或完成率时，先核实分母的年度/同期范围、预算版本、挂载方式和汇总规则；"
+    "仅在证据明确且分母与公式匹配后计算。未核实或核实失败时不计算该比率，"
+    "不以披露缺口或仅供参考替代核实；记录具体缺口并继续实际金额、趋势等独立分析，正常完成任务。"
+)
 
 
 @dataclass(frozen=True)
@@ -47,7 +53,8 @@ PROFESSIONAL_CRITERIA = (
     ProfessionalCriterion("budget_policy", ("R009", "R018", "R037", "R070"),
         ("analysis", "draft"),
         "先确认年度预算、月度下达预算、累计预算或年度预算重复挂载及版本；相同月值不证明可求和或"
-        "应取期末。区分年度预算完成率和同期预算执行率；未下达月预算不得按年预算除以12生成正式预算。",
+        "应取期末。区分年度预算完成率和同期预算执行率；未下达月预算不得按年预算除以12生成正式预算。"
+        + BUDGET_CALCULATION_CONDITION,
         ("预算时间属性及版本", "下达与汇总规则", "同期预算或年度预算分母")),
     ProfessionalCriterion("consistent_values", tuple(f"R{n:03d}" for n in (
         4, 5, 11, 19, 21, 26, 32, 60, 75,
@@ -200,9 +207,27 @@ def review_professional_content(markdown: str) -> tuple[ProfessionalReviewIssue,
         rule = _BY_CODE[criterion]
         issues.setdefault(code, ProfessionalReviewIssue(code, criterion, rule.review_ids, message))
 
+    # 预算缺口与计算动作常用分号连接，不能在分号处丢失前提。
+    for sentence in re.split(r"[。！？\n]", text):
+        unverified_basis = re.search(
+            r"(?:全年|年度|同期)?预算(?:的)?(?:口径|时间属性|挂载(?:方式)?|汇总规则|可加性|分母|版本)"
+            r".{0,12}(?:待核实|待确认|未核实|尚未核实|未确认|不明|未知)", sentence,
+        )
+        rates = re.search(r"(?:执行率|完成率)(?:约为|为|约)?\s*[+-]?\d+(?:\.\d+)?\s*[%％]", sentence)
+        rate_actions = re.finditer(r"(?:计算|生成|给出|展示|列示)[^，,；;]{0,20}?(?:执行率|完成率)", sentence)
+        affirmed_rate_action = any(
+            not re.search(r"(?:不|勿|无需|无须|避免|禁止|不能|不得|不应|不再)\s*$", sentence[:match.start()])
+            and not re.search(
+                r"(?:核实|确认|验证)(?:通过|完成|成功)?后(?:才|再|方可|才能)?$",
+                sentence[:match.start()],
+            )
+            for match in rate_actions
+        )
+        if unverified_basis and (rates or affirmed_rate_action):
+            warn("professional_unverified_budget_rate", "budget_policy",
+                 "专业口径需复核：预算分母口径或汇总规则未核实却仍计算执行率，应先核实，证据不足时只保留缺口和独立分析。")
     for clause in _CLAUSE.split(text):
-        # Only an explicitly percentage-valued execution/completion rate has
-        # this denominator. A bare 0.89 is not silently converted to 89%.
+        # Only explicitly percentage-valued rates use this denominator.
         rates = list(re.finditer(r"(?:执行率|完成率)(?:约为|为|约)?\s*([+-]?\d+(?:\.\d+)?)\s*[%％]", clause))
         if (re.search(r"(?:预算|实际|执行率|差额).{0,12}(?:待核实|待确认|尚未核实)", clause)
                 and _affirmed(r"接近预算|略低于预算|超预算|低于预算|预算合理|主要缺口", clause)

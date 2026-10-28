@@ -853,13 +853,6 @@ class ContextBudgetController(ProtectedCompressionManager):
     async def acompress(self, messages, run_metrics=None):
         self.compress(messages, run_metrics=run_metrics)
 
-    def prepare_context(self, messages: list[Message]) -> list[Message]:
-        return TaskExecutionContextProjector.project(
-            messages,
-            model=self.model,
-            hard_cap=self.input_token_budget,
-        )
-
     async def compress_history_message(self, message: Message) -> Message:
         candidate = deepcopy(message)
         candidate.from_history = True
@@ -1711,14 +1704,6 @@ class TaskExecutionContextProjector:
             candidate.extend(group)
         if feedback is not None:
             candidate.append(feedback)
-
-        final_metadata_bytes = cls._coding_custom_history_metadata_bytes(candidate)
-        custom_history_metrics["metadata_bytes"] = final_metadata_bytes
-        custom_history_metrics["bytes_after"] = final_metadata_bytes
-        custom_history_metrics["metadata_budget_exceeded"] = (
-            metadata_budget_enabled
-            and final_metadata_bytes > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
-        )
 
         target = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_TARGET))
         deletable_start = len(protected_rounds)

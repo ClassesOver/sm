@@ -136,15 +136,6 @@ def _formula_labels(
     return {name: primary_display_name(label) or label for name, label in labels.items()}
 
 
-def _column_field_definitions(
-    analysis_context: Mapping[str, Any],
-    files: Mapping[str, Any],
-    datasets: Sequence[Any],
-) -> dict[str, str]:
-    """列名到中文说明；只采用与已登记数据集快照字节一致的分析上下文。"""
-    return _merged_column_definitions(_dataset_column_definitions(analysis_context, files, datasets))
-
-
 def narrative_section_projection(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Return revision-bound finding assignments for the editor.
 

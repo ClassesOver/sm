@@ -174,7 +174,9 @@ def test_coding_context_controller_keeps_below_budget_history_uncompressed():
         Message(role="assistant", content="third"),
     ]
 
-    prepared = controller.prepare_context(messages)
+    prepared, _metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=controller.model, hard_cap=controller.input_token_budget
+    )
 
     assert old.compressed_content is None
     assert prepared[1].compressed_content is None
@@ -420,7 +422,9 @@ def test_coding_context_controller_defers_skill_pruning_until_budget_rebase():
     messages = [old, *[Message(role="assistant", content=str(i)) for i in range(10)]]
     controller = ContextBudgetController(model=CountingModel(), context_token_budget=200_000)
 
-    stable = controller.prepare_context(messages)
+    stable, _metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=controller.model, hard_cap=controller.input_token_budget
+    )
 
     assert stable[0].compressed_content is None
     assert old.compressed_content is None

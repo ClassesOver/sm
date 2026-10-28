@@ -517,12 +517,21 @@ class RuntimePublicationMixin:
                 raise ReportingError(
                     "report_artifact_validation_failed", "PDF/Word 验收回执缺少有效计数。"
                 )
+            common_manifest_fields = {
+                "reportId": draft.report_id,
+                "revision": draft.revision,
+                "effectiveProfileHash": draft.effective_profile_hash,
+                "sourceMarkdownSha256": draft.markdown.sha256,
+                "sourceChartSha256s": source_chart_sha256s,
+                "renderedChartIds": tuple(validation.get("chartIds") or ()),
+                "citationIds": tuple(validation.get("citationIds") or ()),
+                "sections": tuple(validation.get("sectionIds") or ()),
+                "sectionNumbers": draft.section_numbers,
+                "headingNumbers": draft.heading_numbers,
+                "sourceWarnings": source_warnings,
+            }
             rendered_pdf = PdfArtifactManifest(
-                reportId=draft.report_id,
-                revision=draft.revision,
-                effectiveProfileHash=draft.effective_profile_hash,
-                sourceMarkdownSha256=draft.markdown.sha256,
-                sourceChartSha256s=source_chart_sha256s,
+                **common_manifest_fields,
                 pdf=ArtifactFile(
                     path=pdf_path,
                     mediaType="application/pdf",
@@ -530,19 +539,9 @@ class RuntimePublicationMixin:
                     sha256=pdf_identity["sha256"],
                 ),
                 pageCount=page_count,
-                renderedChartIds=tuple(validation.get("chartIds") or ()),
-                citationIds=tuple(validation.get("citationIds") or ()),
-                sections=tuple(validation.get("sectionIds") or ()),
-                sectionNumbers=draft.section_numbers,
-                headingNumbers=draft.heading_numbers,
-                sourceWarnings=source_warnings,
             )
             rendered_word = DocxArtifactManifest(
-                reportId=draft.report_id,
-                revision=draft.revision,
-                effectiveProfileHash=draft.effective_profile_hash,
-                sourceMarkdownSha256=draft.markdown.sha256,
-                sourceChartSha256s=source_chart_sha256s,
+                **common_manifest_fields,
                 docx=ArtifactFile(
                     path=word_path,
                     mediaType=(
@@ -554,12 +553,6 @@ class RuntimePublicationMixin:
                 convertedPageCount=converted_page_count,
                 sectionCount=section_count,
                 tocEntryCount=toc_entry_count,
-                renderedChartIds=tuple(validation.get("chartIds") or ()),
-                citationIds=tuple(validation.get("citationIds") or ()),
-                sections=tuple(validation.get("sectionIds") or ()),
-                sectionNumbers=draft.section_numbers,
-                headingNumbers=draft.heading_numbers,
-                sourceWarnings=source_warnings,
             )
             validate_rendered_artifacts(draft, rendered_pdf, rendered_word, lineage=lineage)
             # PDF/DOCX 仍由既有渲染链生成，但其最终身份属于同一 Reporting checkpoint。

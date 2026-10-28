@@ -77,8 +77,13 @@ async def test_combined_chart_sources_cannot_bypass_response_budget(monkeypatch)
     async def read(*_args, **_kwargs):
         return content
 
+    async def edit_summaries(_context):
+        # 改图历史无关本用例；真实预览解析与组合响应预算检查仍须执行。
+        return {}
+
     monkeypatch.setattr(service, "require_index", index)
     monkeypatch.setattr(service, "_read_registered_file", read)
+    monkeypatch.setattr(service, "_chart_edit_summaries", edit_summaries)
     try:
         with pytest.raises(ReportingError) as error:
             await service.chart_source(SimpleNamespace(), "chart_001")
