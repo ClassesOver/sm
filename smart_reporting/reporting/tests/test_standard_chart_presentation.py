@@ -321,3 +321,16 @@ def test_summary_projection_with_malformed_metadata_requires_fallback(metadata):
     document = {'columns': ['budget', 'actual'], 'rows': [[100, 80]], 'columnMeta': metadata}
     plan, inputs = build(document, form='summary-bars', selected=('budget', 'actual'))
     assert standard_visualization_script(plan, inputs) is None
+
+
+def test_manual_canvas_cannot_silently_clip_external_legend(render):
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartCanvas
+
+    names = [f'系列{i}' for i in range(8)]
+    document = {'columns': ['label', *names], 'rows': [['甲', *range(1, 9)], ['乙', *range(2, 10)]],
+                'columnMeta': {name: {'unit': '元'} for name in names}}
+    plan, inputs = build(document, form='line', selected=tuple(names))
+    plan.charts[0].standard_annotations = ()
+    plan.charts[0].standard_canvas = StandardChartCanvas(layout='manual', legendPosition='outside')
+    with pytest.raises(ValueError, match='图例超出画布'):
+        render(plan, inputs)

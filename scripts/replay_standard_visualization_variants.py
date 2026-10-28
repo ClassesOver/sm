@@ -11,6 +11,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
 
+from pydantic import ValidationError
+
+from scripts.standard_visualization_stress_cases import extended_cases
 from smart_reporting.reporting.workflow.runtime.chart_inputs import (
     ChartInputFile,
     ChartInputMaterialization,
@@ -77,6 +80,30 @@ def capture(fig, *args, **kwargs):
                 if left.overlaps(right):
                     collisions.append([left_text, right_text])
     audit["categoryTickCollisions"] = collisions
+    mismatches = []
+    expectations = json.loads(Path("expectations.json").read_text()) if Path("expectations.json").exists() else {}
+    from matplotlib.colors import to_hex
+    horizontal = json.loads(Path("parameters.json").read_text())["visual_form"] == "barh"
+    for expected in expectations.get("series", []):
+        artists = [artist for ax in fig.axes for artist in (ax.lines if expected["kind"] == "line" else ax.containers)
+                   if artist.get_label() == expected["name"]]
+        if len(artists) != 1:
+            mismatches.append("missing_or_ambiguous_series:" + expected["name"])
+            continue
+        artist = artists[0]
+        actual = list(artist.get_ydata()) if expected["kind"] == "line" else [bar.get_width() if horizontal else bar.get_height() for bar in artist]
+        wanted = expected["values"]
+        if len(actual) != len(wanted) or any(not (math.isnan(a) if b is None else math.isclose(a, b, rel_tol=1e-10, abs_tol=0)) for a, b in zip(actual, wanted)):
+            mismatches.append("wrong_values:" + expected["name"])
+        if "colors" in expected:
+            actual_colors = [to_hex(bar.get_facecolor()) for bar in artist]
+            if actual_colors != expected["colors"]:
+                mismatches.append("wrong_colors:" + expected["name"])
+    visible_text = "\\n".join(text.get_text() for text in drawn if text.get_visible())
+    for text in expectations.get("texts", []):
+        if text not in visible_text:
+            mismatches.append("missing_frozen_text:" + text)
+    audit["semanticMismatches"] = mismatches
     Path("audit.json").write_text(json.dumps(audit, ensure_ascii=False, indent=2))
     return original_save(fig, *args, **kwargs)
 
@@ -130,13 +157,23 @@ def mutate(documents, variant):
 def run_case(case, output):
     folder = output / case['id']
     folder.mkdir(parents=True, exist_ok=True)
-    plan = plan_from_saved(case['parameters'])
+    for path in [folder / name for name in ['standard.png', 'audit.json', 'render.py', 'audit.py']]:
+        path.unlink(missing_ok=True)
+    for path in [*folder.glob('input-*.json'), *folder.glob('verified-input-*.json')]:
+        path.unlink()
+    record = {'id': case['id'], 'group': case['group'], 'variant': case['variant'], 'synthetic': case['synthetic']}
+    if 'expected' in case:
+        record['expected'] = case['expected']
+    (folder / 'parameters.json').write_text(json.dumps(case['parameters'], ensure_ascii=False, indent=2))
+    (folder / 'expectations.json').write_text(json.dumps(case.get('assertions', {}), ensure_ascii=False, indent=2))
+    try:
+        plan = plan_from_saved(case['parameters'])
+    except ValidationError as error:
+        return {**record, 'status': 'schema_rejected', 'error': str(error)[:1500]}
     files = tuple(ChartInputFile(f'input-{index}.json', json.dumps(document, ensure_ascii=False).encode())
                   for index, document in enumerate(case['documents']))
     inputs = ChartInputMaterialization(files=files, entries=tuple(
         {'chartId': plan.charts[0].chart_id, 'path': source.path, 'sha256': source.sha256} for source in files))
-    record = {'id': case['id'], 'group': case['group'], 'variant': case['variant'], 'synthetic': case['synthetic']}
-    (folder / 'parameters.json').write_text(json.dumps(case['parameters'], ensure_ascii=False, indent=2))
     for source in files:
         (folder / source.path).write_bytes(source.content)
     try:
@@ -147,15 +184,25 @@ def run_case(case, output):
         return {**record, 'status': 'coding_fallback_required'}
     (folder / 'render.py').write_text(script)
     (folder / 'audit.py').write_text(AUDITOR)
+    if 'tamperSource' in case.get('assertions', {}):
+        target = folder / f'input-{case["assertions"]["tamperSource"]}.json'
+        (folder / ('verified-' + target.name)).write_bytes(target.read_bytes())
+        target.write_text('{}')
     try:
         completed = subprocess.run([sys.executable, 'audit.py'], cwd=folder, capture_output=True, text=True, timeout=45)
     except subprocess.TimeoutExpired:
         return {**record, 'status': 'render_timeout'}
     if completed.returncode:
+        if 'identity changed' in completed.stderr:
+            return {**record, 'status': 'identity_rejected', 'error': completed.stderr[-1500:]}
+        if 'standard_chart_layout_unresolved' in completed.stderr:
+            return {**record, 'status': 'layout_repair_required', 'error': completed.stderr[-1500:]}
         return {**record, 'status': 'render_failure_requires_fallback', 'error': completed.stderr[-1500:]}
     audit = json.loads((folder / 'audit.json').read_text())
     rounded = audit['roundedToZeroCandidates'] if case['variant'] == 'amounts_small' else []
     status = 'needs_visual_repair' if audit['outsideCanvas'] or rounded or audit['categoryTickCollisions'] else 'rendered_geometry_checked'
+    if audit['semanticMismatches']:
+        status = 'semantic_mismatch'
     for source in files:
         assert (folder / source.path).read_bytes() == source.content
     return {**record, 'status': status, 'audit': audit,
@@ -243,8 +290,8 @@ def synthetic_cases():
 def write_replay_report(result, output):
     output = Path(output)
     title = '标准可视化：完整数据替换回放'
-    explanation = ('这是离线模板回放，不调用规划模型或在线独立视觉审查。原报告9张及其换数值/换量级/调行序/缺单位/字段改名场景全部执行，'
-                   '另测图形、双轴、分面、对数、局部放大和容量边界。合成数据仅用于测试，不是新增报告事实。'
+    explanation = ('这是离线模板回放，不调用规划模型或在线独立视觉审查。当前场景范围以以下逐项记录为准；支持报告变更数据、'
+                   '多来源、日期、比例尺度、双轴、分面、对数、局部放大和容量边界。合成数据仅用于测试，不是新增报告事实。'
                    '成图只代表脚本与几何检查成功，不代表业务语义或最终视觉验收通过；回退只验证预检不选标准路线，未执行完整Coding修复。')
     lines = ['# ' + title, '', explanation, '', '| 状态 | 数量 |', '|---|---:|']
     lines += [f'| {status} | {count} |' for status, count in result['counts'].items()]
@@ -255,7 +302,7 @@ def write_replay_report(result, output):
     cards = []
     for record in result['results']:
         picture = ('<a href="' + html.escape(record['png'], quote=True) + '"><img loading="lazy" src="'
-                   + html.escape(record['png'], quote=True) + '"></a>') if 'png' in record else '<p>标准预检要求回退；本场景未生成标准图片。</p>'
+                   + html.escape(record['png'], quote=True) + '"></a>') if 'png' in record else '<p>未生成标准成图；详见状态及variants.json中的诊断。</p>'
         cards.append('<article><h2>' + html.escape(record['id']) + '</h2><p>' + html.escape(record['status']) + '</p>' + picture + '</article>')
     content = ('<!doctype html><meta charset="utf-8"><title>' + title + '</title>'
                '<style>body{margin:32px;font:16px system-ui;color:#243447;background:#f4f6f8}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}'
@@ -272,10 +319,13 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
-    cases = [*cases_from_report(args.baseline), *synthetic_cases()]
+    cases = ([*cases_from_report(args.baseline), *synthetic_cases()] if args.suite != 'extended' else [])
+    if args.suite != 'basic':
+        cases.extend(extended_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []
@@ -283,6 +333,11 @@ def main():
         futures = [executor.submit(run_case, case, args.output) for case in cases]
         for index, future in enumerate(as_completed(futures), 1):
             record = future.result()
+            expected_statuses = {'render': {'rendered_geometry_checked'}, 'fallback': {'coding_fallback_required'},
+                                 'schema': {'schema_rejected'}, 'identity': {'identity_rejected'},
+                                 'repair': {'layout_repair_required'}}
+            if 'expected' in record:
+                record['expectationMet'] = record['status'] in expected_statuses[record['expected']]
             records.append(record)
             print(f'{index}/{len(cases)} {record["id"]}: {record["status"]}', flush=True)
     counts = {status: sum(record['status'] == status for record in records) for status in sorted({r['status'] for r in records})}
@@ -293,7 +348,7 @@ def main():
     (args.output / 'variants.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
     write_replay_report(result, args.output)
     print(json.dumps(counts))
-    if any(record['status'] not in {'rendered_geometry_checked', 'coding_fallback_required'} for record in records):
+    if any(not record.get('expectationMet', record['status'] in {'rendered_geometry_checked', 'coding_fallback_required'}) for record in records):
         raise SystemExit(1)
 
 

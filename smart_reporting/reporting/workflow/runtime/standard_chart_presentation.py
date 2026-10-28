@@ -7,6 +7,12 @@ from datetime import date
 from ...units import unit_conversion_scale
 
 
+def valid_standard_metadata(meta):
+    return (isinstance(meta, dict)
+            and (meta.get('unit') is None or isinstance(meta.get('unit'), str))
+            and (meta.get('isPercent') is None or isinstance(meta.get('isPercent'), bool)))
+
+
 def order_standard_rows(document, label, policy):
     columns, rows = document['columns'], document['rows']
     position = columns.index(label)
@@ -61,7 +67,7 @@ def frozen_label(spec, document, row):
         if spec.field not in columns:
             return None
         meta = metadata.get(spec.field, {})
-        if not isinstance(meta, dict):
+        if not valid_standard_metadata(meta):
             return None
         value = row[columns.index(spec.field)]
         unit = meta.get('unit')
@@ -76,7 +82,7 @@ def frozen_label(spec, document, row):
         numerator = row[columns.index(spec.numerator)]
         denominator = row[columns.index(spec.denominator)]
         left, right = metadata.get(spec.numerator, {}), metadata.get(spec.denominator, {})
-        if not isinstance(left, dict) or not isinstance(right, dict):
+        if not valid_standard_metadata(left) or not valid_standard_metadata(right):
             return None
         if (not _finite(numerator) or not _finite(denominator) or denominator <= 0
                 or not left.get('unit') or left.get('unit') != right.get('unit')

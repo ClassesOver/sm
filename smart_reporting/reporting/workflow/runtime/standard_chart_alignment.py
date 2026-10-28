@@ -2,6 +2,8 @@
 import json
 import math
 
+from .standard_chart_presentation import valid_standard_metadata
+
 
 def align_chart_sources(entries, files, selections):
     if len(entries) < 2 or not selections or len(selections) > 8:
@@ -59,7 +61,7 @@ def align_chart_sources(entries, files, selections):
         if not isinstance(column_meta, dict):
             return None
         meta = column_meta.get(selection.value_field, {})
-        if not isinstance(meta, dict) or not meta.get('unit'):
+        if not valid_standard_metadata(meta) or not meta.get('unit'):
             return None
         lookup = dict(zip(current_labels, values, strict=True))
         series.append([lookup[label] for label in labels])

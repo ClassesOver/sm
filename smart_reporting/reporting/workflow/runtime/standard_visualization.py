@@ -20,6 +20,7 @@ from .standard_chart_presentation import (
     PRESENTATION_SCRIPT,
     order_standard_rows,
     prepare_standard_presentation,
+    valid_standard_metadata,
 )
 
 
@@ -78,7 +79,7 @@ def _standard_visualization_script(
                     or len(set(selected)) != len(selected) or not set(selected).issubset(original_columns)):
                 return None
             selected_meta = [original_meta.get(column, {}) for column in selected]
-            if (any(not isinstance(meta, dict) or not meta.get('unit') for meta in selected_meta)
+            if (any(not valid_standard_metadata(meta) or not meta.get('unit') for meta in selected_meta)
                     or any(meta != selected_meta[0] for meta in selected_meta)):
                 return None
             document = {'columns': ['label', 'value'],
@@ -150,7 +151,7 @@ def _standard_visualization_script(
         if not isinstance(metadata, dict):
             return None
         metas = [metadata.get(column, {}) for column in values]
-        if any(not isinstance(meta, dict) for meta in metas):
+        if any(not valid_standard_metadata(meta) for meta in metas):
             return None
         axes = getattr(chart, 'standard_axes', StandardChartAxes())
         advanced = axes.mode != 'single' or axes.scale != 'linear'
@@ -169,7 +170,7 @@ def _standard_visualization_script(
                 return None
             for field in auxiliary_fields:
                 meta = metadata.get(field, {})
-                if not isinstance(meta, dict) or not meta.get('unit') or any(
+                if not valid_standard_metadata(meta) or not meta.get('unit') or any(
                     not isinstance(row[columns.index(field)], (int, float))
                     or isinstance(row[columns.index(field)], bool)
                     or not math.isfinite(row[columns.index(field)]) for row in rows
@@ -475,6 +476,13 @@ def finish_standard_layout(fig, policy):
             reserved["header_bottom"] - reserved["footer_top"]))
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
+    if policy["crop"] == "canvas":
+        for ax in fig.axes:
+            legend = ax.get_legend()
+            if legend is not None:
+                bounds = legend.get_window_extent(renderer)
+                if bounds.x0 < 0 or bounds.y0 < 0 or bounds.x1 > fig.bbox.width or bounds.y1 > fig.bbox.height:
+                    raise ValueError("standard_chart_layout_unresolved: 图例超出画布，请增加右侧留白或使用自适应布局")
     annotations = [text for ax in fig.axes for text in ax.texts if isinstance(text, Annotation)]
     placed = []
     for annotation in annotations:
