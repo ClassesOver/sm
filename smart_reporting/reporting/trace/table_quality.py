@@ -220,6 +220,7 @@ def evaluate_table_quality(
     checks = {}
     registered = {item.file_resource_id: item.analysis_id for item in index.fact_files}
     for table in index.tables:
+        column_offset = int(table.row_label_column)
         reasons: list[str] = []
         checked = 0
         try:
@@ -234,9 +235,9 @@ def evaluate_table_quality(
                 reasons.append("table_identity_unavailable")
             elif (
                 len(frozen) != len(table.row_keys) + 1
-                or tuple(frozen[0][1:]) != table.column_keys
-                or len({row[0] for row in frozen[1:]}) != len(frozen) - 1
-                or any(len(row) != len(table.column_keys) + 1 for row in frozen)
+                or tuple(frozen[0][column_offset:]) != table.column_keys
+                or (table.row_label_column and len({row[0] for row in frozen[1:]}) != len(frozen) - 1)
+                or any(len(row) != len(table.column_keys) + column_offset for row in frozen)
             ):
                 reasons.append("frozen_structure_ambiguous")
             elif (
@@ -252,7 +253,7 @@ def evaluate_table_quality(
                     reasons.append("table_cells_unbound")
                 rows = dict(zip(table.row_keys, frozen[1:], strict=True))
                 for cell in table.cells:
-                    text = rows[cell.row_key][table.column_keys.index(cell.column_key) + 1]
+                    text = rows[cell.row_key][table.column_keys.index(cell.column_key) + column_offset]
                     if cell.source_cell is not None:
                         from .table_sources import source_cell_text, source_cell_view
 

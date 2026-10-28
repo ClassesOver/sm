@@ -187,6 +187,7 @@ def build_table_trace(
     markdown = render_table_markdown(
         table_id, trace.column_keys, markdown_rows,
         caption=str(spec["caption"]) if spec.get("caption") else None,
+        row_label_header=str(spec.get("rowLabelHeader", "项目")),
     )
     return trace, markdown
 
@@ -230,11 +231,11 @@ def render_table_markdown(
     rows: Sequence[Sequence[str]],
     *,
     caption: str | None = None,
+    row_label_header: str | None = "项目",
 ) -> str:
     """渲染带协议块的 Markdown 表格；每行首项是行标签（不占 columnKey）。
 
-    表头 = 空标签列 + columnKeys；数据行 = [label, *values]，长度必须
-    等于 len(column_keys) + 1。
+    默认增加有名称的行标签列；原始数据表传 None，不添加展示列。
     """
 
     def literal_cell(value: str) -> str:
@@ -243,11 +244,12 @@ def render_table_markdown(
         value = re.sub(r"([\\|`*_{}\[\]<>])", r"\\\1", value)
         return value.replace("\r", "&#13;").replace("\n", "&#10;")
 
-    header = "| " + " | ".join(("", *(literal_cell(key) for key in column_keys))) + " |"
+    headers = ([row_label_header] if row_label_header is not None else []) + list(column_keys)
+    header = "| " + " | ".join(literal_cell(key) for key in headers) + " |"
     # 行标签左对齐，数值列右对齐，便于逐行比较位数与小数点。
-    separator = "| " + " | ".join(("---", *("---:",) * len(column_keys))) + " |"
+    separator = "| " + " | ".join(("---", *("---:",) * (len(headers) - 1))) + " |"
     for row in rows:
-        if len(row) != len(column_keys) + 1:
+        if len(row) != len(headers):
             raise ReportingError(
                 "request_invalid", f"表格行单元格数与列数不一致: {row[:1]}"
             )
@@ -487,6 +489,7 @@ def build_analysis_table(
         "tableId": table_id,
         "metricCodes": codes,
         "columnLabels": labels,
+        "rowLabelHeader": "期间" if periods else "项目",
         "factIds": {code: fact.fact_id for code, fact in facts_by_code.items() if fact.fact_id},
         "rows": rows,
         "allowMissingPeriods": True,
@@ -715,7 +718,9 @@ def build_group_edit_table(
         columnKeys=tuple(column_keys),
         cells=tuple(cells),
     )
-    return trace, render_table_markdown(trace.table_id, column_keys, rows, caption=caption)
+    return trace, render_table_markdown(
+        trace.table_id, column_keys, rows, caption=caption, row_label_header=breakdown_label,
+    )
 
 
 def _percentage_text(numerator: float, denominator: float) -> str:
@@ -834,7 +839,7 @@ def build_supplemental_tables(
                         for index in range(offset, min(offset + limit, len(source_rows))):
                             key = f'source-row:{index}'
                             keys.append(key)
-                            row = [f'第{index + 1}行']
+                            row = []
                             for column in selected_columns:
                                 operand = TableOperandV1(fileResourceId=file_resource_id, tablePointer=pointer,
                                                          rowIndex=index, columnIndex=column, coefficient='1')
@@ -851,9 +856,10 @@ def build_supplemental_tables(
                         table_id = f'table-supplemental-{identity}'
                         caption = node.get('title') or node.get('name')
                         markdown = render_table_markdown(table_id, labels, rows,
-                                                         caption=caption if isinstance(caption, str) else None)
+                                                         caption=caption if isinstance(caption, str) else None,
+                                                         row_label_header=None)
                         trace = TableTraceV1(tableId=table_id, rowKeys=keys, columnKeys=labels,
-                                             cells=cells, originMarkdown=markdown)
+                                             cells=cells, originMarkdown=markdown, rowLabelColumn=False)
                         tables.append((trace, markdown))
                 return
             for key, child in node.items():

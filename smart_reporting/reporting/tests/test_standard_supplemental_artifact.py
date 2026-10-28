@@ -166,7 +166,8 @@ async def test_concurrent_identical_artifact_is_reused_and_not_claimed_as_create
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('mode', ['single', 'query_scope', 'ratio', 'batch', 'batch_failure', 'disabled'])
+@pytest.mark.parametrize('mode', ['single', 'query_scope', 'ratio', 'batch', 'batch_failure', 'disabled',
+                                  'comparison', 'comparison_drift'])
 async def test_runtime_standard_callback_signs_evidence_without_script(monkeypatch, mode):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -228,7 +229,27 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             facts=SimpleNamespace(metrics=[parent], derived_metrics=[]),
         )
         selected = spec
-        if mode == 'ratio':
+        if mode in {'comparison', 'comparison_drift'}:
+            prior_content = (b'period,department,actual_equipment,visits\n'
+                             b'2024-01,A,5,1\n2024-02,B,10,2\n2025-01,A,999,1\n')
+            prior_identity = {'path': 'datasets/prior.csv', 'size': len(prior_content),
+                              'sha256': hashlib.sha256(prior_content).hexdigest()}
+            workspace.files[prior_identity['path']] = (
+                b'changed input' if mode == 'comparison_drift' else prior_content
+            )
+            prior = SimpleNamespace(fact_id='fact-bbbbbbbbbbbbbbbb', scope={}, period_values=[
+                SimpleNamespace(period='2024-01', value=5), SimpleNamespace(period='2024-02', value=10),
+            ])
+            state.facts.metrics.append(prior)
+            state.instruction['datasets'].append({
+                'datasetId': 'dataset_prior', **prior_identity, 'columns': dataset['columns'],
+            })
+            state.instruction['currentAnalysis']['datasetIds'].append('dataset_prior')
+            selected = spec.model_copy(update={
+                'operation': 'period_comparison', 'baseline_dataset_id': 'dataset_prior',
+                'baseline_parent_fact_id': prior.fact_id, 'baseline_periods': ('2024-01', '2024-02'),
+            })
+        elif mode == 'ratio':
             denominator = SimpleNamespace(**vars(parent))
             denominator.fact_id = 'fact-bbbbbbbbbbbbbbbb'
             denominator.period_values = [SimpleNamespace(period='2025-01', value=3),
@@ -262,15 +283,18 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
         return SimpleNamespace(output=result)
 
     monkeypatch.setattr(analysis_module.AnalysisItemWorkflow, 'run', run)
-    if mode == 'batch_failure':
-        with pytest.raises(ValueError, match='injected second'):
+    if mode in {'batch_failure', 'comparison_drift'}:
+        error_type, message = ((ValueError, 'injected second') if mode == 'batch_failure'
+                               else (ReportingError, '身份'))
+        with pytest.raises(error_type, match=message):
             await runtime._execute_analysis_item_workflow(
                 json.dumps({'currentAnalysisId': 'analysis_001', 'currentAnalysis': {}}),
                 RunContext(run_id='task-1', session_id='session-1'),
                 parent_run_context=RunContext(run_id='report-1', session_id='session-1'),
                 model_metrics_recorder=lambda *args: None,
             )
-        assert set(workspace.files) == {identity['path']}
+        assert set(workspace.files) == ({identity['path'], 'datasets/prior.csv'}
+                                        if mode == 'comparison_drift' else {identity['path']})
         return
     result = await runtime._execute_analysis_item_workflow(
         json.dumps({'currentAnalysisId': 'analysis_001', 'currentAnalysis': {}}),
@@ -294,6 +318,15 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
     if mode == 'query_scope':
         assert result['evidence'].findings[0]['scope'] == {'income_nature': '开单收入'}
         assert result['computationRecord']['parameters']['queryBoundScopeFields'] == ['income_nature']
+    if mode == 'comparison':
+        record = result['computationRecord']
+        assert record['inputDatasetIds'] == ['dataset_001', 'dataset_prior']
+        assert len(record['parameters']['inputFiles']) == 2
+        assert record['parameters']['baselineDatasetId'] == 'dataset_prior'
+        assert result['evidence'].findings[0]['rows'] == [
+            ['B', 20.0, 10.0, 10.0, 1.0, 2 / 3], ['A', 10.0, 5.0, 5.0, 1.0, 1 / 3],
+        ]
+        assert workspace.read_counts['datasets/prior.csv'] == 1
 
     assert workspace.read_counts[identity['path']] == 1
     if mode == 'batch':

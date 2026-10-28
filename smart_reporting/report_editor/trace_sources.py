@@ -1690,7 +1690,7 @@ class ReportEditorTraceService:
             # 重复身份没有唯一来源，不能按出现顺序挑选其中一块冒充已验证。
             return blocks
 
-        def _rows(body: str) -> tuple[list[str], list[list[str]]]:
+        def _rows(body: str, column_offset: int) -> tuple[list[str], list[list[str]]]:
             from markdown_it import MarkdownIt
 
             # 使用表格语法分列，转义的管道符属于单元格内容，不能直接 split('|')。
@@ -1711,7 +1711,7 @@ class ReportEditorTraceService:
                     ).strip())
             if len(rows) < 2:
                 return [], []
-            return rows[0][1:], rows[1:]
+            return rows[0][column_offset:], rows[1:]
 
         committed_blocks = _blocks(committed)
         draft_blocks = _blocks(draft_markdown)
@@ -1724,6 +1724,7 @@ class ReportEditorTraceService:
             "copiedCells": 0,
         }
         for trace in index.tables:
+            column_offset = int(trace.row_label_column)
             counts = {"valid": 0, "stale": 0, "unbound": 0}
             locations: list[dict[str, Any]] = []
             inserted_rows = 0
@@ -1740,36 +1741,41 @@ class ReportEditorTraceService:
             if draft_body is None:
                 counts["unbound"] = len(trace.cells)
             else:
-                origin_header, origin_rows = _rows(origin_body or "")
+                origin_header, origin_rows = _rows(origin_body or "", column_offset)
+                label_counts = Counter(row[0] for row in origin_rows if row)
+
+                def row_identity(row: list[str]) -> str | tuple[str, ...]:
+                    # 原始表允许同期间多科室；标签重复时只匹配完整冻结行，绝不猜行。
+                    return tuple(row) if not trace.row_label_column and label_counts[row[0]] != 1 else row[0]
                 # 期间并集表的缺失月份由服务端登记为空引用并展示“—”。
                 # 只豁免原样保留的占位符；事实读取失败或填入数字仍须告警。
                 missing_cells = {
                     (key, name)
                     for row, key in zip(origin_rows, trace.row_keys)
-                    for column, name in enumerate(origin_header, 1)
+                    for column, name in enumerate(origin_header, column_offset)
                     if column < len(row) and row[column] == "—"
                 } if len(origin_rows) == len(trace.row_keys) else set()
                 if len(origin_rows) == len(trace.row_keys):
                     label_to_key = {
-                        row[0]: key for row, key in zip(origin_rows, trace.row_keys)
+                        row_identity(row): key for row, key in zip(origin_rows, trace.row_keys)
                     }
                 else:
                     label_to_key = {}
-                draft_header, draft_rows = _rows(draft_body)
+                draft_header, draft_rows = _rows(draft_body, column_offset)
                 # 定位比软校验更保守：重复标签/列名不能选择首个匹配冒充唯一身份。
                 # 无冻结表格且已提交正文不可读时，无法确认原始位置，不给定位。
                 unique_block = origin_body is not None
-                origin_labels = Counter(row[0] for row in origin_rows if row)
-                draft_labels = Counter(row[0] for row in draft_rows if row)
+                origin_labels = Counter(row_identity(row) for row in origin_rows if row)
+                draft_labels = Counter(row_identity(row) for row in draft_rows if row)
                 header_counts = Counter(draft_header)
                 column_index = {
-                    name: position + 1 for position, name in enumerate(draft_header)
+                    name: position + column_offset for position, name in enumerate(draft_header)
                 }
                 row_by_key: dict[str, list[str]] = {}
                 row_positions: dict[str, int] = {}
                 copy_rows: list[list[str]] = []
                 for position, row in enumerate(draft_rows):
-                    key = label_to_key.get(row[0]) if row else None
+                    key = label_to_key.get(row_identity(row)) if row else None
                     # 已知标签的首个出现按冻结行键映射；未知标签或重复标签
                     # （复制行）进入复制候选，逐格细分提示，不静默覆盖首行。
                     if key is None or key in row_by_key:
@@ -1823,10 +1829,10 @@ class ReportEditorTraceService:
                         ) else "stale"
                     )
                     uniquely_bound = (
-                        unique_block and origin_labels[row[0]] == 1
-                        and draft_labels[row[0]] == 1
+                        unique_block and origin_labels[row_identity(row)] == 1
+                        and draft_labels[row_identity(row)] == 1
                         and header_counts[cell.column_key] == 1
-                        and len(row) == len(draft_header) + 1
+                        and len(row) == len(draft_header) + column_offset
                     )
                     if not uniquely_bound:
                         cell_status = "unbound"
@@ -1840,7 +1846,7 @@ class ReportEditorTraceService:
                 # 复制单元格细分：新格文本与某冻结单元格事实值一致时给出
                 # 候选绑定提示（软语义提示，不自动赋绑定身份）。
                 for row in copy_rows:
-                    for column in range(1, len(row)):
+                    for column in range(column_offset, len(row)):
                         cell_text = row[column]
                         if not cell_text or cell_text == "—":
                             continue
@@ -1867,8 +1873,8 @@ class ReportEditorTraceService:
                             {
                                 "rowLabel": row[0],
                                 "columnKey": (
-                                    draft_header[column - 1]
-                                    if column - 1 < len(draft_header)
+                                    draft_header[column - column_offset]
+                                    if column - column_offset < len(draft_header)
                                     else None
                                 ),
                                 "text": cell_text,

@@ -1561,10 +1561,10 @@ class AnalysisItemWorkflow:
                 return None
             return tuple(available[key] for key in keys)
 
-        def supported(fact: Any, periods: tuple[str, ...], field: str) -> bool:
+        def supported(fact: Any, periods: tuple[str, ...], field: str, dataset_id: str | None = None) -> bool:
             if (
                 fact is None
-                or fact.dataset_id != requirement.dataset_id
+                or fact.dataset_id != (dataset_id or requirement.dataset_id)
                 or fact.field != field
                 or getattr(fact, "period_field", None) != spec_period_field
                 or getattr(fact, "aggregation", None) != "sum"
@@ -1582,7 +1582,7 @@ class AnalysisItemWorkflow:
             return unavailable("parent_semantics_or_periods_unsupported")
         baseline = facts.get(spec.baseline_parent_fact_id) if spec.baseline_parent_fact_id else parent
         if spec.operation == "period_comparison" and not supported(
-            baseline, spec.baseline_periods, spec.measure_field,
+            baseline, spec.baseline_periods, spec.measure_field, spec.baseline_dataset_id,
         ):
             return unavailable("baseline_semantics_or_periods_unsupported")
         denominator = facts.get(spec.denominator_parent_fact_id) if spec.denominator_parent_fact_id else None
@@ -1600,6 +1600,10 @@ class AnalysisItemWorkflow:
                 return unavailable("comparison_period_grain_mismatch")
         if spec.operation == "period_comparison" and getattr(parent, "unit", None) != getattr(baseline, "unit", None):
             return unavailable("comparison_unit_mismatch")
+        if spec.baseline_dataset_id is not None and spec.baseline_dataset_id != requirement.dataset_id:
+            if (not getattr(parent, "field_ref", None)
+                    or getattr(parent, "field_ref", None) != getattr(baseline, "field_ref", None)):
+                return unavailable("comparison_measure_identity_mismatch")
         ratio_fact: Any | None = None
         if spec.operation == "group_ratio":
             ratio_facts = {
@@ -1700,6 +1704,21 @@ class AnalysisItemWorkflow:
         projected_scope = set(parent_scope) & dataset_columns
         if not projected_scope.issubset(requirement.fields):
             return unavailable("scope_fields_not_authorized")
+        if spec.baseline_dataset_id is not None:
+            if spec.baseline_dataset_id not in current_analysis.get("datasetIds", ()):
+                return unavailable("baseline_dataset_not_authorized")
+            baseline_dataset = next((item for item in (state.instruction.get("datasets") or ())
+                                     if isinstance(item, Mapping)
+                                     and item.get("datasetId") == spec.baseline_dataset_id), None)
+            if baseline_dataset is None:
+                return unavailable("baseline_dataset_missing")
+            baseline_columns = set(baseline_dataset.get("columns") or ())
+            if not required_fields.issubset(baseline_columns):
+                return unavailable("baseline_fields_not_authorized")
+            if not (set(baseline_scope) - baseline_columns).issubset(
+                query_bound_scope_fields(baseline_dataset, baseline_scope)
+            ):
+                return unavailable("baseline_scope_columns_missing")
         logger.bind(
             analysis_id=state.instruction.get("currentAnalysisId"), reason="eligible",
         ).info("report_analysis_standard_preflight reason=eligible")
