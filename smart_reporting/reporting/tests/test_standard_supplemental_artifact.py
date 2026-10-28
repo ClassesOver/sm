@@ -167,7 +167,11 @@ async def test_concurrent_identical_artifact_is_reused_and_not_claimed_as_create
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('mode', ['single', 'query_scope', 'ratio', 'batch', 'batch_failure', 'disabled',
-                                  'comparison', 'comparison_drift'])
+                                  'comparison', 'comparison_drift', 'comparison_current_hash',
+                                  'comparison_baseline_hash', 'comparison_current_missing_hash',
+                                  'comparison_baseline_missing_hash', 'comparison_same_total_drift',
+                                  'comparison_query_scope', 'comparison_baseline_or',
+                                  'comparison_baseline_sql_hash', 'comparison_current_sql_hash'])
 async def test_runtime_standard_callback_signs_evidence_without_script(monkeypatch, mode):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -209,6 +213,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             assert workflow.run_standard_supplemental is None
             return SimpleNamespace(output={'disabled': True})
         parent = SimpleNamespace(**{'fact_id': 'fact-aaaaaaaaaaaaaaaa', 'scope': {}},
+                                 dataset_id='dataset_001', dataset_sha256=identity['sha256'],
                                  **{'period_values': [SimpleNamespace(period='2025-01', value=10),
                                                      SimpleNamespace(period='2025-02', value=20)]})
         dataset = {'datasetId': 'dataset_001', **identity,
@@ -229,7 +234,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             facts=SimpleNamespace(metrics=[parent], derived_metrics=[]),
         )
         selected = spec
-        if mode in {'comparison', 'comparison_drift'}:
+        if mode.startswith('comparison'):
             prior_content = (b'period,department,actual_equipment,visits\n'
                              b'2024-01,A,5,1\n2024-02,B,10,2\n2025-01,A,999,1\n')
             prior_identity = {'path': 'datasets/prior.csv', 'size': len(prior_content),
@@ -237,7 +242,8 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             workspace.files[prior_identity['path']] = (
                 b'changed input' if mode == 'comparison_drift' else prior_content
             )
-            prior = SimpleNamespace(fact_id='fact-bbbbbbbbbbbbbbbb', scope={}, period_values=[
+            prior = SimpleNamespace(fact_id='fact-bbbbbbbbbbbbbbbb', scope={},
+                                    dataset_id='dataset_prior', dataset_sha256=prior_identity['sha256'], period_values=[
                 SimpleNamespace(period='2024-01', value=5), SimpleNamespace(period='2024-02', value=10),
             ])
             state.facts.metrics.append(prior)
@@ -245,6 +251,31 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                 'datasetId': 'dataset_prior', **prior_identity, 'columns': dataset['columns'],
             })
             state.instruction['currentAnalysis']['datasetIds'].append('dataset_prior')
+            if mode == 'comparison_current_hash':
+                parent.dataset_sha256 = 'c' * 64
+            elif mode == 'comparison_baseline_hash':
+                prior.dataset_sha256 = 'c' * 64
+            elif mode == 'comparison_current_missing_hash':
+                del parent.dataset_sha256
+            elif mode == 'comparison_baseline_missing_hash':
+                del prior.dataset_sha256
+            elif mode == 'comparison_same_total_drift':
+                changed = content.replace(b'A,10,3', b'A,20,3').replace(b'B,20,4', b'B,10,4')
+                workspace.files[identity['path']] = changed
+                dataset['sha256'] = hashlib.sha256(changed).hexdigest()
+            elif mode in {'comparison_query_scope', 'comparison_baseline_or',
+                          'comparison_baseline_sql_hash', 'comparison_current_sql_hash'}:
+                parent.scope = prior.scope = {'area': 'north'}
+                for side, item in [('current', dataset), ('baseline', state.instruction['datasets'][-1])]:
+                    query = ("SELECT period, department, actual_equipment, visits FROM db.income "
+                             "WHERE area = 'north'")
+                    if mode == 'comparison_baseline_or' and side == 'baseline':
+                        query += " OR area = 'south'"
+                    digest = hashlib.sha256(query.encode()).hexdigest()
+                    if mode == f'comparison_{side}_sql_hash':
+                        digest = '0' * 64
+                    item.update({'sourceType': 'starrocks_materialized',
+                                 'provenance': {'querySql': query, 'sqlHash': digest}})
             selected = spec.model_copy(update={
                 'operation': 'period_comparison', 'baseline_dataset_id': 'dataset_prior',
                 'baseline_parent_fact_id': prior.fact_id, 'baseline_periods': ('2024-01', '2024-02'),
@@ -283,9 +314,13 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
         return SimpleNamespace(output=result)
 
     monkeypatch.setattr(analysis_module.AnalysisItemWorkflow, 'run', run)
-    if mode in {'batch_failure', 'comparison_drift'}:
+    comparison_failure = mode.startswith('comparison') and mode not in {'comparison', 'comparison_query_scope'}
+    if mode == 'batch_failure' or comparison_failure:
         error_type, message = ((ValueError, 'injected second') if mode == 'batch_failure'
-                               else (ReportingError, '身份'))
+                               else (ReportingError, '固定范围' if mode in {
+                                   'comparison_baseline_or', 'comparison_baseline_sql_hash',
+                                   'comparison_current_sql_hash',
+                               } else '身份'))
         with pytest.raises(error_type, match=message):
             await runtime._execute_analysis_item_workflow(
                 json.dumps({'currentAnalysisId': 'analysis_001', 'currentAnalysis': {}}),
@@ -294,7 +329,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                 model_metrics_recorder=lambda *args: None,
             )
         assert set(workspace.files) == ({identity['path'], 'datasets/prior.csv'}
-                                        if mode == 'comparison_drift' else {identity['path']})
+                                        if comparison_failure else {identity['path']})
         return
     result = await runtime._execute_analysis_item_workflow(
         json.dumps({'currentAnalysisId': 'analysis_001', 'currentAnalysis': {}}),
@@ -318,7 +353,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
     if mode == 'query_scope':
         assert result['evidence'].findings[0]['scope'] == {'income_nature': '开单收入'}
         assert result['computationRecord']['parameters']['queryBoundScopeFields'] == ['income_nature']
-    if mode == 'comparison':
+    if mode in {'comparison', 'comparison_query_scope'}:
         record = result['computationRecord']
         assert record['inputDatasetIds'] == ['dataset_001', 'dataset_prior']
         assert len(record['parameters']['inputFiles']) == 2

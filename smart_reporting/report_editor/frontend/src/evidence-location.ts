@@ -41,7 +41,7 @@ export function findEvidenceTableCell(root: HTMLElement, tableId: string, locati
   const markers = [...root.querySelectorAll<HTMLElement>('.report-table-marker')].filter(marker =>
     findProtocolMarkers(marker.textContent ?? '').some(value => value.kind === 'table' && value.value === tableId))
   if (markers.length !== 1 || !Number.isInteger(location.rowIndex) || location.rowIndex < 0 ||
-      !Number.isInteger(location.columnIndex) || location.columnIndex < 1) return null
+      !Number.isInteger(location.columnIndex) || location.columnIndex < 0) return null
   const block = markers[0].closest('p')
   const next = block?.nextElementSibling
   const tables = next?.matches('table') ? [next as HTMLTableElement]

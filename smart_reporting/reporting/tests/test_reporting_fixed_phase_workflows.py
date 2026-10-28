@@ -300,6 +300,7 @@ def _analysis_state_with_requirement(
 
 def _standard_analysis_state() -> _AnalysisItemState:
     state = _analysis_state_with_requirement(fields=("department", "income", "period"))
+    state.instruction["datasets"][0]["sha256"] = "a" * 64
     state.decision = AnalysisEvidenceDecision.model_validate(
         {
             "requiresSupplementalEvidence": True,
@@ -328,6 +329,7 @@ def _standard_analysis_state() -> _AnalysisItemState:
             SimpleNamespace(
                 fact_id="fact-1234567890abcdef",
                 dataset_id="dataset_001",
+                dataset_sha256="a" * 64,
                 field="income",
                 total=1.0,
                 period_field="period",
@@ -491,6 +493,7 @@ def test_standard_period_comparison_rejects_mismatched_parent_scopes():
 
 def test_standard_period_comparison_can_use_same_frozen_parent_fact():
     state = _standard_analysis_state()
+    state.facts.metrics[0].period_roles = ("current", "mom")
     state.facts.metrics[0].period_values = (
         SimpleNamespace(period="2026-01", value=1.0),
         SimpleNamespace(period="2025-12", value=1.0),

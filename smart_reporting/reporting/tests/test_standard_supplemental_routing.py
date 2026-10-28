@@ -190,6 +190,7 @@ def test_cross_dataset_comparison_uses_authorized_calendar_window(fault):
     state.facts.metrics.append(prior)
     state.instruction['datasets'].append({
         'datasetId': prior.dataset_id, 'columns': ['period', 'department', 'income'],
+        'sha256': prior.dataset_sha256,
     })
     state.instruction['currentAnalysis']['datasetIds'].append(prior.dataset_id)
     if fault == 'unauthorized':
@@ -236,9 +237,7 @@ def test_partially_unknown_requested_window_never_creates_a_partial_candidate():
     )
     state.instruction['currentAnalysis']['periods'] = ['2026-01', 'unknown']
 
-    candidate, = _summary_candidates(state)
-
-    assert candidate['standardComputation']['currentPeriods'] == ['2026-01', '2026-02']
+    assert _summary_candidates(state) == []
 
 
 def _bind_signed_scope(dataset, *, value='开单收入', operator='='):

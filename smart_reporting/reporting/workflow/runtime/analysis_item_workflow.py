@@ -50,8 +50,10 @@ from .evidence_coverage import facts_cover_analysis
 from .fact_summary import deterministic_fact_summary
 from .standard_supplemental import (
     StandardSupplementalSpec,
+    comparison_period_windows,
     query_bound_scope_fields,
     standard_computation_candidates,
+    standard_input_matches_fact,
 )
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
@@ -1598,6 +1600,14 @@ class AnalysisItemWorkflow:
             baseline_key = metric_period_key(spec.baseline_periods[0], getattr(baseline, "period_granularity", None))
             if current_key is None or baseline_key is None or current_key[0] != baseline_key[0]:
                 return unavailable("comparison_period_grain_mismatch")
+            prior_keys = {metric_period_key(label, getattr(baseline, "period_granularity", None))
+                          for label in spec.baseline_periods}
+            if not any(
+                prior_keys == {metric_period_key(label, getattr(baseline, "period_granularity", None))
+                               for label in window}
+                for window in comparison_period_windows(parent, baseline, spec.current_periods)
+            ):
+                return unavailable("comparison_role_or_calendar_mismatch")
         if spec.operation == "period_comparison" and getattr(parent, "unit", None) != getattr(baseline, "unit", None):
             return unavailable("comparison_unit_mismatch")
         if spec.baseline_dataset_id is not None and spec.baseline_dataset_id != requirement.dataset_id:
@@ -1676,6 +1686,13 @@ class AnalysisItemWorkflow:
             None,
         )
         dataset_columns = set(dataset.get("columns") or ()) if isinstance(dataset, Mapping) else set()
+        if not isinstance(dataset, Mapping) or not standard_input_matches_fact(parent, dataset):
+            return unavailable("parent_dataset_identity_mismatch")
+        if spec.operation == "group_ratio" and not standard_input_matches_fact(denominator, dataset):
+            return unavailable("denominator_dataset_identity_mismatch")
+        if spec.operation == "period_comparison" and spec.baseline_dataset_id is None:
+            if not standard_input_matches_fact(baseline, dataset):
+                return unavailable("baseline_dataset_identity_mismatch")
         requested_measures = {item.field for item in state.facts.metrics
                               if item.dataset_id == requirement.dataset_id and item.field in requirement.fields}
         allowed_measures = {
@@ -1695,6 +1712,14 @@ class AnalysisItemWorkflow:
         if not required_fields.issubset(requirement.fields) or not set(requirement.fields).issubset(dataset_columns):
             return unavailable("fields_not_authorized")
         current_analysis = state.instruction.get("currentAnalysis") or {}
+        requested_periods = current_analysis.get("periods", ())
+        if requested_periods:
+            grain = getattr(parent, "period_granularity", None)
+            requested_keys = [metric_period_key(str(label), grain) for label in requested_periods]
+            selected_keys = {metric_period_key(label, grain) for label in spec.current_periods}
+            if (None in requested_keys or len(set(requested_keys)) != len(requested_keys)
+                    or set(requested_keys) != selected_keys):
+                return unavailable("requested_period_window_mismatch")
         if requirement.dataset_id not in current_analysis.get("datasetIds", ()):
             return unavailable("dataset_not_authorized")
         query_bound_scope = query_bound_scope_fields(dataset, parent_scope) if isinstance(dataset, Mapping) else frozenset()
@@ -1712,6 +1737,8 @@ class AnalysisItemWorkflow:
                                      and item.get("datasetId") == spec.baseline_dataset_id), None)
             if baseline_dataset is None:
                 return unavailable("baseline_dataset_missing")
+            if not standard_input_matches_fact(baseline, baseline_dataset):
+                return unavailable("baseline_dataset_identity_mismatch")
             baseline_columns = set(baseline_dataset.get("columns") or ())
             if not required_fields.issubset(baseline_columns):
                 return unavailable("baseline_fields_not_authorized")

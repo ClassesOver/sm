@@ -762,8 +762,24 @@ def query_bound_scope_fields(
     )
 
 
-def _comparison_windows(baseline: Any, current_periods: Sequence[str]) -> list[tuple[str, ...]]:
+def standard_input_matches_fact(fact: Any, dataset: Mapping[str, Any]) -> bool:
+    """清单与实际字节之外，还须绑定计算使用的冻结事实身份。"""
+    return (
+        bool(dataset.get("sha256"))
+        and getattr(fact, "dataset_id", None) == dataset.get("datasetId")
+        and getattr(fact, "dataset_sha256", None) == dataset.get("sha256")
+    )
+
+
+def comparison_period_windows(
+    parent: Any, baseline: Any, current_periods: Sequence[str],
+) -> list[tuple[str, ...]]:
     """用冻结期间角色和日历寻找完整同期，不依赖 CSV 行序或两侧总月数。"""
+    if (
+        "current" not in getattr(parent, "period_roles", ())
+        or getattr(parent, "period_granularity", None) != getattr(baseline, "period_granularity", None)
+    ):
+        return []
     available: dict[Any, str] = {}
     for item in baseline.period_values:
         key = metric_period_key(item.period, getattr(baseline, "period_granularity", None))
@@ -830,6 +846,8 @@ def standard_computation_candidates(
             ):
                 indexes = tuple(valid_keys.index(key) for key in valid_requested)
                 return tuple(available_periods[index] for index in indexes)
+            # 不得把缺月、重复或无法解析的请求静默缩小成已有期间。
+            return None
         return available_periods
 
     def add_candidate(
@@ -922,7 +940,7 @@ def standard_computation_candidates(
                             or not (set(parent_scope) - baseline_columns).issubset(
                                 query_bound_scope_fields(baseline_dataset, parent_scope))):
                         continue
-                    for prior in _comparison_windows(baseline, periods):
+                    for prior in comparison_period_windows(parent, baseline, periods):
                         specs.append(StandardSupplementalSpec(
                             operation="period_comparison", measureField=parent.field,
                             dimensionField=dimension, periodField=parent.period_field,

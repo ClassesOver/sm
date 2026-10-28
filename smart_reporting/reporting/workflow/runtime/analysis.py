@@ -168,6 +168,7 @@ from .standard_supplemental import (
     frozen_period_total,
     query_bound_scope_fields,
     run_standard_supplemental,
+    standard_input_matches_fact,
 )
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
@@ -3835,6 +3836,14 @@ class RuntimeAnalysisMixin:
                         "report_analysis_standard_parent_fact_missing",
                         "标准补证引用的冻结父指标不存在。",
                     )
+                if not standard_input_matches_fact(parent, dataset) or (
+                    computation_spec.operation == "group_ratio"
+                    and not standard_input_matches_fact(denominator, dataset)
+                ):
+                    raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证输入与冻结父指标身份不一致。")
+                if computation_spec.operation == "period_comparison" and computation_spec.baseline_dataset_id is None:
+                    if not standard_input_matches_fact(baseline or parent, dataset):
+                        raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证对照输入与冻结父指标身份不一致。")
                 parent_scope = dict(getattr(parent, "scope", {}) or {})
                 dataset_columns = set(dataset.get("columns") or ())
                 unprojected_scope = set(parent_scope) - dataset_columns
@@ -3850,6 +3859,8 @@ class RuntimeAnalysisMixin:
                 baseline_unprojected_scope: set[str] = set()
                 if computation_spec.baseline_dataset_id is not None:
                     baseline_dataset, _, baseline_content = await read_input(computation_spec.baseline_dataset_id)
+                    if not standard_input_matches_fact(baseline, baseline_dataset):
+                        raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证对照输入与冻结父指标身份不一致。")
                     baseline_columns = set(baseline_dataset.get("columns") or ())
                     baseline_unprojected_scope = set(parent_scope) - baseline_columns
                     if not baseline_unprojected_scope.issubset(query_bound_scope_fields(baseline_dataset, parent_scope)):
