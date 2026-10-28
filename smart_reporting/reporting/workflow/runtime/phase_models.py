@@ -422,6 +422,8 @@ class StandardChartCanvas(StrictModel):
     top: float = Field(default=.90, ge=.55, le=1, allow_inf_nan=False)
     label_wrap: int = Field(default=14, alias='labelWrap', ge=6, le=40)
     tick_font_size: int = Field(default=9, alias='tickFontSize', ge=8, le=16)
+    max_category_ticks: int = Field(default=18, alias='maxCategoryTicks', ge=4, le=60,
+                                    description='纵向图横轴标签过密时显示的最大标签数；所有数据点仍完整绘制')
     legend_position: Literal['auto', 'inside', 'outside'] = Field(default='auto', alias='legendPosition')
 
     @model_validator(mode='after')

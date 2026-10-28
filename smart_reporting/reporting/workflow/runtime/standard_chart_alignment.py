@@ -23,6 +23,8 @@ def align_chart_sources(entries, files, selections):
         if source is None or source.sha256 != entry['sha256']:
             return None
         document = json.loads(source.content)
+        if not isinstance(document, dict):
+            return None
         source_columns = document.get('columns', [])
         rows = document.get('rows', [])
         if (len(set(source_columns)) != len(source_columns)
@@ -53,7 +55,10 @@ def align_chart_sources(entries, files, selections):
             labels = current_labels
         elif set(labels) != set(current_labels):
             return None
-        meta = document.get('columnMeta', {}).get(selection.value_field, {})
+        column_meta = document.get('columnMeta') or {}
+        if not isinstance(column_meta, dict):
+            return None
+        meta = column_meta.get(selection.value_field, {})
         if not isinstance(meta, dict) or not meta.get('unit'):
             return None
         lookup = dict(zip(current_labels, values, strict=True))

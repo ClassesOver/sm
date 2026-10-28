@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import math
 
+from loguru import logger
+
 from ...units import unit_conversion_scale
 from .chart_inputs import ChartInputMaterialization
 from .phase_models import (
@@ -22,6 +24,17 @@ from .standard_chart_presentation import (
 
 
 def standard_visualization_script(
+    plan: VisualizationPlanDraft, inputs: ChartInputMaterialization,
+) -> str | None:
+    """Malformed or numerically unsupported frozen data must leave Coding available."""
+    try:
+        return _standard_visualization_script(plan, inputs)
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        logger.warning('report_standard_visualization_preflight_fallback error={}', type(error).__name__)
+        return None
+
+
+def _standard_visualization_script(
     plan: VisualizationPlanDraft, inputs: ChartInputMaterialization,
 ) -> str | None:
     if inputs.fallback_chart_ids or not plan.charts:
@@ -51,17 +64,21 @@ def standard_visualization_script(
         if source is None or source.sha256 != entry['sha256']:
             return None
         document = json.loads(source.content)
+        if not isinstance(document, dict):
+            return None
         original_document = document
         selected = tuple(getattr(chart, 'standard_value_fields', ()))
         if form == 'summary-bars':
             original_columns = document.get('columns', [])
             original_rows = document.get('rows', [])
             original_meta = document.get('columnMeta', {})
+            if not isinstance(original_meta, dict):
+                return None
             if (len(original_rows) != 1 or len(selected) < 2
                     or len(set(selected)) != len(selected) or not set(selected).issubset(original_columns)):
                 return None
             selected_meta = [original_meta.get(column, {}) for column in selected]
-            if (any(not meta.get('unit') for meta in selected_meta)
+            if (any(not isinstance(meta, dict) or not meta.get('unit') for meta in selected_meta)
                     or any(meta != selected_meta[0] for meta in selected_meta)):
                 return None
             document = {'columns': ['label', 'value'],
@@ -220,6 +237,17 @@ def standard_visualization_script(
         ):
             return None
         total_field = getattr(chart, 'standard_total_field', None)
+        if form in {'stacked-bar', 'stacked-area', 'stacked-total'}:
+            try:
+                totals_to_check = (
+                    [math.fsum(row[columns.index(values[0])] for row in rows if row[label_index] == name)
+                     for name in set(labels)] if category else
+                    [math.fsum(row[columns.index(column)] for column in values if column != total_field) for row in rows]
+                )
+            except OverflowError:
+                return None
+            if any(not math.isfinite(value) for value in totals_to_check):
+                return None
         if total_field is not None:
             if form != 'stacked-total' or category or total_field not in values or len(values) < 2:
                 return None
@@ -415,6 +443,13 @@ def finish_standard_layout(fig, policy):
     apply_standard_style(fig, policy)
     finish_standard_presentation(fig, policy)
     for ax in fig.axes:
+        if not policy["horizontal"]:
+            ticks, texts = ax.get_xticks(), ax.get_xticklabels()
+            if len(texts) > policy["max_category_ticks"]:
+                import math
+                stride = math.ceil((len(texts) - 1) / (policy["max_category_ticks"] - 1))
+                indexes = list(range(0, len(texts) - 1, stride)) + [len(texts) - 1]
+                ax.set_xticks([ticks[index] for index in indexes], [texts[index].get_text() for index in indexes])
         for axis, ticks, setter in ((ax.xaxis, ax.get_xticks(), ax.set_xticks),
                                     (ax.yaxis, ax.get_yticks(), ax.set_yticks)):
             texts = [tick.get_text() for tick in axis.get_ticklabels()]
@@ -448,6 +483,9 @@ def finish_standard_layout(fig, policy):
             from matplotlib.text import Text
             bounds = Text.get_window_extent(annotation, renderer).expanded(1.04, 1.12)
             if not any(bounds.overlaps(previous) for previous in placed):
+                if policy["crop"] == "canvas" and (bounds.x0 < 0 or bounds.y0 < 0 or
+                        bounds.x1 > fig.bbox.width or bounds.y1 > fig.bbox.height):
+                    raise ValueError("standard_chart_layout_unresolved: 标注超出画布，请扩大尺寸或调整位置")
                 placed.append(bounds)
                 break
             x, y = annotation.get_position()
@@ -455,6 +493,11 @@ def finish_standard_layout(fig, policy):
             annotation.update_positions(renderer)
         else:
             raise ValueError("standard_chart_layout_unresolved: 标注重叠，请减少密度或调整布局")
+    for ax in fig.axes:
+        texts = ax.get_yticklabels() if policy["horizontal"] else ax.get_xticklabels()
+        boxes = [text.get_window_extent(renderer) for text in texts if text.get_visible()]
+        if any(left.overlaps(right) for index, left in enumerate(boxes) for right in boxes[index + 1:]):
+            raise ValueError("standard_chart_layout_unresolved: 分类标签重叠，请扩大画布或减少标签密度")
 
 '''
 
@@ -513,7 +556,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
             color = canvas["annotation_specs"][number]["color"] or "#b55d68"
             target.axhline(values[first], color=color, linestyle="--", linewidth=1.2)
             caption = canvas["annotation_specs"][number]["caption"] or f"参考 {labels[first]}"
-            target.text(.99, values[first], f"{caption}: {values[first]:,.{precision}f}{unit}",
+            target.text(.99, values[first], f"{caption}: {format_standard_number(values[first], precision)}{unit}",
                         transform=target.get_yaxis_transform(), va="bottom", ha="right", fontsize=8, color=color,
                         bbox={"fc": "white", "ec": "none", "pad": 2})
             continue
@@ -531,7 +574,7 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
                 coordinate = index - group_width / 2 + width / 2 + members.index(series_index) * width
             extra = canvas["presentation"]["extras"].get((labels[index], names[series_index]), "")
             caption = canvas["annotation_specs"][number]["caption"] or names[series_index]
-            text = f"{caption}: {values[index]:,.{precision}f}{unit}" + (" · " + extra if extra else "")
+            text = f"{caption}: {format_standard_number(values[index], precision)}{unit}" + (" · " + extra if extra else "")
             standard_annotation(target, text, (coordinate, values[index]), canvas, number,
                                 standard_series_color(names[series_index], canvas))
     if mode == "zoom":
@@ -659,7 +702,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
             color = canvas["annotation_specs"][annotation_index]["color"] or "#b55d68"
             draw(values[first], linestyle="--", color=color, alpha=0.8, linewidth=1.2)
             caption = canvas["annotation_specs"][annotation_index]["caption"] or f"参考 {labels[first]} · {names[series_index]}"
-            text = f"{caption}: {values[first]:,.{precision}f}{unit or ''}"
+            text = f"{caption}: {format_standard_number(values[first], precision)}{unit or ''}"
             if form == "barh":
                 ax.text(values[first], 1.02, text, transform=ax.get_xaxis_transform(),
                         va="bottom", fontsize=8, color=color, bbox={"fc": "white", "ec": "none", "pad": 2})
@@ -696,7 +739,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
                 auxiliary_value = matching[0][columns.index(field)]
                 if meta["unit"] == "%" and meta.get("isPercent") is False:
                     auxiliary_value *= 100
-                auxiliary_text.append(f"{field}: {auxiliary_value:,.{precision}f}{meta['unit']}")
+                auxiliary_text.append(f"{field}: {format_standard_number(auxiliary_value, precision)}{meta['unit']}")
             suffix = " · " + " / ".join(auxiliary_text) if auxiliary_text else ""
             extra = canvas["presentation"]["extras"].get((labels[index], names[series_index]), "")
             if extra:
@@ -705,7 +748,7 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
             point = next((item for item in canvas["style"]["points"] if item["series"] == names[series_index] and item["label"] == labels[index]), None)
             if point is not None:
                 color = point["color"]
-            standard_annotation(ax, f"{prefix}{value:,.{precision}f}{unit or ''}{suffix}", xy,
+            standard_annotation(ax, f"{prefix}{format_standard_number(value, precision)}{unit or ''}{suffix}", xy,
                                 canvas, annotation_index, color)
     ax.set_title(title)
     ax.spines[["top", "right"]].set_visible(False)

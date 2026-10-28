@@ -223,3 +223,101 @@ def test_multiline_heading_and_footer_reserve_real_plot_space(render):
     bounds = figure.axes[0].get_position()
     assert bounds.y1 < .8
     assert bounds.y0 > .1
+
+
+@pytest.mark.parametrize('value', [1e-14, -1e-12, 1e15, -1e16])
+@pytest.mark.parametrize('form', ['line', 'barh'])
+def test_changed_value_magnitude_never_formats_nonzero_as_zero(render, value, form):
+    from smart_reporting.reporting.workflow.runtime.standard_chart_presentation import (
+        format_standard_number,
+    )
+
+    document = {'columns': ['label', 'actual'], 'rows': [['业务', value]], 'columnMeta': {'actual': {'unit': '元'}}}
+    plan, inputs = build(document, form=form)
+    axes = render(plan, inputs).axes[0]
+    text = axes.texts[0].get_text().removesuffix('元')
+    assert 'e' in text
+    assert float(text) == pytest.approx(value)
+    assert text == format_standard_number(value)
+    data = list(axes.lines[0].get_ydata()) if form == 'line' else [bar.get_width() for bar in axes.containers[0]]
+    assert data == [value]
+
+
+def test_tiny_frozen_summary_and_auxiliary_values_remain_visible(render):
+    document = {'columns': ['label', 'actual', 'budget'], 'rows': [['业务', 1e-12, 2e-12]],
+                'columnMeta': {'actual': {'unit': '元'}, 'budget': {'unit': '元'}}}
+    plan, inputs = build(document, presentation={'labelFormats': [{'field': 'budget'}], 'summaries': [{'field': 'actual'}]})
+    figure = render(plan, inputs)
+    assert '1.00e-12元' in figure.axes[0].texts[0].get_text()
+    assert 'budget 2.00e-12元' in figure.axes[0].texts[0].get_text()
+    assert any(text.get_text() == 'actual 1.00e-12元' for text in figure.texts)
+
+
+@pytest.mark.parametrize('form', ['stacked-bar', 'stacked-area', 'stacked-total'])
+def test_finite_inputs_with_overflowing_stack_require_fallback(form):
+    document = {'columns': ['label', 'actual', 'budget'], 'rows': [['业务', 1e308, 1e308]],
+                'columnMeta': {'actual': {'unit': '元'}, 'budget': {'unit': '元'}}}
+    plan, inputs = build(document, form=form, selected=('actual', 'budget'))
+    assert standard_visualization_script(plan, inputs) is None
+
+
+def test_dense_category_axis_thins_only_ticks_and_preserves_all_points(render):
+    document = {'columns': ['label', 'actual'], 'rows': [[f'业务名称-{i:02}', i + 1] for i in range(60)],
+                'columnMeta': {'actual': {'unit': '元'}}}
+    plan, inputs = build(document, form='line')
+    plan.charts[0].standard_annotations = ()
+    figure = render(plan, inputs)
+    axes = figure.axes[0]
+    assert list(axes.lines[0].get_ydata()) == list(range(1, 61))
+    assert len(axes.get_xticklabels()) <= 18
+    assert axes.get_xticklabels()[-1].get_text() == '业务名称-59'
+
+
+@pytest.mark.parametrize('document', [None, [], {'rows': []}, {'columns': ['label'], 'rows': None}])
+def test_malformed_replacement_data_never_raises_outside_standard_preflight(document):
+    plan, inputs = build(document)
+    assert standard_visualization_script(plan, inputs) is None
+
+
+@pytest.mark.parametrize('seed', [7, 41, 99])
+@pytest.mark.parametrize('form', ['line', 'barh', 'stacked-total'])
+def test_unfamiliar_random_datasets_preserve_every_series_value(render, seed, form):
+    import math
+    import random
+
+    rng = random.Random(seed)
+    names = [f'新指标-{i}' for i in range(rng.randint(2, 5))]
+    rows = []
+    for index in range(rng.randint(3, 12)):
+        values = [rng.uniform(-1000, 1000) for name in names]
+        if form == 'stacked-total':
+            values = [abs(value) for value in values]
+        rows.append([f'未知业务-{seed}-{index}', *values])
+    document = {'columns': ['label', *names], 'rows': rows, 'columnMeta': {name: {'unit': '元'} for name in names}}
+    plan, inputs = build(document, form=form, selected=tuple(names))
+    plan.charts[0].standard_annotations = ()
+    axes = render(plan, inputs).axes[0]
+    for index, name in enumerate(names):
+        expected = [row[index + 1] for row in rows]
+        if form == 'line':
+            assert list(axes.lines[index].get_ydata()) == expected
+        elif form == 'barh':
+            assert [bar.get_width() for bar in axes.containers[index]] == expected
+        else:
+            assert [bar.get_height() for bar in axes.containers[index]] == pytest.approx(expected)
+    if form == 'stacked-total':
+        assert list(axes.lines[0].get_ydata()) == [math.fsum(row[1:]) for row in rows]
+
+
+def test_invalid_json_bytes_require_fallback_without_escaping_preflight():
+    plan, _ = build({'columns': ['label', 'actual'], 'rows': [['A', 1]]})
+    source = ChartInputFile('input.json', b'{invalid')
+    inputs = ChartInputMaterialization(files=(source,), entries=({'chartId': 'chart', 'path': source.path, 'sha256': source.sha256},))
+    assert standard_visualization_script(plan, inputs) is None
+
+
+@pytest.mark.parametrize('metadata', [None, {'budget': {'unit': '元'}, 'actual': None}])
+def test_summary_projection_with_malformed_metadata_requires_fallback(metadata):
+    document = {'columns': ['budget', 'actual'], 'rows': [[100, 80]], 'columnMeta': metadata}
+    plan, inputs = build(document, form='summary-bars', selected=('budget', 'actual'))
+    assert standard_visualization_script(plan, inputs) is None

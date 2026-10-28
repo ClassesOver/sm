@@ -46,13 +46,23 @@ def _finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def format_standard_number(value, precision=2, show_sign=False):
+    # Never turn a nonzero frozen value into a displayed zero.
+    scientific = value != 0 and (abs(value) < .5 * 10 ** -precision or abs(value) >= 1e12)
+    return format(value, ('+' if show_sign else '') + (f'.{max(2, precision)}e' if scientific else f',.{precision}f'))
+
+
 def frozen_label(spec, document, row):
     columns = document['columns']
     metadata = document.get('columnMeta') or {}
+    if not isinstance(metadata, dict):
+        return None
     if spec.field:
         if spec.field not in columns:
             return None
         meta = metadata.get(spec.field, {})
+        if not isinstance(meta, dict):
+            return None
         value = row[columns.index(spec.field)]
         unit = meta.get('unit')
         if not unit or not _finite(value):
@@ -66,6 +76,8 @@ def frozen_label(spec, document, row):
         numerator = row[columns.index(spec.numerator)]
         denominator = row[columns.index(spec.denominator)]
         left, right = metadata.get(spec.numerator, {}), metadata.get(spec.denominator, {})
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return None
         if (not _finite(numerator) or not _finite(denominator) or denominator <= 0
                 or not left.get('unit') or left.get('unit') != right.get('unit')
                 or left.get('isPercent') != right.get('isPercent')):
@@ -80,7 +92,7 @@ def frozen_label(spec, document, row):
         unit = spec.display_unit
     if not _finite(value):
         return None
-    number = format(value, ('+' if spec.show_sign else '') + f',.{spec.decimals}f')
+    number = format_standard_number(value, spec.decimals, spec.show_sign)
     return f'{caption} {number}{unit}' if caption else f'{number}{unit}'
 
 
@@ -125,7 +137,11 @@ def prepare_standard_presentation(policy, document, original, label, names, labe
     return result
 
 
-PRESENTATION_SCRIPT = '''def standard_values_label_visible(index, series_index, annotations, series):
+PRESENTATION_SCRIPT = '''def format_standard_number(value, precision=2, show_sign=False):
+    scientific = value != 0 and (abs(value) < .5 * 10 ** -precision or abs(value) >= 1e12)
+    return format(value, ("+" if show_sign else "") + (f".{max(2, precision)}e" if scientific else f",.{precision}f"))
+
+def standard_values_label_visible(index, series_index, annotations, series):
     import math
     values = series[series_index]
     finite = [value for value in values if math.isfinite(value)]
