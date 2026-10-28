@@ -365,6 +365,12 @@ export interface TraceValidation {
     datasetIds?: string[]
     /** 数值取得方式：直接取登记事实、服务端按登记原值派生，或按运算式由服务端重算。 */
     computation?: 'registered' | 'derived' | 'calc' | null
+    /** 模型对当前正文的语义解释，独立于确定性数值和来源核验。 */
+    semanticCheck?: {
+      method: 'model_context_interpretation_v1'
+      status: 'interpreted' | 'invalidated' | 'unavailable'
+      interpretation: { claimId: string; scope: { field: string; value: string | null; status: 'resolved' | 'unknown' | 'conflicting'; evidence: string[] }[]; periods: string[]; periodEvidence: string[] }
+    } | null
   }[]
   summary: { valid: number; stale: number; unbound: number }
   tables?: {

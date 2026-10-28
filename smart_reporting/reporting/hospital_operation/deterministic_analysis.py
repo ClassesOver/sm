@@ -43,6 +43,14 @@ class GroupContribution(AnalysisModel):
     group_values: dict[str, str | None] = Field(default_factory=dict, alias="groupValues", max_length=100)
 
 
+class GroupMissingness(AnalysisModel):
+    """同一指标、同一取值窗口内的归属缺失金额绝对值；比例由引用层重算。"""
+
+    missing_row_count: int = Field(alias="missingRowCount", gt=0)
+    absolute_missing_value: float = Field(alias="absoluteMissingValue", ge=0, allow_inf_nan=False)
+    absolute_total_value: float = Field(alias="absoluteTotalValue", gt=0, allow_inf_nan=False)
+
+
 class DeterministicMetricFact(AnalysisModel):
     # B2 起由服务端按内容寻址签发（trace.fact_index.assign_fact_ids）；
     # 旧 bundle 无此字段，FactRef 仅位置寻址。
@@ -96,6 +104,14 @@ class DeterministicMetricFact(AnalysisModel):
     )
     group_warnings: dict[str, tuple[str, ...]] = Field(
         default_factory=dict, alias="groupWarnings", max_length=100,
+        exclude_if=lambda value: not value,
+    )
+    group_missingness: dict[str, GroupMissingness] = Field(
+        default_factory=dict, alias="groupMissingness", max_length=100,
+        exclude_if=lambda value: not value,
+    )
+    series_group_missingness: dict[str, GroupMissingness] = Field(
+        default_factory=dict, alias="seriesGroupMissingness", max_length=100,
         exclude_if=lambda value: not value,
     )
     # 维度分组事实（bundle.breakdowns）：父指标限定 breakdownField 的一个取值，
@@ -243,6 +259,26 @@ class _Dataset:
     period_roles: tuple[PeriodRole, ...]
 
 
+def read_analysis_csv(content: bytes) -> pl.DataFrame:
+    """保留 CSV 标识、固定范围和分组键原文，仅在聚合时转换数值。"""
+    return pl.read_csv(BytesIO(content), infer_schema=False)
+
+
+def apply_metric_scope(frame: pl.DataFrame, scope: Mapping[str, str]) -> pl.DataFrame:
+    """对已确认存在的范围字段精确过滤，不猜测缺失字段的语义。"""
+    for column, expected in scope.items():
+        frame = frame.filter(pl.col(column).cast(pl.String) == expected)
+    return frame
+
+
+def reconciliation_passes(
+    left: float, right: float, *, absolute_tolerance: float, relative_tolerance: float,
+) -> bool:
+    """冻结事实及标准补证共用对账容差定义。"""
+    tolerance = max(absolute_tolerance, relative_tolerance * max(abs(left), abs(right)))
+    return abs(left - right) <= tolerance
+
+
 def build_deterministic_analysis_bundle(
     analysis: DetailedAnalysisItem,
     datasets: tuple[tuple[str, bytes, DatasetAnalysisContext, tuple[PeriodRole, ...]], ...],
@@ -265,8 +301,7 @@ def build_deterministic_analysis_bundle(
     warnings: list[str] = [*analysis.limitations, *selection.warnings]
     for dataset_id, content, context, period_roles in datasets:
         try:
-            # CSV 标识、固定范围和分组键保留原文；只在数值聚合时显式转换。
-            frame = pl.read_csv(BytesIO(content), infer_schema=False)
+            frame = read_analysis_csv(content)
         except (UnicodeDecodeError, pl.exceptions.PolarsError):
             warnings.append(f"Dataset {dataset_id} 无法解析为 CSV，未生成确定性事实。")
             continue
@@ -586,6 +621,14 @@ def _dataset_facts(
             bottomGroups=bottom,
             groupPopulation=population,
             groupWarnings=group_warnings,
+            groupMissingness=(_dimension_missingness(
+                value_frame, field, group_fields, aggregation,
+                period_field=period_field, period_granularity=period_granularity,
+            ) if not period_missing_count else {}),
+            seriesGroupMissingness=(_dimension_missingness(
+                scoped_frame, field, group_fields, aggregation,
+                period_field=period_field, period_granularity=period_granularity,
+            ) if period_aggregation == "last" and not period_missing_count else {}),
             warnings=fact_warnings,
         )
         facts.append(fact)
@@ -719,6 +762,8 @@ def _breakdown_fact(
             period_granularity=fact.period_granularity,
         ),
         "top_groups": (), "bottom_groups": (), "group_population": None, "group_warnings": {},
+        "group_missingness": {},
+        "series_group_missingness": {},
         "warnings": caveats,
     })
 
@@ -749,8 +794,8 @@ def _apply_scope(
                 f"固定范围 {column}={expected} 已由受审核 SQL 应用，CSV 未投影该范围字段。"
             )
             continue
-        frame = frame.filter(pl.col(column).cast(pl.String) == expected)
-    return frame, tuple(warnings)
+    return apply_metric_scope(frame, {column: value for column, value in scope.items()
+                                      if column in frame.columns}), tuple(warnings)
 
 
 def _aggregate(series: pl.Series, aggregation: Aggregation) -> float | None:
@@ -824,6 +869,20 @@ def _stable_aggregate(values: list[float], aggregation: Aggregation) -> float | 
         # 中间值溢出时退回普通求和得到 inf/nan，交由既有非有限值告警处理。
         total = sum(values)
     return total if aggregation == "sum" else total / len(values)
+
+
+def additive_group_totals(
+    frame: pl.DataFrame, field: str, group_field: str,
+) -> tuple[dict[str | None, float], float]:
+    """已授权可加指标的完整分组；复用冻结事实的聚合与非有限值校验。"""
+    grouped, (group,) = _grouped_aggregation(frame, field, (group_field,), "sum")
+    values = {
+        row[group]: _finite(row["__value"])
+        for row in grouped.iter_rows(named=True)
+        if row["__valid"] > 0 and row["__value"] is not None
+    }
+    total = _aggregate(frame[field], "sum")
+    return values, total if total is not None else 0.0
 
 
 def _period_values(
@@ -996,6 +1055,38 @@ def _dimension_review_warnings(
     )
 
 
+def _dimension_missingness(
+    frame: pl.DataFrame, field: str, group_fields: tuple[str, ...], aggregation: Aggregation,
+    *, period_field: str | None, period_granularity: Literal["day", "month", "year"] | None,
+) -> dict[str, GroupMissingness]:
+    if aggregation != "sum" or field not in frame.columns:
+        return {}
+    if period_field and any(
+        value is None or _parse_fact_period(str(value), period_granularity) is None
+        for value in frame[period_field].unique()
+    ):
+        return {}
+    values = frame[field].cast(pl.Float64, strict=False).abs()
+    # 金额缺失或非有限时，不把忽略了这些行的分母签发为完整绝对金额合计。
+    if values.null_count() or not values.is_finite().all():
+        return {}
+    total = values.sum()
+    if not total or not math.isfinite(total):
+        return {}
+    result = {}
+    for group in group_fields:
+        if group not in frame.columns:
+            continue
+        missing = (frame[group].is_null() | frame[group].cast(pl.String).str.strip_chars().eq("")).fill_null(True)
+        count = int(missing.sum())
+        if count:
+            result[group] = GroupMissingness(
+                missingRowCount=count, absoluteMissingValue=values.filter(missing).sum(),
+                absoluteTotalValue=total,
+            )
+    return result
+
+
 def _missing_value_share(
     frame: pl.DataFrame, field: str, missing: pl.Series, aggregation: Aggregation,
 ) -> str:
@@ -1163,6 +1254,14 @@ def _parse_fact_period(
             or grain == "day" and period.granularity != "day"):
         return None
     return _ParsedPeriod(period.label, period.value, grain)
+
+
+def metric_period_key(
+    label: str, grain: Literal["day", "month", "year"] | None = None,
+) -> tuple[str, date] | None:
+    """按冻结指标粒度解释期间，供补证复用同一日历及别名规则。"""
+    parsed = _parse_fact_period(label, grain)
+    return (parsed.granularity, parsed.value) if parsed is not None else None
 
 
 def _parsed_period_values(
@@ -1734,11 +1833,10 @@ def _reconciliations(
                     failed += 1
                     unavailable += 1
                     continue
-                tolerance = max(
-                    absolute_tolerance,
-                    relative_tolerance * max(abs(left), abs(right)),
-                )
-                if abs(left - right) > tolerance:
+                if not reconciliation_passes(
+                    left, right, absolute_tolerance=absolute_tolerance,
+                    relative_tolerance=relative_tolerance,
+                ):
                     failed += 1
             availability_warnings = (
                 (f"对账规则 {code} 有 {unavailable} 个分组缺少可计算值（含单侧缺失），未将缺失值视为零。",)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from typing import Literal
 
@@ -33,7 +34,7 @@ from .semantic_bindings import reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1", "statementReview": "1", "scopeWording": "1", "calcReferences": "1"}
+SEMANTIC_RULE_VERSIONS = {"chartReview": "2", "quantityBinding": "2", "tableCalculation": "2", "tableSourceCell": "1", "claimInterpretation": "2", "topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1", "statementReview": "1", "scopeWording": "1", "calcReferences": "1"}
 
 
 class StatementReview(StrictModel):
@@ -133,7 +134,11 @@ def evaluate_quality_bundle(
     semantic_checks = evaluate_semantic_alignment(index, sources, chart_checks=chart_checks)
     issues.extend(
         QualityIssue(code="chart_semantic_alignment_unknown", subjectId=chart_id, reasons=check.reasons)
-        for chart_id, check in semantic_checks.items() if check.status != "verified"
+        for chart_id, check in semantic_checks.items()
+        if check.status != "verified" and not (
+            check.reasons == ("chart_arrays_unverified",)
+            and chart_id in chart_checks and chart_checks[chart_id].status != "verified"
+        )
     )
     original_markdown = None
     markdown_file = files.get(index.markdown_file_resource_id)
@@ -144,6 +149,20 @@ def evaluate_quality_bundle(
                 original_markdown = original_raw.decode("utf-8")
             except UnicodeDecodeError:
                 pass
+    # 原表直接单元格绑定与正文派生值共用冻结文件身份，不能依赖 factFiles 恰好登记。
+    for resource_id in {cell.source_cell.file_resource_id for table in index.tables
+                        for cell in table.cells if cell.source_cell is not None}:
+        file, raw = files.get(resource_id), sources.get(resource_id)
+        if (file is None or raw is None or len(raw) != file.size
+                or hashlib.sha256(raw).hexdigest() != file.sha256):
+            unavailable.add(resource_id)
+            continue
+        try:
+            from .table_sources import _object
+
+            documents[resource_id] = json.loads(raw, object_pairs_hook=_object)
+        except (ValueError, UnicodeDecodeError):
+            unavailable.add(resource_id)
     table_checks = evaluate_table_quality(index, markdown, documents, original_markdown=original_markdown)
     issues.extend(
         QualityIssue(code="table_support_unknown", subjectId=table_id, reasons=check.reasons)
@@ -204,10 +223,25 @@ def evaluate_quality_bundle(
             if number.table_derivation is None and not calc
             else None
         )
-        if calc or (number.table_derivation is None and request is None):
+        if calc or number.table_derivation is not None or request is None:
             # 计算引用与服务端派生值（月度极值、期间累计、占比、预算比较等）都由服务端按冻结原值
             # 计算：能解析即按与数值引用相同的语句核对期间、范围与单位；无法解析时仍记为未评估，不当作已核对。
-            selected = None if reasons else compiler.resolver.resolve(number.token)
+            if number.table_derivation is not None:
+                from .table_sources import derivation_resource_ids, resolve_table_derivation
+
+                calculation_sources = {}
+                for resource_id in derivation_resource_ids(number.table_derivation):
+                    file, raw = files.get(resource_id), sources.get(resource_id)
+                    if (file is None or raw is None or len(raw) != file.size
+                            or hashlib.sha256(raw).hexdigest() != file.sha256):
+                        reasons.append('source_unavailable')
+                    else:
+                        calculation_sources[resource_id] = raw
+                selected = None if reasons else resolve_table_derivation(
+                    number.token, number.table_derivation, calculation_sources,
+                )
+            else:
+                selected = None if reasons else compiler.resolver.resolve(number.token)
             if not reasons and selected is None:
                 reasons.append("operation_semantics_not_evaluated")
             elif selected is not None:
@@ -219,6 +253,7 @@ def evaluate_quality_bundle(
                     expected_scope=selected["scope"],
                     expected_period_roles=selected["period_roles"],
                     expected_reference=selected,
+                    semantic_receipt=number.semantic_receipt,
                     section_id=subject.locator.section_id,
                 )
                 if detail["status"] != "valid" or detail["warnings"]:
@@ -227,9 +262,6 @@ def evaluate_quality_bundle(
                 if not selected["scope"]:
                     # 与已登记运算语义的引用一致：未登记统计范围时不默认全院。
                     reasons.append("scope_unknown")
-        elif number.table_derivation is not None:
-            # Legacy calculation support is not a complete business proof.
-            reasons.append("operation_semantics_not_evaluated")
         elif not reasons:
             assertion = compiler.compile(request)
             assertions[assertion.assertion_id] = assertion
@@ -252,6 +284,7 @@ def evaluate_quality_bundle(
                     expected_scope=selected["scope"],
                     expected_period_roles=selected["period_roles"],
                     expected_reference=selected,
+                    semantic_receipt=number.semantic_receipt,
                     section_id=subject.locator.section_id,
                 )
                 if detail["status"] != "valid" or detail["warnings"]:

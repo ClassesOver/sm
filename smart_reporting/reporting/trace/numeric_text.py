@@ -492,6 +492,15 @@ def _frozen_number_entries(
                 if not fact_id:
                     continue
                 values = [(field, entry.get(field)) for field in fields]
+                if array == "metrics" and entry.get("aggregation") == "sum":
+                    for key, prefix in (("groupMissingness", "groupMissingShares"),
+                                        ("seriesGroupMissingness", "seriesGroupMissingShares")):
+                        values.extend(
+                            (f"{prefix}.{group}",
+                             Decimal(str(stat["absoluteMissingValue"])) / Decimal(str(stat["absoluteTotalValue"])) * 100)
+                            for group, stat in (entry.get(key) or {}).items()
+                            if stat["absoluteMissingValue"] <= stat["absoluteTotalValue"]
+                        )
                 if array == "derivedMetrics" and not _derived_units_comparable(
                     entry, document["metrics"]
                 ):
@@ -641,7 +650,8 @@ def _frozen_number_entries(
                     unit = (
                         "%"
                         if field in {"changeRate", "percentage"}
-                        or field.startswith(("periodChangeRates.", "groupShares.", "groupContributions."))
+                        or field.startswith(("periodChangeRates.", "groupShares.", "groupContributions.",
+                                             "groupMissingShares.", "seriesGroupMissingShares."))
                         else None
                         if array == "derivedMetrics" and field == "value"
                         else entry.get("unit")
@@ -898,6 +908,19 @@ def frozen_number_guide(
                     + "，不能称为月均值或月度极值",
                 },
             }
+            if fact.group_missingness or fact.series_group_missingness:
+                item["groupMissingness"] = [
+                    {"groupingField": group, "label": (field_definitions or {}).get(group, group),
+                     "reference": token, "periods": selected_periods,
+                     "meaning": "归属缺失行的指标绝对值合计除以同范围全部行指标绝对值合计，"
+                     "不是行数占比、院区收入占比或净额占比"}
+                    for stats, prefix, selected_periods in (
+                        (fact.group_missingness, "groupMissingShares", total_periods),
+                        (fact.series_group_missingness, "seriesGroupMissingShares", periods),
+                    )
+                    for group in stats
+                    if (token := f"{{{{value:{fact.fact_id}:{prefix}.{group}:%}}}}") in catalog
+                ]
             if reference("monthlyAverage"):
                 low = min(value.value for value in fact.period_values)
                 high = max(value.value for value in fact.period_values)

@@ -137,7 +137,7 @@ async def test_unknown_fact_id_blocks_publication() -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_matching_value_passes_and_mismatch_warns() -> None:
+async def test_plan_values_without_selectors_do_not_claim_numeric_verification() -> None:
     good_id = "fact-" + "1" * 16
     harness = _GateHarness(
         {"facts/analysis_001.json": _fact_file_bytes(good_id, total=3600.0)}
@@ -155,7 +155,9 @@ async def test_matching_value_passes_and_mismatch_warns() -> None:
         harness, "thread", checkpoint, (drifted,)
     )
     assert issues == []
-    assert [item["code"] for item in warnings] == ["report_claim_fact_value_mismatch"]
+    # 计划 claim 未绑定 selector，不能断言它引用的是 total；本层只验事实身份。
+    # 正文的实际值由 NumberReference 重算检查，见 test_binding_final_integrity。
+    assert warnings == []
 
 
 @pytest.mark.anyio

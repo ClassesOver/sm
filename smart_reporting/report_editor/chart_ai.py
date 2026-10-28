@@ -32,9 +32,11 @@ from pydantic import Field, model_validator
 
 from ..reporting.code_agent.context import ReportingCodingTaskContext
 from ..reporting.contract import SHA256_PATTERN, StrictModel
+from ..reporting.delivery.artifacts_v1 import ChartArtifact, ReportArtifactManifest
 from ..reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ..reporting.host_workspace import HostReportingWorkspace, ReportingWorkspaceRegistry
 from ..reporting.models import ReportingError
+from ..reporting.trace.contracts_v1 import ChartTraceV1, RevisionTraceIndexV1
 from ..reporting.workflow.runtime.chart_inputs import (
     materialize_chart_inputs,
     verify_static_chart_inputs_referenced,
@@ -78,6 +80,22 @@ _INSPECT_RESERVE_SECONDS = 15.0
 _KEEP_VISUAL_FORM = "保持原图形"
 
 CHART_AI_STAGES = ("queued", "plan", "materialize", "draw", "inspect", "register")
+
+
+def _chart_artifact_for_trace(
+    manifest: ReportArtifactManifest, index: RevisionTraceIndexV1, trace: ChartTraceV1 | None,
+) -> ChartArtifact | None:
+    """按已核验图片身份关联发布编号与来源编号，不借用同名或同路径的其他图片。"""
+    if trace is None:
+        return None
+    image = next((item for item in index.files if item.resource_id == trace.image_file_resource_id), None)
+    if image is None:
+        return None
+    matches = [item for item in manifest.charts
+               if (item.path, item.size, item.sha256, item.media_type)
+               == (image.path, image.size, image.sha256, image.media_type)
+               and set(item.dataset_ids) == set(trace.dataset_ids)]
+    return matches[0] if len(matches) == 1 else None
 
 
 class ChartEditPlan(StrictModel):
@@ -276,8 +294,8 @@ class ChartAIEditService:
         manifest, index = await self.editor.trace.load_manifest_and_index(context)
         if manifest is None or index is None:
             return "plot_data_missing", None
-        chart = next((item for item in manifest.charts if item.chart_id == chart_id), None)
         trace = next((item for item in index.chart_traces if item.chart_id == chart_id), None)
+        chart = _chart_artifact_for_trace(manifest, index, trace)
         if chart is None or trace is None:
             return "unknown_chart", None
         if not trace.fact_refs:
@@ -887,10 +905,10 @@ class ChartAIEditService:
         manifest, index = await self.editor.trace.load_manifest_and_index(context)
         if manifest is None or index is None:
             return {"reason": "plot_data_missing"}
-        chart = next((item for item in manifest.charts if item.chart_id == chart_id), None)
+        trace = next((item for item in index.chart_traces if item.chart_id == chart_id), None)
+        chart = _chart_artifact_for_trace(manifest, index, trace)
         if chart is None:
             return {"reason": "unknown_chart"}
-        trace = next((item for item in index.chart_traces if item.chart_id == chart_id), None)
         if trace is None or not trace.plot_data_file_resource_ids:
             return {"reason": "plot_data_missing"}
         files = {item.resource_id: item for item in index.files}

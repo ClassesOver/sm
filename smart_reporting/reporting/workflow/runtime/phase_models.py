@@ -24,6 +24,7 @@ from ...delivery.draft_v1 import (
     validate_report_block_markdown,
 )
 from ...models import ReportingError
+from ...trace.contracts_v1 import ClaimInterpretationV1
 from ..checkpoint import FileIdentity, SectionClaimSubmission
 
 MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
@@ -519,6 +520,10 @@ class SectionContentBlock(SectionBlockContent):
 
 class SectionContent(StrictModel):
     blocks: tuple[SectionContentBlock, ...] = Field(min_length=1, max_length=12)
+
+
+class SectionSemanticReview(StrictModel):
+    interpretations: tuple[ClaimInterpretationV1, ...] = Field(default=(), max_length=500)
 
 
 class RenderSectionDecision(StrictModel):

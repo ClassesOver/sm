@@ -58,6 +58,23 @@ export function findEvidenceTableCell(root: HTMLElement, tableId: string, locati
   return cell.querySelector<HTMLElement>('p') ?? cell
 }
 
+/** 从正文协议标记正向定位唯一可编辑表格，避免依赖 Milkdown 的内部工具栏层级。 */
+export function findEvidenceTableId(root: HTMLElement, target: HTMLTableElement): string | null {
+  if (!root.contains(target) || target.closest('.drag-preview, [contenteditable="false"]')) return null
+  const matches = [...root.querySelectorAll<HTMLElement>('.report-table-marker')].flatMap(marker => {
+    const ids = findProtocolMarkers(marker.textContent ?? '').filter(item => item.kind === 'table')
+    const next = marker.closest('p')?.nextElementSibling
+    const tables = next?.matches('table') ? [next as HTMLTableElement]
+      : [...next?.querySelectorAll<HTMLTableElement>('table') ?? []]
+          .filter(table => !table.closest('.drag-preview, [contenteditable="false"]'))
+    return ids.length === 1 && tables.length === 1 && tables[0] === target ? [ids[0].value] : []
+  })
+  if (matches.length !== 1) return null
+  const markers = [...root.querySelectorAll<HTMLElement>('.report-table-marker')].filter(marker =>
+    findProtocolMarkers(marker.textContent ?? '').some(item => item.kind === 'table' && item.value === matches[0]))
+  return markers.length === 1 ? matches[0] : null
+}
+
 export const evidenceLocationKey = new PluginKey<DecorationSet>('SMART_REPORT_EVIDENCE_LOCATION')
 
 export function createEvidenceLocationPlugin(): Plugin<DecorationSet> {

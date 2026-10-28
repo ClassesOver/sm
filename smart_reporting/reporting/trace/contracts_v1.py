@@ -443,6 +443,7 @@ class ChartTraceV1(StrictModel):
 class TableCellBindingV1(StrictModel):
     """表格单元格绑定。rowKey/columnKey 是冻结结构键（计划 3.2）。"""
 
+    source_cell: TableOperandV1 | None = Field(default=None, alias="sourceCell")
     row_key: str = Field(alias="rowKey", pattern=TRACE_STRUCTURE_KEY_PATTERN)
     column_key: str = Field(alias="columnKey", pattern=TRACE_STRUCTURE_KEY_PATTERN)
     value_selector: str | None = Field(default=None, alias="valueSelector", max_length=128,
@@ -541,6 +542,68 @@ class TableDerivationV1(StrictModel):
 
     operands: tuple[TableOperandV1, ...] = Field(min_length=1, max_length=100)
     unit: str = Field(max_length=64)
+    denominator_fact: FactRefV1 | None = Field(default=None, alias='denominatorFact')
+    population_fact: FactRefV1 | None = Field(default=None, alias='populationFact')
+    population_proof_sha256: str | None = Field(default=None, alias='populationProofSha256', pattern=r'^[0-9a-f]{64}$')
+    top_selection: Literal['items', 'rank'] | None = Field(default=None, alias='topSelection')
+    top_limit: int | None = Field(default=None, alias='topLimit', ge=1, le=100, strict=True)
+
+
+class ClaimScopeInterpretationV1(StrictModel):
+    field: str = Field(min_length=1, max_length=128)
+    value: str | None = Field(default=None, max_length=512)
+    status: Literal['resolved', 'unknown', 'conflicting'] = 'unknown'
+    evidence: tuple[str, ...] = Field(default=(), max_length=8)
+
+    @field_validator('evidence')
+    @classmethod
+    def validate_evidence(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not text.strip() or len(text) > 512 for text in value):
+            raise ValueError('语义依据必须是1至512字符的原文片段')
+        return value
+
+
+class ClaimQuantityV1(StrictModel):
+    """正文数量关系；仅选择调用方来源身份，不接受模型金额。"""
+    operation: Literal['value', 'sum', 'difference', 'share', 'top_sum', 'top_share', 'unknown'] = 'unknown'
+    left: tuple[str, ...] = Field(default=(), max_length=12)
+    right: tuple[str, ...] = Field(default=(), max_length=12)
+    row_label: str | None = Field(default=None, alias='rowLabel', max_length=512)
+    limit: int | None = Field(default=None, ge=1, le=100)
+    selection: Literal['rank', 'items', 'unknown'] = 'unknown'
+    order_by_source_id: str | None = Field(default=None, alias='orderBySourceId', max_length=128)
+    evidence: tuple[str, ...] = Field(default=(), max_length=8)
+
+    @field_validator('evidence')
+    @classmethod
+    def validate_evidence(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return ClaimScopeInterpretationV1.validate_evidence(value)
+
+
+class ClaimInterpretationV1(StrictModel):
+    """模型对当前断言的解释，不是冻结事实或业务验收证明。"""
+    claim_id: str = Field(alias='claimId', min_length=1, max_length=128)
+    scope: tuple[ClaimScopeInterpretationV1, ...] = Field(default=(), max_length=20)
+    periods: tuple[str, ...] = Field(default=(), max_length=1200)
+    period_evidence: tuple[str, ...] = Field(default=(), alias='periodEvidence', max_length=8)
+    statistic: Literal['single_period', 'period_total', 'period_average', 'other', 'unknown'] = 'unknown'
+    statistic_evidence: tuple[str, ...] = Field(default=(), alias='statisticEvidence', max_length=8)
+    quantity: ClaimQuantityV1 | None = None
+
+    @field_validator('period_evidence', 'statistic_evidence')
+    @classmethod
+    def validate_evidence(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return ClaimScopeInterpretationV1.validate_evidence(value)
+
+
+class ClaimSemanticReceiptV1(StrictModel):
+    method: Literal['model_context_interpretation_v1'] = 'model_context_interpretation_v1'
+    context_sha256: str = Field(alias='contextSha256', pattern=SHA256_PATTERN)
+    interpretation: ClaimInterpretationV1
+    includes_previous: bool = Field(default=False, alias='includesPrevious')
+    includes_section: bool = Field(default=False, alias='includesSection')
+    reviewed_context: str | None = Field(default=None, alias='reviewedContext', max_length=64000)
+    quantity_binding_sha256: str | None = Field(default=None, alias='quantityBindingSha256', pattern=SHA256_PATTERN)
 
 
 class NumberReferenceV1(StrictModel):
@@ -551,6 +614,7 @@ class NumberReferenceV1(StrictModel):
     statement_sha256: str = Field(alias="statementSha256", pattern=SHA256_PATTERN)
     display_text: str | None = Field(default=None, alias="displayText", max_length=4096)
     table_derivation: TableDerivationV1 | None = Field(default=None, alias="tableDerivation")
+    semantic_receipt: ClaimSemanticReceiptV1 | None = Field(default=None, alias='semanticReceipt')
 
 
 class ReviewNoticeV1(StrictModel):
@@ -584,6 +648,7 @@ class SubjectBindingV1(StrictModel):
     computation_id: str | None = Field(
         default=None, alias="computationId", pattern=TRACE_COMPUTATION_ID_PATTERN
     )
+    source_cell: TableOperandV1 | None = Field(default=None, alias="sourceCell")
     number_reference: NumberReferenceV1 | None = Field(default=None, alias="numberReference")
     #: 证据性质：数值事实与解释性推断分开（计划 3.3/F05）。
     evidence_kind: EvidenceKindV1 = Field(alias="evidenceKind", default="computed")
@@ -610,7 +675,9 @@ class SubjectBindingV1(StrictModel):
             self.subject_kind != "text_claim" or self.number_reference.claim_id != self.claim_id
         ):
             raise ValueError("具体数值引用必须属于同一个正文 claim")
-        if not self.fact_refs and self.computation_id is None:
+        if self.source_cell is not None and (self.subject_kind != "table_cell" or self.source_cell.coefficient != "1"):
+            raise ValueError("sourceCell 只能绑定原样表格单元格")
+        if not self.fact_refs and self.computation_id is None and self.source_cell is None:
             if not (
                 self.subject_kind == "text_claim"
                 and self.number_reference is not None
@@ -621,7 +688,7 @@ class SubjectBindingV1(StrictModel):
 
 
 class FactFileEntryV1(StrictModel):
-    """事实文件登记：analysisId → 冻结文件资源（确定性 bundle / 补证 / 作图数据）。"""
+    """事实文件登记：同一分析的确定性 bundle 与补证按文件资源分别登记。"""
 
     analysis_id: str = Field(alias="analysisId", pattern=TRACE_ANALYSIS_ID_PATTERN)
     file_resource_id: str = Field(
@@ -662,7 +729,7 @@ class RevisionTraceIndexV1(StrictModel):
     )
     tables: tuple[TableTraceV1, ...] = Field(default=(), max_length=2000)
     subject_bindings: tuple[SubjectBindingV1, ...] = Field(
-        default=(), alias="subjectBindings", max_length=2000
+        default=(), alias="subjectBindings", max_length=10000
     )
     review_notices: tuple[ReviewNoticeV1, ...] | None = Field(default=None, alias="reviewNotices", max_length=2000)
     drilldown_metrics: tuple[DrilldownMetricV1, ...] = Field(
@@ -698,13 +765,19 @@ class RevisionTraceIndexV1(StrictModel):
         if self.markdown_file_resource_id not in known_files:
             raise ValueError("正文文件未登记")
 
-        analysis_files: dict[str, str] = {}
+        analysis_files: dict[str, set[str]] = {}
+        deterministic_analyses: set[str] = set()
         for entry in self.fact_files:
-            if entry.analysis_id in analysis_files:
-                raise ValueError(f"analysisId 不能重复: {entry.analysis_id}")
+            registered = analysis_files.setdefault(entry.analysis_id, set())
+            if entry.file_resource_id in registered:
+                raise ValueError(f"analysisId 与文件资源登记不能重复: {entry.analysis_id}")
+            if entry.content_kind == "deterministic_bundle":
+                if entry.analysis_id in deterministic_analyses:
+                    raise ValueError(f"analysisId 的确定性事实文件不能重复: {entry.analysis_id}")
+                deterministic_analyses.add(entry.analysis_id)
             if entry.file_resource_id not in known_files:
                 raise ValueError(f"事实文件未登记: {entry.analysis_id}")
-            analysis_files[entry.analysis_id] = entry.file_resource_id
+            registered.add(entry.file_resource_id)
 
         computation_ids = [c.computation_id for c in self.computations]
         if len(computation_ids) != len(set(computation_ids)):
@@ -713,7 +786,7 @@ class RevisionTraceIndexV1(StrictModel):
         def _check_fact_ref(ref: FactRefV1) -> None:
             if ref.analysis_id not in analysis_files:
                 raise ValueError(f"factRef 引用未登记 analysis: {ref.analysis_id}")
-            if ref.file_resource_id != analysis_files[ref.analysis_id]:
+            if ref.file_resource_id not in analysis_files[ref.analysis_id]:
                 raise ValueError(
                     f"factRef 文件与 analysis 登记不一致: {ref.analysis_id}"
                 )
@@ -763,8 +836,13 @@ class RevisionTraceIndexV1(StrictModel):
         table_ids = [t.table_id for t in self.tables]
         if len(table_ids) != len(set(table_ids)):
             raise ValueError("tableId 不能重复")
+        source_files_by_id = {file.resource_id: file for file in self.files}
         for table in self.tables:
             for cell in table.cells:
+                if cell.source_cell is not None:
+                    source = source_files_by_id.get(cell.source_cell.file_resource_id)
+                    if source is None or source.media_type != "application/json" or cell.source_cell.coefficient != "1":
+                        raise ValueError("sourceCell 必须引用已登记 JSON 原始单元格")
                 for ref in cell.fact_refs:
                     _check_fact_ref(ref)
                 if cell.computation_id is not None and (
@@ -791,8 +869,16 @@ class RevisionTraceIndexV1(StrictModel):
                 raise ValueError(f"subject 引用未登记图表: {subject.subject_id}")
             for ref in subject.fact_refs:
                 _check_fact_ref(ref)
+            if subject.source_cell is not None:
+                source = files_by_id.get(subject.source_cell.file_resource_id)
+                if source is None or source.media_type != "application/json":
+                    raise ValueError("sourceCell 必须引用已登记 JSON 文件")
             number = subject.number_reference
             if number is not None and number.table_derivation is not None:
+                if number.table_derivation.denominator_fact is not None:
+                    _check_fact_ref(number.table_derivation.denominator_fact)
+                if number.table_derivation.population_fact is not None:
+                    _check_fact_ref(number.table_derivation.population_fact)
                 for operand in number.table_derivation.operands:
                     source = files_by_id.get(operand.file_resource_id)
                     if source is None:
@@ -844,7 +930,7 @@ TRACE_BUDGETS_V1: Mapping[str, int] = {
     "max_report_inputs": 100,
     "fact_ref_pointer_max_chars": TRACE_FACT_POINTER_MAX_CHARS,
     "index_max_files": 2000,
-    "index_max_subject_bindings": 2000,
+    "index_max_subject_bindings": 10000,
     "index_max_charts": 200,
     "index_max_tables": 2000,
     "index_max_computations": 500,

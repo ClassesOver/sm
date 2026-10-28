@@ -1,4 +1,4 @@
-- 语义业务校验只需要软告警
+- 语义业务校验只需要软告警，使用语义消歧机制，减少对固定措辞的依赖，选择更合理的长期方式解决警告问题和BUG
 - 报告验收或发布门禁失败不得暂停/阻断工作流或阻止下载链接签发；如 PDF/Word 已生成且实际文件身份可读取，应保留并签发下载链接，同时明确返回验收失败原因和告警，不得标记验收通过。只有产物未生成或无法读取身份时，才无法签发对应链接。
   - 非阻断回归契约（修改发布/导出链路时必须保持通过；新增签发链路中可能失败的步骤，须在 `test_http_publication_lineage.py` 的故障注入用例中登记一条）：
     - `smart_reporting/reporting/tests/test_publication_nonblocking.py::test_render_validation_failure_retains_actual_artifacts`（工作流渲染验收失败保留产物）

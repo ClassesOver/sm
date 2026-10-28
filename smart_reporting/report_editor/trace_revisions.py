@@ -106,12 +106,14 @@ async def snapshot_revision_lineage(
     The caller owns rollback of the target directory until its durable commit.
     """
     identities = _lineage_identities(manifest, index)
+    from ..reporting.trace.table_sources import derivation_resource_ids
+
     table_source_ids = {
-        operand.file_resource_id
+        resource_id
         for subject in (index.subject_bindings if index is not None else ())
         if subject.number_reference is not None
         and subject.number_reference.table_derivation is not None
-        for operand in subject.number_reference.table_derivation.operands
+        for resource_id in derivation_resource_ids(subject.number_reference.table_derivation)
     }
     table_sources: dict[str, bytes] = {}
     for source, identity in identities.items():

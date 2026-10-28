@@ -111,6 +111,18 @@ def metric_fact_identity(fact: Any) -> str:
             group_warnings, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
     population = getattr(fact, "group_population", None)
+    missingness = getattr(fact, "group_missingness", {})
+    if missingness:
+        identity += "|groupMissingness=" + json.dumps(
+            {key: value.model_dump(mode="json", by_alias=True) for key, value in missingness.items()},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+    series_missingness = getattr(fact, "series_group_missingness", {})
+    if series_missingness:
+        identity += "|seriesGroupMissingness=" + json.dumps(
+            {key: value.model_dump(mode="json", by_alias=True) for key, value in series_missingness.items()},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
     policy = getattr(fact, "cumulative_policy", None)
     if policy is not None:
         identity += "|cumulativePolicy=" + json.dumps(

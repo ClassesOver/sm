@@ -280,6 +280,25 @@ def build_with_optional_computation_layer(
     return build((), ())
 
 
+def _quality_source_ids(
+    index: RevisionTraceIndexV1, interactive_charts: Mapping[str, str],
+) -> set[str]:
+    source_ids = {entry.file_resource_id for entry in index.fact_files}
+    source_ids.update(cell.source_cell.file_resource_id for table in index.tables
+                      for cell in table.cells if cell.source_cell is not None)
+    from ...trace.table_sources import derivation_resource_ids
+
+    for subject in index.subject_bindings:
+        number = subject.number_reference
+        if number is not None and number.table_derivation is not None:
+            source_ids.update(derivation_resource_ids(number.table_derivation))
+    source_ids.update(resource_id for chart in index.chart_traces
+                      for resource_id in (chart.image_file_resource_id, *chart.plot_data_file_resource_ids))
+    interactive_paths = set(interactive_charts.values())
+    source_ids.update(file.resource_id for file in index.files if file.path in interactive_paths)
+    return source_ids
+
+
 class RuntimePublicationMixin:
     async def _retain_rendered_report(
         self, run_context: RunContext, result: dict[str, Any],
@@ -358,7 +377,20 @@ class RuntimePublicationMixin:
         observed_facts = _reporting_observed_data_facts(
             self._data_shapes(run_context), requirements, lineage
         )
-        source_links = await self._source_links_by_dataset(draft, run_context)
+        source_link_issue = None
+        try:
+            source_links = await self._source_links_by_dataset(draft, run_context)
+        except Exception as error:
+            logger.warning("report_source_appendix_unavailable reason={}", type(error).__name__)
+            source_links = {}
+            source_link_issue = {
+                "code": "report_source_appendix_unavailable",
+                "message": "来源附录追溯索引无法读取或解析，未标记验收通过；报告产物仍继续生成。",
+            }
+            issue = {**source_link_issue, "status": "unknown", "revision": draft.revision}
+            issues = state.setdefault("report_quality_issues", [])
+            if issue not in issues:
+                issues.append(issue)
         await self.report_tools.bind_citation_presentations(
             str(result["jobId"]),
             _citation_presentations(
@@ -419,6 +451,16 @@ class RuntimePublicationMixin:
 
         word_path = str(PurePosixPath(pdf_path).with_suffix(".docx"))
         validation = rendered_result.get("validation") if isinstance(rendered_result, dict) else None
+        if source_link_issue is not None:
+            validation = validation if isinstance(validation, dict) else {"ok": False, "issues": []}
+            validation = {
+                **validation,
+                "ok": False,
+                "issues": [
+                    *(validation.get("issues") if isinstance(validation.get("issues"), list) else []),
+                    source_link_issue,
+                ],
+            }
         if not isinstance(validation, dict) or validation.get("ok") is not True:
             validation = validation if isinstance(validation, dict) else {
                 "ok": False,
@@ -608,7 +650,7 @@ class RuntimePublicationMixin:
             return {}
         thread_id = self._scope(run_context)["threadId"]
         raw_index = await self.workspace_service.read_limited_regular_file(
-            thread_id, identity.path, max_bytes=4 * 1024 * 1024
+            thread_id, identity.path, max_bytes=max(identity.size, 4 * 1024 * 1024)
         )
         if (
             len(raw_index) != identity.size
@@ -1123,10 +1165,12 @@ class RuntimePublicationMixin:
         checkpoint: ReportingCheckpoint,
         section_artifacts: tuple[SectionArtifact, ...],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """核对 claim.factIds：引用必须存在于冻结 bundle，数值须在容差内。
+        """核对 claim.factIds 是否存在于冻结 bundle，异常写入验收原因。
 
-        factId 未知属于错误有效绑定，硬失败关闭发布；数值不匹配按语义业务
-        校验规则软告警（claim 可能是四舍五入展示值），不阻断发布。
+        SectionClaim 未绑定数值选择器，不能将其 value 与事实的 total/change
+        猜测比较；基期、月均和单月均可能引用同一事实。正文数值由已有的
+        NumberReference 精确选择器重算与绑定状态检查负责，本检查不签发数值
+        已核验状态；缺少引用的正文保留原有未核验状态。验收失败不阻断下载。
         """
 
         issues: list[dict[str, Any]] = []
@@ -1172,35 +1216,6 @@ class RuntimePublicationMixin:
                             }
                         )
                         continue
-                    expected = next(
-                        (
-                            entry[key]
-                            for key in ("total", "percentage", "value", "change", "difference")
-                            if entry.get(key) is not None
-                        ),
-                        None,
-                    )
-                    try:
-                        actual = float(claim.value)
-                    except (TypeError, ValueError):
-                        continue
-                    if expected is None or not isinstance(expected, (int, float)):
-                        continue
-                    tolerance = max(0.01, abs(float(expected)) * 1e-9)
-                    if abs(actual - float(expected)) > tolerance:
-                        warnings_out.append(
-                            {
-                                "code": "report_claim_fact_value_mismatch",
-                                "message": "章节 claim 数值与冻结事实在容差外不一致。",
-                                "details": {
-                                    "sectionCode": artifact.section_code,
-                                    "claimId": claim.claim_id,
-                                    "factId": fact_id,
-                                    "claimValue": actual,
-                                    "factValue": expected,
-                                },
-                            }
-                        )
         return issues, warnings_out
 
     async def _build_and_write_artifact_manifest(
@@ -1472,14 +1487,9 @@ class RuntimePublicationMixin:
                             answer_review_plan = None
                             registration_failed = True
                             logger.warning("report_answer_review_registration_unavailable reason={}", type(error).__name__)
-                    quality_source_ids = {entry.file_resource_id for entry in index.fact_files}
+                    quality_source_ids = _quality_source_ids(index, interactive_charts or {})
                     quality_image_ids = {chart.image_file_resource_id for chart in index.chart_traces}
                     quality_image_bytes = 0
-                    quality_source_ids.update(resource_id for chart in index.chart_traces
-                                              for resource_id in (chart.image_file_resource_id, *chart.plot_data_file_resource_ids))
-                    interactive_paths = set((interactive_charts or {}).values())
-                    quality_source_ids.update(file.resource_id for file in index.files
-                                              if file.path in interactive_paths)
                     for file in index.files:
                         if file.resource_id not in quality_source_ids:
                             continue

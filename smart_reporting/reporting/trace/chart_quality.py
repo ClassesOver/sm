@@ -67,15 +67,9 @@ def evaluate_chart_quality(
         reason = "chart_check_failed"
         try:
             image = files[chart.image_file_resource_id]
-            spec = by_path.get(interactive_charts.get(image.path, ""))
-            reason = "interactive_spec_unregistered"
-            if (
-                spec is None
-                or spec.media_type != "application/json"
-                or not image.media_type.startswith("image/")
-            ):
-                raise ValueError(reason)
             reason = "chart_source_unavailable"
+            if not image.media_type.startswith("image/"):
+                raise ValueError(reason)
             read(chart.image_file_resource_id)
             reason = "chart_presentation_changed"
             if presentations is None:
@@ -90,6 +84,13 @@ def evaluate_chart_quality(
             )
             fingerprints = chart_fingerprints(presentations, image.path, allow_filename=unique)
             if chart.presentation_sha256 is None or fingerprints != [chart.presentation_sha256]:
+                raise ValueError(reason)
+            if image.path not in interactive_charts:
+                reason = "static_image_not_evaluated"
+                raise ValueError(reason)
+            spec = by_path.get(interactive_charts[image.path])
+            reason = "interactive_spec_unregistered"
+            if spec is None or spec.media_type != "application/json":
                 raise ValueError(reason)
             reason = "chart_source_unavailable"
             figure = read_json(spec.resource_id)

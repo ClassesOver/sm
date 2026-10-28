@@ -39,6 +39,7 @@ _GUIDANCE = {
     "statement_not_supported": ("unresolved", ("R004", "R005", "R011", "R032"), "对照当前句子与所选事实复核范围、期间、单位及结论", "draft"),
     "interactive_spec_unregistered": ("artifact_gap", ("R004", "R019", "R026"), "补齐登记图形规格，并与冻结数组及事实共同核验", "render"),
     "chart_arrays_unverified": ("proof_not_evaluated", ("R004", "R019", "R026"), "先处理同一图表的数组或规格检查，再复核语义对齐", "render"),
+    "static_image_not_evaluated": ("proof_not_evaluated", ("R004", "R019", "R026"), "复核静态图的可见数值与冻结作图数据；图片身份一致不代表数组语义已核验", "render"),
     "cell_period_label_mismatch": ("definition_review", ("R002", "R035", "R064"), "核实源字段及聚合粒度，不从月初日期猜测月度", "analysis"),
     "cell_period_identity_unavailable": ("definition_review", ("R002", "R035", "R064"), "核对原始期间是否为有效日历及已登记粒度，不将无效日期截成月份", "analysis"),
     "cell_fact_binding_unavailable": ("traceability_gap", ("R014", "R016", "R068"), "核查单元格的原始事实绑定，缺失保持缺失而非补零", "table"),

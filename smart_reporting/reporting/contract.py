@@ -125,6 +125,7 @@ class ReportRequestEnvelope(StrictModel):
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
@@ -253,6 +254,7 @@ class ReportingWorkflowInput(StrictModel):
         default=None, alias="reportGoal", min_length=1, max_length=20_000
     )
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod | None = None
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
@@ -272,6 +274,7 @@ class ReportingWorkflowInput(StrictModel):
                 for value in (
                     self.report_goal,
                     self.report_type,
+                    self.section_count,
                     self.domains,
                     self.period,
                     self.source_ids,

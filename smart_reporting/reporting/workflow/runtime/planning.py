@@ -206,6 +206,7 @@ class RuntimePlanningMixin:
                 "version": "1",
                 "reportGoal": request.prompt,
                 "reportType": report_type,
+                **({"sectionCount": normalized.section_count} if normalized.section_count is not None else {}),
                 **({"domains": domains} if domains else {}),
                 "period": period.model_dump(mode="json"),
             }
@@ -272,6 +273,7 @@ class RuntimePlanningMixin:
         current.update(
             {
                 "reportType": envelope.report_type,
+                "sectionCount": envelope.section_count,
                 "domains": list(envelope.domains) if envelope.domains else None,
                 "primaryDomain": envelope.domains[0] if envelope.domains else None,
                 "period": envelope.period.model_dump(mode="json"),
@@ -3294,11 +3296,12 @@ def _with_drilldown_projection(
     *,
     measure_semantics: tuple[MeasureSemantic, ...] | None = None,
 ) -> tuple[QueryRequirement, ...]:
-    """把所有相关指标共同声明为可加的冻结快照维度加入物化粒度。
+    """把可加维度及指标固定范围字段加入物化粒度。
 
     只处理单表 requirement；字段必须来自当前已绑定 Profile，且必须同时在
-    该 requirement 的每个 measure ``additiveAcross`` 中。超过既有 30 列契约
-    时保持原计划，后续 B7 能力生成器会如实判定不可用。
+    该 requirement 的每个 measure ``additiveAcross`` 中；固定范围字段来自
+    冻结语义 exclusiveScope，保留原有 SQL 范围过滤，仅投影常量以供补证复核。
+    超过既有 30 列契约时保持原计划，后续能力生成器如实判定不可用。
     """
 
     effective_semantics = (
@@ -3307,7 +3310,7 @@ def _with_drilldown_projection(
         else measure_semantics
     )
     profile_dimensions = getattr(profile, "dimensions", ())
-    if not effective_semantics or not profile_dimensions:
+    if not effective_semantics:
         return requirements
     semantics = {item.field_ref.casefold(): item for item in effective_semantics}
     projected: list[QueryRequirement] = []
@@ -3339,7 +3342,9 @@ def _with_drilldown_projection(
         common_additive = set(semantic_items[0].additive_across)
         for semantic in semantic_items[1:]:
             common_additive.intersection_update(semantic.additive_across)
-        additions: list[str] = []
+        additions: list[str] = list(dict.fromkeys(
+            column for semantic in semantic_items for column in semantic.exclusive_scope
+        ))
         for dimension in profile_dimensions:
             candidates = [
                 ref.rsplit(".", 1)[-1]

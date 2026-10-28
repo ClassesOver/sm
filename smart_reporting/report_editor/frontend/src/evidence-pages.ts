@@ -2327,7 +2327,7 @@ interface SubjectPageData extends DraftValidation {
  * 线性追溯链：正文 → 事实 → 计算 → 快照 → 原始行，按登记关系逐级给出入口，默认展示在关系图之前。
  * 只列登记存在的环节；缺失环节标为“未登记”，不补造关系。
  */
-function renderTraceChain(detail: TraceSubjectInfo, sources: TraceSources | null, ctx: EvidencePageContext): HTMLElement {
+function renderTraceChain(detail: TraceSubjectInfo, sources: TraceSources | null, ctx: EvidencePageContext, value?: TraceValidation['subjects'][number]): HTMLElement {
   const section = document.createElement('section')
   section.className = 'evidence-trace-chain'
   section.setAttribute('aria-label', '追溯链')
@@ -2359,7 +2359,24 @@ function renderTraceChain(detail: TraceSubjectInfo, sources: TraceSources | null
   step('事实', facts)
   const computation: EvidenceObjectRef | null = detail.computationId
     ? { kind: 'computation', key: detail.computationId, label: detail.computationId } : null
-  step('计算', computation ? [makeEvidenceLink({ ...computation, label: ctx.labelFor?.(computation) ?? computation.label }, ctx.labelFor?.(computation) ?? computation.label, ctx)] : [])
+  const calculation: Array<HTMLElement | string> = []
+  if (computation) calculation.push(makeEvidenceLink({ ...computation, label: ctx.labelFor?.(computation) ?? computation.label }, ctx.labelFor?.(computation) ?? computation.label, ctx))
+  else if (value?.sourceStatus !== 'integrity_failed' && value?.checkStatus !== 'failed' && value?.status === 'valid'
+    && (value.computation === 'derived' || value.computation === 'calc') && value.formulaText) {
+    const description = document.createElement('div')
+    const method = document.createElement('strong')
+    method.textContent = value.computation === 'calc' ? '服务端重算' : '服务端派生'
+    const formula = document.createElement('p')
+    formula.textContent = value.formulaText
+    description.append(method, formula)
+    if (Array.isArray(value.periods) && value.periods.every(period => typeof period === 'string')) {
+      const periods = document.createElement('p')
+      periods.textContent = `覆盖期间：${value.periods.join('、')}`
+      description.append(periods)
+    }
+    calculation.push(description)
+  }
+  step('计算', calculation)
   const datasetIds = [...new Set(detail.factRefs.flatMap(ref =>
     sources?.facts?.find(fact => fact.analysisId === ref.analysisId && fact.factId === ref.factId)?.datasetIds ?? []))]
   const datasets = datasetIds.map(id => sources?.datasets?.find(item => item.datasetId === id)).filter((item): item is NonNullable<typeof item> => !!item)
@@ -2410,6 +2427,21 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
       ? (CITATION_STATUS_LABELS[entryResult.status] ?? entryResult.status)
       : '未绑定'
     value.append(chip)
+    const semantic = data.validation.subjects.find(subject => subject.subjectId === detail.subjectId)?.semanticCheck
+    if (semantic) {
+      const description = makeStatusRow(skeleton.statusArea, '语义归属', 'semantics')
+      description.textContent = semantic.status === 'interpreted'
+        ? '模型语义解释 · 依据当前正文，不代表业务验收通过'
+        : '原语义判断已失效，需重新复核'
+      if (semantic.status === 'interpreted') {
+        const evidence = semantic.interpretation.scope.flatMap(item => item.evidence)
+        if (evidence.length) {
+          const quotes = document.createElement('p')
+          quotes.textContent = `复核时原文依据：${[...new Set(evidence)].join('；')}`
+          description.append(quotes)
+        }
+      }
+    }
     if (entryResult?.warnings?.length) {
       citationWarning = document.createElement('div')
       citationWarning.className = 'evidence-warning'
@@ -2428,7 +2460,8 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
   const sources = await ctx.loadSources().catch(() => null)
   if (ctx.isStale()) return
-  skeleton.relationSlot.before(renderTraceChain(detail, sources, ctx))
+  skeleton.relationSlot.before(renderTraceChain(detail, sources, ctx,
+    data.validation?.subjects.find(subject => subject.subjectId === detail.subjectId)))
 
   // 引用类型与正文位置使用与其他对象页相同的状态行；定位操作紧挨位置信息。
   makeStatusRow(skeleton.statusArea, '引用类型', 'kind').textContent =

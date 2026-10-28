@@ -202,3 +202,45 @@ def test_unit_conversion_requires_matching_coefficient_and_same_unit_family():
     )["value"] == 1
     wrong = derivation([(0, 1, "1"), (1, 1, "-1")], unit="万元")
     assert table_derivation_token(wrong, {RID: raw}) is None
+
+
+def mixed_sources(*, scope=None, period='2025-01', total=200, fact_key='fact-aaaaaaaaaaaaaaaa'):
+    raw = json.dumps({'periods': [period], 'scope': scope or {'company': '甲院'},
+        'findings': [{'columns': ['科室', '金额'], 'columnMeta': {'金额': {'unit': '元'}},
+                      'rows': [['甲科', 60], ['乙科', 40]]}]}).encode()
+    fact = json.dumps({'analysisId': 'analysis_001', 'metrics': [{
+        'factId': fact_key, 'total': total, 'unit': '元', 'scope': {'company': '甲院'},
+        'aggregation': 'sum', 'periodAggregation': 'sum',
+        'periodValues': [{'period': '2025-01', 'value': total}], 'periodGranularity': 'month',
+        'periodStart': '2025-01', 'periodEnd': '2025-01'}]}).encode()
+    return {RID: raw, 'trf-' + 'b' * 20: fact}
+
+
+def mixed_derivation():
+    return TableDerivationV1.model_validate({'operands': [{
+        'fileResourceId': RID, 'tablePointer': '/findings/0', 'rowIndex': 0,
+        'columnIndex': 1, 'coefficient': '1'}], 'unit': '%', 'denominatorFact': {
+            'analysisId': 'analysis_001', 'fileResourceId': 'trf-' + 'b' * 20,
+            'jsonPointer': '/metrics/0', 'factKind': 'metric', 'factKey': 'fact-aaaaaaaaaaaaaaaa'}})
+
+
+def test_mixed_table_fact_share_recomputes_ratio_and_binds_denominator_bytes():
+    sources = mixed_sources()
+    proof = mixed_derivation()
+    token = table_derivation_token(proof, sources)
+    assert token is not None
+    selected = resolve_table_derivation(token, proof, sources)
+    assert selected['value'] == 30
+    assert selected['unit'] == '%'
+    assert selected['scope'] == {'company': '甲院'}
+    assert resolve_table_derivation(token, proof, {**sources, 'trf-' + 'b' * 20:
+        sources['trf-' + 'b' * 20] + b' '}) is None
+    assert resolve_table_derivation(token, proof, {RID: sources[RID]}) is None
+
+
+@pytest.mark.parametrize('difference', ['scope', 'period', 'zero', 'identity'])
+def test_mixed_share_rejects_unknown_or_conflicting_denominator_semantics(difference):
+    sources = mixed_sources(**{'scope': {'company': '乙院'}} if difference == 'scope' else
+        {'period': '2025-02'} if difference == 'period' else
+        {'total': 0} if difference == 'zero' else {'fact_key': 'fact-bbbbbbbbbbbbbbbb'})
+    assert table_derivation_token(mixed_derivation(), sources) is None

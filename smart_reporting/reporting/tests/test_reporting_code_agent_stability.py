@@ -1155,3 +1155,23 @@ async def test_run_script_missing_output_preserves_execution_diagnostics(binding
     if not large_output:
         assert details["stdout"] == stdout
     assert toolkit.binding.execution_receipt is None
+
+
+@pytest.mark.anyio
+async def test_run_script_does_not_accept_stale_declared_output(binding, workspace):  # noqa: F811
+    runtime = SimpleNamespace(
+        execute_script_process=AsyncMock(
+            return_value=ScriptProcessResult(
+                cell=CellResult(stdout="script did not write evidence"), exit_code=0
+            )
+        )
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.write_script("print('script did not write evidence')\n")
+    await workspace.awrite_bytes("task-1", "analysis/out.json", b'{"stale":true}')
+
+    result = await toolkit.run_script()
+
+    assert result["code"] == "report_code_declared_output_missing"
+    assert binding.execution_receipt is None
+    runtime.execute_script_process.assert_awaited_once()

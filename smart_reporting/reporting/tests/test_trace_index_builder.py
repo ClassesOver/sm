@@ -259,6 +259,26 @@ def test_table_sources_register_referenced_identities_without_fact_files():
     assert RevisionTraceIndexV1.model_validate_json(encode_trace_index(index)) == index
 
 
+def test_trace_index_roundtrips_report_with_more_than_two_thousand_subjects():
+    subjects = tuple(SubjectBindingV1.model_validate({
+        "subjectId": f"sub-{number:016x}", "subjectKind": "text_claim",
+        "locator": {"sectionId": "section_001"}, "subjectSha256": SHA,
+        "claimId": f"claim-{number}",
+        "factRefs": [{"analysisId": "analysis_001",
+                      "fileResourceId": derive_resource_id("facts.json"),
+                      "jsonPointer": "/metrics/0", "factKind": "metric"}],
+    }) for number in range(5000))
+    fact_file = ArtifactFile(
+        path="facts.json", mediaType="application/json", size=30, sha256=OTHER_SHA,
+    )
+    index = _build_table(
+        fact_files={"analysis_001": fact_file}, subject_bindings=subjects,
+    )
+
+    assert len(index.subject_bindings) == 5000
+    assert RevisionTraceIndexV1.model_validate_json(encode_trace_index(index)) == index
+
+
 @pytest.mark.parametrize("sources", [
     (),
     ({**TABLE_SOURCE, "size": 0},),
@@ -357,6 +377,40 @@ def test_table_sources_reuse_matching_json_registration_and_preserve_chart_compu
     assert index.subject_bindings[0].number_reference.table_derivation is not None
 
 
+def test_computation_registration_keeps_deterministic_and_multiple_supplemental_files():
+    from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+
+    from .test_trace_computation_service import EVIDENCE, SCRIPT, _record
+
+    second = {**EVIDENCE, 'path': 'evidence/second.json'}
+    records = (_record(), _record(evidence_file=second))
+    index = _build_table(
+        fact_files={'analysis_001': ArtifactFile(path='facts.json', mediaType='application/json',
+                                               size=30, sha256=SHA)},
+        computation_files=(FileIdentity(**SCRIPT), FileIdentity(**EVIDENCE), FileIdentity(**second)),
+        computations=records,
+    )
+    assert index.computations == records
+    assert {(item.analysis_id, item.file_resource_id, item.content_kind) for item in index.fact_files} == {
+        ('analysis_001', derive_resource_id('facts.json'), 'deterministic_bundle'),
+        ('analysis_001', derive_resource_id(EVIDENCE['path']), 'supplemental_evidence'),
+        ('analysis_001', derive_resource_id(second['path']), 'supplemental_evidence'),
+    }
+    assert RevisionTraceIndexV1.model_validate_json(encode_trace_index(index)) == index
+
+
+def test_multiple_file_registration_does_not_allow_duplicate_fact_bundle():
+    from smart_reporting.reporting.trace.contracts_v1 import FactFileEntryV1
+
+    fact = ArtifactFile(path='facts.json', mediaType='application/json', size=30, sha256=SHA)
+    index = _build_table(fact_files={'analysis_001': fact})
+    duplicate = index.model_dump(by_alias=True)
+    duplicate['factFiles'] += (FactFileEntryV1(analysisId='analysis_001',
+        fileResourceId=index.datasets[0].file_resource_id, contentKind='deterministic_bundle').model_dump(by_alias=True),)
+    with pytest.raises(ValidationError):
+        RevisionTraceIndexV1.model_validate(duplicate)
+
+
 @pytest.mark.parametrize("path,sha", [(MARKDOWN.path, OTHER_SHA), ("facts.json", OTHER_SHA)])
 def test_table_source_collision_preserves_existing_files(path, sha):
     fact_file = ArtifactFile(path="facts.json", mediaType="application/json", size=30, sha256=SHA)
@@ -381,3 +435,49 @@ def test_table_source_registration_budget_degrades_without_dropping_other_files(
     )
     assert len(index.files) == 2000
     assert index.subject_bindings == ()
+
+
+@pytest.mark.parametrize('fault', ['none', 'missing', 'conflict'])
+def test_ratio_denominator_identity_registered_and_invalid_source_only_drops_ratio(fault):
+    denominator = {**TABLE_SOURCE, 'path': 'facts/denominator.json'}
+    payload = _table_subject().model_dump(mode='json', by_alias=True)
+    payload['numberReference']['tableDerivation']['denominatorFact'] = {
+        'analysisId': 'analysis_001', 'fileResourceId': derive_resource_id(denominator['path']),
+        'jsonPointer': '/metrics/0', 'factKind': 'metric', 'factKey': 'fact-denominator',
+    }
+    subject = SubjectBindingV1.model_validate(payload)
+    sources = (TABLE_SOURCE,) + (() if fault == 'missing' else (denominator,))
+    if fault == 'conflict':
+        sources += ({**denominator, 'sha256': OTHER_SHA},)
+    index = _build_table(table_source_files=sources, subject_bindings=(subject,),
+                         fact_files={'analysis_001': ArtifactFile(**denominator, mediaType='application/json')})
+    if fault == 'none':
+        assert len(index.subject_bindings) == 1
+        assert derive_resource_id(denominator['path']) in {item.resource_id for item in index.files}
+    else:
+        assert index.subject_bindings == ()
+
+
+@pytest.mark.parametrize('dependency', ['denominatorFact', 'populationFact'])
+@pytest.mark.parametrize('fault', ['missing', 'conflict'])
+def test_invalid_mixed_subject_with_production_fact_refs_is_dropped_without_harming_other_subjects(dependency, fault):
+    denominator = {**TABLE_SOURCE, 'path': 'facts/denominator.json'}
+    payload = _table_subject().model_dump(mode='json', by_alias=True)
+    ref = {'analysisId': 'analysis_001', 'fileResourceId': derive_resource_id(denominator['path']),
+           'jsonPointer': '/metrics/0', 'factKind': 'metric', 'factKey': 'fact-denominator'}
+    payload['numberReference']['tableDerivation'][dependency] = ref
+    if dependency == 'populationFact':
+        payload['numberReference']['tableDerivation'].update({
+            'populationProofSha256': SHA, 'topSelection': 'items', 'topLimit': 1,
+        })
+    payload['factRefs'] = [ref]
+    subject = SubjectBindingV1.model_validate(payload)
+    ordinary = SubjectBindingV1.model_validate({
+        'subjectId': 'sub-' + '9' * 16, 'subjectKind': 'text_claim',
+        'locator': {'sectionId': 'section_001'}, 'subjectSha256': SHA,
+        'claimId': 'claim-unaffected', 'factRefs': [ref],
+    })
+    sources = (TABLE_SOURCE,) + (() if fault == 'missing' else (denominator, {**denominator, 'sha256': OTHER_SHA}))
+    index = _build_table(table_source_files=sources, subject_bindings=(subject, ordinary),
+                         fact_files={'analysis_001': ArtifactFile(**denominator, mediaType='application/json')})
+    assert [item.claim_id for item in index.subject_bindings] == ['claim-unaffected']

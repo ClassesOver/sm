@@ -1592,6 +1592,63 @@ describe('详情入口统一导航', () => {
 })
 
 describe('subject trace chain', () => {
+  it.each(['interpreted', 'invalidated'] as const)('shows model semantic provenance as %s', async (status) => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      if (String(input).endsWith('/api/sources/validate')) return json({
+        draftSha256: JSON.parse(String(init!.body)).draftSha256,
+        subjects: [{ subjectId: 'sub-cccccccccccccccc', status: 'valid', factValue: 200, warnings: [],
+          semanticCheck: { method: 'model_context_interpretation_v1', status, interpretation: {
+            claimId: 'claim-c', scope: [{ field: 'income_nature', value: '开单收入', status: 'resolved',
+              evidence: ['本段金额均属开单收入'] }], periods: [], periodEvidence: [],
+          } },
+        }], summary: { valid: 1, stale: 0, unbound: 0 },
+      })
+      throw new Error(`unexpected ${String(input)}`)
+    })
+    const { container, ctx } = setupPage(fetcher,
+      { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 · 收入' },
+      { getDraft: () => ({ markdown: '本段金额均属开单收入。南院200元', sha256: 'draft' }) })
+    await renderEvidencePage(container, ctx)
+    expect(container.textContent).toContain(status === 'interpreted' ? '模型语义解释' : '原语义判断已失效')
+    if (status === 'interpreted') {
+      expect(container.textContent).toContain('不代表业务验收通过')
+      expect(container.textContent).toContain('原文依据：本段金额均属开单收入')
+    } else {
+      expect(container.textContent).not.toContain('原文依据：')
+    }
+    container.remove()
+  })
+
+  it('shows a server-derived formula without inventing a computation record', async () => {
+    const warning = '统计期间需复核：当前引用覆盖 2025年1—8月，与正文限定的统计窗口不一致。'
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/api/sources')) return json({ ...SOURCES_PAYLOAD,
+        subjects: [{ ...SOURCES_PAYLOAD.subjects[0], computationId: null }] })
+      if (String(input).endsWith('/api/sources/validate')) return json({
+        draftSha256: JSON.parse(String(init!.body)).draftSha256,
+        subjects: [{ subjectId: 'sub-cccccccccccccccc', status: 'valid', factValue: 1043199694.375,
+          computation: 'derived', formulaText: '2025年1—8月收入合计 ÷ 8',
+          periods: ['2025-01', '2025-02', '2025-03', '2025-04', '2025-05', '2025-06', '2025-07', '2025-08'],
+          warnings: [warning] }], summary: { valid: 1, stale: 0, unbound: 0 },
+      })
+      throw new Error(`unexpected ${String(input)}`)
+    })
+    const { container, ctx } = setupPage(fetcher,
+      { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 · 收入' },
+      { getDraft: () => ({ markdown: '8月收入10.43亿元', sha256: 'draft' }) })
+    await renderEvidencePage(container, ctx)
+    const step = [...container.querySelectorAll<HTMLElement>('.evidence-trace-chain li')]
+      .find(item => item.querySelector('.evidence-trace-step-label')?.textContent === '计算')!
+    expect(step.textContent).toContain('服务端派生')
+    expect(step.textContent).toContain('2025年1—8月收入合计 ÷ 8')
+    expect(step.textContent).toContain('2025-01')
+    expect(step.textContent).toContain('2025-08')
+    expect(step.hasAttribute('data-missing')).toBe(false)
+    expect(step.querySelector('button')).toBeNull()
+    expect(container.querySelector('.evidence-warning')?.textContent).toContain(warning)
+  })
+
   it('lists the linear chain from body to raw rows with registered links only', async () => {
     const payload = {
       ...SOURCES_PAYLOAD,
