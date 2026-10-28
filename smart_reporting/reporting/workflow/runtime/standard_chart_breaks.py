@@ -12,7 +12,7 @@ def prepare_standard_break(chart, config, document, display):
         return
     form, axes, policy = config[4], config[11], config[14]
     if (
-        form not in {"line", "bar", "stacked-bar", "stacked-area", "stacked-total"}
+        form not in {"line", "bar", "barh", "stacked-bar", "stacked-area", "stacked-total"}
         or axes["mode"] != "single"
         or axes["scale"] != "linear"
         or axes["right_fields"]
@@ -21,7 +21,7 @@ def prepare_standard_break(chart, config, document, display):
         fail(
             "standard_break_combination_unsupported",
             "standardBreak",
-            "断轴暂只支持线性单值轴纵向柱线/堆叠/范围带，不能与多轴或standardDomains混用。",
+            "断轴支持线性单值轴纵向柱线/堆叠/范围带或横向分组柱图，不能与多轴或standardDomains混用。",
         )
     profiles = _legacy_profiles(config, document, display)
     units = {item["unit"] for item in profiles.values()}
@@ -77,8 +77,13 @@ def prepare_standard_break(chart, config, document, display):
         "above": above,
     }
     if policy["size_mode"] == "auto":
-        policy["height"] = max(policy["height"], 8)
+        if form == "barh":
+            policy["width"] = max(policy["width"], 12)
+        else:
+            policy["height"] = max(policy["height"], 8)
     note = f"断轴：显示[{low_min}, {low_max}]及[{high_min}, {high_max}]{next(iter(units))}；省略开区间({low_max}, {high_min})，上下段分别线性显示"
+    if form == "barh":
+        note = note.replace("上下段", "左右段")
     if omitted:
         note += f"；省略区间内数据/边界值{omitted}项未显示，原值未改"
     if below or above:

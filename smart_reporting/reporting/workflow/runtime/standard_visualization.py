@@ -27,6 +27,7 @@ from .standard_chart_encoding import (
     prepare_bands,
     prepare_encoded_chart,
 )
+from .standard_chart_horizontal_breaks import HORIZONTAL_BREAK_SCRIPT
 from .standard_chart_presentation import (
     PRESENTATION_SCRIPT,
     order_standard_rows,
@@ -531,6 +532,15 @@ def _standard_visualization_script(
     statistics_script = summary_statistics_script(STATISTICS_SCRIPT) if summary_profiles else STATISTICS_SCRIPT
     has_domains = any('domains' in config[14] for config in configs)
     has_breaks = any('broken_axis' in config[14] for config in configs)
+    has_horizontal_breaks = any('broken_axis' in config[14] and config[4] == 'barh' for config in configs)
+    break_script = BREAK_SCRIPT
+    break_dispatch = BREAK_DISPATCH
+    if has_horizontal_breaks:
+        break_script = break_script.replace('    spec=policy["broken_axis"]\n',
+            '    if policy["horizontal"]:\n        return layout_horizontal_standard_break(fig,policy)\n    spec=policy["broken_axis"]\n', 1)
+        break_script += HORIZONTAL_BREAK_SCRIPT
+        break_dispatch = break_dispatch.replace('        render_broken_chart(',
+            '        (render_horizontal_broken_chart if form == "barh" else render_broken_chart)(')
     layout = _LAYOUT
     if has_domains or has_breaks:
         layout = layout.replace('if isinstance(text, Annotation)]', 'if isinstance(text, Annotation) and text.get_visible()]')
@@ -543,12 +553,12 @@ def _standard_visualization_script(
     body = _BODY.replace('__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else '')
     if has_breaks:
         boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
-        body = body.replace(boundary, BREAK_DISPATCH + boundary)
+        body = body.replace(boundary, break_dispatch + boundary)
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + PRESENTATION_SCRIPT + layout + ENCODING_SCRIPT + _ADVANCED
             + (statistics_script if has_statistics else '')
-            + (BREAK_SCRIPT if has_breaks else '')
+            + (break_script if has_breaks else '')
             + (DOMAIN_SCRIPT if has_domains else '')
             + body)
 

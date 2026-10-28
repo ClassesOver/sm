@@ -205,7 +205,7 @@ def break_cases():
         "dual",
         "log",
         "domains",
-        "horizontal",
+        "horizontal-panels",
         "scatter",
         "unknown_unit",
         "band_gap",
@@ -237,8 +237,9 @@ def break_cases():
             params["standard_axes"] = {"scale": "log"}
         elif fault == "domains":
             params["standard_domains"] = {"left": {"min": 0, "max": 1200}}
-        elif fault == "horizontal":
+        elif fault == "horizontal-panels":
             params["visual_form"] = "barh"
+            params["standard_axes"] = {"mode": "panels"}
         elif fault == "scatter":
             params.update(
                 visual_form="scatter",

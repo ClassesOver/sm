@@ -154,7 +154,7 @@ def test_omitted_points_require_explicit_disclosure_and_do_not_change_source_arr
         ("dual", "standard_break_combination_unsupported"),
         ("log", "standard_break_combination_unsupported"),
         ("domains", "standard_break_combination_unsupported"),
-        ("horizontal", "standard_break_combination_unsupported"),
+        ("horizontal-panels", "standard_break_combination_unsupported"),
     ],
 )
 def test_break_unsupported_or_hidden_data_returns_actionable_fallback(fault, code):
@@ -181,6 +181,7 @@ def test_break_unsupported_or_hidden_data_returns_actionable_fallback(fault, cod
         chart.standard_domains = StandardChartDomains(left={"min": 0, "max": 1200})
     else:
         chart.visual_form = "barh"
+        chart.standard_axes = StandardChartAxes(mode="panels")
     assert standard_visualization_preflight(plan, inputs).diagnostic["code"] == code
 
 
@@ -233,7 +234,7 @@ def test_outer_clipping_requires_disclosure_without_clamping_coordinates(render)
     assert any("整体范围外低于0、高于1项" in text.get_text() for text in figure.texts)
 
 
-@pytest.mark.parametrize("form", ["line", "stacked-total"])
+@pytest.mark.parametrize("form", ["line", "stacked-total", "barh"])
 def test_breaks_pass_formal_source_gate_and_preserve_original_identity(tmp_path, monkeypatch, form):
     from smart_reporting.reporting.code_agent.context import ReportingCodingTaskContext
     from smart_reporting.reporting.code_agent.toolkit import validate_script_source
@@ -260,7 +261,8 @@ def test_breaks_pass_formal_source_gate_and_preserve_original_identity(tmp_path,
         exec(source, {})
 
 
-def test_break_real_plan_roundtrip_and_field_materialization(render):  # noqa: F811
+@pytest.mark.parametrize("form", ["line", "barh"])
+def test_break_real_plan_roundtrip_and_field_materialization(render, form):  # noqa: F811
     import json
 
     from smart_reporting.reporting.workflow.runtime.chart_inputs import materialize_chart_inputs
@@ -281,7 +283,7 @@ def test_break_real_plan_roundtrip_and_field_materialization(render):  # noqa: F
         currentPeriod="2026-10",
         sourceDatasetId="dataset",
         aggregationGrain="month",
-        visualForm="line",
+        visualForm=form,
         standardValueFields=["actual", "budget"],
         standardBreak=base.charts[0].standard_break,
         dataBindings=[
@@ -308,8 +310,12 @@ def test_break_real_plan_roundtrip_and_field_materialization(render):  # noqa: F
         plan, facts, {"facts.json": {"findings": [document]}}, output_root="."
     )
     figure = render(plan, inputs)
-    assert [axis.get_ylim() for axis in figure.axes] == [(900, 1200), (0, 50)]
-    assert list(figure.axes[0].lines[0].get_ydata()) == [10, 1000]
+    if form == "barh":
+        assert [axis.get_xlim() for axis in figure.axes] == [(0, 50), (900, 1200)]
+        assert [bar.get_width() for bar in figure.axes[0].containers[0]] == [10, 1000]
+    else:
+        assert [axis.get_ylim() for axis in figure.axes] == [(900, 1200), (0, 50)]
+        assert list(figure.axes[0].lines[0].get_ydata()) == [10, 1000]
 
 
 @pytest.mark.parametrize(

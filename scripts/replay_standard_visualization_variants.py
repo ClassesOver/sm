@@ -17,6 +17,7 @@ from scripts.standard_visualization_box_summary_cases import summary_cases
 from scripts.standard_visualization_break_cases import break_cases
 from scripts.standard_visualization_domain_cases import domain_cases
 from scripts.standard_visualization_geometry_cases import geometry_cases
+from scripts.standard_visualization_horizontal_break_cases import horizontal_break_cases
 from scripts.standard_visualization_pipeline_cases import pipeline_cases
 from scripts.standard_visualization_statistics_cases import statistics_cases
 from scripts.standard_visualization_stress_cases import extended_cases
@@ -127,6 +128,10 @@ def capture(fig, *args, **kwargs):
                 mismatches.append("wrong_colors:" + expected["name"])
         if "bottoms" in expected and (len(artist)!=len(expected["bottoms"]) or any(not math.isclose(bar.get_y(),value,rel_tol=1e-10,abs_tol=0) for bar,value in zip(artist,expected["bottoms"]))):
             mismatches.append("wrong_bar_baselines:"+expected["name"])
+        for key,values in (("starts", [bar.get_x() for bar in artist] if horizontal else [bar.get_y() for bar in artist]),
+                           ("centers", [bar.get_y()+bar.get_height()/2 for bar in artist] if horizontal else [bar.get_x()+bar.get_width()/2 for bar in artist])) if expected["kind"] != "line" else []:
+            if key in expected and (len(values)!=len(expected[key]) or any(not math.isclose(a,b,rel_tol=1e-10,abs_tol=1e-12) for a,b in zip(values,expected[key]))):
+                mismatches.append("wrong_bar_"+key+":"+expected["name"])
     import numpy as np
     def same_value(actual, wanted):
         if wanted is None:
@@ -256,27 +261,35 @@ def capture(fig, *args, **kwargs):
             if not values or not same_value(min(values),low) or not same_value(max(values),high):
                 mismatches.append("wrong_area_bounds:"+expected["name"])
     for expected in expectations.get("breaks", []):
+        sideways=expected.get("orientation")=="horizontal"
         panels={getattr(ax,"_standard_break_panel",None):ax for ax in fig.axes if hasattr(ax,"_standard_break_panel")}
         if set(panels)!={"upper","lower"}:
             mismatches.append("missing_break_panels")
             continue
         for name in ("upper","lower"):
             ax=panels[name]
-            if any(not same_value(a,b) for a,b in zip(ax.get_ylim(),expected[name])):
+            if any(not same_value(a,b) for a,b in zip(ax.get_xlim() if sideways else ax.get_ylim(),expected[name])):
                 mismatches.append("wrong_break_limits:"+name)
             marks=[line for line in ax.lines if getattr(line,"_standard_axis_break_mark",False)]
             if len(marks)!=expected.get("marksPerPanel",2):
                 mismatches.append("missing_break_marks:"+name)
             for i,line in enumerate(marks):
                 x,y=line.get_xdata(),line.get_ydata()
-                wanted_y=0 if name=="upper" else 1
+                wanted_x=(0 if name=="upper" else 1) if sideways else i
+                wanted_y=i if sideways else (0 if name=="upper" else 1)
                 if (not line.get_visible() or line.get_clip_on() or line.get_transform()!=ax.transAxes
-                    or len(x)!=2 or len(y)!=2 or not math.isclose((x[0]+x[1])/2,i,abs_tol=1e-9)
+                    or len(x)!=2 or len(y)!=2 or not math.isclose((x[0]+x[1])/2,wanted_x,abs_tol=1e-9)
                     or not math.isclose((y[0]+y[1])/2,wanted_y,abs_tol=1e-9) or not (x[1]>x[0] and y[1]>y[0])):
                     mismatches.append("wrong_break_marks:"+name)
         upper,lower=panels["upper"].get_position(),panels["lower"].get_position()
-        if lower.y1>=upper.y0 or not math.isclose(lower.height/upper.height,expected.get("lowerFraction",.5)/(1-expected.get("lowerFraction",.5)),rel_tol=1e-6):
+        overlaps=lower.x1>=upper.x0 if sideways else lower.y1>=upper.y0
+        ratio=lower.width/upper.width if sideways else lower.height/upper.height
+        if overlaps or not math.isclose(ratio,expected.get("lowerFraction",.5)/(1-expected.get("lowerFraction",.5)),rel_tol=1e-6):
             mismatches.append("wrong_break_layout")
+        if sideways and "categoryLabels" in expected:
+            left=panels["lower"]
+            if not left.yaxis_inverted() or left.get_ylim()!=panels["upper"].get_ylim() or [tick.get_text() for tick in left.get_yticklabels()]!=expected["categoryLabels"] or any(tick.get_visible() for tick in panels["upper"].get_yticklabels()):
+                mismatches.append("wrong_break_categories")
     visible_text = "\\n".join(text.get_text() for text in drawn if text.get_visible())
     for text in expectations.get("texts", []):
         if text not in visible_text:
@@ -497,7 +510,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
-    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'breaks', 'summaries', 'all'], default='basic')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'breaks', 'summaries', 'horizontal-breaks', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -516,6 +529,8 @@ def main():
         cases.extend(break_cases())
     if args.suite in {'summaries', 'all'}:
         cases.extend(summary_cases())
+    if args.suite in {'horizontal-breaks', 'all'}:
+        cases.extend(horizontal_break_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []
