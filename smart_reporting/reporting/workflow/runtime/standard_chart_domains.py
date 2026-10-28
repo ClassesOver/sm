@@ -91,7 +91,7 @@ def _legacy_profiles(config, document, display):
     return profiles
 
 
-def prepare_standard_domains(chart, config, document, display):
+def prepare_standard_domains(chart, config, document, display, *, profiles_override=None):
     domains = getattr(chart, "standard_domains", None)
     if domains is None:
         return
@@ -154,15 +154,18 @@ def prepare_standard_domains(chart, config, document, display):
             fail("standard_domain_empty_view", "standardDomains", "显式XY范围内没有完整有效观测。")
     elif form in {"boxplot", "waterfall"}:
         statistics = policy["statistics"]
-        values = _values(document, statistics["value"]["index"], statistics["value"]["factor"])
-        if form == "waterfall":
-            labels = [row[statistics["label_index"]] for row in document["rows"]]
-            values = [
-                value
-                for pair in waterfall_levels(values, labels, statistics["absolute_labels"])
-                for value in pair
-            ]
-        profiles = {"values": dict(values=values, unit=statistics["value"]["unit"])}
+        if profiles_override is not None:
+            profiles = profiles_override
+        else:
+            values = _values(document, statistics["value"]["index"], statistics["value"]["factor"])
+            if form == "waterfall":
+                labels = [row[statistics["label_index"]] for row in document["rows"]]
+                values = [
+                    value
+                    for pair in waterfall_levels(values, labels, statistics["absolute_labels"])
+                    for value in pair
+                ]
+            profiles = {"values": dict(values=values, unit=statistics["value"]["unit"])}
     else:
         profiles = _legacy_profiles(config, document, display)
     if mode == "panels":

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
+from scripts.standard_visualization_box_summary_cases import summary_cases
 from scripts.standard_visualization_break_cases import break_cases
 from scripts.standard_visualization_domain_cases import domain_cases
 from scripts.standard_visualization_geometry_cases import geometry_cases
@@ -28,6 +29,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     StandardChartAxes,
     StandardChartAxisBreak,
     StandardChartBand,
+    StandardChartBoxSummary,
     StandardChartCanvas,
     StandardChartDerivation,
     StandardChartDistribution,
@@ -48,7 +50,8 @@ MODELS = {'standard_canvas': StandardChartCanvas, 'standard_style': StandardChar
           'standard_presentation': StandardChartPresentation, 'standard_axes': StandardChartAxes,
           'standard_view': StandardChartView, 'standard_encoding': StandardChartEncoding,
           'standard_waterfall': StandardChartWaterfall, 'standard_distribution': StandardChartDistribution,
-          'standard_domains': StandardChartDomains, 'standard_break': StandardChartAxisBreak}
+          'standard_domains': StandardChartDomains, 'standard_break': StandardChartAxisBreak,
+          'standard_box_summary': StandardChartBoxSummary}
 LIST_MODELS = {'standard_annotations': StandardChartAnnotation, 'standard_sources': StandardChartSource,
                'standard_derivations': StandardChartDerivation, 'standard_steps': StandardChartStep,
                'standard_bands': StandardChartBand}
@@ -61,7 +64,7 @@ from matplotlib.text import Text, Annotation
 original_save = Figure.savefig
 parameters = json.loads(Path("parameters.json").read_text())
 horizontal = (parameters["visual_form"] == "barh" or parameters["visual_form"] in {"boxplot", "箱线图"}
-              and parameters.get("standard_distribution", {}).get("orientation") == "horizontal")
+              and (parameters.get("standard_distribution") or parameters.get("standard_box_summary") or {}).get("orientation") == "horizontal")
 
 def capture(fig, *args, **kwargs):
     drawn = set()
@@ -494,7 +497,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
-    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'breaks', 'all'], default='basic')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'breaks', 'summaries', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -511,6 +514,8 @@ def main():
         cases.extend(domain_cases())
     if args.suite in {'breaks', 'all'}:
         cases.extend(break_cases())
+    if args.suite in {'summaries', 'all'}:
+        cases.extend(summary_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []

@@ -18,6 +18,7 @@ from .phase_models import (
     VisualizationPlanDraft,
 )
 from .standard_chart_alignment import align_chart_sources
+from .standard_chart_box_summary import prepare_box_summary, summary_statistics_script
 from .standard_chart_breaks import BREAK_DISPATCH, BREAK_SCRIPT, prepare_standard_break
 from .standard_chart_domains import DOMAIN_SCRIPT, prepare_standard_domains
 from .standard_chart_encoding import (
@@ -115,6 +116,7 @@ def _standard_visualization_script(
     if inputs.fallback_chart_ids or not plan.charts:
         _reject('standard_input_unavailable', 'chartInputs', '图表缺少可用的物化输入或计划为空。', '为对应图补齐数据绑定，或只将该图交由Coding。')
     configs: list[tuple[Any, ...]] = []
+    summary_profiles: dict[str, Any] = {}
     aligned = {}
     auxiliary = {}
     displays = {}
@@ -136,7 +138,8 @@ def _standard_visualization_script(
                 'heatmap': 'heatmap', '热力图': 'heatmap'}.get(chart.visual_form, form)
         form = {'waterfall': 'waterfall', '瀑布图': 'waterfall', 'boxplot': 'boxplot', '箱线图': 'boxplot'}.get(chart.visual_form, form)
         if ((getattr(chart, 'standard_waterfall', None) is not None and form != 'waterfall')
-                or (getattr(chart, 'standard_distribution', None) is not None and form != 'boxplot')):
+                or (getattr(chart, 'standard_distribution', None) is not None and form != 'boxplot')
+                or (getattr(chart, 'standard_box_summary', None) is not None and form != 'boxplot')):
             _reject('standard_statistics_form_conflict', 'standardWaterfall/standardDistribution', '统计参数与图形不匹配。', '瀑布用waterfall，原始样本分布用boxplot；不能忽略统计参数。')
         entries = [entry for entry in inputs.entries if entry['chartId'] == chart.chart_id]
         if form is None:
@@ -152,6 +155,16 @@ def _standard_visualization_script(
             return None
         original_document = document
         selected = tuple(getattr(chart, 'standard_value_fields', ()))
+        summary_spec = getattr(chart, 'standard_box_summary', None)
+        if summary_spec is not None:
+            try:
+                policy, summary_profiles[chart.chart_id] = prepare_box_summary(
+                    chart, document, entries, inputs.files, canvas, style, presentation, axes, selected)
+            except StandardChartEncodingError as error:
+                _reject(error.code, error.parameter, str(error), '绑定冻结分位数/须和可选样本量/异常点来源，不补造原始样本。')
+            configs.append((source.path, source.sha256, chart.source_path, chart.title, form,
+                            summary_spec.group_field, [], None, None, None, [], axes.model_dump(), [], None, policy))
+            continue
         if form == 'summary-bars':
             original_columns = document.get('columns', [])
             original_rows = document.get('rows', [])
@@ -510,10 +523,12 @@ def _standard_visualization_script(
                     json.loads(next(source.content for source in inputs.files if source.path == path)))
         try:
             prepare_standard_break(chart, config, document, displays.get(path, (1, None)))
-            prepare_standard_domains(chart, config, document, displays.get(path, (1, None)))
+            prepare_standard_domains(chart, config, document, displays.get(path, (1, None)),
+                                     profiles_override=summary_profiles.get(chart.chart_id))
         except StandardChartEncodingError as error:
             _reject(error.code, error.parameter, str(error), '范围与刻度使用显示单位；保留所有数据或明确声明并说明显示裁切。')
     has_statistics = any(config[4] in {'waterfall', 'boxplot'} for config in configs)
+    statistics_script = summary_statistics_script(STATISTICS_SCRIPT) if summary_profiles else STATISTICS_SCRIPT
     has_domains = any('domains' in config[14] for config in configs)
     has_breaks = any('broken_axis' in config[14] for config in configs)
     layout = _LAYOUT
@@ -532,7 +547,7 @@ def _standard_visualization_script(
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + PRESENTATION_SCRIPT + layout + ENCODING_SCRIPT + _ADVANCED
-            + (STATISTICS_SCRIPT if has_statistics else '')
+            + (statistics_script if has_statistics else '')
             + (BREAK_SCRIPT if has_breaks else '')
             + (DOMAIN_SCRIPT if has_domains else '')
             + body)

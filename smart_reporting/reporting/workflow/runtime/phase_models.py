@@ -458,6 +458,37 @@ class StandardChartWaterfall(StrictModel):
     connectors: bool = True
 
 
+class StandardChartBoxOutliers(StrictModel):
+    source_index: Literal[1] = Field(alias='sourceIndex', description='本图第二个绑定chart-input；第一个必须为分组分位数汇总表。')
+    group_field: str = Field(alias='groupField', min_length=1, max_length=200)
+    value_field: str = Field(alias='valueField', min_length=1, max_length=200)
+
+
+class StandardChartBoxSummary(StrictModel):
+    group_field: str = Field(alias='groupField', min_length=1, max_length=200)
+    q1_field: str = Field(alias='q1Field', min_length=1, max_length=200)
+    median_field: str = Field(alias='medianField', min_length=1, max_length=200)
+    q3_field: str = Field(alias='q3Field', min_length=1, max_length=200)
+    lower_whisker_field: str = Field(alias='lowerWhiskerField', min_length=1, max_length=200)
+    upper_whisker_field: str = Field(alias='upperWhiskerField', min_length=1, max_length=200)
+    count_field: str | None = Field(default=None, alias='countField', min_length=1, max_length=200,
+        description='可选的冻结原始样本量字段；不提供则明确n未提供，不能使用汇总行数代替。')
+    outlier_source: StandardChartBoxOutliers | None = Field(default=None, alias='outlierSource',
+        description='可选的独立长表异常点来源，每行一个登记异常点，允许同值重复观测；不提供须注明异常点未提供。')
+    group_labels: tuple[str, ...] = Field(default=(), alias='groupLabels', max_length=24)
+    orientation: Literal['vertical', 'horizontal'] = 'vertical'
+    show_fliers: bool = Field(default=True, alias='showFliers')
+
+    @model_validator(mode='after')
+    def validate_summary_fields(self) -> StandardChartBoxSummary:
+        fields=[self.group_field,self.q1_field,self.median_field,self.q3_field,self.lower_whisker_field,self.upper_whisker_field]
+        if self.count_field is not None:
+            fields.append(self.count_field)
+        if len(fields)!=len(set(fields)):
+            raise ValueError('分组、五个统计值及样本量须引用不同字段')
+        return self
+
+
 class StandardChartDistribution(StrictModel):
     value_field: str = Field(alias='valueField', min_length=1, max_length=200)
     group_field: str = Field(alias='groupField', min_length=1, max_length=200)
@@ -721,6 +752,8 @@ class ChartDraft(StrictModel):
         description='waterfall绑定有符号valueField及absoluteLabels起点/小计/终点；后续绝对值必须与累计对账，禁止补造或截取贡献项。')
     standard_distribution: StandardChartDistribution | None = Field(default=None, alias='standardDistribution',
         description='boxplot绑定长表groupField及原始样本valueField；最多480样本、24组，由Matplotlib计算线性四分位和IQR须，不从汇总均值伪造分布。')
+    standard_box_summary: StandardChartBoxSummary | None = Field(default=None, alias='standardBoxSummary',
+        description='boxplot直接读取第一个绑定输入的冻结分位数/中位数/须，每组一行；可声明原始样本量及第二个绑定输入的异常点长表。未知n或异常点必须说明，不推断IQR，不与原始样本模式混用。')
     standard_bands: tuple[StandardChartBand, ...] = Field(default=(), alias='standardBands', max_length=8,
         description='折线范围带：series绑定中心值，lowerField/upperField绑定同单位冻结上下界；只显示已有范围，不自动估算置信区间。')
     standard_label_fields: tuple[str, ...] = Field(
