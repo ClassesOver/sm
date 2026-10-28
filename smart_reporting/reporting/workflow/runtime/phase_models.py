@@ -268,6 +268,14 @@ class StandardChartAnnotation(StrictModel):
     end_label: str | None = Field(default=None, alias='endLabel', max_length=200)
 
 
+class StandardChartAxes(StrictModel):
+    mode: Literal['single', 'dual', 'panels', 'zoom'] = 'single'
+    scale: Literal['linear', 'log'] = 'linear'
+    right_fields: tuple[str, ...] = Field(default=(), alias='rightFields', max_length=8)
+    zoom_start: str | None = Field(default=None, alias='zoomStart', max_length=200)
+    zoom_end: str | None = Field(default=None, alias='zoomEnd', max_length=200)
+
+
 class ChartDraft(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
@@ -304,6 +312,10 @@ class ChartDraft(StrictModel):
     standard_annotations: tuple[StandardChartAnnotation, ...] = Field(
         default=(), alias='standardAnnotations', max_length=10,
         description='标准图标注：values数值、peak峰值、trough谷值、point重点、reference以冻结点值为参考线、range重点区间。series必须是已选数值列或长表分类；label/endLabel逐字引用标签。不接受模型编写数值。',
+    )
+    standard_axes: StandardChartAxes = Field(
+        default_factory=StandardChartAxes, alias='standardAxes',
+        description='显式轴策略：dual用rightFields指定右轴系列；panels逐系列共享横轴分面；log只允许严格正数折线；zoom用冻结标签zoomStart/zoomEnd选择局部放大，主图保持完整。',
     )
     data_bindings: tuple[ChartDataBinding, ...] = Field(
         alias="dataBindings", min_length=1, max_length=100

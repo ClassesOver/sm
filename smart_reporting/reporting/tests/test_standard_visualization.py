@@ -188,6 +188,82 @@ def test_unbound_annotations_fall_back(specification):
     assert standard_visualization_script(plan, materialization(document)) is None
 
 
+@pytest.mark.parametrize('mode', ['dual', 'panels', 'zoom', 'log'])
+def test_advanced_axes_preserve_values_units_and_scale(tmp_path, monkeypatch, mode):
+    import matplotlib.pyplot as plt
+
+    from smart_reporting.reporting.workflow.runtime.phase_models import (
+        StandardChartAnnotation,
+        StandardChartAxes,
+    )
+
+    plan, document = complex_fixture('line')
+    options = {'mode': mode} if mode != 'log' else {'scale': 'log'}
+    if mode in {'panels', 'log', 'zoom'}:
+        document['rows'][0][1] = 1
+        document['rows'][1][1] = 1_000_000_000_000
+    if mode == 'dual':
+        document['columnMeta']['budget'] = {'unit': '%', 'isPercent': False}
+        document['rows'][0][2], document['rows'][1][2] = .2, .4
+        options['rightFields'] = ('budget',)
+        plan.charts[0].standard_annotations = (
+            StandardChartAnnotation(kind='reference', series='budget', label='2025-01'),
+        )
+    elif mode == 'zoom':
+        options.update(zoomStart='2025-01', zoomEnd='2025-02')
+    plan.charts[0].standard_axes = StandardChartAxes.model_validate(options)
+    inputs = materialization(document)
+    (tmp_path / 'input.json').write_bytes(inputs.files[0].content)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    try:
+        script = standard_visualization_script(plan, inputs)
+        assert script is not None
+        exec(script, {})
+        axes = plt.gcf().axes
+        assert list(axes[0].lines[0].get_ydata()) == (
+            [10, 30] if mode == 'dual' else [1, 1_000_000_000_000]
+        )
+        if mode == 'dual':
+            assert list(axes[1].lines[0].get_ydata()) == [20, 40]
+            assert axes[0].get_ylabel() == '左轴 · 元'
+            assert axes[1].get_ylabel() == '右轴 · %'
+            assert list(axes[1].lines[1].get_ydata()) == [20, 20]
+            assert not axes[0].texts
+        elif mode == 'panels':
+            assert len(axes) == 2
+            assert list(axes[1].lines[0].get_ydata()) == [20, 40]
+        elif mode == 'log':
+            assert axes[0].get_yscale() == 'log'
+            assert '对数刻度' in axes[0].get_ylabel()
+        else:
+            assert len(axes[0].child_axes) == 1
+            assert '局部放大' in axes[0].child_axes[0].get_title()
+        assert (tmp_path / 'chart.png').exists()
+    finally:
+        close('all')
+
+
+@pytest.mark.parametrize('fault', ['zero_log', 'negative_log', 'unknown_axis', 'all_right', 'zoom', 'mixed_single'])
+def test_advanced_axes_reject_unverifiable_or_misleading_settings(fault):
+    from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartAxes
+
+    plan, document = complex_fixture('line')
+    options = {}
+    if fault.endswith('log'):
+        options = {'scale': 'log'}
+        document['rows'][0][1] = 0 if fault == 'zero_log' else -1
+    elif fault in {'unknown_axis', 'all_right'}:
+        options = {'mode': 'dual', 'rightFields': ('foreign',) if fault == 'unknown_axis' else ('actual', 'budget')}
+    elif fault == 'zoom':
+        options = {'mode': 'zoom', 'zoomStart': 'unknown', 'zoomEnd': '2025-02'}
+    else:
+        document['columnMeta']['budget']['unit'] = '%'
+    plan.charts[0].standard_axes = StandardChartAxes.model_validate(options)
+    assert standard_visualization_script(plan, materialization(document)) is None
+
+
 @pytest.mark.parametrize('form', ['bar', 'line', 'barh'])
 def test_standard_template_executes_and_rejects_changed_input(tmp_path, form):
     plan, inputs = fixture(form)

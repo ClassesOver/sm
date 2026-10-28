@@ -5,7 +5,7 @@ import json
 import math
 
 from .chart_inputs import ChartInputMaterialization
-from .phase_models import VisualizationPlanDraft
+from .phase_models import StandardChartAxes, VisualizationPlanDraft
 
 
 def standard_visualization_script(
@@ -71,8 +71,40 @@ def standard_visualization_script(
         metas = [metadata.get(column, {}) for column in values]
         if any(not isinstance(meta, dict) for meta in metas):
             return None
+        axes = getattr(chart, 'standard_axes', StandardChartAxes())
+        advanced = axes.mode != 'single' or axes.scale != 'linear'
+        right = tuple(axes.right_fields)
+        if (axes.mode != 'dual' and right) or (axes.mode != 'zoom' and (axes.zoom_start or axes.zoom_end)):
+            return None
+        if advanced:
+            if category or form not in {'line', 'bar'} or any(not meta.get('unit') for meta in metas):
+                return None
+            if axes.mode == 'dual' and (
+                not right or len(right) != len(set(right))
+                or not set(right) < set(values)
+            ):
+                return None
+            groups = ([list(range(len(values)))] if axes.mode in {'single', 'zoom'} else
+                      [[index for index, value in enumerate(values) if value not in right],
+                       [values.index(value) for value in right]] if axes.mode == 'dual' else
+                      [[index] for index in range(len(values))])
+            if any(len({(metas[index].get('unit'), metas[index].get('isPercent'))
+                        for index in group}) != 1 for group in groups):
+                return None
+            windows = [meta.get('periods') for meta in metas]
+            if any(window != windows[0] for window in windows):
+                return None
+            if axes.scale == 'log' and (form != 'line' or any(
+                row[columns.index(column)] <= 0 for row in rows for column in values
+            )):
+                return None
+            if axes.mode == 'zoom' and (
+                axes.zoom_start not in labels or axes.zoom_end not in labels
+                or labels.index(axes.zoom_start) > labels.index(axes.zoom_end)
+            ):
+                return None
         # 同轴系列必须有明确且完全一致的单位、比例显示尺度；不推断换算。
-        if len(values) > 1 and (
+        if not advanced and len(values) > 1 and (
             any(not meta.get('unit') for meta in metas)
             or len({(meta.get('unit'), meta.get('isPercent')) for meta in metas}) != 1
         ):
@@ -136,8 +168,107 @@ def standard_visualization_script(
             return None
         configs.append((source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
-                        metas[0].get('isPercent'), annotations))
-    return 'CONFIGS = ' + repr(configs) + '\n' + _BODY
+                        metas[0].get('isPercent'), annotations,
+                        axes.model_dump(), metas))
+    return 'CONFIGS = ' + repr(configs) + '\n' + _ADVANCED + _BODY
+
+
+_ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, form, title, output_path, annotations):
+    import math
+    import matplotlib.pyplot as plt
+    mode = policy["mode"]
+    series = [[value * (100 if meta.get("unit") == "%" and meta.get("isPercent") is False else 1)
+               for value in values] for values, meta in zip(raw_series, metadata, strict=True)]
+    positions = list(range(len(labels)))
+    if mode == "panels":
+        fig, panels = plt.subplots(len(series), 1, sharex=True, squeeze=False,
+                                   figsize=(10, max(6, 2.5 * len(series))), dpi=150)
+        axes = [panel[0] for panel in panels]
+        targets = axes
+    else:
+        fig, primary = plt.subplots(figsize=(11, 7), dpi=150)
+        axes = [primary]
+        secondary = primary.twinx() if mode == "dual" else None
+        if secondary is not None:
+            axes.append(secondary)
+        targets = [secondary if name in policy["right_fields"] else primary for name in names]
+    colors = plt.get_cmap("tab10")
+    for index, (name, values, target, meta) in enumerate(zip(names, series, targets, metadata, strict=True)):
+        side = "右轴" if mode == "dual" and name in policy["right_fields"] else "左轴"
+        caption = f"{name} · {side}" if mode == "dual" else name
+        if form == "bar" and not (mode == "dual" and side == "右轴"):
+            members = [i for i, item in enumerate(targets) if item is target]
+            width = 0.8 / len(members)
+            offsets = [position - .4 + width / 2 + members.index(index) * width for position in positions]
+            target.bar(offsets, values, width=width, color=colors(index), label=caption)
+        else:
+            target.plot(positions, values, marker="o", color=colors(index), label=caption)
+        target.set_ylabel(f"{side} · {meta['unit']}" if mode == "dual" else meta["unit"])
+        target.set_yscale(policy["scale"])
+        target.set_xticks(positions, labels, rotation=45, ha="right")
+        if mode == "panels":
+            target.set_title(f"{name}（独立纵轴）", fontsize=10)
+    for target in axes:
+        target.legend(frameon=False, loc="upper left" if target is axes[0] else "upper right")
+        target.grid(axis="y", linestyle="--", alpha=.2)
+        if policy["scale"] == "log":
+            target.set_ylabel(target.get_ylabel() + "（对数刻度）")
+    for number, (kind, series_index, first, last) in enumerate(annotations):
+        if kind == "range":
+            for target in axes:
+                target.axvspan(first - .4, last + .4, alpha=.12, color="#f59e0b")
+            continue
+        target = targets[series_index]
+        values = series[series_index]
+        unit = metadata[series_index]["unit"]
+        if kind == "reference":
+            target.axhline(values[first], color="#b45309", linestyle="--")
+            target.text(.01, .98 - number * .05, f"参考 {labels[first]}: {values[first]:,.2f}{unit}",
+                        transform=target.transAxes, va="top", fontsize=8)
+            continue
+        indexes = ([first] if kind == "point" else
+                   [index for index, value in enumerate(values) if kind == "values" or
+                    value == (max(values) if kind == "peak" else min(values))])
+        for index in indexes:
+            coordinate = index
+            if form == "bar" and not (mode == "dual" and names[series_index] in policy["right_fields"]):
+                members = [i for i, item in enumerate(targets) if item is target]
+                width = .8 / len(members)
+                coordinate = index - .4 + width / 2 + members.index(series_index) * width
+            target.annotate(f"{names[series_index]}: {values[index]:,.2f}{unit}",
+                            (coordinate, values[index]), xytext=(6, 8 + number * 6),
+                            textcoords="offset points", fontsize=8,
+                            arrowprops={"arrowstyle": "-"})
+    if mode == "zoom":
+        first = labels.index(policy["zoom_start"])
+        last = labels.index(policy["zoom_end"])
+        inset = axes[0].inset_axes([.56, .5, .4, .4])
+        local_values = []
+        for index, values in enumerate(series):
+            if form == "bar":
+                width = .8 / len(series)
+                offsets = [position - .4 + width / 2 + index * width for position in positions]
+                inset.bar(offsets, values, width=width, color=colors(index))
+            else:
+                inset.plot(positions, values, marker="o", color=colors(index))
+            local_values.extend(values[first:last + 1])
+        low, high = min(local_values), max(local_values)
+        padding = (high - low) * .1 or abs(high) * .1 or 1
+        inset.set_xlim(first - .2, last + .2)
+        if policy["scale"] == "log":
+            inset.set_yscale("log")
+            inset.set_ylim(low / 1.2, high * 1.2)
+        else:
+            inset.set_ylim(low - padding, high + padding)
+        inset.set_xticks(positions[first:last + 1], labels[first:last + 1], rotation=45, fontsize=7)
+        inset.set_title("局部放大 · " + metadata[0]["unit"], fontsize=9)
+        axes[0].axvspan(first - .2, last + .2, color="#f59e0b", alpha=.1)
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+'''
 
 
 _BODY = '''import hashlib
@@ -148,7 +279,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 plt.rcParams["font.sans-serif"] = ["Noto Sans CJK SC", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
-for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent, annotations in CONFIGS:
+for input_path, digest, output_path, title, form, label_column, value_columns, category_column, unit, is_percent, annotations, axes_policy, metadata in CONFIGS:
     with open(input_path, "rb") as handle:
         raw = handle.read()
     if hashlib.sha256(raw).hexdigest() != digest:
@@ -166,6 +297,9 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
     else:
         names = value_columns
         series = [[row[columns.index(column)] for row in payload["rows"]] for column in names]
+    if axes_policy["mode"] != "single" or axes_policy["scale"] != "linear":
+        render_advanced(labels, names, series, metadata, axes_policy, form, title, output_path, annotations)
+        continue
     if unit == "%" and is_percent is False:
         series = [[value * 100 for value in values] for values in series]
     fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
