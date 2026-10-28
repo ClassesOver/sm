@@ -18,6 +18,7 @@ from .phase_models import (
     VisualizationPlanDraft,
 )
 from .standard_chart_alignment import align_chart_sources
+from .standard_chart_breaks import BREAK_DISPATCH, BREAK_SCRIPT, prepare_standard_break
 from .standard_chart_domains import DOMAIN_SCRIPT, prepare_standard_domains
 from .standard_chart_encoding import (
     ENCODING_SCRIPT,
@@ -502,28 +503,39 @@ def _standard_visualization_script(
                         metas[0].get('isPercent'), annotations,
                         axes.model_dump(), metas, total_field, canvas_policy))
     for chart, config in zip(plan.charts, configs, strict=True):
-        if getattr(chart, 'standard_domains', None) is None:
+        if getattr(chart, 'standard_domains', None) is None and getattr(chart, 'standard_break', None) is None:
             continue
         path = config[0]
         document = (aligned[path][0] if path in aligned else
                     json.loads(next(source.content for source in inputs.files if source.path == path)))
         try:
+            prepare_standard_break(chart, config, document, displays.get(path, (1, None)))
             prepare_standard_domains(chart, config, document, displays.get(path, (1, None)))
         except StandardChartEncodingError as error:
             _reject(error.code, error.parameter, str(error), '范围与刻度使用显示单位；保留所有数据或明确声明并说明显示裁切。')
     has_statistics = any(config[4] in {'waterfall', 'boxplot'} for config in configs)
     has_domains = any('domains' in config[14] for config in configs)
+    has_breaks = any('broken_axis' in config[14] for config in configs)
     layout = _LAYOUT
-    if has_domains:
+    if has_domains or has_breaks:
         layout = layout.replace('if isinstance(text, Annotation)]', 'if isinstance(text, Annotation) and text.get_visible()]')
+    if has_domains:
         layout = layout.replace('    finish_standard_presentation(fig, policy)',
                                 '    apply_standard_domains(fig, policy)\n    finish_standard_presentation(fig, policy)')
+    if has_breaks:
+        layout = layout.replace('    if policy["layout"] == "tight":',
+                                '    if policy.get("broken_axis"):\n        layout_standard_break(fig, policy)\n    elif policy["layout"] == "tight":')
+    body = _BODY.replace('__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else '')
+    if has_breaks:
+        boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
+        body = body.replace(boundary, BREAK_DISPATCH + boundary)
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + PRESENTATION_SCRIPT + layout + ENCODING_SCRIPT + _ADVANCED
             + (STATISTICS_SCRIPT if has_statistics else '')
+            + (BREAK_SCRIPT if has_breaks else '')
             + (DOMAIN_SCRIPT if has_domains else '')
-            + _BODY.replace('__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else ''))
+            + body)
 
 
 _LAYOUT = '''def standard_series_name(artist, policy):

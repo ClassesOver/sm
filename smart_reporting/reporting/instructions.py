@@ -169,6 +169,13 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
         "需要局部截取显示时显式outOfRange=annotate，服务端注明超界图形端点数，不改原值、不把边界当真实值标注。"
         "显式范围不能与zeroBaseline冲突，对数范围/刻度必须正数；散点XY窗口须包含完整观测。"
         "数值刻度仍需通过重叠/画布检查；格式设置不会取消已声明的自动留白，不要为美观隐瞒超界数据。"
+        "线性单值轴需要双区间断轴时用standardBreak：lower/upper均须给最终显示单位的min/max，lower.max必须小于upper.min，"
+        "每段可设ticks/tickFormat/decimals；gap控制子图间距，lowerFraction控制下段高度比例，markSize控制断轴斜线。"
+        "仅支持纵向line/bar/stacked-bar/stacked-area/stacked-total及单轴柱线混合、冻结范围带；保留完整作图数据，明确上下段分别线性显示。"
+        "默认omittedValues=reject不允许数据/边界落入省略开区间；确需省略时显式annotate并由服务端说明数量，"
+        "整体上下界外的显示裁切另用outOfRange=annotate。缺失保留断点并单独说明，不能把缺失当作断轴省略。"
+        "断轴不能与standardDomains、dual/panels/zoom或log/symlog组合；zeroBaseline要求零点在某个可见区间。"
+        "断轴标注按实际坐标只放在对应区间，不把省略区间值挪到边缘；不支持的组合只回退对应图。"
         "系列名称和标签必须来自绑定数据，显示精度不改变底层数值；不要用自编数值或文案补造事实。"
         "标准参数无法表达的复杂需求由Coding路径实现，并保留独立视觉检查。"
     ),

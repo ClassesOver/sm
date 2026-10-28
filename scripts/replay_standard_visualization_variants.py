@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
+from scripts.standard_visualization_break_cases import break_cases
 from scripts.standard_visualization_domain_cases import domain_cases
 from scripts.standard_visualization_geometry_cases import geometry_cases
 from scripts.standard_visualization_pipeline_cases import pipeline_cases
@@ -25,6 +26,7 @@ from smart_reporting.reporting.workflow.runtime.chart_inputs import (
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     StandardChartAnnotation,
     StandardChartAxes,
+    StandardChartAxisBreak,
     StandardChartBand,
     StandardChartCanvas,
     StandardChartDerivation,
@@ -46,7 +48,7 @@ MODELS = {'standard_canvas': StandardChartCanvas, 'standard_style': StandardChar
           'standard_presentation': StandardChartPresentation, 'standard_axes': StandardChartAxes,
           'standard_view': StandardChartView, 'standard_encoding': StandardChartEncoding,
           'standard_waterfall': StandardChartWaterfall, 'standard_distribution': StandardChartDistribution,
-          'standard_domains': StandardChartDomains}
+          'standard_domains': StandardChartDomains, 'standard_break': StandardChartAxisBreak}
 LIST_MODELS = {'standard_annotations': StandardChartAnnotation, 'standard_sources': StandardChartSource,
                'standard_derivations': StandardChartDerivation, 'standard_steps': StandardChartStep,
                'standard_bands': StandardChartBand}
@@ -105,7 +107,8 @@ def capture(fig, *args, **kwargs):
     expectations = json.loads(Path("expectations.json").read_text()) if Path("expectations.json").exists() else {}
     from matplotlib.colors import to_hex
     for expected in expectations.get("series", []):
-        artists = [artist for ax in fig.axes for artist in (ax.lines if expected["kind"] == "line" else ax.containers)
+        artists = [artist for ax in fig.axes if "panel" not in expected or getattr(ax,"_standard_break_panel",None)==expected["panel"]
+                   for artist in (ax.lines if expected["kind"] == "line" else ax.containers)
                    if artist.get_label() == expected["name"]]
         if len(artists) != 1:
             mismatches.append("missing_or_ambiguous_series:" + expected["name"])
@@ -119,6 +122,8 @@ def capture(fig, *args, **kwargs):
             actual_colors = [to_hex(bar.get_facecolor()) for bar in artist]
             if actual_colors != expected["colors"]:
                 mismatches.append("wrong_colors:" + expected["name"])
+        if "bottoms" in expected and (len(artist)!=len(expected["bottoms"]) or any(not math.isclose(bar.get_y(),value,rel_tol=1e-10,abs_tol=0) for bar,value in zip(artist,expected["bottoms"]))):
+            mismatches.append("wrong_bar_baselines:"+expected["name"])
     import numpy as np
     def same_value(actual, wanted):
         if wanted is None:
@@ -165,7 +170,7 @@ def capture(fig, *args, **kwargs):
             mismatches.append("wrong_matrix_or_mask:" + expected["name"])
         check_color(artist,expected)
     for expected in expectations.get("bands", []):
-        artists = [artist for ax in fig.axes for artist in ax.collections
+        artists = [artist for ax in fig.axes if "panel" not in expected or getattr(ax,"_standard_break_panel",None)==expected["panel"] for artist in ax.collections
                    if getattr(artist, "_standard_band", False) and artist.get_label() == expected["name"]]
         if len(artists) != 1:
             mismatches.append("missing_band:" + expected["name"])
@@ -237,6 +242,38 @@ def capture(fig, *args, **kwargs):
         boxes=[text.get_window_extent(renderer) for value,text in zip(axis.get_ticklocs(),axis.get_ticklabels()) if text.get_visible() and limits[0]<=value<=limits[1]]
         if any(left.overlaps(right) for i,left in enumerate(boxes) for right in boxes[i+1:]):
             mismatches.append("overlapping_domain_ticks:"+expected["coordinate"])
+    for expected in expectations.get("areas", []):
+        artists=[artist for ax in fig.axes if getattr(ax,"_standard_break_panel",None)==expected["panel"] for artist in ax.collections if artist.get_label()==expected["name"]]
+        if len(artists)!=1:
+            mismatches.append("missing_area:"+expected["name"])
+            continue
+        vertices=[point for path in artists[0].get_paths() for point in path.vertices]
+        for i,(low,high) in enumerate(zip(expected["lower"],expected["upper"])):
+            values=[y for x,y in vertices if math.isclose(x,i,abs_tol=1e-9)]
+            if not values or not same_value(min(values),low) or not same_value(max(values),high):
+                mismatches.append("wrong_area_bounds:"+expected["name"])
+    for expected in expectations.get("breaks", []):
+        panels={getattr(ax,"_standard_break_panel",None):ax for ax in fig.axes if hasattr(ax,"_standard_break_panel")}
+        if set(panels)!={"upper","lower"}:
+            mismatches.append("missing_break_panels")
+            continue
+        for name in ("upper","lower"):
+            ax=panels[name]
+            if any(not same_value(a,b) for a,b in zip(ax.get_ylim(),expected[name])):
+                mismatches.append("wrong_break_limits:"+name)
+            marks=[line for line in ax.lines if getattr(line,"_standard_axis_break_mark",False)]
+            if len(marks)!=expected.get("marksPerPanel",2):
+                mismatches.append("missing_break_marks:"+name)
+            for i,line in enumerate(marks):
+                x,y=line.get_xdata(),line.get_ydata()
+                wanted_y=0 if name=="upper" else 1
+                if (not line.get_visible() or line.get_clip_on() or line.get_transform()!=ax.transAxes
+                    or len(x)!=2 or len(y)!=2 or not math.isclose((x[0]+x[1])/2,i,abs_tol=1e-9)
+                    or not math.isclose((y[0]+y[1])/2,wanted_y,abs_tol=1e-9) or not (x[1]>x[0] and y[1]>y[0])):
+                    mismatches.append("wrong_break_marks:"+name)
+        upper,lower=panels["upper"].get_position(),panels["lower"].get_position()
+        if lower.y1>=upper.y0 or not math.isclose(lower.height/upper.height,expected.get("lowerFraction",.5)/(1-expected.get("lowerFraction",.5)),rel_tol=1e-6):
+            mismatches.append("wrong_break_layout")
     visible_text = "\\n".join(text.get_text() for text in drawn if text.get_visible())
     for text in expectations.get("texts", []):
         if text not in visible_text:
@@ -457,7 +494,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--only', help='Rerun only case IDs containing this text')
-    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'all'], default='basic')
+    parser.add_argument('--suite', choices=['basic', 'extended', 'pipelines', 'geometry', 'statistics', 'domains', 'breaks', 'all'], default='basic')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -472,6 +509,8 @@ def main():
         cases.extend(statistics_cases())
     if args.suite in {'domains', 'all'}:
         cases.extend(domain_cases())
+    if args.suite in {'breaks', 'all'}:
+        cases.extend(break_cases())
     if args.only:
         cases = [case for case in cases if args.only in case['id']]
     records = []

@@ -296,6 +296,31 @@ class StandardChartAxisDomain(StrictModel):
         return self
 
 
+class StandardChartAxisBreak(StrictModel):
+    lower: StandardChartAxisDomain = Field(description='下段完整显示范围，必须同时给min/max；只使用ticks/tickFormat/decimals，不设置段内outOfRange。')
+    upper: StandardChartAxisDomain = Field(description='上段完整显示范围，min须严格大于下段max；均使用最终显示单位。')
+    omitted_values: Literal['reject', 'annotate'] = Field(default='reject', alias='omittedValues',
+        description='默认不允许真实数据/绘图边界落入省略开区间；annotate显式允许并注明数量。')
+    out_of_range: Literal['reject', 'annotate'] = Field(default='reject', alias='outOfRange',
+        description='默认不允许数据越过整体上下界；annotate仅裁切显示并注明。')
+    gap: float = Field(default=.08, ge=.03, le=.3, strict=True, allow_inf_nan=False,
+        description='两个子图之间的Matplotlib hspace比例。')
+    lower_fraction: float = Field(default=.5, alias='lowerFraction', ge=.25, le=.75, strict=True, allow_inf_nan=False)
+    mark_size: float = Field(default=.012, alias='markSize', ge=.006, le=.025, strict=True, allow_inf_nan=False,
+        description='断轴斜线在Axes相对坐标中的半长。')
+
+    @model_validator(mode='after')
+    def validate_intervals(self) -> StandardChartAxisBreak:
+        if any(domain.minimum is None or domain.maximum is None for domain in (self.lower,self.upper)):
+            raise ValueError('断轴上下两段必须同时声明min/max')
+        assert self.lower.maximum is not None and self.upper.minimum is not None
+        if self.lower.maximum >= self.upper.minimum:
+            raise ValueError('断轴两段须严格分离且有正的省略区间')
+        if any(domain.out_of_range != 'reject' for domain in (self.lower,self.upper)):
+            raise ValueError('断轴的范围策略使用顶层omittedValues/outOfRange，不在单段设置')
+        return self
+
+
 class StandardChartPanelDomain(StrictModel):
     series: str = Field(min_length=1, max_length=200)
     domain: StandardChartAxisDomain
@@ -660,6 +685,8 @@ class ChartDraft(StrictModel):
     )
     standard_domains: StandardChartDomains | None = Field(default=None, alias='standardDomains',
         description='数值轴显示范围/刻度/格式，数值按显示单位填写；left/right/x/zoom/panels显式定位，默认不得裁切数据，缩小显示须outOfRange=annotate且说明超界。')
+    standard_break: StandardChartAxisBreak | None = Field(default=None, alias='standardBreak',
+        description='线性单值轴的上下双区间断轴，显式省略区间并画断轴标记；保留完整数据，默认不隐藏落入省略区间或外界的数据。暂支持纵向柱线/堆叠/范围带，不与standardDomains或多轴组合。')
     standard_canvas: StandardChartCanvas = Field(
         default_factory=StandardChartCanvas, alias='standardCanvas',
         description='统一画布：width/height单位英寸，dpi、自动/固定尺寸、布局、裁切、留白、换行、字号及图例位置。固定尺寸且crop=canvas时导出像素由尺寸乘DPI确定。',
