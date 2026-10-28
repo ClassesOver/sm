@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from typing import Literal
+from typing import Literal, TypeVar
 
 from agno.exceptions import ModelProviderError
 from loguru import logger
@@ -16,6 +16,7 @@ from ...hospital_operation.findings import FindingGraph
 from ...hospital_operation.narrative_outline import (
     NarrativeOutline,
     NarrativeOutlineCandidate,
+    NarrativeSectionCandidate,
     freeze_narrative_outline,
     merge_repeated_sections,
     repair_narrative_candidate,
@@ -27,6 +28,7 @@ from ...hospital_operation.narrative_planner import (
     build_narrative_planning_batches,
     default_report_title,
 )
+from ...hospital_operation.outline import ReportOutlineSection
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
@@ -164,6 +166,7 @@ from .standard_supplemental import (
     StandardSupplementalSpec,
     build_standard_population_proof,
     frozen_period_total,
+    query_bound_scope_fields,
     run_standard_supplemental,
 )
 from .visualization_section_workflow import (
@@ -175,6 +178,7 @@ __all__ = ["RuntimeAnalysisMixin"]
 
 
 _ANALYSIS_THINKING_BUDGETS = {"simple": 1024, "standard": 2048, "complex": 4096}
+_ArtifactModelT = TypeVar("_ArtifactModelT", bound=BaseModel)
 _CODING_SCRIPT_MAX_BYTES = 4 * 1024 * 1024
 _ANALYSIS_SCRIPT_MAX_BYTES = _CODING_SCRIPT_MAX_BYTES
 _VISUALIZATION_SCRIPT_MAX_BYTES = _CODING_SCRIPT_MAX_BYTES
@@ -2100,7 +2104,9 @@ class RuntimeAnalysisMixin:
                 analysis_items=durable_evidence.payload.get("analysisItems", {}) if durable_evidence else {},
                 citation_bindings=citation_bindings,
             )
-            graph = await self._read_identity_model(scope["threadId"], checkpoint.finding_graph_file, FindingGraph)
+            graph_file = checkpoint.finding_graph_file
+            if graph_file is not None:
+                graph = await self._read_identity_model(scope["threadId"], graph_file, FindingGraph)
         checkpoint_state: dict[str, Any] = checkpoint.model_dump(mode="python")
         # Reporting 阶段统一由 Agno Workflow 驱动。checkpoint 持久化层自身提供 CAS 锁，
         # 回调不持有跨模型调用的外层锁，从而允许 Parallel 模式真正并发执行分析项和章节。
@@ -2481,11 +2487,10 @@ class RuntimeAnalysisMixin:
                 reportType=envelope.report_type,
                 title=default_report_title(envelope.report_goal, envelope.period.start,
                                            envelope.period.end, envelope.report_type),
-                sections=[{
-                    "code": "section_001", "sectionNumber": "1",
-                    "title": "分析任务执行分区",
-                    "analysisIds": tuple(item.analysis_id for item in plan.analyses),
-                }],
+                sections=(ReportOutlineSection(
+                    code="section_001", sectionNumber="1", title="分析任务执行分区",
+                    analysisIds=tuple(item.analysis_id for item in plan.analyses),
+                ),),
             )
             state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
             state[REPORT_OUTLINE_HASH_STATE_KEY] = payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
@@ -2555,9 +2560,11 @@ class RuntimeAnalysisMixin:
                     ordered_ids = tuple(card.finding_id for card in batch_graph.findings)
                     planned.append(NarrativeOutlineCandidate(
                         title=title, snapshotHash=graph.snapshot_hash,
-                        sections=({"title": "补充统计与数据限制", "findingIds": ordered_ids[:200],
-                                   "objective": "保留统计关系与数据质量限制", "groupingReason": "补充证据统一安排附录",
-                                   "narrativeRole": "appendix", "priority": "low", "maxCharts": 0},),
+                        sections=(NarrativeSectionCandidate(
+                            title="补充统计与数据限制", findingIds=ordered_ids[:200],
+                            objective="保留统计关系与数据质量限制", groupingReason="补充证据统一安排附录",
+                            narrativeRole="appendix", priority="low", maxCharts=0,
+                        ),),
                         appendixFindingIds=ordered_ids[200:],
                     ))
                     continue
@@ -2718,13 +2725,14 @@ class RuntimeAnalysisMixin:
         detailed_plan = DetailedAnalysisPlan.model_validate(
             state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]
         )
-        analyses = [{"analysisId": item.analysis_id, "analysisName": item.analysis_name}
+        analyses = [{"analysisId": item.analysis_id,
+                     "analysisName": item.analysis_name or item.analysis_id}
                     for item in detailed_plan.analyses]
         narrative, planning_issues = await self._plan_narrative_outline(
             graph=graph, title=legacy_outline.title,
             report_goal=self._envelope(run_context).report_goal,
             analyses=analyses, run_context=run_context,
-            max_sections=self._envelope(run_context).section_count,
+            max_sections=getattr(self._envelope(run_context), "section_count", None),
         )
         if any(section.narrative_role == "appendix" for section in narrative.sections):
             # 此时尚未绑定最终目录/启动章节。复用冻结分析产物构造与渲染阶段
@@ -3195,8 +3203,8 @@ class RuntimeAnalysisMixin:
         self,
         thread_id: str,
         identity: FileIdentity,
-        model: type[BaseModel],
-    ) -> BaseModel:
+        model: type[_ArtifactModelT],
+    ) -> _ArtifactModelT:
         content = await self._read_identity_bytes(thread_id, identity)
         try:
             return model.model_validate_json(content)
@@ -3605,6 +3613,8 @@ class RuntimeAnalysisMixin:
                 "datasets": planner_payload.get("datasets"),
                 "analysisBlock": {"blockId": f"{analysis_id}:evidence:decision"},
             }
+            if "standardComputationCandidates" in planner_payload:
+                decision_request["standardComputationCandidates"] = planner_payload["standardComputationCandidates"]
             if "correction" in planner_payload:
                 decision_request["correction"] = planner_payload["correction"]
             evidence_agent = evidence_planner or self._analysis_evidence_agent
@@ -3757,97 +3767,165 @@ class RuntimeAnalysisMixin:
                 max_bytes=32 * 1024 * 1024,
             )
 
-        async def run_standard_supplemental_path(*, spec: StandardSupplementalSpec, state: Any, run_context: RunContext) -> Mapping[str, Any]:
-            """Execute and sign one fully authorized standard computation."""
+        async def run_standard_supplemental_path(*, spec: StandardSupplementalSpec | tuple[StandardSupplementalSpec, ...], state: Any, run_context: RunContext) -> Mapping[str, Any]:
+            """Execute an entirely supported batch and sign one evidence artifact."""
             started_at = time.monotonic()
             decision = state.decision
-            if len(decision.coding_requirements) != 1:
-                raise ReportingError(
-                    "report_analysis_standard_unsupported",
-                    "标准补证首期只支持单项结构化计算，转入脚本路径。",
+            specs = spec if isinstance(spec, tuple) else (spec,)
+            if len(specs) != len(decision.coding_requirements):
+                raise ReportingError("report_analysis_standard_unsupported", "标准补证计算计划与需求不一致。")
+            input_cache: dict[str, tuple[FileIdentity, bytes]] = {}
+            combined: dict[str, Any] = {"findings": [], "reconciliations": [], "warnings": []}
+            requests: list[dict[str, Any]] = []
+            population_proofs: list[dict[str, Any]] = []
+            for requirement, computation_spec in zip(decision.coding_requirements, specs, strict=True):
+                datasets = state.instruction.get("datasets") or ()
+                dataset = next(
+                    (
+                        item
+                        for item in datasets
+                        if isinstance(item, Mapping)
+                        and item.get("datasetId") == requirement.dataset_id
+                    ),
+                    None,
                 )
-            requirement = decision.coding_requirements[0]
-            datasets = state.instruction.get("datasets") or ()
-            dataset = next(
-                (
-                    item
-                    for item in datasets
-                    if isinstance(item, Mapping)
-                    and item.get("datasetId") == requirement.dataset_id
-                ),
-                None,
-            )
-            if not isinstance(dataset, Mapping):
-                raise ReportingError(
-                    "report_analysis_standard_dataset_missing",
-                    "标准补证数据集不在当前分析授权中。",
-                )
-            try:
-                identity = FileIdentity.model_validate(
-                    {key: dataset.get(key) for key in ("path", "size", "sha256")}
-                )
-            except Exception as error:
-                raise ReportingError(
-                    "report_analysis_standard_dataset_invalid",
-                    "标准补证数据集身份无效。",
-                ) from error
-            thread_id = str(self._scope(parent_run_context)["threadId"])
-            content = await self._read_identity_bytes(
-                thread_id, identity, max_bytes=32 * 1024 * 1024
-            )
-            fact_by_id = {
-                item.fact_id: item
-                for item in (state.facts.metrics if state.facts is not None else ())
-                if item.fact_id
-            }
-            parent = fact_by_id.get(spec.parent_fact_id)
-            baseline = (
-                fact_by_id.get(spec.baseline_parent_fact_id)
-                if spec.baseline_parent_fact_id
-                else None
-            )
-            if parent is None:
-                raise ReportingError(
-                    "report_analysis_standard_parent_fact_missing",
-                    "标准补证引用的冻结父指标不存在。",
-                )
-            request = StandardSupplementalRequest(
-                operation=spec.operation,
-                datasetId=requirement.dataset_id,
-                outputName=requirement.output_name,
-                measureField=spec.measure_field,
-                measureUnit=getattr(parent, "unit", None),
-                dimensionField=spec.dimension_field,
-                periodField=spec.period_field,
-                periodGranularity=getattr(parent, "period_granularity", None),
-                currentPeriods=spec.current_periods,
-                baselinePeriods=spec.baseline_periods,
-                parentTotal=frozen_period_total(parent, spec.current_periods),
-                baselineParentTotal=(
-                    frozen_period_total(baseline or parent, spec.baseline_periods)
-                    if spec.operation == "period_comparison"
+                if not isinstance(dataset, Mapping):
+                    raise ReportingError(
+                        "report_analysis_standard_dataset_missing",
+                        "标准补证数据集不在当前分析授权中。",
+                    )
+                try:
+                    identity = FileIdentity.model_validate(
+                        {key: dataset.get(key) for key in ("path", "size", "sha256")}
+                    )
+                except Exception as error:
+                    raise ReportingError(
+                        "report_analysis_standard_dataset_invalid",
+                        "标准补证数据集身份无效。",
+                    ) from error
+                thread_id = str(self._scope(parent_run_context)["threadId"])
+                if identity.path not in input_cache:
+                    input_cache[identity.path] = (identity, await self._read_identity_bytes(
+                        thread_id, identity, max_bytes=32 * 1024 * 1024,
+                    ))
+                cached_identity, content = input_cache[identity.path]
+                if cached_identity != identity:
+                    raise ReportingError("report_analysis_standard_dataset_invalid", "批量补证数据集身份冲突。")
+                fact_by_id = {
+                    item.fact_id: item
+                    for item in (state.facts.metrics if state.facts is not None else ())
+                    if item.fact_id
+                }
+                parent = fact_by_id.get(computation_spec.parent_fact_id)
+                baseline = (
+                    fact_by_id.get(computation_spec.baseline_parent_fact_id)
+                    if computation_spec.baseline_parent_fact_id
                     else None
-                ),
-                scope=dict(getattr(parent, "scope", {}) or {}),
-            )
-            raw_payload = run_standard_supplemental(
-                analysis_id=str(state.instruction.get("currentAnalysisId")),
-                dataset_ids=(requirement.dataset_id,),
-                authorized_fields=tuple(dataset.get("columns") or ()),
-                csv_content=content,
-                request=request,
-            )
-            population_proof = None
-            try:
-                population_proof = build_standard_population_proof(
-                    csv_content=content, dataset_sha256=identity.sha256,
-                    request=request, parent_fact=parent, finding=raw_payload["findings"][0],
                 )
-            except Exception as error:
-                logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
-                            error_type=type(error).__name__).warning("report_standard_population_proof_unavailable")
-            if population_proof is not None:
-                raw_payload["findings"][0]["populationProof"] = population_proof
+                denominator = (
+                    fact_by_id.get(computation_spec.denominator_parent_fact_id)
+                    if computation_spec.denominator_parent_fact_id
+                    else None
+                )
+                ratio_fact = next(
+                    (
+                        item
+                        for item in getattr(state.facts, "derived_metrics", ())
+                        if getattr(item, "fact_id", None) == computation_spec.ratio_fact_id
+                    ),
+                    None,
+                )
+                if parent is None:
+                    raise ReportingError(
+                        "report_analysis_standard_parent_fact_missing",
+                        "标准补证引用的冻结父指标不存在。",
+                    )
+                parent_scope = dict(getattr(parent, "scope", {}) or {})
+                dataset_columns = set(dataset.get("columns") or ())
+                unprojected_scope = set(parent_scope) - dataset_columns
+                if not unprojected_scope.issubset(
+                    query_bound_scope_fields(dataset, parent_scope)
+                ):
+                    raise ReportingError(
+                        "report_analysis_standard_scope_unverified",
+                        "标准补证固定范围既未投影，也没有签发查询的精确等值约束。",
+                    )
+                request = StandardSupplementalRequest(
+                    operation=computation_spec.operation,
+                    datasetId=requirement.dataset_id,
+                    outputName=requirement.output_name,
+                    measureField=computation_spec.measure_field,
+                    denominatorField=computation_spec.denominator_field,
+                    measureUnit=getattr(parent, "unit", None),
+                    dimensionField=computation_spec.dimension_field,
+                    secondaryDimensionField=computation_spec.secondary_dimension_field,
+                    periodField=computation_spec.period_field,
+                    periodGranularity=getattr(parent, "period_granularity", None),
+                    currentPeriods=computation_spec.current_periods,
+                    baselinePeriods=computation_spec.baseline_periods,
+                    parentTotal=frozen_period_total(parent, computation_spec.current_periods),
+                    parentPeriodTotals=(
+                        tuple(
+                            frozen_period_total(parent, (period,))
+                            for period in computation_spec.current_periods
+                        )
+                        if computation_spec.operation == "group_period_series"
+                        else ()
+                    ),
+                    baselineParentTotal=(
+                        frozen_period_total(baseline or parent, computation_spec.baseline_periods)
+                        if computation_spec.operation == "period_comparison"
+                        else None
+                    ),
+                    denominatorParentTotal=(
+                        frozen_period_total(denominator, computation_spec.current_periods)
+                        if computation_spec.operation == "group_ratio" and denominator is not None
+                        else None
+                    ),
+                    denominatorScale=(
+                        getattr(ratio_fact, "denominator_scale", None)
+                        if computation_spec.operation == "group_ratio"
+                        else None
+                    ),
+                    ratioFactId=computation_spec.ratio_fact_id,
+                    scope=parent_scope,
+                    queryBoundScopeFields=tuple(sorted(unprojected_scope)),
+                )
+                raw_payload = await asyncio.to_thread(
+                    run_standard_supplemental,
+                    analysis_id=str(state.instruction.get("currentAnalysisId")),
+                    dataset_ids=(requirement.dataset_id,),
+                    authorized_fields=tuple(getattr(requirement, "fields", dataset.get("columns") or ())),
+                    csv_content=content,
+                    request=request,
+                    authorized_query_scope={
+                        field: parent_scope[field] for field in unprojected_scope
+                    },
+                )
+                population_proof = None
+                try:
+                    population_proof = build_standard_population_proof(
+                        csv_content=content, dataset_sha256=identity.sha256,
+                        request=request, parent_fact=parent, finding=raw_payload["findings"][0],
+                    )
+                except Exception as error:
+                    logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
+                                error_type=type(error).__name__).warning("report_standard_population_proof_unavailable")
+                if population_proof is not None:
+                    population_proof["tablePointer"] = f"/findings/{len(combined['findings'])}"
+                    raw_payload["findings"][0]["populationProof"] = population_proof
+                    population_proofs.append(population_proof)
+                combined["findings"].extend(raw_payload["findings"])
+                combined["reconciliations"].extend(raw_payload["reconciliations"])
+                combined["warnings"].extend(raw_payload["warnings"])
+                requests.append(request.model_dump(mode="json", by_alias=True))
+            raw_payload = {**combined, "warnings": list(dict.fromkeys(combined["warnings"]))[:100]}
+            input_files = tuple(value[0].model_dump(mode="json", by_alias=True) for value in input_cache.values())
+            batch = len(specs) > 1
+            single_spec = specs[0]
+            parameters = {"computations": requests} if batch else requests[0]
+            if population_proofs:
+                parameters = {**parameters, "populationProofs": population_proofs}
             evidence_content = json.dumps(
                 raw_payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
             ).encode()
@@ -3870,20 +3948,21 @@ class RuntimeAnalysisMixin:
                 execution_id = (
                     "standard-"
                     + hashlib.sha256(
-                        (identity.sha256 + evidence_file.sha256).encode()
+                        ("".join(item["sha256"] for item in input_files) + evidence_file.sha256).encode()
                     ).hexdigest()[:16]
                 )
                 record = build_standard_supplemental_computation_record(
                     analysis_id=str(state.instruction.get("currentAnalysisId")),
-                    dataset_ids=(requirement.dataset_id,),
-                    input_files=(identity.model_dump(mode="json", by_alias=True),),
+                    dataset_ids=tuple(dict.fromkeys(item.dataset_id for item in decision.coding_requirements)),
+                    input_files=input_files,
                     evidence_file=evidence_file.model_dump(mode="json", by_alias=True),
-                    method=f"supplemental_standard_{spec.operation}",
+                    method=("supplemental_standard_batch" if batch
+                            else f"supplemental_standard_{single_spec.operation}"),
                     method_version="standard-supplemental-v1",
-                    parameters={**request.model_dump(mode="json", by_alias=True),
-                                **({"populationProofs": [population_proof]} if population_proof else {})},
+                    parameters=parameters,
                     execution_id=execution_id,
                     finding_count=sum(len(item.get("rows", ())) for item in evidence.findings),
+                    finding_row_counts=tuple(len(item.get("rows", ())) for item in evidence.findings) if batch else None,
                 )
             except Exception:
                 if evidence_created and evidence_file is not None:
@@ -3903,7 +3982,9 @@ class RuntimeAnalysisMixin:
                 raise
             logger.bind(
                 analysis_id=state.instruction.get("currentAnalysisId"),
-                operation=spec.operation,
+                operation="batch" if batch else single_spec.operation,
+                computation_count=len(specs),
+                input_count=len(input_files),
                 evidence_bytes=len(evidence_content),
                 warning_count=len(evidence.warnings),
             ).info(
@@ -3924,7 +4005,7 @@ class RuntimeAnalysisMixin:
             "complete": toolkit.complete_analysis_item,
             "read_dataset": read_dataset,
         }
-        if getattr(self, "standard_supplemental_enabled", False):
+        if getattr(self, "standard_supplemental_enabled", True):
             workflow_kwargs["run_standard_supplemental"] = run_standard_supplemental_path
         if knowledge_index is not None:
             workflow_kwargs["record_successful_repair"] = record_successful_repair

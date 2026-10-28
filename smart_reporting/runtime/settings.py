@@ -219,14 +219,14 @@ class AgentSettings:
     # 代理的读超时必须不小于该值，否则请求会先于服务端被切断。
     report_editor_export_timeout_seconds: int = 1200
     # 编辑器 AI 改图（设计稿 docs/superpowers/specs/2026-10-25-report-editor-ai-chart-edit-design.md）：
-    # 默认关闭，按环境灰度；未配置视觉审查模型时功能自动按不可用提示。
-    report_editor_chart_ai_enabled: bool = False
+    # 默认开启；显式关闭可隐藏入口，未配置视觉审查模型时提示不可用。
+    report_editor_chart_ai_enabled: bool = True
     # 每会话（用户）每小时改图次数上限。
     report_editor_chart_ai_hourly_limit: int = 20
     # 单次改图墙钟超时（秒），超时取消并返回原因，原图不受影响。
     report_editor_chart_ai_timeout_seconds: int = 180
-    # 编辑器 AI 改表与预制表模板；默认关闭，按环境灰度。
-    report_editor_table_ai_enabled: bool = False
+    # 编辑器 AI 改表与预制表模板；默认开启，可按环境显式关闭。
+    report_editor_table_ai_enabled: bool = True
     report_editor_table_ai_hourly_limit: int = 20
     report_editor_table_ai_timeout_seconds: int = 120
     # 报表完成时返回给调用方的 markdown 模板；未设置时使用默认紧凑格式。
@@ -420,7 +420,7 @@ class AgentSettings:
                 maximum=3600,
             ),
             report_editor_chart_ai_enabled=_flag(
-                values.get("AGENT_REPORT_EDITOR_CHART_AI_ENABLED"), default=False
+                values.get("AGENT_REPORT_EDITOR_CHART_AI_ENABLED"), default=True
             ),
             report_editor_chart_ai_hourly_limit=_positive_int(
                 values,
@@ -435,7 +435,7 @@ class AgentSettings:
                 maximum=900,
             ),
             report_editor_table_ai_enabled=_flag(
-                values.get("AGENT_REPORT_EDITOR_TABLE_AI_ENABLED"), default=False
+                values.get("AGENT_REPORT_EDITOR_TABLE_AI_ENABLED"), default=True
             ),
             report_editor_table_ai_hourly_limit=_positive_int(
                 values,

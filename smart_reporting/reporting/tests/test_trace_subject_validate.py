@@ -909,7 +909,8 @@ async def test_validate_table_sources_cached_per_request_off_thread_and_not_fact
     result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
     assert result["summary"] == {"valid": 3, "stale": 0, "unbound": 0}
     assert source_reads == [path]
-    assert len(resolver_threads) == 2
+    # 正文引用校验与质量包是两个独立信任边界，各自按冻结来源重算一次。
+    assert len(resolver_threads) == 4
     assert all(thread != threading.get_ident() for thread in resolver_threads)
     assert len(batches) == 1
     assert len(batches[0]) == 1

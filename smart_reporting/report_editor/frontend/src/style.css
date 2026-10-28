@@ -5499,3 +5499,30 @@ input:disabled, textarea:disabled, select:disabled {
     overflow-x: auto;
   }
 }
+
+
+/* 图表操作浮层不属于可编辑正文；触摸、键盘和鼠标共用同一入口。 */
+.asset-ai-actions {
+  position: fixed;
+  z-index: 35;
+  padding: 4px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgb(15 23 42 / 12%);
+}
+.asset-ai-actions[hidden] { display: none; }
+.asset-ai-edit-button {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #eef2ff;
+  color: #3730a3;
+  font: inherit;
+  cursor: pointer;
+}
+.asset-ai-edit-button:hover { background: #e0e7ff; }
+.asset-ai-edit-button:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; }
+
+@media print { .asset-ai-actions { display: none; } }

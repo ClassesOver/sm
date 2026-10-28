@@ -53,7 +53,7 @@ def _window(start: Any, end: Any, grain: Any = None) -> tuple[str, ...]:
         current, stop = current.replace(day=1), stop.replace(day=1)
     if width == 4:
         current, stop = current.replace(month=1), stop.replace(month=1)
-    result = []
+    result: list[str] = []
     while current <= stop and len(result) < 1200:
         result.append(current.isoformat()[:width])
         if current == stop:
@@ -90,15 +90,21 @@ def _structured_periods(node: Mapping[str, Any]) -> tuple[str, ...] | None:
     return None
 
 
-def table_semantics(document: Any, table: Any) -> dict[str, Any]:
+def table_semantics(document: Any, table: Any, column: str | None = None) -> dict[str, Any]:
     """Read period/scope only from the verified table and its document, never a claim.
 
     Structured periods take precedence over names. Missing, invalid or ambiguous
     periods remain empty; there is no inferred year or implicit current role.
     """
-    empty = {"periods": (), "period_roles": {}, "scope": {}}
+    empty: dict[str, Any] = {"periods": (), "period_roles": {}, "scope": {}}
     try:
         nodes = [node for node in (table, document) if isinstance(node, Mapping)]
+        metadata = table.get("columnMeta", {}) if isinstance(table, Mapping) else {}
+        meta = metadata.get(column) if isinstance(metadata, Mapping) and column is not None else None
+        if isinstance(meta, Mapping):
+            grain = next((node.get("periodGranularity", node.get("period_granularity"))
+                          for node in nodes if "periodGranularity" in node or "period_granularity" in node), None)
+            nodes.insert(0, {"periodGranularity": grain, **meta})
         periods = None
         for node in nodes:
             periods = _structured_periods(node)
@@ -126,7 +132,7 @@ def table_semantics(document: Any, table: Any) -> dict[str, Any]:
                     periods = next(iter(candidates)) if len(candidates) == 1 else ()
                     break
         periods = periods or ()
-        scope = next((node["scope"] for node in nodes if "scope" in node), {})
+        scope: Any = next((node["scope"] for node in nodes if "scope" in node), {})
         if not isinstance(scope, Mapping) or any(
             not isinstance(key, str) or not isinstance(value, str) for key, value in scope.items()
         ):
@@ -288,7 +294,8 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
         return None
     # Precision covers all aligned products and their sum, independently of caller context.
     products_budget = [len(value.as_tuple().digits) + len(coefficient.as_tuple().digits)
-                       + abs(value.as_tuple().exponent) + abs(coefficient.as_tuple().exponent)
+                       + abs(int(value.as_tuple().exponent))
+                       + abs(int(coefficient.as_tuple().exponent))
                        for value, coefficient in zip(values, coefficients, strict=True)]
     with localcontext() as context:
         context.prec = max(64, max(products_budget) * 2 + 8)
@@ -309,7 +316,16 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
             for operand in raw_derivation["operands"]
         ],
     }) + "}}"
-    semantics = table_semantics(document, table)
+    operand_semantics = [table_semantics(document, table, columns[op.column_index]) for op in operands]
+    if any(item["scope"] != operand_semantics[0]["scope"] for item in operand_semantics):
+        return None
+    roles: dict[str, tuple[str, ...]] = {}
+    for item in operand_semantics:
+        for role, periods in item["period_roles"].items():
+            roles[role] = tuple(dict.fromkeys((*roles.get(role, ()), *periods)))
+    semantics = {"scope": operand_semantics[0]["scope"],
+                 "periods": tuple(dict.fromkeys(period for item in operand_semantics for period in item["periods"])),
+                 "period_roles": roles}
     names = [table.get(key) for key in ("title", "name", "displayName") if table.get(key)]
     formula = " + ".join(f"({number}) * ({coefficient})" for number, coefficient
                          in zip(values, coefficients, strict=True))
@@ -379,7 +395,8 @@ def _resolve_population(derivation: TableDerivationV1, sources: Mapping[str, byt
         return None
     dimension = proof.get('dimensionField')
     measure = proof.get('measureField') if proof.get('measureField') in columns else 'value'
-    if dimension not in columns or measure not in columns:
+    if (not isinstance(dimension, str) or not isinstance(measure, str)
+            or dimension not in columns or measure not in columns):
         return None
     dimension_index, measure_index = columns.index(dimension), columns.index(measure)
     if any(not isinstance(row, list) or len(row) != len(columns) for row in rows):
@@ -392,10 +409,13 @@ def _resolve_population(derivation: TableDerivationV1, sources: Mapping[str, byt
                 separators=(',', ':')).encode()).hexdigest() != proof.get('membersSha256')
             or _column_unit(table, measure) != proof.get('unit')):
         return None
-    values = [_number(row[measure_index]) for row in rows]
+    raw_values = [_number(row[measure_index]) for row in rows]
     total = _number(parent.get('total'))
-    if (any(value is None for value in values) or total is None
-            or abs(sum(values) - total) > max(Decimal('1e-9'), abs(total) * Decimal('1e-12'))
+    if any(value is None for value in raw_values) or total is None:
+        return None
+    values = [value for value in raw_values if value is not None]
+    if (abs(sum(values, Decimal(0)) - total)
+            > max(Decimal('1e-9'), abs(total) * Decimal('1e-12'))
             or derivation.top_limit > len(rows)):
         return None
     ordered = sorted(range(len(rows)), key=lambda index: (-values[index], labels[index]))
@@ -462,7 +482,10 @@ def _resolve_share(derivation: TableDerivationV1, sources: Mapping[str, bytes]) 
         for operand in derivation.operands:
             table = _pointer(json.loads(sources[operand.file_resource_id], parse_float=Decimal,
                                         object_pairs_hook=_object), operand.table_pointer)
-            numerator_value += _number(table['rows'][operand.row_index][operand.column_index]) * Decimal(operand.coefficient)
+            operand_value = _number(table['rows'][operand.row_index][operand.column_index])
+            if operand_value is None:
+                return None
+            numerator_value += operand_value * Decimal(operand.coefficient)
         value = float(numerator_value / total * 100)
     if not math.isfinite(value):
         return None
@@ -502,14 +525,30 @@ def resolve_table_derivation(
             return resolved[1]
         # Previously issued tokens bind resource IDs. Read them only against the
         # original identity; snapshot migration explicitly verifies then upgrades.
-        if not token.startswith("{{tableDerived:v2:"):
-            legacy = "{{tableDerived:" + canonical_sha256({
-                "derivation": derivation.model_dump(mode="json", by_alias=True, exclude_none=True),
-                "sources": {operand.file_resource_id: hashlib.sha256(
-                    sources[operand.file_resource_id]
-                ).hexdigest() for operand in derivation.operands},
-            }) + "}}"
-            if token == legacy:
+        if not token.startswith("{{tableDerived:v2:") and not any((
+            derivation.denominator_fact,
+            derivation.population_fact,
+            derivation.population_proof_sha256,
+            derivation.top_selection,
+            derivation.top_limit,
+        )):
+            source_hashes = {operand.file_resource_id: hashlib.sha256(
+                sources[operand.file_resource_id]
+            ).hexdigest() for operand in derivation.operands}
+            # Two historical serializers existed: one omitted optional nulls,
+            # while the earlier revision snapshot included them. Both hashes
+            # remain bound to the same verified source bytes and are upgraded
+            # to v2 during the copy.
+            legacy_tokens = {
+                "{{tableDerived:" + canonical_sha256({
+                    "derivation": derivation.model_dump(
+                        mode="json", by_alias=True, exclude_none=exclude_none,
+                    ),
+                    "sources": source_hashes,
+                }) + "}}"
+                for exclude_none in (False, True)
+            }
+            if token in legacy_tokens:
                 return resolved[1]
         return None
     except Exception as error:
@@ -556,7 +595,8 @@ def source_cell_view(operand: Any, document: Any) -> dict[str, Any] | None:
         semantic_document = {key: item for key, item in document.items() if key in semantic_keys}
         semantic_table = {key: item for key, item in table.items() if key in semantic_keys}
         return {'value': value, 'unit': meta.get('unit') if isinstance(meta, dict) else None,
-                'column': columns[operand.column_index], **table_semantics(semantic_document, semantic_table)}
+                'column': columns[operand.column_index], **table_semantics(semantic_document, {**semantic_table, "columnMeta": metadata},
+                                  columns[operand.column_index])}
     except (KeyError, IndexError, TypeError, ValueError):
         return None
 

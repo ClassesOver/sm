@@ -252,7 +252,7 @@ report_editor = ReportEditorService(
     lineage_export_sources_enabled=settings.report_lineage_export_sources_enabled,
 )
 report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
-# 编辑器 AI 改图（REPORT_EDITOR_CHART_AI_ENABLED，默认关闭）：与可视化章节复用
+# 编辑器 AI 改图（AGENT_REPORT_EDITOR_CHART_AI_ENABLED，默认开启）：与可视化章节复用
 # 同一 code agent 工厂、CodeMode runtime、LSP、视觉审查与任务注册表；未配置
 # 视觉审查模型时服务构造仍成功，可用性接口按 vision_missing 提示不可用。
 report_editor_chart_ai = None

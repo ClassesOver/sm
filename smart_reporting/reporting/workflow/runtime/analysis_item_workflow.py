@@ -32,6 +32,7 @@ from ...hospital_operation.deterministic_analysis import (
     metric_period_key,
 )
 from ...models import ReportingError
+from ...units import unit_conversion_scale
 from ..benchmark_variants import (
     BenchmarkProjection,
     BenchmarkVariant,
@@ -47,7 +48,11 @@ from .analysis_coverage import (
 from .code_generation import CodeGenerationResult
 from .evidence_coverage import facts_cover_analysis
 from .fact_summary import deterministic_fact_summary
-from .standard_supplemental import StandardSupplementalSpec
+from .standard_supplemental import (
+    StandardSupplementalSpec,
+    query_bound_scope_fields,
+    standard_computation_candidates,
+)
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
 MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS = 3
@@ -258,6 +263,9 @@ class AnalysisCodingRequirement(_StrictModel):
     fields: tuple[str, ...] = Field(min_length=1, max_length=100)
     calculation: str = Field(min_length=1, max_length=2_000)
     output_name: str = Field(alias="outputName", min_length=1, max_length=128)
+    standard_candidate_id: str | None = Field(
+        default=None, alias="standardCandidateId", max_length=64, exclude_if=lambda value: value is None,
+    )
     standard_computation: StandardSupplementalSpec | None = Field(
         default=None, alias="standardComputation", exclude_if=lambda value: value is None
     )
@@ -274,6 +282,10 @@ class AnalysisCodingRequirement(_StrictModel):
         spec = self.standard_computation
         if spec is not None:
             required = {spec.measure_field, spec.dimension_field, spec.period_field}
+            if spec.secondary_dimension_field is not None:
+                required.add(spec.secondary_dimension_field)
+            if spec.denominator_field is not None:
+                required.add(spec.denominator_field)
             missing = required - set(self.fields)
             if missing:
                 raise ValueError(f"standardComputation 字段不在 requirement.fields 中: {sorted(missing)}")
@@ -897,6 +909,16 @@ def _project_analysis_summary_payload(
                 break
             series_limit = max(2, series_limit // 2)
     candidate = build()
+    catalog = candidate.get("standardComputationCandidates")
+    if isinstance(catalog, list):
+        for limit in (20, 5, 1, 0):
+            if count_tokens(candidate) <= max_tokens:
+                return candidate
+            candidate["standardComputationCandidates"] = catalog[:limit]
+            candidate["standardComputationCandidatesView"] = {
+                "truncated": True, "candidateCount": len(catalog),
+                "selectedCandidateCount": len(candidate["standardComputationCandidates"]),
+            }
     projected_tokens = count_tokens(candidate)
     if projected_tokens <= max_tokens:
         return candidate
@@ -1253,6 +1275,17 @@ class AnalysisItemWorkflow:
             "deterministicFacts": self._model_facts(state),
             "datasets": state.instruction.get("datasets", []),
         }
+        if self.run_standard_supplemental is not None:
+            current_analysis = state.instruction.get("currentAnalysis") or {}
+            payload["standardComputationCandidates"] = standard_computation_candidates(
+                state.facts,
+                state.instruction.get("datasets") or (),
+                current_analysis.get("periods", ()) if isinstance(current_analysis, Mapping) else (),
+            )
+            logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
+                        candidate_count=len(payload["standardComputationCandidates"])).info(
+                "report_analysis_standard_candidates_prepared",
+            )
         for attempt in range(2):
             decision = await self.decide_evidence(payload)
             try:
@@ -1308,7 +1341,13 @@ class AnalysisItemWorkflow:
             ).info("report_analysis_standard_preflight reason=disabled")
             standard_spec = None
         else:
-            standard_spec = self._standard_spec(state)
+            plan = self._standard_plan(state)
+            standard_spec = plan[0] if plan and len(plan) == 1 else plan or None
+            logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
+                        requirement_count=len(getattr(decision, "coding_requirements", ())),
+                        computation_count=len(plan), route="server" if plan else "python").info(
+                "report_analysis_standard_route_selected",
+            )
         if standard_spec is not None and self.run_standard_supplemental is not None:
             try:
                 result = await self.run_standard_supplemental(
@@ -1463,10 +1502,19 @@ class AnalysisItemWorkflow:
         return facts
 
     @staticmethod
-    def _standard_spec(state: _AnalysisItemState) -> StandardSupplementalSpec | None:
-        def unavailable(reason: str) -> None:
+    def _standard_plan(state: _AnalysisItemState) -> tuple[StandardSupplementalSpec, ...]:
+        if not isinstance(state.decision, AnalysisEvidenceDecision):
+            return ()
+        specs = tuple(AnalysisItemWorkflow._standard_spec(state, index)
+                      for index in range(len(state.decision.coding_requirements)))
+        # One unsupported requirement leaves the entire item on the Python path.
+        return tuple(spec for spec in specs if spec is not None) if all(specs) else ()
+
+    @staticmethod
+    def _standard_spec(state: _AnalysisItemState, requirement_index: int = 0) -> StandardSupplementalSpec | None:
+        def unavailable(reason: str) -> StandardSupplementalSpec | None:
             logger.bind(
-                analysis_id=state.instruction.get("currentAnalysisId"), reason=reason,
+                analysis_id=state.instruction.get("currentAnalysisId"), reason=reason, requirement_index=requirement_index,
             ).info("report_analysis_standard_preflight reason={}", reason)
             return None
 
@@ -1474,48 +1522,146 @@ class AnalysisItemWorkflow:
         if not isinstance(decision, AnalysisEvidenceDecision):
             return unavailable("decision_unsupported")
         requirements = decision.coding_requirements
-        if len(requirements) != 1:
-            return unavailable("multiple_or_missing_requirements")
-        requirement = requirements[0]
+        if not requirements:
+            return unavailable("missing_requirements")
+        requirement = requirements[requirement_index]
         spec = requirement.standard_computation
+        if requirement.standard_candidate_id and state.facts is not None:
+            current_analysis = state.instruction.get("currentAnalysis") or {}
+            candidate = next((item for item in standard_computation_candidates(
+                state.facts,
+                state.instruction.get("datasets") or (),
+                current_analysis.get("periods", ()) if isinstance(current_analysis, Mapping) else (),
+            ) if item["candidateId"] == requirement.standard_candidate_id), None)
+            if (candidate is None or candidate["datasetId"] != requirement.dataset_id
+                    or not set(candidate["fields"]).issubset(requirement.fields)):
+                return unavailable("candidate_not_authorized")
+            candidate_spec = StandardSupplementalSpec.model_validate(candidate["standardComputation"])
+            if spec is not None and spec != candidate_spec:
+                return unavailable("candidate_spec_conflict")
+            spec = candidate_spec
         if spec is None or state.facts is None:
             return unavailable("spec_or_facts_missing")
+        assert spec is not None
+        spec_period_field = spec.period_field
         facts = {item.fact_id: item for item in state.facts.metrics if item.fact_id}
 
-        def supported(fact: Any, periods: tuple[str, ...]) -> bool:
+        def canonical_periods(fact: Any, periods: tuple[str, ...]) -> tuple[str, ...] | None:
+            if fact is None:
+                return None
+            grain = getattr(fact, "period_granularity", None)
+            available: dict[Any, str] = {}
+            for item in getattr(fact, "period_values", ()):
+                key = metric_period_key(item.period, grain)
+                if key is None or key in available:
+                    return None
+                available[key] = item.period
+            keys = [metric_period_key(label, grain) for label in periods]
+            if None in keys or len(set(keys)) != len(keys) or any(key not in available for key in keys):
+                return None
+            return tuple(available[key] for key in keys)
+
+        def supported(fact: Any, periods: tuple[str, ...], field: str) -> bool:
             if (
                 fact is None
                 or fact.dataset_id != requirement.dataset_id
-                or fact.field != spec.measure_field
-                or getattr(fact, "period_field", None) != spec.period_field
+                or fact.field != field
+                or getattr(fact, "period_field", None) != spec_period_field
                 or getattr(fact, "aggregation", None) != "sum"
                 or getattr(fact, "period_aggregation", None) != "sum"
                 or getattr(fact, "cumulative_policy", None) is not None
             ):
                 return False
-            available = {getattr(item, "period", None) for item in getattr(fact, "period_values", ())}
             keys = [metric_period_key(label, getattr(fact, "period_granularity", None)) for label in periods]
-            return (set(periods).issubset(available) and None not in keys
+            return (canonical_periods(fact, periods) is not None and None not in keys
                     and len(keys) == len(set(keys))
                     and len({key[0] for key in keys if key is not None}) == 1)
 
         parent = facts.get(spec.parent_fact_id)
-        if not supported(parent, spec.current_periods):
+        if not supported(parent, spec.current_periods, spec.measure_field):
             return unavailable("parent_semantics_or_periods_unsupported")
         baseline = facts.get(spec.baseline_parent_fact_id) if spec.baseline_parent_fact_id else parent
-        if spec.operation == "period_comparison" and not supported(baseline, spec.baseline_periods):
+        if spec.operation == "period_comparison" and not supported(
+            baseline, spec.baseline_periods, spec.measure_field,
+        ):
             return unavailable("baseline_semantics_or_periods_unsupported")
+        denominator = facts.get(spec.denominator_parent_fact_id) if spec.denominator_parent_fact_id else None
+        if spec.operation == "group_ratio" and (
+            spec.denominator_field is None
+            or not supported(denominator, spec.current_periods, spec.denominator_field)
+            or canonical_periods(denominator, spec.current_periods)
+            != canonical_periods(parent, spec.current_periods)
+        ):
+            return unavailable("denominator_semantics_or_periods_unsupported")
         if spec.operation == "period_comparison":
             current_key = metric_period_key(spec.current_periods[0], getattr(parent, "period_granularity", None))
             baseline_key = metric_period_key(spec.baseline_periods[0], getattr(baseline, "period_granularity", None))
             if current_key is None or baseline_key is None or current_key[0] != baseline_key[0]:
                 return unavailable("comparison_period_grain_mismatch")
+        if spec.operation == "period_comparison" and getattr(parent, "unit", None) != getattr(baseline, "unit", None):
+            return unavailable("comparison_unit_mismatch")
+        ratio_fact: Any | None = None
+        if spec.operation == "group_ratio":
+            ratio_facts = {
+                item.fact_id: item
+                for item in getattr(state.facts, "derived_metrics", ())
+                if getattr(item, "fact_id", None)
+            }
+            ratio_fact = ratio_facts.get(spec.ratio_fact_id)
+            scale = unit_conversion_scale(
+                getattr(denominator, "unit", None), getattr(parent, "unit", None)
+            )
+            if (
+                ratio_fact is None
+                or tuple(getattr(ratio_fact, "input_fact_ids", ()))
+                != (spec.parent_fact_id, spec.denominator_parent_fact_id)
+                or tuple(getattr(ratio_fact, "dataset_ids", ())) != (requirement.dataset_id,)
+                or getattr(ratio_fact, "difference", None) is None
+                or getattr(ratio_fact, "percentage", None) is None
+                or scale is None
+                or not math.isclose(
+                    float(scale), float(getattr(ratio_fact, "denominator_scale", 0)),
+                    rel_tol=1e-12, abs_tol=1e-12,
+                )
+            ):
+                return unavailable("ratio_fact_unsupported")
+        spec = spec.model_copy(update={
+            "current_periods": canonical_periods(parent, spec.current_periods),
+            "baseline_periods": (canonical_periods(baseline, spec.baseline_periods)
+                                 if spec.operation == "period_comparison" else ()),
+        })
         parent_scope = getattr(parent, "scope", {}) or {}
         baseline_scope = getattr(baseline, "scope", {}) or {}
-        if not isinstance(parent_scope, Mapping) or not isinstance(baseline_scope, Mapping):
+        denominator_scope = getattr(denominator, "scope", {}) or {}
+        if (
+            not isinstance(parent_scope, Mapping)
+            or not isinstance(baseline_scope, Mapping)
+            or not isinstance(denominator_scope, Mapping)
+        ):
             return unavailable("scope_invalid")
         if spec.operation == "period_comparison" and parent_scope != baseline_scope:
             return unavailable("comparison_scope_mismatch")
+        if spec.operation == "group_ratio" and (
+            parent_scope != denominator_scope
+            or (getattr(ratio_fact, "scope", {}) or {}) != parent_scope
+            or getattr(ratio_fact, "period_role", None)
+            not in getattr(parent, "period_roles", ())
+            or getattr(ratio_fact, "period_role", None)
+            not in getattr(denominator, "period_roles", ())
+        ):
+            return unavailable("ratio_scope_or_period_mismatch")
+        if spec.operation == "group_ratio":
+            period_key = metric_period_key(
+                spec.current_periods[0], getattr(parent, "period_granularity", None)
+            )
+            if (
+                period_key is None
+                or (
+                    getattr(ratio_fact, "period_granularity", None) is not None
+                    and getattr(ratio_fact, "period_granularity", None) != period_key[0]
+                )
+            ):
+                return unavailable("ratio_period_grain_mismatch")
         dataset = next(
             (
                 item
@@ -1526,9 +1672,33 @@ class AnalysisItemWorkflow:
             None,
         )
         dataset_columns = set(dataset.get("columns") or ()) if isinstance(dataset, Mapping) else set()
-        if not set(parent_scope).issubset(dataset_columns):
+        requested_measures = {item.field for item in state.facts.metrics
+                              if item.dataset_id == requirement.dataset_id and item.field in requirement.fields}
+        allowed_measures = {
+            spec.measure_field, spec.dimension_field, spec.period_field, *parent_scope,
+        }
+        if spec.secondary_dimension_field is not None:
+            allowed_measures.add(spec.secondary_dimension_field)
+        if spec.denominator_field is not None:
+            allowed_measures.add(spec.denominator_field)
+        if requested_measures - allowed_measures:
+            return unavailable("multiple_measures_require_separate_requests")
+        required_fields = {spec.measure_field, spec.dimension_field, spec.period_field}
+        if spec.secondary_dimension_field is not None:
+            required_fields.add(spec.secondary_dimension_field)
+        if spec.denominator_field is not None:
+            required_fields.add(spec.denominator_field)
+        if not required_fields.issubset(requirement.fields) or not set(requirement.fields).issubset(dataset_columns):
+            return unavailable("fields_not_authorized")
+        current_analysis = state.instruction.get("currentAnalysis") or {}
+        if requirement.dataset_id not in current_analysis.get("datasetIds", ()):
+            return unavailable("dataset_not_authorized")
+        query_bound_scope = query_bound_scope_fields(dataset, parent_scope) if isinstance(dataset, Mapping) else frozenset()
+        unprojected_scope = set(parent_scope) - dataset_columns
+        if not unprojected_scope.issubset(query_bound_scope):
             return unavailable("scope_columns_missing")
-        if not set(parent_scope).issubset(requirement.fields):
+        projected_scope = set(parent_scope) & dataset_columns
+        if not projected_scope.issubset(requirement.fields):
             return unavailable("scope_fields_not_authorized")
         logger.bind(
             analysis_id=state.instruction.get("currentAnalysisId"), reason="eligible",

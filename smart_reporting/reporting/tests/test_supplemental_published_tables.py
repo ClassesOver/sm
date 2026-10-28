@@ -202,3 +202,40 @@ async def test_conflicting_registered_evidence_identity_never_selects_first_copy
         _Harness({identity.path: raw}), None, checkpoint=checkpoint, outline=outline,
     )
     assert tables == traces == ()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+@pytest.mark.parametrize('fault', ['none', 'source_drift', 'edited_cell'])
+async def test_editor_validate_keeps_direct_cells_and_quality_checks_consistent(fault):
+    from unittest.mock import AsyncMock
+
+    from smart_reporting.report_editor.trace_sources import ReportEditorTraceService
+
+    from .test_trace_index_builder import _build_table
+
+    raw, source, resource, trace, markdown = built_source()
+    index = _build_table(server_table_traces=(trace,), table_source_files=(source,))
+
+    async def read(thread_id, path, **kwargs):
+        if path == source['path']:
+            return raw + b' ' if fault == 'source_drift' else raw
+        return markdown.encode()
+
+    service = ReportEditorTraceService(
+        SimpleNamespace(read_limited_regular_file=read), cursor_secret=b'x' * 32,
+    )
+    service.require_index = AsyncMock(return_value=index)
+    service._column_definitions_for_review = AsyncMock(return_value={})
+    context = SimpleNamespace(scope={'threadId': 'thread-1'}, markdown_path='report.md',
+                              report_id='run1', revision=1)
+    current = markdown.replace('| 科室1 | 101 |', '| 科室1 | 999 |') if fault == 'edited_cell' else markdown
+    result = await service.validate(context, current, hashlib.sha256(current.encode()).hexdigest())
+    assert result['tableSummary']['valid'] == (228 if fault == 'none' else 227 if fault == 'edited_cell' else 0)
+    check = result['tables'][0]['dataCheck']
+    assert check['status'] == ('verified' if fault == 'none' else 'unknown')
+    assert check['checkedCells'] == (228 if fault == 'none' else 0)
+    if fault == 'none':
+        assert result['tables'][0]['locations'][0]['computation']['method'] == 'frozen_source_cell'
+    elif fault == 'source_drift':
+        assert result['sourceIssues'] == [{'resourceId': resource, 'code': 'snapshot_integrity_failed'}]
