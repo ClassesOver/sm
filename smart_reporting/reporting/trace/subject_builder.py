@@ -971,7 +971,9 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
         _period_key(match[0]) for match in _PERIOD_TOKEN.finditer(local)
     ):
         # “2025年二月…[[claim]]及收入…”仍继承正文前项明确的月份。
-        calendars = _inheritable_calendars(before[:previous[-1].start()], include_baseline=comparison)
+        calendars = _inheritable_calendars(
+            before[:previous[-1].start()], include_baseline=comparison,
+        )
         if calendars:
             local = ' '.join(dict.fromkeys(calendars) if comparison else calendars[-1:]) + ' ' + local
     return local

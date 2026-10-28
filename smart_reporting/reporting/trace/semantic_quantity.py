@@ -134,18 +134,23 @@ class QuantityCatalog:
                 unit = _column_unit(node, name)
                 if unit is None:
                     continue
+                meta = node.get('columnMeta', {}).get(name, {})
+                column_semantics = (table_semantics(document, node, name)
+                                    if isinstance(meta, Mapping) and any(key in meta for key in
+                                        ('periods', 'periodStart', 'periodEnd', 'scope', 'periodRoles'))
+                                    else semantics)
                 source_id = _identity('table', hashlib.sha256(raw).hexdigest(), pointer, str(column))
                 descriptor = {'sourceId': source_id, 'kind': 'table_column', 'tablePointer': pointer,
                               'column': name, 'label': node.get('name') or node.get('title'),
-                              'rowLabels': labels, 'unit': unit, 'scope': semantics['scope'],
-                              'periods': list(semantics['periods'])}
+                              'rowLabels': labels, 'unit': unit, 'scope': column_semantics['scope'],
+                              'periods': list(column_semantics['periods'])}
                 if trusted.get('completePopulation') is True:
                     descriptor['completePopulation'] = True
                     descriptor['populationFactSourceId'] = _identity('fact', trusted.get('populationFactId'), 'total')
                 self.prompt.append(descriptor)
                 self._sources[source_id] = {'kind': 'table_column', 'resource': resource, 'pointer': pointer,
                     'column': column, 'unit': unit, 'rows': rows, 'labels': labels,
-                    'semantics': semantics,
+                    'semantics': column_semantics,
                     'population': trusted,
                     'complete': complete and all(_number(row[column]) is not None for row in rows)}
         for key, value in node.items():

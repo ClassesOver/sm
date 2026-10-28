@@ -110,6 +110,12 @@ async def _generate(monkeypatch, mode, outputs, *, project=False, corrections=No
 
     monkeypatch.setattr(semantic_bindings, 'render_bound_numbers', capture_bound_numbers)
 
+    async def preserve_generation_result(_agent, blocks, _number_contents, **_kwargs):
+        # 本文件验证生成与引用收敛；语义解释器由独立集成测试覆盖。
+        return tuple(blocks)
+
+    monkeypatch.setattr(sections, '_interpret_section_claims', preserve_generation_result)
+
     async def fake_stage(_agent, _schema, stage, payload, **_kwargs):
         if stage == 'plan':
             return SectionPlanOutput.model_validate({'kind': 'render', **plan_payload})

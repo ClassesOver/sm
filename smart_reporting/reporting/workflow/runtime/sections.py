@@ -1949,7 +1949,7 @@ def _verified_population_contexts(work_item: SectionWorkItem, sources: Mapping[s
     for item in work_item.evidence:
         try:
             record = ComputationRecordV1.model_validate(item.computation_record)
-            if (record.method != 'supplemental_standard_group_summary'
+            if (record.method not in {'supplemental_standard_group_summary', 'supplemental_standard_batch'}
                     or record.method_version != 'standard-supplemental-v1'
                     or record.script_file_resource_id is not None
                     or tuple(record.input_dataset_ids) != tuple(item.dataset_ids)):
@@ -1957,9 +1957,10 @@ def _verified_population_contexts(work_item: SectionWorkItem, sources: Mapping[s
             parameters = dict(record.parameters)
             proofs = parameters.pop('populationProofs', ())
             inputs = parameters.pop('inputFiles', ())
-            if len(inputs) != 1 or not isinstance(inputs[0], Mapping):
+            if not inputs or any(not isinstance(item, Mapping) for item in inputs):
                 continue
-            csv_identity = FileIdentity.model_validate(inputs[0])
+            csv_identities = tuple(FileIdentity.model_validate(item) for item in inputs)
+            row_counts = parameters.pop('findingRowCounts', None)
             for identity in item.evidence_files:
                 resource = derive_resource_id(identity.path)
                 raw = sources.get(resource)
@@ -1968,14 +1969,15 @@ def _verified_population_contexts(work_item: SectionWorkItem, sources: Mapping[s
                     continue
                 document = json.loads(raw)
                 execution = 'standard-' + hashlib.sha256(
-                    (csv_identity.sha256 + identity.sha256).encode(),
+                    (''.join(item.sha256 for item in csv_identities) + identity.sha256).encode(),
                 ).hexdigest()[:16]
                 expected = build_standard_supplemental_computation_record(
                     analysis_id=item.analysis_id, dataset_ids=item.dataset_ids,
-                    input_files=(inputs[0],), evidence_file=identity.model_dump(mode='json', by_alias=True),
+                    input_files=inputs, evidence_file=identity.model_dump(mode='json', by_alias=True),
                     method=record.method, method_version=record.method_version,
                     parameters={**parameters, 'populationProofs': proofs}, execution_id=execution,
                     finding_count=sum(len(finding.get('rows', ())) for finding in document.get('findings', ())),
+                    finding_row_counts=row_counts,
                 )
                 if record != expected:
                     continue
@@ -1984,12 +1986,21 @@ def _verified_population_contexts(work_item: SectionWorkItem, sources: Mapping[s
                         continue
                     pointer = proof.get('tablePointer')
                     table = _pointer(document, pointer)
-                    if (not isinstance(table, Mapping) or table.get('populationProof') != proof
+                    request = parameters
+                    if record.method == 'supplemental_standard_batch':
+                        match = re.fullmatch(r'/findings/(\d+)', pointer) if isinstance(pointer, str) else None
+                        computations = parameters.get('computations', ())
+                        if match is None or int(match[1]) >= len(computations):
+                            continue
+                        request = computations[int(match[1])]
+                    if (request.get('operation') != 'group_summary'
+                            or not isinstance(table, Mapping) or table.get('populationProof') != proof
                             or proof.get('version') != 'standard-population-v1'
-                            or proof.get('datasetSha256') != csv_identity.sha256
+                            or proof.get('datasetSha256') not in {item.sha256 for item in csv_identities}
                             or proof.get('datasetId') not in item.dataset_ids
-                            or proof.get('scope') != parameters.get('scope')
-                            or proof.get('periods') != parameters.get('currentPeriods')
+                            or proof.get('datasetId') != request.get('datasetId')
+                            or proof.get('scope') != request.get('scope')
+                            or proof.get('periods') != request.get('currentPeriods')
                             or proof.get('completePopulation') is not True
                             or proof.get('invalidRowCount') != 0):
                         continue

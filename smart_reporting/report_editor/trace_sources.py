@@ -947,6 +947,7 @@ class ReportEditorTraceService:
                         source_failures[resource_id] = code
                         raise ReportingError(code, "表格来源无法核验。") from error
                 result[resource_id] = table_source_cache[resource_id]
+                validated_source_bytes[resource_id] = table_source_cache[resource_id]
             return result
 
         async def _fact_entry_of(ref: Any) -> dict[str, Any] | None:
@@ -1323,7 +1324,7 @@ class ReportEditorTraceService:
             from ..reporting.trace.table_sources import _object, source_cell_view
 
             try:
-                sources = await _table_sources_of(SimpleNamespace(operands=(operand,), denominator_fact=None))
+                sources = await _table_sources_of(SimpleNamespace(operands=(operand,), denominator_fact=None, population_fact=None))
                 resource_id = operand.file_resource_id
                 if resource_id not in direct_source_documents:
                     direct_source_documents[resource_id] = json.loads(sources[resource_id], object_pairs_hook=_object)
@@ -1779,10 +1780,11 @@ class ReportEditorTraceService:
                     else:
                         row_by_key[key] = row
                         row_positions[key] = position
-                frozen_values: list[tuple[Any, Any, str | None]] = []
+                frozen_values: list[tuple[Any, Any, str | None, bool]] = []
                 for cell in trace.cells:
                     value: Any = None
                     unit: str | None = None
+                    source_cell = getattr(cell, "source_cell", None)
                     for ref in cell.fact_refs:
                         selector = cell.value_selector or cell.row_key
                         if fact_selector_valid_of is not None and not await fact_selector_valid_of(ref, cell.row_key, selector):
@@ -1792,13 +1794,13 @@ class ReportEditorTraceService:
                             if fact_unit_of is not None:
                                 unit = await fact_unit_of(ref, selector)
                             break
-                    if cell.source_cell is not None and source_cell_of is not None:
-                        selected = await source_cell_of(cell.source_cell)
+                    if source_cell is not None and source_cell_of is not None:
+                        selected = await source_cell_of(source_cell)
                         if selected is not None:
                             from ..reporting.trace.table_sources import source_cell_text
                             value, unit = source_cell_text(selected['value']), None
-                    frozen_values.append((cell, value, unit))
-                for cell, fact_value, fact_unit in frozen_values:
+                    frozen_values.append((cell, value, unit, source_cell is not None))
+                for cell, fact_value, fact_unit, has_source_cell in frozen_values:
                     row = row_by_key.get(cell.row_key)
                     if row is None:
                         counts["unbound"] += 1
@@ -1815,7 +1817,7 @@ class ReportEditorTraceService:
                         "valid" if missing_unchanged or (
                             fact_value is not None and (
                                 row[column] == "—" if fact_value == "—"
-                                else row[column] == fact_value if cell.source_cell is not None
+                                else row[column] == fact_value if has_source_cell
                                 else matches_fact_value(row[column], fact_value, fact_unit, cell.column_key)
                             )
                         ) else "stale"
@@ -1852,7 +1854,7 @@ class ReportEditorTraceService:
                                     else None
                                 ),
                             }
-                            for frozen_cell, frozen_value, frozen_unit in frozen_values
+                            for frozen_cell, frozen_value, frozen_unit, _has_source_cell in frozen_values
                             if frozen_value is not None
                             and matches_fact_value(
                                 cell_text, frozen_value, frozen_unit, frozen_cell.column_key
@@ -1997,9 +1999,13 @@ class ReportEditorTraceService:
 
         from .chart_edits import load_chart_edit_records
 
+        scope = getattr(context, "scope", None)
+        markdown_path = getattr(context, "markdown_path", None)
+        if self._workspace is None or not isinstance(scope, Mapping) or not markdown_path:
+            return {}
         try:
             records = await load_chart_edit_records(
-                self._workspace, context.scope["threadId"], context.markdown_path
+                self._workspace, scope["threadId"], markdown_path
             )
         except ValueError as error:
             logger.warning(
