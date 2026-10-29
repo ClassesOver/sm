@@ -477,7 +477,12 @@ async def test_planner_receives_candidates_only_when_server_route_is_enabled(mon
     await workflow._decide_evidence(state)
     assert len(requests) == 1
     assert ('standardComputationCandidates' in requests[0]) is enabled
+    assert ('standardComputationPolicy' in requests[0]) is enabled
     if enabled:
+        policy = requests[0]['standardComputationPolicy']
+        declared = set(module.StandardSupplementalSpec.model_json_schema()['properties']['operation']['enum'])
+        assert set(policy['supportedOperations']) == declared
+        assert policy['catalogIsExhaustive'] is False
         assert len(workflow._standard_plan(state)) == 1
 
 

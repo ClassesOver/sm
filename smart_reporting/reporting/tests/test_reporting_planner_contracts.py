@@ -3115,6 +3115,7 @@ def test_runtime_defaults_analysis_evidence_planner_to_dynamic_requirements() ->
         state_repository=SimpleNamespace(),
     )
 
+    assert runtime.analysis_concurrency == 5
     assert runtime._analysis_evidence_agent.output_schema is AnalysisEvidenceDecision
     coding_agent = runtime._analysis_script_agent_factory([])
     coding_instructions = "\n".join(coding_agent.instructions)
@@ -5586,3 +5587,32 @@ def test_evidence_decision_request_uses_summary_budget_projection() -> None:
     assert len(metric["topGroups"]) < 10 and metric["topGroupsView"]["rowCount"] == 10
     assert projected["analysisBlock"] == request["analysisBlock"]
     assert projected["datasets"] == request["datasets"]
+
+
+@pytest.mark.parametrize(('concurrency', 'valid'), [
+    (6, False), (True, False), (1.5, False), (0, False),
+    (1, True), (3, True), (5, True),
+])
+def test_runtime_requires_bounded_integer_analysis_concurrency(concurrency, valid) -> None:
+    def build():
+        return ReportWorkflowRuntime(
+            db=SimpleNamespace(),
+            reporting_agent_template=Agent(model=ReportingPhaseOpenAIChat(
+                id='deepseek-v4-flash-0731', api_key='test', reasoning_effort='high',
+                extra_body={'enable_thinking': True},
+            )),
+            task_runner=SimpleNamespace(), workspace_service=SimpleNamespace(),
+            registry=SimpleNamespace(), profiles=SimpleNamespace(), planner_enable_thinking=True,
+            planner_thinking_budget=8192, state_repository=SimpleNamespace(),
+            analysis_concurrency=concurrency,
+        )
+
+    if not valid:
+        with pytest.raises(ValueError, match='analysis_concurrency'):
+            build()
+        return
+
+    runtime = build()
+    assert runtime.analysis_concurrency == concurrency
+    assert runtime.section_concurrency == 1
+    assert runtime.reporting_execution_mode == 'sequential'

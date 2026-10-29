@@ -90,11 +90,14 @@ def _structured_periods(node: Mapping[str, Any]) -> tuple[str, ...] | None:
     return None
 
 
-def table_semantics(document: Any, table: Any, column: str | None = None) -> dict[str, Any]:
+def table_semantics(
+    document: Any, table: Any, column: str | None = None, *, row_index: int | None = None,
+) -> dict[str, Any]:
     """Read period/scope only from the verified table and its document, never a claim.
 
     Structured periods take precedence over names. Missing, invalid or ambiguous
     periods remain empty; there is no inferred year or implicit current role.
+    显式逐行期间绑定无效时保持未知，不退回整列窗口。
     """
     empty: dict[str, Any] = {"periods": (), "period_roles": {}, "scope": {}}
     try:
@@ -105,11 +108,27 @@ def table_semantics(document: Any, table: Any, column: str | None = None) -> dic
             grain = next((node.get("periodGranularity", node.get("period_granularity"))
                           for node in nodes if "periodGranularity" in node or "period_granularity" in node), None)
             nodes.insert(0, {"periodGranularity": grain, **meta})
-        periods = None
-        for node in nodes:
-            periods = _structured_periods(node)
-            if periods is not None:
-                break
+        periods: tuple[str, ...] | None = None
+        if row_index is not None and isinstance(meta, Mapping) and 'periodsByRowPeriod' in meta:
+            periods = ()
+            period_column = table.get('rowPeriodColumn')
+            columns, rows = table.get('columns'), table.get('rows')
+            period_map = meta['periodsByRowPeriod']
+            if (type(row_index) is int and isinstance(columns, list) and isinstance(rows, list)
+                    and 0 <= row_index < len(rows) and isinstance(period_column, str)
+                    and columns.count(period_column) == 1 and isinstance(period_map, Mapping)):
+                row = rows[row_index]
+                if isinstance(row, list) and len(row) == len(columns):
+                    row_period = row[columns.index(period_column)]
+                    if isinstance(row_period, str) and row_period:
+                        periods = _structured_periods({
+                            'periodGranularity': grain, 'periods': period_map.get(row_period),
+                        }) or ()
+        if periods is None:
+            for node in nodes:
+                periods = _structured_periods(node)
+                if periods is not None:
+                    break
         if periods is None:
             for node in nodes:
                 names = [node[key] for key in ("title", "name", "displayName")
@@ -316,7 +335,8 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
             for operand in raw_derivation["operands"]
         ],
     }) + "}}"
-    operand_semantics = [table_semantics(document, table, columns[op.column_index]) for op in operands]
+    operand_semantics = [table_semantics(document, table, columns[op.column_index], row_index=op.row_index)
+                         for op in operands]
     if any(item["scope"] != operand_semantics[0]["scope"] for item in operand_semantics):
         return None
     roles: dict[str, tuple[str, ...]] = {}
@@ -593,10 +613,11 @@ def source_cell_view(operand: Any, document: Any) -> dict[str, Any] | None:
                          'periodGranularity', 'period_granularity', 'periods',
                          'periodRoles', 'period_roles', 'scope'}
         semantic_document = {key: item for key, item in document.items() if key in semantic_keys}
-        semantic_table = {key: item for key, item in table.items() if key in semantic_keys}
+        semantic_table = {key: item for key, item in table.items()
+                          if key in semantic_keys or key in {'rowPeriodColumn', 'columns', 'rows'}}
         return {'value': value, 'unit': meta.get('unit') if isinstance(meta, dict) else None,
                 'column': columns[operand.column_index], **table_semantics(semantic_document, {**semantic_table, "columnMeta": metadata},
-                                  columns[operand.column_index])}
+                                  columns[operand.column_index], row_index=operand.row_index)}
     except (KeyError, IndexError, TypeError, ValueError):
         return None
 

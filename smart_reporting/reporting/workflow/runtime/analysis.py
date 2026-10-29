@@ -167,11 +167,13 @@ from .standard_supplemental import (
     StandardSupplementalRequest,
     StandardSupplementalSpec,
     build_standard_population_proof,
+    compact_standard_reconciliations,
     frozen_period_total,
     query_bound_scope_fields,
     run_standard_supplemental,
     standard_input_matches_fact,
 )
+from .standard_supplemental_input import BatchAnalysisInputCache
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
     _validate_visualization_plan_bindings,
@@ -2106,7 +2108,7 @@ class RuntimeAnalysisMixin:
                 tuple(analyses),
                 run_evidence_item,
                 execution_mode=getattr(self, "reporting_execution_mode", "sequential"),
-                limiter=asyncio.Semaphore(getattr(self, "analysis_concurrency", 1)),
+                limiter=asyncio.Semaphore(getattr(self, "analysis_concurrency", 5)),
                 run_context=run_context,
             )
             evidence_checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
@@ -2468,7 +2470,7 @@ class RuntimeAnalysisMixin:
             rework_analysis=rework_analysis,
             execution_mode=getattr(self, "reporting_execution_mode", "sequential"),
             section_concurrency=getattr(self, "section_concurrency", 1),
-            analysis_concurrency=getattr(self, "analysis_concurrency", 1),
+            analysis_concurrency=getattr(self, "analysis_concurrency", 5),
         )
         output = await reporting_workflow.arun(
             input={"reportGoal": self._envelope(run_context).report_goal},
@@ -3653,6 +3655,8 @@ class RuntimeAnalysisMixin:
             }
             if "standardComputationCandidates" in planner_payload:
                 decision_request["standardComputationCandidates"] = planner_payload["standardComputationCandidates"]
+            if "standardComputationPolicy" in planner_payload:
+                decision_request["standardComputationPolicy"] = planner_payload["standardComputationPolicy"]
             if "correction" in planner_payload:
                 decision_request["correction"] = planner_payload["correction"]
             evidence_agent = evidence_planner or self._analysis_evidence_agent
@@ -3813,6 +3817,7 @@ class RuntimeAnalysisMixin:
             if len(specs) != len(decision.coding_requirements):
                 raise ReportingError("report_analysis_standard_unsupported", "标准补证计算计划与需求不一致。")
             input_cache: dict[str, tuple[FileIdentity, bytes]] = {}
+            parsed_input_cache = BatchAnalysisInputCache()
             combined: dict[str, Any] = {"findings": [], "reconciliations": [], "warnings": []}
             requests: list[dict[str, Any]] = []
             population_proofs: list[dict[str, Any]] = []
@@ -3922,14 +3927,25 @@ class RuntimeAnalysisMixin:
                     periodGranularity=getattr(parent, "period_granularity", None),
                     currentPeriods=computation_spec.current_periods,
                     baselinePeriods=computation_spec.baseline_periods,
+                    baselineMethod=computation_spec.baseline_method,
+                    changeRateDenominator=computation_spec.change_rate_denominator,
+                    rankBy=computation_spec.rank_by,
+                    includePeriodChange=computation_spec.include_period_change,
+                    includeMarginalShares=computation_spec.include_marginal_shares,
+                    groupByPeriod=computation_spec.group_by_period,
                     parentTotal=frozen_period_total(parent, computation_spec.current_periods),
                     parentPeriodTotals=(
                         tuple(
                             frozen_period_total(parent, (period,))
                             for period in computation_spec.current_periods
                         )
-                        if computation_spec.operation == "group_period_series"
+                        if computation_spec.operation in {"group_period_series", "group_period_comparison"}
+                        or computation_spec.group_by_period
                         else ()
+                    ),
+                    baselinePeriodTotals=(
+                        tuple(frozen_period_total(parent, (period,)) for period in computation_spec.baseline_periods)
+                        if computation_spec.operation == "group_period_comparison" else ()
                     ),
                     baselineParentTotal=(
                         frozen_period_total(baseline or parent, computation_spec.baseline_periods)
@@ -3940,6 +3956,13 @@ class RuntimeAnalysisMixin:
                         frozen_period_total(denominator, computation_spec.current_periods)
                         if computation_spec.operation == "group_ratio" and denominator is not None
                         else None
+                    ),
+                    denominatorPeriodTotals=(
+                        tuple(frozen_period_total(denominator, (period,))
+                              for period in computation_spec.current_periods)
+                        if computation_spec.operation == "group_ratio"
+                        and computation_spec.group_by_period and denominator is not None
+                        else ()
                     ),
                     denominatorScale=(
                         getattr(ratio_fact, "denominator_scale", None)
@@ -3966,12 +3989,15 @@ class RuntimeAnalysisMixin:
                     baseline_authorized_query_scope={
                         field: parent_scope[field] for field in baseline_unprojected_scope
                     },
+                    _input_cache=parsed_input_cache,
                 )
                 population_proof = None
                 try:
-                    population_proof = build_standard_population_proof(
+                    population_proof = await asyncio.to_thread(
+                        build_standard_population_proof,
                         csv_content=content, dataset_sha256=identity.sha256,
                         request=request, parent_fact=parent, finding=raw_payload["findings"][0],
+                        _input_cache=parsed_input_cache,
                     )
                 except Exception as error:
                     logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
@@ -3984,7 +4010,11 @@ class RuntimeAnalysisMixin:
                 combined["reconciliations"].extend(raw_payload["reconciliations"])
                 combined["warnings"].extend(raw_payload["warnings"])
                 requests.append(request.model_dump(mode="json", by_alias=True))
-            raw_payload = {**combined, "warnings": list(dict.fromkeys(combined["warnings"]))[:100]}
+            raw_payload = {
+                **combined,
+                "reconciliations": compact_standard_reconciliations(combined["reconciliations"], "standard_batch_checks"),
+                "warnings": list(dict.fromkeys(combined["warnings"]))[:100],
+            }
             input_files = tuple(value[0].model_dump(mode="json", by_alias=True) for value in input_cache.values())
             batch = len(specs) > 1
             single_spec = specs[0]
@@ -4058,7 +4088,9 @@ class RuntimeAnalysisMixin:
                 evidence_bytes=len(evidence_content),
                 warning_count=len(evidence.warnings),
             ).info(
-                "report_analysis_standard_path_completed duration_ms={}",
+                "report_analysis_standard_path_completed analysis_id={} computations={} inputs={} bytes={} warnings={} duration_ms={}",
+                state.instruction.get("currentAnalysisId"), len(specs), len(input_files),
+                len(evidence_content), len(evidence.warnings),
                 max(0, round((time.monotonic() - started_at) * 1000)),
             )
             return {

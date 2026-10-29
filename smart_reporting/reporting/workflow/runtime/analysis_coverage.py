@@ -4,7 +4,7 @@
   重合定位 finding 中的维度列（与列名、主题无关），报告全集中缺失的维度值。
 - A1 单侧缺失：本期/上期成对列中只有一侧有值的行，若 evidence.warnings 未提及
   对应维度值，报告该方向未披露。
-- A2 输出契约：每个 codingRequirements[].outputName 应对应一个 findings[].name。
+- A2 输出契约：同名 finding 应包含结构化 requiredColumns；缺失只告警。
 """
 
 from __future__ import annotations
@@ -100,17 +100,22 @@ def _best_dimension_column(
 def requirement_output_gaps(
     requirements: Sequence[Mapping[str, Any]], findings: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
-    """A2：codingRequirements.outputName 没有同名 finding 时记软告警。"""
-
-    names = {finding.get("name") for finding in findings if isinstance(finding, Mapping)}
-    return [
-        {
-            "code": "report_analysis_requirement_unfulfilled",
-            "outputName": requirement.get("outputName"),
-        }
-        for requirement in requirements
-        if isinstance(requirement, Mapping) and requirement.get("outputName") not in names
-    ]
+    """A2：缺少同名输出或明确声明的列时记录可定位软告警。"""
+    gaps = []
+    for requirement in requirements:
+        if not isinstance(requirement, Mapping):
+            continue
+        name = requirement.get("outputName")
+        named = [item for item in findings if isinstance(item, Mapping) and item.get("name") == name]
+        required = tuple(requirement.get("requiredColumns") or ())
+        if named and any(set(required).issubset(item.get("columns") or ()) for item in named):
+            continue
+        gap = {"code": "report_analysis_requirement_unfulfilled", "outputName": name}
+        if named:
+            best = min(named, key=lambda item: len(set(required) - set(item.get("columns") or ())))
+            gap["missingColumns"] = [column for column in required if column not in (best.get("columns") or ())]
+        gaps.append(gap)
+    return gaps
 
 
 def dimension_coverage_gaps(
