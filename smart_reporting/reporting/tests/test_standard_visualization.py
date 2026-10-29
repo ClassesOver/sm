@@ -46,6 +46,56 @@ def materialization(document):
     },))
 
 
+@pytest.mark.parametrize('form', ['line', 'bar', 'barh'])
+@pytest.mark.parametrize('label', ['period', 'label'])
+@pytest.mark.parametrize('unit,title', [
+    ('元', '收入趋势'),
+    ('万元', '收入趋势'),
+    ('万元', '收入趋势（万元）'),
+    (None, '收入趋势'),
+    (None, '收入趋势（万元）'),
+])
+def test_registered_unit_reaches_value_axis_without_changing_values(
+    tmp_path, monkeypatch, form, label, unit, title,
+):
+    import matplotlib.pyplot as plt
+
+    plan, _ = fixture(form)
+    plan.charts[0].title = title
+    values = [0, -12500.5, 27000.25]
+    document = {'columns': [label, 'value'],
+                'rows': [[name, value] for name, value in zip(
+                    ['2025-01', '2025-02', '2025-03'], values, strict=True)]}
+    if unit is not None:
+        document['columnMeta'] = {'value': {'unit': unit}}
+    inputs = materialization(document)
+    original = inputs.files[0].content
+    input_path = tmp_path / 'input.json'
+    input_path.write_bytes(original)
+    monkeypatch.chdir(tmp_path)
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args: None)
+    try:
+        script = standard_visualization_script(plan, inputs)
+        assert script is not None
+        exec(script, {})
+        axes = plt.gcf().axes[0]
+        # The registered unit is authoritative even when the title repeats it;
+        # a title alone does not supply missing metadata or request conversion.
+        assert (axes.get_xlabel() if form == 'barh' else axes.get_ylabel()) == (unit or '')
+        assert any(text.get_text() == title for text in plt.gcf().texts)
+        if form == 'line':
+            actual = list(axes.lines[0].get_ydata())
+        else:
+            actual = [bar.get_width() if form == 'barh' else bar.get_height()
+                      for bar in axes.containers[0].patches]
+        assert actual == values
+        assert input_path.read_bytes() == original
+        assert (tmp_path / 'chart.png').read_bytes().startswith(b'\x89PNG')
+    finally:
+        close('all')
+
+
 @pytest.mark.parametrize('form', ['line', 'bar', 'barh', 'stacked-bar', 'stacked-area'])
 @pytest.mark.parametrize('long', [False, True])
 def test_complex_templates_render_all_series(tmp_path, form, long):

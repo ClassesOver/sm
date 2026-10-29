@@ -87,9 +87,24 @@ def setup(tmp_path, forms):
 async def test_mixed_routes_keep_good_charts_standard_and_sign_final_execution(
     tmp_path, monkeypatch, failure
 ):
+    from matplotlib.figure import Figure
+
     monkeypatch.chdir(tmp_path)
-    plan, inputs, context = setup(tmp_path, ["line", "violin", "bar"])
+    plan, inputs, context = setup(tmp_path, ["line", "violin", "barh"])
     calls = []
+    rendered = {}
+    savefig = Figure.savefig
+
+    def capture(figure, path, *args, **kwargs):
+        axes = figure.axes[0]
+        rendered[str(path)] = (
+            axes.get_xlabel(), axes.get_ylabel(),
+            [bar.get_width() for bar in axes.patches],
+            [list(line.get_ydata()) for line in axes.lines],
+        )
+        return savefig(figure, path, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", capture)
 
     async def execute(ctx, source):
         validate_script_source(ctx, source)
@@ -183,6 +198,12 @@ async def test_mixed_routes_keep_good_charts_standard_and_sign_final_execution(
     assert [item["route"] for item in result.standard_chart_routes] == (
         ["coding", "coding", "standard"] if failure else ["standard", "coding", "standard"]
     )
+    # A neighboring Coding fallback and final composition must retain the
+    # registered unit on the horizontal value axis and preserve bar widths.
+    assert rendered["chart-2.png"][:3] == ("元", "", [10, 20])
+    if failure is None:
+        assert rendered["chart-0.png"][:2] == ("", "元")
+        assert rendered["chart-0.png"][3] == [[10, 20]]
 
 
 @pytest.mark.parametrize(
