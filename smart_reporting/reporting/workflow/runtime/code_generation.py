@@ -145,6 +145,7 @@ class CodeGenerationResult:
     execution_receipt: ExecutionReceipt
     visual_inspection_receipts: tuple[ChartVisualInspectionReceipt, ...] = ()
     visual_repair_diagnostic: Mapping[str, Any] | None = None
+    standard_chart_routes: tuple[Mapping[str, Any], ...] = ()
 
 
 class ReportingCodeGenerationRunner:
@@ -182,9 +183,14 @@ class ReportingCodeGenerationRunner:
             "visualizationDataContract",
             "missingCharts",
             "chartInputs",
+            "standardChartPreflight",
         ):
             if key in task_facts:
                 projected[key] = task_facts[key]
+        if 'standardChartPreflight' in task_facts:
+            for key in ('visualizationPlan', 'visualizationWorkspace', 'visualizationFacts'):
+                if key in task_facts:
+                    projected[key] = task_facts[key]
         current_analysis = task_facts.get("currentAnalysis")
         if isinstance(current_analysis, Mapping):
             projected["currentAnalysis"] = {
@@ -266,6 +272,43 @@ class ReportingCodeGenerationRunner:
         self.coding_metrics_recorder = coding_metrics_recorder
         self.failure_artifact_recorder = failure_artifact_recorder
         self.compact_continuation = compact_continuation
+
+    async def run_standard_visualization(
+        self, task_context: ReportingCodingTaskContext, workspace: HostReportingWorkspace,
+        source: str, task_facts: Mapping[str, Any],
+    ) -> CodeGenerationResult:
+        """Use the same execution, image review and submission gates as Coding."""
+        async with self.registry.bind(task_context, workspace) as binding:
+            toolkit = ReportingCodeModeToolkit(
+                binding, self.code_mode_runtime, vision_reviewer=self.vision_reviewer,
+                lsp_manager=self.lsp_manager,
+                visualization_plan=task_facts.get('visualizationPlan'),
+            )
+            try:
+                await toolkit.refresh_delivery_state()
+                for operation in (
+                    lambda: toolkit.write_script(source),
+                    toolkit.run_script,
+                    lambda: toolkit.view_image(paths=list(task_context.declared_output_paths)),
+                    toolkit.submit_script,
+                ):
+                    result = await operation()
+                    if result.get('ok') is not True:
+                        raise ReportingError(
+                            'report_standard_visualization_failed',
+                            '标准可视化未通过执行或视觉验收，转入 Coding 路径。',
+                            details={**result, 'standardDiagnostic': getattr(binding, 'visual_repair_diagnostic', None)},
+                        )
+                receipt = binding.execution_receipt
+                if receipt is None:
+                    raise ReportingError('report_standard_visualization_failed', '标准可视化缺少执行回执。')
+                await toolkit.require_current_receipt(receipt)
+                return CodeGenerationResult(
+                    script_file=receipt.source_file, execution_receipt=receipt,
+                    visual_inspection_receipts=tuple(binding.visual_inspection_receipts.values()),
+                )
+            finally:
+                await self.code_mode_runtime.shutdown(task_context.code_mode_session_id)
 
     async def run(
         self,
@@ -930,6 +973,10 @@ class ReportingCodeGenerationRunner:
                 "toolMessage": pending_validation.get("message"),
             }
         safe: dict[str, Any] = {}
+        for field in ('chartId', 'parameter', 'suggestion'):
+            value = details.get(field)
+            if isinstance(value, str) and value:
+                safe[field] = value[:MAX_DIAGNOSTIC_MESSAGE_LENGTH]
         issue_summary = details.get("issueSummary")
         if isinstance(issue_summary, str) and issue_summary:
             safe["issueSummary"] = issue_summary[:MAX_DIAGNOSTIC_OUTPUT_LENGTH]

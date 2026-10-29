@@ -261,6 +261,426 @@ class ChartDataBinding(StrictModel):
         return value
 
 
+class StandardChartAnnotation(StrictModel):
+    kind: Literal['values', 'peak', 'trough', 'point', 'reference', 'range']
+    series: str | None = Field(default=None, max_length=200)
+    label: str | None = Field(default=None, max_length=200)
+    end_label: str | None = Field(default=None, alias='endLabel', max_length=200)
+    row_label: str | None = Field(default=None, alias='rowLabel', max_length=200)
+    end_row_label: str | None = Field(default=None, alias='endRowLabel', max_length=200)
+    color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
+    highlight: bool = False
+    position: Literal['auto', 'above', 'below', 'left', 'right'] = 'auto'
+    caption: str | None = Field(default=None, max_length=60, description='参考线或重点标注的业务简称；数值仍从冻结数据生成')
+
+
+class StandardChartAxisDomain(StrictModel):
+    minimum: float | None = Field(default=None, alias='min', strict=True, allow_inf_nan=False)
+    maximum: float | None = Field(default=None, alias='max', strict=True, allow_inf_nan=False)
+    ticks: tuple[Annotated[float, Field(strict=True, allow_inf_nan=False)], ...] = Field(default=(), max_length=16)
+    tick_format: Literal['auto', 'number', 'scientific'] = Field(default='auto', alias='tickFormat')
+    decimals: int | None = Field(default=None, ge=0, le=6)
+    out_of_range: Literal['reject', 'annotate'] = Field(default='reject', alias='outOfRange',
+        description='默认拒绝裁切数据；annotate显式允许缩小显示范围，并注明超界图形端点数量；底层值保持不变。')
+
+    @model_validator(mode='after')
+    def validate_domain(self) -> StandardChartAxisDomain:
+        if self.minimum is not None and self.maximum is not None and self.minimum >= self.maximum:
+            raise ValueError('轴范围min必须小于max')
+        if len(set(self.ticks)) != len(self.ticks) or any(a >= b for a,b in zip(self.ticks,self.ticks[1:])):
+            raise ValueError('数值刻度须严格递增且唯一')
+        if any(self.minimum is not None and value < self.minimum or self.maximum is not None and value > self.maximum for value in self.ticks):
+            raise ValueError('刻度必须在声明范围内')
+        if self.minimum is None and self.maximum is None and not self.ticks and self.tick_format == 'auto' and self.decimals is None:
+            raise ValueError('轴参数至少指定范围、刻度或格式')
+        return self
+
+
+class StandardChartAxisBreak(StrictModel):
+    lower: StandardChartAxisDomain = Field(description='低值段完整显示范围，纵向在下、barh在左；必须同时给min/max；只使用ticks/tickFormat/decimals，不设置段内outOfRange。')
+    upper: StandardChartAxisDomain = Field(description='高值段完整显示范围，纵向在上、barh在右；min须严格大于低值段max；均使用最终显示单位。')
+    omitted_values: Literal['reject', 'annotate'] = Field(default='reject', alias='omittedValues',
+        description='默认不允许真实数据/绘图边界落入省略开区间；annotate显式允许并注明数量。')
+    out_of_range: Literal['reject', 'annotate'] = Field(default='reject', alias='outOfRange',
+        description='默认不允许数据越过整体上下界；annotate仅裁切显示并注明。')
+    gap: float = Field(default=.08, ge=.03, le=.3, strict=True, allow_inf_nan=False,
+        description='两个子图之间的Matplotlib间距比例：纵向hspace、barh横向wspace。')
+    lower_fraction: float = Field(default=.5, alias='lowerFraction', ge=.25, le=.75, strict=True, allow_inf_nan=False,
+        description='低值段的尺寸份额：纵向为下段高度、barh为左段宽度。')
+    mark_size: float = Field(default=.012, alias='markSize', ge=.006, le=.025, strict=True, allow_inf_nan=False,
+        description='断轴斜线在Axes相对坐标中的半长。')
+
+    @model_validator(mode='after')
+    def validate_intervals(self) -> StandardChartAxisBreak:
+        if any(domain.minimum is None or domain.maximum is None for domain in (self.lower,self.upper)):
+            raise ValueError('断轴上下两段必须同时声明min/max')
+        assert self.lower.maximum is not None and self.upper.minimum is not None
+        if self.lower.maximum >= self.upper.minimum:
+            raise ValueError('断轴两段须严格分离且有正的省略区间')
+        if any(domain.out_of_range != 'reject' for domain in (self.lower,self.upper)):
+            raise ValueError('断轴的范围策略使用顶层omittedValues/outOfRange，不在单段设置')
+        return self
+
+
+class StandardChartPanelDomain(StrictModel):
+    series: str = Field(min_length=1, max_length=200)
+    domain: StandardChartAxisDomain
+
+
+class StandardChartDomains(StrictModel):
+    left: StandardChartAxisDomain | None = Field(default=None, description='单轴/左轴值域；横向图作用于数值X轴；panels作为各面板默认值域。均使用换算后的显示单位。')
+    right: StandardChartAxisDomain | None = Field(default=None, description='仅dual右侧值轴，使用右轴显示单位。')
+    x: StandardChartAxisDomain | None = Field(default=None, description='仅scatter/bubble的数值X轴；类别轴不可设数值范围。')
+    zoom: StandardChartAxisDomain | None = Field(default=None, description='仅zoom局部子图的值轴；不改变主图。')
+    panels: tuple[StandardChartPanelDomain, ...] = Field(default=(), max_length=8,
+        description='仅panels按冻结系列名覆盖独立值域。')
+
+    @model_validator(mode='after')
+    def validate_targets(self) -> StandardChartDomains:
+        if not any((self.left,self.right,self.x,self.zoom,self.panels)):
+            raise ValueError('至少声明一个数值轴参数')
+        if len({item.series for item in self.panels}) != len(self.panels):
+            raise ValueError('同面板不能重复设置值域')
+        return self
+
+
+class StandardChartAxes(StrictModel):
+    mode: Literal['single', 'dual', 'panels', 'zoom'] = 'single'
+    scale: Literal['linear', 'log', 'symlog'] = 'linear'
+    linear_threshold: float = Field(default=1, alias='linearThreshold', gt=0, allow_inf_nan=False,
+                                    description='symlog在显示单位下零点附近的线性区间阈值。')
+    zero_baseline: bool = Field(default=False, alias='zeroBaseline')
+    right_fields: tuple[str, ...] = Field(default=(), alias='rightFields', max_length=8)
+    allow_nulls: bool = Field(default=False, alias='allowNulls', description='折线/普通柱图保留null为空位，不补零；堆叠不支持。')
+    left_display_unit: str | None = Field(default=None, alias='leftDisplayUnit', max_length=30)
+    right_display_unit: str | None = Field(default=None, alias='rightDisplayUnit', max_length=30)
+    panel_limit: int | None = Field(default=None, alias='panelLimit', ge=1, le=60,
+                                   description='仅barh+panels，各系列独立按数值排序取前N项。')
+    panel_descending: bool = Field(default=True, alias='panelDescending')
+    zoom_start: str | None = Field(default=None, alias='zoomStart', max_length=200)
+    zoom_end: str | None = Field(default=None, alias='zoomEnd', max_length=200)
+    zoom_bounds: tuple[
+        Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
+        Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
+        Annotated[float, Field(ge=.15, le=.8, allow_inf_nan=False)],
+        Annotated[float, Field(ge=.15, le=.8, allow_inf_nan=False)],
+    ] = Field(default=(.56, .5, .4, .4), alias='zoomBounds', description='局部图在主图内的相对位置与尺寸[left,bottom,width,height]，可调整以避开重点标注。')
+
+    @model_validator(mode='after')
+    def validate_zoom_bounds(self) -> StandardChartAxes:
+        left, bottom, width, height = self.zoom_bounds
+        if left + width > 1 or bottom + height > 1:
+            raise ValueError('局部放大画布须位于主图内')
+        return self
+
+
+class StandardChartSource(StrictModel):
+    source_index: int = Field(alias='sourceIndex', ge=0, le=7)
+    label_field: str = Field(alias='labelField', min_length=1, max_length=200)
+    value_field: str = Field(alias='valueField', min_length=1, max_length=200)
+    series_name: str = Field(alias='seriesName', min_length=1, max_length=200)
+    category_field: str | None = Field(default=None, alias='categoryField', max_length=200)
+    category_value: str | None = Field(default=None, alias='categoryValue', max_length=200)
+    label_mode: Literal['exact', 'month'] = Field(default='exact', alias='labelMode')
+    excluded_labels: tuple[str, ...] = Field(default=(), alias='excludedLabels', max_length=60)
+
+
+class StandardChartView(StrictModel):
+    """Explicit transformations of identity-checked rows, never model supplied data."""
+    kind: Literal['group', 'pivot']
+    label_field: str = Field(alias='labelField', min_length=1, max_length=200)
+    value_fields: tuple[str, ...] = Field(alias='valueFields', min_length=1, max_length=8)
+    series_field: str | None = Field(default=None, alias='seriesField', max_length=200)
+    series_values: tuple[str, ...] = Field(default=(), alias='seriesValues', max_length=8)
+    group_by: tuple[str, ...] = Field(default=(), alias='groupBy', max_length=2,
+                                     description='group的附加维度，与labelField组成最多三维分组；保留各维度原列，不拼接标签。')
+    aggregation: Literal['sum', 'mean', 'weighted_mean'] = 'sum'
+    weight_field: str | None = Field(default=None, alias='weightField', max_length=200)
+
+    @model_validator(mode='after')
+    def validate_aggregation(self) -> StandardChartView:
+        if (self.aggregation == 'weighted_mean') != bool(self.weight_field):
+            raise ValueError('加权平均必须且只能指定冻结权重字段')
+        if self.kind == 'pivot' and (self.group_by or self.aggregation != 'sum' or self.weight_field):
+            raise ValueError('pivot仅透视唯一单元，不声明分组聚合')
+        if len(set((self.label_field, *self.group_by))) != 1 + len(self.group_by):
+            raise ValueError('分组维度不能重复')
+        return self
+
+
+class StandardChartDerivation(StrictModel):
+    kind: Literal['ratio_percent', 'difference', 'mom_percent', 'yoy_percent',
+                  'cumulative_sum', 'rolling_sum', 'rolling_mean']
+    name: str = Field(min_length=1, max_length=200)
+    numerator: str = Field(min_length=1, max_length=200)
+    denominator: str | None = Field(default=None, max_length=200)
+    label_field: str | None = Field(default=None, alias='labelField', max_length=200)
+    group_by: tuple[str, ...] = Field(default=(), alias='groupBy', max_length=3)
+    window: int | None = Field(default=None, ge=1, le=60)
+    min_periods: int | None = Field(default=None, alias='minPeriods', ge=1, le=60)
+    reset: Literal['none', 'year'] = 'none'
+
+    @model_validator(mode='after')
+    def validate_window(self) -> StandardChartDerivation:
+        rolling = self.kind in {'rolling_sum', 'rolling_mean'}
+        if rolling != (self.window is not None):
+            raise ValueError('滚动运算必须且只能指定window')
+        if self.min_periods is not None and (not rolling or self.min_periods > (self.window or 0)):
+            raise ValueError('minPeriods仅适用于滚动运算且不能大于window')
+        if self.reset != 'none' and self.kind != 'cumulative_sum':
+            raise ValueError('按年重置仅适用于累计')
+        if self.kind in {'ratio_percent', 'difference'} and (self.group_by or self.label_field):
+            raise ValueError('同行二元运算不能指定时间或分组维度')
+        if self.kind not in {'ratio_percent', 'difference'} and (not self.label_field or self.denominator):
+            raise ValueError('时间运算须指定labelField且不能指定denominator')
+        if len(set(self.group_by)) != len(self.group_by) or self.label_field in self.group_by:
+            raise ValueError('时间分组维度重复或包含期间列')
+        return self
+
+
+class StandardChartStep(StrictModel):
+    view: StandardChartView | None = None
+    derivation: StandardChartDerivation | None = None
+
+    @model_validator(mode='after')
+    def validate_step(self) -> StandardChartStep:
+        if (self.view is None) == (self.derivation is None):
+            raise ValueError('每步必须且只能声明view或derivation')
+        return self
+
+
+class StandardChartWaterfall(StrictModel):
+    value_field: str = Field(alias='valueField', min_length=1, max_length=200)
+    absolute_labels: tuple[str, ...] = Field(alias='absoluteLabels', min_length=1, max_length=60,
+        description='绑定绝对值起点/小计/终点的冻结标签；必须含首项，后续绝对值须与前项累计对账。其他项视为有符号增减。')
+    increase_color: str = Field(default='#36856b', alias='increaseColor', pattern=r'^#[0-9a-fA-F]{6}$')
+    decrease_color: str = Field(default='#b55d68', alias='decreaseColor', pattern=r'^#[0-9a-fA-F]{6}$')
+    absolute_color: str = Field(default='#3066a3', alias='absoluteColor', pattern=r'^#[0-9a-fA-F]{6}$')
+    connectors: bool = True
+
+
+class StandardChartBoxOutliers(StrictModel):
+    source_index: Literal[1] = Field(alias='sourceIndex', description='本图第二个绑定chart-input；第一个必须为分组分位数汇总表。')
+    group_field: str = Field(alias='groupField', min_length=1, max_length=200)
+    value_field: str = Field(alias='valueField', min_length=1, max_length=200)
+
+
+class StandardChartBoxSummary(StrictModel):
+    group_field: str = Field(alias='groupField', min_length=1, max_length=200)
+    q1_field: str = Field(alias='q1Field', min_length=1, max_length=200)
+    median_field: str = Field(alias='medianField', min_length=1, max_length=200)
+    q3_field: str = Field(alias='q3Field', min_length=1, max_length=200)
+    lower_whisker_field: str = Field(alias='lowerWhiskerField', min_length=1, max_length=200)
+    upper_whisker_field: str = Field(alias='upperWhiskerField', min_length=1, max_length=200)
+    count_field: str | None = Field(default=None, alias='countField', min_length=1, max_length=200,
+        description='可选的冻结原始样本量字段；不提供则明确n未提供，不能使用汇总行数代替。')
+    outlier_source: StandardChartBoxOutliers | None = Field(default=None, alias='outlierSource',
+        description='可选的独立长表异常点来源，每行一个登记异常点，允许同值重复观测；不提供须注明异常点未提供。')
+    group_labels: tuple[str, ...] = Field(default=(), alias='groupLabels', max_length=24)
+    orientation: Literal['vertical', 'horizontal'] = 'vertical'
+    show_fliers: bool = Field(default=True, alias='showFliers')
+
+    @model_validator(mode='after')
+    def validate_summary_fields(self) -> StandardChartBoxSummary:
+        fields=[self.group_field,self.q1_field,self.median_field,self.q3_field,self.lower_whisker_field,self.upper_whisker_field]
+        if self.count_field is not None:
+            fields.append(self.count_field)
+        if len(fields)!=len(set(fields)):
+            raise ValueError('分组、五个统计值及样本量须引用不同字段')
+        return self
+
+
+class StandardChartDistribution(StrictModel):
+    value_field: str = Field(alias='valueField', min_length=1, max_length=200)
+    group_field: str = Field(alias='groupField', min_length=1, max_length=200)
+    group_labels: tuple[str, ...] = Field(default=(), alias='groupLabels', max_length=24,
+        description='当前全部分组的显式顺序，保留组内所有绑定样本。')
+    orientation: Literal['vertical', 'horizontal'] = 'vertical'
+    whisker_iqr: float = Field(default=1.5, alias='whiskerIqr', gt=0, le=5, allow_inf_nan=False)
+    show_fliers: bool = Field(default=True, alias='showFliers')
+
+
+class StandardChartEncoding(StrictModel):
+    x_field: str = Field(alias='xField', min_length=1, max_length=200)
+    y_field: str = Field(alias='yField', min_length=1, max_length=200)
+    value_field: str | None = Field(default=None, alias='valueField', max_length=200)
+    size_field: str | None = Field(default=None, alias='sizeField', max_length=200)
+    color_field: str | None = Field(default=None, alias='colorField', max_length=200)
+    group_field: str | None = Field(default=None, alias='groupField', max_length=200)
+    x_labels: tuple[str, ...] = Field(default=(), alias='xLabels', max_length=60,
+                                    description='热力图当前全部X标签的显式顺序，不能隐式丢弃类别。')
+    y_labels: tuple[str, ...] = Field(default=(), alias='yLabels', max_length=60,
+                                    description='热力图当前全部Y标签的显式顺序，不能隐式丢弃类别。')
+    x_caption: str | None = Field(default=None, alias='xCaption', max_length=60)
+    y_caption: str | None = Field(default=None, alias='yCaption', max_length=60)
+    color_caption: str | None = Field(default=None, alias='colorCaption', max_length=60)
+    size_caption: str | None = Field(default=None, alias='sizeCaption', max_length=60)
+    x_display_unit: str | None = Field(default=None, alias='xDisplayUnit', max_length=30)
+    y_display_unit: str | None = Field(default=None, alias='yDisplayUnit', max_length=30)
+    color_display_unit: str | None = Field(default=None, alias='colorDisplayUnit', max_length=30)
+    x_scale: Literal['linear', 'log', 'symlog'] = Field(default='linear', alias='xScale')
+    x_linear_threshold: float = Field(default=1, alias='xLinearThreshold', gt=0, allow_inf_nan=False)
+    color_map: Literal['viridis', 'cividis', 'Blues', 'RdBu_r', 'YlGnBu'] = Field(default='viridis', alias='colorMap')
+    color_scale: Literal['linear', 'log', 'symlog'] = Field(default='linear', alias='colorScale')
+    color_linear_threshold: float = Field(default=1, alias='colorLinearThreshold', gt=0, allow_inf_nan=False)
+    color_center: float | None = Field(default=None, alias='colorCenter', allow_inf_nan=False,
+                                       description='线性色标的显示单位中点，如正负值RdBu_r设0；必须位于实际最小/最大值之间。')
+    max_area: float = Field(default=600, alias='maxArea', ge=100, le=1600, allow_inf_nan=False,
+                            description='气泡最大面积，单位points²；面积与冻结sizeField成比例，零值面积为0。')
+    show_values: bool = Field(default=False, alias='showValues', description='热力图显示已有单元值，最多60项；缺失单元保持空白。')
+
+
+class StandardChartBand(StrictModel):
+    series: str = Field(min_length=1, max_length=200)
+    lower_field: str = Field(alias='lowerField', min_length=1, max_length=200)
+    upper_field: str = Field(alias='upperField', min_length=1, max_length=200)
+    label: str | None = Field(default=None, max_length=60)
+    alpha: float = Field(default=.18, ge=.05, le=.5, allow_inf_nan=False)
+    color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
+
+
+class StandardChartSeriesStyle(StrictModel):
+    series: str = Field(min_length=1, max_length=200)
+    label: str | None = Field(default=None, max_length=200)
+    geometry: Literal['auto', 'line', 'bar'] = 'auto'
+    color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
+    line_style: Literal['-', '--', '-.', ':'] = Field(default='-', alias='lineStyle')
+    line_width: float = Field(default=2, alias='lineWidth', ge=.5, le=6, allow_inf_nan=False)
+    marker: Literal['o', 's', '^', 'D', 'x', '.', 'none'] = 'o'
+    marker_size: float = Field(default=5, alias='markerSize', ge=1, le=12, allow_inf_nan=False)
+    alpha: float = Field(default=1, ge=.2, le=1, allow_inf_nan=False)
+    hatch: Literal['', '/', '//', '\\', 'x', '.', '+', '-'] = ''
+
+
+class StandardChartPointStyle(StrictModel):
+    series: str = Field(min_length=1, max_length=200)
+    label: str = Field(min_length=1, max_length=200)
+    color: str = Field(pattern=r'^#[0-9a-fA-F]{6}$')
+    marker_size: int = Field(default=8, alias='markerSize', ge=3, le=16)
+
+
+class StandardChartOrder(StrictModel):
+    mode: Literal['source', 'reverse', 'label', 'value', 'max_abs', 'explicit'] = 'source'
+    fields: tuple[str, ...] = Field(default=(), max_length=8)
+    field: str | None = Field(default=None, max_length=200)
+    descending: bool = False
+    labels: tuple[str, ...] = Field(default=(), max_length=60)
+    limit: int | None = Field(default=None, ge=1, le=60)
+    exclude_missing: bool = Field(default=False, alias='excludeMissing')
+
+    @model_validator(mode='after')
+    def validate_order(self) -> StandardChartOrder:
+        if (self.mode == 'max_abs') != bool(self.fields):
+            raise ValueError('最大绝对值排序必须且只能指定冻结字段集合')
+        if (self.mode == 'value') != (self.field is not None):
+            raise ValueError('数值排序必须且只能指定一个冻结字段')
+        if self.exclude_missing and self.mode != 'value':
+            raise ValueError('排除空值仅适用于明确的数值排序')
+        if (self.mode == 'explicit') != bool(self.labels):
+            raise ValueError('显式排序必须且只能提供标签顺序')
+        if self.descending and self.mode not in {'value', 'label', 'max_abs'}:
+            raise ValueError('降序仅适用于数值或标签排序')
+        return self
+
+
+class StandardChartLabelFormat(StrictModel):
+    field: str | None = Field(default=None, max_length=200)
+    numerator: str | None = Field(default=None, max_length=200)
+    denominator: str | None = Field(default=None, max_length=200)
+    caption: str | None = Field(default=None, max_length=40)
+    display_unit: str | None = Field(default=None, alias='displayUnit', max_length=30)
+    decimals: int = Field(default=2, ge=0, le=6)
+    show_sign: bool = Field(default=False, alias='showSign')
+    series: tuple[str, ...] = Field(default=(), max_length=8, description='辅助标注限定系列；空表示全部系列')
+
+    @model_validator(mode='after')
+    def validate_value_binding(self) -> StandardChartLabelFormat:
+        if self.field is not None:
+            if self.numerator is not None or self.denominator is not None:
+                raise ValueError('标注只能选择冻结字段或显式分子/分母之一')
+        elif not self.numerator or not self.denominator:
+            raise ValueError('比率标注必须指定冻结分子和分母')
+        return self
+
+
+class StandardChartSummary(StandardChartLabelFormat):
+    label: str | None = Field(default=None, max_length=200, description='多行表中唯一冻结标签；单行表可省略')
+    color: str = Field(default='#475569', pattern=r'^#[0-9a-fA-F]{6}$')
+
+
+class StandardChartPresentation(StrictModel):
+    subtitle: str | None = Field(default=None, max_length=300)
+    source_note: str | None = Field(default=None, alias='sourceNote', max_length=500)
+    label_mode: Literal['source', 'month'] = Field(default='source', alias='labelMode')
+    order: StandardChartOrder = Field(default_factory=StandardChartOrder)
+    label_formats: tuple[StandardChartLabelFormat, ...] = Field(default=(), alias='labelFormats', max_length=3)
+    summaries: tuple[StandardChartSummary, ...] = Field(default=(), max_length=4)
+
+
+class StandardChartStyle(StrictModel):
+    palette: Literal['report', 'tab10', 'Set2', 'Dark2', 'Paired', 'viridis', 'cividis'] = 'report'
+    theme: Literal['report', 'classic'] = 'report'
+    series: tuple[StandardChartSeriesStyle, ...] = Field(default=(), max_length=8)
+    points: tuple[StandardChartPointStyle, ...] = Field(default=(), max_length=60)
+    background: str = Field(default='#ffffff', pattern=r'^#[0-9a-fA-F]{6}$')
+    grid: Literal['none', 'x', 'y', 'both'] = 'y'
+    grid_alpha: float = Field(default=.2, alias='gridAlpha', ge=0, le=.8, allow_inf_nan=False)
+    title_font_size: int = Field(default=14, alias='titleFontSize', ge=10, le=24)
+    axis_font_size: int = Field(default=10, alias='axisFontSize', ge=8, le=18)
+    label_rotation: int = Field(default=45, alias='labelRotation', ge=-90, le=90)
+    legend_columns: int = Field(default=1, alias='legendColumns', ge=1, le=8)
+    legend_font_size: int = Field(default=9, alias='legendFontSize', ge=8, le=16)
+    legend_location: Literal['auto', 'best', 'upper left', 'upper right', 'lower left', 'lower right', 'upper center', 'lower center'] = Field(default='auto', alias='legendLocation')
+    decimals: int = Field(default=2, ge=0, le=6)
+    annotation_font_size: int = Field(default=8, alias='annotationFontSize', ge=8, le=16)
+    annotation_offset_x: int = Field(default=8, alias='annotationOffsetX', ge=-120, le=120)
+    annotation_offset_y: int = Field(default=8, alias='annotationOffsetY', ge=-120, le=120)
+    value_margin: float = Field(default=.1, alias='valueMargin', ge=0, le=.5, allow_inf_nan=False)
+    bar_group_width: float = Field(default=.64, alias='barGroupWidth', ge=.3, le=.9, allow_inf_nan=False)
+    annotation_leader: bool = Field(default=False, alias='annotationLeader')
+    annotation_color: Literal['series', 'neutral'] = Field(default='series', alias='annotationColor')
+
+    @model_validator(mode='after')
+    def unique_series(self) -> StandardChartStyle:
+        if len({item.series for item in self.series}) != len(self.series):
+            raise ValueError('系列样式名称不能重复')
+        if len({(item.series, item.label) for item in self.points}) != len(self.points):
+            raise ValueError('同一系列标签的样式不能重复')
+        return self
+
+
+class StandardChartCanvas(StrictModel):
+    size_mode: Literal['auto', 'fixed'] = Field(default='auto', alias='sizeMode')
+    width: float = Field(default=12, ge=4, le=20, allow_inf_nan=False, description='英寸')
+    height: float = Field(default=7, ge=3, le=24, allow_inf_nan=False, description='英寸')
+    dpi: int = Field(default=150, ge=72, le=240)
+    layout: Literal['tight', 'constrained', 'manual'] = 'tight'
+    crop: Literal['canvas', 'tight'] = 'canvas'
+    padding: float = Field(default=.25, ge=0, le=1, allow_inf_nan=False)
+    left: float = Field(default=.12, ge=0, le=.45, allow_inf_nan=False)
+    right: float = Field(default=.94, ge=.55, le=1, allow_inf_nan=False)
+    bottom: float = Field(default=.16, ge=0, le=.45, allow_inf_nan=False)
+    top: float = Field(default=.90, ge=.55, le=1, allow_inf_nan=False)
+    label_wrap: int = Field(default=14, alias='labelWrap', ge=6, le=40)
+    tick_font_size: int = Field(default=9, alias='tickFontSize', ge=8, le=16)
+    max_category_ticks: int = Field(default=18, alias='maxCategoryTicks', ge=4, le=60,
+                                    description='纵向图横轴标签过密时显示的最大标签数；所有数据点仍完整绘制')
+    legend_position: Literal['auto', 'inside', 'outside'] = Field(default='auto', alias='legendPosition')
+
+    @model_validator(mode='after')
+    def validate_pixel_budget(self) -> StandardChartCanvas:
+        if self.width * self.height * self.dpi ** 2 > 24_000_000:
+            raise ValueError('标准画布不能超过2400万像素')
+        return self
+
+
+class StandardChartPagination(StrictModel):
+    page_size: int = Field(alias='pageSize', ge=1, le=60, strict=True,
+        description='每页冻结类别数；宿主展开为独立登记图，覆盖全部绑定类别，不截掉末页。')
+    max_pages: int = Field(default=20, alias='maxPages', ge=1, le=20, strict=True,
+        description='允许生成的最多页数；超限整图回退，不只保留前几页。')
+
+
 class ChartDraft(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
@@ -290,6 +710,78 @@ class ChartDraft(StrictModel):
     aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
     comparability: Literal["strict", "reference_only"] = "strict"
     visual_form: str = Field(alias="visualForm", min_length=1, max_length=200)
+    standard_value_fields: tuple[str, ...] = Field(
+        default=(), alias="standardValueFields", max_length=8,
+        description="标准静态图明确选择的数值列，必须来自绑定的chart-input；可排除同表辅助排名/占比列。空数组按全部数值列预检。",
+    )
+    standard_annotations: tuple[StandardChartAnnotation, ...] = Field(
+        default=(), alias='standardAnnotations', max_length=10,
+        description='标准图标注：values数值、peak峰值、trough谷值、point重点、reference以冻结点值为参考线、range重点区间。series必须是已选数值列或长表分类；label/endLabel逐字引用标签。不接受模型编写数值。',
+    )
+    standard_axes: StandardChartAxes = Field(
+        default_factory=StandardChartAxes, alias='standardAxes',
+        description='显式轴策略：dual用rightFields指定右轴系列；panels逐系列共享横轴分面；log只允许严格正数折线；zoom用冻结标签zoomStart/zoomEnd选择局部放大，主图保持完整。',
+    )
+    standard_domains: StandardChartDomains | None = Field(default=None, alias='standardDomains',
+        description='数值轴显示范围/刻度/格式，数值按显示单位填写；left/right/x/zoom/panels显式定位，默认不得裁切数据，缩小显示须outOfRange=annotate且说明超界。')
+    standard_break: StandardChartAxisBreak | None = Field(default=None, alias='standardBreak',
+        description='线性单值轴双区间断轴，显式省略区间并画断轴标记；保留完整数据，默认不隐藏省略区间或外界数据。支持纵向柱线/堆叠/范围带和barh横向分组柱图；不与standardDomains或多轴组合。')
+    standard_pagination: StandardChartPagination | None = Field(default=None, alias='standardPagination',
+        description='宽表单轴bar/barh按完整冻结类别顺序自动拆页；宿主生成每页独立身份、图片与报告引用，统一数值范围/系列颜色。不可在单图模板中忽略该参数；超限或不支持组合整图回退。')
+    standard_canvas: StandardChartCanvas = Field(
+        default_factory=StandardChartCanvas, alias='standardCanvas',
+        description='统一画布：width/height单位英寸，dpi、自动/固定尺寸、布局、裁切、留白、换行、字号及图例位置。固定尺寸且crop=canvas时导出像素由尺寸乘DPI确定。',
+    )
+    standard_style: StandardChartStyle = Field(
+        default_factory=StandardChartStyle, alias='standardStyle',
+        description='可自由组合的标准表现参数：调色板、按冻结系列名称设置颜色/线型/线宽/点型/透明度/柱纹理、网格、字号、标签旋转、图例列数与位置、数值精度、标注偏移和值轴留白；不改变冻结数据。可与画布、双轴、分面、局部放大和标注组合。超出标准能力使用Coding路线。',
+    )
+    standard_presentation: StandardChartPresentation = Field(
+        default_factory=StandardChartPresentation, alias='standardPresentation',
+        description='报告排版：subtitle副标题/sourceNote来源说明；labelMode=month简写月份；order明确排序、前N项及缺失值排除；labelFormats为冻结辅助字段指定单位/简称/精度，或按同单位冻结numerator/denominator计算百分比；summaries绑定冻结行的字段生成摘要徽章，不接受模型编造数值。',
+    )
+    standard_sources: tuple[StandardChartSource, ...] = Field(
+        default=(), alias='standardSources', max_length=8,
+        description='多来源作图显式选择：sourceIndex按本图chart-input顺序从0计数，labelField/valueField必须是来源现有列，seriesName为唯一图例名称。标签集合必须完全一致，单位只从冻结元数据读取。',
+    )
+    standard_source_labels: tuple[str, ...] = Field(default=(), alias='standardSourceLabels', max_length=60,
+        description='standardSources显式共同输入窗口，须包含计算需要的历史；有数据变换时standardLabels只选择最终展示窗口。')
+    standard_label_field: str | None = Field(default=None, alias='standardLabelField', max_length=200,
+                                           description='显式标签列；忽略未选择的其他文本辅助列，视图转换后仍须存在。')
+    standard_view: StandardChartView | None = Field(default=None, alias='standardView',
+        description='group按labelField及可选groupBy分组，对valueFields做sum/mean/weighted_mean（须weightField）；只处理绑定输入行。pivot以seriesField的seriesValues将一个度量透视为系列，不合并重复单元或填零。')
+    standard_derivations: tuple[StandardChartDerivation, ...] = Field(
+        default=(), alias='standardDerivations', max_length=8,
+        description='视图后计算新列：同单位ratio_percent/difference；按labelField及groupBy计算mom_percent/yoy_percent/cumulative_sum/rolling_sum/rolling_mean。滚动须window，minPeriods默认完整窗口；累计reset=year显式按年重置。name不得覆盖原列，缺失保留null。',
+    )
+    standard_steps: tuple[StandardChartStep, ...] = Field(default=(), alias='standardSteps', max_length=8,
+        description='按顺序执行最多8步view/derivation，可多维分组→分组累计/同比/滚动→透视；不能与standardView/standardDerivations混用。')
+    standard_encoding: StandardChartEncoding | None = Field(default=None, alias='standardEncoding',
+        description='scatter/bubble显式绑定数值xField/yField，可用groupField或colorField、sizeField；heatmap用文本xField/yField及数值valueField。单位来自冻结元数据。')
+    standard_waterfall: StandardChartWaterfall | None = Field(default=None, alias='standardWaterfall',
+        description='waterfall绑定有符号valueField及absoluteLabels起点/小计/终点；后续绝对值必须与累计对账，禁止补造或截取贡献项。')
+    standard_distribution: StandardChartDistribution | None = Field(default=None, alias='standardDistribution',
+        description='boxplot绑定长表groupField及原始样本valueField；最多480样本、24组，由Matplotlib计算线性四分位和IQR须，不从汇总均值伪造分布。')
+    standard_box_summary: StandardChartBoxSummary | None = Field(default=None, alias='standardBoxSummary',
+        description='boxplot直接读取第一个绑定输入的冻结分位数/中位数/须，每组一行；可声明原始样本量及第二个绑定输入的异常点长表。未知n或异常点必须说明，不推断IQR，不与原始样本模式混用。')
+    standard_bands: tuple[StandardChartBand, ...] = Field(default=(), alias='standardBands', max_length=8,
+        description='折线范围带：series绑定中心值，lowerField/upperField绑定同单位冻结上下界；只显示已有范围，不自动估算置信区间。')
+    standard_label_fields: tuple[str, ...] = Field(
+        default=(), alias='standardLabelFields', max_length=3,
+        description='数值标注附带的冻结辅助列，如占比、差额、预算；必须为同表已登记单位的有限数值列，不改变坐标轴。',
+    )
+    standard_display_unit: str | None = Field(
+        default=None, alias='standardDisplayUnit', max_length=30,
+        description='单轴图显示单位，如元转亿元；必须由服务端登记单位换算，不能提交自由倍率。',
+    )
+    standard_labels: tuple[str, ...] = Field(
+        default=(), alias='standardLabels', max_length=60,
+        description='显式选择的冻结横轴标签，必须唯一且全部存在；按原输入顺序显示，不从标题推断窗口。',
+    )
+    standard_total_field: str | None = Field(
+        default=None, alias='standardTotalField', max_length=200,
+        description='stacked-total指定独立总额系列；须与每个标签的其他分项合计对账，不能重复计入堆叠。',
+    )
     data_bindings: tuple[ChartDataBinding, ...] = Field(
         alias="dataBindings", min_length=1, max_length=100
     )

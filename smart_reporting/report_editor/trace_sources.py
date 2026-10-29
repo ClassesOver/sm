@@ -2003,7 +2003,7 @@ class ReportEditorTraceService:
         登记不存在视为空；损坏只降级该展示数据并告警，不影响来源面板其余内容。
         """
 
-        from .chart_edits import load_chart_edit_records
+        from .chart_edits import chart_edit_page_src, chart_edit_pages, load_chart_edit_records
 
         scope = getattr(context, "scope", None)
         markdown_path = getattr(context, "markdown_path", None)
@@ -2033,6 +2033,13 @@ class ReportEditorTraceService:
                     "instruction": record.instruction[:200],
                     "level": list(record.level),
                     "createdAt": record.created_at,
+                    "pages": [
+                        {"pageNumber": page.page_number, "pageCount": len(chart_edit_pages(record)),
+                         "imagePath": page.image.path,
+                         "imageSrc": chart_edit_page_src(context.markdown_path, record.edit_id, page.page_number),
+                         "title": page.chart.title, "altText": page.chart.alt_text}
+                        for page in chart_edit_pages(record)
+                    ],
                 }
             )
         for entry in summaries.values():

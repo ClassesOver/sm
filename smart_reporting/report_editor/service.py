@@ -63,8 +63,11 @@ from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from ..workspace import WorkspaceError, WorkspacePathConflict
 from .capabilities import EditorCapabilities
+from .chart_continuation import migrate_chart_edit_records
 from .chart_edits import (
     CHART_EDITS_DIR,
+    chart_edit_page_chart_id,
+    chart_edit_pages,
     chart_edit_summary,
     load_chart_edit_records,
     load_table_edit_records,
@@ -1201,8 +1204,9 @@ class ReportEditorService:
             )
             return None
         for record in records:
-            if record.image.path == path:
-                return record.image.as_identity()
+            for page in chart_edit_pages(record):
+                if page.image.path == path:
+                    return page.image.as_identity()
         return None
 
     @source_lifecycle
@@ -2362,13 +2366,30 @@ class ReportEditorService:
                     size=len(document.markdown.encode()), sha256=document.sha256,
                 )
                 try:
-                    _, next_manifest_identity = await snapshot_revision_lineage(
+                    next_manifest, next_manifest_identity = await snapshot_revision_lineage(
                         self.workspace, scope.workspace_key,
                         manifest=awaitable_manifest, index=trace_index,
                         markdown_file=next_markdown, target_revision=next_revision,
                         path_map=path_map,
                         manifest_path=str(PurePosixPath(markdown_path).with_name("artifact-manifest.json")),
                     )
+                    try:
+                        if trace_index is not None:
+                            await migrate_chart_edit_records(
+                                self.workspace, scope.workspace_key,
+                                source_markdown_path=source_context.markdown_path,
+                                target_markdown_path=markdown_path,
+                                path_map=path_map, manifest=next_manifest, index=trace_index,
+                            )
+                    except Exception as error:  # noqa: BLE001 - 编辑连续性不可阻断下载或丢弃正式追溯
+                        lineage_issues.append({
+                            "code": "report_editor_chart_continuation_unavailable",
+                            "message": "新版本图表已登记，但改图分页和参数恢复失败，请核对后重新选择模板。",
+                        })
+                        logger.opt(exception=error).warning(
+                            "report_editor_chart_continuation_unavailable report_id={} revision={}",
+                            context.report_id, next_revision,
+                        )
                 except Exception as error:  # noqa: BLE001 - PDF/Word 已生成，追溯降级
                     lineage_issues.append(_lineage_unavailable_issue(error, rendered=True))
                     next_manifest_identity = None
@@ -2682,12 +2703,29 @@ class ReportEditorService:
         )
         if not records:
             return {}, None
+        charts_by_id = {item.chart_id: item for item in manifest.charts}
+        # 已随正式版本迁移的连续编辑记录只恢复参数与页组；其图片和输入
+        # 已由 manifest/index 登记，不能再次当作待发布的新改图覆盖自己。
+        baseline_records = [record for record in records if all(
+            (registered := charts_by_id.get(chart_edit_page_chart_id(record, page.page_number))) is not None
+            and registered.path == page.image.path
+            and registered.sha256 == page.image.sha256
+            and registered.size == page.image.size
+            and registered.dataset_ids == page.chart.dataset_ids
+            for page in chart_edit_pages(record)
+        )]
+        baseline_ids = {record.edit_id for record in baseline_records}
+        page_records = [
+            (record.model_copy(update={"image": page.image, "chart": page.chart, "pages": ()}),
+             chart_edit_page_chart_id(record, page.page_number))
+            for record in records if record.edit_id not in baseline_ids
+            for page in chart_edit_pages(record)
+        ]
         files = {item.resource_id: item for item in index.files}
         traces_by_chart = {item.chart_id: item for item in index.chart_traces}
-        charts_by_id = {item.chart_id: item for item in manifest.charts}
         edited_registered = {
             record.image.path: record.chart.dataset_ids
-            for record in records
+            for record, _page_chart_id in page_records
             if record.chart_id in traces_by_chart
         }
         bindings = _markdown_image_bindings(
@@ -2699,13 +2737,25 @@ class ReportEditorService:
             } | edited_registered,
         )
         referenced = set(bindings)
+        page_positions = {
+            page.image.path: (page.page_number, len(chart_edit_pages(record)))
+            for record in records for page in chart_edit_pages(record)
+        }
+        for record in records:
+            page_paths = {page.image.path for page in chart_edit_pages(record)}
+            if page_paths & referenced and not page_paths.issubset(referenced):
+                raise ReportingError("snapshot_integrity_failed", "改图分页未完整引用；不能将部分页面登记为完整分页。")
         edited_charts: dict[str, ChartArtifact] = {}
         new_files: list[TraceFileRefV1] = []
         new_traces: list[ChartTraceV1] = []
         known_paths = {item.path for item in index.files}
-        for record in records:
+        exported_ids: set[str] = set()
+        for record, page_chart_id in page_records:
             if record.image.path not in referenced:
                 continue
+            if page_chart_id in exported_ids or page_chart_id in traces_by_chart and page_chart_id != record.chart_id:
+                raise ReportingError("snapshot_integrity_failed", "改图分页图表标识冲突，不能覆盖其他登记图表。")
+            exported_ids.add(page_chart_id)
             trace = traces_by_chart.get(record.chart_id)
             original = charts_by_id.get(record.chart_id)
             if trace is None or original is None:
@@ -2780,7 +2830,7 @@ class ReportEditorService:
                 media_type=media_type,
                 size=record.image.size,
                 sha256=record.image.sha256,
-                chart_id=record.chart_id,
+                chart_id=page_chart_id,
                 dataset_ids=record.chart.dataset_ids,
                 renderer="matplotlib",
             )
@@ -2807,6 +2857,9 @@ class ReportEditorService:
                 )
                 known_paths.add(record.script.path)
             notes = [f"编辑器 AI 改图：{chart_edit_summary(record.instruction)}"]
+            page_number, page_count = page_positions[record.image.path]
+            if page_count > 1:
+                notes.append(f"完整分页：第{page_number}/{page_count}页；同组全部页面已核验并引用。")
             if data_origin == "rebound":
                 notes.append(
                     "换绑数据："
@@ -2822,7 +2875,7 @@ class ReportEditorService:
             )
             new_traces.append(
                 ChartTraceV1(
-                    chart_id=record.chart_id,
+                    chart_id=page_chart_id,
                     presentation_sha256=None,
                     image_file_resource_id=derive_resource_id(record.image.path),
                     plot_data_file_resource_ids=(
@@ -2838,11 +2891,25 @@ class ReportEditorService:
         if not edited_charts:
             return {}, None
         replaced = {item.chart_id: item for item in new_traces}
+        retired_ids = {
+            chart_edit_page_chart_id(record, page.page_number)
+            for record in baseline_records if record.chart_id in replaced
+            for page in chart_edit_pages(record) if page.page_number > 1
+        }
         chart_traces = tuple(
             replaced.get(item.chart_id, item) for item in index.chart_traces
-        )
+            if item.chart_id not in retired_ids
+        ) + tuple(item for item in new_traces if item.chart_id not in traces_by_chart)
         augmented = index.model_copy(
-            update={"files": (*index.files, *new_files), "chart_traces": chart_traces}
+            update={
+                "files": (*index.files, *new_files), "chart_traces": chart_traces,
+                # 删除的旧分页不再是当前正文的数值定位对象；不能把旧定位
+                # 静默移到新页。其冻结事实文件仍保留，后续校验按未绑定处理。
+                "subject_bindings": tuple(
+                    subject for subject in index.subject_bindings
+                    if subject.locator.chart_id not in retired_ids
+                ),
+            }
         )
         # 新图注指纹按当前草稿正文冻结；重新校验保证追加的文件引用闭环。
         augmented = freeze_chart_presentations(augmented, markdown)
