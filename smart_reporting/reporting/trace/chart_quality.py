@@ -82,7 +82,8 @@ def evaluate_chart_quality(
                 )
                 == 1
             )
-            fingerprints = chart_fingerprints(presentations, image.path, allow_filename=unique)
+            fingerprints = chart_fingerprints(presentations, image.path, allow_filename=unique,
+                                              markdown_path=files[index.markdown_file_resource_id].path)
             if chart.presentation_sha256 is None or fingerprints != [chart.presentation_sha256]:
                 raise ValueError(reason)
             if image.path not in interactive_charts:

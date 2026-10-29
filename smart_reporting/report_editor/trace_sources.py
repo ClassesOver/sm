@@ -17,7 +17,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import partial
 from pathlib import Path, PurePosixPath
 from time import perf_counter
@@ -54,6 +54,8 @@ from .capabilities import EditorCapabilities
 from .trace_exports import TraceDerivedExportService
 
 _MAX_INDEX_BYTES = 4 * 1024 * 1024
+# 多分析项的完整追溯索引可超过普通元数据预算；仍保留独立的有界读取。
+_MAX_TRACE_INDEX_BYTES = 16 * 1024 * 1024
 _DRILLDOWN_TIMEOUT_SECONDS = 10.0
 _DRILLDOWN_LARGE_FILE_BYTES = 64 * 1024 * 1024
 
@@ -203,8 +205,10 @@ def check_mismatched(check: Any) -> bool:
 
 
 class ReportEditorTraceService:
-    def __init__(self, workspace: Any, *, cursor_secret: bytes) -> None:
+    def __init__(self, workspace: Any, *, cursor_secret: bytes,
+                 chart_edit_lineage: Callable[..., Awaitable[Any]] | None = None) -> None:
         self._workspace = workspace
+        self._chart_edit_lineage = chart_edit_lineage
         self._preview = TraceCsvPreviewService(secret=cursor_secret)
         self._drilldown = TraceDrilldownService(secret=cursor_secret)
         self._drilldown_limiter = anyio.CapacityLimiter(4)
@@ -264,7 +268,7 @@ class ReportEditorTraceService:
         if manifest is None or manifest.trace_index is None:
             return None
         content = await self._read_registered_file(
-            context, manifest.trace_index, max_bytes=_MAX_INDEX_BYTES
+            context, manifest.trace_index, max_bytes=_MAX_TRACE_INDEX_BYTES
         )
         try:
             index = RevisionTraceIndexV1.model_validate_json(content)
@@ -1394,7 +1398,26 @@ class ReportEditorTraceService:
             file = files[index.markdown_file_resource_id]
             committed = await self._read_registered_file(context, file, max_bytes=16 * 1024 * 1024)
             index = freeze_chart_presentations(index, committed.decode("utf-8"))
+        original_chart_images = {chart.chart_id: files[chart.image_file_resource_id].path for chart in index.chart_traces}
+        try:
+            index = await self._draft_chart_index(context, index, markdown)
+            files = {item.resource_id: item for item in index.files}
+        except Exception as error:
+            # 改图来源损坏只降级相应绑定，不中断正文校验或产物签发。
+            from .chart_edits import chart_edits_registry_path
+
+            source_failures[derive_resource_id(chart_edits_registry_path(context.markdown_path))] = (
+                error.code if isinstance(error, ReportingError) else 'chart_edit_lineage_unavailable'
+            )
+            logger.warning('editor_draft_chart_lineage_unavailable reason={}', type(error).__name__)
         charts_payload = self._evaluate_charts(index, markdown)
+        from .chart_edits import CHART_EDIT_ID_PATTERN
+
+        for chart in charts_payload:
+            parent = PurePosixPath(chart['imagePath'] or '').parent
+            if (chart['status'] != 'unbound' and original_chart_images.get(chart['chartId']) != chart['imagePath']
+                    and parent.parent.name == 'chart-edits' and CHART_EDIT_ID_PATTERN.fullmatch(parent.name)):
+                chart['editId'] = parent.name
         from ..reporting.trace.content_review import review_content
 
         # 未绑定数值的趋势段也需要复核，不能只加载已有数值锚点引用的事实。
@@ -1592,11 +1615,12 @@ class ReportEditorTraceService:
     @staticmethod
     def _evaluate_charts(index: Any, draft_markdown: str) -> list[dict[str, Any]]:
         """图表唯一定位；图题/紧邻图注变化给出软语义 stale。"""
-        from ..reporting.trace.chart_subjects import chart_fingerprints, chart_presentations
+        from ..reporting.trace.chart_subjects import chart_fingerprints, chart_image_paths, chart_presentations
 
         charts: list[dict[str, Any]] = []
         files = {item.resource_id: item for item in index.files}
         presentations = chart_presentations(draft_markdown)
+        markdown_path = files[index.markdown_file_resource_id].path
         registered_paths: set[str] = set()
         for trace in index.chart_traces:
             image = files.get(trace.image_file_resource_id)
@@ -1604,18 +1628,19 @@ class ReportEditorTraceService:
                 PurePosixPath(files[item.image_file_resource_id].path).name == PurePosixPath(image.path).name
                 for item in index.chart_traces
             ) == 1
-            fingerprints = chart_fingerprints(presentations, image.path, allow_filename=unique_name) if image else []
+            fingerprints = chart_fingerprints(presentations, image.path, allow_filename=unique_name, markdown_path=markdown_path) if image else []
             if image is not None:
                 registered_paths.add(image.path)
                 # 重名裸文件名已由上述未绑定记录覆盖，不能再追加为新图片。
                 # 是否能绑定仍由 unique_name 控制；其他目录的路径仍须独立计数。
                 registered_paths.add(PurePosixPath(image.path).name)
+                registered_paths.update(chart_image_paths(image.path, allow_filename=unique_name, markdown_path=markdown_path))
             status = "unbound" if len(fingerprints) != 1 else (
                 "valid" if fingerprints[0] == trace.presentation_sha256 else "stale"
             )
             location_source = None
             if image is not None and len(fingerprints) == 1:
-                allowed_paths = {image.path, PurePosixPath(image.path).name} if unique_name else {image.path}
+                allowed_paths = chart_image_paths(image.path, allow_filename=unique_name, markdown_path=markdown_path)
                 location_source = next(path for path in presentations if path in allowed_paths)
             charts.append(
                 {
@@ -1805,8 +1830,10 @@ class ReportEditorTraceService:
                     if source_cell is not None and source_cell_of is not None:
                         selected = await source_cell_of(source_cell)
                         if selected is not None:
-                            from ..reporting.trace.table_sources import source_cell_text
-                            value, unit = source_cell_text(selected['value']), None
+                            from ..reporting.trace.table_sources import source_cell_display
+                            value, unit = source_cell_display(
+                                selected, cell.column_key, display_format=trace.source_cell_display,
+                            ), None
                     frozen_values.append((cell, value, unit, source_cell is not None))
                 for cell, fact_value, fact_unit, has_source_cell in frozen_values:
                     row = row_by_key.get(cell.row_key)
@@ -2078,6 +2105,19 @@ class ReportEditorTraceService:
             )
         return {"available": True, "charts": charts_payload}
 
+    async def _draft_chart_index(self, context: Any, index: Any, markdown: str) -> Any:
+        """来源预览与导出共用同一改图核验，不凭图片路径推断来源。"""
+        if self._chart_edit_lineage is None:
+            return index
+        manifest = await self.load_manifest(context)
+        if manifest is None:
+            return index
+        _charts, edited_index = await self._chart_edit_lineage(
+            context, markdown=markdown, markdown_path=context.markdown_path, manifest=manifest, index=index,
+            draft=True,
+        )
+        return edited_index if edited_index is not None else index
+
     async def chart_source(
         self,
         context: Any,
@@ -2086,6 +2126,7 @@ class ReportEditorTraceService:
         session_capabilities: CapabilitiesInput = None,
         preview_limit: int = 20,
         preview_offset: int = 0,
+        edit_id: str | None = None,
     ) -> dict[str, Any]:
         """图表来源详情：图片/作图数据身份 + 作图表有界预览（计划 5.1）。
 
@@ -2095,6 +2136,26 @@ class ReportEditorTraceService:
         """
 
         index = await self.require_index(context)
+        edited_page = None
+        if edit_id is not None:
+            from .chart_edits import chart_edit_page_chart_id, chart_edit_page_src, chart_edit_pages, load_chart_edit_records
+
+            try:
+                records = await load_chart_edit_records(self._workspace, context.scope['threadId'], context.markdown_path)
+            except ValueError as error:
+                raise ReportingError('snapshot_integrity_failed', '改图来源登记无法解析。') from error
+            record = next((item for item in records if item.edit_id == edit_id), None)
+            if record is None or chart_id not in {chart_edit_page_chart_id(record, page.page_number) for page in chart_edit_pages(record)}:
+                raise ReportingError('source_missing', '改图不在当前修订的来源登记中。')
+            for page in chart_edit_pages(record):
+                expected_path = PurePosixPath(context.markdown_path).parent / chart_edit_page_src(context.markdown_path, record.edit_id, page.page_number)
+                if page.image.path != expected_path.as_posix():
+                    raise ReportingError('snapshot_integrity_failed', '改图图片不属于当前修订的登记目录。')
+                if chart_edit_page_chart_id(record, page.page_number) == chart_id:
+                    edited_page = page
+            # 显式选择正文入口绑定的完整改图组；不依赖尚未完成的自动保存，也不猜最新一次任务。
+            markdown = '\n\n'.join(f'![改图]({chart_edit_page_src(context.markdown_path, record.edit_id, page.page_number)})' for page in chart_edit_pages(record))
+            index = await self._draft_chart_index(context, index, markdown)
         trace = next(
             (item for item in index.chart_traces if item.chart_id == chart_id),
             None,
@@ -2103,6 +2164,11 @@ class ReportEditorTraceService:
             raise ReportingError("source_missing", "图表不在当前修订的来源索引中。")
         files = {item.resource_id: item for item in index.files}
         image_ref = files[trace.image_file_resource_id]
+        if edited_page is not None and (
+            (image_ref.path, image_ref.size, image_ref.sha256) != (edited_page.image.path, edited_page.image.size, edited_page.image.sha256)
+            or trace.dataset_ids != edited_page.chart.dataset_ids
+        ):
+            raise ReportingError('snapshot_integrity_failed', '改图来源与所选图片登记身份不一致。')
         if not 1 <= preview_limit <= TRACE_BUDGETS_V1["preview_max_rows_per_page"]:
             raise ReportingError(
                 "request_invalid",

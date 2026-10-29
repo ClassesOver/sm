@@ -276,3 +276,8 @@ describe('evidence state', () => {
     expect(evidenceRefId(dataset('fact-a'))).toBe('dataset:fact-a')
   })
 })
+it('同一图表的原图与不同改图来源不能复用同一缓存任务', () => {
+  const base = { kind: 'chart' as const, key: 'chart_001', label: '收入' }
+  expect(evidenceRefId({ ...base, editId: 'cedit-12345678' })).not.toBe(evidenceRefId(base))
+  expect(evidenceRefId({ ...base, editId: 'cedit-12345678' })).not.toBe(evidenceRefId({ ...base, editId: 'cedit-abcdefgh' }))
+})

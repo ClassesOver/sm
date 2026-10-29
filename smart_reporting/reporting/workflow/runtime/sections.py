@@ -4473,6 +4473,7 @@ class RuntimeSectionsMixin:
                     for trace, markdown in build_supplemental_tables(
                         document, file_resource_id=derive_resource_id(identity.path),
                         dataset_ids=evidence.dataset_ids,
+                        dataset_contexts=self._state(run_context).get("report_analysis_data_context", ()),
                     ):
                         tables.append(ReportServerTable(sectionCode=section_code, markdown=markdown))
                         traces.append(trace)

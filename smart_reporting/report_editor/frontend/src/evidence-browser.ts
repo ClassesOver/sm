@@ -1119,6 +1119,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   }
 
   const showShell = () => {
+    document.body.classList.add('evidence-is-open')
+    document.dispatchEvent(new CustomEvent('report-panel-open', { detail: 'evidence' }))
     if (!isOpen) options.onOpen?.()
     isOpen = true
     shell.hidden = false
@@ -1133,6 +1135,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   }
 
   function hideShell() {
+    document.body.classList.remove('evidence-is-open')
     navigationIntent += 1
     directoryController?.abort()
     isOpen = false

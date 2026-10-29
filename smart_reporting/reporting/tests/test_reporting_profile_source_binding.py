@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -75,6 +76,59 @@ def test_ruijin_profile包含收入汇总权威指标定义() -> None:
     metric = next(item for item in profile.metrics if item.code == "income_summary_total")
     assert metric.field_ref == "rj.rj.dwd_hdc_income_summary_view.indicator_value"
     assert metric.aggregation == "sum"
+
+
+def test_ruijin_income_semantics_produce_executable_standard_grouping():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        build_deterministic_analysis_bundle,
+    )
+    from smart_reporting.reporting.tests.test_deterministic_analysis import analysis, context
+    from smart_reporting.reporting.workflow.runtime.standard_supplemental import (
+        StandardSupplementalRequest,
+        run_standard_supplemental,
+        standard_computation_catalog,
+    )
+
+    registry = load_configured_reporting_profiles(Path("deploy/agentos/reporting"))
+    profile = bind_reporting_profile_sources(resolve_reporting_profile(registry, "ruijin"), {"rj": "rj"})
+    semantic = next((item for item in profile.measure_semantics
+                     if item.field_ref == "rj.rj.dwd_hdc_income_summary_view.indicator_value"), None)
+    assert semantic is not None, "收入汇总缺少受信时间可加语义，标准补证目录会为空"
+    csv = b"data_date,area,indicator_value\n2025-01-01,A,10\n2025-01-01,B,20\n2025-02-01,A,30\n"
+    digest = hashlib.sha256(csv).hexdigest()
+    ctx = context("current").model_copy(update={
+        "fields": ("data_date", "area", "indicator_value"), "numeric_fields": ("indicator_value",),
+        "metric_semantics": (semantic.model_dump(mode="json", by_alias=True),),
+        "organization_grain": ("area",), "time_series_sort_field": "data_date",
+        "period_granularities": {"data_date": "month"}, "sha256": digest,
+    })
+    item = analysis(fields=("indicator_value",)).model_copy(update={
+        "dataset_ids": ("current",), "organization_grain": ("area",),
+        "periods": ("2025-01", "2025-02"),
+    })
+    bundle = build_deterministic_analysis_bundle(item, (("current", csv, ctx, ("current",)),))
+    parent, = bundle.metrics
+    assert parent.period_aggregation == "sum"
+    catalog = standard_computation_catalog(bundle, [{
+        "datasetId": "current", "sha256": digest,
+        "columns": ["data_date", "area", "indicator_value"],
+    }], item.periods)
+    assert catalog["groupingSources"]["totalItems"] == 1
+    assert any(candidate["standardComputation"]["operation"] == "group_period_series"
+               for candidate in catalog["candidates"])
+    result = run_standard_supplemental(
+        analysis_id=item.analysis_id, dataset_ids=("current",),
+        authorized_fields=ctx.fields, csv_content=csv,
+        request=StandardSupplementalRequest(
+            operation="group_summary", datasetId="current", outputName="院区收入",
+            measureField="indicator_value", measureUnit="元", dimensionField="area",
+            periodField="data_date", periodGranularity="month",
+            currentPeriods=("2025-01-01", "2025-02-01"), parentTotal=60,
+        ),
+    )
+    finding = result["findings"][0]
+    rows = [dict(zip(finding["columns"], row)) for row in finding["rows"]]
+    assert {row["area"]: row["value"] for row in rows} == {"A": 40, "B": 20}
 
 
 def test_ruijin_profile工作量排除口径与真实字段说明一致() -> None:

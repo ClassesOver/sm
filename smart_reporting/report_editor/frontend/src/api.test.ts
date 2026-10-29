@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { ReportEditorClient } from './api'
 
 describe('ReportEditorClient', () => {
+  it('来源详情请求绑定指定改图版本，不猜最近完成的改图', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ datasetIds: [] })))
+    const client = new ReportEditorClient('/editor', fetcher)
+    await client.chartSource('chart_001', { editId: 'cedit-12345678', limit: 1 })
+    expect(fetcher.mock.calls[0][0]).toBe('/editor/api/charts/chart_001/source?limit=1&edit_id=cedit-12345678')
+  })
   it('returns the registered canonical visual form and tolerates legacy records without it', async () => {
     const base = { editId: 'cedit-old12345', chartId: 'chart_001', imagePath: 'reports/revision-1/chart.png' }
     const fetcher = vi.fn<typeof fetch>()

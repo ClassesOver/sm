@@ -3480,6 +3480,50 @@ async def test_visualization_section_task_stops_fatal_infra_failure_after_single
     assert runtime._persist_reporting_checkpoint.await_count >= 1
 
 
+@pytest.mark.anyio
+async def test_visualization_submit_keeps_preflight_plot_data(monkeypatch):
+    from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
+    from smart_reporting.reporting.workflow.runtime.chart_inputs import (
+        ChartInputFile,
+        ChartInputMaterialization,
+    )
+
+    chart = SimpleNamespace(chart_id="chart-1", data_bindings=())
+    plan = SimpleNamespace(
+        charts=(chart,),
+        model_dump=lambda **_kwargs: {"charts": [{"chartId": "chart-1", "title": "收入"}]},
+    )
+    file = ChartInputFile("charts/input.json", b'{"rows": [[1]]}')
+    inputs = ChartInputMaterialization(
+        files=(file,),
+        entries=({"chartId": "chart-1", "path": file.path, "sha256": file.sha256},),
+    )
+    prepare = AsyncMock(return_value=inputs)
+    monkeypatch.setattr(reporting_analysis, "prepare_chart_inputs", prepare)
+    monkeypatch.setattr(reporting_analysis, "_visualization_registration_payload",
+                        lambda _chart: {"chartId": "chart-1"})
+    from smart_reporting.reporting.workflow.runtime import standard_visualization
+    monkeypatch.setattr(standard_visualization, "standard_plan_diagnostics",
+                        lambda *_args: [])
+
+    async def workflow_run(workflow, _payload, run_context):
+        await workflow.preflight_plan(plan, run_context)
+        await workflow.submit(plan, (), run_context)
+        return SimpleNamespace(plan=plan)
+
+    runtime, toolkit, run_section = _final_attempt_runtime(monkeypatch, AsyncMock())
+    runtime._run_workspace = lambda _context: object()
+    monkeypatch.setattr(reporting_analysis.VisualizationSectionWorkflow, "run", workflow_run)
+    await run_section()
+
+    prepare.assert_awaited_once()
+    assert toolkit.submit_visualization_charts.await_args.kwargs["plot_data_files"] == (
+        {"chartId": "chart-1", "files": [
+            {"path": file.path, "size": len(file.content), "sha256": file.sha256}
+        ]},
+    )
+
+
 def _final_attempt_runtime(monkeypatch, failing_workflow, extra_context=None):
     from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
     from smart_reporting.reporting.workflow.runtime.phase_models import VisualizationPlanDraft

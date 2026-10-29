@@ -45,12 +45,24 @@ def chart_presentations(markdown: str) -> dict[str, list[str]]:
     return presentations
 
 
+def chart_image_paths(image_path: str, *, allow_filename: bool = True, markdown_path: str | None = None) -> set[str]:
+    paths = {image_path, PurePosixPath(image_path).name} if allow_filename else {image_path}
+    if markdown_path is not None:
+        try:
+            relative = PurePosixPath(image_path).relative_to(PurePosixPath(markdown_path).parent)
+            if allow_filename or len(relative.parts) > 1:
+                paths.add(relative.as_posix())
+        except ValueError:
+            pass
+    return paths
+
+
 def chart_fingerprints(
     presentations: dict[str, list[str]], image_path: str, *, allow_filename: bool = True,
+    markdown_path: str | None = None,
 ) -> list[str]:
     # 编辑器草稿经 manifest 定位裸文件名；其他目录的同名图片不能冒充。
-    filename = PurePosixPath(image_path).name
-    paths = {image_path, filename} if allow_filename else {image_path}
+    paths = chart_image_paths(image_path, allow_filename=allow_filename, markdown_path=markdown_path)
     return [fingerprint for path, fingerprints in presentations.items()
             if path in paths for fingerprint in fingerprints]
 
@@ -66,7 +78,8 @@ def freeze_chart_presentations(index: Any, markdown: str) -> Any:
                 PurePosixPath(files[item.image_file_resource_id].path).name == PurePosixPath(image_path).name
                 for item in index.chart_traces
             ) == 1
-            fingerprints = chart_fingerprints(presentations, image_path, allow_filename=unique_name)
+            fingerprints = chart_fingerprints(presentations, image_path, allow_filename=unique_name,
+                                              markdown_path=files[index.markdown_file_resource_id].path)
             chart = chart.model_copy(update={
                 "presentation_sha256": fingerprints[0] if len(fingerprints) == 1 else canonical_sha256(None),
             })

@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { ReportEditorClient, type TraceSources } from './api'
 import { createBodySourcePreview } from './body-source-preview'
+import { askAIPanel } from './ask-ai-panel'
 
 afterEach(() => {
   vi.restoreAllMocks(); document.body.replaceChildren()
@@ -86,6 +87,60 @@ const baseSources = (): TraceSources => ({
   available: true,
   citations: [{ citationId: 'cite-a', datasetId: 'data-a' }, { citationId: 'cite-b', datasetId: 'data-a' }] as TraceSources['citations'],
   datasets: [{ datasetId: 'data-a', sourceType: 'csv', requirementId: 'income', filename: '收入.csv', businessLabel: '收入台账', rowCount: 3, size: 10, materializedAt: null, periodRoles: ['current'], queryWindowId: 'current' }],
+})
+
+it.each([undefined, 'cedit-12345678', 'cedit-87654321'])('来源版本说明只使用当前绑定改图的历史（%s）', async editId => {
+  asyncDialogs()
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+    available: true, datasetIds: ['data-a'], editHistory: [
+      { editId: 'cedit-newest00', instruction: '其他新任务', level: ['L1'], createdAt: '2026-10-30T04:00:00' },
+      { editId: 'cedit-12345678', instruction: '按收入降序', level: ['L1'], createdAt: '2026-10-30T03:00:00' },
+    ],
+  })))
+  const preview = createBodySourcePreview({ client: new ReportEditorClient('/editor', fetcher), sources: async () => baseSources(), validation: () => null, open: vi.fn() })
+  document.body.innerHTML = '<p><span id=marker></span></p>'
+  await preview(document.getElementById('marker')!, [{ kind: 'chart', value: 'chart_001', editId }])
+  const version = document.querySelector<HTMLElement>('.source-preview-version')!
+  expect(version).not.toBeNull()
+  expect(version.textContent).toContain(editId ? '当前采用的改图版本' : '原始发布图表')
+  expect(version.textContent).not.toContain('其他新任务')
+  if (editId === 'cedit-12345678') expect(version.textContent).toContain('按收入降序')
+  else expect(version.textContent).not.toContain('按收入降序')
+})
+
+it('改图来源入口携带确定的编辑版本，并在查看完整来源时继续保留', async () => {
+  asyncDialogs()
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ datasetIds: ['data-a'] })))
+  const client = new ReportEditorClient('/editor', fetcher)
+  const open = vi.fn()
+  const preview = createBodySourcePreview({ client, sources: async () => baseSources(), validation: () => null, open })
+  document.body.innerHTML = '<p>收入<span id=marker></span></p>'
+  await preview(document.getElementById('marker')!, [{ kind: 'chart', value: 'chart_001', editId: 'cedit-12345678' }])
+  expect(document.querySelector('.source-preview-dataset')?.textContent).toContain('收入台账')
+  expect(String(fetcher.mock.calls[0][0])).toContain('edit_id=cedit-12345678')
+  document.querySelector<HTMLButtonElement>('.source-preview-open')!.click()
+  expect(open).toHaveBeenCalledWith({ kind: 'chart', value: 'chart_001', editId: 'cedit-12345678' })
+})
+
+it('引用预览与Ask AI互斥显示，异步关闭不抢输入焦点或丢会话', async () => {
+  asyncDialogs()
+  const chart = askAIPanel().createSession({ kind: 'chart', label: '收入', content: '<textarea></textarea>' })
+  chart.open()
+  chart.card.querySelector('textarea')!.value = '保留我的要求'
+  chart.setState('running')
+  const marker = document.createElement('span'); marker.tabIndex = 0; document.body.append(marker)
+  const preview = createBodySourcePreview({ client: new ReportEditorClient('/editor'), sources: async () => baseSources(), validation: () => null, open: vi.fn() })
+  await preview(marker, [{ kind: 'citation', value: 'cite-a' }])
+  expect(chart.visible).toBe(false)
+  expect(document.querySelector('dialog')!.open).toBe(true)
+  chart.setState('ready')
+  document.querySelector<HTMLButtonElement>('.ask-ai-launcher')!.click()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(document.querySelector('dialog')).toBeNull()
+  expect(chart.visible).toBe(true)
+  expect(chart.card.querySelector('textarea')!.value).toBe('保留我的要求')
+  expect(document.activeElement).toBe(chart.card.querySelector('textarea'))
+  chart.remove()
 })
 
 it('keeps the marker highlighted when the same marker reopens its preview', async () => {

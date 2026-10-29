@@ -255,14 +255,16 @@ def evaluate_table_quality(
                 for cell in table.cells:
                     text = rows[cell.row_key][table.column_keys.index(cell.column_key) + column_offset]
                     if cell.source_cell is not None:
-                        from .table_sources import source_cell_text, source_cell_view
+                        from .table_sources import source_cell_display, source_cell_view
 
                         source = documents.get(cell.source_cell.file_resource_id)
                         if source is None:
                             reasons.append("cell_source_unavailable")
                             continue
                         selected = source_cell_view(cell.source_cell, source)
-                        if selected is None or text != source_cell_text(selected['value']):
+                        if selected is None or text != source_cell_display(
+                            selected, cell.column_key, display_format=table.source_cell_display,
+                        ):
                             reasons.append("cell_value_or_unit_unverified")
                         else:
                             checked += 1

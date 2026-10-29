@@ -1,4 +1,5 @@
 import { createAssetAIActions } from './asset-ai-actions'
+import { updateAskAISourceStatus } from './ask-ai-panel'
 import { bodySourceLinksPlugin, updateBodySourceLinks } from './body-source-links'
 import { bodyValueMarksPlugin, installValueCard, restoreRegisteredValue, updateBodyValueMarks } from './body-value-marks'
 import '@milkdown/crepe/theme/common/prosemirror.css'
@@ -215,6 +216,7 @@ const sourceValidation = createSourceValidationController(
   () => getEditorMarkdown(),
   (result) => {
     currentBodyValidation = result
+    if (result) updateAskAISourceStatus('updated')
     sourceStatusLabel.setAttribute('aria-busy', 'false')
     currentBodyValidationMarkdown = getEditorMarkdown()
     if (!lineagePanelEnabled) return
@@ -235,6 +237,7 @@ const sourceValidation = createSourceValidationController(
   },
   () => {
     currentBodyValidation = null
+    updateAskAISourceStatus('checking')
     currentBodyValidationMarkdown = ''
     sourceStatusLabel.title = ''
     if (!lineagePanelEnabled) return
@@ -250,15 +253,17 @@ const sourceValidation = createSourceValidationController(
       ? `${error.code}${error.requestId ? `（请求 ${error.requestId}）` : ''}`
       : '网络或服务暂时不可用'
     sourceStatusLabel.title = `正文来源校验失败：${detail}`
+    updateAskAISourceStatus('error', sourceStatusLabel.title)
     sourceStatusLabel.textContent = `来源校验失败：${detail}`
-    sourceStatusLabel.dataset.state = 'unknown'
-    sourceStatusLabel.disabled = true
+    sourceStatusLabel.dataset.state = 'error'
+    sourceStatusLabel.disabled = false
     sourceStatusLabel.hidden = false
   },
 )
 const scheduleSourceValidation = () => {
   if (lineagePanelEnabled) sourceValidation.schedule()
 }
+document.addEventListener('report-source-retry', scheduleSourceValidation)
 // B5/v6：证据浏览器——核对任务页签 + 探索路径 + 对象页，覆盖编辑器但不卸载它。
 // 单独拆 chunk，避免图关系与对象详情代码增大编辑器首屏入口包。
 let captureEvidenceEditor = () => {}
@@ -389,7 +394,7 @@ const previewBodySource = createBodySourcePreview({
   open: reference => {
     if (reference.kind === 'dataset') evidenceBrowser.openObject({ kind: 'dataset', key: reference.value, label: reference.label })
     else if (reference.kind === 'analysis') void evidenceBrowser.openAnalysis(reference.value)
-    else if (reference.kind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: reference.value, label: '图表数据来源' })
+    else if (reference.kind === 'chart') evidenceBrowser.openObject({ kind: 'chart', key: reference.value, editId: reference.editId, label: '图表数据来源' })
     else void evidenceBrowser.openSubject(reference.value)
   },
 })
@@ -400,7 +405,7 @@ const openBodySource = (event: MouseEvent | KeyboardEvent) => {
   event.preventDefault()
   if (reviewMode !== 'idle') { status(reviewMessage(), 'dirty'); return }
   if (event instanceof KeyboardEvent) event.stopPropagation()
-  const references: Array<{ kind: 'analysis' | 'citation' | 'chart'; value: string }> = JSON.parse(marker.dataset.markerReferences ?? '[]')
+  const references: Array<{ kind: 'analysis' | 'citation' | 'chart'; value: string; editId?: string }> = JSON.parse(marker.dataset.markerReferences ?? '[]')
   const selected = references.length ? references : [{ kind: marker.dataset.markerKind as 'analysis' | 'citation' | 'chart', value: marker.dataset.markerValue! }]
   void previewBodySource(marker, selected)
 }
@@ -487,6 +492,7 @@ try {
   exportSettingsPanel.setSourcesEnabled(documentState.lineageFeatures?.exportSources ?? true)
   if (!lineagePanelEnabled) {
     sourceValidation.cancel()
+    updateAskAISourceStatus('unavailable')
     sourceStatusLabel.hidden = true
   }
   const saveInBackground = () => runInBackground(saveNow())
@@ -585,6 +591,7 @@ try {
   }
   let lastSourceIssue: number | null = null
   sourceStatusLabel.addEventListener('click', () => {
+    if (sourceStatusLabel.dataset.state === 'error') { scheduleSourceValidation(); return }
     const validation = currentBodyValidationMarkdown === getEditorMarkdown() ? currentBodyValidation : null
     const target = nextSourceIssue(shell.editor, lastSourceIssue, element => evidenceView.posAtDOM(element, 0), validation)
     if (!target) {
@@ -778,24 +785,28 @@ try {
     `${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown,
     documentState.sourceRevision ?? Number(revision),
   )
-  let chartAIController: ReturnType<typeof import('./chart-ai-edit').createChartAIEdit> | null = null
-  let tableAIController: import('./table-ai-edit').TableAIEditController | null = null
+  const chartAIControllers = new Map<string, ReturnType<typeof import('./chart-ai-edit').createChartAIEdit>>()
+  const tableAIControllers = new Map<string, import('./table-ai-edit').TableAIEditController>()
   const openChartAI = documentState.chartAiEnabled ? (img: HTMLImageElement) => {
     void import('./chart-ai-edit').then(({ createChartAIEdit }) => {
-      chartAIController ??= createChartAIEdit({
+      const key = img.getAttribute('src') ?? ''
+      const controller = chartAIControllers.get(key) ?? createChartAIEdit({
         view: evidenceView, client, basePath,
         hooks: { onReplaced: () => status('已替换为 AI 改图结果，正在自动保存…', 'dirty') },
       })
-      chartAIController.open(img)
+      chartAIControllers.set(key, controller)
+      controller.open(img)
     }).catch(() => status('无法加载 AI 改图面板，请稍后重试', 'error'))
   } : undefined
   const openTableAI = documentState.tableAiEnabled ? (tableId: string) => {
     void import('./table-ai-edit').then(({ createTableAIEdit, tableBodyMarkdown }) => {
-      tableAIController ??= createTableAIEdit({
+      const controller = tableAIControllers.get(tableId) ?? createTableAIEdit({
         view: evidenceView, client,
+        currentBody: id => tableBodyMarkdown(getEditorMarkdown(), id),
         hooks: { onReplaced: () => status('已替换为 AI 改表结果，正在自动保存…', 'dirty') },
       })
-      tableAIController.open(tableId, tableBodyMarkdown(getEditorMarkdown(), tableId))
+      tableAIControllers.set(tableId, controller)
+      controller.open(tableId, tableBodyMarkdown(getEditorMarkdown(), tableId))
     }).catch(() => status('无法加载 AI 改表面板，请稍后重试', 'error'))
   } : undefined
   createImagePreview(shell.editor, { onChartEdit: openChartAI })
