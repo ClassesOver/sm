@@ -3,12 +3,59 @@
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from sys import getsizeof
+from threading import RLock
 
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline.backticks import backtick
 
+MAX_TRACE_BODY_CACHE_BYTES = 4 * 1024 * 1024
+MAX_TRACE_BODY_CACHE_ENTRIES = 16
+
+
+@dataclass
+class _TraceBodyCache:
+    entries: dict[tuple[str, bool], str] = field(default_factory=dict)
+    size: int = 0
+    lock: RLock = field(default_factory=RLock)
+
+
+_TRACE_BODY_CACHE: ContextVar[_TraceBodyCache | None] = ContextVar("trace_body_cache", default=None)
+
+
+@asynccontextmanager
+async def trace_body_cache_scope() -> AsyncIterator[None]:
+    """仅在一次来源校验内复用不可变结果，AnyIO 工作线程沿用本次上下文。"""
+    token = _TRACE_BODY_CACHE.set(_TraceBodyCache())
+    try:
+        yield
+    finally:
+        _TRACE_BODY_CACHE.reset(token)
+
 
 def trace_body(markdown: str, *, mask_inline_code: bool = True) -> str:
+    cache = _TRACE_BODY_CACHE.get()
+    if cache is None:
+        return _parse_trace_body(markdown, mask_inline_code=mask_inline_code)
+    key = (markdown, mask_inline_code)
+    # 同一请求的工作线程可能重叠；锁也确保相同正文不会同时重新解析。
+    with cache.lock:
+        if key in cache.entries:
+            return cache.entries[key]
+        result = _parse_trace_body(markdown, mask_inline_code=mask_inline_code)
+        size = getsizeof(markdown) + getsizeof(result) + getsizeof(key)
+        if (len(cache.entries) < MAX_TRACE_BODY_CACHE_ENTRIES
+                and cache.size + size <= MAX_TRACE_BODY_CACHE_BYTES):
+            cache.entries[key] = result
+            cache.size += size
+        return result
+
+
+def _parse_trace_body(markdown: str, *, mask_inline_code: bool = True) -> str:
     parser = MarkdownIt("commonmark")
     tokens = parser.parse(markdown)
     offsets = [0]

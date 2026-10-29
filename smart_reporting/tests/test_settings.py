@@ -66,6 +66,7 @@ def test_settings_defaults():
     assert current.report_output_token_reserve == 64 * 1024
     assert current.report_analysis_concurrency == 5
     assert current.report_section_concurrency == 1
+    assert current.reporting_execution_mode == "parallel"
     assert current.report_section_whole_generation is True
     assert current.report_lineage_registration_enabled is True
     assert current.report_lineage_panel_enabled is True
@@ -93,6 +94,13 @@ def test_report_output_reserve_defaults_to_one_eighth_of_context_budget(
     current = settings(environ)
 
     assert current.report_output_token_reserve == context_budget // 8
+
+
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+def test_reporting_execution_mode_preserves_explicit_choice(mode):
+    current = settings(AGENT_REPORT_CODING_EXECUTION_MODE=mode)
+    assert current.reporting_execution_mode == mode
+    assert current.report_section_concurrency == 1
 
 
 def test_runtime_directory_defaults_allow_environment_overrides(tmp_path: Path) -> None:

@@ -736,7 +736,7 @@ class _ReportWorkflowRuntimeBase:
         state_repository: ReportingStateRepository,
         analysis_concurrency: int = 5,
         section_concurrency: int = 1,
-        reporting_execution_mode: str = "sequential",
+        reporting_execution_mode: str = "parallel",
         section_whole_generation: bool = True,
         trace_registration_enabled: bool = True,
         standard_supplemental_enabled: bool = True,

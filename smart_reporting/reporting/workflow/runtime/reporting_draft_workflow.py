@@ -49,7 +49,7 @@ class ReportingDraftWorkflow(Workflow):
         submit_visualization: VisualizationRunner,
         draft_section: DraftRunner,
         rework_analysis: ReworkRunner | None = None,
-        execution_mode: ReportingExecutionMode = "sequential",
+        execution_mode: ReportingExecutionMode = "parallel",
         analysis_limiter: asyncio.Semaphore | None = None,
         evidence_frozen: bool = False,
     ) -> None:
@@ -203,7 +203,7 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
         submit_visualization: VisualizationRunner,
         draft_section: DraftRunner,
         rework_analysis: ReworkRunner | None = None,
-        execution_mode: ReportingExecutionMode = "sequential",
+        execution_mode: ReportingExecutionMode = "parallel",
         section_concurrency: int = 1,
         analysis_concurrency: int = 5,
         evidence_frozen: bool = False,
