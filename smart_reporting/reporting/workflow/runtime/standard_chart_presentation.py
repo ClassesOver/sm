@@ -130,8 +130,32 @@ def prepare_standard_presentation(policy, document, original, label, names, labe
         if len({value.year for value in dates}) != 1 or len({value.month for value in dates}) != len(dates):
             return None
         result['display_labels'] = [f'{value.month}月' for value in dates]
+    elif policy.label_mode == 'month_of_year':
+        if any(value not in {f'{month:02d}' for month in range(1, 13)} for value in labels):
+            return None
+        result['display_labels'] = [f'{int(value)}月' for value in labels]
     for spec in policy.summaries:
         rows = original['rows']
+        if spec.aggregation == 'sum':
+            columns = original['columns']
+            metadata = original.get('columnMeta') or {}
+            meta = metadata.get(spec.field, {})
+            if (spec.field not in columns or not rows or not valid_standard_metadata(meta)
+                    or not meta.get('unit') or meta.get('unit') == '%' or meta.get('isPercent') is True):
+                return None
+            if not (unit_conversion_scale(meta['unit'], '元') is not None
+                    or unit_conversion_scale(meta['unit'], '人次') is not None or meta['unit'] == '床日'):
+                return None
+            values = [row[columns.index(spec.field)] for row in rows]
+            if any(not _finite(value) for value in values):
+                return None
+            total = math.fsum(values)
+            summary_document = {'columns': [spec.field], 'columnMeta': {spec.field: meta}}
+            value = frozen_label(spec, summary_document, [total])
+            if value is None:
+                return None
+            result['badges'].append((value, spec.color))
+            continue
         if spec.label is not None:
             columns = original['columns']
             text_columns = [i for i in range(len(columns)) if all(isinstance(row[i], str) for row in rows)]

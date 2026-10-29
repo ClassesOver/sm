@@ -26,6 +26,7 @@ from ...delivery.draft_v1 import (
 from ...models import ReportingError
 from ...trace.contracts_v1 import ClaimInterpretationV1
 from ..checkpoint import FileIdentity, SectionClaimSubmission
+from .standard_chart_contract import SourceLabelMode, StandardChartForm, SummaryAggregation
 
 MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
 _DEFAULT_SECTION_CHART_COUNT = 3
@@ -381,8 +382,71 @@ class StandardChartSource(StrictModel):
     series_name: str = Field(alias='seriesName', min_length=1, max_length=200)
     category_field: str | None = Field(default=None, alias='categoryField', max_length=200)
     category_value: str | None = Field(default=None, alias='categoryValue', max_length=200)
-    label_mode: Literal['exact', 'month'] = Field(default='exact', alias='labelMode')
+    label_mode: SourceLabelMode = Field(default='exact', alias='labelMode',
+        description='exact精确标签；month保留年份归一为YYYY-MM；跨年同月比较显式用month_of_year，并声明periodYear，映射为01至12。')
+    period_year: int | None = Field(default=None, alias='periodYear', ge=1, le=9999,
+        description='month_of_year的唯一来源年份；不允许把多个年份静默合并为同一月份。')
     excluded_labels: tuple[str, ...] = Field(default=(), alias='excludedLabels', max_length=60)
+
+    @model_validator(mode='after')
+    def validate_period_year(self) -> StandardChartSource:
+        if (self.label_mode == 'month_of_year') != (self.period_year is not None):
+            raise ValueError('month_of_year必须且只能声明periodYear')
+        return self
+
+
+class StandardChartScalarRef(StrictModel):
+    """标量只能选择本图原始有序冻结来源，不接受模型常数。"""
+    source_index: int = Field(alias='sourceIndex', ge=0, le=99, strict=True)
+    field: str = Field(min_length=1, max_length=200)
+    label_field: str | None = Field(default=None, alias='labelField', min_length=1, max_length=200)
+    label: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode='after')
+    def complete_selector(self) -> StandardChartScalarRef:
+        if (self.label_field is None) != (self.label is None):
+            raise ValueError('标量labelField与label必须同时出现')
+        return self
+
+
+class StandardChartDenominator(StrictModel):
+    mode: Literal['bound_sum', 'reference'] = 'bound_sum'
+    ref: StandardChartScalarRef | None = None
+
+    @model_validator(mode='after')
+    def reference_only(self) -> StandardChartDenominator:
+        if (self.mode == 'reference') != (self.ref is not None):
+            raise ValueError('reference必须且只能声明冻结ref')
+        return self
+
+
+class StandardChartComposition(StrictModel):
+    denominator: StandardChartDenominator = Field(default_factory=StandardChartDenominator)
+
+
+class StandardChartRadarScale(StrictModel):
+    field: str = Field(min_length=1, max_length=200)
+    minimum: StandardChartScalarRef = Field(alias='min')
+    maximum: StandardChartScalarRef = Field(alias='max')
+
+
+class StandardChartRadar(StrictModel):
+    scales: tuple[StandardChartRadarScale, ...] = Field(default=(), max_length=8)
+
+
+class StandardChartFunnel(StrictModel):
+    ratio_base: Literal['none', 'first', 'previous'] = Field(default='none', alias='ratioBase')
+
+
+class StandardChartSankeyNodes(StrictModel):
+    source_index: int = Field(alias='sourceIndex', ge=0, le=99, strict=True)
+    id_field: str = Field(alias='idField', min_length=1, max_length=200)
+    label_field: str | None = Field(default=None, alias='labelField', min_length=1, max_length=200)
+    stage_field: str | None = Field(default=None, alias='stageField', min_length=1, max_length=200)
+
+
+class StandardChartSankey(StrictModel):
+    nodes: StandardChartSankeyNodes | None = None
 
 
 class StandardChartView(StrictModel):
@@ -605,13 +669,21 @@ class StandardChartLabelFormat(StrictModel):
 
 class StandardChartSummary(StandardChartLabelFormat):
     label: str | None = Field(default=None, max_length=200, description='多行表中唯一冻结标签；单行表可省略')
+    aggregation: SummaryAggregation = Field(default='row',
+        description='row绑定一条冻结输入行；sum显式汇总本绑定输入全部行的已登记金额、人次或床日，仅代表绑定输入范围，不按caption猜测合计；复合比率、未知量纲、缺失或布尔值不求和。')
     color: str = Field(default='#475569', pattern=r'^#[0-9a-fA-F]{6}$')
+
+    @model_validator(mode='after')
+    def validate_summary_aggregation(self) -> StandardChartSummary:
+        if self.aggregation == 'sum' and (self.label is not None or self.field is None):
+            raise ValueError('sum摘要须显式绑定可加字段，不能混用单行标签或比率')
+        return self
 
 
 class StandardChartPresentation(StrictModel):
     subtitle: str | None = Field(default=None, max_length=300)
     source_note: str | None = Field(default=None, alias='sourceNote', max_length=500)
-    label_mode: Literal['source', 'month'] = Field(default='source', alias='labelMode')
+    label_mode: Literal['source', 'month', 'month_of_year'] = Field(default='source', alias='labelMode')
     order: StandardChartOrder = Field(default_factory=StandardChartOrder)
     label_formats: tuple[StandardChartLabelFormat, ...] = Field(default=(), alias='labelFormats', max_length=3)
     summaries: tuple[StandardChartSummary, ...] = Field(default=(), max_length=4)
@@ -709,7 +781,10 @@ class ChartDraft(StrictModel):
     source_dataset_id: str = Field(alias="sourceDatasetId", min_length=1, max_length=256)
     aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
     comparability: Literal["strict", "reference_only"] = "strict"
-    visual_form: str = Field(alias="visualForm", min_length=1, max_length=200)
+    visual_form: str = Field(alias="visualForm", min_length=1, max_length=200,
+        description='业务图形意图与展示说明；不用于解析机器类型。新计划必须另填standardForm。')
+    standard_form: StandardChartForm | None = Field(default=None, alias='standardForm',
+        description='标准图机器类型，必须显式选择枚举；自然语言说明放visualForm。无法由标准参数表达时选custom交由Coding。null只兼容旧计划，不得从说明猜测类型。')
     standard_value_fields: tuple[str, ...] = Field(
         default=(), alias="standardValueFields", max_length=8,
         description="标准静态图明确选择的数值列，必须来自绑定的chart-input；可排除同表辅助排名/占比列。空数组按全部数值列预检。",
@@ -742,10 +817,10 @@ class ChartDraft(StrictModel):
     )
     standard_sources: tuple[StandardChartSource, ...] = Field(
         default=(), alias='standardSources', max_length=8,
-        description='多来源作图显式选择：sourceIndex按本图chart-input顺序从0计数，labelField/valueField必须是来源现有列，seriesName为唯一图例名称。标签集合必须完全一致，单位只从冻结元数据读取。',
+        description='多来源显式选择：sourceIndex按chart-input顺序从0计数，labelField/valueField来自冻结列；对齐后数值列名为seriesName，standardValueFields须引用这些系列名。跨年同月用month_of_year和各自periodYear；同年日期格式归一用month。',
     )
     standard_source_labels: tuple[str, ...] = Field(default=(), alias='standardSourceLabels', max_length=60,
-        description='standardSources显式共同输入窗口，须包含计算需要的历史；有数据变换时standardLabels只选择最终展示窗口。')
+        description='各来源归一后共同输入标签的交集，不是原始日期并集；month为YYYY-MM，month_of_year为01至12。须包含计算历史；standardLabels只选择最终展示窗口。')
     standard_label_field: str | None = Field(default=None, alias='standardLabelField', max_length=200,
                                            description='显式标签列；忽略未选择的其他文本辅助列，视图转换后仍须存在。')
     standard_view: StandardChartView | None = Field(default=None, alias='standardView',
@@ -758,6 +833,14 @@ class ChartDraft(StrictModel):
         description='按顺序执行最多8步view/derivation，可多维分组→分组累计/同比/滚动→透视；不能与standardView/standardDerivations混用。')
     standard_encoding: StandardChartEncoding | None = Field(default=None, alias='standardEncoding',
         description='scatter/bubble显式绑定数值xField/yField，可用groupField或colorField、sizeField；heatmap用文本xField/yField及数值valueField。单位来自冻结元数据。')
+    standard_composition: StandardChartComposition | None = Field(default=None, alias='standardComposition',
+        description='pie/donut分母：bound_sum为展示筛选前完整绑定可加类别合计；reference引用原始冻结标量。不得归一化补足扇区。')
+    standard_radar: StandardChartRadar | None = Field(default=None, alias='standardRadar',
+        description='雷达逐轴显式冻结min/max；异量纲或任何负径向值必须提供全部轴尺度，不从观测值推断评分。')
+    standard_funnel: StandardChartFunnel | None = Field(default=None, alias='standardFunnel',
+        description='漏斗默认原阶段顺序，ratioBase仅选none/first/previous，结果称阶段值比，不暗称转化率。')
+    standard_sankey: StandardChartSankey | None = Field(default=None, alias='standardSankey',
+        description='桑基source/target/weight用standardEncoding的xField/yField/valueField，nodes可选原始辅助来源及唯一id/显示名/非负整数stage。')
     standard_waterfall: StandardChartWaterfall | None = Field(default=None, alias='standardWaterfall',
         description='waterfall绑定有符号valueField及absoluteLabels起点/小计/终点；后续绝对值必须与累计对账，禁止补造或截取贡献项。')
     standard_distribution: StandardChartDistribution | None = Field(default=None, alias='standardDistribution',

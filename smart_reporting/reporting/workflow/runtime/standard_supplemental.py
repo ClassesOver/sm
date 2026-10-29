@@ -604,6 +604,12 @@ def run_standard_supplemental(
             column_meta[column] = {"sourceField": field}
     if request.measure_unit is not None:
         column_meta.update({column: {"unit": request.measure_unit} for column in amount_columns})
+    # 此补证执行器只接受已授权可加量；仅给真正分组求和列登记维度，
+    # 份额、均值基准和逐行重复的边际合计不能继承这份证明。
+    if request.operation in {"group_summary", "group_period_series", "cross_group_summary"}:
+        column_meta.setdefault("value", {})["measureSemantic"] = {
+            "aggregation": "sum", "additiveAcross": list(source_columns),
+        }
     periods = list(request.current_periods)
     if request.operation in {"period_comparison", "group_period_comparison"}:
         periods = list(dict.fromkeys((*periods, *request.baseline_periods)))

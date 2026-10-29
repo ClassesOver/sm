@@ -27,6 +27,7 @@ from .phase_models import (
     StandardChartDomains,
     VisualizationPlanDraft,
 )
+from .standard_chart_contract import resolve_standard_form
 
 
 class PaginationUnsupported(ValueError):
@@ -36,7 +37,7 @@ class PaginationUnsupported(ValueError):
 def _pages(chart: ChartDraft, inputs: ChartInputMaterialization) -> tuple[ChartDraft, ...]:
     spec = chart.standard_pagination
     assert spec is not None
-    if (chart.renderer != "matplotlib" or chart.interactive_path is not None or chart.visual_form not in {"bar", "barh"}
+    if (chart.renderer != "matplotlib" or chart.interactive_path is not None or resolve_standard_form(chart) not in {"bar", "barh"}
         or chart.standard_axes.mode != "single" or chart.standard_axes.scale != "linear"
         or chart.standard_axes.right_fields or chart.standard_axes.right_display_unit
         or chart.standard_labels or chart.standard_sources or chart.standard_source_labels

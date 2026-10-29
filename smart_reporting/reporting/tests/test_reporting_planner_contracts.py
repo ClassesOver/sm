@@ -3209,7 +3209,8 @@ async def test_runtime_planner_configured_effort_reaches_chat_request(monkeypatc
 
 
 @pytest.mark.anyio
-async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatch) -> None:
+@pytest.mark.parametrize("record_family_warning", [False, True], ids=["request-only", "durable-family-warning"])
+async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatch, record_family_warning) -> None:
     from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
     from smart_reporting.reporting.workflow.runtime.phase_models import VisualizationPlanDraft
 
@@ -3249,6 +3250,8 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
     runtime._envelope = lambda _context: SimpleNamespace(
         report_goal="分析收入", visualization_mode="auto"
     )
+    # 空图计划不需要真实工作区或租户身份恢复。
+    runtime._run_workspace = lambda _context: SimpleNamespace()
     runtime._visualization_section_fact_projection = AsyncMock(
         return_value={"analysisId": "analysis_001"}
     )
@@ -3260,6 +3263,30 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
             SimpleNamespace(payload={"completedVisualizationSections": ["section_001"]}),
         ]
     )
+    if record_family_warning:
+        from smart_reporting.reporting.workflow.state import ReportingPhase, ReportingRunState, apply
+
+        durable = ReportingRunState.initial(report_run_id="visualization-effort", external_run_id="run-1",
+            thread_id="thread-1", owner_user_id="user-1", payload={
+                "analysisItems": {"analysis_001": {"datasetIds": ["dataset_001"]}},
+            })
+        durable.phase = ReportingPhase.ANALYSIS_RUNNING
+
+        async def get_durable(*_args):
+            return durable
+
+        async def apply_durable(_run_id, command, *, expected_version):
+            nonlocal durable
+            assert expected_version == durable.state_version
+            result = apply(durable, command, expected_version=expected_version)
+            durable = result.state
+            return result
+
+        runtime.state_repository.get = get_durable
+        runtime.state_repository.get_by_external_run_id = get_durable
+        runtime.state_repository.apply = apply_durable
+        runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1",
+                                           "externalRunId": "run-1", "callerThreadId": "thread-1"}
     outline = ReportOutline.model_validate(
         {
             "reportType": "topic",
@@ -3281,6 +3308,13 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
 
     async def run_workflow(workflow, payload, run_context):
         plan = await workflow.generate_plan(payload, run_context)
+        if record_family_warning:
+            warning = ({"code": "standard_funnel_nonmonotonic", "chartId": "chart_001",
+                        "message": "冻结阶段值非单调，仅作软告警。"},)
+            await workflow.record_warnings(warning, run_context)
+            await workflow.record_warnings(warning, run_context)
+            # 模拟空图提交已完成；告警本身仍通过真实reducer幂等落库。
+            durable.payload["completedVisualizationSections"] = ["section_001"]
         return SimpleNamespace(plan=plan)
 
     async def run_task(scope, *, executor, **_kwargs):
@@ -3315,6 +3349,12 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
     assert len(requests) == 1
     assert requests[0]["reasoning_effort"] == "low"
     assert requests[0]["extra_body"]["enable_thinking"] is True
+    if record_family_warning:
+        assert durable.payload["warnings"] == [{
+            "code": "standard_funnel_nonmonotonic", "chartId": "chart_001",
+            "message": "冻结阶段值非单调，仅作软告警。", "sectionCode": "section_001",
+        }]
+        assert durable.state_version == 1, "同一软告警回调重放必须幂等"
 
 
 @pytest.mark.anyio

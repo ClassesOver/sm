@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from time import perf_counter
@@ -17,6 +19,7 @@ from agno.tools.function import Function, FunctionCall
 from loguru import logger
 from openinference.instrumentation import using_metadata
 
+from ....async_utils import complete_cleanup
 from ....context_management import (
     CODING_COMPACTION_INPUT_TOKEN_GATE,
     CODING_CUSTOM_HISTORY_TOKEN_THRESHOLD,
@@ -146,6 +149,13 @@ class CodeGenerationResult:
     visual_inspection_receipts: tuple[ChartVisualInspectionReceipt, ...] = ()
     visual_repair_diagnostic: Mapping[str, Any] | None = None
     standard_chart_routes: tuple[Mapping[str, Any], ...] = ()
+    deterministic_image_checks: tuple[Mapping[str, Any], ...] = ()
+    reviewed: bool = False
+    execution_spans: Mapping[str, Any] | str | None = None
+    stage_timings: Mapping[str, int] | None = None
+    stage_statuses: Mapping[str, str] | None = None
+    execution_attempts: tuple[Mapping[str, Any], ...] = ()
+    route_total_ms: int | None = None
 
 
 class ReportingCodeGenerationRunner:
@@ -276,39 +286,130 @@ class ReportingCodeGenerationRunner:
     async def run_standard_visualization(
         self, task_context: ReportingCodingTaskContext, workspace: HostReportingWorkspace,
         source: str, task_facts: Mapping[str, Any],
+        *, deterministic: bool = False,
     ) -> CodeGenerationResult:
-        """Use the same execution, image review and submission gates as Coding."""
-        async with self.registry.bind(task_context, workspace) as binding:
-            toolkit = ReportingCodeModeToolkit(
-                binding, self.code_mode_runtime, vision_reviewer=self.vision_reviewer,
-                lsp_manager=self.lsp_manager,
-                visualization_plan=task_facts.get('visualizationPlan'),
-            )
+        """可信固定源码可用确定性像素检查；默认 AI 仍须独立视觉验收。"""
+        if deterministic and task_context.task_kind != "visualization":
+            raise ReportingError("report_standard_task_kind_invalid", "确定性模板只能使用 visualization 任务。")
+        started = perf_counter()
+        timings: dict[str, int] = {}
+        statuses: dict[str, str] = {}
+        spans: Mapping[str, Any] | str | None = None
+        failure: BaseException | None = None
+        failed_stage: str | None = None
+
+        async def measured(name, operation):
+            nonlocal failed_stage
+            operation_started = perf_counter()
             try:
-                await toolkit.refresh_delivery_state()
-                for operation in (
-                    lambda: toolkit.write_script(source),
-                    toolkit.run_script,
-                    lambda: toolkit.view_image(paths=list(task_context.declared_output_paths)),
-                    toolkit.submit_script,
-                ):
-                    result = await operation()
-                    if result.get('ok') is not True:
-                        raise ReportingError(
-                            'report_standard_visualization_failed',
-                            '标准可视化未通过执行或视觉验收，转入 Coding 路径。',
-                            details={**result, 'standardDiagnostic': getattr(binding, 'visual_repair_diagnostic', None)},
-                        )
-                receipt = binding.execution_receipt
-                if receipt is None:
-                    raise ReportingError('report_standard_visualization_failed', '标准可视化缺少执行回执。')
-                await toolkit.require_current_receipt(receipt)
-                return CodeGenerationResult(
-                    script_file=receipt.source_file, execution_receipt=receipt,
-                    visual_inspection_receipts=tuple(binding.visual_inspection_receipts.values()),
-                )
+                result = await operation()
+                if name in {"write", "draw", "inspect", "submit"} and result.get("ok") is not True:
+                    raise ReportingError(
+                        "report_standard_visualization_failed",
+                        "标准可视化未通过执行或图片检查。",
+                        details={**result, "standardDiagnostic": binding.visual_repair_diagnostic},
+                    )
+                statuses[name] = ("warning" if name == "cleanup" and cleanup_warnings else "succeeded")
+                return result
+            except BaseException as error:
+                statuses[name] = "cancelled" if isinstance(error, asyncio.CancelledError) else "failed"
+                failed_stage = name
+                raise
             finally:
+                timings[name] = max(0, round((perf_counter() - operation_started) * 1000))
+
+        cleanup_warnings: list[dict[str, str]] = []
+
+        async def cleanup() -> None:
+            nonlocal spans
+            try:
                 await self.code_mode_runtime.shutdown(task_context.code_mode_session_id)
+            except (Exception, asyncio.CancelledError) as error:
+                cleanup_warnings.append({"stage": "shutdown", "errorType": type(error).__name__})
+                logger.warning(
+                    "report_standard_shutdown_failed session_id={} error_type={}",
+                    task_context.code_mode_session_id, type(error).__name__,
+                )
+            try:
+                drain = getattr(self.code_mode_runtime, "drain_execution_spans", None)
+                if callable(drain):
+                    spans = drain(task_context.code_mode_session_id)
+            except (Exception, asyncio.CancelledError) as error:
+                cleanup_warnings.append({"stage": "drain", "errorType": type(error).__name__})
+                logger.warning(
+                    "report_standard_spans_drain_failed session_id={} error_type={}",
+                    task_context.code_mode_session_id, type(error).__name__,
+                )
+
+        try:
+            async with self.registry.bind(task_context, workspace) as binding:
+                toolkit = ReportingCodeModeToolkit(
+                    binding, self.code_mode_runtime, vision_reviewer=self.vision_reviewer,
+                    lsp_manager=self.lsp_manager,
+                    visualization_plan=task_facts.get('visualizationPlan'),
+                    deterministic_standard=deterministic,
+                )
+                try:
+                    await measured("check", toolkit.refresh_delivery_state)
+                    for name, operation in (
+                        ("write", lambda: toolkit.write_script(source)),
+                        ("draw", toolkit.run_script),
+                        ("inspect", toolkit.inspect_standard_images if deterministic else
+                         lambda: toolkit.view_image(paths=list(task_context.declared_output_paths))),
+                        ("submit", toolkit.submit_script),
+                    ):
+                        await measured(name, operation)
+                    receipt = binding.execution_receipt
+                    if receipt is None:
+                        raise ReportingError('report_standard_visualization_failed', '标准可视化缺少执行回执。')
+                    await measured("currentReceipt", lambda: toolkit.require_current_receipt(receipt))
+                    generated = CodeGenerationResult(
+                        script_file=receipt.source_file, execution_receipt=receipt,
+                        visual_inspection_receipts=tuple(binding.visual_inspection_receipts.values()),
+                        deterministic_image_checks=binding.deterministic_image_checks,
+                        reviewed=not deterministic and bool(binding.visual_inspection_receipts),
+                    )
+                finally:
+                    primary_error = sys.exception()
+                    owner = asyncio.current_task()
+                    cancellation_count = owner.cancelling() if owner is not None else 0
+                    await complete_cleanup(measured("cleanup", cleanup))
+                    if primary_error is None and owner is not None and owner.cancelling() > cancellation_count:
+                        failed_stage = "cleanup"
+                        statuses["cleanup"] = "cancelled"
+                        raise asyncio.CancelledError
+                await measured("handoff", lambda: toolkit.require_current_receipt(generated.execution_receipt))
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            timings["total"] = max(0, round((perf_counter() - started) * 1000))
+            observation = {
+                "status": ("cancelled" if isinstance(failure, asyncio.CancelledError) else
+                           "failed" if failure is not None else "succeeded"),
+                "failedStage": failed_stage if failure is not None else None,
+                "stageTimings": dict(timings), "stageStatuses": dict(statuses),
+                "executionSpans": spans,
+                "cleanupWarnings": cleanup_warnings,
+            }
+            if failure is not None:
+                failure.standard_execution = observation
+                if isinstance(failure, ReportingError):
+                    details = (dict(failure.details) if isinstance(failure.details, Mapping) else
+                               {} if failure.details is None else {"originalDetails": failure.details})
+                    failure.details = {**details, "standardExecution": observation}
+            logger.bind(standard_execution=observation).info(
+                "report_standard_execution_finished session_id={} deterministic={} status={} failed_stage={} stages={} runtime_spans={}",
+                task_context.code_mode_session_id, deterministic, observation["status"],
+                observation["failedStage"], timings, spans,
+            )
+        return CodeGenerationResult(
+            script_file=generated.script_file, execution_receipt=generated.execution_receipt,
+            visual_inspection_receipts=generated.visual_inspection_receipts,
+            deterministic_image_checks=generated.deterministic_image_checks,
+            reviewed=generated.reviewed, execution_spans=spans, stage_timings=timings,
+            stage_statuses=statuses, execution_attempts=(observation,),
+        )
 
     async def run(
         self,
@@ -919,6 +1020,7 @@ class ReportingCodeGenerationRunner:
                 script_file=receipt.source_file,
                 execution_receipt=receipt,
                 visual_inspection_receipts=visual_receipts,
+                reviewed=bool(visual_receipts) and all(item.reviewed for item in visual_receipts),
                 visual_repair_diagnostic=(
                     binding.visual_repair_diagnostic
                     if task_context.task_kind == "visualization"

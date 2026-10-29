@@ -211,6 +211,12 @@ export interface TraceChartInfo {
 
 export interface ChartAIAvailability {
   available: boolean
+  standardAvailable?: boolean
+  standardReason?: string
+  codingAvailable?: boolean
+  baseImagePath?: string
+  expectedSha256?: string
+  standardChartCapabilities?: { forms: string[]; families?: Record<string, unknown> }
   reason?: string
   chartId?: string
 }
@@ -265,6 +271,17 @@ export interface ChartAIEditRequest {
   expectedSha256?: string
 }
 
+export interface ChartStandardEditRequest {
+  standard: Record<string, unknown>
+  baseImagePath: string
+  expectedSha256: string
+  previousEditId?: string
+  baseTitle?: string
+  baseAltText?: string
+  title?: string
+  altText?: string
+}
+
 export interface ChartAIEditChanges {
   title?: string | null
   altText?: string | null
@@ -288,6 +305,9 @@ export interface ChartAIEditSuccess {
   warnings: string[]
   skipped: { request: string; reason: string }[]
   visualInspection: { format?: string; width?: number; height?: number; reviewed: boolean }
+  planningRoute?: 'direct' | 'ai'
+  renderingRoute?: 'standard' | 'mixed' | 'coding'
+  stageTimingsMs?: Record<string, number>
 }
 
 export interface ChartAIEditPage {
@@ -297,6 +317,7 @@ export interface ChartAIEditPage {
   imageSrc: string
   title: string | null
   altText: string | null
+  sha256?: string
 }
 
 export interface ChartAIEditState {
@@ -304,6 +325,7 @@ export interface ChartAIEditState {
   chartId: string
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   stage?: string
+  stageTimingsMs?: Record<string, number>
   error?: { code: string; message: string; status?: number; skipped?: { request: string; reason: string }[] }
 }
 
@@ -721,9 +743,15 @@ export class ReportEditorClient {
     })
   }
 
-  chartAiEditStatus(chartId: string, editId: string): Promise<ChartAIEditState> {
+  startChartStandardEdit(chartId: string, payload: ChartStandardEditRequest): Promise<{ editId: string; status: string }> {
+    return this.request(`/api/charts/${encodeURIComponent(chartId)}/standard-edits`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  }
+
+  chartAiEditStatus(chartId: string, editId: string, waitMs = 0): Promise<ChartAIEditState> {
     return this.request<ChartAIEditState>(
-      `/api/charts/${encodeURIComponent(chartId)}/ai-edits/${encodeURIComponent(editId)}`,
+      `/api/charts/${encodeURIComponent(chartId)}/ai-edits/${encodeURIComponent(editId)}${waitMs ? `?waitMs=${waitMs}` : ''}`,
     )
   }
 

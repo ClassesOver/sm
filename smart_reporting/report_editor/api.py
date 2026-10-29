@@ -23,7 +23,7 @@ from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
-from .chart_ai import ChartAIEditRequest, ChartTemplateApplyRequest
+from .chart_ai import ChartAIEditRequest, ChartStandardEditRequest, ChartTemplateApplyRequest
 from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
 from .table_ai import TableAIEditRequest, TableTemplateApplyRequest
 from .trace_retention import SourceFileResponse
@@ -1051,6 +1051,25 @@ def create_report_editor_router(
                     _editor_http_error(error, request_id=request_id)
                 return JSONResponse({**started, "requestId": request_id or started["editId"]}, status_code=202)
 
+            @router.post(
+                "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/standard-edits",
+                include_in_schema=False,
+            )
+            async def start_chart_standard_edit(
+                report_id: str, revision: int, chart_id: str,
+                payload: ChartStandardEditRequest, request: Request,
+            ) -> JSONResponse:
+                session, context = await _write_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+                request_id = _request_id(request.headers.get("x-request-id"))
+                try:
+                    started = await chart_ai.start_standard_edit(context, session, chart_id, payload)
+                except ReportingError as error:
+                    _editor_http_error(error, request_id=request_id)
+                return JSONResponse({**started, "requestId": request_id or started["editId"]}, status_code=202)
+
             @router.get(
                 "/reports/v1/editor/{report_id}/{revision}/api/chart-edits/{edit_id}",
                 include_in_schema=False,
@@ -1114,12 +1133,14 @@ def create_report_editor_router(
                 chart_id: str,
                 edit_id: str,
                 request: Request,
+                wait_ms: int = Query(default=0, alias="waitMs", ge=0, le=1500),
             ) -> dict[str, object]:
                 _raw_session, context = await _read_context(
                     grants, editor, request, report_id=report_id, revision=revision
                 )
                 try:
-                    status = chart_ai.edit_status(context, chart_id, edit_id)
+                    status = (await chart_ai.wait_edit_status(context, chart_id, edit_id, wait_ms=wait_ms)
+                              if wait_ms else chart_ai.edit_status(context, chart_id, edit_id))
                 except ReportingError as error:
                     _editor_http_error(error)
                 failure = status.get("error")

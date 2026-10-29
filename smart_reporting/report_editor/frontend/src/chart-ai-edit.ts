@@ -3,7 +3,7 @@ import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model'
 import { buttonClasses } from './button'
 import { createModal } from './modal'
 import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
-import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ReportEditorClient, type TraceChartInfo } from './api'
+import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ChartStandardEditRequest, type ReportEditorClient, type TraceChartInfo } from './api'
 
 /** 设计稿：docs/superpowers/specs/2026-10-25-report-editor-ai-chart-edit-design.md §3/§10。 */
 
@@ -19,9 +19,11 @@ const UNAVAILABLE_REASONS: Record<string, string> = {
 
 const STAGE_LABELS: Record<string, string> = {
   queued: '排队中…',
+  check: '正在核验底图身份…',
   plan: '正在理解改图要求…',
   materialize: '正在准备作图数据…',
-  draw: '正在绘图（通常 1–3 分钟）…',
+  compile: '正在编译标准图参数…',
+  draw: '正在绘图与执行检查…',
   inspect: '正在检查图表…',
   register: '正在登记改图结果…',
 }
@@ -54,6 +56,11 @@ export function quickCommandsForForm(visualForm?: string | null): string[] {
 const MAX_INSTRUCTION_CHARS = 2000
 
 export const STANDARD_CHART_PRESETS = [
+  { id: 'pie', name: '饼图', description: '需要可加的非负构成数据；不足整体的区域保持留白。', standard: { standardForm: 'pie' }, instruction: '按已登记数据改成饼图，保持真实分母与覆盖范围。' },
+  { id: 'donut', name: '环形图', description: '沿用真实构成分母，不把展示子集重新归一。', standard: { standardForm: 'donut' }, instruction: '按已登记数据改成环形图，保持真实分母与覆盖范围。' },
+  { id: 'radar', name: '雷达图', description: '需要3–8个同量纲轴，或前轮已登记的冻结尺度。', standard: { standardForm: 'radar' }, instruction: '使用已登记字段与尺度改成雷达图，不从观测值猜测业务满分。' },
+  { id: 'funnel', name: '漏斗图', description: '保持冻结阶段顺序；非单调按原值呈现并告警。', standard: { standardForm: 'funnel' }, instruction: '改成按登记阶段顺序的漏斗图，不暗中声称转化率。' },
+  { id: 'sankey', name: '桑基图', description: '需要前轮已登记的source/target/value字段绑定。', standard: { standardForm: 'sankey' }, instruction: '按已登记流向字段改成静态桑基图，不补造平衡流。' },
   { id: 'dual', name: '双坐标轴', description: '适合金额与完成率等单位不同的系列。', instruction: '根据已登记系列改成双坐标轴，金额与完成率等不同单位分别使用左右轴，清楚标明单位；不新增或修改数值。' },
   { id: 'dual-stack', name: '堆叠柱与右轴折线', description: '适合分项金额与独立比例同时展示。', instruction: '把已登记的可加分项画成左轴堆叠柱，正负分开累计；完成率等独立指标画右轴折线，分别标明单位，总额只包含左侧分项，不重复堆叠。' },
   { id: 'vertical-break', name: '纵向断轴', description: '适合少数极大值挤压其余柱或折线。', instruction: '保留全部数据和原值，用上下两个线性区间展示纵向图，清楚画出断轴斜线并说明省略区间；不得静默隐藏数据点或将值压到边界。' },
@@ -361,6 +368,10 @@ interface EditTarget {
   title: string
   altText: string
   visualForm?: string | null
+  expectedSha256?: string
+  aiAvailable?: boolean
+  aiReason?: string
+  standardForms?: string[]
   previousEditId?: string
   /** 正文中的原图组；继续预览未接受的结果时保持不变。 */
   bodyEditId?: string
@@ -372,7 +383,7 @@ export function createChartAIEdit(options: {
   view: EditorView
   client: ReportEditorClient
   basePath: string
-  /** 轮询间隔（毫秒）；生产 1500，测试可注入更小值。 */
+  /** 可显式使用定时轮询；默认由服务端短时等待任务完成。 */
   pollIntervalMs?: number
   hooks?: ChartAIEditHooks
 }): ChartAIEditController {
@@ -384,6 +395,16 @@ export function createChartAIEdit(options: {
   let cancelled = false
   // 用户关闭了窗口：后台结果不再重新打开窗口抢焦点。
   let dismissed = false
+  // 关闭或切换目标后，旧异步请求不得再操作当前窗口与任务身份。
+  let generation = 0
+  const invalidateCurrent = () => {
+    generation++
+    cancelled = true
+    if (runningEditId && target) {
+      void client.cancelChartAiEdit(target.chartId, runningEditId).catch(() => undefined)
+    }
+    runningEditId = null
+  }
 
   const ensureModal = () => {
     if (modal) return modal
@@ -403,11 +424,8 @@ export function createChartAIEdit(options: {
         <div class="chart-ai-body" data-role="body"></div>
       `,
       onRequestClose: () => {
-        cancelled = true
+        invalidateCurrent()
         dismissed = true
-        if (runningEditId && target) {
-          void client.cancelChartAiEdit(target.chartId, runningEditId).catch(() => undefined)
-        }
         modal?.close()
       },
     })
@@ -451,7 +469,7 @@ export function createChartAIEdit(options: {
           : null
       if (!chart) return { error: '这张图不在当前版本的登记图表中，无法改图。' }
       const availability = await client.chartAiAvailability(chart.chartId)
-      if (!availability.available) {
+      if (!availability.available && !availability.standardAvailable) {
         return { error: chartAiUnavailableReason(availability.reason) }
       }
       return {
@@ -461,6 +479,10 @@ export function createChartAIEdit(options: {
         title: baseTitleOf(img),
         altText,
         visualForm: matched?.visualForm ?? null,
+        expectedSha256: record?.pages?.find(page => imageMatchesPage(src, page, basePath))?.sha256 ?? availability.expectedSha256,
+        aiAvailable: availability.available,
+        aiReason: availability.reason,
+        standardForms: availability.standardChartCapabilities?.forms,
         bodyImageSrc: locateImage(view, img)?.node.attrs.src as string | undefined,
         ...(record ? { previousEditId: record.editId, bodyEditId: record.editId, bodyPages: record.pages } : {}),
       }
@@ -486,16 +508,16 @@ export function createChartAIEdit(options: {
         <label class="chart-ai-label" for="chart-ai-standard-preset">标准图形与排版</label>
         <div class="chart-ai-standard-controls">
           <select id="chart-ai-standard-preset" aria-describedby="chart-ai-standard-help"><option value="">选择一种图形或调整方式</option></select>
-          <button type="button" class="${buttonClasses('secondary')}" data-action="apply-standard" disabled>填入改图要求</button>
+          <button type="button" class="${buttonClasses('secondary')}" data-action="apply-standard" disabled>应用所选预设</button>
         </div>
-        <p id="chart-ai-standard-help" class="chart-ai-hint" aria-live="polite">选择后可补充字段、单位、颜色等要求；会先检查已登记数据是否满足条件。</p>
+        <p id="chart-ai-standard-help" class="chart-ai-hint" aria-live="polite">结构化预设直接执行；有自由要求时，请明确使用 AI 生成。</p>
       </div>
       <label class="chart-ai-label" for="chart-ai-instruction">改图要求</label>
       <textarea id="chart-ai-instruction" rows="3" maxlength="2000"
         placeholder="例如：改成横向柱状图并按金额降序，显示数值标签"></textarea>
       <div class="chart-ai-quick" role="group" aria-label="快捷指令"></div>
       <div class="chart-ai-actions">
-        <button type="button" class="${buttonClasses('primary')}" data-action="submit">生成改图</button>
+        <button type="button" class="${buttonClasses('primary')}" data-action="submit">使用 AI 生成改图</button>
         <span class="chart-ai-hint">作图数据不变；超出已登记数据的要求会说明原因后跳过。</span>
       </div>
     `
@@ -506,7 +528,8 @@ export function createChartAIEdit(options: {
     const presets = body.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
     const presetHelp = body.querySelector<HTMLElement>('#chart-ai-standard-help')!
     const applyPreset = body.querySelector<HTMLButtonElement>('[data-action="apply-standard"]')!
-    for (const preset of STANDARD_CHART_PRESETS) {
+    for (const preset of STANDARD_CHART_PRESETS.filter(item => !('standard' in item)
+      || !current.standardForms || current.standardForms.includes(item.standard.standardForm))) {
       const option = document.createElement('option')
       option.value = preset.id
       option.textContent = preset.name
@@ -521,6 +544,19 @@ export function createChartAIEdit(options: {
     applyPreset.addEventListener('click', () => {
       const preset = STANDARD_CHART_PRESETS.find(item => item.id === presets.value)
       if (!preset) return
+      if ('standard' in preset && !textarea.value.trim()) {
+        if (!current.expectedSha256) {
+          presetHelp.textContent = '底图身份不可读取，请刷新后重试；未启动改图。'
+          return
+        }
+        void runEdit(current, `应用预设：${preset.name}`, { standard: preset.standard,
+          baseImagePath: current.imagePath, expectedSha256: current.expectedSha256,
+          ...(current.previousEditId ? { previousEditId: current.previousEditId } : {}),
+          ...(current.title ? { baseTitle: current.title } : {}),
+          ...(current.altText ? { baseAltText: current.altText } : {}),
+        })
+        return
+      }
       const custom = appliedPreset ? textarea.value.replace(appliedPreset, '').replace(/^；|；$/g, '').trim() : textarea.value.trim()
       const instruction = custom ? `${custom}；${preset.instruction}` : preset.instruction
       if (instruction.length > MAX_INSTRUCTION_CHARS) {
@@ -530,6 +566,7 @@ export function createChartAIEdit(options: {
       }
       textarea.value = instruction
       appliedPreset = preset.instruction
+      presetHelp.textContent = '此要求包含自由描述，需要点击“使用 AI 生成改图”；不会作为无模型模板执行。'
       textarea.focus()
     })
     const quick = body.querySelector<HTMLElement>('.chart-ai-quick')!
@@ -546,6 +583,8 @@ export function createChartAIEdit(options: {
       quick.append(chip)
     }
     const submit = body.querySelector<HTMLButtonElement>('[data-action="submit"]')!
+    submit.disabled = current.aiAvailable === false
+    if (submit.disabled) submit.title = chartAiUnavailableReason(current.aiReason)
     const chartTemplates = (client as ReportEditorClient & {
       chartTemplates?: (chartId: string) => Promise<{ templates: { templateId: string; name: string; available: boolean; reason?: string }[] }>
     }).chartTemplates
@@ -562,7 +601,14 @@ export function createChartAIEdit(options: {
           control.textContent = item.name
           control.disabled = !item.available
           control.title = item.reason ?? ''
-          control.addEventListener('click', () => void runTemplate(current, item.templateId, textarea.value.trim()))
+          control.addEventListener('click', () => {
+            if (textarea.value.trim()) {
+              textarea.value = `${textarea.value.trim()}；参考模板：${item.name}`.slice(0, MAX_INSTRUCTION_CHARS)
+              presetHelp.textContent = '包含自由要求，请点击“使用 AI 生成改图”。'
+              return
+            }
+            void runTemplate(current, item.templateId, '')
+          })
           templates.append(control)
         }
         submit.parentElement?.before(templates)
@@ -580,6 +626,7 @@ export function createChartAIEdit(options: {
   }
 
   async function runTemplate(current: EditTarget, templateId: string, instruction: string) {
+    const owner = generation
     const body = bodyOf()
     cancelled = false
     body.innerHTML = '<p role="status">正在套用预制图模板…</p>'
@@ -592,11 +639,20 @@ export function createChartAIEdit(options: {
         ...(current.altText ? { baseAltText: current.altText } : {}),
         ...(current.previousEditId ? { previousEditId: current.previousEditId } : {}),
       })
+      if (owner !== generation || cancelled || dismissed) {
+        void client.cancelChartAiEdit(current.chartId, started.editId).catch(() => undefined)
+        return
+      }
       runningEditId = started.editId
+      let firstStatus = true
       for (;;) {
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
-        if (cancelled) return
-        const state = await client.chartAiEditStatus(current.chartId, runningEditId)
+        const waitMs = !firstStatus && options.pollIntervalMs === undefined ? 1500 : 0
+        if (!firstStatus) await new Promise(resolve => setTimeout(resolve, options.pollIntervalMs ?? 0))
+        firstStatus = false
+        if (owner !== generation || cancelled || dismissed) return
+        const state = waitMs ? await client.chartAiEditStatus(current.chartId, runningEditId, waitMs)
+          : await client.chartAiEditStatus(current.chartId, runningEditId)
+        if (owner !== generation || cancelled || dismissed) return
         if (state.status === 'succeeded') {
           renderReviewPhase(current, state as unknown as ChartAIEditSuccess, `套用模板：${templateId}`)
           return
@@ -607,13 +663,14 @@ export function createChartAIEdit(options: {
         }
       }
     } catch {
-      renderInputPhase(current, '模板请求失败，原图保持不变。')
+      if (owner === generation && !dismissed) renderInputPhase(current, '模板请求失败，原图保持不变。')
     } finally {
-      runningEditId = null
+      if (owner === generation) runningEditId = null
     }
   }
 
-  async function runEdit(current: EditTarget, instruction: string) {
+  async function runEdit(current: EditTarget, instruction: string, standard?: ChartStandardEditRequest) {
+    const owner = generation
     const body = bodyOf()
     cancelled = false
     body.innerHTML = `
@@ -629,6 +686,7 @@ export function createChartAIEdit(options: {
     const stage = body.querySelector<HTMLElement>('[data-role="stage"]')!
     const cancel = body.querySelector<HTMLButtonElement>('[data-action="cancel"]')!
     cancel.addEventListener('click', () => {
+      if (owner !== generation) return
       cancelled = true
       if (runningEditId && current.chartId) {
         void client.cancelChartAiEdit(current.chartId, runningEditId).catch(() => undefined)
@@ -636,30 +694,42 @@ export function createChartAIEdit(options: {
     })
     const started = performance.now()
     try {
-      const startedResponse = await client.startChartAiEdit(current.chartId, {
+      const startedResponse = standard ? await client.startChartStandardEdit(current.chartId, standard) : await client.startChartAiEdit(current.chartId, {
         instruction,
         ...(current.imagePath ? { baseImagePath: current.imagePath } : {}),
         ...(current.title ? { baseTitle: current.title } : {}),
         ...(current.altText ? { baseAltText: current.altText } : {}),
         ...(current.previousEditId ? { previousEditId: current.previousEditId } : {}),
       })
+      if (owner !== generation || dismissed) {
+        void client.cancelChartAiEdit(current.chartId, startedResponse.editId).catch(() => undefined)
+        return
+      }
       runningEditId = startedResponse.editId
       if (cancelled) {
         // 服务端返回编号前已取消：补发取消请求，避免后台任务继续占用该图与额度。
         void client.cancelChartAiEdit(current.chartId, runningEditId).catch(() => undefined)
       }
       let transientFailures = 0
+      let firstStatus = true
       for (;;) {
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+        const waitMs = !firstStatus && transientFailures === 0 && options.pollIntervalMs === undefined ? 1500 : 0
+        if (!firstStatus) await new Promise((resolve) => setTimeout(resolve,
+          transientFailures ? pollIntervalMs : options.pollIntervalMs ?? 0))
+        firstStatus = false
+        if (owner !== generation) return
         if (cancelled) break
         let state: Awaited<ReturnType<typeof client.chartAiEditStatus>>
         try {
-          state = await client.chartAiEditStatus(current.chartId, runningEditId)
+          state = waitMs ? await client.chartAiEditStatus(current.chartId, runningEditId, waitMs)
+            : await client.chartAiEditStatus(current.chartId, runningEditId)
           transientFailures = 0
         } catch (error) {
           if (error instanceof TypeError && ++transientFailures < 5) continue
           throw error
         }
+        if (owner !== generation) return
+        if (cancelled) break
         const stageLabel = STAGE_LABELS[String(state.stage ?? 'queued')] ?? STAGE_LABELS.queued
         stage.textContent = `${stageLabel}（${Math.round((performance.now() - started) / 1000)} 秒）`
         if (dismissed) return
@@ -684,10 +754,11 @@ export function createChartAIEdit(options: {
         renderInputPhase(current, '已取消本次改图，原图保持不变。')
       }
     } catch (error) {
+      if (owner !== generation || dismissed) return
       hooks?.onError?.(error instanceof Error ? error.message : 'report_editor_chart_ai_failed')
       if (!dismissed) renderInputPhase(current, '改图请求失败，请稍后重试；原图保持不变。')
     } finally {
-      runningEditId = null
+      if (owner === generation) runningEditId = null
     }
   }
 
@@ -702,6 +773,8 @@ export function createChartAIEdit(options: {
     if (result.changes.title) changes.push(`标题改为「${result.changes.title}」`)
     if (result.changes.altText) changes.push(`图注改为「${result.changes.altText}」`)
     if (result.changes.visualForm) changes.push(`图形改为「${result.changes.visualForm}」`)
+    if (result.planningRoute === 'direct') changes.push('确定性模板预览；未调用 AI 参数规划或自由绘图。')
+    if (!result.visualInspection.reviewed) changes.push('仅完成确定性图片检查，尚未进行独立模型视觉审查。')
     if (pages.length > 1) changes.push(`完整生成 ${pages.length} 页，接受时将一次替换整组图表。`)
     if (result.changes.plotDataUnchanged) {
       changes.push('作图数据未变（数值与原图一致）')
@@ -785,6 +858,7 @@ export function createChartAIEdit(options: {
           title: result.changes.title ?? current.title,
           altText: result.changes.altText ?? current.altText,
           visualForm: result.changes.visualForm ?? current.visualForm,
+          expectedSha256: pages[0]?.sha256,
         },
         `已基于上一轮结果（${instruction.slice(0, 40)}${instruction.length > 40 ? '…' : ''}）继续调整。`,
       )
@@ -793,6 +867,8 @@ export function createChartAIEdit(options: {
 
   return {
     open(img: HTMLImageElement) {
+      invalidateCurrent()
+      const owner = generation
       dismissed = false
       const body = bodyOf()
       body.innerHTML = `
@@ -802,7 +878,7 @@ export function createChartAIEdit(options: {
       `
       ensureModal().open()
       void resolveTarget(img).then((resolved) => {
-        if (dismissed) return
+        if (owner !== generation || dismissed) return
         if ('error' in resolved) {
           body.innerHTML = `
             <div class="chart-ai-unavailable" role="alert">
@@ -821,8 +897,8 @@ export function createChartAIEdit(options: {
       })
     },
     dispose() {
+      invalidateCurrent()
       dismissed = true
-      cancelled = true
       modal?.remove()
       modal = null
     },

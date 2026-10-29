@@ -130,6 +130,8 @@ class ReportingCodingTaskBinding:
         default_factory=dict
     )
     visual_repair_diagnostic: dict[str, Any] | None = None
+    deterministic_image_checks: tuple[Mapping[str, Any], ...] = ()
+    deterministic_image_run_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.context.workspace_key != self.workspace.identity.workspace_key:
@@ -151,6 +153,8 @@ class ReportingCodingTaskBinding:
         """源码变更只失效执行回执；视觉回执由下次执行按内容哈希过滤。"""
         self.execution_receipt = None
         self.output_validation = OutputValidationState()
+        self.deterministic_image_checks = ()
+        self.deterministic_image_run_id = None
 
 
 class ReportingCodingTaskRegistry:

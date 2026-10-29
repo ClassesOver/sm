@@ -1,6 +1,7 @@
 import hashlib
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -132,7 +133,7 @@ class StandardRunner(FakeRunner):
         await workspace.awrite_bytes(context.workspace_key,context.script_path,source.encode(),overwrite=True)
         for output in context.declared_output_paths:
             (context.workspace_root/output).parent.mkdir(parents=True,exist_ok=True)
-        subprocess.run(['/workspace/sm/.venv/bin/python',context.script_path],cwd=context.workspace_root,check=True,capture_output=True)
+        subprocess.run([sys.executable,context.script_path],cwd=context.workspace_root,check=True,capture_output=True)
         receipts=[]
         for output in context.declared_output_paths:
             image,_=await workspace.afile_bytes(context.workspace_key,output)

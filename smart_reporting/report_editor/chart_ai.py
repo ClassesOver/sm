@@ -15,17 +15,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
-from agno.agent import Agent
+from agno.exceptions import redact_secrets
 from agno.run import RunContext
 from loguru import logger
 from pydantic import Field, model_validator
@@ -35,14 +36,18 @@ from ..reporting.contract import SHA256_PATTERN, StrictModel
 from ..reporting.delivery.artifacts_v1 import ChartArtifact, ReportArtifactManifest
 from ..reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ..reporting.host_workspace import HostReportingWorkspace, ReportingWorkspaceRegistry
-from ..reporting.instructions import REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS
 from ..reporting.models import ReportingError
+from ..reporting.structured_output import (
+    ReportingStructuredOutputExecutor,
+    StructuredOutputCallBudget,
+)
 from ..reporting.trace.contracts_v1 import ChartTraceV1, RevisionTraceIndexV1
 from ..reporting.workflow.runtime.chart_inputs import (
     materialize_chart_inputs,
     verify_static_chart_inputs_referenced,
 )
 from ..reporting.workflow.runtime.phase_models import ChartDataBinding
+from ..reporting.workflow.runtime.standard_chart_contract import standard_chart_capabilities
 from ..reporting.workflow.runtime.standard_chart_routing import run_standard_chart_routes
 from ._edit_jobs import prune_finished_jobs, prune_hourly_window
 from .capabilities import EditorCapabilities
@@ -90,7 +95,7 @@ _INSPECT_RESERVE_SECONDS = 15.0
 # 计划未改图形时，绘图与登记都写“保持原图形”，不留空。
 _KEEP_VISUAL_FORM = "保持原图形"
 
-CHART_AI_STAGES = ("queued", "plan", "materialize", "draw", "inspect", "register")
+CHART_AI_STAGES = ("queued", "check", "plan", "materialize", "compile", "draw", "inspect", "register")
 
 
 def _chart_artifact_for_trace(
@@ -157,6 +162,19 @@ class ChartAIEditRequest(StrictModel):
         return self
 
 
+class ChartStandardEditRequest(StrictModel):
+    """标准直达只接受呈现参数；执行身份与策略由服务端掌握。"""
+
+    standard: StandardChartEditParameters
+    base_image_path: str = Field(alias="baseImagePath", min_length=1, max_length=1024)
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
+    previous_edit_id: str | None = Field(default=None, alias="previousEditId", min_length=8, max_length=40)
+    base_title: str | None = Field(default=None, alias="baseTitle", max_length=200)
+    base_alt_text: str | None = Field(default=None, alias="baseAltText", max_length=200)
+    title: str | None = Field(default=None, max_length=200)
+    alt_text: str | None = Field(default=None, alias="altText", max_length=200)
+
+
 class ChartTemplateApplyRequest(StrictModel):
     """POST /charts/{chart_id}/template-edits 请求体。"""
 
@@ -198,6 +216,78 @@ class _ChartEditJob:
     result: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
     cancelled: bool = False
+    stage_started_at: float = field(default_factory=time.monotonic)
+    stage_timings_ms: dict[str, float] = field(default_factory=dict)
+    # 兼容字段仍表示最终交付runner；逐轮保留真实观测，不能把嵌套total当墙钟相加。
+    execution_stage_timings_ms: dict[str, float] = field(default_factory=dict)
+    execution_observation: dict[str, Any] = field(default_factory=dict)
+    execution_rounds: list[dict[str, Any]] = field(default_factory=list)
+
+    def capture_execution(self, value: Any, *, phase: str | None = None) -> None:
+        details = getattr(value, "details", None)
+        details = details if isinstance(details, Mapping) else {}
+        observation = getattr(value, "standard_execution", None) or details.get("standardExecution") or {}
+        timings = getattr(value, "stage_timings", None) or observation.get("stageTimings", {})
+        statuses = getattr(value, "stage_statuses", None) or observation.get("stageStatuses", {})
+        spans = getattr(value, "execution_spans", None) or observation.get("executionSpans")
+        attempts = (getattr(value, "execution_attempts", None) or getattr(value, "standard_execution_attempts", None)
+                    or details.get("standardExecutionAttempts") or ((observation,) if observation else ()))
+        route_total = getattr(value, "route_total_ms", None)
+        if route_total is None:
+            route_total = getattr(value, "standard_route_total_ms", None) or details.get("standardRouteTotalMs")
+        route = getattr(value, "standard_route_execution", None) or details.get("standardRouteExecution")
+        if not (timings or attempts or spans is not None or route is not None or _nonnegative_number(route_total)) and getattr(value, "__cause__", None) is not None:
+            self.capture_execution(value.__cause__, phase=phase)
+            return
+        if timings or attempts or spans is not None or route is not None or phase is not None:
+            self.execution_stage_timings_ms = _safe_stage_timings(timings)
+            current = {
+                "executionStageTimingsMs": self.execution_stage_timings_ms,
+                "executionStageStatuses": _safe_stage_statuses(statuses),
+                "executionSpans": _safe_execution_spans(spans),
+                "executionAttempts": [_safe_execution_attempt(item) for item in attempts[:20] if isinstance(item, Mapping)],
+                **({"standardRouteTotalMs": route_total} if _nonnegative_number(route_total) else {}),
+            }
+            if isinstance(route, Mapping):
+                current["standardRouteExecution"] = {
+                    **_safe_execution_attempt(route),
+                    **({"routeTotalMs": route["routeTotalMs"]} if _nonnegative_number(route.get("routeTotalMs")) else {}),
+                    **({"initialCompileMs": route["initialCompileMs"]} if _nonnegative_number(route.get("initialCompileMs")) else {}),
+                    **({"initialCompileStatus": route["initialCompileStatus"]} if route.get("initialCompileStatus") in {"not_started", "succeeded", "failed"} else {}),
+                }
+            if phase is not None:
+                self.execution_rounds.append({
+                    "round": len(self.execution_rounds) + 1, "phase": phase,
+                    "status": "cancelled" if isinstance(value, asyncio.CancelledError) else "failed" if isinstance(value, BaseException) else "succeeded",
+                    **current,
+                })
+            self.execution_observation = {
+                **current, "executionRounds": self.execution_rounds,
+                "executionTimingSemantics": "per-round nested timings; totals and spans are not additive wall time",
+            }
+
+    def set_stage(self, stage: str) -> None:
+        now = time.monotonic()
+        self.stage_timings_ms[self.stage] = self.stage_timings_ms.get(self.stage, 0) + (now - self.stage_started_at) * 1000
+        self.stage = stage
+        self.stage_started_at = now
+
+    def timings(self) -> dict[str, float]:
+        values = {name: 0.0 for name in CHART_AI_STAGES if name != "queued"}
+        values.update(self.stage_timings_ms)
+        if self.finished_at is None:
+            values[self.stage] = values.get(self.stage, 0) + (time.monotonic() - self.stage_started_at) * 1000
+        values["total"] = ((self.finished_at or time.monotonic()) - self.started_at) * 1000
+        execution_timings = [item.get("standardRouteExecution", {}).get("stageTimings") or item["executionStageTimingsMs"]
+                             for item in self.execution_rounds] or [self.execution_stage_timings_ms]
+        if any(execution_timings):
+            # runner提供真实细分时，将执行检查从draw归入inspect，其余仍保留端到端。
+            execution_inspect = sum(item.get("inspect", 0) for item in execution_timings)
+            execution_compile = sum(item.get("compile", 0) for item in execution_timings)
+            values["draw"] = max(0, values.get("draw", 0) - execution_inspect - execution_compile)
+            values["inspect"] = values.get("inspect", 0) + execution_inspect
+            values["compile"] = values.get("compile", 0) + execution_compile
+        return {key: round(value, 3) for key, value in values.items()}
 
     @property
     def key(self) -> tuple[str, int, str]:
@@ -206,6 +296,71 @@ class _ChartEditJob:
 
 def _chart_ai_error(code: str, message: str, **details: Any) -> ReportingError:
     return ReportingError(code, message, details=details or None)
+
+
+def _standard_warning_text(value: Any) -> str:
+    if isinstance(value, Mapping):
+        message = str(value.get("message") or value.get("code") or "标准图语义需人工核对")
+        return f"{message}（{value['code']}）" if value.get("code") else message
+    return str(value)
+
+
+_EXECUTION_STAGES = frozenset({"check", "write", "draw", "inspect", "submit", "currentReceipt", "cleanup", "handoff", "total", "compile"})
+
+
+def _nonnegative_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+
+
+def _safe_stage_timings(value):
+    return {key: item for key, item in value.items() if key in _EXECUTION_STAGES and _nonnegative_number(item)} if isinstance(value, Mapping) else {}
+
+
+def _safe_stage_statuses(value):
+    return {key: item for key, item in value.items() if key in _EXECUTION_STAGES and item in {"succeeded", "failed", "cancelled", "warning"}} if isinstance(value, Mapping) else {}
+
+
+def _safe_execution_spans(value):
+    if not isinstance(value, Mapping):
+        return "unknown" if value == "unknown" else None
+    return {key: [item for item in values[:64] if _nonnegative_number(item)]
+            for key, values in value.items() if key in {"bootstrap", "monitor", "cell", "script", "scriptProcess", "shutdown"}
+            and isinstance(values, (list, tuple))}
+
+
+def _safe_execution_attempt(value):
+    return {
+        **({"status": value["status"]} if value.get("status") in {"succeeded", "failed", "cancelled"} else {}),
+        **({"failedStage": value["failedStage"]} if value.get("failedStage") in _EXECUTION_STAGES else {}),
+        **{key: value[key] for key in ("attempt", "durationMs") if _nonnegative_number(value.get(key))},
+        "stageTimings": _safe_stage_timings(value.get("stageTimings")),
+        "stageStatuses": _safe_stage_statuses(value.get("stageStatuses")),
+        "executionSpans": _safe_execution_spans(value.get("executionSpans")),
+    }
+
+
+def _safe_execution_diagnostic(details, phase):
+    """只投影工具的故障标识与图片位置，不序列化行值、源码或任意异常对象。"""
+    if not isinstance(details, Mapping):
+        return {}
+    result = {}
+    for key, limit in (("code", 120), ("message", 500), ("parameter", 120)):
+        if isinstance(details.get(key), str):
+            result[key] = redact_secrets(details[key])[:limit]
+    if phase in _EXECUTION_STAGES:
+        result["phase"] = phase
+    nested = details.get("details")
+    nested = nested if isinstance(nested, Mapping) else details
+    safe = {}
+    path = nested.get("path")
+    if isinstance(path, str) and len(path) <= 1024 and not path.startswith(("/", "\\")) and ".." not in path.replace("\\", "/").split("/"):
+        safe["path"] = path
+    for key in ("width", "height"):
+        if _nonnegative_number(nested.get(key)):
+            safe[key] = nested[key]
+    if safe:
+        result["details"] = safe
+    return result
 
 
 class ChartAIEditService:
@@ -243,23 +398,37 @@ class ChartAIEditService:
     ) -> dict[str, Any]:
         """按钮置灰原因判定；只读会话、无作图数据、来源过期等均为不可用。"""
 
-        reason, _resolved = await self._check(expected, session, chart_id)
-        if reason is not None:
-            return {"available": False, "reason": reason}
-        return {"available": True, "chartId": chart_id}
+        reason, _resolved = await self._check(expected, session, chart_id, deterministic=True)
+        ai_reason = reason or self._model_unavailable_reason()
+        standard_reason = reason or (None if callable(getattr(self.runner, "run_standard_visualization", None)) else "unconfigured")
+        result = {"available": ai_reason is None, "chartId": chart_id,
+                **({"reason": ai_reason} if ai_reason else {}),
+                "standardAvailable": standard_reason is None,
+                **({"standardReason": standard_reason} if standard_reason else {}),
+                "codingAvailable": ai_reason is None}
+        result["standardChartCapabilities"] = standard_chart_capabilities()
+        if _resolved is not None:
+            result.update(baseImagePath=_resolved[1].path, expectedSha256=_resolved[1].sha256)
+        return result
+
+    def _model_unavailable_reason(self) -> str | None:
+        if self.planner is None:
+            return "unconfigured"
+        if getattr(self.runner, "vision_reviewer", None) is None:
+            return "vision_missing"
+        return None
 
     async def _check(
-        self, expected: ReportEditorContext, session: Any, chart_id: str
+        self, expected: ReportEditorContext, session: Any, chart_id: str, *, deterministic: bool = False
     ) -> tuple[str | None, tuple[ReportEditorContext, Any, Any, Any] | None]:
         """可用性判定与图表解析共用一次来源上下文与清单加载；返回 (不可用原因, 解析结果)。"""
 
         if EditorCapabilities.of(getattr(session, "capabilities", None)).restricted:
             return "read_only", None
-        if self.runner is None or self.planner is None:
+        if self.runner is None:
             return "unconfigured", None
-        if getattr(self.runner, "vision_reviewer", None) is None:
-            # 未配置视觉审查模型时 runner 拒绝运行可视化任务，功能按不可用提示。
-            return "vision_missing", None
+        if not deterministic and (reason := self._model_unavailable_reason()):
+            return reason, None
         try:
             context = await self.editor._source_context(expected)
         except ReportingError as error:
@@ -420,28 +589,33 @@ class ChartAIEditService:
         pages = chart_edit_pages(record)
         return [dict(pageNumber=page.page_number, pageCount=len(pages), imagePath=page.image.path,
                      imageSrc=chart_edit_page_src(context.markdown_path, record.edit_id, page.page_number),
-                     title=page.chart.title, altText=page.chart.alt_text) for page in pages]
+                     title=page.chart.title, altText=page.chart.alt_text, sha256=page.image.sha256) for page in pages]
 
     async def start_edit(
         self,
         expected: ReportEditorContext,
         session: Any,
         chart_id: str,
-        request: ChartAIEditRequest,
+        request: ChartAIEditRequest | ChartStandardEditRequest,
     ) -> dict[str, Any]:
+        request_started = time.monotonic()
         self._prune_jobs()
         if EditorCapabilities.of(getattr(session, "capabilities", None)).restricted:
             raise _chart_ai_error(
                 "report_editor_chart_ai_unavailable", "当前会话为只读分享会话，不能使用 AI 改图。"
             )
-        instruction = request.instruction.strip()
+        deterministic = isinstance(request, ChartStandardEditRequest)
+        instruction = "按结构化标准参数调整图表" if deterministic else request.instruction.strip()
         if not instruction:
             raise _chart_ai_error("report_editor_chart_ai_instruction_required", "请填写改图要求。")
         if len(instruction) > MAX_CHART_AI_INSTRUCTION_CHARS:
             raise _chart_ai_error(
                 "report_editor_chart_ai_instruction_too_large", "改图要求过长，请拆分为多次调整。"
             )
-        reason, resolved = await self._check(expected, session, chart_id)
+        check_started = time.monotonic()
+        reason, resolved = await self._check(expected, session, chart_id, deterministic=deterministic)
+        if deterministic and not callable(getattr(self.runner, "run_standard_visualization", None)):
+            reason = "unconfigured"
         if reason is not None or resolved is None:
             reason = reason or "unavailable"
             raise _chart_ai_error(
@@ -475,12 +649,15 @@ class ChartAIEditService:
             chart_id=chart_id,
             user_id=user_id,
             task=task,
-            started_at=time.monotonic(),
+            started_at=request_started,
+            stage_started_at=time.monotonic(),
         )
         self._jobs[edit_id] = job
+        job.stage_timings_ms["check"] = (time.monotonic() - check_started) * 1000
 
         def completed(done: asyncio.Task[dict[str, Any]]) -> None:
             if job.finished_at is None:
+                job.set_stage(job.stage)
                 job.finished_at = time.monotonic()
             if not done.cancelled():
                 done.exception()
@@ -497,6 +674,11 @@ class ChartAIEditService:
         )
         return {"editId": edit_id, "status": "queued"}
 
+    async def start_standard_edit(
+        self, expected: ReportEditorContext, session: Any, chart_id: str, request: ChartStandardEditRequest,
+    ) -> dict[str, Any]:
+        return await self.start_edit(expected, session, chart_id, request)
+
     def edit_status(
         self, expected: ReportEditorContext, chart_id: str, edit_id: str
     ) -> dict[str, Any]:
@@ -505,18 +687,32 @@ class ChartAIEditService:
         if job is None or job.key != (expected.report_id, expected.revision, chart_id):
             raise _chart_ai_error("report_editor_chart_ai_missing", "改图任务不存在或已过期。")
         if not job.task.done():
-            return {"editId": edit_id, "chartId": chart_id, "status": "running", "stage": job.stage}
+            return {"editId": edit_id, "chartId": chart_id, "status": "running", "stage": job.stage, "stageTimingsMs": job.timings(), **job.execution_observation}
         if job.cancelled or job.task.cancelled():
             return {
                 "editId": edit_id,
                 "chartId": chart_id,
                 "status": "cancelled",
                 "error": job.error,
+                "stageTimingsMs": job.timings(),
+                **job.execution_observation,
             }
         if job.result is not None:
-            return {"editId": edit_id, "chartId": chart_id, **job.result}
+            return {"editId": edit_id, "chartId": chart_id, **job.result, "stageTimingsMs": job.timings(), **job.execution_observation}
         error = job.error or {"code": "report_editor_chart_ai_failed", "message": "改图失败。"}
-        return {"editId": edit_id, "chartId": chart_id, "status": "failed", "error": error}
+        return {"editId": edit_id, "chartId": chart_id, "status": "failed", "error": error, "stageTimingsMs": job.timings(), **job.execution_observation}
+
+    async def wait_edit_status(
+        self, expected: ReportEditorContext, chart_id: str, edit_id: str, *, wait_ms: int
+    ) -> dict[str, Any]:
+        if not 0 <= wait_ms <= 1500:
+            raise ValueError("wait_ms must be between 0 and 1500")
+        status = self.edit_status(expected, chart_id, edit_id)
+        if status["status"] == "running" and wait_ms:
+            job = self._jobs[edit_id]
+            await asyncio.wait({job.task}, timeout=wait_ms / 1000)
+            status = self.edit_status(expected, chart_id, edit_id)
+        return status
 
     def cancel_edit(
         self, expected: ReportEditorContext, chart_id: str, edit_id: str
@@ -566,6 +762,7 @@ class ChartAIEditService:
             async with deadline:
                 result = await self._run_template(resolved, chart_id, request, edit_id)
         except TimeoutError as error:
+            job.capture_execution(error)
             if not deadline.expired():
                 job.error = {
                     "code": "report_editor_chart_ai_failed",
@@ -583,9 +780,11 @@ class ChartAIEditService:
                 job.error["code"],
             )
             raise _from_error_dict(job.error) from error
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
+            job.capture_execution(error)
             raise
         except ReportingError as error:
+            job.capture_execution(error)
             job.error = {"code": error.code, "message": error.message}
             raise
         except BaseException as error:  # noqa: BLE001 - task result is returned by polling
@@ -720,13 +919,23 @@ class ChartAIEditService:
                 raise _chart_ai_error(
                     "report_editor_chart_ai_unavailable", "CodeMode 执行运行时未配置。"
                 )
-            await runtime.execute_script(
-                f"chart-template:{edit_id}",
-                workspace,
-                script_path,
-                timeout=int(self.timeout_seconds),
-                matplotlib_agg=True,
-            )
+            session_id = f"chart-template:{edit_id}"
+            try:
+                await runtime.execute_script(
+                    session_id, workspace, script_path,
+                    timeout=int(self.timeout_seconds), matplotlib_agg=True,
+                )
+            finally:
+                # 只关闭本次模板会话；清理错误不能覆盖执行、取消或已有产物。
+                try:
+                    await runtime.shutdown(session_id)
+                except (Exception, asyncio.CancelledError) as error:
+                    logger.warning("report_editor_template_cleanup_failed edit_id={} error_type={}", edit_id, type(error).__name__)
+                try:
+                    spans = runtime.drain_execution_spans(session_id)
+                    logger.info("report_editor_template_execution_spans edit_id={} spans={}", edit_id, spans)
+                except (Exception, asyncio.CancelledError) as error:
+                    logger.warning("report_editor_template_spans_failed edit_id={} error_type={}", edit_id, type(error).__name__)
             receipts = ()
         self._jobs[edit_id].stage = "inspect"
         inspection = await workspace.inspect_chart_file(thread_id, output_path)
@@ -816,7 +1025,7 @@ class ChartAIEditService:
         self,
         resolved: tuple[ReportEditorContext, Any, Any, Any],
         chart_id: str,
-        request: ChartAIEditRequest,
+        request: ChartAIEditRequest | ChartStandardEditRequest,
         edit_id: str,
         *,
         instruction: str,
@@ -835,6 +1044,7 @@ class ChartAIEditService:
                     deadline=started + self.timeout_seconds,
                 )
         except TimeoutError as error:
+            job.capture_execution(error)
             if not deadline.expired():
                 # 执行器内部的超时不是整次改图超时，按一般失败如实报告。
                 job.error = {
@@ -867,14 +1077,29 @@ class ChartAIEditService:
                 "report_editor_chart_ai_timeout",
             )
             raise _from_error_dict(job.error)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
+            job.capture_execution(error)
             raise
         except ReportingError as error:
+            job.capture_execution(error)
             job.error = {"code": error.code, "message": error.message}
-            if error.details:
+            if isinstance(error.details, Mapping):
                 skipped = error.details.get("skipped")
                 if isinstance(skipped, list):
                     job.error["skipped"] = skipped
+                observation = getattr(error, "standard_execution", None) or error.details.get("standardExecution") or {}
+                phase = observation.get("failedStage") or job.stage
+                execution_diagnostic = _safe_execution_diagnostic(error.details, phase)
+                if execution_diagnostic.get("code"):
+                    job.error["executionDiagnostic"] = execution_diagnostic
+                    job.error["message"] += " " + " - ".join(str(execution_diagnostic[key]) for key in ("code", "message") if execution_diagnostic.get(key))
+                    if execution_diagnostic.get("details", {}).get("path"):
+                        job.error["message"] += "（" + execution_diagnostic["details"]["path"] + "）"
+                diagnostic = error.details.get("standardDiagnostic")
+                if isinstance(diagnostic, Mapping):
+                    job.error["standardDiagnostic"] = _safe_execution_diagnostic(diagnostic, phase)
+                    if job.error["standardDiagnostic"].get("message"):
+                        job.error["message"] += " " + job.error["standardDiagnostic"]["message"]
             logger.warning(
                 "report_editor_chart_ai_failed report_id={} revision={} chart_id={} edit_id={} "
                 "elapsed_ms={} error_code={}",
@@ -887,6 +1112,7 @@ class ChartAIEditService:
             )
             raise
         except BaseException as error:  # noqa: BLE001 - 后台任务必须消化异常供轮询读取
+            job.capture_execution(error)
             job.error = {
                 "code": "report_editor_chart_ai_failed",
                 "message": "改图执行失败，原图不受影响。",
@@ -945,14 +1171,15 @@ class ChartAIEditService:
         self,
         resolved: tuple[ReportEditorContext, Any, Any, Any],
         chart_id: str,
-        request: ChartAIEditRequest,
+        request: ChartAIEditRequest | ChartStandardEditRequest,
         edit_id: str,
         *,
         instruction: str,
         deadline: float,
     ) -> dict[str, Any]:
         job = self._jobs[edit_id]
-        job.stage = "plan"
+        deterministic = isinstance(request, ChartStandardEditRequest)
+        job.set_stage("check")
         # 启动时已解析的来源上下文与清单直接沿用，不在后台任务中重复加载与核验。
         source_context, chart_artifact, trace, index = resolved
         thread_id = source_context.scope["threadId"]
@@ -966,7 +1193,7 @@ class ChartAIEditService:
         )
 
         # materialize：L1 直接引用原归档 chart-input（只读），为 plan 提供数据摘要。
-        job.stage = "materialize"
+        job.set_stage("materialize")
         plot_files, plot_entries = await self._materialize_inputs(
             source_context, trace, workspace, index
         )
@@ -1034,18 +1261,27 @@ class ChartAIEditService:
                     data_origin = previous.data_origin
                     effective_bindings = tuple(previous.data_bindings)
                     effective_dataset_ids = tuple(previous.chart.dataset_ids)
-        registered_bindings, fact_documents = await self._registered_bindings(
-            source_context, trace, index, workspace
-        )
-        # plan：模型把用户要求分级；L2 只能从服务端给出的同分析签发目录换绑。
-        job.stage = "plan"
-        plan = await self._plan(
-            source_context, chart_id, request, plot_entries, registered_bindings,
-            plot_files=plot_files, previous_standard=previous_standard,
-            previous_visual_form=previous_visual_form,
-            previous_group_title=previous_group_title, previous_group_alt=previous_group_alt,
-        )
-        effective_standard = inherit_standard(previous_standard, plan.standard)
+        # 直达复用已核验的前轮快照，不重新选事实，也不进入任何模型。
+        job.set_stage("plan")
+        if deterministic:
+            effective_standard = inherit_standard(previous_standard, request.standard)
+            if effective_standard is None or effective_standard.standard_form in {None, "custom"}:
+                raise _chart_ai_error("report_editor_standard_form_required", "请明确选择标准图形，或从已登记的标准改图继续调整。")
+            plan = ChartEditPlan(level=("L1",), title=request.title, altText=request.alt_text,
+                drawInstruction=instruction, standard=effective_standard)
+            registered_bindings, fact_documents = (), {}
+        else:
+            registered_bindings, fact_documents = await self._registered_bindings(
+                source_context, trace, index, workspace
+            )
+            plan = await self._plan(
+                source_context, chart_id, request, plot_entries, registered_bindings,
+                plot_files=plot_files, previous_standard=previous_standard,
+                previous_visual_form=previous_visual_form,
+                previous_group_title=previous_group_title, previous_group_alt=previous_group_alt,
+            )
+            # AI 明确选自由绘图时不把上一轮标准模板重新强加给本轮。
+            effective_standard = inherit_standard(previous_standard, plan.standard) if plan.standard is not None else None
         level = tuple(item for item in plan.level if item in {"L1", "L2"})
         skipped = list(plan.skipped)
         l2_selected_bindings: tuple[ChartDataBinding, ...] = ()
@@ -1131,7 +1367,7 @@ class ChartAIEditService:
                 skipped=[{"request": item.request, "reason": item.reason} for item in skipped],
             )
 
-        job.stage = "draw"
+        job.set_stage("compile")
         edit_dir = chart_edit_output_dir(source_context.markdown_path, edit_id)
         script_path = f"{edit_dir}/chart_edit.py"
         output_path = f"{edit_dir}/chart.png"
@@ -1216,21 +1452,40 @@ class ChartAIEditService:
             session_state={},
         )
         assert self.runner is not None  # availability 已检查
+        job.set_stage("draw")
         standard_fallback = None
-        if plan.standard is not None and callable(getattr(self.runner, "run_standard_visualization", None)):
-            try:
-                result = await run_standard_chart_routes(
-                    self.runner, task_context, workspace, standard_plan, standard_inputs,
-                    task_facts, run_context,
-                )
-            except Exception as error:
-                logger.warning("report_editor_standard_chart_fallback error={}", type(error).__name__)
-                task_facts["standardChartPreflight"] = {"code":"standard_editor_execution_failed", "message":"标准绘图未完成，按相同绑定和全部输出修复。"}
-                standard_fallback = "标准模板执行未完成，已按相同登记数据和全部输出转为自由绘图。"
+        execution_phase = "initial"
+        try:
+            if plan.standard is not None and callable(getattr(self.runner, "run_standard_visualization", None)):
+                try:
+                    result = await run_standard_chart_routes(
+                        self.runner, task_context, workspace, standard_plan, standard_inputs,
+                        task_facts, run_context, **({"deterministic": True} if deterministic else {}),
+                    )
+                except Exception as error:
+                    if deterministic:
+                        if isinstance(error, ReportingError):
+                            raise
+                        raise _chart_ai_error("report_editor_standard_execution_failed",
+                            "标准图执行失败，原图保持不变；未调用 AI 或自由绘图。", errorType=type(error).__name__) from error
+                    job.capture_execution(error, phase=execution_phase)
+                    execution_phase = "fallback"
+                    logger.warning("report_editor_standard_chart_fallback error={}", type(error).__name__)
+                    task_facts["standardChartPreflight"] = {"code":"standard_editor_execution_failed", "message":"标准绘图未完成，按相同绑定和全部输出修复。"}
+                    standard_fallback = "标准模板执行未完成，已按相同登记数据和全部输出转为自由绘图。"
+                    result = await self.runner.run(task_context, workspace, task_facts, run_context=run_context)
+            else:
+                if deterministic:
+                    raise _chart_ai_error("report_editor_standard_unavailable", "标准图运行时未配置，未调用 AI 或自由绘图。")
                 result = await self.runner.run(task_context, workspace, task_facts, run_context=run_context)
-        else:
-            result = await self.runner.run(task_context, workspace, task_facts, run_context=run_context)
+        except BaseException as error:
+            job.capture_execution(error, phase=execution_phase)
+            raise
         warnings: list[str] = list(standard_plan.warnings)
+        job.capture_execution(result, phase=execution_phase)
+        warnings.extend(_standard_warning_text(item) for item in getattr(result, "standard_chart_warnings", ()))
+        for route in getattr(result, "standard_chart_routes", ()):
+            warnings.extend(_standard_warning_text(item) for item in route.get("warnings", ()))
         if standard_fallback:
             warnings.append(standard_fallback)
         elif effective_standard is not None:
@@ -1239,7 +1494,7 @@ class ChartAIEditService:
                 if route.get("route") == "coding" and diagnostic.get("message"):
                     warnings.append("标准模板未直接适用，已使用登记数据自由绘图：" + str(diagnostic["message"])[:300])
         # 视觉问题为软告警，可触发一次自动修复；修复后仍有问题则带告警交付审阅。
-        if any(receipt.requires_revision for receipt in result.visual_inspection_receipts):
+        if not deterministic and any(receipt.requires_revision for receipt in result.visual_inspection_receipts):
             result = await self._repair(
                 task_context,
                 workspace,
@@ -1250,9 +1505,11 @@ class ChartAIEditService:
                 paths=(*output_paths, script_path),
                 deadline=deadline,
                 warnings=warnings,
+                job=job,
             )
 
-        job.stage = "inspect"
+        job.capture_execution(result)
+        job.set_stage("inspect")
         inspection = await workspace.inspect_chart_file(thread_id, output_path)
         for page_path in output_paths[1:]:
             await workspace.inspect_chart_file(thread_id, page_path)
@@ -1284,7 +1541,7 @@ class ChartAIEditService:
             warnings.append(f"图表 {chart} 的作图数据未被脚本直接引用，请人工核对数值来源。")
         warnings.extend(_caption_number_warnings(plan.alt_text or previous_group_alt or base_alt, plot_files))
 
-        job.stage = "register"
+        job.set_stage("register")
         image_identity = await workspace.ahash_file(thread_id, output_path)
         script_identity = await workspace.ahash_file(thread_id, script_path)
         page_records = []
@@ -1301,6 +1558,7 @@ class ChartAIEditService:
                                              visualForm=visual_form, datasetIds=effective_dataset_ids),
                     visualInspectionReceipt=page_receipt.model_dump(mode="json", by_alias=True) if page_receipt else {},
                 ))
+        warnings = list(dict.fromkeys(warnings))
         record = ChartEditRecord(
             editId=edit_id,
             chartId=chart_id,
@@ -1354,6 +1612,9 @@ class ChartAIEditService:
             "imagePath": output_path,
             "imageSrc": chart_edit_image_src(source_context.markdown_path, edit_id),
             "pages": self._page_response(source_context, record),
+            "planningRoute": "direct" if deterministic else "ai",
+            **job.execution_observation,
+            "deterministicImageChecks": list(getattr(result, "deterministic_image_checks", ())),
             "renderingRoute": "standard" if routes == {"standard"} else "mixed" if routes == {"standard", "coding"} else "coding",
             "level": list(level),
             "changes": {
@@ -1372,7 +1633,8 @@ class ChartAIEditService:
                 "format": inspection.get("format"),
                 "width": inspection.get("width"),
                 "height": inspection.get("height"),
-                "reviewed": bool(result.visual_inspection_receipts),
+                "reviewed": not deterministic and bool(result.visual_inspection_receipts)
+                    and all(receipt.reviewed for receipt in result.visual_inspection_receipts),
             },
         }
 
@@ -1388,6 +1650,7 @@ class ChartAIEditService:
         paths: tuple[str, ...],
         deadline: float,
         warnings: list[str],
+        job: _ChartEditJob,
     ) -> Any:
         """视觉审查要求修改时自动修复一次；时间不足或修复失败时恢复首轮产物并带告警交付。"""
 
@@ -1402,7 +1665,7 @@ class ChartAIEditService:
         assert self.runner is not None
         try:
             async with asyncio.timeout(remaining):
-                return await self.runner.run(
+                repaired = await self.runner.run(
                     task_context,
                     workspace,
                     task_facts,
@@ -1412,7 +1675,12 @@ class ChartAIEditService:
                         "message": "视觉审查发现问题，请在不改变数据与输出路径的前提下修复图表。",
                     },
                 )
-        except Exception as error:  # noqa: BLE001 - 修复是附加步骤，失败时交付首轮结果
+                job.capture_execution(repaired, phase="repair")
+                return repaired
+        except BaseException as error:  # noqa: BLE001 - 取消保留执行观测后仍向外传播
+            job.capture_execution(error, phase="repair")
+            if not isinstance(error, Exception):
+                raise
             logger.opt(exception=error).warning(
                 "report_editor_chart_ai_repair_failed task_id={} error_type={}",
                 task_context.task_id,
@@ -1429,7 +1697,7 @@ class ChartAIEditService:
         self,
         source_context: ReportEditorContext,
         chart_artifact: Any,
-        request: ChartAIEditRequest,
+        request: ChartAIEditRequest | ChartStandardEditRequest,
         *,
         chart_id: str,
     ) -> tuple[str, str]:
@@ -1612,12 +1880,18 @@ class ChartAIEditService:
             ],
             "instruction": request.instruction.strip(),
             "supportedLevels": ["L1", "L2"],
+            "currentBindings": _bindings_from_plot_files(plot_files),
             "registeredBindings": registered_bindings,
             "previousStandard": previous_standard or {},
             "previousVisualForm": previous_visual_form,
             "standardPlotSummary": standard_plot_summary(plot_files),
+            "standardChartCapabilities": standard_chart_capabilities(),
+            "standardChartSchema": StandardChartEditParameters.model_json_schema(by_alias=True),
         }
         try:
+            if isinstance(self.planner, AgnoChartEditPlanner):
+                # 用户身份只进受信执行上下文，不混入模型可见的业务JSON。
+                return await self.planner(plan_request, user_id=context.scope.get("userId", ""))
             return await self.planner(plan_request)
         except ReportingError:
             raise
@@ -1744,7 +2018,7 @@ def _bindings_from_plot_files(plot_files: list[SimpleNamespace]) -> list[dict[st
     """由 chart-input 的 source 字段还原数据绑定（登记展示用）。"""
 
     bindings: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[Any, ...]] = set()
     for item in plot_files:
         try:
             payload = json.loads(item.content)
@@ -1758,16 +2032,19 @@ def _bindings_from_plot_files(plot_files: list[SimpleNamespace]) -> list[dict[st
             str(source.get("path", "")),
             str(source.get("dataPath", "")),
         )
-        if not all(key) or key in seen:
+        fields = [str(column) for column in (payload.get("columns") or ())]
+        role = str(payload.get("role", ""))
+        identity = (*key, tuple(fields), role)
+        if not all(key) or identity in seen:
             continue
-        seen.add(key)
+        seen.add(identity)
         bindings.append(
             {
                 "analysisId": key[0],
                 "factPath": key[1],
                 "dataPath": key[2],
-                "fields": [str(column) for column in (payload.get("columns") or ())],
-                "role": str(payload.get("role", "")),
+                "fields": fields,
+                "role": role,
             }
         )
     return bindings
@@ -1838,18 +2115,23 @@ class AgnoChartEditPlanner:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
 
-    async def __call__(self, request: Mapping[str, Any]) -> ChartEditPlan:
-        payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
+    async def __call__(self, request: Mapping[str, Any], *, user_id: str = "") -> ChartEditPlan:
+        # 公共执行器已提供完整输出契约；仅内置适配器省去重复schema，不改自定义规划器输入。
+        model_request = {key: value for key, value in request.items() if key != "standardChartSchema"}
+        payload = json.dumps(model_request, ensure_ascii=False, sort_keys=True)
         prompt = (
             "<chart_edit_request>\n"
             f"{payload}\n"
             "</chart_edit_request>\n"
             "请按系统指令对该改图要求分级并输出结构化规划。"
         )
-        output = await self.agent.arun(
+        output = await ReportingStructuredOutputExecutor(self.agent).execute(
             prompt,
-            add_history_to_context=False,
+            routing_context=None,
             session_id=f"report-editor-chart-ai:{request.get('chartId', '')}",
+            user_id=user_id,
+            # 保持原规划器单次业务调用，不因接入公共执行器扩大纠错轮数。
+            call_budget=StructuredOutputCallBudget(max_model_calls=1),
         )
         content = getattr(output, "content", None)
         if isinstance(content, ChartEditPlan):
@@ -1868,16 +2150,25 @@ def create_report_editor_chart_ai_service(
     hourly_limit: int = DEFAULT_CHART_AI_HOURLY_LIMIT,
     timeout_seconds: float = DEFAULT_CHART_AI_TIMEOUT_SECONDS,
 ) -> ChartAIEditService:
-    agent = Agent(
-        id="report-editor-chart-ai-planner",
-        name="报告编辑器 AI 改图规划",
+    # reporting.agent冷启动会经runtime导入编辑器，工厂在实际创建时再加载以免循环。
+    from ..reporting.agent import create_reporting_generator_agent
+
+    agent = create_reporting_generator_agent(
+        name="report-editor-chart-ai-planner",
         role="把改图要求分级为L1呈现调整、L2同分析登记数据换绑、L3超出来源并说明跳过。",
         model=model,
         output_schema=ChartEditPlan,
-        instructions=[
-            *REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS,
+        stage_instructions=(
+            "只返回当前编辑器改图的ChartEditPlan，不生成报告章节或其他分析图，不返回Python源码或工作区操作；物化、Matplotlib静态绘图、检查与登记由宿主编排，保留独立视觉复核。",
+            "冻结事实、字段、标签、期间、单位与引用身份不得改写或猜测；只使用当前输入或明确授权的同分析绑定，绘图涉及的全部字段须进入dataBindings。显示精度和登记单位换算不改变原值；未知保留缺失，不补零。排序明细或TopN须标明子集，不能冒充总体分布或占比分母；标题、图注和altText只陈述有依据的数值关系，不推断截止日、完整性或因果。",
+            "汇总与派生仅使用输出契约允许的显式参数并保留分组、时间顺序与计算基期；金额和数量等明确可加指标才可求和，百分比或单价不得求和，均值不得称为合计。比率只能绑定同口径、同单位的冻结分子分母，未知或非正基数保留缺失，不猜未登记比例尺度；多来源只能按授权共同窗口对齐，不跨组或先裁掉历史基数。",
+            "范围带只显示已登记的同量纲上下界，不估计分位数或置信区间；箱线必须区分真实原始样本与登记分位数汇总，不以均值/总额伪造分布或用汇总行数代替样本量。瀑布保留原贡献顺序并用冻结绝对值对账，不补终点；堆叠仅含可加分项，独立总额和右轴比率不得重复堆入。",
+            "轴、单位、标签、图例、配色和标注应清晰一致；对数域必须为正，裁切、断轴、隐藏异常点或缺失须如实说明，不改值美化。分页须覆盖全部绑定输入并保持系列颜色、尺度和原类别顺序，不能只交付前几页或以分页冒充TopN。",
             "编辑器使用standard对象填写生产standard*参数，visualForm在顶层；只能更改当前图的呈现或已明确授权的L2绑定，不生成其他分析图。",
+            "currentBindings是当前已核验plotData的绑定身份，L1沿用这些输入，dataBindings可省略或照录currentBindings；registeredBindings仅供L2换绑选择，不是L1字段白名单。不得因L2目录未包含当前字段而跳过L1，也不得编造路径。",
             "优先输出标准模板参数：双轴/堆叠双轴、横纵断轴、范围带、散点/气泡/热力、瀑布、原始或登记汇总箱线、画布/配色/标注和完整分页。缺少对应来源字段时不要伪造。",
+            "standardChartCapabilities给出标准能力，完整字段以系统输出契约的standard对象为准；显式填写standardForm，不从visualForm猜类型。pie/donut/radar/funnel/sankey均按冻结数据政策选择，不能提交常数代替冻结事实。",
+            "pie/donut使用standardComposition冻结分母；radar异量纲或负值须standardRadar.scales绑定冻结端点；funnel保留阶段顺序且ratioBase默认none；sankey用standardEncoding的xField/yField/valueField绑定原source/target/weight，辅助节点用standardSankey.nodes。sourceIndex严格引用完整有序输入，不另找来源，不造零或补平衡流。",
             "上一轮previousStandard未被本轮要求改变的参数应保留；省略standard组由服务端继承，显式提供的组替换该组。改变轴模式时给出完整新轴组。",
             "只有显式输出standard对象才承诺全部绘图要求已用参数表达；standard={}可复用上一轮参数。无法完整参数化则standard=null走自由绘图，不能让默认模板忽略drawInstruction。",
             "凡可由标准模板表达的要求应填写完整必要standard参数；无法完整表达时才用null，并在drawInstruction保留所有要求。",
@@ -1890,14 +2181,9 @@ def create_report_editor_chart_ai_service(
             "L3 需要未登记的计算或数据（新口径、跨分析拼算、未拆分维度、预测），写入 skipped 并如实说明原因。",
             "数值必须来自 plotData 或 registeredBindings 指向的数据文件；不得发明数据、口径或聚合规则。",
             "level 为空时必须给出全部跳过说明；可执行时 drawInstruction 用一句话描述绘图调整，不得包含路径。",
-        ],
-        tools=[],
-        add_history_to_context=False,
-        enable_session_summaries=False,
-        retries=0,
-        markdown=False,
-        telemetry=False,
+        ),
     )
+    agent.name = "报告编辑器 AI 改图规划"
     return ChartAIEditService(
         editor=editor,
         workspace_registry=workspace_registry,

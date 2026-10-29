@@ -226,6 +226,7 @@ describe('页响应完整性', () => {
 function client(overrides: Record<string, unknown> = {}) {
   return { charts: vi.fn(async () => ({ charts: [{ chartId: 'chart_001', imagePath: 'reports/revision-1/original.png' }] })),
     chartAiAvailability: vi.fn(async () => ({ available: true })),
+    cancelChartAiEdit: vi.fn(async () => ({ status: 'cancelled' })),
     startChartAiEdit: vi.fn(async () => ({ editId: 'cedit-new12345' })), chartAiEditStatus: vi.fn(async () => result()),
     chartEditRecord: vi.fn(async () => ({ editId: 'cedit-old12345', chartId: 'chart_001', imagePath: old[0]!.imagePath, pages: old })),
     ...overrides } as unknown as ReportEditorClient
@@ -238,6 +239,177 @@ function mount(src = '/b/asset/reports/revision-1/original.png') {
 }
 
 describe('模板选择与完整预览', () => {
+  it.each(['ai', 'standard', 'template'])('关闭再打开后丢弃%s旧状态，且仍能取消新任务', async (route) => {
+    let finishOld: (value: unknown) => void = () => undefined
+    let oldWaiting = false
+    const start = vi.fn().mockResolvedValueOnce({ editId: 'cedit-old12345' }).mockResolvedValueOnce({ editId: 'cedit-new12345' })
+    const api = client({
+      chartAiAvailability: vi.fn(async () => ({ available: true, standardAvailable: true, standard: { standardForm: 'bar' }, expectedSha256: 'a'.repeat(64), baseImagePath: 'reports/revision-1/original.png' })),
+      startChartAiEdit: start, startChartStandardEdit: start, startChartTemplateEdit: start,
+      chartTemplates: vi.fn(async () => ({ templates: [{ templateId: 'one', name: '预制一', available: true }] })),
+      cancelChartAiEdit: vi.fn(async () => ({ status: 'cancelled' })),
+      chartAiEditStatus: vi.fn((_chart, editId) => editId === 'cedit-old12345'
+        ? new Promise(resolve => { oldWaiting = true; finishOld = resolve })
+        : new Promise(() => undefined)),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    const img = mount()
+    const startRoute = async () => {
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+      if (route === 'template') {
+        await vi.waitFor(() => expect(document.querySelector('.chart-ai-template')).not.toBeNull())
+        ;(document.querySelector('.chart-ai-template') as HTMLButtonElement).click()
+      } else if (route === 'standard') {
+        const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
+        select.value = 'pie'
+        select.dispatchEvent(new Event('change'))
+        ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+      } else {
+        document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+        ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
+      }
+    }
+    try {
+      controller.open(img)
+      await startRoute()
+      await vi.waitFor(() => expect(oldWaiting).toBe(true))
+      ;(document.querySelector('.chart-ai-edit-close') as HTMLButtonElement).click()
+      controller.open(img)
+      // 新任务走AI，确保旧任务收尾不会清掉其取消身份。
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+      document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '新任务颜色'
+      ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
+      await vi.waitFor(() => expect(api.chartAiEditStatus).toHaveBeenCalledWith('chart_001', 'cedit-new12345'))
+      finishOld(result())
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(document.querySelector('[data-action="accept"]')).toBeNull()
+      expect(document.querySelector('.chart-ai-progress')).not.toBeNull()
+      ;(document.querySelector('.chart-ai-edit-close') as HTMLButtonElement).click()
+      expect(api.cancelChartAiEdit).toHaveBeenLastCalledWith('chart_001', 'cedit-new12345')
+    } finally { controller.dispose() }
+  })
+
+  it.each(['ai', 'template'])('关闭后%s启动回执晚到时补发取消，不查询或重开预览', async (route) => {
+    let finishStart: (value: unknown) => void = () => undefined
+    const start = vi.fn(() => new Promise(resolve => { finishStart = resolve }))
+    const api = client({ startChartAiEdit: start, startChartTemplateEdit: start,
+      chartTemplates: vi.fn(async () => ({ templates: [{ templateId: 'one', name: '预制一', available: true }] })),
+      cancelChartAiEdit: vi.fn(async () => ({ status: 'cancelled' })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    try {
+      controller.open(mount())
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+      if (route === 'template') {
+        await vi.waitFor(() => expect(document.querySelector('.chart-ai-template')).not.toBeNull())
+        ;(document.querySelector('.chart-ai-template') as HTMLButtonElement).click()
+      } else {
+        document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+        ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
+      }
+      expect(start).toHaveBeenCalledTimes(1)
+      ;(document.querySelector('.chart-ai-edit-close') as HTMLButtonElement).click()
+      finishStart({ editId: 'cedit-old12345' })
+      await vi.waitFor(() => expect(api.cancelChartAiEdit).toHaveBeenCalledWith('chart_001', 'cedit-old12345'))
+      expect(api.chartAiEditStatus).not.toHaveBeenCalled()
+      expect(document.querySelector<HTMLDivElement>('.chart-ai-edit')!.hidden).toBe(true)
+    } finally { controller.dispose() }
+  })
+
+  it('乱序目标解析不让旧图覆盖新打开的图', async () => {
+    let finishOld: (value: unknown) => void = () => undefined
+    const api = client({ charts: vi.fn().mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+      .mockResolvedValueOnce({ charts: [{ chartId: 'chart_002', imagePath: 'new.png' }] }) })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    try {
+      controller.open(mount())
+      controller.open(mount('/b/asset/new.png'))
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+      finishOld({ charts: [{ chartId: 'chart_001', imagePath: 'reports/revision-1/original.png' }] })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+      ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
+      await vi.waitFor(() => expect(api.startChartAiEdit).toHaveBeenCalledWith('chart_002', expect.objectContaining({ baseImagePath: 'new.png' })))
+    } finally { controller.dispose() }
+  })
+
+  it('临时网络错误退避后立即探测一次，不叠加服务端长等待', async () => {
+    const api = client({ chartAiEditStatus: vi.fn()
+      .mockResolvedValueOnce({ status: 'running' })
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockResolvedValueOnce(result()) })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    controller.open(mount())
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+    document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+    ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
+    try {
+      await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull(), { timeout: 2200 })
+      expect(vi.mocked(api.chartAiEditStatus).mock.calls).toEqual([
+        ['chart_001', 'cedit-new12345'],
+        ['chart_001', 'cedit-new12345', 1500],
+        ['chart_001', 'cedit-new12345'],
+      ])
+    } finally { controller.dispose() }
+  })
+
+  it('长轮询中取消后不呈现随后到达的成功预览', async () => {
+    let complete: (value: unknown) => void = () => undefined
+    let waiting = false
+    const api = client({
+      cancelChartAiEdit: vi.fn(async () => ({ status: 'cancelled' })),
+      chartAiEditStatus: vi.fn().mockResolvedValueOnce({ status: 'running' })
+        .mockImplementationOnce(() => new Promise(resolve => { waiting = true; complete = resolve })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    controller.open(mount())
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+    document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+    ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
+    try {
+      await vi.waitFor(() => expect(waiting).toBe(true))
+      ;(document.querySelector('[data-action="cancel"]') as HTMLButtonElement).click()
+      complete(result())
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull(), { timeout: 250 })
+      expect(document.querySelector('[data-action="accept"]')).toBeNull()
+      expect(document.querySelector('.chart-ai-note')!.textContent).toContain('已取消')
+    } finally { controller.dispose() }
+  })
+
+  it('生产状态等待返回后立即呈现结果，不再叠加固定轮询间隔', async () => {
+    const api = client({ chartAiEditStatus: vi.fn().mockResolvedValueOnce({ status: 'running' }).mockResolvedValueOnce(result()) })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    controller.open(mount())
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+    document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+    ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
+    try {
+      await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull(), { timeout: 250 })
+      expect(api.chartAiEditStatus).toHaveBeenLastCalledWith('chart_001', 'cedit-new12345', 1500)
+    } finally { controller.dispose() }
+  })
+
+  it('未配置AI仍可直达结构化预设，且启动后立即查询首个状态', async () => {
+    const api = client({ chartAiAvailability: vi.fn(async () => ({ available: false, reason: 'unconfigured', standardAvailable: true,
+      standard: { standardForm: 'bar' }, baseImagePath: 'reports/revision-1/original.png', expectedSha256: 'a'.repeat(64) })),
+      startChartStandardEdit: vi.fn(async () => ({ editId: 'cedit-new12345' })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 60000 })
+    controller.open(mount())
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-standard-preset')).not.toBeNull())
+    const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
+    select.value = 'donut'
+    select.dispatchEvent(new Event('change'))
+    ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
+    expect(api.startChartStandardEdit).toHaveBeenCalledWith('chart_001', expect.objectContaining({
+      standard: { standardForm: 'donut' }, expectedSha256: 'a'.repeat(64), baseImagePath: 'reports/revision-1/original.png',
+    }))
+    expect(api.startChartAiEdit).not.toHaveBeenCalled()
+    expect(api.chartAiEditStatus).toHaveBeenCalledTimes(1)
+    controller.dispose()
+  })
+
   it('选择堆叠双轴保留补充要求，通过现有改图请求实际提交，切换预设不累积冲突', async () => {
     const api = client()
     const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 1 })

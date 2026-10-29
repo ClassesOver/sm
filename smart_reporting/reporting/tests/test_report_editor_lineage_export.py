@@ -1072,12 +1072,30 @@ async def test_export_revision_registers_table_edit_and_still_issues_links(
     assert {item.table_id for item in next_manifest.tables} == {"tbl-1-e0000001"}
 
 
+@pytest.fixture
+async def native_chart_cleanup():
+    """断言失败或超时也先取消任务，再回收真实LSP和CodeMode。"""
+    resources = []
+    try:
+        yield resources
+    finally:
+        for service, lsp, runtime in reversed(resources):
+            try:
+                await service.aclose()
+            finally:
+                try:
+                    await lsp.aclose()
+                finally:
+                    await runtime.aclose()
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("fault", [None, "l2_plot_changed"])
-@pytest.mark.parametrize("scenario", ["single", "reedit", "paginated_reedit", "revision_reedit"])
+@pytest.mark.parametrize("scenario", ["single", "reedit", "paginated_reedit", "revision_reedit",
+    pytest.param("native_revision_reedit", marks=pytest.mark.integration)])
 async def test_export_revision_registers_l2_chart_edit_plot_data(
-    tmp_path: Path, fault: str | None, scenario: str
+    tmp_path: Path, fault: str | None, scenario: str, native_chart_cleanup,
 ) -> None:
     """L2 换绑导出：新物化作图数据进入新 revision 追溯，ChartTraceV1 指向新文件。
 
@@ -1101,7 +1119,10 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     from smart_reporting.reporting.tests.test_report_editor_standard_charts import StandardRunner
     from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
 
-    paginated = scenario in {"paginated_reedit", "revision_reedit"}
+    native = scenario == "native_revision_reedit"
+    if native and fault is not None:
+        pytest.skip("原故障契约已覆盖；此新增场景只核验真实CodeMode续改")
+    paginated = scenario in {"paginated_reedit", "revision_reedit", "native_revision_reedit"}
     fixture = await _make_editor_with_chart(tmp_path, template_ready=paginated)
     editor = fixture.editor
     workspace = fixture.workspace
@@ -1135,7 +1156,8 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
                 "visual_form": "barh",
                 "standard": ChartEditPlan.model_validate({
                     "level": ["L2"], "drawInstruction": "完整分页",
-                    "standard": {"standardValueFields": ["value"], "standardPagination": {"pageSize": 1}},
+                    "standard": {"standardValueFields": ["value"], "standardPagination": {"pageSize": 1},
+                                 **({"standardForm": "barh"} if native else {})},
                 }).standard,
             })
         return plan
@@ -1168,13 +1190,47 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     if scenario != "single":
         previous_record = record
         base = record.pages[1].image if paginated else record.image
-        started = await service.start_edit(context, session, "chart_001", ChartAIEditRequest(
-            instruction="只改颜色，保留全部分页和数据", previousEditId=record.edit_id,
-            baseImagePath=base.path, expectedSha256=base.sha256,
-        ))
+        if native:
+            from agno.tools.code import CodeMode
+
+            from smart_reporting.report_editor.chart_ai import ChartStandardEditRequest
+            from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
+            from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime
+            from smart_reporting.reporting.workflow.runtime.code_generation import (
+                ReportingCodeGenerationRunner,
+            )
+
+            identity = editor.workspace_registry.get(thread_id)
+            runtime = ReportingCodeModeRuntime(CodeMode(
+                snapshot=False, allow_shell=True, cwd=str(identity.root), timeout=45, max_kernels=1,
+            ))
+            lsp = ReportingLspProcessManager()
+
+            def forbid_model(*_args, **_kwargs):
+                raise AssertionError("直接模板续改不能调用模型")
+
+            native_runner = ReportingCodeGenerationRunner(forbid_model, runtime, lsp, vision_reviewer=None)
+            service.runner = native_runner
+            native_chart_cleanup.append((service, lsp, runtime))
+            started = await service.start_standard_edit(context, session, "chart_001", ChartStandardEditRequest(
+                standard={"standardStyle": {"palette": "viridis"}}, previousEditId=record.edit_id,
+                baseImagePath=base.path, expectedSha256=base.sha256,
+            ))
+        else:
+            started = await service.start_edit(context, session, "chart_001", ChartAIEditRequest(
+                instruction="只改颜色，保留全部分页和数据", previousEditId=record.edit_id,
+                baseImagePath=base.path, expectedSha256=base.sha256,
+            ))
         from smart_reporting.reporting.tests.test_report_editor_chart_ai import _await_edit
         status = await _await_edit(service, context, "chart_001", started["editId"])
         assert status["status"] == "succeeded", status
+        if native:
+            assert status["planningRoute"] == "direct"
+            assert status["visualInspection"]["reviewed"] is False
+            assert len(status["deterministicImageChecks"]) == 3
+            assert native_runner.registry.active_count == 0 and not runtime._logged_connections
+            await lsp.aclose()
+            await runtime.aclose()
         records = await load_chart_edit_records(workspace, thread_id, context.markdown_path)
         record = records[-1]
         assert record.level == ("L1",) and record.data_origin == "rebound"
@@ -1309,7 +1365,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     payload = _json.loads(migrated)
     assert payload["source"]["dataPath"] == "metrics[0].periodValues"
     assert payload["rows"] == ([["2025-07", 1200.0], ["2025-08", 1500.0], ["2025-09", 1800.0]] if paginated else [["2025-09", 3600.0]])
-    if scenario != "revision_reedit":
+    if scenario not in {"revision_reedit", "native_revision_reedit"}:
         return
 
     migrated_records = await load_chart_edit_records(workspace, thread_id, committed.markdown_path)
@@ -1328,16 +1384,35 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
         editor=editor, workspace_registry=editor.workspace_registry,
         planner=planner, runner=StandardRunner(fixture.chart_bytes),
     )
+    if native:
+        runtime = ReportingCodeModeRuntime(CodeMode(
+            snapshot=False, allow_shell=True, cwd=str(identity.root), timeout=45, max_kernels=1,
+        ))
+        lsp = ReportingLspProcessManager()
+        service.runner = native_runner = ReportingCodeGenerationRunner(forbid_model, runtime, lsp, vision_reviewer=None)
+        native_chart_cleanup.append((service, lsp, runtime))
     recovered = await service.edit_record(committed, baseline.edit_id)
     assert len(recovered["pages"]) == 3
     assert recovered["pages"][1]["imagePath"] == baseline.pages[1].image.path
     base = baseline.pages[1].image
-    started = await service.start_edit(committed, session, "chart_001", ChartAIEditRequest(
-        instruction="保持全部数据，调整配色并改为每页两条", previousEditId=baseline.edit_id,
-        baseImagePath=base.path, expectedSha256=base.sha256,
-    ))
+    if native:
+        started = await service.start_standard_edit(committed, session, "chart_001", ChartStandardEditRequest(
+            standard={"standardPagination": {"pageSize": 2}}, previousEditId=baseline.edit_id,
+            baseImagePath=base.path, expectedSha256=base.sha256,
+        ))
+    else:
+        started = await service.start_edit(committed, session, "chart_001", ChartAIEditRequest(
+            instruction="保持全部数据，调整配色并改为每页两条", previousEditId=baseline.edit_id,
+            baseImagePath=base.path, expectedSha256=base.sha256,
+        ))
     status = await _await_edit(service, committed, "chart_001", started["editId"])
     assert status["status"] == "succeeded", status
+    if native:
+        assert status["planningRoute"] == "direct" and len(status["deterministicImageChecks"]) == 2
+        assert native_runner.registry.active_count == 0 and not runtime._logged_connections
+        assert plan_calls == 1, "直接模板和跨revision续改均不能进入planner"
+        await lsp.aclose()
+        await runtime.aclose()
     await service.aclose()
     current_records = await load_chart_edit_records(workspace, thread_id, committed.markdown_path)
     record = current_records[-1]
@@ -1361,6 +1436,286 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     assert len(third_index.chart_traces) == len(third_manifest.charts) == 2
     assert {trace.chart_id for trace in third_index.chart_traces} == {chart.chart_id for chart in third_manifest.charts}
     assert len(await load_chart_edit_records(workspace, thread_id, third.markdown_path)) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_editor_multi_input_composition_source_index_survives_two_exports(
+    tmp_path: Path, native_chart_cleanup,
+) -> None:
+    """两输入构成图的sourceIndex=1在revision迁移及direct续改后仍指向冻结分母。"""
+    import json
+    from types import SimpleNamespace
+
+    from agno.tools.code import CodeMode
+
+    from smart_reporting.report_editor.chart_ai import (
+        ChartAIEditService,
+        ChartStandardEditRequest,
+    )
+    from smart_reporting.report_editor.chart_edits import (
+        chart_edit_page_src,
+        load_chart_edit_records,
+    )
+    from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
+    from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime
+    from smart_reporting.reporting.tests.test_report_editor_chart_ai import _make_editor_with_chart
+    from smart_reporting.reporting.workflow.runtime.code_generation import (
+        ReportingCodeGenerationRunner,
+    )
+
+    fixture = await _make_editor_with_chart(tmp_path, template_ready=True)
+    editor, context = fixture.editor, fixture.context
+    workspace, thread_id = fixture.workspace, fixture.thread_id
+    index = await editor.trace.load_index(context)
+    assert index is not None
+    original_fact_bytes = {
+        item.path: (await workspace.afile_bytes(thread_id, item.path))[0]
+        for item in index.files
+        if item.resource_id in {fact.file_resource_id for fact in index.fact_files}
+    }
+    documents = [
+        {"columns": ["period", "value"], "rows": [["甲", 30], ["乙", 20]],
+         "columnMeta": {"value": {"unit": "元", "measureSemantic": {
+             "aggregation": "sum", "additiveAcross": ["period"]}}}},
+        {"columns": ["total"], "rows": [[100]], "columnMeta": {"total": {"unit": "元"}}},
+    ]
+    refs, contents = [], []
+    for position, document in enumerate(documents):
+        document.update(
+            schema="chart-input/v1", chartId="chart_001", role="measure",
+            source={"analysisId": "analysis_001", "path": "synthetic/facts.json",
+                    "dataPath": f"metrics[{position}]"},
+            rowCount=len(document["rows"]),
+        )
+        content = json.dumps(document, ensure_ascii=False).encode()
+        path = f"reports/revision-1/native-input-{position}.json"
+        await workspace.awrite_bytes(thread_id, path, content)
+        contents.append(content)
+        refs.append(TraceFileRefV1(
+            resourceId=derive_resource_id(path), path=path, mediaType="application/json",
+            size=len(content), sha256=hashlib.sha256(content).hexdigest(),
+        ))
+    trace = index.chart_traces[0].model_copy(update={
+        "plot_data_file_resource_ids": tuple(ref.resource_id for ref in refs),
+    })
+    index = index.model_copy(update={"files": (*index.files, *refs), "chart_traces": (trace,)})
+    await workspace.awrite_bytes(thread_id, "reports/revision-1/trace-index-v1.json",
+        encode_trace_index(index), overwrite=True)
+    manifest_ref = await register_trace_manifest(workspace, thread_id, index, overwrite=True)
+    manifest = await editor.trace.load_manifest(context.model_copy(update={"artifact_manifest": manifest_ref}))
+    assert manifest is not None
+    manifest = manifest.model_copy(update={"charts": (fixture.chart,)})
+    manifest_bytes = manifest.model_dump_json(by_alias=True).encode()
+    await workspace.awrite_bytes(thread_id, manifest_ref.path, manifest_bytes, overwrite=True)
+    manifest_ref = manifest_ref.model_copy(update={"size": len(manifest_bytes), "sha256": _sha(manifest_bytes)})
+    context = context.model_copy(update={"artifact_manifest": manifest_ref})
+    editor.state_repository.durable.payload["reportEditorContexts"]["1"] = context.model_dump(
+        mode="json", by_alias=True
+    )
+
+    identity = editor.workspace_registry.get(thread_id)
+    runtime = ReportingCodeModeRuntime(CodeMode(
+        snapshot=False, allow_shell=True, cwd=str(identity.root), timeout=45, max_kernels=1,
+    ))
+    lsp = ReportingLspProcessManager()
+
+    def forbid_model(*_args, **_kwargs):
+        raise AssertionError("构成图直接续改不得调用模型")
+
+    runner = ReportingCodeGenerationRunner(forbid_model, runtime, lsp, vision_reviewer=None)
+    service = ChartAIEditService(editor=editor, workspace_registry=editor.workspace_registry,
+        planner=None, runner=runner, timeout_seconds=45)
+    native_chart_cleanup.append((service, lsp, runtime))
+    session = SimpleNamespace(capabilities=None)
+    standard = {
+        "standardForm": "pie", "standardValueFields": ["value"],
+        "standardLabelField": "period",
+        "standardComposition": {"denominator": {"mode": "reference",
+            "ref": {"sourceIndex": 1, "field": "total"}}},
+    }
+    original_chart_bytes = fixture.chart_bytes
+    original_markdown = fixture.markdown
+
+    async def edit_and_assert(base_context, base_image_path, base_sha, previous_edit_id=None):
+        request = ChartStandardEditRequest(
+            standard=standard, previousEditId=previous_edit_id,
+            baseImagePath=base_image_path, expectedSha256=base_sha,
+        )
+        started = await service.start_standard_edit(base_context, session, "chart_001", request)
+        from smart_reporting.reporting.tests.test_report_editor_chart_ai import _await_edit
+        status = await _await_edit(service, base_context, "chart_001", started["editId"])
+        assert status["status"] == "succeeded", status
+        assert status["planningRoute"] == "direct" and status["renderingRoute"] == "standard"
+        assert status["visualInspection"]["reviewed"] is False
+        assert status["deterministicImageChecks"]
+        assert runner.registry.active_count == 0 and not runtime._logged_connections
+        records = await load_chart_edit_records(workspace, thread_id, base_context.markdown_path)
+        record = records[-1]
+        assert [ref.sha256 for ref in record.plot_data_files] == [ref.sha256 for ref in refs]
+        assert [ref.size for ref in record.plot_data_files] == [ref.size for ref in refs]
+        assert [await workspace.afile_bytes(thread_id, ref.path) for ref in record.plot_data_files] == [
+            (content, "application/json") for content in contents
+        ]
+        assert tuple(record.data_bindings) == tuple({
+            "analysisId": "analysis_001", "factPath": "synthetic/facts.json",
+            "dataPath": f"metrics[{position}]", "fields": document["columns"], "role": "measure",
+        } for position, document in enumerate(documents))
+        assert record.chart.dataset_ids == fixture.chart.dataset_ids
+        denominator = record.standard_parameters["standardComposition"]["denominator"]
+        assert denominator["mode"] == "reference"
+        assert denominator["ref"]["sourceIndex"] == 1 and denominator["ref"]["field"] == "total"
+        scalar_input, _ = await workspace.afile_bytes(thread_id, record.plot_data_files[1].path)
+        assert json.loads(scalar_input)["rows"] == [[100]]
+        return record
+
+    try:
+        first = await edit_and_assert(context, fixture.chart_path, fixture.chart.sha256)
+        header = (
+            '# Revenue report\n\n<a id="report-section-section_002"></a>\n'
+            "## 1 Report\n\n[[section:section_002]]\n[[analysis:analysis_001]]\n\n"
+        )
+        pages = tuple(first.pages) or (SimpleNamespace(image=first.image, page_number=1),)
+        markdown2 = header + "Revenue 3600 [[claim:claim-1]]" + "".join(
+            f"\n\n![Revenue]({chart_edit_page_src(context.markdown_path, first.edit_id, page.page_number)}) [[citation:citation_001]]\n"
+            for page in pages
+        )
+        for suffix, content in (("pdf", b"old-pdf"), ("docx", b"old-word")):
+            await workspace.awrite_bytes(thread_id, f"reports/revision-1/report.{suffix}", content)
+        context = context.model_copy(update={"job": {
+            **context.job, "render": {**context.job["render"],
+                "pdf": _identity("reports/revision-1/report.pdf", b"old-pdf"),
+                "word": _identity("reports/revision-1/report.docx", b"old-word")},
+        }})
+        editor.state_repository.durable.payload["reportEditorContexts"]["1"] = context.model_dump(
+            mode="json", by_alias=True
+        )
+
+        current_pages = pages
+        class ReportTools:
+            async def _render_report_pair(self, actual_job_id, markdown_path, output_path, *,
+                    artifact_manifest, management_overview=None, run_context):
+                snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
+                pdf_path = output_path
+                word_path = PurePosixPath(output_path).with_suffix(".docx").as_posix()
+                await workspace.awrite_bytes(thread_id, pdf_path, b"rendered-pdf")
+                await workspace.awrite_bytes(thread_id, word_path, b"rendered-word")
+                run_context.session_state[REPORT_JOBS_STATE_KEY][actual_job_id]["render"] = {
+                    "pdf": _identity(pdf_path, b"rendered-pdf"),
+                    "word": _identity(word_path, b"rendered-word"),
+                    "markdown": _identity(markdown_path, snapshot),
+                    "images": [{"path": page.image.path, "size": page.image.size,
+                                "sha256": page.image.sha256} for page in current_pages],
+                }
+                return {"status": "validated", "validation": {"ok": True}}
+
+        class Persistence:
+            async def persist_available(self, **values):
+                return values["artifacts"]
+
+        class DownloadGrants:
+            async def issue(self, **values):
+                return "download-raw", ReportDownloadGrant(
+                    grant_hash="d" * 64, expires_at=datetime(2026, 10, 15, tzinfo=UTC), **values
+                )
+
+        class EditorGrants:
+            async def issue(self, issued_context):
+                return "editor-raw", datetime(2026, 10, 15, tzinfo=UTC)
+
+        editor.report_tools = ReportTools()
+        editor.artifact_persistence = Persistence()
+        editor.download_grants = DownloadGrants()
+        editor.editor_grants = EditorGrants()
+        editor.public_base_url = "https://reports.example.com"
+
+        async def export(base_context, markdown, revision):
+            target = f"reports/revision-{revision}/draft/report.md"
+            await workspace.awrite_text(thread_id, target, markdown)
+            result = await editor.export_revision(base_context, expected_sha256=_sha(markdown.encode()))
+            assert result["revision"] == revision + 1
+            assert result["validation"]["ok"] is True, result
+            assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+            return ReportEditorContext.model_validate(
+                editor.state_repository.durable.payload["reportEditorContexts"][str(revision + 1)]
+            )
+
+        context2 = await export(context, markdown2, 1)
+        assert await workspace.afile_bytes(thread_id, fixture.chart_path) == (original_chart_bytes, "image/png")
+        assert await workspace.aread_text(thread_id, fixture.context.markdown_path) == original_markdown
+        index2 = await editor.trace.load_index(context2)
+        manifest2 = await editor.trace.load_manifest(context2)
+        assert index2 is not None and manifest2 is not None
+        trace2 = next(item for item in index2.chart_traces if item.chart_id == "chart_001")
+        assert trace2.plot_data_file_resource_ids == tuple(derive_resource_id(
+            f"reports/revision-2/{PurePosixPath(ref.path).relative_to('reports/revision-1').as_posix()}"
+        ) for ref in refs)
+        assert trace2.dataset_ids == fixture.chart.dataset_ids
+        assert [(ref.analysis_id, ref.json_pointer, ref.fact_kind, ref.fact_key) for ref in trace2.fact_refs] == [
+            (ref.analysis_id, ref.json_pointer, ref.fact_kind, ref.fact_key) for ref in trace.fact_refs
+        ]
+        migrated_refs = [next(item for item in index2.files if item.resource_id == resource_id)
+                         for resource_id in trace2.plot_data_file_resource_ids]
+        assert [item.size for item in migrated_refs] == [ref.size for ref in refs]
+        assert [item.path for item in migrated_refs] == [
+            f"reports/revision-2/{PurePosixPath(ref.path).relative_to('reports/revision-1').as_posix()}"
+            for ref in refs
+        ]
+        assert [await workspace.afile_bytes(thread_id, item.path) for item in migrated_refs] == [
+            (content, "application/json") for content in contents
+        ]
+        baseline = (await load_chart_edit_records(workspace, thread_id, context2.markdown_path))[0]
+        assert baseline.data_origin == "original" and baseline.level == ("L1",)
+        assert baseline.standard_parameters == first.standard_parameters
+        assert baseline.chart.dataset_ids == fixture.chart.dataset_ids
+
+        second = await edit_and_assert(context2, baseline.image.path, baseline.image.sha256,
+            previous_edit_id=baseline.edit_id)
+        current_pages = tuple(second.pages) or (SimpleNamespace(image=second.image, page_number=1),)
+        markdown3 = header + "Revenue 3600 [[claim:claim-1]]" + "".join(
+            f"\n\n![Revenue]({chart_edit_page_src(context2.markdown_path, second.edit_id, page.page_number)}) [[citation:citation_001]]\n"
+            for page in current_pages
+        )
+        context3 = await export(context2, markdown3, 2)
+        index3 = await editor.trace.load_index(context3)
+        manifest3 = await editor.trace.load_manifest(context3)
+        assert index3 is not None and manifest3 is not None
+        trace3 = next(item for item in index3.chart_traces if item.chart_id == "chart_001")
+        trace3_refs = [next(item for item in index3.files if item.resource_id == resource_id)
+                       for resource_id in trace3.plot_data_file_resource_ids]
+        assert [item.sha256 for item in trace3_refs] == [ref.sha256 for ref in refs]
+        assert [item.size for item in trace3_refs] == [ref.size for ref in refs]
+        assert [item.path for item in trace3_refs] == [
+            f"reports/revision-3/{PurePosixPath(ref.path).relative_to('reports/revision-1').as_posix()}"
+            for ref in refs
+        ]
+        assert [await workspace.afile_bytes(thread_id, item.path) for item in trace3_refs] == [
+            (content, "application/json") for content in contents
+        ]
+        assert trace3.dataset_ids == fixture.chart.dataset_ids
+        assert [(ref.analysis_id, ref.json_pointer, ref.fact_kind, ref.fact_key) for ref in trace3.fact_refs] == [
+            (ref.analysis_id, ref.json_pointer, ref.fact_kind, ref.fact_key) for ref in trace.fact_refs
+        ]
+        third_record = (await load_chart_edit_records(workspace, thread_id, context3.markdown_path))[0]
+        assert third_record.standard_parameters == first.standard_parameters
+        assert [item.sha256 for item in third_record.plot_data_files] == [item.sha256 for item in refs]
+        assert [item.size for item in third_record.plot_data_files] == [item.size for item in refs]
+        assert [item.path for item in third_record.plot_data_files] == [
+            f"reports/revision-3/{PurePosixPath(ref.path).relative_to('reports/revision-1').as_posix()}"
+            for ref in refs
+        ]
+        assert len(index3.chart_traces) == len(manifest3.charts) == 1
+        assert await workspace.afile_bytes(thread_id, fixture.chart_path) == (original_chart_bytes, "image/png")
+        assert await workspace.aread_text(thread_id, fixture.context.markdown_path) == original_markdown
+        for path, content in original_fact_bytes.items():
+            assert (await workspace.afile_bytes(thread_id, path))[0] == content
+        assert runner.registry.active_count == 0 and not runtime._logged_connections
+    finally:
+        await service.aclose()
+        await lsp.aclose()
+        await runtime.aclose()
+        await editor.aclose()
 
 
 def _identity(path: str, content: bytes) -> dict[str, object]:

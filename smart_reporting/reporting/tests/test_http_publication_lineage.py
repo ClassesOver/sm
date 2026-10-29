@@ -860,7 +860,7 @@ async def test_editor_publication_keeps_links_when_reedited_paginated_data_chang
     )
 
     await test_export_revision_registers_l2_chart_edit_plot_data(
-        tmp_path, "l2_plot_changed", "paginated_reedit"
+        tmp_path, "l2_plot_changed", "paginated_reedit", []
     )
 
 
@@ -873,7 +873,7 @@ async def test_editor_publication_keeps_lineage_and_links_when_chart_continuatio
     )
 
     await test_export_revision_registers_l2_chart_edit_plot_data(
-        tmp_path, "continuation_failed", "paginated_reedit"
+        tmp_path, "continuation_failed", "paginated_reedit", []
     )
 
 

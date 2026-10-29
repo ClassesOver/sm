@@ -15,7 +15,11 @@ _ORIGINAL_PARSE_RESPONSE_MODEL_STR = agno_string.parse_response_model_str
 
 def _parse_reporting_response_model(content: str, output_schema: type[Any]) -> Any | None:
     module = str(getattr(output_schema, "__module__", ""))
-    if not module.startswith("smart_reporting.reporting."):
+    # 编辑器改图规划同样走Reporting执行器，只显式纳入该领域契约，不扩到其他编辑器schema。
+    chart_edit_plan = (module, getattr(output_schema, "__qualname__", "")) == (
+        "smart_reporting.report_editor.chart_ai", "ChartEditPlan"
+    )
+    if not module.startswith("smart_reporting.reporting.") and not chart_edit_plan:
         return _ORIGINAL_PARSE_RESPONSE_MODEL_STR(content, output_schema)
     json_validator = getattr(output_schema, "model_validate_json", None)
     if not callable(json_validator):

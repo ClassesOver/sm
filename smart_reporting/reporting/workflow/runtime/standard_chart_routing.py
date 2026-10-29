@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import is_dataclass, replace
 from pathlib import PurePosixPath
+from time import perf_counter
 
 from loguru import logger
 
@@ -15,13 +18,105 @@ from .phase_models import StandardChartCanvas
 from .standard_visualization import standard_visualization_preflight
 
 
-async def run_standard_chart_routes(runner, context, workspace, plan, inputs, facts, run_context):
+async def run_standard_chart_routes(
+    runner, context, workspace, plan, inputs, facts, run_context, *, deterministic=False
+):
+    """记录完整路由边界，包括首次编译及失败/取消，不改变原异常。"""
+    started = perf_counter()
+    route_state = {"initialCompileMs": 0, "initialCompileStatus": "not_started"}
+    try:
+        result = await _run_standard_chart_routes(
+            runner, context, workspace, plan, inputs, facts, run_context,
+            deterministic=deterministic, route_state=route_state,
+        )
+    except BaseException as error:
+        attempts = getattr(error, "standard_execution_attempts", ())
+        observations = attempts or (getattr(error, "standard_execution", {}),)
+        timings = {}
+        spans = {}
+        for observation in observations:
+            for name, elapsed in observation.get("stageTimings", {}).items():
+                timings[name] = timings.get(name, 0) + elapsed
+            observed_spans = observation.get("executionSpans")
+            if isinstance(observed_spans, Mapping):
+                for name, values in observed_spans.items():
+                    spans.setdefault(name, []).extend(values)
+        timings["compile"] = timings.get("compile", 0) + route_state["initialCompileMs"]
+        total = max(0, round((perf_counter() - started) * 1000))
+        observation = {
+            **route_state, "status": "cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+            "stageTimings": timings, "executionSpans": spans or None, "routeTotalMs": total,
+        }
+        error.standard_route_total_ms = total
+        error.standard_route_execution = observation
+        if isinstance(error, ReportingError):
+            details = (dict(error.details) if isinstance(error.details, Mapping) else
+                       {} if error.details is None else {"originalDetails": error.details})
+            error.details = {**details, "standardRouteExecution": observation, "standardRouteTotalMs": total}
+        logger.bind(standard_route_execution=observation).info(
+            "report_standard_route_finished status={} route_total_ms={} initial_compile_ms={}",
+            observation["status"], total, route_state["initialCompileMs"],
+        )
+        raise
+    total = max(0, round((perf_counter() - started) * 1000))
+    if is_dataclass(result) and not isinstance(result, type):
+        return replace(result, route_total_ms=total)
+    result.route_total_ms = total
+    return result
+
+
+async def _run_standard_chart_routes(
+    runner, context, workspace, plan, inputs, facts, run_context, *, deterministic, route_state
+):
     """Fast path for a supported group; mixed groups isolate compilation and Coding.
 
     The final script rechecks all signed component sources, executes them in isolated
     namespaces and goes through the normal run/view/submit/current-receipt gates.
     Component image reviews never substitute for this final review.
     """
+    route_started = perf_counter()
+    if deterministic:
+        # 只接服务端编译源码；任何诊断或执行异常均不得进入模型回退。
+        if any(chart.renderer != "matplotlib" or chart.interactive_path for chart in plan.charts):
+            raise ReportingError(
+                "report_standard_static_group_required",
+                "确定性直达仅支持 Matplotlib 静态图，原图保持不变。",
+            )
+        try:
+            compile_started = perf_counter()
+            route_state["initialCompileStatus"] = "failed"
+            try:
+                complete = standard_visualization_preflight(plan, inputs)
+            finally:
+                compile_ms = max(0, round((perf_counter() - compile_started) * 1000))
+                route_state["initialCompileMs"] = compile_ms
+        except Exception as error:
+            raise ReportingError(
+                "report_standard_preflight_failed",
+                "标准预检未能完成，原图保持不变。",
+                details={"errorType": type(error).__name__, "reason": str(error)[:512]},
+            ) from error
+        if complete.source is None:
+            raise ReportingError(
+                "report_standard_preflight_rejected",
+                "该参数不适用于确定性模板，原图保持不变。",
+                details={"standardDiagnostic": complete.diagnostic},
+            )
+        route_state["initialCompileStatus"] = "succeeded"
+        if len(plan.charts) == 1:
+            result = await _run_standard_with_layout_retry(
+                runner, context, workspace, plan, inputs, facts, deterministic=True
+            )
+        else:
+            result = await runner.run_standard_visualization(
+                context, workspace, complete.source, facts, deterministic=True
+            )
+        result = _with_compile_timing(result, compile_ms, route_started)
+        return _with_routes(result, [
+            dict(chartId=chart.chart_id, route="standard", diagnostic=None,
+                 warnings=_chart_warnings(complete, chart.chart_id))
+            for chart in plan.charts
+        ])
     if any(chart.renderer != "matplotlib" or chart.interactive_path for chart in plan.charts):
         # Keep the legacy delivery contract on its existing path. The new compositor
         # only accepts static charts; JSON companions must never enter image review.
@@ -41,7 +136,14 @@ async def run_standard_chart_routes(runner, context, workspace, plan, inputs, fa
                 for chart in plan.charts
             ],
         )
-    complete = standard_visualization_preflight(plan, inputs)
+    compile_started = perf_counter()
+    route_state["initialCompileStatus"] = "failed"
+    try:
+        complete = standard_visualization_preflight(plan, inputs)
+    finally:
+        compile_ms = max(0, round((perf_counter() - compile_started) * 1000))
+        route_state["initialCompileMs"] = compile_ms
+    route_state["initialCompileStatus"] = "succeeded" if complete.source is not None else "failed"
     if complete.source is not None:
         try:
             if len(plan.charts) == 1:
@@ -53,9 +155,10 @@ async def run_standard_chart_routes(runner, context, workspace, plan, inputs, fa
                     context, workspace, complete.source, facts
                 )
             return _with_routes(
-                result,
+                _with_compile_timing(result, compile_ms, route_started),
                 [
-                    dict(chartId=chart.chart_id, route="standard", diagnostic=None)
+                    dict(chartId=chart.chart_id, route="standard", diagnostic=None,
+                         warnings=_chart_warnings(complete, chart.chart_id))
                     for chart in plan.charts
                 ],
             )
@@ -157,6 +260,7 @@ async def run_standard_chart_routes(runner, context, workspace, plan, inputs, fa
                 chartId=chart.chart_id,
                 route=route,
                 diagnostic=diagnostic if route == "coding" else None,
+                warnings=_chart_warnings(preflight, chart.chart_id) if route == "standard" else [],
             )
         )
         logger.info(
@@ -250,26 +354,109 @@ def _with_routes(result, routes):
     return result
 
 
+def _chart_warnings(preflight, chart_id):
+    return [item for item in getattr(preflight, "warnings", ())
+            if not isinstance(item, dict) or not item.get("chartId") or item["chartId"] == chart_id]
+
+
+def _with_compile_timing(result, elapsed_ms, route_started=None):
+    timings = dict(getattr(result, "stage_timings", {}) or {})
+    timings["compile"] = timings.get("compile", 0) + elapsed_ms
+    updates = {"stage_timings": timings}
+    if route_started is not None:
+        updates["route_total_ms"] = max(0, round((perf_counter() - route_started) * 1000))
+    if is_dataclass(result) and not isinstance(result, type):
+        return replace(result, **updates)
+    for key, value in updates.items():
+        setattr(result, key, value)
+    return result
+
+
 def _diagnostic(chart_id, diagnostic):
     if diagnostic is None:
         return None
     return {**diagnostic, "details": {"chartId": chart_id, **diagnostic}}
 
 
-async def _run_standard_with_layout_retry(runner, context, workspace, plan, inputs, facts):
+async def _run_standard_with_layout_retry(
+    runner, context, workspace, plan, inputs, facts, *, deterministic=False
+):
     current = plan
+    route_started = perf_counter()
+    attempts = []
     for attempt in range(3):
-        preflight = standard_visualization_preflight(current, inputs)
-        if preflight.source is None:
-            raise ReportingError(
-                "report_standard_layout_retry_invalid",
-                "布局候选未通过标准预检。",
-                details={"standardDiagnostic": preflight.diagnostic},
-            )
+        attempt_started = perf_counter()
+        compile_started = perf_counter()
+        compile_ms = 0
+        compiled = False
+        result = None
+        attempt_error = None
         try:
-            return await runner.run_standard_visualization(
-                context, workspace, preflight.source, facts
+            try:
+                preflight = standard_visualization_preflight(current, inputs)
+            finally:
+                compile_ms = max(0, round((perf_counter() - compile_started) * 1000))
+            if preflight.source is None:
+                raise ReportingError(
+                    "report_standard_layout_retry_invalid",
+                    "布局候选未通过标准预检。",
+                    details={"standardDiagnostic": preflight.diagnostic},
+                )
+            compiled = True
+            result = await runner.run_standard_visualization(
+                context, workspace, preflight.source, facts,
+                **({"deterministic": True} if deterministic else {}),
             )
+        except BaseException as error:
+            attempt_error = error
+        finally:
+            recorded = (getattr(result, "execution_attempts", ()) or ()) if result is not None else ()
+            observation = dict(recorded[-1] if recorded else getattr(attempt_error, "standard_execution", {}) or {})
+            timings = dict(observation.get("stageTimings", {}))
+            timings["compile"] = timings.get("compile", 0) + compile_ms
+            statuses = dict(observation.get("stageStatuses", {}))
+            statuses["compile"] = "succeeded" if compiled else "failed"
+            observation.update(
+                attempt=attempt + 1, stageTimings=timings, stageStatuses=statuses,
+                durationMs=max(0, round((perf_counter() - attempt_started) * 1000)),
+            )
+            if not compiled:
+                observation["failedStage"] = "compile"
+            observation.setdefault("status", "cancelled" if isinstance(attempt_error, asyncio.CancelledError) else "failed" if attempt_error is not None else "succeeded")
+            attempts.append(observation)
+            route_total = max(0, round((perf_counter() - route_started) * 1000))
+            if attempt_error is not None:
+                attempt_error.standard_execution_attempts = tuple(attempts)
+                attempt_error.standard_route_total_ms = route_total
+                if isinstance(attempt_error, ReportingError):
+                    details = (dict(attempt_error.details) if isinstance(attempt_error.details, Mapping) else
+                               {} if attempt_error.details is None else {"originalDetails": attempt_error.details})
+                    attempt_error.details = {**details, "standardExecutionAttempts": list(attempts), "standardRouteTotalMs": route_total}
+            logger.bind(standard_execution_attempts=tuple(attempts), route_total_ms=route_total).info(
+                "report_standard_layout_attempt chart={} attempt={} status={} duration_ms={} route_total_ms={}",
+                current.charts[0].chart_id, attempt + 1, observation["status"], observation["durationMs"], route_total,
+            )
+        if result is not None:
+            timings = {}
+            spans = {}
+            for observation in attempts:
+                for name, elapsed in observation.get("stageTimings", {}).items():
+                    timings[name] = timings.get(name, 0) + elapsed
+                observed_spans = observation.get("executionSpans")
+                if isinstance(observed_spans, dict):
+                    for name, values in observed_spans.items():
+                        spans.setdefault(name, []).extend(values)
+            updates = dict(execution_attempts=tuple(attempts), route_total_ms=route_total,
+                           stage_timings=timings, execution_spans=spans or None)
+            if is_dataclass(result) and not isinstance(result, type):
+                return replace(result, **updates)
+            for key, value in updates.items():
+                setattr(result, key, value)
+            return result
+
+        # 只有真实测量的布局失败才允许机械扩容；其他错误保持原异常。
+        try:
+            raise attempt_error
         except Exception as error:
             # Only measured layout failures justify mechanical resizing. Semantic or
             # identity failures must retain their diagnosis and follow Coding repair.
