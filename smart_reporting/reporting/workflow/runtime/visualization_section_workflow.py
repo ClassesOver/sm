@@ -528,8 +528,22 @@ class VisualizationWorkflowResult:
     recovery_used: bool = False
 
 
+def _merge_standard_chart_parameters(chart: ChartDraft, replacement: ChartDraft) -> ChartDraft:
+    """省略表示保留，显式空值表示清除；嵌套参数同样遵循补丁语义。"""
+    def merge(original, patch):
+        result = dict(original)
+        for name, value in patch.items():
+            previous = original.get(name)
+            result[name] = merge(previous, value) if isinstance(previous, dict) and isinstance(value, dict) else value
+        return result
+
+    fields = {name for name in ChartDraft.model_fields if name.startswith('standard_')}
+    patch = replacement.model_dump(by_alias=True, exclude_unset=True, include=fields)
+    return ChartDraft.model_validate(merge(chart.model_dump(by_alias=True), patch))
+
+
 class VisualizationSectionWorkflow:
-    """计划数据范围最多纠正一次；固定 Workflow 独立限制执行修复。"""
+    """数据范围与标准参数合并纠正最多一次；执行修复仍独立限次。"""
 
     def __init__(
         self,
@@ -537,8 +551,11 @@ class VisualizationSectionWorkflow:
         generate_plan: GenerateVisualizationPlan,
         run_code: RunVisualizationCode,
         submit: SubmitVisualization,
+        preflight_plan: Callable[[VisualizationPlanDraft, RunContext], Awaitable[list[dict]]] | None = None,
         degrade: DegradeVisualization | None = None,
         record_successful_repair: Callable[[Mapping[str, Any], FileIdentity], Awaitable[None]]
+        | None = None,
+        record_warnings: Callable[[tuple[dict[str, Any], ...], RunContext], Awaitable[None]]
         | None = None,
         thinking_enabled: bool = True,
         thinking_budget_cap: int = 8192,
@@ -550,6 +567,7 @@ class VisualizationSectionWorkflow:
         self.generate_plan = generate_plan
         self.run_code = run_code
         self.submit = submit
+        self.preflight_plan = preflight_plan
         self.degrade = degrade
         # 报告级最后一次 fresh attempt：工作流内不可降级的业务/模型错误也按零图收口，
         # 避免单章图表失败升级为整份报告失败；基础设施类错误与代码缺陷仍上抛。
@@ -560,6 +578,7 @@ class VisualizationSectionWorkflow:
         self.deadline = deadline
         self.clock = clock
         self.record_successful_repair = record_successful_repair
+        self.record_warnings = record_warnings
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
         self.benchmark_projection = benchmark_projection
@@ -631,31 +650,52 @@ class VisualizationSectionWorkflow:
     async def _run_attempt(
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
+        if self.preflight_plan is not None:
+            from .standard_chart_contract import standard_chart_capabilities
+
+            payload = {**payload, 'standardChartCapabilities': standard_chart_capabilities()}
         plan = await self.generate_plan(payload, run_context)
         plan = _validate_visualization_plan_bindings(plan, payload)
         scope_issues = _ranked_detail_scope_issues(plan)
-        if scope_issues:
+        standard_issues = []
+        if self.preflight_plan is not None:
+            try:
+                standard_issues = await self.preflight_plan(plan, run_context)
+            except Exception as error:  # 优化预检不能取代执行时身份校验，也不能阻断原绘图路径。
+                logger.warning('report_visualization_plan_preflight_unavailable error_type={} reason={}',
+                               type(error).__name__, str(error)[:500])
+        if scope_issues or standard_issues:
             if not self._deadline_exceeded():
                 try:
                     repaired = await self.generate_plan({
                         **payload,
                         "previousPlan": plan.model_dump(mode="json", by_alias=True),
                         "scopeCorrections": scope_issues,
+                        "standardChartCorrections": standard_issues,
                         "repairInstruction": "仅纠正scopeCorrections指出的图表范围，保留其余图；"
-                        "完整汇总只绑定对应补证，不用明细子集替代。缺少汇总证据则省略该图并说明。",
+                        "完整汇总只绑定对应补证，不用明细子集替代。缺少汇总证据则省略该图并说明。"
+                        "standardChartCorrections只纠正指出图的standard*参数，沿用原图ID、路径、期间、口径和数据绑定；"
+                        "按standardChartCapabilities选择机器类型、显式同月映射或摘要聚合。确实超出能力则standardForm=custom，不得改写事实。",
                     }, run_context)
                     repaired = _validate_visualization_plan_bindings(repaired, payload)
                     affected = {item["chartId"] for item in scope_issues}
+                    standard_affected = {item['chartId'] for item in standard_issues}
                     replacements = {chart.chart_id: chart for chart in repaired.charts}
+                    corrected = []
+                    for chart in plan.charts:
+                        replacement = replacements.get(chart.chart_id, chart)
+                        if chart.chart_id in affected:
+                            corrected.append(replacement)
+                        elif chart.chart_id in standard_affected:
+                            corrected.append(_merge_standard_chart_parameters(chart, replacement))
+                        else:
+                            corrected.append(chart)
                     plan = plan.model_copy(update={
-                        "charts": tuple(
-                            replacements.get(chart.chart_id, chart) if chart.chart_id in affected else chart
-                            for chart in plan.charts
-                        ),
+                        "charts": tuple(corrected),
                         "warnings": tuple(dict.fromkeys((*plan.warnings, *repaired.warnings)))[-100:],
                     })
                 except (ReportingError, ModelProviderError, ValidationError, TaskExecutionContextHardLimitError) as error:
-                    logger.warning("report_visualization_scope_repair_failed error_type={} reason={}",
+                    logger.warning("report_visualization_plan_repair_failed error_type={} reason={}",
                                    type(error).__name__, str(error)[:500])
             remaining = _ranked_detail_scope_issues(plan)
             unsafe = {item["chartId"] for item in remaining}
@@ -670,6 +710,8 @@ class VisualizationSectionWorkflow:
                 })
             logger.info("report_visualization_scope_review corrected={} omitted={}",
                         len(scope_issues) - len(remaining), len(unsafe))
+            if standard_issues:
+                logger.info('report_visualization_standard_plan_repair charts={} retry_limit=1', len(standard_issues))
         benchmark_kwargs = (
             {"benchmark_projection": self.benchmark_projection}
             if self.benchmark_projection is not None
@@ -785,8 +827,28 @@ class VisualizationSectionWorkflow:
                 _raise_rejected_submission(receipt)
                 if successful_repair is not None and self.record_successful_repair is not None:
                     await self.record_successful_repair(*successful_repair)
+                # 成功软告警只随结果追加；提交前改计划会改变物化输入的缓存键。
+                structured_warnings = tuple(
+                    {**warning, "chartId": warning.get("chartId") or route.get("chartId", "")}
+                    for route in generated_result.standard_chart_routes
+                    for warning in route.get('warnings', ())
+                    if isinstance(warning, Mapping) and isinstance(warning.get('message'), str)
+                )
+                if structured_warnings and self.record_warnings is not None:
+                    try:
+                        await self.record_warnings(structured_warnings, run_context)
+                    except Exception:
+                        # 图表已提交，告警存储故障不触发重绘或丢弃产物。
+                        logger.opt(exception=True).warning("report_visualization_warning_persist_failed")
+                route_warnings = tuple(
+                    f"{warning['chartId']}：{warning['message']}"
+                    for warning in structured_warnings
+                )
+                result_plan = plan.model_copy(update={
+                    "warnings": tuple(dict.fromkeys((*plan.warnings, *route_warnings)))[-100:],
+                }) if route_warnings else plan
                 return VisualizationWorkflowResult(
-                    "accepted", plan, script_file, inspections, recovery_used
+                    "accepted", result_plan, script_file, inspections, recovery_used
                 )
             except Exception as error:
                 if unchanged_repair:

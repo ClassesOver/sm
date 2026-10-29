@@ -795,11 +795,13 @@ async def test_chart_ai_availability_reports_missing_plot_data_and_unknown_chart
     session = SimpleNamespace(capabilities=None)
 
     unknown = await service.availability(fixture.context, session, "chart_404")
-    assert unknown == {"available": False, "reason": "unknown_chart"}
+    assert unknown["available"] is False and unknown["reason"] == "unknown_chart"
+    assert unknown["standardAvailable"] is False
 
     restricted = SimpleNamespace(capabilities={"download_original": False})
     read_only = await service.availability(fixture.context, restricted, "chart_001")
-    assert read_only == {"available": False, "reason": "read_only"}
+    assert read_only["available"] is False and read_only["reason"] == "read_only"
+    assert read_only["standardAvailable"] is False
 
     with pytest.raises(ReportingError, match="report_editor_chart_ai_unavailable"):
         await service.start_edit(
@@ -816,7 +818,8 @@ async def test_chart_ai_availability_reports_missing_plot_data_and_unknown_chart
         runner=SimpleNamespace(vision_reviewer=None),
     )
     missing_vision = await no_vision.availability(fixture.context, session, "chart_001")
-    assert missing_vision == {"available": False, "reason": "vision_missing"}
+    assert missing_vision["available"] is False and missing_vision["reason"] == "vision_missing"
+    assert missing_vision["standardAvailable"] is False
 
 
 @pytest.mark.anyio

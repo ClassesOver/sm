@@ -1172,7 +1172,7 @@ class RuntimeAnalysisMixin:
                     repair_workspace_key: str | None = None
                     knowledge_index = getattr(self, "knowledge_index", None)
                     code_runner_instance: ReportingCodeGenerationRunner | None = None
-                    # 计划在绘图前最多纠正一次范围；chart-input 按最终计划物化并复用。
+                    # 范围与标准参数共用一次规划纠错；输入按绑定缓存，参数纠正不重复读取/写入事实。
                     chart_input_cache: dict[str, ChartInputMaterialization | None] = {}
                     planner_metrics_recorder = invocation.model_metrics_settlement.stage_recorder(
                         "planner", agent_role="visualization-planner"
@@ -1180,6 +1180,26 @@ class RuntimeAnalysisMixin:
                     coding_metrics_recorder = invocation.model_metrics_settlement.stage_recorder(
                         "coding", agent_role="visualization-coding"
                     )
+
+                    async def materialized_inputs(plan: VisualizationPlanDraft, task_context: RunContext):
+                        binding = task_context.dependencies.get('AgentOS 任务执行') if isinstance(task_context.dependencies, Mapping) else None
+                        coding_task_id = (binding.get('externalRunId') if isinstance(binding, Mapping) else None) or task_id
+                        plan_key = payload_sha256({'charts': [
+                            {'chartId': chart.chart_id, 'dataBindings': [item.model_dump(mode='json', by_alias=True)
+                                                                       for item in chart.data_bindings]}
+                            for chart in plan.charts
+                        ]})
+                        if plan_key not in chart_input_cache:
+                            chart_input_cache[plan_key] = await prepare_chart_inputs(
+                                plan, facts, self._run_workspace(run_context), thread_id=str(coding_task_id),
+                                output_root=_visualization_chart_input_root(root))
+                        return chart_input_cache[plan_key]
+
+                    async def preflight_plan(plan: VisualizationPlanDraft, task_context: RunContext):
+                        from .standard_visualization import standard_plan_diagnostics
+
+                        inputs = await materialized_inputs(plan, task_context)
+                        return standard_plan_diagnostics(plan, inputs) if inputs is not None else []
 
                     async def generate_plan(
                         request: Mapping[str, Any], task_context: RunContext
@@ -1287,16 +1307,7 @@ class RuntimeAnalysisMixin:
                             benchmark_projection is None
                             or benchmark_projection.materialize_chart_inputs
                         ):
-                            plan_key = payload_sha256(plan.model_dump(mode="json", by_alias=True))
-                            if plan_key not in chart_input_cache:
-                                chart_input_cache[plan_key] = await prepare_chart_inputs(
-                                    plan,
-                                    facts,
-                                    task_workspace,
-                                    thread_id=str(coding_task_id),
-                                    output_root=_visualization_chart_input_root(root),
-                                )
-                            chart_inputs = chart_input_cache[plan_key]
+                            chart_inputs = await materialized_inputs(plan, task_context)
                         coding_facts = visualization_coding_facts(
                             facts,
                             plan=(
@@ -1531,15 +1542,33 @@ class RuntimeAnalysisMixin:
                             section_code, [], run_context=task_context
                         )
 
+                    async def record_chart_warnings(
+                        warnings: tuple[dict[str, Any], ...], _task_context: RunContext
+                    ) -> None:
+                        await self._apply_durable_command(
+                            run_context,
+                            ReportingCommand(
+                                name="record_warnings",
+                                commandId=(f"visualization-family:{context['revision']}:"
+                                           f"{section_code}:{payload_sha256(warnings)}"),
+                                payload={"warnings": [
+                                    {**warning, "sectionCode": section_code} for warning in warnings
+                                ]},
+                            ),
+                        )
+
                     workflow_kwargs: dict[str, Any] = {
                         "generate_plan": generate_plan,
                         "run_code": run_code,
                         "submit": submit,
+                        "record_warnings": record_chart_warnings,
                         "degrade": degrade,
                         "thinking_enabled": self._analysis_thinking_enabled,
                         "thinking_budget_cap": self._analysis_thinking_budget_cap,
                         "benchmark_projection": benchmark_projection,
                     }
+                    if benchmark_projection is None:
+                        workflow_kwargs['preflight_plan'] = preflight_plan
                     if knowledge_index is not None:
                         workflow_kwargs["record_successful_repair"] = record_successful_repair
                     result = await VisualizationSectionWorkflow(

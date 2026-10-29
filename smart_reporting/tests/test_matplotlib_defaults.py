@@ -2,9 +2,70 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 from smart_reporting.reporting.matplotlib_defaults import matplotlib_bootstrap
+
+
+def test_matplotlib_bootstrap_extracts_only_the_matching_chinese_font_face(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    # 真实执行bootstrap：禁止整套TTC加载，同时核对单face输出的字形、名称和字表身份。
+    script = textwrap.dedent(
+        """
+        import hashlib
+        from pathlib import Path
+        import fontTools.ttLib as ttlib
+
+        original_font = ttlib.TTFont
+        loaded_faces = []
+
+        def single_face(file, *args, **kwargs):
+            if str(file).endswith('.ttc'):
+                loaded_faces.append((str(file), kwargs.get('fontNumber'), kwargs.get('lazy')))
+            return original_font(file, *args, **kwargs)
+
+        def reject_collection(*args, **kwargs):
+            raise AssertionError('不得为提取一个face加载整套字体集合')
+
+        ttlib.TTFont = single_face
+        ttlib.TTCollection = reject_collection
+        """
+    ) + matplotlib_bootstrap(str(runtime_root)) + textwrap.dedent(
+        f"""
+        ttlib.TTFont = original_font
+        expected_sources = [
+            '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+            '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc',
+        ]
+        assert loaded_faces == [(source, 2, True) for source in expected_sources], loaded_faces
+        for source, target_name in zip(
+            expected_sources, ['NotoSansCJKSC-Regular.otf', 'NotoSansCJKSC-Bold.otf'], strict=True
+        ):
+            with original_font(source, fontNumber=2, lazy=True) as source_font, original_font(
+                Path({str(runtime_root)!r}) / target_name, lazy=True
+            ) as target_font:
+                for tag in ('CFF ', 'cmap', 'name', 'maxp'):
+                    assert hashlib.sha256(source_font.getTableData(tag)).digest() == hashlib.sha256(
+                        target_font.getTableData(tag)
+                    ).digest(), (target_name, tag)
+                assert target_font['name'].getDebugName(1) == 'Noto Sans CJK SC'
+                assert source_font.getGlyphOrder() == target_font.getGlyphOrder()
+        from matplotlib.font_manager import fontManager
+        for weight, target_name in [(400, 'Regular'), (700, 'Bold')]:
+            target = str(Path({str(runtime_root)!r}) / f'NotoSansCJKSC-{{target_name}}.otf')
+            entries = [entry for entry in fontManager.ttflist if entry.fname == target]
+            assert len(entries) == 1
+            assert entries[0].name == 'Noto Sans CJK SC' and entries[0].weight == weight
+        assert not list(Path({str(runtime_root)!r}).glob('*.tmp'))
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script], check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_matplotlib_bootstrap_keeps_chinese_font_after_script_overrides(tmp_path: Path) -> None:

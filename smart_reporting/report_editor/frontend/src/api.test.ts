@@ -3,6 +3,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { ReportEditorClient } from './api'
 
 describe('ReportEditorClient', () => {
+  it('waits for chart status with a bounded server wait instead of a client sleep', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ editId: 'cedit-12345678', status: 'running' })))
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+    await client.chartAiEditStatus('chart_001', 'cedit-12345678', 1500)
+    expect(fetcher.mock.calls[0][0]).toBe('/reports/v1/editor/report-1/1/api/charts/chart_001/ai-edits/cedit-12345678?waitMs=1500')
+    await client.chartAiEditStatus('chart_001', 'cedit-12345678')
+    expect(fetcher.mock.calls[1][0]).toBe('/reports/v1/editor/report-1/1/api/charts/chart_001/ai-edits/cedit-12345678')
+  })
+
   it('issues an edit share link with the current session and CSRF token', async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({ markdown: '# 报告', sha256: 'a'.repeat(64), csrfToken: 'csrf' })))

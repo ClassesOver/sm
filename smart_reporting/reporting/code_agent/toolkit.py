@@ -1908,11 +1908,17 @@ class ReportingCodeModeToolkit(Toolkit):
         | None = None,
         failure_artifact_recorder: Callable[[Mapping[str, Any]], None] | None = None,
         visualization_plan: Mapping[str, Any] | None = None,
+        *,
+        deterministic_standard: bool = False,
     ) -> None:
         self.binding = binding
+        # 仅保留当前实例最近一次完整静态校验的成功证明，不缓存文件读取或身份。
+        self._validated_source_proof: tuple[ReportingCodingTaskContext, str, bytes] | None = None
         self.runtime = runtime
         self.knowledge_index = knowledge_index
         self.vision_reviewer = vision_reviewer
+        # 仅由可信标准编译执行器设置，不进入工具参数或模型任务上下文。
+        self._deterministic_standard = deterministic_standard
         self.expected_charts = {
             chart["sourcePath"]: chart for chart in (visualization_plan or {}).get("charts", ())
             if isinstance(chart, Mapping) and isinstance(chart.get("sourcePath"), str)
@@ -2828,10 +2834,12 @@ class ReportingCodeModeToolkit(Toolkit):
             try:
                 candidate = await format_python_source(source)
                 candidate = validate_draft_source(self.context, candidate).decode("utf-8")
-                candidate_tree = ast.parse(candidate, filename=self.context.script_path)
-                if ast.dump(tree) != ast.dump(candidate_tree):
-                    raise ValueError("格式化结果改变了源码 AST。")
-                _reject_embedded_data(candidate_tree)
+                # 文本未变时，本次原 AST 已完整预检；仅变化结果需要再次核验。
+                if candidate != source:
+                    candidate_tree = ast.parse(candidate, filename=self.context.script_path)
+                    if ast.dump(tree) != ast.dump(candidate_tree):
+                        raise ValueError("格式化结果改变了源码 AST。")
+                    _reject_embedded_data(candidate_tree)
             except (
                 OSError,
                 subprocess.SubprocessError,
@@ -3565,10 +3573,13 @@ class ReportingCodeModeToolkit(Toolkit):
         )
 
     async def _validated_source_identity(self) -> FileIdentity:
+        previous_proof = self._validated_source_proof
+        self._validated_source_proof = None
+        context = self.context
         raw = await self.workspace.read_limited_regular_file(
-            self.context.task_id,
-            self.context.script_path,
-            max_bytes=self.context.max_source_bytes,
+            context.task_id,
+            context.script_path,
+            max_bytes=context.max_source_bytes,
         )
         try:
             source = raw.decode("utf-8")
@@ -3576,9 +3587,12 @@ class ReportingCodeModeToolkit(Toolkit):
             raise ReportingError(
                 "report_code_source_invalid", "Python 脚本不是有效的 UTF-8 文本。"
             ) from error
-        validate_script_source(self.context, source)
+        proof = (context, self.workspace.identity.scope_fingerprint, raw)
+        if proof != previous_proof:
+            validate_script_source(context, source)
+        self._validated_source_proof = proof
         return FileIdentity(
-            path=self.context.script_path,
+            path=context.script_path,
             size=len(raw),
             sha256=hashlib.sha256(raw).hexdigest(),
         )
@@ -3884,6 +3898,34 @@ class ReportingCodeModeToolkit(Toolkit):
             },
         )
 
+    async def inspect_standard_images(self) -> dict[str, Any]:
+        """逐页真实解码；只证明当前像素可读，不冒充独立视觉验收。"""
+        receipt = self.binding.execution_receipt
+        if not self._deterministic_standard or self.context.task_kind != "visualization" or receipt is None:
+            return _failure("report_standard_inspection_forbidden", "缺少可信标准执行回执。")
+        self.binding.deterministic_image_checks = ()
+        self.binding.deterministic_image_run_id = None
+        checks: list[Mapping[str, Any]] = []
+        for output in receipt.output_files:
+            if not output.path.lower().endswith((".png", ".jpg", ".jpeg")):
+                return _failure("report_standard_image_invalid", "标准输出必须是 PNG/JPEG。", {"path": output.path})
+            try:
+                inspection = await self.workspace.inspect_chart_file(self.context.task_id, output.path)
+                if inspection["sha256"] != output.sha256:
+                    return _failure("report_code_visual_output_changed", "标准图片身份已变化。", {"path": output.path})
+                width, height = inspection["width"], inspection["height"]
+                if width < 2 or height < 2 or width * height > 24_000_000:
+                    return _failure("report_standard_image_dimensions_invalid", "标准图片尺寸无效。", {"path": output.path, "width": width, "height": height})
+            except ReportingError as error:
+                return _failure(error.code, error.message, {"path": output.path, **(error.details or {})})
+            except (WorkspaceError, OSError, ValueError) as error:
+                return _failure("report_standard_image_invalid", "标准图片无法完整解码。", {"path": output.path, "errorType": type(error).__name__})
+            checks.append({"path": output.path, "sha256": output.sha256, "width": width, "height": height, "decoded": True, "nonblank": True, "reviewed": False})
+        await self.require_current_receipt(receipt)
+        self.binding.deterministic_image_checks = tuple(checks)
+        self.binding.deterministic_image_run_id = receipt.run_id
+        return {"ok": True, "reviewed": False, "checks": checks}
+
     async def submit_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
         receipt = self.binding.execution_receipt
@@ -3928,7 +3970,13 @@ class ReportingCodeModeToolkit(Toolkit):
                 "脚本输出在执行后发生变化。",
                 {"nextTools": ["read_script", "edit_script", "run_script"]},
             )
-        if self.context.task_kind == "visualization":
+        if self.context.task_kind == "visualization" and self._deterministic_standard:
+            checks = self.binding.deterministic_image_checks
+            if self.binding.deterministic_image_run_id != receipt.run_id or {
+                (item["path"], item["sha256"]) for item in checks
+            } != {(item.path, item.sha256) for item in receipt.output_files}:
+                return _failure("report_standard_image_inspection_required", "每一页当前标准图片都必须完成确定性检查。")
+        if self.context.task_kind == "visualization" and not self._deterministic_standard:
             output_by_path = {
                 item.path: item
                 for item in receipt.output_files
@@ -3968,7 +4016,7 @@ class ReportingCodeModeToolkit(Toolkit):
                         {"nextTools": ["read_script", "edit_script", "run_script"]},
                     )
         submit_warnings: list[dict[str, Any]] = []
-        if self.visual_review_gate_tripped and self.context.task_kind == "visualization":
+        if self.visual_review_gate_tripped and self.context.task_kind == "visualization" and not self._deterministic_standard:
             flagged = [
                 path
                 for path, reviewed in self.binding.visual_inspection_receipts.items()

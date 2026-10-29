@@ -206,6 +206,13 @@ def _table_for_binding(
                 column_meta = {'value': {'unit': unit}}
                 if isinstance(metric.get('isPercent'), bool):
                     column_meta['value']['isPercent'] = metric['isPercent']
+                # 可加性必须来自冻结期间口径；单位相同不是可加证明。
+                if (metric.get('aggregation') in {'sum', 'count'}
+                        and metric.get('periodAggregation') == 'sum'
+                        and metric.get('cumulativePolicy') is None and 'period' in fields):
+                    column_meta['value']['measureSemantic'] = {
+                        'aggregation': metric['aggregation'], 'additiveAcross': ['period'],
+                    }
         return fields, rows, column_meta
     if isinstance(value, Mapping):
         missing = [name for name in fields if name not in value]
@@ -213,7 +220,17 @@ def _table_for_binding(
         if missing or nested:
             # 绑定字段缺失或是嵌套结构时不能静默丢列，整图回退原始 facts。
             raise ChartInputError(f"对象绑定字段缺失或非标量：{missing + nested}")
-        return fields, [[value[name] for name in fields]], None
+        column_meta = None
+        # 标量端点复用同一冻结指标单位；计数、比率和未知键不借用金额单位。
+        if (len(tokens) == 2 and tokens[0] in {'metrics', 'breakdowns'}
+                and isinstance(tokens[1], int) and isinstance(value.get('unit'), str)
+                and value['unit'].strip()):
+            column_meta = {name: {'unit': value['unit']} for name in fields
+                           if name in {'total', 'average', 'minimum', 'maximum'}} or None
+            if isinstance(value.get('isPercent'), bool) and column_meta:
+                for meta in column_meta.values():
+                    meta['isPercent'] = value['isPercent']
+        return fields, [[value[name] for name in fields]], column_meta
     raise ChartInputError("dataPath 指向的值无法转换为表格")
 
 

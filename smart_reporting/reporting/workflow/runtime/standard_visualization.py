@@ -20,6 +20,7 @@ from .phase_models import (
 from .standard_chart_alignment import align_chart_sources
 from .standard_chart_box_summary import prepare_box_summary, summary_statistics_script
 from .standard_chart_breaks import BREAK_DISPATCH, BREAK_SCRIPT, prepare_standard_break
+from .standard_chart_contract import resolve_standard_form
 from .standard_chart_domains import DOMAIN_SCRIPT, prepare_standard_domains
 from .standard_chart_dual_stack import DUAL_STACK_DISPATCH, DUAL_STACK_SCRIPT, prepare_dual_stack
 from .standard_chart_encoding import (
@@ -29,6 +30,9 @@ from .standard_chart_encoding import (
     prepare_encoded_chart,
 )
 from .standard_chart_horizontal_breaks import HORIZONTAL_BREAK_SCRIPT
+from .standard_chart_families import (
+    FAMILY_DISPATCH, FAMILY_FORMS, FAMILY_SCRIPT, family_aligned_semantics, family_input_roles, prepare_family_chart,
+)
 from .standard_chart_presentation import (
     PRESENTATION_SCRIPT,
     order_standard_rows,
@@ -43,6 +47,7 @@ from .standard_chart_statistics import (
 from .standard_chart_transform import (
     StandardChartTransformationError,
     apply_standard_chart_steps,
+    month_label,
     transform_chart_document,
 )
 
@@ -51,6 +56,7 @@ from .standard_chart_transform import (
 class StandardVisualizationPreflight:
     source: str | None
     diagnostic: dict | None = None
+    warnings: tuple[dict, ...] = ()
 
 
 class _Unsupported(ValueError):
@@ -67,11 +73,15 @@ def standard_visualization_preflight(
     plan: VisualizationPlanDraft, inputs: ChartInputMaterialization,
 ) -> StandardVisualizationPreflight:
     try:
-        source = _standard_visualization_script(plan, inputs)
+        warnings = []
+        source = _standard_visualization_script(plan, inputs, warnings=warnings)
         return StandardVisualizationPreflight(source, None if source else dict(
             code='standard_parameter_combination_unsupported', parameter='standardChart',
             message='当前数据或参数组合无法由标准模板表达。',
-            suggestion='保留冻结输入与业务目标，交由Coding生成该图；其他图独立选择路线。'))
+            suggestion='保留冻结输入与业务目标，交由Coding生成该图；其他图独立选择路线。'), tuple(warnings))
+    except StandardChartEncodingError as error:
+        return StandardVisualizationPreflight(None, dict(code=error.code, parameter=error.parameter,
+            message=str(error), suggestion='保留冻结值及来源，修正显式图族参数；不补造几何或业务数据。'))
     except _Unsupported as error:
         return StandardVisualizationPreflight(None, error.diagnostic)
     except (KeyError, TypeError, ValueError, OverflowError) as error:
@@ -86,6 +96,46 @@ def standard_visualization_preflight(
 def standard_visualization_script(plan: VisualizationPlanDraft, inputs: ChartInputMaterialization) -> str | None:
     """Compatibility API; production routing uses the structured preflight result."""
     return standard_visualization_preflight(plan, inputs).source
+
+
+def standard_plan_diagnostics(plan: VisualizationPlanDraft, inputs: ChartInputMaterialization) -> list[dict]:
+    """逐图反馈机器契约问题；自选Coding及不可用输入不触发无意义重规划。"""
+    diagnostics = []
+    for chart in plan.charts:
+        if (chart.renderer != 'matplotlib' or chart.interactive_path
+                or getattr(chart, 'standard_form', None) == 'custom'
+                or chart.chart_id in inputs.fallback_chart_ids):
+            continue
+        entries = tuple(entry for entry in inputs.entries if entry['chartId'] == chart.chart_id)
+        if not entries:
+            continue
+        paths = {entry['path'] for entry in entries}
+        bound = ChartInputMaterialization(files=tuple(file for file in inputs.files if file.path in paths),
+                                         entries=entries)
+        result = standard_visualization_preflight(plan.model_copy(update={'charts': (chart,)}), bound)
+        if result.diagnostic is not None:
+            diagnostics.append({'chartId': chart.chart_id, **result.diagnostic})
+    return diagnostics
+
+
+def _compatible_periods(chart, metas, form):
+    windows = [meta.get('periods') for meta in metas]
+    if all(window == windows[0] for window in windows):
+        return True
+    if (form not in {'bar', 'barh', 'line'} or len(windows) != 2
+            or getattr(chart, 'comparison_type', None) != 'yoy'
+            or getattr(chart, 'comparability', None) != 'strict'
+            or any(not isinstance(window, (list, tuple)) or not window for window in windows)):
+        return False
+    try:
+        periods = [sorted(month_label(value) for value in window) for window in windows]
+    except ValueError:
+        return False
+    years = [{int(value[:4]) for value in window} for window in periods]
+    return (all(len(year) == 1 for year in years)
+            and abs(next(iter(years[0])) - next(iter(years[1]))) == 1
+            and all(len(set(window)) == len(window) for window in periods)
+            and [value[5:] for value in periods[0]] == [value[5:] for value in periods[1]])
 
 
 def _encoded_configuration(chart, document, original_document, form, label, source, canvas, style, presentation, axes, selected):
@@ -114,6 +164,7 @@ def _statistical_configuration(chart, document, original, form, label, source, c
 
 def _standard_visualization_script(
     plan: VisualizationPlanDraft, inputs: ChartInputMaterialization,
+    *, warnings: list[dict] | None = None,
 ) -> str | None:
     if inputs.fallback_chart_ids or not plan.charts:
         _reject('standard_input_unavailable', 'chartInputs', '图表缺少可用的物化输入或计划为空。', '为对应图补齐数据绑定，或只将该图交由Coding。')
@@ -131,25 +182,21 @@ def _standard_visualization_script(
         axes = getattr(chart, 'standard_axes', StandardChartAxes())
         if chart.renderer != 'matplotlib' or chart.interactive_path:
             _reject('standard_renderer_unsupported', 'renderer', '标准模板只输出Matplotlib静态图。', '使用matplotlib与静态PNG/JPEG输出。')
-        form = {'line': 'line', '折线图': 'line', '多系列折线图': 'line',
-                'bar': 'bar', '柱状图': 'bar', '分组柱状图': 'bar',
-                'barh': 'barh', '横向条形图': 'barh',
-                'stacked-bar': 'stacked-bar', '堆叠柱状图': 'stacked-bar',
-                'stacked-area': 'stacked-area', '堆叠面积图': 'stacked-area',
-                'stacked-total': 'stacked-total', '堆叠柱合计折线图': 'stacked-total',
-                'summary-bars': 'summary-bars', '单行指标对比图': 'summary-bars'}.get(chart.visual_form)
-        form = {'scatter': 'scatter', '散点图': 'scatter', 'bubble': 'bubble', '气泡图': 'bubble',
-                'heatmap': 'heatmap', '热力图': 'heatmap'}.get(chart.visual_form, form)
-        form = {'waterfall': 'waterfall', '瀑布图': 'waterfall', 'boxplot': 'boxplot', '箱线图': 'boxplot'}.get(chart.visual_form, form)
+        form = resolve_standard_form(chart)
+        if getattr(chart, 'standard_form', None) == 'custom':
+            _reject('standard_custom_requested', 'standardForm', '规划显式选择自定义Coding图。', '保留冻结输入与业务意图，由Coding执行；不视为标准能力命中失败。')
         if ((getattr(chart, 'standard_waterfall', None) is not None and form != 'waterfall')
                 or (getattr(chart, 'standard_distribution', None) is not None and form != 'boxplot')
                 or (getattr(chart, 'standard_box_summary', None) is not None and form != 'boxplot')):
             _reject('standard_statistics_form_conflict', 'standardWaterfall/standardDistribution', '统计参数与图形不匹配。', '瀑布用waterfall，原始样本分布用boxplot；不能忽略统计参数。')
         entries = [entry for entry in inputs.entries if entry['chartId'] == chart.chart_id]
         if form is None:
-            _reject('standard_form_unsupported', 'visualForm', '图形类型尚未标准化。', '使用已支持的图形类型，或仅对该图使用Coding。')
+            _reject('standard_form_unsupported', 'standardForm', '缺少可执行的标准图机器类型。', '按能力契约显式选择standardForm，业务描述保留在visualForm；确需Coding时选custom。')
         if not entries:
             _reject('standard_input_missing', 'chartInputs', '未找到本图绑定的物化数据。', '补齐本图chart-input绑定。')
+        if form not in FAMILY_FORMS and any(getattr(chart, field, None) is not None for field in (
+                'standard_composition', 'standard_radar', 'standard_funnel', 'standard_sankey')):
+            _reject('standard_family_form_conflict', 'standardChart', '图族专用参数与机器类型不匹配。', '选择匹配机器类型，不能忽略图族参数。')
         entry = entries[0]
         source = next((item for item in inputs.files if item.path == entry['path']), None)
         if source is None or source.sha256 != entry['sha256']:
@@ -199,14 +246,22 @@ def _standard_visualization_script(
         source_labels = getattr(chart, 'standard_source_labels', ())
         if source_labels and not selections:
             _reject('standard_source_window_without_selection', 'standardSourceLabels', '输入窗口需要显式来源列选择。', '声明standardSources，或仅使用standardLabels选择最终展示窗口。')
-        if len(entries) > 1 or selections:
-            alignment = align_chart_sources(entries, inputs.files, selections,
-                                            selected_labels=source_labels or (() if has_transform else getattr(chart, 'standard_labels', ())),
+        family_documents = None
+        alignment_entries, alignment_selections = entries, selections
+        family_identities = None
+        if form in FAMILY_FORMS:
+            family_documents, family_identities, alignment_entries, alignment_selections = family_input_roles(chart, entries, inputs.files)
+            aligned[scope] = (document, family_identities)
+        if alignment_selections or len(alignment_entries) > 1:
+            alignment = align_chart_sources(alignment_entries, inputs.files, alignment_selections,
+                                            selected_labels=source_labels or (() if has_transform or form in FAMILY_FORMS else getattr(chart, 'standard_labels', ())),
                                             allow_nulls=axes.allow_nulls, max_labels=480 if form in {'scatter', 'bubble'} else 60)
             if alignment is None:
                 _reject('standard_source_alignment_failed', 'standardSources', '来源标签、单位、身份或来源使用范围不满足对齐要求。', '显式指定月份规范化、合计排除及共同窗口；检查重复标签、单位和所有绑定来源。')
             document, identities = alignment
-            aligned[scope] = (document, identities)
+            if form in FAMILY_FORMS:
+                document = family_aligned_semantics(document, selections)
+            aligned[scope] = (document, family_identities if form in FAMILY_FORMS else identities)
         if steps and (view is not None or derivations):
             _reject('standard_pipeline_order_ambiguous', 'standardSteps', '不能混用新流水线和旧视图/计算参数。', '将所有view/derivation按执行顺序放入standardSteps。')
         if view is not None or derivations or steps:
@@ -218,6 +273,14 @@ def _standard_visualization_script(
                         error.reason, '检查该步的输入列、登记单位、分组维度及月份；按声明顺序修正，禁止补零或覆盖原字段。')
             dependencies = aligned.get(scope, (None, [(source.path, source.sha256)]))[1]
             aligned[scope] = (document, dependencies)
+        if form in FAMILY_FORMS:
+            policy, family_warnings = prepare_family_chart(chart, document, original_document, form,
+                canvas, style, presentation, axes, family_documents)
+            if warnings is not None:
+                warnings.extend({'chartId': chart.chart_id, **item} for item in family_warnings)
+            configs.append((source.path, source.sha256, chart.source_path, chart.title, form,
+                            None, [], None, None, None, [], axes.model_dump(), [], None, policy))
+            continue
         columns, rows = document['columns'], document['rows']
         if (not isinstance(columns, list) or not columns
                 or any(not isinstance(column, str) or not column for column in columns)
@@ -310,6 +373,8 @@ def _standard_visualization_script(
         metas = [metadata.get(column, {}) for column in values]
         if any(not valid_standard_metadata(meta) for meta in metas):
             _reject('standard_metadata_invalid', 'columnMeta', '度量单位或百分比尺度元数据类型无效。', '从对应冻结事实重新物化元数据，不从标题猜测单位。')
+        if any(getattr(item, 'label_mode', None) == 'month_of_year' for item in selections) and not _compatible_periods(chart, metas, form):
+            _reject('standard_period_alignment_invalid', 'standardSources.periodYear/comparisonType', '同月映射的期间不满足显式比较关系。', '严格同比须为相邻两年的相同月份集合，不修改冻结日期或补齐缺失月份。')
         mixed = any(item.geometry != 'auto' for item in style.series)
         advanced = axes.mode != 'single' or axes.scale != 'linear' or mixed
         if mixed and form not in {'line', 'bar'} and not dual_stack:
@@ -379,9 +444,8 @@ def _standard_visualization_script(
             if any(len({(axis_units[index], metas[index].get('isPercent'))
                         for index in group}) != 1 for group in groups):
                 _reject('standard_axis_units_incompatible', 'standardAxes', '同轴度量单位或百分比尺度不一致。', '显式统一显示单位，或将不同量纲放到双轴/分面。')
-            windows = [meta.get('periods') for meta in metas]
-            if any(window != windows[0] for window in windows):
-                return None
+            if not _compatible_periods(chart, metas, form):
+                _reject('standard_period_alignment_invalid', 'columnMeta.periods/comparisonType', '系列期间不满足显式比较关系。', '同窗口比较保留一致期间；严格同比允许相邻两年相同月份，不得丢失来源期间。')
             if axes.scale == 'log' and (form != 'line' or any(
                 row[columns.index(column)] is not None and row[columns.index(column)] <= 0 for row in rows for column in values
             )):
@@ -398,9 +462,8 @@ def _standard_visualization_script(
         ):
             return None
         if form in {'line', 'stacked-bar', 'stacked-area', 'stacked-total'} and len(values) > 1:
-            windows = [meta.get('periods') for meta in metas]
-            if any(window != windows[0] for window in windows):
-                return None
+            if not _compatible_periods(chart, metas, form):
+                _reject('standard_period_alignment_invalid', 'columnMeta.periods/comparisonType', '系列期间不满足显式比较关系。', '仅普通柱线图允许显式严格同比；堆叠图须使用同一期间。')
         if category:
             category_index = columns.index(category)
             keys = [(row[label_index], row[category_index]) for row in rows]
@@ -495,7 +558,7 @@ def _standard_visualization_script(
         prepared = prepare_standard_presentation(presentation, document, original_document,
                                                  label, annotation_names, annotation_labels, category)
         if prepared is None:
-            return None
+            _reject('standard_presentation_binding_invalid', 'standardPresentation', '摘要或展示标签未绑定可用的冻结数据。', '摘要用row绑定唯一行，或显式sum汇总可加冻结字段；月份显示方式须与来源对齐方式一致。')
         canvas_policy = canvas.model_dump()
         canvas_policy['style'] = style.model_dump()
         canvas_policy['presentation'] = prepared
@@ -542,6 +605,11 @@ def _standard_visualization_script(
         except StandardChartEncodingError as error:
             _reject(error.code, error.parameter, str(error), '范围与刻度使用显示单位；保留所有数据或明确声明并说明显示裁切。')
     has_statistics = any(config[4] in {'waterfall', 'boxplot'} for config in configs)
+    has_families = any(config[4] in FAMILY_FORMS for config in configs)
+    if has_families and all(config[4] in FAMILY_FORMS for config in configs):
+        # 纯图族只拼接实际消费的原有helper；读取/SHA循环复用_BODY原文，身份策略不变。
+        return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned) + '\n'
+                + PRESENTATION_SCRIPT + _CANVAS_SCRIPT + FAMILY_SCRIPT + _FAMILY_BODY)
     statistics_script = summary_statistics_script(STATISTICS_SCRIPT) if summary_profiles else STATISTICS_SCRIPT
     has_domains = any('domains' in config[14] for config in configs)
     has_breaks = any('broken_axis' in config[14] for config in configs)
@@ -565,6 +633,8 @@ def _standard_visualization_script(
         layout = layout.replace('    if policy["layout"] == "tight":',
                                 '    if policy.get("broken_axis"):\n        layout_standard_break(fig, policy)\n    elif policy["layout"] == "tight":')
     body = _BODY.replace('__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else '')
+    if has_families:
+        body = body.replace('    columns = payload["columns"]\n', '    columns = payload["columns"]\n' + FAMILY_DISPATCH)
     if has_dual_stacks:
         boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
         body = body.replace(boundary, DUAL_STACK_DISPATCH + boundary)
@@ -574,6 +644,7 @@ def _standard_visualization_script(
     return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + PRESENTATION_SCRIPT + layout + ENCODING_SCRIPT + _ADVANCED
+            + (FAMILY_SCRIPT if has_families else '')
             + (statistics_script if has_statistics else '')
             + (DUAL_STACK_SCRIPT if has_dual_stacks else '')
             + (break_script if has_breaks else '')
@@ -714,7 +785,9 @@ def apply_standard_style(fig, policy):
     if fig._suptitle is not None:
         fig._suptitle.set_fontsize(style["title_font_size"])
 
-def create_standard_canvas(policy, labels, form, panels=1):
+'''
+
+_CANVAS_SCRIPT = '''def create_standard_canvas(policy, labels, form, panels=1):
     policy["horizontal"] = form == "barh"
     width, height = policy["width"], policy["height"]
     if policy["size_mode"] == "auto":
@@ -733,7 +806,9 @@ def save_standard_canvas(fig, output_path, policy):
                 bbox_inches="tight" if policy["crop"] == "tight" else None,
                 pad_inches=policy["padding"])
 
-def place_standard_legends(fig, policy):
+'''
+
+_LAYOUT += _CANVAS_SCRIPT + '''def place_standard_legends(fig, policy):
     if policy["style"]["legend_location"] != "auto" or policy["legend_position"] == "outside":
         return
     import math
@@ -1187,4 +1262,8 @@ __STATISTICAL_DISPATCH__    canvas["band_data"] = standard_band_data(payload, ca
     finish_standard_layout(fig, canvas)
     save_standard_canvas(fig, output_path, canvas)
     plt.close(fig)
+'''
+
+# 逐字复用正式输入读取与全部依赖SHA检查，只去除未消费的旧几何分支。
+_FAMILY_BODY = _BODY[:_BODY.index('    columns = payload["columns"]\n')] + '''    render_family_chart(payload, canvas, form, title, output_path)
 '''

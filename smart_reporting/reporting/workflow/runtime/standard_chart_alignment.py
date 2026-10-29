@@ -48,11 +48,18 @@ def align_chart_sources(entries, files, selections, *, selected_labels=(), allow
         rows = [row for row in rows if row[label_index] not in getattr(selection, 'excluded_labels', ())]
         current_labels = [row[label_index] for row in rows]
         values = [row[value_index] for row in rows]
-        if getattr(selection, 'label_mode', 'exact') == 'month':
+        mode = getattr(selection, 'label_mode', 'exact')
+        if mode in {'month', 'month_of_year'}:
             try:
                 current_labels = [month_label(label) for label in current_labels]
             except ValueError:
                 return None
+            if mode == 'month_of_year':
+                year = getattr(selection, 'period_year', None)
+                if year is None or any(int(label[:4]) != year for label in current_labels):
+                    return None
+                source_periods = current_labels
+                current_labels = [label[5:] for label in current_labels]
         if selected_labels:
             if len(set(selected_labels)) != len(selected_labels) or not set(selected_labels).issubset(current_labels):
                 return None
@@ -75,6 +82,8 @@ def align_chart_sources(entries, files, selections, *, selected_labels=(), allow
         meta = column_meta.get(selection.value_field, {})
         if not valid_standard_metadata(meta) or not meta.get('unit'):
             return None
+        if mode == 'month_of_year':
+            meta = {**meta, 'periods': [period for period in source_periods if period[5:] in current_labels]}
         lookup = dict(zip(current_labels, values, strict=True))
         series.append([lookup[label] for label in labels])
         metadata[selection.series_name] = meta
