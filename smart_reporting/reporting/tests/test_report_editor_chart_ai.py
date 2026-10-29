@@ -1203,11 +1203,13 @@ async def test_chart_ai_keeps_visual_form_and_serves_relative_src_for_re_edit(
     content, media_type = await fixture.editor.read_asset(fixture.context, status["imageSrc"])
     assert media_type == "image/png" and content == fixture.chart_bytes
     record = await service.edit_record(fixture.context, started["editId"])
-    assert record == {
+    assert {key:record[key] for key in ("editId", "chartId", "imagePath")} == {
         "editId": started["editId"],
         "chartId": "chart_001",
         "imagePath": status["imagePath"],
     }
+    assert record["imageSrc"] == status["imageSrc"]
+    assert len(record["pages"]) == 1 and record["pages"][0]["pageCount"] == 1
 
 
 @pytest.mark.anyio

@@ -58,6 +58,13 @@ class ChartEditChartMeta(StrictModel):
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
 
 
+class ChartEditPage(StrictModel):
+    page_number: int = Field(alias="pageNumber", ge=1, le=20, strict=True)
+    image: ChartEditFileRef
+    chart: ChartEditChartMeta
+    visual_inspection_receipt: dict[str, Any] = Field(alias="visualInspectionReceipt", default_factory=dict)
+
+
 class ChartEditRecord(StrictModel):
     """一条已成功执行的改图登记。
 
@@ -85,6 +92,8 @@ class ChartEditRecord(StrictModel):
         alias="dataBindings", default=(), max_length=100
     )
     chart: ChartEditChartMeta
+    pages: tuple[ChartEditPage, ...] = Field(default=(), max_length=20)
+    standard_parameters: dict[str, Any] = Field(default_factory=dict, alias="standardParameters", max_length=32)
     visual_inspection_receipt: dict[str, Any] = Field(
         alias="visualInspectionReceipt", default_factory=dict
     )
@@ -100,12 +109,33 @@ class ChartEditRecord(StrictModel):
         path = safe_relative_posix_path(value, "改图底图路径必须是安全的工作区相对路径")
         return path.as_posix()
 
+    @field_validator("standard_parameters")
+    @classmethod
+    def validate_standard_parameters(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if value:
+            from .standard_charts import StandardChartEditParameters
+
+            StandardChartEditParameters.model_validate(value)
+        return value
+
     @model_validator(mode="after")
     def validate_record(self) -> ChartEditRecord:
         if len(set(self.level)) != len(self.level):
             raise ValueError("改图级别不能重复")
         if len({item.path for item in self.plot_data_files}) != len(self.plot_data_files):
             raise ValueError("作图数据文件不能重复")
+        if self.pages:
+            if [page.page_number for page in self.pages] != list(range(1, len(self.pages) + 1)):
+                raise ValueError("改图页码必须从1连续排列")
+            if self.pages[0].image != self.image or self.pages[0].chart != self.chart:
+                raise ValueError("改图首图身份和语义必须与第一页一致")
+            parent = PurePosixPath(self.image.path).parent
+            if parent.name != self.edit_id or parent.parent.name != CHART_EDITS_DIR or PurePosixPath(self.image.path).name != "chart.png":
+                raise ValueError("改图分页必须属于当前不可变改图目录")
+            for page in self.pages:
+                expected = parent / ("chart.png" if page.page_number == 1 else f"chart--page-{page.page_number}.png")
+                if page.image.path != expected.as_posix() or page.chart.dataset_ids != self.chart.dataset_ids:
+                    raise ValueError("改图分页路径或来源数据集与当前改图不一致")
         return self
 
 
@@ -159,6 +189,26 @@ def chart_edit_image_src(markdown_path: str, edit_id: str) -> str:
     image_path = PurePosixPath(chart_edit_output_dir(markdown_path, edit_id)) / "chart.png"
     relative = image_path.relative_to(PurePosixPath(markdown_path).parent)
     return relative.as_posix()
+
+
+def chart_edit_page_src(markdown_path: str, edit_id: str, page_number: int) -> str:
+    if isinstance(page_number, bool) or not isinstance(page_number, int) or not 1 <= page_number <= 20:
+        raise ValueError("改图页码无效")
+    parent = PurePosixPath(chart_edit_output_dir(markdown_path, edit_id))
+    image = parent / ("chart.png" if page_number == 1 else f"chart--page-{page_number}.png")
+    return image.relative_to(PurePosixPath(markdown_path).parent).as_posix()
+
+
+def chart_edit_pages(record: ChartEditRecord) -> tuple[ChartEditPage, ...]:
+    return record.pages or (ChartEditPage(pageNumber=1, image=record.image, chart=record.chart,
+        visualInspectionReceipt=record.visual_inspection_receipt),)
+
+
+def chart_edit_page_chart_id(record: ChartEditRecord, page_number: int) -> str:
+    if page_number == 1:
+        return record.chart_id
+    suffix = hashlib.sha256(f"{record.edit_id}:{page_number}".encode()).hexdigest()[:16]
+    return f"{record.chart_id[:80]}--page-{page_number}-{suffix}"
 
 
 def _parse_registry_payload(content: bytes) -> dict[str, Any]:

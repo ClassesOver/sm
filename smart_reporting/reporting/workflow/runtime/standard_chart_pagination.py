@@ -157,7 +157,7 @@ def _pages(chart: ChartDraft, inputs: ChartInputMaterialization) -> tuple[ChartD
             "standard_pagination": None, "standard_labels": selected, "standard_domains": domains,
             "standard_presentation": presentation, "standard_style": style, "standard_label_field": label,
             "standard_display_unit": requested})
-        pages.append(ChartDraft.model_validate(page.model_dump()))
+        pages.append(type(chart).model_validate(page.model_dump()))
     return tuple(pages)
 
 
@@ -191,7 +191,7 @@ def expand_standard_pagination(plan: VisualizationPlanDraft, inputs: ChartInputM
             logger.warning("report_standard_pagination_fallback chart_id={} reason={}", chart.chart_id, str(error)[:300])
             charts.append(chart)
             warnings.append(f"{chart.chart_id}：标准分页未展开（{str(error)[:300]}），保留完整图交由Coding处理。")
-    return VisualizationPlanDraft.model_validate({"charts": charts, "warnings": warnings[-100:]})
+    return type(plan).model_validate({"charts": charts, "warnings": warnings[-100:]})
 
 
 async def prepare_standard_paginated_plan(plan: VisualizationPlanDraft, facts: Sequence[Mapping],

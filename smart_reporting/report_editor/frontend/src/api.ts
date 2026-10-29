@@ -281,11 +281,22 @@ export interface ChartAIEditSuccess {
   imagePath: string
   /** 新图在正文中的引用形式（相对修订目录）。 */
   imageSrc: string
+  /** 完整且有序的分页；包含兼容顶层字段所指的第一页。 */
+  pages?: ChartAIEditPage[]
   level: string[]
   changes: ChartAIEditChanges
   warnings: string[]
   skipped: { request: string; reason: string }[]
   visualInspection: { format?: string; width?: number; height?: number; reviewed: boolean }
+}
+
+export interface ChartAIEditPage {
+  pageNumber: number
+  pageCount: number
+  imagePath: string
+  imageSrc: string
+  title: string | null
+  altText: string | null
 }
 
 export interface ChartAIEditState {
@@ -717,7 +728,7 @@ export class ReportEditorClient {
   }
 
   /** 已登记改图的图表归属：正文图片已替换为改图结果时据此继续改图。 */
-  chartEditRecord(editId: string): Promise<{ editId: string; chartId: string; imagePath: string }> {
+  chartEditRecord(editId: string): Promise<{ editId: string; chartId: string; imagePath: string; pages?: ChartAIEditPage[] }> {
     return this.request(`/api/chart-edits/${encodeURIComponent(editId)}`)
   }
 

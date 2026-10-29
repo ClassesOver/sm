@@ -346,7 +346,7 @@ def mutate(documents, variant):
     return documents
 
 
-def run_case(case, output):
+def run_case(case, output, *, plan_factory=plan_from_saved):
     folder = output / case['id']
     folder.mkdir(parents=True, exist_ok=True)
     for path in [folder / name for name in ['standard.png', 'audit.json', 'render.py', 'audit.py']]:
@@ -359,7 +359,7 @@ def run_case(case, output):
     (folder / 'parameters.json').write_text(json.dumps(case['parameters'], ensure_ascii=False, indent=2))
     (folder / 'expectations.json').write_text(json.dumps(case.get('assertions', {}), ensure_ascii=False, indent=2))
     try:
-        plan = plan_from_saved(case['parameters'])
+        plan = plan_factory(case['parameters'])
     except ValidationError as error:
         return {**record, 'status': 'schema_rejected', 'error': str(error)[:1500]}
     files = tuple(ChartInputFile(f'input-{index}.json', json.dumps(document, ensure_ascii=False).encode())
