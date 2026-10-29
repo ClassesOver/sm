@@ -41,6 +41,36 @@ def ranked_detail_scope(data_path: str) -> dict[str, Any] | None:
     }
 
 
+def chart_input_matches_rebuild(actual: bytes, rebuilt: bytes) -> bool:
+    """Accept exact data, or the old grouped-input format lacking parent units.
+
+    Only metadata newly inherited by grouped arrays can be absent. Every other
+    byte, including rows, selectors and source identities, must still match the
+    canonical deterministic rebuild. Present but incorrect units never qualify.
+    """
+    if actual == rebuilt:
+        return True
+    try:
+        payload = json.loads(rebuilt)
+        path = payload["source"]["dataPath"]
+        metadata = payload["columnMeta"]
+    except (ValueError, KeyError, TypeError):
+        return False
+    if not isinstance(path, str) or not re.fullmatch(
+        r"(?:breakdowns\[\d+\]\.(?:periodValues|topGroups|bottomGroups|groupPopulation)"
+        r"|metrics\[\d+\]\.(?:topGroups|bottomGroups|groupPopulation))", path,
+    ):
+        return False
+    if (not isinstance(metadata, dict) or set(metadata) != {"value"}
+            or not isinstance(metadata["value"], dict)
+            or "unit" not in metadata["value"]
+            or not set(metadata["value"]).issubset({"unit", "isPercent"})):
+        return False
+    payload.pop("columnMeta")
+    legacy = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    return actual == legacy
+
+
 class ChartInputError(ValueError):
     """单个绑定无法确定性物化；调用方对该图回退原始 facts。"""
 
@@ -161,9 +191,12 @@ def _table_for_binding(
                 raise ChartInputError("行对象字段必须是标量")
             rows.append(row)
         column_meta = None
-        # periodValues.value inherits the exact signed metric unit, never a name/title guess.
-        if (len(tokens) == 3 and tokens[0] == 'metrics' and isinstance(tokens[1], int)
-                and tokens[2] == 'periodValues' and 'value' in fields):
+        # Frozen metric/group arrays carry the parent measure's unit. Do not
+        # infer units from labels/titles or alter any signed source values.
+        if (len(tokens) == 3 and tokens[0] in {'metrics', 'breakdowns'}
+                and isinstance(tokens[1], int)
+                and tokens[2] in {'periodValues', 'topGroups', 'bottomGroups', 'groupPopulation'}
+                and 'value' in fields):
             metric = _navigate(document, tokens[:-1])
             unit = metric.get('unit')
             if isinstance(unit, str) and unit.strip():

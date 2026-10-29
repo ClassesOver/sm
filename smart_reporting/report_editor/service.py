@@ -3000,7 +3000,10 @@ class ReportEditorService:
             raise ReportingError("snapshot_integrity_failed", "改图数据集不在本报告登记范围内。")
 
         if data_origin == "rebound":
-            from ..reporting.workflow.runtime.chart_inputs import materialize_chart_inputs
+            from ..reporting.workflow.runtime.chart_inputs import (
+                chart_input_matches_rebuild,
+                materialize_chart_inputs,
+            )
             from ..reporting.workflow.runtime.phase_models import ChartDataBinding
 
             try:
@@ -3044,7 +3047,9 @@ class ReportEditorService:
                 documents,
                 output_root="verification",
             )
-            if rebuilt.fallback_chart_ids or [item.content for item in rebuilt.files] != contents:
+            if (rebuilt.fallback_chart_ids or len(rebuilt.files) != len(contents)
+                    or not all(chart_input_matches_rebuild(content, item.content)
+                               for content, item in zip(contents, rebuilt.files, strict=True))):
                 raise ReportingError("snapshot_integrity_failed", "改图换绑作图数据无法从冻结事实重建。")
             return
 
