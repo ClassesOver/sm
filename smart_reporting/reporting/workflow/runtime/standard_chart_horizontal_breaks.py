@@ -31,7 +31,7 @@ def render_horizontal_broken_chart(payload,canvas,form,title,output_path,label_c
     else:
         raw=[[row[columns.index(name)] if row[columns.index(name)] is not None else float("nan") for row in rows] for name in names]
         metas=metadata
-    factors=canvas["axis_factors"] if canvas["advanced"] else [DISPLAYS.get(input_path,(1,None))[0]]*len(names)
+    factors=canvas["axis_factors"] if canvas["advanced"] else [DISPLAYS.get((input_path,output_path),(1,None))[0]]*len(names)
     if category:
         factors=[factors[0]]*len(names)
     series=[[value*factor*(100 if meta.get("unit")=="%" and meta.get("isPercent") is False else 1) for value in values]
@@ -88,7 +88,7 @@ def render_horizontal_broken_chart(payload,canvas,form,title,output_path,label_c
                     continue
                 extra=canvas["presentation"]["extras"].get((labels[i],name),"")
                 auxiliary=[]
-                for field in AUXILIARY.get(input_path,()):
+                for field in AUXILIARY.get((input_path,output_path),()):
                     matching=[row for row in rows if row[columns.index(label_column)]==labels[i] and (not category or row[columns.index(category)]==name)]
                     if len(matching)!=1:
                         raise ValueError("annotation row is ambiguous")

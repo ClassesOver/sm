@@ -43,7 +43,7 @@ from ...phase import (
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
 from ...trace.computation_service import build_standard_supplemental_computation_record
-from ...trace.fact_index import breakdown_partition_rows, breakdown_partitions
+from ...trace.fact_index import breakdown_partitions
 from ...trace.numeric_text import frozen_number_catalog, render_frozen_numbers
 from ..benchmark_variants import (
     BenchmarkProjection,
@@ -144,13 +144,18 @@ from .base import (
     time,
     validate_metric_code_bindings,
 )
+from .chart_data_descriptors import (
+    breakdown_descriptors as _breakdown_descriptors,  # noqa: F401 - historical import compatibility
+)
+from .chart_data_descriptors import (
+    deterministic_chart_descriptors,
+)
 from .chart_inputs import (
     ChartInputMaterialization,
     _binding_catalog,
     chart_input_root_for,
     fallback_plan,
     prepare_chart_inputs,
-    ranked_detail_scope,
     verify_plotly_chart_inputs,
     verify_static_chart_inputs_referenced,
 )
@@ -778,31 +783,6 @@ _MODEL_FACT_WARNING_COLLECTIONS = (
     "comparisons",
     "reconciliations",
 )
-
-
-def _breakdown_descriptors(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """维度分组的图表数据描述。
-
-    图表绑定只能按路径取值、不能筛选行：整表只有一个指标的一个维度时才按行绑定；
-    否则逐组登记，由图表选取同一 parentFactId 与 breakdownField 的分组，避免混入其他维度。
-    逐组条目与逐月序列只为组数不多的维度登记（多组饼图/折线不可读），控制图表规划输入体积。
-    """
-    fields = ["parentFactId", "breakdownField", "breakdownLabel", "breakdownValue",
-              "displayName", "total", "unit"]
-    partitions = breakdown_partition_rows(payload)
-    descriptors: list[dict[str, Any]] = []
-    if len(partitions) == 1 and sum(map(len, partitions.values())) == len(payload.get("breakdowns") or ()):
-        descriptors.append({"dataPath": "breakdowns", "fields": fields,
-                            "dataScope": "同一指标同一维度的完整分组合计"})
-    for rows in partitions.values():
-        if len(rows) > 6:
-            continue
-        for index, item in rows:
-            if len(partitions) > 1:
-                descriptors.append({"dataPath": f"breakdowns[{index}]", "fields": fields})
-            if item.get("periodValues"):
-                descriptors.append({"dataPath": f"breakdowns[{index}].periodValues", "fields": ["period", "value"]})
-    return descriptors
 
 
 def _model_facing_breakdowns(
@@ -1636,34 +1616,7 @@ class RuntimeAnalysisMixin:
             DeterministicAnalysisBundle,
         )
         payload = fact_model.model_dump(mode="json", by_alias=True)
-        data_descriptors: list[dict[str, Any]] = []
-        for index, metric in enumerate(payload.get("metrics", ())):
-            if not isinstance(metric, Mapping):
-                continue
-            data_descriptors.append({"dataPath": f"metrics[{index}]", "fields": sorted(key for key, value in metric.items() if value is None or isinstance(value, (str, int, float, bool)))})
-            data_descriptors.extend(
-                {
-                    "dataPath": f"metrics[{index}].{collection}",
-                    "fields": fields,
-                    **({"dataScope": scope} if (scope := ranked_detail_scope(f"metrics[{index}].{collection}")) else {}),
-                }
-                for collection, fields in (
-                    ("periodValues", ["period", "value"]),
-                    ("topGroups", ["group", "value"]),
-                    ("bottomGroups", ["group", "value"]),
-                )
-            )
-        data_descriptors.extend(_breakdown_descriptors(payload))
-        data_descriptors.extend(
-            {"dataPath": f"derivedMetrics[{index}]", "fields": sorted(key for key, value in metric.items() if value is None or isinstance(value, (str, int, float, bool)))}
-            for index, metric in enumerate(payload.get("derivedMetrics", ()))
-            if isinstance(metric, Mapping)
-        )
-        data_descriptors.extend(
-            {"dataPath": f"comparisons[{index}]", "fields": sorted(key for key, value in item.items() if value is None or isinstance(value, (str, int, float, bool)))}
-            for index, item in enumerate(payload.get("comparisons", ()))
-            if isinstance(item, Mapping)
-        )
+        data_descriptors = deterministic_chart_descriptors(payload)
         supplemental_sources: list[dict[str, Any]] = []
         if isinstance(durable_item, Mapping):
             for raw_identity in durable_item.get("evidenceFiles", ()):
