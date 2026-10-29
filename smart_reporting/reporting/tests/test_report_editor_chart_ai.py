@@ -669,9 +669,16 @@ async def test_chart_ai_edit_l2_rebinds_registered_data_and_reports_change(tmp_p
     )
     assert [item.data_origin for item in records] == ["rebound", "rebound", "rebound"]
     assert [item.level for item in records] == [("L2",), ("L1",), ("L1",)]
-    assert all(item.plot_data_files[0].path == new_plot.path for item in records)
+    assert len({item.plot_data_files[0].path for item in records}) == len(records)
+    for item in records:
+        snapshot = item.plot_data_files[0]
+        assert snapshot.path.startswith(item.image.path.rsplit("/", 1)[0] + "/")
+        assert snapshot.sha256 == new_plot.sha256 and snapshot.size == new_plot.size
+        assert (await fixture.workspace.afile_bytes(fixture.thread_id, snapshot.path))[0] == stored
     assert all(item.chart.dataset_ids == ("dataset-url-abc0001",) for item in records)
-    assert all(new_plot.path in call[0].authorized_read_paths for call in runner.calls[1:])
+    for item, call in zip(records, runner.calls, strict=True):
+        assert item.plot_data_files[0].path in call[0].authorized_read_paths
+        assert [entry["path"] for entry in call[1]["chartInputs"]] == [item.plot_data_files[0].path]
 
 
 @pytest.mark.anyio
