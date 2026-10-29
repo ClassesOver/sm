@@ -833,13 +833,21 @@ def frozen_number_guide(
     guide: list[dict[str, Any]] = []
     seen: set[str] = set()
     for content in contents:
-        try:
-            bundle = DeterministicAnalysisBundle.model_validate_json(content)
-        except ValueError:
+        bundle = _parsed_fact_bundle(content)
+        if bundle is None:
             continue
         comparisons = budget_comparison_values(bundle)
         project_ratios = project_ratio_values(bundle)
         metric_shares = metric_share_values(bundle)
+        comparisons_by_actual: dict[str | None, list[dict[str, Any]]] = {}
+        ratios_by_numerator: dict[str | None, list[dict[str, Any]]] = {}
+        shares_by_part: dict[str | None, list[dict[str, Any]]] = {}
+        for comparison in comparisons:
+            comparisons_by_actual.setdefault(comparison["actualFactId"], []).append(comparison)
+        for ratio in project_ratios:
+            ratios_by_numerator.setdefault(ratio["numeratorFactId"], []).append(ratio)
+        for share in metric_shares:
+            shares_by_part.setdefault(share["partFactId"], []).append(share)
         bundle_items: list[dict[str, Any]] = []
         for fact in (*bundle.metrics, *bundle.breakdowns):
             if not fact.fact_id or fact.fact_id in seen:
@@ -867,7 +875,9 @@ def frozen_number_guide(
             total_periods = periods[-1:] if stock else periods
             if fact.breakdown_field is not None:
                 bundle_items.append(_breakdown_guide_item(
-                    fact, bundle.analysis_id, catalog, comparisons, project_ratios,
+                    fact, bundle.analysis_id, catalog,
+                    comparisons_by_actual.get(fact.fact_id, ()),
+                    ratios_by_numerator.get(fact.fact_id, ()),
                     field_definitions or {},
                 ))
                 continue
@@ -1016,9 +1026,7 @@ def frozen_number_guide(
                 for index, group in enumerate(groups)
             ]
             item["budgetComparisons"] = []
-            for comparison in comparisons:
-                if comparison["actualFactId"] != fact.fact_id:
-                    continue
+            for comparison in comparisons_by_actual.get(fact.fact_id, ()):
                 references = {}
                 for field, unit in (("difference", comparison["unit"]), ("percentage", "%")):
                     token = f"{{{{value:{fact.fact_id}:budgetComparison.{comparison['budgetFactId']}.{comparison['period']}.{field}:{unit or ''}}}}}"
@@ -1042,8 +1050,7 @@ def frozen_number_guide(
                     "reference": token,
                     "meaning": "同快照合同或付款总额除以项目预算总额×100%；金额单位未知不影响比率。",
                 }
-                for ratio in project_ratios
-                if ratio["numeratorFactId"] == fact.fact_id
+                for ratio in ratios_by_numerator.get(fact.fact_id, ())
                 if (
                     token
                     := f"{{{{value:{fact.fact_id}:projectRatio.{ratio['budgetFactId']}.percentage:%}}}}"
@@ -1058,8 +1065,7 @@ def frozen_number_guide(
                     "reference": token,
                     "meaning": "该指标占同口径合计指标的百分比，分子分母均为冻结值；写占比必须使用此引用，不得自行相除",
                 }
-                for share in metric_shares
-                if share["partFactId"] == fact.fact_id
+                for share in shares_by_part.get(fact.fact_id, ())
                 if (
                     token := f"{{{{value:{fact.fact_id}:metricShare.{share['totalFactId']}"
                     + (f".{share['period']}" if share["period"] else "")
@@ -1190,7 +1196,7 @@ def _breakdown_guide_item(
         }
     budgets = []
     for comparison in comparisons:
-        if comparison["actualFactId"] != fact.fact_id or ".." not in comparison["period"]:
+        if ".." not in comparison["period"]:
             continue
         if comparison["period"].split("..", 1)[1] != (_canonical_month_label(periods[-1]) if periods else None):
             continue
@@ -1207,7 +1213,7 @@ def _breakdown_guide_item(
     ratios = [
         {"budgetFactId": ratio["budgetFactId"], "numeratorMetric": ratio["numeratorMetric"],
          "reference": reference(f"projectRatio.{ratio['budgetFactId']}.percentage", "%")}
-        for ratio in project_ratios if ratio["numeratorFactId"] == fact.fact_id
+        for ratio in project_ratios
     ]
     if ratios:
         item["projectRatios"] = ratios

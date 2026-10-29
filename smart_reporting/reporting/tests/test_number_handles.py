@@ -13,7 +13,11 @@ from smart_reporting.reporting.structured_output.execution import _validation_is
 from smart_reporting.reporting.tests.test_number_selection import source
 from smart_reporting.reporting.tests.test_reporting_fixed_phase_workflows import _context
 from smart_reporting.reporting.trace.calc_references import CalcEvaluator
-from smart_reporting.reporting.trace.number_handles import NumberHandles, compact_catalog
+from smart_reporting.reporting.trace.number_handles import (
+    NumberHandles,
+    compact_catalog,
+    registered_number_identities,
+)
 from smart_reporting.reporting.trace.numeric_text import (
     frozen_number_catalog,
     prompt_number_catalog,
@@ -75,6 +79,27 @@ def test_only_registered_identities_get_handles():
     assert handles.encode(f'{bogus}{TOTAL}') == bogus + '{{N1:元}}'
     assert handles.encode('{{calc:ratio(fact-bbbbbbbbbbbbbbbb:bogus,fact-bbbbbbbbbbbbbbbb:total):%}}') == (
         '{{calc:ratio(fact-bbbbbbbbbbbbbbbb:bogus,N1):%}}')
+
+
+def test_precompiled_registered_identities_are_shared_without_sharing_handle_order():
+    catalog = frozen_number_catalog(source())
+    registered = registered_number_identities(catalog)
+    first = NumberHandles(registered_identities=registered)
+    second = NumberHandles(registered_identities=registered)
+    period = next(token for token in catalog if ":periodValues.0:" in token)
+
+    assert first._registered is registered and second._registered is registered
+    encoded = first.encode(f"{TOTAL}{period}")
+    assert "{{N1:元}}" in encoded and "{{N2:" in encoded
+    second_encoded = second.encode(period)
+    assert "{{N1:" in second_encoded
+    assert second.decode(second_encoded) == period
+
+
+def test_catalog_and_precompiled_registered_identities_are_mutually_exclusive():
+    catalog = frozen_number_catalog(source())
+    with pytest.raises(ValueError, match="不能同时提供"):
+        NumberHandles(catalog, registered_identities=registered_number_identities(catalog))
 
 
 def test_calc_accepts_selectors_with_hyphens():

@@ -54,7 +54,11 @@ from ...trace.contracts_v1 import (
 )
 from ...trace.fact_service import fact_display_unit, fact_display_value
 from ...trace.index_builder import trace_index_path_for
-from ...trace.number_handles import NumberHandles, compact_catalog
+from ...trace.number_handles import (
+    NumberHandles,
+    compact_catalog,
+    registered_number_identities,
+)
 from ...trace.number_selection import align_number_selections
 from ...trace.numeric_text import (
     frozen_number_catalog,
@@ -2358,6 +2362,9 @@ async def _generate_section_in_blocks(
         raise AssertionError("章节规划纠错循环未终止。")
 
     decision = _fit_section_plan_budget(decision, work_item)
+    number_handle_identities = registered_number_identities(
+        frozen_number_catalog(number_contents)
+    )
 
     def retain_source_warnings(result: RenderSectionDecision) -> RenderSectionDecision:
         # 来源问题独立于正文纠错；即使模型不再写“待核实”，也不能抹去核查失败。
@@ -2373,6 +2380,7 @@ async def _generate_section_in_blocks(
                     scope=scope, run_context=run_context, thinking_request=thinking_request,
                     review_notices=review_notices, number_contents=number_contents,
                     table_sources=table_sources,
+                    number_handle_identities=number_handle_identities,
                     allowed_fact_ids=scoped_fact_ids, compact=compact,
                     earlier_sentences=earlier_sentences,
                 )
@@ -2497,7 +2505,7 @@ async def _generate_section_in_blocks(
         first_block_score = (0, 0)
         for block_attempt in range(2):
             try:
-                handles = NumberHandles(frozen_number_catalog(number_contents))
+                handles = NumberHandles(registered_identities=number_handle_identities)
                 content = await _run_section_stage(
                     agent,
                     SectionBlockContent,
@@ -2664,6 +2672,7 @@ async def _generate_whole_section_content(
     review_notices: dict[str, list[dict[str, Any]]] | None = None,
     number_contents: Sequence[str] | None = None,
     table_sources: Mapping[str, bytes] | None = None,
+    number_handle_identities: frozenset[tuple[str, str]] | None = None,
     allowed_fact_ids: set[str] | None = None,
     compact: bool = False,
     earlier_sentences: Mapping[str, str] | None = None,
@@ -2673,6 +2682,10 @@ async def _generate_whole_section_content(
     number_contents = tuple(number_contents or (item.content for item in evidence.files))
     if table_sources is None:
         table_sources = _verified_table_sources(evidence.files)
+    if number_handle_identities is None:
+        number_handle_identities = registered_number_identities(
+            frozen_number_catalog(number_contents)
+        )
     payload = {
         "phase": "section",
         "generationStage": "content",
@@ -2797,7 +2810,7 @@ async def _generate_whole_section_content(
             if request_tokens > input_budget:
                 raise ReportingError("report_section_context_too_large", "整章请求超过当前模型输入预算。",
                                      details={"requestTokens": request_tokens, "inputTokenBudget": input_budget})
-            handles = NumberHandles(frozen_number_catalog(number_contents))
+            handles = NumberHandles(registered_identities=number_handle_identities)
             content = await _run_section_stage(
                 agent,
                 SectionContent,
@@ -4342,7 +4355,7 @@ class RuntimeSectionsMixin:
             bundle_fact_arrays,
             fact_binding_records,
             fact_entry_from_pointer,
-            fact_pointer,
+            fact_pointer_index,
             frozen_fact_content,
             merge_binding_records,
         )
@@ -4377,9 +4390,10 @@ class RuntimeSectionsMixin:
                 bundle = DeterministicAnalysisBundle.model_validate_json(raw)
                 document = bundle.model_dump(mode="json", by_alias=True)
                 binding_records = fact_binding_records(bundle)
+                pointers = fact_pointer_index(bundle)
                 for fact in (fact for _, _, facts in bundle_fact_arrays(bundle) for fact in facts):
                     if fact.fact_id:
-                        pointer = fact_pointer(bundle, fact.fact_id)
+                        pointer = pointers.get(fact.fact_id)
                         if pointer:
                             frozen_fact = fact.model_dump(mode="json", by_alias=True)
                             binding_record = binding_records[fact.fact_id]

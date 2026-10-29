@@ -359,6 +359,46 @@ def test_budget_comparison_calculates_registered_months_and_zero_numerator():
     assert any('93.8%' in warning for warning in review_content('1月93.8%。', [content]))
 
 
+def test_number_guide_reuses_parsed_bundle_and_indexes_budget_comparisons(monkeypatch):
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicAnalysisBundle,
+    )
+    from smart_reporting.reporting.trace import numeric_text
+
+    class CountedComparisons(list):
+        visits = 0
+
+        def __iter__(self):
+            for item in super().__iter__():
+                self.visits += 1
+                yield item
+
+    content = _budget_pair_contents()
+    numeric_text._parsed_fact_bundle.cache_clear()
+    numeric_text._fact_bundle_document.cache_clear()
+    numeric_text._frozen_number_catalog.cache_clear()
+    original_validate = DeterministicAnalysisBundle.model_validate_json
+    parse_calls = 0
+
+    def counted_validate(value, *args, **kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_validate(value, *args, **kwargs)
+
+    monkeypatch.setattr(DeterministicAnalysisBundle, "model_validate_json", counted_validate)
+    catalog = frozen_number_catalog([content])
+    bundle = numeric_text._parsed_fact_bundle(content)
+    assert bundle is not None
+    comparisons = CountedComparisons(numeric_text.budget_comparison_values(bundle))
+    monkeypatch.setattr(numeric_text, "budget_comparison_values", lambda _bundle: comparisons)
+
+    guide = numeric_text.frozen_number_guide([content], catalog)
+
+    assert parse_calls == 1
+    assert comparisons.visits == len(comparisons)
+    assert guide[1]["budgetComparisons"]
+
+
 def test_budget_comparison_zero_denominator_has_no_percentage_reference():
     from smart_reporting.reporting.trace.numeric_text import frozen_number_guide
 

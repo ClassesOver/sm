@@ -28,7 +28,7 @@ from .contracts_v1 import (
     TableCellBindingV1,
     TableTraceV1,
 )
-from .fact_index import fact_pointer
+from .fact_index import fact_pointer_index
 from .numeric_text import (
     _MONEY_UNITS,
     PERCENT_POINT,
@@ -89,6 +89,7 @@ def build_table_trace(
     """
 
     table_id = _normalize_table_id(str(spec.get("tableId", "")))
+    pointers = fact_pointer_index(bundle)
     metric_codes = tuple(str(code) for code in spec.get("metricCodes", ()))
     rows_spec = tuple(spec.get("rows", ()))
     if not metric_codes or len(metric_codes) != len(set(metric_codes)):
@@ -163,7 +164,7 @@ def build_table_trace(
                     FactRefV1(
                         analysisId=bundle.analysis_id,
                         fileResourceId=fact_file_resource_id,
-                        jsonPointer=fact_pointer(bundle, fact.fact_id) or "",
+                        jsonPointer=pointers.get(fact.fact_id) or "",
                         factKind="metric",
                         factKey=fact.fact_id,
                     ),
@@ -369,6 +370,7 @@ def build_analysis_table(
     - 无可用指标 → 返回 None；无分期间值 → 展示冻结指标合计。
     """
 
+    pointers = fact_pointer_index(bundle)
     table_id = f"table-{bundle.analysis_id}"
     if part_index is not None:
         table_id += f"-part-{part_index}"
@@ -436,7 +438,7 @@ def build_analysis_table(
                     valueSelector=field,
                     factRefs=(FactRefV1(
                         analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
-                        jsonPointer=fact_pointer(bundle, fact.fact_id) or "",
+                        jsonPointer=pointers.get(fact.fact_id) or "",
                         factKind="comparison", factKey=fact.fact_id,
                     ),),
                 ))
@@ -561,6 +563,7 @@ def build_comparison_edit_table(
 
     if not comparisons or not selectors:
         raise ReportingError("request_invalid", "对比表至少需要一行比较事实与一列选择器。")
+    pointers = fact_pointer_index(bundle)
     types = {fact.comparison_type for fact in comparisons}
     metric_names = {metric.field_ref: _fact_label(metric, dataset_contexts, metric_descriptions)
                     for metric in bundle.metrics}
@@ -612,7 +615,7 @@ def build_comparison_edit_table(
                 valueSelector=selector,
                 factRefs=(FactRefV1(
                     analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
-                    jsonPointer=fact_pointer(bundle, fact.fact_id) or "",
+                    jsonPointer=pointers.get(fact.fact_id) or "",
                     factKind="comparison", factKey=fact.fact_id,
                 ),),
             ))
@@ -648,6 +651,7 @@ def build_group_edit_table(
 
     if not groups:
         raise ReportingError("request_invalid", "构成表至少需要一组维度分组。")
+    pointers = fact_pointer_index(bundle)
     ordered = sorted(groups, key=lambda item: -item.total)
     parent_label = _fact_label(parent, dataset_contexts, metric_descriptions)
     breakdown_label = ordered[0].breakdown_label or ordered[0].breakdown_field or "维度"
@@ -663,7 +667,7 @@ def build_group_edit_table(
     rows: list[list[str]] = []
     parent_ref = FactRefV1(
         analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
-        jsonPointer=fact_pointer(bundle, parent.fact_id) or "",
+        jsonPointer=pointers.get(parent.fact_id) or "",
         factKind="metric", factKey=parent.fact_id,
     )
 
@@ -683,7 +687,7 @@ def build_group_edit_table(
             rowKey=row_key, columnKey=value_column, valueSelector="total",
             factRefs=(FactRefV1(
                 analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
-                jsonPointer=fact_pointer(bundle, group.fact_id) or "",
+                jsonPointer=pointers.get(group.fact_id) or "",
                 factKind="metric", factKey=group.fact_id,
             ),),
         ))
@@ -746,6 +750,7 @@ def build_budget_edit_table(
     绑定两个事实。
     """
 
+    pointers = fact_pointer_index(bundle)
     facts = {fact.fact_id: fact for fact in (*bundle.metrics, *bundle.breakdowns)
              if fact.fact_id}
     rows: list[list[str]] = []
@@ -773,7 +778,7 @@ def build_budget_edit_table(
                 valueSelector="total",
                 factRefs=(FactRefV1(
                     analysisId=bundle.analysis_id, fileResourceId=fact_file_resource_id,
-                    jsonPointer=fact_pointer(bundle, fact.fact_id) or "",
+                    jsonPointer=pointers.get(fact.fact_id) or "",
                     factKind="metric", factKey=fact.fact_id,
                 ),),
             ))

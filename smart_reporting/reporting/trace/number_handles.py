@@ -33,14 +33,32 @@ _OPERAND_HANDLE = re.compile(r"(?<![\w-])[Nn](?P<number>\d+)(?![\w])")
 _NESTED_HANDLE = re.compile(r"(\{\{calc:[^{}]*?)\{\{\s*([Nn]\d+)(?:\s*[:：][^{}]*?)?\s*\}\}")
 
 
+def registered_number_identities(catalog: Iterable[str]) -> frozenset[tuple[str, str]]:
+    """把完整数值目录编译为可跨同一章节调用共享的不可变白名单。"""
+    return frozenset(
+        (match["fact"], match["selector"])
+        for token in catalog
+        if (match := _FULL_VALUE.fullmatch(token))
+    )
+
+
 class NumberHandles:
     """单次模型调用内的短编号表：提示边界编码，模型输出入口解码。"""
 
-    def __init__(self, catalog: Iterable[str] | None = None) -> None:
+    def __init__(
+        self,
+        catalog: Iterable[str] | None = None,
+        *,
+        registered_identities: frozenset[tuple[str, str]] | None = None,
+    ) -> None:
         # 给定数值目录时只为其中的引用身份分配编号；不给时（单元测试）为所有完整引用分配。
-        self._registered = None if catalog is None else {
-            (match["fact"], match["selector"]) for token in catalog if (match := _FULL_VALUE.fullmatch(token))
-        }
+        if catalog is not None and registered_identities is not None:
+            raise ValueError("catalog 与 registered_identities 不能同时提供")
+        self._registered = (
+            registered_identities
+            if registered_identities is not None
+            else None if catalog is None else registered_number_identities(catalog)
+        )
         self._identities: dict[str, tuple[str, str]] = {}
         self._handles: dict[tuple[str, str], str] = {}
         self._assertions: dict[str, str] = {}
@@ -136,4 +154,4 @@ def compact_catalog(catalog: Mapping[str, str]) -> dict[str, str]:
     return {key: "｜".join(dict.fromkeys(texts)) for key, texts in grouped.items()}
 
 
-__all__ = ["NumberHandles", "compact_catalog"]
+__all__ = ["NumberHandles", "compact_catalog", "registered_number_identities"]
