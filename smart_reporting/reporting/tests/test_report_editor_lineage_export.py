@@ -1091,9 +1091,13 @@ async def native_chart_cleanup():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-@pytest.mark.parametrize("fault", [None, "l2_plot_changed"])
-@pytest.mark.parametrize("scenario", ["single", "reedit", "paginated_reedit", "revision_reedit",
-    pytest.param("native_revision_reedit", marks=pytest.mark.integration)])
+@pytest.mark.parametrize("scenario,fault", [
+    (scenario, fault)
+    for scenario in ("single", "reedit", "paginated_reedit", "revision_reedit")
+    for fault in (None, "l2_plot_changed")
+] + [pytest.param("native_revision_reedit", fault, marks=pytest.mark.integration)
+     for fault in (None, "l2_plot_changed")]
+  + [("revision_grow", None), ("revision_single", None)])
 async def test_export_revision_registers_l2_chart_edit_plot_data(
     tmp_path: Path, fault: str | None, scenario: str, native_chart_cleanup,
 ) -> None:
@@ -1122,7 +1126,12 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     native = scenario == "native_revision_reedit"
     if native and fault is not None:
         pytest.skip("原故障契约已覆盖；此新增场景只核验真实CodeMode续改")
-    paginated = scenario in {"paginated_reedit", "revision_reedit", "native_revision_reedit"}
+    revision_scenarios = {"revision_reedit", "revision_grow", "revision_single", "native_revision_reedit"}
+    paginated = scenario in {"paginated_reedit", *revision_scenarios}
+    initial_page_size = 2 if scenario == "revision_grow" else 1
+    initial_page_count = (3 + initial_page_size - 1) // initial_page_size
+    target_page_size = {"revision_grow": 1, "revision_single": 3}.get(scenario, 2)
+    target_page_count = (3 + target_page_size - 1) // target_page_size
     fixture = await _make_editor_with_chart(tmp_path, template_ready=paginated)
     editor = fixture.editor
     workspace = fixture.workspace
@@ -1144,8 +1153,8 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
         plan_calls += 1
         if plan_calls > 1:
             standard = {"standardStyle": {"palette": "viridis"}} if paginated else None
-            if scenario == "revision_reedit" and plan_calls == 3:
-                standard["standardPagination"] = {"pageSize": 2}
+            if scenario in revision_scenarios and plan_calls == 3:
+                standard["standardPagination"] = {"pageSize": target_page_size}
             return ChartEditPlan(
                 level=["L1"], drawInstruction="保持全部数据，只调整颜色",
                 standard=standard,
@@ -1156,7 +1165,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
                 "visual_form": "barh",
                 "standard": ChartEditPlan.model_validate({
                     "level": ["L2"], "drawInstruction": "完整分页",
-                    "standard": {"standardValueFields": ["value"], "standardPagination": {"pageSize": 1},
+                    "standard": {"standardValueFields": ["value"], "standardPagination": {"pageSize": initial_page_size},
                                  **({"standardForm": "barh"} if native else {})},
                 }).standard,
             })
@@ -1242,7 +1251,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
             # 新一轮的独立快照不依赖旧改图目录继续存在。
             await workspace.adelete_file(thread_id, previous_record.plot_data_files[0].path)
         if paginated:
-            assert len(record.pages) == 3
+            assert len(record.pages) == initial_page_count
     await service.aclose()
     new_plot = record.plot_data_files[0]
     assert new_plot.path != fixture.plot_path
@@ -1365,7 +1374,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     payload = _json.loads(migrated)
     assert payload["source"]["dataPath"] == "metrics[0].periodValues"
     assert payload["rows"] == ([["2025-07", 1200.0], ["2025-08", 1500.0], ["2025-09", 1800.0]] if paginated else [["2025-09", 3600.0]])
-    if scenario not in {"revision_reedit", "native_revision_reedit"}:
+    if scenario not in revision_scenarios:
         return
 
     migrated_records = await load_chart_edit_records(workspace, thread_id, committed.markdown_path)
@@ -1373,7 +1382,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     baseline = migrated_records[0]
     assert baseline.edit_id == record.edit_id and baseline.data_origin == "original"
     assert baseline.standard_parameters == record.standard_parameters
-    assert len(baseline.pages) == 3
+    assert len(baseline.pages) == initial_page_count
     baseline_manifest = await editor.trace.load_manifest(committed)
     assert baseline_manifest is not None
     assert await editor._chart_edit_lineage(
@@ -1392,17 +1401,17 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
         service.runner = native_runner = ReportingCodeGenerationRunner(forbid_model, runtime, lsp, vision_reviewer=None)
         native_chart_cleanup.append((service, lsp, runtime))
     recovered = await service.edit_record(committed, baseline.edit_id)
-    assert len(recovered["pages"]) == 3
+    assert len(recovered["pages"]) == initial_page_count
     assert recovered["pages"][1]["imagePath"] == baseline.pages[1].image.path
     base = baseline.pages[1].image
     if native:
         started = await service.start_standard_edit(committed, session, "chart_001", ChartStandardEditRequest(
-            standard={"standardPagination": {"pageSize": 2}}, previousEditId=baseline.edit_id,
+            standard={"standardPagination": {"pageSize": target_page_size}}, previousEditId=baseline.edit_id,
             baseImagePath=base.path, expectedSha256=base.sha256,
         ))
     else:
         started = await service.start_edit(committed, session, "chart_001", ChartAIEditRequest(
-            instruction="保持全部数据，调整配色并改为每页两条", previousEditId=baseline.edit_id,
+            instruction=f"保持全部数据，调整配色并改为每页{target_page_size}条", previousEditId=baseline.edit_id,
             baseImagePath=base.path, expectedSha256=base.sha256,
         ))
     status = await _await_edit(service, committed, "chart_001", started["editId"])
@@ -1416,8 +1425,8 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     await service.aclose()
     current_records = await load_chart_edit_records(workspace, thread_id, committed.markdown_path)
     record = current_records[-1]
-    assert record.data_origin == "original" and len(record.pages) == 2
-    assert record.standard_parameters["standardPagination"]["pageSize"] == 2
+    assert record.data_origin == "original" and len(chart_edit_pages(record)) == target_page_count
+    assert record.standard_parameters["standardPagination"]["pageSize"] == target_page_size
     assert record.plot_data_files == baseline.plot_data_files
     pages = chart_edit_pages(record)
     edited_markdown = header + "Revenue 3600 [[claim:claim-1]]" + "".join(
@@ -1433,7 +1442,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     third_index = await editor.trace.load_index(third)
     third_manifest = await editor.trace.load_manifest(third)
     assert third_index is not None and third_manifest is not None
-    assert len(third_index.chart_traces) == len(third_manifest.charts) == 2
+    assert len(third_index.chart_traces) == len(third_manifest.charts) == target_page_count
     assert {trace.chart_id for trace in third_index.chart_traces} == {chart.chart_id for chart in third_manifest.charts}
     assert len(await load_chart_edit_records(workspace, thread_id, third.markdown_path)) == 1
 

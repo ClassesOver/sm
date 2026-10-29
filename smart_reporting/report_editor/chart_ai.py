@@ -1263,6 +1263,27 @@ class ChartAIEditService:
                     data_origin = previous.data_origin
                     effective_bindings = tuple(previous.data_bindings)
                     effective_dataset_ids = tuple(previous.chart.dataset_ids)
+            if previous is not None and not previous.pages and previous_standard:
+                # Older successful 1/1 pagination omitted the page group. Prove
+                # that these verified inputs still expand to one page before
+                # treating its trailing page number as host metadata.
+                suffix = "（第1/1页）"
+                if previous.chart.title.endswith(suffix) or previous.chart.alt_text.endswith(suffix):
+                    try:
+                        options = StandardChartEditParameters.model_validate(previous_standard)
+                        if getattr(options, "standard_pagination", None) is not None:
+                            historical, _ = standard_edit_plan(
+                                chart_id=chart_id, output_path=previous.image.path,
+                                title=previous.chart.title, alt_text=previous.chart.alt_text,
+                                visual_form=previous.chart.visual_form, standard=options,
+                                bindings=effective_bindings, plot_files=plot_files,
+                            )
+                            if len(historical.charts) == 1 and historical.charts[0].standard_pagination is None:
+                                previous_group_title = previous.chart.title.removesuffix(suffix)
+                                previous_group_alt = previous.chart.alt_text.removesuffix(suffix)
+                    except Exception as error:  # noqa: BLE001 - optional metadata recovery must not block editing
+                        logger.debug("report_editor_single_page_caption_restore_unavailable edit_id={} error={}",
+                                     previous.edit_id, type(error).__name__)
         # 直达复用已核验的前轮快照，不重新选事实，也不进入任何模型。
         job.set_stage("plan")
         if deterministic:
@@ -1547,7 +1568,11 @@ class ChartAIEditService:
         image_identity = await workspace.ahash_file(thread_id, output_path)
         script_identity = await workspace.ahash_file(thread_id, script_path)
         page_records = []
-        if len(standard_plan.charts) > 1:
+        expanded_pagination = (
+            effective_standard is not None and effective_standard.standard_pagination is not None
+            and all(page.standard_pagination is None for page in standard_plan.charts)
+        )
+        if len(standard_plan.charts) > 1 or expanded_pagination:
             for number, page in enumerate(standard_plan.charts, 1):
                 page_identity = await workspace.ahash_file(thread_id, page.source_path)
                 page_receipt = next((item for item in result.visual_inspection_receipts

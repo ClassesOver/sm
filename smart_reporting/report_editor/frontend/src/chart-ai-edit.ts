@@ -1,5 +1,6 @@
 import type { EditorView } from '@milkdown/kit/prose/view'
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model'
+import { closeHistory } from '@milkdown/kit/prose/history'
 import { buttonClasses } from './button'
 import { createModal } from './modal'
 import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
@@ -185,19 +186,37 @@ export function applyChartReplacement(
   if (!located) return false
   const { from, node, blockEnd } = located
   const { title, altText } = text
+  const captions: { target: CaptionTarget; references: ProseMirrorNode[]; replacement: string }[] = []
+  const seen = new Set<string>()
+  let cursor = blockEnd
+  for (let count = 0; count < 2; count++) {
+    const target = findChartCaptionParagraph(view.state.doc, cursor)
+    if (!target) break
+    const kind = target.prefix.startsWith('图表') ? '图表' : '图注'
+    if (seen.has(kind)) return false
+    seen.add(kind)
+    const value = kind === '图表' ? title : altText
+    if (value !== null) {
+      const references = captionReferenceNodes(view.state.doc.nodeAt(target.from)!)
+      if (references === null) return false
+      captions.push({ target, references, replacement: `${target.prefix}${value}` })
+    }
+    cursor = target.to
+  }
   const tr = view.state.tr
   if (node.type.name === 'image-block') {
     tr.setNodeMarkup(from, undefined, { ...node.attrs, src: imageSrc, caption: altText ?? node.attrs.caption })
   } else {
     tr.setNodeMarkup(from, undefined, { ...node.attrs, src: imageSrc, alt: altText ?? node.attrs.alt })
   }
-  const caption = findChartCaptionParagraph(view.state.doc, blockEnd)
-  const captionText = caption?.prefix.startsWith('图表') ? title : altText
-  if (caption && captionText !== null) {
-    // 只替换段落内文本，保留段落节点本身。
-    tr.insertText(`${caption.prefix}${captionText}`, caption.from + 1, caption.to - 1)
+  // 从后向前编辑，保留段落类型/属性及引用节点；首段变长不偏移第二段。
+  for (const { target, references, replacement } of captions.reverse()) {
+    if (references.length) {
+      tr.replaceWith(target.from + 1, target.to - 1, [view.state.schema.text(replacement), ...references])
+    } else tr.insertText(replacement, target.from + 1, target.to - 1)
   }
-  view.dispatch(tr)
+  if (!protocolMarkersUnchanged(view.state.doc.textContent, tr.doc.textContent)) return false
+  view.dispatch(closeHistory(tr))
   return true
 }
 
@@ -246,6 +265,43 @@ function citationOnlyContent(nodes: ProseMirrorNode[]): { nodes: ProseMirrorNode
     hasCitation = true
   }
   return flush() ? { nodes, hasCitation } : null
+}
+
+/** 图题/图注文字可以替换，已有引用的文字片段、marks 和已知 atom 原样保留。 */
+function captionReferenceNodes(caption: ProseMirrorNode): ProseMirrorNode[] | null {
+  const references: ProseMirrorNode[] = []
+  let pendingText = ''
+  let pendingStart = 0
+  let valid = true
+  const append = (nodes: ProseMirrorNode[]) => {
+    references.push(caption.type.schema.text(' '), ...nodes)
+  }
+  const flush = () => {
+    const markers = findProtocolMarkers(pendingText)
+    if (markers.some(marker => marker.kind !== 'citation')) return false
+    let remaining = pendingText
+    for (const marker of [...markers].reverse()) remaining = remaining.slice(0, marker.start) + remaining.slice(marker.end)
+    if (remaining.includes('[[') || remaining.includes(']]')) return false
+    for (const marker of markers) {
+      const nodes: ProseMirrorNode[] = []
+      caption.content.cut(pendingStart + marker.start, pendingStart + marker.end).forEach(node => nodes.push(node))
+      append(nodes)
+    }
+    pendingText = ''
+    return true
+  }
+  caption.forEach((node, offset) => {
+    if (!valid) return
+    if (node.isText) {
+      if (!pendingText) pendingStart = offset
+      pendingText += node.text ?? ''
+    } else {
+      const citation = citationOnlyContent([node])
+      if (!flush() || !citation?.hasCitation) valid = false
+      else append([node])
+    }
+  })
+  return valid && flush() ? references : null
 }
 
 /** 根级完整图组一次替换；拒绝缺页、重复、分散或夹杂其他正文的图组。 */
@@ -329,6 +385,9 @@ export function applyChartPagesReplacement(
       if (seenCaptions.has(matched[1]!)) return false
       seenCaptions.add(matched[1]!)
       if (page && matched[2] !== (matched[1] === '图表' ? page.title : page.altText)) return false
+      const references = captionReferenceNodes(caption)
+      if (references === null) return false
+      citations.push(...references)
       cursor++
     }
   }
@@ -346,7 +405,7 @@ export function applyChartPagesReplacement(
   if (!template.isInline && citations.length) nodes.push(paragraph.create(null, citations))
   const tr = view.state.tr.replaceWith(blocks[first]!.from, blocks[cursor - 1]!.to, nodes)
   if (!protocolMarkersUnchanged(doc.textContent, tr.doc.textContent)) return false
-  view.dispatch(tr)
+  view.dispatch(closeHistory(tr))
   return true
 }
 
