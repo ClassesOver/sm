@@ -4914,6 +4914,7 @@ class RuntimeAnalysisMixin:
                 raise ReportingError("stale_dataset", "确定性事实计算前 Dataset 身份已变化。")
             contents[handle.dataset_id] = content
         identities: dict[str, FileIdentity] = {}
+        parsed_inputs = BatchAnalysisInputCache()
         for analysis in detailed_plan.analyses:
             datasets = tuple(
                 (
@@ -4933,6 +4934,7 @@ class RuntimeAnalysisMixin:
                     profile_reconciliations=profile_reconciliations,
                     profile_dimensions=profile_dimensions,
                     profile_hash=profile.effective_profile_hash,
+                    _input_cache=parsed_inputs,
                 )
             )
             try:

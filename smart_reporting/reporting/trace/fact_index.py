@@ -323,6 +323,15 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
     )
 
 
+def fact_pointer_index(bundle: DeterministicAnalysisBundle) -> dict[str | None, str]:
+    """一次遍历冻结事实建立定位表，重复ID保持与 fact_pointer 相同的首次命中。"""
+    pointers: dict[str | None, str] = {}
+    for _, array, facts in bundle_fact_arrays(bundle):
+        for index, fact in enumerate(facts):
+            pointers.setdefault(fact.fact_id, f"/{array}/{index}")
+    return pointers
+
+
 def fact_pointer(bundle: DeterministicAnalysisBundle, fact_id: str) -> str | None:
     """factId → bundle 文件内的 JSON Pointer；未知 ID 返回 None。"""
 

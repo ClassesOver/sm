@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from io import BytesIO
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import polars as pl
 from pydantic import Field
@@ -264,6 +264,10 @@ def read_analysis_csv(content: bytes) -> pl.DataFrame:
     return pl.read_csv(BytesIO(content), infer_schema=False)
 
 
+class _AnalysisInputCache(Protocol):
+    def read(self, content: bytes) -> pl.DataFrame: ...
+
+
 def apply_metric_scope(frame: pl.DataFrame, scope: Mapping[str, str]) -> pl.DataFrame:
     """对已确认存在的范围字段精确过滤，不猜测缺失字段的语义。"""
     for column, expected in scope.items():
@@ -287,6 +291,7 @@ def build_deterministic_analysis_bundle(
     profile_reconciliations: tuple[Mapping[str, Any], ...] = (),
     profile_dimensions: tuple[Mapping[str, Any], ...] = (),
     profile_hash: str | None = None,
+    _input_cache: _AnalysisInputCache | None = None,
 ) -> DeterministicAnalysisBundle:
     """只计算由冻结 CSV、已确认语义和 Effective Profile 唯一确定的事实。"""
 
@@ -301,7 +306,7 @@ def build_deterministic_analysis_bundle(
     warnings: list[str] = [*analysis.limitations, *selection.warnings]
     for dataset_id, content, context, period_roles in datasets:
         try:
-            frame = read_analysis_csv(content)
+            frame = _input_cache.read(content) if _input_cache is not None else read_analysis_csv(content)
         except (UnicodeDecodeError, pl.exceptions.PolarsError):
             warnings.append(f"Dataset {dataset_id} 无法解析为 CSV，未生成确定性事实。")
             continue
