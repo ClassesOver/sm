@@ -2,7 +2,8 @@ import type { EditorView } from '@milkdown/kit/prose/view'
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model'
 import { buttonClasses } from './button'
 import { createModal } from './modal'
-import type { ChartAIEditSuccess, ReportEditorClient, TraceChartInfo } from './api'
+import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
+import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ReportEditorClient, type TraceChartInfo } from './api'
 
 /** 设计稿：docs/superpowers/specs/2026-10-25-report-editor-ai-chart-edit-design.md §3/§10。 */
 
@@ -51,6 +52,21 @@ export function quickCommandsForForm(visualForm?: string | null): string[] {
 }
 
 const MAX_INSTRUCTION_CHARS = 2000
+
+export const STANDARD_CHART_PRESETS = [
+  { id: 'dual', name: '双坐标轴', description: '适合金额与完成率等单位不同的系列。', instruction: '根据已登记系列改成双坐标轴，金额与完成率等不同单位分别使用左右轴，清楚标明单位；不新增或修改数值。' },
+  { id: 'dual-stack', name: '堆叠柱与右轴折线', description: '适合分项金额与独立比例同时展示。', instruction: '把已登记的可加分项画成左轴堆叠柱，正负分开累计；完成率等独立指标画右轴折线，分别标明单位，总额只包含左侧分项，不重复堆叠。' },
+  { id: 'vertical-break', name: '纵向断轴', description: '适合少数极大值挤压其余柱或折线。', instruction: '保留全部数据和原值，用上下两个线性区间展示纵向图，清楚画出断轴斜线并说明省略区间；不得静默隐藏数据点或将值压到边界。' },
+  { id: 'horizontal-break', name: '横向条形断轴', description: '适合类别较多且数值差距很大的横条。', instruction: '改成横向分组条形图，使用左右两个线性区间和清晰断轴标记；两段保持同一类别顺序、颜色、真实有符号柱长和零起点，说明省略区间。' },
+  { id: 'scatter', name: '数值散点', description: '需要两个已登记数值字段。', instruction: '使用两个合适的已登记数值字段绘制散点图，横纵坐标均使用真实数值及登记单位；若有分类字段按分类区分，不用类别序号代替数值。' },
+  { id: 'bubble', name: '比例气泡', description: '还需要一个非负数值字段表示面积。', instruction: '使用已登记的两个数值字段作为真实横纵坐标、一个非负数值字段表示气泡面积，面积严格正比于原值，零值不制造虚假气泡，并说明各字段及单位。' },
+  { id: 'heatmap', name: '分类热力图', description: '需要两个分类字段和一个数值字段。', instruction: '用两个已登记分类字段和一个数值字段绘制热力矩阵，保留真实行列含义，缺失单元与零值区分；不暗中聚合重复单元。' },
+  { id: 'waterfall', name: '增减瀑布图', description: '需要明确的起点、增减项和已登记小计或终点。', instruction: '将已登记的可加金额绘制为增减瀑布图，明确绝对值起点、小计或终点与有符号增减项；累计对账，不编造终点或改变贡献顺序。' },
+  { id: 'boxplot', name: '分布箱线图', description: '需要原始样本，或同口径的已登记分位数和须。', instruction: '绘制分组箱线图：有原始组内样本时按样本计算；只有已登记分位数和上下须时直接读取统计量，不把汇总均值当原始样本。真实样本量和异常点未知时明确说明。' },
+  { id: 'bands', name: '折线与范围带', description: '需要已登记的中心值、上下界和一致期间。', instruction: '将中心值画为折线，并使用同口径、同期间的已登记上下界绘制范围带，明确单位；缺失保持断带，不能自行估算置信区间。' },
+  { id: 'canvas', name: '画布与配色', description: '改善字号、留白、图例与重点标注的阅读效果。', instruction: '优化画布比例、字体、留白与配色，提高对比度；同一系列颜色保持一致，合理安排图例和重点标注，避免文字遮挡或超出画布，保留全部真实数值。' },
+  { id: 'pagination', name: '全部类别分页', description: '适合类别较多的柱图；完整页数须在图表预算内。', instruction: '将全部已登记类别按原顺序分页为清晰的柱图或横向条形图，所有页使用相同系列颜色、单位和值域，标明页号；不截取TopN、不丢末页，若预算不足请明确说明。' },
+] as const
 
 export function chartAiUnavailableReason(reason?: string): string {
   if (!reason) return UNAVAILABLE_REASONS.unavailable
@@ -125,6 +141,7 @@ const isImageNode = (node: ProseMirrorNode | null | undefined): node is ProseMir
 
 /** 图片节点位置；行内图片（与引用标记同段）的图注段落在所在段落之后。 */
 function locateImage(view: EditorView, img: HTMLImageElement) {
+  try {
   const doc = view.state.doc
   const pos = view.posAtDOM(img, 0)
   const direct = doc.nodeAt(pos)
@@ -137,6 +154,9 @@ function locateImage(view: EditorView, img: HTMLImageElement) {
   const from = resolved.before()
   const node = doc.nodeAt(from)
   return isImageNode(node) ? { from, node, blockEnd: from + node.nodeSize } : null
+  } catch {
+    return null
+  }
 }
 
 export interface ChartReplacementText {
@@ -174,6 +194,155 @@ export function applyChartReplacement(
   return true
 }
 
+/** 页列表必须完整，不能把损坏的多页响应降格为只接受首页。 */
+export function chartResultPages(result: ChartAIEditSuccess): ChartAIEditPage[] | null {
+  if (result.pages === undefined) return [{ pageNumber: 1, pageCount: 1, imagePath: result.imagePath,
+    imageSrc: result.imageSrc, title: result.changes.title ?? null, altText: result.changes.altText ?? null }]
+  const pages = result.pages
+  if (!Array.isArray(pages) || !pages.length || pages.length > 20 || pages.some((page, i) => page.pageNumber !== i + 1
+    || page.pageCount !== pages.length || !page.imagePath || !page.imageSrc
+    || page.imagePath.split('/').includes('..') || page.imageSrc.split('/').includes('..'))
+    || new Set(pages.map(page => page.imagePath)).size !== pages.length
+    || new Set(pages.map(page => page.imageSrc)).size !== pages.length
+    || pages[0]!.imagePath !== result.imagePath || pages[0]!.imageSrc !== result.imageSrc) return null
+  return pages
+}
+
+function imageMatchesPage(src: string, page: ChartAIEditPage, basePath: string): boolean {
+  const value = workspacePathFromSrc(src, basePath) ?? src
+  return value === page.imagePath || value === page.imageSrc
+}
+
+/** 只移动已有引用节点；完整协议文本之外的正文和未知 atom 不能被当作图组内容。 */
+function citationOnlyContent(nodes: ProseMirrorNode[]): { nodes: ProseMirrorNode[]; hasCitation: boolean } | null {
+  let pendingText = ''
+  let hasCitation = false
+  const flush = () => {
+    const markers = findProtocolMarkers(pendingText)
+    if (markers.some(marker => marker.kind !== 'citation')) return false
+    let remaining = pendingText
+    for (const marker of markers.reverse()) remaining = remaining.slice(0, marker.start) + remaining.slice(marker.end)
+    if (remaining.trim()) return false
+    hasCitation ||= markers.length > 0
+    pendingText = ''
+    return true
+  }
+  for (const node of nodes) {
+    if (node.isText) {
+      pendingText += node.text ?? ''
+      continue
+    }
+    if (!flush()) return null
+    const id = node.attrs.citationId ?? node.attrs.subjectId ?? node.attrs.id
+    if (!node.isInline || !node.isAtom || !node.isLeaf || !['citation', 'citation_marker', 'citation-marker'].includes(node.type.name)
+      || typeof id !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(id)) return null
+    hasCitation = true
+  }
+  return flush() ? { nodes, hasCitation } : null
+}
+
+/** 根级完整图组一次替换；拒绝缺页、重复、分散或夹杂其他正文的图组。 */
+export function applyChartPagesReplacement(
+  view: EditorView, img: HTMLImageElement, pages: ChartAIEditPage[],
+  options: { basePath: string; previousEditId?: string; previousPages?: ChartAIEditPage[]; expectedImageSrc?: string },
+): boolean {
+  const located = locateImage(view, img)
+  if (!located || options.expectedImageSrc !== undefined && located.node.attrs.src !== options.expectedImageSrc) return false
+  if (options.previousEditId && (options.previousPages?.length ?? 1) <= 1) {
+    let found = 0
+    view.state.doc.descendants?.((node) => {
+      if (isImageNode(node) && chartEditIdFromSrc(String(node.attrs.src), options.basePath) === options.previousEditId) found++
+    })
+    if (found > 1) return false
+  }
+  if (pages.length === 1 && (options.previousPages?.length ?? 1) === 1) {
+    return applyChartReplacement(view, img, pages[0]!.imageSrc, pages[0]!)
+  }
+  if (!pages.length) return false
+  const doc = view.state.doc
+  const blocks: { node: ProseMirrorNode; from: number; to: number; image?: ProseMirrorNode; imagePos?: number; citations: ProseMirrorNode[] }[] = []
+  doc.forEach((node, from) => {
+    let image: ProseMirrorNode | undefined
+    let imagePos: number | undefined
+    let citations: ProseMirrorNode[] = []
+    if (node.type.name === 'image' || node.type.name === 'image-block') {
+      image = node
+      imagePos = from
+    } else if (node.type.name === 'paragraph') {
+      const references: ProseMirrorNode[] = []
+      const referenceSegments: ProseMirrorNode[][] = [[]]
+      let imageCount = 0
+      node.forEach((child, offset) => {
+        if (isImageNode(child)) {
+          imageCount++
+          image = child
+          imagePos = from + 1 + offset
+          referenceSegments.push([])
+        } else {
+          references.push(child)
+          referenceSegments.at(-1)!.push(child)
+        }
+      })
+      if (imageCount !== 1 || referenceSegments.some(segment => !citationOnlyContent(segment))) {
+        image = undefined
+        imagePos = undefined
+      } else citations = references
+    }
+    blocks.push({ node, from, to: from + node.nodeSize, image, imagePos, citations })
+  })
+  let first = blocks.findIndex(block => block.imagePos === located.from)
+  if (first < 0) return false
+  const oldPages = options.previousPages
+  if (oldPages && oldPages.length > 1) {
+    if (!options.previousEditId) return false
+    const images: { node: ProseMirrorNode; from: number }[] = []
+    doc.descendants((node, from) => {
+      if (isImageNode(node) && chartEditIdFromSrc(String(node.attrs.src), options.basePath) === options.previousEditId) images.push({ node, from })
+    })
+    if (images.length !== oldPages.length || images.some((item, i) => !imageMatchesPage(String(item.node.attrs.src), oldPages[i]!, options.basePath))) return false
+    first = blocks.findIndex(block => block.imagePos === images[0]!.from)
+    if (first < 0) return false
+  }
+  const template = blocks[first]!.image
+  if (!template) return false
+  let cursor = first
+  const expected = oldPages && oldPages.length > 1 ? oldPages : [null]
+  const citations: ProseMirrorNode[] = []
+  for (const page of expected) {
+    const block = blocks[cursor]
+    if (!block?.image || page && !imageMatchesPage(String(block.image.attrs.src), page, options.basePath)) return false
+    citations.push(...block.citations)
+    cursor++
+    const seenCaptions = new Set<string>()
+    for (let n = 0; n < 2; n++) {
+      const caption = blocks[cursor]?.node
+      if (!caption?.isTextblock) break
+      const matched = /^(图表|图注)\s*[:：]\s*(.*)$/.exec(caption.textContent.trim())
+      if (!matched) break
+      if (seenCaptions.has(matched[1]!)) return false
+      seenCaptions.add(matched[1]!)
+      if (page && matched[2] !== (matched[1] === '图表' ? page.title : page.altText)) return false
+      cursor++
+    }
+  }
+  const paragraph = view.state.schema.nodes.paragraph
+  if (!paragraph) return false
+  const nodes: ProseMirrorNode[] = []
+  for (const [index, page] of pages.entries()) {
+    const attrs = { ...template.attrs, src: page.imageSrc,
+      ...(template.type.name === 'image-block' ? { caption: page.altText ?? '' } : { alt: page.altText ?? '' }) }
+    const image = template.type.create(attrs)
+    nodes.push(image.isInline ? paragraph.create(null, [image, ...(index === 0 ? citations : [])]) : image)
+    if (page.title) nodes.push(paragraph.create(null, view.state.schema.text(`图表：${page.title}`)))
+    if (page.altText && image.isInline) nodes.push(paragraph.create(null, view.state.schema.text(`图注：${page.altText}`)))
+  }
+  if (!template.isInline && citations.length) nodes.push(paragraph.create(null, citations))
+  const tr = view.state.tr.replaceWith(blocks[first]!.from, blocks[cursor - 1]!.to, nodes)
+  if (!protocolMarkersUnchanged(doc.textContent, tr.doc.textContent)) return false
+  view.dispatch(tr)
+  return true
+}
+
 export interface ChartAIEditHooks {
   /** 接受替换并写回正文后触发（自动保存由通用文档变更链路接管）。 */
   onReplaced?: (editId: string) => void
@@ -193,6 +362,10 @@ interface EditTarget {
   altText: string
   visualForm?: string | null
   previousEditId?: string
+  /** 正文中的原图组；继续预览未接受的结果时保持不变。 */
+  bodyEditId?: string
+  bodyPages?: ChartAIEditPage[]
+  bodyImageSrc?: string
 }
 
 export function createChartAIEdit(options: {
@@ -263,7 +436,12 @@ export function createChartAIEdit(options: {
     try {
       // 已接受过的改图：按登记找回所属图表，以该改图为底图继续调整。
       const editId = chartEditIdFromSrc(src, basePath)
-      const record = editId ? await client.chartEditRecord(editId) : null
+      let record: Awaited<ReturnType<typeof client.chartEditRecord>> | null = null
+      if (editId) {
+        try { record = await client.chartEditRecord(editId) } catch (error) {
+          if (!(error instanceof ReportEditorApiError && error.status === 404)) throw error
+        }
+      }
       const charts = record ? [] : (await client.charts()).charts ?? []
       const matched = record ? null : matchChartForImage(charts, src, basePath)
       const chart = record
@@ -279,11 +457,12 @@ export function createChartAIEdit(options: {
       return {
         img,
         chartId: chart.chartId,
-        imagePath: chart.imagePath,
+        imagePath: record?.pages?.find(page => imageMatchesPage(src, page, basePath))?.imagePath ?? chart.imagePath,
         title: baseTitleOf(img),
         altText,
         visualForm: matched?.visualForm ?? null,
-        ...(record ? { previousEditId: record.editId } : {}),
+        bodyImageSrc: locateImage(view, img)?.node.attrs.src as string | undefined,
+        ...(record ? { previousEditId: record.editId, bodyEditId: record.editId, bodyPages: record.pages } : {}),
       }
     } catch {
       return { error: '无法获取图表登记信息，请稍后重试。' }
@@ -291,6 +470,7 @@ export function createChartAIEdit(options: {
   }
 
   function renderInputPhase(current: EditTarget, note?: string) {
+    if (dismissed) return
     target = current
     const body = bodyOf()
     body.innerHTML = `
@@ -302,6 +482,14 @@ export function createChartAIEdit(options: {
         </div>
       </div>
       ${note ? `<p class="chart-ai-note" role="status"></p>` : ''}
+      <div class="chart-ai-standard">
+        <label class="chart-ai-label" for="chart-ai-standard-preset">标准图形与排版</label>
+        <div class="chart-ai-standard-controls">
+          <select id="chart-ai-standard-preset" aria-describedby="chart-ai-standard-help"><option value="">选择一种图形或调整方式</option></select>
+          <button type="button" class="${buttonClasses('secondary')}" data-action="apply-standard" disabled>填入改图要求</button>
+        </div>
+        <p id="chart-ai-standard-help" class="chart-ai-hint" aria-live="polite">选择后可补充字段、单位、颜色等要求；会先检查已登记数据是否满足条件。</p>
+      </div>
       <label class="chart-ai-label" for="chart-ai-instruction">改图要求</label>
       <textarea id="chart-ai-instruction" rows="3" maxlength="2000"
         placeholder="例如：改成横向柱状图并按金额降序，显示数值标签"></textarea>
@@ -315,6 +503,35 @@ export function createChartAIEdit(options: {
     body.querySelector<HTMLElement>('.chart-ai-chart-alt')!.textContent = `图注：${current.altText || '（无）'}`
     if (note) body.querySelector<HTMLElement>('.chart-ai-note')!.textContent = note
     const textarea = body.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+    const presets = body.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
+    const presetHelp = body.querySelector<HTMLElement>('#chart-ai-standard-help')!
+    const applyPreset = body.querySelector<HTMLButtonElement>('[data-action="apply-standard"]')!
+    for (const preset of STANDARD_CHART_PRESETS) {
+      const option = document.createElement('option')
+      option.value = preset.id
+      option.textContent = preset.name
+      presets.append(option)
+    }
+    presets.addEventListener('change', () => {
+      const preset = STANDARD_CHART_PRESETS.find(item => item.id === presets.value)
+      applyPreset.disabled = !preset
+      presetHelp.textContent = preset ? `${preset.description} 数据不满足时会说明原因，不补造数据。` : '选择后可补充字段、单位、颜色等要求；会先检查已登记数据是否满足条件。'
+    })
+    let appliedPreset = ''
+    applyPreset.addEventListener('click', () => {
+      const preset = STANDARD_CHART_PRESETS.find(item => item.id === presets.value)
+      if (!preset) return
+      const custom = appliedPreset ? textarea.value.replace(appliedPreset, '').replace(/^；|；$/g, '').trim() : textarea.value.trim()
+      const instruction = custom ? `${custom}；${preset.instruction}` : preset.instruction
+      if (instruction.length > MAX_INSTRUCTION_CHARS) {
+        presetHelp.textContent = '改图要求合计不能超过2000字，请缩短补充要求后再填入。'
+        textarea.focus()
+        return
+      }
+      textarea.value = instruction
+      appliedPreset = preset.instruction
+      textarea.focus()
+    })
     const quick = body.querySelector<HTMLElement>('.chart-ai-quick')!
     for (const command of quickCommandsForForm(current.visualForm)) {
       const chip = document.createElement('button')
@@ -475,11 +692,17 @@ export function createChartAIEdit(options: {
   }
 
   function renderReviewPhase(current: EditTarget, result: ChartAIEditSuccess, instruction: string) {
+    const pages = chartResultPages(result)
+    if (!pages) {
+      renderInputPhase(current, '分页结果不完整，未替换正文。请重新生成或联系管理员。')
+      return
+    }
     const body = bodyOf()
     const changes: string[] = []
     if (result.changes.title) changes.push(`标题改为「${result.changes.title}」`)
     if (result.changes.altText) changes.push(`图注改为「${result.changes.altText}」`)
     if (result.changes.visualForm) changes.push(`图形改为「${result.changes.visualForm}」`)
+    if (pages.length > 1) changes.push(`完整生成 ${pages.length} 页，接受时将一次替换整组图表。`)
     if (result.changes.plotDataUnchanged) {
       changes.push('作图数据未变（数值与原图一致）')
     } else {
@@ -496,10 +719,7 @@ export function createChartAIEdit(options: {
           <figcaption>原图</figcaption>
           <img alt="改图前的原图" src="${assetUrl(basePath, current.imagePath)}">
         </figure>
-        <figure class="chart-ai-compare-item">
-          <figcaption>新图（AI 改图结果）</figcaption>
-          <img alt="AI 改图生成的新图" src="${assetUrl(basePath, result.imagePath)}">
-        </figure>
+        <div class="chart-ai-pages" aria-label="全部改图结果"></div>
       </div>
       <ul class="chart-ai-changes" aria-label="变更清单"></ul>
       ${result.warnings.length ? '<ul class="chart-ai-warnings" role="alert" aria-label="软告警"></ul>' : ''}
@@ -511,6 +731,18 @@ export function createChartAIEdit(options: {
       </div>
       <p class="chart-ai-hint">接受后正文图片与图注一并替换，可用撤销（⌘/Ctrl+Z）恢复原图；导出新版本后改图与原图一样可追溯。</p>
     `
+    const pageList = body.querySelector<HTMLElement>('.chart-ai-pages')!
+    for (const page of pages) {
+      const figure = document.createElement('figure')
+      figure.className = 'chart-ai-compare-item'
+      const caption = document.createElement('figcaption')
+      caption.textContent = pages.length > 1 ? `新图 · 第 ${page.pageNumber}/${page.pageCount} 页` : '新图（AI 改图结果）'
+      const image = document.createElement('img')
+      image.alt = page.altText || `AI 改图生成的新图${pages.length > 1 ? `第${page.pageNumber}页` : ''}`
+      image.src = assetUrl(basePath, page.imagePath)
+      figure.append(caption, image)
+      pageList.append(figure)
+    }
     const changeList = body.querySelector<HTMLElement>('.chart-ai-changes')!
     for (const change of changes) {
       const item = document.createElement('li')
@@ -530,13 +762,12 @@ export function createChartAIEdit(options: {
       skipped.append(entry)
     }
     body.querySelector<HTMLButtonElement>('[data-action="accept"]')!.addEventListener('click', () => {
-      const replaced = applyChartReplacement(view, current.img, result.imageSrc, {
-        title: result.changes.title ?? null,
-        altText: result.changes.altText ?? null,
+      const replaced = applyChartPagesReplacement(view, current.img, pages, {
+        basePath, previousEditId: current.bodyEditId, previousPages: current.bodyPages, expectedImageSrc: current.bodyImageSrc,
       })
       if (!replaced) {
         hooks?.onError?.('report_editor_chart_ai_target_missing')
-        renderInputPhase(current, '未能在正文中定位这张图（页面可能已变化），请重新打开后重试。')
+        renderInputPhase(current, '未能完整定位正文图表组（可能缺页、分散或包含其他正文），尚未替换。请刷新并从完整图组重新打开。')
         return
       }
       hooks?.onReplaced?.(result.editId)
@@ -590,6 +821,8 @@ export function createChartAIEdit(options: {
       })
     },
     dispose() {
+      dismissed = true
+      cancelled = true
       modal?.remove()
       modal = null
     },

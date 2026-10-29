@@ -45,7 +45,10 @@ def test_visualization_plan_accepts_bound_chart_metadata_and_warnings() -> None:
     assert VisualizationPlanDraft.__name__ == "VisualizationPlanDraft"
     plan = VisualizationPlanDraft(charts=(_chart(),), warnings=("数据仅供参考",))
 
-    assert plan.charts[0].model_dump(mode="json", by_alias=True) == {
+    serialized = plan.charts[0].model_dump(mode="json", by_alias=True)
+    assert serialized['standardEncoding'] is None
+    assert serialized['standardBands'] == []
+    assert {key: value for key, value in serialized.items() if not key.startswith('standard')} == {
         "chartId": "chart_001",
         "sourcePath": "report/charts/chart-001.png",
         "renderer": "matplotlib",

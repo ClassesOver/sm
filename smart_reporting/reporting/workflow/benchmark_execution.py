@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ..agent import create_reporting_generator_agent
+from ..instructions import REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS
 from ..models import ReportingError
 from .benchmark_variants import (
     BenchmarkPlannerSpec,
@@ -47,6 +48,7 @@ def build_benchmark_planner_agent(
     task_kind: str,
     variant: BenchmarkVariant,
     planner_request: Mapping[str, Any] | None = None,
+    standard_visualization: bool = False,
 ) -> tuple[BenchmarkPlannerSpec, Any]:
     """在首个 provider 请求前选择冻结 benchmark 的 schema 和指令。"""
 
@@ -83,7 +85,9 @@ def build_benchmark_planner_agent(
         model=model,
         output_schema=spec.output_schema,
         name=f"benchmark-{task_kind}-{variant.value}-planner",
-        stage_instructions=spec.instructions,
+        stage_instructions=(*spec.instructions, *REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
+        if standard_visualization and task_kind == 'visualization' and variant is BenchmarkVariant.CANDIDATE
+        else spec.instructions,
     )
     return spec, agent
 

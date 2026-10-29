@@ -160,7 +160,17 @@ def _table_for_binding(
             if not all(_is_scalar(cell) for cell in row):
                 raise ChartInputError("行对象字段必须是标量")
             rows.append(row)
-        return fields, rows, None
+        column_meta = None
+        # periodValues.value inherits the exact signed metric unit, never a name/title guess.
+        if (len(tokens) == 3 and tokens[0] == 'metrics' and isinstance(tokens[1], int)
+                and tokens[2] == 'periodValues' and 'value' in fields):
+            metric = _navigate(document, tokens[:-1])
+            unit = metric.get('unit')
+            if isinstance(unit, str) and unit.strip():
+                column_meta = {'value': {'unit': unit}}
+                if isinstance(metric.get('isPercent'), bool):
+                    column_meta['value']['isPercent'] = metric['isPercent']
+        return fields, rows, column_meta
     if isinstance(value, Mapping):
         missing = [name for name in fields if name not in value]
         nested = [name for name in fields if name in value and not _is_scalar(value[name])]
