@@ -414,7 +414,7 @@ export interface TraceValidation {
     copiedCells?: { rowLabel: string; columnKey: string | null; text: string; matches: { rowKey: string; columnKey: string; factKey: string | null }[] }[]
   }[]
   tableSummary?: { valid: number; stale: number; unbound: number; insertedRows: number; copiedCells: number }
-  charts?: { chartId: string; imagePath: string | null; status: 'valid' | 'stale' | 'unbound'; semanticCheck?: { status: 'verified' | 'unknown' | 'conflicting'; scope: 'registered_fact_projection'; reasons: string[] }; locationSource?: string | null; dataCheck?: { status: 'verified' | 'unknown'; scope: 'registered_arrays'; reason: string } }[]
+  charts?: { chartId: string; editId?: string; imagePath: string | null; status: 'valid' | 'stale' | 'unbound'; semanticCheck?: { status: 'verified' | 'unknown' | 'conflicting'; scope: 'registered_fact_projection'; reasons: string[] }; locationSource?: string | null; dataCheck?: { status: 'verified' | 'unknown'; scope: 'registered_arrays'; reason: string } }[]
 }
 
 /** 正文数值与表格单元格共用的冻结数值视图：登记值、单位、期间、口径或可验算算式、取得方式与来源数据集。 */
@@ -667,12 +667,13 @@ export class ReportEditorClient {
 
   async chartSource(
     chartId: string,
-    options: { limit?: number; offset?: number } = {},
+    options: { limit?: number; offset?: number; editId?: string } = {},
     signal?: AbortSignal,
   ): Promise<TraceChartSource> {
     const params = new URLSearchParams()
     if (options.limit) params.set('limit', String(options.limit))
     if (options.offset) params.set('offset', String(options.offset))
+    if (options.editId) params.set('edit_id', options.editId)
     const query = params.toString()
     return this.request<TraceChartSource>(
       `/api/charts/${encodeURIComponent(chartId)}/source${query ? `?${query}` : ''}`,

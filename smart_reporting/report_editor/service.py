@@ -695,6 +695,7 @@ class ReportEditorService:
         self.trace = ReportEditorTraceService(
             workspace,
             cursor_secret=trace_cursor_secret or secrets.token_bytes(32),
+            chart_edit_lineage=self._chart_edit_lineage,
         )
         cast(Any, self.trace.exports).source_guard = self._derived_source_guard
 
@@ -1579,6 +1580,7 @@ class ReportEditorService:
         *,
         preview_limit: int = 20,
         preview_offset: int = 0,
+        edit_id: str | None = None,
     ) -> dict[str, Any]:
         self._require_lineage_feature("panel")
         context = await self._source_context(expected)
@@ -1588,6 +1590,7 @@ class ReportEditorService:
             session_capabilities=session.capabilities,
             preview_limit=preview_limit,
             preview_offset=preview_offset,
+            edit_id=edit_id,
         )
 
     @source_lifecycle
@@ -2685,6 +2688,7 @@ class ReportEditorService:
         markdown_path: str,
         manifest: Any,
         index: RevisionTraceIndexV1,
+        draft: bool = False,
     ) -> tuple[dict[str, ChartArtifact], RevisionTraceIndexV1 | None]:
         """把草稿正文引用的 AI 改图登记转换为导出追溯数据。
 
@@ -2703,7 +2707,13 @@ class ReportEditorService:
         )
         if not records:
             return {}, None
-        charts_by_id = {item.chart_id: item for item in manifest.charts}
+        from .chart_ai import _chart_artifact_for_trace
+
+        # 发布编号与分析项来源编号可能不同；与改图启动保持同一文件身份匹配规则。
+        charts_by_id = {
+            trace.chart_id: chart for trace in index.chart_traces
+            if (chart := _chart_artifact_for_trace(manifest, index, trace)) is not None
+        }
         # 已随正式版本迁移的连续编辑记录只恢复参数与页组；其图片和输入
         # 已由 manifest/index 登记，不能再次当作待发布的新改图覆盖自己。
         baseline_records = [record for record in records if all(
@@ -2728,13 +2738,23 @@ class ReportEditorService:
             for record, _page_chart_id in page_records
             if record.chart_id in traces_by_chart
         }
+        registered_datasets = {chart.path: chart.dataset_ids for chart in manifest.charts} | edited_registered
+        binding_markdown = markdown
+        if draft:
+            from ..reporting.trace.chart_subjects import chart_presentations
+
+            # 草稿允许未登记说明图；只隔离其来源绑定，不跳过登记图的整组/身份核验。
+            # 仍保留原图、新图及各页的出现关系，图题指纹仍用完整正文计算。
+            parent = PurePosixPath(markdown_path).parent
+            binding_markdown = '\n\n'.join(
+                f'![登记图]({path})' for path in chart_presentations(markdown)
+                if (parent / path).as_posix() in registered_datasets
+            )
         bindings = _markdown_image_bindings(
-            markdown,
+            binding_markdown,
             markdown_path,
             {citation.citation_id: citation.dataset_id for citation in manifest.citations},
-            registered_datasets={
-                chart.path: chart.dataset_ids for chart in manifest.charts
-            } | edited_registered,
+            registered_datasets=registered_datasets,
         )
         referenced = set(bindings)
         page_positions = {

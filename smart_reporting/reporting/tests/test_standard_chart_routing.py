@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -7,13 +8,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from smart_reporting.reporting.code_agent.context import ReportingCodingTaskContext
-from smart_reporting.reporting.code_agent.toolkit import validate_script_source
+from smart_reporting.reporting.code_agent.toolkit import _collect_preflight, validate_script_source
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.runtime.chart_inputs import (
     ChartInputFile,
     ChartInputMaterialization,
 )
 from smart_reporting.reporting.workflow.runtime.standard_chart_routing import (
+    _composite_source,
     run_standard_chart_routes,
 )
 from smart_reporting.reporting.workflow.runtime.standard_visualization import (
@@ -30,6 +32,20 @@ class Plan:
 
     def model_dump(self, **kwargs):
         return {"charts": [vars(chart) for chart in self.charts]}
+
+
+def test_composite_never_accepts_stale_output_from_a_component_that_did_not_draw(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    raw = b"pass\n"
+    Path("component.py").write_bytes(raw)
+    Path("chart.png").write_bytes(b"stale image")
+    source = _composite_source(
+        [("component.py", hashlib.sha256(raw).hexdigest())],
+        ChartInputMaterialization(), [], ("chart.png",),
+    )
+    with pytest.raises(ValueError, match="chart component output missing"):
+        exec(source, {})
+    assert not Path("chart.png").exists()
 
 
 def setup(tmp_path, forms):
@@ -108,6 +124,8 @@ async def test_mixed_routes_keep_good_charts_standard_and_sign_final_execution(
 
     async def execute(ctx, source):
         validate_script_source(ctx, source)
+        violations = _collect_preflight(ast.parse(source), source, "write_script", ctx)
+        assert not violations, [(item.code, item.details) for item in violations]
         Path(ctx.script_path).write_text(source)
         exec(source, {})
         identity = SimpleNamespace(

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Schema } from '@milkdown/kit/prose/model'
 import { EditorState, type Transaction } from '@milkdown/kit/prose/state'
+import { EditorView } from '@milkdown/kit/prose/view'
+import { history, undo } from '@milkdown/kit/prose/history'
 
 import type { ReportEditorClient, TraceChartInfo } from './api'
 import {
@@ -25,8 +27,8 @@ const chart: TraceChartInfo = {
 }
 
 const replacementSchema = new Schema({ nodes: {
-  doc: { content: 'block+' }, paragraph: { content: 'inline*', group: 'block' },
-  'image-block': { group: 'block', atom: true, attrs: { src: {}, caption: { default: '' } } },
+  doc: { content: 'block+' }, paragraph: { content: 'inline*', group: 'block', toDOM: () => ['p', 0] },
+  'image-block': { group: 'block', atom: true, attrs: { src: {}, caption: { default: '' } }, toDOM: node => ['img', { src: node.attrs.src, alt: node.attrs.caption }] },
   image: { group: 'inline', inline: true, atom: true, attrs: { src: {}, alt: { default: '' } } },
   text: { group: 'inline' },
 } })
@@ -186,6 +188,50 @@ describe('createChartAIEdit', () => {
     document.body.innerHTML = ''
   })
 
+  it.each([false, true])('采用后可继续修改当前新图，撤销后拒绝旧回执定位（撤销=%s）', async (reverted) => {
+    const client = fakeClient({
+      chartAiEditStatus: vi.fn(async () => ({
+        editId: 'cedit-prev1234', chartId: 'chart_001', status: 'succeeded',
+        imagePath: 'reports/revision-1/chart-edits/cedit-prev1234/chart.png', imageSrc: 'chart-edits/cedit-prev1234/chart.png',
+        changes: { title: '收入', altText: '新图', plotDataUnchanged: true }, warnings: [], skipped: [],
+        visualInspection: { format: 'PNG', width: 64, height: 48, reviewed: true },
+      })),
+    })
+    const host = document.createElement('div'); document.body.append(host)
+    const view = new EditorView(host, { state: EditorState.create({
+      doc: replacementSchema.node('doc', null, replacementSchema.node('image-block', { src: 'chart-001.png' })), plugins: [history()],
+    }) })
+    const controller = createChartAIEdit({ view, client, basePath: '/b', pollIntervalMs: 1 })
+    controller.open(view.dom.querySelector('img')!)
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+    const input = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+    input.value = '改配色'; input.dispatchEvent(new Event('input'))
+    document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
+    expect(document.querySelector('[data-action="accept"]')?.textContent).toBe('采用到正文')
+    document.querySelector<HTMLButtonElement>('[data-action="accept"]')!.click()
+    expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.hidden).toBe(false)
+    const receipt = document.querySelector<HTMLElement>('.ask-ai-receipt')!
+    expect(receipt).not.toBeNull()
+    expect(view.state.doc.firstChild?.attrs.src).toContain('cedit-prev1234')
+    if (reverted) {
+      undo(view.state, view.dispatch)
+      receipt.querySelector<HTMLButtonElement>('[data-action="continue-editing"]')!.click()
+      expect(receipt.textContent).toContain('已变化或无法唯一定位')
+      expect(view.state.doc.firstChild?.attrs.src).toBe('chart-001.png')
+      expect(document.querySelector('#chart-ai-instruction')).toBeNull()
+    } else {
+      view.updateState(view.state.reconfigure({ plugins: [history()] }))
+      receipt.querySelector<HTMLButtonElement>('[data-action="continue-editing"]')!.click()
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+      const next = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+      next.value = '加标签'; next.dispatchEvent(new Event('input'))
+      document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
+      await vi.waitFor(() => expect(client.startChartAiEdit).toHaveBeenLastCalledWith('chart_001', expect.objectContaining({ previousEditId: 'cedit-prev1234' })))
+    }
+    controller.dispose(); view.destroy()
+  })
+
   it('输入阶段展示当前图与快捷指令', async () => {
     const client = fakeClient()
     const controller = createChartAIEdit({
@@ -199,6 +245,8 @@ describe('createChartAIEdit', () => {
       expect(document.querySelector('#chart-ai-instruction')).not.toBeNull()
     })
     expect(document.querySelectorAll('.chart-ai-chip').length).toBeGreaterThan(0)
+    expect(document.querySelector('.ask-ai-composers #chart-ai-instruction')).not.toBeNull()
+    expect(document.querySelector('.ask-ai-content textarea')).toBeNull()
     expect(document.querySelector('.chart-ai-current img')!.getAttribute('src')).toContain(
       'asset/reports/revision-1/chart-001.png',
     )
@@ -241,6 +289,13 @@ describe('createChartAIEdit', () => {
           warnings: ['视觉审查提示：图例遮挡'],
           skipped: [],
           visualInspection: { format: 'PNG', width: 64, height: 48, reviewed: true },
+        })
+        .mockResolvedValueOnce({
+          editId: 'cedit-abc12345', chartId: 'chart_001', status: 'succeeded',
+          imagePath: 'reports/revision-1/chart-edits/cedit-abc12345/chart.png',
+          imageSrc: 'chart-edits/cedit-abc12345/chart.png',
+          changes: { plotDataUnchanged: true }, warnings: [], skipped: [],
+          visualInspection: { format: 'PNG', width: 64, height: 48, reviewed: true },
         }),
     })
     const onReplaced = vi.fn()
@@ -258,6 +313,7 @@ describe('createChartAIEdit', () => {
     })
     const textarea = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
     textarea.value = '改成横向条形图并按金额降序'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => {
       expect(document.querySelector('.chart-ai-compare')).not.toBeNull()
@@ -271,9 +327,35 @@ describe('createChartAIEdit', () => {
     expect(compareImages).toHaveLength(2)
     expect(compareImages[1]!.getAttribute('src')).toContain('chart-edits/cedit-abc12345/chart.png')
     expect(document.querySelector('.chart-ai-warnings')!.textContent).toContain('图例遮挡')
+    const original = document.querySelector<HTMLElement>('[data-compare-view="original"]')!
+    const generated = document.querySelector<HTMLElement>('.chart-ai-pages')!
+    expect(original).not.toBeNull()
+    expect(original.hidden).toBe(true)
+    expect(generated.hidden).toBe(false)
+    document.querySelector<HTMLButtonElement>('[data-action="view-original"]')!.click()
+    expect(original.hidden).toBe(false)
+    expect(generated.hidden).toBe(true)
+    expect(document.querySelector('.chart-ai-warnings')!.textContent).toContain('图例遮挡')
+    document.querySelector<HTMLButtonElement>('[data-action="view-new"]')!.click()
+    expect(generated.hidden).toBe(false)
+    const followUp = document.querySelector<HTMLTextAreaElement>('.ask-ai-composers textarea')!
+    expect(followUp).not.toBeNull()
+    followUp.value = '图例移到底部'; followUp.dispatchEvent(new Event('input'))
+    document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
+    await vi.waitFor(() => expect(client.startChartAiEdit).toHaveBeenCalledWith('chart_001', expect.objectContaining({
+      instruction: '图例移到底部', previousEditId: 'cedit-abc12345',
+    })))
+    await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
     ;(document.querySelector('[data-action="accept"]') as HTMLButtonElement).click()
     expect(view.dispatch).toHaveBeenCalledTimes(1)
     expect(onReplaced).toHaveBeenCalledWith('cedit-abc12345')
+    const receipt = document.querySelector<HTMLElement>('.ask-ai-receipt')
+    expect(receipt).not.toBeNull()
+    expect(receipt!.textContent).toContain('已替换到正文')
+    expect(receipt!.textContent).toContain('撤销')
+    expect(receipt!.textContent).not.toContain('已保存')
+    expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.hidden).toBe(false)
+    expect(document.querySelector('[data-action="accept"]')).toBeNull()
     controller.dispose()
   })
 
@@ -296,11 +378,13 @@ describe('createChartAIEdit', () => {
     })
     const textarea = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
     textarea.value = '加预测'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => {
       expect(document.querySelector('.chart-ai-note')).not.toBeNull()
     })
     expect(document.querySelector('.chart-ai-note')!.textContent).toContain('预测数据未登记')
+    expect(document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value).toBe('加预测')
     controller.dispose()
   })
 
@@ -315,6 +399,7 @@ describe('createChartAIEdit', () => {
     expect(client.chartEditRecord).toHaveBeenCalledWith('cedit-prev1234')
     expect(client.charts).not.toHaveBeenCalled()
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '再加数值标签'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => {
       expect(client.startChartAiEdit).toHaveBeenCalledWith('chart_001', expect.objectContaining({
@@ -325,31 +410,136 @@ describe('createChartAIEdit', () => {
     controller.dispose()
   })
 
-  it('关闭窗口后不再被后台结果重新打开；编号返回前取消也会通知服务端', async () => {
+  it('收起后任务继续，重新打开同一张图恢复结果而不重复提交', async () => {
     let releaseStart: (value: { editId: string; status: string }) => void = () => undefined
     const client = fakeClient({
       startChartAiEdit: vi.fn(() => new Promise((resolve) => { releaseStart = resolve })),
-      chartAiEditStatus: vi.fn(async () => ({ editId: 'cedit-abc12345', chartId: 'chart_001', status: 'cancelled' })),
+      chartAiEditStatus: vi.fn(async () => ({
+        editId: 'cedit-abc12345', chartId: 'chart_001', status: 'succeeded',
+        imagePath: 'chart-edits/cedit-abc12345/chart.png', imageSrc: 'chart-edits/cedit-abc12345/chart.png',
+        changes: { title: null, altText: null, visualForm: '折线图', plotDataUnchanged: true },
+        warnings: [], skipped: [], visualInspection: { reviewed: true, format: 'PNG', width: 64, height: 48 },
+      })),
     })
     const controller = createChartAIEdit({ view: fakeViewForController(), client, basePath: '/b', pollIntervalMs: 1 })
-    controller.open(mountEditorWithImage())
+    const image = mountEditorWithImage()
+    controller.open(image)
     await vi.waitFor(() => {
       expect(document.querySelector('#chart-ai-instruction')).not.toBeNull()
     })
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '改成折线图'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => {
       expect(document.querySelector('[data-action="cancel"]')).not.toBeNull()
     })
-    const overlay = document.querySelector<HTMLElement>('.chart-ai-edit')!
     ;(document.querySelector('.chart-ai-edit-close') as HTMLButtonElement).click()
     releaseStart({ editId: 'cedit-abc12345', status: 'queued' })
     await vi.waitFor(() => {
-      expect(client.cancelChartAiEdit).toHaveBeenCalledWith('chart_001', 'cedit-abc12345')
+      expect(document.querySelector('.chart-ai-compare')).not.toBeNull()
     })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(overlay.hidden || !overlay.isConnected || !overlay.classList.contains('is-open')).toBe(true)
+    expect(client.cancelChartAiEdit).not.toHaveBeenCalled()
+    expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.hidden).toBe(true)
     expect(document.activeElement?.id).not.toBe('chart-ai-instruction')
+    controller.open(image)
+    expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.hidden).toBe(false)
+    expect(document.querySelector('[data-action="accept"]')).not.toBeNull()
+    expect(client.startChartAiEdit).toHaveBeenCalledTimes(1)
+    controller.dispose()
+  })
+
+  it('空输入不提交，Ctrl+Enter 提交已输入的要求', async () => {
+    const client = fakeClient({ chartAiEditStatus: vi.fn(async () => ({ status: 'failed', error: { message: '稍后重试' } })) })
+    const controller = createChartAIEdit({ view: fakeViewForController(), client, basePath: '/b', pollIntervalMs: 1 })
+    controller.open(mountEditorWithImage())
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+    const area = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+    expect(document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.disabled).toBe(true)
+    area.value = '显示数值标签'
+    area.dispatchEvent(new Event('input', { bubbles: true }))
+    area.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(client.startChartAiEdit).toHaveBeenCalledWith('chart_001', expect.objectContaining({ instruction: '显示数值标签' })))
+    controller.dispose()
+  })
+
+  it('多个图表会话字段身份唯一，切换后分别保留输入', async () => {
+    const image = mountEditorWithImage()
+    const secondImage = document.createElement('img'); secondImage.src = image.src; document.querySelector('#editor')!.append(secondImage)
+    const first = createChartAIEdit({ view: fakeViewForController(), client: fakeClient(), basePath: '/b', pollIntervalMs: 1 })
+    const second = createChartAIEdit({ view: fakeViewForController(), client: fakeClient(), basePath: '/b', pollIntervalMs: 1 })
+    first.open(image)
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+    document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '第一张图要求'
+    document.querySelector('#chart-ai-instruction')!.dispatchEvent(new Event('input'))
+    second.open(secondImage)
+    await vi.waitFor(() => expect(document.querySelectorAll('.ask-ai-composers textarea')).toHaveLength(2))
+    const fields = [...document.querySelectorAll<HTMLTextAreaElement>('.ask-ai-composers textarea')]
+    expect(new Set(fields.map(field => field.id)).size).toBe(2)
+    fields[1].value = '第二张图要求'
+    fields[1].dispatchEvent(new Event('input'))
+    first.open(image)
+    expect(fields[0].value).toBe('第一张图要求')
+    expect(fields[1].value).toBe('第二张图要求')
+    expect(document.querySelectorAll('.ask-ai-panel')).toHaveLength(1)
+    first.dispose(); second.dispose()
+  })
+
+  it('后台失败不打断用户在正文之外的输入', async () => {
+    let complete: (value: unknown) => void = () => undefined
+    const client = fakeClient({ chartAiEditStatus: vi.fn(() => new Promise(resolve => { complete = resolve })) })
+    const controller = createChartAIEdit({ view: fakeViewForController(), client, basePath: '/b', pollIntervalMs: 1 })
+    controller.open(mountEditorWithImage())
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+    const area = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+    area.value = '优化配色'; area.dispatchEvent(new Event('input'))
+    document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
+    await vi.waitFor(() => expect(client.chartAiEditStatus).toHaveBeenCalled())
+    const search = document.createElement('input'); document.body.append(search); search.focus()
+    complete({ status: 'failed', error: { message: '暂时失败' } })
+    await vi.waitFor(() => expect(document.querySelector('.chart-ai-note')).not.toBeNull())
+    expect(document.activeElement).toBe(search)
+    controller.dispose()
+  })
+
+  it.each(['登记读取', '审阅结果', '通知恢复', '通知恢复有重复资源'])('%s期间同一图片DOM重建后，安全定位当前图片', async phase => {
+    let ready: (value: unknown) => void = () => undefined
+    const client = fakeClient({
+      charts: vi.fn(() => new Promise(resolve => { ready = resolve })),
+      chartAiEditStatus: vi.fn(async () => ({
+        editId: 'cedit-abc12345', chartId: 'chart_001', status: 'succeeded',
+        imagePath: 'chart-edits/cedit-abc12345/chart.png', imageSrc: 'chart-edits/cedit-abc12345/chart.png',
+        changes: { title: null, altText: null, visualForm: null, plotDataUnchanged: true },
+        warnings: [], skipped: [], visualInspection: { reviewed: true, format: 'PNG', width: 64, height: 48 },
+      })),
+    })
+    const view = fakeViewForController()
+    view.posAtDOM = node => { if (!node.isConnected) throw new RangeError('detached'); return 0 }
+    const controller = createChartAIEdit({ view, client, basePath: '/b', pollIntervalMs: 1 })
+    const old = mountEditorWithImage()
+    Object.assign(view, { dom: old.parentElement })
+    controller.open(old)
+    const rebuildImage = (reopen = true) => {
+      const current = old.cloneNode() as HTMLImageElement
+      old.replaceWith(current)
+      if (phase === '通知恢复有重复资源') current.parentElement!.append(current.cloneNode())
+      if (reopen) controller.open(current)
+    }
+    if (phase === '登记读取') rebuildImage()
+    ready({ charts: [chart] })
+    await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+    const area = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+    area.value = '优化配色'; area.dispatchEvent(new Event('input'))
+    document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
+    if (phase === '审阅结果') rebuildImage()
+    if (phase.startsWith('通知恢复')) {
+      controller.open(old)
+      document.querySelector<HTMLButtonElement>('.chart-ai-edit-close')!.click()
+      rebuildImage(false)
+      document.querySelector<HTMLButtonElement>('.ask-ai-launcher')!.click()
+    }
+    document.querySelector<HTMLButtonElement>('[data-action="accept"]')!.click()
+    expect(view.dispatch).toHaveBeenCalledTimes(phase === '通知恢复有重复资源' ? 0 : 1)
     controller.dispose()
   })
 })

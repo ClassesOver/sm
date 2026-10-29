@@ -1,9 +1,19 @@
 {
   "version": "1",
   "profileId": "ruijin",
-  "revision": "7",
+  "revision": "8",
   "extends": [
     "base"
+  ],
+  "measureSemantics": [
+    {
+      "fieldRef": "rj.dwd_hdc_income_summary_view.indicator_value",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": [
+        "data_date"
+      ]
+    }
   ],
   "metrics": [
     {

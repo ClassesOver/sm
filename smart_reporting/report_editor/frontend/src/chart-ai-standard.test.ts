@@ -240,7 +240,30 @@ function mount(src = '/b/asset/reports/revision-1/original.png') {
 }
 
 describe('模板选择与完整预览', () => {
-  it.each(['ai', 'standard', 'template'])('关闭再打开后丢弃%s旧状态，且仍能取消新任务', async (route) => {
+  it('预制模板不把展示文案作为自由要求发送给 AI', async () => {
+    const api = client({
+      chartTemplates: vi.fn(async () => ({ templates: [
+        { templateId: 'budget-execution', name: '执行对比', available: true },
+        { templateId: 'composition', name: '构成分析', available: false, reason: '缺少分组维度' },
+      ] })),
+      startChartTemplateEdit: vi.fn(async () => ({ editId: 'cedit-new12345' })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 1 })
+    controller.open(mount())
+    await vi.waitFor(() => expect(document.querySelector('.chart-ai-template')).not.toBeNull())
+    const unavailable = document.querySelector<HTMLButtonElement>('.chart-ai-template:disabled')!
+    expect(unavailable.querySelector('.ask-ai-template-reason')?.textContent).toContain('缺少分组维度')
+    expect(document.querySelectorAll('.ask-ai-template-card')).toHaveLength(2)
+    unavailable.click()
+    expect(api.startChartTemplateEdit).not.toHaveBeenCalled()
+    document.querySelector<HTMLButtonElement>('.chart-ai-template')!.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
+    expect(api.startChartTemplateEdit).toHaveBeenCalledWith('chart_001', expect.not.objectContaining({ instruction: expect.anything() }))
+    expect(api.startChartAiEdit).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
+  it.each(['ai', 'standard', 'template'])('取消后丢弃%s旧状态，且仍能取消新任务', async (route) => {
     let finishOld: (value: unknown) => void = () => undefined
     let oldWaiting = false
     const start = vi.fn().mockResolvedValueOnce({ editId: 'cedit-old12345' }).mockResolvedValueOnce({ editId: 'cedit-new12345' })
@@ -267,6 +290,7 @@ describe('模板选择与完整预览', () => {
         ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
       } else {
         document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+        document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
         ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
       }
     }
@@ -274,23 +298,24 @@ describe('模板选择与完整预览', () => {
       controller.open(img)
       await startRoute()
       await vi.waitFor(() => expect(oldWaiting).toBe(true))
-      ;(document.querySelector('.chart-ai-edit-close') as HTMLButtonElement).click()
+      ;(document.querySelector('[data-action="cancel"]') as HTMLButtonElement).click()
       controller.open(img)
       // 新任务走AI，确保旧任务收尾不会清掉其取消身份。
       await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
       document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '新任务颜色'
+      document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
       ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
       await vi.waitFor(() => expect(api.chartAiEditStatus).toHaveBeenCalledWith('chart_001', 'cedit-new12345'))
       finishOld(result())
       await new Promise(resolve => setTimeout(resolve, 0))
       expect(document.querySelector('[data-action="accept"]')).toBeNull()
       expect(document.querySelector('.chart-ai-progress')).not.toBeNull()
-      ;(document.querySelector('.chart-ai-edit-close') as HTMLButtonElement).click()
+      ;(document.querySelector('[data-action="cancel"]') as HTMLButtonElement).click()
       expect(api.cancelChartAiEdit).toHaveBeenLastCalledWith('chart_001', 'cedit-new12345')
     } finally { controller.dispose() }
   })
 
-  it.each(['ai', 'template'])('关闭后%s启动回执晚到时补发取消，不查询或重开预览', async (route) => {
+  it.each(['ai', 'template'])('主动取消后%s启动回执晚到时补发取消，不查询或重开预览', async (route) => {
     let finishStart: (value: unknown) => void = () => undefined
     const start = vi.fn(() => new Promise(resolve => { finishStart = resolve }))
     const api = client({ startChartAiEdit: start, startChartTemplateEdit: start,
@@ -306,14 +331,16 @@ describe('模板选择与完整预览', () => {
         ;(document.querySelector('.chart-ai-template') as HTMLButtonElement).click()
       } else {
         document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+        document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
         ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
       }
       expect(start).toHaveBeenCalledTimes(1)
-      ;(document.querySelector('.chart-ai-edit-close') as HTMLButtonElement).click()
+      ;(document.querySelector('[data-action="cancel"]') as HTMLButtonElement).click()
       finishStart({ editId: 'cedit-old12345' })
       await vi.waitFor(() => expect(api.cancelChartAiEdit).toHaveBeenCalledWith('chart_001', 'cedit-old12345'))
       expect(api.chartAiEditStatus).not.toHaveBeenCalled()
-      expect(document.querySelector<HTMLDivElement>('.chart-ai-edit')!.hidden).toBe(true)
+      expect(document.querySelector('.chart-ai-compare')).toBeNull()
+      expect(document.querySelector('#chart-ai-instruction')).not.toBeNull()
     } finally { controller.dispose() }
   })
 
@@ -329,6 +356,7 @@ describe('模板选择与完整预览', () => {
       finishOld({ charts: [{ chartId: 'chart_001', imagePath: 'reports/revision-1/original.png' }] })
       await new Promise(resolve => setTimeout(resolve, 0))
       document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+      document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
       ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
       await vi.waitFor(() => expect(api.startChartAiEdit).toHaveBeenCalledWith('chart_002', expect.objectContaining({ baseImagePath: 'new.png' })))
     } finally { controller.dispose() }
@@ -343,6 +371,7 @@ describe('模板选择与完整预览', () => {
     controller.open(mount())
     await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     try {
       await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull(), { timeout: 2200 })
@@ -366,6 +395,7 @@ describe('模板选择与完整预览', () => {
     controller.open(mount())
     await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     try {
       await vi.waitFor(() => expect(waiting).toBe(true))
@@ -383,6 +413,7 @@ describe('模板选择与完整预览', () => {
     controller.open(mount())
     await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     try {
       await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull(), { timeout: 250 })
@@ -429,6 +460,7 @@ describe('模板选择与完整预览', () => {
     expect(text.value).toContain('收入用万元，蓝绿色')
     expect(text.value).toContain('正负分开累计')
     expect(text.value).not.toContain('根据已登记系列改成双坐标轴')
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => expect(api.startChartAiEdit).toHaveBeenCalledWith('chart_001', expect.objectContaining({ instruction: expect.stringContaining('正负分开累计') })))
     await vi.waitFor(() => expect(document.querySelectorAll('.chart-ai-pages img')).toHaveLength(2))
@@ -457,6 +489,7 @@ describe('模板选择与完整预览', () => {
     controller.open(mount(`/b/asset/${old[1]!.imagePath}`))
     await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => expect(api.startChartAiEdit).toHaveBeenCalledWith('chart_001', expect.objectContaining({ baseImagePath: old[1]!.imagePath, previousEditId: 'cedit-old12345' })))
     controller.dispose()
@@ -470,10 +503,12 @@ describe('模板选择与完整预览', () => {
     controller.open(mount(`/b/asset/${old[1]!.imagePath}`))
     await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '第一次'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => expect(document.querySelector('[data-action="continue"]')).not.toBeNull())
     ;(document.querySelector('[data-action="continue"]') as HTMLButtonElement).click()
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '第二次'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
     ;(document.querySelector('[data-action="accept"]') as HTMLButtonElement).click()
@@ -492,6 +527,7 @@ describe('模板选择与完整预览', () => {
     controller.open(mount(`/b/asset/${old[1]!.imagePath}`))
     await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
     document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
+    document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => expect(api.startChartAiEdit).toHaveBeenCalledWith('published', expect.not.objectContaining({ previousEditId: expect.anything() })))
     controller.dispose()

@@ -472,6 +472,8 @@ class TableTraceV1(StrictModel):
     cells: tuple[TableCellBindingV1, ...] = Field(default=(), max_length=2000)
     # 原始数据表没有额外标签列；旧报告仍按独立标签列解释。
     row_label_column: bool = Field(default=True, alias="rowLabelColumn")
+    # 新表显式登记单位格式化；历史快照缺省保持来源值的原样展示。
+    source_cell_display: Literal["raw", "unit_formatted"] = Field(default="raw", alias="sourceCellDisplay")
     # 首次人工修订前冻结的表格块，用于恢复行标签与结构键的原始对应关系。
     origin_markdown: str | None = Field(default=None, alias="originMarkdown")
 

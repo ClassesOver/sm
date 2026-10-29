@@ -616,6 +616,7 @@ def source_cell_view(operand: Any, document: Any) -> dict[str, Any] | None:
         semantic_table = {key: item for key, item in table.items()
                           if key in semantic_keys or key in {'rowPeriodColumn', 'columns', 'rows'}}
         return {'value': value, 'unit': meta.get('unit') if isinstance(meta, dict) else None,
+                'isPercent': meta.get('isPercent') if isinstance(meta, dict) else None,
                 'column': columns[operand.column_index], **table_semantics(semantic_document, {**semantic_table, "columnMeta": metadata},
                                   columns[operand.column_index], row_index=operand.row_index)}
     except (KeyError, IndexError, TypeError, ValueError):
@@ -625,3 +626,32 @@ def source_cell_view(operand: Any, document: Any) -> dict[str, Any] | None:
 def source_cell_text(value: Any) -> str:
     """原样展示冻结值，单位只保留来源显式元数据。"""
     return '—' if value is None else str(value)
+
+
+def source_cell_display(selected: Mapping[str, Any], column_key: str, *, display_format: str = 'raw') -> str:
+    """仅按显式登记的展示契约格式化；不从历史表头猜测格式。"""
+    from ..units import unit_conversion_scale
+    from .numeric_text import format_fact_value
+
+    value = selected['value']
+    if display_format != 'unit_formatted':
+        return source_cell_text(value)
+    number = _number(value)
+    target = re.search(r'（([^（）]+)）$', column_key)
+    if number is None or target is None:
+        return source_cell_text(value)
+    unit = selected.get('unit')
+    display_unit = target[1]
+    if display_unit == '单位未提供' and unit is None:
+        return format_fact_value(value, None)
+    scale = unit_conversion_scale(unit, display_unit)
+    if scale is None:
+        return source_cell_text(value)
+    if unit == '%':
+        if selected.get('isPercent') is False:
+            number *= 100
+        from decimal import ROUND_HALF_UP
+
+        rounded = number.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        return f'{abs(rounded) if rounded == 0 else rounded:,.2f}'
+    return format_fact_value(value, unit, display_unit).removesuffix(display_unit)

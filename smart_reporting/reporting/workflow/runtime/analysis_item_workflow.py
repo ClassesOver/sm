@@ -1325,7 +1325,9 @@ class AnalysisItemWorkflow:
             }
             logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
                         candidate_count=len(payload["standardComputationCandidates"])).info(
-                "report_analysis_standard_candidates_prepared",
+                "report_analysis_standard_candidates_prepared analysis_id={} candidates={} grouping_sources={}",
+                state.instruction.get("currentAnalysisId"), len(catalog["candidates"]),
+                catalog["groupingSources"]["totalItems"],
             )
         for attempt in range(2):
             decision = await self.decide_evidence(payload)
@@ -1387,7 +1389,9 @@ class AnalysisItemWorkflow:
             logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
                         requirement_count=len(getattr(decision, "coding_requirements", ())),
                         computation_count=len(plan), route="server" if plan else "python").info(
-                "report_analysis_standard_route_selected",
+                "report_analysis_standard_route_selected analysis_id={} route={} requirements={} computations={}",
+                state.instruction.get("currentAnalysisId"), "server" if plan else "python",
+                len(decision.coding_requirements), len(plan),
             )
         if standard_spec is not None and self.run_standard_supplemental is not None:
             try:

@@ -802,16 +802,36 @@ def build_budget_edit_table(
 
 
 
+_SUPPLEMENTAL_LABELS = {
+    "value": "指标值", "current": "本期值", "baseline": "对照期值", "previous": "上期值",
+    "change": "变动额", "changeRate": "变动幅度", "contribution": "增减贡献占比",
+    "share": "占比", "rank": "排名", "ratio": "比率", "numerator": "分子值",
+    "denominator": "分母值", "difference": "差值", "primaryTotal": "主维度合计",
+    "primaryShare": "主维度占比", "secondaryTotal": "次维度合计",
+    "secondaryShare": "次维度占比", "baselineTotal": "基准合计", "totalChange": "总变动额",
+}
+
+
 def build_supplemental_tables(
     document: Mapping[str, Any], *, file_resource_id: str, dataset_ids: Sequence[str] = (),
+    dataset_contexts: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[tuple[TableTraceV1, str], ...]:
     """完整发布冻结 findings 中的结构化表；不从列名推断指标与计算规则。"""
     import hashlib
 
     from .contracts_v1 import TableOperandV1
-    from .table_sources import source_cell_text, source_cell_view
+    from .table_sources import source_cell_display, source_cell_view
 
     tables: list[tuple[TableTraceV1, str]] = []
+    field_labels: dict[str, set[str]] = {}
+    for context in dataset_contexts:
+        if context.get("datasetId") not in dataset_ids:
+            continue
+        for table in context.get("schema", {}).get("tables", ()):
+            for column in table.get("columns", ()):
+                label = primary_display_name(column.get("description"))
+                if label:
+                    field_labels.setdefault(column["name"], set()).add(label)
 
     def walk(node: Any, pointer: str) -> None:
         if isinstance(node, list):
@@ -827,12 +847,31 @@ def build_supplemental_tables(
                         or len(columns) != len(set(columns))
                         or any(not isinstance(row, list) or len(row) != len(columns) for row in source_rows)):
                     return
+                metadata = node.get('columnMeta', {})
+                headers = []
+                for position, column in enumerate(columns):
+                    meta = metadata.get(column, {}) if isinstance(metadata, Mapping) else {}
+                    label = meta.get('label') or meta.get('displayName')
+                    candidates = field_labels.get(meta.get('sourceField', column), set())
+                    label = label or (next(iter(candidates)) if len(candidates) == 1 else None)
+                    label = label or _SUPPLEMENTAL_LABELS.get(column, column)
+                    unit = meta.get('unit')
+                    values = [row[position] for row in source_rows
+                              if type(row[position]) in (int, float)]
+                    display_unit = _table_display_unit(unit, values)
+                    if display_unit and not re.search(r'[（(]' + re.escape(display_unit) + r'[）)]$', label):
+                        label += f'（{display_unit}）'
+                    elif not unit and column in _SUPPLEMENTAL_LABELS and column != 'rank':
+                        label += '（单位未提供）'
+                    headers.append(label)
+                if len(set(headers)) != len(headers):
+                    headers = [f'{label} · {column}' for label, column in zip(headers, columns, strict=True)]
                 # 宽表拆列时重复来源首列，保留读者逐行对照；没有任何业务列名推断。
                 column_groups = ([list(range(len(columns)))] if len(columns) <= 5 else
                                  [[0, *range(offset, min(offset + 4, len(columns)))]
                                   for offset in range(1, len(columns), 4)])
                 for selected_columns in column_groups:
-                    labels = [columns[column] for column in selected_columns]
+                    labels = [headers[column] for column in selected_columns]
                     limit = min(1000, 2000 // len(labels))
                     for offset in range(0, len(source_rows), limit):
                         cells, rows, keys = [], [], []
@@ -846,9 +885,9 @@ def build_supplemental_tables(
                                 selected = source_cell_view(operand, document)
                                 if selected is None:
                                     return
-                                row.append(source_cell_text(selected['value']))
+                                row.append(source_cell_display(selected, headers[column], display_format='unit_formatted'))
                                 cells.append(TableCellBindingV1(
-                                    rowKey=key, columnKey=columns[column], sourceCell=operand,
+                                    rowKey=key, columnKey=headers[column], sourceCell=operand,
                                     datasetIds=dataset_ids or document.get("datasetIds", ()),
                                 ))
                             rows.append(row)
@@ -859,7 +898,8 @@ def build_supplemental_tables(
                                                          caption=caption if isinstance(caption, str) else None,
                                                          row_label_header=None)
                         trace = TableTraceV1(tableId=table_id, rowKeys=keys, columnKeys=labels,
-                                             cells=cells, originMarkdown=markdown, rowLabelColumn=False)
+                                             cells=cells, originMarkdown=markdown, rowLabelColumn=False,
+                                             sourceCellDisplay='unit_formatted')
                         tables.append((trace, markdown))
                 return
             for key, child in node.items():

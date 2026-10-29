@@ -1,0 +1,205 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { askAIPanel, updateAskAISourceStatus } from './ask-ai-panel'
+
+afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ''; document.body.classList.remove('ask-ai-open'); updateAskAISourceStatus('checking') })
+
+describe('Ask AI shared sidebar', () => {
+  it('来源功能未启用时不显示虚假更新中，采用回执保留已经返回的来源状态', () => {
+    updateAskAISourceStatus('unavailable')
+    const panel = askAIPanel()
+    const session = panel.createSession({ kind: 'chart', label: '收入', content: '<div data-role="body"></div>' })
+    session.open(); session.notifyReplaced({ locate: () => true, continueEditing: () => {} })
+    expect(session.card.querySelector('.ask-ai-source-state')?.textContent).toContain('未启用引用核验')
+    expect(session.card.querySelector<HTMLButtonElement>('[data-action="retry-sources"]')!.hidden).toBe(true)
+    panel.setSourceStatus('updated')
+    session.notifyReplaced({ locate: () => true, continueEditing: () => {} })
+    expect(session.card.querySelector('.ask-ai-source-state')?.textContent).toContain('引用已刷新')
+    session.remove()
+  })
+
+  it('窄屏定位成功后收起侧栏让正文可见，继续修改不收起', () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390)
+    const session = askAIPanel().createSession({ kind: 'chart', label: '收入', content: '<div data-role="body"></div>' })
+    session.open()
+    let continued = false
+    session.notifyReplaced({ locate: () => true, continueEditing: () => { continued = true } })
+    session.card.querySelector<HTMLButtonElement>('[data-action="locate-body"]')!.click()
+    expect(session.visible).toBe(false)
+    document.querySelector<HTMLButtonElement>('.ask-ai-launcher')!.click()
+    session.card.querySelector<HTMLButtonElement>('[data-action="continue-editing"]')!.click()
+    expect(continued).toBe(true)
+    expect(session.visible).toBe(true)
+    session.remove()
+  })
+
+  it('待采用时默认收起输入区，继续调整才展开并聚焦，切换会话保留展开状态', () => {
+    const chart = askAIPanel().createSession({ kind: 'chart', label: '收入', content: '<div data-role="body"></div>' })
+    const table = askAIPanel().createSession({ kind: 'table', label: '收入表', content: '<div data-role="body"></div>' })
+    chart.open()
+    const form = document.createElement('div'); form.innerHTML = '<textarea></textarea>'
+    chart.mountComposer(form); chart.setState('ready')
+    expect(chart.composer.hidden).toBe(true)
+    chart.focusComposer()
+    expect(chart.composer.hidden).toBe(false)
+    expect(document.activeElement).toBe(form.querySelector('textarea'))
+    table.open(); chart.open()
+    expect(chart.composer.hidden).toBe(false)
+    chart.setState('running'); chart.setState('ready')
+    expect(chart.composer.hidden).toBe(true)
+    chart.remove(); table.remove()
+  })
+
+  it('采用操作固定在预览滚动区外，切换会话不串操作，重新生成不保留旧采用按钮', () => {
+    const chart = askAIPanel().createSession({ kind: 'chart', label: '收入', content: '<div data-role="body"></div>' })
+    const table = askAIPanel().createSession({ kind: 'table', label: '科室', content: '<div data-role="body"></div>' })
+    const actions = document.createElement('div'); actions.innerHTML = '<button>采用到正文</button>'
+    chart.open(); chart.setState('ready'); chart.mountReviewActions(actions)
+    expect(actions.closest('.ask-ai-content')).toBeNull()
+    expect(chart.reviewDock.hidden).toBe(false)
+    table.open()
+    expect(chart.reviewDock.hidden).toBe(true)
+    chart.open()
+    expect(chart.reviewDock.hidden).toBe(false)
+    chart.setState('running')
+    expect(chart.reviewDock.childElementCount).toBe(0)
+    expect(chart.reviewDock.hidden).toBe(true)
+    chart.remove(); table.remove()
+  })
+
+  it('修改步骤随真实会话状态推进，失败不伪装为完成', () => {
+    const session = askAIPanel().createSession({ kind: 'chart', label: '收入', content: '<div class="panel-header"></div><div data-role="body"></div>' })
+    session.open()
+    const currentStep = () => session.card.querySelector('[aria-current="step"]')?.textContent
+    expect(currentStep()).toContain('描述需求')
+    session.setState('running')
+    expect(currentStep()).toContain('AI 修改')
+    expect(session.card.querySelector('[aria-label="修改步骤"]')?.getAttribute('aria-busy')).toBe('true')
+    session.setState('error')
+    expect(currentStep()).toContain('AI 修改')
+    expect(session.card.querySelectorAll('[data-step-state="done"]')).toHaveLength(1)
+    session.setState('ready')
+    expect(currentStep()).toContain('预览确认')
+    session.remove()
+  })
+
+  it('采用后保留成功回执，定位失败不误继续，引用失败可重试', () => {
+    const panel = askAIPanel()
+    const session = panel.createSession({ kind: 'table', label: '收入', content: '<div class="panel-header"></div><div data-role="body"></div>' })
+    session.open(); session.setState('ready')
+    let present = true
+    let continued = false
+    let retries = 0
+    const retry = () => { retries++ }
+    document.addEventListener('report-source-retry', retry)
+    session.notifyReplaced({ locate: () => present, continueEditing: () => { continued = true } })
+    expect(session.visible).toBe(true)
+    expect(session.card.querySelector('[aria-current="step"]')?.textContent).toContain('采用完成')
+    const receipt = session.card.querySelector<HTMLElement>('.ask-ai-receipt')!
+    expect(receipt.textContent).toContain('正文已更新')
+    expect(receipt.textContent).toContain('正在更新引用')
+    panel.setSourceStatus('error')
+    receipt.querySelector<HTMLButtonElement>('[data-action="retry-sources"]')!.click()
+    expect(retries).toBe(1)
+    expect(receipt.textContent).toContain('正在更新引用')
+    panel.setSourceStatus('updated')
+    expect(receipt.textContent).toContain('引用已刷新')
+    expect(receipt.textContent).not.toContain('核验通过')
+    present = false
+    receipt.querySelector<HTMLButtonElement>('[data-action="continue-editing"]')!.click()
+    expect(continued).toBe(false)
+    expect(receipt.textContent).toContain('已变化或无法唯一定位')
+    present = true
+    receipt.querySelector<HTMLButtonElement>('[data-action="continue-editing"]')!.click()
+    expect(continued).toBe(true)
+    document.removeEventListener('report-source-retry', retry)
+    session.remove()
+  })
+
+  it('切换图表会话保留各自输入，收起后通过入口恢复当前会话', () => {
+    const chart = askAIPanel().createSession({ kind: 'chart', label: '收入趋势', content: '<div class="panel-header"></div><textarea></textarea>' })
+    const table = askAIPanel().createSession({ kind: 'table', label: '科室收入', content: '<div class="panel-header"></div><textarea></textarea>' })
+    chart.open()
+    chart.card.querySelector('textarea')!.value = '标注最高月份'
+    chart.setState('running')
+    table.open()
+    expect(document.querySelectorAll('.ask-ai-panel')).toHaveLength(1)
+    expect(chart.overlay.hidden).toBe(true)
+    expect(table.overlay.hidden).toBe(false)
+    table.closeButton.click()
+    chart.setState('ready')
+    expect(chart.tab.querySelector('.ask-ai-session-status')?.textContent).toBe('待确认')
+    expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.hidden).toBe(true)
+    expect(document.querySelector('.ask-ai-launcher')!.textContent).toContain('待确认')
+    document.querySelector<HTMLButtonElement>('.ask-ai-launcher')!.click()
+    expect(table.visible).toBe(true)
+    chart.tab.click()
+    expect(chart.card.querySelector('textarea')!.value).toBe('标注最高月份')
+    expect(chart.visible).toBe(true)
+    expect(chart.tab.getAttribute('aria-pressed')).toBe('true')
+    chart.remove(); table.remove()
+    expect(document.querySelector('.ask-ai-launcher')).toBeNull()
+    expect(document.querySelector('.ask-ai-notifications')).toBeNull()
+  })
+
+  it('会话中的图片可放大，关闭图片预览后回到原会话', () => {
+    const chart = askAIPanel().createSession({ kind: 'chart', label: '收入', content: '<div class="panel-header"></div><img src="/income.png" alt="收入对比">' })
+    chart.open()
+    chart.card.querySelector('img')!.click()
+    const zoom = document.querySelector<HTMLElement>('.ask-ai-image-preview')!
+    expect(zoom).not.toBeNull()
+    expect(zoom.hidden).toBe(false)
+    expect(zoom.querySelector('img')!.getAttribute('src')).toBe('/income.png')
+    zoom.querySelector<HTMLButtonElement>('.modal-close')!.click()
+    expect(chart.visible).toBe(true)
+    expect(zoom.hidden).toBe(true)
+    chart.remove()
+  })
+
+  it('会话提供编号和缩略图，点击缩略图只切换对象而不放大', () => {
+    const first = askAIPanel().createSession({ kind: 'chart', label: '收入对比', content: '<div class="panel-header"></div>' })
+    const second = askAIPanel().createSession({ kind: 'chart', label: '科室构成', content: '<div class="panel-header"></div>' })
+    expect(first.tab.textContent).toContain('图 1 · 收入对比')
+    expect(second.tab.textContent).toContain('图 2 · 科室构成')
+    expect(typeof first.setThumbnail).toBe('function')
+    first.setThumbnail('/income.png')
+    second.open()
+    first.tab.querySelector('img')!.click()
+    expect(first.visible).toBe(true)
+    expect(document.querySelector('.ask-ai-image-preview')).toBeNull()
+    expect(first.tab.title).toContain('收入对比')
+    first.remove(); second.remove()
+  })
+
+  it('后台完成提示不抢焦点，查看时恢复对应会话且不会重复通知', () => {
+    const chart = askAIPanel().createSession({ kind: 'chart', label: '收入趋势', content: '<div class="panel-header"></div><textarea></textarea>' })
+    const table = askAIPanel().createSession({ kind: 'table', label: '科室收入', content: '<div class="panel-header"></div><textarea></textarea>' })
+    chart.open(); chart.setState('running'); chart.close()
+    const search = document.createElement('input'); document.body.append(search); search.focus()
+    chart.setState('ready'); chart.setState('ready')
+    const notice = document.querySelector<HTMLElement>('.ask-ai-notification')
+    expect(notice).not.toBeNull()
+    expect(notice!.textContent).toContain('收入趋势')
+    expect(document.querySelectorAll('.ask-ai-notification')).toHaveLength(1)
+    expect(document.activeElement).toBe(search)
+    expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.hidden).toBe(true)
+    notice!.querySelector<HTMLButtonElement>('[data-action="view-session"]')!.click()
+    expect(chart.visible).toBe(true)
+    expect(document.querySelectorAll('.ask-ai-notification')).toHaveLength(0)
+    table.open(); chart.setState('running'); chart.setState('error')
+    expect(table.visible).toBe(true)
+    const failed = document.querySelector<HTMLElement>('.ask-ai-notification[data-kind="error"]')!
+    expect(failed).not.toBeNull()
+    failed.querySelector<HTMLButtonElement>('[data-action="dismiss"]')!.click()
+    expect(document.querySelectorAll('.ask-ai-notification')).toHaveLength(0)
+    chart.remove(); table.remove()
+  })
+
+  it('当前会话的完成与取消不会额外弹出后台提示', () => {
+    const chart = askAIPanel().createSession({ kind: 'chart', label: '收入趋势', content: '<div class="panel-header"></div>' })
+    chart.open(); chart.setState('running'); chart.setState('ready')
+    expect(document.querySelector('.ask-ai-notification')).toBeNull()
+    chart.setState('running'); chart.close(); chart.setState('idle')
+    expect(document.querySelector('.ask-ai-notification')).toBeNull()
+    chart.remove()
+  })
+})

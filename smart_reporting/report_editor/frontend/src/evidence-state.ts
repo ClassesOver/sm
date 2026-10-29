@@ -21,6 +21,8 @@ export interface EvidenceObjectRef {
   key: string
   /** 事实对象需要 analysisId 才能定位。 */
   analysisId?: string
+  /** 已登记的改图版本；与原图独立核对，避免复用旧来源缓存。 */
+  editId?: string
   /** 展示名（任务名、面包屑、节点文字）。 */
   label: string
 }
@@ -61,7 +63,7 @@ export interface EvidenceTask {
 export const REPORT_TAB = 'report'
 
 export function evidenceRefId(ref: EvidenceObjectRef): string {
-  return `${ref.kind}:${ref.analysisId ? `${ref.analysisId}/` : ''}${ref.key}`
+  return `${ref.kind}:${ref.analysisId ? `${ref.analysisId}/` : ''}${ref.key}${ref.kind === 'chart' && ref.editId ? `@${ref.editId}` : ''}`
 }
 
 export function sameEvidenceRef(a: EvidenceObjectRef, b: EvidenceObjectRef): boolean {

@@ -610,6 +610,7 @@ def create_report_editor_router(
             request: Request,
             limit: int = 20,
             offset: int = 0,
+            edit_id: str | None = None,
         ) -> JSONResponse:
             session, context = await _read_session_context(
                 grants, editor, request, report_id=report_id, revision=revision
@@ -622,6 +623,7 @@ def create_report_editor_router(
                     chart_id,
                     preview_limit=limit,
                     preview_offset=offset,
+                    edit_id=edit_id,
                 )
             except ReportingError as error:
                 _editor_http_error(error, request_id=request_id)

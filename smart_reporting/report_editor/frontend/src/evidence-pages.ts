@@ -928,7 +928,7 @@ async function loadNodeRelations(ref: EvidenceObjectRef, ctx: EvidencePageContex
       return assembleDatasetRelations(ref, await ctx.loadSources())
     }
     case 'chart': {
-      const source = await ctx.client.chartSource(ref.key, { limit: 1, offset: 0 }, ctx.signal)
+      const source = await ctx.client.chartSource(ref.key, { limit: 1, offset: 0, editId: ref.editId }, ctx.signal)
       return assembleChartRelations(ref, source)
     }
     case 'subject': {
@@ -2157,7 +2157,7 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
   if (!data) {
     showLoading(container)
     try {
-      const source = await ctx.client.chartSource(ctx.page.ref.key, { limit: 20, offset: ctx.page.chartOffset }, ctx.signal)
+      const source = await ctx.client.chartSource(ctx.page.ref.key, { limit: 20, offset: ctx.page.chartOffset, editId: ctx.page.ref.editId }, ctx.signal)
       if (ctx.isStale()) return
       data = { detail: { source, offset: ctx.page.chartOffset }, relations: assembleChartRelations(ctx.page.ref, source) }
       ctx.setPageData(data)
@@ -2290,7 +2290,7 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
     const restoreFocus = rememberPaginationFocus(moreSlot)
     moreSlot.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true })
     try {
-      const next = await ctx.client.chartSource(ctx.page.ref.key, { limit: 20, offset }, ctx.signal)
+      const next = await ctx.client.chartSource(ctx.page.ref.key, { limit: 20, offset, editId: ctx.page.ref.editId }, ctx.signal)
       if (ctx.isStale()) return
       data!.detail = { source: next, offset }
       ctx.updatePage({ chartOffset: offset })

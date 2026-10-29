@@ -4,7 +4,7 @@ import { formatRegisteredValue, periodListText } from './body-value-marks'
 import { analysisLabel, citationLabel, datasetLabel } from './evidence-relations'
 import { sourceSubjectStatus } from './source-status'
 
-type Reference = { kind: 'analysis' | 'citation' | 'chart'; value: string }
+type Reference = { kind: 'analysis' | 'citation' | 'chart'; value: string; editId?: string }
 type OpenTarget = Reference | { kind: 'dataset'; value: string; label: string }
 type Options = {
   client: ReportEditorClient
@@ -82,12 +82,18 @@ function claimVerification(entry: ValidationSubject, restore: (() => boolean) | 
 export function createBodySourcePreview(options: Options) {
   let current: { dialog: HTMLDialogElement; marker: HTMLElement } | null = null
   return async (marker: HTMLElement, references: Reference[]) => {
+    document.dispatchEvent(new CustomEvent('report-panel-open', { detail: 'source-preview' }))
     current?.dialog.close('replaced')
     const dialog = document.createElement('dialog')
     current = { dialog, marker }
     dialog.className = 'report-source-preview'
     dialog.setAttribute('aria-label', '正文来源预览')
     const controller = new AbortController()
+    document.addEventListener('report-panel-open', event => {
+      if ((event as CustomEvent<string>).detail === 'source-preview') return
+      dialog.close('replaced')
+      document.body.classList.remove('source-preview-is-open')
+    }, { signal: controller.signal })
     const heading = document.createElement('header')
     const title = document.createElement('h2')
     title.append(createElement(Database, { width: 18, height: 18 }), '正文来源')
@@ -242,10 +248,25 @@ export function createBodySourcePreview(options: Options) {
               status?.status === 'valid' ? '登记数值一致' : '需复核 · 保留登记来源')
             card.append(badge)
           }
+          const chartSource = reference.kind === 'chart'
+            ? await options.client.chartSource(reference.value, { limit: 1, editId: reference.editId }, controller.signal) : null
+          if (controller.signal.aborted) return
+          if (chartSource) {
+            const version = document.createElement('div'); version.className = 'source-preview-version'
+            const label = document.createElement('strong'); label.textContent = reference.editId ? '当前采用的改图版本' : '原始发布图表'
+            version.append(label)
+            if (reference.editId) {
+              const record = chartSource.editHistory?.find(item => item.editId === reference.editId)
+              const note = document.createElement('p'); note.textContent = record?.instruction || '此版本的修改说明暂不可用'
+              const identity = document.createElement('small'); identity.textContent = `版本：${reference.editId}`
+              version.append(note, identity)
+            }
+            card.append(version)
+          }
           const datasetIds = reference.kind === 'analysis'
             ? [...new Set(sources.facts?.filter(item => item.analysisId === reference.value).flatMap(item => item.datasetIds))]
             : reference.kind === 'chart'
-              ? (await options.client.chartSource(reference.value, { limit: 1 }, controller.signal)).datasetIds
+              ? chartSource?.datasetIds
               : subject ? [...new Set(subject.factRefs.flatMap(ref => sources.facts?.find(item => item.analysisId === ref.analysisId && item.factId === ref.factId)?.datasetIds ?? []))]
                 : [sources.citations?.find(item => item.citationId === reference.value)?.datasetId].filter((id): id is string => !!id)
           if (controller.signal.aborted) return

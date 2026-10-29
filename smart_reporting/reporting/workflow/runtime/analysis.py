@@ -1181,14 +1181,17 @@ class RuntimeAnalysisMixin:
                         "coding", agent_role="visualization-coding"
                     )
 
-                    async def materialized_inputs(plan: VisualizationPlanDraft, task_context: RunContext):
-                        binding = task_context.dependencies.get('AgentOS 任务执行') if isinstance(task_context.dependencies, Mapping) else None
-                        coding_task_id = (binding.get('externalRunId') if isinstance(binding, Mapping) else None) or task_id
-                        plan_key = payload_sha256({'charts': [
+                    def chart_input_key(plan: VisualizationPlanDraft) -> str:
+                        return payload_sha256({'charts': [
                             {'chartId': chart.chart_id, 'dataBindings': [item.model_dump(mode='json', by_alias=True)
                                                                        for item in chart.data_bindings]}
                             for chart in plan.charts
                         ]})
+
+                    async def materialized_inputs(plan: VisualizationPlanDraft, task_context: RunContext):
+                        binding = task_context.dependencies.get('AgentOS 任务执行') if isinstance(task_context.dependencies, Mapping) else None
+                        coding_task_id = (binding.get('externalRunId') if isinstance(binding, Mapping) else None) or task_id
+                        plan_key = chart_input_key(plan)
                         if plan_key not in chart_input_cache:
                             chart_input_cache[plan_key] = await prepare_chart_inputs(
                                 plan, facts, self._run_workspace(run_context), thread_id=str(coding_task_id),
@@ -1453,8 +1456,7 @@ class RuntimeAnalysisMixin:
                         # B3：把服务端预物化的 chart-input 文件身份随提交上报，
                         # 由 submit 工具重验后冻结进 AnalysisChart.plotDataFiles。
                         plot_data_files: tuple[dict[str, Any], ...] = ()
-                        plan_key = payload_sha256(plan.model_dump(mode="json", by_alias=True))
-                        chart_inputs = chart_input_cache.get(plan_key)
+                        chart_inputs = chart_input_cache.get(chart_input_key(plan))
                         if chart_inputs is not None and chart_inputs.entries:
                             identity_by_path = {
                                 item.path: {

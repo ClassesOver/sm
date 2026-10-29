@@ -286,7 +286,7 @@ async def _run_standard_chart_routes(
             result = await runner.run_standard_visualization(
                 final_context,
                 workspace,
-                _composite_source(components, inputs, routes),
+                _composite_source(components, inputs, routes, context.declared_output_paths),
                 {**facts, "standardChartRoutes": routes},
             )
             return _with_routes(result, routes)
@@ -319,11 +319,12 @@ async def _run_standard_chart_routes(
     raise AssertionError("Unreachable composite retry")
 
 
-def _composite_source(components, inputs, routes):
+def _composite_source(components, inputs, routes, output_paths):
     source = 'import hashlib\nfrom pathlib import Path\nimport matplotlib\nmatplotlib.use("Agg")\nimport matplotlib.pyplot as plt\n'
     # Preflight every dependency before executing any component.
     source += "COMPONENTS = " + repr(components) + "\n"
     source += "CHART_ROUTES = " + repr(routes) + "\n"
+    source += "OUTPUT_PATHS = " + repr(tuple(output_paths)) + "\n"
     source += (
         "CHART_INPUTS = "
         + repr([(entry["path"], entry["sha256"]) for entry in inputs.entries])
@@ -338,11 +339,16 @@ for path, digest in COMPONENTS:
     if hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError("chart component identity changed")
     sources.append((path, raw))
+for path in OUTPUT_PATHS:
+    Path(path).unlink(missing_ok=True)
 for path, raw in sources:
     with plt.rc_context():
         plt.rcdefaults()
         exec(compile(raw, path, "exec"), {"__name__": "__main__", "__file__": path})
     plt.close("all")
+for path in OUTPUT_PATHS:
+    if not Path(path).is_file():
+        raise ValueError("chart component output missing: " + path)
 """
     return source
 

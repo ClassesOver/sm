@@ -90,7 +90,7 @@ def test_supplemental_source_table_names_its_row_header():
 
     from smart_reporting.report_editor.table_ai import _parse_table_grid
 
-    assert _parse_table_grid(markdown)[0] == ['科室', '收入', '占比', '排名']
+    assert _parse_table_grid(markdown)[0] == ['科室', '收入（元）', '占比（%）', '排名']
 
 
 @pytest.mark.anyio

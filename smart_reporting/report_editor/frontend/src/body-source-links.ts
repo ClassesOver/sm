@@ -17,11 +17,11 @@ export const bodySourceLinksPlugin = $prose(() => new Plugin<DecorationSet>({
 }))
 
 export function updateBodySourceLinks(view: EditorView, root: HTMLElement, sources: TraceSources, result: TraceValidation | null): void {
-  const targets = new Map<HTMLElement, Array<{ kind: 'citation' | 'chart'; value: string; state: 'valid' | 'stale' }>>()
-  const add = (target: HTMLElement | null, kind: 'citation' | 'chart', value: string, state: 'valid' | 'stale' = 'valid') => {
+  const targets = new Map<HTMLElement, Array<{ kind: 'citation' | 'chart'; value: string; state: 'valid' | 'stale'; editId?: string }>>()
+  const add = (target: HTMLElement | null, kind: 'citation' | 'chart', value: string, state: 'valid' | 'stale' = 'valid', editId?: string) => {
     if (!target) return
     const refs = targets.get(target) ?? []
-    if (!refs.some(ref => ref.kind === kind && ref.value === value)) refs.push({ kind, value, state })
+    if (!refs.some(ref => ref.kind === kind && ref.value === value)) refs.push({ kind, value, state, ...(editId ? { editId } : {}) })
     targets.set(target, refs)
   }
   for (const subject of sources.subjects ?? []) {
@@ -33,7 +33,7 @@ export function updateBodySourceLinks(view: EditorView, root: HTMLElement, sourc
   for (const chart of result?.charts ?? []) {
     if (chart.status === 'unbound' || !chart.locationSource) continue
     add(findEvidenceChartImage(root, chart.locationSource, document.baseURI), 'chart', chart.chartId,
-      chart.status === 'valid' && !checkNeedsReview(chart.dataCheck) && !checkNeedsReview(chart.semanticCheck) ? 'valid' : 'stale')
+      chart.status === 'valid' && !checkNeedsReview(chart.dataCheck) && !checkNeedsReview(chart.semanticCheck) ? 'valid' : 'stale', chart.editId)
   }
   const decorations: Decoration[] = []
   for (const [target, references] of targets) {
