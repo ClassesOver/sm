@@ -10,19 +10,21 @@ def encode(value):
 
 
 @pytest.mark.parametrize('path', [
+    'breakdowns',
     'breakdowns[0].periodValues', 'breakdowns[0].topGroups', 'breakdowns[0].bottomGroups',
     'breakdowns[0].groupPopulation', 'metrics[0].topGroups', 'metrics[0].bottomGroups',
     'metrics[0].groupPopulation',
 ])
 def test_only_absent_new_parent_units_can_use_exact_legacy_bytes(path):
+    measure = 'total' if path == 'breakdowns' else 'value'
     old = {'schema': 'chart-input/v1', 'source': {'dataPath': path, 'sha256': 'a' * 64},
-           'columns': ['group', 'value'], 'rows': [['甲', 42]], 'rowCount': 1}
-    new = {**old, 'columnMeta': {'value': {'unit': '万元', 'isPercent': False}}}
+           'columns': ['group', measure], 'rows': [['甲', 42]], 'rowCount': 1}
+    new = {**old, 'columnMeta': {measure: {'unit': '万元', 'isPercent': False}}}
     assert chart_input_matches_rebuild(encode(old), encode(new))
     assert chart_input_matches_rebuild(encode(new), encode(new))
     for actual in ({**old, 'rows': [['甲', 43]]}, {**old, 'rowCount': 2},
                    {**old, 'source': {**old['source'], 'sha256': 'b' * 64}},
-                   {**old, 'columnMeta': {'value': {'unit': '亿元'}}}):
+                   {**old, 'columnMeta': {measure: {'unit': '亿元'}}}):
         assert not chart_input_matches_rebuild(encode(actual), encode(new))
 
 

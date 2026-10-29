@@ -14,14 +14,26 @@ def breakdown_descriptors(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     partitions = breakdown_partition_rows(payload)
     descriptors: list[dict[str, Any]] = []
     if len(partitions) == 1 and sum(map(len, partitions.values())) == len(payload.get("breakdowns") or ()):
-        descriptors.append({"dataPath": "breakdowns", "fields": fields,
-                            "dataScope": "同一指标同一维度的完整分组合计"})
+        whole_rows = [row for _index, row in next(iter(partitions.values()))]
+        common = [field for field in fields if all(
+            field in row and (row[field] is None or isinstance(row[field], (str, int, float, bool)))
+            for row in whole_rows
+        )]
+        # Historical snapshots may omit optional displayName/breakdownLabel.
+        # Sign only real common fields instead of inventing empty cells.
+        if {"parentFactId", "breakdownField", "breakdownValue", "total"}.issubset(common):
+            descriptors.append({"dataPath": "breakdowns", "fields": common,
+                                "dataScope": "同一指标同一维度的完整分组合计",
+                                "standardHints": {"standardLabelField": "breakdownValue", "standardValueFields": ["total"]}})
     for rows in partitions.values():
         if len(rows) > 6:
             continue
         for index, item in rows:
             if len(partitions) > 1:
-                descriptors.append({"dataPath": f"breakdowns[{index}]", "fields": fields})
+                descriptors.append({"dataPath": f"breakdowns[{index}]", "fields": [
+                    field for field in fields if field in item
+                    and (item[field] is None or isinstance(item[field], (str, int, float, bool)))
+                ]})
             if item.get("periodValues"):
                 descriptors.append({"dataPath": f"breakdowns[{index}].periodValues", "fields": ["period", "value"]})
     return descriptors

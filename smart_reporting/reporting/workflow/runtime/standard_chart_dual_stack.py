@@ -187,7 +187,7 @@ DUAL_STACK_SCRIPT = '''def render_dual_stack(payload,canvas,form,title,output_pa
             text=prefix+caption+": "+format_standard_number(value,precision)+unit
             extra=canvas["presentation"]["extras"].get((labels[i],name),"")
             auxiliary=[]
-            for field in AUXILIARY.get(input_path,()):
+            for field in AUXILIARY.get((input_path,output_path),()):
                 meta=payload["columnMeta"][field]
                 auxiliary_value=rows[i][columns.index(field)]*(100 if meta["unit"]=="%" and meta.get("isPercent") is False else 1)
                 auxiliary.append(field+": "+format_standard_number(auxiliary_value,precision)+meta["unit"])

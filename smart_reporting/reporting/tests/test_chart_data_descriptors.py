@@ -88,11 +88,56 @@ def test_template_switch_clears_only_explicitly_reset_pagination_and_keeps_style
     assert preflight(reset).source
 
 
+@pytest.mark.parametrize('omitted', [('displayName',), ('breakdownLabel',), ('displayName', 'breakdownLabel')])
+def test_legacy_optional_breakdown_fields_are_not_invented_or_required(omitted):
+    from smart_reporting.reporting.workflow.runtime.chart_inputs import _table_for_binding
+    from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
+
+    document = _bundle().model_dump(mode='json', by_alias=True)
+    dimension = document['breakdowns'][0]['breakdownField']
+    document['breakdowns'] = [row for row in document['breakdowns'] if row['breakdownField'] == dimension]
+    for field in omitted:
+        document['breakdowns'][0].pop(field)
+    original = deepcopy(document)
+    descriptor = descriptors(document)['breakdowns']
+    assert not set(omitted) & set(descriptor['fields'])
+    assert descriptor['standardHints'] == {'standardLabelField': 'breakdownValue', 'standardValueFields': ['total']}
+    binding = ChartDataBinding(analysisId='analysis_001', factPath='facts.json', dataPath='breakdowns', fields=descriptor['fields'], role='main')
+    columns, rows, metadata = _table_for_binding(document, binding)
+    assert rows == [[row[field] for field in columns] for row in document['breakdowns']]
+    assert metadata == {'total': {'unit': document['breakdowns'][0]['unit']}}
+    assert document == original
+
+
+@pytest.mark.parametrize('fault', ['none', 'foreign_dataset', 'missing_dataset', 'parent', 'dimension'])
+def test_whole_breakdown_binding_requires_every_registered_dataset_and_one_partition(fault):
+    from smart_reporting.report_editor.chart_ai import _dataset_ids_for_bindings
+    from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
+
+    document = _bundle().model_dump(mode='json', by_alias=True)
+    dimension = document['breakdowns'][0]['breakdownField']
+    document['breakdowns'] = [row for row in document['breakdowns'] if row['breakdownField'] == dimension]
+    known = {row['datasetId'] for row in document['breakdowns']}
+    second = document['breakdowns'][-1]
+    if fault == 'foreign_dataset':
+        second['datasetId'] = 'foreign-dataset'
+    elif fault == 'missing_dataset':
+        second.pop('datasetId')
+    elif fault == 'parent':
+        second['parentFactId'] = 'fact-' + '0' * 16
+    elif fault == 'dimension':
+        second['breakdownField'] = 'foreign_dimension'
+    binding = ChartDataBinding(analysisId='analysis_001', factPath='facts.json', dataPath='breakdowns', fields=['breakdownValue', 'total'], role='main')
+    result = _dataset_ids_for_bindings({'facts.json': document}, (binding,), known_dataset_ids=known)
+    assert set(result) == (known if fault == 'none' else set())
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
-@pytest.mark.parametrize('selector', ['topGroups', 'bottomGroups', 'groupPopulation', 'breakdown_period'])
+@pytest.mark.parametrize('selector', ['topGroups', 'bottomGroups', 'groupPopulation', 'breakdown_period', 'whole_breakdowns'])
 async def test_editor_rebinds_ranked_or_complete_groups_and_executes_standard_source(tmp_path, selector):
     import json
+    import subprocess
 
     fixture = await _make_editor_with_chart(tmp_path, template_ready=True)
     editor, workspace, thread = fixture.editor, fixture.workspace, fixture.thread_id
@@ -101,13 +146,21 @@ async def test_editor_rebinds_ranked_or_complete_groups_and_executes_standard_so
     entry = next(item for item in index.fact_files if item.analysis_id == 'analysis_001' and item.content_kind == 'deterministic_bundle')
     fact = next(item for item in index.files if item.resource_id == entry.file_resource_id)
     document = json.loads(await workspace.aread_text(thread, fact.path))
-    population = [{'group': '甲', 'value': 1200.0}, {'group': '乙', 'value': 1500.0}, {'group': '丙', 'value': 1800.0}]
+    population = [{'group': '甲', 'value': 1125.0}, {'group': '乙', 'value': 1125.0}, {'group': '丙', 'value': 2250.0}]
     document['metrics'][0].update(groupPopulation=population, topGroups=[population[-1]], bottomGroups=[population[0]])
     document['breakdowns'] = [{**deepcopy(document['metrics'][0]),
         'parentFactId': document['metrics'][0]['factId'], 'breakdownField': 'department',
         'breakdownLabel': '科室', 'breakdownValue': '甲',
         'scope': {**document['metrics'][0].get('scope', {}), 'department': '甲'}}]
-    selected_path = 'breakdowns[0].periodValues' if selector == 'breakdown_period' else f'metrics[0].{selector}'
+    if selector == 'whole_breakdowns':
+        parent = document['metrics'][0]
+        document['breakdowns'] = [{**deepcopy(document['breakdowns'][0]),
+            'breakdownValue': group['group'], 'total': group['value'],
+            'scope': {**parent.get('scope', {}), 'department': group['group']},
+            'periodValues': [{'period': row['period'], 'value': row['value'] * group['value'] / parent['total']}
+                             for row in parent['periodValues']]}
+            for group in population]
+    selected_path = 'breakdowns' if selector == 'whole_breakdowns' else 'breakdowns[0].periodValues' if selector == 'breakdown_period' else f'metrics[0].{selector}'
     content = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
     await workspace.awrite_bytes(thread, fact.path, content, overwrite=True)
     fact = fact.model_copy(update={'size': len(content), 'sha256': _sha(content)})
@@ -126,19 +179,40 @@ async def test_editor_rebinds_ranked_or_complete_groups_and_executes_standard_so
     async def planner(request):
         requests.append(request)
         selected = next(item for item in request['registeredBindings'] if item['dataPath'] == selected_path)
+        standard = {'standardValueFields': ['value']}
+        if selector == 'whole_breakdowns':
+            standard = {**selected['standardHints'], 'standardPagination': {'pageSize': 2}}
         return ChartEditPlan(level=['L2'], visualForm='barh', drawInstruction='使用指定冻结分组逐项显示',
             dataBindings=[{key: selected[key] for key in ('analysisId', 'factPath', 'dataPath', 'fields', 'role')}],
-            standard={'standardValueFields': ['value']})
+            standard=standard)
 
-    runner = StandardRunner(fixture.chart_bytes)
+    class AuditedStandardRunner(StandardRunner):
+        async def run_standard_visualization(self, *args, **kwargs):
+            try:
+                return await super().run_standard_visualization(*args, **kwargs)
+            except subprocess.CalledProcessError as error:
+                self.failure_stderr = error.stderr.decode('utf-8', errors='replace')
+                raise
+
+    runner = AuditedStandardRunner(fixture.chart_bytes)
     service = _service(fixture, runner, planner=planner, timeout_seconds=60)
     try:
-        started = await service.start_edit(context, SimpleNamespace(capabilities=None), 'chart_001', ChartAIEditRequest(instruction='使用完整分组' if selector == 'groupPopulation' else '只显示已冻结的排序子集'))
+        started = await service.start_edit(context, SimpleNamespace(capabilities=None), 'chart_001', ChartAIEditRequest(instruction='使用完整分组' if selector in {'groupPopulation', 'whole_breakdowns'} else '只显示已冻结的排序子集'))
         result = await _await_edit(service, context, 'chart_001', started['editId'])
         assert result['status'] == 'succeeded', result
-        assert len(runner.standard_calls) == 1 and not runner.calls
+        assert len(runner.standard_calls) == 1 and not runner.calls, getattr(runner, 'failure_stderr', '')
         record = (await load_chart_edit_records(workspace, thread, context.markdown_path))[-1]
         payload = json.loads((await workspace.afile_bytes(thread, record.plot_data_files[0].path))[0])
+        if selector == 'whole_breakdowns':
+            assert len(record.pages) == 2
+            position = payload['columns'].index('total')
+            label_position = payload['columns'].index('breakdownValue')
+            assert [[row[label_position], row[position]] for row in payload['rows']] == [[row['group'], row['value']] for row in population]
+            assert payload['columnMeta']['total']['unit'] == document['metrics'][0]['unit']
+            assert record.data_origin == 'rebound' and len(record.plot_data_files) == 1
+            assert record.standard_parameters['standardLabelField'] == 'breakdownValue'
+            assert record.standard_parameters['standardValueFields'] == ['total']
+            return
         expected = document['metrics'][0]['periodValues'] if selector == 'breakdown_period' else population if selector == 'groupPopulation' else document['metrics'][0][selector]
         label = 'period' if selector == 'breakdown_period' else 'group'
         assert payload['rows'] == [[row[label], row['value']] for row in expected]

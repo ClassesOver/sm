@@ -154,6 +154,9 @@ def _standard_visualization_script(
         source = next((item for item in inputs.files if item.path == entry['path']), None)
         if source is None or source.sha256 != entry['sha256']:
             _reject('standard_input_identity_mismatch', 'chartInputs.sha256', '输入身份与登记不一致。', '重新物化并核验原始来源，禁止绕过身份核验。')
+        # Multiple charts/pages may intentionally share one immutable full
+        # cohort. Their display windows, transforms and units are per output.
+        scope = (source.path, chart.source_path)
         document = json.loads(source.content)
         if not isinstance(document, dict):
             return None
@@ -185,7 +188,7 @@ def _standard_visualization_script(
             document = {'columns': ['label', 'value'],
                         'rows': [[column, original_rows[0][original_columns.index(column)]] for column in selected],
                         'columnMeta': {'value': selected_meta[0]}}
-            aligned[source.path] = (document, [(source.path, source.sha256)])
+            aligned[scope] = (document, [(source.path, source.sha256)])
             selected = ('value',)
             form = 'bar'
         selections = getattr(chart, 'standard_sources', ())
@@ -203,7 +206,7 @@ def _standard_visualization_script(
             if alignment is None:
                 _reject('standard_source_alignment_failed', 'standardSources', '来源标签、单位、身份或来源使用范围不满足对齐要求。', '显式指定月份规范化、合计排除及共同窗口；检查重复标签、单位和所有绑定来源。')
             document, identities = alignment
-            aligned[source.path] = (document, identities)
+            aligned[scope] = (document, identities)
         if steps and (view is not None or derivations):
             _reject('standard_pipeline_order_ambiguous', 'standardSteps', '不能混用新流水线和旧视图/计算参数。', '将所有view/derivation按执行顺序放入standardSteps。')
         if view is not None or derivations or steps:
@@ -213,8 +216,8 @@ def _standard_visualization_script(
             except StandardChartTransformationError as error:
                 _reject('standard_transformation_failed', f'standardSteps[{error.step_index}]',
                         error.reason, '检查该步的输入列、登记单位、分组维度及月份；按声明顺序修正，禁止补零或覆盖原字段。')
-            dependencies = aligned.get(source.path, (None, [(source.path, source.sha256)]))[1]
-            aligned[source.path] = (document, dependencies)
+            dependencies = aligned.get(scope, (None, [(source.path, source.sha256)]))[1]
+            aligned[scope] = (document, dependencies)
         columns, rows = document['columns'], document['rows']
         if (not isinstance(columns, list) or not columns
                 or any(not isinstance(column, str) or not column for column in columns)
@@ -255,15 +258,15 @@ def _standard_visualization_script(
                 return None
             rows = [row for row in rows if row[label_index] in selected_labels]
             document = {**document, 'rows': rows}
-            dependencies = aligned.get(source.path, (None, [(source.path, source.sha256)]))[1]
-            aligned[source.path] = (document, dependencies)
+            dependencies = aligned.get(scope, (None, [(source.path, source.sha256)]))[1]
+            aligned[scope] = (document, dependencies)
         ordered = order_standard_rows(document, label, presentation.order)
         if ordered is None:
             return None
         if ordered['rows'] != rows:
             document, rows = ordered, ordered['rows']
-            dependencies = aligned.get(source.path, (None, [(source.path, source.sha256)]))[1]
-            aligned[source.path] = (document, dependencies)
+            dependencies = aligned.get(scope, (None, [(source.path, source.sha256)]))[1]
+            aligned[scope] = (document, dependencies)
         labels = [row[label_index] for row in rows]
         if any(not isinstance(value, str) or not value for value in labels):
             return None
@@ -333,13 +336,13 @@ def _standard_visualization_script(
             if not advanced:
                 scale = scales[0]
                 assert scale is not None
-                displays[source.path] = (float(scale), display_unit)
+                displays[scope] = (float(scale), display_unit)
         if not advanced and axes.left_display_unit:
             if display_unit:
                 return None
             if len(set(axis_factors)) != 1 or len(set(axis_units)) != 1:
                 return None
-            displays[source.path] = (axis_factors[0], axes.left_display_unit)
+            displays[scope] = (axis_factors[0], axes.left_display_unit)
         auxiliary_fields = tuple(getattr(chart, 'standard_label_fields', ()))
         if auxiliary_fields:
             if (advanced and not dual_stack or len(auxiliary_fields) != len(set(auxiliary_fields))
@@ -353,7 +356,7 @@ def _standard_visualization_script(
                     or not math.isfinite(row[columns.index(field)]) for row in rows
                 ):
                     return None
-            auxiliary[source.path] = auxiliary_fields
+            auxiliary[scope] = auxiliary_fields
         right = tuple(axes.right_fields)
         if (axes.mode != 'dual' and right) or (axes.mode != 'zoom' and (axes.zoom_start or axes.zoom_end)):
             return None
@@ -505,7 +508,7 @@ def _standard_visualization_script(
         canvas_policy['axis_factors'] = axis_factors
         canvas_policy['axis_units'] = axis_units
         try:
-            factors = [axis_factors[i] if advanced or axes.left_display_unit else displays.get(source.path, (1, None))[0]
+            factors = [axis_factors[i] if advanced or axes.left_display_unit else displays.get(scope, (1, None))[0]
                        for i in range(len(values))]
             factors = [factor * (100 if meta.get('unit') == '%' and meta.get('isPercent') is False else 1)
                        for factor, meta in zip(factors, metas, strict=True)]
@@ -529,11 +532,12 @@ def _standard_visualization_script(
         if getattr(chart, 'standard_domains', None) is None and getattr(chart, 'standard_break', None) is None:
             continue
         path = config[0]
-        document = (aligned[path][0] if path in aligned else
+        scope = (path, config[2])
+        document = (aligned[scope][0] if scope in aligned else
                     json.loads(next(source.content for source in inputs.files if source.path == path)))
         try:
-            prepare_standard_break(chart, config, document, displays.get(path, (1, None)))
-            prepare_standard_domains(chart, config, document, displays.get(path, (1, None)),
+            prepare_standard_break(chart, config, document, displays.get(scope, (1, None)))
+            prepare_standard_domains(chart, config, document, displays.get(scope, (1, None)),
                                      profiles_override=summary_profiles.get(chart.chart_id))
         except StandardChartEncodingError as error:
             _reject(error.code, error.parameter, str(error), '范围与刻度使用显示单位；保留所有数据或明确声明并说明显示裁切。')
@@ -1041,8 +1045,9 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
     if hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError("chart input identity changed")
     payload = json.loads(raw)
-    if input_path in ALIGNED:
-        payload, dependencies = ALIGNED[input_path]
+    scope = (input_path, output_path)
+    if scope in ALIGNED:
+        payload, dependencies = ALIGNED[scope]
         for dependency_path, dependency_digest in dependencies:
             with open(dependency_path, "rb") as handle:
                 dependency_raw = handle.read()
@@ -1070,8 +1075,8 @@ __STATISTICAL_DISPATCH__    canvas["band_data"] = standard_band_data(payload, ca
         continue
     if unit == "%" and is_percent is False:
         series = [[value * 100 for value in values] for values in series]
-    if input_path in DISPLAYS:
-        factor, unit = DISPLAYS[input_path]
+    if scope in DISPLAYS:
+        factor, unit = DISPLAYS[scope]
         series = [[value * factor for value in values] for values in series]
     fig, ax = plt.subplots(**create_standard_canvas(canvas, labels, form))
     draw_standard_bands(ax, canvas, names, positions=list(range(len(labels))))
@@ -1157,7 +1162,7 @@ __STATISTICAL_DISPATCH__    canvas["band_data"] = standard_band_data(payload, ca
             if caption:
                 prefix = caption + " "
             auxiliary_text = []
-            for field in AUXILIARY.get(input_path, ()):
+            for field in AUXILIARY.get(scope, ()):
                 matching = [row for row in payload["rows"] if row[label_index] == labels[index]
                             and (not category_column or row[category_index] == names[series_index])]
                 if len(matching) != 1:

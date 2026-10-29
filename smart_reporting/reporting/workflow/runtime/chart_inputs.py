@@ -56,15 +56,16 @@ def chart_input_matches_rebuild(actual: bytes, rebuilt: bytes) -> bool:
         metadata = payload["columnMeta"]
     except (ValueError, KeyError, TypeError):
         return False
-    if not isinstance(path, str) or not re.fullmatch(
+    if not isinstance(path, str) or not (path == "breakdowns" or re.fullmatch(
         r"(?:breakdowns\[\d+\]\.(?:periodValues|topGroups|bottomGroups|groupPopulation)"
         r"|metrics\[\d+\]\.(?:topGroups|bottomGroups|groupPopulation))", path,
-    ):
+    )):
         return False
-    if (not isinstance(metadata, dict) or set(metadata) != {"value"}
-            or not isinstance(metadata["value"], dict)
-            or "unit" not in metadata["value"]
-            or not set(metadata["value"]).issubset({"unit", "isPercent"})):
+    measure = "total" if path == "breakdowns" else "value"
+    if (not isinstance(metadata, dict) or set(metadata) != {measure}
+            or not isinstance(metadata[measure], dict)
+            or "unit" not in metadata[measure]
+            or not set(metadata[measure]).issubset({"unit", "isPercent"})):
         return False
     payload.pop("columnMeta")
     legacy = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -191,6 +192,8 @@ def _table_for_binding(
                 raise ChartInputError("行对象字段必须是标量")
             rows.append(row)
         column_meta = None
+        if tokens == ("breakdowns",) and "total" in fields:
+            column_meta = _breakdown_total_metadata(value)
         # Frozen metric/group arrays carry the parent measure's unit. Do not
         # infer units from labels/titles or alter any signed source values.
         if (len(tokens) == 3 and tokens[0] in {'metrics', 'breakdowns'}
@@ -212,6 +215,31 @@ def _table_for_binding(
             raise ChartInputError(f"对象绑定字段缺失或非标量：{missing + nested}")
         return fields, [[value[name] for name in fields]], None
     raise ChartInputError("dataPath 指向的值无法转换为表格")
+
+
+def _breakdown_total_metadata(rows: list[Any]) -> dict[str, Any] | None:
+    """Only a proven common partition/unit can share one unchanged total axis."""
+    if not rows:
+        return None
+    for key in ("parentFactId", "breakdownField"):
+        identities = [row.get(key) for row in rows]
+        if (not all(isinstance(item, str) and item.strip() for item in identities)
+                or len(set(identities)) != 1):
+            raise ChartInputError("完整分组合计不能混用不同或未知父指标/维度")
+    units = [row.get("unit") for row in rows]
+    known = [unit for unit in units if isinstance(unit, str) and unit.strip()]
+    if known and (len(known) != len(units) or len(set(known)) != 1):
+        raise ChartInputError("完整分组合计的单位不一致，不能共用数值轴")
+    scales = [row.get("isPercent") for row in rows]
+    explicit = [scale for scale in scales if isinstance(scale, bool)]
+    if explicit and (len(explicit) != len(scales) or len(set(explicit)) != 1):
+        raise ChartInputError("完整分组合计的百分数尺度不一致，不能共用数值轴")
+    if not known:
+        return None
+    metadata: dict[str, Any] = {"unit": known[0]}
+    if explicit:
+        metadata["isPercent"] = explicit[0]
+    return {"total": metadata}
 
 
 def _binding_catalog(
