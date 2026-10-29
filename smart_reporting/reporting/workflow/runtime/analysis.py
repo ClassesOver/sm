@@ -2089,7 +2089,7 @@ class RuntimeAnalysisMixin:
             await execute_analysis_items(
                 tuple(analyses),
                 run_evidence_item,
-                execution_mode=getattr(self, "reporting_execution_mode", "sequential"),
+                execution_mode=getattr(self, "reporting_execution_mode", "parallel"),
                 limiter=asyncio.Semaphore(getattr(self, "analysis_concurrency", 5)),
                 run_context=run_context,
             )
@@ -2450,7 +2450,7 @@ class RuntimeAnalysisMixin:
             submit_visualization=submit_visualization,
             draft_section=draft_section,
             rework_analysis=rework_analysis,
-            execution_mode=getattr(self, "reporting_execution_mode", "sequential"),
+            execution_mode=getattr(self, "reporting_execution_mode", "parallel"),
             section_concurrency=getattr(self, "section_concurrency", 1),
             analysis_concurrency=getattr(self, "analysis_concurrency", 5),
         )
@@ -3803,6 +3803,11 @@ class RuntimeAnalysisMixin:
             combined: dict[str, Any] = {"findings": [], "reconciliations": [], "warnings": []}
             requests: list[dict[str, Any]] = []
             population_proofs: list[dict[str, Any]] = []
+            fact_by_id = {
+                item.fact_id: item
+                for item in (state.facts.metrics if state.facts is not None else ())
+                if item.fact_id
+            }
 
             async def read_input(dataset_id: str) -> tuple[Mapping[str, Any], FileIdentity, bytes]:
                 current_analysis = state.instruction.get("currentAnalysis") or {}
@@ -3831,11 +3836,6 @@ class RuntimeAnalysisMixin:
             for requirement, computation_spec in zip(decision.coding_requirements, specs, strict=True):
                 dataset, identity, content = await read_input(requirement.dataset_id)
                 thread_id = str(self._scope(parent_run_context)["threadId"])
-                fact_by_id = {
-                    item.fact_id: item
-                    for item in (state.facts.metrics if state.facts is not None else ())
-                    if item.fact_id
-                }
                 parent = fact_by_id.get(computation_spec.parent_fact_id)
                 baseline = (
                     fact_by_id.get(computation_spec.baseline_parent_fact_id)

@@ -5655,4 +5655,4 @@ def test_runtime_requires_bounded_integer_analysis_concurrency(concurrency, vali
     runtime = build()
     assert runtime.analysis_concurrency == concurrency
     assert runtime.section_concurrency == 1
-    assert runtime.reporting_execution_mode == 'sequential'
+    assert runtime.reporting_execution_mode == 'parallel'
