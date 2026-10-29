@@ -169,8 +169,16 @@ class RuntimePlanningMixin:
             else ReportingWorkflowInput.model_validate(step_input.input)
         )
         request = workflow_input.request()
+        options = workflow_input.request_options
         feedback = self._feedback(step_input)
         if isinstance(request, ReportRequestEnvelope):
+            if options:
+                request = ReportRequestEnvelope.model_validate({
+                    **request.model_dump(),
+                    "report_goal": options.planning_goal(request.report_goal),
+                    "period": options.period or request.period,
+                    "domains": options.domains or request.domains,
+                })
             self._record_request_context(state, request.report_goal, feedback)
             self._record_normalized_request(state, request)
             return StepOutput(
@@ -178,17 +186,24 @@ class RuntimePlanningMixin:
             )
 
         assert isinstance(request, ReportPromptInput)
-        self._record_request_context(state, request.prompt, feedback)
+        planning_goal = options.planning_goal(request.prompt) if options else request.prompt
+        self._record_request_context(state, planning_goal, feedback)
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
+        if options:
+            prompt_payload["requestOptions"] = options.model_dump(mode="json", by_alias=True)
         if feedback:
             prompt_payload["supplement"] = feedback
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
         period = _single_explicit_period(request.prompt, feedback) or normalized.period
+        if options and options.period:
+            period = options.period
         missing: list[str] = []
         if period is None:
             missing.append(normalized.clarification_question or "请明确唯一的分析期间。")
         semantic_domains = tuple(dict.fromkeys(normalized.domains))
+        if options and options.domains:
+            semantic_domains = options.domains
         report_type = normalized.report_type
         if report_type is None:
             missing.append(
@@ -204,7 +219,7 @@ class RuntimePlanningMixin:
         envelope = ReportRequestEnvelope.from_untrusted(
             {
                 "version": "1",
-                "reportGoal": request.prompt,
+                "reportGoal": planning_goal,
                 "reportType": report_type,
                 **({"sectionCount": normalized.section_count} if normalized.section_count is not None else {}),
                 **({"domains": domains} if domains else {}),

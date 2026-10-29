@@ -901,11 +901,12 @@ button {
   background: #f6fafc;
 }
 
-.share-link { display: grid; gap: 8px; }
+.share-link { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
 .share-link[hidden] { display: none; }
-.share-link-row { display: flex; align-items: stretch; }
+.share-link-row { display: flex; align-items: stretch; min-width: 0; }
 .share-link-row input {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  width: 0;
   min-width: 0;
   padding: 9px 12px;
   border: 1px solid var(--color-border-strong);
@@ -928,7 +929,7 @@ button {
 }
 .share-link-row button:hover { border-color: transparent; background: linear-gradient(135deg, #0f77c2 0%, #0d5fa3 100%); }
 .share-link-row button:disabled { border-color: transparent; background: var(--color-disabled); cursor: default; }
-.share-link-footer { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.share-link-footer { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; overflow-wrap: anywhere; }
 .share-link-meta { color: var(--color-text-muted); font-size: var(--font-size-sm); }
 .share-renew-note { margin: 0; color: #636f77; font-size: var(--font-size-sm); }
 

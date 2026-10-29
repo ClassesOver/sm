@@ -948,7 +948,7 @@ wheels = [
 
 [[package]]
 name = "dingyi-agno"
-version = "0.5.4"
+version = "0.5.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ag-ui-protocol", marker = "sys_platform != 'emscripten'" },
@@ -961,9 +961,9 @@ dependencies = [
     { name = "python-multipart", marker = "sys_platform != 'emscripten'" },
     { name = "sqlalchemy", extra = ["asyncio"], marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/94/5aefa229e5f5c17a10e90780b69604e37af4cd671582ebfe47546a300dd6/dingyi_agno-0.5.4.tar.gz", hash = "sha256:7f07ebd251644eb371fc04096db6b27270d479d0e076c038ff9d645fec6f6e27", size = 1157439, upload-time = "2026-10-15T06:10:32.768Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/80/ae674f5866911f78f2d3fd2ca669897bc350d964277a0822ecf51b1cec6b/dingyi_agno-0.5.5.tar.gz", hash = "sha256:22103b6bdc7f2c07b743ec6f919469ff3de9b8ad2cd4794e63fd9cd2df324538", size = 1170084, upload-time = "2026-10-23T05:02:00.063Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/af/1d/971c2983100e4336ee79302ba3010e8bbac89620d733b134e4209f8c7ade/dingyi_agno-0.5.4-py3-none-any.whl", hash = "sha256:fa6ef677e70f5c633244b75972c5c8946a58b85591d5090aff17de8b781a1c7e", size = 1133175, upload-time = "2026-10-15T06:10:30.094Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/a8/d1625a4a5c3e34478612e26e73c589f7b136d8ba57323e458b85fe270006/dingyi_agno-0.5.5-py3-none-any.whl", hash = "sha256:8fddae9120a4648ecb08f687a70958e9bb66f3e3138d99fc858dbf1f673b1fab", size = 1142431, upload-time = "2026-10-23T05:01:57.365Z" },
 ]
 
 [[package]]
@@ -4865,7 +4865,7 @@ requires-dist = [
     { name = "cairosvg", specifier = "==2.9.1" },
     { name = "cryptography", specifier = ">=45,<51" },
     { name = "dill", specifier = ">=0.3.9,<0.4.0" },
-    { name = "dingyi-agno", specifier = "==0.5.4" },
+    { name = "dingyi-agno", specifier = "==0.5.5" },
     { name = "duckdb", specifier = "==1.5.5" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastmcp", specifier = ">=4,<5" },
