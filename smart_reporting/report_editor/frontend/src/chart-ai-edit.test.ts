@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Schema } from '@milkdown/kit/prose/model'
+import { EditorState, type Transaction } from '@milkdown/kit/prose/state'
 
 import type { ReportEditorClient, TraceChartInfo } from './api'
 import {
@@ -21,6 +23,13 @@ const chart: TraceChartInfo = {
   imagePath: 'reports/revision-1/chart-001.png',
   imageSize: 10,
 }
+
+const replacementSchema = new Schema({ nodes: {
+  doc: { content: 'block+' }, paragraph: { content: 'inline*', group: 'block' },
+  'image-block': { group: 'block', atom: true, attrs: { src: {}, caption: { default: '' } } },
+  image: { group: 'inline', inline: true, atom: true, attrs: { src: {}, alt: { default: '' } } },
+  text: { group: 'inline' },
+} })
 
 describe('quickCommandsForForm', () => {
   it('按当前图形形态优先推荐对应快捷指令，未知形态回落默认集', () => {
@@ -68,48 +77,29 @@ describe('chartAiUnavailableReason', () => {
 
 describe('applyChartReplacement', () => {
   function fakeView(nodeType: string, { inline = false, captionText = '图表：收入对比' } = {}) {
-    const node = {
-      type: { name: nodeType },
-      attrs: { src: 'chart-001.png', caption: '旧图注', alt: '旧 alt' },
-      nodeSize: inline ? 1 : 4,
-      isTextblock: false,
-      isInline: inline,
-    }
-    const captionNode = {
-      type: { name: 'paragraph' },
-      attrs: {},
-      nodeSize: 6,
-      isTextblock: true,
-      textContent: captionText,
-    }
+    const node = replacementSchema.node(nodeType, { src: 'chart-001.png', caption: '旧图注', alt: '旧 alt' })
+    const captionNode = replacementSchema.node('paragraph', null, replacementSchema.text(captionText))
+    const block = inline ? replacementSchema.node('paragraph', null, [replacementSchema.text('x'), node]) : node
+    const content = inline ? [block, captionNode] : [replacementSchema.node('paragraph'), block, captionNode]
+    let state = EditorState.create({ doc: replacementSchema.node('doc', null, content) })
+    const captionFrom = inline ? block.nodeSize : 2 + block.nodeSize
     const marks: Array<[string, ...unknown[]]> = []
-    const tr = {
-      setNodeMarkup(pos: number, _type: unknown, attrs: Record<string, unknown>) {
-        marks.push(['setNodeMarkup', pos, attrs])
-        return tr
-      },
-      insertText(text: string, from: number, to: number) {
-        marks.push(['insertText', text, from, to])
-        return tr
-      },
-    }
+    const tr = state.tr
+    const setMarkup = tr.setNodeMarkup.bind(tr)
+    const insertText = tr.insertText.bind(tr)
+    tr.setNodeMarkup = (pos, type, attrs) => { marks.push(['setNodeMarkup', pos, attrs]); return setMarkup(pos, type, attrs) }
+    tr.insertText = (text, from, to) => { marks.push(['insertText', text, from, to]); return insertText(text, from, to) }
+    Object.defineProperty(state, 'tr', { get: () => tr })
     const view = {
       posAtDOM: () => 2,
-      state: {
-        doc: {
-          // 行内图片位于段落内（段落结束于 10），图注段落在段落之后。
-          resolve: () => ({ depth: 1, before: () => 2, after: () => 10 }),
-          nodeAt: (pos: number) => (pos === 2 ? node : pos === (inline ? 10 : 6) ? captionNode : null),
-        },
-        tr,
-      },
-      dispatch: vi.fn(),
+      state,
+      dispatch: vi.fn((change: Transaction) => { state = state.apply(change); view.state = state }),
     }
-    return { view, marks }
+    return { view, marks, captionRange: [captionFrom + 1, captionFrom + captionNode.nodeSize - 1] }
   }
 
   it('一次事务替换图片节点：“图表：”段落写标题，替代文本写图注', () => {
-    const { view, marks } = fakeView('image-block')
+    const { view, marks, captionRange } = fakeView('image-block')
     const ok = applyChartReplacement(
       view as never,
       document.createElement('img'),
@@ -121,14 +111,14 @@ describe('applyChartReplacement', () => {
     const attrs = (marks[0] as unknown[])[2] as Record<string, unknown>
     expect(attrs.src).toBe('chart-edits/cedit-1/chart.png')
     expect(attrs.caption).toBe('收入横向对比')
-    expect(marks[1]).toEqual(['insertText', '图表：收入（横向）', 7, 11])
+    expect(marks[1]).toEqual(['insertText', '图表：收入（横向）', ...captionRange])
   })
 
   it('“图注：”段落写图注；标题未变时不改“图表：”段落', () => {
     const captioned = fakeView('image-block', { captionText: '图注：旧说明' })
     applyChartReplacement(captioned.view as never, document.createElement('img'), 'x.png',
       { title: '新标题', altText: '新说明' })
-    expect(captioned.marks[1]).toEqual(['insertText', '图注：新说明', 7, 11])
+    expect(captioned.marks[1]).toEqual(['insertText', '图注：新说明', ...captioned.captionRange])
     const titled = fakeView('image-block')
     applyChartReplacement(titled.view as never, document.createElement('img'), 'x.png',
       { title: null, altText: '新说明' })
@@ -144,7 +134,7 @@ describe('applyChartReplacement', () => {
     expect(applyChartReplacement(inline.view as never, document.createElement('img'), 'x.png',
       { title: '新标题', altText: null })).toBe(true)
     expect(inline.marks[0]).toEqual(['setNodeMarkup', 2, expect.objectContaining({ src: 'x.png', alt: '旧 alt' })])
-    expect(inline.marks[1]).toEqual(['insertText', '图表：新标题', 11, 15])
+    expect(inline.marks[1]).toEqual(['insertText', '图表：新标题', ...inline.captionRange])
   })
 })
 
@@ -177,31 +167,13 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 function fakeViewForController() {
-  const node = {
-    type: { name: 'image-block' },
-    attrs: { src: 'chart-001.png', caption: '旧图注' },
-    nodeSize: 4,
-    isTextblock: false,
+  const view = {
+    posAtDOM: () => 0,
+    state: EditorState.create({ doc: replacementSchema.node('doc', null,
+      replacementSchema.node('image-block', { src: 'chart-001.png', caption: '旧图注' })) }),
+    dispatch: vi.fn((tr: Transaction) => { view.state = view.state.apply(tr) }),
   }
-  const tr = {
-    setNodeMarkup(_pos: number, _t: unknown, _attrs: Record<string, unknown>) {
-      return tr
-    },
-    insertText() {
-      return tr
-    },
-  }
-  return {
-    posAtDOM: () => 2,
-    state: {
-      doc: {
-        resolve: () => ({ depth: 1, before: () => 2 }),
-        nodeAt: () => node,
-      },
-      tr,
-    },
-    dispatch: vi.fn(),
-  } as unknown as Parameters<typeof createChartAIEdit>[0]['view']
+  return view as unknown as Parameters<typeof createChartAIEdit>[0]['view']
 }
 
 function mountEditorWithImage(): HTMLImageElement {

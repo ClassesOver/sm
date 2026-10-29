@@ -851,8 +851,12 @@ async def test_chart_ai_resolves_revision_local_id_by_unique_image_identity(
     session = SimpleNamespace(capabilities=None)
     availability = await service.availability(fixture.context, session, chart_id)
     templates = await service.templates(fixture.context, session, chart_id)
+    assert availability["chartId"] == chart_id
+    assert availability["standardAvailable"] is False  # FakeRunner has no native executor.
     if mismatch is None:
-        assert availability == {"available": True, "chartId": chart_id}
+        assert availability["available"] is True and availability["codingAvailable"] is True
+        assert availability["baseImagePath"] == fixture.chart_path
+        assert availability["expectedSha256"] == fixture.chart.sha256
         assert any(item["available"] for item in templates["templates"])
         started = await service.start_edit(
             fixture.context, session, chart_id, ChartAIEditRequest(instruction="改成横向条形图"),
@@ -862,7 +866,9 @@ async def test_chart_ai_resolves_revision_local_id_by_unique_image_identity(
         records = await load_chart_edit_records(fixture.workspace, fixture.thread_id, fixture.context.markdown_path)
         assert records[-1].chart_id == chart_id
     else:
-        assert availability == {"available": False, "reason": "unknown_chart"}
+        assert availability["available"] is False and availability["codingAvailable"] is False
+        assert availability["reason"] == "unknown_chart"
+        assert "baseImagePath" not in availability and "expectedSha256" not in availability
         assert not any(item["available"] for item in templates["templates"])
     await service.aclose()
 

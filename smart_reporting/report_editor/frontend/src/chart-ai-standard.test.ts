@@ -118,13 +118,14 @@ describe('完整多页接受', () => {
     expect(view.dispatch).not.toHaveBeenCalled()
   })
 
-  it('图题中还有协议引用时，不因重画图题静默丢掉该引用', () => {
+  it('图题中还有引用时保留引用节点后完整重画图组', () => {
     const previous = old.map((item, index) => index === 0 ? { ...item, title: `${item.title} [[citation:caption_001]]` } : item)
     const doc = schema.node('doc', null, nodes(previous))
     const view = viewFor(doc, 1)
-    expect(applyChartPagesReplacement(view, document.createElement('img'), next, { basePath: '/b', previousEditId: 'cedit-old12345', previousPages: previous })).toBe(false)
-    expect(view.dispatch).not.toHaveBeenCalled()
-    expect(view.state.doc.eq(doc)).toBe(true)
+    expect(applyChartPagesReplacement(view, document.createElement('img'), next, { basePath: '/b', previousEditId: 'cedit-old12345', previousPages: previous })).toBe(true)
+    expect(view.dispatch).toHaveBeenCalledTimes(1)
+    expect(protocolMarkersUnchanged(doc.textContent, view.state.doc.textContent)).toBe(true)
+    expect(view.state.doc.textContent.match(/\[\[citation:caption_001\]\]/g)).toHaveLength(1)
   })
   it('从第二页接受会原子替换整组，保留无关正文，撤销一次恢复全部旧页', () => {
     const doc = schema.node('doc', null, [paragraph('前置正文'), ...nodes(old), paragraph('后置正文')])
