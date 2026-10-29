@@ -240,6 +240,110 @@ function mount(src = '/b/asset/reports/revision-1/original.png') {
 }
 
 describe('模板选择与完整预览', () => {
+  it.each([
+    ['饼图', '按占比从大到小排序'],
+    ['折线图', '标注最高和最低的月份'],
+    [undefined, '改成横向条形图并按数值降序排列'],
+  ])('重新打开已登记改图时使用其图形信息（%s），旧记录兼容默认推荐', async (visualForm, firstCommand) => {
+    const api = client({ chartEditRecord: vi.fn(async () => ({ editId: 'cedit-old12345', chartId: 'chart_001',
+      imagePath: old[0]!.imagePath, pages: old, ...(visualForm ? { visualForm } : {}) })) })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    try {
+      controller.open(mount(`/b/asset/${old[1]!.imagePath}`))
+      await vi.waitFor(() => expect(document.querySelector('.chart-ai-quick button')).not.toBeNull())
+      expect(document.querySelector('.chart-ai-quick button')!.textContent).toBe(firstCommand)
+      expect(api.chartEditRecord).toHaveBeenCalledWith('cedit-old12345')
+      expect(api.charts).not.toHaveBeenCalled()
+    } finally { controller.dispose() }
+  })
+
+  it.each([false, true])('从第二页应用标准预设时显式控制重置=%s且保留底图和上轮身份', async (reset) => {
+    const previousPages = old.map(item => ({ ...item, sha256: 'c'.repeat(64) }))
+    const api = client({
+      chartAiAvailability: vi.fn(async () => ({ available: false, reason: 'unconfigured', standardAvailable: true,
+        baseImagePath: 'reports/revision-1/original.png', expectedSha256: 'a'.repeat(64) })),
+      chartEditRecord: vi.fn(async () => ({ editId: 'cedit-old12345', chartId: 'chart_001', imagePath: old[0]!.imagePath, pages: previousPages })),
+      startChartStandardEdit: vi.fn(async () => ({ editId: 'cedit-new12345' })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    try {
+      controller.open(mount(`/b/asset/${old[1]!.imagePath}`))
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-standard-reset')).not.toBeNull())
+      const checkbox = document.querySelector<HTMLInputElement>('#chart-ai-standard-reset')!
+      expect(checkbox.checked).toBe(false)
+      expect(document.querySelector('#chart-ai-standard-reset-help')!.textContent).toContain('作图数据不变')
+      checkbox.checked = reset
+      const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
+      select.value = 'pie'
+      select.dispatchEvent(new Event('change'))
+      ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+      await vi.waitFor(() => expect(api.startChartStandardEdit).toHaveBeenCalledTimes(1))
+      const payload = vi.mocked(api.startChartStandardEdit).mock.calls[0]![1]
+      expect(payload).toMatchObject({ standard: { standardForm: 'pie' }, previousEditId: 'cedit-old12345',
+        baseImagePath: old[1]!.imagePath, expectedSha256: 'c'.repeat(64) })
+      if (reset) expect(payload.inheritPreviousStandard).toBe(false)
+      else expect(payload).not.toHaveProperty('inheritPreviousStandard')
+      expect(api.startChartAiEdit).not.toHaveBeenCalled()
+    } finally { controller.dispose() }
+  })
+
+  it.each([false, true])('勾选标准重置不会混入AI文本请求（先应用预设=%s）', async (applyPreset) => {
+    const api = client({ startChartStandardEdit: vi.fn(),
+      chartAiAvailability: vi.fn(async () => ({ available: true, standardAvailable: true, expectedSha256: 'a'.repeat(64) })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    try {
+      controller.open(mount(`/b/asset/${old[1]!.imagePath}`))
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-standard-reset')).not.toBeNull())
+      document.querySelector<HTMLInputElement>('#chart-ai-standard-reset')!.checked = true
+      document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '保留蓝色并显示数值'
+      if (applyPreset) {
+        const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
+        select.value = 'donut'
+        select.dispatchEvent(new Event('change'))
+        ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+      }
+      ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
+      await vi.waitFor(() => expect(api.startChartAiEdit).toHaveBeenCalledTimes(1))
+      const payload = vi.mocked(api.startChartAiEdit).mock.calls[0]![1]
+      expect(payload.instruction).toContain('保留蓝色并显示数值')
+      expect(payload).toMatchObject({ baseImagePath: old[1]!.imagePath, previousEditId: 'cedit-old12345' })
+      expect(payload).not.toHaveProperty('inheritPreviousStandard')
+      expect(api.startChartStandardEdit).not.toHaveBeenCalled()
+    } finally { controller.dispose() }
+  })
+
+  it('重置选项不能绕过只读限制', async () => {
+    const api = client({ startChartStandardEdit: vi.fn(),
+      chartAiAvailability: vi.fn(async () => ({ available: false, reason: 'read_only', standardAvailable: false })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    try {
+      controller.open(mount())
+      await vi.waitFor(() => expect(document.querySelector('.chart-ai-unavailable')).not.toBeNull())
+      expect(document.querySelector('#chart-ai-standard-reset')).toBeNull()
+      expect(api.startChartStandardEdit).not.toHaveBeenCalled()
+      expect(api.startChartAiEdit).not.toHaveBeenCalled()
+    } finally { controller.dispose() }
+  })
+
+  it('勾选重置后仍须读取底图SHA才能应用标准预设', async () => {
+    const api = client({ startChartStandardEdit: vi.fn() })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    try {
+      controller.open(mount())
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-standard-reset')).not.toBeNull())
+      document.querySelector<HTMLInputElement>('#chart-ai-standard-reset')!.checked = true
+      const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
+      select.value = 'pie'
+      select.dispatchEvent(new Event('change'))
+      ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+      expect(document.querySelector('#chart-ai-standard-help')!.textContent).toContain('底图身份不可读取')
+      expect(api.startChartStandardEdit).not.toHaveBeenCalled()
+      expect(api.startChartAiEdit).not.toHaveBeenCalled()
+    } finally { controller.dispose() }
+  })
+
   it.each(['ai', 'standard', 'template'])('关闭再打开后丢弃%s旧状态，且仍能取消新任务', async (route) => {
     let finishOld: (value: unknown) => void = () => undefined
     let oldWaiting = false
