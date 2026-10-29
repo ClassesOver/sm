@@ -3298,8 +3298,8 @@ def _with_drilldown_projection(
 ) -> tuple[QueryRequirement, ...]:
     """把可加维度及指标固定范围字段加入物化粒度。
 
-    只处理单表 requirement；字段必须来自当前已绑定 Profile，且必须同时在
-    该 requirement 的每个 measure ``additiveAcross`` 中；固定范围字段来自
+    只处理单表 requirement；可加字段必须同时在该 requirement 的每个 measure
+    的冻结 ``additiveAcross`` 中，不能因缺少展示维度登记而丢失时间轴证据；固定范围字段来自
     冻结语义 exclusiveScope，保留原有 SQL 范围过滤，仅投影常量以供补证复核。
     超过既有 30 列契约时保持原计划，后续能力生成器如实判定不可用。
     """
@@ -3359,6 +3359,9 @@ def _with_drilldown_projection(
             ]
             if len(candidates) == 1:
                 additions.append(candidates[0].casefold())
+        # 保留源期间字段供事实层逐行核对时间轴别名；投影本身不证明同轴，
+        # 也不把未确认时间可加性的指标从 last 改成 sum。
+        additions.extend(sorted(common_additive))
         projected_dimensions = tuple(
             dict.fromkeys((*requirement.dimension_columns, *additions))
         )

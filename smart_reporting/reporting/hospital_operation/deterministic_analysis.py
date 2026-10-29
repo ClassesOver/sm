@@ -1264,6 +1264,22 @@ def metric_period_key(
     return (parsed.granularity, parsed.value) if parsed is not None else None
 
 
+def metric_comparison_period_key(
+    label: str, grain: Literal["day", "month", "year"] | None,
+    comparison_type: Literal["yoy", "mom"],
+) -> tuple[str, date] | None:
+    """补证复用事实层日历；不存在的同比日不借用相邻日期。"""
+    parsed = _parse_fact_period(label, grain)
+    if parsed is None:
+        return None
+    try:
+        value = (_previous_period(parsed) if comparison_type == "mom"
+                 else parsed.value.replace(year=parsed.value.year - 1))
+    except ValueError:
+        return None
+    return parsed.granularity, value
+
+
 def _parsed_period_values(
     fact: DeterministicMetricFact,
 ) -> list[tuple[_ParsedPeriod, PeriodValue]] | None:

@@ -21,6 +21,7 @@ from sqlglot.errors import SqlglotError
 from ...hospital_operation.deterministic_analysis import (
     additive_group_totals,
     apply_metric_scope,
+    metric_comparison_period_key,
     metric_period_key,
     read_analysis_csv,
     reconciliation_passes,
@@ -36,6 +37,7 @@ class StandardSupplementalRequest(BaseModel):
         "period_comparison", "group_ratio",
     ]
     dataset_id: str = Field(min_length=1, alias="datasetId")
+    baseline_dataset_id: str | None = Field(default=None, min_length=1, alias="baselineDatasetId")
     output_name: str = Field(min_length=1, alias="outputName")
     measure_field: str = Field(min_length=1, alias="measureField")
     denominator_field: str | None = Field(default=None, min_length=1, alias="denominatorField")
@@ -58,9 +60,16 @@ class StandardSupplementalRequest(BaseModel):
     query_bound_scope_fields: tuple[str, ...] = Field(
         default=(), alias="queryBoundScopeFields", exclude_if=lambda value: not value,
     )
+    baseline_query_bound_scope_fields: tuple[str, ...] = Field(
+        default=(), alias="baselineQueryBoundScopeFields", exclude_if=lambda value: not value,
+    )
 
     @model_validator(mode="after")
     def require_baseline_for_comparison(self) -> StandardSupplementalRequest:
+        if self.baseline_dataset_id is not None and self.operation != "period_comparison":
+            raise ValueError("只有 period_comparison 接受 baselineDatasetId")
+        if self.baseline_query_bound_scope_fields and self.baseline_dataset_id is None:
+            raise ValueError("独立对照范围必须绑定 baselineDatasetId")
         if self.operation == "period_comparison" and not self.baseline_periods:
             raise ValueError("period_comparison 必须提供 baselinePeriods")
         if self.operation == "period_comparison" and self.baseline_parent_total is None:
@@ -101,11 +110,9 @@ class StandardSupplementalRequest(BaseModel):
             raise ValueError("标准补证期间必须可解析且粒度相同")
         if len(keys) != len(set(keys)):
             raise ValueError("标准补证期间不能重复或重叠（含期间别名）")
-        if (
-            len(self.query_bound_scope_fields) != len(set(self.query_bound_scope_fields))
-            or not set(self.query_bound_scope_fields).issubset(self.scope)
-        ):
-            raise ValueError("queryBoundScopeFields 必须唯一且属于 scope")
+        for fields in (self.query_bound_scope_fields, self.baseline_query_bound_scope_fields):
+            if len(fields) != len(set(fields)) or not set(fields).issubset(self.scope):
+                raise ValueError("查询固定范围字段必须唯一且属于 scope")
         return self
 
 
@@ -129,6 +136,7 @@ class StandardSupplementalSpec(BaseModel):
     baseline_periods: tuple[str, ...] = Field(default=(), alias="baselinePeriods")
     parent_fact_id: str = Field(min_length=1, alias="parentFactId")
     baseline_parent_fact_id: str | None = Field(default=None, alias="baselineParentFactId")
+    baseline_dataset_id: str | None = Field(default=None, min_length=1, alias="baselineDatasetId")
     denominator_parent_fact_id: str | None = Field(
         default=None, min_length=1, alias="denominatorParentFactId",
     )
@@ -147,7 +155,7 @@ class StandardSupplementalSpec(BaseModel):
                 raise ValueError("period_comparison 必须提供 baselinePeriods")
             if len(self.current_periods) != len(self.baseline_periods):
                 raise ValueError("当前期间与对照期间粒度数必须一致")
-        elif self.baseline_periods or self.baseline_parent_fact_id is not None:
+        elif self.baseline_periods or self.baseline_parent_fact_id is not None or self.baseline_dataset_id is not None:
             raise ValueError(f"{self.operation} 不接受对照期间")
         if self.operation == "group_ratio":
             if (
@@ -185,47 +193,63 @@ def run_standard_supplemental(
     csv_content: bytes,
     request: StandardSupplementalRequest,
     authorized_query_scope: Mapping[str, str] | None = None,
+    baseline_csv_content: bytes | None = None,
+    baseline_authorized_fields: Sequence[str] = (),
+    baseline_authorized_query_scope: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """计算完整分组、期间分组、交叉分组、期间变化或登记比率分组。"""
 
-    if request.dataset_id not in set(dataset_ids):
-        raise ValueError("请求引用了未授权 dataset")
-    authorized_query_scope = dict(authorized_query_scope or {})
-    if any(
-        authorized_query_scope.get(field) != request.scope[field]
-        for field in request.query_bound_scope_fields
+    if request.dataset_id not in set(dataset_ids) or (
+        request.baseline_dataset_id is not None and request.baseline_dataset_id not in set(dataset_ids)
     ):
-        raise ValueError("请求引用了未授权的查询固定范围")
-    required_fields = {
-        request.measure_field,
-        request.dimension_field,
-        request.period_field,
-        *(set(request.scope) - set(request.query_bound_scope_fields)),
-    }
-    if request.secondary_dimension_field is not None:
-        required_fields.add(request.secondary_dimension_field)
-    if request.denominator_field is not None:
-        required_fields.add(request.denominator_field)
-    unauthorized = required_fields - set(authorized_fields)
-    if unauthorized:
-        raise ValueError(f"请求引用了未授权字段: {sorted(unauthorized)}")
-    try:
-        frame = read_analysis_csv(csv_content)
-    except (UnicodeDecodeError, pl.exceptions.PolarsError) as error:
-        raise ValueError("授权 CSV 无法解析") from error
-    missing = required_fields - set(frame.columns)
-    if missing:
-        raise ValueError(f"CSV 缺少请求字段: {sorted(missing)}")
-    frame = apply_metric_scope(
-        frame,
-        {
-            field: value
-            for field, value in request.scope.items()
-            if field not in request.query_bound_scope_fields
-        },
-    )
+        raise ValueError("请求引用了未授权 dataset")
 
-    rows, warnings = _read_rows(frame, request)
+    def scoped_frame(content: bytes, fields: Sequence[str], bound_fields: Sequence[str],
+                     query_scope: Mapping[str, str] | None) -> pl.DataFrame:
+        if any((query_scope or {}).get(field) != request.scope[field] for field in bound_fields):
+            raise ValueError("请求引用了未授权的查询固定范围")
+        required_fields = {
+            request.measure_field, request.dimension_field, request.period_field,
+            *(set(request.scope) - set(bound_fields)),
+        }
+        if request.secondary_dimension_field is not None:
+            required_fields.add(request.secondary_dimension_field)
+        if request.denominator_field is not None:
+            required_fields.add(request.denominator_field)
+        unauthorized = required_fields - set(fields)
+        if unauthorized:
+            raise ValueError(f"请求引用了未授权字段: {sorted(unauthorized)}")
+        try:
+            frame = read_analysis_csv(content)
+        except (UnicodeDecodeError, pl.exceptions.PolarsError) as error:
+            raise ValueError("授权 CSV 无法解析") from error
+        missing = required_fields - set(frame.columns)
+        if missing:
+            raise ValueError(f"CSV 缺少请求字段: {sorted(missing)}")
+        return apply_metric_scope(frame, {
+            field: value for field, value in request.scope.items() if field not in bound_fields
+        })
+
+    frame = scoped_frame(csv_content, authorized_fields, request.query_bound_scope_fields, authorized_query_scope)
+
+    rows, warnings = _read_rows(
+        frame, request,
+        periods=request.current_periods if request.baseline_dataset_id is not None else None,
+    )
+    baseline_rows = None
+    if request.baseline_dataset_id is not None:
+        if baseline_csv_content is None:
+            raise ValueError("独立对照 dataset 缺少 CSV")
+        baseline_frame = scoped_frame(
+            baseline_csv_content, baseline_authorized_fields,
+            request.baseline_query_bound_scope_fields, baseline_authorized_query_scope,
+        )
+        baseline_rows, baseline_warnings = _read_rows(
+            baseline_frame, request, periods=request.baseline_periods,
+        )
+        warnings.extend(baseline_warnings)
+    elif baseline_csv_content is not None:
+        raise ValueError("独立对照 CSV 必须绑定 baselineDatasetId")
     columns: list[str]
     column_meta: dict[str, dict[str, Any]]
     amount_columns: tuple[str, ...]
@@ -291,6 +315,7 @@ def run_standard_supplemental(
         assert request.baseline_parent_total is not None
         finding_rows, current_total, baseline_total, current_sum, baseline_sum = _comparison_rows(
             rows, request.current_periods, request.baseline_periods, warnings,
+            baseline_rows=baseline_rows,
         )
         if not finding_rows:
             warnings.append("当前期间与对照期间没有可比较的有效分组")
@@ -435,7 +460,10 @@ def build_standard_population_proof(
     }
 
 
-def _read_rows(frame: pl.DataFrame, request: StandardSupplementalRequest) -> tuple[list[dict[str, Any]], list[str]]:
+def _read_rows(
+    frame: pl.DataFrame, request: StandardSupplementalRequest,
+    *, periods: Sequence[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     expressions = [pl.col(request.measure_field).cast(pl.Float64, strict=False).alias("__value")]
     if request.denominator_field is not None:
@@ -447,7 +475,7 @@ def _read_rows(frame: pl.DataFrame, request: StandardSupplementalRequest) -> tup
     baseline_periods = request.baseline_periods if request.operation == "period_comparison" else ()
     selected_periods = {
         metric_period_key(label, request.period_granularity): label
-        for label in (*request.current_periods, *baseline_periods)
+        for label in (periods if periods is not None else (*request.current_periods, *baseline_periods))
     }
     selected_columns = [request.period_field, request.dimension_field, "__value"]
     if request.secondary_dimension_field is not None:
@@ -634,12 +662,15 @@ def _comparison_rows(
     current_periods: Sequence[str],
     baseline_periods: Sequence[str],
     warnings: list[str],
+    *, baseline_rows: Iterable[dict[str, Any]] | None = None,
 ) -> tuple[list[list[Any]], float, float, float, float]:
     current_period_set = set(current_periods)
     baseline_period_set = set(baseline_periods)
     rows = list(rows)
     current, current_total = _group_totals(row for row in rows if row["period"] in current_period_set)
-    baseline, baseline_total = _group_totals(row for row in rows if row["period"] in baseline_period_set)
+    baseline, baseline_total = _group_totals(
+        row for row in (rows if baseline_rows is None else baseline_rows) if row["period"] in baseline_period_set
+    )
     result: list[list[Any]] = []
     for dimension in sorted(
         set(current) | set(baseline),
@@ -731,6 +762,42 @@ def query_bound_scope_fields(
     )
 
 
+def standard_input_matches_fact(fact: Any, dataset: Mapping[str, Any]) -> bool:
+    """清单与实际字节之外，还须绑定计算使用的冻结事实身份。"""
+    return (
+        bool(dataset.get("sha256"))
+        and getattr(fact, "dataset_id", None) == dataset.get("datasetId")
+        and getattr(fact, "dataset_sha256", None) == dataset.get("sha256")
+    )
+
+
+def comparison_period_windows(
+    parent: Any, baseline: Any, current_periods: Sequence[str],
+) -> list[tuple[str, ...]]:
+    """用冻结期间角色和日历寻找完整同期，不依赖 CSV 行序或两侧总月数。"""
+    if (
+        "current" not in getattr(parent, "period_roles", ())
+        or getattr(parent, "period_granularity", None) != getattr(baseline, "period_granularity", None)
+    ):
+        return []
+    available: dict[Any, str] = {}
+    for item in baseline.period_values:
+        key = metric_period_key(item.period, getattr(baseline, "period_granularity", None))
+        if key is None or key in available:
+            return []
+        available[key] = item.period
+    windows: list[tuple[str, ...]] = []
+    grain = getattr(baseline, "period_granularity", None)
+    current_keys = {metric_period_key(label, grain) for label in current_periods}
+    for role in sorted(set(getattr(baseline, "period_roles", ())) & {"yoy", "mom"}):
+        keys = [metric_comparison_period_key(label, grain, role) for label in current_periods]
+        if keys and all(key in available for key in keys) and not set(keys) & current_keys:
+            window = tuple(available[key] for key in keys)
+            if window not in windows:
+                windows.append(window)
+    return windows
+
+
 def standard_computation_candidates(
     facts: Any,
     datasets: Sequence[Any],
@@ -738,6 +805,7 @@ def standard_computation_candidates(
 ) -> list[dict[str, Any]]:
     """Advertise bounded, fully bound choices; never infer an operation from prose."""
     metrics = tuple(getattr(facts, "metrics", ()))
+    datasets_by_id = {item.get("datasetId"): item for item in datasets if isinstance(item, dict)}
     metrics_by_id = {item.fact_id: item for item in metrics if getattr(item, "fact_id", None)}
     measures_by_dataset = {
         dataset.get("datasetId"): {
@@ -752,7 +820,7 @@ def standard_computation_candidates(
     }
     seen: set[str] = set()
 
-    def period_selection(parent: Any) -> tuple[tuple[str, ...], tuple[Any, ...], tuple[int, ...]] | None:
+    def period_selection(parent: Any) -> tuple[str, ...] | None:
         available_periods = tuple(item.period for item in parent.period_values)
         available_keys = tuple(
             metric_period_key(label, getattr(parent, "period_granularity", None))
@@ -777,12 +845,10 @@ def standard_computation_candidates(
                 and all(key in valid_keys for key in valid_requested)
             ):
                 indexes = tuple(valid_keys.index(key) for key in valid_requested)
-                return (
-                    tuple(available_periods[index] for index in indexes),
-                    valid_requested,
-                    indexes,
-                )
-        return available_periods, valid_keys, tuple(range(len(available_periods)))
+                return tuple(available_periods[index] for index in indexes)
+            # 不得把缺月、重复或无法解析的请求静默缩小成已有期间。
+            return None
+        return available_periods
 
     def add_candidate(
         *, dataset_id: str, fields: set[str], label: str, spec: StandardSupplementalSpec,
@@ -823,10 +889,9 @@ def standard_computation_candidates(
             required = {parent.field, parent.period_field, *(set(parent_scope) & columns)}
             if not required.issubset(columns):
                 continue
-            selection = period_selection(parent)
-            if selection is None:
+            periods = period_selection(parent)
+            if periods is None:
                 continue
-            periods, valid_keys, period_indexes = selection
             dimensions = [
                 dimension
                 for dimension in sorted(
@@ -853,31 +918,36 @@ def standard_computation_candidates(
                     for operation in operations
                 ]
                 for baseline in metrics:
+                    baseline_dataset = datasets_by_id.get(baseline.dataset_id)
                     if ("current" not in getattr(parent, "period_roles", ())
                             or not set(getattr(baseline, "period_roles", ())) & {"yoy", "mom"}
-                            or baseline.dataset_id != dataset_id or not baseline.fact_id
+                            or baseline_dataset is None or not baseline.fact_id
                             or baseline.field != parent.field or baseline.aggregation != "sum"
                             or baseline.period_aggregation != "sum" or baseline.cumulative_policy is not None
                             or baseline.period_field != parent.period_field
                             or getattr(baseline, "period_granularity", None) != getattr(parent, "period_granularity", None)
                             or getattr(baseline, "unit", None) != getattr(parent, "unit", None)
-                            or getattr(baseline, "scope", {}) != getattr(parent, "scope", {})
-                            or len(baseline.period_values) != len(parent.period_values)):
+                            or getattr(baseline, "scope", {}) != getattr(parent, "scope", {})):
                         continue
-                    prior = tuple(baseline.period_values[index].period for index in period_indexes)
-                    prior_keys = [metric_period_key(label, getattr(baseline, "period_granularity", None)) for label in prior]
-                    valid_prior_keys = [key for key in prior_keys if key is not None]
-                    if (len(valid_prior_keys) != len(prior_keys)
-                            or len(set(valid_prior_keys)) != len(valid_prior_keys)
-                            or set(valid_keys) & set(valid_prior_keys)
-                            or any(key[0] != valid_keys[0][0] for key in valid_prior_keys)):
+                    cross_dataset = baseline.dataset_id != dataset_id
+                    if cross_dataset and (
+                        not getattr(parent, "field_ref", None)
+                        or getattr(parent, "field_ref", None) != getattr(baseline, "field_ref", None)
+                    ):
                         continue
-                    specs.append(StandardSupplementalSpec(
-                        operation="period_comparison", measureField=parent.field,
-                        dimensionField=dimension, periodField=parent.period_field,
-                        currentPeriods=periods, baselinePeriods=prior,
-                        parentFactId=parent.fact_id, baselineParentFactId=baseline.fact_id,
-                    ))
+                    baseline_columns = set(baseline_dataset.get("columns") or ())
+                    if (not {parent.field, parent.period_field, dimension}.issubset(baseline_columns)
+                            or not (set(parent_scope) - baseline_columns).issubset(
+                                query_bound_scope_fields(baseline_dataset, parent_scope))):
+                        continue
+                    for prior in comparison_period_windows(parent, baseline, periods):
+                        specs.append(StandardSupplementalSpec(
+                            operation="period_comparison", measureField=parent.field,
+                            dimensionField=dimension, periodField=parent.period_field,
+                            currentPeriods=periods, baselinePeriods=prior,
+                            parentFactId=parent.fact_id, baselineParentFactId=baseline.fact_id,
+                            baselineDatasetId=baseline.dataset_id if cross_dataset else None,
+                        ))
                 for spec in specs:
                     add_candidate(
                         dataset_id=dataset_id,
@@ -968,10 +1038,9 @@ def standard_computation_candidates(
                 )
             ):
                 continue
-            selection = period_selection(numerator)
-            if selection is None:
+            numerator_periods = period_selection(numerator)
+            if numerator_periods is None:
                 continue
-            numerator_periods, _, _ = selection
             unprojected_scope = set(numerator_scope) - columns
             bound_scope = query_bound_scope_fields(dataset, numerator_scope)
             if not unprojected_scope.issubset(bound_scope):

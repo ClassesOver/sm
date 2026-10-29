@@ -58,6 +58,7 @@ async def test_table_header_unit_cannot_be_bypassed_by_raw_source_number(
         tables=(
             SimpleNamespace(
                 table_id="table-scaled",
+                row_label_column=True,
                 row_keys=(cell.row_key,),
                 cells=(cell,),
                 origin_markdown=markdown(original),

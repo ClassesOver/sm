@@ -64,6 +64,40 @@ def test_group_summary_emits_complete_population_rank_share_and_reconciliation()
     assert validated.findings[0]["rows"] == finding["rows"]
 
 
+@pytest.mark.parametrize('fault', [None, 'dataset', 'fields', 'scope'])
+def test_cross_dataset_comparison_keeps_inputs_separate_and_checks_authorization(fault):
+    comparison = StandardSupplementalRequest(
+        operation='period_comparison', datasetId='dataset-current', baselineDatasetId='dataset-prior',
+        outputName='comparison', measureField='amount', dimensionField='department', periodField='period',
+        currentPeriods=['2025-01'], baselinePeriods=['2024-01'], parentTotal=100, baselineParentTotal=50,
+        scope={'income_nature': '开单收入'}, queryBoundScopeFields=['income_nature'],
+        baselineQueryBoundScopeFields=['income_nature'],
+    )
+    kwargs = dict(
+        analysis_id='analysis_001', dataset_ids=['dataset-current', 'dataset-prior'],
+        authorized_fields=['period', 'department', 'amount'], request=comparison,
+        csv_content=b'period,department,amount\n2025-01,A,100\n2024-01,A,invalid\n',
+        baseline_csv_content=b'period,department,amount\n2024-01,A,50\n2025-01,A,invalid\n',
+        baseline_authorized_fields=['period', 'department', 'amount'],
+        authorized_query_scope={'income_nature': '开单收入'},
+        baseline_authorized_query_scope={'income_nature': '开单收入'},
+    )
+    if fault == 'dataset':
+        kwargs['dataset_ids'] = ['dataset-current']
+    elif fault == 'fields':
+        kwargs['baseline_authorized_fields'] = ['period', 'amount']
+    elif fault == 'scope':
+        kwargs['baseline_authorized_query_scope'] = {}
+    if fault is not None:
+        with pytest.raises(ValueError, match='未授权'):
+            run_standard_supplemental(**kwargs)
+        return
+    result = run_standard_supplemental(**kwargs)
+    assert result['findings'][0]['rows'] == [['A', 100.0, 50.0, 50.0, 1.0, 1.0]]
+    assert all(item['passed'] for item in result['reconciliations'])
+    assert result['warnings'] == []
+
+
 def test_group_ratio_emits_operands_difference_ratio_and_dual_reconciliation():
     csv = (
         b"period,department,actual,budget\n"

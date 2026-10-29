@@ -89,6 +89,13 @@ def test_build_table_trace_freezes_keys_and_binds_cells() -> None:
     # Markdown 含协议块与手算值（1200+2400=3600）。
     assert "[[table:table-income]]" in markdown and "[[/table:table-income]]" in markdown
     assert "3,600" in markdown
+    from smart_reporting.report_editor.table_ai import _parse_table_grid
+    assert _parse_table_grid(markdown)[0] == ['项目', 'income_total']
+
+
+def test_analysis_period_table_names_its_business_row_header() -> None:
+    _trace, markdown = build_analysis_table(_bundle(), fact_file_resource_id=FACT_FILE_RESOURCE)
+    assert '| 期间 |' in markdown
 
 
 def test_table_trace_embeds_into_revision_index() -> None:

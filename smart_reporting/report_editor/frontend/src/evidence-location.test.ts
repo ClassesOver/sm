@@ -150,3 +150,28 @@ describe('evidence editor location', () => {
     expect(cleared.selection.eq(edited.selection)).toBe(true)
   })
 })
+
+describe('raw source table location', () => {
+  it.each([0, 1])('locates source column %s', columnIndex => {
+    const root = document.createElement('div')
+    root.innerHTML = '<p><span class="report-table-marker">[[table:raw]]</span></p>' +
+      '<table><tbody><tr><th>期间</th><th>收入</th></tr>' +
+      '<tr><td><p>2025-01</p></td><td><p>100</p></td></tr></tbody></table>'
+    const location = {rowKey: 'source-row:0', rowIndex: 0, columnIndex,
+      columnKey: ['期间', '收入'][columnIndex], rowLabel: '2025-01',
+      text: ['2025-01', '100'][columnIndex]}
+    expect(findEvidenceTableCell(root, 'raw', location)?.textContent).toBe(location.text)
+  })
+})
+
+describe('single source column', () => {
+  it('locates its only cell while rejecting a negative index', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<p><span class="report-table-marker">[[table:raw]]</span></p>' +
+      '<table><tbody><tr><th>收入</th></tr><tr><td>100</td></tr></tbody></table>'
+    const location = { rowKey: 'source-row:0', rowIndex: 0, columnIndex: 0,
+      columnKey: '收入', rowLabel: '100', text: '100' }
+    expect(findEvidenceTableCell(root, 'raw', location)?.textContent).toBe('100')
+    expect(findEvidenceTableCell(root, 'raw', { ...location, columnIndex: -1 })).toBeNull()
+  })
+})

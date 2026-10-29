@@ -60,6 +60,91 @@ def built_source():
     return raw, source, resource, trace, markdown
 
 
+def test_period_supplemental_table_uses_period_labels_without_generated_row_numbers():
+    from smart_reporting.reporting.trace.table_builder import build_supplemental_tables
+
+    document = {
+        'findings': [{
+            'name': '月度收入', 'columns': ['期间', '开单收入金额'],
+            'rows': [['2025-01', 889688670.0], ['2025-02', 899035187.0]],
+        }],
+    }
+
+    trace, markdown = build_supplemental_tables(
+        document, file_resource_id='trf-' + '1' * 20,
+    )[0]
+
+    assert '| 期间 | 开单收入金额 |' in markdown
+    assert '| 2025-01 | 889688670.0 |' in markdown
+    assert '| 2025-02 | 899035187.0 |' in markdown
+    assert '第1行' not in markdown and '第2行' not in markdown
+    assert trace.row_keys == ('source-row:0', 'source-row:1')
+    assert trace.column_keys == ('期间', '开单收入金额')
+    assert {(cell.source_cell.row_index, cell.source_cell.column_index) for cell in trace.cells} == {
+        (0, 0), (0, 1), (1, 0), (1, 1),
+    }
+
+
+def test_supplemental_source_table_names_its_row_header():
+    _raw, _source, _resource, _trace, markdown = built_source()
+
+    from smart_reporting.report_editor.table_ai import _parse_table_grid
+
+    assert _parse_table_grid(markdown)[0] == ['科室', '收入', '占比', '排名']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+@pytest.mark.parametrize('columns, rows', [
+    (['期间', '科室', '收入'], [['2025-01', 'A', 100], ['2025-01', 'B', 200]]),
+    (['收入'], [[100], [200]]),
+])
+async def test_source_table_without_extra_label_preserves_all_cells_after_sorting(columns, rows):
+    import re
+
+    from smart_reporting.report_editor.table_ai import _parse_table_grid
+    from smart_reporting.report_editor.trace_sources import ReportEditorTraceService
+    from smart_reporting.reporting.trace.contracts_v1 import derive_resource_id
+    from smart_reporting.reporting.trace.table_builder import build_supplemental_tables
+    from smart_reporting.reporting.trace.table_quality import evaluate_table_quality
+    from smart_reporting.reporting.trace.table_sources import resolve_source_cell
+
+    from .test_trace_index_builder import _build_table
+
+    document = {'findings': [{'columns': columns, 'rows': rows}]}
+    raw = json.dumps(document).encode()
+    source = {'path': 'evidence/table.json', 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+    resource = derive_resource_id(source['path'])
+    trace, markdown = build_supplemental_tables(document, file_resource_id=resource)[0]
+    index = _build_table(server_table_traces=(trace,), table_source_files=(source,))
+    assert _parse_table_grid(markdown) == [columns, *[[str(value) for value in row] for row in rows]]
+    assert len(trace.cells) == len(rows) * len(columns)
+    data_lines = [line for line in markdown.splitlines() if line.startswith('| ')]
+    current = markdown.replace('\n'.join(data_lines[2:]), '\n'.join(reversed(data_lines[2:])))
+    check = evaluate_table_quality(index, current, {resource: document})[trace.table_id]
+    assert check.status == 'verified'
+    assert check.checked_cells == len(rows) * len(columns)
+
+    async def read(*args, **kwargs):
+        return markdown.encode()
+
+    async def unused(*args):
+        return None
+
+    async def selected(operand):
+        return resolve_source_cell(operand, {resource: raw})
+
+    tables, summary = await ReportEditorTraceService._evaluate_tables(
+        SimpleNamespace(_workspace=SimpleNamespace(read_limited_regular_file=read)), index,
+        SimpleNamespace(scope={'threadId': 'thread-1'}, markdown_path='report.md'),
+        current, unused, re.compile(r'\[\[table:([^\]]+)\]\]\n(.*?)\n\[\[/table:\1\]\]', re.S),
+        lambda *args: False, source_cell_of=selected,
+    )
+    assert summary['valid'] == len(rows) * len(columns)
+    assert summary['stale'] == summary['unbound'] == 0
+    assert {location['columnIndex'] for location in tables[0]['locations']} == set(range(len(columns)))
+
+
 @pytest.mark.parametrize('fault', ['none', 'missing', 'conflict'])
 def test_table_source_index_registration_degrades_only_affected_bindings(fault):
     from smart_reporting.reporting.trace.contracts_v1 import RevisionTraceIndexV1

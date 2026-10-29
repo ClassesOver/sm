@@ -168,6 +168,7 @@ from .standard_supplemental import (
     frozen_period_total,
     query_bound_scope_fields,
     run_standard_supplemental,
+    standard_input_matches_fact,
 )
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
@@ -3778,31 +3779,21 @@ class RuntimeAnalysisMixin:
             combined: dict[str, Any] = {"findings": [], "reconciliations": [], "warnings": []}
             requests: list[dict[str, Any]] = []
             population_proofs: list[dict[str, Any]] = []
-            for requirement, computation_spec in zip(decision.coding_requirements, specs, strict=True):
-                datasets = state.instruction.get("datasets") or ()
-                dataset = next(
-                    (
-                        item
-                        for item in datasets
-                        if isinstance(item, Mapping)
-                        and item.get("datasetId") == requirement.dataset_id
-                    ),
-                    None,
-                )
-                if not isinstance(dataset, Mapping):
-                    raise ReportingError(
-                        "report_analysis_standard_dataset_missing",
-                        "标准补证数据集不在当前分析授权中。",
-                    )
+
+            async def read_input(dataset_id: str) -> tuple[Mapping[str, Any], FileIdentity, bytes]:
+                current_analysis = state.instruction.get("currentAnalysis") or {}
+                if dataset_id not in current_analysis.get("datasetIds", ()):
+                    raise ReportingError("report_analysis_standard_dataset_missing", "标准补证数据集不在当前分析授权中。")
+                dataset = next((item for item in (state.instruction.get("datasets") or ())
+                                if isinstance(item, Mapping) and item.get("datasetId") == dataset_id), None)
+                if dataset is None:
+                    raise ReportingError("report_analysis_standard_dataset_missing", "标准补证数据集不在当前分析授权中。")
                 try:
                     identity = FileIdentity.model_validate(
                         {key: dataset.get(key) for key in ("path", "size", "sha256")}
                     )
                 except Exception as error:
-                    raise ReportingError(
-                        "report_analysis_standard_dataset_invalid",
-                        "标准补证数据集身份无效。",
-                    ) from error
+                    raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证数据集身份无效。") from error
                 thread_id = str(self._scope(parent_run_context)["threadId"])
                 if identity.path not in input_cache:
                     input_cache[identity.path] = (identity, await self._read_identity_bytes(
@@ -3811,6 +3802,11 @@ class RuntimeAnalysisMixin:
                 cached_identity, content = input_cache[identity.path]
                 if cached_identity != identity:
                     raise ReportingError("report_analysis_standard_dataset_invalid", "批量补证数据集身份冲突。")
+                return dataset, identity, content
+
+            for requirement, computation_spec in zip(decision.coding_requirements, specs, strict=True):
+                dataset, identity, content = await read_input(requirement.dataset_id)
+                thread_id = str(self._scope(parent_run_context)["threadId"])
                 fact_by_id = {
                     item.fact_id: item
                     for item in (state.facts.metrics if state.facts is not None else ())
@@ -3840,6 +3836,14 @@ class RuntimeAnalysisMixin:
                         "report_analysis_standard_parent_fact_missing",
                         "标准补证引用的冻结父指标不存在。",
                     )
+                if not standard_input_matches_fact(parent, dataset) or (
+                    computation_spec.operation == "group_ratio"
+                    and not standard_input_matches_fact(denominator, dataset)
+                ):
+                    raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证输入与冻结父指标身份不一致。")
+                if computation_spec.operation == "period_comparison" and computation_spec.baseline_dataset_id is None:
+                    if not standard_input_matches_fact(baseline or parent, dataset):
+                        raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证对照输入与冻结父指标身份不一致。")
                 parent_scope = dict(getattr(parent, "scope", {}) or {})
                 dataset_columns = set(dataset.get("columns") or ())
                 unprojected_scope = set(parent_scope) - dataset_columns
@@ -3850,9 +3854,27 @@ class RuntimeAnalysisMixin:
                         "report_analysis_standard_scope_unverified",
                         "标准补证固定范围既未投影，也没有签发查询的精确等值约束。",
                     )
+                baseline_content = None
+                baseline_fields: tuple[str, ...] = ()
+                baseline_unprojected_scope: set[str] = set()
+                if computation_spec.baseline_dataset_id is not None:
+                    baseline_dataset, _, baseline_content = await read_input(computation_spec.baseline_dataset_id)
+                    if not standard_input_matches_fact(baseline, baseline_dataset):
+                        raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证对照输入与冻结父指标身份不一致。")
+                    baseline_columns = set(baseline_dataset.get("columns") or ())
+                    baseline_unprojected_scope = set(parent_scope) - baseline_columns
+                    if not baseline_unprojected_scope.issubset(query_bound_scope_fields(baseline_dataset, parent_scope)):
+                        raise ReportingError("report_analysis_standard_scope_unverified", "标准补证对照数据集固定范围未核验。")
+                    baseline_fields = tuple(sorted({
+                        computation_spec.measure_field, computation_spec.dimension_field,
+                        computation_spec.period_field, *(set(parent_scope) & baseline_columns),
+                    }))
+                    if not set(baseline_fields).issubset(baseline_columns):
+                        raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证对照字段未授权。")
                 request = StandardSupplementalRequest(
                     operation=computation_spec.operation,
                     datasetId=requirement.dataset_id,
+                    baselineDatasetId=computation_spec.baseline_dataset_id,
                     outputName=requirement.output_name,
                     measureField=computation_spec.measure_field,
                     denominatorField=computation_spec.denominator_field,
@@ -3890,16 +3912,22 @@ class RuntimeAnalysisMixin:
                     ratioFactId=computation_spec.ratio_fact_id,
                     scope=parent_scope,
                     queryBoundScopeFields=tuple(sorted(unprojected_scope)),
+                    baselineQueryBoundScopeFields=tuple(sorted(baseline_unprojected_scope)),
                 )
                 raw_payload = await asyncio.to_thread(
                     run_standard_supplemental,
                     analysis_id=str(state.instruction.get("currentAnalysisId")),
-                    dataset_ids=(requirement.dataset_id,),
+                    dataset_ids=tuple((state.instruction.get("currentAnalysis") or {}).get("datasetIds", ())),
                     authorized_fields=tuple(getattr(requirement, "fields", dataset.get("columns") or ())),
                     csv_content=content,
                     request=request,
                     authorized_query_scope={
                         field: parent_scope[field] for field in unprojected_scope
+                    },
+                    baseline_csv_content=baseline_content,
+                    baseline_authorized_fields=baseline_fields,
+                    baseline_authorized_query_scope={
+                        field: parent_scope[field] for field in baseline_unprojected_scope
                     },
                 )
                 population_proof = None
@@ -3953,7 +3981,12 @@ class RuntimeAnalysisMixin:
                 )
                 record = build_standard_supplemental_computation_record(
                     analysis_id=str(state.instruction.get("currentAnalysisId")),
-                    dataset_ids=tuple(dict.fromkeys(item.dataset_id for item in decision.coding_requirements)),
+                    dataset_ids=tuple(dict.fromkeys(
+                        dataset_id
+                        for item, selected_spec in zip(decision.coding_requirements, specs, strict=True)
+                        for dataset_id in (item.dataset_id, selected_spec.baseline_dataset_id)
+                        if dataset_id is not None
+                    )),
                     input_files=input_files,
                     evidence_file=evidence_file.model_dump(mode="json", by_alias=True),
                     method=("supplemental_standard_batch" if batch

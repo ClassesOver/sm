@@ -148,6 +148,85 @@ def test_requested_window_crops_current_and_baseline_by_matching_position():
     assert comparison['baselinePeriods'] == ['2025-01', '2025-02']
 
 
+@pytest.mark.parametrize('grain,current,prior,expected', [
+    ('day', '2026-03-02', '2026-03-01', True),
+    ('day', '2026-03-02', '2026-02-02', False),
+    ('month', '2026-01', '2025-12', True),
+    ('year', '2026', '2025', True),
+])
+def test_comparison_candidate_uses_frozen_grain_for_previous_period(grain, current, prior, expected):
+    state = _standard_analysis_state()
+    parent = state.facts.metrics[0]
+    parent.period_roles = ('current',)
+    parent.period_granularity = grain
+    parent.period_values = (SimpleNamespace(period=current, value=10),)
+    baseline = SimpleNamespace(**vars(parent))
+    baseline.fact_id = 'fact-bbbbbbbbbbbbbbbb'
+    baseline.period_roles = ('mom',)
+    baseline.period_values = (SimpleNamespace(period=prior, value=5),)
+    state.facts.metrics.append(baseline)
+    comparisons = [item['standardComputation'] for item in _candidates(state)
+                   if item['standardComputation']['operation'] == 'period_comparison']
+    assert bool(comparisons) is expected
+    if expected:
+        assert comparisons[0]['baselinePeriods'] == [prior]
+
+
+@pytest.mark.parametrize('fault', [None, 'unauthorized', 'field', 'scope', 'unit', 'last', 'missing_month'])
+def test_cross_dataset_comparison_uses_authorized_calendar_window(fault):
+    state = _standard_analysis_state()
+    parent = state.facts.metrics[0]
+    parent.period_roles = ('current',)
+    parent.period_granularity = 'month'
+    parent.field_ref = 'source.db.income.income'
+    parent.unit = '元'
+    parent.period_values = tuple(SimpleNamespace(period=f'2026-{m:02d}', value=m) for m in range(1, 12))
+    prior = SimpleNamespace(**vars(parent))
+    prior.fact_id = 'fact-bbbbbbbbbbbbbbbb'
+    prior.dataset_id = 'dataset_prior'
+    prior.period_roles = ('yoy',)
+    # Deliberately reverse the source order: matching by position is unsafe.
+    prior.period_values = tuple(SimpleNamespace(period=f'2025-{m:02d}', value=m) for m in range(12, 0, -1))
+    state.facts.metrics.append(prior)
+    state.instruction['datasets'].append({
+        'datasetId': prior.dataset_id, 'columns': ['period', 'department', 'income'],
+        'sha256': prior.dataset_sha256,
+    })
+    state.instruction['currentAnalysis']['datasetIds'].append(prior.dataset_id)
+    if fault == 'unauthorized':
+        state.instruction['currentAnalysis']['datasetIds'].remove(prior.dataset_id)
+    elif fault == 'field':
+        prior.field_ref = 'another.source.income'
+    elif fault == 'scope':
+        prior.scope = {'income_nature': '其他收入'}
+    elif fault == 'unit':
+        prior.unit = '万元'
+    elif fault == 'last':
+        prior.period_aggregation = 'last'
+    elif fault == 'missing_month':
+        prior.period_values = prior.period_values[2:]
+    # The instruction catalog is restricted to the analysis authorization, as in production.
+    datasets = [d for d in state.instruction['datasets']
+                if d['datasetId'] in state.instruction['currentAnalysis']['datasetIds']]
+    comparisons = [item for item in standard_computation_candidates(state.facts, datasets)
+                   if item['standardComputation']['operation'] == 'period_comparison']
+    if fault is not None:
+        assert comparisons == []
+        return
+    candidate, = comparisons
+    spec = candidate['standardComputation']
+    assert spec['baselineDatasetId'] == prior.dataset_id
+    assert spec['baselinePeriods'] == [f'2025-{m:02d}' for m in range(1, 12)]
+    requirement = state.decision.coding_requirements[0].model_copy(update={
+        'standard_computation': None, 'standard_candidate_id': candidate['candidateId'],
+    })
+    state.decision = state.decision.model_copy(update={'coding_requirements': (requirement,)})
+    selected, = AnalysisItemWorkflow._standard_plan(state)
+    assert selected.baseline_dataset_id == prior.dataset_id
+    state.instruction['currentAnalysis']['datasetIds'].remove(prior.dataset_id)
+    assert AnalysisItemWorkflow._standard_plan(state) == ()
+
+
 def test_partially_unknown_requested_window_never_creates_a_partial_candidate():
     state = _standard_analysis_state()
     parent = state.facts.metrics[0]
@@ -158,9 +237,7 @@ def test_partially_unknown_requested_window_never_creates_a_partial_candidate():
     )
     state.instruction['currentAnalysis']['periods'] = ['2026-01', 'unknown']
 
-    candidate, = _summary_candidates(state)
-
-    assert candidate['standardComputation']['currentPeriods'] == ['2026-01', '2026-02']
+    assert _summary_candidates(state) == []
 
 
 def _bind_signed_scope(dataset, *, value='开单收入', operator='='):
