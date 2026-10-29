@@ -181,7 +181,8 @@ async def test_direct_failure_never_calls_planner_or_coding_and_keeps_original(t
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_direct_inherits_ordered_full_template_inputs_bindings_and_dataset_ids(tmp_path, monkeypatch):
+@pytest.mark.parametrize("inherit_settings", [True, False])
+async def test_direct_inherits_ordered_full_template_inputs_bindings_and_dataset_ids(tmp_path, monkeypatch, inherit_settings):
     from smart_reporting.report_editor.chart_edits import ChartEditRecord, append_chart_edit_record
     fixture = await _make_editor_with_chart(tmp_path)
     prefix = "reports/revision-1/chart-edits/cedit-previous123"
@@ -220,7 +221,9 @@ async def test_direct_inherits_ordered_full_template_inputs_bindings_and_dataset
     previous = record
     for _ in range(2):
         started = await service.start_standard_edit(fixture.context, SimpleNamespace(capabilities=None), "chart_001",
-            _request(fixture, standard={}, previousEditId=previous.edit_id, baseImagePath=previous.image.path))
+            _request(fixture, standard={} if inherit_settings else {"standardForm": "bar"},
+                     inheritPreviousStandard=inherit_settings,
+                     previousEditId=previous.edit_id, baseImagePath=previous.image.path))
         status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
         assert status["status"] == "succeeded", status
         previous = (await load_chart_edit_records(fixture.workspace, fixture.thread_id, fixture.context.markdown_path))[-1]
@@ -228,7 +231,7 @@ async def test_direct_inherits_ordered_full_template_inputs_bindings_and_dataset
         assert list(previous.data_bindings) == bindings
         assert previous.chart.dataset_ids == ("dataset-url-abc0001",)
         assert [item.sha256 for item in previous.plot_data_files] == [item["sha256"] for item in refs]
-        assert previous.standard_parameters["standardValueFields"] == ["revenue"]
+        assert previous.standard_parameters["standardValueFields"] == (["revenue"] if inherit_settings else [])
     # AI明确不给standard时进入自由绘图，不能被上一轮模板参数强制接管。
     async def planner(request):
         assert {"pie", "donut", "radar", "funnel", "sankey"}.issubset(request["standardChartCapabilities"]["forms"])

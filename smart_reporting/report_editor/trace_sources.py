@@ -46,6 +46,7 @@ from ..reporting.trace.dataset_service import (
 from ..reporting.trace.drilldown_service import TraceDrilldownService
 from ..reporting.trace.fact_index import FACT_ARRAYS
 from ..reporting.trace.fact_service import fact_display_unit, fact_display_value, read_fact_document
+from ..reporting.trace.markdown_body import trace_body_cache_scope
 from ..reporting.trace.numeric_text import PERCENT_POINT, percent_point_field, primary_display_name
 from ..reporting.workflow.checkpoint import FileIdentity
 from ..workspace import WorkspaceError
@@ -881,6 +882,7 @@ class ReportEditorTraceService:
     # 正文 subject 校验（B6）
     # ------------------------------------------------------------------
 
+    @trace_body_cache_scope()
     async def validate(
         self,
         context: Any,

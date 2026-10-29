@@ -9,6 +9,32 @@ describe('ReportEditorClient', () => {
     await client.chartSource('chart_001', { editId: 'cedit-12345678', limit: 1 })
     expect(fetcher.mock.calls[0][0]).toBe('/editor/api/charts/chart_001/source?limit=1&edit_id=cedit-12345678')
   })
+  it('returns the registered canonical visual form and tolerates legacy records without it', async () => {
+    const base = { editId: 'cedit-old12345', chartId: 'chart_001', imagePath: 'reports/revision-1/chart.png' }
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...base, visualForm: 'funnel' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify(base)))
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+    expect((await client.chartEditRecord(base.editId)).visualForm).toBe('funnel')
+    expect((await client.chartEditRecord(base.editId)).visualForm).toBeUndefined()
+  })
+
+  it('preserves an explicit false inheritance option and scope identity in standard edit JSON', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ markdown: '# 报告', sha256: 'a'.repeat(64), csrfToken: 'csrf' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ editId: 'cedit-new12345', status: 'running' })))
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+    await client.load()
+    const payload = { standard: { standardForm: 'pie' }, inheritPreviousStandard: false,
+      previousEditId: 'cedit-old12345', baseImagePath: 'reports/revision-1/chart-edits/cedit-old12345/chart--page-2.png',
+      expectedSha256: 'b'.repeat(64) }
+    await client.startChartStandardEdit('chart_001', payload)
+    expect(fetcher.mock.calls[1]![0]).toBe('/reports/v1/editor/report-1/1/api/charts/chart_001/standard-edits')
+    const init = fetcher.mock.calls[1]![1]!
+    expect(JSON.parse(init.body as string)).toEqual(payload)
+    expect(init).toMatchObject({ method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': 'csrf' } })
+  })
+
   it('waits for chart status with a bounded server wait instead of a client sleep', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
       new Response(JSON.stringify({ editId: 'cedit-12345678', status: 'running' })))

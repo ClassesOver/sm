@@ -288,7 +288,7 @@ class AgentSettings:
             maximum=5,
         )
         reporting_execution_mode = (
-            values.get("AGENT_REPORT_CODING_EXECUTION_MODE", "sequential").strip().lower()
+            values.get("AGENT_REPORT_CODING_EXECUTION_MODE", "parallel").strip().lower()
         )
         if reporting_execution_mode not in {"sequential", "parallel"}:
             raise ValueError("AGENT_REPORT_CODING_EXECUTION_MODE 必须是 sequential 或 parallel")

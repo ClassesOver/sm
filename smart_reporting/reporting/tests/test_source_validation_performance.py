@@ -31,19 +31,26 @@ async def test_validation_parses_document_once_for_many_claims(tmp_path, monkeyp
     # 改值仍应 stale；代码中的伪锚点仍应 unbound。
     markdown = markdown.replace(statements[18], statements[18].replace('2400', '2500'))
     markdown = markdown.replace(statements[19], '```\n' + statements[19] + '\n```')
-    calls = 0
-    parse = markdown_body.trace_body
+    calls = []
+    parse = markdown_body._parse_trace_body
 
     def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
+        calls.append((args[0], kwargs.get('mask_inline_code', True)))
         return parse(*args, **kwargs)
 
-    monkeypatch.setattr(markdown_body, 'trace_body', counted)
+    monkeypatch.setattr(markdown_body, '_parse_trace_body', counted)
     result = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
     assert result['summary'] == {'valid': 18, 'stale': 1, 'unbound': 1}
-    # 正文、表格、图表及复核可各自解析，但调用数不能随引用数增长。
-    assert calls < 10
+    # 不同复核共享完整正文和解析选项；正式旧正文与当前草稿仍分别解析。
+    assert len(calls) <= 4
+    assert len(calls) == len(set(calls))
+    cached_count = len(calls)
+    calls.clear()
+    monkeypatch.setattr(markdown_body, 'MAX_TRACE_BODY_CACHE_BYTES', 0)
+    uncached = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+    # 只省解析工作，完整复核结果、告警与来源身份必须逐字段相同。
+    assert uncached == result
+    assert len(calls) > cached_count
 
 
 def test_batch_fingerprints_preserve_normalization_and_duplicate_detection(monkeypatch):

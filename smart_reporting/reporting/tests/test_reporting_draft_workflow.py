@@ -510,9 +510,12 @@ async def test_parallel_analysis_items_run_concurrently_up_to_the_shared_limit()
 async def test_parallel_analysis_default_runs_five_items_and_preserves_plan_order() -> None:
     active = maximum = 0
     release = asyncio.Event()
+    completed_sections = []
 
     async def analysis(instruction, _context):
         nonlocal active, maximum
+        if instruction['sectionCode'] == 's2':
+            assert completed_sections == ['s1']
         active += 1
         maximum = max(maximum, active)
         if maximum == 5:
@@ -521,18 +524,27 @@ async def test_parallel_analysis_default_runs_five_items_and_preserves_plan_orde
         active -= 1
         return _ok(instruction['analysisId'])
 
+    async def draft(instruction, _context):
+        completed_sections.append(instruction['sectionCode'])
+        return _ok('draft')
+
     workflow = ReportingAnalysisAndDraftWorkflow(
         report_goal='验证默认五并发',
-        sections=[{'sectionCode': 's1', 'analysisIds': ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']}],
+        sections=[
+            {'sectionCode': 's1', 'analysisIds': ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']},
+            {'sectionCode': 's2', 'analysisIds': ['a7']},
+        ],
         run_analysis=analysis, submit_visualization=AsyncMock(return_value=_ok('visual')),
-        draft_section=AsyncMock(return_value=_ok('draft')), execution_mode='parallel',
+        draft_section=draft,
     )
     result = await asyncio.wait_for(
-        workflow.sections[0].execute_section(RunContext(run_id='run-1', session_id='session-1')),
+        workflow._run_sections(RunContext(run_id='run-1', session_id='session-1')),
         timeout=2,
     )
     assert maximum == 5
-    assert [output.content for output in result.analysis_outputs] == ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']
+    assert [output.content for output in result[0].analysis_outputs] == ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']
+    assert [output.content for output in result[1].analysis_outputs] == ['a7']
+    assert completed_sections == ['s1', 's2']
 
 
 @pytest.mark.anyio
