@@ -171,6 +171,10 @@ class ChartStandardEditRequest(StrictModel):
     base_image_path: str = Field(alias="baseImagePath", min_length=1, max_length=1024)
     expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
     previous_edit_id: str | None = Field(default=None, alias="previousEditId", min_length=8, max_length=40)
+    inherit_previous_standard: bool = Field(
+        default=True, alias="inheritPreviousStandard", strict=True,
+        description="仅控制标准图形参数继承；不改变上一轮冻结作图数据、绑定或底图身份。",
+    )
     base_title: str | None = Field(default=None, alias="baseTitle", max_length=200)
     base_alt_text: str | None = Field(default=None, alias="baseAltText", max_length=200)
     title: str | None = Field(default=None, max_length=200)
@@ -584,6 +588,7 @@ class ChartAIEditService:
             "imagePath": record.image.path,
             "imageSrc": chart_edit_image_src(context.markdown_path, record.edit_id),
             "pages": self._page_response(context, record),
+            "visualForm": record.chart.visual_form,
         }
 
     @staticmethod
@@ -1287,7 +1292,9 @@ class ChartAIEditService:
         # 直达复用已核验的前轮快照，不重新选事实，也不进入任何模型。
         job.set_stage("plan")
         if deterministic:
-            effective_standard = inherit_standard(previous_standard, request.standard)
+            effective_standard = inherit_standard(
+                previous_standard if getattr(request, "inherit_previous_standard", True) else {}, request.standard
+            )
             if effective_standard is None or effective_standard.standard_form in {None, "custom"}:
                 raise _chart_ai_error("report_editor_standard_form_required", "请明确选择标准图形，或从已登记的标准改图继续调整。")
             plan = ChartEditPlan(level=("L1",), title=request.title, altText=request.alt_text,
@@ -1411,7 +1418,13 @@ class ChartAIEditService:
         base_alt = (request.base_alt_text or "").strip() or "（原图注未提供）"
         new_title = plan.title or previous_group_title or base_title
         new_alt = plan.alt_text or previous_group_alt or base_alt
-        visual_form = plan.visual_form or previous_visual_form or _KEEP_VISUAL_FORM
+        selected_form = getattr(effective_standard, "standard_form", None)
+        if isinstance(selected_form, str) and selected_form != "custom":
+            standard_form_selected = True
+            visual_form = selected_form
+        else:
+            standard_form_selected = False
+            visual_form = plan.visual_form or previous_visual_form or _KEEP_VISUAL_FORM
         standard_plan, standard_inputs = standard_edit_plan(
             chart_id=chart_id, output_path=output_path, title=new_title, alt_text=new_alt,
             visual_form=visual_form, standard=effective_standard,
@@ -1647,7 +1660,7 @@ class ChartAIEditService:
             "changes": {
                 "title": plan.title,
                 "altText": plan.alt_text,
-                "visualForm": plan.visual_form,
+                "visualForm": visual_form if standard_form_selected else plan.visual_form,
                 "plotDataUnchanged": not bool(l2_selected_bindings),
                 "dataBindingsAdded": [
                     binding.model_dump(mode="json", by_alias=True)

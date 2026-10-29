@@ -537,7 +537,7 @@ export function createChartAIEdit(options: {
         imagePath: record?.pages?.find(page => imageMatchesPage(src, page, basePath))?.imagePath ?? chart.imagePath,
         title: baseTitleOf(img),
         altText,
-        visualForm: matched?.visualForm ?? null,
+        visualForm: record?.visualForm ?? matched?.visualForm ?? null,
         expectedSha256: record?.pages?.find(page => imageMatchesPage(src, page, basePath))?.sha256 ?? availability.expectedSha256,
         aiAvailable: availability.available,
         aiReason: availability.reason,
@@ -570,6 +570,11 @@ export function createChartAIEdit(options: {
           <button type="button" class="${buttonClasses('secondary')}" data-action="apply-standard" disabled>应用所选预设</button>
         </div>
         <p id="chart-ai-standard-help" class="chart-ai-hint" aria-live="polite">结构化预设直接执行；有自由要求时，请明确使用 AI 生成。</p>
+        <label class="chart-ai-hint" for="chart-ai-standard-reset">
+          <input id="chart-ai-standard-reset" type="checkbox" aria-describedby="chart-ai-standard-reset-help">
+          套用预设时重置旧图形设置
+        </label>
+        <p id="chart-ai-standard-reset-help" class="chart-ai-hint">勾选后仅对直接应用的标准预设生效；作图数据不变，旧配色、坐标轴、分页等设置不再沿用。AI 改图仍按改图要求执行。</p>
       </div>
       <label class="chart-ai-label" for="chart-ai-instruction">改图要求</label>
       <textarea id="chart-ai-instruction" rows="3" maxlength="2000"
@@ -587,6 +592,7 @@ export function createChartAIEdit(options: {
     const presets = body.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
     const presetHelp = body.querySelector<HTMLElement>('#chart-ai-standard-help')!
     const applyPreset = body.querySelector<HTMLButtonElement>('[data-action="apply-standard"]')!
+    const resetStandard = body.querySelector<HTMLInputElement>('#chart-ai-standard-reset')!
     for (const preset of STANDARD_CHART_PRESETS.filter(item => !('standard' in item)
       || !current.standardForms || current.standardForms.includes(item.standard.standardForm))) {
       const option = document.createElement('option')
@@ -609,6 +615,7 @@ export function createChartAIEdit(options: {
           return
         }
         void runEdit(current, `应用预设：${preset.name}`, { standard: preset.standard,
+          ...(resetStandard.checked ? { inheritPreviousStandard: false } : {}),
           baseImagePath: current.imagePath, expectedSha256: current.expectedSha256,
           ...(current.previousEditId ? { previousEditId: current.previousEditId } : {}),
           ...(current.title ? { baseTitle: current.title } : {}),
