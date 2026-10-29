@@ -64,7 +64,7 @@ def test_settings_defaults():
     assert current.tracing_enabled is False
     assert current.report_context_token_budget == 512 * 1024
     assert current.report_output_token_reserve == 64 * 1024
-    assert current.report_analysis_concurrency == 1
+    assert current.report_analysis_concurrency == 5
     assert current.report_section_concurrency == 1
     assert current.report_section_whole_generation is True
     assert current.report_lineage_registration_enabled is True
@@ -178,10 +178,15 @@ def test_standard_supplemental_is_enabled_by_default_and_can_be_disabled():
     assert settings(AGENT_REPORT_STANDARD_SUPPLEMENTAL_ENABLED="false").report_standard_supplemental_enabled is False
 
 
-@pytest.mark.parametrize("value", ["0", "5", "invalid"])
+@pytest.mark.parametrize("value", ["0", "6", "invalid"])
 def test_report_analysis_concurrency_is_bounded(value):
     with pytest.raises(ValueError, match="AGENT_REPORT_ANALYSIS_CONCURRENCY"):
         settings(AGENT_REPORT_ANALYSIS_CONCURRENCY=value)
+
+
+@pytest.mark.parametrize("value", [1, 3, 5])
+def test_report_analysis_concurrency_accepts_five_and_preserves_explicit_limits(value):
+    assert settings(AGENT_REPORT_ANALYSIS_CONCURRENCY=str(value)).report_analysis_concurrency == value
 
 
 def test_model_timeout_comes_from_environment():

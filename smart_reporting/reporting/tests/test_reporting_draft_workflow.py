@@ -507,6 +507,35 @@ async def test_parallel_analysis_items_run_concurrently_up_to_the_shared_limit()
 
 
 @pytest.mark.anyio
+async def test_parallel_analysis_default_runs_five_items_and_preserves_plan_order() -> None:
+    active = maximum = 0
+    release = asyncio.Event()
+
+    async def analysis(instruction, _context):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        if maximum == 5:
+            release.set()
+        await release.wait()
+        active -= 1
+        return _ok(instruction['analysisId'])
+
+    workflow = ReportingAnalysisAndDraftWorkflow(
+        report_goal='验证默认五并发',
+        sections=[{'sectionCode': 's1', 'analysisIds': ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']}],
+        run_analysis=analysis, submit_visualization=AsyncMock(return_value=_ok('visual')),
+        draft_section=AsyncMock(return_value=_ok('draft')), execution_mode='parallel',
+    )
+    result = await asyncio.wait_for(
+        workflow.sections[0].execute_section(RunContext(run_id='run-1', session_id='session-1')),
+        timeout=2,
+    )
+    assert maximum == 5
+    assert [output.content for output in result.analysis_outputs] == ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(("mode", "expected_started"), [
     ("sequential", ["a1", "a2"]),
     ("parallel", ["a1", "a2", "a3"]),
@@ -530,3 +559,41 @@ async def test_analysis_item_failure_keeps_the_original_error(mode, expected_sta
         )
     assert caught.value.code == "report_analysis_task_terminal"
     assert sorted(started) == expected_started
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('concurrency', 'valid'), [
+    (6, False), (True, False), (1.5, False), (0, False),
+    (1, True), (3, True), (5, True),
+])
+async def test_analysis_workflow_requires_bounded_integer_concurrency(concurrency, valid) -> None:
+    active = maximum = 0
+
+    async def analysis(instruction, _context):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return _ok(instruction['analysisId'])
+
+    async def complete(_instruction, _context):
+        return _ok('completed')
+
+    def build():
+        return ReportingAnalysisAndDraftWorkflow(
+            report_goal='验证分析并发参数边界',
+            sections=[{'sectionCode': 's1', 'analysisIds': ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']}],
+            run_analysis=analysis, submit_visualization=complete, draft_section=complete,
+            execution_mode='parallel', analysis_concurrency=concurrency,
+        )
+
+    if not valid:
+        with pytest.raises(ValueError):
+            build()
+        return
+
+    workflow = build()
+    result = await workflow.sections[0].execute_section(RunContext(run_id='run', session_id='session'))
+    assert maximum == concurrency
+    assert [output.content for output in result.analysis_outputs] == ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']

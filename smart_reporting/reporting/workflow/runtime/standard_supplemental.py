@@ -10,7 +10,8 @@ import hashlib
 import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Literal
+from statistics import median
+from typing import Any, Literal, get_args
 
 import polars as pl
 from loguru import logger
@@ -27,15 +28,23 @@ from ...hospital_operation.deterministic_analysis import (
     reconciliation_passes,
 )
 from ...units import unit_conversion_scale
+from .standard_supplemental_input import BatchAnalysisInputCache
+
+StandardSupplementalOperation = Literal[
+    "group_summary", "group_period_series", "cross_group_summary",
+    "period_comparison", "group_ratio", "group_period_comparison",
+]
+STANDARD_SUPPLEMENTAL_OPERATIONS: tuple[StandardSupplementalOperation, ...] = get_args(StandardSupplementalOperation)
+STANDARD_CANDIDATE_LIMIT = 40
+STANDARD_CANDIDATE_BYTES = 24_000
+STANDARD_GROUPING_SOURCE_BYTES = 12_000
+STANDARD_RECONCILIATION_LIMIT = 100
 
 
 class StandardSupplementalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    operation: Literal[
-        "group_summary", "group_period_series", "cross_group_summary",
-        "period_comparison", "group_ratio",
-    ]
+    operation: StandardSupplementalOperation
     dataset_id: str = Field(min_length=1, alias="datasetId")
     baseline_dataset_id: str | None = Field(default=None, min_length=1, alias="baselineDatasetId")
     output_name: str = Field(min_length=1, alias="outputName")
@@ -50,10 +59,34 @@ class StandardSupplementalRequest(BaseModel):
     period_granularity: Literal["day", "month", "year"] | None = Field(default=None, alias="periodGranularity")
     current_periods: tuple[str, ...] = Field(min_length=1, alias="currentPeriods")
     baseline_periods: tuple[str, ...] = Field(default=(), alias="baselinePeriods")
+    baseline_method: Literal["previous_period", "mean", "median"] | None = Field(
+        default=None, alias="baselineMethod", exclude_if=lambda value: value is None,
+    )
+    change_rate_denominator: Literal["signed", "absolute"] = Field(
+        default="signed", alias="changeRateDenominator", exclude_if=lambda value: value == "signed",
+    )
+    rank_by: Literal["absolute_change_desc", "change_desc"] = Field(
+        default="absolute_change_desc", alias="rankBy", exclude_if=lambda value: value == "absolute_change_desc",
+    )
+    include_period_change: bool = Field(
+        default=False, alias="includePeriodChange", exclude_if=lambda value: not value,
+    )
+    include_marginal_shares: bool = Field(
+        default=False, alias="includeMarginalShares", exclude_if=lambda value: not value,
+    )
+    group_by_period: bool = Field(
+        default=False, alias="groupByPeriod", exclude_if=lambda value: not value,
+    )
     parent_total: float = Field(alias="parentTotal")
     parent_period_totals: tuple[float, ...] = Field(default=(), alias="parentPeriodTotals")
+    baseline_period_totals: tuple[float, ...] = Field(
+        default=(), alias="baselinePeriodTotals", exclude_if=lambda value: not value,
+    )
     baseline_parent_total: float | None = Field(default=None, alias="baselineParentTotal")
     denominator_parent_total: float | None = Field(default=None, alias="denominatorParentTotal")
+    denominator_period_totals: tuple[float, ...] = Field(
+        default=(), alias="denominatorPeriodTotals", exclude_if=lambda value: not value,
+    )
     denominator_scale: float | None = Field(default=None, gt=0, alias="denominatorScale")
     ratio_fact_id: str | None = Field(default=None, min_length=1, alias="ratioFactId")
     scope: dict[str, str] = Field(default_factory=dict)
@@ -66,6 +99,31 @@ class StandardSupplementalRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_baseline_for_comparison(self) -> StandardSupplementalRequest:
+        if self.change_rate_denominator != "signed" and not (
+            self.operation in {"period_comparison", "group_period_comparison"}
+            or self.operation == "group_period_series" and self.include_period_change
+        ):
+            raise ValueError("只有比较计算接受 changeRateDenominator")
+        if self.rank_by != "absolute_change_desc" and self.operation != "group_period_comparison":
+            raise ValueError("只有 group_period_comparison 接受 rankBy")
+        if self.include_period_change and self.operation != "group_period_series":
+            raise ValueError("只有 group_period_series 接受 includePeriodChange")
+        if self.include_marginal_shares and self.operation != "cross_group_summary":
+            raise ValueError("只有 cross_group_summary 接受 includeMarginalShares")
+        if self.group_by_period and self.operation not in {"cross_group_summary", "group_ratio"}:
+            raise ValueError("只有 cross_group_summary 和 group_ratio 接受 groupByPeriod")
+        if self.operation == "group_ratio" and self.group_by_period:
+            if len(self.denominator_period_totals) != len(self.current_periods):
+                raise ValueError("逐期 group_ratio 必须为每个期间提供 denominatorPeriodTotals")
+        elif self.denominator_period_totals:
+            raise ValueError("只有逐期 group_ratio 接受 denominatorPeriodTotals")
+        if self.operation == "group_period_comparison":
+            if self.baseline_method is None or not self.baseline_periods:
+                raise ValueError("group_period_comparison 必须提供 baselineMethod 和 baselinePeriods")
+            if len(self.baseline_period_totals) != len(self.baseline_periods):
+                raise ValueError("group_period_comparison 必须提供逐期 baselinePeriodTotals")
+        elif self.baseline_method is not None or self.baseline_period_totals:
+            raise ValueError("只有 group_period_comparison 接受基准方法与逐期基准总额")
         if self.baseline_dataset_id is not None and self.operation != "period_comparison":
             raise ValueError("只有 period_comparison 接受 baselineDatasetId")
         if self.baseline_query_bound_scope_fields and self.baseline_dataset_id is None:
@@ -97,18 +155,22 @@ class StandardSupplementalRequest(BaseModel):
                 raise ValueError("交叉维度必须与度量、主维度和期间字段不同")
         elif self.secondary_dimension_field is not None:
             raise ValueError("只有 cross_group_summary 接受 secondaryDimensionField")
-        if self.operation == "group_period_series":
+        if self.operation in {"group_period_series", "group_period_comparison"} or self.group_by_period:
             if len(self.parent_period_totals) != len(self.current_periods):
-                raise ValueError("group_period_series 必须为每个期间提供 parentPeriodTotals")
+                raise ValueError(f"{self.operation} 必须为每个期间提供 parentPeriodTotals")
         elif self.parent_period_totals:
-            raise ValueError("只有 group_period_series 接受 parentPeriodTotals")
+            raise ValueError("只有逐期分组计算接受 parentPeriodTotals")
         current_keys = [metric_period_key(label, self.period_granularity) for label in self.current_periods]
         baseline_keys = ([metric_period_key(label, self.period_granularity) for label in self.baseline_periods]
-                         if self.operation == "period_comparison" else [])
+                         if self.operation in {"period_comparison", "group_period_comparison"} else [])
         keys = [*current_keys, *baseline_keys]
         if None in keys or len({key[0] for key in keys if key is not None}) != 1:
             raise ValueError("标准补证期间必须可解析且粒度相同")
-        if len(keys) != len(set(keys)):
+        duplicate_periods = (
+            len(current_keys) != len(set(current_keys)) or len(baseline_keys) != len(set(baseline_keys))
+            if self.operation == "group_period_comparison" else len(keys) != len(set(keys))
+        )
+        if duplicate_periods:
             raise ValueError("标准补证期间不能重复或重叠（含期间别名）")
         for fields in (self.query_bound_scope_fields, self.baseline_query_bound_scope_fields):
             if len(fields) != len(set(fields)) or not set(fields).issubset(self.scope):
@@ -121,10 +183,7 @@ class StandardSupplementalSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    operation: Literal[
-        "group_summary", "group_period_series", "cross_group_summary",
-        "period_comparison", "group_ratio",
-    ]
+    operation: StandardSupplementalOperation
     measure_field: str = Field(min_length=1, alias="measureField")
     denominator_field: str | None = Field(default=None, min_length=1, alias="denominatorField")
     dimension_field: str = Field(min_length=1, alias="dimensionField")
@@ -134,6 +193,24 @@ class StandardSupplementalSpec(BaseModel):
     period_field: str = Field(min_length=1, alias="periodField")
     current_periods: tuple[str, ...] = Field(min_length=1, alias="currentPeriods")
     baseline_periods: tuple[str, ...] = Field(default=(), alias="baselinePeriods")
+    baseline_method: Literal["previous_period", "mean", "median"] | None = Field(
+        default=None, alias="baselineMethod", exclude_if=lambda value: value is None,
+    )
+    change_rate_denominator: Literal["signed", "absolute"] = Field(
+        default="signed", alias="changeRateDenominator", exclude_if=lambda value: value == "signed",
+    )
+    rank_by: Literal["absolute_change_desc", "change_desc"] = Field(
+        default="absolute_change_desc", alias="rankBy", exclude_if=lambda value: value == "absolute_change_desc",
+    )
+    include_period_change: bool = Field(
+        default=False, alias="includePeriodChange", exclude_if=lambda value: not value,
+    )
+    include_marginal_shares: bool = Field(
+        default=False, alias="includeMarginalShares", exclude_if=lambda value: not value,
+    )
+    group_by_period: bool = Field(
+        default=False, alias="groupByPeriod", exclude_if=lambda value: not value,
+    )
     parent_fact_id: str = Field(min_length=1, alias="parentFactId")
     baseline_parent_fact_id: str | None = Field(default=None, alias="baselineParentFactId")
     baseline_dataset_id: str | None = Field(default=None, min_length=1, alias="baselineDatasetId")
@@ -144,18 +221,40 @@ class StandardSupplementalSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_periods_and_parent_refs(self) -> StandardSupplementalSpec:
+        if self.change_rate_denominator != "signed" and not (
+            self.operation in {"period_comparison", "group_period_comparison"}
+            or self.operation == "group_period_series" and self.include_period_change
+        ):
+            raise ValueError("只有比较计算接受 changeRateDenominator")
+        if self.rank_by != "absolute_change_desc" and self.operation != "group_period_comparison":
+            raise ValueError("只有 group_period_comparison 接受 rankBy")
+        if self.include_period_change and self.operation != "group_period_series":
+            raise ValueError("只有 group_period_series 接受 includePeriodChange")
+        if self.include_marginal_shares and self.operation != "cross_group_summary":
+            raise ValueError("只有 cross_group_summary 接受 includeMarginalShares")
+        if self.group_by_period and self.operation not in {"cross_group_summary", "group_ratio"}:
+            raise ValueError("只有 cross_group_summary 和 group_ratio 接受 groupByPeriod")
+        if self.operation == "group_period_comparison":
+            if self.baseline_method is None or not self.baseline_periods:
+                raise ValueError("group_period_comparison 必须提供 baselineMethod 和 baselinePeriods")
+            if self.baseline_parent_fact_id is not None or self.baseline_dataset_id is not None:
+                raise ValueError("逐期基准比较必须使用同一冻结父事实")
+        elif self.baseline_method is not None:
+            raise ValueError("只有 group_period_comparison 接受 baselineMethod")
         if len(self.current_periods) != len(set(self.current_periods)):
             raise ValueError("currentPeriods 不能重复")
         if len(self.baseline_periods) != len(set(self.baseline_periods)):
             raise ValueError("baselinePeriods 不能重复")
-        if set(self.current_periods) & set(self.baseline_periods):
+        if self.operation != "group_period_comparison" and set(self.current_periods) & set(self.baseline_periods):
             raise ValueError("当前期间和对照期间不能重叠")
         if self.operation == "period_comparison":
             if not self.baseline_periods:
                 raise ValueError("period_comparison 必须提供 baselinePeriods")
             if len(self.current_periods) != len(self.baseline_periods):
                 raise ValueError("当前期间与对照期间粒度数必须一致")
-        elif self.baseline_periods or self.baseline_parent_fact_id is not None or self.baseline_dataset_id is not None:
+        elif self.operation != "group_period_comparison" and (
+            self.baseline_periods or self.baseline_parent_fact_id is not None or self.baseline_dataset_id is not None
+        ):
             raise ValueError(f"{self.operation} 不接受对照期间")
         if self.operation == "group_ratio":
             if (
@@ -185,6 +284,100 @@ class StandardSupplementalSpec(BaseModel):
         return self
 
 
+def _standard_source_fields(spec: StandardSupplementalSpec | StandardSupplementalRequest) -> tuple[str, ...]:
+    dimensions: tuple[str, ...] = (spec.dimension_field,)
+    if spec.secondary_dimension_field is not None:
+        dimensions += (spec.secondary_dimension_field,)
+    if spec.operation in {"group_period_series", "group_period_comparison"} or spec.group_by_period:
+        return (spec.period_field, *dimensions)
+    return dimensions
+
+
+def standard_output_columns(spec: StandardSupplementalSpec | StandardSupplementalRequest) -> tuple[str, ...]:
+    """目录、契约与执行共用列定义；源字段碰撞时别名，不改派生列语义。"""
+    derived: tuple[str, ...]
+    if spec.operation == "group_summary":
+        derived = ("value", "rank", "share")
+    elif spec.operation == "group_period_series":
+        derived = ("value", "rank", "share", *(
+            ("previous", "change", "changeRate") if spec.include_period_change else ()
+        ))
+    elif spec.operation == "cross_group_summary":
+        derived = (
+            "value", "rank", "share",
+            *(("primaryTotal", "primaryShare", "secondaryTotal", "secondaryShare")
+              if spec.include_marginal_shares else ()),
+        )
+    elif spec.operation == "group_period_comparison":
+        derived = (
+            "current", "baseline", "change",
+            "changeRate", "contribution", "rank", "baselineTotal", "totalChange",
+        )
+    elif spec.operation == "period_comparison":
+        derived = ("current", "baseline", "change", "changeRate", "contribution")
+    else:
+        derived = ("numerator", "denominator", "difference", "ratio")
+    sources = _standard_source_fields(spec)
+    used = set(sources) | set(derived)
+    columns = []
+    for field in sources:
+        column = field
+        if column in derived:
+            role = "period" if field == spec.period_field else "dimension"
+            base = f"{role}_{field}"
+            column, suffix = base, 2
+            while column in used:
+                column, suffix = f"{base}_{suffix}", suffix + 1
+            used.add(column)
+        columns.append(column)
+    return (*columns, *derived)
+
+
+def compact_standard_reconciliations(checks: Sequence[dict[str, Any]], name: str) -> list[dict[str, Any]]:
+    """仅压缩顶层数量；每项原始检查与失败原因完整保留，不放宽证据契约。"""
+    if len(checks) <= STANDARD_RECONCILIATION_LIMIT:
+        return list(checks)
+    return [{"name": name, "passed": all(check["passed"] for check in checks), "checks": list(checks)}]
+
+
+def _row_period_metadata(
+    request: StandardSupplementalRequest, columns: Sequence[str], column_meta: dict[str, dict[str, Any]],
+) -> None:
+    """用显式行期间绑定精确窗口，不让单月值冒充整列累计窗口。"""
+    sources = _standard_source_fields(request)
+    available = (request.baseline_periods if request.operation == "group_period_comparison"
+                 else request.current_periods)
+    labels = {metric_period_key(period, request.period_granularity): period for period in available}
+
+    def structured(periods: Sequence[str]) -> list[str]:
+        keys = [metric_period_key(period, request.period_granularity) for period in periods]
+        return list(dict.fromkeys(key[1].isoformat()[:{"year": 4, "month": 7, "day": 10}[key[0]]]
+                                 for key in keys if key is not None))
+
+    current = {period: structured((period,)) for period in request.current_periods}
+    reference: dict[str, list[str]] = {}
+    baseline_window = structured(request.baseline_periods)
+    for period in request.current_periods:
+        if request.operation == "group_period_comparison" and request.baseline_method != "previous_period":
+            reference[period] = baseline_window
+        else:
+            previous = labels.get(metric_comparison_period_key(period, request.period_granularity, "mom"))
+            reference[period] = structured((previous,)) if previous is not None else []
+    combined = {period: list(dict.fromkeys((*current[period], *reference[period])))
+                for period in request.current_periods}
+    for column in columns[len(sources):]:
+        if column == "rank":
+            continue
+        mapping = current
+        if request.operation == "group_period_comparison":
+            mapping = (current if column == "current" else reference
+                       if column in {"baseline", "baselineTotal"} else combined)
+        elif request.operation == "group_period_series":
+            mapping = (reference if column == "previous" else combined
+                       if column in {"change", "changeRate"} else current)
+        column_meta.setdefault(column, {})["periodsByRowPeriod"] = mapping
+
+
 def run_standard_supplemental(
     *,
     analysis_id: str,
@@ -196,8 +389,9 @@ def run_standard_supplemental(
     baseline_csv_content: bytes | None = None,
     baseline_authorized_fields: Sequence[str] = (),
     baseline_authorized_query_scope: Mapping[str, str] | None = None,
+    _input_cache: BatchAnalysisInputCache | None = None,
 ) -> dict[str, Any]:
-    """计算完整分组、期间分组、交叉分组、期间变化或登记比率分组。"""
+    """计算授权可加指标的分组、逐期比较、交叉构成及登记比率，不推断业务主题。"""
 
     if request.dataset_id not in set(dataset_ids) or (
         request.baseline_dataset_id is not None and request.baseline_dataset_id not in set(dataset_ids)
@@ -220,7 +414,7 @@ def run_standard_supplemental(
         if unauthorized:
             raise ValueError(f"请求引用了未授权字段: {sorted(unauthorized)}")
         try:
-            frame = read_analysis_csv(content)
+            frame = read_analysis_csv(content) if _input_cache is None else _input_cache.read(content)
         except (UnicodeDecodeError, pl.exceptions.PolarsError) as error:
             raise ValueError("授权 CSV 无法解析") from error
         missing = required_fields - set(frame.columns)
@@ -250,7 +444,6 @@ def run_standard_supplemental(
         warnings.extend(baseline_warnings)
     elif baseline_csv_content is not None:
         raise ValueError("独立对照 CSV 必须绑定 baselineDatasetId")
-    columns: list[str]
     column_meta: dict[str, dict[str, Any]]
     amount_columns: tuple[str, ...]
     if request.operation == "group_summary":
@@ -266,12 +459,11 @@ def run_standard_supplemental(
         reconciliations = [_reconciliation(request.output_name + "_total", group_total, request.parent_total)]
         if not reconciliations[0]["passed"]:
             warnings.append("分组结果与父指标总额不闭合，保留结果并产生软告警")
-        columns = [request.dimension_field, "value", "rank", "share"]
         column_meta = {"rank": {"unit": "名"}, "share": {"unit": "%", "isPercent": False}}
         amount_columns = ("value",)
     elif request.operation == "group_period_series":
         finding_rows, period_totals = _period_group_rows(
-            rows, request.current_periods, warnings,
+            rows, request, warnings,
         )
         if not finding_rows:
             warnings.append("当前期间没有可计算的分组趋势")
@@ -292,30 +484,56 @@ def run_standard_supplemental(
         ))
         if any(not item["passed"] for item in reconciliations):
             warnings.append("期间分组结果与冻结逐期总额不闭合，保留结果并产生软告警")
-        columns = [request.period_field, request.dimension_field, "value", "rank", "share"]
         column_meta = {"rank": {"unit": "名"}, "share": {"unit": "%", "isPercent": False}}
         amount_columns = ("value",)
+        if request.include_period_change:
+            amount_columns += ("previous", "change")
+            column_meta["changeRate"] = {"unit": "%", "isPercent": False}
     elif request.operation == "cross_group_summary":
         assert request.secondary_dimension_field is not None
-        finding_rows, group_total = _cross_group_rows(rows)
+        if request.group_by_period:
+            finding_rows = []
+            reconciliations = []
+            cross_period_totals: list[float] = []
+            period_rows_by_label = _rows_by_period(rows)
+            for period, expected in zip(request.current_periods, request.parent_period_totals, strict=True):
+                period_rows, total = _cross_group_rows(
+                    period_rows_by_label.get(period, ()), request.include_marginal_shares, warnings,
+                )
+                finding_rows.extend([period, *row] for row in period_rows)
+                cross_period_totals.append(total)
+                reconciliations.append(_reconciliation(f"{request.output_name}_{period}_total", total, expected))
+            group_total = math.fsum(cross_period_totals)
+        else:
+            finding_rows, group_total = _cross_group_rows(rows, request.include_marginal_shares, warnings)
+            reconciliations = []
         if not finding_rows:
             warnings.append("当前期间没有可计算的交叉分组")
-        reconciliations = [
-            _reconciliation(request.output_name + "_total", group_total, request.parent_total),
-        ]
-        if not reconciliations[0]["passed"]:
+        reconciliations.append(_reconciliation(request.output_name + "_total", group_total, request.parent_total))
+        if any(not item["passed"] for item in reconciliations):
             warnings.append("交叉分组结果与父指标总额不闭合，保留结果并产生软告警")
-        columns = [
-            request.dimension_field, request.secondary_dimension_field,
-            "value", "rank", "share",
-        ]
         column_meta = {"rank": {"unit": "名"}, "share": {"unit": "%", "isPercent": False}}
         amount_columns = ("value",)
+        if request.include_marginal_shares:
+            amount_columns += ("primaryTotal", "secondaryTotal")
+            column_meta.update({
+                name: {"unit": "%", "isPercent": False}
+                for name in ("primaryShare", "secondaryShare")
+            })
+    elif request.operation == "group_period_comparison":
+        finding_rows, reconciliations = _baseline_comparison_rows(rows, request, warnings)
+        column_meta = {
+            "rank": {"unit": "名"},
+            "changeRate": {"unit": "%", "isPercent": False},
+            "contribution": {"unit": "%", "isPercent": False},
+        }
+        amount_columns = ("current", "baseline", "change", "baselineTotal", "totalChange")
     elif request.operation == "period_comparison":
         assert request.baseline_parent_total is not None
         finding_rows, current_total, baseline_total, current_sum, baseline_sum = _comparison_rows(
             rows, request.current_periods, request.baseline_periods, warnings,
             baseline_rows=baseline_rows,
+            change_rate_denominator=request.change_rate_denominator,
         )
         if not finding_rows:
             warnings.append("当前期间与对照期间没有可比较的有效分组")
@@ -325,7 +543,6 @@ def run_standard_supplemental(
         ]
         if any(not item["passed"] for item in reconciliations):
             warnings.append("期间比较结果与父指标总额不闭合，保留结果并产生软告警")
-        columns = [request.dimension_field, "current", "baseline", "change", "changeRate", "contribution"]
         column_meta = {
             "changeRate": {"unit": "%", "isPercent": False},
             "contribution": {"unit": "%", "isPercent": False},
@@ -335,47 +552,104 @@ def run_standard_supplemental(
         assert request.denominator_field is not None
         assert request.denominator_parent_total is not None
         assert request.denominator_scale is not None
-        finding_rows, numerator_total, denominator_total = _ratio_rows(
-            rows, request.current_periods, request.denominator_scale, warnings,
-        )
+        reconciliations = []
+        if request.group_by_period:
+            finding_rows = []
+            period_rows_by_label = _rows_by_period(rows)
+            numerator_totals: list[float] = []
+            denominator_totals: list[float] = []
+            for period, numerator_expected, denominator_expected in zip(
+                request.current_periods, request.parent_period_totals,
+                request.denominator_period_totals, strict=True,
+            ):
+                ratio_rows, numerator_period_total, denominator_period_total = _ratio_rows(
+                    period_rows_by_label.get(period, ()), (period,), request.denominator_scale, warnings,
+                )
+                finding_rows.extend([period, *row] for row in ratio_rows)
+                numerator_totals.append(numerator_period_total)
+                denominator_totals.append(denominator_period_total)
+                reconciliations.extend((
+                    _reconciliation(f"{request.output_name}_{period}_numerator_total",
+                                    numerator_period_total, numerator_expected),
+                    _reconciliation(f"{request.output_name}_{period}_denominator_total",
+                                    denominator_period_total, denominator_expected),
+                ))
+                if not ratio_rows:
+                    warnings.append(f"期间 {period} 没有可计算的有效分组比率")
+            numerator_total = math.fsum(numerator_totals)
+            denominator_total = math.fsum(denominator_totals)
+        else:
+            finding_rows, numerator_total, denominator_total = _ratio_rows(
+                rows, request.current_periods, request.denominator_scale, warnings,
+            )
         if not finding_rows:
             warnings.append("当前期间没有可计算的有效分组比率")
-        reconciliations = [
+        reconciliations.extend((
             _reconciliation(request.output_name + "_numerator_total", numerator_total, request.parent_total),
             _reconciliation(
                 request.output_name + "_denominator_total",
                 denominator_total,
                 request.denominator_parent_total,
             ),
-        ]
+        ))
         if any(not item["passed"] for item in reconciliations):
             warnings.append("分组比率结果与分子或分母父指标总额不闭合，保留结果并产生软告警")
-        columns = [request.dimension_field, "numerator", "denominator", "difference", "ratio"]
         column_meta = {"ratio": {"unit": "%", "isPercent": False}}
         amount_columns = ("numerator", "denominator", "difference")
 
+    columns = list(standard_output_columns(request))
+    source_columns = columns[:len(_standard_source_fields(request))]
+    for field, column in zip(_standard_source_fields(request), source_columns, strict=True):
+        if field != column:
+            column_meta[column] = {"sourceField": field}
     if request.measure_unit is not None:
         column_meta.update({column: {"unit": request.measure_unit} for column in amount_columns})
     periods = list(request.current_periods)
-    if request.operation == "period_comparison":
-        periods.extend(request.baseline_periods)
-        for column in columns[1:]:
+    if request.operation in {"period_comparison", "group_period_comparison"}:
+        periods = list(dict.fromkeys((*periods, *request.baseline_periods)))
+    if request.operation in {"period_comparison", "group_period_comparison"}:
+        reference_periods = request.baseline_periods
+        if request.baseline_method == "previous_period":
+            prior_keys = {metric_comparison_period_key(period, request.period_granularity, "mom")
+                          for period in request.current_periods}
+            reference_periods = tuple(period for period in reference_periods
+                                      if metric_period_key(period, request.period_granularity) in prior_keys)
+        comparison_periods = list(dict.fromkeys((*request.current_periods, *reference_periods)))
+        for column in columns:
+            if column in {*source_columns, "rank"}:
+                continue
             selected_periods = (request.current_periods if column == "current" else
-                                request.baseline_periods if column == "baseline" else periods)
+                                reference_periods if column in {"baseline", "baselineTotal"} else comparison_periods)
             column_meta.setdefault(column, {}).update(periods=list(selected_periods))
         column_meta["current"]["periodRoles"] = ["current"]
         column_meta["baseline"]["periodRoles"] = ["prior"]
+    has_row_period = request.operation in {"group_period_series", "group_period_comparison"} or request.group_by_period
+    if has_row_period:
+        _row_period_metadata(request, columns, column_meta)
 
     logger.bind(analysis_id=analysis_id, operation=request.operation).info(
         "report_standard_supplemental_completed rows={} warnings={}",
         len(finding_rows), len(warnings),
     )
+    finding: dict[str, Any] = {
+        "name": request.output_name, "columns": columns, "columnMeta": column_meta,
+        "scope": dict(request.scope), "periodGranularity": request.period_granularity,
+        "periods": periods, "rows": finding_rows,
+    }
+    if has_row_period:
+        finding["rowPeriodColumn"] = columns[0]
+    if request.operation == "group_period_comparison":
+        finding["comparison"] = {
+            "baselineMethod": request.baseline_method,
+            "baselinePeriods": list(request.baseline_periods),
+            "currentPeriods": list(request.current_periods),
+            "rankBy": request.rank_by,
+        }
+    if request.change_rate_denominator != "signed":
+        finding.setdefault("comparison", {})["changeRateDenominator"] = request.change_rate_denominator
     return {
-        "findings": [{"name": request.output_name, "columns": columns,
-                      "columnMeta": column_meta, "scope": dict(request.scope),
-                      "periodGranularity": request.period_granularity,
-                      "periods": periods, "rows": finding_rows}],
-        "reconciliations": reconciliations,
+        "findings": [finding],
+        "reconciliations": compact_standard_reconciliations(reconciliations, request.output_name + "_checks"),
         "warnings": list(dict.fromkeys(warnings))[:100],
     }
 
@@ -401,6 +675,7 @@ def frozen_period_total(fact: Any, periods: Sequence[str]) -> float:
 def build_standard_population_proof(
     *, csv_content: bytes, dataset_sha256: str, request: StandardSupplementalRequest,
     parent_fact: Any, finding: dict[str, Any],
+    _input_cache: BatchAnalysisInputCache | None = None,
 ) -> dict[str, Any] | None:
     """从身份已核验的全量CSV复算成员；无效/遗漏行或父事实不一致不签完整性。
 
@@ -422,7 +697,7 @@ def build_standard_population_proof(
             or getattr(parent_fact, "cumulative_policy", None) is not None
             or not getattr(parent_fact, "fact_id", None)):
         return None
-    frame = read_analysis_csv(csv_content)
+    frame = read_analysis_csv(csv_content) if _input_cache is None else _input_cache.read(csv_content)
     parent_periods = tuple(item.period for item in getattr(parent_fact, "period_values", ()))
     if (len(parent_periods) != len(request.current_periods)
             or set(parent_periods) != set(request.current_periods)):
@@ -436,7 +711,7 @@ def build_standard_population_proof(
         return None
     selected = [row for row in rows if row["period"] in request.current_periods]
     computed, total, _ = _group_rows(selected, [])
-    if (not computed or finding.get("columns") != [request.dimension_field, "value", "rank", "share"]
+    if (not computed or finding.get("columns") != list(standard_output_columns(request))
             or finding.get("rows") != computed
             or finding.get("scope") != request.scope
             or finding.get("periods") != list(request.current_periods)
@@ -452,7 +727,7 @@ def build_standard_population_proof(
         "datasetId": request.dataset_id, "datasetSha256": dataset_sha256,
         "populationFactId": parent_fact.fact_id, "scope": dict(request.scope),
         "periodGranularity": request.period_granularity,
-        "periods": list(request.current_periods), "dimensionField": request.dimension_field,
+        "periods": list(request.current_periods), "dimensionField": standard_output_columns(request)[0],
         "measureField": request.measure_field, "unit": request.measure_unit,
         "members": members, "membersSha256": hashlib.sha256(encoded).hexdigest(),
         "memberCount": len(members), "sourceRowCount": frame.height,
@@ -465,30 +740,29 @@ def _read_rows(
     *, periods: Sequence[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
-    expressions = [pl.col(request.measure_field).cast(pl.Float64, strict=False).alias("__value")]
+    # 同一 select 中按角色投影，不在原 frame 上覆盖可能同名的合法源字段。
+    expressions = [
+        pl.col(request.period_field).alias("__period"),
+        pl.col(request.dimension_field).alias("__dimension"),
+        pl.col(request.measure_field).cast(pl.Float64, strict=False).alias("__value"),
+    ]
+    if request.secondary_dimension_field is not None:
+        expressions.append(pl.col(request.secondary_dimension_field).alias("__secondary_dimension"))
     if request.denominator_field is not None:
         expressions.append(
             pl.col(request.denominator_field).cast(pl.Float64, strict=False).alias("__denominator")
         )
-    numeric = frame.with_columns(*expressions)
     rows: list[dict[str, Any]] = []
-    baseline_periods = request.baseline_periods if request.operation == "period_comparison" else ()
+    baseline_periods = (request.baseline_periods
+                        if request.operation in {"period_comparison", "group_period_comparison"} else ())
     selected_periods = {
         metric_period_key(label, request.period_granularity): label
         for label in (periods if periods is not None else (*request.current_periods, *baseline_periods))
     }
-    selected_columns = [request.period_field, request.dimension_field, "__value"]
-    if request.secondary_dimension_field is not None:
-        selected_columns.append(request.secondary_dimension_field)
-    if request.denominator_field is not None:
-        selected_columns.append("__denominator")
-    for item in numeric.select(*selected_columns).to_dicts():
-        period = item.get(request.period_field)
-        dimension = item.get(request.dimension_field)
-        secondary_dimension = (
-            item.get(request.secondary_dimension_field)
-            if request.secondary_dimension_field is not None else None
-        )
+    for item in frame.select(*expressions).iter_rows(named=True):
+        period = item.get("__period")
+        dimension = item.get("__dimension")
+        secondary_dimension = item.get("__secondary_dimension")
         value = item.get("__value")
         denominator = item.get("__denominator")
         if period is None:
@@ -532,16 +806,29 @@ def _read_rows(
     return rows, warnings
 
 
+def _rows_by_period(rows: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """单次分桶，避免逐期分析反复扫描全部明细。"""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["period"], []).append(row)
+    return grouped
+
+
 def _period_group_rows(
     rows: Iterable[dict[str, Any]],
-    current_periods: Sequence[str],
+    request: StandardSupplementalRequest,
     warnings: list[str],
 ) -> tuple[list[list[Any]], dict[str, float]]:
-    rows = list(rows)
+    period_rows = _rows_by_period(rows)
     result: list[list[Any]] = []
     totals: dict[str, float] = {}
-    for period in current_periods:
-        grouped, total = _group_totals(row for row in rows if row["period"] == period)
+    grouped_periods = {
+        period: _group_totals(period_rows.get(period, ()))
+        for period in request.current_periods
+    }
+    labels = {metric_period_key(period, request.period_granularity): period for period in request.current_periods}
+    for period in request.current_periods:
+        grouped, total = grouped_periods[period]
         totals[period] = total
         if not grouped:
             warnings.append(f"期间 {period} 没有可计算的有效分组")
@@ -549,16 +836,27 @@ def _period_group_rows(
         ordered = sorted(
             grouped.items(), key=lambda item: (-item[1], item[0] is None, item[0] or ""),
         )
-        result.extend(
-            [period, dimension, value, index, value / total if total else None]
-            for index, (dimension, value) in enumerate(ordered, start=1)
-        )
+        previous_period = labels.get(metric_comparison_period_key(period, request.period_granularity, "mom"))
+        previous_groups = grouped_periods[previous_period][0] if previous_period is not None else {}
+        for index, (dimension, value) in enumerate(ordered, start=1):
+            item = [period, dimension, value, index, value / total if total else None]
+            if request.include_period_change:
+                previous = previous_groups.get(dimension)
+                change = value - previous if previous is not None else None
+                denominator = abs(previous) if previous is not None and request.change_rate_denominator == "absolute" else previous
+                rate = change / denominator if change is not None and denominator else None
+                item.extend((previous, change, rate))
+                if previous is None or previous == 0:
+                    warnings.append(f"期间 {period} 分组 {dimension} 的前期缺失或为零，保留未知环比")
+            result.append(item)
         if total == 0:
             warnings.append(f"期间 {period} 分组占比分母为零，share 保留为空")
     return result, totals
 
 
-def _cross_group_rows(rows: Iterable[dict[str, Any]]) -> tuple[list[list[Any]], float]:
+def _cross_group_rows(
+    rows: Iterable[dict[str, Any]], include_marginal_shares: bool, warnings: list[str],
+) -> tuple[list[list[Any]], float]:
     encoded_rows = [{
         "dimension": json.dumps(
             [row["dimension"], row.get("secondary_dimension")],
@@ -580,10 +878,100 @@ def _cross_group_rows(rows: Iterable[dict[str, Any]]) -> tuple[list[list[Any]], 
             item[1] is None, item[1] or "",
         ),
     )
-    return [
-        [primary, secondary, value, index, value / total if total else None]
-        for index, (primary, secondary, value) in enumerate(ordered, start=1)
-    ], total
+    primary_totals: dict[str | None, list[float]] = {}
+    secondary_totals: dict[str | None, list[float]] = {}
+    if include_marginal_shares:
+        for primary, secondary, value in ordered:
+            primary_totals.setdefault(primary, []).append(value)
+            secondary_totals.setdefault(secondary, []).append(value)
+    primary_sums = {key: math.fsum(values) for key, values in primary_totals.items()}
+    secondary_sums = {key: math.fsum(values) for key, values in secondary_totals.items()}
+    result: list[list[Any]] = []
+    for index, (primary, secondary, value) in enumerate(ordered, start=1):
+        item = [primary, secondary, value, index, value / total if total else None]
+        if include_marginal_shares:
+            primary_total = primary_sums[primary]
+            secondary_total = secondary_sums[secondary]
+            item.extend((primary_total, value / primary_total if primary_total else None,
+                         secondary_total, value / secondary_total if secondary_total else None))
+            if primary_total == 0 or secondary_total == 0:
+                warnings.append("交叉分组的边际合计为零，对应占比保留为空")
+        result.append(item)
+    return result, total
+
+
+def _baseline_comparison_rows(
+    rows: Iterable[dict[str, Any]], request: StandardSupplementalRequest, warnings: list[str],
+) -> tuple[list[list[Any]], list[dict[str, Any]]]:
+    """独立计算总体与各组基准；中位数不可加时如实保留差额，不强行配平。"""
+    rows_by_period = _rows_by_period(rows)
+    periods = tuple(dict.fromkeys((*request.current_periods, *request.baseline_periods)))
+    grouped = {period: _group_totals(rows_by_period.get(period, ())) for period in periods}
+    checks = [
+        _reconciliation(f"{request.output_name}_{role}_{period}_total", grouped[period][1], expected)
+        for role, labels, totals in (
+            ("current", request.current_periods, request.parent_period_totals),
+            ("baseline", request.baseline_periods, request.baseline_period_totals),
+        )
+        for period, expected in zip(labels, totals, strict=True)
+    ]
+    checks.append(_reconciliation(
+        request.output_name + "_total",
+        math.fsum(grouped[period][1] for period in request.current_periods), request.parent_total,
+    ))
+    baseline_labels = {
+        metric_period_key(period, request.period_granularity): period for period in request.baseline_periods
+    }
+
+    def statistic(values: Sequence[float]) -> float:
+        return float(median(values)) if request.baseline_method == "median" else math.fsum(values) / len(values)
+
+    result: list[list[Any]] = []
+    for period in request.current_periods:
+        current, total = grouped[period]
+        selected = request.baseline_periods
+        if request.baseline_method == "previous_period":
+            previous = baseline_labels.get(metric_comparison_period_key(period, request.period_granularity, "mom"))
+            selected = (previous,) if previous is not None else ()
+        complete = bool(selected) and all(grouped[label][0] for label in selected)
+        baseline_total = statistic([grouped[label][1] for label in selected]) if complete else None
+        total_change = total - baseline_total if baseline_total is not None else None
+        dimensions = set(current).union(*(set(grouped[label][0]) for label in selected))
+        period_rows: list[list[Any]] = []
+        changes = []
+        for dimension in dimensions:
+            values = [grouped[label][0].get(dimension) for label in selected]
+            baseline = statistic([value for value in values if value is not None]) if (
+                values and all(value is not None for value in values)
+            ) else None
+            value = current.get(dimension)
+            change = value - baseline if value is not None and baseline is not None else None
+            denominator = abs(baseline) if baseline is not None and request.change_rate_denominator == "absolute" else baseline
+            rate = change / denominator if change is not None and denominator else None
+            contribution = change / total_change if change is not None and total_change else None
+            if change is not None:
+                changes.append(change)
+            if value is None or baseline is None:
+                warnings.append(f"期间 {period} 分组 {dimension} 缺少完整本期或基准，变化保留为空")
+            elif baseline == 0:
+                warnings.append(f"期间 {period} 分组 {dimension} 基准为零，changeRate 保留为空")
+            period_rows.append([period, dimension, value, baseline, change, rate, contribution])
+        period_rows.sort(key=lambda item: (
+            item[4] is None, -(abs(item[4]) if request.rank_by == "absolute_change_desc" else item[4])
+            if item[4] is not None else 0,
+            item[1] is None, item[1] or "",
+        ))
+        result.extend([*item, rank, baseline_total, total_change]
+                      for rank, item in enumerate(period_rows, start=1))
+        if total_change is not None:
+            checks.append(_reconciliation(
+                f"{request.output_name}_{period}_change", math.fsum(changes), total_change,
+            ))
+        if total_change is None or total_change == 0:
+            warnings.append(f"期间 {period} 的总体基准缺失或总变化为零，贡献保留为空")
+    if any(not check["passed"] for check in checks):
+        warnings.append("逐期基准比较存在对账差异（中位数可能不可加或分组缺失），保留结果与真实差额")
+    return result, checks
 
 
 def _ratio_rows(
@@ -663,6 +1051,7 @@ def _comparison_rows(
     baseline_periods: Sequence[str],
     warnings: list[str],
     *, baseline_rows: Iterable[dict[str, Any]] | None = None,
+    change_rate_denominator: Literal["signed", "absolute"] = "signed",
 ) -> tuple[list[list[Any]], float, float, float, float]:
     current_period_set = set(current_periods)
     baseline_period_set = set(baseline_periods)
@@ -685,7 +1074,7 @@ def _comparison_rows(
         else:
             change = current_value - baseline_value if current_value is not None else None
             change_rate = (
-                change / baseline_value
+                change / (abs(baseline_value) if change_rate_denominator == "absolute" else baseline_value)
                 if change is not None and baseline_value != 0
                 else None
             )
@@ -804,6 +1193,18 @@ def standard_computation_candidates(
     requested_periods: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     """Advertise bounded, fully bound choices; never infer an operation from prose."""
+    return standard_computation_catalog(
+        facts, datasets, requested_periods, _include_grouping_sources=False,
+    )["candidates"]
+
+
+def standard_computation_catalog(
+    facts: Any,
+    datasets: Sequence[Any],
+    requested_periods: Sequence[str] = (),
+    *, _include_grouping_sources: bool = True,
+) -> dict[str, Any]:
+    """共用源资格计算；紧凑索引不依赖有界候选中是否展示某个维度组合。"""
     metrics = tuple(getattr(facts, "metrics", ()))
     datasets_by_id = {item.get("datasetId"): item for item in datasets if isinstance(item, dict)}
     metrics_by_id = {item.fact_id: item for item in metrics if getattr(item, "fact_id", None)}
@@ -814,11 +1215,10 @@ def standard_computation_candidates(
         for dataset in datasets
         if isinstance(dataset, dict)
     }
-    buckets: dict[str, list[dict[str, Any]]] = {
-        "group_summary": [], "group_period_series": [],
-        "cross_group_summary": [], "period_comparison": [], "group_ratio": [],
-    }
+    buckets: dict[str, list[dict[str, Any]]] = {operation: [] for operation in STANDARD_SUPPLEMENTAL_OPERATIONS}
     seen: set[str] = set()
+    candidate_sizes: dict[str, int] = {}
+    grouping_sources: list[dict[str, Any]] = []
 
     def period_selection(parent: Any) -> tuple[str, ...] | None:
         available_periods = tuple(item.period for item in parent.period_values)
@@ -860,13 +1260,16 @@ def standard_computation_candidates(
         if candidate_id in seen:
             return
         seen.add(candidate_id)
-        buckets[spec.operation].append({
+        candidate = {
             "candidateId": candidate_id,
             "datasetId": dataset_id,
             "fields": sorted(fields),
             "label": label,
             "standardComputation": payload,
-        })
+            "outputColumns": list(standard_output_columns(spec)),
+        }
+        candidate_sizes[candidate_id] = len(json.dumps(candidate, ensure_ascii=False).encode())
+        buckets[spec.operation].append(candidate)
 
     for dataset in datasets:
         if not isinstance(dataset, dict):
@@ -902,6 +1305,24 @@ def standard_computation_candidates(
                     and profile.get(dimension, {}).get("role") in {"measure", "period", "empty"}
                 )
             ]
+            source: dict[str, Any] | None = None
+            comparison_bindings: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
+            if _include_grouping_sources and dimensions and standard_input_matches_fact(parent, dataset):
+                source = {
+                    "datasetId": dataset_id, "parentFactId": parent.fact_id,
+                    "measureField": parent.field, "periodField": parent.period_field,
+                    "currentPeriods": list(periods), "dimensionFields": dimensions,
+                    "projectedScopeFields": sorted(set(parent_scope) & columns),
+                    "comparisonBindings": [],
+                }
+                grouping_sources.append(source)
+            all_periods = tuple(item.period for item in parent.period_values)
+            all_keys = {metric_period_key(label, getattr(parent, "period_granularity", None))
+                        for label in all_periods}
+            prior_keys = {metric_comparison_period_key(label, getattr(parent, "period_granularity", None), "mom")
+                          for label in periods}
+            prior_periods = tuple(label for label in all_periods
+                                  if metric_period_key(label, getattr(parent, "period_granularity", None)) in prior_keys)
             for dimension in dimensions:
                 role = profile.get(dimension, {}).get("role") if isinstance(profile, dict) else None
                 if role in {"measure", "period", "empty"}:
@@ -914,9 +1335,17 @@ def standard_computation_candidates(
                         operation=operation, measureField=parent.field,
                         dimensionField=dimension, periodField=parent.period_field,
                         currentPeriods=periods, parentFactId=parent.fact_id,
+                        includePeriodChange=operation == "group_period_series",
                     )
                     for operation in operations
                 ]
+                if prior_keys & all_keys:
+                    specs.append(StandardSupplementalSpec(
+                        operation="group_period_comparison", measureField=parent.field,
+                        dimensionField=dimension, periodField=parent.period_field,
+                        currentPeriods=periods, parentFactId=parent.fact_id,
+                        baselineMethod="previous_period", baselinePeriods=prior_periods,
+                    ))
                 for baseline in metrics:
                     baseline_dataset = datasets_by_id.get(baseline.dataset_id)
                     if ("current" not in getattr(parent, "period_roles", ())
@@ -948,6 +1377,18 @@ def standard_computation_candidates(
                             parentFactId=parent.fact_id, baselineParentFactId=baseline.fact_id,
                             baselineDatasetId=baseline.dataset_id if cross_dataset else None,
                         ))
+                        if source is not None and standard_input_matches_fact(baseline, baseline_dataset):
+                            binding_key = (baseline.fact_id, baseline.dataset_id, prior)
+                            if binding_key not in comparison_bindings:
+                                binding = {
+                                    "baselineParentFactId": baseline.fact_id,
+                                    "baselinePeriods": list(prior), "dimensionFields": [],
+                                }
+                                if cross_dataset:
+                                    binding["baselineDatasetId"] = baseline.dataset_id
+                                comparison_bindings[binding_key] = binding
+                                source["comparisonBindings"].append(binding)
+                            comparison_bindings[binding_key]["dimensionFields"].append(dimension)
                 for spec in specs:
                     add_candidate(
                         dataset_id=dataset_id,
@@ -955,20 +1396,31 @@ def standard_computation_candidates(
                         label=getattr(parent, "display_name", None) or parent.field,
                         spec=spec,
                     )
-            # 交叉构成最多枚举前8个已授权维度，最终目录仍受40项/24KB总预算约束。
-            for primary_index, primary in enumerate(dimensions[:8]):
-                for secondary in dimensions[primary_index + 1:8]:
-                    add_candidate(
-                        dataset_id=dataset_id,
-                        fields=required | {primary, secondary},
-                        label=getattr(parent, "display_name", None) or parent.field,
-                        spec=StandardSupplementalSpec(
-                            operation="cross_group_summary", measureField=parent.field,
-                            dimensionField=primary, secondaryDimensionField=secondary,
-                            periodField=parent.period_field, currentPeriods=periods,
-                            parentFactId=parent.fact_id,
-                        ),
-                    )
+            # 有界轮转维度配对，避免字典序前8列永久挤掉其他主题的业务维度。
+            pairs: set[tuple[str, str]] = set()
+            for offset in range(1, len(dimensions)):
+                for index, dimension in enumerate(dimensions):
+                    primary, secondary = sorted((dimension, dimensions[(index + offset) % len(dimensions)]))
+                    if (primary, secondary) in pairs:
+                        continue
+                    pairs.add((primary, secondary))
+                    for by_period in (False, True):
+                        add_candidate(
+                            dataset_id=dataset_id,
+                            fields=required | {primary, secondary},
+                            label=getattr(parent, "display_name", None) or parent.field,
+                            spec=StandardSupplementalSpec(
+                                operation="cross_group_summary", measureField=parent.field,
+                                dimensionField=primary, secondaryDimensionField=secondary,
+                                periodField=parent.period_field, currentPeriods=periods,
+                                parentFactId=parent.fact_id, includeMarginalShares=True,
+                                groupByPeriod=by_period,
+                            ),
+                        )
+                    if len(pairs) >= 28:
+                        break
+                if len(pairs) >= 28:
+                    break
 
         for ratio_fact in tuple(getattr(facts, "derived_metrics", ())):
             input_ids = tuple(getattr(ratio_fact, "input_fact_ids", ()))
@@ -1006,7 +1458,10 @@ def standard_computation_candidates(
                 or not numerator.period_values
                 or not denominator.period_values
                 or getattr(ratio_fact, "difference", None) is None
-                or getattr(ratio_fact, "percentage", None) is None
+                or (
+                    getattr(ratio_fact, "percentage", None) is None
+                    and getattr(ratio_fact, "denominator", None) != 0
+                )
             ):
                 continue
             scale = unit_conversion_scale(
@@ -1058,49 +1513,78 @@ def standard_computation_candidates(
                 role = profile.get(dimension, {}).get("role") if isinstance(profile, dict) else None
                 if role in {"measure", "period", "empty"}:
                     continue
-                add_candidate(
-                    dataset_id=dataset_id,
-                    fields=required | {dimension},
-                    label=getattr(ratio_fact, "code", None) or "登记比率",
-                    spec=StandardSupplementalSpec(
-                        operation="group_ratio",
-                        measureField=numerator.field,
-                        denominatorField=denominator.field,
-                        dimensionField=dimension,
-                        periodField=numerator.period_field,
-                        currentPeriods=numerator_periods,
-                        parentFactId=numerator.fact_id,
-                        denominatorParentFactId=denominator.fact_id,
-                        ratioFactId=ratio_fact.fact_id,
-                    ),
-                )
+                for by_period in (False, True):
+                    add_candidate(
+                        dataset_id=dataset_id,
+                        fields=required | {dimension},
+                        label=getattr(ratio_fact, "code", None) or "登记比率",
+                        spec=StandardSupplementalSpec(
+                            operation="group_ratio",
+                            measureField=numerator.field,
+                            denominatorField=denominator.field,
+                            dimensionField=dimension,
+                            periodField=numerator.period_field,
+                            currentPeriods=numerator_periods,
+                            parentFactId=numerator.fact_id,
+                            denominatorParentFactId=denominator.fact_id,
+                            ratioFactId=ratio_fact.fact_id,
+                            groupByPeriod=by_period,
+                        ),
+                    )
 
     candidates: list[dict[str, Any]] = []
     used_bytes = 0
-    positions = {operation: 0 for operation in buckets}
-    while len(candidates) < 40:
+    dimension_uses: dict[tuple[str, str], int] = {}
+    measure_uses: dict[tuple[str, str], int] = {}
+    variant_uses: dict[tuple[str, str, str, bool], int] = {}
+
+    def coverage_key(candidate: Mapping[str, Any]) -> tuple[int, int, int]:
+        spec = candidate["standardComputation"]
+        dimensions = [spec["dimensionField"]]
+        if spec.get("secondaryDimensionField"):
+            dimensions.append(spec["secondaryDimensionField"])
+        return (
+            measure_uses.get((candidate["datasetId"], spec["measureField"]), 0),
+            variant_uses.get((candidate["datasetId"], spec["operation"],
+                              spec["measureField"], spec.get("groupByPeriod", False)), 0),
+            max(dimension_uses.get((candidate["datasetId"], field), 0) for field in dimensions),
+        )
+
+    while len(candidates) < STANDARD_CANDIDATE_LIMIT:
         added = False
-        for operation in (
-            "group_summary", "group_period_series", "cross_group_summary",
-            "period_comparison", "group_ratio",
-        ):
-            position = positions[operation]
-            if position >= len(buckets[operation]):
+        for operation in STANDARD_SUPPLEMENTAL_OPERATIONS:
+            # 余量只会减小，放不下的候选无需反复全桶排名后再逐个丢弃。
+            bucket = [item for item in buckets[operation]
+                      if candidate_sizes[item["candidateId"]] <= STANDARD_CANDIDATE_BYTES - used_bytes]
+            buckets[operation] = bucket
+            if not bucket:
                 continue
-            candidate = buckets[operation][position]
-            positions[operation] += 1
-            size = len(json.dumps(candidate, ensure_ascii=False).encode())
-            if used_bytes + size > 24_000:
-                continue
+            position = min(range(len(bucket)), key=lambda index: coverage_key(bucket[index]))
+            candidate = bucket.pop(position)
+            size = candidate_sizes[candidate["candidateId"]]
             candidates.append(candidate)
             used_bytes += size
+            spec = candidate["standardComputation"]
+            for field in (spec["dimensionField"], spec.get("secondaryDimensionField")):
+                if field is not None:
+                    key = (candidate["datasetId"], field)
+                    dimension_uses[key] = dimension_uses.get(key, 0) + 1
+            measure_key = (candidate["datasetId"], spec["measureField"])
+            measure_uses[measure_key] = measure_uses.get(measure_key, 0) + 1
+            variant_key = (candidate["datasetId"], spec["operation"],
+                           spec["measureField"], spec.get("groupByPeriod", False))
+            variant_uses[variant_key] = variant_uses.get(variant_key, 0) + 1
             added = True
-            if len(candidates) >= 40:
+            if len(candidates) >= STANDARD_CANDIDATE_LIMIT:
                 break
         if not added:
-            if all(positions[operation] >= len(buckets[operation]) for operation in buckets):
-                break
-            # Oversized entries have already advanced their bucket; continue to later candidates.
-            if used_bytes >= 24_000:
-                break
-    return candidates
+            break
+    source_index: dict[str, Any] = {
+        "items": [], "totalItems": len(grouping_sources), "truncated": False,
+    }
+    for source in grouping_sources:
+        source_index["items"].append(source)
+        if len(json.dumps(source_index, ensure_ascii=False).encode()) > STANDARD_GROUPING_SOURCE_BYTES:
+            source_index["items"].pop()
+    source_index["truncated"] = len(source_index["items"]) < len(grouping_sources)
+    return {"candidates": candidates, "groupingSources": source_index}

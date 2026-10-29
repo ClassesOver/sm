@@ -278,8 +278,8 @@ class AgentSettings:
         report_analysis_concurrency = _positive_int(
             values,
             "AGENT_REPORT_ANALYSIS_CONCURRENCY",
-            1,
-            maximum=4,
+            5,
+            maximum=5,
         )
         report_section_concurrency = _positive_int(
             values,

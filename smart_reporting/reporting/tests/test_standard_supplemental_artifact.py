@@ -166,13 +166,15 @@ async def test_concurrent_identical_artifact_is_reused_and_not_claimed_as_create
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('mode', ['single', 'query_scope', 'ratio', 'batch', 'batch_failure', 'disabled',
+@pytest.mark.parametrize('mode', ['single', 'proof_thread', 'batch_checks', 'query_scope', 'ratio', 'ratio_period', 'batch', 'batch_failure', 'disabled',
+                                  'series', 'previous_baseline', 'absolute_baseline', 'mean_baseline', 'median_baseline', 'cross_period',
                                   'comparison', 'comparison_drift', 'comparison_current_hash',
                                   'comparison_baseline_hash', 'comparison_current_missing_hash',
                                   'comparison_baseline_missing_hash', 'comparison_same_total_drift',
                                   'comparison_query_scope', 'comparison_baseline_or',
                                   'comparison_baseline_sql_hash', 'comparison_current_sql_hash'])
 async def test_runtime_standard_callback_signs_evidence_without_script(monkeypatch, mode):
+    from threading import get_ident
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -186,8 +188,28 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
         StandardSupplementalSpec,
     )
 
+    event_loop_thread = get_ident()
+    proof_threads = []
+    if mode == 'proof_thread':
+        original_proof = analysis_module.build_standard_population_proof
+
+        def tracked_proof(**kwargs):
+            proof_threads.append(get_ident())
+            return original_proof(**kwargs)
+
+        monkeypatch.setattr(analysis_module, 'build_standard_population_proof', tracked_proof)
+
     workspace = _MemoryWorkspace()
+    extended = mode in {'series', 'previous_baseline', 'absolute_baseline', 'mean_baseline', 'median_baseline', 'cross_period'}
     content = b'period,department,actual_equipment,visits\n2025-01,A,10,3\n2025-02,B,20,4\n'
+    if extended:
+        content = (b'period,department,actual_equipment,visits,category\n'
+                   b'2025-01,A,10,3,X\n2025-01,B,20,4,Y\n'
+                   b'2025-02,A,20,5,X\n2025-02,B,30,6,Y\n')
+    if mode == 'absolute_baseline':
+        content = (b'period,department,actual_equipment,visits,category\n'
+                   b'2025-01,A,-10,3,X\n2025-01,B,20,4,Y\n'
+                   b'2025-02,A,-5,5,X\n2025-02,B,25,6,Y\n')
     identity = {'path': 'datasets/income.csv', 'size': len(content),
                 'sha256': hashlib.sha256(content).hexdigest()}
     runtime = ReportWorkflowRuntime(
@@ -218,6 +240,15 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                                                      SimpleNamespace(period='2025-02', value=20)]})
         dataset = {'datasetId': 'dataset_001', **identity,
                    'columns': ['period', 'department', 'actual_equipment', 'visits']}
+        if extended:
+            parent.period_granularity = 'month'
+            parent.unit = '元'
+            parent.period_values = [SimpleNamespace(period='2025-01', value=30),
+                                    SimpleNamespace(period='2025-02', value=50)]
+            dataset['columns'].append('category')
+            if mode == 'absolute_baseline':
+                parent.period_values = [SimpleNamespace(period='2025-01', value=10),
+                                        SimpleNamespace(period='2025-02', value=20)]
         if mode == 'query_scope':
             parent.scope = {'income_nature': '开单收入'}
             query = ("SELECT period, department, actual_equipment, visits FROM db.income "
@@ -234,7 +265,28 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             facts=SimpleNamespace(metrics=[parent], derived_metrics=[]),
         )
         selected = spec
-        if mode.startswith('comparison'):
+        if mode == 'batch_checks':
+            state.decision.coding_requirements = [
+                SimpleNamespace(dataset_id='dataset_001', output_name=f'part_{index}') for index in range(40)
+            ]
+            selected = (spec.model_copy(update={'operation': 'group_period_series'}),) * 40
+        elif mode == 'series':
+            selected = spec.model_copy(update={'operation': 'group_period_series', 'include_period_change': True})
+        elif mode.endswith('_baseline'):
+            method = mode.removesuffix('_baseline')
+            selected = spec.model_copy(update={
+                'operation': 'group_period_comparison',
+                'baseline_method': 'previous_period' if method in {'previous', 'absolute'} else method,
+                'current_periods': ('2025-02',), 'baseline_periods': ('2025-01',),
+                **({'change_rate_denominator': 'absolute', 'rank_by': 'change_desc'}
+                   if mode == 'absolute_baseline' else {}),
+            })
+        elif mode == 'cross_period':
+            selected = spec.model_copy(update={
+                'operation': 'cross_group_summary', 'secondary_dimension_field': 'category',
+                'include_marginal_shares': True, 'group_by_period': True,
+            })
+        elif mode.startswith('comparison'):
             prior_content = (b'period,department,actual_equipment,visits\n'
                              b'2024-01,A,5,1\n2024-02,B,10,2\n2025-01,A,999,1\n')
             prior_identity = {'path': 'datasets/prior.csv', 'size': len(prior_content),
@@ -280,7 +332,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                 'operation': 'period_comparison', 'baseline_dataset_id': 'dataset_prior',
                 'baseline_parent_fact_id': prior.fact_id, 'baseline_periods': ('2024-01', '2024-02'),
             })
-        elif mode == 'ratio':
+        elif mode in {'ratio', 'ratio_period'}:
             denominator = SimpleNamespace(**vars(parent))
             denominator.fact_id = 'fact-bbbbbbbbbbbbbbbb'
             denominator.period_values = [SimpleNamespace(period='2025-01', value=3),
@@ -293,6 +345,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                 'denominator_field': 'visits',
                 'denominator_parent_fact_id': denominator.fact_id,
                 'ratio_fact_id': ratio_fact.fact_id,
+                'group_by_period': mode == 'ratio_period',
             })
         elif mode in {'batch', 'batch_failure'}:
             second = spec.model_copy(update={'measure_field': 'visits', 'parent_fact_id': 'fact-bbbbbbbbbbbbbbbb'})
@@ -342,7 +395,43 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
         return
     assert result['evidenceFile'].path == 'evidence/analysis_001/supplement.json'
     assert result['computationRecord']['scriptFileResourceId'] is None
-    assert len(result['evidence'].findings[0]['rows']) == 2
+    assert len(result['evidence'].findings[0]['rows']) == (4 if mode in {'series', 'cross_period'} else 2)
+    if mode == 'proof_thread':
+        assert proof_threads and all(thread != event_loop_thread for thread in proof_threads)
+    if mode == 'batch_checks':
+        assert len(result['evidence'].findings) == 40
+        checks = result['evidence'].reconciliations
+        assert len(checks) <= 100
+        assert len(checks[0]['checks']) == 120
+        assert all(check['passed'] for check in checks[0]['checks'])
+
+    if extended:
+        finding = result['evidence'].findings[0]
+        parameters = result['computationRecord']['parameters']
+        assert parameters['parentPeriodTotals'] == ([30, 50] if mode in {'series', 'cross_period'}
+                                                   else [20] if mode == 'absolute_baseline' else [50])
+        assert all(check['passed'] for check in result['evidence'].reconciliations)
+        rows = [dict(zip(finding['columns'], row, strict=True)) for row in finding['rows']]
+        if mode.endswith('_baseline'):
+            assert parameters['baselinePeriodTotals'] == ([10] if mode == 'absolute_baseline' else [30])
+            assert parameters['baselineMethod'] == ('previous_period' if mode in {'previous_baseline', 'absolute_baseline'}
+                                                    else mode.removesuffix('_baseline'))
+            assert result['computationRecord']['method'] == 'supplemental_standard_group_period_comparison'
+            assert rows[0]['change'] == (5 if mode == 'absolute_baseline' else 10)
+            assert rows[0]['contribution'] == .5
+            if mode == 'absolute_baseline':
+                assert rows[0]['changeRate'] == .5
+                assert parameters['changeRateDenominator'] == 'absolute'
+                assert parameters['rankBy'] == 'change_desc'
+                assert finding['comparison']['changeRateDenominator'] == 'absolute'
+                assert finding['comparison']['rankBy'] == 'change_desc'
+        elif mode == 'series':
+            assert parameters['includePeriodChange'] is True
+            assert next(row for row in rows if row['period'] == '2025-02' and row['department'] == 'A')['change'] == 10
+        else:
+            assert parameters['groupByPeriod'] is True
+            assert rows[0]['primaryShare'] == 1
+            assert rows[0]['secondaryShare'] == 1
 
     if mode == 'ratio':
         assert result['computationRecord']['method'] == 'supplemental_standard_group_ratio'
@@ -350,6 +439,18 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             'department', 'numerator', 'denominator', 'difference', 'ratio',
         ]
         assert result['evidence'].findings[0]['rows'][0] == ['B', 20.0, 4.0, 16.0, 5.0]
+    if mode == 'ratio_period':
+        parameters = result['computationRecord']['parameters']
+        assert parameters['denominatorPeriodTotals'] == [3, 4]
+        assert parameters['parentPeriodTotals'] == [10, 20]
+        assert result['evidence'].findings[0]['columns'] == [
+            'period', 'department', 'numerator', 'denominator', 'difference', 'ratio',
+        ]
+        assert result['evidence'].findings[0]['rows'] == [
+            ['2025-01', 'A', 10.0, 3.0, 7.0, 10 / 3],
+            ['2025-02', 'B', 20.0, 4.0, 16.0, 5.0],
+        ]
+        assert all(check['passed'] for check in result['evidence'].reconciliations)
     if mode == 'query_scope':
         assert result['evidence'].findings[0]['scope'] == {'income_nature': '开单收入'}
         assert result['computationRecord']['parameters']['queryBoundScopeFields'] == ['income_nature']

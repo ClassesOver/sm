@@ -49,11 +49,17 @@ from .code_generation import CodeGenerationResult
 from .evidence_coverage import facts_cover_analysis
 from .fact_summary import deterministic_fact_summary
 from .standard_supplemental import (
+    STANDARD_CANDIDATE_BYTES,
+    STANDARD_CANDIDATE_LIMIT,
+    STANDARD_RECONCILIATION_LIMIT,
+    STANDARD_SUPPLEMENTAL_OPERATIONS,
     StandardSupplementalSpec,
     comparison_period_windows,
     query_bound_scope_fields,
     standard_computation_candidates,
+    standard_computation_catalog,
     standard_input_matches_fact,
+    standard_output_columns,
 )
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
@@ -217,6 +223,16 @@ def _evidence_tables(value: Any) -> Iterator[Mapping[str, Any]]:
             yield from _evidence_tables(item)
 
 
+def _reconciliation_checks(value: Any) -> Iterator[Mapping[str, Any]]:
+    """展开标准批量对账，保持原有空结果护栏，不把业务差额变成硬失败。"""
+    if isinstance(value, Mapping):
+        yield value
+        yield from _reconciliation_checks(value.get("checks"))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _reconciliation_checks(item)
+
+
 def empty_supplemental_evidence_error(evidence: SupplementalEvidence) -> ReportingError | None:
     """补证表全部为空、或对账一侧为 0 而另一侧是已确认的非零总额：几乎都是筛选条件与数据
     实际格式不符（period_code 实为“2025-01-01”却按“2025-01”匹配）。交给修复循环重跑一次，
@@ -228,7 +244,7 @@ def empty_supplemental_evidence_error(evidence: SupplementalEvidence) -> Reporti
     any_empty_table = any(not table["rows"] for table in tables)
     zero_sides = [
         str(item.get("name"))
-        for item in evidence.reconciliations
+        for item in _reconciliation_checks(evidence.reconciliations)
         if item.get("passed") is False
         and isinstance(left := item.get("left"), (int, float)) and isinstance(right := item.get("right"), (int, float))
         and (left == 0) != (right == 0)
@@ -265,6 +281,9 @@ class AnalysisCodingRequirement(_StrictModel):
     fields: tuple[str, ...] = Field(min_length=1, max_length=100)
     calculation: str = Field(min_length=1, max_length=2_000)
     output_name: str = Field(alias="outputName", min_length=1, max_length=128)
+    required_columns: tuple[str, ...] = Field(
+        default=(), alias="requiredColumns", max_length=100, exclude_if=lambda value: not value,
+    )
     standard_candidate_id: str | None = Field(
         default=None, alias="standardCandidateId", max_length=64, exclude_if=lambda value: value is None,
     )
@@ -423,7 +442,7 @@ class SupplementalEvidence(_StrictModel):
     analysis_id: str = Field(alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$")
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
     findings: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=500)
-    reconciliations: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=100)
+    reconciliations: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=STANDARD_RECONCILIATION_LIMIT)
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
     @field_validator("warnings", mode="before")
@@ -921,6 +940,13 @@ def _project_analysis_summary_payload(
                 "truncated": True, "candidateCount": len(catalog),
                 "selectedCandidateCount": len(candidate["standardComputationCandidates"]),
             }
+    # 候选已收缩后才省略完整来源；保留身份与维度的绑定，不截断来源内部字段。
+    policy = candidate.get("standardComputationPolicy")
+    source_index = policy.get("groupingSources") if isinstance(policy, Mapping) else None
+    if isinstance(source_index, dict) and isinstance(source_index.get("items"), list):
+        while source_index["items"] and count_tokens(candidate) > max_tokens:
+            source_index["items"].pop()
+            source_index["truncated"] = True
     projected_tokens = count_tokens(candidate)
     if projected_tokens <= max_tokens:
         return candidate
@@ -1279,11 +1305,24 @@ class AnalysisItemWorkflow:
         }
         if self.run_standard_supplemental is not None:
             current_analysis = state.instruction.get("currentAnalysis") or {}
-            payload["standardComputationCandidates"] = standard_computation_candidates(
+            authorized_datasets = (current_analysis.get("datasetIds", ())
+                                   if isinstance(current_analysis, Mapping) else ())
+            catalog = standard_computation_catalog(
                 state.facts,
-                state.instruction.get("datasets") or (),
+                [item for item in (state.instruction.get("datasets") or ())
+                 if isinstance(item, Mapping) and item.get("datasetId") in authorized_datasets],
                 current_analysis.get("periods", ()) if isinstance(current_analysis, Mapping) else (),
             )
+            payload["standardComputationCandidates"] = catalog["candidates"]
+            payload["standardComputationPolicy"] = {
+                "supportedOperations": list(STANDARD_SUPPLEMENTAL_OPERATIONS),
+                "catalogIsExhaustive": False,
+                "candidateLimit": STANDARD_CANDIDATE_LIMIT,
+                "candidateBytesLimit": STANDARD_CANDIDATE_BYTES,
+                "batchRouting": "all_or_script",
+                "outputContractField": "requiredColumns",
+                "groupingSources": catalog["groupingSources"],
+            }
             logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
                         candidate_count=len(payload["standardComputationCandidates"])).info(
                 "report_analysis_standard_candidates_prepared",
@@ -1507,17 +1546,28 @@ class AnalysisItemWorkflow:
     def _standard_plan(state: _AnalysisItemState) -> tuple[StandardSupplementalSpec, ...]:
         if not isinstance(state.decision, AnalysisEvidenceDecision):
             return ()
-        specs = tuple(AnalysisItemWorkflow._standard_spec(state, index)
+        candidates: dict[str, Mapping[str, Any]] = {}
+        if any(item.standard_candidate_id for item in state.decision.coding_requirements):
+            current = state.instruction.get("currentAnalysis") or {}
+            candidates = {item["candidateId"]: item for item in standard_computation_candidates(
+                state.facts, state.instruction.get("datasets") or (),
+                current.get("periods", ()) if isinstance(current, Mapping) else (),
+            )}
+        specs = tuple(AnalysisItemWorkflow._standard_spec(state, index, candidates=candidates)
                       for index in range(len(state.decision.coding_requirements)))
         # One unsupported requirement leaves the entire item on the Python path.
         return tuple(spec for spec in specs if spec is not None) if all(specs) else ()
 
     @staticmethod
-    def _standard_spec(state: _AnalysisItemState, requirement_index: int = 0) -> StandardSupplementalSpec | None:
+    def _standard_spec(
+        state: _AnalysisItemState, requirement_index: int = 0,
+        *, candidates: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> StandardSupplementalSpec | None:
         def unavailable(reason: str) -> StandardSupplementalSpec | None:
             logger.bind(
                 analysis_id=state.instruction.get("currentAnalysisId"), reason=reason, requirement_index=requirement_index,
-            ).info("report_analysis_standard_preflight reason={}", reason)
+            ).info("report_analysis_standard_preflight reason={} analysis_id={} requirement_index={}",
+                   reason, state.instruction.get("currentAnalysisId"), requirement_index)
             return None
 
         decision = state.decision
@@ -1529,22 +1579,32 @@ class AnalysisItemWorkflow:
         requirement = requirements[requirement_index]
         spec = requirement.standard_computation
         if requirement.standard_candidate_id and state.facts is not None:
-            current_analysis = state.instruction.get("currentAnalysis") or {}
-            candidate = next((item for item in standard_computation_candidates(
-                state.facts,
-                state.instruction.get("datasets") or (),
-                current_analysis.get("periods", ()) if isinstance(current_analysis, Mapping) else (),
-            ) if item["candidateId"] == requirement.standard_candidate_id), None)
+            if candidates is None:
+                current_analysis = state.instruction.get("currentAnalysis") or {}
+                candidates = {item["candidateId"]: item for item in standard_computation_candidates(
+                    state.facts, state.instruction.get("datasets") or (),
+                    current_analysis.get("periods", ()) if isinstance(current_analysis, Mapping) else (),
+                )}
+            candidate = candidates.get(requirement.standard_candidate_id)
             if (candidate is None or candidate["datasetId"] != requirement.dataset_id
                     or not set(candidate["fields"]).issubset(requirement.fields)):
                 return unavailable("candidate_not_authorized")
             candidate_spec = StandardSupplementalSpec.model_validate(candidate["standardComputation"])
-            if spec is not None and spec != candidate_spec:
-                return unavailable("candidate_spec_conflict")
+            if spec is not None:
+                # 新增的可选输出只补齐未显式声明的选项，不能覆盖模型明确选择的口径。
+                explicit = spec.model_copy(update={
+                    name: getattr(candidate_spec, name)
+                    for name in ("include_period_change", "include_marginal_shares", "group_by_period")
+                    if name not in spec.model_fields_set
+                })
+                if explicit != candidate_spec:
+                    return unavailable("candidate_spec_conflict")
             spec = candidate_spec
         if spec is None or state.facts is None:
             return unavailable("spec_or_facts_missing")
         assert spec is not None
+        if not set(requirement.required_columns).issubset(standard_output_columns(spec)):
+            return unavailable("required_outputs_unsupported")
         spec_period_field = spec.period_field
         facts = {item.fact_id: item for item in state.facts.metrics if item.fact_id}
 
@@ -1582,6 +1642,10 @@ class AnalysisItemWorkflow:
         parent = facts.get(spec.parent_fact_id)
         if not supported(parent, spec.current_periods, spec.measure_field):
             return unavailable("parent_semantics_or_periods_unsupported")
+        if spec.operation == "group_period_comparison" and not supported(
+            parent, spec.baseline_periods, spec.measure_field,
+        ):
+            return unavailable("baseline_semantics_or_periods_unsupported")
         baseline = facts.get(spec.baseline_parent_fact_id) if spec.baseline_parent_fact_id else parent
         if spec.operation == "period_comparison" and not supported(
             baseline, spec.baseline_periods, spec.measure_field, spec.baseline_dataset_id,
@@ -1631,7 +1695,10 @@ class AnalysisItemWorkflow:
                 != (spec.parent_fact_id, spec.denominator_parent_fact_id)
                 or tuple(getattr(ratio_fact, "dataset_ids", ())) != (requirement.dataset_id,)
                 or getattr(ratio_fact, "difference", None) is None
-                or getattr(ratio_fact, "percentage", None) is None
+                or (
+                    getattr(ratio_fact, "percentage", None) is None
+                    and getattr(ratio_fact, "denominator", None) != 0
+                )
                 or scale is None
                 or not math.isclose(
                     float(scale), float(getattr(ratio_fact, "denominator_scale", 0)),
@@ -1642,7 +1709,7 @@ class AnalysisItemWorkflow:
         spec = spec.model_copy(update={
             "current_periods": canonical_periods(parent, spec.current_periods),
             "baseline_periods": (canonical_periods(baseline, spec.baseline_periods)
-                                 if spec.operation == "period_comparison" else ()),
+                                 if spec.operation in {"period_comparison", "group_period_comparison"} else ()),
         })
         parent_scope = getattr(parent, "scope", {}) or {}
         baseline_scope = getattr(baseline, "scope", {}) or {}
@@ -1717,8 +1784,10 @@ class AnalysisItemWorkflow:
             grain = getattr(parent, "period_granularity", None)
             requested_keys = [metric_period_key(str(label), grain) for label in requested_periods]
             selected_keys = {metric_period_key(label, grain) for label in spec.current_periods}
+            matches_window = (selected_keys.issubset(requested_keys)
+                              if spec.operation == "group_period_comparison" else set(requested_keys) == selected_keys)
             if (None in requested_keys or len(set(requested_keys)) != len(requested_keys)
-                    or set(requested_keys) != selected_keys):
+                    or not matches_window):
                 return unavailable("requested_period_window_mismatch")
         if requirement.dataset_id not in current_analysis.get("datasetIds", ()):
             return unavailable("dataset_not_authorized")

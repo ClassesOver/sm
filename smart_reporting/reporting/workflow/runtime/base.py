@@ -503,8 +503,8 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "未声明该等式时，分项与总额差额不代表数据对账失败。",
     "管理问题要求差额、完成率或分组贡献时，逐项核对所需期间和粒度：只有分子分母总额不等于已登记月度差额/完成率，完整组合的topGroups也不等于单一科室累计。所需计算未登记时将其声明为缺口，按明确分子分母和期间生成最小补充证据；不得把图注或模型摘要中的数字当作已冻结计算。",
     "比率补证必须记录分子、分母、差额和百分数；分母非零且分子为零时百分数为0%，只有分母为零或缺失时为null并软告警。",
-    "变化额、变化率与贡献补证使用本期累计与同期相同月份累计之差；不得以窗口首尾两个月的差额代表期间变化或贡献（R050）。"
-    "授权数据集没有同期时不生成变化额，只列示各期值并说明同比暂不可评价。",
+    "同比变化额、变化率与贡献使用本期累计与同期相同月份累计之差；不得用窗口首尾两月之差冒充同比（R050）。"
+    "没有授权同期时不生成同比变化；环比或显式基准比较应另行声明方法、期间与分母，不得混称同比。",
     "只返回 requiresSupplementalEvidence、reason、missingFacts、codingRequirements，不得生成 script 或任何代码。",
     "需要补证时，codingRequirements 逐项声明当前授权 datasets 中的 datasetId、fields、calculation 和 outputName；不得编造数据集或字段。",
     "固定事实足够时 missingFacts 和 codingRequirements 必须都是空数组，不得为了探索数据而声明缺口。",
@@ -512,16 +512,31 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "优先从 standardComputationCandidates 选择与真实缺口的指标、维度、期间和运算完全一致的候选，"
     "在 codingRequirement 填 standardCandidateId、候选的 datasetId 和完整 fields，outputName 自定但不得重复；无需抄写 standardComputation。"
     "候选只表示可计算，不代表需要补证；不得为了命中标准路径改变问题、期间或补证目标。"
+    "候选受40项/24KB限制，未列出某指标或维度不等于不支持；按字段语义判断，完全匹配工具时可显式填写standardComputation。"
+    "standardComputationPolicy.groupingSources按冻结父事实列出合法分组来源，独立于候选目录；"
+    "需要的单维或两维交叉组合未列入候选时，可从同一来源的dimensionFields选择一个或两个不同维度，填写现有standardComputation。"
+    "填写来源的datasetId、parentFactId、measureField、periodField、currentPeriods，fields同时包含projectedScopeFields；"
+    "period_comparison仅使用该来源comparisonBindings中的父事实、期间和共同维度。"
+    "索引truncated=true仅表示展示不全，不表示其他计算不支持；索引不承诺任意筛选、TopN或业务异常规则。"
+    "对标准需求用requiredColumns声明所有必需输出列，并逐项核对候选outputColumns；不能把含未支持计算的需求绑定到仅完成其中部分的候选。"
     "多个受支持指标或维度分别声明 codingRequirement，服务端会整组批量计算。"
     "没有匹配候选时仍可填写明确的 standardComputation；复杂需求照常交给脚本。",
     "只有不属于标准补证的同一 datasetId、同一维度粒度多个指标才合并为一个 codingRequirement（一个 outputName，fields 同时列出维度列与全部指标列），"
     "不要按指标逐条拆分；可参考 datasets[].columnProfile 的列角色（dimension/measure/period）与基数选择字段。",
-    "当且仅当缺口完全属于标准补证的 group_summary、group_period_series、cross_group_summary、period_comparison 或 group_ratio，且字段、期间、维度和冻结父指标事实均明确时，"
-    "group_period_series 输出逐期分组趋势；cross_group_summary 输出两个授权维度的交叉构成，须带 secondaryDimensionField。优先选择目录中对应候选。"
+    "标准补证支持group_summary、group_period_series、cross_group_summary、period_comparison、group_ratio和group_period_comparison，不按业务主题限制。"
+    "group_period_series的includePeriodChange=true输出日历相邻期间的previous/change/changeRate；"
+    "cross_group_summary须带secondaryDimensionField，includeMarginalShares=true输出两维各自分母及占比，groupByPeriod=true逐期计算，全年与逐期需求分别声明。"
+    "group_period_comparison按currentPeriods逐期输出变化、贡献与排名；rankBy默认absolute_change_desc，可显式change_desc按有符号变化额降序。"
+    "baselineMethod必须为previous_period、mean或median，baselinePeriods须显式引用同一父事实已冻结期间。"
+    "period_comparison、group_period_comparison和启用includePeriodChange的group_period_series，changeRateDenominator默认signed；"
+    "需求明确用基期绝对值作变化率分母时须显式absolute，不改变变化额或贡献分母。"
+    "均值/中位数窗口须有明确分析依据，不得自行发明常态窗口、异常阈值或业务原因；中位数不可加的差额保留为对账软告警。"
+    "仅在字段、期间、维度及父事实明确且全部输出可满足时，"
     "在对应 codingRequirement 中填写 standardComputation；parentFactId 和 baselineParentFactId 必须逐字引用 deterministicFacts.metrics 中已有 factId，"
     "fields 必须包含计算字段及 CSV 中已投影的父事实 scope 字段；未投影 scope 只有在服务端核验签发物化查询的 sqlHash 和精确等值条件后才会自动授权，"
     "不得编造范围字段、自由倍率或根据提示中的 SQL 文本自行声明授权。"
     "group_ratio 还必须引用 derivedMetrics 中已有 ratioFactId、denominatorField 和 denominatorParentFactId；只能使用该比率事实冻结的有序分子分母，不能任意配对指标。"
+    "group_ratio默认全窗；groupByPeriod=true时每期分别汇总分子分母后计算差额/比率，并逐期核对冻结父事实，不平均各期或明细比率。"
     "不得填写 parentTotal 数值，不得猜测父指标或跨 dataset 组合。未登记比率、统计模型、复杂归因和语义不完整的需求不要填写 standardComputation，交给脚本路径。",
 )
 
@@ -719,7 +734,7 @@ class _ReportWorkflowRuntimeBase:
         report_public_base_url: str | None = None,
         report_completion_template: str | None = None,
         state_repository: ReportingStateRepository,
-        analysis_concurrency: int = 1,
+        analysis_concurrency: int = 5,
         section_concurrency: int = 1,
         reporting_execution_mode: str = "sequential",
         section_whole_generation: bool = True,
@@ -767,8 +782,12 @@ class _ReportWorkflowRuntimeBase:
         self.trace_registration_enabled = trace_registration_enabled
         self.standard_supplemental_enabled = standard_supplemental_enabled
         self.state_repository = state_repository
-        if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
-            raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
+        if (
+            isinstance(analysis_concurrency, bool)
+            or not isinstance(analysis_concurrency, int)
+            or not 1 <= analysis_concurrency <= 5
+        ):
+            raise ValueError("analysis_concurrency 必须在 1 到 5 之间")
         if isinstance(section_concurrency, bool) or not 1 <= section_concurrency <= 5:
             raise ValueError("section_concurrency 必须在 1 到 5 之间")
         if reporting_execution_mode not in {"sequential", "parallel"}:

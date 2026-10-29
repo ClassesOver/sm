@@ -205,10 +205,16 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
         rework_analysis: ReworkRunner | None = None,
         execution_mode: ReportingExecutionMode = "sequential",
         section_concurrency: int = 1,
-        analysis_concurrency: int = 1,
+        analysis_concurrency: int = 5,
         evidence_frozen: bool = False,
     ) -> None:
-        if section_concurrency < 1 or analysis_concurrency < 1:
+        if (
+            isinstance(analysis_concurrency, bool)
+            or not isinstance(analysis_concurrency, int)
+            or not 1 <= analysis_concurrency <= 5
+        ):
+            raise ValueError("analysis_concurrency 必须在 1 到 5 之间")
+        if section_concurrency < 1:
             raise ValueError("并发度必须大于 0")
         self.execution_mode = execution_mode
         self.section_concurrency = section_concurrency
