@@ -1075,7 +1075,7 @@ async def test_export_revision_registers_table_edit_and_still_issues_links(
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("fault", [None, "l2_plot_changed"])
-@pytest.mark.parametrize("scenario", ["single", "reedit", "paginated_reedit"])
+@pytest.mark.parametrize("scenario", ["single", "reedit", "paginated_reedit", "revision_reedit"])
 async def test_export_revision_registers_l2_chart_edit_plot_data(
     tmp_path: Path, fault: str | None, scenario: str
 ) -> None:
@@ -1101,7 +1101,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     from smart_reporting.reporting.tests.test_report_editor_standard_charts import StandardRunner
     from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
 
-    paginated = scenario == "paginated_reedit"
+    paginated = scenario in {"paginated_reedit", "revision_reedit"}
     fixture = await _make_editor_with_chart(tmp_path, template_ready=paginated)
     editor = fixture.editor
     workspace = fixture.workspace
@@ -1122,9 +1122,12 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
         nonlocal plan_calls
         plan_calls += 1
         if plan_calls > 1:
+            standard = {"standardStyle": {"palette": "viridis"}} if paginated else None
+            if scenario == "revision_reedit" and plan_calls == 3:
+                standard["standardPagination"] = {"pageSize": 2}
             return ChartEditPlan(
                 level=["L1"], drawInstruction="保持全部数据，只调整颜色",
-                standard={"standardStyle": {"palette": "viridis"}} if paginated else None,
+                standard=standard,
             )
         plan = await initial_planner(request)
         if paginated:
@@ -1225,10 +1228,11 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
         ):
             snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
             await workspace.awrite_bytes(thread_id, output_path, b"new-pdf")
-            await workspace.awrite_bytes(thread_id, "reports/revision-2/report.docx", b"new-word")
+            word_path = PurePosixPath(output_path).with_suffix(".docx").as_posix()
+            await workspace.awrite_bytes(thread_id, word_path, b"new-word")
             run_context.session_state[REPORT_JOBS_STATE_KEY][actual_job_id]["render"] = {
                 "pdf": _identity(output_path, b"new-pdf"),
-                "word": _identity("reports/revision-2/report.docx", b"new-word"),
+                "word": _identity(word_path, b"new-word"),
                 "markdown": _identity(markdown_path, snapshot),
                 "images": [{"path": page.image.path, "size": page.image.size, "sha256": page.image.sha256} for page in pages],
             }
@@ -1254,14 +1258,30 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     editor.editor_grants = EditorGrants()
     editor.public_base_url = "https://reports.example.com"
 
-    result = await editor.export_revision(
-        context, expected_sha256=_sha(edited_markdown.encode())
-    )
+    if fault == "continuation_failed":
+        import smart_reporting.report_editor.service as service_module
+
+        async def fail_continuation(*args, **kwargs):
+            raise OSError("fixture continuation write failed")
+
+        with pytest.MonkeyPatch.context() as patcher:
+            patcher.setattr(service_module, "migrate_chart_edit_records", fail_continuation)
+            result = await editor.export_revision(context, expected_sha256=_sha(edited_markdown.encode()))
+    else:
+        result = await editor.export_revision(context, expected_sha256=_sha(edited_markdown.encode()))
     assert result["revision"] == 2
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
     committed = ReportEditorContext.model_validate(
         editor.state_repository.durable.payload["reportEditorContexts"]["2"]
     )
+    if fault == "continuation_failed":
+        assert result["validation"]["ok"] is False
+        assert "report_editor_chart_continuation_unavailable" in {
+            issue["code"] for issue in result["validation"]["issues"]
+        }
+        assert committed.artifact_manifest is not None
+        assert await editor.trace.load_index(committed) is not None
+        return
     if fault == "l2_plot_changed":
         assert result["validation"]["ok"] is False
         codes = [issue["code"] for issue in result["validation"]["issues"]]
@@ -1289,6 +1309,58 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     payload = _json.loads(migrated)
     assert payload["source"]["dataPath"] == "metrics[0].periodValues"
     assert payload["rows"] == ([["2025-07", 1200.0], ["2025-08", 1500.0], ["2025-09", 1800.0]] if paginated else [["2025-09", 3600.0]])
+    if scenario != "revision_reedit":
+        return
+
+    migrated_records = await load_chart_edit_records(workspace, thread_id, committed.markdown_path)
+    assert len(migrated_records) == 1
+    baseline = migrated_records[0]
+    assert baseline.edit_id == record.edit_id and baseline.data_origin == "original"
+    assert baseline.standard_parameters == record.standard_parameters
+    assert len(baseline.pages) == 3
+    baseline_manifest = await editor.trace.load_manifest(committed)
+    assert baseline_manifest is not None
+    assert await editor._chart_edit_lineage(
+        committed, markdown=edited_markdown, markdown_path=committed.markdown_path,
+        manifest=baseline_manifest, index=next_index,
+    ) == ({}, None)
+    service = ChartAIEditService(
+        editor=editor, workspace_registry=editor.workspace_registry,
+        planner=planner, runner=StandardRunner(fixture.chart_bytes),
+    )
+    recovered = await service.edit_record(committed, baseline.edit_id)
+    assert len(recovered["pages"]) == 3
+    assert recovered["pages"][1]["imagePath"] == baseline.pages[1].image.path
+    base = baseline.pages[1].image
+    started = await service.start_edit(committed, session, "chart_001", ChartAIEditRequest(
+        instruction="保持全部数据，调整配色并改为每页两条", previousEditId=baseline.edit_id,
+        baseImagePath=base.path, expectedSha256=base.sha256,
+    ))
+    status = await _await_edit(service, committed, "chart_001", started["editId"])
+    assert status["status"] == "succeeded", status
+    await service.aclose()
+    current_records = await load_chart_edit_records(workspace, thread_id, committed.markdown_path)
+    record = current_records[-1]
+    assert record.data_origin == "original" and len(record.pages) == 2
+    assert record.standard_parameters["standardPagination"]["pageSize"] == 2
+    assert record.plot_data_files == baseline.plot_data_files
+    pages = chart_edit_pages(record)
+    edited_markdown = header + "Revenue 3600 [[claim:claim-1]]" + "".join(
+        f"\n\n![Revenue]({chart_edit_page_src(committed.markdown_path, record.edit_id, page.page_number)}) [[citation:citation_001]]\n"
+        for page in pages
+    )
+    await workspace.awrite_text(thread_id, "reports/revision-2/draft/report.md", edited_markdown)
+    next_result = await editor.export_revision(committed, expected_sha256=_sha(edited_markdown.encode()))
+    assert next_result["revision"] == 3
+    assert next_result["validation"]["ok"] is True, next_result
+    assert next_result["pdf"]["downloadUrl"] and next_result["word"]["downloadUrl"]
+    third = ReportEditorContext.model_validate(editor.state_repository.durable.payload["reportEditorContexts"]["3"])
+    third_index = await editor.trace.load_index(third)
+    third_manifest = await editor.trace.load_manifest(third)
+    assert third_index is not None and third_manifest is not None
+    assert len(third_index.chart_traces) == len(third_manifest.charts) == 2
+    assert {trace.chart_id for trace in third_index.chart_traces} == {chart.chart_id for chart in third_manifest.charts}
+    assert len(await load_chart_edit_records(workspace, thread_id, third.markdown_path)) == 1
 
 
 def _identity(path: str, content: bytes) -> dict[str, object]:

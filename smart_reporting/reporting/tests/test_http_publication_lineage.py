@@ -865,6 +865,19 @@ async def test_editor_publication_keeps_links_when_reedited_paginated_data_chang
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_editor_publication_keeps_lineage_and_links_when_chart_continuation_fails(tmp_path):
+    """继续编辑侧车写入失败不能丢弃正式追溯或阻断 PDF/Word 下载。"""
+    from smart_reporting.reporting.tests.test_report_editor_lineage_export import (
+        test_export_revision_registers_l2_chart_edit_plot_data,
+    )
+
+    await test_export_revision_registers_l2_chart_edit_plot_data(
+        tmp_path, "continuation_failed", "paginated_reedit"
+    )
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("fault", ["none", "overview_write", "state_store"])
 async def test_overview_delivery_faults_preserve_files_and_http_downloads(tmp_path, monkeypatch, fault):
     from smart_reporting.reporting.delivery.report_runtime.overview import load_overview
