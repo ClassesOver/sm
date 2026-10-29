@@ -991,6 +991,8 @@ class ChartAIEditService:
             if previous is not None:
                 previous_standard = previous.standard_parameters
                 previous_visual_form = previous.chart.visual_form
+                previous_group_title = previous.chart.title
+                previous_group_alt = previous.chart.alt_text
                 if previous.pages:
                     suffix = f"（第1/{len(previous.pages)}页）"
                     previous_group_title = previous.chart.title.removesuffix(suffix)
@@ -998,7 +1000,7 @@ class ChartAIEditService:
             if previous is not None and previous.data_origin != "original":
                 previous_files: list[SimpleNamespace] = []
                 previous_entries: list[dict[str, Any]] = []
-                for ref in previous.plot_data_files:
+                for position, ref in enumerate(previous.plot_data_files, start=1):
                     current = await workspace.ahash_file(thread_id, ref.path)
                     if (
                         current.get("missing")
@@ -1009,12 +1011,24 @@ class ChartAIEditService:
                             "report_editor_chart_ai_base_changed", "上一轮换绑作图数据身份已变化。"
                         )
                     content, _media = await workspace.afile_bytes(thread_id, ref.path)
+                    # 每轮持有独立数据快照，导出可按本轮目录核验；内容不重算、
+                    # 不按分页裁剪，仍保留上一轮完整且已核验的冻结数据。
+                    if len(content) != ref.size or hashlib.sha256(content).hexdigest() != ref.sha256:
+                        raise _chart_ai_error(
+                            "report_editor_chart_ai_base_changed", "上一轮换绑作图数据身份已变化。"
+                        )
+                    inherited_path = (
+                        f"{chart_edit_output_dir(source_context.markdown_path, edit_id)}"
+                        f"/inherited-input-{position}.json"
+                    )
+                    await workspace.awrite_bytes(thread_id, inherited_path, content, overwrite=True)
+                    inherited_ref = ref.model_copy(update={"path": inherited_path})
                     previous_files.append(
                         SimpleNamespace(
-                            path=ref.path, size=ref.size, sha256=ref.sha256, content=content
+                            path=inherited_path, size=ref.size, sha256=ref.sha256, content=content
                         )
                     )
-                    previous_entries.append(_chart_input_entry(content, ref))
+                    previous_entries.append(_chart_input_entry(content, inherited_ref))
                 if previous_files:
                     plot_files, plot_entries = previous_files, previous_entries
                     data_origin = previous.data_origin

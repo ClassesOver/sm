@@ -201,7 +201,10 @@ async def test_real_paginated_edit_reedit_from_page2_inherits_whole_cohort_and_s
     records=await load_chart_edit_records(fixture.workspace,fixture.thread_id,fixture.context.markdown_path)
     result=records[-1]
     assert result.base_image_path==second_page.image.path
-    assert result.plot_data_files==original.plot_data_files and len(result.plot_data_files)==1
+    assert len(result.plot_data_files)==len(original.plot_data_files)==1
+    assert result.plot_data_files[0].path!=original.plot_data_files[0].path
+    assert result.plot_data_files[0].sha256==original.plot_data_files[0].sha256
+    assert result.plot_data_files[0].path.startswith(str(result.image.path.rsplit('/',1)[0])+'/')
     assert result.standard_parameters['standardPagination']['pageSize']==1
     assert result.standard_parameters['standardStyle']['palette']=='viridis'
     assert requests[-1]['baseTitle']=='收入分页'
