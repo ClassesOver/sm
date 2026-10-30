@@ -982,9 +982,23 @@ def _validate_docx_rendering(
     if not 1 <= len(reader.pages) <= MAX_PDF_PAGES:
         raise ReportFailure("Word 转换页数超出边界")
     prefix = raster / "page"
+    # 空白页与图片判定只依赖文本层和 page.images，不读像素；栅格化仅确认转换结果
+    # 可被渲染，因此只抽首页低分辨率栅格化，避免对最多 200 页逐页出图。
     try:
         rendered = subprocess.run(
-            ["pdftoppm", "-gray", "-r", "72", "-png", str(converted), str(prefix)],
+            [
+                "pdftoppm",
+                "-gray",
+                "-r",
+                "36",
+                "-f",
+                "1",
+                "-l",
+                "1",
+                "-png",
+                str(converted),
+                str(prefix),
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=DOCX_VALIDATION_TIMEOUT_SECONDS,
@@ -992,22 +1006,23 @@ def _validate_docx_rendering(
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ReportFailure("Word 转换结果栅格化失败") from error
-    rendered_pages = sorted(
-        raster.glob("page-*.png"), key=lambda item: int(item.stem.rsplit("-", 1)[-1])
-    )
-    if rendered.returncode != 0 or len(rendered_pages) != len(reader.pages):
+    rendered_pages = list(raster.glob("page-*.png"))
+    if rendered.returncode != 0 or len(rendered_pages) != 1:
         raise ReportFailure("Word 转换结果栅格化失败")
+    try:
+        with Image.open(rendered_pages[0]) as image:
+            image.verify()
+    except (OSError, SyntaxError) as error:
+        raise ReportFailure("Word 转换结果栅格化失败") from error
     extracted_pages: list[str] = []
     page_image_counts: list[int] = []
     image_count = 0
-    for page, rendered_page in zip(reader.pages, rendered_pages, strict=True):
+    for page in reader.pages:
         page_text = page.extract_text() or ""
         extracted_pages.append(page_text)
         current_image_count = len(page.images)
         page_image_counts.append(current_image_count)
         image_count += current_image_count
-        with Image.open(rendered_page) as image:
-            image.verify()
     first_section_title = "".join(context["sections"][0]["title"].split())
     report_title = "".join(context["title"].split())
     first_section_pages = [

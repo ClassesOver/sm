@@ -380,28 +380,33 @@ class ReportRuntime:
                 toc_page_numbers = _toc_page_numbers(
                     preflight_document.pages, context["headingNumbers"]
                 )
-                pdf_document, _ = _semantic_documents(
-                    html_body,
-                    context=context,
-                    layout=layout,
-                    toc_page_numbers=toc_page_numbers,
-                    include_cover=include_cover,
-                    include_toc=include_toc,
-                    citation_presentations=(citation_presentations if include_sources else []),
-                    trace_sources=(trace_source_render if include_sources else None),
-                )
-                final_document = HTML(
-                    string=pdf_document,
-                    base_url=str(source.parent),
-                    url_fetcher=fetch_resource,
-                ).render()
-                if (
-                    _toc_page_numbers(final_document.pages, context["headingNumbers"])
-                    != toc_page_numbers
-                ):
-                    # 目录页码使用固定宽度，正常不会改变分页；若字体或渲染器升级导致
-                    # 锚点漂移，则不能发布目录与正文不一致的产物。
-                    raise ReportFailure("PDF 目录页码在最终渲染时发生漂移")
+                if not include_toc:
+                    # 不输出目录时页码不进入 HTML，预排版即最终排版；
+                    # 锚点完整性已由上面的 _toc_page_numbers 校验，无需再排版一遍。
+                    final_document = preflight_document
+                else:
+                    pdf_document, _ = _semantic_documents(
+                        html_body,
+                        context=context,
+                        layout=layout,
+                        toc_page_numbers=toc_page_numbers,
+                        include_cover=include_cover,
+                        include_toc=include_toc,
+                        citation_presentations=(citation_presentations if include_sources else []),
+                        trace_sources=(trace_source_render if include_sources else None),
+                    )
+                    final_document = HTML(
+                        string=pdf_document,
+                        base_url=str(source.parent),
+                        url_fetcher=fetch_resource,
+                    ).render()
+                    if (
+                        _toc_page_numbers(final_document.pages, context["headingNumbers"])
+                        != toc_page_numbers
+                    ):
+                        # 目录页码使用固定宽度，正常不会改变分页；若字体或渲染器升级导致
+                        # 锚点漂移，则不能发布目录与正文不一致的产物。
+                        raise ReportFailure("PDF 目录页码在最终渲染时发生漂移")
                 final_document.write_pdf(str(temporary), pdf_variant="pdf/ua-1")
                 if temporary.stat().st_size > MAX_PDF_BYTES:
                     raise ReportFailure("PDF 文件不能超过 200 MiB")
@@ -670,10 +675,12 @@ class ReportRuntime:
                     extracted_pages.append(page_text)
                     with Image.open(rendered_page) as image:
                         grayscale = image.convert("L")
-                        samples = grayscale.tobytes()
+                        histogram = grayscale.histogram()
                         width, height = grayscale.size
-                    non_white = sum(value < 250 for value in samples)
-                    ratio = round(non_white / len(samples), 6) if samples else 0.0
+                    # 灰度直方图在 C 层统计，避免逐像素 Python 迭代（200 页约 1 亿次）。
+                    sample_count = width * height
+                    non_white = sum(histogram[:250])
+                    ratio = round(non_white / sample_count, 6) if sample_count else 0.0
                     image_count = len(page.images)
                     rendered_image_count += image_count
                     if index < first_numbered_page:

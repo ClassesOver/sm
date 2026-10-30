@@ -593,9 +593,11 @@ class ContextBudgetController(ProtectedCompressionManager):
         except Exception:
             # 非 Agno 测试模型可能拒绝动态属性；压缩管理器本身仍可独立工作。
             pass
+        # compress 为空操作（预算由模型投影层执行）。关闭 compress_tool_results 让 Agno
+        # 模型循环跳过每轮的 should_compress 全量分词；should_compress 仍可显式调用。
         super().__init__(
             model=model,
-            compress_tool_results=True,
+            compress_tool_results=False,
             compress_token_limit=self.input_token_budget,
         )
 
@@ -1569,7 +1571,10 @@ class TaskExecutionContextProjector:
         if feedback is not None:
             projected.append(feedback)
         threshold = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD))
-        projected_tokens = counted_token_count(projected)
+        # 未追加反馈时 projected 与刚计数的 canonical 完全相同，复用结果省一次全量分词。
+        projected_tokens = (
+            counted_token_count(projected) if feedback is not None else canonical_tokens
+        )
         # benchmark 基线语义：摘要关闭时恢复旧行为——只要存在可压缩的已完成 custom
         # 历史就强制走窗口重建（不因低于阈值而保留完整旧历史），保证 G1 与 B0 生产
         # 基线同口径。摘要开启时低于门禁则原样保留。
@@ -1699,18 +1704,43 @@ class TaskExecutionContextProjector:
             for group in [*incomplete_batches, *selected_rounds]
         ]
         positioned.sort(key=lambda item: item[0])
-        candidate = [*prefix, checkpoint_message]
-        for _position, group in positioned:
-            candidate.extend(group)
-        if feedback is not None:
-            candidate.append(feedback)
-
         target = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_TARGET))
         deletable_start = len(protected_rounds)
-        while len(selected_rounds) > deletable_start and counted_token_count(candidate) > target:
-            removed = selected_rounds.pop(deletable_start)
-            start = next(index for index, message in enumerate(candidate) if message is removed[0])
-            del candidate[start : start + len(removed)]
+        deletable_rounds = selected_rounds[deletable_start:]
+        candidate_tokens: dict[int, int] = {}
+
+        def candidate_without(dropped_count: int) -> list[Message]:
+            dropped = {id(group) for group in deletable_rounds[:dropped_count]}
+            built = [*prefix, checkpoint_message]
+            for _position, group in positioned:
+                if id(group) not in dropped:
+                    built.extend(group)
+            if feedback is not None:
+                built.append(feedback)
+            return built
+
+        def candidate_token_count(dropped_count: int) -> int:
+            if dropped_count not in candidate_tokens:
+                candidate_tokens[dropped_count] = counted_token_count(
+                    candidate_without(dropped_count)
+                )
+            return candidate_tokens[dropped_count]
+
+        # 从最旧的可删轮次开始丢弃，取满足 target 的最少丢弃数；没有满足的就全部丢弃。
+        # 删除消息只会让 token 数单调不增，二分得到的结果与逐轮删除逐次全量计数一致，
+        # 但全量分词次数从 O(轮次) 降到 O(log 轮次)。
+        dropped_count = 0
+        if candidate_token_count(0) > target:
+            low, high = 1, len(deletable_rounds)
+            while low < high:
+                middle = (low + high) // 2
+                if candidate_token_count(middle) <= target:
+                    high = middle
+                else:
+                    low = middle + 1
+            dropped_count = high
+        candidate = candidate_without(dropped_count)
+        selected_rounds = [*protected_rounds, *deletable_rounds[dropped_count:]]
         final_metadata_bytes = cls._coding_custom_history_metadata_bytes(candidate)
         custom_history_metrics["metadata_bytes"] = final_metadata_bytes
         custom_history_metrics["bytes_after"] = final_metadata_bytes
@@ -1718,7 +1748,7 @@ class TaskExecutionContextProjector:
             metadata_budget_enabled
             and final_metadata_bytes > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
         )
-        projected_tokens = counted_token_count(candidate)
+        projected_tokens = candidate_token_count(dropped_count)
         if projected_tokens > hard_cap:
             metrics = {
                 "canonical_message_count": len(messages),
