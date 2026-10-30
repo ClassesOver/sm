@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from smart_reporting.reporting.trace import number_selection
 from smart_reporting.reporting.trace.contracts_v1 import derive_resource_id
 from smart_reporting.reporting.trace.semantic_bindings import (
     anchor_bound_numbers,
@@ -55,6 +56,21 @@ def test_number_anchors_keep_repeated_values_distinct_and_bind_both_operands():
     assert len(bindings[1].fact_refs) == 2
     assert not notices
     assert statement_fingerprint(markdown.replace('租赁', '销售'), references[0].claim_id) != references[0].statement_sha256
+
+
+def test_render_bound_numbers_can_reuse_aligned_markdown(monkeypatch):
+    markdown = '设备支出合计为{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。'
+    expected = render_bound_numbers(markdown, contents(), key='aligned')
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError('aligned markdown was aligned again')
+
+    monkeypatch.setattr(number_selection, 'align_number_selections', unexpected)
+    actual = render_bound_numbers(
+        markdown, contents(), key='aligned', number_selections_aligned=True,
+    )
+
+    assert actual == expected
 
 
 def test_missing_operand_or_conflicting_identity_never_falls_back_to_total():
