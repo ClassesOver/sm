@@ -587,6 +587,7 @@ async def test_semantic_batches_keep_full_context_and_isolate_failed_or_foreign_
     async def review(agent, schema, stage, payload, **kwargs):
         calls.append(payload)
         assert len(payload['references']) <= 10
+        assert {item['factId'] for item in payload['quantitySources']} == {'fact-aaaaaaaaaaaaaaaa'}
         context = next(iter(payload['contexts'].values()))
         assert '本节共同口径为开单收入' in context and '独立项目20收入' in context
         if len(calls) == 2:
@@ -606,6 +607,52 @@ async def test_semantic_batches_keep_full_context_and_isolate_failed_or_foreign_
     reviewed = [number.semantic_receipt is not None for block in result for number in block.number_references]
     assert reviewed == [True] * 10 + [False] * 10 + [True]
     assert sum(len(item['references']) for item in calls) == 21
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('budget_error', [False, True])
+async def test_semantic_batches_fit_routed_budget_without_losing_claims_or_chapter(monkeypatch, budget_error):
+    import json
+    from types import SimpleNamespace
+
+    from agno.run import RunContext
+
+    from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+    from smart_reporting.reporting.model_policy import ThinkingRequest
+    from smart_reporting.reporting.tests.test_semantic_bindings import contents
+    from smart_reporting.reporting.trace.semantic_bindings import render_bound_numbers
+    from smart_reporting.reporting.workflow.runtime import sections
+
+    class Model:
+        _task_execution_input_token_budget = 150
+
+        def count_tokens(self, messages, **kwargs):
+            payload = json.loads(messages[-1].content)
+            return 20 + 30 * len(payload['references'])
+
+    markdown, refs, _ = render_bound_numbers(
+        '本章共同口径。' + '收入{{value:fact-aaaaaaaaaaaaaaaa:total:元}}。' * 11 + '末段口径。',
+        contents(), key='bounded-semantics')
+    calls = []
+
+    async def review(agent, schema, stage, payload, **kwargs):
+        assert len(payload['references']) <= (10 if budget_error else 4)
+        assert all('本章共同口径' in text and '末段口径' in text for text in payload['contexts'].values())
+        calls.extend(item['claimId'] for item in payload['references'])
+        return schema.model_validate({'interpretations': [{'claimId': item['claimId']}
+                                                          for item in payload['references']]})
+
+    monkeypatch.setattr(sections, '_run_section_stage', review)
+    if budget_error:
+        def unavailable(*args, **kwargs):
+            raise RuntimeError('预算解析暂时不可用')
+        monkeypatch.setattr(sections, '_section_block_input_token_budget', unavailable)
+    result = await sections._interpret_section_claims(
+        SimpleNamespace(model=Model()), [ReportDraftBlock(blockId='b', markdown=markdown, numberReferences=refs)],
+        contents(), section_code='s', scope=SimpleNamespace(), run_context=RunContext(run_id='r', session_id='s'),
+        thinking_request=ThinkingRequest(operation='section_generation', complexity='standard'))
+    assert calls == [number.claim_id for number in refs]
+    assert all(number.semantic_receipt is not None for number in result[0].number_references)
 
 
 @pytest.mark.parametrize('payload', [

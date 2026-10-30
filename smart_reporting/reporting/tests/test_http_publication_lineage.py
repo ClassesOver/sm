@@ -407,7 +407,7 @@ async def _publication_fixture(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate", "runtime_state", "quality_source_selection", "write", "read"])
+@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "heading_projection", "standard_proof_sources", "overview_evaluate", "runtime_state", "quality_source_selection", "write", "read"])
 async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch, fault):
     from smart_reporting.reporting.trace import quality_bundle
 
@@ -434,6 +434,18 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
         def fail(*_args, **_kwargs):
             raise RuntimeError("injected quality evaluation failure")
         monkeypatch.setattr(quality_bundle, {"evaluate": "evaluate_quality_bundle", "chart_evaluate": "evaluate_chart_quality", "table_evaluate": "evaluate_table_quality", "semantic_evaluate": "evaluate_semantic_alignment", "overview_evaluate": "build_management_overview"}[fault], fail)
+    elif fault == "heading_projection":
+        from smart_reporting.reporting.trace import claim_semantics
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("injected semantic heading projection failure")
+        monkeypatch.setattr(claim_semantics, "project_semantic_headings", fail)
+    elif fault == "standard_proof_sources":
+        from smart_reporting.reporting.trace import chart_quality
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("injected standard chart proof dependency failure")
+        monkeypatch.setattr(chart_quality, "standard_proof_source_ids", fail)
     elif fault == "quality_source_selection":
         def fail(*_args, **_kwargs):
             raise RuntimeError("injected quality source dependency failure")

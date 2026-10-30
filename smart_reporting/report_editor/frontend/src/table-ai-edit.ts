@@ -10,6 +10,38 @@ const TABLE_MARKER = /^\[\[table:([A-Za-z0-9_.:-]+)\]\]$/
 const CLOSE_MARKER = /^\[\[\/table:([A-Za-z0-9_.:-]+)\]\]$/
 
 function text(value: string): Text { return document.createTextNode(value) }
+function markdownTableRow(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/)
+    .map(value => value.trim().replace(/\\\|/g, '|'))
+}
+
+function currentTablePreview(markdown: string): HTMLTableElement | null {
+  const lines = markdown.split('\n').map(line => line.trim()).filter(line => line.startsWith('|'))
+  if (!lines.length) return null
+  const rows = lines.map(markdownTableRow)
+  const hasSeparator = rows.length > 1 && rows[1]!.every(value => /^:?-{3,}:?$/.test(value))
+  const header = rows[0]!
+  const data = rows.slice(hasSeparator ? 2 : 1)
+  const table = document.createElement('table')
+  table.className = 'table-ai-current-preview'
+  table.setAttribute('aria-label', '当前表格预览')
+  const head = document.createElement('thead')
+  const headRow = document.createElement('tr')
+  header.forEach(value => {
+    const cell = document.createElement('th')
+    cell.scope = 'col'; cell.textContent = value; headRow.append(cell)
+  })
+  head.append(headRow); table.append(head)
+  const body = document.createElement('tbody')
+  data.forEach(values => {
+    const row = document.createElement('tr')
+    values.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.append(cell) })
+    body.append(row)
+  })
+  table.append(body)
+  return table
+}
+
 function button(label: string, kind: 'primary' | 'secondary' | 'quiet', action: () => void, extraClass = ''): HTMLButtonElement {
   const node = document.createElement('button')
   node.type = 'button'
@@ -145,7 +177,10 @@ export function createTableAIEdit(options: {
     const context = document.createElement('div')
     context.className = 'ask-ai-context'
     const title = document.createElement('strong'); title.textContent = '当前表格'
-    const preview = document.createElement('pre'); preview.textContent = baseBody.split('\n').slice(0, 5).join('\n') || '已选中正文表格'
+    const preview = document.createElement('div'); preview.className = 'table-ai-preview-scroll'
+    const tablePreview = currentTablePreview(baseBody)
+    if (tablePreview) preview.append(tablePreview)
+    else { const empty = document.createElement('p'); empty.textContent = '已选中正文表格'; preview.append(empty) }
     context.append(title, preview)
     if (!retainReview) body().replaceChildren(context)
     if (note) { const status = document.createElement('p'); status.className = 'chart-ai-note'; status.setAttribute('role', 'status'); status.textContent = note; body().append(status) }

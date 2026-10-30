@@ -76,6 +76,7 @@ async def bound_chart(tmp_path, *, monthly=False):
     sources[fact_file] = encoded(document)
     plot = json.loads(sources[plot_id])
     plot["source"]["sha256"] = hashlib.sha256(sources[fact_file]).hexdigest()
+    plot["columnMeta"] = {"value" if monthly else "total": {"unit": "元"}}
     if monthly:
         plot["source"]["dataPath"] = "metrics[0].periodValues"
         plot["columns"] = ["period", "value"]

@@ -376,11 +376,15 @@ def test_standard_parent_fact_rejects_unsupported_semantics_and_missing_periods(
 
 
 @pytest.mark.parametrize("period_aggregation", [None, "last"])
-def test_standard_route_requires_confirmed_time_additivity(period_aggregation):
+@pytest.mark.parametrize("multiple_periods", [False, True])
+def test_standard_route_requires_confirmed_time_additivity_only_across_periods(period_aggregation, multiple_periods):
     state = _standard_analysis_state()
     state.facts.metrics[0].period_aggregation = period_aggregation
+    if multiple_periods:
+        state.facts.metrics[0].period_values += (SimpleNamespace(period="2026-02", value=2),)
+        _replace_standard_spec(state, current_periods=("2026-01", "2026-02"))
     _validate_standard_state(state)
-    assert AnalysisItemWorkflow._standard_spec(state) is None
+    assert (AnalysisItemWorkflow._standard_spec(state) is None) is multiple_periods
 
 
 def test_standard_period_comparison_rejects_month_against_year():

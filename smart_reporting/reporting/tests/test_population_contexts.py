@@ -43,6 +43,30 @@ def test_server_registered_population_context_is_table_pointer_scoped():
     assert contexts[derive_resource_id('evidence.json')]['/findings/0'] == proof
 
 
+def test_registered_computation_may_use_only_a_subset_of_analysis_datasets():
+    from smart_reporting.reporting.workflow.runtime.sections import _verified_population_contexts
+
+    work, sources, proof = registered_population()
+    work.evidence[0].dataset_ids += ('dataset-unused',)
+    contexts = _verified_population_contexts(work, sources)
+    assert contexts[derive_resource_id('evidence.json')]['/findings/0'] == proof
+    work.evidence[0].dataset_ids = ('dataset-unused',)
+    assert not _verified_population_contexts(work, sources)
+
+
+def test_evidence_without_computation_does_not_log_a_population_validation_failure(monkeypatch):
+    from unittest.mock import Mock
+
+    from smart_reporting.reporting.workflow.runtime import sections
+
+    work, sources, _ = registered_population()
+    work.evidence[0].computation_record = None
+    warning = Mock()
+    monkeypatch.setattr(sections.loguru_logger, 'warning', warning)
+    assert not sections._verified_population_contexts(work, sources)
+    warning.assert_not_called()
+
+
 @pytest.mark.parametrize('fault',['missing_record','script_method','output_drift','proof_conflict','dataset_conflict','output_identity'])
 def test_model_metadata_or_conflicting_identity_does_not_authorize_population(fault):
     from smart_reporting.reporting.workflow.runtime.sections import _verified_population_contexts

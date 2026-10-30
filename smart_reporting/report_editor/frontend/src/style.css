@@ -5259,6 +5259,7 @@ input:disabled, textarea:disabled, select:disabled {
 .ask-ai-input-form > label { font-size: 12px; font-weight: 600; }
 .ask-ai-panel .ask-ai-composer textarea { min-height: 76px; max-height: 140px; height: 76px; box-sizing: border-box; padding: 10px 12px; }
 .ask-ai-panel .ask-ai-composer .chart-ai-actions { position: static; margin: 0; padding: 0; border: 0; background: transparent; }
+.ask-ai-panel .ask-ai-composer .ui-button { box-sizing: border-box; min-height: 32px; padding: 6px 12px; font-size: 13px; line-height: 18px; }
 .ask-ai-panel .ask-ai-composer .chart-ai-hint { margin-top: 0; margin-bottom: 0; font-size: 10px; }
 .ask-ai-composer .chart-ai-quick { flex-wrap: nowrap; overflow-x: auto; gap: 6px; }
 .ask-ai-composer .chart-ai-chip { flex-shrink: 0; padding: 5px 9px; }
@@ -5311,8 +5312,10 @@ body.source-preview-is-open .ask-ai-notifications { display: none; }
 .ask-ai-panel .chart-ai-standard { padding: 12px; border: 1px solid var(--color-border-soft); border-radius: 10px; background: white; }
 .ask-ai-panel summary { cursor: pointer; color: var(--color-primary); font-size: 13px; font-weight: 600; }
 .ask-ai-panel summary span { float: right; color: var(--color-text-muted); font-weight: 400; font-size: 11px; }
-.ask-ai-panel .chart-ai-standard-controls { margin-top: 12px; }
-.ask-ai-panel .chart-ai-standard-controls select { flex-basis: 100%; }
+.ask-ai-panel .chart-ai-standard-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; margin-top: 8px; }
+.ask-ai-panel .chart-ai-standard-controls select { width: 100%; min-width: 0; }
+.ask-ai-panel .chart-ai-standard-controls > .ui-button { min-height: 34px; padding: 5px 10px; font-size: 12px; }
+.ask-ai-panel .chart-ai-standard > .chart-ai-hint { margin: 6px 0 0; line-height: 1.5; }
 .ask-ai-panel .chart-ai-label, .table-ai-body > label { font-size: 13px; font-weight: 600; }
 .ask-ai-panel textarea { width: 100%; min-height: 104px; padding: 12px; border: 1px solid #bfd0df; border-radius: 12px; background: white; color: var(--color-ink); font: inherit; font-size: 13px; line-height: 1.65; resize: vertical; }
 .ask-ai-panel textarea:focus { outline: 3px solid #e0effc; border-color: var(--color-primary); }
@@ -5326,18 +5329,18 @@ body.source-preview-is-open .ask-ai-notifications { display: none; }
 .chart-ai-view-switch button[aria-pressed="true"] { background: #e5effb; color: var(--color-primary); border-color: transparent; }
 .ask-ai-panel img { cursor: zoom-in; }
 .ask-ai-context { padding: 12px; border: 1px solid var(--color-border-soft); border-radius: 12px; background: white; font-size: 13px; }
-.ask-ai-context pre { margin: 8px 0 0; max-height: 110px; overflow: auto; color: var(--color-text-muted); font-size: 11px; }
+.table-ai-preview-scroll { max-height: min(280px, 35vh); margin-top: 8px; overflow: auto; border: 1px solid var(--color-border-soft); border-radius: 6px; }
+.table-ai-preview-scroll > p { margin: 0; padding: 8px; color: var(--color-text-muted); font-size: 11px; }
+.table-ai-current-preview { min-width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.45; }
+.table-ai-current-preview th, .table-ai-current-preview td { padding: 5px 8px; border: 1px solid var(--color-border-soft); text-align: left; vertical-align: top; }
+.table-ai-current-preview th { position: sticky; top: 0; background: #f3f7fa; color: var(--color-ink-2); font-weight: 600; }
+.table-ai-current-preview td { max-width: 220px; overflow-wrap: anywhere; }
 .ask-ai-progress { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 18px; border: 1px solid var(--color-border-soft); border-radius: 12px; background: white; }
 .ask-ai-progress p { margin: 0; }
 .ask-ai-image-preview figure { margin: 0; }
 .ask-ai-image-preview img { max-width: 100%; max-height: 80vh; object-fit: contain; }
 .ask-ai-image-preview figcaption { margin-top: 10px; color: var(--color-text-muted); font-size: 13px; }
 .ask-ai-panel :focus-visible { outline: 3px solid var(--focus-ring, #8fc7f0); outline-offset: 2px; }
-@media (min-width: 1200px) {
-  body.ask-ai-open #app { margin-right: 480px; }
-  body.ask-ai-open .report-outline { display: none; }
-  body.ask-ai-open .report-workspace { grid-template-columns: minmax(0, 1fr); }
-}
 @media (max-width: 640px) {
   .ask-ai-panel { inset: 0; width: 100%; }
   .ask-ai-header { padding: 14px 16px; }

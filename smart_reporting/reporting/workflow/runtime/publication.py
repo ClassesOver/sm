@@ -294,6 +294,9 @@ def _quality_source_ids(
             source_ids.update(derivation_resource_ids(number.table_derivation))
     source_ids.update(resource_id for chart in index.chart_traces
                       for resource_id in (chart.image_file_resource_id, *chart.plot_data_file_resource_ids))
+    from ...trace.chart_quality import standard_proof_source_ids
+
+    source_ids.update(standard_proof_source_ids(index))
     interactive_paths = set(interactive_charts.values())
     source_ids.update(file.resource_id for file in index.files if file.path in interactive_paths)
     return source_ids
@@ -1326,6 +1329,7 @@ class RuntimePublicationMixin:
                     review_notices=review_notices,
                     markdown=markdown_bytes.decode("utf-8"),
                     interactive_charts=interactive_charts,
+                    heading_numbers=heading_numbers,
                     revision=revision,
                     run_context=run_context,
                 )
@@ -1396,6 +1400,7 @@ class RuntimePublicationMixin:
         subject_bindings: tuple = (),
         review_notices: tuple | None = None,
         markdown: str | None = None,
+        heading_numbers: tuple[HeadingNumber, ...] = (),
     ) -> ArtifactFile:
         """构建并写入 revision 追溯索引，返回供权威清单登记的产物身份。
 
@@ -1515,6 +1520,7 @@ class RuntimePublicationMixin:
                         mode="enabled" if policy.get("mode") == "enabled" else "shadow",
                         questions=questions,
                         interactive_charts=interactive_charts,
+                        heading_numbers=heading_numbers,
                     )
                     bundle = await anyio.to_thread.run_sync(partial(evaluate, answer_review_plan=answer_review_plan))
                     # The provider is application construction, never request/session/model data.

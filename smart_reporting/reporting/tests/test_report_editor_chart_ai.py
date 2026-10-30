@@ -748,6 +748,43 @@ async def test_chart_ai_edit_single_flight_busy_and_hourly_rate_limit(tmp_path: 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_chart_ai_invalid_plan_returns_original_error_and_allows_retry(tmp_path: Path) -> None:
+    from smart_reporting.reporting.structured_output.execution import _validate_content
+
+    fixture = await _make_editor_with_chart(tmp_path)
+    runner = FakeRunner(fixture.chart_bytes)
+
+    async def invalid_plan(_request):
+        _validate_content({"level": ["L1"], "drawInstruction": ""}, ChartEditPlan)
+
+    service = _service(fixture, runner, planner=invalid_plan)
+    session = SimpleNamespace(capabilities=None)
+    request = ChartAIEditRequest(instruction="改成横向条形图")
+    try:
+        started = await service.start_edit(fixture.context, session, "chart_001", request)
+        status = await _await_edit(service, fixture.context, "chart_001", started["editId"])
+        assert status["status"] == "failed"
+        assert status["error"]["code"] == "report_phase_output_invalid"
+        assert runner.calls == []
+        assert await load_chart_edit_records(
+            fixture.workspace, fixture.thread_id, fixture.context.markdown_path
+        ) == ()
+        assert await fixture.workspace.afile_bytes(fixture.thread_id, fixture.chart_path) == (
+            fixture.chart_bytes, "image/png"
+        )
+        assert await fixture.workspace.aread_text(
+            fixture.thread_id, fixture.context.markdown_path
+        ) == fixture.markdown
+        service.planner = _planner()
+        retried = await service.start_edit(fixture.context, session, "chart_001", request)
+        result = await _await_edit(service, fixture.context, "chart_001", retried["editId"])
+        assert result["status"] == "succeeded"
+    finally:
+        await service.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_chart_ai_edit_timeout_returns_reason_and_keeps_original(tmp_path: Path) -> None:
     fixture = await _make_editor_with_chart(tmp_path)
     gate = asyncio.Event()

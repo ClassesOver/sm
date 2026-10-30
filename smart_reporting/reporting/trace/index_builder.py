@@ -147,7 +147,9 @@ def build_csv_trace_index(
     # 必须全部落在已登记文件上（契约全局校验兜底）。
     for identity in chart_trace_files:
         media_type = (
-            "application/json"
+            "text/x-python"
+            if str(identity.path).endswith(".py")
+            else "application/json"
             if str(identity.path).endswith(".json")
             else "image/png"
             if str(identity.path).endswith(".png")

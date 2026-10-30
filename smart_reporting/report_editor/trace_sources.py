@@ -902,6 +902,7 @@ class ReportEditorTraceService:
         import json as _json
 
         from ..reporting.delivery.artifacts_v1 import _TABLE_BLOCK
+        from ..reporting.trace.claim_semantics import project_semantic_headings
         from ..reporting.trace.semantic_bindings import (
             bound_number_display,
             reference_computation,
@@ -927,6 +928,15 @@ class ReportEditorTraceService:
             )
 
         index = await self.require_index(context)
+        try:
+            manifest = await self.load_manifest(context)
+        except Exception:
+            manifest = None
+            logger.warning("editor_semantic_heading_manifest_unavailable")
+        heading_numbers = getattr(manifest, "heading_numbers", ())
+        semantic_markdown = await anyio.to_thread.run_sync(
+            project_semantic_headings, markdown, heading_numbers, limiter=self._validation_limiter,
+        )
         files = {item.resource_id: item for item in index.files}
         thread_id = context.scope["threadId"]
         bundle_cache: dict[str, Any] = {}
@@ -1085,7 +1095,7 @@ class ReportEditorTraceService:
         subjects: list[dict[str, Any]] = []
         summary = {"valid": 0, "stale": 0, "unbound": 0}
         check_claim = await anyio.to_thread.run_sync(
-            prepare_claim_status, markdown, limiter=self._validation_limiter
+            prepare_claim_status, semantic_markdown, limiter=self._validation_limiter
         )
         fingerprints = await anyio.to_thread.run_sync(statement_fingerprints, markdown, tuple(
             binding.claim_id for binding in index.subject_bindings
@@ -1306,7 +1316,7 @@ class ReportEditorTraceService:
                     "warnings": detail["warnings"],
                     "semanticCheck": {
                         "method": receipt.method,
-                        "status": semantic_receipt_status(markdown, binding.claim_id, receipt),
+                        "status": semantic_receipt_status(semantic_markdown, binding.claim_id, receipt),
                         "interpretation": receipt.interpretation.model_dump(mode='json', by_alias=True),
                     } if receipt and selected and not failed_sources else None,
                     "draftValue": detail.get("draftValue"),
@@ -1482,7 +1492,6 @@ class ReportEditorTraceService:
             answer_review_plan = None
             interactive_charts = {}
             try:
-                manifest = await self.load_manifest(context)
                 if manifest is not None:
                     for chart in manifest.charts:
                         spec = chart.interactive_spec
@@ -1495,9 +1504,10 @@ class ReportEditorTraceService:
             except Exception:
                 logger.warning("editor_chart_manifest_unavailable")
             chart_quality_ids = {chart.image_file_resource_id for chart in index.chart_traces}
-            from ..reporting.trace.chart_quality import QUALITY_IMAGE_BYTE_BUDGET
+            from ..reporting.trace.chart_quality import QUALITY_IMAGE_BYTE_BUDGET, standard_proof_source_ids
 
             quality_image_ids = set(chart_quality_ids)
+            chart_quality_ids.update(standard_proof_source_ids(index))
             quality_image_bytes = 0
             chart_quality_ids.update(file.resource_id for file in index.files
                                      if file.path in set(interactive_charts.values()))
@@ -1544,6 +1554,7 @@ class ReportEditorTraceService:
                 questions=questions,
                 answer_review_plan=answer_review_plan,
                 interactive_charts=interactive_charts,
+                heading_numbers=heading_numbers,
             ), limiter=self._validation_limiter)
             quality_payload = {
                 "status": "evaluated", "inputSha256": quality.input_sha256,

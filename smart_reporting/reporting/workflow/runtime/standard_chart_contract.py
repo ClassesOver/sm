@@ -35,10 +35,13 @@ def standard_chart_capabilities():
         'forms': list(get_args(StandardChartForm)),
         'sourceLabelModes': list(get_args(SourceLabelMode)),
         'summaryAggregations': list(get_args(SummaryAggregation)),
+        # 非笛卡尔图族仅消费显示单位，不能承诺忽略其他坐标参数。
+        'familyAxesOverrides': ['leftDisplayUnit'],
         'families': {
             'composition': {'forms': ['pie', 'donut'], 'denominatorModes': ['bound_sum', 'reference']},
             'radar': {'axes': [3, 8], 'maxEntities': 8, 'scaleEndpoints': 'frozen_scalar'},
             'funnel': {'ratioBases': ['none', 'first', 'previous'], 'order': ['source', 'explicit']},
-            'sankey': {'topology': 'DAG', 'maxNodes': 60, 'maxEdges': 480},
+            'sankey': {'topology': 'DAG', 'maxNodes': 60, 'maxEdges': 480,
+                       'encodingFields': ['xField', 'yField', 'valueField']},
         },
     }

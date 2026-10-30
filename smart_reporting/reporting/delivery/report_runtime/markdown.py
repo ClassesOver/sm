@@ -418,8 +418,8 @@ def _balanced_cover_title(title: str) -> str:
 
 
 # 服务端分期间汇总表（[[table:…]] 协议块及其上一行表名）原样追加在各章末尾，回放中第1章
-# 后连续3—4页月度表格把下一章推远。渲染时统一移到正文之后的“附表”，报告 Markdown、编辑器
-# 与溯源标记不变；模型自写表格没有协议标记，不受影响。
+# 后连续3—4页月度表格把下一章推远。新报告的 Markdown 已集中归档，旧报告仍在渲染时
+# 统一移到正文之后的“附表”；模型自写表格没有协议标记，不受影响。
 _SERVER_TABLE_BLOCK = re.compile(
     # 表名是表格上一行不含协议标记、不以句末标点结尾的短行；正文段落不能被当作表名一起移走。
     # 服务端表名自成一段（前接空行）且不是列表项：多行段落的末行、列表末项不随表格移走。
@@ -432,6 +432,10 @@ APPENDIX_TABLES_TITLE = '<p class="report-appendix-title"><strong>附表</strong
 
 
 def relocate_server_tables(markdown: str) -> str:
+    # 新报告已在源 Markdown 分章归档；导出保留分组，仅替换附表分页标记。
+    body, separator, appendix = markdown.partition("\n\n**附表：数据明细**\n\n")
+    if separator and not _SERVER_TABLE_BLOCK.search(body):
+        return "\n\n".join((body, APPENDIX_TABLES_SENTINEL, appendix))
     tables = [match[0].strip() for match in _SERVER_TABLE_BLOCK.finditer(markdown)]
     if not tables:
         return markdown

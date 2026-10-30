@@ -169,6 +169,18 @@ def _warning(code, message, **details):
     return dict(code=code, message=message, **details)
 
 
+def validate_family_parameters(chart):
+    """规划和绘图共用无数据依赖的参数校验，便于在昂贵绘图前纠错。"""
+    form = chart.standard_form
+    if form not in FAMILY_FORMS:
+        return
+    _common_policy(chart, form, chart.standard_canvas, chart.standard_style,
+                   chart.standard_presentation, chart.standard_axes)
+    # 规划可省略整组并继承上一轮；完整来源必需性仍在绘图前检查。
+    if form == 'sankey' and chart.standard_encoding is not None:
+        _sankey_encoding(chart)
+
+
 def _common_policy(chart, form, canvas, style, presentation, axes):
     if (axes.mode != 'single' or axes.scale != 'linear' or axes.right_fields
             or axes.right_display_unit or axes.zoom_start or axes.zoom_end or axes.panel_limit
@@ -630,7 +642,7 @@ def render_family_chart(payload, policy, form, title, output_path):
 '''
 
 
-def _prepare_sankey(chart, document, original, policy, presentation, axes, documents):
+def _sankey_encoding(chart):
     encoding = getattr(chart, 'standard_encoding', None)
     if encoding is None or not encoding.value_field:
         fail('standard_sankey_encoding_required', 'standardEncoding', '桑基必须显式绑定source/target/value。')
@@ -638,6 +650,11 @@ def _prepare_sankey(chart, document, original, policy, presentation, axes, docum
     defaults = type(encoding).model_construct(x_field=encoding.x_field, y_field=encoding.y_field, value_field=encoding.value_field)
     if any(v != defaults.model_dump()[k] for k,v in encoding.model_dump().items() if k not in allowed):
         fail('standard_sankey_encoding_unsupported', 'standardEncoding', '桑基不使用颜色/大小/热力或坐标变换编码。')
+    return encoding
+
+
+def _prepare_sankey(chart, document, original, policy, presentation, axes, documents):
+    encoding = _sankey_encoding(chart)
     if (getattr(chart, 'standard_labels', ()) or presentation.order.mode != 'source'
             or presentation.order.limit is not None or presentation.order.exclude_missing or presentation.label_mode != 'source'):
         fail('standard_sankey_order_unsupported', 'standardPresentation.order', '桑基必须保留全部冻结边及首次出现顺序。')

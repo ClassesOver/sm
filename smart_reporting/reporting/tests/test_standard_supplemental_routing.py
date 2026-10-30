@@ -76,6 +76,8 @@ def test_candidate_selection_cannot_expand_authorization_or_override_frozen_sema
         requirement = requirement.model_copy(update={'dataset_id': 'foreign'})
     elif fault == 'changed_parent':
         state.facts.metrics[0].period_aggregation = 'last'
+        state.facts.metrics[0].period_values += (SimpleNamespace(period='2026-02', value=2),)
+        state.instruction['currentAnalysis']['periods'] = ['2026-01', '2026-02']
     else:
         original = state.decision.coding_requirements[0].standard_computation
         requirement = requirement.model_copy(update={'standard_computation': original.model_copy(
@@ -93,6 +95,8 @@ def test_catalog_does_not_advertise_unsupported_frozen_inputs(fault):
         parent.aggregation = 'average'
     elif fault == 'period_aggregation':
         parent.period_aggregation = None
+        parent.period_values += (SimpleNamespace(period='2026-02', value=2),)
+        state.instruction['currentAnalysis']['periods'] = ['2026-01', '2026-02']
     elif fault == 'scope':
         parent.scope = {'company': 'not_projected'}
     elif fault == 'invalid_period':
@@ -172,8 +176,9 @@ def test_comparison_candidate_uses_frozen_grain_for_previous_period(grain, curre
         assert comparisons[0]['baselinePeriods'] == [prior]
 
 
+@pytest.mark.parametrize('by_period', [False, True])
 @pytest.mark.parametrize('fault', [None, 'unauthorized', 'field', 'scope', 'unit', 'last', 'missing_month'])
-def test_cross_dataset_comparison_uses_authorized_calendar_window(fault):
+def test_cross_dataset_comparison_uses_authorized_calendar_window(fault, by_period):
     state = _standard_analysis_state()
     parent = state.facts.metrics[0]
     parent.period_roles = ('current',)
@@ -209,7 +214,8 @@ def test_cross_dataset_comparison_uses_authorized_calendar_window(fault):
     datasets = [d for d in state.instruction['datasets']
                 if d['datasetId'] in state.instruction['currentAnalysis']['datasetIds']]
     comparisons = [item for item in standard_computation_candidates(state.facts, datasets)
-                   if item['standardComputation']['operation'] == 'period_comparison']
+                   if item['standardComputation']['operation'] == 'period_comparison'
+                   and item['standardComputation'].get('groupByPeriod', False) is by_period]
     if fault is not None:
         assert comparisons == []
         return
@@ -484,6 +490,112 @@ async def test_planner_receives_candidates_only_when_server_route_is_enabled(mon
         assert set(policy['supportedOperations']) == declared
         assert policy['catalogIsExhaustive'] is False
         assert len(workflow._standard_plan(state)) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('selection', ['candidate', 'explicit'])
+@pytest.mark.parametrize('repair', [True, False])
+async def test_planner_corrects_standard_output_contract_without_losing_complex_requirements(
+    monkeypatch, selection, repair,
+):
+    from smart_reporting.reporting.workflow.runtime import analysis_item_workflow as module
+
+    state = _standard_analysis_state()
+    original = state.decision
+    candidate, = _summary_candidates(state)
+    first = original.coding_requirements[0].model_copy(update={
+        'standard_candidate_id': candidate['candidateId'] if selection == 'candidate' else None,
+        'standard_computation': None if selection == 'candidate' else original.coding_requirements[0].standard_computation,
+        'required_columns': ('department', 'currentValue'),
+    })
+    # 复杂输出不能因标准输出纠错而被删除或假装由标准计算覆盖。
+    complex_requirement = first.model_copy(update={
+        'output_name': 'positive_months', 'standard_candidate_id': None,
+        'standard_computation': None, 'required_columns': ('positiveYoyMonths',),
+    })
+    responses = [original.model_copy(update={'coding_requirements': (first, complex_requirement)})]
+    corrected = first.model_copy(update={'required_columns': ('department', 'value')}) if repair else first
+    responses.append(original.model_copy(update={'coding_requirements': (corrected, complex_requirement)}))
+    requests = []
+
+    async def decide(payload):
+        requests.append(dict(payload))
+        return responses[len(requests) - 1]
+
+    workflow = AnalysisItemWorkflow(decide_evidence=decide, run_code=AsyncMock(),
+        summarize=AsyncMock(), read_file=AsyncMock(), complete=AsyncMock(),
+        run_standard_supplemental=AsyncMock())
+    workflow._model_facts = lambda _: {}
+    monkeypatch.setattr(module, 'facts_cover_analysis', lambda *args: None)
+    await workflow._decide_evidence(state)
+
+    assert len(requests) == 2
+    correction = requests[1]['correction']
+    assert correction['code'] == 'standard_output_contract_mismatch'
+    issue, = correction['details']['requirements']
+    assert issue['outputName'] == first.output_name
+    assert issue['unsupportedColumns'] == ['currentValue']
+    assert issue['outputColumns'] == ['department', 'value', 'rank', 'share']
+    assert state.decision == responses[1]
+    assert not state.supplement_abandoned
+    assert state.decision.missing_facts == original.missing_facts
+    assert AnalysisItemWorkflow._standard_plan(state) == ()
+    # 去掉确实复杂的需求后，修正的标准需求能执行；未修正的仍诚实回退。
+    state.decision = state.decision.model_copy(update={'coding_requirements': (corrected,)})
+    assert bool(AnalysisItemWorkflow._standard_plan(state)) is repair
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('loss', ['requirement', 'all', 'output', 'question', 'field', 'missing_fact',
+                                  'bound_output', 'provider_error'])
+async def test_output_correction_cannot_erase_or_narrow_evidence_requirements(monkeypatch, loss):
+    from smart_reporting.reporting.workflow.runtime import analysis_item_workflow as module
+
+    state = _standard_analysis_state()
+    base = state.decision
+    first = base.coding_requirements[0].model_copy(update={'required_columns': ('department', 'currentValue')})
+    complex_requirement = first.model_copy(update={
+        'output_name': 'positive_months', 'calculation': '逐月同比并统计正增长月数',
+        'standard_computation': None, 'required_columns': ('positiveYoyMonths',),
+    })
+    original = base.model_copy(update={
+        'missing_facts': ('部门完整汇总', '同比正增长月数'),
+        'coding_requirements': (first, complex_requirement),
+    })
+    repaired = first.model_copy(update={'required_columns': ('department', 'value')})
+    if loss == 'bound_output':
+        repaired = repaired.model_copy(update={'required_columns': ('department',)})
+    requirements = (repaired, complex_requirement)
+    if loss == 'requirement':
+        requirements = (repaired,)
+    elif loss == 'output':
+        requirements = (repaired, complex_requirement.model_copy(update={'required_columns': ()}))
+    elif loss == 'question':
+        requirements = (repaired, complex_requirement.model_copy(update={'calculation': '仅汇总总额'}))
+    elif loss == 'field':
+        requirements = (repaired, complex_requirement.model_copy(update={'fields': ('income',)}))
+    corrected = original.model_copy(update={'coding_requirements': requirements})
+    if loss == 'all':
+        corrected = base.model_copy(update={
+            'requires_supplemental_evidence': False, 'coding_requirements': (), 'missing_facts': (),
+        })
+    elif loss == 'missing_fact':
+        corrected = corrected.model_copy(update={'missing_facts': ('部门完整汇总',)})
+    if loss == 'provider_error':
+        corrected = RuntimeError('provider unavailable during output correction')
+    workflow = AnalysisItemWorkflow(decide_evidence=AsyncMock(side_effect=[original, corrected]),
+        run_code=AsyncMock(), summarize=AsyncMock(), read_file=AsyncMock(), complete=AsyncMock(),
+        run_standard_supplemental=AsyncMock())
+    workflow._model_facts = lambda _: {}
+    monkeypatch.setattr(module, 'facts_cover_analysis', lambda *args: None)
+    await workflow._decide_evidence(state)
+
+    assert state.decision.requires_supplemental_evidence
+    assert state.decision.missing_facts == original.missing_facts
+    assert state.decision.coding_requirements == original.coding_requirements
+    assert not state.supplement_abandoned
+    assert AnalysisItemWorkflow._standard_plan(state) == ()
+    assert any('纠错' in warning and '原始' in warning for warning in state.warnings)
 
 
 def test_large_standard_batch_uses_bounded_table_refs_instead_of_falling_back():

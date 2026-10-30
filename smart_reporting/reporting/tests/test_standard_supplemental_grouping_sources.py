@@ -64,6 +64,8 @@ def test_catalog_preserves_existing_candidate_order_identity_and_payload():
             'datasetId': 'dataset_001', 'parentFactId': state.facts.metrics[0].fact_id,
             'measureField': 'income', 'periodField': 'period', 'currentPeriods': ['2026-01'],
             'dimensionFields': ['department'], 'projectedScopeFields': [],
+            'periodAggregation': 'sum',
+            'supportedOperations': list(module.STANDARD_SUPPLEMENTAL_OPERATIONS),
             'comparisonBindings': [],
         }],
         'totalItems': 1, 'truncated': False,
@@ -126,6 +128,8 @@ def test_source_index_rejects_unbound_or_nonadditive_parent_facts(fault):
         parent.aggregation = 'average'
     elif fault == 'period_aggregation':
         parent.period_aggregation = 'last'
+        parent.period_values += (SimpleNamespace(period='2026-02', value=2),)
+        state.instruction['currentAnalysis']['periods'] = ['2026-01', '2026-02']
     elif fault == 'cumulative':
         parent.cumulative_policy = 'year_to_date'
     elif fault == 'missing_measure':
@@ -147,6 +151,25 @@ def test_source_index_rejects_unbound_or_nonadditive_parent_facts(fault):
     assert _catalog(state)['groupingSources'] == {
         'items': [], 'totalItems': 0, 'truncated': False,
     }
+
+
+@pytest.mark.parametrize('period_aggregation', [None, 'last'])
+def test_single_period_source_exposes_only_grouping_operations(period_aggregation):
+    state = _standard_analysis_state()
+    state.facts.metrics[0].period_aggregation = period_aggregation
+    source, = _sources(state)
+    assert source['periodAggregation'] == period_aggregation
+    assert source['supportedOperations'] == ['group_summary', 'cross_group_summary']
+    assert source['comparisonBindings'] == []
+    _select(state, source, ('department',))
+    for operation in ('group_period_series', 'group_period_comparison', 'period_comparison', 'group_ratio'):
+        requirement = state.decision.coding_requirements[0]
+        state.decision = state.decision.model_copy(update={'coding_requirements': (
+            requirement.model_copy(update={'standard_computation': requirement.standard_computation.model_copy(
+                update={'operation': operation},
+            )}),
+        )})
+        assert AnalysisItemWorkflow._standard_plan(state) == ()
 
 
 @pytest.mark.parametrize('projected', [True, False])

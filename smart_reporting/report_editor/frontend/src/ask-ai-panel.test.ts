@@ -4,6 +4,27 @@ import { askAIPanel, updateAskAISourceStatus } from './ask-ai-panel'
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ''; document.body.classList.remove('ask-ai-open'); updateAskAISourceStatus('checking') })
 
 describe('Ask AI shared sidebar', () => {
+  it('desktop sidebar supports pointer and keyboard resizing within limits', () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1280)
+    const session = askAIPanel().createSession({ kind: 'chart', label: '收入', content: '<div></div>' })
+    const panel = document.querySelector<HTMLElement>('.ask-ai-panel')!
+    const separator = panel.querySelector<HTMLElement>('[role="separator"]')!
+
+    expect(separator.getAttribute('aria-label')).toBe('调整 Ask AI 宽度')
+    expect(separator.getAttribute('aria-valuenow')).toBe('560')
+    separator.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 600 }))
+    window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 500 }))
+    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('660px')
+    expect(separator.getAttribute('aria-valuenow')).toBe('660')
+    window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+
+    separator.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowLeft' }))
+    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('676px')
+    for (let index = 0; index < 20; index++) separator.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
+    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('400px')
+    session.remove()
+  })
+
   it('来源功能未启用时不显示虚假更新中，采用回执保留已经返回的来源状态', () => {
     updateAskAISourceStatus('unavailable')
     const panel = askAIPanel()

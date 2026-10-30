@@ -344,7 +344,14 @@ class ReportingStructuredOutputExecutor:
 
                     business_call_number += 1
                     budget.record_model_call()
+                    logger.warning(
+                        "report_structured_output_validation_failed schema_name={} issues={}",
+                        schema_name,
+                        json.dumps(issues, ensure_ascii=False, separators=(",", ":")),
+                    )
                     if budget.exhausted:
+                        if isinstance(error, ReportingError):
+                            raise
                         raise _structured_output_error(error, schema) from error
                     correction_number = business_call_number
                     current_instruction = _correction_instruction(
@@ -357,11 +364,6 @@ class ReportingStructuredOutputExecutor:
                         "report_structured_output_mode_downgraded"
                         if mode is not previous_mode
                         else "report_structured_output_correction_requested"
-                    )
-                    logger.warning(
-                        "report_structured_output_validation_failed schema_name={} issues={}",
-                        schema_name,
-                        json.dumps(issues, ensure_ascii=False, separators=(",", ":")),
                     )
                     logger.bind(
                         model_id=model_id,

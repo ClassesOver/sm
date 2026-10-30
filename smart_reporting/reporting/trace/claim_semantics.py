@@ -4,11 +4,44 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from .contracts_v1 import ClaimInterpretationV1, ClaimSemanticReceiptV1
+
+if TYPE_CHECKING:
+    from ..delivery.draft_v1 import HeadingNumber
+
+
+def project_semantic_headings(markdown: str, headings: Sequence[HeadingNumber]) -> str:
+    """仅移除权威清单中真实标题的自动编号；数量标题、正文和代码不变。"""
+    from markdown_it import MarkdownIt
+
+    from ..delivery.draft_v1 import _inline_heading_text
+    from ..delivery.report_runtime.markdown import format_heading_label
+
+    registered = {
+        (heading.level, format_heading_label(level=heading.level, number=heading.number, title=heading.title)): heading
+        for heading in headings if heading.level in {3, 4}
+    }
+    if not registered:
+        return markdown
+    lines = markdown.splitlines(keepends=True)
+    tokens = MarkdownIt('commonmark').parse(markdown)
+    for position, token in enumerate(tokens):
+        if token.type != 'heading_open' or token.tag not in {'h3', 'h4'} or not token.map:
+            continue
+        title = _inline_heading_text(re.sub(r'\[\[[^\]\r\n]+\]\]', '', tokens[position + 1].content))
+        heading = registered.get((int(token.tag[1:]), title))
+        if heading is None:
+            continue
+        line = token.map[0]
+        prefix = re.match(r'^( {0,3}#{3,4}[ \t]+)' + re.escape(heading.number) + r'[ \t]+', lines[line])
+        if prefix is not None:
+            lines[line] = prefix[1] + lines[line][prefix.end():]
+    return ''.join(lines)
 
 
 def _section_narrative(markdown: str) -> str:

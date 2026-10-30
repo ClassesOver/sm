@@ -39,6 +39,7 @@ async def test_nested_supplement_tables_remain_bindable_without_inheriting_units
     assert {"dataPath": "findings[0].tables[0].rows", "fields": columns} in source["dataDescriptors"]
     nested = next(item for item in source["findings"] if item["dataPath"] == "findings[0].tables[1].monthly")
     assert nested["nullableFields"] == ["actual"]
+    assert nested["emptyFields"] == ["actual"]
     assert "columnMeta" not in nested
     binding = ChartDataBinding(analysisId="analysis_001", factPath=supplement.path,
                                dataPath="findings[0].tables[0].rows", fields=columns, role="预算执行")

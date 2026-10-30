@@ -1154,12 +1154,16 @@ def assemble_report_markdown(
                         },
                     }
                 )
-        # B2：服务端结构化表格在该章节全部模型 blocks 渲染完成后追加；
-        # 表格文本是服务端生成物，不经过模型正文协议校验（契约已限制
-        # 只能是单个成对 table 协议块）。
-        markdown_parts.extend(
-            server_tables_by_section.get(section.section_code, ())
-        )
+
+    # 完整来源表集中收录于附表，正文保留模型围绕结论选择的简表。
+    # 原表与来源标记原样保留，编辑器和导出文档采用一致的阅读顺序。
+    if server_tables_by_section:
+        markdown_parts.append("**附表：数据明细**")
+        for definition in sections:
+            tables = server_tables_by_section.get(definition.code, ())
+            if tables:
+                markdown_parts.append(f"**{definition.section_number}. {definition.title}**")
+                markdown_parts.extend(tables)
 
     if require_table and not any(
         "|" in block.markdown for section in draft.sections for block in section.blocks

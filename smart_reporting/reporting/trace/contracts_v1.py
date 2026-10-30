@@ -386,6 +386,17 @@ class ChartSeriesV1(StrictModel):
     categories: tuple[str, ...] = Field(default=(), max_length=500)
 
 
+class StandardChartRenderProofV1(StrictModel):
+    """仅由宿主为标准编译源码的当前执行签发，不接受模型自行声明。"""
+
+    version: Literal["standard-matplotlib/1"] = "standard-matplotlib/1"
+    run_id: str = Field(alias="runId", min_length=1, max_length=128)
+    script_sha256: str = Field(alias="scriptSha256", pattern=SHA256_PATTERN)
+    image_sha256: str = Field(alias="imageSha256", pattern=SHA256_PATTERN)
+    plan: dict[str, Any]
+    inputs: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=500)
+
+
 class ChartTraceV1(StrictModel):
     """静态图表追溯：图片 → 实际作图数据 → 规则 → facts/CSV（计划 4.4）。
 
@@ -420,6 +431,9 @@ class ChartTraceV1(StrictModel):
     axis_unit: str | None = Field(default=None, alias="axisUnit", max_length=64)
     script_file_resource_id: str | None = Field(
         default=None, alias="scriptFileResourceId", pattern=TRACE_RESOURCE_ID_PATTERN
+    )
+    standard_render_proof: StandardChartRenderProofV1 | None = Field(
+        default=None, alias="standardRenderProof"
     )
 
     @model_validator(mode="after")

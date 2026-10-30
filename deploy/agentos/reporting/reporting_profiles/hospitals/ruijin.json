@@ -1,11 +1,151 @@
 {
   "version": "1",
   "profileId": "ruijin",
-  "revision": "8",
+  "revision": "9",
   "extends": [
     "base"
   ],
   "measureSemantics": [
+    {
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_outpatient",
+      "aggregation": "sum",
+      "unit": "人次",
+      "additiveAcross": ["data_date", "period_code", "area"]
+    },
+    {
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_discharges",
+      "aggregation": "sum",
+      "unit": "人次",
+      "additiveAcross": ["data_date", "period_code", "area"]
+    },
+    {
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.mantime_outpatient_non",
+      "aggregation": "sum",
+      "unit": "人次",
+      "additiveAcross": ["data_date", "period_code", "area"]
+    },
+    {
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.actual_open_bed",
+      "aggregation": "sum",
+      "unit": "床日",
+      "additiveAcross": ["data_date", "period_code", "area"]
+    },
+    {
+      "fieldRef": "rj.dm_hdc_gongzuoliang_view.discharges_bed",
+      "aggregation": "sum",
+      "unit": "床日",
+      "additiveAcross": ["data_date", "period_code", "area"]
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.actual_person_time",
+      "aggregation": "sum",
+      "unit": "人次",
+      "additiveAcross": ["data_date", "period_code", "area", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.actual_medical_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["data_date", "period_code", "area", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.actual_medicine_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["data_date", "period_code", "area", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.actual_material_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["data_date", "period_code", "area", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.actual_service_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["data_date", "period_code", "area", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.actual_test_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["data_date", "period_code", "area", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.budget_person_time",
+      "aggregation": "sum",
+      "unit": "人次",
+      "additiveAcross": []
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.budget_medical_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": []
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.budget_medicine_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": []
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.budget_material_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": []
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.budget_service_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": []
+    },
+    {
+      "fieldRef": "rj.dwd_income_budget_view.budget_test_income",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": []
+    },
+    {
+      "fieldRef": "rj.dwd_expenditure_budget_view.actual_expenditure",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["data_date", "period_code", "area", "budget_type", "detail_analytic_unit"]
+    },
+    {
+      "fieldRef": "rj.dwd_expenditure_budget_view.budget_expenditure",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": []
+    },
+    {
+      "fieldRef": "rj.dwd_project_budget_view.budget_project_amount",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["area", "project_code", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_project_budget_view.contract_amount",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["area", "project_code", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_project_budget_view.payment_amount",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": ["area", "project_code", "budget_type"]
+    },
+    {
+      "fieldRef": "rj.dwd_hdc_cost_table_view.indicator_value",
+      "aggregation": "sum",
+      "unit": "元",
+      "additiveAcross": [
+        "data_date"
+      ]
+    },
     {
       "fieldRef": "rj.dwd_hdc_income_summary_view.indicator_value",
       "aggregation": "sum",

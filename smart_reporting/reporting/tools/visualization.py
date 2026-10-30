@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -182,6 +183,7 @@ class RuntimeVisualizationMixin:
         run_context: RunContext | None = None,
         visual_receipts: tuple[dict[str, Any], ...] = (),
         plot_data_files: tuple[dict[str, Any], ...] = (),
+        standard_render_proofs: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any]:
         """提交当前章节图表草案（允许零图）并结束可视化 Task。
 
@@ -347,6 +349,41 @@ class RuntimeVisualizationMixin:
                         )
                     verified.append(dict(raw_file))
                 verified_plot_data.append({"chartId": chart_id, "files": verified})
+            # 仅宿主回调提供标准执行证明；失败只丢弃证明，不影响已有图片提交。
+            from ..trace.contracts_v1 import StandardChartRenderProofV1
+            from ..workflow.runtime.standard_chart_proof import recompile_standard_render_proof
+
+            for record in standard_render_proofs:
+                try:
+                    chart_id = record["chartId"]
+                    entry = next(item for item in verified_plot_data if item["chartId"] == chart_id)
+                    proof = StandardChartRenderProofV1.model_validate(record["proof"])
+                    script = FileIdentity.model_validate(record["scriptFile"])
+                    self._require_chart_output_path(script.path, output_root)
+                    current = await self._ahash_file(thread_id=scope.thread_id, path=script.path)
+                    if current.get("sha256") != script.sha256 or current.get("size") != script.size:
+                        raise ValueError("render_script_changed")
+                    contents = {}
+                    for item in proof.inputs:
+                        if not item["path"].startswith(f"{plot_data_root}/"):
+                            raise ValueError("render_input_scope_mismatch")
+                        raw, _ = await self.runtime.workspace.afile_bytes(scope.thread_id, item["path"])
+                        contents[item["sha256"]] = raw
+                    source = recompile_standard_render_proof(proof, contents)
+                    if source is None or hashlib.sha256(source).hexdigest() != script.sha256:
+                        raise ValueError("render_source_unproven")
+                    if {item["sha256"] for item in entry["files"]} != {
+                        item["sha256"] for item in proof.inputs if item["chartId"] == chart_id
+                    }:
+                        raise ValueError("render_input_binding_mismatch")
+                    image = next(item for item in parsed if item.chart_id == chart_id)
+                    current_image = await self._ahash_file(thread_id=scope.thread_id, path=image.source_path)
+                    if current_image.get("sha256") != proof.image_sha256:
+                        raise ValueError("render_image_changed")
+                    entry["standardRenderProof"] = proof.model_dump(mode="json", by_alias=True)
+                    entry["renderScriptFile"] = script.model_dump(mode="json", by_alias=True)
+                except Exception as error:
+                    loguru_logger.warning("report_standard_render_proof_dropped error={}", type(error).__name__)
             for registration in parsed:
                 source_path = self._require_chart_output_path(registration.source_path, output_root)
                 # 同一次检查得到文件身份与尺寸类质量告警（分辨率、有效 DPI、宽高比），

@@ -29,6 +29,31 @@ function viewFor(doc: ReturnType<typeof schema.node>) {
 }
 
 describe('createTableAIEdit review', () => {
+  it('shows the complete current table as a readable preview', async () => {
+    document.body.innerHTML = ''
+    const client = {
+      tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
+      tableTemplates: vi.fn(async () => ({ templates: [] })),
+    } as unknown as ReportEditorClient
+    const { view } = viewFor(schema.node('doc', null, paragraph('正文')))
+    const controller = createTableAIEdit({ view: view as never, client })
+    const currentBody = [
+      '| 科室 | 门诊量 |', '| --- | ---: |',
+      ...Array.from({ length: 7 }, (_, index) => `| 科室 ${index + 1} | ${100 + index} |`),
+    ].join('\n')
+
+    controller.open('tbl-preview', currentBody)
+    await vi.waitFor(() => expect(document.querySelector('#table-ai-input')).not.toBeNull())
+
+    const preview = document.querySelector<HTMLTableElement>('.table-ai-current-preview')!
+    expect(preview.getAttribute('aria-label')).toBe('当前表格预览')
+    expect(preview.querySelectorAll('thead th')).toHaveLength(2)
+    expect(preview.querySelectorAll('tbody tr')).toHaveLength(7)
+    expect(preview.textContent).toContain('科室 7')
+    expect(document.querySelector('.table-ai-context pre')).toBeNull()
+    controller.dispose()
+  })
+
   it.each([false, true])('采用后的改表回执只定位仍存在的新版本（撤销=%s）', async reverted => {
     document.body.innerHTML = ''
     const markdown = '[[table:tbl-new]]\n| 项目 |\n| --- |\n| 新值 |\n\n[[/table:tbl-new]]'

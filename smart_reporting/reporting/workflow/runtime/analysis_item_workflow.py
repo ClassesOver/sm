@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -58,6 +58,7 @@ from .standard_supplemental import (
     query_bound_scope_fields,
     standard_computation_candidates,
     standard_computation_catalog,
+    standard_grouping_periods_supported,
     standard_input_matches_fact,
     standard_output_columns,
 )
@@ -166,6 +167,9 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
             "用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑写入，"
             "勿用 indent，勿删减已计算事实。",
             "每个 codingRequirements[].outputName 对应一个逐字相同的 findings[].name。",
+            "每个 finding 用 metricCodes 声明其实际使用的指标，逐项来自本分析的 allowedMetricCodes；"
+            "不得把所有允许指标无差别填写。展示标题另用简体中文 title，不把 outputName 当表题。"
+            "表格用 rowKeyColumns 声明共同标识每行的全部列（如期间和科室），包括数字型编码列。",
             "表格 finding 可选 columnMeta：{列名: {unit, isPercent, periodRole}}；"
             "isPercent=true 表示已乘 100，periodRole 取 current/prior/change；不确定时省略。",
             "嵌套tables中的每张columns+rows表自行声明columnMeta；父对象元数据不自动继承。"
@@ -1329,14 +1333,58 @@ class AnalysisItemWorkflow:
                 state.instruction.get("currentAnalysisId"), len(catalog["candidates"]),
                 catalog["groupingSources"]["totalItems"],
             )
+        original_output_decision = None
+        output_issues: list[dict[str, Any]] = []
         for attempt in range(2):
-            decision = await self.decide_evidence(payload)
+            try:
+                decision = await self.decide_evidence(payload)
+            except Exception as error:
+                if original_output_decision is None:
+                    raise
+                logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
+                            error_type=type(error).__name__).warning("report_analysis_output_correction_failed")
+                state.warnings.append("补证输出纠错失败，已保留原始完整需求并回退脚本补证。")
+                decision = original_output_decision
+                break
+            if original_output_decision is not None and not self._preserves_output_correction(
+                original_output_decision, decision, output_issues,
+            ):
+                logger.bind(analysis_id=state.instruction.get("currentAnalysisId")).warning(
+                    "report_analysis_output_correction_narrowed_requirements"
+                )
+                state.warnings.append("补证输出纠错改变或遗漏了原始计算需求，"
+                                      "已保留原始完整需求并回退脚本补证。")
+                decision = original_output_decision
+                break
             try:
                 _validate_coding_requirements(
                     decision,
                     state.instruction.get("datasets"),
                     state.instruction.get("currentAnalysis"),
                 )
+                if self.run_standard_supplemental is not None:
+                    issues = self._standard_output_issues(
+                        decision, payload.get("standardComputationCandidates", ()),
+                    )
+                    if issues:
+                        logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
+                                    requirements=issues, attempt=attempt).warning(
+                            "report_analysis_standard_output_contract_mismatch"
+                        )
+                        if attempt == 0:
+                            original_output_decision = decision
+                            output_issues = issues
+                            payload["correction"] = {
+                                "previousDecision": decision.model_dump(mode="json", by_alias=True),
+                                "code": "standard_output_contract_mismatch",
+                                "message": "声明的标准计算不能提供全部 requiredColumns。",
+                                "details": {"requirements": issues},
+                                "instruction": "逐项核对实际 outputColumns；仅在计算含义相同时修正列名。"
+                                "保留原始事实缺口和全部计算要求，不得删除未支持的统计或输出以迁就标准路径；"
+                                "真实计算超出标准能力时保留完整需求并交给脚本。返回完整补证决策。",
+                            }
+                            continue
+                        # 输出能力不匹配只回退脚本，不放弃合法补证需求。
                 break
             except ReportingError as error:
                 logger.bind(
@@ -1547,6 +1595,77 @@ class AnalysisItemWorkflow:
         return facts
 
     @staticmethod
+    def _preserves_output_correction(
+        original: AnalysisEvidenceDecision, corrected: EvidenceDecision, issues: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        """纠错仅允许列名规范化或退出标准绑定，不得缩小原始计算目标。"""
+        if (not isinstance(corrected, AnalysisEvidenceDecision)
+                or not corrected.requires_supplemental_evidence
+                or set(original.missing_facts) != set(corrected.missing_facts)):
+            return False
+        replacements = {item.output_name: item for item in corrected.coding_requirements}
+        if set(replacements) != {item.output_name for item in original.coding_requirements}:
+            return False
+        aliases = {issue["outputName"]: issue["columnAliases"] for issue in issues}
+        for requirement in original.coding_requirements:
+            replacement = replacements[requirement.output_name]
+            if (requirement.dataset_id != replacement.dataset_id
+                    or set(requirement.fields) != set(replacement.fields)
+                    or requirement.calculation.strip() != replacement.calculation.strip()):
+                return False
+            original_binding = (requirement.standard_candidate_id, requirement.standard_computation)
+            binding = (replacement.standard_candidate_id, replacement.standard_computation)
+            if binding != original_binding and binding != (None, None):
+                return False
+            mapping = aliases.get(requirement.output_name, {})
+            required = {mapping.get(column, column) for column in requirement.required_columns}
+            provided = {mapping.get(column, column) for column in replacement.required_columns}
+            if not required.issubset(provided):
+                return False
+        return True
+
+    @staticmethod
+    def _standard_output_issues(
+        decision: EvidenceDecision, candidates: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(decision, AnalysisEvidenceDecision):
+            return []
+        indexed = {item["candidateId"]: item for item in candidates}
+        issues = []
+        for requirement in decision.coding_requirements:
+            spec = requirement.standard_computation
+            if requirement.standard_candidate_id:
+                candidate = indexed.get(requirement.standard_candidate_id)
+                if (candidate is None or candidate["datasetId"] != requirement.dataset_id
+                        or not set(candidate["fields"]).issubset(requirement.fields)):
+                    continue
+                spec = StandardSupplementalSpec.model_validate(candidate["standardComputation"])
+            if spec is None:
+                continue
+            columns = standard_output_columns(spec)
+            unsupported = sorted(set(requirement.required_columns) - set(columns))
+            if unsupported:
+                # 只登记结构化角色已知的列名别名；未知统计列不能借纠错删除。
+                has_period = spec.operation in {"group_period_series", "group_period_comparison"} or spec.group_by_period
+                aliases = {"group": columns[1 if has_period else 0]}
+                if has_period:
+                    aliases["period"] = columns[0]
+                if "current" in columns or "value" in columns:
+                    aliases["currentValue"] = "current" if "current" in columns else "value"
+                if "baseline" in columns:
+                    aliases["baselineValue"] = "baseline"
+                aliases = {key: value for key, value in aliases.items() if key not in columns}
+                issues.append({
+                    "outputName": requirement.output_name,
+                    "operation": spec.operation,
+                    "requiredColumns": list(requirement.required_columns),
+                    "outputColumns": list(columns),
+                    "unsupportedColumns": unsupported,
+                    "columnAliases": aliases,
+                })
+        return issues
+
+    @staticmethod
     def _standard_plan(state: _AnalysisItemState) -> tuple[StandardSupplementalSpec, ...]:
         if not isinstance(state.decision, AnalysisEvidenceDecision):
             return ()
@@ -1634,7 +1753,9 @@ class AnalysisItemWorkflow:
                 or fact.field != field
                 or getattr(fact, "period_field", None) != spec_period_field
                 or getattr(fact, "aggregation", None) != "sum"
-                or getattr(fact, "period_aggregation", None) != "sum"
+                or not standard_grouping_periods_supported(fact, periods)
+                or (getattr(fact, "period_aggregation", None) != "sum"
+                    and spec.operation not in {"group_summary", "cross_group_summary"})
                 or getattr(fact, "cumulative_policy", None) is not None
             ):
                 return False
@@ -1670,12 +1791,15 @@ class AnalysisItemWorkflow:
                 return unavailable("comparison_period_grain_mismatch")
             prior_keys = {metric_period_key(label, getattr(baseline, "period_granularity", None))
                           for label in spec.baseline_periods}
-            if not any(
-                prior_keys == {metric_period_key(label, getattr(baseline, "period_granularity", None))
-                               for label in window}
-                for window in comparison_period_windows(parent, baseline, spec.current_periods)
-            ):
+            aligned_window = next((
+                window for window in comparison_period_windows(parent, baseline, spec.current_periods)
+                if prior_keys == {metric_period_key(label, getattr(baseline, "period_granularity", None))
+                                  for label in window}
+            ), None)
+            if aligned_window is None:
                 return unavailable("comparison_role_or_calendar_mismatch")
+            if spec.group_by_period:
+                spec = spec.model_copy(update={"baseline_periods": aligned_window})
         if spec.operation == "period_comparison" and getattr(parent, "unit", None) != getattr(baseline, "unit", None):
             return unavailable("comparison_unit_mismatch")
         if spec.baseline_dataset_id is not None and spec.baseline_dataset_id != requirement.dataset_id:

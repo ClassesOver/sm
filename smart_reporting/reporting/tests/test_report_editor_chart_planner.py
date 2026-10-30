@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from types import SimpleNamespace
+from pydantic import ValidationError
 
 import anyio
 import httpx
@@ -65,6 +66,9 @@ async def test_editor_planner_wire_uses_one_complete_editor_contract(model_id, m
     assert "standardChartSchema" not in payload
     assert payload["chartId"] == "chart_contract"
     assert payload["standardChartCapabilities"]
+    capabilities = payload["standardChartCapabilities"]
+    assert capabilities["familyAxesOverrides"] == ["leftDisplayUnit"]
+    assert capabilities["families"]["sankey"]["encodingFields"] == ["xField", "yField", "valueField"]
     system = "\n".join(message["content"] for message in body["messages"]
         if message["role"] in {"system", "developer"})
     contract = system if mode == "json_object" else json.dumps(body["response_format"]["json_schema"]["schema"])
@@ -155,12 +159,14 @@ def test_editor_planner_parser_preserves_strict_complete_object_boundary(raw, ex
 @pytest.mark.parametrize("model_id,mode,valid", [
     ("deepseek-v4-flash-0731", "json_object", True),
     ("deepseek-v4-flash-0731", "json_object", False),
+    ("deepseek-v4-flash-0731", "json_object", "recover"),
     ("qwen3.8-flash", "json_schema", True),
 ])
-async def test_editor_planner_uses_shared_provider_policy_and_one_business_call(model_id, mode, valid):
+async def test_editor_planner_uses_shared_provider_policy_and_bounded_correction(model_id, mode, valid):
     requests = []
-    candidate = {"level": ["L1"], "drawInstruction": "保留冻结数据，调整布局",
-        "standard": {"standardForm": "bar"}} if valid else {"level": ["L1"], "drawInstruction": ""}
+    valid_candidate = {"level": ["L1"], "drawInstruction": "保留冻结数据，调整布局",
+        "standard": {"standardForm": "bar"}}
+    candidate = valid_candidate if valid is True else {**valid_candidate, "standardPlotSummaryNote": "不允许的额外字段"}
     async def handler(request):
         body = json.loads(request.content)
         requests.append(body)
@@ -169,7 +175,9 @@ async def test_editor_planner_uses_shared_provider_policy_and_one_business_call(
                 "type": "invalid_request_error", "code": "invalid_parameter"}})
         return httpx.Response(200, json={"id": "chatcmpl-editor-fixture", "object": "chat.completion",
             "created": 1, "model": model_id, "choices": [{"index": 0, "finish_reason": "stop",
-            "message": {"role": "assistant", "content": json.dumps(candidate, ensure_ascii=False)}}],
+            "message": {"role": "assistant", "content": json.dumps(
+                valid_candidate if valid == "recover" and len(requests) == 2 else candidate,
+                ensure_ascii=False)}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         model = ReportingPhaseOpenAIChat(id=model_id, api_key="fixture-key",
@@ -187,8 +195,47 @@ async def test_editor_planner_uses_shared_provider_policy_and_one_business_call(
             with pytest.raises(ReportingError) as failed:
                 await service._plan(context, "chart_001", request, [], [])
             assert failed.value.code == "report_phase_output_invalid"
-        assert len(requests) == 1
+            assert failed.value.__cause__ is not failed.value
+            assert failed.value.__cause__ is not None
+        assert len(requests) == (1 if valid is True else 2)
+        if valid == "recover":
+            correction = json.dumps(requests[1]["messages"], ensure_ascii=False)
+            assert "standardPlotSummaryNote" in correction
+            assert "extra_forbidden" in correction
         assert requests[0]["response_format"]["type"] == mode
         assert "trusted-owner-only" not in json.dumps(requests[0]["messages"])
         if mode == "json_schema":
             assert requests[0]["response_format"]["json_schema"]["schema"]["type"] == "object"
+
+
+@pytest.mark.parametrize("cycle_length", [1, 2])
+def test_chart_job_observation_handles_cyclic_error_causes(cycle_length):
+    errors = [ReportingError("invalid_plan", "规划无效") for _ in range(cycle_length)]
+    for position, error in enumerate(errors):
+        error.__cause__ = errors[(position + 1) % cycle_length]
+    job = chart_ai._ChartEditJob(report_id="report", revision=1,
+        chart_id="chart", user_id="user", task=None, started_at=0)
+    job.capture_execution(errors[0])
+    assert job.execution_rounds == []
+
+
+@pytest.mark.parametrize("standard", [
+    {"standardForm": "funnel", "standardAxes": {"zeroBaseline": True}},
+    {"standardForm": "sankey", "standardEncoding": {
+        "xField": "source", "yField": "target", "valueField": "value", "xCaption": "起点"}},
+])
+def test_editor_planner_checks_family_parameter_policy_before_drawing(standard):
+    with pytest.raises(ValidationError):
+        chart_ai.ChartEditPlan(level=("L1",), drawInstruction="保留冻结输入", standard=standard)
+
+
+def test_editor_planner_preserves_omitted_family_groups_for_next_edit():
+    from smart_reporting.report_editor.standard_charts import inherit_standard
+
+    previous = {"standardForm": "sankey", "standardEncoding": {
+        "xField": "source", "yField": "target", "valueField": "value"}}
+    plan = chart_ai.ChartEditPlan(level=("L1",), drawInstruction="调整背景色", standard={
+        "standardForm": "sankey", "standardStyle": {"background": "#eeeeee"}})
+    effective = inherit_standard(previous, plan.standard)
+    assert effective.standard_encoding.x_field == "source"
+    assert effective.standard_style.background == "#eeeeee"

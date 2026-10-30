@@ -14,6 +14,7 @@ from pydantic import Field, field_validator, model_validator
 from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
 from ..delivery.draft_v1 import ReportDraftBlock
 from ..models import ReportingError
+from ..trace.contracts_v1 import StandardChartRenderProofV1
 from .scope import digest_values
 
 
@@ -297,6 +298,10 @@ class AnalysisChart(StrictModel):
     plot_data_kind: Literal["chart_input", "fallback_facts"] | None = Field(
         default=None, alias="plotDataKind"
     )
+    standard_render_proof: StandardChartRenderProofV1 | None = Field(
+        default=None, alias="standardRenderProof"
+    )
+    render_script_file: FileIdentity | None = Field(default=None, alias="renderScriptFile")
 
     @field_validator("plot_data_files")
     @classmethod

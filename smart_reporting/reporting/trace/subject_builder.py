@@ -934,6 +934,10 @@ def _reference_local_window(before: str, after: str, *, comparison: bool = False
     comparison：变化额、变化率涉及本期与基期两个期间，继承句中全部日期，而不是最后一个。
     """
     claim = re.compile(r'\[\[claim:[^\]\r\n]+\]\]')
+    # 同一可见数值后可能同时保留旧 claim 与新的精确数值引用。
+    # 相邻标记没有可见内容，不构成前后两个数值的边界。
+    before = re.sub(r'(?:\s*\[\[(?:claim|citation):[^\]\r\n]+\]\])+\s*$', '', before)
+    after = re.sub(r'^(?:\s*\[\[(?:claim|citation):[^\]\r\n]+\]\])+', '', after)
     # 单金额句也要区分相对同期的比较背景与当前值归属。
     if not claim.search(before + after) and not re.search(r'(?:上年|去年)同期', before):
         return None
@@ -1073,14 +1077,13 @@ def _claim_status_from_body(
         after = ""
     statement = re.split(r"[。！？;；\n]", before)[-1] + re.split(r"[。！？;；\n]", after)[0]
     window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", statement)
-    reference_window = None
-    if expected_reference:
-        selector = str(expected_reference.get("selector") or "")
-        reference_window = _reference_local_window(
-            re.split(r'[。！？;；\n]', before)[-1], re.split(r'[。！？;；\n]', after)[0],
-            comparison=selector in {"change", "changeRate"}
-            or selector.startswith(("periodChanges.", "periodChangeRates.", "cumulativeChanges.")),
-        )
+    # 旧式事实引用同样需要隔离相邻本期/基期；不能用整句的所有年份核对单个值。
+    selector = str((expected_reference or {}).get("selector") or "")
+    reference_window = _reference_local_window(
+        re.split(r'[。！？;；\n]', before)[-1], re.split(r'[。！？;；\n]', after)[0],
+        comparison=selector in {"change", "changeRate"}
+        or selector.startswith(("periodChanges.", "periodChangeRates.", "cumulativeChanges.")),
+    )
     if expected_unit == "个百分点":
         window = _point_plain_text(window)
         if reference_window is not None:

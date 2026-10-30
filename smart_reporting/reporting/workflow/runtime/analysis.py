@@ -1174,6 +1174,7 @@ class RuntimeAnalysisMixin:
                     code_runner_instance: ReportingCodeGenerationRunner | None = None
                     # 范围与标准参数共用一次规划纠错；输入按绑定缓存，参数纠正不重复读取/写入事实。
                     chart_input_cache: dict[str, ChartInputMaterialization | None] = {}
+                    render_proof_cache: dict[str, tuple[Mapping[str, Any], ...]] = {}
                     planner_metrics_recorder = invocation.model_metrics_settlement.stage_recorder(
                         "planner", agent_role="visualization-planner"
                     )
@@ -1394,6 +1395,7 @@ class RuntimeAnalysisMixin:
                             run_context=task_context,
                             diagnostic=diagnostic,
                         )
+                        render_proof_cache[chart_input_key(plan)] = getattr(result, "standard_render_proofs", ())
                         if chart_inputs is not None and chart_inputs.files:
                             await verify_plotly_chart_inputs(
                                 plan,
@@ -1485,6 +1487,12 @@ class RuntimeAnalysisMixin:
                                     for entry in chart_inputs.entries
                                 )
                             )
+                        proofs = render_proof_cache.get(chart_input_key(plan), ())
+                        proof_options = {"standard_render_proofs": tuple({
+                            "chartId": record["chartId"],
+                            "scriptFile": record["scriptFile"].model_dump(mode="json", by_alias=True),
+                            "proof": record["proof"].model_dump(mode="json", by_alias=True),
+                        } for record in proofs)} if proofs else {}
                         return await toolkit.submit_visualization_charts(
                             section_code,
                             [_visualization_registration_payload(item) for item in plan.charts],
@@ -1493,6 +1501,7 @@ class RuntimeAnalysisMixin:
                                 item.model_dump(mode="json", by_alias=True) for item in _inspections
                             ),
                             plot_data_files=plot_data_files,
+                            **proof_options,
                         )
 
                     async def degrade(
@@ -1719,6 +1728,9 @@ class RuntimeAnalysisMixin:
                                 for row in rows
                             )
                         ]
+                        empty_fields = [str(column) for column_index, column in enumerate(columns)
+                                        if rows and all(isinstance(row, list) and column_index < len(row)
+                                            and row[column_index] is None for row in rows)]
                         descriptor.update(
                             {
                                 "columns": columns,
@@ -1726,6 +1738,7 @@ class RuntimeAnalysisMixin:
                                 "rowEncoding": "columns_rows",
                                 "rowCount": len(rows),
                                 **({"nullableFields": nullable_fields} if nullable_fields else {}),
+                                **({"emptyFields": empty_fields} if empty_fields else {}),
                                 **(
                                     {"columnMeta": finding["columnMeta"]}
                                     if isinstance(finding.get("columnMeta"), Mapping)
@@ -1773,8 +1786,10 @@ class RuntimeAnalysisMixin:
                         for key in (
                             "datasetId",
                             "field",
+                            "fieldRef",
                             "metricCodes",
                             "aggregation",
+                            "periodAggregation",
                             "unit",
                             "scope",
                             "periodRoles",
@@ -3902,6 +3917,10 @@ class RuntimeAnalysisMixin:
                     datasetId=requirement.dataset_id,
                     baselineDatasetId=computation_spec.baseline_dataset_id,
                     outputName=requirement.output_name,
+                    metricCodes=tuple(dict.fromkeys(
+                        code for fact in (parent, baseline, denominator, ratio_fact)
+                        for code in getattr(fact, "metric_codes", ())
+                    )),
                     measureField=computation_spec.measure_field,
                     denominatorField=computation_spec.denominator_field,
                     measureUnit=getattr(parent, "unit", None),
@@ -3928,8 +3947,11 @@ class RuntimeAnalysisMixin:
                         else ()
                     ),
                     baselinePeriodTotals=(
-                        tuple(frozen_period_total(parent, (period,)) for period in computation_spec.baseline_periods)
-                        if computation_spec.operation == "group_period_comparison" else ()
+                        tuple(frozen_period_total(baseline or parent, (period,))
+                              for period in computation_spec.baseline_periods)
+                        if computation_spec.operation == "group_period_comparison"
+                        or computation_spec.operation == "period_comparison" and computation_spec.group_by_period
+                        else ()
                     ),
                     baselineParentTotal=(
                         frozen_period_total(baseline or parent, computation_spec.baseline_periods)

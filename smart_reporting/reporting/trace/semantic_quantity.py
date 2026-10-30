@@ -20,7 +20,7 @@ from .contracts_v1 import (
 )
 from .fact_index import merge_frozen_fact
 from .numeric_text import format_fact_value
-from .semantic_bindings import NumberReferenceResolver
+from .semantic_bindings import NumberReferenceResolver, reference_fact_ids
 from .table_sources import (
     _TOTAL,
     _column_unit,
@@ -58,6 +58,7 @@ class QuantityCatalog:
                                 'value', 'percentage', 'numerator', 'denominator', 'difference',
                                 'monthlyAverage', 'monthlyMinimum', 'monthlyMaximum'} and not selector.startswith(
                                     ('periodValues.', 'periodAverages.', 'periodTotals.',
+                                     'periodChanges.', 'periodChangeRates.',
                                      'groupMissingShares.', 'seriesGroupMissingShares.')):
                 continue
             if (fact, selector) in seen:
@@ -72,6 +73,17 @@ class QuantityCatalog:
             descriptor = {'sourceId': source_id, 'kind': 'fact', 'factId': fact, 'selector': selector,
                           'label': entry.get('displayName') or entry.get('field'),
                           'scope': view['scope'], 'periods': list(view['periods']), 'unit': view['unit']}
+            descriptor['periodRoles'] = view['period_roles']
+            if selector in {'change', 'changeRate', 'difference'} or selector.startswith(
+                    ('periodChanges.', 'periodChangeRates.')):
+                descriptor.update(
+                    quantityRole='registered_change_rate' if selector == 'changeRate'
+                    or selector.startswith('periodChangeRates.') else 'registered_change',
+                    periodMeaning=('已登记左右操作数在共同期间的差额，不代表跨期变化'
+                                   if selector == 'difference' else
+                                   '已登记比较的基期和当期窗口；必须与正文所述两期一致'),
+                    operationMeaning='已登记完整比较结果，直接使用operation=value，不再用两期总量重复计算',
+                )
             if selector.startswith(('groupMissingShares.', 'seriesGroupMissingShares.')):
                 group = selector.split('.', 1)[1]
                 descriptor.update(quantityRole='group_missing_absolute_share',
@@ -99,6 +111,77 @@ class QuantityCatalog:
             except (ValueError, TypeError):
                 continue
             self._tables(resource, raw, document, document, '')
+
+    def prompt_for(self, views: Sequence[Mapping[str, Any]], *,
+                   tokens: Sequence[str] = (),
+                   table_derivations: Sequence[TableDerivationV1] = ()) -> list[dict[str, Any]]:
+        """只投影本批登记身份及其业务家族；宿主的完整解析目录不变。"""
+        fact_ids: set[str] = set()
+        tables: set[tuple[str, str]] = set()
+
+        def collect(entry):
+            if not isinstance(entry, Mapping):
+                return
+            if fact_id := entry.get('factId'):
+                fact_ids.add(fact_id)
+            fact_ids.update(entry.get('inputFactIds') or ())
+            if parent := entry.get('parentFactId'):
+                fact_ids.add(parent)
+
+        for view in views:
+            collect(view.get('entry'))
+            for entry in (*view.get('operandEntries', ()), *view.get('operandViews', ())):
+                collect(entry)
+        # budgetComparison/metricShare/derived 等既有视图未必展开操作数；
+        # 从已核验 token 读取原登记身份，不能靠字段家族猜分母。
+        for token in tokens:
+            if self.resolver.resolve(token) is not None:
+                fact_ids.update(reference_fact_ids(token))
+        for derivation in table_derivations:
+            tables.update((operand.file_resource_id, operand.table_pointer) for operand in derivation.operands)
+            for fact in (derivation.population_fact, derivation.denominator_fact):
+                if fact is not None and fact.fact_key:
+                    fact_ids.add(fact.fact_key)
+        for source in self._sources.values():
+            if source['kind'] == 'table_column' and (source['resource'], source['pointer']) in tables:
+                if parent := source['population'].get('populationFactId'):
+                    fact_ids.add(parent)
+
+        # 同物理列还可能承载不同业务指标或不同主体，不能只按 fieldRef 扩大候选。
+        entries = self.resolver.entries
+        family_keys = ('fieldRef', 'scope', 'metricCodes', 'unit', 'aggregation', 'periodAggregation')
+        seeds = [entries[key] for key in fact_ids if key in entries]
+        for key, entry in entries.items():
+            if any(seed.get('fieldRef') and all(entry.get(name) == seed.get(name) for name in family_keys)
+                   for seed in seeds):
+                fact_ids.add(key)
+        # 比较结果只在全部操作数已属于本批家族时加入，不沿共享分母串联无关指标。
+        for key, entry in entries.items():
+            operands = set(entry.get('inputFactIds') or ())
+            if entry.get('comparisonType') and operands and operands <= fact_ids:
+                fact_ids.add(key)
+        pending = list(fact_ids)
+        while pending:
+            entry = entries.get(pending.pop(), {})
+            parents = [*(entry.get('inputFactIds') or ())]
+            if parent := entry.get('parentFactId'):
+                parents.append(parent)
+            for parent in parents:
+                if parent not in fact_ids:
+                    fact_ids.add(parent)
+                    pending.append(parent)
+
+        result = []
+        for descriptor in self.prompt:
+            if descriptor['kind'] == 'fact':
+                if descriptor['factId'] in fact_ids:
+                    result.append(descriptor)
+            else:
+                source = self._sources[descriptor['sourceId']]
+                if ((source['resource'], source['pointer']) in tables
+                        or source['population'].get('populationFactId') in fact_ids):
+                    result.append(descriptor)
+        return result
 
     def _tables(self, resource, raw, document, node, pointer):
         if isinstance(node, list):

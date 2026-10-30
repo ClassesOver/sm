@@ -78,7 +78,8 @@ def test_ruijin_profile包含收入汇总权威指标定义() -> None:
     assert metric.aggregation == "sum"
 
 
-def test_ruijin_income_semantics_produce_executable_standard_grouping():
+@pytest.mark.parametrize("table", ["dwd_hdc_income_summary_view", "dwd_hdc_cost_table_view"])
+def test_ruijin_additive_semantics_produce_executable_standard_grouping(table):
     from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
         build_deterministic_analysis_bundle,
     )
@@ -92,8 +93,8 @@ def test_ruijin_income_semantics_produce_executable_standard_grouping():
     registry = load_configured_reporting_profiles(Path("deploy/agentos/reporting"))
     profile = bind_reporting_profile_sources(resolve_reporting_profile(registry, "ruijin"), {"rj": "rj"})
     semantic = next((item for item in profile.measure_semantics
-                     if item.field_ref == "rj.rj.dwd_hdc_income_summary_view.indicator_value"), None)
-    assert semantic is not None, "收入汇总缺少受信时间可加语义，标准补证目录会为空"
+                     if item.field_ref == f"rj.rj.{table}.indicator_value"), None)
+    assert semantic is not None, f"{table} 缺少受信时间可加语义，标准补证目录会为空"
     csv = b"data_date,area,indicator_value\n2025-01-01,A,10\n2025-01-01,B,20\n2025-02-01,A,30\n"
     digest = hashlib.sha256(csv).hexdigest()
     ctx = context("current").model_copy(update={

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
@@ -33,8 +33,14 @@ from .semantic_alignment import SemanticAlignmentCheck, evaluate_semantic_alignm
 from .semantic_bindings import reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
+if TYPE_CHECKING:
+    from ..delivery.draft_v1 import HeadingNumber
+
 QUALITY_FILENAME = "quality-bundle-v1.json"
-SEMANTIC_RULE_VERSIONS = {"chartReview": "2", "quantityBinding": "2", "tableCalculation": "2", "tableSourceCell": "1", "claimInterpretation": "2", "topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1", "statementReview": "1", "scopeWording": "1", "calcReferences": "1"}
+SEMANTIC_RULE_VERSIONS = {"chartReview": "2", "quantityBinding": "2", "tableCalculation": "2", "tableSourceCell": "1", "claimInterpretation": "3", "topSets": "1", "businessSemantics": "1", "groupContributions": "1", "calendarComparisons": "1", "registeredRatios": "2", "cumulativeChanges": "3", "professionalReview": PROFESSIONAL_REVIEW_VERSION, "tableCoverage": "1", "tablePeriods": "1", "managementOverview": OVERVIEW_VERSION, "scopeValues": "1", "overviewSourceBinding": "1", "periodIdentity": "1", "unitIdentity": "1", "statementReview": "1", "scopeWording": "1", "calcReferences": "1"}
+
+
+SEMANTIC_RULE_VERSIONS["standardMatplotlib"] = "1"
 
 
 class StatementReview(StrictModel):
@@ -93,6 +99,7 @@ def evaluate_quality_bundle(
     questions: QuestionSet | None = None,
     interactive_charts: Mapping[str, str] | None = None,
     answer_review_plan: AnswerReviewPlan | None = None,
+    heading_numbers: tuple[HeadingNumber, ...] = (),
 ) -> QualityBundle:
     """Identity-check again at this boundary. Missing data only degrades dependents."""
     trusted: list[str] = []
@@ -110,7 +117,9 @@ def evaluate_quality_bundle(
             from .fact_service import read_fact_document
 
             document = read_fact_document(raw)
-            if document.get("analysisId") != entry.analysis_id:
+            if document.get("analysisId") != entry.analysis_id and not (
+                entry.content_kind == "supplemental_evidence" and document.get("analysisId") is None
+            ):
                 unavailable.add(file.resource_id)
                 continue
             documents[file.resource_id] = document
@@ -179,9 +188,10 @@ def evaluate_quality_bundle(
     assertions: dict[str, AssertionResult] = {}
     bindings: dict[str, str] = {}
     question_assertions: dict[str, list[str]] = {}
+    from .claim_semantics import project_semantic_headings
     from .subject_builder import prepare_claim_status
 
-    check_claim = prepare_claim_status(markdown)
+    check_claim = prepare_claim_status(project_semantic_headings(markdown, heading_numbers))
     fingerprints = statement_fingerprints(
         markdown,
         (
@@ -315,6 +325,7 @@ def evaluate_quality_bundle(
             "unavailable": sorted(unavailable),
             "ruleVersion": RULE_VERSION,
             "semanticRuleVersions": SEMANTIC_RULE_VERSIONS,
+            "headingNumbers": [heading.model_dump(mode="json", by_alias=True) for heading in heading_numbers],
             "authorizationScopeHash": authorization_scope_hash,
             "answerReviewPlan": answer_review_plan.model_dump(mode="json", by_alias=True) if answer_review_plan else None,
             "questionSpecs": questions.model_dump(mode="json", by_alias=True)
