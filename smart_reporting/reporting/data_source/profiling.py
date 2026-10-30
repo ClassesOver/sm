@@ -124,7 +124,11 @@ async def _profile_table(
     period_identifier = _identifier(period_column)
     normalized_period = normalized_period_sql(period_identifier, period_granularity)
     period_filter = period_filter_sql(
-        period_identifier, period_granularity, period_start, period_end
+        period_identifier,
+        period_granularity,
+        period_start,
+        period_end,
+        data_type=columns[period_column].data_type,
     )
     qualified = f"{_identifier(table.database)}.{_identifier(table.name)}"
     base_aliases = (

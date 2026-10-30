@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal
 
 from dateutil.relativedelta import relativedelta
@@ -136,12 +137,28 @@ def normalized_period_sql(identifier: str, granularity: PeriodGranularity) -> st
     return f"SUBSTRING({compact}, 1, {width})"
 
 
+_TEMPORAL_COLUMN_TYPE = re.compile(r"^\s*(DATE|DATETIME)\b", re.IGNORECASE)
+
+
 def period_filter_sql(
     identifier: str,
     granularity: PeriodGranularity,
     period_start: date,
     period_end: date,
+    *,
+    data_type: str | None = None,
 ) -> str:
+    temporal = _TEMPORAL_COLUMN_TYPE.match(data_type or "")
+    if temporal is not None:
+        # DATE/DATETIME 列直接比较列值，StarRocks 才能做分区裁剪和 ZoneMap 过滤；
+        # 半开区间与规范化文本比较等价（DATETIME 覆盖末日全天），NULL 同样不命中。
+        lower, upper = normalize_period_bounds(period_start, period_end, granularity)
+        upper += timedelta(days=1)
+        suffix = " 00:00:00" if temporal[1].upper() == "DATETIME" else ""
+        return (
+            f"{identifier} >= '{lower:%Y-%m-%d}{suffix}' "
+            f"AND {identifier} < '{upper:%Y-%m-%d}{suffix}'"
+        )
     normalized = normalized_period_sql(identifier, granularity)
     if granularity == "year":
         start, end = f"{period_start:%Y}", f"{period_end:%Y}"
