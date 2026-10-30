@@ -1210,10 +1210,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             request_metrics[-1]["requestParams"] = dict(observation)
         return params
 
-    def count_tokens(
-        self, messages: list[Message], tools: Any = None, output_schema: Any = None
-    ) -> int:
-        return Model.count_tokens(self, messages, tools, output_schema)
+    # 跳过 Responses 的 provider 计数 API，直接使用 Agno 基础累加实现；以同一函数对象
+    # 绑定，投影层据此识别可加性并启用逐消息 token 缓存。
+    count_tokens = Model.count_tokens
 
     def _phase_request_model(self, messages: list[Message]) -> ReportingCodeOpenAIResponses:
         request_model = copy(self)

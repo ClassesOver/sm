@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextvars import ContextVar
 from copy import deepcopy
@@ -16,6 +17,7 @@ from urllib.parse import urlparse
 
 import requests
 from agno.compression.manager import CompressionManager
+from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from loguru import logger
@@ -355,6 +357,59 @@ def _status_value(run: Any) -> str:
 
 def _fallback_token_count(value: str) -> int:
     return max(1, (len(value.encode("utf-8")) + 1) // 2)
+
+
+_MESSAGE_TOKEN_CACHE_MAX_ENTRIES = 8192
+_MESSAGE_TOKEN_CACHE: "OrderedDict[tuple[str, str], int]" = OrderedDict()
+_MESSAGE_MEDIA_FIELDS = ("images", "audio", "videos", "files", "audio_output", "image_output")
+
+
+def _message_token_cache_key(model_id: str, message: Message) -> tuple[str, str] | None:
+    """按影响 Agno 逐消息计数的全部文本字段生成内容指纹；含媒体时不缓存。"""
+
+    if any(getattr(message, field, None) for field in _MESSAGE_MEDIA_FIELDS):
+        return None
+    encoded = json.dumps(
+        [
+            message.role,
+            message.content,
+            message.compressed_content,
+            message.tool_calls,
+            message.tool_call_id,
+            message.reasoning_content,
+            message.redacted_reasoning_content,
+            message.name,
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return model_id, hashlib.blake2b(encoded.encode("utf-8"), digest_size=20).hexdigest()
+
+
+def _additive_token_count(
+    messages: list[Message], model: Any, tools: Any, response_format: Any
+) -> int:
+    """Agno 基础 count_tokens 是逐消息累加再加工具/schema；投影每轮重计同一段历史，
+    这里按消息内容缓存单条计数，只对新增或被改写的消息分词。"""
+
+    model_id = str(model.id)
+    total = Model.count_tokens(model, [], tools, response_format)
+    for message in messages:
+        key = _message_token_cache_key(model_id, message)
+        if key is None:
+            total += Model.count_tokens(model, [message])
+            continue
+        cached = _MESSAGE_TOKEN_CACHE.get(key)
+        if cached is None:
+            cached = Model.count_tokens(model, [message])
+            _MESSAGE_TOKEN_CACHE[key] = cached
+            if len(_MESSAGE_TOKEN_CACHE) > _MESSAGE_TOKEN_CACHE_MAX_ENTRIES:
+                _MESSAGE_TOKEN_CACHE.popitem(last=False)
+        else:
+            _MESSAGE_TOKEN_CACHE.move_to_end(key)
+        total += cached
+    return total
 
 
 def _fallback_context_token_count(
@@ -1260,6 +1315,10 @@ class TaskExecutionContextProjector:
     ) -> int:
         started_at = perf_counter()
         try:
+            # 仅当计数实现就是 Agno 基础累加实现时走逐消息缓存；改写过计数的模型
+            # （按阶段过滤消息、调用 provider 计数 API 等）不满足可加性，按原样整体计数。
+            if getattr(type(model), "count_tokens", None) is Model.count_tokens:
+                return int(_additive_token_count(messages, model, tools, response_format))
             return int(model.count_tokens(messages, tools, response_format))
         except Exception as error:
             model_id, _host = _model_log_fields(model)
