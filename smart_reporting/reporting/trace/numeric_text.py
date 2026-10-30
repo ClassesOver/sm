@@ -109,7 +109,8 @@ _RATE_SUBJECT = re.compile(
 
 def describes_rate_level(prefix: str) -> bool:
     """方向词之前紧邻比率名词时返回 True。"""
-    return _RATE_SUBJECT.search(prefix) is not None
+    # 模式锚定在末尾：去掉尾部空白后只需检查最后几个字符，避免对整段前文逐位置搜索。
+    return _RATE_SUBJECT.search(prefix.rstrip()[-8:]) is not None
 
 
 _NUMBER = r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
@@ -3336,7 +3337,7 @@ def replace_unregistered_numbers(
             prefix,
             _paragraph_at(markdown, match.start()),
             _statement_at(markdown, match.start()),
-            re.split(r"[。！？；;\n]", markdown[: match.end()])[-1],
+            text_after_last_break(markdown, match.end()),
             reference,
             re.sub(r"\[\[[^\]\n]+\]\]", "", markdown[match.end() : match.end() + 80])[:3],
         )

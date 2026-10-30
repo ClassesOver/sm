@@ -101,6 +101,33 @@ def evaluate_quality_bundle(
     heading_numbers: tuple[HeadingNumber, ...] = (),
 ) -> QualityBundle:
     """Identity-check again at this boundary. Missing data only degrades dependents."""
+    from .markdown_body import trace_body_cache_scope_sync
+
+    # 同一次评估中各 claim/表格检查会对同一正文反复调用 trace_body，只解析一次。
+    with trace_body_cache_scope_sync():
+        return _evaluate_quality_bundle(
+            index,
+            markdown,
+            sources,
+            authorization_scope_hash=authorization_scope_hash,
+            mode=mode,
+            questions=questions,
+            answer_review_plan=answer_review_plan,
+            heading_numbers=heading_numbers,
+        )
+
+
+def _evaluate_quality_bundle(
+    index: RevisionTraceIndexV1,
+    markdown: str,
+    sources: Mapping[str, bytes],
+    *,
+    authorization_scope_hash: str,
+    mode: Literal["shadow", "enabled"],
+    questions: QuestionSet | None,
+    answer_review_plan: AnswerReviewPlan | None,
+    heading_numbers: tuple[HeadingNumber, ...],
+) -> QualityBundle:
     trusted: list[str] = []
     documents = {}
     unavailable: set[str] = set()
