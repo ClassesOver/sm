@@ -1,6 +1,7 @@
 import type { EditorView } from '@milkdown/kit/prose/view'
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model'
 import { closeHistory } from '@milkdown/kit/prose/history'
+import { createElement, CircleAlert } from 'lucide'
 import { buttonClasses } from './button'
 import { askAIPanel, type AskAISession } from './ask-ai-panel'
 import { createAITemplateCard } from './ai-template-card'
@@ -30,6 +31,14 @@ const STAGE_LABELS: Record<string, string> = {
   register: '正在登记改图结果…',
 }
 
+/** 阶段时间线：服务端 8 个细阶段收成 4 个粗阶段展示，细节仍由进度标题给出。 */
+const STAGE_GROUPS: { label: string; stages: string[] }[] = [
+  { label: '核验底图', stages: ['queued', 'check'] },
+  { label: '理解与规划', stages: ['plan', 'materialize'] },
+  { label: '绘图与检查', stages: ['compile', 'draw', 'inspect'] },
+  { label: '登记结果', stages: ['register'] },
+]
+
 const QUICK_COMMANDS = [
   '改成横向条形图并按数值降序排列',
   '在图上显示数值标签',
@@ -57,6 +66,12 @@ export function quickCommandsForForm(visualForm?: string | null): string[] {
 
 const MAX_INSTRUCTION_CHARS = 2000
 
+/** 已用时统一 mm:ss 显示（改图/改表进度共用同一读法）。 */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.floor(ms / 1000)
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+}
+
 export const STANDARD_CHART_PRESETS = [
   { id: 'pie', name: '饼图', description: '需要可加的非负构成数据；不足整体的区域保持留白。', standard: { standardForm: 'pie' }, instruction: '按已登记数据改成饼图，保持真实分母与覆盖范围。' },
   { id: 'donut', name: '环形图', description: '沿用真实构成分母，不把展示子集重新归一。', standard: { standardForm: 'donut' }, instruction: '按已登记数据改成环形图，保持真实分母与覆盖范围。' },
@@ -80,6 +95,15 @@ export const STANDARD_CHART_PRESETS = [
 export function chartAiUnavailableReason(reason?: string): string {
   if (!reason) return UNAVAILABLE_REASONS.unavailable
   return UNAVAILABLE_REASONS[reason] ?? UNAVAILABLE_REASONS.unavailable
+}
+
+/** 标准（确定性）预设不可用时的常显说明：点名受影响的预设，并指出 AI 路径仍可用。 */
+export function standardUnavailableText(reason?: string): string {
+  const detail = reason === 'unconfigured' ? '服务未配置完成'
+    : reason === 'read_only' ? '当前会话为只读分享会话'
+      : reason === 'snapshot_expired' ? '该版本的数据来源已结束保留期'
+        : '服务暂不可用'
+  return `标准预设${detail}，饼图、环形图、雷达图、漏斗图、桑基图暂不可用；其余预设与自由要求可继续用 AI 生成。`
 }
 
 export function assetUrl(basePath: string, imagePath: string): string {
@@ -431,6 +455,8 @@ interface EditTarget {
   expectedSha256?: string
   aiAvailable?: boolean
   aiReason?: string
+  standardAvailable?: boolean
+  standardReason?: string
   standardForms?: string[]
   previousEditId?: string
   /** 正文中的原图组；继续预览未接受的结果时保持不变。 */
@@ -474,13 +500,7 @@ export function createChartAIEdit(options: {
     if (modal) return modal
     modal = askAIPanel().createSession({
       kind: 'chart', label: '图表',
-      content: `
-        <div class="panel-header">
-          <h2>AI 改图</h2>
-          <p class="chart-ai-subtitle" data-role="subtitle">用自然语言调整这张图，改后先对比再替换</p>
-        </div>
-        <div class="chart-ai-body" data-role="body"></div>
-      `,
+      content: '<div class="chart-ai-body" data-role="body"></div>',
     })
     return modal
   }
@@ -535,6 +555,8 @@ export function createChartAIEdit(options: {
         expectedSha256: record?.pages?.find(page => imageMatchesPage(src, page, basePath))?.sha256 ?? availability.expectedSha256,
         aiAvailable: availability.available,
         aiReason: availability.reason,
+        standardAvailable: availability.standardAvailable,
+        standardReason: availability.standardReason,
         standardForms: availability.standardChartCapabilities?.forms,
         bodyImageSrc: locateImage(view, img)?.node.attrs.src as string | undefined,
         ...(record ? { previousEditId: record.editId, bodyEditId: record.editId, bodyPages: record.pages } : {}),
@@ -570,12 +592,12 @@ export function createChartAIEdit(options: {
           <select id="${fieldId('chart-ai-standard-preset')}" aria-describedby="${fieldId('chart-ai-standard-help')}"><option value="">选择一种图形或调整方式</option></select>
           <button type="button" class="${buttonClasses('secondary')}" data-action="apply-standard" disabled>应用所选预设</button>
         </div>
-        <p id="${fieldId('chart-ai-standard-help')}" class="chart-ai-hint" aria-live="polite">结构化预设直接执行；有自由要求时，请明确使用 AI 生成。</p>
+        <p id="${fieldId('chart-ai-standard-help')}" class="chart-ai-hint" aria-live="polite">预设直接执行；自由要求请用 AI 生成。</p>
         <label class="chart-ai-hint" for="${fieldId('chart-ai-standard-reset')}">
           <input id="${fieldId('chart-ai-standard-reset')}" type="checkbox" aria-describedby="${fieldId('chart-ai-standard-reset-help')}">
           套用预设时重置旧图形设置
         </label>
-        <p id="${fieldId('chart-ai-standard-reset-help')}" class="chart-ai-hint">勾选后仅对直接应用的标准预设生效；作图数据不变，旧配色、坐标轴、分页等设置不再沿用。AI 改图仍按改图要求执行。</p>
+        <p id="${fieldId('chart-ai-standard-reset-help')}" class="chart-ai-hint">仅对直接应用的预设生效；作图数据不变。</p>
       </details>
       <div class="ask-ai-input-form">
       <label class="chart-ai-label" for="${fieldId('chart-ai-instruction')}">${retainReview ? '继续调整新图' : '改图要求'}</label>
@@ -593,7 +615,24 @@ export function createChartAIEdit(options: {
     body.querySelector<HTMLElement>('.chart-ai-chart-alt')!.textContent = `图注：${current.altText || '（无）'}`
     body.querySelector<HTMLElement>('.chart-ai-chart-title')!.title = current.title || ''
     body.querySelector<HTMLElement>('.chart-ai-chart-alt')!.title = current.altText || ''
-    if (note) body.querySelector<HTMLElement>('.chart-ai-note')!.textContent = note
+    if (note) {
+      const noteElement = body.querySelector<HTMLElement>('.chart-ai-note')!
+      noteElement.textContent = note
+      if (failed) {
+        noteElement.dataset.tone = 'warn'
+        if (instructionDraft.trim()) {
+          const retry = document.createElement('button')
+          retry.type = 'button'
+          retry.className = buttonClasses('secondary')
+          retry.textContent = '重新生成'
+          retry.addEventListener('click', () => {
+            const submitButton = ensureModal().composer.querySelector<HTMLButtonElement>('[data-action="submit"]')
+            if (submitButton && !submitButton.disabled) submitButton.click()
+          })
+          noteElement.after(retry)
+        }
+      }
+    }
     const textarea = body.querySelector<HTMLTextAreaElement>(`#${fieldId('chart-ai-instruction')}`)!
     textarea.value = instructionDraft
     const presets = body.querySelector<HTMLSelectElement>(`#${fieldId('chart-ai-standard-preset')}`)!
@@ -606,8 +645,11 @@ export function createChartAIEdit(options: {
       const option = document.createElement('option')
       option.value = preset.id
       option.textContent = preset.name
+      // 标准执行通道不可用时，确定性预设直接置灰，避免选完点应用才报错。
+      if ('standard' in preset && current.standardAvailable === false) option.disabled = true
       presets.append(option)
     }
+    if (current.standardAvailable === false) presetHelp.textContent = standardUnavailableText(current.standardReason)
     presets.addEventListener('change', () => {
       const preset = STANDARD_CHART_PRESETS.find(item => item.id === presets.value)
       applyPreset.disabled = !preset
@@ -617,6 +659,10 @@ export function createChartAIEdit(options: {
     applyPreset.addEventListener('click', () => {
       const preset = STANDARD_CHART_PRESETS.find(item => item.id === presets.value)
       if (!preset) return
+      if ('standard' in preset && current.standardAvailable === false) {
+        presetHelp.textContent = standardUnavailableText(current.standardReason)
+        return
+      }
       if ('standard' in preset && !textarea.value.trim()) {
         if (!current.expectedSha256) {
           presetHelp.textContent = '底图身份不可读取，请刷新后重试；未启动改图。'
@@ -658,12 +704,18 @@ export function createChartAIEdit(options: {
       })
       quick.append(chip)
     }
+    if (quick.scrollWidth > quick.clientWidth) quick.dataset.overflow = 'true'
     const submit = body.querySelector<HTMLButtonElement>('[data-action="submit"]')!
     const inputCount = body.querySelector<HTMLElement>('[data-role="input-count"]')!
     const syncInput = () => {
       instructionDraft = textarea.value
+      // 输入框随内容自动增高（上限与面板样式一致），不用一直滚动小框。
+      textarea.style.height = 'auto'
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
       submit.disabled = current.aiAvailable === false || !textarea.value.trim()
       inputCount.textContent = `${textarea.value.length} / ${MAX_INSTRUCTION_CHARS}`
+      inputCount.dataset.level = textarea.value.length >= MAX_INSTRUCTION_CHARS ? 'limit'
+        : textarea.value.length >= MAX_INSTRUCTION_CHARS * 0.9 ? 'warn' : ''
     }
     textarea.addEventListener('input', syncInput)
     textarea.addEventListener('keydown', event => {
@@ -672,19 +724,36 @@ export function createChartAIEdit(options: {
       }
     })
     syncInput()
-    if (current.aiAvailable === false) submit.title = chartAiUnavailableReason(current.aiReason)
+    if (current.aiAvailable === false) {
+      submit.title = chartAiUnavailableReason(current.aiReason)
+      // AI 不可用但标准预设仍可用时，原因不能只藏在悬停提示里：常显一行说明，并指出还能走的路。
+      const note = document.createElement('p')
+      note.className = 'chart-ai-hint'
+      note.dataset.role = 'ai-unavailable-note'
+      note.setAttribute('role', 'status')
+      note.textContent = `${chartAiUnavailableReason(current.aiReason)}可直接应用标准预设。`
+      submit.closest('.chart-ai-actions')?.after(note)
+    }
     const chartTemplates = (client as ReportEditorClient & {
-      chartTemplates?: (chartId: string) => Promise<{ templates: { templateId: string; name: string; available: boolean; reason?: string }[] }>
+      chartTemplates?: (chartId: string) => Promise<{ templates: { templateId: string; name: string; available: boolean; reason?: string; recommended?: boolean; recommendationReason?: string }[] }>
     }).chartTemplates
     if (typeof chartTemplates === 'function') {
       const owner = generation
+      const skeleton = document.createElement('div')
+      skeleton.className = 'ai-template-skeleton'
+      skeleton.setAttribute('aria-hidden', 'true')
+      skeleton.append(document.createElement('span'), document.createElement('span'))
+      standardDetails.append(skeleton)
       void chartTemplates.call(client, current.chartId).then((catalog) => {
+        skeleton.remove()
         if (owner !== generation || !textarea.isConnected || dismissed) return
         const templates = document.createElement('div')
         templates.className = 'chart-ai-templates'
         templates.setAttribute('role', 'group')
         templates.setAttribute('aria-label', '预制图模板')
-        for (const item of catalog.templates) {
+        templates.hidden = catalog.templates.length === 0
+        const ordered = [...catalog.templates].sort((a, b) => Number(b.recommended ?? false) - Number(a.recommended ?? false) || Number(b.available) - Number(a.available))
+        for (const item of ordered) {
           const control = createAITemplateCard(item, 'chart', () => {
             if (textarea.value.trim()) {
               textarea.value = `${textarea.value.trim()}；参考模板：${item.name}`.slice(0, MAX_INSTRUCTION_CHARS)
@@ -697,7 +766,14 @@ export function createChartAIEdit(options: {
           templates.append(control)
         }
         standardDetails.append(templates)
-      }).catch(() => undefined)
+      }).catch(() => {
+        skeleton.remove()
+        if (owner !== generation || dismissed) return
+        const loadNote = document.createElement('p')
+        loadNote.className = 'chart-ai-hint'
+        loadNote.textContent = '模板加载失败，可直接输入要求生成。'
+        standardDetails.append(loadNote)
+      })
     }
     submit.addEventListener('click', () => {
       const instruction = textarea.value.trim()
@@ -729,28 +805,40 @@ export function createChartAIEdit(options: {
       <div class="chart-ai-progress" role="status" aria-live="polite">
         <div class="chart-ai-current"><img alt="当前图表" src="${assetUrl(basePath, current.imagePath)}"></div>
         <p class="chart-ai-stage" data-role="stage">${STAGE_LABELS.queued}</p>
-        <p class="ask-ai-elapsed" data-role="elapsed">已用 0 秒</p>
-        <p class="chart-ai-hint">可收起侧栏继续阅读，完成后从 Ask AI 恢复预览。</p>
+        <div class="ai-progress-track" aria-hidden="true"><span class="ai-progress-fill"></span></div>
+        <ol class="ai-stage-timeline" data-role="timeline" aria-label="生成阶段">${STAGE_GROUPS.map((group, index) => `<li data-step-state="${index === 0 ? 'current' : 'pending'}"><span class="ai-stage-dot" aria-hidden="true"></span>${group.label}</li>`).join('')}</ol>
+        <p class="ask-ai-elapsed" data-role="elapsed" aria-hidden="true">已用时 00:00</p>
+        <p class="chart-ai-hint">可收起侧栏，任务继续运行。</p>
         <div class="chart-ai-actions">
-          <button type="button" class="${buttonClasses('danger')}" data-action="cancel">取消改图</button>
+          <button type="button" class="${buttonClasses('secondary')}" data-action="cancel">取消改图</button>
         </div>
       </div>
     `
     const stage = body.querySelector<HTMLElement>('[data-role="stage"]')!
+    const timeline = body.querySelector<HTMLElement>('[data-role="timeline"]')!
+    const setStage = (key: string) => {
+      stage.textContent = STAGE_LABELS[key] ?? '正在处理改图…'
+      const currentIndex = STAGE_GROUPS.findIndex(group => group.stages.includes(key))
+      timeline.querySelectorAll<HTMLElement>('li').forEach((item, index) => {
+        const state = currentIndex < 0 ? 'pending' : index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'pending'
+        item.dataset.stepState = state
+        item.querySelector('.ai-stage-dot')!.textContent = state === 'done' ? '✓' : ''
+      })
+    }
     const elapsed = body.querySelector<HTMLElement>('[data-role="elapsed"]')!
     const cancel = body.querySelector<HTMLButtonElement>('[data-action="cancel"]')!
     cancel.addEventListener('click', () => {
       if (owner !== generation) return
       cancelled = true
       cancel.disabled = true
+      cancel.textContent = '正在取消…'
       stage.textContent = '正在取消…'
       invalidateCurrent()
       renderInputPhase(current, '已取消本次改图，原图保持不变。')
     })
     const started = performance.now()
-    let stageLabel = STAGE_LABELS.queued
     const clock = progressClock = window.setInterval(() => {
-      if (!cancelled) elapsed.textContent = `已用 ${Math.floor((performance.now() - started) / 1000)} 秒`
+      if (!cancelled) elapsed.textContent = `已用时 ${formatElapsed(performance.now() - started)}`
     }, 1000)
     try {
       const payload = {
@@ -790,8 +878,7 @@ export function createChartAIEdit(options: {
         }
         if (owner !== generation) return
         if (cancelled) break
-        stageLabel = STAGE_LABELS[String(state.stage ?? '')] ?? '正在处理改图…'
-        stage.textContent = stageLabel
+        setStage(String(state.stage ?? ''))
         if (dismissed) return
         if (state.status === 'succeeded') {
           renderReviewPhase(current, state as unknown as ChartAIEditSuccess)
@@ -832,7 +919,7 @@ export function createChartAIEdit(options: {
     }
     const body = bodyOf()
     ensureModal().setState('ready')
-    ensureModal().addMessage('assistant', '新图已生成。请查看变更和告警，确认后替换到正文。')
+    ensureModal().addMessage('assistant', '新图已生成。')
     const changes: string[] = []
     if (result.changes.title) changes.push(`标题改为「${result.changes.title}」`)
     if (result.changes.altText) changes.push(`图注改为「${result.changes.altText}」`)
@@ -840,20 +927,21 @@ export function createChartAIEdit(options: {
     if (result.planningRoute === 'direct') changes.push('确定性模板预览；未调用 AI 参数规划或自由绘图。')
     if (!result.visualInspection.reviewed) changes.push('仅完成确定性图片检查，尚未进行独立模型视觉审查。')
     if (pages.length > 1) changes.push(`完整生成 ${pages.length} 页，接受时将一次替换整组图表。`)
+    let dataChange: string | null = null
     if (result.changes.plotDataUnchanged) {
       changes.push('作图数据未变（数值与原图一致）')
     } else {
       const added = result.changes.dataBindingsAdded ?? []
-      changes.push(
-        added.length
-          ? `作图数据换绑：${added.map(item => `${item.dataPath}（${item.fields.join('、')}）`).join('；')}`
-          : '作图数据有变化',
-      )
+      dataChange = added.length
+        ? `作图数据换绑：${added.map(item => `${item.dataPath}（${item.fields.join('、')}）`).join('；')}`
+        : '作图数据有变化'
     }
     body.innerHTML = `
       <div class="chart-ai-view-switch" role="group" aria-label="选择预览图">
-        <button type="button" class="${buttonClasses('secondary')}" data-action="view-new" aria-pressed="true">新图</button>
+        <button type="button" class="${buttonClasses('quiet')}" data-action="view-new" aria-pressed="true">新图</button>
         <button type="button" class="${buttonClasses('quiet')}" data-action="view-original" aria-pressed="false">原图</button>
+        <button type="button" class="${buttonClasses('quiet')}" data-action="view-both" aria-pressed="false">对比</button>
+        <button type="button" class="${buttonClasses('quiet')}" data-action="view-blink" aria-pressed="false">闪烁</button>
       </div>
       <div class="chart-ai-compare" role="group" aria-label="改图前后对比">
         <figure class="chart-ai-compare-item" data-compare-view="original" hidden>
@@ -862,6 +950,16 @@ export function createChartAIEdit(options: {
         </figure>
         <div class="chart-ai-pages" aria-label="全部改图结果"></div>
       </div>
+      <div class="chart-ai-blink" data-compare-view="blink" hidden>
+        <div class="chart-ai-blink-frame" data-frame="new" role="button" tabindex="0" title="点击暂停或继续闪烁" aria-label="闪烁对比画布，点击暂停或继续">
+          <img class="chart-ai-blink-img" alt="改图前的原图" src="${assetUrl(basePath, current.imagePath)}">
+          <img class="chart-ai-blink-img chart-ai-blink-top" alt="AI 改图生成的新图" src="${assetUrl(basePath, pages[0]!.imagePath)}">
+          <span class="chart-ai-blink-tag" data-role="blink-tag">新图</span>
+        </div>
+        <div class="chart-ai-page-nav" data-role="blink-nav" role="group" aria-label="闪烁对比分页" hidden></div>
+        <p class="chart-ai-hint">每秒交替，点击画面暂停。${pages.length > 1 ? '多页可用页码切换。' : ''}</p>
+      </div>
+      <div class="ai-review-summary" data-role="review-summary" aria-label="审阅摘要"></div>
       <ul class="chart-ai-changes" aria-label="变更清单"></ul>
       ${result.warnings.length ? '<ul class="chart-ai-warnings" role="alert" aria-label="软告警"></ul>' : ''}
       ${result.skipped.length ? '<ul class="chart-ai-skipped" aria-label="未执行的要求"></ul>' : ''}
@@ -871,18 +969,74 @@ export function createChartAIEdit(options: {
         <button type="button" class="${buttonClasses('secondary')}" data-action="continue">继续调整</button>
         <button type="button" class="${buttonClasses('quiet')}" data-action="discard">放弃</button>
       </div>
-      <p class="chart-ai-hint">接受后正文图片与图注一并替换，可用撤销（⌘/Ctrl+Z）恢复原图；导出新版本后改图与原图一样可追溯。</p>
+      <p class="chart-ai-hint">快捷键：<kbd>A</kbd> 采用 · <kbd>X</kbd> 放弃 · <kbd>C</kbd> 继续调整 · <kbd>1</kbd>–<kbd>4</kbd> 切换视图（输入时不触发）</p>
     `
     const pageList = body.querySelector<HTMLElement>('.chart-ai-pages')!
     const original = body.querySelector<HTMLElement>('[data-compare-view="original"]')!
-    for (const view of ['original', 'new']) {
-      body.querySelector<HTMLButtonElement>(`[data-action="view-${view}"]`)!.addEventListener('click', () => {
-        original.hidden = view !== 'original'
-        pageList.hidden = view !== 'new'
-        body.querySelector('[data-action="view-original"]')!.setAttribute('aria-pressed', String(view === 'original'))
-        body.querySelector('[data-action="view-new"]')!.setAttribute('aria-pressed', String(view === 'new'))
+    const blink = body.querySelector<HTMLElement>('[data-compare-view="blink"]')!
+    const blinkFrame = blink.querySelector<HTMLElement>('.chart-ai-blink-frame')!
+    const blinkTag = blink.querySelector<HTMLElement>('[data-role="blink-tag"]')!
+    const blinkTop = blink.querySelector<HTMLImageElement>('.chart-ai-blink-top')!
+    const blinkNav = blink.querySelector<HTMLElement>('[data-role="blink-nav"]')!
+    let pageNav: HTMLElement | undefined
+    let blinkTimer: number | undefined
+    let blinkPaused = false
+    let blinkShowNew = true
+    const renderBlinkFrame = () => {
+      blinkFrame.dataset.frame = blinkShowNew ? 'new' : 'original'
+      blinkTag.textContent = blinkPaused ? '已暂停' : blinkShowNew ? '新图' : '原图'
+    }
+    const stopBlink = () => { if (blinkTimer !== undefined) { window.clearInterval(blinkTimer); blinkTimer = undefined } blinkPaused = false }
+    const startBlink = () => {
+      stopBlink()
+      blinkShowNew = true
+      // 减动效偏好下不自动闪烁：停在新图并标注已暂停，用户点击可手动切换。
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { blinkPaused = true; renderBlinkFrame(); return }
+      renderBlinkFrame()
+      blinkTimer = window.setInterval(() => { blinkShowNew = !blinkShowNew; renderBlinkFrame() }, 900)
+    }
+    const toggleBlinkPause = (event: Event) => {
+      // 闪烁画布的点击/按键只用于暂停，不冒泡触发面板的图片放大。
+      event.stopPropagation()
+      if (blink.hidden) return
+      if (blinkPaused) { blinkPaused = false; blinkTimer = window.setInterval(() => { blinkShowNew = !blinkShowNew; renderBlinkFrame() }, 900) }
+      else { stopBlink(); blinkPaused = true }
+      renderBlinkFrame()
+    }
+    blinkFrame.addEventListener('click', toggleBlinkPause)
+    blinkFrame.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      toggleBlinkPause(event)
+    })
+    if (pages.length > 1) {
+      pages.forEach((page, index) => {
+        const jump = document.createElement('button')
+        jump.type = 'button'
+        jump.className = 'chart-ai-chip'
+        jump.textContent = `第 ${page.pageNumber} 页`
+        jump.setAttribute('aria-pressed', String(index === 0))
+        jump.addEventListener('click', () => {
+          blinkTop.src = assetUrl(basePath, page.imagePath)
+          blinkNav.querySelectorAll('button').forEach(item => item.setAttribute('aria-pressed', String(item === jump)))
+        })
+        blinkNav.append(jump)
       })
     }
+    for (const view of ['original', 'new', 'both', 'blink']) {
+      body.querySelector<HTMLButtonElement>(`[data-action="view-${view}"]`)!.addEventListener('click', () => {
+        original.hidden = view === 'new' || view === 'blink'
+        pageList.hidden = view === 'original' || view === 'blink'
+        if (pageNav) pageNav.hidden = pageList.hidden
+        blink.hidden = view !== 'blink'
+        blinkNav.hidden = view !== 'blink' || pages.length <= 1
+        if (view === 'blink') startBlink(); else stopBlink()
+        for (const name of ['original', 'new', 'both', 'blink']) {
+          body.querySelector(`[data-action="view-${name}"]`)!.setAttribute('aria-pressed', String(view === name))
+        }
+      })
+    }
+    const figures: HTMLElement[] = []
     for (const page of pages) {
       const figure = document.createElement('figure')
       figure.className = 'chart-ai-compare-item'
@@ -892,12 +1046,35 @@ export function createChartAIEdit(options: {
       image.alt = page.altText || `AI 改图生成的新图${pages.length > 1 ? `第${page.pageNumber}页` : ''}`
       image.src = assetUrl(basePath, page.imagePath)
       figure.append(caption, image)
+      figures.push(figure)
       pageList.append(figure)
+    }
+    if (pages.length > 1) {
+      const nav = document.createElement('div')
+      nav.className = 'chart-ai-page-nav'
+      nav.setAttribute('role', 'group')
+      nav.setAttribute('aria-label', '结果分页导航')
+      pages.forEach((page, index) => {
+        const jump = document.createElement('button')
+        jump.type = 'button'
+        jump.className = 'chart-ai-chip'
+        jump.textContent = `第 ${page.pageNumber} 页`
+        jump.addEventListener('click', () => figures[index]?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+        nav.append(jump)
+      })
+      pageNav = nav
+      pageList.before(nav)
     }
     const changeList = body.querySelector<HTMLElement>('.chart-ai-changes')!
     for (const change of changes) {
       const item = document.createElement('li')
       item.textContent = change
+      changeList.append(item)
+    }
+    if (dataChange) {
+      const item = document.createElement('li')
+      item.className = 'chart-ai-change--data'
+      item.textContent = dataChange
       changeList.append(item)
     }
     const warnings = body.querySelector<HTMLElement>('.chart-ai-warnings')
@@ -912,7 +1089,67 @@ export function createChartAIEdit(options: {
       entry.textContent = `「${item.request}」未执行：${item.reason}`
       skipped.append(entry)
     }
+    const summary = body.querySelector<HTMLElement>('[data-role="review-summary"]')!
+    const summaryParts: [string, string, string][] = []
+    if (dataChange) summaryParts.push(['is-data', '含作图数据变更', '.chart-ai-change--data'])
+    else if (result.changes.plotDataUnchanged) summaryParts.push(['is-safe', '作图数据未变', '.chart-ai-changes'])
+    summaryParts.push(['', `变更 ${changes.length + (dataChange ? 1 : 0)} 项`, '.chart-ai-changes'])
+    if (result.warnings.length) summaryParts.push(['is-warn', `告警 ${result.warnings.length} 条`, '.chart-ai-warnings'])
+    if (result.skipped.length) summaryParts.push(['is-skipped', `未执行 ${result.skipped.length} 项`, '.chart-ai-skipped'])
+    if (pages.length > 1) summaryParts.push(['', `${pages.length} 页结果`, '.chart-ai-pages'])
+    for (const [tone, label, selector] of summaryParts) {
+      const item = document.createElement('button')
+      item.type = 'button'
+      item.className = tone ? `ai-review-summary-item ${tone}` : 'ai-review-summary-item'
+      item.textContent = label
+      item.title = '定位到对应内容'
+      item.addEventListener('click', () => {
+        const target = body.querySelector<HTMLElement>(selector)
+        if (!target) return
+        target.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        target.classList.remove('ai-flash')
+        void target.offsetWidth
+        target.classList.add('ai-flash')
+        window.setTimeout(() => target.classList.remove('ai-flash'), 2000)
+      })
+      summary.append(item)
+    }
+    // 变更清单过长时折叠多余项，避免审阅区被清单淹没。
+    const changeItems = [...changeList.children] as HTMLElement[]
+    if (changeItems.length > 6) {
+      changeItems.slice(6).forEach(item => { item.hidden = true })
+      const toggle = document.createElement('button')
+      toggle.type = 'button'
+      toggle.className = 'chart-ai-chip'
+      toggle.textContent = `展开全部 ${changeItems.length} 项变更`
+      toggle.addEventListener('click', () => {
+        const expanding = changeItems[6]!.hidden
+        changeItems.slice(6).forEach(item => { item.hidden = !expanding })
+        toggle.textContent = expanding ? '收起变更清单' : `展开全部 ${changeItems.length} 项变更`
+      })
+      changeList.after(toggle)
+    }
+    // 审阅按钮角标提示快捷键：用 data-key + 伪元素呈现，不改按钮文本（按钮会被整体移入底部 dock，角标随行）。
+    for (const [action, key] of [['accept', 'A'], ['continue', 'C'], ['discard', 'X']] as const) {
+      const actionButton = body.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)
+      if (actionButton) actionButton.dataset.key = key
+    }
+    // 审阅快捷键：监听挂 document，离开审阅阶段后自清理；输入框内不触发。
+    const onReviewKey = (event: KeyboardEvent) => {
+      if (!body.isConnected || !body.querySelector('[data-action="accept"]')) { document.removeEventListener('keydown', onReviewKey); return }
+      if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return
+      if ((event.target as HTMLElement | null)?.closest('input, textarea, select, [contenteditable="true"]')) return
+      if (body.closest('[hidden]')) return
+      const key = event.key.toLowerCase()
+      const action = key === 'a' ? 'accept' : key === 'x' ? 'discard' : key === 'c' ? 'continue'
+        : ['1', '2', '3', '4'].includes(key) ? `view-${['new', 'original', 'both', 'blink'][Number(key) - 1]}` : undefined
+      if (!action) return
+      event.preventDefault()
+      body.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.click()
+    }
+    document.addEventListener('keydown', onReviewKey)
     body.querySelector<HTMLButtonElement>('[data-action="accept"]')!.addEventListener('click', () => {
+      stopBlink()
       let bodyImage = openedImage ?? current.img
       // 后台完成时正文可能因装饰重绘而更换 DOM；只恢复唯一同源图片，歧义仍拒绝。
       if (!bodyImage.isConnected) {
@@ -958,6 +1195,7 @@ export function createChartAIEdit(options: {
       })
     })
     body.querySelector<HTMLButtonElement>('[data-action="discard"]')!.addEventListener('click', () => {
+      stopBlink()
       openedImage = null
       ensureModal().mountComposer(null)
       ensureModal().setState('idle')
@@ -1000,7 +1238,7 @@ export function createChartAIEdit(options: {
       ensureModal().mountComposer(null)
       body.innerHTML = `
         <div class="chart-ai-progress" role="status" aria-live="polite">
-          <p>正在读取图表信息…</p>
+          <p class="ai-loading-line">正在读取图表信息…</p>
         </div>
       `
       ensureModal().open()
@@ -1017,6 +1255,10 @@ export function createChartAIEdit(options: {
               </div>
             </div>
           `
+          const unavailableIcon = document.createElement('span')
+          unavailableIcon.className = 'chart-ai-unavailable-icon'
+          unavailableIcon.append(createElement(CircleAlert, { width: 22, height: 22, 'aria-hidden': 'true' }))
+          body.querySelector('.chart-ai-unavailable')!.prepend(unavailableIcon)
           body.querySelector('p')!.textContent = resolved.error
           body.querySelector('[data-action="close"]')!.addEventListener('click', () => modal?.close())
           hooks?.onError?.('report_editor_chart_ai_unavailable')

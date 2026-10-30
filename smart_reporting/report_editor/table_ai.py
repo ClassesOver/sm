@@ -279,10 +279,46 @@ class TableAIEditService:
                 ],
             }
         bundle = resolved.bundle
+        fact_keys = {
+            ref.fact_key
+            for cell in resolved.trace.cells
+            for ref in cell.fact_refs
+            if ref.fact_key
+        }
         entries = []
         for template in _TABLE_TEMPLATES:
             available, why = _template_availability(template["templateId"], bundle)
             entries.append({**template, "available": available, **({"reason": why} if why else {})})
+        # 推荐只给一个：模板所需事实命中该表单元格绑定事实最多者；同分按目录序。
+        best_id: str | None = None
+        best_facts: list[Any] = []
+        for entry in entries:
+            if not entry["available"]:
+                continue
+            matched = _template_matched_facts(entry["templateId"], bundle, fact_keys)
+            if len(matched) > len(best_facts):
+                best_facts, best_id = matched, entry["templateId"]
+        if best_id is not None:
+            for entry in entries:
+                if entry["templateId"] == best_id:
+                    entry["recommended"] = True
+                    named = next(
+                        (
+                            str(name)
+                            for fact in best_facts
+                            for name in (
+                                getattr(fact, "display_name", None),
+                                getattr(fact, "field", None),
+                            )
+                            if name
+                        ),
+                        None,
+                    )
+                    entry["recommendationReason"] = (
+                        f"与该表绑定的「{named[:24]}」一致"
+                        if named
+                        else _TABLE_RECOMMENDATION_REASONS[best_id]
+                    )
         return {"tableId": table_id, "templates": entries}
 
     async def _check(
@@ -989,6 +1025,56 @@ def _template_name(template_id: str | None) -> str:
         (item["name"] for item in _TABLE_TEMPLATES if item["templateId"] == template_id),
         template_id or "",
     )
+
+
+_TABLE_RECOMMENDATION_REASONS = {
+    "composition": "与该表绑定的构成数据一致",
+    "yoy-comparison": "与该表绑定的同比数据一致",
+    "budget-execution": "与该表绑定的预算数据一致",
+    "monthly-detail": "与该表绑定的月度数据一致",
+}
+
+
+def _template_matched_facts(
+    template_id: str, bundle: DeterministicAnalysisBundle, fact_keys: set[str]
+) -> list[Any]:
+    """模板所需事实中正被该表单元格绑定的那些；推荐只认绑定，不认库存里存在。"""
+
+    if not fact_keys:
+        return []
+    if template_id == "composition":
+        metrics_by_id = {fact.fact_id: fact for fact in bundle.metrics}
+        matched: list[Any] = []
+        for (parent, _field), groups in breakdown_partitions(bundle).items():
+            if parent in fact_keys and parent in metrics_by_id:
+                matched.append(metrics_by_id[parent])
+            matched.extend(group for group in groups if group.fact_id in fact_keys)
+        return matched
+    if template_id == "yoy-comparison":
+        return [
+            fact
+            for fact in bundle.comparisons
+            if fact.comparison_type == "yoy" and fact.fact_id in fact_keys
+        ]
+    if template_id == "budget-execution":
+        lookup = {
+            fact.fact_id: fact
+            for fact in (*bundle.metrics, *bundle.breakdowns)
+            if fact.fact_id
+        }
+        return [
+            lookup[key]
+            for item in budget_comparison_values(bundle)
+            for key in (item.get("actualFactId"), item.get("budgetFactId"))
+            if key in lookup and key in fact_keys
+        ]
+    if template_id == "monthly-detail":
+        return [
+            fact
+            for fact in _analysis_table_metrics(bundle).values()
+            if fact.fact_id in fact_keys and fact.period_values
+        ]
+    return []
 
 
 def _template_availability(

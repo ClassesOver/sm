@@ -4,7 +4,9 @@ import json
 
 import pytest
 
-from smart_reporting.reporting.trace.content_review import review_content
+from smart_reporting.reporting.trace import content_review as content_review_module
+from smart_reporting.reporting.trace import number_selection
+from smart_reporting.reporting.trace.content_review import review_content, review_content_result
 from smart_reporting.reporting.trace.numeric_text import frozen_number_catalog
 
 
@@ -32,6 +34,26 @@ def test_review_keeps_registered_values_and_flags_invented_units():
     assert review_content("实际累计300元", [content])
     assert review_content("实际累计300人次", [content])
     assert review_content("补充科室金额123.45元", [content, '{"departmentAmount":123.45}']) == []
+
+
+def test_review_reuses_preparsed_documents_and_aligned_number_selections(monkeypatch):
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric()]})
+    text = "经营情况保持稳定。"
+    expected = review_content_result(text, [content])
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("precomputed review inputs were rebuilt")
+
+    monkeypatch.setattr(content_review_module, "_documents", unexpected)
+    monkeypatch.setattr(number_selection, "align_number_selections", unexpected)
+    actual = review_content_result(
+        text,
+        [content],
+        documents=(json.loads(content),),
+        number_selections_aligned=True,
+    )
+
+    assert actual == expected
 
 
 @pytest.mark.parametrize("text", [

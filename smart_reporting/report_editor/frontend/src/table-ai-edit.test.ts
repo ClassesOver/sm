@@ -93,6 +93,39 @@ describe('createTableAIEdit review', () => {
     }
     controller.dispose(); view.destroy()
   })
+  it('打开不可用的表格时先展示原因卡，不挂载输入区', async () => {
+    document.body.innerHTML = ''
+    const client = {
+      tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
+      tableAiAvailability: vi.fn(async () => ({ available: false, reason: 'table_unbound' })),
+      tableTemplates: vi.fn(async () => ({ templates: [] })),
+    } as unknown as ReportEditorClient
+    const host = document.createElement('div'); document.body.append(host)
+    const view = new EditorView(host, { state: EditorState.create({ schema, doc: schema.node('doc', null, [paragraph('[[table:tbl-old]]'), table('旧值'), paragraph('[[/table:tbl-old]]')]), plugins: [history()] }) })
+    const controller = createTableAIEdit({ view, client, pollIntervalMs: 1 })
+    controller.open('tbl-old', '| 项目 |\n| --- |\n| 旧值 |')
+    await vi.waitFor(() => expect(document.querySelector('.chart-ai-unavailable')).not.toBeNull())
+    expect(document.querySelector('.chart-ai-unavailable')!.textContent).toContain('无法改表')
+    expect(document.querySelector('#table-ai-input')).toBeNull()
+    expect(client.tableAiAvailability).toHaveBeenCalledWith('tbl-old')
+    controller.dispose(); view.destroy()
+  })
+
+  it('可用性预检请求失败时照常打开输入区', async () => {
+    document.body.innerHTML = ''
+    const client = {
+      tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
+      tableAiAvailability: vi.fn(async () => { throw new Error('network') }),
+      tableTemplates: vi.fn(async () => ({ templates: [] })),
+    } as unknown as ReportEditorClient
+    const host = document.createElement('div'); document.body.append(host)
+    const view = new EditorView(host, { state: EditorState.create({ schema, doc: schema.node('doc', null, [paragraph('[[table:tbl-old]]'), table('旧值'), paragraph('[[/table:tbl-old]]')]), plugins: [history()] }) })
+    const controller = createTableAIEdit({ view, client, pollIntervalMs: 1 })
+    controller.open('tbl-old', '| 项目 |\n| --- |\n| 旧值 |')
+    await vi.waitFor(() => expect(document.querySelector('#table-ai-input')).not.toBeNull())
+    controller.dispose(); view.destroy()
+  })
+
   it('同一表格正文改变后重开，保留要求并使用新表体提交', async () => {
     document.body.innerHTML = ''
     const client = {

@@ -4,6 +4,12 @@ import { ReportEditorApiError } from './api'
 // 不能让 409/504 等状态码统一落成“保存冲突”“操作失败”。
 const CODE_LABELS: Record<string, string> = {
   report_editor_ai_review_pending: '请先完成 AI 候选的接受或拒绝，再保存或导出',
+  report_editor_ai_selection_required: '请先选择需要改写的正文',
+  report_editor_ai_action_invalid: '报告 AI 改写动作无效',
+  report_editor_ai_selection_too_large: '选择的正文过长，请缩小范围',
+  report_editor_ai_protocol_marker: '包含报告协议标记的正文不能使用 AI 改写',
+  report_editor_ai_failed: 'AI 改写失败 · 已保留原文',
+  report_editor_ai_empty_stream: 'AI 改写未返回内容 · 已保留原文',
   report_editor_revision_stale: '已有更新版本 · 请打开最新版本的编辑链接',
   report_editor_revision_conflict: '新版本已存在 · 请重新载入',
   report_editor_export_running: '当前版本正在导出 · 请等待完成',

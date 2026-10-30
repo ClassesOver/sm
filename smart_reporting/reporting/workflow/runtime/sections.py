@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from copy import copy
 from functools import partial
 
@@ -67,6 +67,7 @@ from ...trace.numeric_text import (
     render_frozen_numbers,
     replace_unregistered_numbers,
 )
+from ...trace.review_common import _documents
 from ...trace.review_readability import (
     earlier_section_sentences,
     prose_hedge_warnings,
@@ -607,15 +608,16 @@ def _planning_table(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {"columns": columns, "rows": [[row.get(column) for column in columns] for row in records]}
 
 
-def _section_number_context(
+def _prepare_section_number_context(
     contents: Sequence[str],
-    field_definitions: dict[str, str],
-    *,
-    claims: Sequence[Any] | None = None,
-    allowed_fact_ids: set[str] | None = None,
-    compact: bool = False,
-) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """模型只消费当前结论的数值视图，完整目录仍用于服务端校验。"""
+    field_definitions: Mapping[str, str],
+) -> tuple[
+    dict[str, str],
+    list[dict[str, Any]],
+    dict[str, set[str]],
+    dict[str, set[str]],
+]:
+    """Build the immutable section-wide number indexes once before projections."""
 
     catalog = frozen_number_catalog(contents)
     guide = frozen_number_guide(contents, catalog, field_definitions=field_definitions)
@@ -625,7 +627,6 @@ def _section_number_context(
                        | {entry["totalFactId"] for entry in item.get("metricShares", ())}
         for item in guide
     }
-    # 父指标条目列出的分组合计与占比引用须留在目录中；分组的其余选择器只在分组被选中时展示。
     group_tokens = {
         item["factId"]: {
             reference for entry in item.get("breakdowns", ()) for group in entry["groups"]
@@ -633,6 +634,28 @@ def _section_number_context(
         }
         for item in guide
     }
+    return catalog, guide, dependencies, group_tokens
+
+
+def _section_number_context(
+    contents: Sequence[str],
+    field_definitions: dict[str, str],
+    *,
+    claims: Sequence[Any] | None = None,
+    allowed_fact_ids: set[str] | None = None,
+    compact: bool = False,
+    prepared: tuple[
+        dict[str, str],
+        list[dict[str, Any]],
+        dict[str, set[str]],
+        dict[str, set[str]],
+    ] | None = None,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """模型只消费当前结论的数值视图，完整目录仍用于服务端校验。"""
+
+    catalog, guide, dependencies, group_tokens = (
+        prepared or _prepare_section_number_context(contents, field_definitions)
+    )
     explicit: set[str] = set()
 
     def visible_catalog(source: Mapping[str, str], ids: set[str]) -> dict[str, str]:
@@ -688,7 +711,9 @@ def _section_number_context(
     guide = shown(guide, selected_ids)
     if not guide and not fact_ids:
         # 旧证据可能没有 factId/metricCodes，沿用完整目录，不能猜测绑定。
-        return prompt_number_catalog(catalog), frozen_number_guide(contents, catalog, field_definitions=field_definitions)
+        return prompt_number_catalog(catalog), frozen_number_guide(
+            contents, catalog, field_definitions=field_definitions
+        )
     # 同比/对账事实也有数值目录，但不在 metric 的 numberGuide 中；显式绑定
     # 的 factId 必须仍保留，不能因此回退到整份无关目录。
     catalog = visible_catalog(prompt_number_catalog(catalog), selected_ids)
@@ -702,18 +727,25 @@ def _compact_planning_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         payload['factCatalog'] = _planning_table(payload['factCatalog'])
     counts: dict[str, int] = {}
     sizes: dict[str, int] = {}
+    fingerprints: dict[int, tuple[Any, str | None, int]] = {}
 
-    def signature(value: Any) -> str | None:
+    def fingerprint(value: Any) -> tuple[str | None, int]:
         if not isinstance(value, (str, list, dict)):
-            return None
+            return None, 0
+        identity = id(value)
+        cached = fingerprints.get(identity)
+        if cached is not None and cached[0] is value:
+            return cached[1], cached[2]
         encoded = _json_text(value).encode('utf-8')
-        return canonical_sha256(value) if len(encoded) >= 64 else None
+        signature = canonical_sha256(value) if len(encoded) >= 64 else None
+        fingerprints[identity] = (value, signature, len(encoded))
+        return signature, len(encoded)
 
     def collect(value: Any) -> None:
-        key = signature(value)
+        key, size = fingerprint(value)
         if key is not None:
             counts[key] = counts.get(key, 0) + 1
-            sizes[key] = len(_json_text(value).encode('utf-8'))
+            sizes[key] = size
         if isinstance(value, dict):
             for child in value.values():
                 collect(child)
@@ -733,7 +765,7 @@ def _compact_planning_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         return value
 
     def project(value: Any) -> Any:
-        key = signature(value)
+        key, _size = fingerprint(value)
         if key is not None and (counts[key] - 1) * sizes[key] > counts[key] * 32 + 32:
             if key not in names:
                 name = f'd{len(names)}'
@@ -835,17 +867,15 @@ def _section_block_evidence_token_budget(
     return evidence_budget
 
 
-def _iter_section_relevance_values(value: Any) -> list[str]:
-    values: list[str] = []
+def _iter_section_relevance_values(value: Any) -> Iterator[str]:
     if isinstance(value, Mapping):
         for nested in value.values():
-            values.extend(_iter_section_relevance_values(nested))
+            yield from _iter_section_relevance_values(nested)
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for nested in value:
-            values.extend(_iter_section_relevance_values(nested))
+            yield from _iter_section_relevance_values(nested)
     elif value is not None and not isinstance(value, bool):
-        values.append(str(value))
-    return values
+        yield str(value)
 
 
 def _section_block_relevance_terms(*values: Any) -> tuple[str, ...]:
@@ -2138,11 +2168,14 @@ async def _generate_section_in_blocks(
     # 规划阶段只收到文件身份，不能要求模型从摘要猜测内容寻址的事实 ID。
     # 目录仅从本轮已验证 SHA 的证据正文提取，不接受模型提交的编号别名。
     fact_catalog: list[dict[str, Any]] = []
+    review_documents: list[dict[str, Any]] = []
     for evidence_file in original_evidence_files:
         try:
             document = json.loads(evidence_file.content)
         except ValueError:
             continue
+        if isinstance(document, dict):
+            review_documents.append(document)
         if (
             not isinstance(document, dict)
             or document.get("analysisId") not in work_item.analysis_ids
@@ -2397,6 +2430,7 @@ async def _generate_section_in_blocks(
                     number_handle_identities=number_handle_identities,
                     allowed_fact_ids=scoped_fact_ids, compact=compact,
                     earlier_sentences=earlier_sentences,
+                    review_documents=review_documents,
                 )
                 return retain_source_warnings(result)
             except (ReportingError, TaskExecutionContextHardLimitError) as error:
@@ -2414,6 +2448,9 @@ async def _generate_section_in_blocks(
 
     claims_by_id = {item.claim_id: item for item in decision.claims}
     files_by_path = {item.identity.path: item for item in evidence.files}
+    number_contexts: dict[tuple[str, ...], tuple[
+        dict[str, str], list[dict[str, Any]], dict[str, set[str]], dict[str, set[str]],
+    ]] = {}
     blocks: list[ReportDraftBlock] = []
     for index, block_plan in enumerate(decision.blocks, start=1):
         block_claims = tuple(claims_by_id[item] for item in block_plan.claim_ids)
@@ -2457,6 +2494,16 @@ async def _generate_section_in_blocks(
         selected_files = tuple(
             files_by_path[path] for path in selected_paths if path in files_by_path
         )
+        block_number_contents = (
+            number_contents if scoped_fact_ids is not None
+            else tuple(item.content for item in selected_files)
+        )
+        prepared_number_context = number_contexts.get(block_number_contents)
+        if prepared_number_context is None:
+            prepared_number_context = _prepare_section_number_context(
+                block_number_contents, instruction_payload.get("fieldDefinitions", {})
+            )
+            number_contexts[block_number_contents] = prepared_number_context
         block_payload = {
             "phase": "section",
             "generationStage": "block",
@@ -2464,10 +2511,7 @@ async def _generate_section_in_blocks(
             "sectionGoal": instruction_payload.get("sectionGoal", {}),
             "blockPlan": block_plan.model_dump(mode="json", by_alias=True),
             "claims": [item.model_dump(mode="json", by_alias=True) for item in block_claims],
-            "frozenNumbers": frozen_number_catalog(
-                number_contents if scoped_fact_ids is not None
-                else tuple(item.content for item in selected_files)
-            ),
+            "frozenNumbers": prepared_number_context[0],
             "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
             "facts": block_facts,
             "metricDefinitions": block_metrics,
@@ -2484,11 +2528,11 @@ async def _generate_section_in_blocks(
         # 完整证据只驻留在当前固定 Workflow 内存中；模型按 block 消费带身份的相关视图。
         block_number_catalog = block_payload["frozenNumbers"]
         block_payload["frozenNumbers"], block_payload["numberGuide"] = _section_number_context(
-            number_contents if scoped_fact_ids is not None
-            else tuple(item.content for item in selected_files),
+            block_number_contents,
             block_payload["fieldDefinitions"],
             claims=block_claims,
             allowed_fact_ids=scoped_fact_ids,
+            prepared=prepared_number_context,
         )
         block_assertions = _controlled_assertions(number_contents, block_payload, instruction_payload.get("assertionPolicy"))
         if "questionSpecs" in instruction_payload:
@@ -2561,12 +2605,15 @@ async def _generate_section_in_blocks(
                 field_definitions=block_payload["fieldDefinitions"],
                 fact_ids=tuple(fact_id for claim in block_claims for fact_id in claim.fact_ids),
                 bound_chart_ids=chart_ids,
+                number_selections_aligned=True,
+                documents=review_documents,
             )
             # 发布后编辑器按引用句核对期间、角色与范围；写作时同步核对，纠错轮次才看得到同样的提醒。
             statement_warnings = await _in_thread(
                 statement_review_warnings, content.markdown, number_contents,
                 field_definitions=block_payload["fieldDefinitions"], table_sources=table_sources,
                 assertions=block_assertions,
+                number_selections_aligned=True,
             )
             # 撤销的引用在复核文本里只剩“未登记”，补上对齐时写明的主语与口径，纠错轮次才能改准。
             review_warnings = list(dict.fromkeys([
@@ -2615,6 +2662,7 @@ async def _generate_section_in_blocks(
                 field_definitions=block_payload["fieldDefinitions"],
                 table_sources=table_sources,
                 assertions=block_assertions,
+                number_selections_aligned=True,
             )
             candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
@@ -2690,10 +2738,13 @@ async def _generate_whole_section_content(
     allowed_fact_ids: set[str] | None = None,
     compact: bool = False,
     earlier_sentences: Mapping[str, str] | None = None,
+    review_documents: Sequence[Mapping[str, Any]] | None = None,
 ) -> RenderSectionDecision:
     """一次生成整章正文；引用与顺序始终由已校验规划决定。"""
 
     number_contents = tuple(number_contents or (item.content for item in evidence.files))
+    if review_documents is None:
+        review_documents = tuple(_documents(number_contents))
     if table_sources is None:
         table_sources = _verified_table_sources(evidence.files)
     if number_handle_identities is None:
@@ -2772,7 +2823,9 @@ async def _generate_whole_section_content(
             block.block_id: review_content_result(block.markdown, number_contents,
                                            field_definitions=payload["fieldDefinitions"],
                                            fact_ids=block_fact_ids[block.block_id],
-                                           bound_chart_ids=block_chart_ids[block.block_id])
+                                           bound_chart_ids=block_chart_ids[block.block_id],
+                                           number_selections_aligned=True,
+                                           documents=review_documents)
             for block in candidate.blocks
         }
         # 与分块路径一致：写作时同步发布后的引用句核对，计入准确性问题。
@@ -2780,6 +2833,7 @@ async def _generate_whole_section_content(
             block.block_id: statement_review_warnings(
                 block.markdown, number_contents, field_definitions=payload["fieldDefinitions"],
                 table_sources=table_sources, assertions=section_assertions,
+                number_selections_aligned=True,
             )
             for block in candidate.blocks
         }
@@ -2948,6 +3002,7 @@ async def _generate_whole_section_content(
             field_definitions=payload["fieldDefinitions"],
             table_sources=table_sources,
             assertions=section_assertions,
+            number_selections_aligned=True,
         )
         block = ReportDraftBlock(
             blockId=block_plan.block_id,

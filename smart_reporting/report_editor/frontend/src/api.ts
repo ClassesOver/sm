@@ -260,6 +260,9 @@ export interface EditorTemplateInfo {
   name: string
   available: boolean
   reason?: string
+  /** 服务端按该图表/表格绑定的数据源计算的推荐标记，全目录至多一个。 */
+  recommended?: boolean
+  recommendationReason?: string
 }
 
 export interface ChartAIEditRequest {

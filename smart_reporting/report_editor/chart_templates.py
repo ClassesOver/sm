@@ -314,6 +314,57 @@ def template_availability(
     return materialized.available, materialized.reason
 
 
+_RECOMMENDATION_REASONS = {
+    "composition-bars": "与该图绑定的构成数据一致",
+    "monthly-trend": "与该图绑定的月度指标一致",
+    "yoy-comparison": "与该图绑定的同比数据一致",
+    "budget-progress": "与该图绑定的预算数据一致",
+}
+
+
+def matched_pointer_count(pointers: Sequence[str], fact_refs: Sequence[Any]) -> int:
+    """物化来源指针中有多少条正指向该图绑定的事实；推荐只认绑定，不认库存里存在。"""
+
+    count = 0
+    for pointer in pointers:
+        parts = pointer.strip("/").split("/")
+        if len(parts) != 2 or not parts[1].isdigit():
+            continue
+        if _reference_matches(fact_refs, parts[0], int(parts[1]), None):
+            count += 1
+    return count
+
+
+def recommendation_reason(template_id: str) -> str | None:
+    return _RECOMMENDATION_REASONS.get(template_id)
+
+
+def matched_fact_name(
+    pointers: Sequence[str], fact_refs: Sequence[Any], bundle: DeterministicAnalysisBundle
+) -> str | None:
+    """第一条命中绑定事实的显示名（displayName 优先，其次 field），供推荐原因点名。"""
+
+    for pointer in pointers:
+        parts = pointer.strip("/").split("/")
+        if len(parts) != 2 or not parts[1].isdigit():
+            continue
+        kind, index = parts[0], int(parts[1])
+        if not _reference_matches(fact_refs, kind, index, None):
+            continue
+        facts = {
+            "metrics": bundle.metrics,
+            "breakdowns": bundle.breakdowns,
+            "comparisons": bundle.comparisons,
+        }.get(kind)
+        if facts is None or index >= len(facts):
+            continue
+        fact = facts[index]
+        name = getattr(fact, "display_name", None) or getattr(fact, "field", None)
+        if name:
+            return str(name)
+    return None
+
+
 def materialize_chart_template(
     template_id: str,
     bundle: DeterministicAnalysisBundle,

@@ -3255,6 +3255,17 @@ def test_section_evidence_projection_bounds_plateau_retries(
     assert len(attempted_budgets) <= 16
 
 
+def test_section_relevance_terms_stop_after_the_bounded_prefix():
+    class UnusedTail:
+        def __str__(self):
+            raise AssertionError("relevance traversal consumed values after reaching its limit")
+
+    values = [f"term{index:03d}" for index in range(128)]
+    terms = reporting_sections._section_block_relevance_terms([*values, UnusedTail()])
+
+    assert terms == tuple(values)
+
+
 @pytest.mark.parametrize("bind_fact_id", [False, True])
 def test_section_number_context_excludes_unrelated_facts_and_keeps_exact_values(bind_fact_id):
     contents = (json.dumps({
@@ -3277,6 +3288,10 @@ def test_section_number_context_excludes_unrelated_facts_and_keeps_exact_values(
         fact_ids=("fact-aaaaaaaaaaaaaaaa",) if bind_fact_id else (), metric_code="revenue",
     )
     catalog, guide = reporting_sections._section_number_context(contents, {}, claims=(claim,))
+    prepared = reporting_sections._prepare_section_number_context(contents, {})
+    assert reporting_sections._section_number_context(
+        contents, {}, claims=(claim,), prepared=prepared,
+    ) == (catalog, guide)
     assert [item["factId"] for item in guide] == ["fact-aaaaaaaaaaaaaaaa"]
     token = "{{value:fact-aaaaaaaaaaaaaaaa:total:元}}"
     assert catalog[token] == "11,123,541,503元"
@@ -4693,6 +4708,28 @@ def test_planning_shared_definitions_preserve_every_month_and_do_not_mutate_inpu
     facts = expand(compact['factCatalog'])
     assert [dict(zip(facts['columns'], row, strict=True)) for row in facts['rows']] == original['factCatalog']
     assert json.dumps(original) == before
+
+
+def test_planning_shared_definitions_reuse_each_node_fingerprint(monkeypatch):
+    shared = {
+        "columns": ["period", "value"],
+        "rows": [[f"2025-{month:02}", month * 100] for month in range(1, 13)],
+    }
+    payload = {"numberGuide": [{"monthly": shared}, {"monthly": shared}]}
+    original_json_text = reporting_sections._json_text
+    shared_serializations = 0
+
+    def counted_json_text(value):
+        nonlocal shared_serializations
+        if value is shared:
+            shared_serializations += 1
+        return original_json_text(value)
+
+    monkeypatch.setattr(reporting_sections, "_json_text", counted_json_text)
+    compact = reporting_sections._compact_planning_payload(payload)
+
+    assert compact["$defs"]
+    assert shared_serializations == 1
 
 
 @pytest.mark.anyio

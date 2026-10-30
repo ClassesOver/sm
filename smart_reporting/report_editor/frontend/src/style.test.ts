@@ -294,7 +294,8 @@ describe('report editor visual hierarchy', () => {
       .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
     const panel = rules.find((rule) => rule.selectorText === '.ask-ai-panel')!.style
     const handle = rules.find((rule) => rule.selectorText === '.ask-ai-resize-handle')!.style
-    expect(panel.width).toBe('min(var(--ask-ai-panel-width, 560px), 100vw)')
+    expect(panel.width).toBe('var(--ask-ai-panel-width, 560px)')
+    expect(panel.maxWidth).toBe('100vw')
     expect(handle.position).toBe('absolute')
     expect(handle.cursor).toBe('col-resize')
   })
@@ -448,8 +449,13 @@ describe('report editor visual hierarchy', () => {
     expect(style('#report-editor .milkdown-toolbar .toolbar-item svg').width).toBe('18px')
     expect(resolveTokens(style('#report-editor .milkdown-slash-menu').borderRadius)).toBe('8px')
     expect(resolveTokens(style('#report-editor .milkdown-link-preview > .link-preview').borderRadius)).toBe('6px')
-    expect(resolveTokens(style('#report-editor .milkdown-ai-instruction > .ai-instruction').borderRadius)).toBe('8px')
-    expect(resolveTokens(style('#report-editor .milkdown-ai-diff-actions').borderRadius)).toBe('8px')
+    // AI 面板与 diff 动作条的 chrome 已下沉到基础层（移动端与桌面一致），从顶层规则读取。
+    const baseStyle = (selector: string) => Array.from(document.styleSheets[0].cssRules).find(
+      (rule): rule is CSSStyleRule =>
+        rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes(selector),
+    )!.style
+    expect(resolveTokens(baseStyle('#report-editor .milkdown-ai-instruction > .ai-instruction').borderRadius)).toBe('8px')
+    expect(resolveTokens(baseStyle('#report-editor .milkdown-ai-diff-actions').borderRadius)).toBe('8px')
   })
 
   it('keeps keyboard focus visible inside outline links', () => {

@@ -72,9 +72,11 @@ from .chart_templates import (
     TEMPLATE_CATALOG,
     TEMPLATE_IDS,
     build_chart_input,
+    matched_fact_name,
+    matched_pointer_count,
     materialize_chart_template,
+    recommendation_reason,
     render_template_script,
-    template_availability,
 )
 from .service import ReportEditorContext, ReportEditorService
 from .standard_charts import (
@@ -472,10 +474,37 @@ class ChartAIEditService:
                 ],
             }
         _context, _chart, _trace, _index, bundle, _fact_ref = resolved
+        materialized = [
+            (item, materialize_chart_template(item["templateId"], bundle, _trace.fact_refs))
+            for item in TEMPLATE_CATALOG
+        ]
+        # 推荐只给一个：物化数据命中该图绑定事实最多者；同分比行数，再同分按目录序。
+        best_id: str | None = None
+        best_key: tuple[int, int] | None = None
+        for item, entry in materialized:
+            if not entry.available:
+                continue
+            matched = matched_pointer_count(entry.source_pointers, _trace.fact_refs)
+            if matched == 0:
+                continue
+            key = (matched, len(entry.rows))
+            if best_key is None or key > best_key:
+                best_key, best_id = key, item["templateId"]
         result = []
-        for item in TEMPLATE_CATALOG:
-            available, why = template_availability(item["templateId"], bundle, _trace.fact_refs)
-            result.append({**item, "available": available, **({"reason": why} if why else {})})
+        for item, entry in materialized:
+            payload = {
+                **item,
+                "available": entry.available,
+                **({"reason": entry.reason} if entry.reason else {}),
+            }
+            if item["templateId"] == best_id:
+                payload["recommended"] = True
+                named = matched_fact_name(entry.source_pointers, _trace.fact_refs, bundle)
+                if named:
+                    payload["recommendationReason"] = f"与该图绑定的「{named[:24]}」一致"
+                elif why := recommendation_reason(item["templateId"]):
+                    payload["recommendationReason"] = why
+            result.append(payload)
         return {"chartId": chart_id, "templates": result}
 
     async def _check_template(
