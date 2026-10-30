@@ -2712,16 +2712,7 @@ def create_reporting_generator_agent(
                 "dataBindings[].role 只说明该数据在图中的业务用途；不要在 visualForm 或 role 中"
                 "定义配色、尺寸、标注坐标或绘图库 API。"
             )
-        instructions.append(
-            "按输入中的 visualizationMode 选择每张图的 renderer："
-            "visualizationMode=static 时全部使用 renderer=matplotlib 且不得声明 interactivePath；"
-            "visualizationMode=interactive 时优先使用 renderer=plotly，仅当 Plotly 不适合该表达时才使用 Matplotlib；"
-            "visualizationMode=auto 时逐图选择，探索、悬浮明细或缩放场景优先 Plotly，复杂静态标注等场景可使用 Matplotlib。"
-        )
-        instructions.append(
-            "renderer=plotly 时必须同时声明静态图片 sourcePath 和同一图表的 .plotly.json interactivePath；"
-            "renderer=matplotlib 时只声明静态图片 sourcePath。"
-        )
+        instructions.append("报告图表全部使用 Matplotlib 静态 PNG/JPEG，不生成交互规格。")
     elif output_schema_name == "SectionDecisionOutput":
         instructions[1] = (
             "根 JSON 必须直接包含 kind（render 或 rework）及该分支字段；不得输出 render/rework 单键包装对象。"

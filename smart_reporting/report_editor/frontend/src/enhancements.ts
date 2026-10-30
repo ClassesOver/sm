@@ -169,7 +169,7 @@ export function createImagePreview(editor: HTMLElement, options: ImagePreviewOpt
   const chartAIButton = dialog.querySelector<HTMLButtonElement>('.image-preview-chart-ai')
   let current: HTMLImageElement | null = null
   const isPreviewable = (target: EventTarget | null): target is HTMLImageElement =>
-    target instanceof HTMLImageElement && !target.classList.contains('interactive-chart-fallback')
+    target instanceof HTMLImageElement
   const prepareImage = (target: HTMLImageElement) => {
     if (isPreviewable(target)) target.tabIndex = 0
   }

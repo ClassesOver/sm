@@ -44,11 +44,7 @@ def _missing_chinese_display_fields(registration: ReportChartRegistration) -> li
 
 
 def _serialized_chart_registration(registration: ReportChartRegistration) -> dict[str, Any]:
-    payload = registration.model_dump(mode="json", by_alias=True)
-    if registration.renderer == "matplotlib":
-        payload.pop("renderer", None)
-        payload.pop("interactivePath", None)
-    return payload
+    return registration.model_dump(mode="json", by_alias=True)
 
 
 class RuntimeVisualizationMixin:
@@ -93,21 +89,6 @@ class RuntimeVisualizationMixin:
                 details={"capability": "inspect_chart_file"},
             )
         return await workspace.inspect_chart_file(thread_id, path)
-
-    async def _inspect_plotly_file(
-        self,
-        *,
-        thread_id: str,
-        path: str,
-    ) -> dict[str, Any]:
-        workspace = self.runtime.workspace
-        if not hasattr(workspace, "inspect_plotly_file"):
-            raise ReportingError(
-                "report_workspace_capability_missing",
-                "Reporting 工作区适配缺少 Plotly 检查能力。",
-                details={"capability": "inspect_plotly_file"},
-            )
-        return await workspace.inspect_plotly_file(thread_id, path)
 
     async def _ahash_file(self, *, thread_id: str, path: str) -> dict[str, Any]:
         workspace = self.runtime.workspace
@@ -210,13 +191,6 @@ class RuntimeVisualizationMixin:
                 )
             output_root = self._chart_output_root(phase_contract)
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
-            if phase_contract.get("visualizationMode") == "static" and any(
-                item.renderer != "matplotlib" for item in parsed
-            ):
-                raise ReportingError(
-                    "report_visualization_section_invalid",
-                    "静态模式只允许提交 Matplotlib 图表。",
-                )
             serialized_charts = [
                 _serialized_chart_registration(registration) for registration in parsed
             ]
@@ -305,7 +279,6 @@ class RuntimeVisualizationMixin:
                 )
             inspected: list[dict[str, Any]] = []
             files: list[dict[str, Any]] = []
-            interactive_files: list[dict[str, Any]] = []
             verified_plot_data: list[dict[str, Any]] = []
             chart_ids = {registration.chart_id for registration in parsed}
             # B3：作图数据文件必须落在当前 visualization Task 的 chart-input
@@ -403,21 +376,6 @@ class RuntimeVisualizationMixin:
                         sha256=identity["sha256"],
                     ).model_dump(mode="json", by_alias=True)
                 )
-                if registration.interactive_path is not None:
-                    interactive_path = self._require_chart_output_path(
-                        registration.interactive_path, output_root
-                    )
-                    interactive_identity = await self._inspect_plotly_file(
-                        thread_id=scope.thread_id,
-                        path=interactive_path,
-                    )
-                    interactive_files.append(
-                        FileIdentity(
-                            path=interactive_identity["sourcePath"],
-                            size=interactive_identity["size"],
-                            sha256=interactive_identity["sha256"],
-                        ).model_dump(mode="json", by_alias=True)
-                    )
             receipts = tuple(
                 ChartVisualInspectionReceipt.model_validate(item) for item in visual_receipts
             )
@@ -456,7 +414,6 @@ class RuntimeVisualizationMixin:
             if isinstance(existing, dict):
                 if (
                     existing.get("files") != files
-                    or existing.get("interactiveFiles", []) != interactive_files
                     or existing.get("plotDataFiles", []) != verified_plot_data
                 ):
                     raise ReportingError(
@@ -471,8 +428,6 @@ class RuntimeVisualizationMixin:
                     "files": files,
                     "visualReceipts": serialized_receipts,
                 }
-                if interactive_files:
-                    submission_payload["interactiveFiles"] = interactive_files
                 if verified_plot_data:
                     submission_payload["plotDataFiles"] = verified_plot_data
                 digest = _stable_digest(submission_payload)
@@ -507,7 +462,7 @@ class RuntimeVisualizationMixin:
             self._complete_phase_plan(self._session_state(run_context))
             finish_result = await self.runtime.finish_task(
                 f"图表章节 {sectionCode} 已提交 {len(inspected)} 张图表。",
-                [file["path"] for file in (*files, *interactive_files)],
+                [file["path"] for file in files],
                 None,
                 [],
                 run_context,

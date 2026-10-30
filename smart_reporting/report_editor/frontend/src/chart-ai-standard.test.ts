@@ -240,6 +240,33 @@ function mount(src = '/b/asset/reports/revision-1/original.png') {
 }
 
 describe('模板选择与完整预览', () => {
+  it('将标准预设、模板和快捷指令集中到模态弹窗，点快捷指令后写入要求并关闭', async () => {
+    const api = client({
+      chartTemplates: vi.fn(async () => ({ templates: [
+        { templateId: 'budget-execution', name: '执行对比', available: true },
+      ] })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b' })
+    try {
+      controller.open(mount())
+      await vi.waitFor(() => expect(document.querySelector('[data-action="show-chart-actions"]')).not.toBeNull())
+      await vi.waitFor(() => expect(document.querySelector('.chart-ai-template')).not.toBeNull())
+      const trigger = document.querySelector<HTMLButtonElement>('[data-action="show-chart-actions"]')!
+      trigger.click()
+      const dialog = document.querySelector<HTMLElement>('.chart-ai-actions-modal')!
+      expect(dialog.hidden).toBe(false)
+      expect(dialog.getAttribute('role')).toBe('dialog')
+      expect(dialog.getAttribute('aria-modal')).toBe('true')
+      expect(dialog.querySelector('#chart-ai-standard-preset')).not.toBeNull()
+      expect(dialog.querySelector('.chart-ai-template')).not.toBeNull()
+      expect(dialog.querySelector('.chart-ai-quick button')).not.toBeNull()
+
+      dialog.querySelector<HTMLButtonElement>('.chart-ai-quick button')!.click()
+      expect(document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value).toContain('改成横向条形图')
+      expect(dialog.hidden).toBe(true)
+    } finally { controller.dispose() }
+  })
+
   it('预制模板不把展示文案作为自由要求发送给 AI', async () => {
     const api = client({
       chartTemplates: vi.fn(async () => ({ templates: [

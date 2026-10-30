@@ -78,11 +78,6 @@ async def _run_standard_chart_routes(
     route_started = perf_counter()
     if deterministic:
         # 只接服务端编译源码；任何诊断或执行异常均不得进入模型回退。
-        if any(chart.renderer != "matplotlib" or chart.interactive_path for chart in plan.charts):
-            raise ReportingError(
-                "report_standard_static_group_required",
-                "确定性直达仅支持 Matplotlib 静态图，原图保持不变。",
-            )
         try:
             compile_started = perf_counter()
             route_state["initialCompileStatus"] = "failed"
@@ -119,25 +114,6 @@ async def _run_standard_chart_routes(
                  warnings=_chart_warnings(complete, chart.chart_id))
             for chart in plan.charts
         ])
-    if any(chart.renderer != "matplotlib" or chart.interactive_path for chart in plan.charts):
-        # Keep the legacy delivery contract on its existing path. The new compositor
-        # only accepts static charts; JSON companions must never enter image review.
-        result = await runner.run(
-            context, workspace, facts, run_context=run_context, diagnostic=None
-        )
-        return _with_routes(
-            result,
-            [
-                dict(
-                    chartId=chart.chart_id,
-                    route="coding",
-                    diagnostic=dict(
-                        code="standard_static_group_required", message="旧交互计划保留原执行路径。"
-                    ),
-                )
-                for chart in plan.charts
-            ],
-        )
     compile_started = perf_counter()
     route_state["initialCompileStatus"] = "failed"
     try:
@@ -202,7 +178,7 @@ async def _run_standard_chart_routes(
                 PurePosixPath(context.script_path).stem + f"-chart-{index + 1:03}.py"
             )
         )
-        outputs = tuple(path for path in (chart.source_path, chart.interactive_path) if path)
+        outputs = (chart.source_path,)
         child = replace(
             context,
             script_path=path,

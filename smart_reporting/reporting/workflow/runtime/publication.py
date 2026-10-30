@@ -78,18 +78,6 @@ from .base import (
 )
 
 
-def _editor_interactive_charts(manifest: ReportArtifactManifest) -> dict[str, dict[str, Any]]:
-    return {
-        chart.path: {
-            "path": chart.interactive_spec.path,
-            "size": chart.interactive_spec.size,
-            "sha256": chart.interactive_spec.sha256,
-        }
-        for chart in manifest.charts
-        if chart.interactive_spec is not None
-    }
-
-
 def _narrative_reuse_snapshot_hash(graph, finding_graph_hash: str | None) -> str | None:
     """跨章节复用 analysisId 只承认发现图谱哈希，不使用数据集快照哈希。"""
     if not isinstance(finding_graph_hash, str) or finding_graph_hash != graph.snapshot_hash:
@@ -280,9 +268,7 @@ def build_with_optional_computation_layer(
     return build((), ())
 
 
-def _quality_source_ids(
-    index: RevisionTraceIndexV1, interactive_charts: Mapping[str, str],
-) -> set[str]:
+def _quality_source_ids(index: RevisionTraceIndexV1) -> set[str]:
     source_ids = {entry.file_resource_id for entry in index.fact_files}
     source_ids.update(cell.source_cell.file_resource_id for table in index.tables
                       for cell in table.cells if cell.source_cell is not None)
@@ -297,8 +283,6 @@ def _quality_source_ids(
     from ...trace.chart_quality import standard_proof_source_ids
 
     source_ids.update(standard_proof_source_ids(index))
-    interactive_paths = set(interactive_charts.values())
-    source_ids.update(file.resource_id for file in index.files if file.path in interactive_paths)
     return source_ids
 
 
@@ -1129,9 +1113,6 @@ class RuntimePublicationMixin:
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
-        interactive_charts = _editor_interactive_charts(manifest) if manifest is not None else {}
-        if interactive_charts:
-            editor_job = {**editor_job, "interactiveCharts": interactive_charts}
         return StepOutput(
             content={
                 "status": result.get("status", "validated"),
@@ -1236,7 +1217,6 @@ class RuntimePublicationMixin:
         table_source_files: tuple[FileIdentity, ...] = (),
         subject_bindings: tuple = (),
         review_notices: tuple | None = None,
-        interactive_charts: Mapping[str, str] | None = None,
         markdown_path: str,
         lineage: tuple[DatasetLineage, ...],
         revision: int,
@@ -1328,7 +1308,6 @@ class RuntimePublicationMixin:
                     subject_bindings=subject_bindings,
                     review_notices=review_notices,
                     markdown=markdown_bytes.decode("utf-8"),
-                    interactive_charts=interactive_charts,
                     heading_numbers=heading_numbers,
                     revision=revision,
                     run_context=run_context,
@@ -1341,7 +1320,6 @@ class RuntimePublicationMixin:
                 markdown_path=markdown_path,
                 markdown=markdown_bytes.decode("utf-8"),
                 accepted_artifacts=current_artifacts,
-                interactive_charts=interactive_charts,
                 lineage=lineage,
                 sections=tuple(
                     section.code for section in _frozen_outline(self._state(run_context)).sections
@@ -1393,7 +1371,6 @@ class RuntimePublicationMixin:
         server_table_traces: tuple = (),
         chart_trace_files: tuple[FileIdentity, ...] = (),
         chart_traces: tuple = (),
-        interactive_charts: Mapping[str, str] | None = None,
         computation_files: tuple[FileIdentity, ...] = (),
         computations: tuple = (),
         table_source_files: tuple[FileIdentity, ...] = (),
@@ -1492,7 +1469,7 @@ class RuntimePublicationMixin:
                             answer_review_plan = None
                             registration_failed = True
                             logger.warning("report_answer_review_registration_unavailable reason={}", type(error).__name__)
-                    quality_source_ids = _quality_source_ids(index, interactive_charts or {})
+                    quality_source_ids = _quality_source_ids(index)
                     quality_image_ids = {chart.image_file_resource_id for chart in index.chart_traces}
                     quality_image_bytes = 0
                     for file in index.files:
@@ -1519,7 +1496,6 @@ class RuntimePublicationMixin:
                         authorization_scope_hash=canonical_sha256({key: scope[key] for key in ("userId", "threadId")}),
                         mode="enabled" if policy.get("mode") == "enabled" else "shadow",
                         questions=questions,
-                        interactive_charts=interactive_charts,
                         heading_numbers=heading_numbers,
                     )
                     bundle = await anyio.to_thread.run_sync(partial(evaluate, answer_review_plan=answer_review_plan))
@@ -1999,7 +1975,6 @@ def _accepted_artifacts_match_manifest(
     declared = [
         manifest.markdown,
         *manifest.charts,
-        *(chart.interactive_spec for chart in manifest.charts if chart.interactive_spec),
     ]
     declared_paths = {item.path for item in declared}
     extra_paths = set(accepted) - declared_paths

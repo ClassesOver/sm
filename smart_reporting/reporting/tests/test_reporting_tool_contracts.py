@@ -241,12 +241,10 @@ async def test_section_visualization_requires_signed_visual_receipt() -> None:
 
 
 @pytest.mark.anyio
-async def test_section_visualization_persists_plotly_companion_identity() -> None:
+async def test_section_visualization_persists_static_image_only() -> None:
     chart = {
         "chartId": "income",
         "sourcePath": "analysis/charts/section_001/income.png",
-        "renderer": "plotly",
-        "interactivePath": "analysis/charts/section_001/income.plotly.json",
         "title": "收入趋势",
         "altText": "收入趋势图",
         "citationIds": ["citation-1"],
@@ -266,14 +264,6 @@ async def test_section_visualization_persists_plotly_companion_identity() -> Non
                 "sha256": "a" * 64,
             }
         ),
-        inspect_plotly_file=AsyncMock(
-            return_value={
-                "sourcePath": chart["interactivePath"],
-                "size": 20,
-                "sha256": "b" * 64,
-                "mediaType": "application/vnd.plotly.v1+json",
-            }
-        ),
     )
 
     result = await toolkit.submit_visualization_charts(
@@ -285,13 +275,7 @@ async def test_section_visualization_persists_plotly_companion_identity() -> Non
 
     assert result["ok"] is True
     payload = toolkit._apply_durable_command.await_args_list[0].kwargs["payload"]
-    assert payload["interactiveFiles"] == [
-        {
-            "path": chart["interactivePath"],
-            "size": 20,
-            "sha256": "b" * 64,
-        }
-    ]
+    assert "interactiveFiles" not in payload
 
 
 @pytest.mark.anyio
@@ -337,7 +321,7 @@ async def test_section_visualization_keeps_gate_tripped_revision_receipt_as_warn
 
 
 @pytest.mark.anyio
-async def test_section_visualization_reports_missing_workspace_capability_not_attribute_error() -> (
+async def test_section_visualization_rejects_retired_interactive_fields() -> (
     None
 ):
     chart = {
@@ -354,20 +338,6 @@ async def test_section_visualization_reports_missing_workspace_capability_not_at
         "aggregationGrain": "month",
     }
     toolkit = _toolkit()
-    # 复现生产缺陷形态：runtime.workspace 缺少 inspect_plotly_file 时不得把
-    # AttributeError 逃逸成 retry，必须返回确定性 infra 失败码。
-    toolkit.runtime.workspace = SimpleNamespace(
-        inspect_chart_file=AsyncMock(
-            return_value={
-                "sourcePath": chart["sourcePath"],
-                "size": 10,
-                "width": 1600,
-                "height": 900,
-                "sha256": "a" * 64,
-            }
-        )
-    )
-
     result = await toolkit.submit_visualization_charts(
         sectionCode="section_001",
         charts=[chart],
@@ -376,9 +346,8 @@ async def test_section_visualization_reports_missing_workspace_capability_not_at
     )
 
     assert result["ok"] is False
-    assert result["code"] == "report_workspace_capability_missing"
-    assert result["details"] == {"capability": "inspect_plotly_file"}
-    assert result["retryable"] is False
+    assert result["code"] == "report_tool_arguments_invalid"
+    assert result["retryable"] is True
     toolkit._apply_durable_command.assert_not_awaited()
 
 

@@ -23,7 +23,6 @@ from loguru import logger
 from ...code_monitor.tools import log_tool_event
 from ...workspace import WorkspaceError, normalize_workspace_path
 from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult, cell_field
-from ..contract import interactive_spec_path
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
 from ..vision import ReportVisionReviewer
@@ -71,15 +70,10 @@ _FORBIDDEN_PATH_CALLS = frozenset(
     }
 )
 _PATH_ARGUMENT_CALLS = frozenset(
-    {"open", "io.open", "os.makedirs", "os.mkdir", "pathlib.Path", "plotly.offline.plot"}
+    {"open", "io.open", "os.makedirs", "os.mkdir", "pathlib.Path"}
 )
 _PATH_ARGUMENT_METHODS = frozenset(
     {
-        # Plotly 写出（fig.write_image(path) / pio.write_image(fig, path)）；
-        # 不含 write_text/write_bytes：pathlib 这两个方法的首参是内容而非路径。
-        "write_html",
-        "write_image",
-        "write_json",
         "imread",
         "imsave",
         "read_csv",
@@ -123,30 +117,18 @@ _PLACEHOLDER_OUTPUT_METHODS = frozenset(
         "to_pickle",
         "write_text",
         "write_bytes",
-        "write_image",
-        "write_html",
-        "write_json",
     }
 )
 _PLACEHOLDER_OUTPUT_CALLS = frozenset(
     {
-        "plotly.offline.plot",
-        "plotly.io.write_image",
-        "plotly.io.write_html",
-        "plotly.io.write_json",
     }
 )
 
 # 声明产物写出调用的静态识别（write_script/edit_script 结构预检与软告警共用）。
 _OUTPUT_WRITE_METHODS = _PLACEHOLDER_OUTPUT_METHODS
 _OUTPUT_WRITE_CALLS = _PLACEHOLDER_OUTPUT_CALLS
-# 这些方法名在 pathlib/plotly 中都出现，但路径位置不同：
-# Path("charts/a.png").write_bytes(...) 的路径在 receiver 上；
-# fig.write_image("charts/a.png") 的路径在第一个位置参数上。
-# 静态分析无法区分 receiver 是 Path 还是 Figure，两个位置都尝试解析。
-_PATH_OWNER_WRITE_METHODS = frozenset(
-    {"write_text", "write_bytes", "write_image", "write_html", "write_json"}
-)
+# pathlib 写入方法的路径在 receiver 上。
+_PATH_OWNER_WRITE_METHODS = frozenset({"write_text", "write_bytes"})
 _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE = 5
 
 # 本地图片检查（文件缺失、解码失败、空白）的拒绝码：属于脚本产物问题，
@@ -331,14 +313,6 @@ def _literal_string(
     return None
 
 
-# 路径不在首个位置参数的调用：plotly.io 模块级写出函数签名为 (fig, path)。
-_PATH_ARGUMENT_POSITION = {
-    "plotly.io.write_image": 1,
-    "plotly.io.write_json": 1,
-    "plotly.io.write_html": 1,
-}
-
-
 def _call_path_arguments(call: ast.Call, qualified_name: str) -> list[ast.AST]:
     """调用中承载路径的实参：按签名取位置参数，并加上路径关键字参数。"""
 
@@ -468,9 +442,6 @@ def _declared_output_write_paths(tree: ast.AST, declared_paths: frozenset[str]) 
                 resolved = _resolved_path_literal(node.func.value, aliases, bindings)
                 if resolved in declared_paths:
                     found.add(resolved)
-                # 继续尝试位置参数（plotly 的 fig.write_image / pio.write_image 风格）。
-            # 位置参数与路径关键字都可能承载路径（plotly.offline.plot 的首参是
-            # figure，路径在 filename=），逐个解析而不是只看第一个。
             for argument in _call_path_arguments(node, qualified_name):
                 resolved = _resolved_path_literal(argument, aliases, bindings)
                 if resolved in declared_paths:
@@ -605,7 +576,7 @@ _MISSING_OUTPUT_HINTS = (
     (
         "unresolvedWritePaths",
         "unresolvedWritePaths 在脚本中出现，但宿主未识别到对它的写出调用（路径经变量传入，"
-        "或使用了未识别的写出方式如 PIL Image.save）：改为在 savefig/write_image/write_json "
+        "或使用了未识别的写出方式如 PIL Image.save）：改为在 savefig/to_json/write_text "
         "调用中直接使用签发路径字面量。",
     ),
 )
@@ -644,21 +615,7 @@ def _missing_output_diagnosis(
 def _declared_output_write_example(path: str, declared_paths: tuple[str, ...]) -> str:
     """零产物回执附带缺失产物的完整写出示例，路径逐字使用签发值。
 
-    图片与交互产物的配对沿用交付校验规则：image.with_suffix(".plotly.json")。
     """
-
-    images = [item for item in declared_paths if not item.endswith(".plotly.json")]
-    if path.endswith(".plotly.json"):
-        image = next((item for item in images if interactive_spec_path(item) == path), None)
-        interactive: str | None = path
-    else:
-        image = path
-        interactive = (
-            interactive_spec_path(path) if interactive_spec_path(path) in declared_paths else None
-        )
-    if interactive is not None:
-        lines = [f"fig.write_image({image!r})"] if image is not None else []
-        return "\n".join([*lines, f"fig.write_json({interactive!r})"])
     return (
         "fig, ax = plt.subplots(figsize=(10, 6))\n"
         "# ... 按本图 chartInputs 绘制 ...\n"
@@ -1168,7 +1125,7 @@ def _is_placeholder_script(
         return False
 
     if task_kind == "visualization":
-        viz_roots = {"matplotlib", "plotly", "seaborn"}
+        viz_roots = {"matplotlib", "seaborn"}
         if any(module.split(".")[0] in viz_roots for module in aliases.values()) or any(
             isinstance(node, ast.Import)
             and any(alias.name.split(".")[0] in viz_roots for alias in node.names)
@@ -2560,7 +2517,6 @@ class ReportingCodeModeToolkit(Toolkit):
                 item.path
                 for item in (receipt.output_files if receipt else ())
                 if self.context.task_kind == "visualization"
-                and not item.path.endswith(".plotly.json")
                 and (
                     (review := self.binding.visual_inspection_receipts.get(item.path)) is None
                     or review.sha256 != item.sha256
@@ -3255,9 +3211,7 @@ class ReportingCodeModeToolkit(Toolkit):
         # 非法路径不再让整批失败：合法图片照常审查，非法项逐条回执并给出可审查的
         # 声明图片清单，模型可直接改正，不必再猜路径或重复消耗一轮。
         path_failures: list[dict[str, Any]] = []
-        reviewable_paths = [
-            item for item in self.context.declared_output_paths if not item.endswith(".plotly.json")
-        ]
+        reviewable_paths = list(self.context.declared_output_paths)
         for raw_path in target_paths:
             try:
                 source_path = normalize_workspace_path(raw_path, allow_root=False)
@@ -3275,17 +3229,13 @@ class ReportingCodeModeToolkit(Toolkit):
             normalized_paths.append(source_path)
         # 同一路径并发审查会重复调用视觉模型并重复计数。
         normalized_paths = list(dict.fromkeys(normalized_paths))
-        # Plotly 交互规格不是图片，交付状态也不要求审查；送入图片检查会得到
-        # report_chart_source_invalid，并把模型误导去修复本无问题的脚本。
-        skipped_paths = [item for item in normalized_paths if item.endswith(".plotly.json")]
-        normalized_paths = [item for item in normalized_paths if item not in skipped_paths]
         if not normalized_paths:
             if path_failures:
                 return self._aggregate_view_failures(path_failures, [], 0)
             return _failure(
                 "report_code_visual_path_not_image",
-                "Plotly 交互规格（.plotly.json）无需视觉审查；只审查 PNG/JPEG 图片输出。",
-                {"path": skipped_paths[0]},
+                "没有可审查的图片输出。",
+                {"path": target_paths[0]},
             )
 
         receipts: list[dict[str, Any]] = []
@@ -3653,7 +3603,7 @@ class ReportingCodeModeToolkit(Toolkit):
             example = (
                 _declared_output_write_example(missing_paths[0], self.context.declared_output_paths)
                 if self.context.task_kind == "visualization"
-                and missing_paths[0].lower().endswith((".png", ".jpg", ".jpeg", ".plotly.json"))
+                and missing_paths[0].lower().endswith((".png", ".jpg", ".jpeg"))
                 else ""
             )
             if example:
@@ -3980,7 +3930,6 @@ class ReportingCodeModeToolkit(Toolkit):
             output_by_path = {
                 item.path: item
                 for item in receipt.output_files
-                if not item.path.endswith(".plotly.json")
             }
             reviews = self.binding.visual_inspection_receipts
             if set(reviews) != set(output_by_path):

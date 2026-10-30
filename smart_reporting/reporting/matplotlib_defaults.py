@@ -3,7 +3,6 @@ import importlib.machinery
 import re
 import runpy
 import sys
-import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -11,7 +10,6 @@ from .delivery.report_runtime.theme import (
     REPORT_CHART_FONTS,
     REPORT_VISUAL_THEME,
     matplotlib_theme_rc,
-    plotly_theme_layout,
 )
 
 # 字体与报表主题配色一并作为默认样式；脚本显式设置的颜色、网格等仍然优先。
@@ -113,77 +111,6 @@ def matplotlib_bootstrap(runtime_root: str) -> str:
         "        RuntimeWarning,\n"
         "    )\n"
     )
-
-
-_KALEIDO_SYNC_FUNCTIONS = ("calc_fig_sync", "write_fig_sync", "write_fig_from_object_sync")
-_PLOTLY_REPORTING_TEMPLATE = "reporting_theme"
-
-
-class _KaleidoSession:
-    """首个同步渲染请求时启动常驻 Chrome，脚本结束时关闭。
-
-    Kaleido 1.x 未启动 sync server 时每次 write_image 都冷启动并关闭一个
-    Chrome；复用单实例只改变渲染进程生命周期，不改变脚本语义。任何失败都
-    静默退回逐次启动。
-    """
-
-    def __init__(self) -> None:
-        self.module: Any = None
-        self.started = False
-        self.attempted = False
-
-    def ensure_started(self) -> None:
-        if self.attempted or self.module is None:
-            return
-        self.attempted = True
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                self.module.start_sync_server(silence_warnings=True)
-            self.started = True
-        except Exception:
-            self.started = False
-
-    def patch(self, module: Any) -> None:
-        self.module = module
-        if not callable(getattr(module, "start_sync_server", None)):
-            return
-        for name in _KALEIDO_SYNC_FUNCTIONS:
-            original = getattr(module, name, None)
-            if callable(original):
-                setattr(module, name, self._wrap(original))
-
-    def _wrap(self, original: Callable[..., Any]) -> Callable[..., Any]:
-        def call(*args: Any, **kwargs: Any) -> Any:
-            self.ensure_started()
-            return original(*args, **kwargs)
-
-        call.__wrapped__ = original  # type: ignore[attr-defined]
-        return call
-
-    def close(self) -> None:
-        if not self.started or self.module is None:
-            return
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                self.module.stop_sync_server(silence_warnings=True)
-        except Exception:
-            pass
-        self.started = False
-
-
-def _apply_plotly_layout_defaults(module: Any) -> None:
-    """为 Plotly 默认模板叠加报表主题（含 automargin，避免长刻度标签被裁切或重叠）。"""
-
-    try:
-        base = module.templates.default or "plotly"
-        if _PLOTLY_REPORTING_TEMPLATE in str(base).split("+"):
-            return
-        module.templates[_PLOTLY_REPORTING_TEMPLATE] = {"layout": plotly_theme_layout()}
-        module.templates.default = f"{base}+{_PLOTLY_REPORTING_TEMPLATE}"
-    except Exception:
-        pass
 
 
 class _PostImportHooks(importlib.abc.MetaPathFinder):
@@ -417,18 +344,13 @@ def _apply_color_defaults(module: Any) -> None:
     module._colors_full_map.cache.clear()
 
 
-def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
+def _install_import_hooks() -> _PostImportHooks:
     hooks = _PostImportHooks({
-        "kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults,
         "matplotlib.ticker": _apply_ticker_defaults, "matplotlib.text": _apply_text_defaults,
         "matplotlib.figure": _apply_figure_defaults, "matplotlib.colors": _apply_color_defaults,
     })
     sys.meta_path.insert(0, hooks)
     # 包装器之前已导入的模块直接应用默认值。
-    if "kaleido" in sys.modules:
-        kaleido.patch(sys.modules["kaleido"])
-    if "plotly.io" in sys.modules:
-        _apply_plotly_layout_defaults(sys.modules["plotly.io"])
     if "matplotlib.ticker" in sys.modules:
         _apply_ticker_defaults(sys.modules["matplotlib.ticker"])
     if "matplotlib.text" in sys.modules:
@@ -441,20 +363,18 @@ def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
 
 
 def run_reporting_script(script_path: str, runtime_root: str) -> None:
-    """在正式脚本进程内应用 Matplotlib/Plotly 默认值后执行签发脚本。"""
+    """在正式脚本进程内应用 Matplotlib 默认值后执行签发脚本。"""
 
     namespace: dict[str, object] = {}
     bootstrap = matplotlib_bootstrap(runtime_root)
     exec(compile(bootstrap, "<matplotlib-bootstrap>", "exec"), namespace)
-    kaleido = _KaleidoSession()
-    hooks = _install_import_hooks(kaleido)
+    hooks = _install_import_hooks()
     previous_argv = sys.argv
     sys.argv = [script_path]
     try:
         runpy.run_path(script_path, run_name="__main__")
     finally:
         sys.argv = previous_argv
-        kaleido.close()
         try:
             sys.meta_path.remove(hooks)
         except ValueError:

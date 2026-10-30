@@ -102,8 +102,7 @@ def standard_plan_diagnostics(plan: VisualizationPlanDraft, inputs: ChartInputMa
     """逐图反馈机器契约问题；自选Coding及不可用输入不触发无意义重规划。"""
     diagnostics = []
     for chart in plan.charts:
-        if (chart.renderer != 'matplotlib' or chart.interactive_path
-                or getattr(chart, 'standard_form', None) == 'custom'
+        if (getattr(chart, 'standard_form', None) == 'custom'
                 or chart.chart_id in inputs.fallback_chart_ids):
             continue
         entries = tuple(entry for entry in inputs.entries if entry['chartId'] == chart.chart_id)
@@ -189,8 +188,6 @@ def _standard_visualization_script(
         style = getattr(chart, 'standard_style', StandardChartStyle())
         presentation = getattr(chart, 'standard_presentation', StandardChartPresentation())
         axes = getattr(chart, 'standard_axes', StandardChartAxes())
-        if chart.renderer != 'matplotlib' or chart.interactive_path:
-            _reject('standard_renderer_unsupported', 'renderer', '标准模板只输出Matplotlib静态图。', '使用matplotlib与静态PNG/JPEG输出。')
         form = resolve_standard_form(chart)
         if getattr(chart, 'standard_form', None) == 'custom':
             _reject('standard_custom_requested', 'standardForm', '规划显式选择自定义Coding图。', '保留冻结输入与业务意图，由Coding执行；不视为标准能力命中失败。')

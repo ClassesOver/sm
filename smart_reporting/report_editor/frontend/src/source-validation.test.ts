@@ -41,7 +41,7 @@ describe('source validation', () => {
     result.quality = { status: 'evaluated', allKeyFactsEvaluated: false, inputSha256: 'current', issues: [
       { code: 'assertion_support_unknown', subjectId: 's1', reasons: ['scope_unknown'] },
       { code: 'assertion_support_unknown', subjectId: 's2', reasons: ['operation_semantics_not_evaluated', 'scope_unknown'] },
-      { code: 'chart_support_unknown', subjectId: 'chart1', reasons: ['interactive_spec_unregistered'] },
+      { code: 'chart_support_unknown', subjectId: 'chart1', reasons: ['chart_unregistered'] },
     ] }
     // 回放：400 余条“范围未确认/运算未评估/图表未核对”曾计入语义待确认，淹没真正的提醒。
     expect(notEvaluatedQualityBreakdown(result)).toEqual({ scope: 1, other: 2 })
@@ -78,7 +78,7 @@ describe('source validation', () => {
     result.tables = [{ tableId: 't1', cells: { valid: 1, stale: 0, unbound: 0 },
       dataCheck: { status: 'unknown', scope: 'frozen_cells', reasons: ['cell_period_label_mismatch'] } }]
     result.charts = [{ chartId: 'chart1', imagePath: 'chart.png', status: 'valid',
-      dataCheck: { status: 'unknown', scope: 'registered_arrays', reason: 'interactive_spec_unregistered' } }]
+      dataCheck: { status: 'unknown', scope: 'registered_arrays', reason: 'chart_unregistered' } }]
     result.quality = { status: 'evaluated', allKeyFactsEvaluated: false, issues: [
       { code: 'chart_support_unknown', subjectId: 'chart1' },
       { code: 'chart_semantic_alignment_unknown', subjectId: 'chart1' },

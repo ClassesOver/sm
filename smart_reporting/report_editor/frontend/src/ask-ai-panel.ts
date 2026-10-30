@@ -32,7 +32,7 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
   const resizeMin = 400
   const resizeMax = 760
   const availableMax = () => Math.max(resizeMin, Math.min(resizeMax, window.innerWidth - 80))
-  const currentWidth = () => Number.parseFloat(panel.style.getPropertyValue('--ask-ai-panel-width')) || Math.min(560, window.innerWidth)
+  const currentWidth = () => Number.parseFloat(panel.style.getPropertyValue('--ask-ai-panel-width')) || Math.min(640, window.innerWidth)
   const setWidth = (requested: number) => {
     const width = Math.round(Math.max(resizeMin, Math.min(availableMax(), requested)))
     panel.style.setProperty('--ask-ai-panel-width', `${width}px`)

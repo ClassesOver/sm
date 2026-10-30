@@ -863,7 +863,6 @@ def apply(
         section_code = arguments.get("sectionCode")
         charts = arguments.get("charts")
         files = arguments.get("files")
-        interactive_files = arguments.get("interactiveFiles", [])
         plot_data_files = arguments.get("plotDataFiles", [])
         visual_receipts = arguments.get("visualReceipts", [])
         if not isinstance(section_code, str) or not 1 <= len(section_code) <= 128:
@@ -873,7 +872,6 @@ def apply(
         if (
             not isinstance(charts, list)
             or not isinstance(files, list)
-            or not isinstance(interactive_files, list)
             or not isinstance(plot_data_files, list)
             or not isinstance(visual_receipts, list)
         ):
@@ -889,10 +887,6 @@ def apply(
             parsed_files = [
                 FileIdentity.model_validate(file).model_dump(mode="json", by_alias=True)
                 for file in files
-            ]
-            parsed_interactive_files = [
-                FileIdentity.model_validate(file).model_dump(mode="json", by_alias=True)
-                for file in interactive_files
             ]
             parsed_plot_data = [
                 {
@@ -934,27 +928,10 @@ def apply(
             raise ReportingStateError(
                 "report_visualization_section_invalid", "作图数据必须绑定本次提交的唯一图表。"
             )
-        for chart in parsed_charts:
-            if chart["renderer"] == "matplotlib":
-                chart.pop("renderer")
-                chart.pop("interactivePath")
-        interactive_paths = [item["path"] for item in parsed_interactive_files]
-        declared_paths = [
-            chart["interactivePath"] for chart in parsed_charts if chart.get("renderer") == "plotly"
-        ]
         if len(chart_ids) != len(set(chart_ids)) or len(source_paths) != len(set(source_paths)):
             raise ReportingStateError(
                 "report_visualization_section_conflict",
                 "章节图表提交包含重复 chartId 或 sourcePath。",
-            )
-        if (
-            len(interactive_paths) != len(set(interactive_paths))
-            or set(interactive_paths) != set(declared_paths)
-            or set(interactive_paths) & set(source_paths)
-        ):
-            raise ReportingStateError(
-                "report_visualization_section_invalid",
-                "Plotly 图表与交互文件身份未精确配对。",
             )
         sections = payload.setdefault("visualizationSections", {})
         if not isinstance(sections, dict):
@@ -970,11 +947,9 @@ def apply(
                 )
             existing_charts = existing_section.get("charts")
             existing_files = existing_section.get("files")
-            existing_interactive_files = existing_section.get("interactiveFiles", [])
             if (
                 not isinstance(existing_charts, list)
                 or not isinstance(existing_files, list)
-                or not isinstance(existing_interactive_files, list)
             ):
                 raise ReportingStateError(
                     "report_state_invalid", "visualizationSections 状态损坏。"
@@ -982,7 +957,6 @@ def apply(
             if (
                 existing_charts != parsed_charts
                 or existing_files != parsed_files
-                or existing_interactive_files != parsed_interactive_files
                 or existing_section.get("plotDataFiles", []) != parsed_plot_data
                 or existing_section.get("visualReceipts", []) != parsed_receipts
             ):
@@ -992,7 +966,6 @@ def apply(
                 )
         existing_chart_ids: set[str] = set()
         existing_source_paths: set[str] = set()
-        existing_interactive_paths: set[str] = set()
         for existing_section_code, existing_section in sections.items():
             if existing_section_code == section_code:
                 continue
@@ -1013,21 +986,15 @@ def apply(
                         existing_chart_ids.add(chart_id)
                     if isinstance(source_path, str):
                         existing_source_paths.add(source_path)
-            for file in existing_section.get("interactiveFiles", []):
-                if isinstance(file, Mapping) and isinstance(file.get("path"), str):
-                    existing_interactive_paths.add(file["path"])
         if (
             set(chart_ids) & existing_chart_ids
-            or set(source_paths) & (existing_source_paths | existing_interactive_paths)
-            or set(interactive_paths) & (existing_source_paths | existing_interactive_paths)
+            or set(source_paths) & existing_source_paths
         ):
             raise ReportingStateError(
                 "report_visualization_section_conflict",
                 "章节图表与既有章节包含重复 chartId 或 sourcePath。",
             )
         sections[section_code] = {"charts": parsed_charts, "files": parsed_files}
-        if parsed_interactive_files:
-            sections[section_code]["interactiveFiles"] = parsed_interactive_files
         if parsed_plot_data:
             sections[section_code]["plotDataFiles"] = parsed_plot_data
         if parsed_receipts:

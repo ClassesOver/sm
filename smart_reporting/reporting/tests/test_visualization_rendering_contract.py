@@ -66,93 +66,47 @@ def _draft_payload(**overrides: object) -> dict[str, object]:
     }
 
 
-def test_report_request_visualization_mode_defaults_to_static_and_serializes_override() -> None:
+def test_report_request_only_accepts_static_visualization_mode() -> None:
     assert _request().visualization_mode == "static"
-    assert (
-        _request(visualizationMode="interactive").model_dump(by_alias=True)["visualizationMode"]
-        == "interactive"
-    )
+    assert _request(visualizationMode="static").model_dump(by_alias=True)["visualizationMode"] == "static"
+    with pytest.raises(ValidationError):
+        _request(visualizationMode="interactive")
+    with pytest.raises(ValidationError):
+        _request(visualizationMode="auto")
 
 
-def test_legacy_chart_payload_defaults_to_matplotlib() -> None:
+def test_chart_contracts_reject_renderer_and_companion_fields() -> None:
     draft = ChartDraft.model_validate(_draft_payload())
     registration = ReportChartRegistration.model_validate(_chart_payload())
-
-    assert draft.renderer == "matplotlib"
-    assert draft.interactive_path is None
-    assert registration.renderer == "matplotlib"
-    assert registration.interactive_path is None
-
-
-def test_plotly_chart_requires_safe_plotly_json_companion() -> None:
-    with pytest.raises(ValidationError, match="interactivePath"):
-        ReportChartRegistration.model_validate(_chart_payload(renderer="plotly"))
-
-    registration = ReportChartRegistration.model_validate(
-        _chart_payload(
-            renderer="plotly",
-            interactivePath="analysis/charts/income.plotly.json",
-        )
-    )
-
-    assert registration.interactive_path == "analysis/charts/income.plotly.json"
-
-
-@pytest.mark.parametrize(
-    ("renderer", "interactive_path"),
-    [
-        ("matplotlib", "analysis/charts/income.plotly.json"),
-        ("plotly", "analysis/charts/income.json"),
-        ("plotly", "../income.plotly.json"),
-    ],
-)
-def test_chart_rejects_inconsistent_interactive_companion(
-    renderer: str, interactive_path: str
-) -> None:
-    with pytest.raises(ValidationError):
-        ChartDraft.model_validate(
-            _chart_payload(renderer=renderer, interactivePath=interactive_path)
-        )
-
-
-def test_analysis_chart_preserves_plotly_companion_identity() -> None:
-    chart = AnalysisChart.model_validate(
+    frozen = AnalysisChart.model_validate(
         {
-            key: value
-            for key, value in _chart_payload(
-                renderer="plotly",
-            ).items()
-            if key not in {"sourcePath"}
-        }
-        | {
-            "sourceFile": {
-                "path": "analysis/charts/income.png",
-                "size": 10,
-                "sha256": "a" * 64,
-            },
-            "interactiveFile": {
-                "path": "analysis/charts/income.plotly.json",
-                "size": 20,
-                "sha256": "b" * 64,
-            },
+            "chartId": "income-trend",
+            "sourceFile": {"path": "analysis/charts/income.png", "size": 10, "sha256": "a" * 64},
+            "title": "收入趋势",
+            "altText": "收入趋势图",
+            "citationIds": ["citation-1"],
+            "metricCodes": ["income"],
+            "currentPeriod": "2026-01 至 2026-08",
+            "sourceDatasetId": "dataset-1",
+            "aggregationGrain": "month",
         }
     )
 
-    assert chart.renderer == "plotly"
-    assert chart.interactive_file is not None
-    assert chart.interactive_file.sha256 == "b" * 64
+    assert "renderer" not in draft.model_dump()
+    assert "renderer" not in registration.model_dump()
+    assert "renderer" not in frozen.model_dump()
+    for model, payload in (
+        (ChartDraft, _draft_payload(renderer="plotly", interactivePath="chart.plotly.json")),
+        (ReportChartRegistration, _chart_payload(renderer="plotly", interactivePath="chart.plotly.json")),
+        (AnalysisChart, {**frozen.model_dump(by_alias=True), "renderer": "plotly"}),
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
 
 
-def test_visualization_task_signs_both_plotly_outputs() -> None:
-    chart = ChartDraft.model_validate(
-        _draft_payload(
-            renderer="plotly",
-            interactivePath="analysis/charts/income.plotly.json",
-        )
-    )
-
+def test_visualization_task_signs_only_static_image_outputs() -> None:
+    chart = ChartDraft.model_validate(_draft_payload())
     assert _visualization_output_paths(VisualizationPlanDraft(charts=(chart,))) == (
-        "analysis/charts/income.plotly.json",
         "analysis/charts/income.png",
     )
 
@@ -172,20 +126,14 @@ def test_visualization_registration_drops_coding_only_plan_fields() -> None:
     assert ReportChartRegistration.model_validate(payload).chart_id == "income-trend"
 
 
-def test_plotly_visual_review_only_requires_raster_receipt() -> None:
-    chart = ChartDraft.model_validate(
-        _draft_payload(
-            renderer="plotly",
-            interactivePath="analysis/charts/income.plotly.json",
-        )
-    )
+def test_static_visual_review_requires_raster_receipt() -> None:
+    chart = ChartDraft.model_validate(_draft_payload())
     image = FileIdentity(path=chart.source_path, size=10, sha256="a" * 64)
-    companion = FileIdentity(path=chart.interactive_path, size=20, sha256="b" * 64)
     script = FileIdentity(path="analysis/charts/chart.py", size=5, sha256="c" * 64)
     result = CodeGenerationResult(
         script_file=script,
         execution_receipt=ExecutionReceipt(
-            runId="run-1", sourceFile=script, outputFiles=(image, companion)
+            runId="run-1", sourceFile=script, outputFiles=(image,)
         ),
         visual_inspection_receipts=(
             ChartVisualInspectionReceipt(
@@ -201,33 +149,15 @@ def test_plotly_visual_review_only_requires_raster_receipt() -> None:
     assert len(_validated_visual_receipts(result, VisualizationPlanDraft(charts=(chart,)))) == 1
 
 
-def test_analysis_freeze_binds_plotly_identity_without_leaking_source_paths() -> None:
-    registration = _chart_payload(
-        renderer="plotly",
-        interactivePath="analysis/charts/income.plotly.json",
-    )
+def test_analysis_freeze_binds_static_chart_without_leaking_source_paths() -> None:
+    registration = _chart_payload()
     chart = _analysis_chart_from_registration(
         registration,
         {"path": "analysis/charts/income.png", "size": 10, "sha256": "a" * 64},
-        {"path": "analysis/charts/income.plotly.json", "size": 20, "sha256": "b" * 64},
     )
 
-    assert chart.interactive_file is not None
-    assert chart.interactive_file.path == "analysis/charts/income.plotly.json"
-    assert "interactivePath" not in chart.model_dump(by_alias=True)
-
-
-def test_analysis_freeze_rejects_missing_plotly_identity() -> None:
-    registration = _chart_payload(
-        renderer="plotly",
-        interactivePath="analysis/charts/income.plotly.json",
-    )
-    with pytest.raises(ReportingError, match="交互文件"):
-        _analysis_chart_from_registration(
-            registration,
-            {"path": "analysis/charts/income.png", "size": 10, "sha256": "a" * 64},
-            None,
-        )
+    assert chart.source_file.path == "analysis/charts/income.png"
+    assert "interactiveFile" not in chart.model_dump(by_alias=True)
 
 
 _SOURCE_FILE = {"path": "analysis/charts/income.png", "size": 10, "sha256": "a" * 64}
@@ -254,7 +184,7 @@ _VISION_RECEIPT = {
 def test_analysis_freeze_keeps_matching_visual_receipt(
     receipt: dict[str, object] | None, expected_mode: str, expected_status: str
 ) -> None:
-    chart = _analysis_chart_from_registration(_chart_payload(), _SOURCE_FILE, None, receipt)
+    chart = _analysis_chart_from_registration(_chart_payload(), _SOURCE_FILE, visual_receipt=receipt)
 
     frozen = chart.model_dump(by_alias=True)["visualInspectionReceipt"]
     assert frozen["inspectionMode"] == expected_mode

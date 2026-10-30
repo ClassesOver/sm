@@ -9,7 +9,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 # 视觉主题属于服务端渲染契约，而不是模型自由生成的正文内容。PDF、Word、沙箱内
-# Matplotlib/Plotly 默认样式与编辑器交互图表共同引用 theme.py 中这一份科技蓝
+# Matplotlib 默认样式与编辑器图表共同引用 theme.py 中这一份科技蓝
 # 颜色事实，避免封面、正文和图表各自选色；图表类型、系列数量和强调对象仍由模型
 # 根据数据决定，琥珀/绿色仅用于语义强调。
 from .theme import REPORT_VISUAL_THEME

@@ -33,7 +33,7 @@ from .runtime.phase_models import VisualizationPlanDraft
 
 _VISUALIZATION_BENCHMARK_IDENTITY_INSTRUCTIONS = (
     "planner 请求中的 requiredCharts 是冻结的图表身份契约：必须逐字使用每项的 "
-    "chartId、sourcePath、interactivePath（null 表示无交互产物）；"
+    "chartId、sourcePath；"
     "不得新增、删除、改名图表或改动任何路径。",
 )
 
@@ -93,12 +93,7 @@ def build_benchmark_planner_agent(
 
 
 def _visualization_paths(plan: VisualizationPlanDraft) -> set[str]:
-    return {
-        path
-        for chart in plan.charts
-        for path in (chart.source_path, chart.interactive_path)
-        if path is not None
-    }
+    return {chart.source_path for chart in plan.charts}
 
 
 def _validate_required_charts_identity(
@@ -136,9 +131,7 @@ def _validate_required_charts_identity(
     for chart_id in sorted(set(required_by_id) & set(planned_by_id)):
         required_item = required_by_id[chart_id]
         chart = planned_by_id[chart_id]
-        if chart.source_path != required_item.get(
-            "sourcePath"
-        ) or chart.interactive_path != required_item.get("interactivePath"):
+        if chart.source_path != required_item.get("sourcePath"):
             mismatches.append(chart_id)
     if missing or unexpected or mismatches:
         raise ReportingError(

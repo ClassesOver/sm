@@ -744,28 +744,6 @@ async def test_reporting_runtime_rejects_tampered_truncated_tool_output(
         )
 
 
-@pytest.mark.anyio
-async def test_reporting_runtime_workspace_adapter_inspects_plotly_file(tmp_path: Path) -> None:
-    registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
-    registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
-    router = ReportingWorkspaceRouter(registry)
-    runtime = ReportingTaskRuntime(router, object())
-    content = json.dumps(
-        {"data": [{"type": "bar", "x": ["一月", "二月"], "y": [10, 12]}]},
-        ensure_ascii=False,
-    ).encode("utf-8")
-    await router.awrite_bytes("workspace-1", "analysis/charts/income.plotly.json", content)
-
-    result = await runtime.workspace.inspect_plotly_file(
-        "workspace-1", "analysis/charts/income.plotly.json"
-    )
-
-    assert result["sourcePath"] == "analysis/charts/income.plotly.json"
-    assert result["size"] == len(content)
-    assert result["sha256"] == hashlib.sha256(content).hexdigest()
-    assert result["traceCount"] == 1
-
-
 def _host_workspace(tmp_path: Path) -> HostReportingWorkspace:
     registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
     return HostReportingWorkspace(

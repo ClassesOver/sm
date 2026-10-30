@@ -31,7 +31,6 @@ from smart_reporting.reporting.tools.workspace_adapter import (
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
-from smart_reporting.reporting.workspace import MAX_REPORT_PLOTLY_BYTES
 from smart_reporting.task_execution import abuild_workspace_changes
 from smart_reporting.workspace import WorkspaceError, normalize_workspace_path
 
@@ -180,63 +179,6 @@ async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -
         }
     ]
     assert not hasattr(adapter, "read_text")
-
-
-def _plotly_file_service(content: bytes) -> SimpleNamespace:
-    return SimpleNamespace(
-        normalize_path=normalize_workspace_path,
-        read_limited_regular_file=AsyncMock(return_value=content),
-    )
-
-
-@pytest.mark.anyio
-async def test_reporting_workspace_adapter_inspects_plotly_file_identity() -> None:
-    content = json.dumps(
-        {"data": [{"type": "bar", "x": ["一月", "二月"], "y": [10, 12]}]},
-        ensure_ascii=False,
-    ).encode("utf-8")
-    service = _plotly_file_service(content)
-    adapter = ReportingWorkspaceAdapter(service)  # type: ignore[arg-type]
-
-    result = await adapter.inspect_plotly_file("thread-1", "analysis/charts/s1/income.plotly.json")
-
-    assert result == {
-        "sourcePath": "analysis/charts/s1/income.plotly.json",
-        "size": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
-        "mediaType": "application/vnd.plotly.v1+json",
-        "traceCount": 1,
-    }
-    service.read_limited_regular_file.assert_awaited_once_with(
-        "thread-1", "analysis/charts/s1/income.plotly.json", max_bytes=MAX_REPORT_PLOTLY_BYTES
-    )
-
-
-@pytest.mark.anyio
-async def test_reporting_workspace_adapter_keeps_plotly_missing_failure_code() -> None:
-    service = SimpleNamespace(
-        normalize_path=normalize_workspace_path,
-        read_limited_regular_file=AsyncMock(
-            side_effect=WorkspaceError("工作区路径不存在，请检查名称后重试。")
-        ),
-    )
-    adapter = ReportingWorkspaceAdapter(service)  # type: ignore[arg-type]
-
-    with pytest.raises(ReportingError) as caught:
-        await adapter.inspect_plotly_file("thread-1", "analysis/charts/s1/income.plotly.json")
-
-    assert caught.value.code == "report_plotly_file_missing"
-    assert caught.value.details == {"sourcePath": "analysis/charts/s1/income.plotly.json"}
-
-
-@pytest.mark.anyio
-async def test_reporting_workspace_adapter_keeps_plotly_invalid_failure_code() -> None:
-    adapter = ReportingWorkspaceAdapter(_plotly_file_service(b"not-json"))  # type: ignore[arg-type]
-
-    with pytest.raises(ReportingError) as caught:
-        await adapter.inspect_plotly_file("thread-1", "analysis/charts/s1/income.plotly.json")
-
-    assert caught.value.code == "report_plotly_source_invalid"
 
 
 @pytest.mark.anyio
@@ -1011,28 +953,6 @@ async def test_visualization_python_source_gate_enforces_rendering_policy(source
 
 
 @pytest.mark.anyio
-async def test_visualization_python_source_accepts_plotly_and_matplotlib_fallback() -> None:
-    path = "analysis/charts/s1/charts.py"
-    harness = object.__new__(RuntimeAnalysisMixin)
-    harness._phase_parameters = lambda *_args: (
-        {},
-        {"taskKind": "visualization_section", "visualizationWorkspace": {"scriptPath": path}},
-    )
-    source = (
-        "import plotly.graph_objects as go\n"
-        "import matplotlib\nmatplotlib.use('Agg')\n"
-        "import matplotlib.pyplot as plt\n"
-        "fig = go.Figure(data=[go.Bar(x=[1], y=[2])])\n"
-        "fig.write_json('analysis/charts/s1/chart.plotly.json')\n"
-        "plt.savefig('analysis/charts/s1/chart.png')\n"
-    )
-    await harness._preflight_analysis_python_write(
-        scope=SimpleNamespace(thread_id="thread-1"),
-        tool_name="apply_analysis_patch",
-        canonical={"operations": [{"operation": "create", "path": path, "content": source}]},
-    )
-
-
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "path,source",

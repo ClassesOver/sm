@@ -62,9 +62,8 @@ def _remap_references(value: Any, resource_ids: Mapping[str, str]) -> Any:
 def _lineage_identities(
     manifest: ReportArtifactManifest, index: RevisionTraceIndexV1 | None
 ) -> dict[str, Any]:
-    """新 revision 需要随迁的全部登记文件（图表、交互图规格与索引登记文件）。"""
+    """新 revision 需要随迁的全部登记图表与索引文件。"""
     identities: dict[str, Any] = {chart.path: chart for chart in manifest.charts}
-    identities.update({chart.interactive_spec.path: chart.interactive_spec for chart in manifest.charts if chart.interactive_spec})
     if index is not None:
         identities.update({file.path: file for file in index.files if file.resource_id != index.markdown_file_resource_id})
     return identities
@@ -189,9 +188,6 @@ async def snapshot_revision_lineage(
     payload.update(revision=target_revision, markdown=markdown_file.model_dump(mode="json", by_alias=True), traceIndex=trace_identity.model_dump(mode="json", by_alias=True) if trace_identity else None)
     for chart in payload["charts"]:
         chart["path"] = path_map.get(chart["path"], chart["path"])
-        if chart["interactiveSpec"]:
-            spec = chart["interactiveSpec"]
-            spec["path"] = path_map.get(spec["path"], spec["path"])
     rebound_manifest = ReportArtifactManifest.model_validate(payload)
     identity = await write_registered_json(workspace, thread_id, manifest_path, canonical_json_bytes(rebound_manifest.model_dump(mode="json", by_alias=True)))
     return rebound_manifest, identity
@@ -211,8 +207,7 @@ async def rebuild_edited_manifest(
     """Rebuild edited structure using authoritative marker/image/table parsers.
 
     ``edited_charts`` 登记编辑器 AI 改图产物：键为正文中绑定的图片路径，
-    值为服务端按改图登记核验身份后构造的 ChartArtifact（renderer 固定
-    matplotlib，无交互规格）。未登记且不在其中的图片仍拒绝。
+    值为服务端按改图登记核验身份后构造的静态 ChartArtifact。未登记且不在其中的图片仍拒绝。
     """
     current = await workspace.ahash_file(thread_id, markdown_path)
     markdown_file = ArtifactFile(path=markdown_path, mediaType="text/markdown", size=current["size"], sha256=current["sha256"])
@@ -236,11 +231,9 @@ async def rebuild_edited_manifest(
         chart = known.get(path)
         if chart is None:
             raise ReportingError("report_artifact_chart_invalid", "Edited chart is not registered.")
-        for identity in (chart, chart.interactive_spec):
-            if identity is not None:
-                current = await workspace.ahash_file(thread_id, identity.path)
-                if current.get("size") != identity.size or current.get("sha256") != identity.sha256:
-                    raise ReportingError("snapshot_integrity_failed", "Frozen chart identity changed.")
+        current = await workspace.ahash_file(thread_id, chart.path)
+        if current.get("size") != chart.size or current.get("sha256") != chart.sha256:
+            raise ReportingError("snapshot_integrity_failed", "Frozen chart identity changed.")
         payload = chart.model_dump(mode="json", by_alias=True)
         payload.update(datasetIds=bindings[path])
         charts.append(ChartArtifact.model_validate(payload))

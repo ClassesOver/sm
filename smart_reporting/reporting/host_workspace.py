@@ -754,11 +754,6 @@ class HostReportingWorkspace:
 
         return await inspect_report_chart_file(self, thread_id=thread_id, path=path)
 
-    async def inspect_plotly_file(self, thread_id: str, path: str) -> dict[str, Any]:
-        from .workspace import inspect_report_plotly_file
-
-        return await inspect_report_plotly_file(self, thread_id=thread_id, path=path)
-
     async def aapply_changes(self, thread_id: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_PATCH_FILES:
             raise WorkspaceError(f"变更集必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
@@ -1069,9 +1064,6 @@ class ReportingWorkspaceRouter:
 
     async def inspect_chart_file(self, thread_id: str, path: str) -> dict[str, Any]:
         return await self.workspace(thread_id).inspect_chart_file(thread_id, path)
-
-    async def inspect_plotly_file(self, thread_id: str, path: str) -> dict[str, Any]:
-        return await self.workspace(thread_id).inspect_plotly_file(thread_id, path)
 
     async def aview_image(self, thread_id: str, path: str) -> ToolResult:
         return await self.workspace(thread_id).aview_image(thread_id, path)

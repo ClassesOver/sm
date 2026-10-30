@@ -95,7 +95,7 @@ async def test_ledger_groups_dependencies_without_losing_or_adjudicating_issues(
     issues = (
         QualityIssue(code="assertion_support_unknown", subjectId=subject.subject_id, reasons=("scope_unknown",)),
         QualityIssue(code="assertion_support_unknown", subjectId=copy.subject_id, reasons=("scope_value_unknown",)),
-        QualityIssue(code="chart_support_unknown", subjectId="chart-1", reasons=("interactive_spec_unregistered",)),
+        QualityIssue(code="chart_support_unknown", subjectId="chart-1", reasons=("chart_unregistered",)),
         QualityIssue(code="chart_semantic_alignment_unknown", subjectId="chart-1", reasons=("chart_arrays_unverified",)),
         QualityIssue(code="future_check", reasons=("future_reason",)),
         QualityIssue(code="future_check", reasons=()),
