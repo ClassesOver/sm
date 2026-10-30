@@ -244,11 +244,14 @@ def prepare_standard_domains(chart, config, document, display, *, profiles_overr
                 "standardDomains",
                 "普通对数的范围与刻度必须严格正数。",
             )
-        if not profile["unit"]:
+        if not profile["unit"] and (
+            spec.minimum is not None or spec.maximum is not None or spec.ticks
+        ):
             fail(
                 "standard_domain_units_missing",
                 "standardDomains",
-                "显式数值范围需要已登记的显示单位。",
+                "显式数值范围需要已登记的显示单位；未知单位时可移除非业务必需的 "
+                "standardDomains 和单位换算，保留原值使用自动坐标；不得从标题猜测单位。",
             )
         zero_required = (
             axes["zero_baseline"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, cast
@@ -66,6 +67,51 @@ def _binding(tmp_path: Path, *, task_kind: str = "visualization") -> ReportingCo
         ),
         workspace,  # type: ignore[arg-type]
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("image_count", [1, 2])
+async def test_view_image_returns_successful_static_image_reviews(tmp_path: Path, image_count: int):
+    binding = _binding(tmp_path)
+    paths = ("charts/chart.png", "charts/second.png")[:image_count]
+    binding.context = replace(
+        binding.context, declared_output_paths=paths,
+        authorized_write_paths=("charts/charts.py", *paths),
+    )
+    binding.workspace.files["charts/second.png"] = {
+        "path": "charts/second.png", "size": 9, "sha256": "c" * 64,
+    }
+    outputs = tuple(FileIdentity.model_validate(binding.workspace.files[path]) for path in paths)
+    binding.execution_receipt = ExecutionReceipt(
+        runId="run-1",
+        sourceFile=FileIdentity.model_validate(binding.workspace.files["charts/charts.py"]),
+        outputFiles=outputs,
+    )
+    reviews = {
+        output.path: ChartVisualInspectionReceipt(
+            sourcePath=output.path, sha256=output.sha256, inspectionMode="vision",
+            visualReviewStatus="passed", modelId="vision-test", reviewed=True,
+            requiresRevision=False,
+        )
+        for output in outputs
+    }
+    reviewer = AsyncMock()
+    reviewer.review.side_effect = lambda _workspace, path, **kwargs: reviews[path]
+    toolkit = ReportingCodeModeToolkit(
+        binding, SimpleNamespace(), ReportingLspProcessManager(), vision_reviewer=reviewer,
+    )
+
+    if image_count == 1:
+        result = await toolkit.view_image(path=paths[0])
+    else:
+        result = await toolkit.view_image(paths=list(paths))
+
+    assert result["ok"] is True
+    assert result["freshReviewCount"] == image_count
+    receipts = [result["receipt"]] if image_count == 1 else result["receipts"]
+    assert [receipt["sourcePath"] for receipt in receipts] == list(paths)
+    assert all(receipt["visualReviewStatus"] == "passed" for receipt in receipts)
+    assert binding.visual_inspection_receipts == reviews
 
 
 def test_view_image_projects_model_receipt_but_keeps_full_audit_receipt(

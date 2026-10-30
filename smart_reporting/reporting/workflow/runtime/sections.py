@@ -1592,7 +1592,7 @@ async def _run_section_stage(
 def _section_stage_thinking_request(
     request: ThinkingRequest, stage: str, *, block_count: int = 1
 ) -> ThinkingRequest:
-    """规划独立推理；正文只在自己的结构纠错中升级。"""
+    """各阶段尊重思考开关；正文只在自己的结构纠错中升级。"""
 
     is_plan = stage == "plan"
     return ThinkingRequest(
@@ -1601,13 +1601,8 @@ def _section_stage_thinking_request(
         attempt=request.attempt if is_plan else 0,
         failure_kind=request.failure_kind if is_plan else None,
         configured_budget_cap=request.configured_budget_cap,
-        # 正文不继承规划阶段的显式 effort；默认请求仍可使用基础预算，
-        # 规划失败恢复时则关闭正文思考，避免在同一失败上下文重复消耗调用。
-        thinking_enabled=(
-            request.thinking_enabled
-            if is_plan
-            else request.thinking_enabled and request.reasoning_effort is None and request.failure_kind is None
-        ),
+        # 正文与语义复核使用自身基础预算，不因规划的 effort 或恢复状态关闭思考。
+        thinking_enabled=request.thinking_enabled,
         reasoning_effort=request.reasoning_effort if is_plan else None,
         section_block_count=block_count if stage == "content" else 1,
     )
@@ -3221,7 +3216,11 @@ async def _interpret_section_claims(
     # 逐项解释含范围、期间与数量关系，50 处一次输出会被端点截断；限制输出批量，
     # 再按实际路由输入预算缩小批量，不裁章节或来源家族。未发送前拆批不消耗模型调用。
     start = 0
+    batch_number = 0
     while start < len(references):
+        batch_number += 1
+        batch_started = time.monotonic()
+        batch_status = 'failed'
         batch = references[start:start + 10]
         try:
             payload = batch_payload(batch)
@@ -3236,6 +3235,10 @@ async def _interpret_section_claims(
                 if request_tokens > input_budget:
                     raise ReportingError('report_section_context_too_large',
                                          '单条语义复核的完整上下文超过输入预算，保留待复核。')
+            loguru_logger.info(
+                'report_claim_semantics_batch_started section={} batch={} processed={} total={} batch_size={}',
+                section_code, batch_number, start, len(references), len(batch),
+            )
             result = await _run_section_stage(
                 agent, SectionSemanticReview, 'semantics', payload,
                 scope=scope, run_context=run_context, thinking_request=_section_stage_thinking_request(
@@ -3246,6 +3249,7 @@ async def _interpret_section_claims(
                 raise ValueError('semantic_review_output_invalid')
             batch_ids = {item['claimId'] for item in batch}
             items.extend(item for item in result.interpretations if item.claim_id in batch_ids)
+            batch_status = 'completed'
         except Exception as error:
             details = error.details if isinstance(error, ReportingError) and isinstance(error.details, Mapping) else {}
             issues = [{'loc': issue.get('loc'), 'type': issue.get('type')}
@@ -3253,6 +3257,11 @@ async def _interpret_section_claims(
             loguru_logger.warning('report_claim_semantics_unavailable section={} batch={} error={} issues={}',
                                  section_code, start, type(error).__name__, issues)
         start += len(batch)
+        loguru_logger.info(
+            'report_claim_semantics_batch_completed section={} batch={} processed={} total={} status={} elapsed_ms={}',
+            section_code, batch_number, start, len(references), batch_status,
+            round((time.monotonic() - batch_started) * 1000),
+        )
     known_ids = {item['claimId'] for item in references}
     by_id = {item.claim_id: item for item in items if item.claim_id in known_ids
              and sum(other.claim_id == item.claim_id for other in items) == 1}

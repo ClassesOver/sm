@@ -178,16 +178,23 @@ def _validate_visualization_plan_bindings(
             if declared_fields is not None and set(binding.fields).issubset(declared_fields):
                 corrected_bindings.append(binding)
                 continue
-            # 生产实证（cli-report-e556f25b 复盘）：planner 可能把 supplement 形状的
-            # dataPath（如 findings[1].rows）签到 facts 文件上，模型照计划执行必然
-            # KeyError。字段集合在该 analysisId 的签发描述中唯一匹配时自动改指；
-            # 否则按结构错误终止本 Task，由报告级 fresh attempt 携错误上下文重签。
+            # 先保留精确表索引修正文件，避免收入/成本表同列而被判为歧义。
+            # 字段兜底只在同类数据结构中匹配，不能把 findings 改成 metrics。
             binding_fields = frozenset(binding.fields)
+            root = binding.data_path.split('[', 1)[0].split('.', 1)[0]
             candidates = [
                 (path, data_path)
                 for path, data_path, fields in by_analysis.get(binding.analysis_id, ())
                 if binding_fields and binding_fields == set(fields)
+                and data_path.split('[', 1)[0].split('.', 1)[0] == root
             ]
+            exact_tables = [
+                (path, data_path)
+                for path, data_path, fields in by_analysis.get(binding.analysis_id, ())
+                if data_path == binding.data_path and binding_fields and binding_fields <= fields
+            ]
+            if exact_tables:
+                candidates = exact_tables
             if len(candidates) == 1:
                 corrected_path, corrected_data_path = candidates[0]
                 logger.bind(
@@ -199,7 +206,7 @@ def _validate_visualization_plan_bindings(
                     corrected_data_path=corrected_data_path,
                 ).warning(
                     "report_visualization_binding_autocorrected chart_id={} "
-                    "dataPath={} -> {} 字段唯一匹配，自动改指。",
+                    "dataPath={} -> {} 签发表结构唯一匹配，自动改指。",
                     chart.chart_id,
                     binding.data_path,
                     corrected_data_path,
@@ -719,6 +726,9 @@ class VisualizationSectionWorkflow:
                         "standardChartCorrections只纠正指出图的standard*参数，沿用原图ID、路径、期间、口径和数据绑定；"
                         "仅bindingCorrectionAllowed=true时可在同一analysis已签发的dataDescriptors中重选来源，"
                         "修复空系列或期间错绑；不得补零、改写事实或更改业务比较目标。"
+                        "结合各图sources的列和登记元数据显式选择standardValueFields，排名与占比不能混入金额轴；"
+                        "缺少单位时不得猜测；仅为排版设置的standardDomains或单位换算可清空，保留原值自动坐标。"
+                        "来源身份正确但缺失元数据时，不得换用其他指标、量纲或业务口径来提高命中。"
                         "按standardChartCapabilities选择机器类型、显式同月映射或摘要聚合。确实超出能力则standardForm=custom，不得改写事实。",
                     }, run_context)
                     repaired = _validate_visualization_plan_bindings(repaired, payload)

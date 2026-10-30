@@ -216,6 +216,7 @@ async def _run_standard_chart_routes(
                         message="该图标准执行或独立视觉验收失败。",
                         suggestion="按该图诊断修复，保留其他图的标准方案。",
                         errorType=type(error).__name__,
+                        errorMessage=str(error)[:500],
                     ),
                 )
         if result is None:
@@ -246,10 +247,11 @@ async def _run_standard_chart_routes(
             )
         )
         logger.info(
-            "report_visualization_chart_route chart={} route={} diagnostic={}",
+            "report_visualization_chart_route chart={} route={} diagnostic={} details={}",
             chart.chart_id,
             route,
             (diagnostic or {}).get("code"),
+            json.dumps(diagnostic, ensure_ascii=False, default=str)[:2000] if diagnostic else "-",
         )
 
     final_context = replace(
