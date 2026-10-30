@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import copy
 from datetime import date, datetime
@@ -821,6 +822,8 @@ class _ReportWorkflowRuntimeBase:
         self.reporting_execution_mode = reporting_execution_mode
         self.section_whole_generation = section_whole_generation
         self._durable_command_lock = asyncio.Lock()
+        # externalRunId -> (reportRunId, 本实例最近一次写入后的 stateVersion)。
+        self._durable_versions: OrderedDict[str, tuple[str, int]] = OrderedDict()
         self._checkpoint_persist_lock = asyncio.Lock()
         self.datasets = ReportDatasetStore(workspace_service)
         self.report_tools = WorkspaceReportService(workspace_service, data_sources=self.datasets)
@@ -1483,26 +1486,49 @@ class _ReportWorkflowRuntimeBase:
         report_run_id = str(run_context.run_id or scope["externalRunId"])
         # 多个章节 child task 可以同时完成；CAS 冲突只重读当前版本并重放同一
         # commandId。Reducer 对已应用 command 返回幂等结果，副作用不会重复。
+        external_run_id = scope["externalRunId"]
+        versions = getattr(self, "_durable_versions", None)
+        if versions is None:
+            versions = self._durable_versions = OrderedDict()
         async with self._durable_command_lock:
-            for _ in range(3):
-                durable = await self.state_repository.get_by_external_run_id(scope["externalRunId"])
-                if durable is None:
-                    durable = await self.state_repository.get_or_create(
-                        report_run_id=report_run_id,
-                        external_run_id=scope["externalRunId"],
-                        thread_id=scope["callerThreadId"],
-                        owner_user_id=scope["userId"],
-                    )
+            # 状态行可达 MB 级：本实例刚写过时直接用已知版本做 CAS，免去每条命令先整行
+            # 读取一次；版本被其他写入方推进时 CAS 冲突，再按原逻辑重读（重读次数不变）。
+            known = versions.get(external_run_id)
+            for attempt in range(4 if known is not None else 3):
+                if known is not None and attempt == 0:
+                    durable_run_id, durable_version = known
+                else:
+                    durable = await self.state_repository.get_by_external_run_id(external_run_id)
+                    if durable is None:
+                        durable = await self.state_repository.get_or_create(
+                            report_run_id=report_run_id,
+                            external_run_id=external_run_id,
+                            thread_id=scope["callerThreadId"],
+                            owner_user_id=scope["userId"],
+                        )
+                    durable_run_id, durable_version = durable.report_run_id, durable.state_version
                 try:
-                    return await self.state_repository.apply(
-                        durable.report_run_id,
+                    result = await self.state_repository.apply(
+                        durable_run_id,
                         command,
-                        expected_version=durable.state_version,
+                        expected_version=durable_version,
                     )
                 except ReportingStateError as error:
                     if error.code == "report_state_conflict":
                         continue
+                    if known is not None and attempt == 0 and error.code == "report_state_not_found":
+                        # 缓存的状态行已不存在：丢弃缓存，按原逻辑重读或创建。
+                        versions.pop(external_run_id, None)
+                        continue
                     raise ReportingError(error.code, error.message) from error
+                state = getattr(result, "state", None)
+                version = getattr(state, "state_version", None)
+                if isinstance(version, int) and not isinstance(version, bool):
+                    versions[external_run_id] = (durable_run_id, version)
+                    versions.move_to_end(external_run_id)
+                    while len(versions) > 256:
+                        versions.popitem(last=False)
+                return result
             raise ReportingError("report_state_conflict", "Reporting 状态并发更新冲突，请重试。")
 
     @staticmethod
