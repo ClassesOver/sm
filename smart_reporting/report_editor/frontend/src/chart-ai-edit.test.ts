@@ -274,6 +274,53 @@ describe('createChartAIEdit', () => {
     controller.dispose()
   })
 
+  it('AI 不可用但标准预设可用时保留输入区，并在提交按钮下方常显原因', async () => {
+    const client = fakeClient({
+      chartAiAvailability: vi.fn(async () => ({ available: false, standardAvailable: true, reason: 'vision_missing' })),
+    })
+    const controller = createChartAIEdit({
+      view: fakeViewForController(),
+      client,
+      basePath: '/b',
+      pollIntervalMs: 1,
+    })
+    controller.open(mountEditorWithImage())
+    await vi.waitFor(() => {
+      expect(document.querySelector('#chart-ai-instruction')).not.toBeNull()
+    })
+    const note = document.querySelector('[data-role="ai-unavailable-note"]')
+    expect(note).not.toBeNull()
+    expect(note!.textContent).toContain('未配置视觉审查模型')
+    expect(note!.textContent).toContain('标准预设')
+    const textarea = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+    textarea.value = '改成折线图'; textarea.dispatchEvent(new Event('input'))
+    expect(document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.disabled).toBe(true)
+    controller.dispose()
+  })
+
+  it('标准预设通道不可用时置灰确定性预设并常显说明，AI 预设不受影响', async () => {
+    const client = fakeClient({
+      chartAiAvailability: vi.fn(async () => ({ available: true, standardAvailable: false, standardReason: 'unconfigured' })),
+    })
+    const controller = createChartAIEdit({
+      view: fakeViewForController(),
+      client,
+      basePath: '/b',
+      pollIntervalMs: 1,
+    })
+    controller.open(mountEditorWithImage())
+    await vi.waitFor(() => {
+      expect(document.querySelector('#chart-ai-instruction')).not.toBeNull()
+    })
+    const select = document.querySelector<HTMLSelectElement>('[id$="chart-ai-standard-preset"]')!
+    const pie = select.querySelector<HTMLOptionElement>('option[value="pie"]')!
+    const dual = select.querySelector<HTMLOptionElement>('option[value="dual"]')!
+    expect(pie.disabled).toBe(true)
+    expect(dual.disabled).toBe(false)
+    expect(document.querySelector('[id$="chart-ai-standard-help"]')!.textContent).toContain('暂不可用')
+    controller.dispose()
+  })
+
   it('成功后进入审阅卡，接受替换写回正文并回调 onReplaced', async () => {
     const client = fakeClient({
       chartAiEditStatus: vi.fn()
