@@ -530,7 +530,10 @@ try {
       buildAISuggestions: configureSelectionAISuggestions,
       diffReviewOnEnd: true,
       onError: (error) => {
-        rewriteError = error.message || 'AI 改写失败，已保留原文'
+        // 接口错误走统一标签（含请求编号），不要把错误码原文展示给用户；本地校验错误保留其自带说明。
+        rewriteError = error instanceof ReportEditorApiError
+          ? errorStatusLabel(error)
+          : error.message || 'AI 改写失败，已保留原文'
         status(rewriteError, 'error')
       },
     },
