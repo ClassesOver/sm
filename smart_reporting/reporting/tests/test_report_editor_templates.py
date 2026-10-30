@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from smart_reporting.report_editor.chart_templates import (
     TEMPLATE_IDS,
     build_chart_input,
+    matched_fact_name,
+    matched_pointer_count,
     materialize_chart_template,
     template_availability,
 )
@@ -160,3 +162,50 @@ def test_all_table_templates_disable_without_registered_facts() -> None:
         assert spec is None
         if template_id != "budget-execution":
             assert skipped
+
+
+def test_recommendation_signals_follow_the_bound_facts() -> None:
+    """推荐信号只认图表绑定的事实：命中计数与点名都随 fact_refs 变，无绑定则无信号。"""
+
+    def metric(letter: str, values: list[int]) -> dict[str, object]:
+        return {
+            "factId": "fact-" + letter * 16,
+            "datasetId": f"dataset-{letter}",
+            "datasetSha256": letter * 64,
+            "periodRoles": ["current"],
+            "metricCodes": [f"metric-{letter}"],
+            "field": f"metric_{letter}",
+            "fieldRef": f"source.table.metric_{letter}",
+            "displayName": f"指标{letter.upper()}",
+            "aggregation": "sum",
+            "unit": "元",
+            "formula": "sum",
+            "total": sum(values),
+            "missingCount": 0,
+            "zeroCount": 0,
+            "negativeCount": 0,
+            "periodGranularity": "month",
+            "periodValues": [
+                {"period": f"2025-{index + 1:02d}", "value": value}
+                for index, value in enumerate(values)
+            ],
+        }
+
+    bundle = DeterministicAnalysisBundle.model_validate(
+        {
+            "analysisId": "analysis_001",
+            "metrics": [metric("a", [1, 2, 3]), metric("b", [10, 20, 30])],
+        }
+    )
+    refs = (
+        SimpleNamespace(
+            fact_kind="metric",
+            fact_key="fact-bbbbbbbbbbbbbbbb",
+            json_pointer="/metrics/1",
+        ),
+    )
+    materialized = materialize_chart_template("monthly-trend", bundle, refs)
+    assert matched_pointer_count(materialized.source_pointers, refs) == 1
+    assert matched_fact_name(materialized.source_pointers, refs, bundle) == "指标B"
+    assert matched_pointer_count(materialized.source_pointers, ()) == 0
+    assert matched_fact_name(materialized.source_pointers, (), bundle) is None

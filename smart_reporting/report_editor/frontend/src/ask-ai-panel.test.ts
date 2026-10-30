@@ -32,20 +32,20 @@ describe('Ask AI shared sidebar', () => {
     session.remove()
   })
 
-  it('待采用时默认收起输入区，继续调整才展开并聚焦，切换会话保留展开状态', () => {
+  it('待采用时输入区仍固定展开在底部，继续调整聚焦输入，切换会话与重新生成都保持展开', () => {
     const chart = askAIPanel().createSession({ kind: 'chart', label: '收入', content: '<div data-role="body"></div>' })
     const table = askAIPanel().createSession({ kind: 'table', label: '收入表', content: '<div data-role="body"></div>' })
     chart.open()
     const form = document.createElement('div'); form.innerHTML = '<textarea></textarea>'
     chart.mountComposer(form); chart.setState('ready')
-    expect(chart.composer.hidden).toBe(true)
+    expect(chart.composer.hidden).toBe(false)
     chart.focusComposer()
     expect(chart.composer.hidden).toBe(false)
     expect(document.activeElement).toBe(form.querySelector('textarea'))
     table.open(); chart.open()
     expect(chart.composer.hidden).toBe(false)
     chart.setState('running'); chart.setState('ready')
-    expect(chart.composer.hidden).toBe(true)
+    expect(chart.composer.hidden).toBe(false)
     chart.remove(); table.remove()
   })
 

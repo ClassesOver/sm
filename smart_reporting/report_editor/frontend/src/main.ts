@@ -636,6 +636,7 @@ try {
       currentBodyValidation = null
       currentBodyValidationMarkdown = ''
       reviewBanner.hidden = reviewMode === 'idle' && !rewriteError
+      reviewBanner.dataset.state = reviewMode === 'idle' ? (rewriteError ? 'error' : 'idle') : reviewMode
       if (reviewMode === 'idle' && rewriteError) {
         reviewBanner.textContent = `AI 改写未应用，原稿已保留。${rewriteError}`
         rewriteError = ''
