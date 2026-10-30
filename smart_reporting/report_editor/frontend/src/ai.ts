@@ -51,9 +51,9 @@ function isSelectionAIAction(value: string): value is SelectionAIAction {
 export function selectionAIProvider(client: SelectionAIClient): AIProvider {
   return async function* (context, signal) {
     const selection = context.selection.trim()
-    if (!selection) throw new Error('report_editor_ai_selection_required')
+    if (!selection) throw new Error('请先选择要改写的正文。')
     const action = resolveSelectionAIAction(context.instruction)
-    if (!action) throw new Error('report_editor_ai_action_invalid')
+    if (!action) throw new Error('无法把输入对应到改写动作，请直接选择预设动作。')
     // Crepe 以 Markdown 序列化选区，协议标记会被转义为 \[\[...]]，需还原后再识别。
     const original = restoreProtocolMarkers(selection)
     const markers = findProtocolMarkers(original)
