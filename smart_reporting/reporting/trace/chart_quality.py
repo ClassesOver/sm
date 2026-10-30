@@ -29,6 +29,16 @@ class ChartQualityCheck(StrictModel):
     reason: str
 
 
+def standard_proof_source_ids(index: RevisionTraceIndexV1) -> set[str]:
+    """发布和编辑器使用同一份标准绘制证明依赖清单。"""
+    ids = {chart.script_file_resource_id for chart in index.chart_traces
+           if chart.standard_render_proof is not None and chart.script_file_resource_id is not None}
+    digests = {entry.get("sha256") for chart in index.chart_traces
+               if chart.standard_render_proof is not None for entry in chart.standard_render_proof.inputs}
+    ids.update(file.resource_id for file in index.files if file.sha256 in digests)
+    return ids
+
+
 def evaluate_chart_quality(
     index: RevisionTraceIndexV1,
     markdown: str,
@@ -86,15 +96,18 @@ def evaluate_chart_quality(
                                               markdown_path=files[index.markdown_file_resource_id].path)
             if chart.presentation_sha256 is None or fingerprints != [chart.presentation_sha256]:
                 raise ValueError(reason)
-            if image.path not in interactive_charts:
+            static = image.path not in interactive_charts
+            if static and chart.standard_render_proof is None:
                 reason = "static_image_not_evaluated"
                 raise ValueError(reason)
-            spec = by_path.get(interactive_charts[image.path])
-            reason = "interactive_spec_unregistered"
-            if spec is None or spec.media_type != "application/json":
-                raise ValueError(reason)
-            reason = "chart_source_unavailable"
-            figure = read_json(spec.resource_id)
+            figure = None
+            if not static:
+                spec = by_path.get(interactive_charts[image.path])
+                reason = "interactive_spec_unregistered"
+                if spec is None or spec.media_type != "application/json":
+                    raise ValueError(reason)
+                reason = "chart_source_unavailable"
+                figure = read_json(spec.resource_id)
             inputs = []
             for resource_id in chart.plot_data_file_resource_ids:
                 plot = read_json(resource_id)
@@ -120,7 +133,10 @@ def evaluate_chart_quality(
                 document = read_json(origin.file_resource_id)
                 if (
                     not isinstance(document, dict)
-                    or document.get("analysisId") != origin.analysis_id
+                    or (document.get("analysisId") != origin.analysis_id and not (
+                        static and origin.content_kind == "supplemental_evidence"
+                        and document.get("analysisId") is None
+                    ))
                 ):
                     raise ValueError(reason)
                 data_path = source.get("dataPath")
@@ -157,6 +173,37 @@ def evaluate_chart_quality(
                 ) != len(rows):
                     raise ValueError(reason)
                 inputs.append(plot)
+            if static:
+                from ..workflow.runtime.standard_chart_proof import recompile_standard_render_proof
+
+                proof = chart.standard_render_proof
+                reason = "standard_render_identity_mismatch"
+                script = files.get(chart.script_file_resource_id)
+                if (proof is None or proof.image_sha256 != image.sha256 or script is None
+                        or script.media_type != "text/x-python" or script.sha256 != proof.script_sha256):
+                    raise ValueError(reason)
+                compiled_inputs = {}
+                for entry in proof.inputs:
+                    matches = [file for file in index.files
+                               if file.sha256 == entry.get("sha256") and file.media_type == "application/json"]
+                    if not matches:
+                        raise ValueError(reason)
+                    compiled_inputs[entry["sha256"]] = read(matches[0].resource_id)
+                expected_inputs = {entry["sha256"] for entry in proof.inputs
+                                   if entry.get("chartId") == chart.chart_id}
+                actual_inputs = {files[resource_id].sha256 for resource_id in chart.plot_data_file_resource_ids}
+                plan_charts = proof.plan.get("charts", ())
+                if (actual_inputs != expected_inputs
+                        or sum(item.get("chartId") == chart.chart_id for item in plan_charts) != 1):
+                    raise ValueError(reason)
+                reason = "standard_render_source_unproven"
+                compiled = recompile_standard_render_proof(proof, compiled_inputs)
+                if compiled is None or compiled != read(script.resource_id):
+                    raise ValueError(reason)
+                results[chart.chart_id] = ChartQualityCheck(
+                    status="verified", reason="standard_render_matches_frozen_inputs"
+                )
+                continue
             reason = "chart_data_unverified"
             if not isinstance(figure, Mapping) or not plotly_trace_matches_chart_inputs(
                 figure, inputs

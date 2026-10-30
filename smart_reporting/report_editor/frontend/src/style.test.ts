@@ -271,6 +271,51 @@ describe('report editor visual hierarchy', () => {
     expect(resolveTokens(base('.export-block-spinner').borderTopColor)).toBe('rgb(11, 79, 138)')
   })
 
+  it('keeps Ask AI as an overlay without shifting the report outline', () => {
+    const rules = Array.from(document.styleSheets[0].cssRules)
+    const allRules = rules.flatMap((rule) => rule instanceof CSSMediaRule ? Array.from(rule.cssRules) : [rule])
+      .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
+    const selectors = allRules.map((rule) => rule.selectorText)
+
+    expect(selectors).not.toContain('body.ask-ai-open #app')
+    expect(selectors).not.toContain('body.ask-ai-open .report-outline')
+    expect(selectors).not.toContain('body.ask-ai-open .report-workspace')
+
+    const composerButton = allRules.find((rule) =>
+      rule.selectorText === '.ask-ai-panel .ask-ai-composer .ui-button',
+    )!.style
+    expect(composerButton.minHeight).toBe('32px')
+    expect(composerButton.padding).toBe('6px 12px')
+    expect(composerButton.fontSize).toBe('13px')
+  })
+
+  it('gives Ask AI a wider default and a visible desktop resize handle', () => {
+    const rules = Array.from(document.styleSheets[0].cssRules)
+      .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
+    const panel = rules.find((rule) => rule.selectorText === '.ask-ai-panel')!.style
+    const handle = rules.find((rule) => rule.selectorText === '.ask-ai-resize-handle')!.style
+    expect(panel.width).toBe('var(--ask-ai-panel-width, 560px)')
+    expect(panel.maxWidth).toBe('100vw')
+    expect(handle.position).toBe('absolute')
+    expect(handle.cursor).toBe('col-resize')
+  })
+
+  it('places the standard chart preset and action on one compact row', () => {
+    const rules = Array.from(document.styleSheets[0].cssRules)
+      .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
+    const controls = rules.find((rule) => rule.selectorText === '.ask-ai-panel .chart-ai-standard-controls')!.style
+    const select = rules.find((rule) => rule.selectorText === '.ask-ai-panel .chart-ai-standard-controls select')!.style
+    const actionRule = rules.find((rule) => rule.selectorText === '.ask-ai-panel .chart-ai-standard-controls > .ui-button')
+    expect(actionRule).toBeDefined()
+    if (!actionRule) return
+    const action = actionRule.style
+
+    expect(controls.display).toBe('grid')
+    expect(controls.gridTemplateColumns).toBe('minmax(0, 1fr) auto')
+    expect(select.minWidth).toBe('0')
+    expect(action.minHeight).toBe('34px')
+  })
+
   it('gives export actions a quieter visual weight than save', () => {
     document.body.insertAdjacentHTML(
       'beforeend',

@@ -871,11 +871,32 @@ def build_supplemental_tables(
                     headers.append(label)
                 if len(set(headers)) != len(headers):
                     headers = [f'{label} · {column}' for label, column in zip(headers, columns, strict=True)]
-                # 宽表拆列时重复来源首列，保留读者逐行对照；没有任何业务列名推断。
-                column_groups = ([list(range(len(columns)))] if len(columns) <= 5 else
-                                 [[0, *range(offset, min(offset + 4, len(columns)))]
-                                  for offset in range(1, len(columns), 4)])
-                for selected_columns in column_groups:
+                # 行身份可能由期间、类别等多列共同构成；拆列不能只保留首列。
+                declared_keys = node.get('rowKeyColumns', ())
+                declared_keys = declared_keys if isinstance(declared_keys, (list, tuple)) else ()
+                dimensions = []
+                for position, column in enumerate(columns):
+                    meta = metadata.get(column, {}) if isinstance(metadata, Mapping) else {}
+                    values = [row[position] for row in source_rows if row[position] is not None]
+                    if (column in declared_keys or column == node.get('rowPeriodColumn')
+                            or meta.get('role') in {'dimension', 'identifier', 'period'}
+                            or (not meta.get('unit') and column not in _SUPPLEMENTAL_LABELS
+                                and values and all(isinstance(value, str) for value in values))):
+                        dimensions.append(position)
+                dimensions = dimensions or [0]
+                measures = [index for index in range(len(columns)) if index not in dimensions]
+                capacity = 5 - len(dimensions)
+                column_groups = ([list(range(len(columns)))]
+                                 if len(columns) <= 5 or capacity <= 0 or not measures else
+                                 [sorted([*dimensions, *measures[offset:offset + capacity]])
+                                  for offset in range(0, len(measures), capacity)])
+                dimension_labels = [headers[index] for index in dimensions
+                                    if re.search(r'[\u4e00-\u9fff]', headers[index])]
+                caption = next((value.strip() for value in
+                                (node.get('title'), node.get('name'))
+                                if isinstance(value, str) and re.search(r'[\u4e00-\u9fff]', value)),
+                               '、'.join(dimension_labels) + '明细' if dimension_labels else '补充分析明细')
+                for part, selected_columns in enumerate(column_groups, 1):
                     labels = [headers[column] for column in selected_columns]
                     limit = min(1000, 2000 // len(labels))
                     for offset in range(0, len(source_rows), limit):
@@ -898,9 +919,13 @@ def build_supplemental_tables(
                             rows.append(row)
                         identity = hashlib.sha256(f'{file_resource_id}|{pointer}|{selected_columns}|{offset}'.encode()).hexdigest()[:20]
                         table_id = f'table-supplemental-{identity}'
-                        caption = node.get('title') or node.get('name')
+                        table_caption = caption
+                        if len(column_groups) > 1:
+                            table_caption += f'（分表 {part}/{len(column_groups)}）'
+                        if len(source_rows) > limit:
+                            table_caption += f'（第 {offset + 1}—{min(offset + limit, len(source_rows))} 行）'
                         markdown = render_table_markdown(table_id, labels, rows,
-                                                         caption=caption if isinstance(caption, str) else None,
+                                                         caption=table_caption,
                                                          row_label_header=None)
                         trace = TableTraceV1(tableId=table_id, rowKeys=keys, columnKeys=labels,
                                              cells=cells, originMarkdown=markdown, rowLabelColumn=False,

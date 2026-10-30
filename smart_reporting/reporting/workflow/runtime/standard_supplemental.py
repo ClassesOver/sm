@@ -48,6 +48,7 @@ class StandardSupplementalRequest(BaseModel):
     dataset_id: str = Field(min_length=1, alias="datasetId")
     baseline_dataset_id: str | None = Field(default=None, min_length=1, alias="baselineDatasetId")
     output_name: str = Field(min_length=1, alias="outputName")
+    metric_codes: tuple[str, ...] = Field(default=(), alias="metricCodes")
     measure_field: str = Field(min_length=1, alias="measureField")
     denominator_field: str | None = Field(default=None, min_length=1, alias="denominatorField")
     measure_unit: str | None = Field(default=None, min_length=1, alias="measureUnit")
@@ -104,14 +105,17 @@ class StandardSupplementalRequest(BaseModel):
             or self.operation == "group_period_series" and self.include_period_change
         ):
             raise ValueError("只有比较计算接受 changeRateDenominator")
-        if self.rank_by != "absolute_change_desc" and self.operation != "group_period_comparison":
-            raise ValueError("只有 group_period_comparison 接受 rankBy")
+        if self.rank_by != "absolute_change_desc" and not (
+            self.operation == "group_period_comparison"
+            or self.operation == "period_comparison" and self.group_by_period
+        ):
+            raise ValueError("只有逐期比较接受 rankBy")
         if self.include_period_change and self.operation != "group_period_series":
             raise ValueError("只有 group_period_series 接受 includePeriodChange")
         if self.include_marginal_shares and self.operation != "cross_group_summary":
             raise ValueError("只有 cross_group_summary 接受 includeMarginalShares")
-        if self.group_by_period and self.operation not in {"cross_group_summary", "group_ratio"}:
-            raise ValueError("只有 cross_group_summary 和 group_ratio 接受 groupByPeriod")
+        if self.group_by_period and self.operation not in {"cross_group_summary", "group_ratio", "period_comparison"}:
+            raise ValueError("只有交叉分组、分组比率和期间比较接受 groupByPeriod")
         if self.operation == "group_ratio" and self.group_by_period:
             if len(self.denominator_period_totals) != len(self.current_periods):
                 raise ValueError("逐期 group_ratio 必须为每个期间提供 denominatorPeriodTotals")
@@ -122,6 +126,11 @@ class StandardSupplementalRequest(BaseModel):
                 raise ValueError("group_period_comparison 必须提供 baselineMethod 和 baselinePeriods")
             if len(self.baseline_period_totals) != len(self.baseline_periods):
                 raise ValueError("group_period_comparison 必须提供逐期 baselinePeriodTotals")
+        elif self.operation == "period_comparison" and self.group_by_period:
+            if self.baseline_method is not None:
+                raise ValueError("逐期期间比较不接受 baselineMethod")
+            if len(self.baseline_period_totals) != len(self.baseline_periods):
+                raise ValueError("逐期 period_comparison 必须提供逐期 baselinePeriodTotals")
         elif self.baseline_method is not None or self.baseline_period_totals:
             raise ValueError("只有 group_period_comparison 接受基准方法与逐期基准总额")
         if self.baseline_dataset_id is not None and self.operation != "period_comparison":
@@ -172,6 +181,8 @@ class StandardSupplementalRequest(BaseModel):
         )
         if duplicate_periods:
             raise ValueError("标准补证期间不能重复或重叠（含期间别名）")
+        if self.operation == "period_comparison" and self.group_by_period:
+            _aligned_baseline_periods(self.current_periods, self.baseline_periods, self.period_granularity)
         for fields in (self.query_bound_scope_fields, self.baseline_query_bound_scope_fields):
             if len(fields) != len(set(fields)) or not set(fields).issubset(self.scope):
                 raise ValueError("查询固定范围字段必须唯一且属于 scope")
@@ -226,14 +237,17 @@ class StandardSupplementalSpec(BaseModel):
             or self.operation == "group_period_series" and self.include_period_change
         ):
             raise ValueError("只有比较计算接受 changeRateDenominator")
-        if self.rank_by != "absolute_change_desc" and self.operation != "group_period_comparison":
-            raise ValueError("只有 group_period_comparison 接受 rankBy")
+        if self.rank_by != "absolute_change_desc" and not (
+            self.operation == "group_period_comparison"
+            or self.operation == "period_comparison" and self.group_by_period
+        ):
+            raise ValueError("只有逐期比较接受 rankBy")
         if self.include_period_change and self.operation != "group_period_series":
             raise ValueError("只有 group_period_series 接受 includePeriodChange")
         if self.include_marginal_shares and self.operation != "cross_group_summary":
             raise ValueError("只有 cross_group_summary 接受 includeMarginalShares")
-        if self.group_by_period and self.operation not in {"cross_group_summary", "group_ratio"}:
-            raise ValueError("只有 cross_group_summary 和 group_ratio 接受 groupByPeriod")
+        if self.group_by_period and self.operation not in {"cross_group_summary", "group_ratio", "period_comparison"}:
+            raise ValueError("只有交叉分组、分组比率和期间比较接受 groupByPeriod")
         if self.operation == "group_period_comparison":
             if self.baseline_method is None or not self.baseline_periods:
                 raise ValueError("group_period_comparison 必须提供 baselineMethod 和 baselinePeriods")
@@ -314,7 +328,8 @@ def standard_output_columns(spec: StandardSupplementalSpec | StandardSupplementa
             "changeRate", "contribution", "rank", "baselineTotal", "totalChange",
         )
     elif spec.operation == "period_comparison":
-        derived = ("current", "baseline", "change", "changeRate", "contribution")
+        derived = ("current", "baseline", "change", "changeRate", "contribution",
+                   *(("rank",) if spec.group_by_period else ()))
     else:
         derived = ("numerator", "denominator", "difference", "ratio")
     sources = _standard_source_fields(spec)
@@ -340,6 +355,19 @@ def compact_standard_reconciliations(checks: Sequence[dict[str, Any]], name: str
     return [{"name": name, "passed": all(check["passed"] for check in checks), "checks": list(checks)}]
 
 
+def _aligned_baseline_periods(
+    current: Sequence[str], baseline: Sequence[str], grain: str | None,
+) -> tuple[str, ...]:
+    """按同一日历角色找完整配对，不把列表位置或相邻可用月份当成同期。"""
+    labels = {metric_period_key(period, grain): period for period in baseline}
+    if len(current) == len(baseline):
+        for role in ("yoy", "mom"):
+            keys = [metric_comparison_period_key(period, grain, role) for period in current]
+            if None not in keys and len(set(keys)) == len(keys) and set(keys) == set(labels):
+                return tuple(labels[key] for key in keys)
+    raise ValueError("逐期期间比较必须提供完整且同角色的日历同期或相邻期间")
+
+
 def _row_period_metadata(
     request: StandardSupplementalRequest, columns: Sequence[str], column_meta: dict[str, dict[str, Any]],
 ) -> None:
@@ -357,8 +385,13 @@ def _row_period_metadata(
     current = {period: structured((period,)) for period in request.current_periods}
     reference: dict[str, list[str]] = {}
     baseline_window = structured(request.baseline_periods)
+    aligned = (dict(zip(request.current_periods, _aligned_baseline_periods(
+        request.current_periods, request.baseline_periods, request.period_granularity,
+    ), strict=True)) if request.operation == "period_comparison" else {})
     for period in request.current_periods:
-        if request.operation == "group_period_comparison" and request.baseline_method != "previous_period":
+        if aligned:
+            reference[period] = structured((aligned[period],))
+        elif request.operation == "group_period_comparison" and request.baseline_method != "previous_period":
             reference[period] = baseline_window
         else:
             previous = labels.get(metric_comparison_period_key(period, request.period_granularity, "mom"))
@@ -369,9 +402,12 @@ def _row_period_metadata(
         if column == "rank":
             continue
         mapping = current
-        if request.operation == "group_period_comparison":
+        if request.operation in {"group_period_comparison", "period_comparison"}:
             mapping = (current if column == "current" else reference
                        if column in {"baseline", "baselineTotal"} else combined)
+            if request.operation == "period_comparison" and column == "contribution":
+                mapping = {period: structured((*request.current_periods, *request.baseline_periods))
+                           for period in request.current_periods}
         elif request.operation == "group_period_series":
             mapping = (reference if column == "previous" else combined
                        if column in {"change", "changeRate"} else current)
@@ -528,6 +564,14 @@ def run_standard_supplemental(
             "contribution": {"unit": "%", "isPercent": False},
         }
         amount_columns = ("current", "baseline", "change", "baselineTotal", "totalChange")
+    elif request.operation == "period_comparison" and request.group_by_period:
+        finding_rows, reconciliations = _period_comparison_rows(rows, baseline_rows, request, warnings)
+        column_meta = {
+            "rank": {"unit": "名"},
+            "changeRate": {"unit": "%", "isPercent": False},
+            "contribution": {"unit": "%", "isPercent": False},
+        }
+        amount_columns = ("current", "baseline", "change")
     elif request.operation == "period_comparison":
         assert request.baseline_parent_total is not None
         finding_rows, current_total, baseline_total, current_sum, baseline_sum = _comparison_rows(
@@ -640,8 +684,10 @@ def run_standard_supplemental(
     finding: dict[str, Any] = {
         "name": request.output_name, "columns": columns, "columnMeta": column_meta,
         "scope": dict(request.scope), "periodGranularity": request.period_granularity,
-        "periods": periods, "rows": finding_rows,
+        "periods": periods, "rows": finding_rows, "rowKeyColumns": list(source_columns),
     }
+    if request.metric_codes:
+        finding["metricCodes"] = list(request.metric_codes)
     if has_row_period:
         finding["rowPeriodColumn"] = columns[0]
     if request.operation == "group_period_comparison":
@@ -651,6 +697,13 @@ def run_standard_supplemental(
             "currentPeriods": list(request.current_periods),
             "rankBy": request.rank_by,
         }
+    if request.operation == "period_comparison" and request.group_by_period:
+        finding["comparison"] = {
+            "groupByPeriod": True, "rankBy": request.rank_by,
+            "currentPeriods": list(request.current_periods),
+            "baselinePeriods": list(request.baseline_periods),
+            "contributionScope": "window_total_change", "rankScope": "window",
+        }
     if request.change_rate_denominator != "signed":
         finding.setdefault("comparison", {})["changeRateDenominator"] = request.change_rate_denominator
     return {
@@ -658,6 +711,14 @@ def run_standard_supplemental(
         "reconciliations": compact_standard_reconciliations(reconciliations, request.output_name + "_checks"),
         "warnings": list(dict.fromkeys(warnings))[:100],
     }
+
+
+def standard_grouping_periods_supported(fact: Any, periods: Sequence[str]) -> bool:
+    """单期分组不需要跨期可加证明；多期只能使用已冻结的 sum 口径。"""
+    return (getattr(fact, "aggregation", None) == "sum"
+            and getattr(fact, "cumulative_policy", None) is None
+            and bool(periods)
+            and (getattr(fact, "period_aggregation", None) == "sum" or len(periods) == 1))
 
 
 def frozen_period_total(fact: Any, periods: Sequence[str]) -> float:
@@ -1092,6 +1153,59 @@ def _comparison_rows(
     return result, current_total, baseline_total, math.fsum(current.values()), math.fsum(baseline.values())
 
 
+def _period_comparison_rows(
+    rows: Sequence[dict[str, Any]], baseline_rows: Sequence[dict[str, Any]] | None,
+    request: StandardSupplementalRequest, warnings: list[str],
+) -> tuple[list[list[Any]], list[dict[str, Any]]]:
+    """逐期取同日历基期，贡献和排名仍回答整个请求窗口的增减集中程度。"""
+    aligned = _aligned_baseline_periods(
+        request.current_periods, request.baseline_periods, request.period_granularity,
+    )
+    current_by_period = _rows_by_period(rows)
+    baseline_by_period = current_by_period if baseline_rows is None else _rows_by_period(baseline_rows)
+    baseline_expected = dict(zip(request.baseline_periods, request.baseline_period_totals, strict=True))
+    result: list[list[Any]] = []
+    checks: list[dict[str, Any]] = []
+    current_totals: list[float] = []
+    baseline_totals: list[float] = []
+    for period, prior, expected in zip(request.current_periods, aligned, request.parent_period_totals, strict=True):
+        period_rows, current_total, baseline_total, _, _ = _comparison_rows(
+            current_by_period.get(period, ()), (period,), (prior,), warnings,
+            baseline_rows=baseline_by_period.get(prior, ()),
+            change_rate_denominator=request.change_rate_denominator,
+        )
+        result.extend([period, *row] for row in period_rows)
+        current_totals.append(current_total)
+        baseline_totals.append(baseline_total)
+        checks.extend((
+            _reconciliation(f"{request.output_name}_current_{period}_total", current_total, expected),
+            _reconciliation(f"{request.output_name}_baseline_{prior}_total", baseline_total, baseline_expected[prior]),
+        ))
+        if not period_rows:
+            warnings.append(f"期间 {period} 与 {prior} 没有可比较的有效分组")
+    current_total = math.fsum(current_totals)
+    baseline_total = math.fsum(baseline_totals)
+    total_change = current_total - baseline_total
+    assert request.baseline_parent_total is not None
+    checks.extend((
+        _reconciliation(request.output_name + "_current_total", current_total, request.parent_total),
+        _reconciliation(request.output_name + "_baseline_total", baseline_total, request.baseline_parent_total),
+        _reconciliation(request.output_name + "_change",
+                        math.fsum(row[4] for row in result if row[4] is not None), total_change),
+    ))
+    for row in result:
+        row[6] = row[4] / total_change if row[4] is not None and total_change else None
+    result.sort(key=lambda row: (
+        row[4] is None, -(abs(row[4]) if request.rank_by == "absolute_change_desc" else row[4])
+        if row[4] is not None else 0, row[0], row[1] is None, row[1] or "",
+    ))
+    if total_change == 0:
+        warnings.append("全窗总变化为零，contribution 保留为空")
+    if any(not check["passed"] for check in checks):
+        warnings.append("逐期期间比较与冻结总额或可比较分组不闭合，保留结果并产生软告警")
+    return [[*row, rank] for rank, row in enumerate(result, start=1)], checks
+
+
 def _reconciliation(name: str, left: float, right: float) -> dict[str, Any]:
     passed = reconciliation_passes(left, right, absolute_tolerance=1e-9, relative_tolerance=1e-12)
     return {"name": name, "passed": passed, "left": left, "right": right}
@@ -1286,7 +1400,7 @@ def standard_computation_catalog(
         profile = dataset.get("columnProfile") or {}
         for parent in metrics:
             if (parent.dataset_id != dataset_id or not parent.fact_id
-                    or parent.aggregation != "sum" or parent.period_aggregation != "sum"
+                    or parent.aggregation != "sum"
                     or parent.cumulative_policy is not None or not parent.period_field
                     or not parent.period_values):
                 continue
@@ -1299,7 +1413,7 @@ def standard_computation_catalog(
             if not required.issubset(columns):
                 continue
             periods = period_selection(parent)
-            if periods is None:
+            if periods is None or not standard_grouping_periods_supported(parent, periods):
                 continue
             dimensions = [
                 dimension
@@ -1318,6 +1432,9 @@ def standard_computation_catalog(
                     "datasetId": dataset_id, "parentFactId": parent.fact_id,
                     "measureField": parent.field, "periodField": parent.period_field,
                     "currentPeriods": list(periods), "dimensionFields": dimensions,
+                    "periodAggregation": parent.period_aggregation,
+                    "supportedOperations": list(STANDARD_SUPPLEMENTAL_OPERATIONS)
+                    if parent.period_aggregation == "sum" else ["group_summary", "cross_group_summary"],
                     "projectedScopeFields": sorted(set(parent_scope) & columns),
                     "comparisonBindings": [],
                 }
@@ -1334,7 +1451,8 @@ def standard_computation_catalog(
                 if role in {"measure", "period", "empty"}:
                     continue
                 operations: tuple[Literal["group_summary", "group_period_series"], ...] = (
-                    "group_summary", "group_period_series",
+                    ("group_summary", "group_period_series") if parent.period_aggregation == "sum"
+                    else ("group_summary",)
                 )
                 specs = [
                     StandardSupplementalSpec(
@@ -1345,7 +1463,7 @@ def standard_computation_catalog(
                     )
                     for operation in operations
                 ]
-                if prior_keys & all_keys:
+                if parent.period_aggregation == "sum" and prior_keys & all_keys:
                     specs.append(StandardSupplementalSpec(
                         operation="group_period_comparison", measureField=parent.field,
                         dimensionField=dimension, periodField=parent.period_field,
@@ -1354,7 +1472,8 @@ def standard_computation_catalog(
                     ))
                 for baseline in metrics:
                     baseline_dataset = datasets_by_id.get(baseline.dataset_id)
-                    if ("current" not in getattr(parent, "period_roles", ())
+                    if (parent.period_aggregation != "sum"
+                            or "current" not in getattr(parent, "period_roles", ())
                             or not set(getattr(baseline, "period_roles", ())) & {"yoy", "mom"}
                             or baseline_dataset is None or not baseline.fact_id
                             or baseline.field != parent.field or baseline.aggregation != "sum"
@@ -1376,13 +1495,15 @@ def standard_computation_catalog(
                                 query_bound_scope_fields(baseline_dataset, parent_scope))):
                         continue
                     for prior in comparison_period_windows(parent, baseline, periods):
-                        specs.append(StandardSupplementalSpec(
-                            operation="period_comparison", measureField=parent.field,
-                            dimensionField=dimension, periodField=parent.period_field,
-                            currentPeriods=periods, baselinePeriods=prior,
-                            parentFactId=parent.fact_id, baselineParentFactId=baseline.fact_id,
-                            baselineDatasetId=baseline.dataset_id if cross_dataset else None,
-                        ))
+                        for by_period in (False, True):
+                            specs.append(StandardSupplementalSpec(
+                                operation="period_comparison", measureField=parent.field,
+                                dimensionField=dimension, periodField=parent.period_field,
+                                currentPeriods=periods, baselinePeriods=prior,
+                                parentFactId=parent.fact_id, baselineParentFactId=baseline.fact_id,
+                                baselineDatasetId=baseline.dataset_id if cross_dataset else None,
+                                groupByPeriod=by_period,
+                            ))
                         if source is not None and standard_input_matches_fact(baseline, baseline_dataset):
                             binding_key = (baseline.fact_id, baseline.dataset_id, prior)
                             if binding_key not in comparison_bindings:

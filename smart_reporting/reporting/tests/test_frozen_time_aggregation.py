@@ -47,13 +47,13 @@ def catalog(bundle, *tokens):
     "additive,expected", [(("month", "department"), "sum"), (("department",), "last"), ((), None)]
 )
 def test_time_aggregation_is_frozen_from_confirmed_reporting_axis(additive, expected):
-    bundle = frozen_bundle(additive=additive, comparison=False)
+    bundle = frozen_bundle(additive=additive, comparison=False, months=(1,) if expected is None else (1, 2))
     fact = bundle.metrics[0]
     assert fact.period_aggregation == expected
     loaded = read_fact_document(bundle.model_dump_json(by_alias=True).encode())
     assert loaded["metrics"][0]["periodAggregation"] == expected
     assert ("最新登记期间" in fact.formula) == (expected == "last")
-    assert fact.total == (200 if expected == "last" else 300)
+    assert fact.total == (100 if expected is None else 200 if expected == "last" else 300)
 
 
 def test_explicit_flow_identity_does_not_rewrite_legacy_unknown_metadata():

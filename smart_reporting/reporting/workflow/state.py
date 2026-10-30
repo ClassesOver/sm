@@ -20,6 +20,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..delivery.draft_v1 import ReportChartRegistration
+from ..trace.contracts_v1 import StandardChartRenderProofV1
 from .checkpoint import ChartVisualInspectionReceipt, FileIdentity
 
 REPORTING_STATE_SCHEMA_VERSION = 3
@@ -900,6 +901,14 @@ def apply(
                         FileIdentity.model_validate(file).model_dump(mode="json", by_alias=True)
                         for file in entry["files"]
                     ],
+                    **({
+                        "standardRenderProof": StandardChartRenderProofV1.model_validate(
+                            entry["standardRenderProof"]
+                        ).model_dump(mode="json", by_alias=True),
+                        "renderScriptFile": FileIdentity.model_validate(
+                            entry["renderScriptFile"]
+                        ).model_dump(mode="json", by_alias=True),
+                    } if entry.get("standardRenderProof") is not None else {}),
                 }
                 for entry in plot_data_files
             ]

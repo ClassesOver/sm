@@ -149,6 +149,7 @@ class CodeGenerationResult:
     visual_inspection_receipts: tuple[ChartVisualInspectionReceipt, ...] = ()
     visual_repair_diagnostic: Mapping[str, Any] | None = None
     standard_chart_routes: tuple[Mapping[str, Any], ...] = ()
+    standard_render_proofs: tuple[Mapping[str, Any], ...] = ()
     deterministic_image_checks: tuple[Mapping[str, Any], ...] = ()
     reviewed: bool = False
     execution_spans: Mapping[str, Any] | str | None = None

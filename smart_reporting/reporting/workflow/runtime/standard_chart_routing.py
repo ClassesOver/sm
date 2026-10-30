@@ -15,6 +15,7 @@ from loguru import logger
 from ...models import ReportingError
 from .chart_inputs import ChartInputMaterialization
 from .phase_models import StandardChartCanvas
+from .standard_chart_proof import create_standard_render_proofs
 from .standard_visualization import standard_visualization_preflight
 
 
@@ -111,6 +112,7 @@ async def _run_standard_chart_routes(
             result = await runner.run_standard_visualization(
                 context, workspace, complete.source, facts, deterministic=True
             )
+            result = _with_standard_proofs(result, plan, inputs)
         result = _with_compile_timing(result, compile_ms, route_started)
         return _with_routes(result, [
             dict(chartId=chart.chart_id, route="standard", diagnostic=None,
@@ -154,6 +156,7 @@ async def _run_standard_chart_routes(
                 result = await runner.run_standard_visualization(
                     context, workspace, complete.source, facts
                 )
+                result = _with_standard_proofs(result, plan, inputs)
             return _with_routes(
                 _with_compile_timing(result, compile_ms, route_started),
                 [
@@ -181,6 +184,7 @@ async def _run_standard_chart_routes(
         )
 
     components = []
+    component_proofs = {}
     routes = []
     child_tasks = []
     for index, chart in enumerate(plan.charts):
@@ -255,6 +259,8 @@ async def _run_standard_chart_routes(
                 "report_chart_component_identity_changed", "图表组件脚本身份已变化。"
             )
         components.append((identity.path, identity.sha256))
+        if route == 'standard':
+            component_proofs[chart.chart_id] = getattr(result, 'standard_render_proofs', ())
         routes.append(
             dict(
                 chartId=chart.chart_id,
@@ -289,7 +295,12 @@ async def _run_standard_chart_routes(
                 _composite_source(components, inputs, routes, context.declared_output_paths),
                 {**facts, "standardChartRoutes": routes},
             )
-            return _with_routes(result, routes)
+            # 组合脚本会重画所有组件。只在最终图片仍与真实标准执行逐字节一致时保留证明。
+            outputs = {item.path: item.sha256 for item in getattr(result.execution_receipt, 'output_files', ())}
+            proofs = tuple(record for chart in plan.charts
+                           for record in component_proofs.get(chart.chart_id, ())
+                           if record['proof'].image_sha256 == outputs.get(chart.source_path))
+            return _with_routes(_with_standard_proofs(result, plan, inputs, proofs=proofs), routes)
         except ReportingError as error:
             details = error.details if isinstance(error.details, dict) else {}
             diagnostic = details.get("standardDiagnostic")
@@ -313,6 +324,7 @@ async def _run_standard_chart_routes(
                     "report_chart_component_identity_changed", "修复组件身份已变化。"
                 ) from error
             components[index] = (identity.path, identity.sha256)
+            component_proofs.pop(plan.charts[index].chart_id, None)
             routes[index] = dict(
                 chartId=plan.charts[index].chart_id, route="coding", diagnostic=diagnostic
             )
@@ -357,6 +369,15 @@ def _with_routes(result, routes):
     if is_dataclass(result) and not isinstance(result, type):
         return replace(result, standard_chart_routes=tuple(routes))
     result.standard_chart_routes = tuple(routes)
+    return result
+
+
+def _with_standard_proofs(result, plan, inputs, *, proofs=None):
+    if proofs is None:
+        proofs = create_standard_render_proofs(result, plan, inputs)
+    if is_dataclass(result) and not isinstance(result, type):
+        return replace(result, standard_render_proofs=proofs)
+    result.standard_render_proofs = proofs
     return result
 
 
@@ -452,6 +473,7 @@ async def _run_standard_with_layout_retry(
                 if isinstance(observed_spans, dict):
                     for name, values in observed_spans.items():
                         spans.setdefault(name, []).extend(values)
+            result = _with_standard_proofs(result, current, inputs)
             updates = dict(execution_attempts=tuple(attempts), route_total_ms=route_total,
                            stage_timings=timings, execution_spans=spans or None)
             if is_dataclass(result) and not isinstance(result, type):

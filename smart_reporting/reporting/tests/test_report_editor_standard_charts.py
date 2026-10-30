@@ -95,6 +95,28 @@ def test_editor_standard_input_identity_changes_are_rejected():
     assert standard_visualization_preflight(plan,inputs).source is None
 
 
+@pytest.mark.parametrize('baseline_year,baseline_months,expected', [
+    (2024, ['01', '02'], True), (2023, ['01', '02'], False),
+    (2024, ['01', '03'], False),
+])
+def test_editor_same_month_comparison_preserves_strict_period_validation(
+    baseline_year, baseline_months, expected,
+):
+    documents = [{'columns': ['period', 'value'],
+                  'rows': [[f'{year}-{month}-01', 10] for month in months],
+                  'columnMeta': {'value': {'unit': '元'}}}
+                 for year, months in [(2025, ['01', '02']), (baseline_year, baseline_months)]]
+    parameters = {'visual_form': 'line', 'standard_form': 'line',
+                  'standard_value_fields': ['当年', '基期'],
+                  'standard_sources': [
+                      {'sourceIndex': index, 'labelField': 'period', 'valueField': 'value',
+                       'seriesName': name, 'labelMode': 'month_of_year', 'periodYear': year}
+                      for index, name, year in [(0, '当年', 2025), (1, '基期', baseline_year)]]}
+    plan, inputs = prepared(parameters, documents)
+    result = standard_visualization_preflight(plan, inputs)
+    assert (result.source is not None) is expected, result.diagnostic
+
+
 def test_editor_pagination_has_every_page_but_one_original_cohort():
     doc={'columns':['label','value'],'rows':[[f'组{n}',n] for n in range(25)],'columnMeta':{'value':{'unit':'元'}}}
     parameters={'visual_form':'barh','standard_value_fields':['value'],'standard_pagination':{'pageSize':10}}

@@ -209,6 +209,9 @@ def _analysis_chart_from_registration(
             dict(item) for item in plot_data["files"] if isinstance(item, Mapping)
         ]
         payload["plotDataKind"] = "chart_input"
+        if plot_data.get("standardRenderProof") is not None:
+            payload["standardRenderProof"] = plot_data["standardRenderProof"]
+            payload["renderScriptFile"] = plot_data["renderScriptFile"]
     # 可视化阶段已为同一文件签发的真实审查回执必须随冻结图表保留；否则通过视觉
     # 审查的图表会在证据中被记录为“未运行审查”。没有匹配回执时才退回确定性检查。
     receipt = _frozen_visual_receipt(visual_receipt, source_file) or ChartVisualInspectionReceipt(
@@ -228,6 +231,7 @@ def _analysis_chart_from_registration(
 # 交给模型会被写进正文（“视觉回执提示纵轴比例失真”“柱形顶部被截断”）。
 _WRITER_CHART_EXCLUDE = frozenset({
     "visual_inspection_receipt", "source_file", "interactive_file", "plot_data_files", "plot_data_kind", "renderer",
+    "standard_render_proof", "render_script_file",
 })
 
 
@@ -1410,6 +1414,10 @@ def _section_stage_agent(
         instructions.extend(
             [
                 "render 只规划必要的正文 block 和结构化 claims，不在 objective 中撰写正文。",
+                "根据本章管理问题组织整体规模与结构、趋势拐点、增减贡献及异常核查；"
+                "只覆盖本章已有同口径证据的维度，不机械逐表逐行复述。重点贡献和异常有证据时"
+                "应分配分析 block，不能只保留总量与数据限制。数值分解仅说明增减来自哪些分项，"
+                "业务原因须另有直接证据；工作量比较先核对服务范围，不用全院成本直接构造门诊次均成本。",
                 "numberGuide 给出服务端确认的数值期间与粒度。按它选择结论，原始行统计不能规划成月度统计，完整分组组合不能规划成单一科室累计。",
                 "claims.value中的数字只取规划输入内可直接核对的登记数值，不把分析摘要或图表标题"
                 "里的合并占比当作已登记比例；没有可核对的补证百分数时，规划描述各类别构成，"
@@ -1465,6 +1473,9 @@ def _section_stage_agent(
             "同比必须分别复核本期与上年同期的年份及月份窗口；‘2025年1—9月较上年同期’的基期是2024年1—9月。服务器告警需结合当前数值的比较角色复核，不得为消除告警把正确基期引用替换成本期引用；错年、错月及同比环比混用仍须纠正。",
             (
                 "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"
+                "正文表格只用于支撑分析结论的汇总比较、趋势、贡献或异常分析，"
+                "选择必要的指标与对象并解释其含义；不得把原始明细或补证表逐行复制进正文，"
+                "完整来源明细由服务端另行收录。"
                 "H3/H4 必须是不超过 40 个中文字符的短标题，并独占一个物理行。"
                 "标题行后必须立即换行；有正文时，使用『### 收入分析\n\n本季度收入……』格式。"
                 "禁止『### 收入分析：本季度收入……』同一行混写。"
@@ -1981,12 +1992,15 @@ def _verified_population_contexts(work_item: SectionWorkItem, sources: Mapping[s
     contexts: dict = {}
     conflicts: set[tuple[str, str]] = set()
     for item in work_item.evidence:
+        if item.computation_record is None:
+            continue
         try:
             record = ComputationRecordV1.model_validate(item.computation_record)
             if (record.method not in {'supplemental_standard_group_summary', 'supplemental_standard_batch'}
                     or record.method_version != 'standard-supplemental-v1'
                     or record.script_file_resource_id is not None
-                    or tuple(record.input_dataset_ids) != tuple(item.dataset_ids)):
+                    or not record.input_dataset_ids
+                    or not set(record.input_dataset_ids) <= set(item.dataset_ids)):
                 continue
             parameters = dict(record.parameters)
             proofs = parameters.pop('populationProofs', ())
@@ -2006,7 +2020,7 @@ def _verified_population_contexts(work_item: SectionWorkItem, sources: Mapping[s
                     (''.join(item.sha256 for item in csv_identities) + identity.sha256).encode(),
                 ).hexdigest()[:16]
                 expected = build_standard_supplemental_computation_record(
-                    analysis_id=item.analysis_id, dataset_ids=item.dataset_ids,
+                    analysis_id=item.analysis_id, dataset_ids=record.input_dataset_ids,
                     input_files=inputs, evidence_file=identity.model_dump(mode='json', by_alias=True),
                     method=record.method, method_version=record.method_version,
                     parameters={**parameters, 'populationProofs': proofs}, execution_id=execution,
@@ -2031,7 +2045,7 @@ def _verified_population_contexts(work_item: SectionWorkItem, sources: Mapping[s
                             or not isinstance(table, Mapping) or table.get('populationProof') != proof
                             or proof.get('version') != 'standard-population-v1'
                             or proof.get('datasetSha256') not in {item.sha256 for item in csv_identities}
-                            or proof.get('datasetId') not in item.dataset_ids
+                            or proof.get('datasetId') not in record.input_dataset_ids
                             or proof.get('datasetId') != request.get('datasetId')
                             or proof.get('scope') != request.get('scope')
                             or proof.get('periods') != request.get('currentPeriods')
@@ -3161,6 +3175,9 @@ async def _interpret_section_claims(
         return resolver.resolve(number.token)
 
     references = []
+    selected_views = {}
+    selected_tokens = {}
+    table_derivations = {}
     contexts = {}
     anchored_blocks = {
         block.block_id: anchor_bound_numbers(block.markdown, block.number_references, block.review_notices)
@@ -3173,6 +3190,10 @@ async def _interpret_section_claims(
             context = claim_context(original_section, number.claim_id, include_section=True)
             if selected is None or context is None:
                 continue
+            selected_views[number.claim_id] = selected
+            selected_tokens[number.claim_id] = number.token
+            if number.table_derivation is not None:
+                table_derivations[number.claim_id] = number.table_derivation
             references.append({
                 'claimId': number.claim_id, 'context': context,
                 'displayText': number.display_text, 'selector': selected['selector'],
@@ -3192,15 +3213,44 @@ async def _interpret_section_claims(
         reference['localText'] = context[max(0, offset - 70):offset + 50]
         contexts[context_id] = context.replace('【当前数值引用】', '')
     items = []
+    def batch_payload(batch):
+        return {
+            'contexts': {item['contextId']: contexts[item['contextId']] for item in batch},
+            'references': batch,
+            'quantitySources': quantity_catalog.prompt_for(
+                [selected_views[item['claimId']] for item in batch],
+                tokens=[selected_tokens[item['claimId']] for item in batch],
+                table_derivations=[table_derivations[item['claimId']] for item in batch
+                                   if item['claimId'] in table_derivations],
+            ),
+        }
+
+    input_budget = None
+    if getattr(agent, 'model', None) is not None:
+        try:
+            input_budget = _section_block_input_token_budget(agent, run_context, default_budget=None)
+        except Exception as error:
+            loguru_logger.warning('report_semantic_budget_unavailable error={}', type(error).__name__)
     # 逐项解释含范围、期间与数量关系，50 处一次输出会被端点截断；限制输出批量，
-    # 不裁剪任何章节上下文。每批仍只有一次模型调用，不重试失败批。
-    for start in range(0, len(references), 10):
+    # 再按实际路由输入预算缩小批量，不裁章节或来源家族。未发送前拆批不消耗模型调用。
+    start = 0
+    while start < len(references):
         batch = references[start:start + 10]
         try:
+            payload = batch_payload(batch)
+            if input_budget is not None:
+                request_tokens = _section_request_tokens(
+                    agent, payload, run_context, stage='semantics', output_schema=SectionSemanticReview)
+                while request_tokens > input_budget and len(batch) > 1:
+                    batch = batch[:max(1, len(batch) // 2)]
+                    payload = batch_payload(batch)
+                    request_tokens = _section_request_tokens(
+                        agent, payload, run_context, stage='semantics', output_schema=SectionSemanticReview)
+                if request_tokens > input_budget:
+                    raise ReportingError('report_section_context_too_large',
+                                         '单条语义复核的完整上下文超过输入预算，保留待复核。')
             result = await _run_section_stage(
-                agent, SectionSemanticReview, 'semantics', {
-                    'contexts': contexts, 'references': batch, 'quantitySources': quantity_catalog.prompt,
-                },
+                agent, SectionSemanticReview, 'semantics', payload,
                 scope=scope, run_context=run_context, thinking_request=_section_stage_thinking_request(
                     thinking_request, 'semantics',
                 ), section_code=section_code, response_validator=_validated_section_semantic_review,
@@ -3214,7 +3264,8 @@ async def _interpret_section_claims(
             issues = [{'loc': issue.get('loc'), 'type': issue.get('type')}
                       for issue in details.get('errors', ()) if isinstance(issue, Mapping)]
             loguru_logger.warning('report_claim_semantics_unavailable section={} batch={} error={} issues={}',
-                                 section_code, start // 10, type(error).__name__, issues)
+                                 section_code, start, type(error).__name__, issues)
+        start += len(batch)
     known_ids = {item['claimId'] for item in references}
     by_id = {item.claim_id: item for item in items if item.claim_id in known_ids
              and sum(other.claim_id == item.claim_id for other in items) == 1}
@@ -4673,6 +4724,8 @@ class RuntimeSectionsMixin:
         interactive_charts: dict[str, str] = {}
         plot_data_files: list[FileIdentity] = []
         plot_files_by_chart: dict[str, list[FileIdentity]] = {}
+        render_scripts_by_chart: dict[str, FileIdentity] = {}
+        render_trace_files: dict[str, FileIdentity] = {}
         for chart_id in referenced_chart_ids:
             chart = chart_by_id[chart_id]
             content = await self._read_identity_bytes(
@@ -4699,6 +4752,18 @@ class RuntimeSectionsMixin:
                     )
                 )
                 plot_files_by_chart.setdefault(chart_id, []).append(plot_data_files[-1])
+            if chart.standard_render_proof is not None:
+                try:
+                    from .standard_chart_proof import archive_standard_render_proof
+
+                    script, dependencies = await archive_standard_render_proof(
+                        self, scope["threadId"], chart, destination_by_chart[chart_id],
+                    )
+                    render_scripts_by_chart[chart_id] = script
+                    render_trace_files.update((item.path, item) for item in dependencies)
+                except Exception as error:
+                    loguru_logger.warning("report_standard_render_archive_unavailable chart={} error={}",
+                                          chart_id, type(error).__name__)
             if chart.interactive_file is not None:
                 spec_content = await self._read_identity_bytes(
                     scope["threadId"], chart.interactive_file, max_bytes=2 * 1024 * 1024
@@ -4743,12 +4808,17 @@ class RuntimeSectionsMixin:
                         derive_resource_id(item.path) for item in plot_files
                     ),
                     datasetIds=dataset_ids,
+                    scriptFileResourceId=(derive_resource_id(render_scripts_by_chart[chart_id].path)
+                                          if chart_id in render_scripts_by_chart else None),
+                    standardRenderProof=(chart.standard_render_proof
+                                         if chart_id in render_scripts_by_chart else None),
                     transformNotes=(
                         "作图数据由服务端 chart-input/v1 物化，图片以同一份数据生成",
                     ),
                 )
             )
             chart_trace_files.extend(plot_files)
+        chart_trace_files.extend(render_trace_files.values())
         markdown_file = await self._write_immutable_artifact(
             scope["threadId"], markdown_path, rendered.markdown.encode("utf-8")
         )

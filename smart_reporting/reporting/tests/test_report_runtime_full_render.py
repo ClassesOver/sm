@@ -797,7 +797,8 @@ def test_render_markdown_hides_trace_source_appendix_when_sources_disabled(
         assert "本期营业收入 3,600 万元" in rendered_text
 
 
-def test_render_markdown_moves_server_tables_to_appendix_after_body(tmp_path: Path) -> None:
+@pytest.mark.parametrize('canonical_appendix', [False, True])
+def test_render_markdown_moves_server_tables_to_appendix_after_body(tmp_path: Path, canonical_appendix) -> None:
     """服务端汇总表原在各章末尾，回放中第1章后连续数页表格；渲染时统一移到正文之后的“附表”。"""
     import pypdf
     from docx import Document
@@ -811,6 +812,14 @@ def test_render_markdown_moves_server_tables_to_appendix_after_body(tmp_path: Pa
         ),
         encoding="utf-8",
     )
+    if canonical_appendix:
+        import re
+
+        markdown = draft.read_text(encoding='utf-8')
+        table = re.search(r'\[\[table:tbl-1\]\].*?\[\[/table:tbl-1\]\]', markdown, re.S)[0]
+        draft.write_text(markdown.replace(table, '').rstrip()
+                         + '\n\n**附表：数据明细**\n\n**1. 收入分析**\n\n'
+                         + table + '\n', encoding='utf-8')
     try:
         result = ReportRuntime(workspace).render_markdown(
             state,

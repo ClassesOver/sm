@@ -12,6 +12,51 @@ from smart_reporting.reporting.trace.table_quality import evaluate_table_quality
 from .test_trace_index_builder import _build_table
 
 
+def test_wide_tables_repeat_all_row_dimensions_and_preserve_source_coordinates():
+    finding = {
+        'name': 'cost_type_2025_composition',
+        'columns': ['日期', '成本类型', 'current', 'baseline', 'change', 'changeRate', 'share'],
+        'rows': [['2025-12', '人员', 120, 100, 20, .2, .6],
+                 ['2025-12', '材料', 80, 70, 10, 1 / 7, .4]],
+    }
+    tables = build_supplemental_tables({'findings': [finding]}, file_resource_id='trf-' + '1' * 20)
+    assert len(tables) == 2
+    for trace, markdown in tables:
+        assert trace.column_keys[:2] == ('日期', '成本类型')
+        assert len(trace.column_keys) <= 5
+        assert 'cost_type_2025_composition' not in markdown
+        assert '日期、成本类型明细' in markdown
+        assert '| 2025-12 | 人员 |' in markdown
+        assert '| 2025-12 | 材料 |' in markdown
+        assert [cell.source_cell.column_index for cell in trace.cells[:2]] == [0, 1]
+        assert [cell.source_cell.row_index for cell in trace.cells[::len(trace.column_keys)]] == [0, 1]
+        lines = [line for line in markdown.splitlines() if line.startswith('|')]
+        assert len({line.count('|') for line in lines}) == 1
+    coordinates = {(cell.source_cell.row_index, cell.source_cell.column_index)
+                   for trace, _ in tables for cell in trace.cells}
+    assert coordinates == {(row, col) for row in range(2) for col in range(7)}
+
+
+def test_numeric_row_keys_and_empty_dimension_keep_their_identity_on_every_part():
+    finding = {'title': '科室成本比较', 'rowKeyColumns': ['科室编码', '类别'],
+               'columns': ['科室编码', '类别', 'a', 'b', 'c', 'd'],
+               'rows': [[101, None, 1, 2, 3, 4], [102, None, 5, 6, 7, 8]]}
+    tables = build_supplemental_tables({'findings': [finding]}, file_resource_id='trf-' + '1' * 20)
+    assert len(tables) == 2
+    for index, (trace, markdown) in enumerate(tables, 1):
+        assert trace.column_keys[:2] == ('科室编码', '类别')
+        assert f'科室成本比较（分表 {index}/2）' in markdown
+        assert [cell.source_cell.column_index for cell in trace.cells[:2]] == [0, 1]
+
+
+def test_all_dimension_wide_table_is_not_split_into_indistinguishable_rows():
+    columns = [f'维度{i}' for i in range(6)]
+    tables = build_supplemental_tables({'findings': [{'columns': columns,
+        'rows': [['A'] * 6]}]}, file_resource_id='trf-' + '1' * 20)
+    assert len(tables) == 1
+    assert tables[0][0].column_keys == tuple(columns)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize('edited', [False, True])
 async def test_legacy_raw_amount_header_preserves_quality_and_editor_checks(tmp_path, edited):

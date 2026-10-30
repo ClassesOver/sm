@@ -20,6 +20,56 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     <div class="ask-ai-composers"></div>
   `
   panel.querySelector('.ask-ai-brand')!.append(createElement(Sparkles, { width: 22, height: 22, 'aria-hidden': 'true' }))
+  const resizeHandle = document.createElement('div')
+  resizeHandle.className = 'ask-ai-resize-handle'
+  resizeHandle.setAttribute('role', 'separator')
+  resizeHandle.setAttribute('aria-orientation', 'vertical')
+  resizeHandle.setAttribute('aria-label', '调整 Ask AI 宽度')
+  resizeHandle.setAttribute('aria-valuemin', '400')
+  resizeHandle.tabIndex = 0
+  resizeHandle.innerHTML = '<span aria-hidden="true"></span>'
+  panel.append(resizeHandle)
+  const resizeMin = 400
+  const resizeMax = 760
+  const availableMax = () => Math.max(resizeMin, Math.min(resizeMax, window.innerWidth - 80))
+  const currentWidth = () => Number.parseFloat(panel.style.getPropertyValue('--ask-ai-panel-width')) || Math.min(560, window.innerWidth)
+  const setWidth = (requested: number) => {
+    const width = Math.round(Math.max(resizeMin, Math.min(availableMax(), requested)))
+    panel.style.setProperty('--ask-ai-panel-width', `${width}px`)
+    resizeHandle.setAttribute('aria-valuemax', String(availableMax()))
+    resizeHandle.setAttribute('aria-valuenow', String(width))
+    resizeHandle.setAttribute('aria-valuetext', `${width} px`)
+  }
+  resizeHandle.setAttribute('aria-valuemax', String(availableMax()))
+  resizeHandle.setAttribute('aria-valuenow', String(Math.min(availableMax(), currentWidth())))
+  resizeHandle.setAttribute('aria-valuetext', `${Math.min(availableMax(), currentWidth())} px`)
+  let resizeStart: { x: number; width: number } | null = null
+  const finishResize = () => {
+    resizeStart = null
+    window.removeEventListener('pointermove', moveResize)
+    window.removeEventListener('pointerup', finishResize)
+    window.removeEventListener('pointercancel', finishResize)
+  }
+  const moveResize = (event: PointerEvent) => {
+    if (resizeStart) setWidth(resizeStart.width + resizeStart.x - event.clientX)
+  }
+  resizeHandle.addEventListener('pointerdown', event => {
+    const pointer = event as PointerEvent
+    if (pointer.button !== 0) return
+    pointer.preventDefault()
+    resizeStart = { x: pointer.clientX, width: currentWidth() }
+    window.addEventListener('pointermove', moveResize)
+    window.addEventListener('pointerup', finishResize)
+    window.addEventListener('pointercancel', finishResize)
+    if (typeof resizeHandle.setPointerCapture === 'function') resizeHandle.setPointerCapture(pointer.pointerId)
+  })
+  resizeHandle.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    setWidth(currentWidth() + (event.key === 'ArrowLeft' ? 16 : -16))
+  })
+  const clampOnResize = () => { if (window.innerWidth > 640) setWidth(currentWidth()) }
+  window.addEventListener('resize', clampOnResize)
   const closeButton = document.createElement('button')
   closeButton.type = 'button'
   closeButton.className = `${buttonClasses('quiet', true)} ask-ai-close`
@@ -197,7 +247,7 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
         sessions.delete(session)
         overlay.remove(); composer.remove(); reviewDock.remove(); tab.remove()
         if (active === session) { active = [...sessions].at(-1) ?? null; if (active && !panel.hidden) active.open(); else hide() }
-        if (!sessions.size) { document.removeEventListener('report-panel-open', otherPanelOpened); imageObserver.disconnect(); imagePreview?.remove(); panel.remove(); launcher.remove(); notifications.remove(); document.body.classList.remove('ask-ai-open') }
+        if (!sessions.size) { finishResize(); window.removeEventListener('resize', clampOnResize); document.removeEventListener('report-panel-open', otherPanelOpened); imageObserver.disconnect(); imagePreview?.remove(); panel.remove(); launcher.remove(); notifications.remove(); document.body.classList.remove('ask-ai-open') }
         refresh()
       },
       setState(state: SessionState) {

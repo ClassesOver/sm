@@ -16,6 +16,22 @@ from smart_reporting.reporting.workflow.runtime.standard_supplemental import (
 )
 
 
+def test_standard_finding_carries_verified_metric_identity_and_explicit_row_keys():
+    req = StandardSupplementalRequest.model_validate({
+        **request().model_dump(by_alias=True), 'metricCodes': ['cost_total']})
+    payload = run_standard_supplemental(analysis_id='analysis_001',
+        dataset_ids=('dataset-current',), authorized_fields=('period', 'department', 'amount'),
+        csv_content=CSV, request=req)
+    finding = payload['findings'][0]
+    assert finding['metricCodes'] == ['cost_total']
+    assert finding['rowKeyColumns'] == ['department']
+    validated = validate_supplemental_evidence(json.dumps(payload).encode(), {
+        'analysisId': 'analysis_001', 'datasetIds': ['dataset-current'],
+        'allowedMetricCodes': ['cost_total'],
+    })
+    assert not validated.findings[0].get('metricScopeRejected')
+
+
 def test_standard_finding_metadata_preserves_fraction_scale_and_frozen_measure_unit():
     req = request().model_copy(update={'measure_unit': '元'})
     payload = run_standard_supplemental(
@@ -24,7 +40,8 @@ def test_standard_finding_metadata_preserves_fraction_scale_and_frozen_measure_u
     )
     finding = payload['findings'][0]
     assert finding['columnMeta'] == {
-        'value': {'unit': '元'}, 'rank': {'unit': '名'},
+        'value': {'unit': '元', 'measureSemantic': {
+            'aggregation': 'sum', 'additiveAcross': ['department']}}, 'rank': {'unit': '名'},
         'share': {'unit': '%', 'isPercent': False},
     }
     assert finding['rows'][0][-1] == 0.65

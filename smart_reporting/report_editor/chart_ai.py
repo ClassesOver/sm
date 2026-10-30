@@ -37,6 +37,7 @@ from ..reporting.delivery.artifacts_v1 import ChartArtifact, ReportArtifactManif
 from ..reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ..reporting.host_workspace import HostReportingWorkspace, ReportingWorkspaceRegistry
 from ..reporting.models import ReportingError
+from ..reporting.workflow.runtime.standard_chart_families import validate_family_parameters
 from ..reporting.structured_output import (
     ReportingStructuredOutputExecutor,
     StructuredOutputCallBudget,
@@ -142,6 +143,8 @@ class ChartEditPlan(StrictModel):
             raise ValueError("改图规划必须给出可执行级别或跳过说明")
         if self.level and not self.draw_instruction.strip():
             raise ValueError("可执行的改图规划必须包含绘图指令")
+        if self.standard is not None:
+            validate_family_parameters(self.standard)
         return self
 
 
@@ -231,7 +234,13 @@ class _ChartEditJob:
     execution_observation: dict[str, Any] = field(default_factory=dict)
     execution_rounds: list[dict[str, Any]] = field(default_factory=list)
 
-    def capture_execution(self, value: Any, *, phase: str | None = None) -> None:
+    def capture_execution(
+        self, value: Any, *, phase: str | None = None, _seen: set[int] | None = None,
+    ) -> None:
+        seen = _seen if _seen is not None else set()
+        if id(value) in seen:
+            return
+        seen.add(id(value))
         details = getattr(value, "details", None)
         details = details if isinstance(details, Mapping) else {}
         observation = getattr(value, "standard_execution", None) or details.get("standardExecution") or {}
@@ -245,7 +254,7 @@ class _ChartEditJob:
             route_total = getattr(value, "standard_route_total_ms", None) or details.get("standardRouteTotalMs")
         route = getattr(value, "standard_route_execution", None) or details.get("standardRouteExecution")
         if not (timings or attempts or spans is not None or route is not None or _nonnegative_number(route_total)) and getattr(value, "__cause__", None) is not None:
-            self.capture_execution(value.__cause__, phase=phase)
+            self.capture_execution(value.__cause__, phase=phase, _seen=seen)
             return
         if timings or attempts or spans is not None or route is not None or phase is not None:
             self.execution_stage_timings_ms = _safe_stage_timings(timings)
@@ -2199,7 +2208,8 @@ class AgnoChartEditPlanner:
             session_id=f"report-editor-chart-ai:{request.get('chartId', '')}",
             user_id=user_id,
             # 保持原规划器单次业务调用，不因接入公共执行器扩大纠错轮数。
-            call_budget=StructuredOutputCallBudget(max_model_calls=1),
+            # 正常规划只调用一次；格式/字段校验失败时复用公共执行器纠正一次。
+            call_budget=StructuredOutputCallBudget(max_model_calls=2),
         )
         content = getattr(output, "content", None)
         if isinstance(content, ChartEditPlan):
@@ -2236,6 +2246,7 @@ def create_report_editor_chart_ai_service(
             "currentBindings是当前已核验plotData的绑定身份，L1沿用这些输入，dataBindings可省略或照录currentBindings；registeredBindings仅供L2换绑选择，不是L1字段白名单。不得因L2目录未包含当前字段而跳过L1，也不得编造路径。",
             "优先输出标准模板参数：双轴/堆叠双轴、横纵断轴、范围带、散点/气泡/热力、瀑布、原始或登记汇总箱线、画布/配色/标注和完整分页。缺少对应来源字段时不要伪造。",
             "standardChartCapabilities给出标准能力，完整字段以系统输出契约的standard对象为准；显式填写standardForm，不从visualForm猜类型。pie/donut/radar/funnel/sankey均按冻结数据政策选择，不能提交常数代替冻结事实。",
+            "上述非笛卡尔图族的坐标参数仅能按standardChartCapabilities.familyAxesOverrides调整，其余保持默认；不要为漏斗设置zeroBaseline或allowNulls。sankey的standardEncoding仅填写能力契约encodingFields列出的字段，单位用standardDisplayUnit，字段含义放在title或altText，不附加坐标、颜色或大小编码的caption。",
             "pie/donut使用standardComposition冻结分母；radar异量纲或负值须standardRadar.scales绑定冻结端点；funnel保留阶段顺序且ratioBase默认none；sankey用standardEncoding的xField/yField/valueField绑定原source/target/weight，辅助节点用standardSankey.nodes。sourceIndex严格引用完整有序输入，不另找来源，不造零或补平衡流。",
             "上一轮previousStandard未被本轮要求改变的参数应保留；省略standard组由服务端继承，显式提供的组替换该组。改变轴模式时给出完整新轴组。",
             "切换图形时显式清除不兼容的专属参数：例如分页条形改为折线须standardPagination=null，瀑布改为普通柱须standardWaterfall=null；箱线汇总/范围带/断轴等同样按新图形核对并清除，仍适用的画布、颜色和轴参数保留。",

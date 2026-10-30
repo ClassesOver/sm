@@ -528,7 +528,38 @@ class VisualizationWorkflowResult:
     recovery_used: bool = False
 
 
-def _merge_standard_chart_parameters(chart: ChartDraft, replacement: ChartDraft) -> ChartDraft:
+def _source_correction_catalog(chart: ChartDraft, payload: Mapping[str, Any]) -> dict:
+    """按原图目标指标和数据集冻结业务家族；仅重选同主体的真实期间序列。"""
+    families = {}
+    by_code: dict[str, set[str]] = {code: set() for code in chart.metric_codes}
+    analyses = {binding.analysis_id for binding in chart.data_bindings}
+    for analysis in payload.get('visualizationFacts', ()):
+        if not isinstance(analysis, Mapping) or analysis.get('analysisId') not in analyses:
+            continue
+        path = (analysis.get('factFile') or {}).get('path')
+        for metric in analysis.get('metrics', ()):
+            if (not isinstance(metric, Mapping) or not metric.get('field') or not metric.get('unit')
+                    or not metric.get('aggregation') or not isinstance(metric.get('scope'), Mapping)
+                    or not metric['scope']
+                    or not metric.get('metricCodes') or not isinstance(metric.get('metricIndex'), int)):
+                continue
+            family = json.dumps({**{name: metric.get(name) for name in (
+                'fieldRef', 'field', 'unit', 'aggregation', 'periodAggregation', 'scope')},
+                'metricCodes': sorted(metric['metricCodes'])}, ensure_ascii=False, sort_keys=True)
+            key = (analysis['analysisId'], path, f"metrics[{metric['metricIndex']}].periodValues")
+            families[key] = family
+            if metric.get('datasetId') == chart.source_dataset_id:
+                for code in set(metric['metricCodes']) & by_code.keys():
+                    by_code[code].add(family)
+    if not by_code or any(len(values) != 1 for values in by_code.values()):
+        return {}
+    expected = set().union(*by_code.values())
+    registered = _visualization_binding_catalog(payload)
+    return {key: {'fields': registered[key], 'family': family} for key, family in families.items()
+            if key in registered and family in expected}
+
+
+def _merge_standard_chart_parameters(chart: ChartDraft, replacement: ChartDraft, *, binding_catalog=None) -> ChartDraft:
     """省略表示保留，显式空值表示清除；嵌套参数同样遵循补丁语义。"""
     def merge(original, patch):
         result = dict(original)
@@ -539,7 +570,20 @@ def _merge_standard_chart_parameters(chart: ChartDraft, replacement: ChartDraft)
 
     fields = {name for name in ChartDraft.model_fields if name.startswith('standard_')}
     patch = replacement.model_dump(by_alias=True, exclude_unset=True, include=fields)
-    return ChartDraft.model_validate(merge(chart.model_dump(by_alias=True), patch))
+    result = ChartDraft.model_validate(merge(chart.model_dump(by_alias=True), patch))
+    if binding_catalog is not None:
+        bindings = replacement.data_bindings
+        selected = [binding_catalog.get((binding.analysis_id, binding.fact_path, binding.data_path))
+                    for binding in bindings]
+        if ({binding.analysis_id for binding in bindings} == {binding.analysis_id for binding in chart.data_bindings}
+                and all(entry is not None and set(binding.fields) <= entry['fields']
+                        for binding, entry in zip(bindings, selected, strict=True))
+                and {entry['family'] for entry in selected} == {
+                    entry['family'] for entry in binding_catalog.values()}):
+            result = result.model_copy(update={'data_bindings': bindings})
+        else:
+            logger.warning('report_visualization_source_correction_rejected chart={}', chart.chart_id)
+    return result
 
 
 class VisualizationSectionWorkflow:
@@ -675,11 +719,15 @@ class VisualizationSectionWorkflow:
                         "repairInstruction": "仅纠正scopeCorrections指出的图表范围，保留其余图；"
                         "完整汇总只绑定对应补证，不用明细子集替代。缺少汇总证据则省略该图并说明。"
                         "standardChartCorrections只纠正指出图的standard*参数，沿用原图ID、路径、期间、口径和数据绑定；"
+                        "仅bindingCorrectionAllowed=true时可在同一analysis已签发的dataDescriptors中重选来源，"
+                        "修复空系列或期间错绑；不得补零、改写事实或更改业务比较目标。"
                         "按standardChartCapabilities选择机器类型、显式同月映射或摘要聚合。确实超出能力则standardForm=custom，不得改写事实。",
                     }, run_context)
                     repaired = _validate_visualization_plan_bindings(repaired, payload)
                     affected = {item["chartId"] for item in scope_issues}
                     standard_affected = {item['chartId'] for item in standard_issues}
+                    binding_affected = {item['chartId'] for item in standard_issues
+                                        if item.get('bindingCorrectionAllowed') is True}
                     replacements = {chart.chart_id: chart for chart in repaired.charts}
                     corrected = []
                     for chart in plan.charts:
@@ -687,7 +735,9 @@ class VisualizationSectionWorkflow:
                         if chart.chart_id in affected:
                             corrected.append(replacement)
                         elif chart.chart_id in standard_affected:
-                            corrected.append(_merge_standard_chart_parameters(chart, replacement))
+                            corrected.append(_merge_standard_chart_parameters(chart, replacement,
+                                binding_catalog=_source_correction_catalog(chart, payload)
+                                if chart.chart_id in binding_affected else None))
                         else:
                             corrected.append(chart)
                     plan = plan.model_copy(update={

@@ -134,6 +134,44 @@ def test_explicit_month_of_year_alignment_renders_yoy_without_overwriting_dates(
     assert json.loads(inputs.files[1].content) == previous
 
 
+def test_month_of_year_yoy_accepts_multiple_registered_series_per_year(render):  # noqa: F811
+    documents = []
+    selections = []
+    for index, year in enumerate((2025, 2025, 2024, 2024)):
+        documents.append({'columns': ['period', 'value'],
+            'rows': [[f'{year}-01-01', 10 + index], [f'{year}-02-01', 20 + index]],
+            'columnMeta': {'value': {'unit': '床日'}}})
+        selections.append({'sourceIndex': index, 'labelField': 'period', 'valueField': 'value',
+                           'seriesName': f'系列{index}', 'labelMode': 'month_of_year', 'periodYear': year})
+    plan, inputs = plan_and_inputs(documents, comparisonType='yoy', comparisonPeriod='2024-01至2024-02',
+        standardForm='line', standardValueFields=[item['seriesName'] for item in selections],
+        standardSourceLabels=['01', '02'], standardSources=selections,
+        standardPresentation={'labelMode': 'month_of_year'})
+    figure = render(plan, inputs)
+    assert [list(line.get_ydata()) for line in figure.axes[0].lines] == [
+        [10, 20], [11, 21], [12, 22], [13, 23]]
+    assert [json.loads(file.content) for file in inputs.files] == documents
+
+
+@pytest.mark.parametrize('fault', ['third_year', 'different_months', 'duplicate_month'])
+def test_multiple_yoy_series_still_reject_incompatible_period_windows(fault):
+    windows = [['2025-01', '2025-02'], ['2025-01', '2025-02'],
+               ['2024-01', '2024-02'], ['2024-01', '2024-02']]
+    windows[-1] = {'third_year': ['2023-01', '2023-02'],
+                  'different_months': ['2024-01', '2024-03'],
+                  'duplicate_month': ['2024-01-01', '2024-01-02']}[fault]
+    columns = ['current_a', 'current_b', 'previous_a', 'previous_b']
+    document = {'columns': ['area', *columns], 'rows': [['甲', 10, 20, 30, 40]],
+                'columnMeta': {name: {'unit': '床日', 'periods': window}
+                               for name, window in zip(columns, windows, strict=True)}}
+    plan, inputs = plan_and_inputs([document], comparisonType='yoy', comparisonPeriod='2024-01至2024-02',
+        standardLabelField='area', standardValueFields=columns,
+        standardStyle={'series': [{'series': name, 'geometry': 'bar'} for name in columns]})
+    result = standard_visualization_preflight(plan, inputs)
+    assert result.source is None
+    assert result.diagnostic['code'] == 'standard_period_alignment_invalid'
+
+
 @pytest.mark.parametrize('fault', ['wrong_year', 'duplicate_month', 'missing_month', 'identity'])
 def test_month_of_year_alignment_rejects_unsafe_sources(fault):
     left, right = monthly(), monthly()
@@ -254,6 +292,90 @@ def test_explicit_custom_chart_is_not_replanned_as_standard():
     plan, inputs = plan_and_inputs([monthly()], standardForm='custom')
     assert standard_plan_diagnostics(plan, inputs) == []
     assert standard_visualization_preflight(plan, inputs).diagnostic['code'] == 'standard_custom_requested'
+
+
+def test_empty_registered_series_requests_source_correction_instead_of_filling_zero():
+    from smart_reporting.reporting.workflow.runtime.standard_visualization import (
+        standard_plan_diagnostics,
+    )
+
+    document = monthly()
+    for row in document['rows']:
+        row[1] = None
+    plan, inputs = plan_and_inputs([document], standardAxes={'allowNulls': True})
+    issues = standard_plan_diagnostics(plan, inputs)
+    assert issues[0]['code'] == 'standard_series_empty'
+    assert issues[0]['bindingCorrectionAllowed'] is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+@pytest.mark.parametrize('source', ['registered', 'foreign', 'other_analysis', 'other_metric',
+                                   'other_scope', 'other_unit', 'other_field', 'other_aggregation'])
+async def test_source_correction_rebinds_only_registered_same_analysis_series(source):
+    from smart_reporting.reporting.tests.test_reporting_fixed_phase_workflows import (
+        _context,
+        _execution_receipt,
+        _inspection,
+        _visualization_payload,
+        _visualization_plan,
+    )
+    from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+    from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
+    from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
+        VisualizationSectionWorkflow,
+    )
+
+    original = _visualization_plan()
+    chart = original.charts[0]
+    payload = _visualization_payload()
+    candidate = chart.data_bindings[0].model_copy(update={'data_path': 'metrics[1].periodValues'})
+    payload['visualizationFacts'][0]['dataDescriptors'].append({
+        'dataPath': candidate.data_path, 'fields': list(candidate.fields)})
+    primary = {'metricIndex': 0, 'datasetId': chart.source_dataset_id, 'metricCodes': list(chart.metric_codes),
+               'field': 'income', 'fieldRef': 'hospital.income', 'aggregation': 'sum',
+               'periodAggregation': 'sum', 'scope': {'company': '甲院'}, 'unit': '元'}
+    secondary = {**primary, 'metricIndex': 1, 'datasetId': 'dataset_previous', 'periodRoles': ['yoy']}
+    secondary.update({'other_metric': {'metricCodes': ['expense']},
+                      'other_scope': {'scope': {'company': '乙院'}}, 'other_unit': {'unit': '人次'},
+                      'other_field': {'field': 'expense', 'fieldRef': 'hospital.expense'},
+                      'other_aggregation': {'aggregation': 'mean'}}.get(source, {}))
+    payload['visualizationFacts'][0]['metrics'] = [primary, secondary]
+    if source == 'foreign':
+        candidate = candidate.model_copy(update={'fact_path': 'foreign.json', 'data_path': 'unknown'})
+    elif source == 'other_analysis':
+        candidate = candidate.model_copy(update={'analysis_id': 'analysis_002'})
+        payload['visualizationFacts'].append({
+            'analysisId': 'analysis_002', 'factFile': {'path': candidate.fact_path},
+            'dataDescriptors': [{'dataPath': candidate.data_path, 'fields': list(candidate.fields)}]})
+    calls = []
+
+    async def generate(request, _context):
+        calls.append(request)
+        if len(calls) == 1:
+            return original
+        return original.model_copy(update={'charts': (chart.model_copy(update={
+            'data_bindings': (candidate,), 'standard_form': 'line',
+            'title': '不得覆盖原业务目标', 'source_path': 'changed.png', 'current_period': '2030'}),)})
+
+    async def preflight(plan, _context):
+        return [{'chartId': chart.chart_id, 'code': 'standard_series_empty', 'bindingCorrectionAllowed': True}]
+
+    async def run_code(plan, _context, **kwargs):
+        return CodeGenerationResult(script_file=FileIdentity(path='charts/charts.py', size=1, sha256='b' * 64),
+            execution_receipt=_execution_receipt('charts/charts.py', 1, 'b' * 64, (chart.source_path,)),
+            visual_inspection_receipts=(_inspection(),))
+
+    async def submit(*args):
+        return {'status': 'accepted'}
+
+    result = await VisualizationSectionWorkflow(generate_plan=generate, preflight_plan=preflight,
+        run_code=run_code, submit=submit).run(payload, _context())
+    assert result.status == 'accepted' and len(calls) == 2
+    actual = result.plan.charts[0]
+    assert actual.data_bindings == ((candidate,) if source == 'registered' else chart.data_bindings)
+    assert (actual.title, actual.source_path, actual.current_period) == (
+        chart.title, chart.source_path, chart.current_period)
 
 
 def test_parameter_repair_distinguishes_explicit_clear_from_omission():

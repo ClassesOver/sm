@@ -29,6 +29,8 @@ EditorStandardChart = create_model(
     title=(str, ...), alt_text=(str, Field(alias="altText")),
     visual_form=(str, Field(alias="visualForm")),
     data_bindings=(tuple[dict[str, Any], ...], Field(alias="dataBindings")),
+    comparison_type=(Literal['none', 'yoy'], Field(default='none', alias='comparisonType')),
+    comparability=(Literal['strict'], 'strict'),
 )
 EditorStandardPlan = create_model(
     "EditorStandardPlan", __base__=StrictModel,
@@ -41,9 +43,15 @@ def standard_edit_plan(*, chart_id, output_path, title, alt_text, visual_form,
                        standard, bindings, plot_files):
     """Only source bytes and server-owned paths/ids determine the execution scope."""
     options = standard or StandardChartEditParameters()
+    # 显式跨年同月选择声明比较意图；编译器仍逐项验证相邻年、月份及原始期间。
+    monthly_sources = options.standard_sources
+    comparison = 'yoy' if monthly_sources and all(
+        source.label_mode == 'month_of_year' for source in monthly_sources
+    ) else 'none'
     chart = EditorStandardChart.model_validate({
         "chartId":chart_id, "sourcePath":output_path, "title":title, "altText":alt_text,
         "visualForm":visual_form, "dataBindings":bindings,
+        "comparisonType": comparison,
         **{name:getattr(options,name) for name in STANDARD_CHART_FIELDS},
     })
     inputs = ChartInputMaterialization(

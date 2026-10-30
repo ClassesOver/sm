@@ -21,6 +21,37 @@ const TABLE_MARKER = /^\[\[table:([A-Za-z0-9_.:-]+)\]\]$/
 const CLOSE_MARKER = /^\[\[\/table:([A-Za-z0-9_.:-]+)\]\]$/
 
 function text(value: string): Text { return document.createTextNode(value) }
+function markdownTableRow(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/)
+    .map(value => value.trim().replace(/\\\|/g, '|'))
+}
+
+function currentTablePreview(markdown: string): HTMLTableElement | null {
+  const lines = markdown.split('\n').map(line => line.trim()).filter(line => line.startsWith('|'))
+  if (!lines.length) return null
+  const rows = lines.map(markdownTableRow)
+  const hasSeparator = rows.length > 1 && rows[1]!.every(value => /^:?-{3,}:?$/.test(value))
+  const header = rows[0]!
+  const data = rows.slice(hasSeparator ? 2 : 1)
+  const table = document.createElement('table')
+  table.className = 'table-ai-current-preview'
+  table.setAttribute('aria-label', '当前表格预览')
+  const head = document.createElement('thead')
+  const headRow = document.createElement('tr')
+  header.forEach(value => {
+    const cell = document.createElement('th')
+    cell.scope = 'col'; cell.textContent = value; headRow.append(cell)
+  })
+  head.append(headRow); table.append(head)
+  const body = document.createElement('tbody')
+  data.forEach(values => {
+    const row = document.createElement('tr')
+    values.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.append(cell) })
+    body.append(row)
+  })
+  table.append(body)
+  return table
+}
 
 /** 与后端 _TABLE_UNAVAILABLE_REASONS 对齐的不可用文案（预检展示用）。 */
 const TABLE_UNAVAILABLE_REASONS: Record<string, string> = {
@@ -124,37 +155,11 @@ export function tableBodyMarkdown(markdown: string, tableId: string): string {
   return new RegExp(`^\\[\\[table:${escaped}\\]\\]\\n(.*?)\\n\\n?\\[\\[/table:${escaped}\\]\\]$`, 'ms').exec(markdown)?.[1] ?? ''
 }
 
-/** 上下文预览：正文表格 markdown 渲染成迷你表格（表头 + 前 4 行），解析不出时返回 null 由调用方回落原文。 */
+/** 上下文预览：保留全部行，由滚动容器限制高度。 */
 export function tablePreviewElement(markdown: string): { element: HTMLTableElement; meta: string } | null {
-  const lines = markdown.split('\n').map(line => line.trim()).filter(line => line.startsWith('|'))
-  const parse = (line: string) => line.replace(/^\|/, '').replace(/\|$/, '').split('|').map(value => value.trim())
-  const rows = lines.filter(line => !/^\|?[\s:|-]+\|?$/.test(line)).map(parse)
-  if (rows.length < 2 || !rows[0]!.length) return null
-  const table = document.createElement('table')
-  table.className = 'ai-mini-table'
-  const head = document.createElement('thead')
-  const headRow = document.createElement('tr')
-  for (const value of rows[0]) { const th = document.createElement('th'); th.textContent = value; headRow.append(th) }
-  head.append(headRow)
-  table.append(head)
-  const tbody = document.createElement('tbody')
-  const shown = rows.slice(1, 5)
-  for (const row of shown) {
-    const tr = document.createElement('tr')
-    for (const value of row) { const td = document.createElement('td'); td.textContent = value; tr.append(td) }
-    tbody.append(tr)
-  }
-  if (rows.length - 1 > shown.length) {
-    const tr = document.createElement('tr')
-    const td = document.createElement('td')
-    td.colSpan = rows[0]!.length
-    td.className = 'ai-mini-more'
-    td.textContent = `… 其余 ${rows.length - 1 - shown.length} 行`
-    tr.append(td)
-    tbody.append(tr)
-  }
-  table.append(tbody)
-  return { element: table, meta: `共 ${rows.length - 1} 行 · ${rows[0]!.length} 列` }
+  const table = currentTablePreview(markdown)
+  if (!table) return null
+  return { element: table, meta: `共 ${table.tBodies[0]!.rows.length} 行 · ${table.tHead!.rows[0]!.cells.length} 列` }
 }
 
 export interface TableAIEditController { open(tableId: string, baseBody?: string): void; dispose(): void }
@@ -230,13 +235,15 @@ export function createTableAIEdit(options: {
     const context = document.createElement('div')
     context.className = 'ask-ai-context'
     const title = document.createElement('strong'); title.textContent = '当前表格'
+    const preview = document.createElement('div'); preview.className = 'table-ai-preview-scroll'
     const previewData = tablePreviewElement(baseBody)
     if (previewData) {
       const meta = document.createElement('span'); meta.className = 'ai-mini-meta'; meta.textContent = previewData.meta
       const headRow = document.createElement('div'); headRow.className = 'ai-mini-head'; headRow.append(title, meta)
-      context.append(headRow, previewData.element)
+      preview.append(previewData.element)
+      context.append(headRow, preview)
     } else {
-      const preview = document.createElement('pre'); preview.textContent = baseBody.split('\n').slice(0, 5).join('\n') || '已选中正文表格'
+      const empty = document.createElement('p'); empty.textContent = '已选中正文表格'; preview.append(empty)
       context.append(title, preview)
     }
     if (!retainReview) body().replaceChildren(context)

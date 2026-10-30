@@ -109,6 +109,8 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
     "图表计划、脚本生成、执行、检查和提交均由固定 Workflow 编排。",
     "结构化生成器只返回 VisualizationPlanDraft，不返回 Python 源码或工作区操作。",
     "每张图必须显式填写standardForm机器枚举；visualForm只描述业务意图，不拼接机器类型。按输入standardChartCapabilities选类型，确需Coding才选custom。",
+    "来源描述中的emptyFields为全部缺失的列，不能画成有效比较系列或补零。同比/环比必须核对冻结列的期间元数据；"
+    "来源期间不符时，改用同analysis中确有对应期间的事实序列，不按previous/current等列名猜期间。",
     (
         "优先组合标准图参数满足业务需求：standardSources绑定多来源，standardValueFields选择系列，"
         "standardAxes选择双轴、分面、对数或局部放大，standardAnnotations绑定冻结点值和区间，"

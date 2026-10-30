@@ -28,6 +28,86 @@ def _source(catalog, **criteria):
     return next(item['sourceId'] for item in catalog.prompt if all(item.get(k) == v for k,v in criteria.items()))
 
 
+def test_batch_prompt_keeps_registered_family_and_population_without_unrelated_facts():
+    catalog = _catalog()
+    view = catalog.resolver.resolve('{{value:fact-aaaaaaaaaaaaaaaa:periodAverages.0-0:元}}')
+    prompt = catalog.prompt_for([view])
+    assert {item['factId'] for item in prompt if item['kind'] == 'fact'} == {'fact-aaaaaaaaaaaaaaaa'}
+    assert {'total', 'monthlyAverage', 'periodAverages.0-0'} <= {
+        item.get('selector') for item in prompt}
+    assert {item['column'] for item in prompt if item['kind'] == 'table_column'} == {'金额', '占比'}
+    # 模型候选投影不能裁掉宿主解析目录。
+    assert any(item.get('factId') == 'fact-bbbbbbbbbbbbbbbb' for item in catalog.prompt)
+
+
+def test_batch_prompt_includes_exact_comparison_family_but_not_other_scope_or_metric():
+    document = json.loads(contents()[0])
+    original = document['metrics'][0]
+    original['metricCodes'] = ['actual']
+    for key, patch in [
+        ('c', {'periodStart': '2024-01', 'periodEnd': '2024-02', 'periodRoles': ['yoy'],
+               'periodValues': [{'period': '2024-01', 'value': 10}, {'period': '2024-02', 'value': 20}]}),
+        ('d', {'scope': {'company': '另一院'}}),
+        ('e', {'metricCodes': ['budget']}),
+    ]:
+        document['metrics'].append({**original, **patch, 'factId': 'fact-' + key * 16})
+    catalog = build_quantity_catalog([json.dumps(document)], {})
+    view = catalog.resolver.resolve('{{value:fact-aaaaaaaaaaaaaaaa:total:元}}')
+    prompt = catalog.prompt_for([view])
+    assert {item.get('factId') for item in prompt} == {
+        'fact-aaaaaaaaaaaaaaaa', 'fact-cccccccccccccccc'}
+    assert catalog.prompt_for([]) == []
+
+
+def test_batch_prompt_preserves_calc_operands_and_table_derivation_sources():
+    catalog = _catalog()
+    view = catalog.resolver.resolve('{{calc:ratio(fact-aaaaaaaaaaaaaaaa:total,fact-bbbbbbbbbbbbbbbb:total):%}}')
+    prompt = catalog.prompt_for([view])
+    assert {item['factId'] for item in prompt if item['kind'] == 'fact'} == {
+        'fact-aaaaaaaaaaaaaaaa', 'fact-bbbbbbbbbbbbbbbb'}
+    amount = _source(catalog, kind='table_column', column='金额')
+    binding = catalog.resolve({'operation': 'value', 'left': [amount], 'rowLabel': '甲科',
+        'evidence': ['甲科收入']}, '甲科收入60元。')
+    prompt = catalog.prompt_for([], table_derivations=[binding.table_derivation])
+    assert {item['column'] for item in prompt if item['kind'] == 'table_column'} == {'金额', '占比'}
+    assert any(item.get('factId') == 'fact-aaaaaaaaaaaaaaaa' for item in prompt)
+
+
+def test_batch_prompt_keeps_the_second_fact_embedded_in_comparison_selector():
+    catalog = _catalog()
+    token = '{{value:fact-aaaaaaaaaaaaaaaa:budgetComparison.fact-bbbbbbbbbbbbbbbb.2025-02.percentage:%}}'
+    view = catalog.resolver.resolve(token)
+    assert view is not None
+    prompt = catalog.prompt_for([view], tokens=[token])
+    assert {item['factId'] for item in prompt if item['kind'] == 'fact'} == {
+        'fact-aaaaaaaaaaaaaaaa', 'fact-bbbbbbbbbbbbbbbb'}
+
+
+def test_batch_prompt_keeps_both_operands_of_registered_derived_quantity():
+    from smart_reporting.reporting.tests.test_numeric_text import _metric_pair_document
+    from smart_reporting.reporting.trace.numeric_text import (
+        derived_reference_token,
+        replace_unregistered_numbers,
+    )
+
+    frozen = [_metric_pair_document(left=150, right=400, name_left='实际支出', name_right='预算支出')]
+    tokens = []
+
+    def anchor(entry, unit):
+        tokens.append(derived_reference_token(entry, unit))
+        return ''
+
+    replace_unregistered_numbers('实际支出相当于预算支出的37.50%。', frozen,
+                                on_derived_anchor=anchor)
+    assert tokens
+    catalog = build_quantity_catalog(frozen, {})
+    view = catalog.resolver.resolve(tokens[0])
+    assert view is not None
+    prompt = catalog.prompt_for([view], tokens=tokens)
+    assert {item['factId'] for item in prompt if item['kind'] == 'fact'} == {
+        'fact-aaaaaaaaaaaaaaaa', 'fact-aaaaaaaaaaaaaaab'}
+
+
 def test_top_set_uses_complete_table_and_not_monthly_average():
     catalog = _catalog()
     amount = _source(catalog, kind='table_column', column='金额')
@@ -171,6 +251,17 @@ def test_period_average_sources_include_registered_subwindows():
     assert binding is not None
     assert binding.view['value'] == 40
     assert binding.view['periods'] == ('2025-01',)
+
+
+@pytest.mark.parametrize(('selector', 'expected'), [('periodChanges.1', 20), ('periodChangeRates.1', 50)])
+def test_quantity_catalog_exposes_registered_monthly_comparison_with_both_periods(selector, expected):
+    catalog = _catalog()
+    source = _source(catalog, kind='fact', factId='fact-aaaaaaaaaaaaaaaa', selector=selector)
+    binding = catalog.resolve({'operation': 'value', 'left': [source], 'evidence': ['二月较一月变化']},
+                              '二月较一月变化。')
+    assert binding is not None
+    assert binding.view['value'] == expected
+    assert set(binding.view['periods']) == {'2025-01', '2025-02'}
 
 
 def test_repeated_quantity_evidence_is_grounded_at_current_claim_instead_of_global_uniqueness():

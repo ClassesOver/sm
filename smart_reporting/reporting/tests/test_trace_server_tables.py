@@ -212,6 +212,50 @@ def test_assembler_appends_server_table_to_section() -> None:
     assert "3,600" in rendered.markdown
 
 
+def test_assembler_groups_source_tables_in_appendix_after_all_analysis():
+    definitions = (*_outline_sections(), ReportSectionDefinition(
+        code='section_003', sectionNumber='2', title='趋势分析', protocolMarker=True,
+        analysisIds=('analysis_001',)))
+    draft = _draft().model_copy(update={'sections': (*_draft().sections,
+        ReportDraftSection(sectionCode='section_003', blocks=(ReportDraftBlock(
+            blockId='b2', markdown='趋势结论。', citationIds=()),)))})
+    _, table = build_analysis_table(_bundle(), fact_file_resource_id=FACT_RESOURCE)
+    rendered = assemble_report_markdown(draft, expected_title='运营报告',
+        markdown_path='report.md', sections=definitions, citation_ids=(),
+        server_tables=(_server_table(table),))
+    body, appendix = rendered.markdown.split('**附表：数据明细**')
+    assert '趋势结论。' in body
+    assert '[[table:' not in body
+    assert '**1. 收入分析**' in appendix and table in appendix
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        relocate_server_tables, APPENDIX_TABLES_SENTINEL,
+    )
+    projected = relocate_server_tables(rendered.markdown)
+    assert projected.count(APPENDIX_TABLES_SENTINEL) == 1
+    assert '**附表：数据明细**' not in projected
+    assert projected.index(APPENDIX_TABLES_SENTINEL) < projected.index('**1. 收入分析**')
+
+
+def test_model_analysis_table_stays_in_body_while_source_details_go_to_appendix():
+    analysis_table = '| 分析维度 | 管理判断 |\n| --- | --- |\n| 结构 | 重点关注主要贡献项 |'
+    draft = ReportDraft(sections=(ReportDraftSection(sectionCode='section_002', blocks=(
+        ReportDraftBlock(blockId='b1', markdown='收入结构分析。\n\n' + analysis_table,
+                         citationIds=()),)),))
+    _, source_table = build_analysis_table(_bundle(), fact_file_resource_id=FACT_RESOURCE)
+    rendered = assemble_report_markdown(draft, expected_title='运营报告',
+        markdown_path='report.md', sections=_outline_sections(), citation_ids=(),
+        server_tables=(_server_table(source_table),))
+    body, appendix = rendered.markdown.split('**附表：数据明细**')
+    assert analysis_table in body
+    assert source_table not in body and source_table in appendix
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        APPENDIX_TABLES_SENTINEL, relocate_server_tables,
+    )
+    export_body, export_appendix = relocate_server_tables(rendered.markdown).split(APPENDIX_TABLES_SENTINEL)
+    assert analysis_table in export_body
+    assert source_table in export_appendix
+
+
 def test_assembler_rejects_unknown_section_and_duplicate_table_id() -> None:
     _trace, table_markdown = build_analysis_table(
         _bundle(), fact_file_resource_id=FACT_RESOURCE

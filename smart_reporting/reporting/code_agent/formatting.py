@@ -8,8 +8,12 @@ import sys
 
 
 async def format_python_source(source: str) -> str:
-    result = await asyncio.to_thread(
-        subprocess.run,
+    return await asyncio.to_thread(format_python_source_sync, source)
+
+
+def format_python_source_sync(source: str) -> str:
+    """供离线证明核验复用与真实 write_script 完全相同的宿主格式化规则。"""
+    result = subprocess.run(
         [
             sys.executable,
             "-I",

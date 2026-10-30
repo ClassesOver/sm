@@ -114,7 +114,11 @@ def standard_plan_diagnostics(plan: VisualizationPlanDraft, inputs: ChartInputMa
                                          entries=entries)
         result = standard_visualization_preflight(plan.model_copy(update={'charts': (chart,)}), bound)
         if result.diagnostic is not None:
-            diagnostics.append({'chartId': chart.chart_id, **result.diagnostic})
+            issue = {'chartId': chart.chart_id, **result.diagnostic}
+            if result.diagnostic['code'] in {'standard_series_empty', 'standard_source_alignment_failed',
+                                              'standard_period_alignment_invalid'}:
+                issue['bindingCorrectionAllowed'] = True
+            diagnostics.append(issue)
     return diagnostics
 
 
@@ -122,7 +126,7 @@ def _compatible_periods(chart, metas, form):
     windows = [meta.get('periods') for meta in metas]
     if all(window == windows[0] for window in windows):
         return True
-    if (form not in {'bar', 'barh', 'line'} or len(windows) != 2
+    if (form not in {'bar', 'barh', 'line'}
             or getattr(chart, 'comparison_type', None) != 'yoy'
             or getattr(chart, 'comparability', None) != 'strict'
             or any(not isinstance(window, (list, tuple)) or not window for window in windows)):
@@ -131,10 +135,15 @@ def _compatible_periods(chart, metas, form):
         periods = [sorted(month_label(value) for value in window) for window in windows]
     except ValueError:
         return False
+    if any(len(set(window)) != len(window) for window in periods):
+        return False
+    # 一个年度窗口可对应多项指标；按两个唯一窗口校验同比，不限制为两条系列。
+    periods = list(dict.fromkeys(tuple(window) for window in periods))
+    if len(periods) != 2:
+        return False
     years = [{int(value[:4]) for value in window} for window in periods]
     return (all(len(year) == 1 for year in years)
             and abs(next(iter(years[0])) - next(iter(years[1]))) == 1
-            and all(len(set(window)) == len(window) for window in periods)
             and [value[5:] for value in periods[0]] == [value[5:] for value in periods[1]])
 
 

@@ -2702,7 +2702,8 @@ def create_reporting_generator_agent(
         if output_schema_name == "VisualizationPlanDraft":
             instructions.append(
                 "每张图显式选择standardForm机器枚举，visualForm只描述业务意图；真正超出标准能力时选择custom。"
-                "standardChartCorrections存在时仅修复指出图的standard*参数，保留原数据绑定、ID、路径和比较口径；纠正不成功仍交由Coding。"
+                "standardChartCorrections存在时仅修复指出图的standard*参数，保留ID、路径和比较口径；"
+                "仅bindingCorrectionAllowed=true时可在同analysis签发的dataDescriptors中重选来源，修复空系列或期间错绑；纠正不成功仍交由Coding。"
                 "每张图必须声明简短 visualForm 和至少一个 dataBindings；每个 binding 的 "
                 "analysisId、factPath、dataPath、fields 必须逐字复制 visualizationFacts 中同一 "
                 "dataDescriptors 项及其所属事实文件，不得自行生成 factPath、dataPath 或 fields。"

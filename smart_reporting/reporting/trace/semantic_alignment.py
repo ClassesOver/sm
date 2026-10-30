@@ -183,6 +183,12 @@ def evaluate_semantic_alignment(
                 or chart_checks[chart.chart_id].status != "verified"
             ):
                 raise ValueError("chart_arrays_unverified")
+            if (chart.standard_render_proof is not None
+                    and chart_checks[chart.chart_id].reason == "standard_render_matches_frozen_inputs"):
+                from .standard_chart_alignment import evaluate_standard_chart_alignment
+
+                checks[chart.chart_id] = evaluate_standard_chart_alignment(index, chart, document)
+                continue
             if not chart.fact_refs:
                 raise ValueError("chart_fact_binding_unregistered")
             for ref in chart.fact_refs:

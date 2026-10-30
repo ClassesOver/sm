@@ -492,6 +492,23 @@ def _dataset_facts(
         field = str(semantic.get("datasetField") or field_ref.rsplit(".", 1)[-1])
         aggregation = _aggregation(semantic)
         scoped_frame, scope_warnings = _apply_scope(dataset, semantic)
+        # 只登记 Profile 确认的同表组织维度；完整范围内所有行必须属于同一非空主体。
+        scope = _scope(semantic)
+        prefix = field_ref.rsplit(".", 1)[0].casefold()
+        for dimension in profile_dimensions:
+            if dimension.get("kind") != "organization":
+                continue
+            for ref in dimension.get("fieldRefs", ()):
+                column = str(ref).rsplit(".", 1)[-1]
+                if (str(ref).rsplit(".", 1)[0].casefold() != prefix
+                        or column not in scoped_frame.columns or column in scope
+                        or scoped_frame.is_empty()):
+                    continue
+                values = scoped_frame[column].cast(pl.String)
+                if (not values.null_count() and values.n_unique() == 1
+                        and values[0].strip()):
+                    scope[column] = values[0]
+        semantic = {**semantic, "exclusiveScope": scope}
         if aggregation not in {"count", "count_distinct"}:
             numeric_input = scoped_frame[field].cast(pl.Float64, strict=False)
             nonfinite_count = int((numeric_input.is_not_null() & ~numeric_input.is_finite()).sum())
@@ -515,6 +532,16 @@ def _dataset_facts(
             warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 累计快照策略或时间可加性未确认，"
                             "未生成该指标事实，其他指标继续计算。")
             continue
+        if aggregation in {"sum", "count"} and period_field and period_aggregation is None:
+            period_keys = {
+                metric_period_key(label, period_granularity) if label is not None else None
+                for label in scoped_frame[period_field].unique().cast(pl.String).to_list()
+            }
+            if len(period_keys) != 1 or None in period_keys:
+                warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 时间可加性未确认，"
+                                "且输入不属于唯一有效期间，未生成跨期合计及其派生事实；"
+                                "需确认月度分配或年度快照口径，其他指标继续计算。")
+                continue
         value_frame = scoped_frame
         if period_aggregation == "last":
             latest_frame = _last_period_rows(scoped_frame, period_field)
@@ -1588,6 +1615,10 @@ def _derived_metrics(
                 continue
             numerator_fact = numerator_facts[0]
             denominator_fact = denominator_facts[0]
+            if any(denominator_fact.scope[key] != value for key, value in numerator_fact.scope.items()
+                   if key in denominator_fact.scope):
+                warnings.append(f"Profile 比率指标 {code} 在 {role} 期间的分子分母范围冲突，未生成该派生指标。")
+                continue
             ratio_warnings = list(
                 dict.fromkeys((*numerator_fact.warnings, *denominator_fact.warnings))
             )
@@ -1780,6 +1811,10 @@ def _reconciliations(
                 continue
             left_fact = left_candidates[0]
             right_fact = right_candidates[0]
+            if any(right_fact.scope[key] != value for key, value in left_fact.scope.items()
+                   if key in right_fact.scope):
+                warnings.append(f"Profile 对账规则 {code} 在 {role} 期间的左右指标范围冲突，未生成对账。")
+                continue
             right_scale = unit_conversion_scale(right_fact.unit, left_fact.unit)
             if right_scale is None:
                 warnings.append(f"Profile 对账规则 {code} 的左右单位不兼容或缺少确认单位，未生成对账。")

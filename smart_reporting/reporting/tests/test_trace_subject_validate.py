@@ -1671,6 +1671,45 @@ def test_visit_count_claims_bind_when_written_in_wan_visits() -> None:
     )
 
 
+@pytest.mark.parametrize('text,value,unit', [
+    ('成本139.14亿元[[claim:rounded]]（13,914,301,853元', 13914301853, '元'),
+    ('门诊人次累计717.39万人次', 7173929, '人次'),
+    ('较上年同期减少-22.94万人次', -229382, '人次'),
+])
+def test_coincident_legacy_and_numeric_claim_markers_share_the_visible_value(text, value, unit):
+    markdown = text + '[[claim:legacy]][[citation:source]][[claim:target]]）。'
+    result = claim_status(markdown, 'target', value, expected_unit=unit,
+                          expected_reference={'selector': 'total', 'entry': {'scope': {}},
+                                              'scope': {}, 'periods': (), 'unit': unit, 'value': value})
+    assert result['status'] == 'valid'
+
+
+def test_coincident_claim_markers_cannot_borrow_value_from_an_earlier_reference():
+    markdown = ('成本139.14亿元[[claim:earlier]]，另一项成本120亿元'
+                '[[claim:legacy]][[citation:source]][[claim:target]]。')
+    assert claim_status(markdown, 'target', 13914301853, expected_unit='元',
+                        expected_reference={'selector': 'total', 'entry': {'scope': {}},
+                                            'scope': {}, 'periods': (), 'unit': '元',
+                                            'value': 13914301853})['status'] == 'stale'
+
+
+@pytest.mark.parametrize('claim_id,value,year', [
+    ('legacy-current', 13914301853, 2025), ('legacy-prior', 12134291030, 2024),
+    ('legacy-change', 1780010823, 2025),
+])
+def test_legacy_claim_period_check_uses_its_own_value_not_neighboring_year(claim_id, value, year):
+    markdown = ('2025年1—12月成本139.14亿元[[claim:n-current]]'
+                '（13,914,301,853元[[claim:legacy-current]][[claim:n-current-raw]]），'
+                '较2024年同期121.34亿元[[claim:n-prior]]'
+                '（12,134,291,030元[[claim:legacy-prior]][[claim:n-prior-raw]]）'
+                '增加17.80亿元[[claim:n-change]]'
+                '（1,780,010,823元[[claim:legacy-change]][[claim:n-change-raw]]）。')
+    result = claim_status(markdown, claim_id, value, expected_unit='元',
+                          expected_periods=tuple(f'{year}-{month:02d}' for month in range(1, 13)))
+    assert result['status'] == 'valid'
+    assert not any('期间文本' in warning for warning in result['warnings'])
+
+
 def test_claim_anchor_never_lands_inside_a_date() -> None:
     """“2025年12月”中紧跟“月”的数字是日期，不能被当成事实值把锚点插进日期中间。"""
     from smart_reporting.reporting.trace.subject_builder import anchor_claims, value_matches
