@@ -16,7 +16,6 @@ from pydantic_core import PydanticCustomError
 
 from ....context_management import TaskExecutionContextHardLimitError
 from ...code_agent.failure_policy import fresh_attempt_futile
-from ...contract import interactive_spec_path
 from ...delivery.draft_v1 import (
     ReportDraftBlock,
     ReportServerTable,
@@ -162,10 +161,6 @@ from .publication import _accepted_artifacts_match_manifest
 from .section_workflow import SectionWorkflow
 
 
-def _archived_interactive_path(image_path: str) -> str:
-    return interactive_spec_path(image_path)
-
-
 def _frozen_visual_receipt(
     receipt: Any, source_file: Mapping[str, Any]
 ) -> ChartVisualInspectionReceipt | None:
@@ -185,23 +180,15 @@ def _frozen_visual_receipt(
 def _analysis_chart_from_registration(
     raw_chart: Mapping[str, Any],
     source_file: Mapping[str, Any],
-    interactive_file: Mapping[str, Any] | None,
     visual_receipt: Mapping[str, Any] | None = None,
     plot_data: Mapping[str, Any] | None = None,
 ) -> AnalysisChart:
-    interactive_path = raw_chart.get("interactivePath")
-    if interactive_path is not None and (
-        interactive_file is None or interactive_file.get("path") != interactive_path
-    ):
-        raise ReportingError("report_phase_artifact_changed", "Plotly 图表缺少匹配的交互文件身份。")
     payload = {
         key: value
         for key, value in raw_chart.items()
-        if key not in {"sourcePath", "interactivePath"}
+        if key != "sourcePath"
     }
     payload["sourceFile"] = dict(source_file)
-    if interactive_file is not None:
-        payload["interactiveFile"] = dict(interactive_file)
     # B3：服务端重验过的 chart-input 文件身份随图表冻结，形成图片↔作图
     # 数据证据链；缺失时保持旧形态（plotDataFiles 空 = 来源不足，读取层降级）。
     if isinstance(plot_data, Mapping) and plot_data.get("files"):
@@ -230,7 +217,7 @@ def _analysis_chart_from_registration(
 # 写作模型只需图表的主题、口径与期间；视觉审查回执、文件身份等用于服务端门禁与溯源，
 # 交给模型会被写进正文（“视觉回执提示纵轴比例失真”“柱形顶部被截断”）。
 _WRITER_CHART_EXCLUDE = frozenset({
-    "visual_inspection_receipt", "source_file", "interactive_file", "plot_data_files", "plot_data_kind", "renderer",
+    "visual_inspection_receipt", "source_file", "plot_data_files", "plot_data_kind",
     "standard_render_proof", "render_script_file",
 })
 
@@ -4720,8 +4707,6 @@ class RuntimeSectionsMixin:
         )
         chart_by_id = {item.chart_id: item for item in checkpoint.evidence_manifest.charts}
         chart_files: list[FileIdentity] = []
-        interactive_files: list[FileIdentity] = []
-        interactive_charts: dict[str, str] = {}
         plot_data_files: list[FileIdentity] = []
         plot_files_by_chart: dict[str, list[FileIdentity]] = {}
         render_scripts_by_chart: dict[str, FileIdentity] = {}
@@ -4764,16 +4749,6 @@ class RuntimeSectionsMixin:
                 except Exception as error:
                     loguru_logger.warning("report_standard_render_archive_unavailable chart={} error={}",
                                           chart_id, type(error).__name__)
-            if chart.interactive_file is not None:
-                spec_content = await self._read_identity_bytes(
-                    scope["threadId"], chart.interactive_file, max_bytes=2 * 1024 * 1024
-                )
-                image_path = destination_by_chart[chart_id]
-                spec_path = _archived_interactive_path(image_path)
-                interactive_files.append(
-                    await self._write_immutable_artifact(scope["threadId"], spec_path, spec_content)
-                )
-                interactive_charts[image_path] = spec_path
         if tuple(item.path for item in chart_files) != rendered.chart_paths:
             raise ReportingError(
                 "report_draft_chart_path_invalid", "服务端图表归档路径与 Markdown 装配结果不一致。"
@@ -4825,7 +4800,6 @@ class RuntimeSectionsMixin:
         accepted_artifacts = [
             markdown_file.model_dump(mode="json", by_alias=True),
             *(item.model_dump(mode="json", by_alias=True) for item in chart_files),
-            *(item.model_dump(mode="json", by_alias=True) for item in interactive_files),
         ]
         analysis_task_id = next(
             (
@@ -4896,7 +4870,7 @@ class RuntimeSectionsMixin:
             handles=trace_handles,
             fact_files=trace_fact_files,
             server_table_traces=server_table_traces,
-            chart_trace_files=(*chart_files, *interactive_files, *chart_trace_files),
+            chart_trace_files=(*chart_files, *chart_trace_files),
             chart_traces=tuple(chart_traces),
             computation_files=tuple(computation_files),
             computations=tuple(computation_records),
@@ -4908,7 +4882,6 @@ class RuntimeSectionsMixin:
                 for notice in block.review_notices or ()
             ) if all(block.review_notices is not None
                      for artifact in section_artifacts for block in artifact.blocks) else None),
-            interactive_charts=interactive_charts,
             markdown_path=markdown_path,
             lineage=lineage,
             source_warnings=source_warnings,
@@ -4945,7 +4918,6 @@ class RuntimeSectionsMixin:
                 checkpoint.files,
                 markdown_file,
                 *chart_files,
-                *interactive_files,
                 manifest_file,
                 *((trace_index_identity,) if trace_index_identity is not None else ()),
             ),
@@ -5067,7 +5039,6 @@ class RuntimeSectionsMixin:
                 if selected_section_codes is None or section.code in selected_section_codes
             )
             file_by_path: dict[str, Mapping[str, Any]] = {}
-            interactive_by_path: dict[str, Mapping[str, Any]] = {}
             receipt_by_path: dict[str, Mapping[str, Any]] = {}
             plot_data_by_chart: dict[str, Mapping[str, Any]] = {}
             for section in ordered_sections:
@@ -5082,9 +5053,6 @@ class RuntimeSectionsMixin:
                 for raw_file in section_payload.get("files", ()):
                     if isinstance(raw_file, Mapping) and isinstance(raw_file.get("path"), str):
                         file_by_path[raw_file["path"]] = raw_file
-                for raw_file in section_payload.get("interactiveFiles", ()):
-                    if isinstance(raw_file, Mapping) and isinstance(raw_file.get("path"), str):
-                        interactive_by_path[raw_file["path"]] = raw_file
                 for raw_plot in section_payload.get("plotDataFiles", ()):
                     if isinstance(raw_plot, Mapping) and isinstance(raw_plot.get("chartId"), str):
                         plot_data_by_chart[raw_plot["chartId"]] = raw_plot
@@ -5105,7 +5073,6 @@ class RuntimeSectionsMixin:
                         _analysis_chart_from_registration(
                             raw_chart,
                             source_file,
-                            interactive_by_path.get(str(raw_chart.get("interactivePath") or "")),
                             receipt_by_path.get(source_path),
                             plot_data=plot_data_by_chart.get(str(raw_chart.get("chartId") or "")),
                         )

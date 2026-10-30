@@ -238,7 +238,7 @@ async def test_static_quality_requires_proof_and_current_frozen_source_projectio
         sources[plot_id] = json.dumps(document).encode()
     chart = chart.model_copy(update={"script_file_resource_id": script_id, "standard_render_proof": proof})
     index = index.model_copy(update={"files": (*index.files, script_ref), "chart_traces": (chart,)})
-    check = evaluate_chart_quality(index, markdown, sources, {})[chart.chart_id]
+    check = evaluate_chart_quality(index, markdown, sources)[chart.chart_id]
     assert check.status == ("verified" if fault is None else "unknown")
     if fault is None:
         assert check.reason == "standard_render_matches_frozen_inputs"

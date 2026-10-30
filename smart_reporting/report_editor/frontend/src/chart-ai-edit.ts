@@ -5,6 +5,7 @@ import { createElement, CircleAlert } from 'lucide'
 import { buttonClasses } from './button'
 import { askAIPanel, type AskAISession } from './ask-ai-panel'
 import { createAITemplateCard } from './ai-template-card'
+import { createModal } from './modal'
 import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
 import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ChartStandardEditRequest, type ReportEditorClient, type TraceChartInfo } from './api'
 
@@ -476,6 +477,7 @@ export function createChartAIEdit(options: {
   const { view, client, basePath, hooks } = options
   const pollIntervalMs = options.pollIntervalMs ?? 1500
   let modal: AskAISession | null = null
+  let actionModal: ReturnType<typeof createModal> | null = null
   let target: EditTarget | null = null
   let openedImage: HTMLImageElement | null = null
   let instructionDraft = ''
@@ -503,6 +505,19 @@ export function createChartAIEdit(options: {
       content: '<div class="chart-ai-body" data-role="body"></div>',
     })
     return modal
+  }
+
+  const ensureActionModal = () => {
+    if (actionModal) return actionModal
+    actionModal = createModal({
+      root: document.body,
+      overlayClass: 'chart-ai-actions-modal',
+      cardClass: 'chart-ai-actions-card',
+      closeLabel: '关闭模板与快捷操作',
+      label: '模板与快捷操作',
+      content: '<div class="chart-ai-actions-dialog"><h2>模板与快捷操作</h2><div class="chart-ai-action-dialog-body"></div></div>',
+    })
+    return actionModal
   }
 
   const bodyOf = () => {
@@ -574,6 +589,7 @@ export function createChartAIEdit(options: {
     ensureModal().setThumbnail(assetUrl(basePath, current.imagePath))
     const output = bodyOf()
     const focusInput = modal?.visible && (output.contains(document.activeElement) || modal.composer.contains(document.activeElement) || document.activeElement === modal.closeButton)
+    actionModal?.close()
     const body = document.createElement('div')
     const fieldId = (name: string) => `${name}${ensureModal().idSuffix}`
     body.innerHTML = `
@@ -587,7 +603,6 @@ export function createChartAIEdit(options: {
       ${note ? `<p class="chart-ai-note" role="status"></p>` : ''}
       <details class="chart-ai-standard">
         <summary>模板与快捷调整 <span>选择后预览</span></summary>
-        <label class="chart-ai-label" for="${fieldId('chart-ai-standard-preset')}">标准图形与排版</label>
         <div class="chart-ai-standard-controls">
           <select id="${fieldId('chart-ai-standard-preset')}" aria-describedby="${fieldId('chart-ai-standard-help')}"><option value="">选择一种图形或调整方式</option></select>
           <button type="button" class="${buttonClasses('secondary')}" data-action="apply-standard" disabled>应用所选预设</button>
@@ -600,10 +615,12 @@ export function createChartAIEdit(options: {
         <p id="${fieldId('chart-ai-standard-reset-help')}" class="chart-ai-hint">仅对直接应用的预设生效；作图数据不变。</p>
       </details>
       <div class="ask-ai-input-form">
-      <label class="chart-ai-label" for="${fieldId('chart-ai-instruction')}">${retainReview ? '继续调整新图' : '改图要求'}</label>
+      <div class="chart-ai-input-heading">
+        <label class="chart-ai-label" for="${fieldId('chart-ai-instruction')}">${retainReview ? '继续调整新图' : '改图要求'}</label>
+        <button type="button" class="${buttonClasses('secondary')} chart-ai-actions-trigger" data-action="show-chart-actions" aria-haspopup="dialog">模板与快捷操作</button>
+      </div>
       <textarea id="${fieldId('chart-ai-instruction')}" rows="3" maxlength="2000"
         placeholder="例如：改成横向柱状图并按金额降序，显示数值标签"></textarea>
-      <div class="chart-ai-quick" role="group" aria-label="快捷指令"></div>
       <div class="chart-ai-actions">
         <button type="button" class="${buttonClasses('primary')}" data-action="submit">使用 AI 生成改图</button>
         <span class="chart-ai-hint" data-role="input-count"></span>
@@ -638,8 +655,24 @@ export function createChartAIEdit(options: {
     const presets = body.querySelector<HTMLSelectElement>(`#${fieldId('chart-ai-standard-preset')}`)!
     const presetHelp = body.querySelector<HTMLElement>(`#${fieldId('chart-ai-standard-help')}`)!
     const applyPreset = body.querySelector<HTMLButtonElement>('[data-action="apply-standard"]')!
-    const standardDetails = body.querySelector<HTMLElement>('.chart-ai-standard')!
+    const originalStandard = body.querySelector<HTMLDetailsElement>('.chart-ai-standard')!
+    const standardDetails = document.createElement('section')
+    standardDetails.className = 'chart-ai-standard chart-ai-actions-section'
+    const standardTitle = document.createElement('h3'); standardTitle.textContent = '标准图形与排版'
+    standardDetails.append(standardTitle)
+    originalStandard.querySelector('summary')?.remove()
+    standardDetails.append(...Array.from(originalStandard.childNodes))
+    originalStandard.replaceWith(standardDetails)
     const resetStandard = body.querySelector<HTMLInputElement>(`#${fieldId('chart-ai-standard-reset')}`)!
+    const templateSection = document.createElement('section')
+    templateSection.className = 'chart-ai-actions-section chart-ai-actions-templates'
+    const templateTitle = document.createElement('h3'); templateTitle.textContent = '预制图模板'
+    const templates = document.createElement('div')
+    templates.className = 'chart-ai-templates'
+    templates.setAttribute('role', 'group')
+    templates.setAttribute('aria-label', '预制图模板')
+    templateSection.append(templateTitle, templates)
+    templateSection.hidden = true
     for (const preset of STANDARD_CHART_PRESETS.filter(item => !('standard' in item)
       || !current.standardForms || current.standardForms.includes(item.standard.standardForm))) {
       const option = document.createElement('option')
@@ -668,6 +701,7 @@ export function createChartAIEdit(options: {
           presetHelp.textContent = '底图身份不可读取，请刷新后重试；未启动改图。'
           return
         }
+        actionModal?.close()
         void runEdit(current, `应用预设：${preset.name}`, { standard: preset.standard,
           ...(resetStandard.checked ? { inheritPreviousStandard: false } : {}),
           baseImagePath: current.imagePath, expectedSha256: current.expectedSha256,
@@ -688,9 +722,17 @@ export function createChartAIEdit(options: {
       textarea.dispatchEvent(new Event('input'))
       appliedPreset = preset.instruction
       presetHelp.textContent = '此要求包含自由描述，需要点击“使用 AI 生成改图”；不会作为无模型模板执行。'
+      actionModal?.close()
       textarea.focus()
     })
-    const quick = body.querySelector<HTMLElement>('.chart-ai-quick')!
+    const quick = document.createElement('div')
+    quick.className = 'chart-ai-quick'
+    quick.setAttribute('role', 'group')
+    quick.setAttribute('aria-label', '快捷指令')
+    const quickSection = document.createElement('section')
+    quickSection.className = 'chart-ai-actions-section chart-ai-actions-quick'
+    const quickTitle = document.createElement('h3'); quickTitle.textContent = '快捷指令'
+    quickSection.append(quickTitle, quick)
     for (const command of quickCommandsForForm(current.visualForm)) {
       const chip = document.createElement('button')
       chip.type = 'button'
@@ -700,6 +742,7 @@ export function createChartAIEdit(options: {
         const merged = textarea.value.trim() ? `${textarea.value.trim()}；${command}` : command
         textarea.value = merged.slice(0, MAX_INSTRUCTION_CHARS)
         textarea.dispatchEvent(new Event('input'))
+        actionModal?.close()
         textarea.focus()
       })
       quick.append(chip)
@@ -738,19 +781,16 @@ export function createChartAIEdit(options: {
       chartTemplates?: (chartId: string) => Promise<{ templates: { templateId: string; name: string; available: boolean; reason?: string; recommended?: boolean; recommendationReason?: string }[] }>
     }).chartTemplates
     if (typeof chartTemplates === 'function') {
+      templateSection.hidden = false
       const owner = generation
       const skeleton = document.createElement('div')
       skeleton.className = 'ai-template-skeleton'
       skeleton.setAttribute('aria-hidden', 'true')
       skeleton.append(document.createElement('span'), document.createElement('span'))
-      standardDetails.append(skeleton)
+      templateSection.append(skeleton)
       void chartTemplates.call(client, current.chartId).then((catalog) => {
         skeleton.remove()
         if (owner !== generation || !textarea.isConnected || dismissed) return
-        const templates = document.createElement('div')
-        templates.className = 'chart-ai-templates'
-        templates.setAttribute('role', 'group')
-        templates.setAttribute('aria-label', '预制图模板')
         templates.hidden = catalog.templates.length === 0
         const ordered = [...catalog.templates].sort((a, b) => Number(b.recommended ?? false) - Number(a.recommended ?? false) || Number(b.available) - Number(a.available))
         for (const item of ordered) {
@@ -759,22 +799,27 @@ export function createChartAIEdit(options: {
               textarea.value = `${textarea.value.trim()}；参考模板：${item.name}`.slice(0, MAX_INSTRUCTION_CHARS)
               textarea.dispatchEvent(new Event('input'))
               presetHelp.textContent = '包含自由要求，请点击“使用 AI 生成改图”。'
+              actionModal?.close()
+              textarea.focus()
               return
             }
+            actionModal?.close()
             void runTemplate(current, item.templateId, '')
           })
           templates.append(control)
         }
-        standardDetails.append(templates)
       }).catch(() => {
         skeleton.remove()
         if (owner !== generation || dismissed) return
         const loadNote = document.createElement('p')
         loadNote.className = 'chart-ai-hint'
         loadNote.textContent = '模板加载失败，可直接输入要求生成。'
-        standardDetails.append(loadNote)
+        templateSection.append(loadNote)
       })
     }
+    const actionDialog = ensureActionModal()
+    actionDialog.card.querySelector<HTMLElement>('.chart-ai-action-dialog-body')!.replaceChildren(standardDetails, templateSection, quickSection)
+    body.querySelector<HTMLButtonElement>('[data-action="show-chart-actions"]')!.addEventListener('click', () => actionDialog.open(presets))
     submit.addEventListener('click', () => {
       const instruction = textarea.value.trim()
       if (!instruction) {
@@ -784,8 +829,7 @@ export function createChartAIEdit(options: {
       void runEdit(current, instruction)
     })
     const form = body.querySelector<HTMLElement>('.ask-ai-input-form')!
-    if (retainReview) output.append(standardDetails)
-    else output.replaceChildren(...body.childNodes)
+    if (!retainReview) output.replaceChildren(...body.childNodes)
     ensureModal().mountComposer(form)
     if (focusInput) textarea.focus()
   }
@@ -1275,6 +1319,8 @@ export function createChartAIEdit(options: {
     dispose() {
       invalidateCurrent()
       dismissed = true
+      actionModal?.remove()
+      actionModal = null
       modal?.remove()
       modal = null
     },

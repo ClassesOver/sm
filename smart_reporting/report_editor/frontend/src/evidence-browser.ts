@@ -1115,7 +1115,6 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       if (child.classList.contains('app-bar') || child.classList.contains('modal-overlay')) continue
       child.inert = covered
     }
-    document.querySelectorAll<HTMLElement>('.interactive-chart').forEach((chart) => { chart.inert = covered })
   }
 
   const showShell = () => {

@@ -31,7 +31,7 @@ export function createAssetAIActions(editor: HTMLElement, options: AssetAIAction
   const showTarget = (element: Element) => {
     const asset = element.closest<HTMLImageElement | HTMLTableElement>('img, table')
     if (!asset || !editor.contains(asset) || asset.closest('.drag-preview')) return hide()
-    if (asset instanceof HTMLImageElement && options.onChartEdit && !asset.classList.contains('interactive-chart-fallback')) {
+    if (asset instanceof HTMLImageElement && options.onChartEdit) {
       button.textContent = 'AI 改图'
       action = () => options.onChartEdit?.(asset)
     } else if (asset instanceof HTMLTableElement && options.onTableEdit) {

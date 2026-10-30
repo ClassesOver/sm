@@ -190,7 +190,7 @@ class _RegisteredFile(Protocol):
 # 降为待复核；其余 unknown（比对不一致、来源不可读、核对失败）仍按待复核处理。前端
 # source-validation.ts 的 checkNeedsReview 保持同一清单。
 NOT_EVALUATED_REASONS = frozenset({
-    "static_image_not_evaluated", "interactive_spec_unregistered", "chart_unregistered", "table_unregistered",
+    "static_image_not_evaluated", "chart_unregistered", "table_unregistered",
     "chart_semantics_unregistered", "chart_fact_binding_unregistered",
     # 语义核对因数组未核验而未运行；数组本身不一致时 dataCheck 已判待复核。
     "chart_arrays_unverified",
@@ -1490,27 +1490,12 @@ class ReportEditorTraceService:
         try:
             questions = None
             answer_review_plan = None
-            interactive_charts = {}
-            try:
-                if manifest is not None:
-                    for chart in manifest.charts:
-                        spec = chart.interactive_spec
-                        if spec is None:
-                            continue
-                        registered = [files.get(derive_resource_id(item.path)) for item in (chart, spec)]
-                        if all(file is not None and file.path == item.path and file.size == item.size
-                               and file.sha256 == item.sha256 for file, item in zip(registered, (chart, spec), strict=True)):
-                            interactive_charts[chart.path] = spec.path
-            except Exception:
-                logger.warning("editor_chart_manifest_unavailable")
             chart_quality_ids = {chart.image_file_resource_id for chart in index.chart_traces}
             from ..reporting.trace.chart_quality import QUALITY_IMAGE_BYTE_BUDGET, standard_proof_source_ids
 
             quality_image_ids = set(chart_quality_ids)
             chart_quality_ids.update(standard_proof_source_ids(index))
             quality_image_bytes = 0
-            chart_quality_ids.update(file.resource_id for file in index.files
-                                     if file.path in set(interactive_charts.values()))
             for resource_id in (file.resource_id for file in index.files if file.resource_id in chart_quality_ids):
                 if resource_id in quality_image_ids:
                     if files[resource_id].size > QUALITY_IMAGE_BYTE_BUDGET - quality_image_bytes:
@@ -1553,7 +1538,6 @@ class ReportEditorTraceService:
                 }),
                 questions=questions,
                 answer_review_plan=answer_review_plan,
-                interactive_charts=interactive_charts,
                 heading_numbers=heading_numbers,
             ), limiter=self._validation_limiter)
             quality_payload = {

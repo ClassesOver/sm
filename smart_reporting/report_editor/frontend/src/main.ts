@@ -691,12 +691,6 @@ try {
       window.clearTimeout(saveTimer)
       saveTimer = window.setTimeout(saveInBackground, 800)
   }
-  if (documentState.interactiveCharts && Object.keys(documentState.interactiveCharts).length) {
-    const { createInteractiveCharts } = await import('./interactive-charts')
-    void createInteractiveCharts(shell.editor, documentState.interactiveCharts, basePath, {
-      theme: documentState.visualTheme,
-    }).refresh()
-  }
   loadState.hide()
   const [
     { createSearchController },

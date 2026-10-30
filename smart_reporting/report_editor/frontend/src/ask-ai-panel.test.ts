@@ -11,16 +11,16 @@ describe('Ask AI shared sidebar', () => {
     const separator = panel.querySelector<HTMLElement>('[role="separator"]')!
 
     expect(separator.getAttribute('aria-label')).toBe('调整 Ask AI 宽度')
-    expect(separator.getAttribute('aria-valuenow')).toBe('560')
+    expect(separator.getAttribute('aria-valuenow')).toBe('640')
     separator.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 600 }))
     window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 500 }))
-    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('660px')
-    expect(separator.getAttribute('aria-valuenow')).toBe('660')
+    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('740px')
+    expect(separator.getAttribute('aria-valuenow')).toBe('740')
     window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
 
     separator.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowLeft' }))
-    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('676px')
-    for (let index = 0; index < 20; index++) separator.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
+    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('756px')
+    for (let index = 0; index < 25; index++) separator.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
     expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('400px')
     session.remove()
   })

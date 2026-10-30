@@ -1,6 +1,6 @@
 """报表视觉主题的唯一来源。
 
-PDF/Word 版式、沙箱内 Matplotlib/Plotly 默认样式与编辑器交互图表共用这里的令牌，
+PDF/Word 版式、沙箱内 Matplotlib 默认样式与编辑器图表共用这里的令牌，
 保证正文、静态图与交互图的配色和字体属于同一套视觉语言。report_runtime 会被整体
 打包进沙箱独立运行，因此本模块只含常量与纯函数，不依赖包外任何模块。
 """
@@ -72,40 +72,8 @@ def matplotlib_theme_rc() -> str:
     )
 
 
-def plotly_theme_layout() -> dict[str, Any]:
-    """报表主题对应的 Plotly 模板 layout；figure 显式声明的值仍然优先。"""
-
-    theme = REPORT_VISUAL_THEME
-    axis = {
-        "automargin": True,
-        "exponentformat": "none",
-        "separatethousands": True,
-        "linecolor": theme["grid"],
-        "gridcolor": theme["gridline"],
-        "zerolinecolor": theme["grid"],
-        "tickfont": {"color": theme["muted"]},
-        "title": {"font": {"color": theme["ink"]}},
-    }
-    return {
-        "colorway": list(theme["chartPalette"]),
-        "font": {"family": ", ".join((*REPORT_CHART_FONTS, "sans-serif")), "color": theme["ink"]},
-        "title": {"font": {"color": theme["ink"]}},
-        "paper_bgcolor": "#FFFFFF",
-        "plot_bgcolor": "#FFFFFF",
-        "xaxis": dict(axis),
-        "yaxis": dict(axis),
-        "legend": {"font": {"color": theme["ink"]}},
-        "hoverlabel": {
-            "bgcolor": theme["ink"],
-            "bordercolor": theme["ink"],
-            "font": {"color": "#FFFFFF"},
-        },
-    }
-
-
 __all__ = [
     "REPORT_CHART_FONTS",
     "REPORT_VISUAL_THEME",
     "matplotlib_theme_rc",
-    "plotly_theme_layout",
 ]

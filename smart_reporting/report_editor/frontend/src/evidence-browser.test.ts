@@ -647,19 +647,15 @@ describe('evidence browser shell', () => {
     const dialog = document.createElement('div')
     dialog.className = 'modal-overlay'
     root.prepend(appBar, workspace, dialog)
-    const chart = document.createElement('div')
-    chart.className = 'interactive-chart'
-    document.body.append(chart)
     browser.open()
     await flush()
-    // 被覆盖的正文与交互图表不可获得焦点；应用栏与弹窗仍可用。
-    expect([workspace, chart, appBar, dialog].map((element) => Boolean(element.inert))).toEqual([true, true, false, false])
+    // 被覆盖的正文不可获得焦点；应用栏与弹窗仍可用。
+    expect([workspace, appBar, dialog].map((element) => Boolean(element.inert))).toEqual([true, false, false])
     let inertWhenReturning: boolean | undefined
     onReturnToReport.mockImplementation(() => { inertWhenReturning = workspace.inert })
     browser.close()
-    expect([workspace.inert, chart.inert]).toEqual([false, false])
+    expect(workspace.inert).toBe(false)
     expect(inertWhenReturning).toBe(false)
-    chart.remove()
   })
 
   it('tab keyboard moves focus without activating, Enter activates, Delete closes', async () => {

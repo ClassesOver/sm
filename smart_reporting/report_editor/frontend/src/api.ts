@@ -1,4 +1,11 @@
-import type { ReportVisualTheme } from './interactive-charts'
+/** 与 PDF/Word、静态图共用的服务端主题令牌。 */
+export interface ReportVisualTheme {
+  ink: string
+  muted: string
+  grid: string
+  gridline: string
+  chartPalette: string[]
+}
 
 export interface ReportDocument {
   path: string
@@ -6,7 +13,6 @@ export interface ReportDocument {
   sha256: string
   sourceRevision?: number
   csrfToken?: string
-  interactiveCharts?: Record<string, string>
   visualTheme?: ReportVisualTheme
   chartAiEnabled?: boolean
   tableAiEnabled?: boolean

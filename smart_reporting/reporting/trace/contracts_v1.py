@@ -140,7 +140,6 @@ TraceMediaTypeV1 = Literal[
     "text/markdown",
     "image/png",
     "image/jpeg",
-    "application/vnd.plotly.v1+json",
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/json",

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -43,10 +42,6 @@ class LegacyChartDraft(BaseModel):
 
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
-    renderer: Literal["matplotlib", "plotly"] = "matplotlib"
-    interactive_path: str | None = Field(
-        default=None, alias="interactivePath", min_length=1, max_length=1024
-    )
     title: str = Field(min_length=1, max_length=200)
     alt_text: str = Field(alias="altText", min_length=1, max_length=200)
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
@@ -68,26 +63,8 @@ class LegacyChartDraft(BaseModel):
             raise ValueError("图表源文件必须是 PNG 或 JPEG")
         return path.as_posix()
 
-    @field_validator("interactive_path")
-    @classmethod
-    def validate_interactive_path(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        path = PurePosixPath(value)
-        if (
-            "\\" in value
-            or path.is_absolute()
-            or ".." in path.parts
-            or value.endswith("/")
-            or not value.endswith(".plotly.json")
-        ):
-            raise ValueError("interactivePath 必须是安全的 .plotly.json 相对路径")
-        return path.as_posix()
-
     @model_validator(mode="after")
     def validate_delivery_fields(self) -> LegacyChartDraft:
-        if (self.renderer == "plotly") != (self.interactive_path is not None):
-            raise ValueError("Plotly 图表必须且仅能声明 interactivePath")
         if self.comparison_type != "none" and not self.comparison_period:
             raise ValueError("比较图表必须声明 comparisonPeriod")
         if self.comparability == "reference_only" and self.comparison_type in {"yoy", "mom"}:

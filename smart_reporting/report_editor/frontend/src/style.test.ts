@@ -236,6 +236,18 @@ describe('report editor visual hierarchy', () => {
     expect(style('.outline-heading').letterSpacing).toBe('0')
   })
 
+  it('gives chart action presets and quick actions a clear modal hierarchy', () => {
+    const rules = Array.from(document.styleSheets[0].cssRules)
+      .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
+    const style = (selector: string) => rules.find((rule) => rule.selectorText === selector)!.style
+
+    expect(stylesheet).toContain('.chart-ai-actions-card { width: min(840px, 100%)')
+    expect(style('.chart-ai-actions-dialog > h2').fontWeight).toBe('700')
+    expect(style('.chart-ai-actions-modal .ask-ai-template-card.is-recommended').gridColumn).toBe('1 / -1')
+    expect(style('.chart-ai-actions-modal .chart-ai-chip:hover').transform).toBe('translateY(-1px)')
+    expect(style('.chart-ai-actions-modal .chart-ai-chip:focus-visible').outlineOffset).toBe('2px')
+  })
+
   it('keeps desktop controls compact and the active outline treatment on-brand', () => {
     const desktop = Array.from(document.styleSheets[0].cssRules).find((rule): rule is CSSMediaRule =>
       rule instanceof CSSMediaRule && rule.conditionText === '(min-width: 769px)' &&
@@ -294,8 +306,8 @@ describe('report editor visual hierarchy', () => {
       .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
     const panel = rules.find((rule) => rule.selectorText === '.ask-ai-panel')!.style
     const handle = rules.find((rule) => rule.selectorText === '.ask-ai-resize-handle')!.style
-    expect(panel.width).toBe('var(--ask-ai-panel-width, 560px)')
-    expect(panel.maxWidth).toBe('100vw')
+    expect(panel.width).toBe('var(--ask-ai-panel-width, 640px)')
+    expect(panel.maxWidth).toBe('calc(100vw - 80px)')
     expect(handle.position).toBe('absolute')
     expect(handle.cursor).toBe('col-resize')
   })

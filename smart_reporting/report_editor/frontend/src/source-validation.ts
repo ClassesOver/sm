@@ -5,7 +5,7 @@ import { isExplanatoryUnverified } from './unverified-text'
 // 与服务端 trace_sources.NOT_EVALUATED_REASONS 同一清单：静态图未做数组比对、未登记规格只是
 // “未评估”，不说明来源被改动，不计入待复核；其余 unknown 与缺少核对结果仍计入。
 const NOT_EVALUATED_REASONS = new Set([
-  'static_image_not_evaluated', 'interactive_spec_unregistered', 'chart_unregistered', 'table_unregistered',
+  'static_image_not_evaluated', 'chart_unregistered', 'table_unregistered',
   'chart_semantics_unregistered', 'chart_fact_binding_unregistered', 'chart_arrays_unverified',
 ])
 

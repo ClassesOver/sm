@@ -24,8 +24,6 @@ EditorStandardChart = create_model(
     "EditorStandardChart", __base__=StandardChartEditParameters,
     chart_id=(str, Field(alias="chartId")),
     source_path=(str, Field(alias="sourcePath")),
-    renderer=(Literal["matplotlib"], "matplotlib"),
-    interactive_path=(None, Field(default=None, alias="interactivePath")),
     title=(str, ...), alt_text=(str, Field(alias="altText")),
     visual_form=(str, Field(alias="visualForm")),
     data_bindings=(tuple[dict[str, Any], ...], Field(alias="dataBindings")),

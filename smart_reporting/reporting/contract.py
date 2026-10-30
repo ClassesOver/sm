@@ -133,7 +133,7 @@ class ReportRequestEnvelope(StrictModel):
     comparison_roles: tuple[Literal["yoy", "mom"], ...] = Field(
         default=("yoy",), alias="comparisonRoles", max_length=2
     )
-    visualization_mode: Literal["auto", "static", "interactive"] = Field(
+    visualization_mode: Literal["static"] = Field(
         default="static", alias="visualizationMode"
     )
     file_inputs: tuple[ReportFileInput, ...] = Field(default=(), alias="fileInputs", max_length=20)
@@ -804,12 +804,6 @@ def _find_connection_input(value: Any) -> set[str]:
         for item in value:
             found.update(_find_connection_input(item))
     return found
-
-
-def interactive_spec_path(image_path: str) -> str:
-    """图表静态图对应的 Plotly 交互产物路径；交付校验、归档与 Coding 回执共用。"""
-
-    return PurePosixPath(image_path).with_suffix(".plotly.json").as_posix()
 
 
 def safe_relative_posix_path(

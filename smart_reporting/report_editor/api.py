@@ -271,10 +271,6 @@ def create_report_editor_router(
             source_revision = getattr(document, "source_revision", None)
             if source_revision is not None:
                 result["sourceRevision"] = source_revision
-            chart_reader = getattr(editor, "interactive_charts", None)
-            interactive_charts = await chart_reader(context) if callable(chart_reader) else {}
-            if interactive_charts:
-                result["interactiveCharts"] = interactive_charts
             return result
 
         @router.get(
@@ -363,7 +359,6 @@ def create_report_editor_router(
                     context, history_revision, expected_sha256=payload.expected_sha256,
                     markdown=payload.markdown
                 )
-                charts = await editor.interactive_charts(context)
             except ReportingError as error:
                 _editor_http_error(error)
             result = {
@@ -373,7 +368,6 @@ def create_report_editor_router(
                 "sourceRevision": document.source_revision,
                 "csrfToken": grants.csrf_token(request.cookies.get(EDITOR_SESSION_COOKIE, "")),
                 "visualTheme": REPORT_VISUAL_THEME,
-                "interactiveCharts": charts,
             }
             feature_reader = getattr(editor, "lineage_features", None)
             if callable(feature_reader):

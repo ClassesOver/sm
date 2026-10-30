@@ -345,7 +345,6 @@ def test_visualization_generator_only_adds_r7_instructions_to_candidate() -> Non
     candidate_text = "\n".join(candidate.instructions)
 
     assert "sourceDatasetId" in legacy_text
-    assert "renderer=plotly" in legacy_text
     assert f"每章最多生成 {MAX_SECTION_CHART_COUNT} 张图" in legacy_text
     assert f"每章最多生成 {MAX_SECTION_CHART_COUNT} 张图" in candidate_text
     assert "visualForm" not in legacy_text
@@ -515,7 +514,7 @@ def test_frozen_bundle_accepts_required_charts_consistent_with_declared(tmp_path
     _write_frozen_bundle(
         tmp_path,
         required_charts=[
-            {"chartId": "chart", "sourcePath": "charts/chart.png", "interactivePath": None}
+            {"chartId": "chart", "sourcePath": "charts/chart.png"}
         ],
     )
 
@@ -524,41 +523,6 @@ def test_frozen_bundle_accepts_required_charts_consistent_with_declared(tmp_path
     assert payloads["plannerRequest"]["requiredCharts"][0]["chartId"] == "chart"
     assert manifest.task_kind == "visualization"
 
-
-def test_frozen_bundle_accepts_required_charts_with_interactive_path(tmp_path) -> None:
-    _write_frozen_bundle(
-        tmp_path,
-        declared_outputs=["charts/chart.png", "charts/chart.plotly.json"],
-        required_charts=[
-            {
-                "chartId": "chart",
-                "sourcePath": "charts/chart.png",
-                "interactivePath": "charts/chart.plotly.json",
-            }
-        ],
-    )
-
-    _manifest, payloads = validate_frozen_planner_coding_bundle(tmp_path)
-
-    assert payloads["plannerRequest"]["requiredCharts"][0]["interactivePath"] == (
-        "charts/chart.plotly.json"
-    )
-
-
-def test_frozen_bundle_rejects_interactive_path_missing_from_declared(tmp_path) -> None:
-    _write_frozen_bundle(
-        tmp_path,
-        required_charts=[
-            {
-                "chartId": "chart",
-                "sourcePath": "charts/chart.png",
-                "interactivePath": "charts/chart.plotly.json",
-            }
-        ],
-    )
-
-    with pytest.raises(ValueError, match="declared_output_paths 不一致"):
-        validate_frozen_planner_coding_bundle(tmp_path)
 
 
 def test_required_charts_rejected_for_non_visualization_task() -> None:
@@ -585,25 +549,6 @@ def test_required_charts_rejected_for_non_visualization_task() -> None:
         (
             [{"chartId": "chart", "sourcePath": "charts/renamed.png"}],
             "declared_output_paths 不一致",
-        ),
-        (
-            [{"chartId": "chart", "sourcePath": "charts/chart.png", "interactivePath": 1}],
-            "interactivePath",
-        ),
-        (
-            [{"chartId": "chart", "sourcePath": "charts/chart.png", "interactivePath": ""}],
-            "空字符串",
-        ),
-        (
-            [
-                {"chartId": "chart-a", "sourcePath": "charts/chart.png"},
-                {
-                    "chartId": "chart-b",
-                    "sourcePath": "charts/chart.png",
-                    "interactivePath": "charts/other.png",
-                },
-            ],
-            "不能重复",
         ),
     ],
 )
@@ -1129,7 +1074,7 @@ def test_visualization_benchmark_accepts_plan_matching_required_charts() -> None
     plan = VisualizationPlanDraft.model_validate(_candidate_visualization_plan_payload())
     planner_request = {
         "requiredCharts": [
-            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png"}
         ],
     }
 
@@ -1148,8 +1093,8 @@ def test_visualization_benchmark_accepts_plan_matching_required_charts() -> None
 def test_visualization_benchmark_rejects_required_charts_identity_violations() -> None:
     planner_request = {
         "requiredCharts": [
-            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None},
-            {"chartId": "chart-2", "sourcePath": "charts/chart-2.png", "interactivePath": None},
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png"},
+            {"chartId": "chart-2", "sourcePath": "charts/chart-2.png"},
         ],
     }
 
@@ -1176,7 +1121,7 @@ def test_visualization_benchmark_rejects_required_charts_path_mismatch() -> None
     plan_payload["charts"][0]["sourcePath"] = "charts/renamed.png"
     planner_request = {
         "requiredCharts": [
-            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png"}
         ],
     }
 
@@ -1192,28 +1137,6 @@ def test_visualization_benchmark_rejects_required_charts_path_mismatch() -> None
 
     assert caught.value.details["pathMismatches"] == ["chart-1"]
 
-
-def test_visualization_benchmark_rejects_required_charts_interactive_path_mismatch() -> None:
-    plan_payload = _candidate_visualization_plan_payload()
-    plan_payload["charts"][0]["renderer"] = "plotly"
-    plan_payload["charts"][0]["interactivePath"] = "charts/chart-1.plotly.json"
-    planner_request = {
-        "requiredCharts": [
-            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
-        ],
-    }
-
-    with pytest.raises(ReportingError, match="requiredCharts") as caught:
-        prepare_benchmark_coding_payload(
-            task_kind="visualization",
-            variant=BenchmarkVariant.CANDIDATE,
-            execution_context=_visualization_execution(),
-            acceptance={},
-            planner_output=VisualizationPlanDraft.model_validate(plan_payload),
-            planner_request=planner_request,
-        )
-
-    assert caught.value.details["pathMismatches"] == ["chart-1"]
 
 
 def _legacy_acceptance() -> dict:
@@ -1238,7 +1161,7 @@ def _legacy_acceptance() -> dict:
 def test_visualization_benchmark_legacy_variant_enforces_required_charts_identity() -> None:
     planner_request = {
         "requiredCharts": [
-            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png"}
         ],
     }
 
@@ -1259,7 +1182,7 @@ def test_visualization_benchmark_legacy_variant_rejects_renamed_chart() -> None:
     legacy_payload["charts"][0]["sourcePath"] = "charts/renamed.png"
     planner_request = {
         "requiredCharts": [
-            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png"}
         ],
     }
 
@@ -1304,7 +1227,7 @@ def test_visualization_benchmark_identity_gate_accepts_mapping_planner_request()
     planner_request = MappingProxyType(
         {
             "requiredCharts": [
-                {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+                {"chartId": "chart-1", "sourcePath": "charts/chart-1.png"}
             ],
         }
     )
@@ -1448,7 +1371,7 @@ def test_visualization_benchmark_planner_instructions_require_chart_identity(var
         variant=variant,
         planner_request={
             "requiredCharts": [
-                {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+                {"chartId": "chart-1", "sourcePath": "charts/chart-1.png"}
             ]
         },
     )

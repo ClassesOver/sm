@@ -1151,7 +1151,6 @@ class ReportEditorService:
             path = str(PurePosixPath(context.markdown_path).parent / path)
         render = context.job.get("render")
         images = render.get("images") if isinstance(render, dict) else None
-        interactive = context.job.get("interactiveCharts")
         registered = (
             next(
                 (item for item in images if isinstance(item, dict) and item.get("path") == path),
@@ -1160,15 +1159,6 @@ class ReportEditorService:
             if isinstance(images, list)
             else None
         )
-        if registered is None and isinstance(interactive, dict) and path.endswith(".plotly.json"):
-            registered = next(
-                (
-                    item
-                    for item in interactive.values()
-                    if isinstance(item, dict) and item.get("path") == path
-                ),
-                None,
-            )
         if not isinstance(registered, dict):
             # 改图登记中的图片：同一 report/revision 的登记记录、哈希一致的 PNG/JPEG
             # 也放行（AI 改图产物与原图同一登记身份规则）。
@@ -1176,9 +1166,7 @@ class ReportEditorService:
         if not isinstance(registered, dict):
             raise ReportingError("report_editor_asset_missing", "报告资源不存在。")
         content, media_type = await self.workspace.afile_bytes(context.scope["threadId"], path)
-        if media_type not in {"image/png", "image/jpeg"} and not (
-            path.endswith(".plotly.json") and media_type == "application/json"
-        ):
+        if media_type not in {"image/png", "image/jpeg"}:
             raise ReportingError("report_editor_asset_invalid", "报告资源格式无效。")
         if len(content) != registered.get("size") or hashlib.sha256(
             content
@@ -1209,26 +1197,6 @@ class ReportEditorService:
                 if page.image.path == path:
                     return page.image.as_identity()
         return None
-
-    @source_lifecycle
-    async def interactive_charts(self, expected: ReportEditorContext) -> dict[str, str]:
-        try:
-            context = await self._source_context(expected)
-        except ReportingError as error:
-            if error.code != "snapshot_expired":
-                raise
-            # 来源过期只禁用交互图表；保留的正文仍可读取，来源面板单独提示过期。
-            return {}
-        interactive = context.job.get("interactiveCharts")
-        if not isinstance(interactive, dict):
-            return {}
-        return {
-            image_path: item["path"]
-            for image_path, item in interactive.items()
-            if isinstance(image_path, str)
-            and isinstance(item, dict)
-            and isinstance(item.get("path"), str)
-        }
 
     async def _registered_analysis_context_file(
         self, context: ReportEditorContext
@@ -2049,9 +2017,6 @@ class ReportEditorService:
             target_job.setdefault("render", {})["images"] = copy.deepcopy(
                 source_context.job.get("render", {}).get("images", [])
             )
-            target_job["interactiveCharts"] = copy.deepcopy(
-                source_context.job.get("interactiveCharts", {})
-            )
         snapshot_path = str(PurePosixPath(source_context.markdown_path).with_name(f".export-{uuid4().hex}.md"))
         await self.workspace.awrite_text(scope.workspace_key, snapshot_path, document.markdown)
         try:
@@ -2343,7 +2308,6 @@ class ReportEditorService:
                 # but do not publish a new lineage index or dangling asset refs.
                 copied = {}
                 render_record["images"] = []
-                next_job["interactiveCharts"] = {}
                 artifact_manifest = None
                 lineage_issues.append(_lineage_unavailable_issue(error, rendered=True))
                 logger.warning("report_editor_asset_copy_unavailable report_id={} revision={} reason={}",
@@ -3238,16 +3202,6 @@ class ReportEditorService:
                 if isinstance(image, dict):
                     await copy_identity(image)
 
-        interactive = job.get("interactiveCharts")
-        if isinstance(interactive, dict):
-            migrated: dict[str, Any] = {}
-            for image_path, identity in interactive.items():
-                if not isinstance(image_path, str):
-                    continue
-                if isinstance(identity, dict):
-                    await copy_identity(identity)
-                migrated[copied.get(image_path, image_path)] = identity
-            job["interactiveCharts"] = migrated
         return copied
 
     async def _delete_export_snapshot(self, thread_id: str, path: str) -> None:

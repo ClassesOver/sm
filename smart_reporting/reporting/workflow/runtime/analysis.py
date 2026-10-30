@@ -156,7 +156,6 @@ from .chart_inputs import (
     chart_input_root_for,
     fallback_plan,
     prepare_chart_inputs,
-    verify_plotly_chart_inputs,
     verify_static_chart_inputs_referenced,
 )
 from .code_generation import (
@@ -599,14 +598,7 @@ def _section_scoped_chart_ids(
 
 
 def _visualization_output_paths(plan: VisualizationPlanDraft) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            path
-            for chart in plan.charts
-            for path in (chart.source_path, chart.interactive_path)
-            if path is not None
-        )
-    )
+    return tuple(sorted(chart.source_path for chart in plan.charts))
 
 
 def _visualization_repair_facts(
@@ -1397,12 +1389,6 @@ class RuntimeAnalysisMixin:
                         )
                         render_proof_cache[chart_input_key(plan)] = getattr(result, "standard_render_proofs", ())
                         if chart_inputs is not None and chart_inputs.files:
-                            await verify_plotly_chart_inputs(
-                                plan,
-                                chart_inputs,
-                                task_workspace,
-                                thread_id=str(coding_task_id),
-                            )
                             # B3：静态图（matplotlib）数值级联合验收——脚本必须
                             # 引用预物化 chart-input 数据；未引用的图记软告警
                             # （哈希无法证明柱高，深核依赖视觉审查与回执绑定）。

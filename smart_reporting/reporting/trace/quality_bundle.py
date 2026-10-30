@@ -97,7 +97,6 @@ def evaluate_quality_bundle(
     authorization_scope_hash: str,
     mode: Literal["shadow", "enabled"] = "shadow",
     questions: QuestionSet | None = None,
-    interactive_charts: Mapping[str, str] | None = None,
     answer_review_plan: AnswerReviewPlan | None = None,
     heading_numbers: tuple[HeadingNumber, ...] = (),
 ) -> QualityBundle:
@@ -134,7 +133,7 @@ def evaluate_quality_bundle(
     issues: list[QualityIssue] = []
     issues.extend(QualityIssue(code=issue.code, reasons=(issue.message, *issue.review_ids))
                   for issue in review_professional_content(markdown))
-    chart_checks = evaluate_chart_quality(index, markdown, sources, interactive_charts or {})
+    chart_checks = evaluate_chart_quality(index, markdown, sources)
     issues.extend(
         QualityIssue(code="chart_support_unknown", subjectId=chart_id, reasons=(check.reason,))
         for chart_id, check in chart_checks.items()
@@ -334,7 +333,6 @@ def evaluate_quality_bundle(
             "tables": [item.model_dump(mode="json", by_alias=True) for item in index.tables],
             "chartTraces": [item.model_dump(mode="json", by_alias=True) for item in index.chart_traces],
             "tableChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in table_checks.items()},
-            "interactiveCharts": dict(interactive_charts or {}),
             "semanticChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in semantic_checks.items()},
             "chartChecks": {
                 key: check.model_dump(mode="json", by_alias=True)

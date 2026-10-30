@@ -11,7 +11,7 @@ from urllib.parse import unquote, urlsplit
 from markdown_it import MarkdownIt
 from pydantic import Field, field_validator, model_validator
 
-from ..contract import SHA256_PATTERN, StrictModel, interactive_spec_path, safe_relative_posix_path
+from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
 from ..hospital_operation.delivery import SourcePolicy, SourceWarning
 from ..models import ReportingError
 from ..workflow.query_pipeline import DatasetLineage
@@ -33,7 +33,6 @@ class ArtifactFile(StrictModel):
         "text/markdown",
         "image/png",
         "image/jpeg",
-        "application/vnd.plotly.v1+json",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/json",
@@ -54,8 +53,6 @@ class ArtifactFile(StrictModel):
 class ChartArtifact(ArtifactFile):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
-    renderer: Literal["matplotlib", "plotly"] = "matplotlib"
-    interactive_spec: ArtifactFile | None = Field(default=None, alias="interactiveSpec")
     source_policy: SourcePolicy | None = Field(default=None, alias="sourcePolicy")
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
@@ -63,13 +60,6 @@ class ChartArtifact(ArtifactFile):
     def validate_image(self) -> ChartArtifact:
         if not self.media_type.startswith("image/"):
             raise ValueError("图表产物必须是图片")
-        if (self.renderer == "plotly") != (self.interactive_spec is not None):
-            raise ValueError("Plotly 图表必须且仅能绑定交互规格")
-        if self.interactive_spec is not None and (
-            self.interactive_spec.media_type != "application/vnd.plotly.v1+json"
-            or self.interactive_spec.path != interactive_spec_path(self.path)
-        ):
-            raise ValueError("Plotly 交互规格必须与静态图同目录同名")
         if len(set(self.dataset_ids)) != len(self.dataset_ids):
             raise ValueError("图表数据集引用不能重复")
         return self
@@ -122,7 +112,6 @@ class ReportArtifactManifest(StrictModel):
         paths = [
             self.markdown.path,
             *(item.path for item in self.charts),
-            *(item.interactive_spec.path for item in self.charts if item.interactive_spec),
             *( [self.trace_index.path] if self.trace_index is not None else [] ),
         ]
         if self.trace_index is not None and (
@@ -214,7 +203,6 @@ def build_authoritative_manifest(
     markdown_path: str,
     markdown: str,
     accepted_artifacts: list[dict[str, Any]],
-    interactive_charts: Mapping[str, str] | None = None,
     lineage: tuple[DatasetLineage, ...],
     sections: tuple[str, ...],
     section_finding_ids: Mapping[str, tuple[str, ...]] | None = None,
@@ -254,25 +242,17 @@ def build_authoritative_manifest(
         for path in extra_paths
         if PurePosixPath(path).suffix.lower() in {".png", ".jpg", ".jpeg"}
     }
-    companions = dict(interactive_charts or {})
     if (
-        set(companions) - set(image_bindings)
-        or len(set(companions.values())) != len(companions)
-        or any(
-            spec_path != interactive_spec_path(image_path)
-            for image_path, spec_path in companions.items()
-        )
-        or extra_paths != submitted_images | set(companions.values())
+        extra_paths != submitted_images
         or not set(image_bindings).issubset(submitted_images)
     ):
         raise ReportingError(
             "report_artifact_acceptance_incomplete",
-            "正式产物回执必须包含 Markdown 图片及其已登记的 Plotly 规格。",
+            "正式产物回执只能包含 Markdown、图片和登记的表格产物。",
         )
 
     charts: list[ChartArtifact] = []
     for index, path in enumerate(sorted(image_bindings), start=1):
-        spec_path = companions.get(path)
         charts.append(
             ChartArtifact(
                 path=path,
@@ -281,17 +261,6 @@ def build_authoritative_manifest(
                 sha256=_artifact_sha256(artifacts[path]),
                 chartId=f"chart_{index:03d}",
                 datasetIds=image_bindings[path],
-                renderer="plotly" if spec_path else "matplotlib",
-                interactiveSpec=(
-                    ArtifactFile(
-                        path=spec_path,
-                        mediaType="application/vnd.plotly.v1+json",
-                        size=_artifact_size(artifacts[spec_path]),
-                        sha256=_artifact_sha256(artifacts[spec_path]),
-                    )
-                    if spec_path
-                    else None
-                ),
             )
         )
     return ReportArtifactManifest(

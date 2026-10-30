@@ -75,10 +75,8 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "不得把 facts 文件（如 analysis_*.json）当作 supplement 来访问 findings。",
     "修复脚本执行失败时必须修正原始数据读取或解码错误，不得仅删除失败代码、"
     "吞掉异常或补默认数据。",
-    "按 visualizationMode 选择 Matplotlib 或 Plotly；每张图都必须生成签发路径的 PNG/JPEG 静态图，"
-    "Plotly 图还必须生成签发路径的 .plotly.json。"
-    "使用 Matplotlib 时在导入 pyplot 前设置 Agg；Plotly 的静态图使用 fig.write_image()"
-    "（Kaleido 已随环境提供），交互产物使用 fig.write_json()。",
+    "图表只使用 Matplotlib 静态 PNG/JPEG；在导入 pyplot 前设置 Agg，"
+    "只生成 Matplotlib PNG/JPEG 静态图。",
     "图内不画整图标题或副标题（suptitle、set_title、layout.title），结论写在图注；"
     "子图只留简短分组名。高质量图：坐标轴、单位、图例和数据标签完整；"
     "标签不得重叠、截断或超出画布；系列、颜色和标注克制，主信息突出；"

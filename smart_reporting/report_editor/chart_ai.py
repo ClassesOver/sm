@@ -941,8 +941,6 @@ class ChartAIEditService:
                             {
                                 "chartId": chart_id,
                                 "sourcePath": output_path,
-                                "renderer": "matplotlib",
-                                "interactivePath": None,
                                 "title": title,
                                 "altText": request.base_alt_text or title,
                                 "visualForm": request.template_id,
@@ -1485,8 +1483,6 @@ class ChartAIEditService:
                     {
                         "chartId": chart_id,
                         "sourcePath": output_path,
-                        "renderer": "matplotlib",
-                        "interactivePath": None,
                         "title": new_title,
                         "altText": new_alt,
                         "visualForm": visual_form,
@@ -1598,7 +1594,7 @@ class ChartAIEditService:
         unresolved = verify_static_chart_inputs_referenced(
             cast(
                 Any,
-                SimpleNamespace(charts=[SimpleNamespace(chart_id=chart_id, interactive_path=None)]),
+                SimpleNamespace(charts=[SimpleNamespace(chart_id=chart_id)]),
             ),
             cast(
                 Any,

@@ -37,6 +37,6 @@ npm run check:budget
 
 ## 限制
 
-- 暂不支持 Plotly.js、任意 JavaScript 或编辑器内图片上传。
+- 不支持任意 JavaScript 或编辑器内图片上传。
 - 图片仅允许读取当前 job 登记且 SHA-256 未变化的 PNG/JPEG，以及同一修订版改图登记（`draft/.chart-edits.json`）中身份一致的改图图片。
 - 真实浏览器多尺寸截图、辅助技术验收和 PDF/Word 视觉验收需要在可用浏览器/渲染环境中执行。

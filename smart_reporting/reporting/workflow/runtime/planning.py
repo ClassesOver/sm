@@ -497,11 +497,6 @@ class RuntimePlanningMixin:
                         if isinstance(image, dict):
                             await _copy_asset(image.get("path", ""))
 
-                interactive = editor_job.get("interactiveCharts")
-                if isinstance(interactive, dict):
-                    for spec in interactive.values():
-                        if isinstance(spec, dict):
-                            await _copy_asset(spec.get("path", ""))
 
                 def _remap_paths(obj: Any) -> Any:
                     if isinstance(obj, dict):
@@ -525,11 +520,6 @@ class RuntimePlanningMixin:
                 source_root = source_markdown.parent
                 target_root = revision_markdown.parent
                 source_paths = [chart.path for chart in source_manifest.charts]
-                source_paths.extend(
-                    chart.interactive_spec.path
-                    for chart in source_manifest.charts
-                    if chart.interactive_spec is not None
-                )
                 if source_index is not None:
                     source_paths.extend(str(item.path) for item in source_index.files)
                 for source_path in source_paths:

@@ -218,10 +218,9 @@ describe('report editor enhancements', () => {
     expect(document.activeElement).toBe(source)
   })
 
-  it('prepares newly rendered images while excluding interactive chart fallbacks', async () => {
+  it('prepares newly rendered images for preview', async () => {
     const editor = document.querySelector<HTMLElement>('#editor')!
     const fallback = document.createElement('img')
-    fallback.className = 'interactive-chart-fallback'
     editor.append(fallback)
     const preview = createImagePreview(editor)
     const added = document.createElement('img')
@@ -230,7 +229,7 @@ describe('report editor enhancements', () => {
     editor.append(added)
 
     await vi.waitFor(() => expect(added.tabIndex).toBe(0))
-    expect(fallback.tabIndex).toBe(-1)
+    expect(fallback.tabIndex).toBe(0)
     added.focus()
     added.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
 

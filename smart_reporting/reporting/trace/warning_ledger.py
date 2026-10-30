@@ -37,7 +37,6 @@ _GUIDANCE = {
     "ranking_context_unknown": ("proof_not_evaluated", ("R015", "R050"), "补齐完整同维度总体及排名上下文", "analysis"),
     "operation_semantics_not_evaluated": ("proof_not_evaluated", ("R009", "R033", "R052", "R061"), "登记对应公式的期间、用途和分子分母前提，再验证运算", "analysis"),
     "statement_not_supported": ("unresolved", ("R004", "R005", "R011", "R032"), "对照当前句子与所选事实复核范围、期间、单位及结论", "draft"),
-    "interactive_spec_unregistered": ("artifact_gap", ("R004", "R019", "R026"), "补齐登记图形规格，并与冻结数组及事实共同核验", "render"),
     "chart_arrays_unverified": ("proof_not_evaluated", ("R004", "R019", "R026"), "先处理同一图表的数组或规格检查，再复核语义对齐", "render"),
     "static_image_not_evaluated": ("proof_not_evaluated", ("R004", "R019", "R026"), "复核静态图的可见数值与冻结作图数据；图片身份一致不代表数组语义已核验", "render"),
     "cell_period_label_mismatch": ("definition_review", ("R002", "R035", "R064"), "核实源字段及聚合粒度，不从月初日期猜测月度", "analysis"),
