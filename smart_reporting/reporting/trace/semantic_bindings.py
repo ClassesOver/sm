@@ -121,10 +121,18 @@ def statement_fingerprint(markdown: str, claim_id: str) -> str | None:
 
 def statement_fingerprints(markdown: str, claim_ids: Iterable[str]) -> dict[str, str | None]:
     """同一草稿只做一次显示规范化，不跨请求缓存可编辑正文。"""
+    markdown = _normalized_statement_markdown(markdown)
+    return {claim_id: _statement_fingerprint(markdown, claim_id) for claim_id in claim_ids}
+
+
+def _normalized_statement_markdown(markdown: str) -> str:
     from ..delivery.report_runtime.markdown import normalize_cjk_punctuation, normalize_cjk_wording
 
-    markdown = normalize_cjk_punctuation(normalize_cjk_wording(markdown))
-    return {claim_id: _statement_fingerprint(markdown, claim_id) for claim_id in claim_ids}
+    return normalize_cjk_punctuation(normalize_cjk_wording(markdown))
+
+
+_STATEMENT_BREAKS = "。！？；;\n"
+_STATEMENT_BREAK = re.compile(r"[。！？；;\n]")
 
 
 def _statement_fingerprint(markdown: str, claim_id: str) -> str | None:
@@ -132,7 +140,10 @@ def _statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     if markdown.count(marker) != 1:
         return None
     before, after = markdown.split(marker)
-    statement = re.split(r"[。！？；;\n]", before)[-1] + re.split(r"[。！？；;\n]", after)[0]
+    # 只取标记所在句：从前文末尾反查断句符、在后文中正查，不切分整段正文。
+    start = max(before.rfind(mark) for mark in _STATEMENT_BREAKS) + 1
+    end_match = _STATEMENT_BREAK.search(after)
+    statement = before[start:] + (after[: end_match.start()] if end_match else after)
     statement = re.sub(r"\[\[[^\]\n]+\]\]", "", statement)
     return hashlib.sha256(re.sub(r"[\s*]", "", statement).encode()).hexdigest()
 
@@ -308,6 +319,15 @@ def render_bound_numbers(
     )
     resolver = NumberReferenceResolver(contents)
     signed_references = []
+    # 正文只在撤销引用时改变；按当前正文对象缓存规范化结果，避免每个引用都全文规范化。
+    normalized: tuple[str, str] | None = None
+
+    def fingerprint(text: str, claim_id: str) -> str | None:
+        nonlocal normalized
+        if normalized is None or normalized[0] is not text:
+            normalized = (text, _normalized_statement_markdown(text))
+        return _statement_fingerprint(normalized[1], claim_id)
+
     for claim_id, token in references:
         marker = f"[[claim:{claim_id}]]"
         position = markdown.find(marker)
@@ -336,7 +356,7 @@ def render_bound_numbers(
             NumberReferenceV1(
                 claimId=claim_id,
                 token=token,
-                statementSha256=statement_fingerprint(markdown, claim_id),
+                statementSha256=fingerprint(markdown, claim_id),
                 displayText=display_text,
                 tableDerivation=table_derivation,
             )
@@ -345,7 +365,7 @@ def render_bound_numbers(
     references = tuple(
         reference.model_copy(
             update={
-                "statement_sha256": statement_fingerprint(markdown, reference.claim_id),
+                "statement_sha256": fingerprint(markdown, reference.claim_id),
             }
         )
         for reference in signed_references

@@ -543,7 +543,7 @@ def _bounded_executive_summary(summaries: Sequence[str]) -> str:
 def _estimated_section_tokens(value: str) -> int:
     """对中英文混合 JSON 做保守估算，避免切片本身依赖供应商 tokenizer。"""
 
-    ascii_characters = sum(1 for character in value if ord(character) < 128)
+    ascii_characters = len(value.encode("ascii", "ignore"))
     return (ascii_characters + 3) // 4 + len(value) - ascii_characters
 
 

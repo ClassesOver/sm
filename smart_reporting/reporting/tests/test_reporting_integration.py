@@ -129,6 +129,56 @@ async def test_durable_command_uses_caller_thread_identity() -> None:
     assert repository.get_or_create.await_args.kwargs["thread_id"] == "caller-thread"
 
 
+@pytest.mark.anyio
+async def test_durable_command_reuses_own_version_and_rereads_after_conflict() -> None:
+    from smart_reporting.reporting.workflow.state import ReportingStateConflict
+
+    seen_versions: list[int] = []
+    current = {"version": 0}
+
+    async def apply(_run_id: str, _command: object, *, expected_version: int) -> SimpleNamespace:
+        seen_versions.append(expected_version)
+        if expected_version != current["version"]:
+            raise ReportingStateConflict()
+        current["version"] += 1
+        return SimpleNamespace(state=SimpleNamespace(state_version=current["version"]))
+
+    async def get_by_external_run_id(_external_run_id: str) -> SimpleNamespace:
+        return SimpleNamespace(report_run_id="report-run", state_version=current["version"])
+
+    repository = SimpleNamespace(
+        get_by_external_run_id=AsyncMock(side_effect=get_by_external_run_id),
+        get_or_create=AsyncMock(),
+        apply=apply,
+    )
+
+    class Runtime:
+        state_repository = repository
+        _durable_command_lock = asyncio.Lock()
+
+        @staticmethod
+        def _scope(_run_context: RunContext) -> dict[str, str]:
+            return {"externalRunId": "external-run", "callerThreadId": "caller", "userId": "user"}
+
+    runtime = Runtime()
+    context = RunContext(run_id="report-run", session_id="session")
+    await _ReportWorkflowRuntimeBase._apply_durable_command(
+        runtime, context, ReportingCommand(name="start_analysis", commandId="command-1")
+    )
+    # 本实例刚写入：下一条命令直接用已知版本 CAS，不再整行预读。
+    await _ReportWorkflowRuntimeBase._apply_durable_command(
+        runtime, context, ReportingCommand(name="start_analysis", commandId="command-2")
+    )
+    assert repository.get_by_external_run_id.await_count == 1
+    # 其他写入方推进了版本：已知版本 CAS 冲突后按原逻辑重读再写入。
+    current["version"] += 1
+    await _ReportWorkflowRuntimeBase._apply_durable_command(
+        runtime, context, ReportingCommand(name="start_analysis", commandId="command-3")
+    )
+    assert repository.get_by_external_run_id.await_count == 2
+    assert seen_versions == [0, 1, 2, 3]
+
+
 class _ReportPairProcess:
     async def exec(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
         raise AssertionError("报表发布不得使用任意 Shell")

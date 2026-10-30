@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from sys import getsizeof
@@ -30,6 +30,19 @@ _TRACE_BODY_CACHE: ContextVar[_TraceBodyCache | None] = ContextVar("trace_body_c
 @asynccontextmanager
 async def trace_body_cache_scope() -> AsyncIterator[None]:
     """仅在一次来源校验内复用不可变结果，AnyIO 工作线程沿用本次上下文。"""
+    token = _TRACE_BODY_CACHE.set(_TraceBodyCache())
+    try:
+        yield
+    finally:
+        _TRACE_BODY_CACHE.reset(token)
+
+
+@contextmanager
+def trace_body_cache_scope_sync() -> Iterator[None]:
+    """同步评估入口的同等作用域；已有外层作用域时直接复用。"""
+    if _TRACE_BODY_CACHE.get() is not None:
+        yield
+        return
     token = _TRACE_BODY_CACHE.set(_TraceBodyCache())
     try:
         yield

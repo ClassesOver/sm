@@ -101,14 +101,55 @@ def evaluate_quality_bundle(
     heading_numbers: tuple[HeadingNumber, ...] = (),
 ) -> QualityBundle:
     """Identity-check again at this boundary. Missing data only degrades dependents."""
+    from .markdown_body import trace_body_cache_scope_sync
+    from .table_sources import table_source_cache_scope
+
+    # 同一次评估中各 claim/表格检查会对同一正文反复调用 trace_body、对同一来源反复做
+    # Decimal 解析与摘要，作用域内各只做一次。
+    with trace_body_cache_scope_sync(), table_source_cache_scope():
+        return _evaluate_quality_bundle(
+            index,
+            markdown,
+            sources,
+            authorization_scope_hash=authorization_scope_hash,
+            mode=mode,
+            questions=questions,
+            answer_review_plan=answer_review_plan,
+            heading_numbers=heading_numbers,
+        )
+
+
+def _evaluate_quality_bundle(
+    index: RevisionTraceIndexV1,
+    markdown: str,
+    sources: Mapping[str, bytes],
+    *,
+    authorization_scope_hash: str,
+    mode: Literal["shadow", "enabled"],
+    questions: QuestionSet | None,
+    answer_review_plan: AnswerReviewPlan | None,
+    heading_numbers: tuple[HeadingNumber, ...],
+) -> QualityBundle:
     trusted: list[str] = []
     documents = {}
     unavailable: set[str] = set()
     files = {file.resource_id: file for file in index.files}
+    verified_sources: dict[str, bytes | None] = {}
+
+    def verified_source(resource_id: str) -> bytes | None:
+        """来源字节与登记身份一致时返回；每个资源在本次评估中只哈希一次。"""
+        if resource_id not in verified_sources:
+            file, raw = files.get(resource_id), sources.get(resource_id)
+            verified_sources[resource_id] = (
+                raw if file is not None and raw is not None and len(raw) == file.size
+                and hashlib.sha256(raw).hexdigest() == file.sha256 else None
+            )
+        return verified_sources[resource_id]
+
     for entry in index.fact_files:
         file = files[entry.file_resource_id]
-        raw = sources.get(file.resource_id)
-        if raw is None or len(raw) != file.size or hashlib.sha256(raw).hexdigest() != file.sha256:
+        raw = verified_source(file.resource_id)
+        if raw is None:
             unavailable.add(file.resource_id)
             continue
         try:
@@ -160,9 +201,8 @@ def evaluate_quality_bundle(
     # 原表直接单元格绑定与正文派生值共用冻结文件身份，不能依赖 factFiles 恰好登记。
     for resource_id in {cell.source_cell.file_resource_id for table in index.tables
                         for cell in table.cells if cell.source_cell is not None}:
-        file, raw = files.get(resource_id), sources.get(resource_id)
-        if (file is None or raw is None or len(raw) != file.size
-                or hashlib.sha256(raw).hexdigest() != file.sha256):
+        raw = verified_source(resource_id)
+        if raw is None:
             unavailable.add(resource_id)
             continue
         try:
@@ -240,9 +280,8 @@ def evaluate_quality_bundle(
 
                 calculation_sources = {}
                 for resource_id in derivation_resource_ids(number.table_derivation):
-                    file, raw = files.get(resource_id), sources.get(resource_id)
-                    if (file is None or raw is None or len(raw) != file.size
-                            or hashlib.sha256(raw).hexdigest() != file.sha256):
+                    raw = verified_source(resource_id)
+                    if raw is None:
                         reasons.append('source_unavailable')
                     else:
                         calculation_sources[resource_id] = raw

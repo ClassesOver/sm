@@ -7,6 +7,8 @@ import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextvars import ContextVar
 from copy import copy, deepcopy
+from functools import lru_cache
+from itertools import takewhile
 from time import perf_counter
 from types import MappingProxyType
 from typing import Any
@@ -314,8 +316,9 @@ def _unresolved_failure_call_ids(state: Mapping[str, Any]) -> frozenset[str]:
     return frozenset({call_id})
 
 
-def _read_script_result_stale(message: Message, current_sha: str) -> bool:
-    content = str(message.content or "")
+@lru_cache(maxsize=256)
+def _read_script_result_sha(content: str) -> str | None:
+    """解析 read_script 结果中的源码 SHA；同一历史结果每轮都会复查，按内容缓存解析。"""
     try:
         payload = json.loads(content)
     except (TypeError, ValueError, RecursionError, MemoryError):
@@ -323,11 +326,16 @@ def _read_script_result_stale(message: Message, current_sha: str) -> bool:
         try:
             payload = ast.literal_eval(content)
         except (SyntaxError, TypeError, ValueError, RecursionError, MemoryError):
-            return False
+            return None
     if not isinstance(payload, dict):
-        return False
+        return None
     sha = payload.get("sha256")
-    return isinstance(sha, str) and bool(sha) and sha != current_sha
+    return sha if isinstance(sha, str) and sha else None
+
+
+def _read_script_result_stale(message: Message, current_sha: str) -> bool:
+    sha = _read_script_result_sha(str(message.content or ""))
+    return sha is not None and sha != current_sha
 
 
 def _filter_read_script_rounds(
@@ -369,14 +377,11 @@ def _filter_read_script_rounds(
                 lookahead += 1
             # 没有完整结果的批次交给投影层的 incomplete batch 保护；只有能确定
             # 全部结果都已过时时才整轮丢弃，避免破坏 Responses 调用链。
-            if results and all(
-                _read_script_result_stale(result, current_sha) for result in results
-            ):
+            stale = [_read_script_result_stale(result, current_sha) for result in results]
+            if stale and all(stale):
                 index = lookahead
                 continue
-            if results and any(
-                not _read_script_result_stale(result, current_sha) for result in results
-            ):
+            if stale and not all(stale):
                 current_call_ids.update(identities)
         kept.append(message)
         index += 1
@@ -891,9 +896,18 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 else "structured"
             )
         system_prefix: list[dict[str, Any]] = []
-        formatted_messages = (
-            self._format_messages(messages, tools=tools) if messages is not None else ()
-        )
+        if messages is None:
+            formatted_messages: Any = ()
+        elif self._using_reasoning_model() and self._chains_responses():
+            # 链式 previous_response_id 会裁掉历史前缀，前缀形态依赖整段历史，保持整体格式化。
+            formatted_messages = self._format_messages(messages, tools=tools)
+        else:
+            # 指纹只取开头连续的 system 项；system 消息逐条独立格式化，
+            # 不必为此把整段历史（含调用身份校验）再格式化一遍。
+            leading_system = list(takewhile(lambda message: message.role == "system", messages))
+            formatted_messages = (
+                self._format_messages(leading_system, tools=tools) if leading_system else ()
+            )
         for item in formatted_messages:
             if not isinstance(item, Mapping) or item.get("role") != self.role_map["system"]:
                 break
@@ -1210,10 +1224,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             request_metrics[-1]["requestParams"] = dict(observation)
         return params
 
-    def count_tokens(
-        self, messages: list[Message], tools: Any = None, output_schema: Any = None
-    ) -> int:
-        return Model.count_tokens(self, messages, tools, output_schema)
+    # 跳过 Responses 的 provider 计数 API，直接使用 Agno 基础累加实现；以同一函数对象
+    # 绑定，投影层据此识别可加性并启用逐消息 token 缓存。
+    count_tokens = Model.count_tokens
 
     def _phase_request_model(self, messages: list[Message]) -> ReportingCodeOpenAIResponses:
         request_model = copy(self)

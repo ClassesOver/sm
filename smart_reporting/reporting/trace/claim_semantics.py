@@ -152,6 +152,10 @@ def semantic_receipt_status(markdown: str, claim_id: str, receipt: ClaimSemantic
         return 'unavailable'
     context = claim_context(markdown, claim_id, include_previous=receipt.includes_previous,
                             include_section=receipt.includes_section)
+    return _receipt_status(context, claim_id, receipt)
+
+
+def _receipt_status(context: str | None, claim_id: str, receipt: ClaimSemanticReceiptV1) -> str:
     return ('interpreted' if context is not None and receipt.interpretation.claim_id == claim_id
             and _fingerprint(context) == receipt.context_sha256 else 'invalidated')
 
@@ -246,7 +250,7 @@ def semantic_warnings(
         return warnings
     context = claim_context(markdown, claim_id, include_previous=receipt.includes_previous,
                             include_section=receipt.includes_section)
-    if context is None or semantic_receipt_status(markdown, claim_id, receipt) != 'interpreted':
+    if context is None or _receipt_status(context, claim_id, receipt) != 'interpreted':
         return [*warnings, '语义归属需复核：正文上下文已改变，原语义判断失效。']
     result = list(warnings)
     evidence_context = (receipt.reviewed_context or context).replace('【当前数值引用】', '')

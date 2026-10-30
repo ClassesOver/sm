@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextvars import ContextVar
 from copy import deepcopy
@@ -16,6 +17,7 @@ from urllib.parse import urlparse
 
 import requests
 from agno.compression.manager import CompressionManager
+from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from loguru import logger
@@ -357,6 +359,59 @@ def _fallback_token_count(value: str) -> int:
     return max(1, (len(value.encode("utf-8")) + 1) // 2)
 
 
+_MESSAGE_TOKEN_CACHE_MAX_ENTRIES = 8192
+_MESSAGE_TOKEN_CACHE: "OrderedDict[tuple[str, str], int]" = OrderedDict()
+_MESSAGE_MEDIA_FIELDS = ("images", "audio", "videos", "files", "audio_output", "image_output")
+
+
+def _message_token_cache_key(model_id: str, message: Message) -> tuple[str, str] | None:
+    """按影响 Agno 逐消息计数的全部文本字段生成内容指纹；含媒体时不缓存。"""
+
+    if any(getattr(message, field, None) for field in _MESSAGE_MEDIA_FIELDS):
+        return None
+    encoded = json.dumps(
+        [
+            message.role,
+            message.content,
+            message.compressed_content,
+            message.tool_calls,
+            message.tool_call_id,
+            message.reasoning_content,
+            message.redacted_reasoning_content,
+            message.name,
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return model_id, hashlib.blake2b(encoded.encode("utf-8"), digest_size=20).hexdigest()
+
+
+def _additive_token_count(
+    messages: list[Message], model: Any, tools: Any, response_format: Any
+) -> int:
+    """Agno 基础 count_tokens 是逐消息累加再加工具/schema；投影每轮重计同一段历史，
+    这里按消息内容缓存单条计数，只对新增或被改写的消息分词。"""
+
+    model_id = str(model.id)
+    total = Model.count_tokens(model, [], tools, response_format)
+    for message in messages:
+        key = _message_token_cache_key(model_id, message)
+        if key is None:
+            total += Model.count_tokens(model, [message])
+            continue
+        cached = _MESSAGE_TOKEN_CACHE.get(key)
+        if cached is None:
+            cached = Model.count_tokens(model, [message])
+            _MESSAGE_TOKEN_CACHE[key] = cached
+            if len(_MESSAGE_TOKEN_CACHE) > _MESSAGE_TOKEN_CACHE_MAX_ENTRIES:
+                _MESSAGE_TOKEN_CACHE.popitem(last=False)
+        else:
+            _MESSAGE_TOKEN_CACHE.move_to_end(key)
+        total += cached
+    return total
+
+
 def _fallback_context_token_count(
     messages: list[Message], tools: Any = None, response_format: Any = None
 ) -> int:
@@ -593,9 +648,11 @@ class ContextBudgetController(ProtectedCompressionManager):
         except Exception:
             # 非 Agno 测试模型可能拒绝动态属性；压缩管理器本身仍可独立工作。
             pass
+        # compress 为空操作（预算由模型投影层执行）。关闭 compress_tool_results 让 Agno
+        # 模型循环跳过每轮的 should_compress 全量分词；should_compress 仍可显式调用。
         super().__init__(
             model=model,
-            compress_tool_results=True,
+            compress_tool_results=False,
             compress_token_limit=self.input_token_budget,
         )
 
@@ -1258,6 +1315,10 @@ class TaskExecutionContextProjector:
     ) -> int:
         started_at = perf_counter()
         try:
+            # 仅当计数实现就是 Agno 基础累加实现时走逐消息缓存；改写过计数的模型
+            # （按阶段过滤消息、调用 provider 计数 API 等）不满足可加性，按原样整体计数。
+            if getattr(type(model), "count_tokens", None) is Model.count_tokens:
+                return int(_additive_token_count(messages, model, tools, response_format))
             return int(model.count_tokens(messages, tools, response_format))
         except Exception as error:
             model_id, _host = _model_log_fields(model)
@@ -1569,7 +1630,10 @@ class TaskExecutionContextProjector:
         if feedback is not None:
             projected.append(feedback)
         threshold = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD))
-        projected_tokens = counted_token_count(projected)
+        # 未追加反馈时 projected 与刚计数的 canonical 完全相同，复用结果省一次全量分词。
+        projected_tokens = (
+            counted_token_count(projected) if feedback is not None else canonical_tokens
+        )
         # benchmark 基线语义：摘要关闭时恢复旧行为——只要存在可压缩的已完成 custom
         # 历史就强制走窗口重建（不因低于阈值而保留完整旧历史），保证 G1 与 B0 生产
         # 基线同口径。摘要开启时低于门禁则原样保留。
@@ -1699,18 +1763,43 @@ class TaskExecutionContextProjector:
             for group in [*incomplete_batches, *selected_rounds]
         ]
         positioned.sort(key=lambda item: item[0])
-        candidate = [*prefix, checkpoint_message]
-        for _position, group in positioned:
-            candidate.extend(group)
-        if feedback is not None:
-            candidate.append(feedback)
-
         target = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_TARGET))
         deletable_start = len(protected_rounds)
-        while len(selected_rounds) > deletable_start and counted_token_count(candidate) > target:
-            removed = selected_rounds.pop(deletable_start)
-            start = next(index for index, message in enumerate(candidate) if message is removed[0])
-            del candidate[start : start + len(removed)]
+        deletable_rounds = selected_rounds[deletable_start:]
+        candidate_tokens: dict[int, int] = {}
+
+        def candidate_without(dropped_count: int) -> list[Message]:
+            dropped = {id(group) for group in deletable_rounds[:dropped_count]}
+            built = [*prefix, checkpoint_message]
+            for _position, group in positioned:
+                if id(group) not in dropped:
+                    built.extend(group)
+            if feedback is not None:
+                built.append(feedback)
+            return built
+
+        def candidate_token_count(dropped_count: int) -> int:
+            if dropped_count not in candidate_tokens:
+                candidate_tokens[dropped_count] = counted_token_count(
+                    candidate_without(dropped_count)
+                )
+            return candidate_tokens[dropped_count]
+
+        # 从最旧的可删轮次开始丢弃，取满足 target 的最少丢弃数；没有满足的就全部丢弃。
+        # 删除消息只会让 token 数单调不增，二分得到的结果与逐轮删除逐次全量计数一致，
+        # 但全量分词次数从 O(轮次) 降到 O(log 轮次)。
+        dropped_count = 0
+        if candidate_token_count(0) > target:
+            low, high = 1, len(deletable_rounds)
+            while low < high:
+                middle = (low + high) // 2
+                if candidate_token_count(middle) <= target:
+                    high = middle
+                else:
+                    low = middle + 1
+            dropped_count = high
+        candidate = candidate_without(dropped_count)
+        selected_rounds = [*protected_rounds, *deletable_rounds[dropped_count:]]
         final_metadata_bytes = cls._coding_custom_history_metadata_bytes(candidate)
         custom_history_metrics["metadata_bytes"] = final_metadata_bytes
         custom_history_metrics["bytes_after"] = final_metadata_bytes
@@ -1718,7 +1807,7 @@ class TaskExecutionContextProjector:
             metadata_budget_enabled
             and final_metadata_bytes > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
         )
-        projected_tokens = counted_token_count(candidate)
+        projected_tokens = candidate_token_count(dropped_count)
         if projected_tokens > hard_cap:
             metrics = {
                 "canonical_message_count": len(messages),

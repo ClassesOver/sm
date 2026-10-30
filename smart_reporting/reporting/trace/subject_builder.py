@@ -1026,9 +1026,31 @@ class ClaimStatusChecker:
         from .markdown_body import trace_body
 
         self.markdown = trace_body(markdown)
+        # 章节边界与各章节正文按请求只切分一次，逐引用校验不再全文扫描章节标记。
+        self._sections = list(re.finditer(r"\[\[section:([^\]\r\n]+)\]\]", self.markdown))
+        self._section_bodies: dict[str, str | None] = {}
 
-    def check(self, claim_id: str, fact_value: Any, **kwargs) -> dict[str, Any]:
-        return _claim_status_from_body(self.markdown, claim_id, fact_value, **kwargs)
+    def _section_body(self, section_id: str | None) -> str | None:
+        if not section_id or not self._sections:
+            return self.markdown
+        if section_id not in self._section_bodies:
+            sections = self._sections
+            matching = [index for index, section in enumerate(sections) if section[1] == section_id]
+            if len(matching) != 1:
+                body = None
+            else:
+                index = matching[0]
+                end = sections[index + 1].start() if index + 1 < len(sections) else len(self.markdown)
+                body = self.markdown[sections[index].end():end]
+            self._section_bodies[section_id] = body
+        return self._section_bodies[section_id]
+
+    def check(self, claim_id: str, fact_value: Any, *, section_id: str | None = None,
+              **kwargs) -> dict[str, Any]:
+        body = self._section_body(section_id)
+        if body is None:
+            return {"status": "unbound", "warnings": []}
+        return _claim_status_from_body(body, claim_id, fact_value, **kwargs)
 
 
 def _claim_status_from_body(
@@ -1043,16 +1065,8 @@ def _claim_status_from_body(
     expected_scope: Mapping[str, str] | None = None,
     expected_reference: Mapping[str, Any] | None = None,
     semantic_receipt: Any = None,
-    section_id: str | None = None,
 ) -> dict[str, Any]:
-    sections = list(re.finditer(r"\[\[section:([^\]\r\n]+)\]\]", markdown))
-    if section_id and sections:
-        matching = [index for index, section in enumerate(sections) if section[1] == section_id]
-        if len(matching) != 1:
-            return {"status": "unbound", "warnings": []}
-        index = matching[0]
-        end = sections[index + 1].start() if index + 1 < len(sections) else len(markdown)
-        markdown = markdown[sections[index].end():end]
+    """markdown 为调用方按 section_id 截好的章节正文。"""
     marker = claim_marker(claim_id)
     position = markdown.find(marker)
     if position < 0:

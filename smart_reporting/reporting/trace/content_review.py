@@ -167,6 +167,37 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
     ).warnings)
 
 
+def _rounded_set(values: Iterable[Decimal], digits: int, *, absolute: bool = False) -> frozenset[Decimal]:
+    """按书写精度舍入后的登记值集合；判断“某值舍入后等于正文数字”改为一次集合查询。"""
+    quantum = Decimal(1).scaleb(-digits)
+    rounded: set[Decimal] = set()
+    for value in values:
+        try:
+            rounded.add((abs(value) if absolute else value).quantize(quantum, rounding=ROUND_HALF_UP))
+        except ArithmeticError:
+            # 超出 Decimal 精度的值舍入后不可能与正文数字相等。
+            continue
+    return frozenset(rounded)
+
+
+class _RoundedIndex:
+    """同一次复核内按（集合名, 小数位）缓存舍入集合；登记值集合在复核开始后不再变化。"""
+
+    def __init__(self) -> None:
+        self._cache: dict[tuple[str, int], frozenset[Decimal]] = {}
+
+    def contains(self, name: str, values: Iterable[Decimal], digits: int, number: Decimal,
+                 *, absolute: bool = False) -> bool:
+        key = (name, digits)
+        if key not in self._cache:
+            self._cache[key] = _rounded_set(values, digits, absolute=absolute)
+        return number in self._cache[key]
+
+
+def _written_digits(number_text: str) -> int:
+    return len(number_text.split(".")[1]) if "." in number_text else 0
+
+
 def review_content_result(markdown: str, contents: Iterable[str], *, field_definitions: Mapping[str, str] | None = None,
                           fact_ids: Iterable[str] | None = None,
                           bound_chart_ids: Iterable[str] = (),
@@ -293,7 +324,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         if match["token"] not in positive or describes_rate_level(markdown[:match.start()]):
             continue
         # “同比/环比下降{变化率}”由下方变化率方向检查覆盖，避免同一问题报两次。
-        if ":changeRate:" in match["token"] and re.search(r"(?:同比|环比)$", markdown[:match.start()]):
+        if ":changeRate:" in match["token"] and markdown.endswith(("同比", "环比", "同比\n", "环比\n"), 0, match.start()):
             continue
         shown = catalog.get(match["token"], match["token"])
         warnings.append(
@@ -391,26 +422,30 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
                                          "correlations", "correlationDetails", "findings"}.intersection(document)
                                  and document.get("schema") != "chart-input/v1"))
     reported_values: set[tuple[Decimal, str]] = set()
+    rounded_index = _RoundedIndex()
+
+    def known_contains(unit: str, digits: int, number: Decimal, *, absolute: bool = False) -> bool:
+        name = f"{'abs:' if absolute else ''}known:{unit}"
+        return rounded_index.contains(name, known.get(unit, ()), digits, number, absolute=absolute)
+
     for match in _VALUE.finditer(text):
         number = Decimal(match[1].replace(",", ""))
-        digits = len(match[1].split(".")[1]) if "." in match[1] else 0
+        digits = _written_digits(match[1])
         quantum = Decimal(1).scaleb(-digits)
         # 原始证据里的数字不区分百分数与百分点：只对得上百分点差值的“X%”先单独提示。
         if (match[2] == "%" and (number, match[2]) not in reported_values
-                and not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number
-                            for value in known.get("%", ()))
-                and any(abs(value).quantize(quantum, rounding=ROUND_HALF_UP) == abs(number)
-                        for value in known.get(PERCENT_POINT, ()))):
+                and not known_contains("%", digits, number)
+                and known_contains(PERCENT_POINT, digits, abs(number), absolute=True)):
             reported_values.add((number, match[2]))
             warnings.append(
                 f"百分数指标的变化是百分点差值：{match[0]}应写为{abs(number)}个百分点，"
                 "写成百分数会被读成相对变化率。"
             )
             continue
-        candidates = known.get(match[2], set()) | supplemental
         prefix = text[max(0, match.start() - 12):match.start()]
-        supported = (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
-                     or registered_decline_magnitude(number, match[2], candidates,
+        supported = (known_contains(match[2], digits, number)
+                     or rounded_index.contains("supplemental", supplemental, digits, number)
+                     or registered_decline_magnitude(number, match[2], known.get(match[2], set()) | supplemental,
                                                      prefix=text[max(0, match.start() - 12):match.start()],
                                                      quantum=quantum)
                      or bounded_by_registered(number, match[1], known.get(match[2], ()),
@@ -422,7 +457,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
             supported = derived.supports(
                 number, match[2], quantum, _paragraph_at(text, match.start()),
                 statement=_statement_at(text, match.start()),
-                claim=re.split(r'[。！？；;\n]', text[:match.end()])[-1],
+                claim=text_after_last_break(text, match.end()),
             ) or referenced_difference_matches(number_references.get(match.end()), catalog, number, match[2])
         if not supported and (number, match[2]) not in reported_values:
             reported_values.add((number, match[2]))
@@ -439,17 +474,18 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
     # 人次（就诊次数）写成人数：“门诊量35.3万人”。
     for match in PERSON_COUNT.finditer(text):
         number = Decimal(match["number"].replace(",", ""))
-        quantum = Decimal(1).scaleb(-(len(match["number"].split(".")[1]) if "." in match["number"] else 0))
+        digits = _written_digits(match["number"])
         visit_unit = "万人次" if match["scale"] else "人次"
-        if (any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get(visit_unit, ()))
-                and not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in known.get("人", ()))):
+        if known_contains(visit_unit, digits, number) and not known_contains("人", digits, number):
             warnings.append(f"单位混用：{match[0]}对应登记的{visit_unit}（就诊次数），不是人数；请写为{match['number']}{visit_unit}。")
     # 自写表格把单位写在表头、单元格只写数字：按表头单位同样核对。
     for _start, _end, number_text, unit in table_unit_cells(text):
         number = Decimal(number_text.replace(",", ""))
-        quantum = Decimal(1).scaleb(-(len(number_text.split(".")[1]) if "." in number_text else 0))
-        candidates = known.get(unit, set()) | known.get(PERCENT_POINT if unit == "%" else unit, set()) | supplemental
-        if (not any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in candidates)
+        digits = _written_digits(number_text)
+        supported = (known_contains(unit, digits, number)
+                     or known_contains(PERCENT_POINT if unit == "%" else unit, digits, number)
+                     or rounded_index.contains("supplemental", supplemental, digits, number))
+        if (not supported
                 and (number, unit) not in reported_values):
             reported_values.add((number, unit))
             warnings.append(
@@ -492,7 +528,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
             supported = derived.supports(
                 number, PERCENT_POINT, quantum, _paragraph_at(text, match.start()),
                 statement=_statement_at(text, match.start()),
-                claim=re.split(r'[。！？；;\n]', text[:match.end()])[-1],
+                claim=text_after_last_break(text, match.end()),
             ) or referenced_difference_matches(number_references.get(match.end()), catalog, number, PERCENT_POINT)
             if not supported:
                 warnings.append(
@@ -501,9 +537,10 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
                 )
             continue
         number = abs(number)
+        digits = _written_digits(match[1])
         if not points and not pairwise:
             continue
-        if any(value.quantize(quantum, rounding=ROUND_HALF_UP) == number for value in points):
+        if rounded_index.contains("points", points, digits, number):
             continue
         if percent_point_written_for_rate(match, text, change_rates, points, rate_level_percents):
             warnings.append(
@@ -511,9 +548,11 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
                 "百分点只用于两项百分数之差。"
             )
             continue
-        if pairwise and not any(
-            abs(left - right).quantize(quantum, rounding=ROUND_HALF_UP) == number
-            for index, left in enumerate(percents) for right in percents[index + 1:]
+        if pairwise and not rounded_index.contains(
+            "percent-differences",
+            (abs(left - right) for index, left in enumerate(percents) for right in percents[index + 1:]),
+            digits,
+            number,
         ):
             warnings.append(
                 f"百分点差值缺少可核对的冻结依据：{match[0]}。须由两项已登记百分数相减得到，"
