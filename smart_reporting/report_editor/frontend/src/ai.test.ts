@@ -93,6 +93,24 @@ describe('selectionAIProvider', () => {
     expect(streamRewrite).toHaveBeenCalledWith('原始正文', 'polish', signal)
   })
 
+  it('rejects an empty selection with a user-facing message', async () => {
+    const streamRewrite = vi.fn(async function* () { yield '改写' })
+    const provider = selectionAIProvider({ streamRewrite })
+    const signal = new AbortController().signal
+    await expect(Array.fromAsync(provider({ document: '# 报告', selection: '  ', instruction: 'polish' }, signal)))
+      .rejects.toThrow('请先选择要改写的正文。')
+    expect(streamRewrite).not.toHaveBeenCalled()
+  })
+
+  it('rejects an instruction that maps to no preset with a user-facing message', async () => {
+    const streamRewrite = vi.fn(async function* () { yield '改写' })
+    const provider = selectionAIProvider({ streamRewrite })
+    const signal = new AbortController().signal
+    await expect(Array.fromAsync(provider({ document: '# 报告', selection: '原始正文', instruction: '把它写长一点' }, signal)))
+      .rejects.toThrow('请直接选择预设动作')
+    expect(streamRewrite).not.toHaveBeenCalled()
+  })
+
   it('exposes only the four report rewrite actions', () => {
     const actions: string[] = ['default-action']
     const builder = {
