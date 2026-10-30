@@ -213,13 +213,15 @@ def render_bound_numbers(
     markdown: str, contents, *, key: str, field_definitions=None,
     table_sources: Mapping[str, bytes] | None = None,
     assertions: Mapping[str, Any] | None = None,
+    number_selections_aligned: bool = False,
 ):
     contents = tuple(contents)
     table_sources = table_sources or {}
     table_derivations: dict[str, TableDerivationV1] = {}
     from .number_selection import align_number_selections
 
-    markdown, _ = align_number_selections(markdown, contents, field_definitions)
+    if not number_selections_aligned:
+        markdown, _ = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     calc_tokens = {match[0] for match in CALC_TOKEN.finditer(markdown)}
     evaluator = CalcEvaluator(contents) if calc_tokens else None

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -169,11 +169,16 @@ def review_content(markdown: str, contents: Iterable[str], *, field_definitions:
 
 def review_content_result(markdown: str, contents: Iterable[str], *, field_definitions: Mapping[str, str] | None = None,
                           fact_ids: Iterable[str] | None = None,
-                          bound_chart_ids: Iterable[str] = ()) -> ContentReviewResult:
+                          bound_chart_ids: Iterable[str] = (),
+                          number_selections_aligned: bool = False,
+                          documents: Sequence[Mapping[str, Any]] | None = None) -> ContentReviewResult:
     contents = tuple(contents)
-    from .number_selection import align_number_selections
+    if number_selections_aligned:
+        selection_warnings = ()
+    else:
+        from .number_selection import align_number_selections
 
-    _, selection_warnings = align_number_selections(markdown, contents, field_definitions)
+        _, selection_warnings = align_number_selections(markdown, contents, field_definitions)
     catalog = frozen_number_catalog(contents)
     # 编辑器复核的是用户可能手输的正文：全角数字与百分点缩写同样要识别。
     markdown = normalize_number_notation(trace_body(markdown, mask_inline_code=False))
@@ -213,7 +218,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         return ""
 
     text = re.sub(marker_pattern, strip_marker, marked)
-    documents = _documents(contents)
+    documents = documents if documents is not None else _documents(contents)
     warnings = [*selection_warnings, *money_text_warnings(text)]
     from ..hospital_operation.professional_review import review_professional_content
 
@@ -247,7 +252,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         evaluator = calc_evaluator or CalcEvaluator(contents)
         aggregations = {
             item.get("factId"): item.get("periodAggregation")
-            for document in _documents(contents)
+            for document in documents
             for item in (*(document.get("metrics") or ()), *(document.get("breakdowns") or ()))
         }
         for match in CALC_TOKEN.finditer(markdown):

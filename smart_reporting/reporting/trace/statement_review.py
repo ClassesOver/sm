@@ -34,12 +34,14 @@ def statement_review_warnings(
     field_definitions: Mapping[str, str] | None = None,
     table_sources: Mapping[str, bytes] | None = None,
     assertions: Mapping[str, Any] | None = None,
+    number_selections_aligned: bool = False,
 ) -> list[str]:
     """返回与编辑器语句核对一致的提醒（附所在语句）；全部一致时返回空列表。"""
     contents = tuple(contents)
     rendered, references, notices = render_bound_numbers(
         markdown, contents, key="statement-review", field_definitions=field_definitions,
         table_sources=table_sources, assertions=assertions,
+        number_selections_aligned=number_selections_aligned,
     )[:3]
     if not references:
         return []
