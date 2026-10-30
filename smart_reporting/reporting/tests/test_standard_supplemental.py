@@ -93,7 +93,7 @@ def test_cross_dataset_comparison_keeps_inputs_separate_and_checks_authorization
             run_standard_supplemental(**kwargs)
         return
     result = run_standard_supplemental(**kwargs)
-    assert result['findings'][0]['rows'] == [['A', 100.0, 50.0, 50.0, 1.0, 1.0]]
+    assert result['findings'][0]['rows'] == [['A', 100.0, 50.0, 50.0, 1.0, 1.0, 1]]
     assert all(item['passed'] for item in result['reconciliations'])
     assert result['warnings'] == []
 
@@ -189,7 +189,7 @@ def test_large_offsets_keep_same_exact_group_totals_as_frozen_facts(operation, v
     if operation == "group_summary":
         assert row == ["内科", 1.0, 1, 1.0]
     else:
-        assert row == ["内科", 1.0, 2.0, -1.0, -0.5, 1.0]
+        assert row == ["内科", 1.0, 2.0, -1.0, -0.5, 1.0, 1]
     assert all(item["passed"] for item in payload["reconciliations"])
 
 
@@ -203,9 +203,9 @@ def test_comparison_keeps_missing_baseline_group_as_warning_and_null_rate():
     )
 
     finding = payload["findings"][0]
-    assert finding["columns"] == ["department", "current", "baseline", "change", "changeRate", "contribution"]
-    assert finding["rows"] == [["内科", 130.0, 50.0, 80.0, 1.6, pytest.approx(80 / 150)],
-                               ["外科", 70.0, None, None, None, None]]
+    assert finding["columns"] == ["department", "current", "baseline", "change", "changeRate", "contribution", "rank"]
+    assert finding["rows"] == [["内科", 130.0, 50.0, 80.0, 1.6, pytest.approx(80 / 150), 1],
+                               ["外科", 70.0, None, None, None, None, 2]]
     assert any("外科" in warning for warning in payload["warnings"])
     assert payload["reconciliations"][0]["passed"] is True
     assert payload["reconciliations"][1]["passed"] is False
@@ -219,7 +219,7 @@ def test_comparison_keeps_baseline_only_group_unknown_instead_of_zero():
         csv_content="period,department,amount\n2024-01,内科,50\n".encode(),
         request=request("period_comparison", parent_total=0.0),
     )
-    assert payload["findings"][0]["rows"] == [["内科", None, 50.0, None, None, None]]
+    assert payload["findings"][0]["rows"] == [["内科", None, 50.0, None, None, None, 1]]
     assert any("缺少本期" in warning for warning in payload["warnings"])
 
 

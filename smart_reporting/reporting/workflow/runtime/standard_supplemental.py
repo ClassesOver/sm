@@ -105,11 +105,8 @@ class StandardSupplementalRequest(BaseModel):
             or self.operation == "group_period_series" and self.include_period_change
         ):
             raise ValueError("只有比较计算接受 changeRateDenominator")
-        if self.rank_by != "absolute_change_desc" and not (
-            self.operation == "group_period_comparison"
-            or self.operation == "period_comparison" and self.group_by_period
-        ):
-            raise ValueError("只有逐期比较接受 rankBy")
+        if self.rank_by != "absolute_change_desc" and self.operation not in {"group_period_comparison", "period_comparison"}:
+            raise ValueError("只有期间比较接受 rankBy")
         if self.include_period_change and self.operation != "group_period_series":
             raise ValueError("只有 group_period_series 接受 includePeriodChange")
         if self.include_marginal_shares and self.operation != "cross_group_summary":
@@ -237,11 +234,8 @@ class StandardSupplementalSpec(BaseModel):
             or self.operation == "group_period_series" and self.include_period_change
         ):
             raise ValueError("只有比较计算接受 changeRateDenominator")
-        if self.rank_by != "absolute_change_desc" and not (
-            self.operation == "group_period_comparison"
-            or self.operation == "period_comparison" and self.group_by_period
-        ):
-            raise ValueError("只有逐期比较接受 rankBy")
+        if self.rank_by != "absolute_change_desc" and self.operation not in {"group_period_comparison", "period_comparison"}:
+            raise ValueError("只有期间比较接受 rankBy")
         if self.include_period_change and self.operation != "group_period_series":
             raise ValueError("只有 group_period_series 接受 includePeriodChange")
         if self.include_marginal_shares and self.operation != "cross_group_summary":
@@ -328,8 +322,7 @@ def standard_output_columns(spec: StandardSupplementalSpec | StandardSupplementa
             "changeRate", "contribution", "rank", "baselineTotal", "totalChange",
         )
     elif spec.operation == "period_comparison":
-        derived = ("current", "baseline", "change", "changeRate", "contribution",
-                   *(("rank",) if spec.group_by_period else ()))
+        derived = ("current", "baseline", "change", "changeRate", "contribution", "rank")
     else:
         derived = ("numerator", "denominator", "difference", "ratio")
     sources = _standard_source_fields(spec)
@@ -579,6 +572,11 @@ def run_standard_supplemental(
             baseline_rows=baseline_rows,
             change_rate_denominator=request.change_rate_denominator,
         )
+        finding_rows.sort(key=lambda row: (
+            row[3] is None, -(abs(row[3]) if request.rank_by == "absolute_change_desc" else row[3])
+            if row[3] is not None else 0, row[0] is None, row[0] or "",
+        ))
+        finding_rows = [[*row, rank] for rank, row in enumerate(finding_rows, start=1)]
         if not finding_rows:
             warnings.append("当前期间与对照期间没有可比较的有效分组")
         reconciliations = [
@@ -588,6 +586,7 @@ def run_standard_supplemental(
         if any(not item["passed"] for item in reconciliations):
             warnings.append("期间比较结果与父指标总额不闭合，保留结果并产生软告警")
         column_meta = {
+            "rank": {"unit": "名"},
             "changeRate": {"unit": "%", "isPercent": False},
             "contribution": {"unit": "%", "isPercent": False},
         }
@@ -706,6 +705,8 @@ def run_standard_supplemental(
         }
     if request.change_rate_denominator != "signed":
         finding.setdefault("comparison", {})["changeRateDenominator"] = request.change_rate_denominator
+    if request.operation == "period_comparison" and not request.group_by_period and request.rank_by != "absolute_change_desc":
+        finding.setdefault("comparison", {})["rankBy"] = request.rank_by
     return {
         "findings": [finding],
         "reconciliations": compact_standard_reconciliations(reconciliations, request.output_name + "_checks"),
