@@ -208,6 +208,31 @@ def _state():
     return state
 
 
+@pytest.mark.parametrize('rank_by', ['absolute_change_desc', 'change_desc'])
+def test_cumulative_yoy_catalog_routes_required_ranking(rank_by):
+    state = _state()
+    catalog = standard_computation_catalog(
+        state.facts, state.instruction['datasets'], state.instruction['currentAnalysis']['periods'],
+    )
+    candidate = next(item for item in catalog['candidates']
+                     if item['standardComputation']['operation'] == 'period_comparison'
+                     and not item['standardComputation'].get('groupByPeriod'))
+    assert 'rank' in candidate['outputColumns']
+    spec = StandardSupplementalSpec.model_validate({
+        **candidate['standardComputation'], 'rankBy': rank_by,
+    })
+    requirement = state.decision.coding_requirements[0].model_copy(update={
+        'standard_computation': spec, 'standard_candidate_id': candidate['candidateId'],
+        'fields': tuple(candidate['fields']),
+        'required_columns': ('department', 'current', 'baseline', 'change', 'changeRate', 'contribution', 'rank'),
+    })
+    state.decision = state.decision.model_copy(update={'coding_requirements': (requirement,)})
+    selected, = AnalysisItemWorkflow._standard_plan(state)
+    assert selected.group_by_period is False
+    assert selected.rank_by == rank_by
+    assert selected.baseline_dataset_id == 'dataset_prior'
+
+
 def test_monthly_yoy_catalog_routes_a_complete_batch_without_inventing_a_script_spec():
     state = _state()
     catalog = standard_computation_catalog(

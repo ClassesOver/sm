@@ -101,7 +101,7 @@ def test_nondefault_options_survive_serialization_only_where_applicable(model, o
             model.model_validate(data)
 
     data = _model_data(model, operation, rankBy='change_desc')
-    if operation == 'group_period_comparison':
+    if operation in {'group_period_comparison', 'period_comparison'}:
         assert model.model_validate(data).model_dump(by_alias=True)['rankBy'] == 'change_desc'
     else:
         with pytest.raises(ValidationError):
@@ -190,6 +190,38 @@ def test_ranking_direction_breaks_ties_stably_and_keeps_signed_total_change(rank
     assert by_group['E']['change'] is None
     assert all(row['totalChange'] == -30 for row in rows)
     assert finding['comparison']['rankBy'] == rank_by
+
+
+@pytest.mark.parametrize('rank_by,expected', [
+    ('absolute_change_desc', ['B', 'A', 'C', 'D', 'E']),
+    ('change_desc', ['A', 'C', 'D', 'B', 'E']),
+])
+def test_window_comparison_ranks_changes_without_changing_contribution(rank_by, expected):
+    payload, finding, rows = _compute(
+        'period,group,amount\n'
+        '2026-01,D,0\n2026-01,C,0\n2026-01,B,50\n2026-01,A,0\n'
+        '2026-02,D,-10\n2026-02,C,10\n2026-02,B,10\n2026-02,A,10\n2026-02,E,0\n',
+        'period_comparison', parentTotal=20, baselineParentTotal=50, rankBy=rank_by,
+    )
+    assert [row['group'] for row in rows] == expected
+    assert [row['rank'] for row in rows] == [1, 2, 3, 4, 5]
+    by_group = {row['group']: row for row in rows}
+    assert by_group['A']['contribution'] == pytest.approx(-1 / 3)
+    assert by_group['B']['contribution'] == pytest.approx(4 / 3)
+    assert by_group['E']['change'] is None
+    assert finding['columnMeta']['rank']['unit'] == '名'
+    assert all(item['passed'] for item in payload['reconciliations'])
+
+
+def test_window_comparison_zero_total_change_keeps_contribution_unknown():
+    payload, _, rows = _compute(
+        'period,group,amount\n2026-01,A,10\n2026-01,B,20\n'
+        '2026-02,A,20\n2026-02,B,10\n',
+        'period_comparison', parentTotal=30, baselineParentTotal=30,
+    )
+    assert [(row['group'], row['rank']) for row in rows] == [('A', 1), ('B', 2)]
+    assert all(row['contribution'] is None for row in rows)
+    assert all(item['passed'] for item in payload['reconciliations'])
 
 
 def _comparison_state(**options):

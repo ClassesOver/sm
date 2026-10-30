@@ -474,7 +474,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
         assert record['parameters']['baselineDatasetId'] == 'dataset_prior'
         if mode != 'comparison_period':
             assert result['evidence'].findings[0]['rows'] == [
-                ['B', 20.0, 10.0, 10.0, 1.0, 2 / 3], ['A', 10.0, 5.0, 5.0, 1.0, 1 / 3],
+                ['B', 20.0, 10.0, 10.0, 1.0, 2 / 3, 1], ['A', 10.0, 5.0, 5.0, 1.0, 1 / 3, 2],
             ]
         assert workspace.read_counts['datasets/prior.csv'] == 1
 

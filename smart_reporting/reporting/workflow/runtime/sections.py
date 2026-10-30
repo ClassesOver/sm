@@ -562,7 +562,8 @@ def _section_block_input_token_budget(
     return reporting_request_input_hard_cap(
         configured_input_token_cap=configured_cap,
         model_id=model_id if isinstance(model_id, str) else None,
-        output_tokens=getattr(model, "max_tokens", None),
+        # 章节实际请求已限制为32K输出，预检须使用同一预留，不能沿用模板的64K。
+        output_tokens=min(positive_token_count(getattr(model, "max_tokens", None)) or 32 * 1024, 32 * 1024),
     )
 
 
@@ -765,6 +766,13 @@ def _compact_planning_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     projected['$defs'] = definitions
     projected['contextEncoding'] = '输入中的 $ref 使用 JSON Pointer 指向本输入 $defs 中的完整原值；规划前读取引用值。'
     return projected
+
+
+def _semantic_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """复用规划输入的无损引用编码，仅在实际缩小时启用，不裁剪语义背景。"""
+    compact = _compact_planning_payload(payload)
+    compact['contextEncoding'] = '输入中的 $ref 使用 JSON Pointer 指向本输入 $defs 中的完整原值；语义复核前展开引用，不得省略共同背景、否定与例外。'
+    return compact if len(_json_text(compact).encode('utf-8')) < len(_json_text(payload).encode('utf-8')) else payload
 
 
 def _controlled_assertions(contents: Sequence[str], payload: dict[str, Any], policy: Any) -> dict:
@@ -1513,9 +1521,11 @@ def _section_stage_agent(
         "retries": 0,
         "exponential_backoff": False,
     }
-    if response_validator is not None and getattr(agent, "model", None) is not None:
+    if getattr(agent, "model", None) is not None:
         stage_model = copy(agent.model)
-        setattr(stage_model, "_report_response_validator", response_validator)
+        stage_model.max_tokens = min(positive_token_count(stage_model.max_tokens) or 32 * 1024, 32 * 1024)
+        if response_validator is not None:
+            setattr(stage_model, "_report_response_validator", response_validator)
         update["model"] = stage_model
     return agent.deep_copy(update=update)
 
@@ -3196,7 +3206,7 @@ async def _interpret_section_claims(
         contexts[context_id] = context.replace('【当前数值引用】', '')
     items = []
     def batch_payload(batch):
-        return {
+        return _semantic_review_payload({
             'contexts': {item['contextId']: contexts[item['contextId']] for item in batch},
             'references': batch,
             'quantitySources': quantity_catalog.prompt_for(
@@ -3205,7 +3215,7 @@ async def _interpret_section_claims(
                 table_derivations=[table_derivations[item['claimId']] for item in batch
                                    if item['claimId'] in table_derivations],
             ),
-        }
+        })
 
     input_budget = None
     if getattr(agent, 'model', None) is not None:
@@ -3221,6 +3231,8 @@ async def _interpret_section_claims(
         batch_number += 1
         batch_started = time.monotonic()
         batch_status = 'failed'
+        model_elapsed_ms = None
+        request_tokens = None
         batch = references[start:start + 10]
         try:
             payload = batch_payload(batch)
@@ -3239,12 +3251,21 @@ async def _interpret_section_claims(
                 'report_claim_semantics_batch_started section={} batch={} processed={} total={} batch_size={}',
                 section_code, batch_number, start, len(references), len(batch),
             )
-            result = await _run_section_stage(
-                agent, SectionSemanticReview, 'semantics', payload,
-                scope=scope, run_context=run_context, thinking_request=_section_stage_thinking_request(
-                    thinking_request, 'semantics',
-                ), section_code=section_code, response_validator=_validated_section_semantic_review,
+            loguru_logger.info(
+                'report_claim_semantics_batch_prepared section={} batch={} input_tokens={} payload_bytes={} preparation_ms={}',
+                section_code, batch_number, request_tokens, len(_json_text(payload).encode('utf-8')),
+                round((time.monotonic() - batch_started) * 1000),
             )
+            model_started = time.monotonic()
+            try:
+                result = await _run_section_stage(
+                    agent, SectionSemanticReview, 'semantics', payload,
+                    scope=scope, run_context=run_context, thinking_request=_section_stage_thinking_request(
+                        thinking_request, 'semantics',
+                    ), section_code=section_code, response_validator=_validated_section_semantic_review,
+                )
+            finally:
+                model_elapsed_ms = round((time.monotonic() - model_started) * 1000)
             if not isinstance(result, SectionSemanticReview):
                 raise ValueError('semantic_review_output_invalid')
             batch_ids = {item['claimId'] for item in batch}
@@ -3257,6 +3278,10 @@ async def _interpret_section_claims(
             loguru_logger.warning('report_claim_semantics_unavailable section={} batch={} error={} issues={}',
                                  section_code, start, type(error).__name__, issues)
         start += len(batch)
+        loguru_logger.info(
+            'report_claim_semantics_batch_model_elapsed section={} batch={} model_ms={}',
+            section_code, batch_number, model_elapsed_ms,
+        )
         loguru_logger.info(
             'report_claim_semantics_batch_completed section={} batch={} processed={} total={} status={} elapsed_ms={}',
             section_code, batch_number, start, len(references), batch_status,
