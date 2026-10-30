@@ -6,7 +6,9 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, timedelta
 from decimal import Decimal, localcontext
 from typing import Any
@@ -249,6 +251,44 @@ def _shape(operands: tuple, rows: list, unit: str) -> bool:
     return False
 
 
+_SOURCE_CACHE: ContextVar[dict[tuple[str, bytes], Any] | None] = ContextVar(
+    "table_source_cache", default=None
+)
+
+
+@contextmanager
+def table_source_cache_scope() -> Iterator[None]:
+    """一次质量评估内复用来源字节的 Decimal 解析与摘要；解析结果只读，不跨请求保留。"""
+    if _SOURCE_CACHE.get() is not None:
+        yield
+        return
+    token = _SOURCE_CACHE.set({})
+    try:
+        yield
+    finally:
+        _SOURCE_CACHE.reset(token)
+
+
+def _decimal_document(raw: bytes) -> Any:
+    cache = _SOURCE_CACHE.get()
+    if cache is None:
+        return json.loads(raw, parse_float=Decimal, object_pairs_hook=_object)
+    key = ("decimal", raw)
+    if key not in cache:
+        cache[key] = json.loads(raw, parse_float=Decimal, object_pairs_hook=_object)
+    return cache[key]
+
+
+def _source_sha256(raw: bytes) -> str:
+    cache = _SOURCE_CACHE.get()
+    if cache is None:
+        return hashlib.sha256(raw).hexdigest()
+    key = ("sha256", raw)
+    if key not in cache:
+        cache[key] = hashlib.sha256(raw).hexdigest()
+    return cache[key]
+
+
 def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tuple[str, dict] | None:
     from ..units import unit_conversion_scale
 
@@ -272,7 +312,7 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
     raw = sources[resource_id]
     if not isinstance(raw, bytes):
         return None
-    document = json.loads(raw, parse_float=Decimal, object_pairs_hook=_object)
+    document = _decimal_document(raw)
     table = _pointer(document, pointer)
     if not isinstance(table, dict):
         return None
@@ -325,7 +365,7 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
         return None
     # A revision may move the authorized file without changing its evidence.
     # Resource IDs remain mandatory read capabilities, but are not proof identity.
-    digest = hashlib.sha256(raw).hexdigest()
+    digest = _source_sha256(raw)
     token = "{{tableDerived:v2:" + canonical_sha256({
         "ruleVersion": "table-linear/2",
         "unit": derivation.unit,
@@ -383,13 +423,13 @@ def _resolve_population(derivation: TableDerivationV1, sources: Mapping[str, byt
     if len(identities) != 1:
         return None
     resource, pointer = next(iter(identities))
-    document = json.loads(sources[resource], parse_float=Decimal, object_pairs_hook=_object)
+    document = _decimal_document(sources[resource])
     table = _pointer(document, pointer)
     proof = table.get('populationProof') if isinstance(table, dict) else None
     if not isinstance(proof, dict) or canonical_sha256(proof) != derivation.population_proof_sha256:
         return None
     parent_raw = sources[ref.file_resource_id]
-    parent_document = json.loads(parent_raw, parse_float=Decimal, object_pairs_hook=_object)
+    parent_document = _decimal_document(parent_raw)
     parent = _pointer(parent_document, ref.json_pointer)
     if (not isinstance(parent, dict) or parent_document.get('analysisId') != ref.analysis_id
             or parent.get('factId') != ref.fact_key or proof.get('populationFactId') != ref.fact_key
@@ -455,7 +495,7 @@ def _resolve_population(derivation: TableDerivationV1, sources: Mapping[str, byt
     return '{{tableDerived:v2:' + canonical_sha256({
         'ruleVersion': 'table-population/1', 'valueToken': token,
         'populationProofSha256': derivation.population_proof_sha256,
-        'populationSourceSha256': hashlib.sha256(parent_raw).hexdigest(),
+        'populationSourceSha256': _source_sha256(parent_raw),
         'topSelection': derivation.top_selection, 'topLimit': derivation.top_limit,
     }) + '}}', {**view, 'populationProof': proof, 'topSelection': derivation.top_selection,
                'topLimit': derivation.top_limit}
@@ -469,7 +509,7 @@ def _resolve_share(derivation: TableDerivationV1, sources: Mapping[str, bytes]) 
     if ref is None or derivation.unit != '%' or ref.fact_kind != 'metric' or not ref.fact_key:
         return None
     raw = sources[ref.file_resource_id]
-    document = json.loads(raw, parse_float=Decimal, object_pairs_hook=_object)
+    document = _decimal_document(raw)
     entry = _pointer(document, ref.json_pointer)
     if (not isinstance(entry, dict) or document.get('analysisId') != ref.analysis_id
             or entry.get('factId') != ref.fact_key or entry.get('aggregation') != 'sum'
@@ -482,8 +522,7 @@ def _resolve_share(derivation: TableDerivationV1, sources: Mapping[str, bytes]) 
         return None
     numerator = derivation.model_copy(update={'unit': unit, 'denominator_fact': None})
     for operand in derivation.operands:
-        table_document = json.loads(sources[operand.file_resource_id], parse_float=Decimal,
-                                    object_pairs_hook=_object)
+        table_document = _decimal_document(sources[operand.file_resource_id])
         table = _pointer(table_document, operand.table_pointer)
         if not isinstance(table.get('scope', table_document.get('scope')), dict):
             return None
@@ -500,8 +539,8 @@ def _resolve_share(derivation: TableDerivationV1, sources: Mapping[str, bytes]) 
         # Recompute from source decimals rather than a rounded percentage cell.
         numerator_value = Decimal(0)
         for operand in derivation.operands:
-            table = _pointer(json.loads(sources[operand.file_resource_id], parse_float=Decimal,
-                                        object_pairs_hook=_object), operand.table_pointer)
+            table = _pointer(_decimal_document(sources[operand.file_resource_id]),
+                             operand.table_pointer)
             operand_value = _number(table['rows'][operand.row_index][operand.column_index])
             if operand_value is None:
                 return None
@@ -513,7 +552,7 @@ def _resolve_share(derivation: TableDerivationV1, sources: Mapping[str, bytes]) 
         'ruleVersion': 'table-fact-share/1', 'numeratorToken': numerator_token,
         'denominatorFact': {key: value for key, value in ref.model_dump(mode='json', by_alias=True).items()
                             if key != 'fileResourceId'},
-        'denominatorSha256': hashlib.sha256(raw).hexdigest(),
+        'denominatorSha256': _source_sha256(raw),
     }) + '}}'
     return token, {**view, 'value': value, 'unit': '%', 'selector': 'tableDerived',
                    'formula': f'({view["formula"]}) / ({total}) * 100',

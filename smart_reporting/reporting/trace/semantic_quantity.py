@@ -29,6 +29,7 @@ from .table_sources import (
     resolve_table_derivation,
     table_derivation_token,
     table_semantics,
+    table_source_cache_scope,
 )
 
 
@@ -45,6 +46,8 @@ class QuantityCatalog:
                  field_definitions: Mapping[str, str] | None = None):
         self.resolver = NumberReferenceResolver(contents)
         self.sources = dict(table_sources)
+        self._source_digests: dict[str, str] = {}
+        self._plain_documents: dict[str, Any] = {}
         self.prompt: list[dict[str, Any]] = []
         self._sources: dict[str, dict[str, Any]] = {}
         self._table_contexts = table_contexts or {}
@@ -222,7 +225,9 @@ class QuantityCatalog:
                                     if isinstance(meta, Mapping) and any(key in meta for key in
                                         ('periods', 'periodStart', 'periodEnd', 'scope', 'periodRoles'))
                                     else semantics)
-                source_id = _identity('table', hashlib.sha256(raw).hexdigest(), pointer, str(column))
+                if resource not in self._source_digests:
+                    self._source_digests[resource] = hashlib.sha256(raw).hexdigest()
+                source_id = _identity('table', self._source_digests[resource], pointer, str(column))
                 descriptor = {'sourceId': source_id, 'kind': 'table_column', 'tablePointer': pointer,
                               'column': name, 'label': node.get('name') or node.get('title'),
                               'rowLabels': labels, 'unit': unit, 'scope': column_semantics['scope'],
@@ -360,8 +365,10 @@ class QuantityCatalog:
             derivation = derivation.model_copy(update={'population_fact': population_ref,
                 'population_proof_sha256': canonical_sha256(source['population']),
                 'top_selection': item.selection, 'top_limit': item.limit})
-        token = table_derivation_token(derivation, self.sources)
-        view = resolve_table_derivation(token, derivation, self.sources) if token else None
+        # 签发与回读同一派生，共用一次来源解析。
+        with table_source_cache_scope():
+            token = table_derivation_token(derivation, self.sources)
+            view = resolve_table_derivation(token, derivation, self.sources) if token else None
         if view is None:
             return None
         return QuantityBinding(token, view, format_fact_value(view['value'], unit, unit), derivation)
@@ -371,9 +378,13 @@ class QuantityCatalog:
         candidates = []
         merged = entry
         for resource, raw in self.sources.items():
-            try:
-                document = json.loads(raw)
-            except (ValueError, TypeError):
+            if resource not in self._plain_documents:
+                try:
+                    self._plain_documents[resource] = json.loads(raw)
+                except (ValueError, TypeError):
+                    self._plain_documents[resource] = None
+            document = self._plain_documents[resource]
+            if document is None:
                 continue
             if not isinstance(document, dict):
                 continue
