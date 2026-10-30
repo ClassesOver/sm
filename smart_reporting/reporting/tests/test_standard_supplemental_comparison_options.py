@@ -213,7 +213,7 @@ def _comparison_state(**options):
 @pytest.mark.parametrize('option', [
     {'changeRateDenominator': 'absolute'}, {'rankBy': 'change_desc'},
 ])
-def test_candidate_identity_rejects_conflicting_explicit_comparison_options(option):
+def test_candidate_accepts_supported_explicit_comparison_options(option):
     state = _comparison_state(**option)
     candidate = next(item for item in standard_computation_candidates(
         state.facts, state.instruction['datasets'], requested_periods=('2026-02',),
@@ -226,7 +226,8 @@ def test_candidate_identity_rejects_conflicting_explicit_comparison_options(opti
     })
     state.decision = state.decision.model_copy(update={'coding_requirements': (requirement,)})
 
-    assert AnalysisItemWorkflow._standard_plan(state) == ()
+    spec, = AnalysisItemWorkflow._standard_plan(state)
+    assert spec.model_dump(by_alias=True)[next(iter(option))] == next(iter(option.values()))
 
 
 @pytest.mark.parametrize('fault', ['fields', 'dataset', 'scope', 'frozen_period', 'analysis_window'])

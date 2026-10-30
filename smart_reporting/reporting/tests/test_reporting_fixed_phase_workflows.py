@@ -52,6 +52,7 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     SupplementalEvidence,
     _AnalysisItemState,
     _validate_coding_requirements,
+    require_preserved_standard_evidence,
 )
 from smart_reporting.reporting.workflow.runtime.base import (
     REPORT_ARTIFACTS_STATE_KEY,
@@ -561,7 +562,8 @@ async def test_standard_supplemental_route_skips_code_generation() -> None:
 
 
 @pytest.mark.anyio
-async def test_standard_supplemental_failure_falls_back_to_signed_script() -> None:
+@pytest.mark.parametrize("mixed", [False, True])
+async def test_standard_supplemental_failure_falls_back_to_signed_script(mixed) -> None:
     run_code = AsyncMock(
         return_value=CodeGenerationResult(
             script_file=FileIdentity(path="analysis/analysis_001/supplement.py", size=1, sha256="b" * 64),
@@ -584,6 +586,10 @@ async def test_standard_supplemental_failure_falls_back_to_signed_script() -> No
         run_standard_supplemental=run_standard_supplemental,
     )
     state = _standard_analysis_state()
+    if mixed:
+        first = state.decision.coding_requirements[0]
+        remaining = first.model_copy(update={"output_name": "complex", "standard_computation": None})
+        state.decision = state.decision.model_copy(update={"coding_requirements": (first, remaining)})
 
     result = await workflow._execute_script(state, _context())
 
@@ -591,6 +597,88 @@ async def test_standard_supplemental_failure_falls_back_to_signed_script() -> No
     assert state.server_computation_record is None
     assert any("report_analysis_standard_fallback" in warning for warning in state.warnings)
     run_code.assert_awaited_once()
+    task = run_code.await_args.kwargs["task_facts"]
+    assert len(task["codingRequirements"]) == (2 if mixed else 1)
+    assert "standardEvidenceFile" not in task
+
+
+@pytest.mark.anyio
+async def test_mixed_supplement_reuses_standard_results_for_remaining_script():
+    state = _standard_analysis_state()
+    first = state.decision.coding_requirements[0]
+    remaining = first.model_copy(update={"output_name": "complex", "standard_computation": None})
+    state.decision = state.decision.model_copy(update={"coding_requirements": (first, remaining)})
+    evidence_file = FileIdentity(
+        path="analysis/analysis_001/standard/supplement.json", size=2, sha256="a" * 64,
+    )
+    server = AsyncMock(return_value={
+        "evidence": _standard_evidence(), "evidenceFile": evidence_file,
+        "computationRecord": {"method": "supplemental_standard_group_summary"},
+    })
+    code = AsyncMock(return_value=CodeGenerationResult(
+        script_file=FileIdentity(path="analysis/analysis_001/supplement.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt(
+            "analysis/analysis_001/supplement.py", 1, "b" * 64,
+            ("analysis/analysis_001/supplement.json",),
+        ),
+    ))
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(), run_code=code, summarize=AsyncMock(),
+        read_file=AsyncMock(), complete=AsyncMock(), run_standard_supplemental=server,
+    )
+
+    result = await workflow._execute_script(state, _context())
+
+    assert result.content["status"] == "executed"
+    assert server.await_args.kwargs["state"].decision.coding_requirements == (first,)
+    assert server.await_args.kwargs["state"].instruction["analysisOutputRoot"].endswith("/standard")
+    task = code.await_args.kwargs["task_facts"]
+    assert [item["outputName"] for item in task["codingRequirements"]] == ["complex"]
+    assert task["standardEvidenceFile"] == evidence_file.model_dump(mode="json", by_alias=True)
+    assert state.decision.coding_requirements == (first, remaining)
+
+    # 脚本重试只补剩余需求，不重复执行已经成功的标准计算。
+    state.failure = ReportingError("report_code_failed", "复杂计算失败")
+    await workflow._execute_script(state, _context())
+    server.assert_awaited_once()
+    assert [item["outputName"] for item in code.await_args.kwargs["task_facts"]["codingRequirements"]] == ["complex"]
+
+    # 余下脚本耗尽时仍保留已经成功的标准补证。
+    state.failure = ReportingError("report_code_failed", "复杂计算失败")
+    workflow._abandon_supplement(state)
+    assert state.evidence == _standard_evidence()
+    assert state.evidence_file == evidence_file
+    assert state.server_computation_record["method"] == "supplemental_standard_group_summary"
+    assert state.execution_receipt is None
+
+    workflow.summarize.return_value = AnalysisSummaryDraft(summary="标准结果已保留，复杂计算未完成", warnings=())
+    workflow.complete.return_value = {"status": "accepted", "taskFinished": True}
+    state.instruction["deterministicFacts"] = {}
+    await workflow._complete_analysis(state, _context())
+    assert workflow.complete.await_args.kwargs["evidencePaths"] == [evidence_file.path]
+    assert workflow.complete.await_args.kwargs["_server_computation_record"] == state.standard_computation_record
+
+
+@pytest.mark.parametrize("changed", ["findings", "reconciliations", "warnings", None])
+def test_mixed_evidence_requires_unchanged_standard_results(changed):
+    standard = _standard_evidence().model_copy(update={"warnings": ("保留预算口径告警",)})
+    payload = standard.model_dump(mode="json", by_alias=True)
+    payload["findings"].append({"name": "complex", "columns": ["value"], "rows": [[2.0]]})
+    payload["reconciliations"].append({"name": "complex_total", "passed": False})
+    payload["warnings"].append("新增计算告警")
+    if changed == "findings":
+        payload["findings"][0]["rows"][0][1] = 999
+    elif changed == "reconciliations":
+        payload["reconciliations"][0]["passed"] = False
+    elif changed == "warnings":
+        payload["warnings"].remove("保留预算口径告警")
+    evidence = SupplementalEvidence.model_validate(payload)
+    if changed is None:
+        require_preserved_standard_evidence(evidence, standard)
+    else:
+        with pytest.raises(ReportingError) as error:
+            require_preserved_standard_evidence(evidence, standard)
+        assert error.value.code == "report_analysis_standard_evidence_changed"
 
 
 @pytest.mark.anyio
@@ -2607,8 +2695,8 @@ async def test_section_generation_plans_then_renders_each_block_serially(
         (item.operation, item.enabled, item.thinking_budget, item.attempt) for item in decisions
     ] == [
         ("section_planning", True, 2048, 0),
-        ("section_generation", False, 0, 0),
-        ("section_generation", False, 0, 0),
+        ("section_generation", True, 2048, 0),
+        ("section_generation", True, 2048, 0),
     ]
     assert isinstance(result, RenderSectionDecision)
     assert tuple(block.block_id for block in result.blocks) == ("block_001", "block_002")
@@ -2773,10 +2861,23 @@ def test_section_block_does_not_inherit_outer_plan_recovery() -> None:
     block_request = reporting_sections._section_stage_thinking_request(recovery_request, "block-1")
 
     assert select_reporting_thinking(plan_request).thinking_budget == 2048
-    assert select_reporting_thinking(block_request).thinking_budget == 0
+    assert select_reporting_thinking(block_request).thinking_budget == 2048
     assert block_request.operation == "section_generation"
     assert block_request.attempt == 0
     assert block_request.failure_kind is None
+
+
+@pytest.mark.parametrize("stage", ["content", "block-1", "semantics"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_section_generation_thinking_respects_switch_with_explicit_planner_effort(stage, enabled):
+    request = ThinkingRequest(
+        operation="section_generation", thinking_enabled=enabled, reasoning_effort="high",
+    )
+    stage_request = reporting_sections._section_stage_thinking_request(request, stage)
+    decision = select_reporting_thinking(stage_request)
+    assert decision.enabled is enabled
+    assert decision.thinking_budget == (2048 if enabled else 0)
+    assert stage_request.reasoning_effort is None
 
 
 @pytest.mark.parametrize(

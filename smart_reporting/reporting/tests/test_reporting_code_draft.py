@@ -259,6 +259,16 @@ def test_plotly_io_writers_take_path_from_second_argument():
     assert _referenced_literal_paths(tree) == declared
 
 
+def test_referenced_literal_paths_accepts_first_argument_path_calls():
+    import ast
+
+    from smart_reporting.reporting.code_agent.toolkit import _referenced_literal_paths
+
+    tree = ast.parse('open("analysis/supplement.json", "w")')
+
+    assert _referenced_literal_paths(tree) == {"analysis/supplement.json"}
+
+
 @pytest.mark.anyio
 async def test_formal_script_edit_failures_do_not_discard_draft(binding, runtime):  # noqa: F811
     toolkit = _toolkit(binding, runtime)

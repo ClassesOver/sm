@@ -313,11 +313,10 @@ def _literal_string(
     return None
 
 
-def _call_path_arguments(call: ast.Call, qualified_name: str) -> list[ast.AST]:
-    """调用中承载路径的实参：按签名取位置参数，并加上路径关键字参数。"""
+def _call_path_arguments(call: ast.Call) -> list[ast.AST]:
+    """调用中承载路径的实参：当前支持的调用均以首个位置参数传路径。"""
 
-    position = _PATH_ARGUMENT_POSITION.get(qualified_name, 0)
-    arguments: list[ast.AST] = [*call.args[position : position + 1]]
+    arguments: list[ast.AST] = call.args[:1]
     arguments.extend(
         keyword.value for keyword in call.keywords if keyword.arg in _PATH_ARGUMENT_KEYWORDS
     )
@@ -328,7 +327,7 @@ def _path_arguments(call: ast.Call, qualified_name: str) -> tuple[ast.AST, ...]:
     method_name = qualified_name.rsplit(".", 1)[-1]
     if qualified_name not in _PATH_ARGUMENT_CALLS and method_name not in _PATH_ARGUMENT_METHODS:
         return ()
-    return tuple(_call_path_arguments(call, qualified_name))
+    return tuple(_call_path_arguments(call))
 
 
 def _normalize_literal_path(value: str) -> str:
@@ -442,7 +441,7 @@ def _declared_output_write_paths(tree: ast.AST, declared_paths: frozenset[str]) 
                 resolved = _resolved_path_literal(node.func.value, aliases, bindings)
                 if resolved in declared_paths:
                     found.add(resolved)
-            for argument in _call_path_arguments(node, qualified_name):
+            for argument in _call_path_arguments(node):
                 resolved = _resolved_path_literal(argument, aliases, bindings)
                 if resolved in declared_paths:
                     found.add(resolved)
@@ -3268,19 +3267,16 @@ class ReportingCodeModeToolkit(Toolkit):
             receipts.extend(chunk_receipts)
         if failures:
             return self._aggregate_view_failures(failures, receipts, fresh_review_count)
-        skipped = {"skippedInteractivePaths": skipped_paths} if skipped_paths else {}
         if len(normalized_paths) == 1:
             return {
                 "ok": True,
                 "receipt": receipts[0],
                 "freshReviewCount": fresh_review_count,
-                **skipped,
             }
         return {
             "ok": True,
             "receipts": receipts,
             "freshReviewCount": fresh_review_count,
-            **skipped,
         }
 
     @staticmethod

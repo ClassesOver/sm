@@ -67,6 +67,7 @@ from .analysis_item_workflow import (
     SupplementalEvidence,
     _project_analysis_summary_payload,
     empty_supplemental_evidence_error,
+    require_preserved_standard_evidence,
     supplemental_evidence_schema_error,
     validate_supplemental_evidence,
 )
@@ -3708,6 +3709,18 @@ class RuntimeAnalysisMixin:
             evidence_path = str(task_facts.get("evidencePath") or "")
             if not evidence_path:
                 raise ReportingError("report_phase_contract_invalid", "补充分析缺少 evidencePath。")
+            standard_file = None
+            standard_evidence = None
+            if task_facts.get("standardEvidenceFile") is not None:
+                standard_file = FileIdentity.model_validate(task_facts["standardEvidenceFile"])
+                standard_content = await self._read_identity_bytes(
+                    str(self._scope(parent_run_context)["threadId"]), standard_file,
+                    max_bytes=MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
+                )
+                standard_evidence = validate_supplemental_evidence(
+                    standard_content, task_facts.get("currentAnalysis") or {},
+                )
+                dataset_paths = (*dataset_paths, standard_file.path)
             coding_context = ReportingCodingTaskContext(
                 task_id=str(task_id),
                 task_kind="analysis",
@@ -3736,10 +3749,17 @@ class RuntimeAnalysisMixin:
                 )
                 current = task_facts.get("currentAnalysis")
                 try:
-                    validate_supplemental_evidence(
+                    evidence = validate_supplemental_evidence(
                         content,
                         current if isinstance(current, Mapping) else {},
                     )
+                    if standard_evidence is not None:
+                        # 身份核验使用服务端签发文件，模型不能通过改写标准输入绕过结果保护。
+                        await self._read_identity_bytes(
+                            str(self._scope(parent_run_context)["threadId"]), standard_file,
+                            max_bytes=MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
+                        )
+                        require_preserved_standard_evidence(evidence, standard_evidence)
                 except ValidationError as error:
                     rejection = supplemental_evidence_schema_error(error)
                     return {
@@ -3747,6 +3767,8 @@ class RuntimeAnalysisMixin:
                         "message": rejection.message,
                         "details": rejection.details,
                     }
+                except ReportingError as error:
+                    return {"code": error.code, "message": error.message, "details": error.details}
                 return None
 
             with bind_reporting_thinking(decision):

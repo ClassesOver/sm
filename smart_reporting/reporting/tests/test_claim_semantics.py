@@ -583,6 +583,10 @@ async def test_semantic_batches_keep_full_context_and_isolate_failed_or_foreign_
             f'独立项目{index}收入{{{{value:fact-aaaaaaaaaaaaaaaa:total:元}}}}。', frozen, key=f'batch-{index}')
         blocks.append(ReportDraftBlock(blockId=f'b{index}', markdown=markdown, numberReferences=refs))
     calls = []
+    progress = []
+    monkeypatch.setattr(sections, 'loguru_logger', SimpleNamespace(
+        info=lambda message, *args: progress.append((message, args)), warning=lambda *_: None,
+    ))
 
     async def review(agent, schema, stage, payload, **kwargs):
         calls.append(payload)
@@ -607,6 +611,10 @@ async def test_semantic_batches_keep_full_context_and_isolate_failed_or_foreign_
     reviewed = [number.semantic_receipt is not None for block in result for number in block.number_references]
     assert reviewed == [True] * 10 + [False] * 10 + [True]
     assert sum(len(item['references']) for item in calls) == 21
+    finished = [args for message, args in progress if 'report_claim_semantics_batch_completed' in message]
+    assert [(args[1], args[2], args[3], args[4]) for args in finished] == [
+        (1, 10, 21, 'completed'), (2, 20, 21, 'failed'), (3, 21, 21, 'completed'),
+    ]
 
 
 @pytest.mark.anyio

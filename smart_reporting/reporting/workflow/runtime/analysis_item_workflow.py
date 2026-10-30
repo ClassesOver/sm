@@ -6,7 +6,7 @@ import json
 import math
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import perf_counter
 from typing import Any
 
@@ -170,8 +170,11 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
             "每个 finding 用 metricCodes 声明其实际使用的指标，逐项来自本分析的 allowedMetricCodes；"
             "不得把所有允许指标无差别填写。展示标题另用简体中文 title，不把 outputName 当表题。"
             "表格用 rowKeyColumns 声明共同标识每行的全部列（如期间和科室），包括数字型编码列。",
-            "表格 finding 可选 columnMeta：{列名: {unit, isPercent, periodRole}}；"
+            "表格 finding 用 columnMeta：{列名: {unit, isPercent, periodRole}} 登记已知度量元数据；"
+            "每个金额或数量列有已登记单位时必须逐列保留，不能只给百分比列登记单位。"
             "isPercent=true 表示已乘 100，periodRole 取 current/prior/change；不确定时省略。",
+            "同一列混合不同量纲时不能统一标注单位；按已登记指标及单位拆成独立表，"
+            "保留期间、指标身份和全部原始值，不按标题或列名猜测单位。",
             "嵌套tables中的每张columns+rows表自行声明columnMeta；父对象元数据不自动继承。"
             "已计算的百分数列在本表声明unit='%'和isPercent=true。金额单位只能沿用"
             "existingFacts内对应指标已登记的unit；unit为空时保留原始金额且不声明元、万元或亿元。",
@@ -261,6 +264,21 @@ def empty_supplemental_evidence_error(evidence: SupplementalEvidence) -> Reporti
         "请对照 profile 中该字段的 topValues 实际取值修正筛选后重新运行。",
         details={"emptyTables": empty_tables, "zeroSidedReconciliations": zero_sides[:20]},
     )
+
+
+def require_preserved_standard_evidence(
+    evidence: SupplementalEvidence, standard: SupplementalEvidence,
+) -> None:
+    """混合补证必须原样保留宿主已经核验的标准结果。"""
+    if (
+        evidence.findings[:len(standard.findings)] != standard.findings
+        or evidence.reconciliations[:len(standard.reconciliations)] != standard.reconciliations
+        or not set(standard.warnings).issubset(evidence.warnings)
+    ):
+        raise ReportingError(
+            "report_analysis_standard_evidence_changed",
+            "脚本必须原样保留标准补证的 findings、reconciliations 和 warnings，再追加剩余结果。",
+        )
 
 
 def supplemental_evidence_schema_error(error: ValidationError) -> ReportingError:
@@ -1007,6 +1025,10 @@ class _AnalysisItemState:
     script_file: FileIdentity | None = None
     execution_receipt: ExecutionReceipt | None = None
     server_computation_record: dict[str, Any] | None = None
+    standard_evidence: SupplementalEvidence | None = None
+    standard_evidence_file: FileIdentity | None = None
+    standard_computation_record: dict[str, Any] | None = None
+    standard_requirement_indices: tuple[int, ...] = ()
     repair_diagnostic: Mapping[str, Any] | None = None
     failure: Exception | None = None
     warnings: list[str] = field(default_factory=list)
@@ -1323,7 +1345,7 @@ class AnalysisItemWorkflow:
                 "catalogIsExhaustive": False,
                 "candidateLimit": STANDARD_CANDIDATE_LIMIT,
                 "candidateBytesLimit": STANDARD_CANDIDATE_BYTES,
-                "batchRouting": "all_or_script",
+                "batchRouting": "per_requirement",
                 "outputContractField": "requiredColumns",
                 "groupingSources": catalog["groupingSources"],
             }
@@ -1432,22 +1454,45 @@ class AnalysisItemWorkflow:
             ).info("report_analysis_standard_preflight reason=disabled")
             standard_spec = None
         else:
-            plan = self._standard_plan(state)
+            selected = tuple(
+                (index, spec)
+                for index in range(len(decision.coding_requirements))
+                if (spec := self._standard_spec(state, index)) is not None
+            )
+            plan = tuple(spec for _, spec in selected)
+            mixed = bool(plan) and len(plan) < len(decision.coding_requirements)
             standard_spec = plan[0] if plan and len(plan) == 1 else plan or None
             logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
                         requirement_count=len(getattr(decision, "coding_requirements", ())),
-                        computation_count=len(plan), route="server" if plan else "python").info(
+                        computation_count=len(plan), route="mixed" if mixed else "server" if plan else "python").info(
                 "report_analysis_standard_route_selected analysis_id={} route={} requirements={} computations={}",
-                state.instruction.get("currentAnalysisId"), "server" if plan else "python",
+                state.instruction.get("currentAnalysisId"), "mixed" if mixed else "server" if plan else "python",
                 len(decision.coding_requirements), len(plan),
             )
         if standard_spec is not None and self.run_standard_supplemental is not None:
             try:
-                result = await self.run_standard_supplemental(
-                    spec=standard_spec,
-                    state=state,
-                    run_context=run_context,
-                )
+                standard_state = state
+                if mixed:
+                    standard_state = replace(
+                        state,
+                        instruction={**state.instruction,
+                            "analysisOutputRoot": str(state.instruction["analysisOutputRoot"]).rstrip("/") + "/standard"},
+                        decision=decision.model_copy(update={"coding_requirements": tuple(
+                            decision.coding_requirements[index] for index, _ in selected
+                        )}),
+                    )
+                if mixed and state.standard_evidence is not None:
+                    result = {
+                        "evidence": state.standard_evidence,
+                        "evidenceFile": state.standard_evidence_file,
+                        "computationRecord": state.standard_computation_record,
+                    }
+                else:
+                    result = await self.run_standard_supplemental(
+                        spec=standard_spec,
+                        state=standard_state,
+                        run_context=run_context,
+                    )
                 evidence = result.get("evidence")
                 evidence_file = result.get("evidenceFile")
                 computation = result.get("computationRecord")
@@ -1457,12 +1502,18 @@ class AnalysisItemWorkflow:
                     raise ReportingError("report_analysis_standard_result_invalid", "服务端标准补证缺少 evidence 身份。")
                 if not isinstance(computation, Mapping):
                     raise ReportingError("report_analysis_standard_result_invalid", "服务端标准补证缺少计算回执。")
-                state.evidence = evidence
-                state.evidence_file = evidence_file
-                state.server_computation_record = dict(computation)
-                state.failure = None
-                state.statuses["execute-script"] = "completed"
-                return StepOutput(content={"status": "executed", "method": computation.get("method")})
+                if mixed:
+                    state.standard_evidence = evidence
+                    state.standard_evidence_file = evidence_file
+                    state.standard_computation_record = dict(computation)
+                    state.standard_requirement_indices = tuple(index for index, _ in selected)
+                else:
+                    state.evidence = evidence
+                    state.evidence_file = evidence_file
+                    state.server_computation_record = dict(computation)
+                    state.failure = None
+                    state.statuses["execute-script"] = "completed"
+                    return StepOutput(content={"status": "executed", "method": computation.get("method")})
             except ReportingError as error:
                 state.warnings.append(f"report_analysis_standard_fallback: {error.code}: {error.message}")
                 logger.warning(
@@ -1590,8 +1641,17 @@ class AnalysisItemWorkflow:
             }
         elif isinstance(decision, AnalysisEvidenceDecision):
             facts["codingRequirements"] = [
-                item.model_dump(mode="json", by_alias=True) for item in decision.coding_requirements
+                item.model_dump(mode="json", by_alias=True)
+                for index, item in enumerate(decision.coding_requirements)
+                if index not in state.standard_requirement_indices
             ]
+        if state.standard_evidence_file is not None:
+            facts["standardEvidenceFile"] = state.standard_evidence_file.model_dump(mode="json", by_alias=True)
+            facts["standardEvidencePolicy"] = (
+                "先读取并核验标准补证文件身份；不要重复计算已完成需求。"
+                "将其中 findings、reconciliations 原样放在对应输出数组开头，保留 warnings，"
+                "再追加剩余 codingRequirements 的结果；可引用标准结果完成后续计算。"
+            )
         return facts
 
     @staticmethod
@@ -1720,9 +1780,16 @@ class AnalysisItemWorkflow:
                     for name in ("include_period_change", "include_marginal_shares", "group_by_period")
                     if name not in spec.model_fields_set
                 })
-                if explicit != candidate_spec:
+                # 候选固定数据身份、指标、维度和期间；支持的展示/算术选项仍须经过后续完整校验。
+                comparable = explicit.model_copy(update={
+                    name: getattr(candidate_spec, name)
+                    for name in ("change_rate_denominator", "rank_by")
+                })
+                if comparable != candidate_spec:
                     return unavailable("candidate_spec_conflict")
-            spec = candidate_spec
+                spec = explicit
+            else:
+                spec = candidate_spec
         if spec is None or state.facts is None:
             return unavailable("spec_or_facts_missing")
         assert spec is not None
@@ -1993,6 +2060,8 @@ class AnalysisItemWorkflow:
                 content,
                 current_analysis if isinstance(current_analysis, Mapping) else {},
             )
+            if state.standard_evidence is not None:
+                require_preserved_standard_evidence(evidence, state.standard_evidence)
             if (empty := empty_supplemental_evidence_error(evidence)) is not None:
                 raise empty
         except ValidationError as error:
@@ -2247,10 +2316,15 @@ class AnalysisItemWorkflow:
                 detail = f"{detail} [{issue_summary}]"
         state.warnings.append(
             f"report_analysis_supplement_abandoned: 补证脚本修复耗尽，"
-            f"仅使用确定性事实完成分析（{code}: {detail}）。"
+            f"{'保留已完成的标准补证与确定性事实' if state.standard_evidence is not None else '仅使用确定性事实'}"
+            f"完成分析（{code}: {detail}）。"
         )
         state.failure = None
-        state.evidence = None
+        state.evidence = state.standard_evidence
+        state.evidence_file = state.standard_evidence_file
+        state.server_computation_record = state.standard_computation_record
+        if state.standard_evidence is not None:
+            state.execution_receipt = None
         state.supplement_abandoned = True
         state.statuses["execute-script"] = "completed"
         return StepOutput(content={"status": "degraded", "code": code})
@@ -2320,7 +2394,7 @@ class AnalysisItemWorkflow:
             analysisId=str(state.instruction.get("currentAnalysisId") or ""),
             summary=draft.summary,
             datasetIds=self._dataset_ids(state),
-            evidencePaths=([self._evidence_path(state)] if state.evidence is not None else []),
+            evidencePaths=([state.evidence_file.path] if state.evidence is not None and state.evidence_file is not None else []),
             citationIds=self._citation_ids(state),
             profileReadReceiptIds=[],
             warnings=warnings,

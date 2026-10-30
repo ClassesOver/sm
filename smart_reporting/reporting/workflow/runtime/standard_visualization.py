@@ -29,10 +29,15 @@ from .standard_chart_encoding import (
     prepare_bands,
     prepare_encoded_chart,
 )
-from .standard_chart_horizontal_breaks import HORIZONTAL_BREAK_SCRIPT
 from .standard_chart_families import (
-    FAMILY_DISPATCH, FAMILY_FORMS, FAMILY_SCRIPT, family_aligned_semantics, family_input_roles, prepare_family_chart,
+    FAMILY_DISPATCH,
+    FAMILY_FORMS,
+    FAMILY_SCRIPT,
+    family_aligned_semantics,
+    family_input_roles,
+    prepare_family_chart,
 )
+from .standard_chart_horizontal_breaks import HORIZONTAL_BREAK_SCRIPT
 from .standard_chart_presentation import (
     PRESENTATION_SCRIPT,
     order_standard_rows,
@@ -60,13 +65,15 @@ class StandardVisualizationPreflight:
 
 
 class _Unsupported(ValueError):
-    def __init__(self, code, parameter, message, suggestion):
+    def __init__(self, code, parameter, message, suggestion, *, details=None):
         self.diagnostic = dict(code=code, parameter=parameter, message=message, suggestion=suggestion)
+        if details:
+            self.diagnostic['details'] = details
         super().__init__(message)
 
 
-def _reject(code, parameter, message, suggestion) -> NoReturn:
-    raise _Unsupported(code, parameter, message, suggestion)
+def _reject(code, parameter, message, suggestion, *, details=None) -> NoReturn:
+    raise _Unsupported(code, parameter, message, suggestion, details=details)
 
 
 def standard_visualization_preflight(
@@ -114,6 +121,20 @@ def standard_plan_diagnostics(plan: VisualizationPlanDraft, inputs: ChartInputMa
         result = standard_visualization_preflight(plan.model_copy(update={'charts': (chart,)}), bound)
         if result.diagnostic is not None:
             issue = {'chartId': chart.chart_id, **result.diagnostic}
+            issue['sources'] = []
+            for index, entry in enumerate(entries):
+                file = next((file for file in bound.files if file.path == entry['path']), None)
+                if file is None or file.sha256 != entry['sha256']:
+                    continue
+                try:
+                    document = json.loads(file.content)
+                except (ValueError, UnicodeDecodeError):
+                    continue  # 输入错误保留原诊断，元数据提示不能使预检异常退出。
+                if isinstance(document, dict):
+                    issue['sources'].append({
+                        'sourceIndex': index, 'source': document.get('source'),
+                        'columns': document.get('columns'), 'columnMeta': document.get('columnMeta', {}),
+                    })
             if result.diagnostic['code'] in {'standard_series_empty', 'standard_source_alignment_failed',
                                               'standard_period_alignment_invalid'}:
                 issue['bindingCorrectionAllowed'] = True
@@ -259,11 +280,15 @@ def _standard_visualization_script(
             family_documents, family_identities, alignment_entries, alignment_selections = family_input_roles(chart, entries, inputs.files)
             aligned[scope] = (document, family_identities)
         if alignment_selections or len(alignment_entries) > 1:
+            alignment_diagnostics = []
             alignment = align_chart_sources(alignment_entries, inputs.files, alignment_selections,
                                             selected_labels=source_labels or (() if has_transform or form in FAMILY_FORMS else getattr(chart, 'standard_labels', ())),
-                                            allow_nulls=axes.allow_nulls, max_labels=480 if form in {'scatter', 'bubble'} else 60)
+                                            allow_nulls=axes.allow_nulls, max_labels=480 if form in {'scatter', 'bubble'} else 60,
+                                            diagnostics=alignment_diagnostics)
             if alignment is None:
-                _reject('standard_source_alignment_failed', 'standardSources', '来源标签、单位、身份或来源使用范围不满足对齐要求。', '显式指定月份规范化、合计排除及共同窗口；检查重复标签、单位和所有绑定来源。')
+                _reject('standard_source_alignment_failed', 'standardSources', '来源标签、单位、身份或来源使用范围不满足对齐要求。',
+                        '按details.reason修正来源选择、分类过滤、月份规范化或共同窗口；单位只用登记值，不补零或静默去重。',
+                        details=alignment_diagnostics[0] if alignment_diagnostics else None)
             document, identities = alignment
             if form in FAMILY_FORMS:
                 document = family_aligned_semantics(document, selections)
@@ -403,7 +428,8 @@ def _standard_visualization_script(
         if display_unit:
             scales = [unit_conversion_scale(meta.get('unit'), display_unit) for meta in metas]
             if not advanced and (None in scales or len(set(scales)) != 1):
-                return None
+                _reject('standard_unit_conversion_invalid', 'standardDisplayUnit', '所选系列无法统一换算到显示单位。',
+                        '按sources.columnMeta选择同量纲度量；单位未知时保留原值且不声明换算单位。')
             if not advanced:
                 scale = scales[0]
                 assert scale is not None
@@ -466,7 +492,9 @@ def _standard_visualization_script(
             any(not meta.get('unit') for meta in metas)
             or len({(meta.get('unit'), meta.get('isPercent')) for meta in metas}) != 1
         ):
-            return None
+            _reject('standard_axis_units_incompatible', 'standardValueFields/columnMeta',
+                    '同轴系列包含未知单位或不同量纲、百分比尺度。',
+                    '显式选择同量纲的业务度量；排名和占比不要作为金额系列；不同量纲使用双轴或分面，未知单位不得猜测。')
         if form in {'line', 'stacked-bar', 'stacked-area', 'stacked-total'} and len(values) > 1:
             if not _compatible_periods(chart, metas, form):
                 _reject('standard_period_alignment_invalid', 'columnMeta.periods/comparisonType', '系列期间不满足显式比较关系。', '仅普通柱线图允许显式严格同比；堆叠图须使用同一期间。')
