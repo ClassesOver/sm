@@ -225,8 +225,16 @@ export interface ChartAIAvailability {
   standardChartCapabilities?: { forms: string[]; families?: Record<string, unknown> }
   /** 服务端按已核验作图数据给出的粗粒度概况，仅用于推荐；读取失败时缺省。 */
   dataProfile?: ChartDataProfile
+  /** 服务端按数据概况给出的推荐；编辑器唯一的推荐来源，缺省时只展示按图形的通用建议。 */
+  recommendations?: ChartRecommendations | null
   reason?: string
   chartId?: string
+}
+
+export interface ChartRecommendations {
+  suggestions: { id: string; text: string }[]
+  suppress: string[]
+  cautions: Record<string, string>
 }
 
 export interface ChartDataProfile {

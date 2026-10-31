@@ -82,6 +82,7 @@ from .service import ReportEditorContext, ReportEditorService
 from .standard_charts import (
     StandardChartEditParameters,
     chart_data_profile,
+    chart_recommendations,
     inherit_standard,
     standard_edit_plan,
     standard_plot_summary,
@@ -431,6 +432,7 @@ class ChartAIEditService:
             result.update(baseImagePath=_resolved[1].path, expectedSha256=_resolved[1].sha256)
             if (profile := await self._data_profile(_resolved)) is not None:
                 result["dataProfile"] = profile
+                result["recommendations"] = chart_recommendations(profile)
         return result
 
     async def _data_profile(self, resolved: tuple[ReportEditorContext, Any, Any, Any]) -> dict[str, Any] | None:

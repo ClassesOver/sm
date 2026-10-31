@@ -244,8 +244,8 @@ describe('模板选择与完整预览', () => {
     const reportEvent = vi.fn(async (_payload: Record<string, unknown>) => undefined)
     const api = client({ reportEvent,
       chartAiAvailability: vi.fn(async () => ({ available: true, expectedSha256: 'a'.repeat(64),
-        dataProfile: { inputCount: 1, rowCount: 4, categoryCount: 4, textFieldCount: 1, numericFieldCount: 2,
-          unitCount: 2, hasPeriod: false, hasNegative: false, magnitudeRatio: 3 } })) })
+        recommendations: { suggestions: [{ id: 'dual-axis', text: '不同单位的系列分别使用左右坐标轴并标明单位' }],
+          suppress: ['top5'], cautions: {} } })) })
     const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 1 })
     try {
       controller.open(mount(`/b/asset/${old[1]!.imagePath}`))
@@ -324,11 +324,11 @@ describe('模板选择与完整预览', () => {
     } finally { controller.dispose() }
   })
 
-  it('首屏推荐：推荐模板一键出预览，AI 建议只填入要求不发送，并按数据概况调整建议与预设提示', async () => {
+  it('首屏推荐：推荐模板一键出预览，AI 建议只填入要求不发送，建议与预设提示来自服务端推荐', async () => {
     const api = client({
       chartAiAvailability: vi.fn(async () => ({ available: true, standardAvailable: true, expectedSha256: 'a'.repeat(64),
-        dataProfile: { inputCount: 1, rowCount: 4, categoryCount: 4, textFieldCount: 1, numericFieldCount: 2,
-          unitCount: 2, hasPeriod: false, hasNegative: true, magnitudeRatio: 3 } })),
+        recommendations: { suggestions: [{ id: 'dual-axis', text: '不同单位的系列分别使用左右坐标轴并标明单位' }],
+          suppress: ['top5'], cautions: { pie: '数据含负值，不适合构成图', donut: '数据含负值，不适合构成图' } } })),
       chartTemplates: vi.fn(async () => ({ templates: [
         { templateId: 'trend', name: '趋势折线', available: false, reason: '没有期间' },
         { templateId: 'ranked', name: '排序条形图', available: true, recommended: true, recommendationReason: '类别较多' },

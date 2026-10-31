@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from smart_reporting.report_editor.standard_charts import chart_data_profile
+from smart_reporting.report_editor.standard_charts import chart_data_profile, chart_recommendations
 from smart_reporting.reporting.tests.test_report_editor_chart_ai import (
     FakeRunner,
     _make_editor_with_chart,
@@ -91,3 +91,53 @@ async def test_profile_is_cached_by_registered_identity_but_failures_are_retried
     assert "dataProfile" not in await service.availability(fixture.context, session, "chart_001")
     assert "dataProfile" not in await service.availability(fixture.context, session, "chart_001")
     assert len(reads) == 3 and not service._profiles
+
+
+def profile(**overrides):
+    return {"inputCount": 1, "rowCount": 10, "categoryCount": 10, "textFieldCount": 1, "numericFieldCount": 1,
+            "unitCount": 1, "hasPeriod": False, "hasNegative": False, "magnitudeRatio": 2, **overrides}
+
+
+def test_profile_aggregates_units_and_range_across_all_inputs():
+    result = chart_data_profile(files(
+        {"columns": ["科室", "收入"], "rows": [["内科", 300], ["外科", 200]], "columnMeta": {"收入": {"unit": "万元"}}},
+        {"columns": ["科室", "完成率"], "rows": [["内科", 0.9], ["外科", -0.1]], "columnMeta": {"完成率": {"unit": "%"}}},
+    ))
+    assert (result["inputCount"], result["categoryCount"], result["unitCount"], result["hasNegative"]) == (2, 2, 2, True)
+    assert result["magnitudeRatio"] == 3000.0
+
+
+def test_recommendations_follow_data_and_hide_unfit_generic_commands():
+    rich = chart_recommendations(profile(categoryCount=40, unitCount=2, magnitudeRatio=500, hasPeriod=True))
+    assert [item["id"] for item in rich["suggestions"]] == ["paginate", "dual-axis", "break", "mark-extremes"]
+    assert rich["suppress"] == [] and "pagination" not in rich["cautions"] and "dual" not in rich["cautions"]
+    small = chart_recommendations(profile(categoryCount=4))
+    assert small["suggestions"] == [] and small["suppress"] == ["top5"]
+    assert chart_recommendations(None) is None
+
+
+@pytest.mark.parametrize("preset,overrides,text", [
+    ("pie", {"hasNegative": True}, "含负值"),
+    ("radar", {"numericFieldCount": 2}, "3–8"),
+    ("bubble", {"numericFieldCount": 2}, "三个数值字段"),
+    ("dual", {"unitCount": 1}, "单位一致"),
+    ("vertical-break", {"magnitudeRatio": 3}, "差距不大"),
+    ("pagination", {"categoryCount": 8}, "无需分页"),
+])
+def test_recommendations_explain_unfit_presets(preset, overrides, text):
+    assert text in chart_recommendations(profile(**overrides))["cautions"][preset]
+
+
+def test_fit_presets_carry_no_caution():
+    cautions = chart_recommendations(profile(numericFieldCount=3, unitCount=2, textFieldCount=2,
+                                             categoryCount=30, magnitudeRatio=100))["cautions"]
+    assert not {"pie", "radar", "bubble", "heatmap", "dual", "vertical-break", "pagination"} & cautions.keys()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_availability_returns_server_recommendations(tmp_path: Path):
+    fixture = await _make_editor_with_chart(tmp_path)
+    service = _service(fixture, FakeRunner(fixture.chart_bytes))
+    availability = await service.availability(fixture.context, SimpleNamespace(capabilities=None), "chart_001")
+    assert availability["recommendations"] == chart_recommendations(availability["dataProfile"])
