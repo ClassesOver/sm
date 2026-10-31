@@ -5,7 +5,7 @@ import { createElement, CircleAlert } from 'lucide'
 import { buttonClasses } from './button'
 import { askAIPanel, type AskAISession } from './ask-ai-panel'
 import { createAITemplateCard } from './ai-template-card'
-import { chartSuggestionsFromProfile, createStartSection, createSuggestionItem, presetCaution, PRESET_GROUPS } from './ai-suggestions'
+import { CHART_REFINEMENTS, chartSuggestionsFromProfile, createRefinementRow, createStartSection, createSuggestionItem, presetCaution, PRESET_GROUPS } from './ai-suggestions'
 import { createModal } from './modal'
 import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
 import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ChartDataProfile, type ChartStandardEditRequest, type ReportEditorClient, type TraceChartInfo } from './api'
@@ -24,21 +24,20 @@ const UNAVAILABLE_REASONS: Record<string, string> = {
 
 const STAGE_LABELS: Record<string, string> = {
   queued: '排队中…',
-  check: '正在核验底图身份…',
-  plan: '正在理解改图要求…',
-  materialize: '正在准备作图数据…',
-  compile: '正在编译标准图参数…',
-  draw: '正在绘图与执行检查…',
-  inspect: '正在检查图表…',
-  register: '正在登记改图结果…',
+  check: '正在确认原图…',
+  plan: '正在理解你的要求…',
+  materialize: '正在准备数据…',
+  compile: '正在生成新图…',
+  draw: '正在生成新图…',
+  inspect: '正在检查新图效果…',
+  register: '即将完成…',
 }
 
-/** 阶段时间线：服务端 8 个细阶段收成 4 个粗阶段展示，细节仍由进度标题给出。 */
+/** 阶段时间线：服务端 8 个细阶段收成 3 个用户能理解的步骤，细节仍由进度标题给出。 */
 const STAGE_GROUPS: { label: string; stages: string[] }[] = [
-  { label: '核验底图', stages: ['queued', 'check'] },
-  { label: '理解与规划', stages: ['plan', 'materialize'] },
-  { label: '绘图与检查', stages: ['compile', 'draw', 'inspect'] },
-  { label: '登记结果', stages: ['register'] },
+  { label: '准备数据', stages: ['queued', 'check', 'plan', 'materialize'] },
+  { label: '生成新图', stages: ['compile', 'draw'] },
+  { label: '检查效果', stages: ['inspect', 'register'] },
 ]
 
 const QUICK_COMMANDS = [
@@ -807,7 +806,7 @@ export function createChartAIEdit(options: {
     // ---- 首屏推荐：推荐模板（一键）+ 按数据给出的 AI 建议 ----
     const actionDialog = ensureActionModal()
     const openActions = () => actionDialog.open(standardCards.querySelector<HTMLElement>('button:not([disabled])') ?? undefined)
-    const start = createStartSection({ label: '查看全部模板与调整', action: 'show-chart-actions', onClick: openActions })
+    const start = createStartSection({ label: '查看全部模板与调整', action: 'show-chart-actions', onClick: openActions }, failed)
     const startTemplate = document.createElement('div'); startTemplate.className = 'ask-ai-start-slot'
     start.list.append(startTemplate)
     for (const command of suggestions.slice(0, 3)) {
@@ -870,6 +869,7 @@ export function createChartAIEdit(options: {
     })
     const form = body.querySelector<HTMLElement>('.ask-ai-input-form')!
     form.before(start.section)
+    if (retainReview) textarea.before(createRefinementRow(CHART_REFINEMENTS, command => { fillInstruction(command) }))
     if (!retainReview) output.replaceChildren(...body.childNodes)
     ensureModal().mountComposer(form)
     if (focusInput) textarea.focus()
@@ -893,7 +893,7 @@ export function createChartAIEdit(options: {
         <div class="ai-progress-track" aria-hidden="true"><span class="ai-progress-fill"></span></div>
         <ol class="ai-stage-timeline" data-role="timeline" aria-label="生成阶段">${STAGE_GROUPS.map((group, index) => `<li data-step-state="${index === 0 ? 'current' : 'pending'}"><span class="ai-stage-dot" aria-hidden="true"></span>${group.label}</li>`).join('')}</ol>
         <p class="ask-ai-elapsed" data-role="elapsed" aria-hidden="true">已用时 00:00</p>
-        <p class="chart-ai-hint">可收起侧栏，任务继续运行。</p>
+        <p class="chart-ai-hint">通常需要 20–60 秒。可以收起侧栏继续改正文，完成后会提示你。</p>
         <div class="chart-ai-actions">
           <button type="button" class="${buttonClasses('secondary')}" data-action="cancel">取消改图</button>
         </div>
@@ -1024,9 +1024,9 @@ export function createChartAIEdit(options: {
     body.innerHTML = `
       <div class="chart-ai-view-switch" role="group" aria-label="选择预览图">
         <button type="button" class="${buttonClasses('quiet')}" data-action="view-new" aria-pressed="true">新图</button>
-        <button type="button" class="${buttonClasses('quiet')}" data-action="view-original" aria-pressed="false">原图</button>
         <button type="button" class="${buttonClasses('quiet')}" data-action="view-both" aria-pressed="false">对比</button>
-        <button type="button" class="${buttonClasses('quiet')}" data-action="view-blink" aria-pressed="false">闪烁</button>
+        <button type="button" class="${buttonClasses('quiet')}" data-action="view-original" aria-pressed="false">原图</button>
+        <button type="button" class="${buttonClasses('quiet')}" data-action="view-blink" aria-pressed="false" title="原图与新图交替显示，便于发现细微差别">闪烁</button>
       </div>
       <div class="chart-ai-compare" role="group" aria-label="改图前后对比">
         <figure class="chart-ai-compare-item" data-compare-view="original" hidden>
@@ -1054,7 +1054,7 @@ export function createChartAIEdit(options: {
         <button type="button" class="${buttonClasses('secondary')}" data-action="continue">继续调整</button>
         <button type="button" class="${buttonClasses('quiet')}" data-action="discard">放弃</button>
       </div>
-      <p class="chart-ai-hint">快捷键：<kbd>A</kbd> 采用 · <kbd>X</kbd> 放弃 · <kbd>C</kbd> 继续调整 · <kbd>1</kbd>–<kbd>4</kbd> 切换视图（输入时不触发）</p>
+      <details class="chart-ai-shortcuts"><summary>键盘快捷键</summary><p class="chart-ai-hint"><kbd>A</kbd> 采用 · <kbd>X</kbd> 放弃 · <kbd>C</kbd> 继续调整 · <kbd>1</kbd>–<kbd>4</kbd> 切换视图（输入时不触发）</p></details>
     `
     const pageList = body.querySelector<HTMLElement>('.chart-ai-pages')!
     const original = body.querySelector<HTMLElement>('[data-compare-view="original"]')!
@@ -1151,10 +1151,21 @@ export function createChartAIEdit(options: {
       pageList.before(nav)
     }
     const changeList = body.querySelector<HTMLElement>('.chart-ai-changes')!
-    for (const change of changes) {
+    // 只露出前 3 条，其余折叠；数据是否变化始终可见。
+    const folded: HTMLElement[] = []
+    changes.forEach((change, index) => {
       const item = document.createElement('li')
       item.textContent = change
+      if (index >= 3) { item.hidden = true; folded.push(item) }
       changeList.append(item)
+    })
+    if (folded.length) {
+      const more = document.createElement('button')
+      more.type = 'button'
+      more.className = 'chart-ai-changes-more'
+      more.textContent = `展开其余 ${folded.length} 项`
+      more.addEventListener('click', () => { folded.forEach(item => { item.hidden = false }); more.remove() })
+      changeList.after(more)
     }
     if (dataChange) {
       const item = document.createElement('li')
@@ -1162,6 +1173,8 @@ export function createChartAIEdit(options: {
       item.textContent = dataChange
       changeList.append(item)
     }
+    // 宽屏单页默认左右对比，省去来回切换；窄屏仍先看新图。
+    if (pages.length === 1 && window.innerWidth >= 1280) body.querySelector<HTMLButtonElement>('[data-action="view-both"]')!.click()
     const warnings = body.querySelector<HTMLElement>('.chart-ai-warnings')
     if (warnings) for (const warning of result.warnings) {
       const item = document.createElement('li')

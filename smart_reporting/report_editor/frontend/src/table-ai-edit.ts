@@ -3,19 +3,19 @@ import { TABLE_PROTOCOL_EDIT_META } from './protocol-plugin'
 import { buttonClasses } from './button'
 import { askAIPanel } from './ask-ai-panel'
 import { createAITemplateCard } from './ai-template-card'
-import { createStartSection, createSuggestionItem, tableProfile, tableSuggestions } from './ai-suggestions'
+import { TABLE_REFINEMENTS, createRefinementRow, createStartSection, createSuggestionItem, tableProfile, tableSuggestions } from './ai-suggestions'
 import type { EditorTemplateInfo, ReportEditorClient, TableAIEditState } from './api'
 import { markdownSha256 } from './source-validation'
 import { formatElapsed } from './chart-ai-edit'
 import { createElement, CircleAlert } from 'lucide'
 
 /** 改表阶段：长标签作进度标题；时间线把 6 个细阶段收成 4 个粗阶段。 */
-const TABLE_STAGE_LABELS: Record<string, string> = { queued: '排队中', plan: '正在理解改表要求', check: '正在核验来源', validate: '正在核验表格与来源', compile: '正在生成表格', register: '正在登记结果' }
+const TABLE_STAGE_LABELS: Record<string, string> = { queued: '排队中', plan: '正在理解要求并生成新表', check: '正在确认表格来源', validate: '正在核对数值与来源', compile: '正在生成新表', register: '即将完成' }
 const TABLE_STAGE_GROUPS: { label: string; stages: string[] }[] = [
-  { label: '理解要求', stages: ['queued', 'plan'] },
-  { label: '核验表格', stages: ['check', 'validate'] },
-  { label: '生成表格', stages: ['compile'] },
-  { label: '登记结果', stages: ['register'] },
+  // 服务端实际顺序为 plan → validate → register；新表在 plan 阶段生成。
+  { label: '生成新表', stages: ['queued', 'plan', 'check', 'compile'] },
+  { label: '核对来源', stages: ['validate'] },
+  { label: '完成', stages: ['register'] },
 ]
 
 const TABLE_MARKER = /^\[\[table:([A-Za-z0-9_.:-]+)\]\]$/
@@ -277,7 +277,7 @@ export function createTableAIEdit(options: {
       templateDetails.open = true
       templateDetails.scrollIntoView?.({ block: 'nearest' })
       templateRoot.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus()
-    } })
+    } }, failed)
     const startTemplate = document.createElement('div'); startTemplate.className = 'ask-ai-start-slot'
     start.list.append(startTemplate)
     for (const command of suggestions.slice(0, 3)) start.list.append(createSuggestionItem({ kind: 'ai', title: command, onClick: () => fill(command) }))
@@ -285,7 +285,9 @@ export function createTableAIEdit(options: {
     const form = document.createElement('div'); form.className = 'ask-ai-input-form'
     if (!retainReview) body().append(start.section)
     body().append(templateDetails)
-    form.append(label, area)
+    form.append(label)
+    if (retainReview) form.append(createRefinementRow(TABLE_REFINEMENTS, fill))
+    form.append(area)
     const actions = document.createElement('div'); actions.className = 'chart-ai-actions'
     const submit = button('让 AI 修改', 'primary', () => { const instruction = area.value.trim(); if (instruction) void runEdit(tableId, targetTableId, instruction, baseBody, previousEditId) })
     retryButton?.addEventListener('click', () => { if (!submit.disabled) submit.click() })
@@ -579,7 +581,7 @@ export function createTableAIEdit(options: {
     const elapsed = document.createElement('p'); elapsed.className = 'ask-ai-elapsed'; elapsed.setAttribute('aria-hidden', 'true'); elapsed.textContent = '已用时 00:00'
     const startedAt = performance.now()
     const clock = progressClock = window.setInterval(() => { elapsed.textContent = `已用时 ${formatElapsed(performance.now() - startedAt)}` }, 1000)
-    const hint = document.createElement('p'); hint.className = 'chart-ai-hint'; hint.textContent = '可收起侧栏，任务继续运行。'
+    const hint = document.createElement('p'); hint.className = 'chart-ai-hint'; hint.textContent = '通常需要 20–60 秒。可以收起侧栏继续改正文，完成后会提示你。'
     const cancel = button('取消改表', 'secondary', () => { invalidateCurrent(); void input(tableId, targetTableId, baseBody, previousEditId, '已取消本次改表。') })
     progress.append(stage, track, timeline, elapsed, hint, cancel); body().replaceChildren(progress)
     try {

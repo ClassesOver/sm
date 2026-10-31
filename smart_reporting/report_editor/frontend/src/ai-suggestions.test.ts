@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { chartSuggestionsFromProfile, presetCaution, tableProfile, tableSuggestions } from './ai-suggestions'
+import { describe, expect, it, vi } from 'vitest'
+import { chartSuggestionsFromProfile, createRefinementRow, createStartSection, presetCaution, TABLE_REFINEMENTS, tableProfile, tableSuggestions } from './ai-suggestions'
 
 const profile = (overrides = {}) => ({ inputCount: 1, rowCount: 10, categoryCount: 10, textFieldCount: 1,
   numericFieldCount: 1, unitCount: 1, hasPeriod: false, hasNegative: false, magnitudeRatio: 2, ...overrides })
@@ -51,5 +51,20 @@ describe('表格建议', () => {
     expect(suggestions).toContain('标注「完成率」低于 100% 的行')
     expect(suggestions.join()).toContain('比率列不直接相加')
     expect(tableSuggestions(null).length).toBeGreaterThan(0)
+  })
+})
+
+describe('推荐区与微调', () => {
+  it('失败时推荐区标题引导换个方式', () => {
+    expect(createStartSection(undefined, true).section.querySelector('h3')!.textContent).toBe('换个方式试试')
+    expect(createStartSection().section.querySelector('h3')!.textContent).toBe('从推荐开始')
+  })
+
+  it('微调按钮只把要求交给填入回调', () => {
+    const fill = vi.fn()
+    const row = createRefinementRow(TABLE_REFINEMENTS, fill)
+    row.querySelector<HTMLButtonElement>('.ask-ai-refine-chip')!.click()
+    expect(fill).toHaveBeenCalledWith(TABLE_REFINEMENTS[0])
+    expect(row.querySelectorAll('.ask-ai-refine-chip')).toHaveLength(TABLE_REFINEMENTS.length)
   })
 })

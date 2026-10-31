@@ -5860,4 +5860,26 @@ button.ai-review-summary-item { padding-block: 3px; }
   .ask-ai-start { padding: 12px; }
 }
 
+/* “对比”模式原图与新图并排，避免新图被挤到首屏以外；手机宽度仍上下排列。 */
+@media (min-width: 641px) {
+  .ask-ai-panel .chart-ai-compare:has(> [data-compare-view="original"]:not([hidden])):has(> .chart-ai-pages:not([hidden])) { grid-template-columns: 1fr 1fr; }
+}
+/* 面板顶部紧凑化：单会话隐藏标签栏；步骤条改为单行小号样式。 */
+.ask-ai-panel[data-sessions="1"] .ask-ai-sessions { display: none; }
+.ask-ai-steps { margin-bottom: 12px; padding: 10px 12px; }
+.ask-ai-steps li { flex-direction: row; justify-content: center; gap: 6px; }
+.ask-ai-steps li:not(:last-child)::after { display: none; }
+.ask-ai-step-marker { width: 22px; height: 22px; font-size: 12px; }
+.ask-ai-steps [data-step-state="current"] .ask-ai-step-marker { box-shadow: 0 0 0 3px var(--color-primary-soft); }
+.chart-ai-changes-more { margin: 4px 0 0; padding: 2px 0; border: 0; background: none; color: var(--color-primary); font: inherit; font-size: var(--font-size-sm); cursor: pointer; }
+.chart-ai-changes-more:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.chart-ai-shortcuts { color: var(--color-ink-2); font-size: var(--font-size-sm); }
+.chart-ai-shortcuts > summary { cursor: pointer; }
+.chart-ai-shortcuts > p { margin: 6px 0 0; }
+.ask-ai-refine { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
+.ask-ai-refine-label { color: var(--color-ink-2); font-size: 12px; font-weight: 600; }
+.ask-ai-refine-chip { padding: 3px 9px; border: 1px solid var(--color-border-soft); border-radius: 999px; background: var(--color-surface); color: var(--color-ink-2); font: inherit; font-size: 12px; cursor: pointer; }
+.ask-ai-refine-chip:hover { border-color: var(--color-select-border); background: var(--color-primary-soft); color: var(--color-primary); }
+.ask-ai-refine-chip:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
 @media print { .asset-ai-actions, .ask-ai-panel, .ask-ai-launcher, .ask-ai-notifications { display: none !important; } }

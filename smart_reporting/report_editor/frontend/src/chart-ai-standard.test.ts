@@ -240,6 +240,66 @@ function mount(src = '/b/asset/reports/revision-1/original.png') {
 }
 
 describe('模板选择与完整预览', () => {
+  it('进度说人话、宽屏默认对比、变更折叠，继续调整给出微调建议且只填入不发送', async () => {
+    const width = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    let finish: (value: ChartAIEditSuccess) => void = () => undefined
+    const single = result([page(1, 1, 'cedit-new12345')])
+    single.changes = { ...single.changes, visualForm: '横向条形图' }
+    single.visualInspection = { reviewed: false }
+    const api = client({ chartAiAvailability: vi.fn(async () => ({ available: true, expectedSha256: 'a'.repeat(64) })),
+      chartEditRecord: vi.fn(async () => { throw new ReportEditorApiError(404, 'not_found', 'missing') }),
+      chartAiEditStatus: vi.fn(() => new Promise(resolve => { finish = resolve })) })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 1 })
+    try {
+      controller.open(mount())
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+      expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.dataset.sessions).toBe('1')
+      const text = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+      text.value = '改成横向条形图'; text.dispatchEvent(new Event('input'))
+      document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
+      await vi.waitFor(() => expect(document.querySelector('.ai-stage-timeline')).not.toBeNull())
+      expect([...document.querySelectorAll('.ai-stage-timeline li')].map(item => item.textContent)).toEqual(['准备数据', '生成新图', '检查效果'])
+      expect(document.querySelector('.chart-ai-progress')!.textContent).toContain('20–60 秒')
+      finish(single)
+      await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
+      expect(document.querySelector('[data-action="view-both"]')!.getAttribute('aria-pressed')).toBe('true')
+      expect(document.querySelector<HTMLElement>('[data-compare-view="original"]')!.hidden).toBe(false)
+      const items = [...document.querySelectorAll<HTMLElement>('.chart-ai-changes li')]
+      expect(items.length).toBeGreaterThan(3)
+      expect(items.filter(item => item.hidden).length).toBeGreaterThan(0)
+      document.querySelector<HTMLButtonElement>('.chart-ai-changes-more')!.click()
+      expect(items.every(item => !item.hidden)).toBe(true)
+      expect(document.querySelector('.chart-ai-shortcuts summary')!.textContent).toBe('键盘快捷键')
+
+      document.querySelector<HTMLButtonElement>('[data-action="continue"]')!.click()
+      await vi.waitFor(() => expect(document.querySelector('.ask-ai-refine-chip')).not.toBeNull())
+      const followUp = document.querySelector<HTMLTextAreaElement>('.ask-ai-composers textarea')!
+      document.querySelector<HTMLButtonElement>('.ask-ai-refine-chip')!.click()
+      expect(followUp.value).toContain('文字和标签再大一些')
+      expect(api.startChartAiEdit).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+      controller.dispose()
+    }
+  })
+
+  it('改图失败后推荐区改为“换个方式试试”，仍给出可直接点的替代方案', async () => {
+    const api = client({ chartEditRecord: vi.fn(async () => { throw new ReportEditorApiError(404, 'not_found', 'missing') }),
+      chartAiEditStatus: vi.fn(async () => ({ editId: 'cedit-new12345', chartId: 'chart_001', status: 'failed',
+        error: { code: 'report_editor_chart_ai_failed', message: '生成失败' } })) })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 1 })
+    try {
+      controller.open(mount())
+      await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
+      const text = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
+      text.value = '加预测线'; text.dispatchEvent(new Event('input'))
+      document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
+      await vi.waitFor(() => expect(document.querySelector('.ask-ai-start h3')?.textContent).toBe('换个方式试试'))
+      expect(document.querySelectorAll('.ask-ai-start-item').length).toBeGreaterThan(0)
+    } finally { controller.dispose() }
+  })
+
   it('首屏推荐：推荐模板一键出预览，AI 建议只填入要求不发送，并按数据概况调整建议与预设提示', async () => {
     const api = client({
       chartAiAvailability: vi.fn(async () => ({ available: true, standardAvailable: true, expectedSha256: 'a'.repeat(64),

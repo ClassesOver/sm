@@ -123,11 +123,12 @@ export function createSuggestionItem(options: {
 }
 
 /** 首屏推荐区外壳；条目由各面板按自身数据填充。 */
-export function createStartSection(moreAction?: { label: string; action: string; onClick: () => void }) {
+export function createStartSection(moreAction?: { label: string; action: string; onClick: () => void }, failed = false) {
   const section = document.createElement('section')
   section.className = 'ask-ai-start'
   section.setAttribute('aria-label', '推荐操作')
-  const heading = document.createElement('h3'); heading.textContent = '从推荐开始'
+  // 上一轮未完成时同样给出可直接点的替代方案，不让用户停在报错处。
+  const heading = document.createElement('h3'); heading.textContent = failed ? '换个方式试试' : '从推荐开始'
   const hint = document.createElement('p'); hint.className = 'ask-ai-start-hint'
   hint.textContent = '「一键」立即出预览，不经过 AI；「AI」会先填入下方要求，可补充后发送。'
   const list = document.createElement('div'); list.className = 'ask-ai-start-list'
@@ -142,4 +143,26 @@ export function createStartSection(moreAction?: { label: string; action: string;
     section.append(more)
   }
   return { section, list }
+}
+
+export const CHART_REFINEMENTS = ['文字和标签再大一些', '换一组更清晰的配色', '标题再精简一些', '图例移到图表下方']
+export const TABLE_REFINEMENTS = ['只保留最关键的列', '数值统一保留两位小数', '突出显示明显偏高或偏低的值', '按主要数值重新排序']
+
+/** 继续调整时的常见微调：点击填入要求，不直接发送。 */
+export function createRefinementRow(commands: readonly string[], fill: (command: string) => void): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'ask-ai-refine'
+  row.setAttribute('role', 'group')
+  row.setAttribute('aria-label', '常见微调')
+  const label = document.createElement('span'); label.className = 'ask-ai-refine-label'; label.textContent = '常见微调'
+  row.append(label)
+  for (const command of commands) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'ask-ai-refine-chip'
+    chip.textContent = command
+    chip.addEventListener('click', () => fill(command))
+    row.append(chip)
+  }
+  return row
 }
