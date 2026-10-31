@@ -6,7 +6,7 @@ import hashlib
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from copy import copy
 from functools import lru_cache, partial
 
@@ -1737,6 +1737,16 @@ def _section_plan_reference_issues(
 # 服务端先确定性修复可唯一推断的引用，模型只负责剩余歧义；两轮后仍未解决的引用
 # 交给渲染工具软告警处理，避免单条结论拖垮整章（原先 5 轮纠错后整章失败并从头重试）。
 _MAX_PLAN_REFERENCE_CORRECTIONS = 2
+# 写作类问题（重复、长句、数值堆砌、含糊措辞等）达到该条数才单独触发纠错轮；
+# 准确性问题始终触发。触发后同一轮一并修正全部告警，不为写作问题另开一轮。
+_STYLE_CORRECTION_THRESHOLD = 3
+
+
+def _needs_content_correction(scores: Iterable[tuple[int, int]]) -> bool:
+    """scores 为各 block 的（准确性问题数, 写作类问题数）。"""
+    return any(accuracy > 0 or style >= _STYLE_CORRECTION_THRESHOLD for accuracy, style in scores)
+
+
 # 语义复核首发批量；失败后拆半重试，不小于原先固定的 10 条粒度。
 _SEMANTIC_REVIEW_BATCH_SIZE = 20
 _SEMANTIC_REVIEW_MIN_SPLIT = 10
@@ -2684,7 +2694,7 @@ async def _generate_section_in_blocks(
                 content, review_warnings = first_block_content, first_block_warnings
             loguru_logger.info("report_content_review_completed section={} block={} attempt={} issue_count={}",
                                work_item.section_code, block_plan.block_id, block_attempt, len(review_warnings))
-            if review_warnings and block_attempt == 0:
+            if review_warnings and block_attempt == 0 and _needs_content_correction((review_score,)):
                 first_block_content, first_block_warnings, first_block_score = content, review_warnings, review_score
                 block_payload["correction"] = {
                     "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
@@ -2997,6 +3007,15 @@ async def _generate_whole_section_content(
                            work_item.section_code, review_attempt,
                            len({warning for warnings in review_warnings.values() for warning in warnings}), len(content.blocks))
         if not review_warnings:
+            break
+        if review_attempt == 0 and not _needs_content_correction(review_scores.values()):
+            # 只有少量写作类问题：保留首轮正文，告警随章节进入质量告警，不额外调用模型。
+            loguru_logger.info("report_content_correction_skipped section={} reason=below_threshold",
+                               work_item.section_code)
+            for block_id, warnings in review_warnings.items():
+                for warning in warnings:
+                    loguru_logger.warning("report_content_review_warning section={} block={} message={}",
+                                         work_item.section_code, block_id, warning)
             break
         if review_attempt == 0:
             first_by_id = content_by_id
