@@ -297,16 +297,3 @@ async def test_supported_group_fast_path_and_group_failure_isolation(
     coding.assert_not_called()
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_legacy_interactive_delivery_keeps_existing_route(tmp_path):
-    plan, inputs, context = setup(tmp_path, ["line"])
-    plan.charts[0].interactive_path = "legacy.plotly.json"
-    runner = SimpleNamespace(
-        run=AsyncMock(return_value=SimpleNamespace()),
-        run_standard_visualization=AsyncMock(side_effect=AssertionError("JSON is not an image")),
-    )
-    result = await run_standard_chart_routes(runner, context, object(), plan, inputs, {}, object())
-    assert result.standard_chart_routes[0]["route"] == "coding"
-    runner.run.assert_awaited_once()
-    runner.run_standard_visualization.assert_not_called()

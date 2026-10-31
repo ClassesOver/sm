@@ -830,7 +830,6 @@ def _prepare_linked_visualization_bundles(tmp_path):
             {
                 "chartId": "chart-1",
                 "sourcePath": "charts/chart-1.png",
-                "interactivePath": None,
             }
         ],
     }
@@ -1567,14 +1566,12 @@ def _trace_span(
     }
 
 
-def _candidate_visualization_plan(chart_path: str, *, interactive_path: str | None = None) -> dict:
+def _candidate_visualization_plan(chart_path: str) -> dict:
     return {
         "charts": [
             {
                 "chartId": "chart-1",
                 "sourcePath": chart_path,
-                "renderer": "plotly" if interactive_path else "matplotlib",
-                "interactivePath": interactive_path,
                 "title": "月度收入趋势",
                 "altText": "月度收入趋势图",
                 "citationIds": ["citation-1"],
@@ -1639,10 +1636,8 @@ def test_extract_analysis_trace_pairs_identity_and_removes_planner_output() -> N
     }
 
 
-@pytest.mark.parametrize("interactive", [False, True])
-def test_extract_visualization_trace_pairs_declared_output_paths(interactive) -> None:
+def test_extract_visualization_trace_pairs_declared_output_paths() -> None:
     chart_path = "charts/chart-1.png"
-    interactive_path = "charts/chart-1.plotly.json"
     planner_request = {
         "sectionCode": "section-001",
         "visualizationWorkspace": {"chartOutputRoot": "charts"},
@@ -1657,9 +1652,7 @@ def test_extract_visualization_trace_pairs_declared_output_paths(interactive) ->
             }
         ],
     }
-    planner_output = _candidate_visualization_plan(
-        chart_path, interactive_path=interactive_path if interactive else None
-    )
+    planner_output = _candidate_visualization_plan(chart_path)
     candidate_facts = [
         {
             **planner_request["visualizationFacts"][0],
@@ -1669,9 +1662,7 @@ def test_extract_visualization_trace_pairs_declared_output_paths(interactive) ->
     coding_payload = {
         "task": {
             "task_kind": "visualization",
-            "declared_output_paths": (
-                [chart_path, interactive_path] if interactive else [chart_path]
-            ),
+            "declared_output_paths": [chart_path],
         },
         "facts": {
             "visualizationFacts": candidate_facts,
@@ -2191,7 +2182,7 @@ async def test_frozen_visualization_planner_threads_required_charts_to_identity_
     planner_request = {
         "sectionCode": "section-1",
         "requiredCharts": [
-            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png"}
         ],
     }
     captured = _install_frozen_visualization_planner(
@@ -2229,7 +2220,6 @@ async def test_frozen_visualization_planner_rejects_renamed_chart_via_identity_g
                 {
                     "chartId": "chart-1",
                     "sourcePath": "charts/chart-1.png",
-                    "interactivePath": None,
                 }
             ],
         },

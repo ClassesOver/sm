@@ -173,12 +173,24 @@ def _apply_ticker_defaults(module: Any) -> None:
 
     def call(self: Any, value: float, pos: Any = None) -> str:
         text = original(self, value, pos)
-        if type(self) is not formatter or not text or abs(value) < 1e4:
+        if type(self) is not formatter or not text:
+            return text
+        # 同一坐标轴有大数刻度时整轴统一写法：否则 0 等小刻度沿用原格式会显示成“0.0”。
+        if abs(value) < 1e4 and not any(abs(loc) >= 1e4 for loc in getattr(self, "locs", ())):
             return text
         return _compact_tick(value)
 
+    original_offset = formatter.get_offset
+
+    def get_offset(self: Any) -> str:
+        # 紧凑刻度已写出完整数值（“5亿”），再显示“1e9”偏移会被读成相乘。
+        if type(self) is formatter and any(abs(loc) >= 1e4 for loc in getattr(self, "locs", ())):
+            return ""
+        return original_offset(self)
+
     call._reporting_compact = True  # type: ignore[attr-defined]
     formatter.__call__ = call
+    formatter.get_offset = get_offset
 
 
 _NUMBER_CHARS = "0123456789.,"

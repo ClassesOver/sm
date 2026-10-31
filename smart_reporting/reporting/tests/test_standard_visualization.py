@@ -681,13 +681,12 @@ def test_style_schema_rejects_invalid_parameters(options):
         StandardChartStyle.model_validate(options)
 
 
-@pytest.mark.parametrize('fault', ['complex', 'identity', 'fallback', 'renderer'])
+# 渲染器只剩 Matplotlib（Plotly 已退役），不再有按 renderer 排除的分支。
+@pytest.mark.parametrize('fault', ['complex', 'identity', 'fallback'])
 def test_unsupported_or_unverified_inputs_do_not_select_standard_route(fault):
     plan, inputs = fixture()
     if fault == 'complex':
         plan.charts[0].visual_form = '双轴组合图'
-    elif fault == 'renderer':
-        plan.charts[0].renderer = 'plotly'
     elif fault == 'identity':
         inputs.entries[0]['sha256'] = '0' * 64
     else:

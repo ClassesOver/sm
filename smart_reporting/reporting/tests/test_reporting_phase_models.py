@@ -51,8 +51,6 @@ def test_visualization_plan_accepts_bound_chart_metadata_and_warnings() -> None:
     assert {key: value for key, value in serialized.items() if not key.startswith('standard')} == {
         "chartId": "chart_001",
         "sourcePath": "report/charts/chart-001.png",
-        "renderer": "matplotlib",
-        "interactivePath": None,
         "title": "收入趋势",
         "altText": "收入按月趋势",
         "citationIds": ["citation_001"],

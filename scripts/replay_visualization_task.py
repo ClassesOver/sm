@@ -1083,12 +1083,7 @@ def extract_benchmark_trace_inputs(
         candidate_plan = VisualizationPlanDraft.model_validate(planner_output)
     except ValidationError as error:
         raise ValueError("可视化 planner trace 缺少有效的 candidate 计划") from error
-    chart_paths = {
-        path
-        for chart in candidate_plan.charts
-        for path in (chart.source_path, chart.interactive_path)
-        if path is not None
-    }
+    chart_paths = {chart.source_path for chart in candidate_plan.charts if chart.source_path is not None}
     coding_candidates = []
     for row in rows:
         attributes = row.get("attributes") if isinstance(row, Mapping) else None

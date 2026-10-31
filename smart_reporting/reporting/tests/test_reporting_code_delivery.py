@@ -46,25 +46,6 @@ from smart_reporting.workspace import WorkspaceError
 
 
 @pytest.mark.anyio
-async def test_plotly_sidecar_is_not_scheduled_for_visual_review(workspace):  # noqa: F811
-    task_binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace,
-        ToolkitRuntime(),
-    )
-    sidecar = output.model_copy(update={"path": "charts/chart.plotly.json"})
-    task_binding.execution_receipt = task_binding.execution_receipt.model_copy(
-        update={"output_files": (output, sidecar)},
-    )
-    toolkit._declared_output_identities = AsyncMock(return_value=(output, sidecar))
-    await toolkit.refresh_delivery_state()
-    assert toolkit.delivery_state()["nextReviewPaths"] == [output.path]
-    task_binding.visual_inspection_receipts[output.path] = _visual_receipt(output)
-    await toolkit.refresh_delivery_state()
-    assert toolkit.delivery_state()["nextReviewPaths"] == []
-    assert toolkit.delivery_state()["nextTools"] == ["submit_script"]
-
-
-@pytest.mark.anyio
 @pytest.mark.parametrize(
     "code",
     [
@@ -1272,26 +1253,6 @@ async def test_write_script_accepts_pathlib_slash_concatenation(workspace):  # n
         "from pathlib import Path\n"
         'out = Path("charts") / "chart.png"\n'
         "out.write_bytes(b'image')\n"
-    )
-
-    result = await toolkit.write_script(source)
-
-    assert result["ok"] is True
-    assert not any(
-        warning["code"] == "report_code_script_output_write_unverified"
-        for warning in result["warnings"]
-    )
-
-
-@pytest.mark.anyio
-async def test_write_script_accepts_plotly_positional_write_image(workspace):  # noqa: F811
-    _task_binding, toolkit, _output = await _prepared_visualization_toolkit(
-        workspace, ToolkitRuntime()
-    )
-    source = (
-        "import plotly.graph_objects as go\n"
-        "fig = go.Figure()\n"
-        'fig.write_image("charts/chart.png")\n'
     )
 
     result = await toolkit.write_script(source)
