@@ -264,7 +264,7 @@ async def test_static_semantics_uses_exact_source_identity_and_not_equal_values(
     from smart_reporting.reporting.trace.chart_quality import ChartQualityCheck
     from smart_reporting.reporting.trace.semantic_alignment import evaluate_semantic_alignment
 
-    index, _, sources, _ = await bound_chart(tmp_path, monthly=True)
+    index, _, sources = await bound_chart(tmp_path, monthly=True)
     chart = index.chart_traces[0]
     origin = index.fact_files[0]
     fact_document = json.loads(sources[origin.file_resource_id])

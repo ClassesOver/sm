@@ -51,6 +51,7 @@ from smart_reporting.reporting.structured_output import ReportingStructuredOutpu
 from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.reporting.workflow.benchmark_bundle import (
     BenchmarkModelConfig,
+    legacy_static_plan,
     prepare_frozen_planner_coding_bundle,
     validate_frozen_planner_coding_bundle,
 )
@@ -664,7 +665,7 @@ def link_coding_only_benchmark(
         # 可视化 planner 输出会改写 facts 投影与授权路径，不能按字段剔除还原；
         # 用冻结计划重走同一确定性投影，逐字比对签名 payload。
         try:
-            plan = VisualizationPlanDraft.model_validate(facts.get("visualizationPlan"))
+            plan = VisualizationPlanDraft.model_validate(legacy_static_plan(facts.get("visualizationPlan")))
             expected_projection = normalize_replay_payload(
                 prepare_benchmark_coding_payload(
                     task_kind=task_kind,
@@ -675,7 +676,7 @@ def link_coding_only_benchmark(
                     planner_request=benchmark_payloads["plannerRequest"],
                 )
             )
-        except (ValidationError, ReportingError) as error:
+        except (ValueError, ReportingError) as error:
             raise ValueError("candidate Coding-only visualizationPlan 未通过冻结投影身份校验") from error
         # 冻结 payload 经 JSON 落盘，元组路径需按同一编码比较。
         expected_payload = json.loads(json.dumps(expected_projection, ensure_ascii=False))
@@ -788,8 +789,8 @@ async def apply_replay_chart_inputs(
     if task.get("task_kind") != "visualization":
         return False
     try:
-        plan = VisualizationPlanDraft.model_validate(facts.get("visualizationPlan"))
-    except ValidationError:
+        plan = VisualizationPlanDraft.model_validate(legacy_static_plan(facts.get("visualizationPlan")))
+    except ValueError:
         return False
     if not any(chart.data_bindings for chart in plan.charts):
         return False
@@ -1080,15 +1081,10 @@ def extract_benchmark_trace_inputs(
     if not isinstance(planner_output, dict):
         raise ValueError("可视化 planner trace 缺少结构化输出")
     try:
-        candidate_plan = VisualizationPlanDraft.model_validate(planner_output)
+        candidate_plan = VisualizationPlanDraft.model_validate(legacy_static_plan(planner_output))
     except ValidationError as error:
         raise ValueError("可视化 planner trace 缺少有效的 candidate 计划") from error
-    chart_paths = {
-        path
-        for chart in candidate_plan.charts
-        for path in (chart.source_path, chart.interactive_path)
-        if path is not None
-    }
+    chart_paths = {chart.source_path for chart in candidate_plan.charts}
     coding_candidates = []
     for row in rows:
         attributes = row.get("attributes") if isinstance(row, Mapping) else None
@@ -1612,7 +1608,7 @@ async def main(
 
                 if not chart_inputs_applied:
                     raise ValueError('standard-routes需要成功物化chart-input，不能将普通Coding回放记为标准命中。')
-                plan = VisualizationPlanDraft.model_validate(payload['facts']['visualizationPlan'])
+                plan = VisualizationPlanDraft.model_validate(legacy_static_plan(payload['facts']['visualizationPlan']))
                 entries = tuple(payload['facts']['chartInputs'])
                 files = []
                 for path in sorted({entry['path'] for entry in entries}):

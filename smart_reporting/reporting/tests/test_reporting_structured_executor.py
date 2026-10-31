@@ -374,7 +374,7 @@ def test_reporting_agno_parser_recovers_later_complete_plan_object(
     assert not any("Validation failed on merged data" in warning for warning in warnings)
 
 
-def test_visualization_generator_explains_renderer_selection_for_each_mode() -> None:
+def test_visualization_generator_only_plans_static_charts() -> None:
     agent = create_reporting_generator_agent(
         model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
         output_schema=VisualizationPlanDraft,
@@ -382,11 +382,11 @@ def test_visualization_generator_explains_renderer_selection_for_each_mode() -> 
     )
     instructions = "\n".join(agent.instructions)
 
-    for mode in ("static", "interactive", "auto"):
-        assert f"visualizationMode={mode}" in instructions
-    assert "renderer=matplotlib" in instructions
-    assert "renderer=plotly" in instructions
-    assert "interactivePath" in instructions
+    # Plotly已退役：规划只产出Matplotlib静态图，不再讲解renderer或交互产物。
+    assert "plotly" not in instructions.lower()
+    for retired in ("visualizationMode", "renderer", "interactivePath"):
+        assert retired not in instructions
+    assert "Matplotlib" in instructions
     assert "sourcePath" in instructions
     assert "visualForm" in instructions
     assert "dataBindings" in instructions

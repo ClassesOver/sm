@@ -1567,14 +1567,20 @@ def _trace_span(
     }
 
 
-def _candidate_visualization_plan(chart_path: str, *, interactive_path: str | None = None) -> dict:
+def _candidate_visualization_plan(
+    chart_path: str, *, legacy: bool = False, interactive_path: str | None = None
+) -> dict:
+    """legacy=True生成Plotly退役前trace中的图表条目（含renderer/interactivePath）。"""
+    legacy_fields = (
+        {"renderer": "plotly" if interactive_path else "matplotlib", "interactivePath": interactive_path}
+        if legacy else {}
+    )
     return {
         "charts": [
             {
                 "chartId": "chart-1",
                 "sourcePath": chart_path,
-                "renderer": "plotly" if interactive_path else "matplotlib",
-                "interactivePath": interactive_path,
+                **legacy_fields,
                 "title": "月度收入趋势",
                 "altText": "月度收入趋势图",
                 "citationIds": ["citation-1"],
@@ -1657,8 +1663,9 @@ def test_extract_visualization_trace_pairs_declared_output_paths(interactive) ->
             }
         ],
     }
+    # 旧trace：静态图剥离等价旧字段后可回放，交互图明确拒绝。
     planner_output = _candidate_visualization_plan(
-        chart_path, interactive_path=interactive_path if interactive else None
+        chart_path, legacy=True, interactive_path=interactive_path if interactive else None
     )
     candidate_facts = [
         {
@@ -1692,6 +1699,14 @@ def test_extract_visualization_trace_pairs_declared_output_paths(interactive) ->
         ),
     ]
 
+    if interactive:
+        with pytest.raises(ValueError, match="旧交互图表不能按静态图回放"):
+            replay_visualization_task.extract_benchmark_trace_inputs(
+                rows,
+                task_kind="visualization",
+                task_identity="section-001",
+            )
+        return
     extracted = replay_visualization_task.extract_benchmark_trace_inputs(
         rows,
         task_kind="visualization",
@@ -2557,3 +2572,23 @@ def test_validate_replay_bundle_rejects_authorized_input_drift(tmp_path):
 
     with pytest.raises(ValueError, match="身份不一致"):
         replay_visualization_task.validate_replay_bundle(bundle / "payload.json")
+
+
+@pytest.mark.parametrize(
+    "item,accepted",
+    [
+        ({"chartId": "c", "sourcePath": "c.png"}, True),
+        ({"chartId": "c", "sourcePath": "c.png", "interactivePath": None}, True),
+        ({"chartId": "c", "sourcePath": "c.png", "renderer": "matplotlib", "interactivePath": None}, True),
+        ({"chartId": "c", "sourcePath": "c.png", "interactivePath": "c.plotly.json"}, False),
+        ({"chartId": "c", "sourcePath": "c.png", "renderer": "plotly", "interactivePath": None}, False),
+    ],
+)
+def test_legacy_static_chart_fields_only_strip_static_equivalents(item, accepted):
+    from smart_reporting.reporting.workflow.benchmark_bundle import legacy_static_chart_fields
+
+    if accepted:
+        assert legacy_static_chart_fields(item) == {"chartId": "c", "sourcePath": "c.png"}
+    else:
+        with pytest.raises(ValueError, match="旧交互图表不能按静态图回放"):
+            legacy_static_chart_fields(item)
