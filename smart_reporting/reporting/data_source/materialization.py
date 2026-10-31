@@ -28,14 +28,17 @@ class CsvMaterializer:
     def append(self, rows: tuple[tuple[Any, ...], ...]) -> None:
         if not rows:
             return
-        normalized = tuple(tuple(_csv_value(value) for value in row) for row in rows)
+        if any(len(row) != len(self._columns) for row in rows):
+            raise ReportingError("source_query_failed", "查询结果无法物化为 CSV。")
+        # Python csv.writer 对数据库标量统一使用 str()，NULL 则写为空字段。先固定这一
+        # 历史字节语义，再交给 Polars 的 Rust writer 批量转义写出，避免 bool 大小写或
+        # datetime 分隔符变化导致不可变 Dataset 的 SHA-256 漂移。按列转换省去逐单元格调用。
+        columns = [
+            [None if value is None else (value if type(value) is str else str(value)) for value in column]
+            for column in zip(*rows, strict=True)
+        ]
         try:
-            frame = pl.DataFrame(
-                normalized,
-                schema=self._columns,
-                orient="row",
-                strict=False,
-            )
+            frame = pl.DataFrame(dict(zip(self._columns, columns, strict=True)), strict=False)
             frame.write_csv(
                 self._buffer,
                 include_header=not self._header_written,
@@ -81,10 +84,3 @@ def _deduplicate_columns(columns: tuple[str, ...]) -> tuple[str, ...]:
         used.add(candidate)
         result.append(candidate)
     return tuple(result)
-
-
-def _csv_value(value: Any) -> Any:
-    # Python csv.writer 对数据库标量统一使用 str()，NULL 则写为空字段。先固定
-    # 这一历史字节语义，再交给 Polars 的 Rust writer 批量完成转义和写出，避免
-    # bool 大小写或 datetime 分隔符变化导致不可变 Dataset 的 SHA-256 漂移。
-    return None if value is None else str(value)
