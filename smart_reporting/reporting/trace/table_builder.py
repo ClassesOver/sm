@@ -21,6 +21,8 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from loguru import logger
+
 from ..hospital_operation.deterministic_analysis import DeterministicAnalysisBundle, _parse_period
 from ..models import ReportingError
 from .contracts_v1 import (
@@ -820,8 +822,9 @@ _SUPPLEMENTAL_LABELS = {
 def build_supplemental_tables(
     document: Mapping[str, Any], *, file_resource_id: str, dataset_ids: Sequence[str] = (),
     dataset_contexts: Sequence[Mapping[str, Any]] = (),
+    summary_only: bool = False,
 ) -> tuple[tuple[TableTraceV1, str], ...]:
-    """完整发布冻结 findings 中的结构化表；不从列名推断指标与计算规则。"""
+    """装配冻结表；自动附表只收录至多30行、5列的完整汇总，不截断或重算。"""
     import hashlib
 
     from .contracts_v1 import TableOperandV1
@@ -851,6 +854,10 @@ def build_supplemental_tables(
                         or not all(isinstance(column, str) and column.strip() and len(column) <= 128 for column in columns)
                         or len(columns) != len(set(columns))
                         or any(not isinstance(row, list) or len(row) != len(columns) for row in source_rows)):
+                    return
+                if summary_only and (len(source_rows) > 30 or len(columns) > 5):
+                    logger.info("report_supplemental_details_retained pointer={} rows={} columns={}",
+                                pointer, len(source_rows), len(columns))
                     return
                 metadata = node.get('columnMeta', {})
                 headers = []

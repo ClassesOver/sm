@@ -51,6 +51,7 @@ _JSON_POINTER_PATTERN = re.compile(r"^(?:/(?:[^~/]|~[01])*)*$")
 
 #: FactRef JSON Pointer 最大长度（计划 3.2：限制指针长度和访问范围）。
 TRACE_FACT_POINTER_MAX_CHARS = 256
+TRACE_INDEX_MAX_SUBJECT_BINDINGS = 20000
 
 
 def validate_json_pointer(value: str) -> str:
@@ -748,7 +749,7 @@ class RevisionTraceIndexV1(StrictModel):
     )
     tables: tuple[TableTraceV1, ...] = Field(default=(), max_length=2000)
     subject_bindings: tuple[SubjectBindingV1, ...] = Field(
-        default=(), alias="subjectBindings", max_length=10000
+        default=(), alias="subjectBindings", max_length=TRACE_INDEX_MAX_SUBJECT_BINDINGS
     )
     review_notices: tuple[ReviewNoticeV1, ...] | None = Field(default=None, alias="reviewNotices", max_length=2000)
     drilldown_metrics: tuple[DrilldownMetricV1, ...] = Field(
@@ -949,7 +950,7 @@ TRACE_BUDGETS_V1: Mapping[str, int] = {
     "max_report_inputs": 100,
     "fact_ref_pointer_max_chars": TRACE_FACT_POINTER_MAX_CHARS,
     "index_max_files": 2000,
-    "index_max_subject_bindings": 10000,
+    "index_max_subject_bindings": TRACE_INDEX_MAX_SUBJECT_BINDINGS,
     "index_max_charts": 200,
     "index_max_tables": 2000,
     "index_max_computations": 500,

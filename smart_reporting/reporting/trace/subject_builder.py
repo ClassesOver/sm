@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any, Literal, cast
 
+from loguru import logger
+
 from ..delivery.report_runtime.markdown import _subject_id
 from ..hospital_operation.deterministic_analysis import (
     _next_period,
@@ -23,7 +25,9 @@ from ..hospital_operation.deterministic_analysis import (
 from ..units import REPORT_VALUE_UNIT_PATTERN, unit_scales
 from .comparison_proofs import period_list_text
 from .contracts_v1 import (
+    TRACE_INDEX_MAX_SUBJECT_BINDINGS,
     FactRefV1,
+    ReviewNoticeV1,
     SubjectBindingV1,
     SubjectLocatorV1,
     canonical_sha256,
@@ -38,10 +42,14 @@ def bind_table_subjects(index: Any) -> Any:
         (item.locator.table_id, item.locator.row_key, item.locator.column_key)
         for item in bindings if item.subject_kind == "table_cell"
     }
+    omitted = 0
     for table in index.tables:
         for cell in table.cells:
             locator = (table.table_id, cell.row_key, cell.column_key)
             if locator in locators or not (cell.fact_refs or cell.source_cell):
+                continue
+            if len(bindings) >= TRACE_INDEX_MAX_SUBJECT_BINDINGS:
+                omitted += 1
                 continue
             fingerprint = canonical_sha256({
                 "tableId": table.table_id, **cell.model_dump(mode="json", by_alias=True),
@@ -55,7 +63,21 @@ def bind_table_subjects(index: Any) -> Any:
                 computationId=cell.computation_id, sourceCell=cell.source_cell,
             ))
             locators.add(locator)
-    return index.model_copy(update={"subject_bindings": tuple(bindings)})
+    notices = index.review_notices
+    if omitted:
+        logger.warning("report_table_subject_budget_reached omitted={} limit={}",
+                       omitted, TRACE_INDEX_MAX_SUBJECT_BINDINGS)
+        notice = ReviewNoticeV1(
+            claimId="review-table-source-capacity", kind="source_review",
+            reason=f"来源入口达到容量上限，{omitted} 个单元格未展开独立入口；表格原始绑定与完整证据仍保留。",
+        )
+        existing = tuple(item for item in notices or () if item.claim_id != notice.claim_id)
+        if len(existing) < 2000:
+            notices = (*existing, notice)
+    if tuple(bindings) == index.subject_bindings and notices == index.review_notices:
+        return index
+    # model_copy 不会重跑字段长度与引用校验，落盘前必须构造契约可回读的索引。
+    return type(index).model_validate({**dict(index), "subject_bindings": tuple(bindings), "review_notices": notices})
 
 
 def build_claim_subject_bindings(
