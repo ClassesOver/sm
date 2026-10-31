@@ -2266,6 +2266,8 @@ def test_task_specific_code_instructions_delegate_wire_protocol_and_fit_budget()
         # 2026-09-24：追加禁止通用 helper / f-string / os.path.join 构造路径后上调至 5_600/1_750。
         # 2026-10-08：此后提交（含 94823f2、e938b7b、cecbe21）追加口径、单位与补证绑定规则，
         # 实测 6_819 bytes / 2_196 tokens，上调至 6_900/2_250，仍拦截意外膨胀。
+        # 2026-10-31：标准模板字段规则（standardBreak/Domains/BoxSummary 等）与标准预检说明
+        # 改为按计划实际字段随 facts.standardFieldRules 下发，不再常驻指令；预算维持不变。
         "visualization": {"bytes": 6_900, "cl100k_tokens": 2_250},
     }
     tokenizer = tiktoken.get_encoding("cl100k_base")

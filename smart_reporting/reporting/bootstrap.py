@@ -34,6 +34,7 @@ from .workflow.execution import ReportingTaskCoordinator
 from .workflow.repository import ReportingStateRepository
 from .workflow.runtime import ReportWorkflowRuntime
 from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationPlanDraft
+from .workflow.runtime.visualization_field_rules import STANDARD_FIELD_RULES_INSTRUCTION
 
 if TYPE_CHECKING:
     from .workflow.answer_registration import AnswerReviewPlanProvider
@@ -122,26 +123,7 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
     "字段或图型；函数组织、布局细节和同章脚本组织由当前实现决定。",
     _VISUALIZATION_CODE_COMMON_INSTRUCTIONS[2],
     "逐字使用 chartInputs[].path（或回退图的 factFile.path）、visualizationPlan.charts 和输出路径。",
-    "standardChartPreflight是标准模板预检诊断；脚本尚不存在时这是首次生成任务，"
-    "应结合完整计划和授权数据生成源码，不要假定已有脚本可读。",
-    "stacked-bar/stacked-total配合dual/rightFields时，左侧分项正负分离堆叠、右侧字段仅画折线，按各轴登记单位换算。"
-    "总额只对左侧分项求净和或读取已对账冻结总额，右侧指标和总额不能重复堆叠；缺失右轴值保留断点。",
-    "standardPagination由宿主原子展开为预算内的全部独立图页，每页保留完整原绑定、统一全表范围与系列颜色并标注页号。"
-    "未展开的分页计划不能被忽略或只交付前几页；不得用TopN冒充分页，不支持的形状明确回退。",
-    "计划中的standardSteps或standardView/standardDerivations须从冻结输入按声明顺序执行分组、透视或计算，"
-    "不得把预先算好的数值写死在脚本中；保留声明的范围、缺失值、显示单位和系列geometry。",
-    "standardEncoding须按冻结列绘制真实数值X/Y、比例气泡面积或分类热力矩阵；颜色/面积不可被主题或高亮重写。"
-    "缺失观测和单元保留掩码，不能补零；热力矩阵不能转置或暗中聚合重复单元。"
-    "standardBands上下界逐行读取已绑定列，按登记单位换算并保持缺失断带，不能估算区间或越过原范围。",
-    "standardWaterfall必须区分冻结绝对值与有符号增减，不排序截取贡献链，小计/终点与累计对账且不得隐式重置。"
-    "standardDistribution仅用绑定的原始组内样本，由Matplotlib绘线性四分位/IQR箱线；缺失不补零，注明有效n，隐藏异常点须说明。",
-    "standardDomains以显示单位控制指定数值轴的范围、刻度和格式；保留原始坐标、范围带和堆叠总高，不按范围裁掉输入行或将超界值压成边界值。"
-    "仅outOfRange=annotate允许裁切显示，必须注明超界数量，隐藏图外数值标注；左右轴、各分面和局部轴保持独立，不截取类别轴。",
-    "standardBreak用显示单位声明两个严格分离的线性值轴区间，画清晰断轴标记并注明省略开区间；两段读取相同完整数据，不能修改数值或删除省略行。"
-    "barh支持横向分组断轴，lower在左、upper在右，lowerFraction为左段宽度份额；保持同一类别顺序、颜色和有符号柱长，不在两段独立排序。"
-    "omittedValues/outOfRange仅显式annotate才允许省略/裁切，并说明数据或边界值数量；缺失空位单独说明，值标注只能落在真实所属区间。",
-    "standardBoxSummary直接读取冻结分位数/中位数/须，不从汇总行重算分布、IQR或原始样本量；未知n和未绑定异常点必须明确说明。"
-    "可选异常点使用第二个绑定长表，保留重复观测，并在预检和执行时核验其SHA，隐藏异常点也不能跳过；范围检查涵盖所有统计量和异常点。",
+    STANDARD_FIELD_RULES_INSTRUCTION,
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[4:6],
     *_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS,
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[9:11],
