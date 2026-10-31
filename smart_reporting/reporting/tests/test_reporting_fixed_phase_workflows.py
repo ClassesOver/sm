@@ -4083,6 +4083,8 @@ def test_block_review_notices_count_only_server_added_unverified_markers():
 
 @pytest.mark.anyio
 async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     from .test_content_review import _metric
 
     calls = []
@@ -4130,6 +4132,8 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
 
 @pytest.mark.anyio
 async def test_whole_section_correction_only_replaces_blocks_with_issues(monkeypatch):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     from .test_content_review import _metric
 
     clean = "本期门诊收入运行总体平稳，结构保持稳定。"
@@ -4584,6 +4588,8 @@ async def _run_correction_harness(monkeypatch, outputs):
     "not a SectionContent",
 ])
 async def test_correction_harness_preserves_first_draft_on_invalid_response(monkeypatch, correction):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     first = [("block_1", _FIRST_WITH_ISSUE), ("block_2", "门诊收入总体保持平稳。")]
     result, notices, calls = await _run_correction_harness(monkeypatch, [first, correction])
     assert len(calls) == 2
@@ -4594,6 +4600,8 @@ async def test_correction_harness_preserves_first_draft_on_invalid_response(monk
 
 @pytest.mark.anyio
 async def test_correction_harness_reviews_in_plan_order(monkeypatch):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     repeated = "本期门诊收入运行总体平稳，结构保持稳定。"
     clean = "住院收入变化需结合科室明细进一步核对。"
     result, _, calls = await _run_correction_harness(monkeypatch, [
@@ -4606,6 +4614,8 @@ async def test_correction_harness_reviews_in_plan_order(monkeypatch):
 
 @pytest.mark.anyio
 async def test_correction_harness_rechecks_repetition_after_partial_rollback(monkeypatch):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     repeated = "本期门诊收入运行总体平稳，结构保持稳定。"
     result, notices, calls = await _run_correction_harness(monkeypatch, [
         [("block_1", repeated + _FIRST_WITH_ISSUE), ("block_2", _FIRST_WITH_ISSUE)],
@@ -4664,6 +4674,8 @@ async def test_block_harness_prioritizes_facts_over_internal_labels(monkeypatch,
 })])
 @pytest.mark.parametrize("first_invalid", [False, True])
 async def test_block_harness_invalid_response_uses_only_a_valid_previous_draft(monkeypatch, invalid, first_invalid):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     calls = []
     original = _FIRST_WITH_ISSUE
 
