@@ -161,9 +161,12 @@ async def test_bad_review_plan_does_not_erase_independent_factual_proofs(tmp_pat
 async def test_bad_review_plan_does_not_erase_independent_chart_checks(tmp_path):
     from .test_chart_quality_bundle import chart_case
 
-    _, _, _, index, markdown, sources, mapping = await chart_case(tmp_path)
+    _, _, _, index, markdown, sources, _ = await chart_case(tmp_path)
     questions = request_questions("核验图表数据")
     bad = AnswerReviewPlan(questionSetSha256="f" * 64)
+    independent = evaluate_quality_bundle(
+        index, markdown, sources, authorization_scope_hash="c" * 64,
+    ).chart_checks
     current = evaluate_quality_bundle(
         index,
         markdown,
@@ -171,10 +174,9 @@ async def test_bad_review_plan_does_not_erase_independent_chart_checks(tmp_path)
         authorization_scope_hash="c" * 64,
         questions=questions,
         answer_review_plan=bad,
-        interactive_charts=mapping,
     )
     assert current.answer_review is None
-    assert current.chart_checks[index.chart_traces[0].chart_id].status == "verified"
+    assert independent and current.chart_checks == independent
 
 
 async def register_quality(editor, context, index, quality):

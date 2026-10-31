@@ -182,7 +182,7 @@ def test_baseline_and_current_content_are_cached_separately(monkeypatch):
             baseline_csv_content=baseline, baseline_authorized_fields=('period', 'group', 'amount'),
             _input_cache=cache,
         )
-        assert result['findings'][0]['rows'] == [['A', 30, 10, 20, 2, 1]]
+        assert result['findings'][0]['rows'] == [['A', 30, 10, 20, 2, 1, 1]]
         assert all(check['passed'] for check in result['reconciliations'])
 
     assert calls == [current, baseline]

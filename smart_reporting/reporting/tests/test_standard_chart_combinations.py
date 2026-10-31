@@ -125,15 +125,17 @@ async def test_layout_retry_is_bounded_and_only_changes_automatic_canvas(
         widths.append(config[0][-1]["width"])
         if len(widths) == 1:
             raise ReportingError("execution_failed", "failure", details={"stderr": error_code})
-        return "current-reviewed-receipt"
+        return receipt
 
+    receipt = SimpleNamespace()
     runner = SimpleNamespace(run_standard_visualization=standard)
     if attempts == 1:
         with pytest.raises(ReportingError):
             await _run_standard_with_layout_retry(runner, context, object(), plan, inputs, {})
     else:
         result = await _run_standard_with_layout_retry(runner, context, object(), plan, inputs, {})
-        assert result == "current-reviewed-receipt"
+        assert result is receipt and result.standard_render_proofs == ()
+        assert [item["status"] for item in result.execution_attempts] == ["failed", "succeeded"]
         assert widths[1] > widths[0]
     assert len(widths) == attempts
 

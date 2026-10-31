@@ -8,7 +8,7 @@ from .standard_chart_encoding import fail
 
 def dual_stack_values(config, document):
     columns, rows = document["columns"], document["rows"]
-    fields, metadata, policy = config[6], config[12], config[14]
+    fields, metadata, policy = config.value_columns, config.metadata, config.policy
     result = {}
     for index, (field, meta) in enumerate(zip(fields, metadata, strict=True)):
         factor = policy["axis_factors"][index] * (100 if meta.get("unit") == "%" and meta.get("isPercent") is False else 1)
@@ -47,15 +47,15 @@ def dual_stack_levels(series, components):
 
 
 def prepare_dual_stack(chart, config, document):
-    form, axes, total, policy = config[4], config[11], config[13], config[14]
+    form, axes, total, policy = config.form, config.axes_policy, config.total_field, config.policy
     if axes["mode"] != "dual" or form not in {"stacked-bar", "stacked-total"}:
         return
     right = set(axes["right_fields"])
     names = policy["series_names"]
     components = [name for name in names if name not in right and name != total]
-    if (config[7] or axes["scale"] != "linear" or not components
+    if (config.category_column or axes["scale"] != "linear" or not components
             or total is not None and (form != "stacked-total" or total in right or total not in names)
-            or any(meta.get("unit") == "%" for name, meta in zip(config[6], config[12], strict=True) if name in components)):
+            or any(meta.get("unit") == "%" for name, meta in zip(config.value_columns, config.metadata, strict=True) if name in components)):
         fail("standard_dual_stack_combination_invalid", "standardAxes/standardTotalField", "堆叠双轴需要线性宽表及左侧可加分项；冻结总额须在左轴，百分比不能堆叠。")
     for item in policy["style"]["series"]:
         allowed = {"auto", "line"} if item["series"] in right or item["series"] == total else {"auto", "bar"}
@@ -89,17 +89,17 @@ def prepare_dual_stack(chart, config, document):
 
 
 def dual_stack_profiles(config, document):
-    policy = config[14]
+    policy = config.policy
     series = dual_stack_values(config, document)
     boundaries, totals = dual_stack_levels(series, policy["dual_stack"]["components"])
     result = {}
-    for index, name in enumerate(config[6]):
+    for index, name in enumerate(config.value_columns):
         values = [value for value in series[name] if value is not None]
         if name in boundaries:
             starts, ends = boundaries[name]
             values = [value for pair in zip(starts, ends, strict=True) for value in pair]
         result[name] = {"values": values, "unit": policy["axis_units"][index]}
-    if config[4] == "stacked-total" and config[13] is None:
+    if config.form == "stacked-total" and config.total_field is None:
         # The calculated net sum belongs only to the left axis.
         # Attach calculated line endpoints to a real left-axis profile instead
         # of inventing a dictionary key which could collide with a source field.

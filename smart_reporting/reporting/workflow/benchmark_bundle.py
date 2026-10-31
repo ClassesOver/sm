@@ -289,6 +289,28 @@ def validate_frozen_planner_coding_bundle(
     return manifest, payloads
 
 
+def legacy_static_chart_fields(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Plotly退役前冻结的静态图条目：剥离等价的renderer/interactivePath。
+
+    交互图（renderer=plotly或interactivePath非空）无法用静态图回放，明确拒绝；
+    仅用于回放冻结输入，模型实时输出仍按严格schema校验。
+    """
+    chart = dict(item)
+    renderer = chart.pop("renderer", None)
+    interactive = chart.pop("interactivePath", None)
+    if renderer not in (None, "matplotlib") or interactive is not None:
+        raise ValueError(f"旧交互图表不能按静态图回放：{chart.get('chartId')}")
+    return chart
+
+
+def legacy_static_plan(plan: Any) -> Any:
+    """对冻结计划逐图应用legacy_static_chart_fields；非标准形状原样交给schema报错。"""
+    if not isinstance(plan, Mapping) or not isinstance(plan.get("charts"), list):
+        return plan
+    return {**plan, "charts": [legacy_static_chart_fields(chart) if isinstance(chart, Mapping) else chart
+                               for chart in plan["charts"]]}
+
+
 def _validate_required_charts(
     planner_request: Mapping[str, Any], task_payload: Mapping[str, Any]
 ) -> None:
@@ -297,7 +319,7 @@ def _validate_required_charts(
     requiredCharts 是冻结的图表身份契约：chartId 全局唯一；
     sourcePath 集合必须与 Coding declared_output_paths 严格相等。
     仅适用于 visualization 任务，其他任务携带即拒绝。
-    条目中的未知键静默忽略，允许前向兼容扩展。
+    条目只允许chartId/sourcePath；旧静态条目中的renderer/interactivePath=null先剥离。
     """
     required = planner_request.get("requiredCharts")
     if required is None:
@@ -311,6 +333,7 @@ def _validate_required_charts(
     for item in required:
         if not isinstance(item, Mapping):
             raise ValueError("benchmark requiredCharts 项必须是对象")
+        item = legacy_static_chart_fields(item)
         chart_id = item.get("chartId")
         source_path = item.get("sourcePath")
         if set(item) - {"chartId", "sourcePath"}:

@@ -17,6 +17,36 @@ HORIZONTAL_BREAK_SCRIPT = '''def layout_horizontal_standard_break(fig,policy):
         fig.tight_layout(pad=max(.7,policy["padding"]),rect=(.02,reserved["footer_top"],.98,reserved["header_bottom"]))
         fig.subplots_adjust(wspace=spec["gap"])
 
+def widen_horizontal_break_gap(fig,axes,policy):
+    # 交界两侧刻度标签按真实包围盒外伸量加宽段间留白；不改范围、刻度或数值。
+    # 与布局重试一致，只调整自动画布；显式固定画布仍如实报告碰撞。
+    if policy["size_mode"]!="auto":
+        return
+    constrained=policy["layout"]=="constrained"
+    for _ in range(4):
+        fig.draw_without_rendering()
+        renderer=fig.canvas.get_renderer()
+        overhang=0
+        for ax,last in ((axes[0],True),(axes[1],False)):
+            low,high=ax.get_xlim()
+            edge=ax.get_window_extent(renderer)
+            boxes=[tick.get_window_extent(renderer) for value,tick in zip(ax.get_xticks(),ax.get_xticklabels())
+                   if tick.get_visible() and low<=value<=high]
+            if boxes:
+                overhang+=max(0,max(box.x1 for box in boxes)-edge.x1) if last else max(0,edge.x0-min(box.x0 for box in boxes))
+        gap=axes[1].get_window_extent(renderer).x0-axes[0].get_window_extent(renderer).x1
+        needed=overhang+6*fig.dpi/72
+        if gap>=needed or gap<=0:
+            return
+        current=fig.get_layout_engine().get()["wspace"] if constrained else fig.subplotpars.wspace
+        if current<=0:
+            return
+        wider=current*needed/gap*1.05
+        if constrained:
+            fig.get_layout_engine().set(wspace=wider)
+        else:
+            fig.subplots_adjust(wspace=wider)
+
 def render_horizontal_broken_chart(payload,canvas,form,title,output_path,label_column,fields,category,metadata,input_path):
     import math
     import matplotlib.pyplot as plt
@@ -116,6 +146,7 @@ def render_horizontal_broken_chart(payload,canvas,form,title,output_path,label_c
     axes[1].tick_params(axis="y",labelleft=False)
     fig.suptitle(title)
     finish_standard_layout(fig,canvas)
+    widen_horizontal_break_gap(fig,axes,canvas)
     renderer=fig.canvas.get_renderer()
     numeric_boxes=[]
     for ax in axes:

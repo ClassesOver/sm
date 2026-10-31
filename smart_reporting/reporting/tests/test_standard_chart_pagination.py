@@ -259,19 +259,6 @@ def test_paginated_materialized_safe_name_collision_is_detected():
     assert result.charts==plan.charts and '冲突' in result.warnings[-1]
 
 
-def test_pagination_rejects_legacy_interactive_companion_before_expansion():
-    plan,inputs,*_=pagination_plan(4,2)
-    bad=plan.charts[0].model_copy(update={'interactive_path':'chart.plotly.json'})
-    # Revalidate would reject this legacy malformed plan; the helper must never
-    # expand its companion and later hide duplicate output paths.
-    from smart_reporting.reporting.workflow.runtime.standard_chart_pagination import (
-        PaginationUnsupported,
-        _pages,
-    )
-    with pytest.raises(PaginationUnsupported):
-        _pages(bad,inputs)
-
-
 def test_page_point_colors_are_filtered_without_changing_series_order():
     from smart_reporting.reporting.workflow.runtime.phase_models import StandardChartStyle
 

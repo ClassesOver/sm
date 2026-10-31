@@ -60,7 +60,7 @@ def test_equal_incomplete_operands_do_not_become_verified():
 
 
 async def bound_chart(tmp_path, *, monthly=False):
-    _, _, _, index, markdown, sources, mapping = await chart_case(tmp_path)
+    _, _, _, index, markdown, sources, _ = await chart_case(tmp_path)
     chart = index.chart_traces[0]
     fact_file = index.fact_files[0].file_resource_id
     plot_id = chart.plot_data_file_resource_ids[0]
@@ -82,10 +82,6 @@ async def bound_chart(tmp_path, *, monthly=False):
         plot["columns"] = ["period", "value"]
         plot["rows"] = [[item["period"], item["value"]] for item in first["periodValues"]]
         plot["rowCount"] = 2
-        spec_id = next(file.resource_id for file in index.files if file.path in mapping.values())
-        sources[spec_id] = encoded(
-            {"data": [{"type": "bar", "x": ["2025-09", "2025-10"], "y": [3600, 3600]}]}
-        )
     sources[plot_id] = encoded(plot)
     ref = FactRefV1(
         analysisId=document["analysisId"],
@@ -109,7 +105,14 @@ async def bound_chart(tmp_path, *, monthly=False):
             ),
         }
     )
-    return index, markdown, sources, mapping
+    return index, markdown, sources
+
+
+def _verified_arrays(index, markdown, sources, chart_id):
+    """静态图自身如实为unknown；语义对齐只消费已核验的图表检查结果。"""
+    honest = evaluate_chart_quality(index, markdown, sources)[chart_id]
+    assert (honest.status, honest.reason) == ("unknown", "static_image_not_evaluated")
+    return {chart_id: ChartQualityCheck(status="verified", reason="standard_render_matches_frozen_inputs")}
 
 
 @pytest.mark.anyio
@@ -129,7 +132,7 @@ async def bound_chart(tmp_path, *, monthly=False):
     ],
 )
 async def test_chart_arrays_do_not_prove_declared_metric_ownership(tmp_path, fault):
-    index, markdown, sources, mapping = await bound_chart(tmp_path)
+    index, markdown, sources = await bound_chart(tmp_path)
     chart = index.chart_traces[0]
     if fault == "wrong_metric":
         ref = chart.fact_refs[0].model_copy(
@@ -153,8 +156,7 @@ async def test_chart_arrays_do_not_prove_declared_metric_ownership(tmp_path, fau
             }
         )
     index = index.model_copy(update={"chart_traces": (chart,)})
-    arrays = evaluate_chart_quality(index, markdown, sources, mapping)
-    assert arrays[chart.chart_id].status == "verified"
+    arrays = _verified_arrays(index, markdown, sources, chart.chart_id)
     if fault == "missing":
         sources.pop(index.fact_files[0].file_resource_id)
     results = evaluate_semantic_alignment(index, sources, chart_checks=arrays)
@@ -173,7 +175,7 @@ async def test_chart_arrays_do_not_prove_declared_metric_ownership(tmp_path, fau
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("wrong_period", [False, True])
 async def test_equal_month_values_cannot_hide_wrong_registered_categories(tmp_path, wrong_period):
-    index, markdown, sources, mapping = await bound_chart(tmp_path, monthly=True)
+    index, markdown, sources = await bound_chart(tmp_path, monthly=True)
     chart = index.chart_traces[0].model_copy(
         update={
             "series": (
@@ -186,8 +188,7 @@ async def test_equal_month_values_cannot_hide_wrong_registered_categories(tmp_pa
         }
     )
     index = index.model_copy(update={"chart_traces": (chart,)})
-    arrays = evaluate_chart_quality(index, markdown, sources, mapping)
-    assert arrays[chart.chart_id].status == "verified"
+    arrays = _verified_arrays(index, markdown, sources, chart.chart_id)
     result = evaluate_semantic_alignment(index, sources, chart_checks=arrays)[chart.chart_id]
     assert result.status == ("unknown" if wrong_period else "verified")
     if wrong_period:
@@ -208,7 +209,7 @@ def test_comparison_projection_preserves_level_point_and_relative_rate_roles(fie
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_unknown_chart_does_not_remove_an_independent_alignment(tmp_path):
-    index, markdown, sources, mapping = await bound_chart(tmp_path)
+    index, markdown, sources = await bound_chart(tmp_path)
     good = index.chart_traces[0]
     bad = good.model_copy(update={"chart_id": "chart_bad", "fact_refs": ()})
     index = index.model_copy(update={"chart_traces": (bad, good)})
@@ -248,7 +249,7 @@ def test_comparison_without_a_unique_registered_value_role_remains_unknown(colum
 async def test_quality_input_hash_binds_chart_metadata_even_if_both_checks_are_unknown(tmp_path):
     from smart_reporting.reporting.trace.quality_bundle import evaluate_quality_bundle
 
-    index, markdown, sources, mapping = await bound_chart(tmp_path)
+    index, markdown, sources = await bound_chart(tmp_path)
     chart = index.chart_traces[0]
     results = []
     for unit in ("万元", "亿元"):
@@ -260,7 +261,6 @@ async def test_quality_input_hash_binds_chart_metadata_even_if_both_checks_are_u
                 current,
                 markdown,
                 sources,
-                interactive_charts=mapping,
                 authorization_scope_hash="c" * 64,
             )
         )

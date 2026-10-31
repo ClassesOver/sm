@@ -264,7 +264,7 @@ async def test_static_semantics_uses_exact_source_identity_and_not_equal_values(
     from smart_reporting.reporting.trace.chart_quality import ChartQualityCheck
     from smart_reporting.reporting.trace.semantic_alignment import evaluate_semantic_alignment
 
-    index, _, sources, _ = await bound_chart(tmp_path, monthly=True)
+    index, _, sources = await bound_chart(tmp_path, monthly=True)
     chart = index.chart_traces[0]
     origin = index.fact_files[0]
     fact_document = json.loads(sources[origin.file_resource_id])
@@ -555,7 +555,7 @@ async def test_standard_proof_survives_host_submission_state_and_revision_archiv
         'name': command['name'], 'commandId': command['command_id'], 'payload': command['payload'],
     }).state
     section = state.payload['visualizationSections']['section_001']
-    frozen = _analysis_chart_from_registration(section['charts'][0], section['files'][0], None,
+    frozen = _analysis_chart_from_registration(section['charts'][0], section['files'][0],
                                                section['visualReceipts'][0], section['plotDataFiles'][0])
     if fault:
         assert frozen.standard_render_proof is None

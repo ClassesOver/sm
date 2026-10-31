@@ -203,7 +203,7 @@ def test_publication_quality_loads_supplemental_cell_sources_without_fact_regist
     index = _build_table(markdown_file=mdfile, server_table_traces=(trace,), table_source_files=(source,))
     available = {resource: raw, derive_resource_id(mdfile.path): md}
     # 发布端必须加载实际单元格依赖，不能仅从 factFiles 收集来源。
-    sources = {key: available[key] for key in _quality_source_ids(index, {}) if key in available}
+    sources = {key: available[key] for key in _quality_source_ids(index) if key in available}
     result = evaluate_quality_bundle(index, markdown, sources, authorization_scope_hash='b' * 64)
     assert result.table_checks[trace.table_id].status == 'verified'
     assert result.table_checks[trace.table_id].checked_cells == 228
