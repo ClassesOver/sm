@@ -55,6 +55,7 @@ async def test_footnote_reference_is_not_the_cell_amount(
                 row_keys=(cell.row_key,),
                 cells=(cell,),
                 origin_markdown=markdown(original),
+                row_label_column=True,
             ),
         )
     )

@@ -1453,6 +1453,9 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "expectedPath",
         "anchor",
         "declaredImagePaths",
+        # 标准图尺寸无效时返回实际像素，模型据此调整画布。
+        "width",
+        "height",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}

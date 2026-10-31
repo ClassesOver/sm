@@ -274,7 +274,8 @@ async def _run_standard_chart_routes(
                 {**facts, "standardChartRoutes": routes},
             )
             # 组合脚本会重画所有组件。只在最终图片仍与真实标准执行逐字节一致时保留证明。
-            outputs = {item.path: item.sha256 for item in getattr(result.execution_receipt, 'output_files', ())}
+            receipt = getattr(result, 'execution_receipt', None)
+            outputs = {item.path: item.sha256 for item in getattr(receipt, 'output_files', ())}
             proofs = tuple(record for chart in plan.charts
                            for record in component_proofs.get(chart.chart_id, ())
                            if record['proof'].image_sha256 == outputs.get(chart.source_path))
