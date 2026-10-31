@@ -1,4 +1,5 @@
 """路由仅暴露本图及全局软告警，并记录真实编译阶段。"""
+import itertools
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +16,8 @@ async def test_group_routes_keep_warning_ownership_and_measured_compile_time(tmp
     warning0 = {"chartId": "0", "code": "first_only", "message": "只属于第一图"}
     warning1 = {"chartId": "1", "code": "second_only", "message": "只属于第二图"}
     global_warning = {"code": "shared", "message": "全局提示"}
-    clock = iter((1.0, 1.025))
+    # 每次读表前进25ms；编译耗时只覆盖预检前后相邻两次读表。
+    clock = itertools.count(1.0, 0.025)
     monkeypatch.setattr(routing, "perf_counter", lambda: next(clock), raising=False)
     monkeypatch.setattr(routing, "standard_visualization_preflight", lambda *args: SimpleNamespace(
         source="pass", diagnostic=None, warnings=(warning0, warning1, global_warning)))

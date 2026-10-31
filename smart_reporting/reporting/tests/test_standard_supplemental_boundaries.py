@@ -151,6 +151,8 @@ async def test_old_report_without_layout_flag_or_origin_keeps_label_offset():
     payload = trace.model_dump(mode="json", by_alias=True)
     payload.pop("rowLabelColumn")
     payload.pop("originMarkdown")
+    # 旧报告早于单元格单位格式化，同样没有sourceCellDisplay，按原始值核验。
+    payload.pop("sourceCellDisplay")
     legacy = TableTraceV1.model_validate(payload)
     assert legacy.row_label_column is True
     index = _build_table(server_table_traces=(legacy,), table_source_files=(source,))

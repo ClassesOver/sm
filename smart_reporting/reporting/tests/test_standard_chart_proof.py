@@ -555,7 +555,7 @@ async def test_standard_proof_survives_host_submission_state_and_revision_archiv
         'name': command['name'], 'commandId': command['command_id'], 'payload': command['payload'],
     }).state
     section = state.payload['visualizationSections']['section_001']
-    frozen = _analysis_chart_from_registration(section['charts'][0], section['files'][0], None,
+    frozen = _analysis_chart_from_registration(section['charts'][0], section['files'][0],
                                                section['visualReceipts'][0], section['plotDataFiles'][0])
     if fault:
         assert frozen.standard_render_proof is None

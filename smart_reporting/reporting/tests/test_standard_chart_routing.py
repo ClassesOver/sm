@@ -276,7 +276,8 @@ async def test_supported_group_fast_path_and_group_failure_isolation(
         return SimpleNamespace(
             script_file=SimpleNamespace(
                 path=ctx.script_path, sha256=hashlib.sha256(source.encode()).hexdigest()
-            )
+            ),
+            execution_receipt=None,
         )
 
     async def read(task_id, path):
@@ -297,16 +298,24 @@ async def test_supported_group_fast_path_and_group_failure_isolation(
     coding.assert_not_called()
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_legacy_interactive_delivery_keeps_existing_route(tmp_path):
-    plan, inputs, context = setup(tmp_path, ["line"])
-    plan.charts[0].interactive_path = "legacy.plotly.json"
-    runner = SimpleNamespace(
-        run=AsyncMock(return_value=SimpleNamespace()),
-        run_standard_visualization=AsyncMock(side_effect=AssertionError("JSON is not an image")),
-    )
-    result = await run_standard_chart_routes(runner, context, object(), plan, inputs, {}, object())
-    assert result.standard_chart_routes[0]["route"] == "coding"
-    runner.run.assert_awaited_once()
-    runner.run_standard_visualization.assert_not_called()
+def test_composite_components_start_from_project_theme_without_leaking_rc(tmp_path, monkeypatch):
+    import matplotlib
+
+    monkeypatch.chdir(tmp_path)
+    scripts = {
+        "first.py": 'import matplotlib\nfrom pathlib import Path\n'
+                    'Path("first.txt").write_text(str(matplotlib.rcParams["lines.linewidth"]))\n'
+                    'matplotlib.rcParams["lines.linewidth"] = 9\n',
+        "second.py": 'import matplotlib\nfrom pathlib import Path\n'
+                     'Path("second.txt").write_text(str(matplotlib.rcParams["lines.linewidth"]))\n',
+    }
+    components = []
+    for path, text in scripts.items():
+        Path(path).write_text(text)
+        components.append((path, hashlib.sha256(text.encode()).hexdigest()))
+    source = _composite_source(components, SimpleNamespace(entries=()), [], ("first.txt", "second.txt"))
+    # 模拟正式进程由matplotlibrc/启动引导设置的项目主题。
+    with matplotlib.rc_context({"lines.linewidth": 3.5}):
+        exec(compile(source, "composite.py", "exec"), {"__name__": "__main__"})
+        assert matplotlib.rcParams["lines.linewidth"] == 3.5
+    assert Path("first.txt").read_text() == Path("second.txt").read_text() == "3.5"

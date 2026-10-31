@@ -82,10 +82,6 @@ async def bound_chart(tmp_path, *, monthly=False):
         plot["columns"] = ["period", "value"]
         plot["rows"] = [[item["period"], item["value"]] for item in first["periodValues"]]
         plot["rowCount"] = 2
-        spec_id = next(file.resource_id for file in index.files if file.path in mapping.values())
-        sources[spec_id] = encoded(
-            {"data": [{"type": "bar", "x": ["2025-09", "2025-10"], "y": [3600, 3600]}]}
-        )
     sources[plot_id] = encoded(plot)
     ref = FactRefV1(
         analysisId=document["analysisId"],
