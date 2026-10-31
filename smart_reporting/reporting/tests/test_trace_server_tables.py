@@ -223,16 +223,17 @@ def test_assembler_groups_source_tables_in_appendix_after_all_analysis():
     rendered = assemble_report_markdown(draft, expected_title='运营报告',
         markdown_path='report.md', sections=definitions, citation_ids=(),
         server_tables=(_server_table(table),))
-    body, appendix = rendered.markdown.split('**附表：数据明细**')
+    body, appendix = rendered.markdown.split('**附表：汇总数据**')
     assert '趋势结论。' in body
     assert '[[table:' not in body
     assert '**1. 收入分析**' in appendix and table in appendix
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
-        relocate_server_tables, APPENDIX_TABLES_SENTINEL,
+        APPENDIX_TABLES_SENTINEL,
+        relocate_server_tables,
     )
     projected = relocate_server_tables(rendered.markdown)
     assert projected.count(APPENDIX_TABLES_SENTINEL) == 1
-    assert '**附表：数据明细**' not in projected
+    assert '**附表：汇总数据**' not in projected
     assert projected.index(APPENDIX_TABLES_SENTINEL) < projected.index('**1. 收入分析**')
 
 
@@ -245,11 +246,12 @@ def test_model_analysis_table_stays_in_body_while_source_details_go_to_appendix(
     rendered = assemble_report_markdown(draft, expected_title='运营报告',
         markdown_path='report.md', sections=_outline_sections(), citation_ids=(),
         server_tables=(_server_table(source_table),))
-    body, appendix = rendered.markdown.split('**附表：数据明细**')
+    body, appendix = rendered.markdown.split('**附表：汇总数据**')
     assert analysis_table in body
     assert source_table not in body and source_table in appendix
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
-        APPENDIX_TABLES_SENTINEL, relocate_server_tables,
+        APPENDIX_TABLES_SENTINEL,
+        relocate_server_tables,
     )
     export_body, export_appendix = relocate_server_tables(rendered.markdown).split(APPENDIX_TABLES_SENTINEL)
     assert analysis_table in export_body

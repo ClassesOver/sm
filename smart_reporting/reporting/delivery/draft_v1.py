@@ -1133,10 +1133,11 @@ def assemble_report_markdown(
                     }
                 )
 
-    # 完整来源表集中收录于附表，正文保留模型围绕结论选择的简表。
+    # 自动汇总表集中收录于附表，正文保留模型围绕结论选择的分析表。
     # 原表与来源标记原样保留，编辑器和导出文档采用一致的阅读顺序。
     if server_tables_by_section:
-        markdown_parts.append("**附表：数据明细**")
+        markdown_parts.append("**附表：汇总数据**")
+        markdown_parts.append("以下为汇总数据。完整分析明细保留在报告来源证据中，供查询与核对。")
         for definition in sections:
             tables = server_tables_by_section.get(definition.code, ())
             if tables:
