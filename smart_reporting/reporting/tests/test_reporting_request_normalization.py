@@ -6,9 +6,58 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from smart_reporting.reporting.contract import ReportRequestEnvelope
 from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
 from smart_reporting.reporting.workflow.runtime.models import NormalizedReportPrompt
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("prompt", "model_period", "expected", "expected_yoy"),
+    [
+        (
+            "分析瑞金医院收入、成本、工作量，期间为2025年1月1日至12月31日",
+            {"start": "2025-01-01", "end": "2025-12-31"},
+            {"start": "2025-01-01", "end": "2025-12-31"},
+            {"start": "2024-01-01", "end": "2024-12-31"},
+        ),
+        (
+            "分析2025年1-9月医院收入",
+            {"start": "2025-01-01", "end": "2025-06-30"},
+            {"start": "2025-01-01", "end": "2025-06-30"},
+            {"start": "2024-01-01", "end": "2024-06-30"},
+        ),
+        (
+            "分析2025年1-9月医院收入",
+            None,
+            {"start": "2025-01-01", "end": "2025-09-30"},
+            {"start": "2024-01-01", "end": "2024-09-30"},
+        ),
+    ],
+)
+async def test_normalization_prefers_model_period_and_only_falls_back_when_missing(
+    prompt, model_period, expected, expected_yoy,
+):
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(return_value=NormalizedReportPrompt(
+        reportType="topic", domains=("income",), period=model_period,
+    ))
+    context = SimpleNamespace(session_state={})
+
+    output = await runtime.normalize_report_request(
+        SimpleNamespace(input=prompt, additional_data=None), context,
+    )
+
+    assert output.content["period"] == expected
+    assert context.session_state["report_request_context"]["period"] == expected
+    envelope = ReportRequestEnvelope.from_untrusted(output.content)
+    windows = {
+        window.role: window.period.model_dump(mode="json")
+        for window in envelope.period_windows().windows
+    }
+    assert windows == {"current": expected, "yoy": expected_yoy}
 
 
 @pytest.mark.anyio

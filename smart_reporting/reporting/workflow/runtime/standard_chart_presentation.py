@@ -30,8 +30,11 @@ def order_standard_rows(document, label, policy):
         if len({(meta['unit'], meta.get('isPercent')) for meta in metas}) != 1:
             return None
         indexes = [columns.index(field) for field in policy.fields]
-        if any(not _finite(row[index]) for row in rows for index in indexes):
+        if any(not _finite(row[index]) and not (policy.exclude_missing and row[index] is None)
+               for row in rows for index in indexes):
             return None
+        if policy.exclude_missing:
+            rows = [row for row in rows if all(row[index] is not None for index in indexes)]
         rows = sorted(rows, key=lambda row: max(abs(row[index]) for index in indexes), reverse=policy.descending)
         labels = [row[position] for row in rows]
     elif policy.mode == 'value':
@@ -240,6 +243,9 @@ def standard_annotation(ax, text, xy, canvas, number, color=None, highlight=Fals
     color = spec["color"] or color or "#475569"
     position = spec["position"]
     dx, dy = style["annotation_offset_x"], style["annotation_offset_y"]
+    negative_bar = position == "auto" and canvas.get("horizontal", False) and xy[0] < 0
+    if negative_bar:
+        dx = -abs(dx)
     if position == "below":
         dy = -abs(dy) - 6
     elif position == "left":
@@ -250,7 +256,7 @@ def standard_annotation(ax, text, xy, canvas, number, color=None, highlight=Fals
         dy = abs(dy) + 4
     annotation = ax.annotate(text, xy, xytext=(dx, dy), textcoords="offset points",
         fontsize=style["annotation_font_size"], color=color,
-        ha="right" if position == "left" else "center" if dx == 0 else "left",
+        ha="right" if position == "left" or negative_bar else "center" if dx == 0 else "left",
         va="top" if dy < 0 else "bottom" if dy > 0 else "center",
         arrowprops={"arrowstyle": "-", "color": color, "lw": .7} if style["annotation_leader"] else None)
     annotation._standard_custom_position = True

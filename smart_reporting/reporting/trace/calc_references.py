@@ -177,7 +177,8 @@ class CalcEvaluator:
         if display == "百分点":
             display = PERCENT_POINT
         target_family = _family(unit)
-        if target_family is None or display not in target_family:
+        # 床日等无倍率单位族的结果仍可按原单位显示，只有换算才要求已确认的单位族。
+        if display != unit and (target_family is None or display not in target_family):
             return f"结果单位为{unit}，与所写显示单位{match['unit']}不一致"
         return CalcResult(value, unit, display, tuple(operands), formula, expression)
 

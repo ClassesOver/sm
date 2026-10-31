@@ -10,7 +10,7 @@ from typing import Any
 
 from ..reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ..reporting.trace.fact_index import breakdown_partitions, shareable_partition
-from ..reporting.trace.numeric_text import budget_comparison_values
+from ..reporting.trace.numeric_text import budget_comparison_values, primary_display_name
 
 TEMPLATE_IDS = ("composition-bars", "monthly-trend", "yoy-comparison", "budget-progress")
 TEMPLATE_CATALOG = (
@@ -96,9 +96,7 @@ def _composition_rows(
             continue
         group_indexes = {id(group): index for index, group in enumerate(bundle.breakdowns)}
         indexes = [group_indexes[id(group)] for group in groups]
-        referenced = any(
-            _reference_matches(refs, "metrics", parent_index, parent.fact_id) for _ in [0]
-        ) or any(
+        group_referenced = any(
             _reference_matches(refs, "breakdowns", idx, bundle.breakdowns[idx].fact_id)
             for idx in indexes
         )
@@ -109,10 +107,36 @@ def _composition_rows(
                 "field": field,
                 "groups": groups,
                 "indexes": indexes,
-                "referenced": referenced,
+                "referenced": group_referenced or _reference_matches(
+                    refs, "metrics", parent_index, parent.fact_id
+                ),
+                "groupReferenced": group_referenced,
             }
         )
-    selected = _select_unique(candidates, refs)
+    eligible = [item for item in candidates if item["referenced"]] if refs else candidates
+    explicit = [item for item in eligible if item["groupReferenced"]]
+    if explicit:
+        eligible = explicit
+    elif any(ref.fact_kind == "supplemental_finding" for ref in refs):
+        # 补证父指标只能证明指标归属，不能证明原图的分组维度。
+        return [], [], "原图补证未绑定可核验的同维度构成事实，不能替换为其他维度。"
+    if len(eligible) > 1:
+        # 只在同一指标、范围、维度的期间候选之间优先本期；不跨指标或维度猜选。
+        first = eligible[0]
+        same_measure = all(
+            item["field"] == first["field"]
+            and item["parent"].field_ref == first["parent"].field_ref
+            and item["parent"].metric_codes == first["parent"].metric_codes
+            and item["parent"].scope == first["parent"].scope
+            and primary_display_name(item["parent"].display_name or "")
+            == primary_display_name(first["parent"].display_name or "")
+            for item in eligible
+        )
+        if same_measure:
+            current = [item for item in eligible if "current" in item["parent"].period_roles]
+            if len(current) == 1:
+                eligible = current
+    selected = eligible[0] if len(eligible) == 1 else None
     if selected is None:
         reason = (
             "没有登记构成数据。"
@@ -219,11 +243,18 @@ def _yoy_rows(
         return [], [], "同比事实包含不同单位，无法共用同一数值轴。"
     rows = []
     pointers = []
+    metric_names = {fact.fact_id: primary_display_name(fact.display_name)
+                    for fact in (*bundle.metrics, *bundle.breakdowns) if fact.fact_id and fact.display_name}
     for entry in selected:
         item, index = entry["item"], entry["index"]
+        names = {metric_names[fact_id] for fact_id in item.input_fact_ids if metric_names.get(fact_id)}
+        name = next(iter(names)) if len(names) == 1 else item.field
+        label = f"{name}（{item.period_end}）" if item.period_end else name
+        if any(row["label"] == label for row in rows):
+            return [], [], "同比事实缺少可唯一识别的指标与期间标签，无法无歧义地展示。"
         rows.append(
             {
-                "label": str(item.period_end or item.field),
+                "label": label,
                 "current": float(item.current_total),
                 "baseline": float(item.baseline_total),
                 "factId": item.fact_id,
@@ -342,8 +373,12 @@ def recommendation_reason(template_id: str) -> str | None:
 def matched_fact_name(
     pointers: Sequence[str], fact_refs: Sequence[Any], bundle: DeterministicAnalysisBundle
 ) -> str | None:
-    """第一条命中绑定事实的显示名（displayName 优先，其次 field），供推荐原因点名。"""
+    """沿绑定和 inputFactIds 获取唯一业务名称；缺失或歧义时使用通用推荐理由。"""
 
+    metric_names = {fact.fact_id: primary_display_name(fact.display_name)
+                    for fact in (*bundle.metrics, *bundle.breakdowns)
+                    if fact.fact_id and fact.display_name}
+    names = set()
     for pointer in pointers:
         parts = pointer.strip("/").split("/")
         if len(parts) != 2 or not parts[1].isdigit():
@@ -359,10 +394,18 @@ def matched_fact_name(
         if facts is None or index >= len(facts):
             continue
         fact = facts[index]
-        name = getattr(fact, "display_name", None) or getattr(fact, "field", None)
-        if name:
-            return str(name)
-    return None
+        if kind == "comparisons":
+            parent_names = {metric_names[fact_id] for fact_id in fact.input_fact_ids
+                            if metric_names.get(fact_id)}
+            if len(parent_names) != 1:
+                return None
+            names.update(parent_names)
+        else:
+            name = primary_display_name(fact.display_name) if fact.display_name else None
+            if not name:
+                return None
+            names.add(name)
+    return next(iter(names)) if len(names) == 1 else None
 
 
 def materialize_chart_template(

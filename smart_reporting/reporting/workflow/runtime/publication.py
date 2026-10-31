@@ -866,6 +866,10 @@ class RuntimePublicationMixin:
             checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
             if checkpoint.evidence_manifest is None:
                 raise ValueError("checkpoint 缺少冻结分析产物")
+            warnings.extend(
+                warning for warning in checkpoint.warnings
+                if warning.get("code") == "chart_caption_numeric_review"
+            )
             analysis_warnings = tuple(
                 dict.fromkeys(
                     (
@@ -1586,6 +1590,32 @@ class RuntimePublicationMixin:
                     })
                 except Exception:
                     logger.warning("report_quality_issue_state_unavailable revision={}", revision)
+        from ...trace.chart_facts import recover_chart_fact_refs
+
+        async def read_chart_source(file):
+            return await self.workspace_service.read_limited_regular_file(
+                scope["threadId"], file.path, max_bytes=file.size
+            )
+
+        bound_charts = []
+        for chart in index.chart_traces:
+            if not chart.fact_refs:
+                try:
+                    refs = await recover_chart_fact_refs(index, chart, read_chart_source)
+                    chart = chart.model_copy(update={"fact_refs": refs})
+                except Exception as error:
+                    logger.warning("report_chart_fact_binding_unavailable chart={} error={}",
+                                   chart.chart_id, type(error).__name__)
+                    try:
+                        self._state(run_context).setdefault("report_quality_issues", []).append({
+                            "code": "chart_fact_binding_unavailable", "status": "unknown",
+                            "chartId": chart.chart_id, "revision": revision,
+                            "message": "图表事实引用未能精确核验，保留图表与下载产物，不标记来源核验通过。",
+                        })
+                    except Exception:
+                        logger.warning("report_chart_fact_binding_notice_unavailable")
+            bound_charts.append(chart)
+        index = index.model_copy(update={"chart_traces": tuple(bound_charts)})
         content = encode_trace_index(index)
         index_path = trace_index_path_for(manifest_relative)
         self.workspace_service.validate_content(content)

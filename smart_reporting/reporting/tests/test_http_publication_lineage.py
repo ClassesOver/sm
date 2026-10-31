@@ -878,6 +878,19 @@ async def test_editor_publication_keeps_links_when_reedited_paginated_data_chang
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_editor_publication_keeps_links_when_legacy_template_binding_recovery_fails(tmp_path):
+    """旧报告模板回溯故障：丢弃对应追溯，已生成成品仍照常签发。"""
+    from smart_reporting.reporting.tests.test_report_editor_lineage_export import (
+        test_export_revision_registers_l2_chart_edit_plot_data,
+    )
+
+    await test_export_revision_registers_l2_chart_edit_plot_data(
+        tmp_path, "template_binding_failed", "legacy_template", []
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_editor_publication_keeps_lineage_and_links_when_chart_continuation_fails(tmp_path):
     """继续编辑侧车写入失败不能丢弃正式追溯或阻断 PDF/Word 下载。"""
     from smart_reporting.reporting.tests.test_report_editor_lineage_export import (
@@ -1029,6 +1042,52 @@ async def test_format_persistence_failure_keeps_other_download(tmp_path, failed_
         assert (
             response.content == files[f"reports/report.{'pdf' if surviving == 'pdf' else 'docx'}"]
         )
+
+
+@pytest.mark.anyio
+async def test_chart_fact_binding_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch):
+    from smart_reporting.reporting.tests.test_report_editor_chart_ai import _png_bytes
+    from smart_reporting.reporting.trace import chart_facts
+    from smart_reporting.reporting.trace.contracts_v1 import ChartTraceV1, TraceFileRefV1
+
+    runtime, arguments, scope, _, artifacts, _, files, index = await _publication_fixture(tmp_path)
+    sources = {"reports/chart.png": _png_bytes(),
+        "reports/chart-input.json": b'{"schema":"chart-input/v1","chartId":"chart_001"}'}
+    refs = []
+    for path, raw in sources.items():
+        await runtime.workspace_service.awrite_bytes(scope.workspace_key, path, raw)
+        refs.append(TraceFileRefV1(resourceId=derive_resource_id(path), path=path, size=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest(),
+            mediaType="image/png" if path.endswith(".png") else "application/json"))
+    chart = ChartTraceV1(chartId="chart_001", imageFileResourceId=refs[0].resource_id,
+        plotDataFileResourceIds=(refs[1].resource_id,), datasetIds=(index.datasets[0].dataset_id,))
+    index = index.model_copy(update={"files": (*index.files, *refs), "chart_traces": (chart,)})
+    state = {}
+    runtime._scope = lambda _: scope.as_state()
+    runtime._state = lambda _: state
+    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._build_drilldown_metrics = AsyncMock(return_value=())
+    monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_: index)
+    fail = AsyncMock(side_effect=RuntimeError("injected chart fact binding failure"))
+    monkeypatch.setattr(chart_facts, "recover_chart_fact_refs", fail)
+    identity = await runtime._write_trace_index("reports/report.manifest.json", handles=(), lineage=(),
+        markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
+        revision=1, run_context=SimpleNamespace(run_id="report-1"))
+    fail.assert_awaited_once()
+    saved = RevisionTraceIndexV1.model_validate_json(await runtime.workspace_service.read_limited_regular_file(
+        scope.workspace_key, identity.path, max_bytes=identity.size))
+    assert saved.chart_traces[0].fact_refs == ()
+    assert state["report_quality_issues"][0]["code"] == "chart_fact_binding_unavailable"
+    manifest = await register_trace_manifest(runtime.workspace_service, scope.workspace_key, saved, overwrite=True)
+    arguments["output"]["artifactManifest"] = manifest.model_dump(mode="json", by_alias=True)
+    result = await runtime.issue_http_publication(**arguments)
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        for kind, suffix in (("pdf", "pdf"), ("word", "docx")):
+            response = await client.get(result[kind]["downloadUrl"])
+            assert response.status_code == 200
+            assert response.content == files[f"reports/report.{suffix}"]
 
 
 @pytest.mark.anyio

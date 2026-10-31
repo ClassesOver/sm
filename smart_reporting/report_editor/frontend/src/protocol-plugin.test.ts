@@ -58,6 +58,35 @@ describe('protocol marker caret anchors', () => {
   })
 })
 
+describe('table marker paragraph layout', () => {
+  it.each(['[[table:detail]]', '[[/table:detail]]', '  [[table:detail]]  '])(
+    '将独占段落的表格标记标为不占位，且不改动协议内容：%s', text => {
+      const doc = schema.node('doc', null, [paragraph(schema.text(text))])
+      const view = new EditorView(document.createElement('div'), {
+        state: EditorState.create({ doc }), decorations: () => markerDecorations(doc),
+      })
+      try {
+        expect(view.dom.querySelector('p')!.classList.contains('report-table-protocol-paragraph')).toBe(true)
+        expect(view.dom.querySelector('.report-protocol-caret-anchor')).not.toBeNull()
+        expect(view.state.doc.textContent).toBe(text)
+      } finally { view.destroy() }
+    },
+  )
+
+  it.each(['正文[[table:detail]]', '[[/table:detail]]后续说明', '[[citation:source-1]]'])(
+    '有正文或可交互来源标记的段落仍可见：%s', text => {
+      const doc = schema.node('doc', null, [paragraph(schema.text(text))])
+      const view = new EditorView(document.createElement('div'), {
+        state: EditorState.create({ doc }), decorations: () => markerDecorations(doc),
+      })
+      try {
+        expect(view.dom.querySelector('p')!.classList.contains('report-table-protocol-paragraph')).toBe(false)
+        expect(view.state.doc.textContent).toBe(text)
+      } finally { view.destroy() }
+    },
+  )
+})
+
 describe('table marker replacement history', () => {
   it('allows the exact paired marker change to undo and redo', () => {
     const before = schema.node('doc', null, [paragraph(schema.text('[[table:old]]')), paragraph(schema.text('内容')), paragraph(schema.text('[[/table:old]]'))])

@@ -168,7 +168,7 @@ async def test_concurrent_identical_artifact_is_reused_and_not_claimed_as_create
 @pytest.mark.anyio
 @pytest.mark.parametrize('mode', ['single', 'proof_thread', 'batch_checks', 'query_scope', 'ratio', 'ratio_period', 'batch', 'batch_failure', 'disabled',
                                   'series', 'previous_baseline', 'absolute_baseline', 'mean_baseline', 'median_baseline', 'cross_period',
-                                  'comparison', 'comparison_period', 'comparison_drift', 'comparison_current_hash',
+                                  'comparison', 'comparison_period', 'comparison_cross', 'comparison_drift', 'comparison_current_hash',
                                   'comparison_baseline_hash', 'comparison_current_missing_hash',
                                   'comparison_baseline_missing_hash', 'comparison_same_total_drift',
                                   'comparison_query_scope', 'comparison_baseline_or',
@@ -202,6 +202,8 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
     workspace = _MemoryWorkspace()
     extended = mode in {'series', 'previous_baseline', 'absolute_baseline', 'mean_baseline', 'median_baseline', 'cross_period'}
     content = b'period,department,actual_equipment,visits\n2025-01,A,10,3\n2025-02,B,20,4\n'
+    if mode == 'comparison_cross':
+        content = b'period,department,actual_equipment,visits,category\n2025-01,A,10,3,X\n2025-02,B,20,4,Y\n'
     if extended:
         content = (b'period,department,actual_equipment,visits,category\n'
                    b'2025-01,A,10,3,X\n2025-01,B,20,4,Y\n'
@@ -241,6 +243,8 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                                                      SimpleNamespace(period='2025-02', value=20)]})
         dataset = {'datasetId': 'dataset_001', **identity,
                    'columns': ['period', 'department', 'actual_equipment', 'visits']}
+        if mode == 'comparison_cross':
+            dataset['columns'].append('category')
         if extended:
             parent.period_granularity = 'month'
             parent.unit = '元'
@@ -290,6 +294,9 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
         elif mode.startswith('comparison'):
             prior_content = (b'period,department,actual_equipment,visits\n'
                              b'2024-01,A,5,1\n2024-02,B,10,2\n2025-01,A,999,1\n')
+            if mode == 'comparison_cross':
+                prior_content = (b'period,department,actual_equipment,visits,category\n'
+                                 b'2024-01,A,5,1,X\n2024-02,B,10,2,Y\n2025-01,A,999,1,X\n')
             prior_identity = {'path': 'datasets/prior.csv', 'size': len(prior_content),
                               'sha256': hashlib.sha256(prior_content).hexdigest()}
             workspace.files[prior_identity['path']] = (
@@ -333,6 +340,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                 'operation': 'period_comparison', 'baseline_dataset_id': 'dataset_prior',
                 'baseline_parent_fact_id': prior.fact_id, 'baseline_periods': ('2024-01', '2024-02'),
                 'group_by_period': mode == 'comparison_period',
+                **({'secondary_dimension_field': 'category'} if mode == 'comparison_cross' else {}),
             })
         elif mode in {'ratio', 'ratio_period'}:
             denominator = SimpleNamespace(**vars(parent))
@@ -369,7 +377,7 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
         return SimpleNamespace(output=result)
 
     monkeypatch.setattr(analysis_module.AnalysisItemWorkflow, 'run', run)
-    comparison_failure = mode.startswith('comparison') and mode not in {'comparison', 'comparison_period', 'comparison_query_scope'}
+    comparison_failure = mode.startswith('comparison') and mode not in {'comparison', 'comparison_period', 'comparison_cross', 'comparison_query_scope'}
     if mode == 'batch_failure' or comparison_failure:
         error_type, message = ((ValueError, 'injected second') if mode == 'batch_failure'
                                else (ReportingError, '固定范围' if mode in {
@@ -467,6 +475,13 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             ['2025-01', 'A', 10, 5, 5, 1, 1 / 3, 2],
         ]
         assert all(check['passed'] for check in result['evidence'].reconciliations)
+    if mode == 'comparison_cross':
+        finding = result['evidence'].findings[0]
+        rows = [dict(zip(finding['columns'], row, strict=True)) for row in finding['rows']]
+        assert [(row['department'], row['category'], row['change'], row['primaryContribution'], row['primaryRank'])
+                for row in rows] == [('B', 'Y', 10, 1, 1), ('A', 'X', 5, 1, 1)]
+        assert all(check['passed'] for check in result['evidence'].reconciliations)
+        assert result['computationRecord']['parameters']['secondaryDimensionField'] == 'category'
     if mode in {'comparison', 'comparison_period', 'comparison_query_scope'}:
         record = result['computationRecord']
         assert record['inputDatasetIds'] == ['dataset_001', 'dataset_prior']

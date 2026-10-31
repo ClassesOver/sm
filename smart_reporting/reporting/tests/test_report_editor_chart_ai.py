@@ -71,7 +71,10 @@ def _png_bytes() -> bytes:
     return buffer.getvalue()
 
 
-async def _make_editor_with_chart(tmp_path: Path, *, template_ready: bool = False):
+async def _make_editor_with_chart(
+    tmp_path: Path, *, template_ready: bool = False, legacy_unbound: bool = False,
+    source_fault: str | None = None,
+):
     """带登记图表（chart_001 + chart-input）的编辑器 fixture，结构对齐导出用例。"""
 
     editor, grants, original = await _make_editor_with_subject(tmp_path)
@@ -155,6 +158,27 @@ async def _make_editor_with_chart(tmp_path: Path, *, template_ready: bool = Fals
             factKey=metric["factId"],
         ),
     )
+    if legacy_unbound:
+        from smart_reporting.reporting.workflow.runtime.chart_inputs import _table_for_binding
+        from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
+
+        binding = ChartDataBinding(analysisId="analysis_001", factPath=fact_file.path,
+            dataPath=f"metrics[{metric_index}].periodValues", fields=("period", "value"), role="measure")
+        columns, rows, metadata = _table_for_binding(fact_payload, binding)
+        plot = {"schema": "chart-input/v1", "chartId": "chart_001", "role": "measure",
+            "source": {"analysisId": "analysis_001", "path": fact_file.path,
+                "sha256": fact_file.sha256, "dataPath": binding.data_path},
+            "columns": columns, "rows": rows, "rowCount": len(rows), "columnMeta": metadata}
+        if source_fault in {"path", "sha256", "analysisId", "dataPath"}:
+            plot["source"][source_fault] = {"path": "facts/foreign.json", "sha256": "0" * 64,
+                "analysisId": "analysis_999", "dataPath": "metrics[999].periodValues"}[source_fault]
+        elif source_fault == "rows":
+            plot["rows"][0][1] += 1
+        elif source_fault == "columnMeta":
+            plot["columnMeta"] = {"value": {"unit": "人"}}
+        plot_bytes = json.dumps(plot, ensure_ascii=False).encode()
+        await workspace.awrite_bytes(thread_id, plot_path, plot_bytes, overwrite=True)
+        chart_fact_refs = ()
     index = index.model_copy(
         update={
             "files": (
@@ -335,10 +359,11 @@ def _service(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("legacy_unbound", [False, True])
 async def test_chart_template_runs_end_to_end_with_registered_fact_identity(
-    tmp_path: Path,
+    tmp_path: Path, legacy_unbound: bool,
 ) -> None:
-    fixture = await _make_editor_with_chart(tmp_path, template_ready=True)
+    fixture = await _make_editor_with_chart(tmp_path, template_ready=True, legacy_unbound=legacy_unbound)
     runner = FakeRunner(fixture.chart_bytes)
     service = _service(fixture, runner)
     session = SimpleNamespace(capabilities=None)
@@ -391,6 +416,25 @@ async def test_chart_template_runs_end_to_end_with_registered_fact_identity(
             index=index,
             data_origin="template",
         )
+    await service.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("source_fault", [None, "path", "sha256", "analysisId", "dataPath", "rows", "columnMeta"])
+async def test_legacy_chart_template_recovers_only_exact_registered_projection(tmp_path, source_fault):
+    fixture = await _make_editor_with_chart(tmp_path, template_ready=True,
+        legacy_unbound=True, source_fault=source_fault)
+    service = _service(fixture, FakeRunner(fixture.chart_bytes))
+    before = await fixture.editor.trace.load_index(fixture.context)
+    catalog = await service.templates(fixture.context, SimpleNamespace(capabilities=None), "chart_001")
+    assert any(item["available"] for item in catalog["templates"]) == (source_fault is None), catalog
+    after = await fixture.editor.trace.load_index(fixture.context)
+    assert after == before  # 旧报告兼容只在内存恢复，不能改写已签名索引。
+    if source_fault is None:
+        _, resolved = await service._check_template(fixture.context, SimpleNamespace(capabilities=None), "chart_001")
+        assert resolved[2].fact_refs[0].fact_key
+        assert resolved[2].fact_refs[0].json_pointer.startswith("/metrics/")
     await service.aclose()
 
 

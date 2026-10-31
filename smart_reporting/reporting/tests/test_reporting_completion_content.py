@@ -136,6 +136,19 @@ def test_completed_report_content_discloses_residual_content_review_as_soft_noti
     assert "[下载 PDF](https://reports.example/report.pdf)" in content
 
 
+def test_completed_report_discloses_caption_numeric_review_without_blocking_downloads():
+    content = _completed_report_content(_completed_payload(publicationGate={
+        "formalReleaseAllowed": True, "issues": [], "warnings": [{
+            "code": "chart_caption_numeric_review", "chartId": "chart_001",
+            "message": "图注部分数值无法对应登记依据，已移除相关分句。",
+        }],
+    }))
+    assert "图注部分数值无法对应登记依据" in content
+    assert "[下载 PDF](https://reports.example/report.pdf)" in content
+    assert "[下载 Word](https://reports.example/report.docx)" in content
+    assert "验收或发布检查未通过" not in content
+
+
 def test_completed_report_content_uses_custom_template() -> None:
     content = _completed_report_content(
         _completed_payload(),

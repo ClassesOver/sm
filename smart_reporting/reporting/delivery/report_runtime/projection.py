@@ -26,7 +26,7 @@ from .markdown import (
 from .overview import insert_management_overview
 from .pdf import _pdf_markdown
 
-PROJECTION_VERSION = "report-markdown/4"
+PROJECTION_VERSION = "report-markdown/5"
 
 
 def _sha256(raw: bytes) -> str:
@@ -147,7 +147,7 @@ def build_render_projection(
         markdown = transform(markdown)
         stages.append(ProjectionStage(name, before, _sha256(markdown.encode("utf-8"))))
 
-    apply("relocate_server_tables/2", relocate_server_tables)
+    apply("relocate_server_tables/3", relocate_server_tables)
     apply("compact_single_column_tables/1", compact_single_column_tables)
     overview_check = None
     if management_overview is None:

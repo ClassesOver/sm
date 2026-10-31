@@ -1246,7 +1246,7 @@ def test_cover_title_breaks_into_balanced_lines(title, expected):
     assert _balanced_cover_title(title) == expected
 
 
-def test_server_tables_move_after_body_with_their_captions_only():
+def test_export_preserves_source_table_and_caption_positions():
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
         APPENDIX_TABLES_SENTINEL,
         relocate_server_tables,
@@ -1257,16 +1257,14 @@ def test_server_tables_move_after_body_with_their_captions_only():
         "## 1. 收入\n\n正文结论。\n\n2025年收入：分期间指标汇总\n\n" + table.format("t1")
         + "\n\n## 2. 成本\n\n次均收入120元[[claim:c]]。\n\n" + table.format("t2") + "\n\n| 模型表 |\n| --- |\n| 留在正文 |\n"
     )
-    body, appendix = relocate_server_tables(markdown).split(APPENDIX_TABLES_SENTINEL)
-    assert "[[table:" not in body and "分期间指标汇总" not in body
-    assert "次均收入120元[[claim:c]]。" in body and "| 留在正文 |" in body
-    assert appendix.index("分期间指标汇总") < appendix.index("[[table:t1]]") < appendix.index("[[table:t2]]")
+    assert relocate_server_tables(markdown) == markdown
+    assert APPENDIX_TABLES_SENTINEL not in relocate_server_tables(markdown)
     assert relocate_server_tables("## 1. 收入\n\n正文。\n") == "## 1. 收入\n\n正文。\n"
-    # 表名自成一段：列表末项、多行段落末行（没有句末标点）不能被当作表名搬进附表。
+    # 列表、多行段落和协议块都不能被导出隐式重排。
     table = "[[table:t9]]\n| a | b |\n| --- | ---: |\n\n[[/table:t9]]\n"
     for prose in ("- 门诊收入增长\n- 住院收入稳定", "1. 门诊收入增长\n2. 住院收入稳定", "多行段落首行\n末行没有句号"):
-        body, appendix = relocate_server_tables(f"## 1. 收入\n\n{prose}\n\n{table}").split(APPENDIX_TABLES_SENTINEL)
-        assert prose in body and prose.splitlines()[-1] not in appendix
+        source = f"## 1. 收入\n\n{prose}\n\n{table}"
+        assert relocate_server_tables(source) == source
 
 
 def test_executive_summary_takes_each_section_conclusion():

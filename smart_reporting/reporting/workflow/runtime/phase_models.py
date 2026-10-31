@@ -624,12 +624,14 @@ class StandardChartPointStyle(StrictModel):
 
 class StandardChartOrder(StrictModel):
     mode: Literal['source', 'reverse', 'label', 'value', 'max_abs', 'explicit'] = 'source'
-    fields: tuple[str, ...] = Field(default=(), max_length=8)
+    fields: tuple[str, ...] = Field(default=(), max_length=8,
+        description='max_abs必须指定一个或多个冻结数值列，单位与百分比尺度须一致；不能与field混用。')
     field: str | None = Field(default=None, max_length=200)
     descending: bool = False
     labels: tuple[str, ...] = Field(default=(), max_length=60)
     limit: int | None = Field(default=None, ge=1, le=60)
-    exclude_missing: bool = Field(default=False, alias='excludeMissing')
+    exclude_missing: bool = Field(default=False, alias='excludeMissing',
+        description='仅value/max_abs排序可显式排除排序字段含None的行；默认不排除，不补零，NaN/Inf/布尔值仍无效。')
 
     @model_validator(mode='after')
     def validate_order(self) -> StandardChartOrder:
@@ -637,7 +639,7 @@ class StandardChartOrder(StrictModel):
             raise ValueError('最大绝对值排序必须且只能指定冻结字段集合')
         if (self.mode == 'value') != (self.field is not None):
             raise ValueError('数值排序必须且只能指定一个冻结字段')
-        if self.exclude_missing and self.mode != 'value':
+        if self.exclude_missing and self.mode not in {'value', 'max_abs'}:
             raise ValueError('排除空值仅适用于明确的数值排序')
         if (self.mode == 'explicit') != bool(self.labels):
             raise ValueError('显式排序必须且只能提供标签顺序')

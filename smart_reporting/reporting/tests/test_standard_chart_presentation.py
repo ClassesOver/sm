@@ -12,6 +12,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     ChartDataBinding,
     StandardChartAnnotation,
     StandardChartAxes,
+    StandardChartOrder,
     StandardChartPresentation,
     StandardChartStyle,
 )
@@ -138,6 +139,110 @@ def test_order_modes_do_not_change_amounts(render, mode, expected):
     axes = render(plan, inputs).axes[0]
     assert [tick.get_text() for tick in axes.get_yticklabels()] == expected
     assert [bar.get_width() for bar in axes.containers[0]] == [10 if label == 'A' else 20 for label in expected]
+
+
+def test_cost_change_horizontal_chart_keeps_numeric_ticks_horizontal(render):
+    # 本次真实报告的七项冻结成本变动；数值轴不能套用类别轴的旋转角度。
+    document = {'columns': ['indicator_name', 'change'], 'rows': [
+        ['人员支出', 175901433], ['其他费用', -14837553],
+        ['卫生材料成本', 9883877], ['药品成本', 1030645],
+        ['固定资产折旧', 286787], ['无形资产摊销费', 155517],
+        ['提取医疗风险基金', -85606]], 'columnMeta': {'change': {'unit': '元'}}}
+    plan, inputs = build(document, selected=('change',), presentation={
+        'order': {'mode': 'value', 'field': 'change', 'descending': True}})
+    plan.charts[0].standard_label_field = 'indicator_name'
+    plan.charts[0].standard_display_unit = '万元'
+    figure = render(plan, inputs)
+    axes = figure.axes[0]
+    ticks = [tick for tick in axes.get_xticklabels() if tick.get_visible()]
+    assert ticks and all(tick.get_rotation() == 0 for tick in ticks)
+    boxes = [tick.get_window_extent(figure.canvas.get_renderer()) for tick in ticks]
+    assert all(not left.overlaps(right) for left, right in zip(boxes, boxes[1:]))
+    assert [bar.get_width() for bar in axes.containers[0]] == pytest.approx(
+        [17590.1433, 988.3877, 103.0645, 28.6787, 15.5517, -8.5606, -1483.7553])
+
+
+def test_vertical_chart_retains_declared_category_rotation(render):
+    document = {'columns': ['label', 'actual'], 'rows': [['甲', 10], ['乙', 20]],
+                'columnMeta': {'actual': {'unit': '元'}}}
+    plan, inputs = build(document, form='bar', style={'labelRotation': 30})
+    axes = render(plan, inputs).axes[0]
+    assert all(tick.get_rotation() == 30 for tick in axes.get_xticklabels())
+
+
+def test_negative_horizontal_auto_labels_stay_outside_their_bars(render):
+    from matplotlib.text import Text
+
+    document = {'columns': ['label', 'actual'],
+        'rows': [['门诊部', -20626], ['儿内科', -12051], ['消化内科', -9626]],
+        'columnMeta': {'actual': {'unit': '人次'}}}
+    plan, inputs = build(document)
+    figure = render(plan, inputs)
+    axes = figure.axes[0]
+    renderer = figure.canvas.get_renderer()
+    for annotation, bar in zip(axes.texts, axes.containers[0], strict=True):
+        assert annotation.get_ha() == 'right'
+        assert annotation.get_position()[0] < 0
+        assert not Text.get_window_extent(annotation, renderer).overlaps(bar.get_window_extent(renderer))
+
+
+def test_negative_horizontal_explicit_right_label_retains_requested_position(render):
+    document = {'columns': ['label', 'actual'], 'rows': [['门诊部', -20626]],
+                'columnMeta': {'actual': {'unit': '人次'}}}
+    plan, inputs = build(document)
+    plan.charts[0].standard_annotations = (
+        StandardChartAnnotation(kind='values', series='actual', position='right'),)
+    annotation = render(plan, inputs).axes[0].texts[0]
+    assert annotation.get_ha() == 'left'
+    assert annotation.get_position()[0] > 0
+
+
+def test_max_abs_explicit_missing_exclusion_keeps_frozen_top_changes(render):
+    document = {'columns': ['label', 'change'], 'rows': [
+        ['门诊部', -20626], ['儿内科', -12051], ['临床营养科', 109], ['脑病中心', None]],
+        'columnMeta': {'change': {'unit': '人次'}}}
+    plan, inputs = build(document, selected=('change',), presentation={
+        'order': {'mode': 'max_abs', 'fields': ['change'], 'descending': True,
+                  'excludeMissing': True, 'limit': 2}})
+    axes = render(plan, inputs).axes[0]
+    assert [tick.get_text() for tick in axes.get_yticklabels()] == ['门诊部', '儿内科']
+    assert [bar.get_width() for bar in axes.containers[0]] == [-20626, -12051]
+    assert json.loads(inputs.files[0].content) == document
+
+
+@pytest.mark.parametrize('bad', [True, float('inf'), float('nan')])
+@pytest.mark.parametrize('missing_peer', [False, True])
+def test_max_abs_explicit_missing_exclusion_still_rejects_invalid_values(bad, missing_peer):
+    from smart_reporting.reporting.workflow.runtime.standard_chart_presentation import (
+        order_standard_rows,
+    )
+
+    document = {'columns': ['label', 'a', 'b'],
+        'rows': [['valid', -10, 20], ['missing', None, 30],
+                 ['invalid', bad, None if missing_peer else 40]],
+        'columnMeta': {'a': {'unit': '人次'}, 'b': {'unit': '人次'}}}
+    order = StandardChartOrder(mode='max_abs', fields=('a', 'b'), excludeMissing=True)
+    assert order_standard_rows(document, 'label', order) is None
+
+
+def test_max_abs_explicit_missing_exclusion_requires_all_sort_operands_and_same_unit():
+    from smart_reporting.reporting.workflow.runtime.standard_chart_presentation import (
+        order_standard_rows,
+    )
+
+    document = {'columns': ['label', 'a', 'b'],
+        'rows': [['first', -10, 20], ['missing_a', None, 30], ['missing_b', 40, None],
+                 ['last', 5, -50]],
+        'columnMeta': {'a': {'unit': '人次'}, 'b': {'unit': '人次'}}}
+    order = StandardChartOrder(mode='max_abs', fields=('a', 'b'), descending=True, excludeMissing=True)
+    assert order_standard_rows(document, 'label', order)['rows'] == [
+        ['last', 5, -50], ['first', -10, 20]]
+    assert order_standard_rows(document, 'label', order.model_copy(update={'exclude_missing': False})) is None
+    document['columnMeta']['b']['unit'] = '床日'
+    assert order_standard_rows(document, 'label', order) is None
+    document['columnMeta']['b']['unit'] = '人次'
+    document['rows'] = [['missing', None, None]]
+    assert order_standard_rows(document, 'label', order) is None
 
 
 @pytest.mark.parametrize('fault', ['unknown_field', 'ratio_zero', 'ratio_unit', 'bad_display_unit', 'ambiguous_summary', 'unknown_point', 'month_cross_year'])

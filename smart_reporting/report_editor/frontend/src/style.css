@@ -3152,10 +3152,15 @@ button {
   transition: outline-color var(--motion-fast) ease, background-color var(--motion-fast) ease;
 }
 
-/* table 协议块独占段落：隐藏标记后把空段落一并收起，避免结束标记被渲染为表格行。 */
+/* 纯协议段落由文档装饰识别，不让光标占位节点撑开标题与表格的间距。 */
+#report-editor .ProseMirror p.report-table-protocol-paragraph,
 #report-editor .ProseMirror p:has(> .report-table-marker:only-child),
 #report-editor .ProseMirror p:has(> .report-table-close-marker:only-child) {
   display: none;
+}
+
+#report-editor .ProseMirror p.report-table-protocol-paragraph:has(> .report-table-marker) + .milkdown-table-block table.children {
+  margin-top: 0;
 }
 
 @media (max-width: 768px) {

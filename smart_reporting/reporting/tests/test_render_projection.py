@@ -64,7 +64,7 @@ def test_projection_runs_the_exact_existing_render_text_pipeline():
     assert receipt["semanticSupportReused"] is False
     stages = receipt["stages"]
     assert [stage["name"] for stage in stages] == [
-        "relocate_server_tables/2",
+        "relocate_server_tables/3",
         "compact_single_column_tables/1",
         "insert_executive_summary/2",
         "collapse_repeated_values/2",

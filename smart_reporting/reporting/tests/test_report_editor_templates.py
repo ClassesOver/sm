@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from smart_reporting.report_editor.chart_templates import (
     TEMPLATE_IDS,
     build_chart_input,
@@ -164,6 +166,37 @@ def test_all_table_templates_disable_without_registered_facts() -> None:
             assert skipped
 
 
+def test_yoy_template_labels_use_frozen_parent_names_and_periods():
+    from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+        DeterministicComparison,
+        DeterministicMetricFact,
+    )
+
+    metrics = []
+    comparisons = []
+    for letter, label in (("a", "医疗收入"), ("b", "医疗成本")):
+        fact = DeterministicMetricFact(datasetId="dataset-current", datasetSha256="a" * 64,
+            periodRoles=("current",),
+            field="indicator_value", fieldRef="source.indicator_value", displayName=label,
+            aggregation="sum", formula="sum(indicator_value)", unit="元", total=1200,
+            missingCount=0, zeroCount=0, negativeCount=0, factId="fact-" + letter * 16)
+        metrics.append(fact)
+        comparisons.append(DeterministicComparison(comparisonType="yoy", field="indicator_value",
+            fieldRef="source.indicator_value", currentDatasetId="dataset-current",
+            baselineDatasetId="dataset-baseline", currentDatasetSha256="a" * 64,
+            baselineDatasetSha256="b" * 64, currentTotal=1200, baselineTotal=1000,
+            change=200, changeRate=20, formula="current - baseline", unit="元", periodEnd="2025-01",
+            inputFactIds=(fact.fact_id,)))
+    bundle = DeterministicAnalysisBundle(analysisId="analysis_001", metrics=tuple(metrics),
+        comparisons=tuple(comparisons))
+    materialized = materialize_chart_template("yoy-comparison", bundle)
+    assert materialized.available
+    labels = [row["label"] for row in materialized.rows]
+    assert len(set(labels)) == 2
+    assert "医疗收入" in labels[0] and "2025-01" in labels[0]
+    assert "医疗成本" in labels[1] and "2025-01" in labels[1]
+
+
 def test_recommendation_signals_follow_the_bound_facts() -> None:
     """推荐信号只认图表绑定的事实：命中计数与点名都随 fact_refs 变，无绑定则无信号。"""
 
@@ -209,3 +242,97 @@ def test_recommendation_signals_follow_the_bound_facts() -> None:
     assert matched_fact_name(materialized.source_pointers, refs, bundle) == "指标B"
     assert matched_pointer_count(materialized.source_pointers, ()) == 0
     assert matched_fact_name(materialized.source_pointers, (), bundle) is None
+
+
+def _composition_bundle(*, dimensions=("area",), roles=("current", "yoy")):
+    metrics, breakdowns = [], []
+    for position, role in enumerate(roles):
+        parent = {
+            "factId": f"fact-{position + 1:016x}",
+            "datasetId": f"dataset-{role}-{position}",
+            "datasetSha256": "a" * 64,
+            "periodRoles": [role], "field": "indicator_value",
+            "fieldRef": "source.indicator_value", "displayName": "医疗收入，也称收入金额",
+            "aggregation": "sum", "formula": "sum", "unit": "元",
+            "total": 100, "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+        }
+        metrics.append(parent)
+        for dimension in dimensions:
+            for label, value in (("甲", 60), ("乙", 40)):
+                breakdowns.append({**parent, "factId": f"fact-{len(breakdowns) + 100:016x}",
+                    "parentFactId": parent["factId"], "breakdownField": dimension,
+                    "breakdownValue": label, "scope": {dimension: label}, "total": value})
+    return DeterministicAnalysisBundle.model_validate({"analysisId": "analysis_001",
+        "metrics": metrics, "breakdowns": breakdowns})
+
+
+def _bound(pointer, kind="metric"):
+    return SimpleNamespace(fact_kind=kind, fact_key=None, json_pointer=pointer)
+
+
+def test_composition_prefers_current_only_for_the_same_bound_measure_and_dimension():
+    bundle = _composition_bundle()
+    result = materialize_chart_template("composition-bars", bundle,
+        (_bound("/metrics/0"), _bound("/metrics/1")))
+    assert result.available
+    assert result.source_pointers == ("/metrics/0", "/breakdowns/0", "/breakdowns/1")
+
+
+def test_composition_explicit_dimension_beats_parent_binding_and_keeps_explicit_baseline():
+    bundle = _composition_bundle(dimensions=("area", "department"))
+    result = materialize_chart_template("composition-bars", bundle,
+        (_bound("/metrics/0"), _bound("/metrics/1"), _bound("/breakdowns/6")))
+    assert result.available
+    assert result.source_pointers == ("/metrics/1", "/breakdowns/6", "/breakdowns/7")
+
+
+@pytest.mark.parametrize("dimensions,roles", [
+    (("area", "department"), ("current", "yoy")),
+    (("area",), ("current", "current")),
+])
+def test_composition_remains_disabled_when_dimension_or_measure_is_ambiguous(dimensions, roles):
+    bundle = _composition_bundle(dimensions=dimensions, roles=roles)
+    result = materialize_chart_template("composition-bars", bundle,
+        (_bound("/metrics/0"), _bound("/metrics/1")))
+    assert not result.available
+
+
+def test_composition_does_not_use_unbound_inventory_or_infer_supplement_dimension():
+    bundle = _composition_bundle(roles=("current",))
+    for refs in (
+        (_bound("/metrics/99"),),
+        (_bound("/metrics/0"), _bound("/findings/0", "supplemental_finding")),
+    ):
+        result = materialize_chart_template("composition-bars", bundle, refs)
+        assert not result.available
+        assert result.reason
+
+
+def test_composition_does_not_prefer_current_across_different_business_names():
+    bundle = _composition_bundle()
+    other = bundle.metrics[1].model_copy(update={"display_name": "医疗成本"})
+    bundle = bundle.model_copy(update={"metrics": (bundle.metrics[0], other)})
+    result = materialize_chart_template("composition-bars", bundle,
+        (_bound("/metrics/0"), _bound("/metrics/1")))
+    assert not result.available
+
+
+def test_comparison_recommendation_uses_frozen_parent_business_name():
+    bundle = _composition_bundle()
+    comparison = {
+        "comparisonType": "yoy", "field": "indicator_value",
+        "fieldRef": "source.indicator_value", "currentDatasetId": "current",
+        "baselineDatasetId": "baseline", "currentDatasetSha256": "a" * 64,
+        "baselineDatasetSha256": "b" * 64, "currentTotal": 100,
+        "baselineTotal": 80, "change": 20, "formula": "current-baseline",
+        "inputFactIds": [fact.fact_id for fact in bundle.metrics],
+    }
+    bundle = DeterministicAnalysisBundle.model_validate({**bundle.model_dump(by_alias=True),
+        "comparisons": [comparison]})
+    refs = (_bound("/comparisons/0", "comparison"),)
+    assert matched_fact_name(("/comparisons/0",), refs, bundle) == "医疗收入"
+
+    # 冻结名称冲突时退回通用推荐，不泄露字段或任取一个名称。
+    conflicting = bundle.metrics[1].model_copy(update={"display_name": "医疗成本"})
+    bundle = bundle.model_copy(update={"metrics": (bundle.metrics[0], conflicting)})
+    assert matched_fact_name(("/comparisons/0",), refs, bundle) is None

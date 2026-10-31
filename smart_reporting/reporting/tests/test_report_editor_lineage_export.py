@@ -1098,7 +1098,8 @@ async def native_chart_cleanup():
     for fault in (None, "l2_plot_changed")
 ] + [pytest.param("native_revision_reedit", fault, marks=pytest.mark.integration)
      for fault in (None, "l2_plot_changed")]
-  + [("revision_grow", None), ("revision_single", None)])
+  + [("revision_grow", None), ("revision_single", None),
+     ("legacy_template", None), ("legacy_template", "template_binding_failed")])
 async def test_export_revision_registers_l2_chart_edit_plot_data(
     tmp_path: Path, fault: str | None, scenario: str, native_chart_cleanup,
 ) -> None:
@@ -1133,7 +1134,9 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     initial_page_count = (3 + initial_page_size - 1) // initial_page_size
     target_page_size = {"revision_grow": 1, "revision_single": 3}.get(scenario, 2)
     target_page_count = (3 + target_page_size - 1) // target_page_size
-    fixture = await _make_editor_with_chart(tmp_path, template_ready=paginated)
+    legacy_template = scenario == "legacy_template"
+    fixture = await _make_editor_with_chart(tmp_path, template_ready=paginated or legacy_template,
+        legacy_unbound=legacy_template)
     editor = fixture.editor
     workspace = fixture.workspace
     thread_id = fixture.thread_id
@@ -1178,16 +1181,23 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
         planner=planner,
         runner=StandardRunner(fixture.chart_bytes) if paginated else FakeRunner(fixture.chart_bytes),
     )
-    started = await service.start_edit(
-        context, session, "chart_001",
-        ChartAIEditRequest(
-            instruction="换成按期间的月度趋势",
-            baseImagePath=fixture.chart_path,
-            baseTitle="收入",
-            baseAltText="收入对比",
-            expectedSha256=fixture.chart.sha256,
-        ),
-    )
+    if legacy_template:
+        from smart_reporting.report_editor.chart_ai import ChartTemplateApplyRequest
+
+        started = await service.start_template(context, session, "chart_001",
+            ChartTemplateApplyRequest(templateId="monthly-trend", instruction="保留模板并标注",
+                expectedSha256=fixture.chart.sha256))
+    else:
+        started = await service.start_edit(
+            context, session, "chart_001",
+            ChartAIEditRequest(
+                instruction="换成按期间的月度趋势",
+                baseImagePath=fixture.chart_path,
+                baseTitle="收入",
+                baseAltText="收入对比",
+                expectedSha256=fixture.chart.sha256,
+            ),
+        )
     for _ in range(400):
         status = service.edit_status(context, "chart_001", started["editId"])
         if status["status"] in {"succeeded", "failed"}:
@@ -1196,8 +1206,8 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     assert status["status"] == "succeeded", status
     records = await load_chart_edit_records(workspace, thread_id, context.markdown_path)
     record = records[0]
-    assert record.level == ("L2",)
-    if scenario != "single":
+    assert record.level == (("L1",) if legacy_template else ("L2",))
+    if scenario != "single" and not legacy_template:
         previous_record = record
         base = record.pages[1].image if paginated else record.image
         if native:
@@ -1324,7 +1334,17 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     editor.editor_grants = EditorGrants()
     editor.public_base_url = "https://reports.example.com"
 
-    if fault == "continuation_failed":
+    if fault == "template_binding_failed":
+        from unittest.mock import AsyncMock
+
+        from smart_reporting.reporting.trace import chart_facts
+
+        fail = AsyncMock(side_effect=ValueError("injected template fact recovery failure"))
+        with pytest.MonkeyPatch.context() as patcher:
+            patcher.setattr(chart_facts, "recover_chart_fact_refs", fail)
+            result = await editor.export_revision(context, expected_sha256=_sha(edited_markdown.encode()))
+        fail.assert_awaited_once()
+    elif fault == "continuation_failed":
         import smart_reporting.report_editor.service as service_module
 
         async def fail_continuation(*args, **kwargs):
@@ -1348,7 +1368,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
         assert committed.artifact_manifest is not None
         assert await editor.trace.load_index(committed) is not None
         return
-    if fault == "l2_plot_changed":
+    if fault in {"l2_plot_changed", "template_binding_failed"}:
         assert result["validation"]["ok"] is False
         codes = [issue["code"] for issue in result["validation"]["issues"]]
         assert "report_editor_chart_edit_lineage_unavailable" in codes
@@ -1365,7 +1385,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     assert len(next_index.chart_traces) == len(pages)
     for new_trace in next_index.chart_traces:
         assert new_trace.plot_data_file_resource_ids == (expected_resource,)
-        assert any(note.startswith("换绑数据：") for note in new_trace.transform_notes)
+        assert any(note.startswith("预制模板：" if legacy_template else "换绑数据：") for note in new_trace.transform_notes)
         if paginated:
             assert any(note.startswith("完整分页：") for note in new_trace.transform_notes)
     # 新作图数据文件已随迁至新 revision，内容与登记身份一致。
@@ -1373,6 +1393,11 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     migrated, _ = await workspace.afile_bytes(thread_id, migrated_plot_path)
     import json as _json
     payload = _json.loads(migrated)
+    if legacy_template:
+        assert payload["templateId"] == "monthly-trend"
+        assert next_index.chart_traces[0].fact_refs
+        assert next_index.chart_traces[0].fact_refs[0].json_pointer == "/metrics/0"
+        return
     assert payload["source"]["dataPath"] == "metrics[0].periodValues"
     assert payload["rows"] == ([["2025-07", 1200.0], ["2025-08", 1500.0], ["2025-09", 1800.0]] if paginated else [["2025-09", 3600.0]])
     if scenario not in revision_scenarios:

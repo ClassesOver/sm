@@ -162,6 +162,31 @@ from .publication import _accepted_artifacts_match_manifest
 from .section_workflow import SectionWorkflow
 
 
+def _bind_server_table_claims(
+    tables: tuple[ReportServerTable, ...],
+    traces: tuple[TableTraceV1, ...],
+    artifacts: Sequence[SectionArtifact],
+    fact_directory: Mapping[str, tuple[str, str]],
+) -> tuple[ReportServerTable, ...]:
+    """仅按冻结 factId 绑定就近声明，不根据标题或金额猜测表格位置。"""
+    traces_by_table = {item.table_id: item for item in traces}
+    artifacts_by_section = {item.section_code: item for item in artifacts}
+    anchored = []
+    for table in tables:
+        table_id = re.search(r"\[\[table:([^\]\r\n]+)\]\]", table.markdown)
+        trace = traces_by_table.get(table_id.group(1)) if table_id else None
+        fact_ids = {
+            ref.fact_key for cell in trace.cells for ref in cell.fact_refs
+            if ref.fact_key and ref.fact_key in fact_directory
+        } if trace else set()
+        artifact = artifacts_by_section[table.section_code]
+        anchored.append(table.model_copy(update={
+            "anchor_claim_ids": tuple(claim.claim_id for claim in artifact.claims
+                                      if fact_ids.intersection(claim.fact_ids)),
+        }))
+    return tuple(anchored)
+
+
 def _frozen_visual_receipt(
     receipt: Any, source_file: Mapping[str, Any]
 ) -> ChartVisualInspectionReceipt | None:
@@ -1226,15 +1251,26 @@ async def _in_thread(function: Callable[..., Any], /, *args: Any, **kwargs: Any)
     return await anyio.to_thread.run_sync(partial(function, *args, **kwargs))
 
 
-def _verified_caption(text: str, number_contents: tuple[str, ...]) -> str:
+def _verified_caption(
+    text: str, number_contents: tuple[str, ...], *,
+    warnings: list[dict[str, Any]] | None = None, chart_id: str | None = None,
+) -> str:
     """图注标题/替代文字与正文同规则核对数值；没有核对依据时原样返回。"""
 
     if not number_contents:
         return text
-    checked = _drop_placeholder_clauses(
-        replace_unregistered_numbers(normalize_number_notation(text), number_contents)
-    )
-    # “待核实”比被替换的数字长，超出图注 200 字上限时截断而不是让装配失败。
+    checked = replace_unregistered_numbers(normalize_number_notation(text), number_contents)
+    if "待核实" in checked:
+        if warnings is not None:
+            warnings.append({
+                "code": "chart_caption_numeric_review", "chartId": chart_id,
+                "message": "图注部分数值无法对应登记依据，已移除相关分句；图表及来源证据保留，请复核图注。",
+            })
+        loguru_logger.warning(
+            "report_chart_caption_numeric_review chart_id={} reason=unregistered_number", chart_id,
+        )
+    checked = _drop_placeholder_clauses(checked) or "图表数据比较（原图注数值依据不足）"
+    # 超出图注 200 字上限时截断，而不是让装配失败。
     return checked if len(checked) <= 200 else f"{checked[:199]}…"
 
 
@@ -1245,7 +1281,7 @@ _CAPTION_OPENERS = {"（": "）", "(": ")", "“": "”", "《": "》"}
 def _drop_placeholder_clauses(text: str) -> str:
     """图题/替代文字中整句删去含“待核实”的分句，避免“药品收入待核实级规模”这类残句（R026）。
 
-    只在括号外的逗号、分号、句号处切分；全部分句都含占位时保留原文，由质量告警提示。
+    只在括号外的逗号、分号、句号处切分；全部分句都含占位时返回空文本，交由调用方降级。
     """
     if "待核实" not in text:
         return text
@@ -1265,7 +1301,7 @@ def _drop_placeholder_clauses(text: str) -> str:
         clauses.append("".join(current))
     kept = [clause for clause in clauses if "待核实" not in clause]
     if not kept:
-        return text
+        return ""
     result = "".join(kept).rstrip("，,；;：:")
     return result + "。" if text.endswith("。") and not result.endswith("。") else result
 
@@ -4613,7 +4649,8 @@ class RuntimeSectionsMixin:
         """从冻结确定性 facts 生成服务端结构化表格（B2，计划 4.2）。
 
         规则：宽表按最多五个数值列拆分；
-        表格追加到第一个引用该 analysis 的批准章节尾部。bundle 不可读或
+        表格归属第一个引用该 analysis 的批准章节，装配时按冻结声明就近插入
+        小型汇总，大表保留附录。bundle 不可读或
         生成失败按软告警跳过（语义缺失软告警，不阻断发布），但已生成的
         表格与其 trace 严格同源。
 
@@ -4818,6 +4855,9 @@ class RuntimeSectionsMixin:
             run_context, checkpoint=checkpoint, outline=outline
         )
         section_artifacts = list(bind_local_claim_values(section_artifacts, fact_values))
+        server_tables = _bind_server_table_claims(
+            server_tables, server_table_traces, section_artifacts, fact_directory,
+        )
         draft = ReportDraft(
             sections=tuple(
                 ReportDraftSection(sectionCode=item.section_code, blocks=item.blocks)
@@ -4829,6 +4869,7 @@ class RuntimeSectionsMixin:
         report_parent = PurePosixPath(markdown_path).parent
         # 图注标题/替代文字由模型登记，装配时直接进入正文；与正文数值同规则核对。
         number_contents = await self._registered_number_contents(scope["threadId"], checkpoint)
+        caption_warnings: list[dict[str, Any]] = []
         for index, chart in enumerate(checkpoint.evidence_manifest.charts, start=1):
             suffix = PurePosixPath(chart.source_file.path).suffix.lower()
             if suffix not in {".png", ".jpg", ".jpeg"}:
@@ -4841,8 +4882,10 @@ class RuntimeSectionsMixin:
                 ReportChartInput(
                     chartId=chart.chart_id,
                     fileName=file_name,
-                    title=_verified_caption(chart.title, number_contents),
-                    altText=_verified_caption(chart.alt_text, number_contents),
+                    title=_verified_caption(chart.title, number_contents,
+                                            warnings=caption_warnings, chart_id=chart.chart_id),
+                    altText=_verified_caption(chart.alt_text, number_contents,
+                                              warnings=caption_warnings, chart_id=chart.chart_id),
                     citationIds=chart.citation_ids,
                 )
             )
@@ -5086,7 +5129,7 @@ class RuntimeSectionsMixin:
                     scope["threadId"], trace_index_path_for(manifest_path)
                 )
             )
-        warning_values = tuple((*checkpoint.warnings, *rendered.warnings)[-500:])
+        warning_values = tuple((*checkpoint.warnings, *rendered.warnings, *caption_warnings)[-500:])
         checkpoint = self._update_reporting_checkpoint(
             checkpoint,
             phase="completed",

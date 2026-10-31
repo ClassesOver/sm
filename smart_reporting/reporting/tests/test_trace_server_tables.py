@@ -212,7 +212,98 @@ def test_assembler_appends_server_table_to_section() -> None:
     assert "3,600" in rendered.markdown
 
 
-def test_assembler_groups_source_tables_in_appendix_after_all_analysis():
+def test_small_server_table_follows_bound_claim_without_appendix_duplicate():
+    _, table = build_analysis_table(_bundle(), fact_file_resource_id=FACT_RESOURCE)
+    draft = ReportDraft(sections=(ReportDraftSection(sectionCode='section_002', blocks=(
+        ReportDraftBlock(blockId='b1', markdown='对应收入结论。', claimIds=('income',)),
+        ReportDraftBlock(blockId='b2', markdown='后续管理建议。'),
+    )),))
+    rendered = assemble_report_markdown(
+        draft, expected_title='运营报告', markdown_path='report.md',
+        sections=_outline_sections(), citation_ids=(),
+        server_tables=(ReportServerTable(sectionCode='section_002', markdown=table,
+                                        anchorClaimIds=('income',)),),
+    )
+    assert rendered.markdown.index('对应收入结论。') < rendered.markdown.index(table)
+    assert rendered.markdown.index(table) < rendered.markdown.index('后续管理建议。')
+    assert rendered.markdown.count('[[table:table-analysis_001]]') == 1
+    assert '**附表：汇总数据**' not in rendered.markdown
+
+
+def test_small_unbound_summary_stays_with_assigned_section_and_large_table_in_appendix():
+    _, small = build_analysis_table(_bundle(), fact_file_resource_id=FACT_RESOURCE)
+    large = '大表\n\n[[table:large]]\n| 科室 | 金额 |\n| --- | ---: |\n' + ''.join(
+        f'| 科室{i} | {i} |\n' for i in range(21)) + '[[/table:large]]'
+    definitions = (*_outline_sections(), ReportSectionDefinition(
+        code='section_003', sectionNumber='2', title='建议'))
+    draft = _draft().model_copy(update={'sections': (*_draft().sections,
+        ReportDraftSection(sectionCode='section_003', blocks=(
+            ReportDraftBlock(blockId='b2', markdown='管理建议。'),)))})
+    rendered = assemble_report_markdown(
+        draft, expected_title='运营报告', markdown_path='report.md',
+        sections=definitions, citation_ids=(),
+        server_tables=(_server_table(small), _server_table(large)), require_table=True,
+    )
+    body, appendix = rendered.markdown.split('**附表：汇总数据**')
+    assert body.index(small) < body.index('## 2. 建议')
+    assert large not in body and large in appendix
+    assert any(item['code'] == 'table_section_anchor_fallback' for item in rendered.warnings)
+
+
+@pytest.mark.parametrize(('row_count', 'column_count', 'in_body'), [
+    (20, 8, True), (21, 8, False), (20, 9, False),
+])
+def test_inline_summary_size_boundary(row_count, column_count, in_body):
+    header = '| ' + ' | '.join(f'列{i}' for i in range(column_count)) + ' |\n'
+    separator = '| ' + ' | '.join('---' for _ in range(column_count)) + ' |\n'
+    rows = ''.join('| ' + ' | '.join(str(row) for _ in range(column_count)) + ' |\n'
+                   for row in range(row_count))
+    table = '汇总\n\n[[table:summary]]\n' + header + separator + rows + '[[/table:summary]]'
+    rendered = assemble_report_markdown(
+        _draft(), expected_title='运营报告', markdown_path='report.md',
+        sections=_outline_sections(), citation_ids=(), server_tables=(_server_table(table),),
+    )
+    body, _, appendix = rendered.markdown.partition('**附表：汇总数据**')
+    assert (table in body) is in_body
+    assert (table in appendix) is not in_body
+    assert rendered.markdown.count('[[table:summary]]') == 1
+
+
+def test_export_preserves_inline_tables_and_only_marks_explicit_appendix():
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        APPENDIX_TABLES_SENTINEL,
+        relocate_server_tables,
+    )
+    _, table = build_analysis_table(_bundle(), fact_file_resource_id=FACT_RESOURCE)
+    body = '## 1. 收入\n\n结论。\n\n' + table + '\n\n后续建议。'
+    assert relocate_server_tables(body) == body
+    projected = relocate_server_tables(body + '\n\n**附表：汇总数据**\n\n附录说明。')
+    assert projected.split(APPENDIX_TABLES_SENTINEL)[0].rstrip() == body
+    assert projected.count('[[table:table-analysis_001]]') == 1
+
+
+def test_runtime_table_anchor_uses_frozen_fact_identity_not_value():
+    from types import SimpleNamespace
+
+    from smart_reporting.reporting.workflow.runtime.sections import _bind_server_table_claims
+
+    trace, table = build_analysis_table(_bundle(), fact_file_resource_id=FACT_RESOURCE)
+    fact_id = trace.cells[0].fact_refs[0].fact_key
+    artifact = SimpleNamespace(section_code='section_002', claims=(
+        SimpleNamespace(claim_id='income', fact_ids=(fact_id,), value=3600),
+        SimpleNamespace(claim_id='foreign', fact_ids=('another-fact',), value=3600),
+    ))
+    anchored = _bind_server_table_claims(
+        (_server_table(table),), (trace,), (artifact,), {fact_id: ('analysis_001', '/facts')},
+    )
+    assert anchored[0].anchor_claim_ids == ('income',)
+    # 歧义事实已从事实目录移除时，不得恢复已丢弃的声明绑定。
+    unbound = _bind_server_table_claims((_server_table(table),), (trace,), (artifact,), {})
+    assert unbound[0].anchor_claim_ids == ()
+    assert anchored[0].markdown == table
+
+
+def test_assembler_keeps_small_summary_in_its_assigned_section():
     definitions = (*_outline_sections(), ReportSectionDefinition(
         code='section_003', sectionNumber='2', title='趋势分析', protocolMarker=True,
         analysisIds=('analysis_001',)))
@@ -223,21 +314,18 @@ def test_assembler_groups_source_tables_in_appendix_after_all_analysis():
     rendered = assemble_report_markdown(draft, expected_title='运营报告',
         markdown_path='report.md', sections=definitions, citation_ids=(),
         server_tables=(_server_table(table),))
-    body, appendix = rendered.markdown.split('**附表：汇总数据**')
-    assert '趋势结论。' in body
-    assert '[[table:' not in body
-    assert '**1. 收入分析**' in appendix and table in appendix
+    assert rendered.markdown.index(table) < rendered.markdown.index('趋势结论。')
+    assert '**附表：汇总数据**' not in rendered.markdown
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
         APPENDIX_TABLES_SENTINEL,
         relocate_server_tables,
     )
     projected = relocate_server_tables(rendered.markdown)
-    assert projected.count(APPENDIX_TABLES_SENTINEL) == 1
-    assert '**附表：汇总数据**' not in projected
-    assert projected.index(APPENDIX_TABLES_SENTINEL) < projected.index('**1. 收入分析**')
+    assert APPENDIX_TABLES_SENTINEL not in projected
+    assert projected == rendered.markdown
 
 
-def test_model_analysis_table_stays_in_body_while_source_details_go_to_appendix():
+def test_model_table_and_traced_summary_both_retain_their_source_identity():
     analysis_table = '| 分析维度 | 管理判断 |\n| --- | --- |\n| 结构 | 重点关注主要贡献项 |'
     draft = ReportDraft(sections=(ReportDraftSection(sectionCode='section_002', blocks=(
         ReportDraftBlock(blockId='b1', markdown='收入结构分析。\n\n' + analysis_table,
@@ -246,16 +334,15 @@ def test_model_analysis_table_stays_in_body_while_source_details_go_to_appendix(
     rendered = assemble_report_markdown(draft, expected_title='运营报告',
         markdown_path='report.md', sections=_outline_sections(), citation_ids=(),
         server_tables=(_server_table(source_table),))
-    body, appendix = rendered.markdown.split('**附表：汇总数据**')
-    assert analysis_table in body
-    assert source_table not in body and source_table in appendix
+    assert analysis_table in rendered.markdown and source_table in rendered.markdown
+    assert rendered.markdown.count('[[table:table-analysis_001]]') == 1
     from smart_reporting.reporting.delivery.report_runtime.markdown import (
         APPENDIX_TABLES_SENTINEL,
         relocate_server_tables,
     )
-    export_body, export_appendix = relocate_server_tables(rendered.markdown).split(APPENDIX_TABLES_SENTINEL)
-    assert analysis_table in export_body
-    assert source_table in export_appendix
+    projected = relocate_server_tables(rendered.markdown)
+    assert APPENDIX_TABLES_SENTINEL not in projected
+    assert analysis_table in projected and source_table in projected
 
 
 def test_assembler_rejects_unknown_section_and_duplicate_table_id() -> None:
@@ -769,14 +856,14 @@ async def test_chart_caption_numbers_are_verified_against_registered_facts() -> 
     assert replace_unregistered_numbers("2025年收入1.23亿元", contents) == "2025年收入1.23亿元"
     assert replace_unregistered_numbers("2025年收入同比增长8.5%", contents) == "2025年收入同比增长待核实"
 
-    assert _verified_caption("2025年收入同比增长8.5%", contents) == "2025年收入同比增长待核实"
+    assert _verified_caption("2025年收入同比增长8.5%", contents) == "图表数据比较（原图注数值依据不足）"
     assert _verified_caption("2025年收入同比增长8.5%", ()) == "2025年收入同比增长8.5%"
     # 全角写法同样核对：先改半角，未登记的数值不会因全角而原样留在图注里。
-    assert _verified_caption("2025年收入同比增长８．５％", contents) == "2025年收入同比增长待核实"
+    assert _verified_caption("2025年收入同比增长８．５％", contents) == "图表数据比较（原图注数值依据不足）"
     assert _verified_caption("2025年收入１．２３亿元", contents) == "2025年收入1.23亿元"
-    # “待核实”比原数字长：超出图注 200 字上限时截断，不让装配因长度校验失败。
+    # 全部缺证时给出中性说明，不发布占位残句。
     long_caption = _verified_caption("增长9%；" * 40, contents)
-    assert len(long_caption) == 200 and long_caption.endswith("…") and "9" not in long_caption
+    assert long_caption == "图表数据比较（原图注数值依据不足）"
 
     missing = _Harness({fact_file.path: facts})
     assert await RuntimeSectionsMixin._registered_number_contents(missing, "thread-1", checkpoint) == ()
@@ -798,7 +885,7 @@ def test_period_table_caption_names_actual_grain_instead_of_analysis_dimension()
          "条形图（单位：元，%）：卫生材料收入20.47亿元居次。"),
         ("预算98.79亿元与实际95.17亿元，差额待核实，完成率96.33%。",
          "预算98.79亿元与实际95.17亿元，完成率96.33%。"),
-        ("北部院区执行率待核实为最低", "北部院区执行率待核实为最低"),
+        ("北部院区执行率待核实为最低", ""),
         ("无占位的标题，保持原样", "无占位的标题，保持原样"),
     ],
 )
