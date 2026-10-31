@@ -556,7 +556,22 @@ class ChartAIEditService:
         if chart is None or trace is None:
             return "unknown_chart", None
         if not trace.fact_refs:
-            return "facts_missing", None
+            from ..reporting.trace.chart_facts import recover_chart_fact_refs
+
+            async def read_file(file):
+                content, _media_type = await self.editor.workspace.afile_bytes(
+                    context.scope["threadId"], file.path
+                )
+                return content
+
+            try:
+                refs = await recover_chart_fact_refs(index, trace, read_file)
+            except Exception as error:
+                logger.warning("report_editor_chart_fact_binding_unavailable chart={} error={}",
+                               chart_id, type(error).__name__)
+                return "facts_unbound", None
+            # 只恢复本次操作的内存对象，旧报告清单与签名索引保持原样。
+            trace = trace.model_copy(update={"fact_refs": refs})
         analysis_ids = {ref.analysis_id for ref in trace.fact_refs}
         if len(analysis_ids) != 1:
             return "facts_ambiguous", None
@@ -2206,6 +2221,7 @@ _UNAVAILABLE_REASON_MESSAGES = {
     "snapshot_expired": "该版本的数据来源已结束保留期，AI 改图不可用。",
     "plot_data_missing": "这张图没有登记作图数据（或来自旧报告），无法保证数值一致，不能改图。",
     "facts_missing": "该图所属分析的冻结事实不在登记中，无法使用图表模板。",
+    "facts_unbound": "该图缺少事实引用，且已登记作图数据无法与冻结来源精确核验，无法使用图表模板。",
     "facts_ambiguous": "该图绑定了多个分析的冻结事实，模板无法无歧义地取数。",
     "unknown_chart": "图表不在当前版本的登记中。",
     "unavailable": "AI 改图当前不可用。",

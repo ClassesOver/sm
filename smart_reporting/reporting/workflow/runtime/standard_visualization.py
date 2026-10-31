@@ -767,9 +767,10 @@ def apply_standard_style(fig, policy):
                     spine.set_visible(False)
         ax.xaxis.label.set_fontsize(style["axis_font_size"])
         ax.yaxis.label.set_fontsize(style["axis_font_size"])
+        rotation = style["label_rotation"] if policy.get("categorical_x", not policy["horizontal"]) else 0
         for tick in ax.get_xticklabels():
-            tick.set_rotation(style["label_rotation"])
-            tick.set_ha("right" if style["label_rotation"] > 0 else "left" if style["label_rotation"] < 0 else "center")
+            tick.set_rotation(rotation)
+            tick.set_ha("right" if rotation > 0 else "left" if rotation < 0 else "center")
         ax.margins(**({"x": style["value_margin"]} if policy["horizontal"] else {"y": style["value_margin"]}))
         if policy["zero_baseline"]:
             low, high = ax.get_xlim() if policy["horizontal"] else ax.get_ylim()

@@ -417,31 +417,17 @@ def _balanced_cover_title(title: str) -> str:
     return "<br>".join(html.escape(piece) for piece in pieces)
 
 
-# 服务端分期间汇总表（[[table:…]] 协议块及其上一行表名）原样追加在各章末尾，回放中第1章
-# 后连续3—4页月度表格把下一章推远。新报告的 Markdown 已集中归档，旧报告仍在渲染时
-# 统一移到正文之后的“附表”；模型自写表格没有协议标记，不受影响。
-_SERVER_TABLE_BLOCK = re.compile(
-    # 表名是表格上一行不含协议标记、不以句末标点结尾的短行；正文段落不能被当作表名一起移走。
-    # 服务端表名自成一段（前接空行）且不是列表项：多行段落的末行、列表末项不随表格移走。
-    r"(?:(?:\A|(?<=\n\n))(?![\[|#!>])(?![-*+][ \t]|\d{1,3}[.)][ \t])(?![^\n]*\[\[)"
-    r"[^\n]*[^\n。！？；.!?]\n\n)?^\[\[table:(?P<id>[^\]\r\n]+)\]\]\n.*?^\[\[/table:(?P=id)\]\][ \t]*(?:\n|\Z)",
-    re.MULTILINE | re.DOTALL,
-)
 APPENDIX_TABLES_SENTINEL = "REPORTING-APPENDIX-TABLES"
 APPENDIX_TABLES_TITLE = '<p class="report-appendix-title"><strong>附表</strong></p>'
 
 
 def relocate_server_tables(markdown: str) -> str:
-    # 新报告已在源 Markdown 分章归档；导出保留分组，仅替换附表分页标记。
+    # 装配/编辑器确定阅读顺序；导出只替换显式附表标题，不再搬走正文表。
     parts = re.split(r"\n\n\*\*附表：(?:汇总数据|数据明细)\*\*\n\n", markdown, maxsplit=1)
     body, separator, appendix = (parts[0], True, parts[1]) if len(parts) == 2 else (markdown, False, "")
-    if separator and not _SERVER_TABLE_BLOCK.search(body):
+    if separator:
         return "\n\n".join((body, APPENDIX_TABLES_SENTINEL, appendix))
-    tables = [match[0].strip() for match in _SERVER_TABLE_BLOCK.finditer(markdown)]
-    if not tables:
-        return markdown
-    body = re.sub(r"\n{3,}", "\n\n", _SERVER_TABLE_BLOCK.sub("", markdown)).rstrip()
-    return "\n\n".join((body, APPENDIX_TABLES_SENTINEL, *tables)) + "\n"
+    return markdown
 
 
 # 附表里单一数值列的月度表（“收入金额（亿元）”逐月一行）占半页却只有一列数字：渲染时转置为

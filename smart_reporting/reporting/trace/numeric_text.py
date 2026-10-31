@@ -1620,6 +1620,7 @@ class _DerivedValue:
     table_token: str | None = None
     # 表内差额列单元格：自带符号，只认原值，不按操作数顺序翻转正负。
     cell: bool = False
+    aggregate_kind: str | None = None
 
 
 _RATIO_VERB = r"(?:相当于|为|占|是|达到?)"
@@ -1835,6 +1836,7 @@ class DerivedNumbers:
         operand_values: tuple[Decimal, ...] = (),
         table_operands: tuple[TableOperandV1, ...] = (),
         cell: bool = False,
+        aggregate_kind: str | None = None,
     ) -> None:
         if not operands or any(not names for names in operands):
             return
@@ -1876,6 +1878,7 @@ class DerivedNumbers:
                         operand_values=tuple(operand * factor for operand in operand_values),
                         table_derivation=table_derivation,
                         cell=cell,
+                        aggregate_kind=aggregate_kind,
                     )
                 )
         self._sorted.clear()
@@ -1996,6 +1999,29 @@ class DerivedNumbers:
             if entry.value.quantize(quantum, rounding=ROUND_HALF_UP) != number:
                 continue
             local_claim = claim or statement or context
+            if entry.aggregate_kind:
+                # 不能因为四个已写成员包含了前三项，就把前三项合计当作四项合计。
+                mentioned = {names for names in entry.comparison
+                             if any(name in local_claim for name in names)}
+                if mentioned != set(entry.operands):
+                    continue
+            if entry.aggregate_kind == "decline_sum":
+                prefix = re.sub(rf"{_NUMBER}\s*{re.escape(unit)}$", "", local_claim).rstrip()
+                if not registered_decline_magnitude(
+                    number, unit, (-entry.value,), prefix=prefix, quantum=quantum,
+                ):
+                    continue
+            elif entry.aggregate_kind == "net_contribution":
+                prefix = re.sub(rf"{_NUMBER}\s*%$", "", local_claim).rstrip()
+                # 贡献列的分母是有符号净变动，不是本期收入、降幅或正向变动合计。
+                denominator = prefix.rsplit("占", 1)[-1]
+                if not (
+                    re.search(r"贡献(?:率|占比)(?:为|约为)?$", prefix)
+                    or "占" in prefix
+                    and re.search(r"净|同比", denominator)
+                    and re.search(r"变动|变化|增减|减收|减少|下降", denominator)
+                ):
+                    continue
             if entry.column and len(entry.peer_columns) > 1:
                 clauses = re.split(r"，|(?<!\d),|,(?!\d)", local_claim)
                 measure_claim = next(
@@ -2307,6 +2333,74 @@ def _derive_from_table(
                 )
 
 
+def _derive_decline_contributions(
+    derived: DerivedNumbers, table: Mapping[str, Any], aliases: list[tuple[str, ...]],
+    *, periods: tuple[str, ...] | None, resource_id: str | None, table_pointer: str,
+) -> None:
+    """标准贡献表：差额逐行勾稽且贡献分母闭合后，补算明确列名成员的减收合计。"""
+    columns, rows, meta = (table.get(key) for key in ("columns", "rows", "columnMeta"))
+    required = ("current", "baseline", "change", "contribution")
+    if (not isinstance(columns, list) or any(not isinstance(column, str) for column in columns)
+            or len(set(columns)) != len(columns)
+            or not isinstance(rows, list) or not isinstance(meta, dict)
+            or any(column not in columns or not isinstance(meta.get(column), dict)
+                   for column in required)
+            or len(rows) != len(aliases) or not 2 <= len(rows) <= 100):
+        return
+    unit = meta["change"].get("unit")
+    if (unit not in _MONEY_UNITS
+            or any(meta[column].get("unit") != unit for column in required[:2])
+            or meta["contribution"].get("unit") != "%"
+            or type(meta["contribution"].get("isPercent")) is not bool):
+        return
+    scale = Decimal(1) if meta["contribution"]["isPercent"] else Decimal(100)
+    if len(set(aliases)) != len(aliases):
+        return
+    values = []
+    for row in rows:
+        if (not isinstance(row, list) or len(row) != len(columns)
+                or sum(isinstance(value, str) and bool(value.strip()) for value in row) != 1):
+            return
+        raw = [row[columns.index(column)] for column in required]
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool)
+               or not math.isfinite(value) for value in raw):
+            return
+        current, baseline, change, contribution = (Decimal(str(value)) for value in raw)
+        if current - baseline != change:
+            return
+        values.append((change, contribution * scale))
+    net = sum((value[0] for value in values), Decimal(0))
+    if net >= 0:
+        return
+    # 分母必须与整表净变动一致，拒绝截断的 Top N、混入合计行和不一致的贡献率。
+    if any(abs(contribution * net / 100 - change)
+           > max(Decimal("1e-12"), abs(change) * Decimal("1e-12"))
+           for change, contribution in values):
+        return
+    ranked = sorted((change, index) for index, (change, _) in enumerate(values) if change < 0)
+    for count in range(2, min(len(ranked), 10) + 1):
+        selected = ranked[:count]
+        names = tuple(aliases[index] for _, index in selected)
+        if len(set(names)) != len(names):
+            continue
+        change = sum((value for value, _ in selected), Decimal(0))
+        def operands(column: str, coefficient: Decimal) -> tuple[TableOperandV1, ...]:
+            return tuple(TableOperandV1(
+                fileResourceId=resource_id, tablePointer=table_pointer, rowIndex=index,
+                columnIndex=columns.index(column), coefficient=str(coefficient),
+            ) for _, index in selected) if resource_id else ()
+
+        derived.add(unit, -change, names, top=count, periods=periods,
+                    named_only=True, aggregate_kind="decline_sum",
+                    comparison=tuple(aliases),
+                    table_operands=operands("change", Decimal(-1)))
+        share = sum((values[index][1] for _, index in selected), Decimal(0))
+        derived.add("%", share, names, top=count, periods=periods,
+                    named_only=True, aggregate_kind="net_contribution",
+                    comparison=tuple(aliases),
+                    table_operands=operands("contribution", scale))
+
+
 def primary_display_name(name: str | None) -> str:
     """显示名常带别名（“收入金额，也称医疗收入金额”）；读者可见处只用首个名称。"""
     return re.split(r"[，,；;]", name or "", maxsplit=1)[0].strip()
@@ -2474,6 +2568,10 @@ def _build_derived_number_values(
                     table[key] = (unit, numbers)
                     column_indices[key] = index
             semantics = table_semantics(document, finding)
+            _derive_decline_contributions(
+                derived, finding, aliases, periods=semantics["periods"],
+                resource_id=resource_id, table_pointer=pointer,
+            )
             _derive_from_table(
                 derived, labels, table, aliases,
                 resource_id=resource_id if source_columns_valid else None,
@@ -2755,7 +2853,7 @@ def registered_decline_magnitude(
     # 中性差额（相差/差额/差距）必须由操作数验证，不能借用全局负值的幅度；
     # “差额为负2.48亿元”已写明符号，按负值幅度核对。
     if number <= 0 or not re.search(
-        rf"(?:{'|'.join(FALLING_WORDS)}|(?<![至最不多])[降减少]|超支|超出|缺口|为负|负值)"
+        rf"(?:{'|'.join(FALLING_WORDS)}|减收|(?<![至最不多])[降减少]|超支|超出|缺口|为负|负值)"
         r"(?:了|约|为|达)?\s*$",
         prefix,
     ):

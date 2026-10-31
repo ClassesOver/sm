@@ -184,7 +184,7 @@ class RuntimePlanningMixin:
             prompt_payload["supplement"] = feedback
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
-        period = _single_explicit_period(request.prompt, feedback) or normalized.period
+        period = normalized.period or _single_explicit_period(request.prompt, feedback)
         missing: list[str] = []
         if period is None:
             missing.append(normalized.clarification_question or "请明确唯一的分析期间。")

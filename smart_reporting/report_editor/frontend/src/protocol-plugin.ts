@@ -72,6 +72,17 @@ export function protocolMarkerTransactionAllowed(transaction: Transaction, state
 export function markerDecorations(doc: ProseNode, sources?: TraceSources, active: number | null = null): DecorationSet {
   const decorations: Decoration[] = []
   doc.descendants((node, position) => {
+    if (node.type.name === 'paragraph') {
+      const markers = findProtocolMarkers(node.textContent)
+      let onlyText = true
+      node.forEach(child => { if (!child.isText) onlyText = false })
+      if (onlyText && markers.length && markers.every(marker => marker.kind === 'table' || marker.kind === 'table-close')
+        && !markers.reduce((text, marker) => text.replace(marker.raw, ''), node.textContent).trim()) {
+        // 依文档内容识别纯协议段落；光标部件、separator、trailingBreak
+        // 都由编辑器后插入，不能用 DOM 的 :only-child 判断是否还有正文。
+        decorations.push(Decoration.node(position, position + node.nodeSize, { class: 'report-table-protocol-paragraph' }))
+      }
+    }
     if (!node.isText || !node.text) return
     for (const group of groupProtocolMarkers(node.text)) {
       decorations.push(Decoration.widget(position + group.at(-1)!.end, caretAnchor, { side: -1, key: PROTOCOL_CARET_ANCHOR }))

@@ -158,7 +158,7 @@ def _selected_measure_fields(chart, plot, source_index):
     return tuple(column for column in plot['columns'] if column in active)
 
 
-def _standard_finding_parents(index, origin, tokens, metrics):
+def _standard_finding_parents(index, origin, tokens, metrics, *, path_matches=None):
     if len(tokens) < 2 or not isinstance(tokens[1], int):
         raise ValueError('chart_projection_fact_unregistered')
     finding_index = tokens[1]
@@ -193,7 +193,7 @@ def _standard_finding_parents(index, origin, tokens, metrics):
         if snapshot is None or dataset_id not in record.input_dataset_ids:
             raise ValueError('chart_dataset_binding_mismatch')
         file = next(item for item in index.files if item.resource_id == snapshot.file_resource_id)
-        if not any(item.get('path') == file.path and item.get('size') == file.size
+        if not any((path_matches(item.get('path'), file.path) if path_matches else item.get('path') == file.path) and item.get('size') == file.size
                    and item.get('sha256') == file.sha256 for item in input_files):
             raise ValueError('chart_dataset_binding_mismatch')
         candidates = {entry.get('factId'): entry for entry in metrics

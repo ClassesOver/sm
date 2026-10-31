@@ -156,7 +156,7 @@ def _content_review_notice(warnings: Any) -> str | None:
             details = item.get("details")
             count = details.get("count") if isinstance(details, dict) else None
             unverified += count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 1
-        elif item.get("code") == "report_section_block_content_review":
+        elif item.get("code") in {"report_section_block_content_review", "chart_caption_numeric_review"}:
             # 只给读者结论句；“请改用……”是写给生成模型的纠正指引。
             findings.append(" ".join(item["message"].split("。", 1)[0].split())[:120])
     findings = list(dict.fromkeys(findings))

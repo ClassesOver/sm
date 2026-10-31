@@ -222,6 +222,17 @@ def _shape(operands: tuple, rows: list, unit: str) -> bool:
         left, right = next(iter(positive)), next(iter(negative))
         return left[0] == right[0] or left[1] == right[1]
     columns = {op.column_index for op in operands}
+    if len(columns) == 1 and not positive and len(operands) >= 2 and unit not in {"%", "个百分点", "‰"}:
+        # 负向差额前 N 项的减少幅度：-sum(负值)，保留原值和显式负系数。
+        column = operands[0].column_index
+        ranked = [(index, _number(row[column])) for index, row in enumerate(rows)
+                  if not any(isinstance(cell, str) and _TOTAL.fullmatch(cell.strip()) for cell in row)]
+        if any(value is None for _, value in ranked) or len(ranked) < len(operands):
+            return False
+        threshold = sorted(value for _, value in ranked)[len(operands) - 1]
+        chosen = {op.row_index for op in operands}
+        return (threshold < 0 and chosen <= {index for index, value in ranked if value <= threshold}
+                and {index for index, value in ranked if value < threshold} <= chosen)
     if len(columns) == 1 and not negative and len(operands) >= 2:
         if unit == "个百分点":
             return False
@@ -334,11 +345,20 @@ def _resolve(derivation: TableDerivationV1, sources: Mapping[str, bytes]) -> tup
                 or len(coefficient.as_tuple().digits) > 32):
             return None
         value = _number(rows[op.row_index][op.column_index])
-        source_unit = _column_unit(table, columns[op.column_index])
+        column = columns[op.column_index]
+        source_unit = _column_unit(table, column)
+        meta = table.get("columnMeta", {})
+        meta = meta.get(column, {}) if isinstance(meta, dict) else {}
+        fraction = (column == "contribution" and isinstance(meta, dict)
+                    and meta.get("unit") == "%" and meta.get("isPercent") is False)
+        if fraction:
+            source_unit = "%"
         if value is None or source_unit is None:
             return None
         target = "%" if derivation.unit == "个百分点" else derivation.unit
         scale = unit_conversion_scale(source_unit, target)
+        if scale is not None and fraction:
+            scale *= 100
         if scale is None or abs(coefficient) != scale:
             return None
         coefficients.append(coefficient)

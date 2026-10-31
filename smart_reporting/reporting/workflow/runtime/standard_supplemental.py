@@ -151,16 +151,16 @@ class StandardSupplementalRequest(BaseModel):
             self.denominator_field, self.denominator_parent_total, self.denominator_scale, self.ratio_fact_id,
         )):
             raise ValueError("只有 group_ratio 接受分母参数")
-        if self.operation == "cross_group_summary":
-            if self.secondary_dimension_field is None:
+        if self.operation in {"cross_group_summary", "period_comparison"}:
+            if self.operation == "cross_group_summary" and self.secondary_dimension_field is None:
                 raise ValueError("cross_group_summary 必须提供 secondaryDimensionField")
-            if self.secondary_dimension_field in {
+            if self.secondary_dimension_field is not None and self.secondary_dimension_field in {
                 self.measure_field, self.dimension_field, self.period_field,
                 self.denominator_field,
             }:
                 raise ValueError("交叉维度必须与度量、主维度和期间字段不同")
         elif self.secondary_dimension_field is not None:
-            raise ValueError("只有 cross_group_summary 接受 secondaryDimensionField")
+            raise ValueError("只有 cross_group_summary 和 period_comparison 接受 secondaryDimensionField")
         if self.operation in {"group_period_series", "group_period_comparison"} or self.group_by_period:
             if len(self.parent_period_totals) != len(self.current_periods):
                 raise ValueError(f"{self.operation} 必须为每个期间提供 parentPeriodTotals")
@@ -279,16 +279,16 @@ class StandardSupplementalSpec(BaseModel):
             self.denominator_field, self.denominator_parent_fact_id, self.ratio_fact_id,
         )):
             raise ValueError("只有 group_ratio 接受分母字段、分母父事实和比率事实")
-        if self.operation == "cross_group_summary":
-            if self.secondary_dimension_field is None:
+        if self.operation in {"cross_group_summary", "period_comparison"}:
+            if self.operation == "cross_group_summary" and self.secondary_dimension_field is None:
                 raise ValueError("cross_group_summary 必须提供 secondaryDimensionField")
-            if self.secondary_dimension_field in {
+            if self.secondary_dimension_field is not None and self.secondary_dimension_field in {
                 self.measure_field, self.dimension_field, self.period_field,
                 self.denominator_field,
             }:
                 raise ValueError("交叉维度必须与度量、主维度和期间字段不同")
         elif self.secondary_dimension_field is not None:
-            raise ValueError("只有 cross_group_summary 接受 secondaryDimensionField")
+            raise ValueError("只有 cross_group_summary 和 period_comparison 接受 secondaryDimensionField")
         return self
 
 
@@ -323,6 +323,8 @@ def standard_output_columns(spec: StandardSupplementalSpec | StandardSupplementa
         )
     elif spec.operation == "period_comparison":
         derived = ("current", "baseline", "change", "changeRate", "contribution", "rank")
+        if spec.secondary_dimension_field is not None:
+            derived += ("primaryChange", "primaryContribution", "primaryRank")
     else:
         derived = ("numerator", "denominator", "difference", "ratio")
     sources = _standard_source_fields(spec)
@@ -473,6 +475,16 @@ def run_standard_supplemental(
         warnings.extend(baseline_warnings)
     elif baseline_csv_content is not None:
         raise ValueError("独立对照 CSV 必须绑定 baselineDatasetId")
+    cross_comparison = request.operation == "period_comparison" and request.secondary_dimension_field is not None
+    if cross_comparison:
+        # 复用单维比较的配对、缺失值和全窗贡献算法；JSON 元组键避免维度值拼接碰撞。
+        def paired(source: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [{**row, "dimension": json.dumps(
+                [row["dimension"], row["secondary_dimension"]], ensure_ascii=False, separators=(",", ":"),
+            )} for row in source]
+
+        rows = paired(rows)
+        baseline_rows = paired(baseline_rows) if baseline_rows is not None else None
     column_meta: dict[str, dict[str, Any]]
     amount_columns: tuple[str, ...]
     if request.operation == "group_summary":
@@ -640,6 +652,13 @@ def run_standard_supplemental(
         column_meta = {"ratio": {"unit": "%", "isPercent": False}}
         amount_columns = ("numerator", "denominator", "difference")
 
+    if cross_comparison:
+        finding_rows = _cross_comparison_columns(finding_rows, request, warnings)
+        amount_columns += ("primaryChange",)
+        column_meta.update({
+            "primaryContribution": {"unit": "%", "isPercent": False},
+            "primaryRank": {"unit": "名"},
+        })
     columns = list(standard_output_columns(request))
     source_columns = columns[:len(_standard_source_fields(request))]
     for field, column in zip(_standard_source_fields(request), source_columns, strict=True):
@@ -707,6 +726,12 @@ def run_standard_supplemental(
         finding.setdefault("comparison", {})["changeRateDenominator"] = request.change_rate_denominator
     if request.operation == "period_comparison" and not request.group_by_period and request.rank_by != "absolute_change_desc":
         finding.setdefault("comparison", {})["rankBy"] = request.rank_by
+    if cross_comparison:
+        finding.setdefault("comparison", {}).update(
+            primaryDimensionField=request.dimension_field,
+            primaryScope="row_period_primary" if request.group_by_period else "window_primary",
+            primaryRankBy=request.rank_by, contributionScope="window_total_change",
+        )
     return {
         "findings": [finding],
         "reconciliations": compact_standard_reconciliations(reconciliations, request.output_name + "_checks"),
@@ -1154,6 +1179,31 @@ def _comparison_rows(
     return result, current_total, baseline_total, math.fsum(current.values()), math.fsum(baseline.values())
 
 
+def _cross_comparison_columns(
+    rows: Sequence[list[Any]], request: StandardSupplementalRequest, warnings: list[str],
+) -> list[list[Any]]:
+    """展开两维来源键，组内仅在配对完整时给出变动贡献与排名。"""
+    offset = int(request.group_by_period)
+    expanded = [[*row[:offset], *json.loads(row[offset]), *row[offset + 1:]] for row in rows]
+    groups: dict[tuple[Any, ...], list[list[Any]]] = {}
+    for row in expanded:
+        groups.setdefault(tuple(row[:offset + 1]), []).append(row)
+    for key, members in groups.items():
+        changes = [row[offset + 4] for row in members]
+        if any(change is None for change in changes):
+            warnings.append(f"主维度 {key} 存在缺失配对，组内变动、贡献与排名保留为空")
+            for row in members:
+                row.extend((None, None, None))
+            continue
+        primary_change = math.fsum(changes)
+        if primary_change == 0:
+            warnings.append(f"主维度 {key} 总变化为零，primaryContribution 保留为空")
+        # members 已沿用全窗变化排序；限制到同一主维度后即为稳定的组内排名。
+        for rank, row in enumerate(members, start=1):
+            row.extend((primary_change, row[offset + 4] / primary_change if primary_change else None, rank))
+    return expanded
+
+
 def _period_comparison_rows(
     rows: Sequence[dict[str, Any]], baseline_rows: Sequence[dict[str, Any]] | None,
     request: StandardSupplementalRequest, warnings: list[str],
@@ -1505,7 +1555,7 @@ def standard_computation_catalog(
                                 baselineDatasetId=baseline.dataset_id if cross_dataset else None,
                                 groupByPeriod=by_period,
                             ))
-                        if source is not None and standard_input_matches_fact(baseline, baseline_dataset):
+                        if standard_input_matches_fact(baseline, baseline_dataset):
                             binding_key = (baseline.fact_id, baseline.dataset_id, prior)
                             if binding_key not in comparison_bindings:
                                 binding = {
@@ -1515,7 +1565,8 @@ def standard_computation_catalog(
                                 if cross_dataset:
                                     binding["baselineDatasetId"] = baseline.dataset_id
                                 comparison_bindings[binding_key] = binding
-                                source["comparisonBindings"].append(binding)
+                                if source is not None:
+                                    source["comparisonBindings"].append(binding)
                             comparison_bindings[binding_key]["dimensionFields"].append(dimension)
                 for spec in specs:
                     add_candidate(
@@ -1545,6 +1596,24 @@ def standard_computation_catalog(
                                 groupByPeriod=by_period,
                             ),
                         )
+                    for binding in comparison_bindings.values():
+                        if not {primary, secondary}.issubset(binding["dimensionFields"]):
+                            continue
+                        for by_period in (False, True):
+                            add_candidate(
+                                dataset_id=dataset_id, fields=required | {primary, secondary},
+                                label=getattr(parent, "display_name", None) or parent.field,
+                                spec=StandardSupplementalSpec(
+                                    operation="period_comparison", measureField=parent.field,
+                                    dimensionField=primary, secondaryDimensionField=secondary,
+                                    periodField=parent.period_field, currentPeriods=periods,
+                                    parentFactId=parent.fact_id,
+                                    baselinePeriods=binding["baselinePeriods"],
+                                    baselineParentFactId=binding["baselineParentFactId"],
+                                    baselineDatasetId=binding.get("baselineDatasetId"),
+                                    groupByPeriod=by_period,
+                                ),
+                            )
                     if len(pairs) >= 28:
                         break
                 if len(pairs) >= 28:

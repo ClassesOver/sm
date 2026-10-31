@@ -341,8 +341,26 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
         if self.execution_mode == "sequential":
             return tuple(await execute_batch(self.sections, parallel=False))
         results: list[ReportingDraftWorkflowResult] = []
-        for offset in range(0, len(self.sections), self.section_concurrency):
-            batch = self.sections[offset : offset + self.section_concurrency]
+        batch: list[ReportingDraftWorkflow] = []
+        batch_analysis_ids: set[str] = set()
+        for section in self.sections:
+            # 冻结事实允许多个章节引用同一分析项，但章节仍可能定向补证，
+            # 撤销全局完成记录。共享分析项的章节必须隔批，等待补证与成稿
+            # 全部结束后才能消费新证据；无依赖交集的章节保留原并发能力。
+            shared_ids = batch_analysis_ids.intersection(section.analysis_ids)
+            if batch and (len(batch) >= self.section_concurrency or shared_ids):
+                if shared_ids:
+                    logger.info(
+                        "report_section_dependency_wait section_code={} analysis_ids={}",
+                        section.section_goal.get("sectionCode", ""),
+                        sorted(shared_ids),
+                    )
+                results.extend(await execute_batch(batch, parallel=True))
+                batch = []
+                batch_analysis_ids.clear()
+            batch.append(section)
+            batch_analysis_ids.update(section.analysis_ids)
+        if batch:
             results.extend(await execute_batch(batch, parallel=True))
         # Parallel completion order is nondeterministic; output remains outline order.
         by_code = {result.section_code: result for result in results}

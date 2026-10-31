@@ -35,6 +35,11 @@ def standard_chart_capabilities():
         'forms': list(get_args(StandardChartForm)),
         'sourceLabelModes': list(get_args(SourceLabelMode)),
         'summaryAggregations': list(get_args(SummaryAggregation)),
+        'ordering': {
+            'value': {'field': 'frozen_numeric_column', 'excludeMissing': 'explicit_only'},
+            'max_abs': {'fields': 'same_unit_frozen_numeric_columns', 'excludeMissing': 'explicit_only'},
+            'missingDefault': 'reject', 'invalidValues': ['NaN', 'Inf', 'bool'],
+        },
         # 非笛卡尔图族仅消费显示单位，不能承诺忽略其他坐标参数。
         'familyAxesOverrides': ['leftDisplayUnit'],
         'families': {

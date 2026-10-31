@@ -173,6 +173,81 @@ def test_reporting_draft_workflow_rejects_analysis_id_assigned_to_two_sections()
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "analysis_groups",
+    [(["a1", "a7"], ["a7"], ["a8"]),
+     (["a1"], ["a2"], ["a1", "a2"])],
+)
+async def test_shared_frozen_evidence_is_not_read_during_section_rework(analysis_groups):
+    evidence = {analysis_id: 1 for group in analysis_groups for analysis_id in group}
+    drafted = set()
+    seen = {}
+
+    async def visualization(instruction, _context):
+        assert all(analysis_id in evidence for analysis_id in instruction["analysisIds"])
+        return _ok("visualization")
+
+    async def draft(instruction, _context):
+        code = instruction["sectionCode"]
+        if code not in drafted:
+            drafted.add(code)
+            return StepOutput(content={"status": "rework", "rework": {
+                "analysisIds": instruction["analysisIds"],
+            }})
+        seen[code] = [evidence[item] for item in instruction["analysisIds"]]
+        return StepOutput(content={"status": "completed"})
+
+    async def rework(instruction, _context):
+        ids = instruction["rework"]["analysisIds"]
+        previous = {item: evidence.pop(item) for item in ids}
+        # 重现 reducer 先撤销证据、补证完成后重新登记的可见时间窗口。
+        await asyncio.sleep(0)
+        evidence.update({item: value + 1 for item, value in previous.items()})
+        return _ok("rework")
+
+    workflow = ReportingAnalysisAndDraftWorkflow(
+        report_goal="目标",
+        sections=[{"sectionCode": f"s{index}", "analysisIds": group}
+                  for index, group in enumerate(analysis_groups, 1)],
+        run_analysis=AsyncMock(side_effect=AssertionError("冻结证据不可重复初次分析")),
+        submit_visualization=visualization, draft_section=draft, rework_analysis=rework,
+        execution_mode="parallel", section_concurrency=3, evidence_frozen=True,
+    )
+    results = await workflow._run_sections(RunContext(run_id="run", session_id="session"))
+    assert [result.section_code for result in results] == ["s1", "s2", "s3"]
+    if analysis_groups[0] == ["a1", "a7"]:
+        assert seen == {"s1": [2, 2], "s2": [3], "s3": [2]}
+    else:
+        assert seen == {"s1": [2], "s2": [2], "s3": [3, 3]}
+
+
+@pytest.mark.anyio
+async def test_disjoint_frozen_sections_still_run_concurrently():
+    both_started = asyncio.Event()
+    active = 0
+
+    async def visualization(_instruction, _context):
+        nonlocal active
+        active += 1
+        if active == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=2)
+        return _ok("visualization")
+
+    workflow = ReportingAnalysisAndDraftWorkflow(
+        report_goal="目标",
+        sections=[{"sectionCode": "s1", "analysisIds": ["a1"]},
+                  {"sectionCode": "s2", "analysisIds": ["a2"]}],
+        run_analysis=AsyncMock(side_effect=AssertionError("冻结证据不可重复初次分析")),
+        submit_visualization=visualization,
+        draft_section=AsyncMock(return_value=StepOutput(content={"status": "completed"})),
+        execution_mode="parallel", section_concurrency=2, evidence_frozen=True,
+    )
+    results = await workflow._run_sections(RunContext(run_id="run", session_id="session"))
+    assert [result.section_code for result in results] == ["s1", "s2"]
+
+
+@pytest.mark.anyio
 async def test_parallel_sections_share_analysis_limiter() -> None:
     active = 0
     maximum = 0

@@ -48,6 +48,7 @@ from ..reporting.models import ReportingError
 from ..reporting.trace.chart_subjects import freeze_chart_presentations
 from ..reporting.trace.contracts_v1 import (
     ChartTraceV1,
+    FactRefV1,
     RevisionTraceIndexV1,
     TableTraceV1,
     TraceFileRefV1,
@@ -2778,13 +2779,15 @@ class ReportEditorService:
             if materialized_data:
                 # 新物化数据必须能从当前 revision 的冻结事实确定性重建；仅凭
                 # analysisId 相同不足以证明路径、哈希、选择器和内容没有被替换。
-                await self._verify_chart_edit_plot_data(
+                template_refs = await self._verify_chart_edit_plot_data(
                     thread_id,
                     record=record,
                     trace=trace,
                     index=index,
                     data_origin=data_origin,
                 )
+                if data_origin == "template" and template_refs:
+                    trace = trace.model_copy(update={"fact_refs": template_refs})
                 for data_ref in record.plot_data_files:
                     if data_ref.path not in known_paths:
                         new_files.append(
@@ -2909,7 +2912,7 @@ class ReportEditorService:
         trace: ChartTraceV1,
         index: RevisionTraceIndexV1,
         data_origin: str,
-    ) -> None:
+    ) -> tuple[FactRefV1, ...] | None:
         """Verify editor-materialized chart inputs against registered frozen facts."""
 
         indexed_files = {item.resource_id: item for item in index.files}
@@ -3064,6 +3067,19 @@ class ReportEditorService:
         )
         from .chart_templates import template_rows
 
+        fact_refs = trace.fact_refs
+        if not fact_refs:
+            from ..reporting.trace.chart_facts import recover_chart_fact_refs
+
+            async def read_source(file):
+                raw, _media = await self.workspace.afile_bytes(thread_id, file.path)
+                return raw
+
+            try:
+                fact_refs = await recover_chart_fact_refs(index, trace, read_source)
+            except Exception as error:
+                raise ReportingError("snapshot_integrity_failed", "原图事实绑定无法从冻结来源恢复。") from error
+
         expected_bindings = tuple(
             {
                 "analysisId": source.get("analysisId"),
@@ -3079,7 +3095,7 @@ class ReportEditorService:
         try:
             bundle = DeterministicAnalysisBundle.model_validate(documents[identity.path])
             rows, expected_pointers, reason = template_rows(
-                str(payload.get("templateId", "")), bundle, trace.fact_refs
+                str(payload.get("templateId", "")), bundle, fact_refs
             )
         except ValueError as error:
             raise ReportingError("snapshot_integrity_failed", "图表模板事实无法重建。") from error
@@ -3100,6 +3116,12 @@ class ReportEditorService:
             raise ReportingError(
                 "snapshot_integrity_failed", "图表模板作图数据无法从冻结事实重建。"
             )
+        from ..reporting.trace.fact_index import fact_entry_from_pointer
+
+        return tuple(FactRefV1(analysisId=bundle.analysis_id, fileResourceId=identity.resource_id,
+            jsonPointer=pointer, factKind=fact_entry_from_pointer(documents[identity.path], pointer)[0],
+            factKey=fact_entry_from_pointer(documents[identity.path], pointer)[1].get("factId"))
+            for pointer in expected_pointers)
 
     async def _table_edit_lineage(
         self,

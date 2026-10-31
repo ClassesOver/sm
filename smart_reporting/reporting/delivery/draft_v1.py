@@ -223,6 +223,8 @@ class ReportServerTable(StrictModel):
 
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
     markdown: str = Field(min_length=1, max_length=64_000)
+    # 仅由服务端依据冻结事实绑定填写，不扩展模型正文提交协议。
+    anchor_claim_ids: tuple[str, ...] = Field(default=(), alias="anchorClaimIds")
 
     @model_validator(mode="after")
     def validate_server_table(self) -> ReportServerTable:
@@ -848,7 +850,7 @@ def assemble_report_markdown(
         raise ReportingError(
             "report_draft_registry_invalid", "Workflow 图表注册表包含重复 chartId。"
         )
-    server_tables_by_section: dict[str, list[str]] = {}
+    server_tables_by_section: dict[str, list[ReportServerTable]] = {}
     seen_table_ids: set[str] = set()
     for table in server_tables:
         if table.section_code not in section_registry:
@@ -864,9 +866,7 @@ def assemble_report_markdown(
                 f"服务端表格 tableId 重复: {table_id.group(1)}",
             )
         seen_table_ids.add(table_id.group(1))
-        server_tables_by_section.setdefault(table.section_code, []).append(
-            table.markdown
-        )
+        server_tables_by_section.setdefault(table.section_code, []).append(table)
     report_path = PurePosixPath(markdown_path)
     if report_path.is_absolute() or ".." in report_path.parts or "\\" in markdown_path:
         raise ReportingError("report_draft_path_invalid", "Markdown 路径必须是安全工作区相对路径。")
@@ -978,6 +978,29 @@ def assemble_report_markdown(
         h3_count = 0
         h4_count = 0
         repeated_titles = _repeated_h3_titles(section.blocks)
+        tables_by_block: dict[int, list[str]] = {}
+        appendix_tables: list[ReportServerTable] = []
+        for table in server_tables_by_section.get(definition.code, ()):
+            rows = [line for line in table.markdown.splitlines() if line.strip().startswith('|')]
+            # 正文最多展示 20 行、8 列的完整汇总（行数不含表头），不改变来源表体。
+            if len(rows) > 22 or not rows or len(rows[0].strip().strip('|').split('|')) > 8:
+                appendix_tables.append(table)
+                continue
+            anchors = [
+                index for index, item in enumerate(section.blocks)
+                if set(table.anchor_claim_ids).intersection(
+                    (*item.claim_ids, *(ref.claim_id for ref in item.number_references))
+                )
+            ]
+            target = anchors[0] if anchors else len(section.blocks) - 1
+            tables_by_block.setdefault(target, []).append(table.markdown)
+            if not anchors:
+                chart_warnings.append({
+                    "code": "table_section_anchor_fallback",
+                    "sectionCode": definition.code,
+                    "message": "汇总表未命中具体声明，保留在已绑定的分析章节末尾。",
+                })
+        server_tables_by_section[definition.code] = appendix_tables
         for block_index, block in enumerate(section.blocks):
             from ..trace.semantic_bindings import anchor_bound_numbers
 
@@ -1133,18 +1156,20 @@ def assemble_report_markdown(
                     }
                 )
 
-    # 自动汇总表集中收录于附表，正文保留模型围绕结论选择的分析表。
+            markdown_parts.extend(tables_by_block.get(block_index, ()))
+
+    # 大型表集中收录于附表，小型完整汇总已就近展示，不重复附录。
     # 原表与来源标记原样保留，编辑器和导出文档采用一致的阅读顺序。
-    if server_tables_by_section:
+    if any(server_tables_by_section.values()):
         markdown_parts.append("**附表：汇总数据**")
         markdown_parts.append("以下为汇总数据。完整分析明细保留在报告来源证据中，供查询与核对。")
         for definition in sections:
             tables = server_tables_by_section.get(definition.code, ())
             if tables:
                 markdown_parts.append(f"**{definition.section_number}. {definition.title}**")
-                markdown_parts.extend(tables)
+                markdown_parts.extend(table.markdown for table in tables)
 
-    if require_table and not any(
+    if require_table and not server_tables and not any(
         "|" in block.markdown for section in draft.sections for block in section.blocks
     ):
         raise ReportingError("report_draft_table_missing", "当前报告至少需要一个 Markdown 表格。")

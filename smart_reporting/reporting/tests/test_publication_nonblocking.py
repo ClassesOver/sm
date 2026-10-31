@@ -324,3 +324,59 @@ async def test_publication_gate_keeps_collected_issues_when_audit_write_fails(mo
     # 审计失败只追加一条问题，之前收集的门禁问题不被替换。
     assert codes[-1] == "report_quality_audit_failed"
     assert len(codes) > 1
+
+
+@pytest.mark.anyio
+async def test_publication_gate_preserves_caption_review_from_checkpoint():
+    from smart_reporting.reporting.workflow.checkpoint import ReportingCheckpoint
+
+    caption_warning = {
+        "code": "chart_caption_numeric_review",
+        "chartId": "chart_001",
+        "message": "图注部分数值缺少依据，已移除相关分句。",
+    }
+    checkpoint = ReportingCheckpoint.model_validate({
+        "revision": 1, "phase": "analysis", "outlineHash": "a" * 64,
+        "profileCoverage": {
+            "authorizedDatasetCount": 1, "coveredDatasetCount": 1,
+            "datasets": [{
+                "datasetId": "dataset-1", "datasetPath": "datasets/source.csv",
+                "datasetSize": 1, "datasetSnapshotHash": "b" * 64,
+                "profileFile": {"path": "profiles/source.json", "size": 1, "sha256": "c" * 64},
+                "rowCount": 1, "fieldCount": 1, "fields": ["amount"],
+            }],
+        },
+        "evidenceManifest": {
+            "evidence": [{
+                "analysisId": "analysis_001", "summary": "收入比较",
+                "datasetIds": ["dataset-1"], "citationIds": ["citation_001"],
+                "evidenceFiles": [{"path": "evidence/source.json", "size": 1, "sha256": "d" * 64}],
+            }],
+            "datasetSemantics": [{
+                "datasetId": "dataset-1", "rowGrain": "收入类型",
+                "duplicateResolution": "not_applicable",
+            }],
+        },
+        "warnings": [caption_warning, {"code": "unrelated_checkpoint_warning"}],
+    })
+    state: dict = {}
+    runtime = SimpleNamespace(
+        _state=lambda _context: state,
+        _workflow_result=lambda _state: {},
+        _scope=lambda _context: {
+            "threadId": "thread", "externalRunId": "external", "database": "db", "companyId": "c",
+        },
+        state_repository=SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(
+            payload={"workflowCheckpoint": checkpoint.model_dump(mode="json", by_alias=True)},
+        ))),
+        _verify_claim_fact_bindings=AsyncMock(return_value=([], [])),
+        quality_warning_service=None,
+    )
+
+    gate = await publication.RuntimePublicationMixin._dataset_publication_gate(
+        runtime, RunContext(run_id="run", session_id="thread", session_state=state), {"revision": 1}
+    )
+
+    assert caption_warning in gate["warnings"]
+    assert not any(item.get("code") == "unrelated_checkpoint_warning" for item in gate["warnings"])
+    assert not any(item["code"] == "chart_caption_numeric_review" for item in gate["issues"])
