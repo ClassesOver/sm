@@ -56,6 +56,7 @@ from .reporting.diagnostics import (
 from .reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .reporting.workflow.controller import ReportWorkflowController
 from .reporting.workflow.repository import REPORTING_DB_SCHEMA
+from .reporting.workflow.runtime.standard_chart_proof import configure_render_proof_signing
 from .reporting_mcp.identity import CapabilityTokenVerifier
 from .runtime.application import ApplicationContext, create_agentos_app
 from .runtime.database import check_database, create_agent_database
@@ -80,6 +81,8 @@ reporting_workspace_registry = ReportingWorkspaceRegistry(
     settings.reporting_host_workspace_root,
     secret=settings.workspace_hmac_secret,
 )
+# 标准渲染证明签名复用工作区密钥（按用途派生子密钥），使模板演进后旧证明仍可核验。
+configure_render_proof_signing(settings.workspace_hmac_secret)
 reporting_code_mode_runtime = create_reporting_code_mode_runtime(
     reporting_workspace_registry.root,
     analysis_concurrency=settings.report_analysis_concurrency,

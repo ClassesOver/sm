@@ -13,7 +13,7 @@ from .fact_index import FACT_ARRAYS, fact_entry_from_pointer
 
 
 def evaluate_standard_chart_alignment(index, chart, document):
-    """前提为 standard_render_matches_frozen_inputs；转换、系列及轴由同一模板证明。"""
+    """前提为标准渲染已核验（重编译一致或签发签名）；转换、系列及轴由证明中的计划确定。"""
     from .semantic_alignment import SemanticAlignmentCheck
 
     fact_ids = set()

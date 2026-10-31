@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import subprocess
 from collections.abc import Mapping
 from functools import lru_cache
@@ -11,11 +12,53 @@ from pathlib import PurePosixPath
 from loguru import logger
 
 from ...code_agent.formatting import format_python_source_sync
-from ...trace.contracts_v1 import StandardChartRenderProofV1
+from ...trace.contracts_v1 import StandardChartRenderProofV1, canonical_json_bytes
 from ..checkpoint import FileIdentity
 from .chart_inputs import ChartInputFile, ChartInputMaterialization
 from .phase_models import VisualizationPlanDraft
 from .standard_visualization import standard_visualization_preflight
+
+_PROOF_SIGNING_DOMAIN = b"standard-render-proof/v1"
+_proof_signing_key: bytes | None = None
+
+
+def configure_render_proof_signing(secret: str) -> None:
+    """复用工作区HMAC密钥并按用途派生子密钥；不足32字节时不签名，核验只依赖重编译。"""
+    global _proof_signing_key
+    raw = secret.encode("utf-8")
+    _proof_signing_key = (hmac.new(raw, _PROOF_SIGNING_DOMAIN, hashlib.sha256).digest()
+                          if len(raw) >= 32 else None)
+
+
+def _proof_digest(proof: StandardChartRenderProofV1, key: bytes) -> str:
+    payload = canonical_json_bytes(proof.model_dump(mode="json", by_alias=True, exclude={"signature"}))
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def sign_standard_render_proof(proof: StandardChartRenderProofV1) -> StandardChartRenderProofV1:
+    key = _proof_signing_key
+    return proof if key is None else proof.model_copy(update={"signature": _proof_digest(proof, key)})
+
+
+def standard_render_proof_signed(proof: StandardChartRenderProofV1) -> bool:
+    key = _proof_signing_key
+    return (key is not None and proof.signature is not None
+            and hmac.compare_digest(proof.signature, _proof_digest(proof, key)))
+
+
+def verify_standard_render_source(
+    proof: StandardChartRenderProofV1, contents: Mapping[str, bytes], script_raw: bytes,
+) -> str | None:
+    """返回核验依据：当前模板重编译一致为recompiled；模板已演进时依签发签名为signed。
+
+    contents按已核验hash索引；签名路径仍要求脚本字节与证明登记的hash一致。
+    """
+    compiled = recompile_standard_render_proof(proof, contents)
+    if compiled is not None and compiled == script_raw:
+        return "recompiled"
+    if hashlib.sha256(script_raw).hexdigest() == proof.script_sha256 and standard_render_proof_signed(proof):
+        return "signed"
+    return None
 
 
 @lru_cache(maxsize=32)
@@ -71,11 +114,11 @@ def create_standard_render_proofs(result, plan, inputs) -> tuple[dict, ...]:
         return tuple({
             'chartId': chart.chart_id,
             'scriptFile': script,
-            'proof': StandardChartRenderProofV1(
+            'proof': sign_standard_render_proof(StandardChartRenderProofV1(
                 runId=receipt.run_id, scriptSha256=script.sha256,
                 imageSha256=outputs[chart.source_path].sha256,
                 plan=frozen_plan.model_dump(mode='json', by_alias=True, exclude_unset=True), inputs=entries,
-            ),
+            )),
         } for chart in frozen_plan.charts)
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         logger.warning('report_standard_chart_proof_unavailable error={}', type(error).__name__)
@@ -99,8 +142,7 @@ async def archive_standard_render_proof(runtime, thread_id, chart, image_path):
         dependencies.append(await runtime._write_immutable_artifact(
             thread_id, str(parent / f'render-input-{identity.sha256}.json'), raw,
         ))
-    compiled = recompile_standard_render_proof(proof, contents)
-    if compiled is None or compiled != script_raw:
+    if verify_standard_render_source(proof, contents, script_raw) is None:
         raise ValueError('standard_render_source_changed')
     archived_script = await runtime._write_immutable_artifact(
         thread_id, str(PurePosixPath(image_path).with_suffix('.render.py')), script_raw,

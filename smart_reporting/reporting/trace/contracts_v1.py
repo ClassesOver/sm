@@ -394,6 +394,8 @@ class StandardChartRenderProofV1(StrictModel):
     image_sha256: str = Field(alias="imageSha256", pattern=SHA256_PATTERN)
     plan: dict[str, Any]
     inputs: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=500)
+    # 签发时服务端已确认脚本由当时模板编译；模板演进后重编译不一致时据此核验。
+    signature: str | None = Field(default=None, pattern=SHA256_PATTERN)
 
 
 class ChartTraceV1(StrictModel):

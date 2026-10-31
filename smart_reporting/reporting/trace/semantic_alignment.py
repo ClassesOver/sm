@@ -17,7 +17,7 @@ from pydantic import Field
 from ..contract import SHA256_PATTERN, StrictModel
 from ..units import unit_conversion_scale
 from ..workflow.runtime.chart_inputs import parse_data_path
-from .chart_quality import ChartQualityCheck
+from .chart_quality import STANDARD_RENDER_VERIFIED_REASONS, ChartQualityCheck
 from .contracts_v1 import RevisionTraceIndexV1
 from .fact_index import fact_entry_from_pointer
 
@@ -184,7 +184,7 @@ def evaluate_semantic_alignment(
             ):
                 raise ValueError("chart_arrays_unverified")
             if (chart.standard_render_proof is not None
-                    and chart_checks[chart.chart_id].reason == "standard_render_matches_frozen_inputs"):
+                    and chart_checks[chart.chart_id].reason in STANDARD_RENDER_VERIFIED_REASONS):
                 from .standard_chart_alignment import evaluate_standard_chart_alignment
 
                 checks[chart.chart_id] = evaluate_standard_chart_alignment(index, chart, document)
