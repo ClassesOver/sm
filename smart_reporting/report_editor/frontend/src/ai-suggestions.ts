@@ -166,3 +166,64 @@ export function createRefinementRow(commands: readonly string[], fill: (command:
   }
   return row
 }
+
+export type AIEventSource = 'start' | 'dialog' | 'refine' | 'free'
+export interface AIOrigin { source: AIEventSource; kind: SuggestionKind; suggestionId?: string; /** 仅本地判断归因，不上报。 */ text?: string }
+
+const SUGGESTION_KEYWORDS: [RegExp, string][] = [
+  [/分页/, 'paginate'], [/左右坐标轴|双坐标轴/, 'dual-axis'], [/断轴/, 'break'], [/最高和最低/, 'mark-extremes'],
+  [/数值标签/, 'value-labels'], [/前\s*5/, 'top5'], [/横向条形/, 'to-barh'], [/降序|从大到小|从高到低/, 'sort'],
+  [/标题/, 'title'], [/配色/, 'palette'], [/图例/, 'legend'], [/平滑|加粗/, 'line-style'], [/柱状图对比/, 'to-bar'],
+  [/百分比/, 'percent'], [/文字和标签/, 'font-size'],
+  [/低于\s*100%/, 'flag-rate'], [/合计行/, 'total-row'], [/前\s*10/, 'top10'], [/关键.*列|精简列/, 'trim-columns'],
+  [/两位小数/, 'decimals'], [/偏高或偏低/, 'outliers'], [/列名/, 'rename-columns'],
+]
+
+/** 推荐的稳定标识：只用固定词表，不上报建议原文（改表建议含真实列名）。 */
+export function suggestionId(command: string): string {
+  return SUGGESTION_KEYWORDS.find(([pattern]) => pattern.test(command))?.[1] ?? 'other'
+}
+
+const safeId = (value: string) => value.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'other'
+
+/**
+ * Ask AI 使用情况埋点：推荐被点击、发起修改、结果与是否采用。只上报枚举与固定标识，
+ * 上报失败静默忽略，不影响编辑流程。
+ */
+export function createAITracker(client: unknown, surface: 'chart' | 'table') {
+  const report = (payload: Record<string, unknown>) => {
+    const send = (client as { reportEvent?: (body: Record<string, unknown>) => Promise<void> } | null)?.reportEvent
+    if (typeof send !== 'function') return
+    void Promise.resolve().then(() => send.call(client, { surface, ...payload })).catch(() => undefined)
+  }
+  const fields = (origin: AIOrigin) => ({ source: origin.source, kind: origin.kind,
+    ...(origin.suggestionId ? { suggestionId: safeId(origin.suggestionId) } : {}) })
+  let pending: AIOrigin | null = null
+  let active: (AIOrigin & { startedAt: number }) | null = null
+  return {
+    used(origin: AIOrigin) {
+      pending = origin
+      report({ event: 'ai_suggestion_used', ...fields(origin) })
+    },
+    started(instruction?: string) {
+      // 推荐文字已被用户删掉重写时，归为自由输入。
+      const origin = pending && !(pending.kind === 'ai' && pending.text && instruction && !instruction.includes(pending.text))
+        ? pending : { source: 'free' as const, kind: 'ai' as const }
+      pending = null
+      active = { ...origin, startedAt: performance.now() }
+      report({ event: 'ai_edit_started', ...fields(origin) })
+    },
+    finished(outcome: 'succeeded' | 'failed' | 'cancelled', errorCode?: string) {
+      if (!active) return
+      report({ event: 'ai_edit_finished', ...fields(active), outcome,
+        durationMs: Math.max(0, Math.round(performance.now() - active.startedAt)),
+        ...(errorCode ? { errorCode: errorCode.slice(0, 128) } : {}) })
+      if (outcome !== 'succeeded') active = null
+    },
+    adopted(outcome: 'accepted' | 'discarded') {
+      if (!active) return
+      report({ event: 'ai_edit_adopted', ...fields(active), outcome })
+      active = null
+    },
+  }
+}

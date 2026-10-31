@@ -240,6 +240,30 @@ function mount(src = '/b/asset/reports/revision-1/original.png') {
 }
 
 describe('模板选择与完整预览', () => {
+  it('埋点：从首屏 AI 推荐发起到采用，完整上报来源、结果与采用，且不含要求原文', async () => {
+    const reportEvent = vi.fn(async (_payload: Record<string, unknown>) => undefined)
+    const api = client({ reportEvent,
+      chartAiAvailability: vi.fn(async () => ({ available: true, expectedSha256: 'a'.repeat(64),
+        dataProfile: { inputCount: 1, rowCount: 4, categoryCount: 4, textFieldCount: 1, numericFieldCount: 2,
+          unitCount: 2, hasPeriod: false, hasNegative: false, magnitudeRatio: 3 } })) })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 1 })
+    try {
+      controller.open(mount(`/b/asset/${old[1]!.imagePath}`))
+      await vi.waitFor(() => expect(document.querySelector('.ask-ai-start-item[data-kind="ai"]')).not.toBeNull())
+      document.querySelector<HTMLButtonElement>('.ask-ai-start-item[data-kind="ai"]')!.click()
+      document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
+      await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
+      ;(document.querySelector('[data-action="accept"]') as HTMLButtonElement).click()
+      await vi.waitFor(() => expect(reportEvent).toHaveBeenCalledTimes(4))
+      const events = reportEvent.mock.calls.map(([payload]) => payload)
+      expect(events.map(item => item.event)).toEqual(['ai_suggestion_used', 'ai_edit_started', 'ai_edit_finished', 'ai_edit_adopted'])
+      for (const event of events) expect(event).toMatchObject({ surface: 'chart', source: 'start', kind: 'ai', suggestionId: 'dual-axis' })
+      expect(events[2]).toMatchObject({ outcome: 'succeeded' })
+      expect(events[3]).toMatchObject({ outcome: 'accepted' })
+      expect(JSON.stringify(events)).not.toContain('坐标轴')
+    } finally { controller.dispose() }
+  })
+
   it('进度说人话、宽屏默认对比、变更折叠，继续调整给出微调建议且只填入不发送', async () => {
     const width = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })

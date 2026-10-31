@@ -5,7 +5,7 @@ import { createElement, CircleAlert } from 'lucide'
 import { buttonClasses } from './button'
 import { askAIPanel, type AskAISession } from './ask-ai-panel'
 import { createAITemplateCard } from './ai-template-card'
-import { CHART_REFINEMENTS, chartSuggestionsFromProfile, createRefinementRow, createStartSection, createSuggestionItem, presetCaution, PRESET_GROUPS } from './ai-suggestions'
+import { type AIOrigin, CHART_REFINEMENTS, chartSuggestionsFromProfile, createAITracker, createRefinementRow, createStartSection, createSuggestionItem, presetCaution, PRESET_GROUPS, suggestionId } from './ai-suggestions'
 import { createModal } from './modal'
 import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
 import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ChartDataProfile, type ChartStandardEditRequest, type ReportEditorClient, type TraceChartInfo } from './api'
@@ -477,6 +477,7 @@ export function createChartAIEdit(options: {
 }): ChartAIEditController {
   const { view, client, basePath, hooks } = options
   const pollIntervalMs = options.pollIntervalMs ?? 1500
+  const tracker = createAITracker(client, 'chart')
   let modal: AskAISession | null = null
   let actionModal: ReturnType<typeof createModal> | null = null
   let target: EditTarget | null = null
@@ -699,7 +700,7 @@ export function createChartAIEdit(options: {
     aiSection.append(aiTitle, aiHint)
 
     let appliedPreset = ''
-    const fillInstruction = (instruction: string, replaced = '') => {
+    const fillInstruction = (instruction: string, replaced = '', origin?: AIOrigin) => {
       const custom = replaced ? textarea.value.replace(replaced, '').replace(/^；|；$/g, '').trim() : textarea.value.trim()
       const merged = custom ? `${custom}；${instruction}` : instruction
       if (merged.length > MAX_INSTRUCTION_CHARS) {
@@ -711,6 +712,7 @@ export function createChartAIEdit(options: {
       textarea.dispatchEvent(new Event('input'))
       actionModal?.close()
       textarea.focus()
+      if (origin) tracker.used({ ...origin, text: instruction })
       return true
     }
     const applyPreset = (preset: typeof STANDARD_CHART_PRESETS[number]) => {
@@ -724,6 +726,7 @@ export function createChartAIEdit(options: {
           return
         }
         actionModal?.close()
+        tracker.used({ source: 'dialog', kind: 'oneclick', suggestionId: `preset-${preset.id}` })
         void runEdit(current, `一键调整：${preset.name}`, { standard: preset.standard,
           ...(resetStandard.checked ? { inheritPreviousStandard: false } : {}),
           baseImagePath: current.imagePath, expectedSha256: current.expectedSha256,
@@ -733,7 +736,7 @@ export function createChartAIEdit(options: {
         })
         return
       }
-      if (fillInstruction(preset.instruction, appliedPreset)) {
+      if (fillInstruction(preset.instruction, appliedPreset, { source: 'dialog', kind: 'ai', suggestionId: `preset-${preset.id}` })) {
         appliedPreset = preset.instruction
         presetHelp.textContent = 'standard' in preset
           ? '已有自定义要求，已合并填入；请点“让 AI 修改”。清空要求后可一键生成。'
@@ -786,7 +789,7 @@ export function createChartAIEdit(options: {
       chip.type = 'button'
       chip.className = 'chart-ai-chip'
       chip.textContent = command
-      chip.addEventListener('click', () => fillInstruction(command))
+      chip.addEventListener('click', () => fillInstruction(command, '', { source: 'dialog', kind: 'ai', suggestionId: suggestionId(command) }))
       quick.append(chip)
     }
     quickBox.append(quickTitle, quick)
@@ -811,10 +814,11 @@ export function createChartAIEdit(options: {
     start.list.append(startTemplate)
     for (const command of suggestions.slice(0, 3)) {
       start.list.append(createSuggestionItem({ kind: 'ai', title: command, disabled: current.aiAvailable === false,
-        onClick: () => fillInstruction(command) }))
+        onClick: () => fillInstruction(command, '', { source: 'start', kind: 'ai', suggestionId: suggestionId(command) }) }))
     }
-    const runTemplateFromCard = (item: { templateId: string; name: string }) => {
+    const runTemplateFromCard = (item: { templateId: string; name: string }, source: 'start' | 'dialog') => {
       if (textarea.value.trim()) {
+        tracker.used({ source, kind: 'ai', suggestionId: `template-${item.templateId}` })
         textarea.value = `${textarea.value.trim()}；参考模板：${item.name}`.slice(0, MAX_INSTRUCTION_CHARS)
         textarea.dispatchEvent(new Event('input'))
         presetHelp.textContent = '包含自由要求，请点击“让 AI 修改”。'
@@ -823,6 +827,7 @@ export function createChartAIEdit(options: {
         return
       }
       actionModal?.close()
+      tracker.used({ source, kind: 'oneclick', suggestionId: `template-${item.templateId}` })
       void runTemplate(current, item.templateId, '')
     }
     const chartTemplates = (client as ReportEditorClient & {
@@ -840,12 +845,12 @@ export function createChartAIEdit(options: {
         if (owner !== generation || !textarea.isConnected || dismissed) return
         templates.hidden = catalog.templates.length === 0
         const ordered = [...catalog.templates].sort((a, b) => Number(b.recommended ?? false) - Number(a.recommended ?? false) || Number(b.available) - Number(a.available))
-        for (const item of ordered) templates.append(createAITemplateCard(item, 'chart', () => runTemplateFromCard(item)))
+        for (const item of ordered) templates.append(createAITemplateCard(item, 'chart', () => runTemplateFromCard(item, 'dialog')))
         const featured = ordered.find(item => item.available)
         if (featured) {
           startTemplate.replaceWith(createSuggestionItem({ kind: 'oneclick', title: featured.name,
             detail: featured.recommended ? (featured.recommendationReason || '与当前数据最匹配') : '预制模板',
-            onClick: () => runTemplateFromCard(featured) }))
+            onClick: () => runTemplateFromCard(featured, 'start') }))
         }
       }).catch(() => {
         skeleton.remove()
@@ -869,7 +874,9 @@ export function createChartAIEdit(options: {
     })
     const form = body.querySelector<HTMLElement>('.ask-ai-input-form')!
     form.before(start.section)
-    if (retainReview) textarea.before(createRefinementRow(CHART_REFINEMENTS, command => { fillInstruction(command) }))
+    if (retainReview) textarea.before(createRefinementRow(CHART_REFINEMENTS, command => {
+      fillInstruction(command, '', { source: 'refine', kind: 'ai', suggestionId: suggestionId(command) })
+    }))
     if (!retainReview) output.replaceChildren(...body.childNodes)
     ensureModal().mountComposer(form)
     if (focusInput) textarea.focus()
@@ -886,6 +893,7 @@ export function createChartAIEdit(options: {
     instructionDraft = standard || templateId ? instructionDraft : instruction
     ensureModal().addMessage('user', instruction)
     ensureModal().setState('running')
+    tracker.started(standard || templateId ? undefined : instruction)
     body.innerHTML = `
       <div class="chart-ai-progress" role="status" aria-live="polite">
         <div class="chart-ai-current"><img alt="当前图表" src="${assetUrl(basePath, current.imagePath)}"></div>
@@ -918,6 +926,7 @@ export function createChartAIEdit(options: {
       cancel.disabled = true
       cancel.textContent = '正在取消…'
       stage.textContent = '正在取消…'
+      tracker.finished('cancelled')
       invalidateCurrent()
       renderInputPhase(current, '已取消本次改图，原图保持不变。')
     })
@@ -966,12 +975,14 @@ export function createChartAIEdit(options: {
         setStage(String(state.stage ?? ''))
         if (dismissed) return
         if (state.status === 'succeeded') {
+          tracker.finished('succeeded')
           renderReviewPhase(current, state as unknown as ChartAIEditSuccess)
           return
         }
         if (state.status === 'failed' || state.status === 'cancelled') {
           const error = (state as { error?: { code?: string; message?: string; skipped?: { request: string; reason: string }[] } }).error
           hooks?.onError?.(error?.code ?? 'report_editor_chart_ai_failed')
+          tracker.finished(state.status, error?.code)
           const skippedNote = (error?.skipped ?? []).map(item => item.reason).join('；')
           renderInputPhase(
             current,
@@ -989,6 +1000,7 @@ export function createChartAIEdit(options: {
     } catch (error) {
       if (owner !== generation || dismissed) return
       hooks?.onError?.(error instanceof Error ? error.message : 'report_editor_chart_ai_failed')
+      tracker.finished('failed', 'request_failed')
       if (!dismissed) renderInputPhase(current, '改图请求失败，请稍后重试；原图保持不变。', true)
     } finally {
       window.clearInterval(clock)
@@ -1265,6 +1277,7 @@ export function createChartAIEdit(options: {
         return
       }
       hooks?.onReplaced?.(result.editId)
+      tracker.adopted('accepted')
       openedImage = null
       const adopted = view.state.doc
       const positions = (doc: ProseMirrorNode) => {
@@ -1293,6 +1306,7 @@ export function createChartAIEdit(options: {
       })
     })
     body.querySelector<HTMLButtonElement>('[data-action="discard"]')!.addEventListener('click', () => {
+      tracker.adopted('discarded')
       stopBlink()
       openedImage = null
       ensureModal().mountComposer(null)

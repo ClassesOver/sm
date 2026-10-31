@@ -808,6 +808,11 @@ export class ReportEditorClient {
     durationMs?: number
     format?: 'pdf' | 'word'
     errorCode?: string
+    surface?: 'chart' | 'table'
+    source?: 'start' | 'dialog' | 'refine' | 'free'
+    kind?: 'oneclick' | 'ai'
+    suggestionId?: string
+    outcome?: 'succeeded' | 'failed' | 'cancelled' | 'accepted' | 'discarded'
   }): Promise<void> {
     const response = await this.fetcher.call(window, `${this.basePath}/api/events`, {
       body: JSON.stringify(payload),

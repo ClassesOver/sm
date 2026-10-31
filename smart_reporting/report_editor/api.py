@@ -105,10 +105,20 @@ class EditorEventPayload(BaseModel):
         "save_failed",
         "export_succeeded",
         "export_failed",
+        "ai_suggestion_used",
+        "ai_edit_started",
+        "ai_edit_finished",
+        "ai_edit_adopted",
     ]
     duration_ms: int | None = Field(default=None, alias="durationMs", ge=0, le=3_600_000)
     format: Literal["pdf", "word"] | None = None
     error_code: str | None = Field(default=None, alias="errorCode", max_length=128)
+    # Ask AI 使用情况：只接受枚举与固定标识，不接受建议原文或用户输入。
+    surface: Literal["chart", "table"] | None = None
+    source: Literal["start", "dialog", "refine", "free"] | None = None
+    kind: Literal["oneclick", "ai"] | None = None
+    suggestion_id: str | None = Field(default=None, alias="suggestionId", pattern=r"^[a-z0-9-]{1,48}$")
+    outcome: Literal["succeeded", "failed", "cancelled", "accepted", "discarded"] | None = None
 
 
 def create_report_editor_router(
@@ -955,7 +965,8 @@ def create_report_editor_router(
             )
             logger.info(
                 "report_editor_event report_id={} revision={} user_id={} event={} "
-                "duration_ms={} format={} error_code={}",
+                "duration_ms={} format={} error_code={} surface={} source={} kind={} "
+                "suggestion_id={} outcome={}",
                 context.report_id,
                 context.revision,
                 context.scope["userId"],
@@ -963,6 +974,11 @@ def create_report_editor_router(
                 payload.duration_ms,
                 payload.format,
                 payload.error_code,
+                payload.surface,
+                payload.source,
+                payload.kind,
+                payload.suggestion_id,
+                payload.outcome,
             )
             return Response(status_code=204)
 

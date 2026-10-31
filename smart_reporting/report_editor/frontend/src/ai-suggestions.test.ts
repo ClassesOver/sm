@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { chartSuggestionsFromProfile, createRefinementRow, createStartSection, presetCaution, TABLE_REFINEMENTS, tableProfile, tableSuggestions } from './ai-suggestions'
+import { chartSuggestionsFromProfile, createAITracker, createRefinementRow, createStartSection, presetCaution, TABLE_REFINEMENTS, suggestionId, tableProfile, tableSuggestions } from './ai-suggestions'
 
 const profile = (overrides = {}) => ({ inputCount: 1, rowCount: 10, categoryCount: 10, textFieldCount: 1,
   numericFieldCount: 1, unitCount: 1, hasPeriod: false, hasNegative: false, magnitudeRatio: 2, ...overrides })
@@ -66,5 +66,48 @@ describe('推荐区与微调', () => {
     row.querySelector<HTMLButtonElement>('.ask-ai-refine-chip')!.click()
     expect(fill).toHaveBeenCalledWith(TABLE_REFINEMENTS[0])
     expect(row.querySelectorAll('.ask-ai-refine-chip')).toHaveLength(TABLE_REFINEMENTS.length)
+  })
+})
+
+describe('使用情况埋点', () => {
+  const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+  it('推荐用固定标识上报，不带原文（含列名的改表建议也只报类别）', () => {
+    expect(suggestionId('按「收入」从高到低排序')).toBe('sort')
+    expect(suggestionId('不同单位的系列分别使用左右坐标轴并标明单位')).toBe('dual-axis')
+    expect(suggestionId('随便写点什么')).toBe('other')
+  })
+
+  it('点推荐后发起即归因到该推荐；用户改写掉推荐文字则归为自由输入', async () => {
+    const reportEvent = vi.fn(async (_payload: Record<string, unknown>) => undefined)
+    const tracker = createAITracker({ reportEvent }, 'table')
+    tracker.used({ source: 'start', kind: 'ai', suggestionId: 'sort', text: '按「收入」从高到低排序' })
+    tracker.started('按「收入」从高到低排序；保留两位小数')
+    tracker.finished('succeeded')
+    tracker.adopted('accepted')
+    tracker.adopted('discarded')
+    tracker.used({ source: 'refine', kind: 'ai', suggestionId: 'decimals', text: '数值统一保留两位小数' })
+    tracker.started('完全不同的要求')
+    tracker.finished('failed', 'report_editor_table_ai_failed')
+    await flush()
+    const events = reportEvent.mock.calls.map(([payload]) => payload)
+    expect(events.map(item => item.event)).toEqual(['ai_suggestion_used', 'ai_edit_started', 'ai_edit_finished',
+      'ai_edit_adopted', 'ai_suggestion_used', 'ai_edit_started', 'ai_edit_finished'])
+    expect(events[1]).toMatchObject({ surface: 'table', source: 'start', kind: 'ai', suggestionId: 'sort' })
+    expect(events[2]).toMatchObject({ outcome: 'succeeded' })
+    expect(typeof events[2]!.durationMs).toBe('number')
+    expect(events[3]).toMatchObject({ outcome: 'accepted', suggestionId: 'sort' })
+    expect(events[5]).toMatchObject({ source: 'free', kind: 'ai' })
+    expect(events[5]).not.toHaveProperty('suggestionId')
+    expect(events[6]).toMatchObject({ outcome: 'failed', errorCode: 'report_editor_table_ai_failed' })
+    expect(JSON.stringify(events)).not.toContain('收入')
+  })
+
+  it('客户端没有上报能力或上报失败时静默忽略', async () => {
+    expect(() => createAITracker({}, 'chart').used({ source: 'start', kind: 'oneclick' })).not.toThrow()
+    const tracker = createAITracker({ reportEvent: vi.fn(async () => { throw new Error('offline') }) }, 'chart')
+    tracker.used({ source: 'dialog', kind: 'oneclick', suggestionId: 'template-Budget Execution!' })
+    tracker.started()
+    await flush()
   })
 })

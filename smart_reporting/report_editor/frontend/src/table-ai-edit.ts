@@ -3,7 +3,7 @@ import { TABLE_PROTOCOL_EDIT_META } from './protocol-plugin'
 import { buttonClasses } from './button'
 import { askAIPanel } from './ask-ai-panel'
 import { createAITemplateCard } from './ai-template-card'
-import { TABLE_REFINEMENTS, createRefinementRow, createStartSection, createSuggestionItem, tableProfile, tableSuggestions } from './ai-suggestions'
+import { type AIOrigin, TABLE_REFINEMENTS, createAITracker, createRefinementRow, createStartSection, createSuggestionItem, suggestionId, tableProfile, tableSuggestions } from './ai-suggestions'
 import type { EditorTemplateInfo, ReportEditorClient, TableAIEditState } from './api'
 import { markdownSha256 } from './source-validation'
 import { formatElapsed } from './chart-ai-edit'
@@ -173,6 +173,7 @@ export function createTableAIEdit(options: {
   hooks?: { onReplaced?: (editId: string) => void; onError?: (code: string) => void }
 }): TableAIEditController {
   const interval = options.pollIntervalMs ?? 800
+  const tracker = createAITracker(options.client, 'table')
   let disposed = false
   let openedTableId: string | null = null
   let generation = 0
@@ -261,11 +262,12 @@ export function createTableAIEdit(options: {
     area.id = `table-ai-input${modal.idSuffix}`; area.maxLength = 2000; area.rows = 3
     area.placeholder = `例如：${suggestions[0] ?? '按同比增幅从高到低排列并标注低于100%的项目'}`
     area.value = instructionDraft
-    const fill = (command: string) => {
+    const fill = (command: string, source: AIOrigin['source']) => {
       const merged = area.value.trim() ? `${area.value.trim()}；${command}` : command
       area.value = merged.slice(0, 2000)
       area.dispatchEvent(new Event('input'))
       area.focus()
+      tracker.used({ source, kind: 'ai', suggestionId: suggestionId(command), text: command })
     }
     // 全部模板（一键）折叠在首屏推荐下方；推荐区已给出最匹配的一项。
     const templateDetails = document.createElement('details'); templateDetails.className = 'chart-ai-standard'
@@ -280,13 +282,13 @@ export function createTableAIEdit(options: {
     } }, failed)
     const startTemplate = document.createElement('div'); startTemplate.className = 'ask-ai-start-slot'
     start.list.append(startTemplate)
-    for (const command of suggestions.slice(0, 3)) start.list.append(createSuggestionItem({ kind: 'ai', title: command, onClick: () => fill(command) }))
+    for (const command of suggestions.slice(0, 3)) start.list.append(createSuggestionItem({ kind: 'ai', title: command, onClick: () => fill(command, 'start') }))
     const label = document.createElement('label'); label.htmlFor = area.id; label.textContent = retainReview ? '继续调整新表' : '描述你的修改'
     const form = document.createElement('div'); form.className = 'ask-ai-input-form'
     if (!retainReview) body().append(start.section)
     body().append(templateDetails)
     form.append(label)
-    if (retainReview) form.append(createRefinementRow(TABLE_REFINEMENTS, fill))
+    if (retainReview) form.append(createRefinementRow(TABLE_REFINEMENTS, command => fill(command, 'refine')))
     form.append(area)
     const actions = document.createElement('div'); actions.className = 'chart-ai-actions'
     const submit = button('让 AI 修改', 'primary', () => { const instruction = area.value.trim(); if (instruction) void runEdit(tableId, targetTableId, instruction, baseBody, previousEditId) })
@@ -314,11 +316,14 @@ export function createTableAIEdit(options: {
       skeleton.remove()
       if (disposed || owner !== generation || !area.isConnected) return
       const ordered = [...templates.templates].sort((a, b) => Number(b.recommended ?? false) - Number(a.recommended ?? false) || Number(b.available) - Number(a.available))
-      const applyTemplate = (item: EditorTemplateInfo) => void runEdit(tableId, targetTableId, `套用模板：${item.name}`, baseBody, previousEditId, item.templateId)
-      ordered.forEach(item => templateRoot.append(createAITemplateCard(item, 'table', () => applyTemplate(item))))
+      const applyTemplate = (item: EditorTemplateInfo, source: AIOrigin['source']) => {
+        tracker.used({ source, kind: 'oneclick', suggestionId: `template-${item.templateId}` })
+        void runEdit(tableId, targetTableId, `套用模板：${item.name}`, baseBody, previousEditId, item.templateId)
+      }
+      ordered.forEach(item => templateRoot.append(createAITemplateCard(item, 'table', () => applyTemplate(item, 'dialog'))))
       const featured = ordered.find(item => item.available)
       if (featured) startTemplate.replaceWith(createSuggestionItem({ kind: 'oneclick', title: featured.name,
-        detail: featured.recommended ? (featured.recommendationReason || '与当前数据最匹配') : '预制模板', onClick: () => applyTemplate(featured) }))
+        detail: featured.recommended ? (featured.recommendationReason || '与当前数据最匹配') : '预制模板', onClick: () => applyTemplate(featured, 'start') }))
       if (!templates.templates.length) {
         if (templateLoadFailed) {
           const loadNote = document.createElement('p'); loadNote.className = 'chart-ai-hint'; loadNote.textContent = '模板加载失败，可直接输入要求生成。'
@@ -498,7 +503,7 @@ export function createTableAIEdit(options: {
         detail.textContent = '未能定位完整原表，尚未替换。请回到正文重新选择表格。'
         options.hooks?.onError?.('report_editor_table_ai_target_missing'); return
       }
-      options.hooks?.onReplaced?.(result.editId); openedTableId = null
+      options.hooks?.onReplaced?.(result.editId); tracker.adopted('accepted'); openedTableId = null
       const newTableId = TABLE_MARKER.exec(result.markdown.split('\n').find(line => TABLE_MARKER.test(line)) ?? '')?.[1]
       const locateBlock = () => {
         if (!newTableId) return null
@@ -530,7 +535,7 @@ export function createTableAIEdit(options: {
       })
     }))
     actions.append(button('继续调整', 'secondary', () => modal.focusComposer()))
-    actions.append(button('放弃', 'quiet', () => { openedTableId = null; modal.setState('idle'); modal.mountComposer(null); body().replaceChildren(text('已放弃本轮结果。继续编辑时，请在正文选择表格。')); modal.close() }))
+    actions.append(button('放弃', 'quiet', () => { tracker.adopted('discarded'); openedTableId = null; modal.setState('idle'); modal.mountComposer(null); body().replaceChildren(text('已放弃本轮结果。继续编辑时，请在正文选择表格。')); modal.close() }))
     body().append(actions)
     modal.mountReviewActions(actions)
     const keyHint = document.createElement('p')
@@ -568,6 +573,7 @@ export function createTableAIEdit(options: {
     }
     modal.addMessage('user', instruction)
     modal.setState('running')
+    tracker.started(templateId ? undefined : instruction)
     const progress = document.createElement('div'); progress.className = 'ask-ai-progress'
     const stage = document.createElement('p'); stage.className = 'chart-ai-stage'; stage.setAttribute('role', 'status'); stage.textContent = '正在准备表格改动…'
     const track = document.createElement('div'); track.className = 'ai-progress-track'; track.setAttribute('aria-hidden', 'true')
@@ -582,7 +588,7 @@ export function createTableAIEdit(options: {
     const startedAt = performance.now()
     const clock = progressClock = window.setInterval(() => { elapsed.textContent = `已用时 ${formatElapsed(performance.now() - startedAt)}` }, 1000)
     const hint = document.createElement('p'); hint.className = 'chart-ai-hint'; hint.textContent = '通常需要 20–60 秒。可以收起侧栏继续改正文，完成后会提示你。'
-    const cancel = button('取消改表', 'secondary', () => { invalidateCurrent(); void input(tableId, targetTableId, baseBody, previousEditId, '已取消本次改表。') })
+    const cancel = button('取消改表', 'secondary', () => { tracker.finished('cancelled'); invalidateCurrent(); void input(tableId, targetTableId, baseBody, previousEditId, '已取消本次改表。') })
     progress.append(stage, track, timeline, elapsed, hint, cancel); body().replaceChildren(progress)
     try {
       const expectedSha256 = await markdownSha256(baseBody)
@@ -593,9 +599,11 @@ export function createTableAIEdit(options: {
       runningEditId = started.editId
       const result = await poll(tableId, started.editId, owner, stage, timeline)
       if (!result) return
+      tracker.finished(result.status === 'succeeded' ? 'succeeded' : result.status === 'cancelled' ? 'cancelled' : 'failed', result.error?.code)
       if (result.status === 'succeeded') review(tableId, targetTableId, result, baseBody, instruction)
       else await input(tableId, targetTableId, baseBody, previousEditId, result.error?.message ?? '改表未完成，原表保持不变。', result.status === 'failed')
     } catch {
+      tracker.finished('failed', 'request_failed')
       if (owner === generation && !disposed) await input(tableId, targetTableId, baseBody, previousEditId, '改表请求失败，原表保持不变。', true)
     } finally {
       window.clearInterval(clock)
