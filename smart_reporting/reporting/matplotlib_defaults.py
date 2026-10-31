@@ -272,13 +272,21 @@ def _legend_overlap(legend: Any, axes: list[Any], renderer: Any) -> float:
 def _place_legends(figure: Any) -> None:
     """保存前把压住数据的轴内图例移到重叠最少的轴内位置；脚本用 bbox_to_anchor 自定位置的不动。"""
 
+    def placeable(ax: Any) -> bool:
+        legend = ax.get_legend()
+        return (legend is not None and legend.get_visible()
+                and getattr(legend, "_bbox_to_anchor", None) is None)
+
+    # 没有需要自动摆放的图例时不做预绘制：savefig 本身仍会完整绘制一次。
+    if not any(placeable(ax) for ax in figure.axes):
+        return
     # 自动缩放与布局在绘制时才落定；不先布局时双轴折线仍按旧坐标计算重叠。
     figure.draw_without_rendering()
     renderer = figure.canvas.get_renderer()
     for ax in figure.axes:
-        legend = ax.get_legend()
-        if legend is None or not legend.get_visible() or getattr(legend, "_bbox_to_anchor", None) is not None:
+        if not placeable(ax):
             continue
+        legend = ax.get_legend()
         twins = [other for other in figure.axes
                  if other.get_position().bounds == ax.get_position().bounds]
         original = legend._loc

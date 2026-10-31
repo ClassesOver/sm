@@ -9,14 +9,21 @@ from loguru import logger
 def log_tool_event(
     *, session_id: str, call_id: str | None, tool: str, status: str, payload: Any
 ) -> None:
-    text = json.dumps(payload, ensure_ascii=False, default=str)
     limit = 8192
-    logger.debug(
+    encoded: list[str] = []
+
+    def text() -> str:
+        # 惰性序列化：DEBUG 未启用时不对整段脚本等参数做 json.dumps。
+        if not encoded:
+            encoded.append(json.dumps(payload, ensure_ascii=False, default=str))
+        return encoded[0]
+
+    logger.opt(lazy=True).debug(
         "code_monitor_tool session_id={} call_id={} tool={} status={} truncated={} payload={}",
-        session_id,
-        call_id,
-        tool,
-        status,
-        len(text) > limit,
-        text[:limit],
+        lambda: session_id,
+        lambda: call_id,
+        lambda: tool,
+        lambda: status,
+        lambda: len(text()) > limit,
+        lambda: text()[:limit],
     )
