@@ -108,12 +108,14 @@ def prepare_standard_break(chart, config, document, display):
 
 
 BREAK_DISPATCH = """    if "broken_axis" in canvas:
-        render_broken_chart(payload,canvas,form,title,output_path,label_column,value_columns,category_column,metadata,input_path)
+        (render_horizontal_broken_chart if form == "barh" else render_broken_chart)(payload,canvas,form,title,output_path,label_column,value_columns,category_column,metadata,input_path)
         continue
 """
 
 
 BREAK_SCRIPT = """def layout_standard_break(fig,policy):
+    if policy["horizontal"]:
+        return layout_horizontal_standard_break(fig,policy)
     spec=policy["broken_axis"]
     for ax,domain in zip(fig.axes,(spec["upper"],spec["lower"])):
         ax.set_ylim(domain["minimum"],domain["maximum"])

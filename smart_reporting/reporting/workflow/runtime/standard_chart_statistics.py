@@ -319,6 +319,7 @@ STATISTICS_SCRIPT = """def render_statistical_chart(payload, policy, form, title
     values = [None if row[spec["value"]["index"]] is None else row[spec["value"]["index"]]*spec["value"]["factor"] for row in payload["rows"]]
     raw_labels = [row[spec["label_index"]] for row in payload["rows"]]
     horizontal = form == "boxplot" and spec["orientation"] == "horizontal"
+    prepared_summary = read_summary_box_stats(payload,policy,{item["series"]:item for item in policy["style"]["series"]}) if "summary_fields" in spec else None
     fig, ax = plt.subplots(**create_standard_canvas(policy, policy["labels"], "barh" if horizontal else form))
     labels = policy["labels"]
     unit = spec["value"]["unit"]
@@ -357,14 +358,17 @@ STATISTICS_SCRIPT = """def render_statistical_chart(payload, policy, form, title
         selected_values = values
         descriptions = [("绝对值 " if label in spec["absolute_labels"] else "变动 ")+format_standard_number(value,precision,show_sign=label not in spec["absolute_labels"])+unit for label,value in zip(labels,values)]
     else:
-        stats = []
-        ticks = []
-        for group,display in zip(labels,standard_label_names(labels,policy)):
-            samples = [value for label,value in zip(raw_labels,values) if label == group and value is not None]
-            item = boxplot_stats(samples,whis=spec["whisker_iqr"])[0]
-            item["label"] = group
-            stats.append(item)
-            ticks.append((overrides.get(group,{}).get("label") or display)+f" (n={len(samples)})")
+        if "summary_fields" in spec:
+            stats,ticks=prepared_summary
+        else:
+            stats = []
+            ticks = []
+            for group,display in zip(labels,standard_label_names(labels,policy)):
+                samples = [value for label,value in zip(raw_labels,values) if label == group and value is not None]
+                item = boxplot_stats(samples,whis=spec["whisker_iqr"])[0]
+                item["label"] = group
+                stats.append(item)
+                ticks.append((overrides.get(group,{}).get("label") or display)+f" (n={len(samples)})")
         artists = ax.bxp(stats,positions=range(len(labels)),widths=.55,patch_artist=True,
                          orientation=spec["orientation"],showfliers=spec["show_fliers"],manage_ticks=False)
         for i,name in enumerate(labels):

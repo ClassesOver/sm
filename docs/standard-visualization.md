@@ -15,7 +15,8 @@
 1. 规划阶段：`standard_plan_diagnostics` 逐图预检，把机器契约问题反馈给规划器；显式 `standardForm=custom` 或输入不可用的图不触发重规划。
 2. 执行阶段（`run_standard_chart_routes`）：整组都支持时执行一次标准脚本；混合计划或整组执行失败时逐图隔离，只把不支持或验收失败的图交给 Coding。组件脚本分别核验身份，最终组合脚本重新核验所有输入和组件 SHA256，在独立命名空间按项目主题执行，再走完整门禁。
 3. 只有测量到 `standard_chart_layout_unresolved` 且 `sizeMode=auto` 时，最多扩大画布重试两次；不改固定画布、DPI 与像素预算，不吞掉身份或语义失败。
-4. 标准渲染证明：只有最终图片与真实标准执行逐字节一致时才保留，用于追溯中的图表核验。
+4. 标准渲染证明：只有最终图片与真实标准执行逐字节一致时才保留，用于追溯中的图表核验。核验时用**当前**模板按证明中的计划重新编译，并与归档脚本逐字节比对；模板没有版本兼容，因此任何改变生成源码的模板改动，都会使改动前签发的证明核验失败，相应图表在质量评估中降为“未核验”（软告警，不影响签发）。修改模板前应评估这一影响，并尽量把源码变化集中在同一次发布中。
+5. 模板结构：各分支（图族、统计图、汇总箱线、堆叠双轴、纵/横向断轴、显示范围）固定写在模板源码中，按图形与参数在运行时选择；编译时只按需附加被调用的辅助函数段，不对模板文本做替换。
 
 ### 诊断
 
@@ -29,7 +30,6 @@
 | 长表与堆叠 | `standard_long_table_incomplete`、`standard_negative_stack_unsupported`、`standard_total_reconciliation_failed` |
 | 轴与标注 | `standard_axes_mode_conflict`、`standard_zoom_range_invalid`、`standard_annotation_binding_invalid`、`standard_annotation_capacity_exceeded` |
 | 来源与变换 | `standard_source_alignment_failed`（`details.reason`）、`standard_transformation_failed`（`standardSteps[index]`） |
-| 模板实现 | `standard_template_anchor_drift`（模板缺陷，转 Coding 并记错误日志） |
 
 `standard_series_empty`、`standard_source_alignment_failed`、`standard_period_alignment_invalid` 允许规划器修正绑定（`bindingCorrectionAllowed`）。日志：逐图路由 `report_visualization_chart_route`（含诊断码），整组异常回退 `report_standard_visualization_fallback`（含 code/parameter）。
 

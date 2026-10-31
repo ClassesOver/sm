@@ -44,12 +44,25 @@ def test_unreconciled_independent_total_reports_specific_reason():
     assert _code(plan, document) == 'standard_total_reconciliation_failed'
 
 
-def test_template_anchor_drift_falls_back_with_diagnostic(monkeypatch):
-    plan, document = complex_fixture('bar')
-    assert standard_visualization_preflight(plan, materialization(document)).source
-    monkeypatch.setattr(standard_visualization, '_BODY', standard_visualization._BODY.replace(
-        '__STATISTICAL_DISPATCH__', ''))
-    assert _code(plan, document) == 'standard_template_anchor_drift'
+@pytest.mark.parametrize('name,section', [
+    ('render_family_chart', 'FAMILY_SCRIPT'),
+    ('render_statistical_chart', 'STATISTICS_SCRIPT'),
+    ('read_summary_box_stats', 'SUMMARY_SCRIPT'),
+    ('render_dual_stack', 'DUAL_STACK_SCRIPT'),
+    ('render_broken_chart', 'BREAK_SCRIPT'),
+    ('layout_standard_break', 'BREAK_SCRIPT'),
+    ('render_horizontal_broken_chart', 'HORIZONTAL_BREAK_SCRIPT'),
+    ('layout_horizontal_standard_break', 'HORIZONTAL_BREAK_SCRIPT'),
+    ('apply_standard_domains', 'DOMAIN_SCRIPT'),
+])
+def test_static_branches_call_only_helpers_from_their_conditional_section(name, section):
+    """模板分支固定存在、按运行时条件选择；被调用函数只能定义在同条件附加的辅助段中。"""
+    sections = {key: getattr(standard_visualization, key) for key in (
+        'FAMILY_SCRIPT', 'STATISTICS_SCRIPT', 'SUMMARY_SCRIPT', 'DUAL_STACK_SCRIPT', 'BREAK_SCRIPT',
+        'HORIZONTAL_BREAK_SCRIPT', 'DOMAIN_SCRIPT', '_LAYOUT', 'ENCODING_SCRIPT', '_ADVANCED',
+        'PRESENTATION_SCRIPT', '_BODY')}
+    assert [key for key, text in sections.items() if f'def {name}(' in text] == [section]
+    assert any(name in text for key, text in sections.items() if key != section)
 
 
 def test_compiled_configs_remain_plain_tuples_in_script():
