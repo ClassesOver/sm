@@ -546,17 +546,16 @@ async def test_download_revalidation_preserves_trace_http_error_contract(tmp_pat
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("with_interactive_chart", [False, True])
-async def test_http_document_remains_readable_after_source_cleanup(tmp_path, with_interactive_chart):
+@pytest.mark.parametrize("with_legacy_interactive_chart", [False, True])
+async def test_http_document_remains_readable_after_source_cleanup(tmp_path, with_legacy_interactive_chart):
     editor, repository, first, second, _ = await _make_shared_revisions(tmp_path)
     image = "reports/revision-1/chart.png"
-    plot = "reports/revision-1/chart.plotly.json"
-    if with_interactive_chart:
+    if with_legacy_interactive_chart:
+        # Plotly 已退役；旧报告 job 中残留的 interactiveCharts 字段不能影响文档读取与清理。
         first = first.model_copy(update={"job": {
-            **first.job, "interactiveCharts": {image: {"path": plot}},
+            **first.job, "interactiveCharts": {image: {"path": "reports/revision-1/chart.plotly.json"}},
         }})
         repository.durable.payload["reportEditorContexts"]["1"] = first.model_dump(mode="json", by_alias=True)
-    assert await editor.interactive_charts(first) == ({image: plot} if with_interactive_chart else {})
     before = await editor.read_document(first)
     now = datetime(2026, 10, 1, tzinfo=UTC)
     await editor.set_revision_retention(first, expires_at=now)
@@ -582,10 +581,10 @@ async def test_http_document_remains_readable_after_source_cleanup(tmp_path, wit
         assert sources.json()["available"] is False
         assert sources.json()["reason"] == "snapshot_expired"
     with pytest.raises(ReportingError) as expired:
-        await editor.read_asset(first, plot)
+        await editor.read_asset(first, image)
     assert expired.value.code == "snapshot_expired"
     # 仅允许正常过期降级，登记身份损坏仍应报错。
     repository.durable.payload["reportEditorRetiredSources"]["1"] = "0" * 64
     with pytest.raises(ReportingError) as damaged:
-        await editor.interactive_charts(first)
+        await editor.read_asset(first, image)
     assert damaged.value.code == "snapshot_integrity_failed"

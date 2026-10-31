@@ -865,7 +865,8 @@ async def test_export_revision_registers_ai_chart_edit_and_still_issues_links(
     assert rendered_chart["path"] == record.image.path
     assert rendered_chart["chartId"] == "chart_001"
     assert rendered_chart["datasetIds"] == ["dataset-url-abc0001"]
-    assert rendered_chart["renderer"] == "matplotlib"
+    # 图表产物只有 Matplotlib 静态图，清单不再携带 renderer/interactiveSpec。
+    assert "renderer" not in rendered_chart and "interactiveSpec" not in rendered_chart
     raw, _ = await fixture.grants.issue(committed)
     _, session = await fixture.grants.exchange(raw)
     next_manifest = await editor.trace.load_manifest(committed)
