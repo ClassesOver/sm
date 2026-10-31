@@ -130,7 +130,8 @@ def _sha256(path: Path) -> str:
 
 
 def _check_image_signature(path: Path) -> None:
-    header = path.read_bytes()[:12]
+    with path.open("rb") as stream:
+        header = stream.read(12)
     suffix = path.suffix.lower()
     valid = {
         ".png": header.startswith(b"\x89PNG\r\n\x1a\n"),
