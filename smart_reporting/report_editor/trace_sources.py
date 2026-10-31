@@ -1491,7 +1491,10 @@ class ReportEditorTraceService:
             questions = None
             answer_review_plan = None
             chart_quality_ids = {chart.image_file_resource_id for chart in index.chart_traces}
-            from ..reporting.trace.chart_quality import QUALITY_IMAGE_BYTE_BUDGET, standard_proof_source_ids
+            from ..reporting.trace.chart_quality import (
+                QUALITY_IMAGE_BYTE_BUDGET,
+                standard_proof_source_ids,
+            )
 
             quality_image_ids = set(chart_quality_ids)
             chart_quality_ids.update(standard_proof_source_ids(index))
@@ -1610,7 +1613,11 @@ class ReportEditorTraceService:
     @staticmethod
     def _evaluate_charts(index: Any, draft_markdown: str) -> list[dict[str, Any]]:
         """图表唯一定位；图题/紧邻图注变化给出软语义 stale。"""
-        from ..reporting.trace.chart_subjects import chart_fingerprints, chart_image_paths, chart_presentations
+        from ..reporting.trace.chart_subjects import (
+            chart_fingerprints,
+            chart_image_paths,
+            chart_presentations,
+        )
 
         charts: list[dict[str, Any]] = []
         files = {item.resource_id: item for item in index.files}
@@ -2133,7 +2140,12 @@ class ReportEditorTraceService:
         index = await self.require_index(context)
         edited_page = None
         if edit_id is not None:
-            from .chart_edits import chart_edit_page_chart_id, chart_edit_page_src, chart_edit_pages, load_chart_edit_records
+            from .chart_edits import (
+                chart_edit_page_chart_id,
+                chart_edit_page_src,
+                chart_edit_pages,
+                load_chart_edit_records,
+            )
 
             try:
                 records = await load_chart_edit_records(self._workspace, context.scope['threadId'], context.markdown_path)

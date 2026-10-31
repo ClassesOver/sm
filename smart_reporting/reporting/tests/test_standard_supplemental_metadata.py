@@ -83,8 +83,6 @@ def test_comparison_metadata_does_not_invent_measure_unit_or_change_ratio_scale(
         expected.setdefault(column, {})['periods'] = list(periods)
     expected['current']['periodRoles'] = ['current']
     expected['baseline']['periodRoles'] = ['prior']
-    # 累计比较同样输出按增减额排名的 rank 列（名次，不带期间）。
-    expected['rank'] = {'unit': '名'}
     assert finding['columnMeta'] == expected
     assert finding['rows'][0][4] == 1.6
     validated = validate_supplemental_evidence(json.dumps(payload).encode(),
