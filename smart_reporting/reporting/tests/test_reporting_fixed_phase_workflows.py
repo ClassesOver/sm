@@ -2143,7 +2143,7 @@ def test_section_plan_references_keep_ambiguous_metric_for_model_correction() ->
 
 
 async def _generate_with_plan(
-    monkeypatch, plan: dict, stages: list[str], work_item: SectionWorkItem | None = None
+    monkeypatch, plan: dict, stages: list[str], work_item: SectionWorkItem | None = None, **options
 ):
     work_item = work_item or _revenue_work_item()
     evidence = SectionEvidenceBundle(
@@ -2172,7 +2172,30 @@ async def _generate_with_plan(
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
         thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+        **options,
     )
+
+
+@pytest.mark.anyio
+async def test_section_recovery_reuses_validated_plan_without_planning_again(monkeypatch):
+    stages: list[str] = []
+    plan = {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+        "claims": [_plan_claim("claim_001")],
+    }
+    holder: dict = {}
+    await _generate_with_plan(monkeypatch, plan, stages, plan_holder=holder)
+    assert stages == ["plan", "block-1"]
+    assert holder["plan"].blocks[0].block_id == "block_001"
+
+    # 正文类失败的恢复只重写正文，不再消耗规划调用。
+    result = await _generate_with_plan(monkeypatch, plan, stages, reuse_plan=holder["plan"])
+    assert stages == ["plan", "block-1", "block-1"]
+    assert [claim.claim_id for claim in result.claims] == ["claim_001"]
+    assert "report_phase_output_invalid" in reporting_sections._PLAN_REUSABLE_RECOVERY_CODES
+    assert "report_section_claim_metric_unknown" not in reporting_sections._PLAN_REUSABLE_RECOVERY_CODES
 
 
 @pytest.mark.anyio

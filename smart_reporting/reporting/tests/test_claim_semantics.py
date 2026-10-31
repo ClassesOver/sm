@@ -590,15 +590,16 @@ async def test_semantic_batches_keep_full_context_and_isolate_failed_or_foreign_
 
     async def review(agent, schema, stage, payload, **kwargs):
         calls.append(payload)
-        assert len(payload['references']) <= 10
+        assert len(payload['references']) <= 20
         assert {item['factId'] for item in payload['quantitySources']} == {'fact-aaaaaaaaaaaaaaaa'}
         context = next(iter(payload['contexts'].values()))
         assert '本节共同口径为开单收入' in context and '独立项目20收入' in context
-        if len(calls) == 2:
+        if len(calls) in {1, 3}:
+            # 首个 20 条大批失败后拆半重试；拆出的 10 条批次再失败时不再拆分。
             raise RuntimeError('one batch unavailable')
         items = [{'claimId': item['claimId'], 'scope': [{'field': 'nature', 'value': '开单收入',
                  'status': 'resolved', 'evidence': ['本节共同口径为开单收入']}]} for item in payload['references']]
-        if len(calls) == 1:
+        if len(calls) == 2:
             # 上一批不能提前解释或替代另一批的引用。
             items.append({'claimId': blocks[11].number_references[0].claim_id})
         return schema.model_validate({'interpretations': items})
@@ -607,13 +608,12 @@ async def test_semantic_batches_keep_full_context_and_isolate_failed_or_foreign_
     result = await sections._interpret_section_claims(object(), blocks, frozen, section_code='section_001',
         scope=SimpleNamespace(), run_context=SimpleNamespace(),
         thinking_request=ThinkingRequest(operation='section_generation', complexity='standard'))
-    assert len(calls) == 3
+    assert [len(item['references']) for item in calls] == [20, 10, 10, 1]
     reviewed = [number.semantic_receipt is not None for block in result for number in block.number_references]
     assert reviewed == [True] * 10 + [False] * 10 + [True]
-    assert sum(len(item['references']) for item in calls) == 21
     finished = [args for message, args in progress if 'report_claim_semantics_batch_completed' in message]
     assert [(args[1], args[2], args[3], args[4]) for args in finished] == [
-        (1, 10, 21, 'completed'), (2, 20, 21, 'failed'), (3, 21, 21, 'completed'),
+        (1, 0, 21, 'split'), (2, 10, 21, 'completed'), (3, 20, 21, 'failed'), (4, 21, 21, 'completed'),
     ]
 
 
