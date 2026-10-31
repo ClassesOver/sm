@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from collections.abc import Callable, Iterator
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Iterator
 from copy import copy
-from functools import partial
+from functools import lru_cache, partial
 
 import anyio
 from agno.exceptions import ModelProviderError
@@ -567,13 +568,33 @@ def _section_block_input_token_budget(
     )
 
 
+_COUNTING_STAGE_AGENTS: OrderedDict[tuple[int, int, type[Any], str], tuple[Any, Any, Any]] = OrderedDict()
+
+
+def _counting_stage_agent(agent: Any, output_schema: type[Any], stage: str) -> Any:
+    """计数用阶段 Agent 只读取系统约束与模型；按生成器与模型身份复用，免去每次 deep_copy。"""
+    model = getattr(agent, "model", None)
+    key = (id(agent), id(model), output_schema, stage)
+    cached = _COUNTING_STAGE_AGENTS.get(key)
+    # 同时持有原对象引用，id 不会被回收对象复用。
+    if cached is not None and cached[0] is agent and cached[1] is model:
+        _COUNTING_STAGE_AGENTS.move_to_end(key)
+        return cached[2]
+    stage_agent = _section_stage_agent(agent, output_schema, stage)
+    _COUNTING_STAGE_AGENTS[key] = (agent, model, stage_agent)
+    while len(_COUNTING_STAGE_AGENTS) > 32:
+        _COUNTING_STAGE_AGENTS.popitem(last=False)
+    return stage_agent
+
+
 def _section_request_tokens(
     agent: Any, payload: Mapping[str, Any], run_context: RunContext, *,
     stage: str = "content", output_schema: type[Any] = SectionContent,
 ) -> int:
     """按最终路由计入系统约束和输出 schema；tokenizer 不可用时保守估算。"""
 
-    stage_agent = _section_stage_agent(agent, output_schema, stage) if callable(getattr(agent, "deep_copy", None)) else agent
+    stage_agent = (_counting_stage_agent(agent, output_schema, stage)
+                   if callable(getattr(agent, "deep_copy", None)) else agent)
     messages = _structured_request_messages(
         stage_agent, _json_text(payload), session_id="section-content-budget"
     )
@@ -775,6 +796,12 @@ def _semantic_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return compact if len(_json_text(compact).encode('utf-8')) < len(_json_text(payload).encode('utf-8')) else payload
 
 
+@lru_cache(maxsize=64)
+def _content_sha256(content: str) -> str:
+    """逐块生成时每个 block 都核对整章证据身份；同一证据正文只哈希一次。"""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 def _controlled_assertions(contents: Sequence[str], payload: dict[str, Any], policy: Any) -> dict:
     """Only an explicitly enabled, run-pinned policy changes generation prompts."""
     if not isinstance(policy, Mapping) or policy.get("mode") != "enabled":
@@ -791,7 +818,7 @@ def _controlled_assertions(contents: Sequence[str], payload: dict[str, Any], pol
         return {}
     trusted_set = frozenset(trusted_hashes)
     trusted_contents = tuple(content for content in contents
-                             if hashlib.sha256(content.encode("utf-8")).hexdigest() in trusted_set)
+                             if _content_sha256(content) in trusted_set)
     if not trusted_contents:
         payload["assertionUnavailable"] = "trusted_facts_unavailable"
         return {}
@@ -1710,6 +1737,33 @@ def _section_plan_reference_issues(
 # 服务端先确定性修复可唯一推断的引用，模型只负责剩余歧义；两轮后仍未解决的引用
 # 交给渲染工具软告警处理，避免单条结论拖垮整章（原先 5 轮纠错后整章失败并从头重试）。
 _MAX_PLAN_REFERENCE_CORRECTIONS = 2
+# 写作类问题（重复、长句、数值堆砌、含糊措辞等）达到该条数才单独触发纠错轮；
+# 准确性问题始终触发。触发后同一轮一并修正全部告警，不为写作问题另开一轮。
+_STYLE_CORRECTION_THRESHOLD = 3
+
+
+def _needs_content_correction(scores: Iterable[tuple[int, int]]) -> bool:
+    """scores 为各 block 的（准确性问题数, 写作类问题数）。"""
+    return any(accuracy > 0 or style >= _STYLE_CORRECTION_THRESHOLD for accuracy, style in scores)
+
+
+# 语义复核首发批量；失败后拆半重试，不小于原先固定的 10 条粒度。
+_SEMANTIC_REVIEW_BATCH_SIZE = 20
+_SEMANTIC_REVIEW_MIN_SPLIT = 10
+# 只由正文内容引起的失败：规划（block 划分与 claims 引用）已通过校验，恢复时复用规划，
+# 只重写正文。其余失败码（claim/引用/图表/补证等）可能源自规划，恢复时重新规划。
+_PLAN_REUSABLE_RECOVERY_CODES = frozenset({
+    # 规划已产生后，正文阶段结构化输出失败或 blockId 与规划不一致。
+    "report_phase_output_invalid",
+    "report_section_content_blocks_invalid",
+    # 正文 Markdown 的标题、表格占位与协议注入问题。
+    "report_draft_heading_format_invalid",
+    "report_draft_heading_level_invalid",
+    "report_draft_heading_parent_missing",
+    "report_draft_heading_title_too_long",
+    "report_draft_protocol_injection",
+    "report_draft_table_missing",
+})
 
 
 def _section_plan_response_validator(
@@ -2107,11 +2161,15 @@ async def _generate_section_in_blocks(
     whole_section: bool = False,
     review_notices: dict[str, list[dict[str, Any]]] | None = None,
     earlier_sections: Sequence[tuple[str, str]] = (),
+    plan_holder: dict[str, RenderSectionPlan] | None = None,
+    reuse_plan: RenderSectionPlan | None = None,
 ) -> SectionDecision:
     """复用章节规划，按开关整章生成或沿用原有逐块生成。
 
     review_notices 按 blockId 收集纠错后仍残留的复核告警，供章节提交时并入质量告警。
     earlier_sections 是提纲中排在本章之前、已完成章节的（标题，正文），用于跨章重复比对。
+    plan_holder 收集本次已通过引用校验的规划；reuse_plan 为恢复时复用的同一规划，
+    失败出在正文而非规划时不必重新规划。
     """
     earlier_sentences = earlier_section_sentences(earlier_sections)
 
@@ -2281,124 +2339,130 @@ async def _generate_section_in_blocks(
         )
     if recovery is not None:
         plan_payload["recovery"] = dict(recovery)
-    previous_output: dict[str, Any] | None = None
-    for plan_call in range(1, _MAX_PLAN_REFERENCE_CORRECTIONS + 2):
-        input_budget = _section_block_input_token_budget(agent, run_context, default_budget=None)
-        request_tokens = _section_request_tokens(agent, plan_payload, run_context, stage="plan", output_schema=plan_schema)
-        if request_tokens > input_budget and plan_payload.get("contextProjection") != "compact":
-            plan_payload["numberGuide"] = _section_number_context(
-                number_contents, instruction_payload.get("fieldDefinitions", {}),
-                allowed_fact_ids=scoped_fact_ids, compact=True,
-            )[1]
-            plan_payload["contextProjection"] = "compact"
-            plan_payload = _compact_planning_payload(plan_payload)
+    if reuse_plan is not None:
+        # 恢复时规划已通过引用校验，失败出在正文；直接复用，不再消耗规划调用。
+        decision = reuse_plan
+    else:
+        previous_output: dict[str, Any] | None = None
+        for plan_call in range(1, _MAX_PLAN_REFERENCE_CORRECTIONS + 2):
+            input_budget = _section_block_input_token_budget(agent, run_context, default_budget=None)
             request_tokens = _section_request_tokens(agent, plan_payload, run_context, stage="plan", output_schema=plan_schema)
-        loguru_logger.info(
-            "report_section_plan_budget section={} projection={} input_tokens={} input_budget={}",
-            work_item.section_code, plan_payload.get("contextProjection", "full"), request_tokens, input_budget,
-        )
-        if request_tokens > input_budget:
-            raise ReportingError(
-                "report_section_context_too_large", "章节规划完整月度信号经无损压缩后仍超过输入预算。",
-                details={"stage": "plan", "requestTokens": request_tokens, "inputTokenBudget": input_budget,
-                         "retryable": False},
+            if request_tokens > input_budget and plan_payload.get("contextProjection") != "compact":
+                plan_payload["numberGuide"] = _section_number_context(
+                    number_contents, instruction_payload.get("fieldDefinitions", {}),
+                    allowed_fact_ids=scoped_fact_ids, compact=True,
+                )[1]
+                plan_payload["contextProjection"] = "compact"
+                plan_payload = _compact_planning_payload(plan_payload)
+                request_tokens = _section_request_tokens(agent, plan_payload, run_context, stage="plan", output_schema=plan_schema)
+            loguru_logger.info(
+                "report_section_plan_budget section={} projection={} input_tokens={} input_budget={}",
+                work_item.section_code, plan_payload.get("contextProjection", "full"), request_tokens, input_budget,
             )
-        planned = await _run_section_stage(
-            agent,
-            plan_schema,
-            "plan",
-            plan_payload,
-            scope=scope,
-            run_context=run_context,
-            thinking_request=_section_stage_thinking_request(thinking_request, "plan"),
-            section_code=work_item.section_code,
-            response_validator=_section_plan_response_validator(
-                work_item, plan_schema, previous_output
-            ),
-            attempt_key=f"plan-{plan_call}",
-        )
-        if analysis_rework_allowed:
-            if not isinstance(planned, SectionPlanOutput):
+            if request_tokens > input_budget:
                 raise ReportingError(
-                    "report_phase_output_invalid", "章节规划 Agent 未返回声明的结果。"
+                    "report_section_context_too_large", "章节规划完整月度信号经无损压缩后仍超过输入预算。",
+                    details={"stage": "plan", "requestTokens": request_tokens, "inputTokenBudget": input_budget,
+                             "retryable": False},
                 )
-            decision = planned.root
-        else:
-            if not isinstance(planned, RenderSectionPlan):
-                raise ReportingError(
-                    "report_phase_output_invalid", "降级章节规划 Agent 未返回 render 结果。"
-                )
-            decision = planned
-        if isinstance(decision, AnalysisReworkDecision):
-            return decision
-        if not isinstance(decision, RenderSectionPlan):
-            raise ReportingError("report_phase_output_invalid", "章节规划结果类型无效。")
-        if decision.section_code != work_item.section_code:
-            raise ReportingError(
-                "report_section_artifact_invalid", "章节规划没有绑定当前 sectionCode。"
+            planned = await _run_section_stage(
+                agent,
+                plan_schema,
+                "plan",
+                plan_payload,
+                scope=scope,
+                run_context=run_context,
+                thinking_request=_section_stage_thinking_request(thinking_request, "plan"),
+                section_code=work_item.section_code,
+                response_validator=_section_plan_response_validator(
+                    work_item, plan_schema, previous_output
+                ),
+                attempt_key=f"plan-{plan_call}",
             )
-        decision = _repair_section_plan_references(decision, work_item)
-        reference_issues = _section_plan_reference_issues(decision, work_item)
-        for index, claim in enumerate(decision.claims):
-            if set(claim.fact_ids) - known_fact_ids:
-                reference_issues.append(
-                    {
-                        "path": f"$.claims[{index}].factIds",
-                        "type": "unknown_fact_id",
-                        "message": "factIds 必须来自当前冻结事实目录，不得编造编号。",
-                        "allowedValues": sorted(known_fact_ids),
-                    }
-                )
-        if not reference_issues:
-            break
-        if plan_call > _MAX_PLAN_REFERENCE_CORRECTIONS:
-            if any(item["type"] == "unknown_fact_id" for item in reference_issues):
+            if analysis_rework_allowed:
+                if not isinstance(planned, SectionPlanOutput):
+                    raise ReportingError(
+                        "report_phase_output_invalid", "章节规划 Agent 未返回声明的结果。"
+                    )
+                decision = planned.root
+            else:
+                if not isinstance(planned, RenderSectionPlan):
+                    raise ReportingError(
+                        "report_phase_output_invalid", "降级章节规划 Agent 未返回 render 结果。"
+                    )
+                decision = planned
+            if isinstance(decision, AnalysisReworkDecision):
+                return decision
+            if not isinstance(decision, RenderSectionPlan):
+                raise ReportingError("report_phase_output_invalid", "章节规划结果类型无效。")
+            if decision.section_code != work_item.section_code:
                 raise ReportingError(
-                    "report_claim_fact_unknown",
-                    "章节规划仍包含不存在的登记事实引用。",
-                    details={"issues": reference_issues},
+                    "report_section_artifact_invalid", "章节规划没有绑定当前 sectionCode。"
                 )
-            # 纠错预算耗尽后交给渲染工具按软告警契约处理：未知指标/管理问题保留并告警，
-            # 未知 citation/chart 解绑，失去全部 claim 的 block 并入相邻 block，告警写入
-            # 章节产物。只有没有任何 claim 保留事实锚点时才提前失败，避免白跑正文生成。
-            if not any(_has_verifiable_anchor(claim, work_item) for claim in decision.claims):
-                raise ReportingError(
-                    "report_section_plan_reference_invalid",
-                    "章节规划引用了当前 WorkItem 外的指标、管理问题、citation 或 chart。",
-                    details={"issues": reference_issues},
-                )
+            decision = _repair_section_plan_references(decision, work_item)
+            reference_issues = _section_plan_reference_issues(decision, work_item)
+            for index, claim in enumerate(decision.claims):
+                if set(claim.fact_ids) - known_fact_ids:
+                    reference_issues.append(
+                        {
+                            "path": f"$.claims[{index}].factIds",
+                            "type": "unknown_fact_id",
+                            "message": "factIds 必须来自当前冻结事实目录，不得编造编号。",
+                            "allowedValues": sorted(known_fact_ids),
+                        }
+                    )
+            if not reference_issues:
+                break
+            if plan_call > _MAX_PLAN_REFERENCE_CORRECTIONS:
+                if any(item["type"] == "unknown_fact_id" for item in reference_issues):
+                    raise ReportingError(
+                        "report_claim_fact_unknown",
+                        "章节规划仍包含不存在的登记事实引用。",
+                        details={"issues": reference_issues},
+                    )
+                # 纠错预算耗尽后交给渲染工具按软告警契约处理：未知指标/管理问题保留并告警，
+                # 未知 citation/chart 解绑，失去全部 claim 的 block 并入相邻 block，告警写入
+                # 章节产物。只有没有任何 claim 保留事实锚点时才提前失败，避免白跑正文生成。
+                if not any(_has_verifiable_anchor(claim, work_item) for claim in decision.claims):
+                    raise ReportingError(
+                        "report_section_plan_reference_invalid",
+                        "章节规划引用了当前 WorkItem 外的指标、管理问题、citation 或 chart。",
+                        details={"issues": reference_issues},
+                    )
+                loguru_logger.bind(
+                    section_code=work_item.section_code,
+                    issue_count=len(reference_issues),
+                    issue_types=sorted({str(item["type"]) for item in reference_issues}),
+                ).warning("report_section_plan_references_unresolved")
+                break
+            previous_output = decision.model_dump(mode="json", by_alias=True)
+            encoded_previous = json.dumps(
+                previous_output,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            correction: dict[str, Any] = {
+                "attempt": plan_call,
+                "code": "report_section_plan_reference_invalid",
+                "issues": reference_issues,
+                "requiredAction": (
+                    "逐项修正 issues，保留其余有效规划；返回包含 kind、sectionCode、blocks、"
+                    "claims 的完整规划对象，不得只返回被修正的 claim、补丁、解释或 schema 外字段。"
+                ),
+            }
+            if len(encoded_previous) <= 32 * 1024:
+                correction["previousOutput"] = previous_output
+            plan_payload["correction"] = correction
             loguru_logger.bind(
                 section_code=work_item.section_code,
+                correction_number=plan_call,
                 issue_count=len(reference_issues),
                 issue_types=sorted({str(item["type"]) for item in reference_issues}),
-            ).warning("report_section_plan_references_unresolved")
-            break
-        previous_output = decision.model_dump(mode="json", by_alias=True)
-        encoded_previous = json.dumps(
-            previous_output,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        correction: dict[str, Any] = {
-            "attempt": plan_call,
-            "code": "report_section_plan_reference_invalid",
-            "issues": reference_issues,
-            "requiredAction": (
-                "逐项修正 issues，保留其余有效规划；返回包含 kind、sectionCode、blocks、"
-                "claims 的完整规划对象，不得只返回被修正的 claim、补丁、解释或 schema 外字段。"
-            ),
-        }
-        if len(encoded_previous) <= 32 * 1024:
-            correction["previousOutput"] = previous_output
-        plan_payload["correction"] = correction
-        loguru_logger.bind(
-            section_code=work_item.section_code,
-            correction_number=plan_call,
-            issue_count=len(reference_issues),
-            issue_types=sorted({str(item["type"]) for item in reference_issues}),
-        ).warning("report_section_plan_correction_requested")
-    else:
-        raise AssertionError("章节规划纠错循环未终止。")
+            ).warning("report_section_plan_correction_requested")
+        else:
+            raise AssertionError("章节规划纠错循环未终止。")
+    if plan_holder is not None:
+        plan_holder["plan"] = decision
 
     decision = _fit_section_plan_budget(decision, work_item)
     number_handle_identities = registered_number_identities(
@@ -2630,7 +2694,7 @@ async def _generate_section_in_blocks(
                 content, review_warnings = first_block_content, first_block_warnings
             loguru_logger.info("report_content_review_completed section={} block={} attempt={} issue_count={}",
                                work_item.section_code, block_plan.block_id, block_attempt, len(review_warnings))
-            if review_warnings and block_attempt == 0:
+            if review_warnings and block_attempt == 0 and _needs_content_correction((review_score,)):
                 first_block_content, first_block_warnings, first_block_score = content, review_warnings, review_score
                 block_payload["correction"] = {
                     "issues": review_warnings, "previousOutput": content.model_dump(mode="json", by_alias=True),
@@ -2944,6 +3008,15 @@ async def _generate_whole_section_content(
                            len({warning for warnings in review_warnings.values() for warning in warnings}), len(content.blocks))
         if not review_warnings:
             break
+        if review_attempt == 0 and not _needs_content_correction(review_scores.values()):
+            # 只有少量写作类问题：保留首轮正文，告警随章节进入质量告警，不额外调用模型。
+            loguru_logger.info("report_content_correction_skipped section={} reason=below_threshold",
+                               work_item.section_code)
+            for block_id, warnings in review_warnings.items():
+                for warning in warnings:
+                    loguru_logger.warning("report_content_review_warning section={} block={} message={}",
+                                         work_item.section_code, block_id, warning)
+            break
         if review_attempt == 0:
             first_by_id = content_by_id
             first_warnings = review_warnings
@@ -3133,6 +3206,18 @@ def _validated_section_semantic_review(payload: Any) -> SectionSemanticReview:
 
 
 async def _interpret_section_claims(
+    agent: Any, blocks: Sequence[ReportDraftBlock], number_contents: Sequence[str], **kwargs: Any,
+) -> tuple[ReportDraftBlock, ...]:
+    from ...trace.claim_semantics import claim_context_cache_scope
+    from ...trace.markdown_body import trace_body_cache_scope_sync
+
+    # 每个引用的上下文、数量绑定与语义回执都会以整章正文调用 claim_context（每次完整解析
+    # Markdown 并规范化整章）；同一次复核内按参数记忆，结果与逐次计算相同。
+    with trace_body_cache_scope_sync(), claim_context_cache_scope():
+        return await _interpret_section_claims_scoped(agent, blocks, number_contents, **kwargs)
+
+
+async def _interpret_section_claims_scoped(
     agent: Any, blocks: Sequence[ReportDraftBlock], number_contents: Sequence[str], *,
     section_code: str, scope: TaskExecutionScope, run_context: RunContext,
     thinking_request: ThinkingRequest, review_notices: dict[str, list[dict]] | None = None,
@@ -3151,7 +3236,7 @@ async def _interpret_section_claims(
         NumberReferenceResolver,
         anchor_bound_numbers,
         bound_number_display,
-        statement_fingerprint,
+        statement_fingerprints,
         strip_bound_anchors,
     )
     from ...trace.semantic_quantity import build_quantity_catalog
@@ -3223,17 +3308,22 @@ async def _interpret_section_claims(
             input_budget = _section_block_input_token_budget(agent, run_context, default_budget=None)
         except Exception as error:
             loguru_logger.warning('report_semantic_budget_unavailable error={}', type(error).__name__)
-    # 逐项解释含范围、期间与数量关系，50 处一次输出会被端点截断；限制输出批量，
+    # 逐项解释含范围、期间与数量关系，50 处一次输出会被端点截断；章节阶段输出上限为 32K，
+    # 首批按 _SEMANTIC_REVIEW_BATCH_SIZE 发送，失败（含输出截断）时拆半重试到原先的 10 条粒度，
     # 再按实际路由输入预算缩小批量，不裁章节或来源家族。未发送前拆批不消耗模型调用。
     start = 0
     batch_number = 0
-    while start < len(references):
+    retry_batches: list[list[dict[str, Any]]] = []
+    processed = 0
+    while retry_batches or start < len(references):
         batch_number += 1
         batch_started = time.monotonic()
         batch_status = 'failed'
         model_elapsed_ms = None
         request_tokens = None
-        batch = references[start:start + 10]
+        from_retry = bool(retry_batches)
+        batch = retry_batches.pop(0) if from_retry else references[start:start + _SEMANTIC_REVIEW_BATCH_SIZE]
+        requested = batch
         try:
             payload = batch_payload(batch)
             if input_budget is not None:
@@ -3249,7 +3339,7 @@ async def _interpret_section_claims(
                                          '单条语义复核的完整上下文超过输入预算，保留待复核。')
             loguru_logger.info(
                 'report_claim_semantics_batch_started section={} batch={} processed={} total={} batch_size={}',
-                section_code, batch_number, start, len(references), len(batch),
+                section_code, batch_number, processed, len(references), len(batch),
             )
             loguru_logger.info(
                 'report_claim_semantics_batch_prepared section={} batch={} input_tokens={} payload_bytes={} preparation_ms={}',
@@ -3276,15 +3366,27 @@ async def _interpret_section_claims(
             issues = [{'loc': issue.get('loc'), 'type': issue.get('type')}
                       for issue in details.get('errors', ()) if isinstance(issue, Mapping)]
             loguru_logger.warning('report_claim_semantics_unavailable section={} batch={} error={} issues={}',
-                                 section_code, start, type(error).__name__, issues)
-        start += len(batch)
+                                 section_code, batch_number, type(error).__name__, issues)
+        consumed = len(batch)
+        if from_retry and consumed < len(requested):
+            # 重试批次按输入预算缩小时，未发送的余下引用放回队首，不能丢失。
+            retry_batches.insert(0, requested[consumed:])
+        if batch_status == 'failed' and model_elapsed_ms is not None and len(batch) > _SEMANTIC_REVIEW_MIN_SPLIT:
+            # 大批次在模型调用后失败（多为输出截断或个别解释无效）：拆半重试，不整批放弃。
+            middle = len(batch) // 2
+            retry_batches[:0] = [batch[:middle], batch[middle:]]
+            batch_status = 'split'
+        if not from_retry:
+            start += consumed
+        if batch_status != 'split':
+            processed += consumed
         loguru_logger.info(
             'report_claim_semantics_batch_model_elapsed section={} batch={} model_ms={}',
             section_code, batch_number, model_elapsed_ms,
         )
         loguru_logger.info(
             'report_claim_semantics_batch_completed section={} batch={} processed={} total={} status={} elapsed_ms={}',
-            section_code, batch_number, start, len(references), batch_status,
+            section_code, batch_number, processed, len(references), batch_status,
             round((time.monotonic() - batch_started) * 1000),
         )
     known_ids = {item['claimId'] for item in references}
@@ -3355,6 +3457,10 @@ async def _interpret_section_claims(
         corrected = corrections[block.block_id]
         numbers = []
         missing = 0
+        # 同一 block 的全部引用共用一次正文规范化。
+        fingerprints = statement_fingerprints(
+            anchored, (number.claim_id for number in block.number_references),
+        ) if corrected else {}
         for number in block.number_references:
             item = by_id.get(number.claim_id)
             receipt = freeze_interpretation(
@@ -3375,7 +3481,7 @@ async def _interpret_section_claims(
                     'quantity_binding_sha256': quantity_binding_fingerprint(binding.view),
                 })
             if corrected:
-                patch['statement_sha256'] = statement_fingerprint(anchored, number.claim_id)
+                patch['statement_sha256'] = fingerprints[number.claim_id]
             numbers.append(number.model_copy(update=patch))
         markdown, numbers, notices = strip_bound_anchors(anchored, tuple(numbers), block.review_notices or ())
         reviewed.append(block.model_copy(update={'markdown': markdown, 'number_references': numbers,
@@ -3820,19 +3926,34 @@ class RuntimeSectionsMixin:
         titles = {section.code: section.title for section in outline.sections}
         completed = {item.section_code: item for item in checkpoint.completed_sections}
         thread_id = self._scope(run_context)["threadId"]
+        # 每章都要读取之前全部已完成章节，整份报告读取量随章节数平方增长；产物按 SHA
+        # 寻址不可变，正文按身份缓存，只有首次读取时核验并解析。
+        cache = getattr(self, "_earlier_section_text_cache", None)
+        if cache is None:
+            cache = self._earlier_section_text_cache = OrderedDict()
         texts: list[tuple[str, str]] = []
         for code in order[:order.index(section_code)]:
             if code not in completed:
                 continue
-            try:
-                artifact = cast(SectionArtifact, await self._read_identity_model(
-                    thread_id, completed[code].artifact_file, SectionArtifact,
-                ))
-            except (ReportingError, ValidationError) as error:
-                loguru_logger.warning("report_section_repetition_context_unavailable section={} code={}",
-                                      code, getattr(error, "code", type(error).__name__))
-                continue
-            texts.append((titles[code], "\n\n".join(block.markdown for block in artifact.blocks)))
+            identity = completed[code].artifact_file
+            digest = getattr(identity, "sha256", None)
+            key = (thread_id, getattr(identity, "path", None), digest) if digest else None
+            text = cache.get(key) if key is not None else None
+            if text is None:
+                try:
+                    artifact = cast(SectionArtifact, await self._read_identity_model(
+                        thread_id, identity, SectionArtifact,
+                    ))
+                except (ReportingError, ValidationError) as error:
+                    loguru_logger.warning("report_section_repetition_context_unavailable section={} code={}",
+                                          code, getattr(error, "code", type(error).__name__))
+                    continue
+                text = "\n\n".join(block.markdown for block in artifact.blocks)
+                if key is not None:
+                    cache[key] = text
+                while len(cache) > 256:
+                    cache.popitem(last=False)
+            texts.append((titles[code], text))
         return tuple(texts)
 
     async def _run_section_phase(
@@ -3925,7 +4046,14 @@ class RuntimeSectionsMixin:
             checkpoint,
             files=self._merge_checkpoint_files(checkpoint.files, work_item_file, constraints_file),
         )
-        await self._persist_reporting_checkpoint(run_context, checkpoint)
+        if any(
+            item.phase == "section" and item.section_code == work_item.section_code
+            and item.status == "started"
+            for item in checkpoint.trace
+        ):
+            await self._persist_reporting_checkpoint(run_context, checkpoint)
+        # 否则下方首轮登记 started 轨迹时与这两份文件一并写入，省一次 checkpoint 全量写入；
+        # 中途失败时本方法重入会重新写出并登记同一内容寻址文件。
         checkpoint_error = checkpoint.last_error
         last_error: Exception | None = (
             ReportingError(
@@ -4132,6 +4260,8 @@ class RuntimeSectionsMixin:
                     validated_evidence: SectionEvidenceBundle | None = None
                     # 本次生成（或恢复生成）纠错后仍残留的块级复核告警，随章节提交进入质量告警。
                     review_notices: dict[str, list[dict[str, Any]]] = {}
+                    # 本次执行已通过引用校验的规划；正文类失败的恢复复用它，不重新规划。
+                    plan_holder: dict[str, RenderSectionPlan] = {}
 
                     async def read_evidence(
                         path: str, offset: int, task_context: RunContext
@@ -4153,6 +4283,7 @@ class RuntimeSectionsMixin:
                         nonlocal validated_evidence
                         validated_evidence = evidence
                         review_notices.clear()
+                        plan_holder.clear()
                         return await _generate_section_in_blocks(
                             self.section_generator,
                             instruction_payload,
@@ -4161,6 +4292,7 @@ class RuntimeSectionsMixin:
                             whole_section=self.section_whole_generation,
                             review_notices=review_notices,
                             earlier_sections=earlier_sections,
+                            plan_holder=plan_holder,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(
@@ -4195,6 +4327,16 @@ class RuntimeSectionsMixin:
                                 "章节恢复缺少当前执行已验证的证据对象。",
                             )
                         review_notices.clear()
+                        reuse_plan = (
+                            plan_holder.get("plan")
+                            if recovery_diagnostic.get("code") in _PLAN_REUSABLE_RECOVERY_CODES
+                            else None
+                        )
+                        if reuse_plan is not None:
+                            loguru_logger.info(
+                                "report_section_recovery_plan_reused section={} code={}",
+                                work_item.section_code, recovery_diagnostic.get("code"),
+                            )
                         return await _generate_section_in_blocks(
                             self.section_recovery,
                             instruction_payload,
@@ -4203,6 +4345,7 @@ class RuntimeSectionsMixin:
                             whole_section=self.section_whole_generation,
                             review_notices=review_notices,
                             earlier_sections=earlier_sections,
+                            reuse_plan=reuse_plan,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(

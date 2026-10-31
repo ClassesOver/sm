@@ -236,6 +236,8 @@ async def test_unfixed_statement_review_is_left_to_the_editor(monkeypatch, mode)
 @pytest.mark.anyio
 @pytest.mark.parametrize('mode', ['whole', 'blocks'])
 async def test_model_written_hedges_are_sent_back_for_a_rewrite(monkeypatch, mode):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     hedged = RAW_RETARGETABLE.replace('。', '，负值明细的性质待核实。')
     block, notices, calls, source, _ = await _generate(monkeypatch, mode, [hedged, RAW_RETARGETABLE])
     _assert_editor_binding_is_current(block, source)
@@ -246,8 +248,24 @@ async def test_model_written_hedges_are_sent_back_for_a_rewrite(monkeypatch, mod
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['whole', 'blocks'])
+async def test_style_issues_below_threshold_keep_first_draft_and_warn(monkeypatch, mode):
+    # 写作类问题未达阈值：不再多跑一轮纠错，首轮正文保留，问题作为软告警返回。
+    hedged = RAW_RETARGETABLE.replace('。', '，负值明细的性质待核实。')
+    _block, notices, calls, _source, _ = await _generate(monkeypatch, mode, [hedged, RAW_RETARGETABLE])
+    assert len(calls) == 1
+    assert any(item['code'] == 'report_section_block_content_review' and '待核实类提示' in item['message']
+               for item in notices)
+    assert sections._needs_content_correction([(0, sections._STYLE_CORRECTION_THRESHOLD - 1)]) is False
+    assert sections._needs_content_correction([(0, sections._STYLE_CORRECTION_THRESHOLD)]) is True
+    assert sections._needs_content_correction([(1, 0)]) is True
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('mode', ['whole_entry', 'blocks'])
 async def test_sentences_repeated_from_earlier_chapters_go_back_for_a_rewrite(monkeypatch, mode):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     repeated = RAW_RETARGETABLE + '本期门诊收入保持稳定增长，结构持续优化。'
     # 前面章节已渲染并带锚点；章节默认串行生成，写本章时比对前面已完成章节。
     earlier = (('收入规模与结构分析', '本期门诊收入保持稳定增长，结构持续优化[[claim:number-1]]。'),)

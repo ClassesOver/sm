@@ -2143,7 +2143,7 @@ def test_section_plan_references_keep_ambiguous_metric_for_model_correction() ->
 
 
 async def _generate_with_plan(
-    monkeypatch, plan: dict, stages: list[str], work_item: SectionWorkItem | None = None
+    monkeypatch, plan: dict, stages: list[str], work_item: SectionWorkItem | None = None, **options
 ):
     work_item = work_item or _revenue_work_item()
     evidence = SectionEvidenceBundle(
@@ -2172,7 +2172,30 @@ async def _generate_with_plan(
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
         thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+        **options,
     )
+
+
+@pytest.mark.anyio
+async def test_section_recovery_reuses_validated_plan_without_planning_again(monkeypatch):
+    stages: list[str] = []
+    plan = {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+        "claims": [_plan_claim("claim_001")],
+    }
+    holder: dict = {}
+    await _generate_with_plan(monkeypatch, plan, stages, plan_holder=holder)
+    assert stages == ["plan", "block-1"]
+    assert holder["plan"].blocks[0].block_id == "block_001"
+
+    # 正文类失败的恢复只重写正文，不再消耗规划调用。
+    result = await _generate_with_plan(monkeypatch, plan, stages, reuse_plan=holder["plan"])
+    assert stages == ["plan", "block-1", "block-1"]
+    assert [claim.claim_id for claim in result.claims] == ["claim_001"]
+    assert "report_phase_output_invalid" in reporting_sections._PLAN_REUSABLE_RECOVERY_CODES
+    assert "report_section_claim_metric_unknown" not in reporting_sections._PLAN_REUSABLE_RECOVERY_CODES
 
 
 @pytest.mark.anyio
@@ -4060,6 +4083,8 @@ def test_block_review_notices_count_only_server_added_unverified_markers():
 
 @pytest.mark.anyio
 async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     from .test_content_review import _metric
 
     calls = []
@@ -4107,6 +4132,8 @@ async def test_section_correction_covers_repetition_and_internal_ids(monkeypatch
 
 @pytest.mark.anyio
 async def test_whole_section_correction_only_replaces_blocks_with_issues(monkeypatch):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     from .test_content_review import _metric
 
     clean = "本期门诊收入运行总体平稳，结构保持稳定。"
@@ -4561,6 +4588,8 @@ async def _run_correction_harness(monkeypatch, outputs):
     "not a SectionContent",
 ])
 async def test_correction_harness_preserves_first_draft_on_invalid_response(monkeypatch, correction):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     first = [("block_1", _FIRST_WITH_ISSUE), ("block_2", "门诊收入总体保持平稳。")]
     result, notices, calls = await _run_correction_harness(monkeypatch, [first, correction])
     assert len(calls) == 2
@@ -4571,6 +4600,8 @@ async def test_correction_harness_preserves_first_draft_on_invalid_response(monk
 
 @pytest.mark.anyio
 async def test_correction_harness_reviews_in_plan_order(monkeypatch):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     repeated = "本期门诊收入运行总体平稳，结构保持稳定。"
     clean = "住院收入变化需结合科室明细进一步核对。"
     result, _, calls = await _run_correction_harness(monkeypatch, [
@@ -4583,6 +4614,8 @@ async def test_correction_harness_reviews_in_plan_order(monkeypatch):
 
 @pytest.mark.anyio
 async def test_correction_harness_rechecks_repetition_after_partial_rollback(monkeypatch):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     repeated = "本期门诊收入运行总体平稳，结构保持稳定。"
     result, notices, calls = await _run_correction_harness(monkeypatch, [
         [("block_1", repeated + _FIRST_WITH_ISSUE), ("block_2", _FIRST_WITH_ISSUE)],
@@ -4641,6 +4674,8 @@ async def test_block_harness_prioritizes_facts_over_internal_labels(monkeypatch,
 })])
 @pytest.mark.parametrize("first_invalid", [False, True])
 async def test_block_harness_invalid_response_uses_only_a_valid_previous_draft(monkeypatch, invalid, first_invalid):
+    # 本用例验证纠错轮机制；单条写作类问题按阈值 1 触发。
+    monkeypatch.setattr(reporting_sections, "_STYLE_CORRECTION_THRESHOLD", 1)
     calls = []
     original = _FIRST_WITH_ISSUE
 
