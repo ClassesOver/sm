@@ -1,3 +1,4 @@
+import { createElement, Sparkles } from 'lucide'
 import { findEvidenceTableId } from './evidence-location'
 
 interface AssetAIActionsOptions {
@@ -15,37 +16,52 @@ export function createAssetAIActions(editor: HTMLElement, options: AssetAIAction
   const button = document.createElement('button')
   button.type = 'button'
   button.className = 'asset-ai-edit-button'
+  const label = document.createElement('span')
+  button.append(createElement(Sparkles, { width: 14, height: 14, 'aria-hidden': 'true' }), label)
   toolbar.append(button)
-  document.body.append(toolbar)
+  // 指向可 AI 编辑的图/表时描边提示；独立浮层，不改动正文 DOM。
+  const outline = document.createElement('div')
+  outline.className = 'asset-ai-outline'
+  outline.setAttribute('aria-hidden', 'true')
+  outline.hidden = true
+  document.body.append(outline, toolbar)
   let target: HTMLElement | null = null
   let action: (() => void) | null = null
 
-  const hide = () => { toolbar.hidden = true; target = null; action = null }
+  const hide = () => { toolbar.hidden = true; outline.hidden = true; target = null; action = null }
   const position = () => {
     if (!target || !editor.contains(target)) return hide()
     const rect = target.getBoundingClientRect()
     if (rect.bottom < 0 || rect.top > window.innerHeight) return hide()
-    toolbar.style.top = `${Math.max(8, rect.top - 40)}px`
-    toolbar.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 120))}px`
+    // 图片放在内部右上角（通常是留白）；表格右上角是表头内容，放在表格外右上方，
+    // 上方空间不足时才退回内部。都靠右，不遮挡上一行正文的开头；视口过窄时贴边。
+    const width = toolbar.offsetWidth || 112
+    const height = toolbar.offsetHeight || 42
+    const above = rect.top - height - 6
+    const top = target instanceof HTMLTableElement && above >= 8 ? above : rect.top + 8
+    toolbar.style.top = `${Math.max(8, Math.min(top, window.innerHeight - 48))}px`
+    toolbar.style.left = `${Math.max(8, Math.min(rect.right - width - 8, window.innerWidth - width - 8))}px`
+    Object.assign(outline.style, { top: `${rect.top}px`, left: `${rect.left}px`, width: `${rect.width}px`, height: `${rect.height}px` })
   }
   const showTarget = (element: Element) => {
     const asset = element.closest<HTMLImageElement | HTMLTableElement>('img, table')
     if (!asset || !editor.contains(asset) || asset.closest('.drag-preview')) return hide()
     if (asset instanceof HTMLImageElement && options.onChartEdit) {
-      button.textContent = 'AI 改图'
+      label.textContent = 'AI 改图'
       action = () => options.onChartEdit?.(asset)
     } else if (asset instanceof HTMLTableElement && options.onTableEdit) {
       const tableId = findEvidenceTableId(editor, asset)
       if (!tableId) return hide()
-      button.textContent = 'AI 改表'
+      label.textContent = 'AI 改表'
       action = () => {
         // 草稿可能在按钮显示后重绘，点击时重新确认表格身份。
         if (findEvidenceTableId(editor, asset) === tableId) options.onTableEdit?.(tableId)
       }
     } else return hide()
-    button.title = `${button.textContent}：输入要求，预览后接受替换`
+    button.title = `${label.textContent}：从推荐一键调整或描述修改，预览后再替换`
     target = asset
     toolbar.hidden = false
+    outline.hidden = false
     position()
   }
   const showFor = (event: Event) => {
@@ -89,6 +105,7 @@ export function createAssetAIActions(editor: HTMLElement, options: AssetAIAction
       window.removeEventListener('scroll', position, true)
       window.removeEventListener('resize', position)
       toolbar.remove()
+      outline.remove()
     },
   }
 }

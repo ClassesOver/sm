@@ -291,7 +291,7 @@ describe('createChartAIEdit', () => {
     const note = document.querySelector('[data-role="ai-unavailable-note"]')
     expect(note).not.toBeNull()
     expect(note!.textContent).toContain('未配置视觉审查模型')
-    expect(note!.textContent).toContain('标准预设')
+    expect(note!.textContent).toContain('一键调整')
     const textarea = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
     textarea.value = '改成折线图'; textarea.dispatchEvent(new Event('input'))
     expect(document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.disabled).toBe(true)
@@ -312,9 +312,8 @@ describe('createChartAIEdit', () => {
     await vi.waitFor(() => {
       expect(document.querySelector('#chart-ai-instruction')).not.toBeNull()
     })
-    const select = document.querySelector<HTMLSelectElement>('[id$="chart-ai-standard-preset"]')!
-    const pie = select.querySelector<HTMLOptionElement>('option[value="pie"]')!
-    const dual = select.querySelector<HTMLOptionElement>('option[value="dual"]')!
+    const pie = document.querySelector<HTMLButtonElement>('[data-preset="pie"]')!
+    const dual = document.querySelector<HTMLButtonElement>('[data-preset="dual"]')!
     expect(pie.disabled).toBe(true)
     expect(dual.disabled).toBe(false)
     expect(document.querySelector('[id$="chart-ai-standard-help"]')!.textContent).toContain('暂不可用')

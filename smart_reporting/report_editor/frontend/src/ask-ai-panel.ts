@@ -142,6 +142,8 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     const ready = [...sessions].filter(session => session.state === 'ready').length
     launcher.textContent = running ? `Ask AI · ${running} 项处理中` : ready ? `Ask AI · ${ready} 项待确认` : 'Ask AI · 继续编辑'
     launcher.dataset.ready = String(ready > 0)
+    // 只有一个会话时会话标签与当前图卡片重复，由样式隐藏标签栏以腾出首屏空间。
+    panel.dataset.sessions = String(sessions.size)
     launcher.hidden = sessions.size === 0 || !panel.hidden
     notifications.hidden = !notifications.childElementCount
     if (sessions.size) {

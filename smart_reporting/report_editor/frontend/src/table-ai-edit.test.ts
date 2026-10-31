@@ -150,6 +150,30 @@ describe('createTableAIEdit review', () => {
     controller.dispose()
   })
 
+  it('首屏推荐按表格列给出建议：AI 建议只填入要求，推荐模板一键执行', async () => {
+    document.body.innerHTML = ''
+    const client = {
+      tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
+      tableTemplates: vi.fn(async () => ({ templates: [{ templateId: 'budget-execution', name: '预算执行', available: true, recommended: true }] })),
+      startTableTemplateEdit: vi.fn(async () => ({ editId: 'tedit-template' })),
+      startTableAiEdit: vi.fn(),
+      tableAiEditStatus: vi.fn(async () => ({ editId: 'tedit-template', status: 'failed', error: { message: '测试终止' } })),
+    } as unknown as ReportEditorClient
+    const { view } = viewFor(schema.node('doc', null, paragraph('正文')))
+    const controller = createTableAIEdit({ view: view as never, client, pollIntervalMs: 1 })
+    controller.open('tbl-1', '| 科室 | 收入 | 完成率 |\n| --- | ---: | ---: |\n| 内科 | 1,200 | 95% |\n| 外科 | 900 | 102% |')
+    await vi.waitFor(() => expect(document.querySelector('.ask-ai-start-item[data-kind="oneclick"]')).not.toBeNull())
+    const aiItem = document.querySelector<HTMLButtonElement>('.ask-ai-start-item[data-kind="ai"]')!
+    expect(aiItem.textContent).toContain('按「收入」从高到低排序')
+    aiItem.click()
+    expect(document.querySelector<HTMLTextAreaElement>('[id^="table-ai-input"]')!.value).toBe('按「收入」从高到低排序')
+    expect(client.startTableAiEdit).not.toHaveBeenCalled()
+    document.querySelector<HTMLTextAreaElement>('[id^="table-ai-input"]')!.value = ''
+    document.querySelector<HTMLButtonElement>('.ask-ai-start-item[data-kind="oneclick"]')!.click()
+    await vi.waitFor(() => expect(client.startTableTemplateEdit).toHaveBeenCalledWith('tbl-1', expect.objectContaining({ templateId: 'budget-execution' })))
+    controller.dispose()
+  })
+
   it('预制表格模板保持无自由要求的确定性执行路径', async () => {
     document.body.innerHTML = ''
     const client = {

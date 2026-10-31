@@ -81,6 +81,7 @@ from .chart_templates import (
 from .service import ReportEditorContext, ReportEditorService
 from .standard_charts import (
     StandardChartEditParameters,
+    chart_data_profile,
     inherit_standard,
     standard_edit_plan,
     standard_plot_summary,
@@ -405,6 +406,8 @@ class ChartAIEditService:
         self.timeout_seconds = timeout_seconds
         self._jobs: dict[str, _ChartEditJob] = {}
         self._hourly: dict[str, list[float]] = {}
+        # 数据概况按作图数据登记身份缓存：内容不可变，同一图重复打开不再读文件。
+        self._profiles: dict[tuple[str, ...], dict[str, Any] | None] = {}
 
     # ------------------------------------------------------------------
     # 可用性与任务管理
@@ -426,7 +429,32 @@ class ChartAIEditService:
         result["standardChartCapabilities"] = standard_chart_capabilities()
         if _resolved is not None:
             result.update(baseImagePath=_resolved[1].path, expectedSha256=_resolved[1].sha256)
+            if (profile := await self._data_profile(_resolved)) is not None:
+                result["dataProfile"] = profile
         return result
+
+    async def _data_profile(self, resolved: tuple[ReportEditorContext, Any, Any, Any]) -> dict[str, Any] | None:
+        """推荐操作用的数据概况；读取或核验失败只省略概况，不改变可用性判定。"""
+
+        context, _chart, trace, index = resolved
+        files = {item.resource_id: item for item in index.files}
+        key = tuple(files[resource_id].sha256 if resource_id in files else ""
+                    for resource_id in trace.plot_data_file_resource_ids[:_MAX_PLOT_DATA_FILES])
+        if key and all(key) and key in self._profiles:
+            return self._profiles[key]
+        try:
+            workspace = self.editor.workspace.workspace(context.scope["threadId"])
+            plot_files, _entries = await self._materialize_inputs(context, trace, workspace, index)
+        except Exception as error:
+            # 读取或身份核验失败不缓存：可能是临时故障，下次重新核验。
+            logger.info("report_editor_chart_data_profile_unavailable error={}", type(error).__name__)
+            return None
+        profile = chart_data_profile(plot_files)
+        if key and all(key):
+            if len(self._profiles) >= 512:
+                self._profiles.pop(next(iter(self._profiles)))
+            self._profiles[key] = profile
+        return profile
 
     def _model_unavailable_reason(self) -> str | None:
         if self.planner is None:

@@ -1,7 +1,7 @@
 import { createModal } from './modal'
 import { readStorage, writeStorage } from './storage'
 
-export function showEditorOnboarding(root: HTMLElement, key: string) {
+export function showEditorOnboarding(root: HTMLElement, key: string, options: { ai?: boolean } = {}) {
   const storageKey = `smart-reporting-editor:onboarding:${key}`
   if (readStorage(storageKey) === 'done') return null
   let closePanel: () => void = () => {}
@@ -16,11 +16,11 @@ export function showEditorOnboarding(root: HTMLElement, key: string) {
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>
         </span>
         <div>
-          <h2>三步完成报告</h2>
+          <h2>${options.ai ? '四' : '三'}步完成报告</h2>
           <p class="panel-subtitle">快速开始</p>
         </div>
       </div>
-      <ol class="editor-onboarding-steps"><li><span class="editor-onboarding-step-num">1</span>点击正文直接编辑 Markdown</li><li><span class="editor-onboarding-step-num">2</span>用左侧目录跳转章节</li><li><span class="editor-onboarding-step-num">3</span>保存后即可导出 PDF / Word</li></ol>
+      <ol class="editor-onboarding-steps"><li><span class="editor-onboarding-step-num">1</span>点击正文直接编辑 Markdown</li><li><span class="editor-onboarding-step-num">2</span>用左侧目录跳转章节</li>${options.ai ? '<li><span class="editor-onboarding-step-num">3</span>指向图表或表格，点「AI 改图 / AI 改表」，从推荐开始一键调整</li>' : ''}<li><span class="editor-onboarding-step-num">${options.ai ? 4 : 3}</span>保存后即可导出 PDF / Word</li></ol>
       <div class="editor-onboarding-actions"><button type="button" data-onboarding="dismiss">知道了</button><button type="button" data-onboarding="hide">以后不再提示</button></div>`,
   })
   const panel = modal.overlay

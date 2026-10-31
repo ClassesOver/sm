@@ -223,8 +223,22 @@ export interface ChartAIAvailability {
   baseImagePath?: string
   expectedSha256?: string
   standardChartCapabilities?: { forms: string[]; families?: Record<string, unknown> }
+  /** 服务端按已核验作图数据给出的粗粒度概况，仅用于推荐；读取失败时缺省。 */
+  dataProfile?: ChartDataProfile
   reason?: string
   chartId?: string
+}
+
+export interface ChartDataProfile {
+  inputCount: number
+  rowCount: number
+  categoryCount: number
+  textFieldCount: number
+  numericFieldCount: number
+  unitCount: number
+  hasPeriod: boolean
+  hasNegative: boolean
+  magnitudeRatio: number | null
 }
 
 export interface TableAIEditRequest {
@@ -794,6 +808,11 @@ export class ReportEditorClient {
     durationMs?: number
     format?: 'pdf' | 'word'
     errorCode?: string
+    surface?: 'chart' | 'table'
+    source?: 'start' | 'dialog' | 'refine' | 'free'
+    kind?: 'oneclick' | 'ai'
+    suggestionId?: string
+    outcome?: 'succeeded' | 'failed' | 'cancelled' | 'accepted' | 'discarded'
   }): Promise<void> {
     const response = await this.fetcher.call(window, `${this.basePath}/api/events`, {
       body: JSON.stringify(payload),

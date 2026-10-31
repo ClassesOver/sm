@@ -73,6 +73,23 @@ def test_editor_export_settings_are_strict_and_whitelisted() -> None:
         EditorExportPayload.model_validate({"expectedSha256": "a" * 64, "note": "x" * 201})
 
 
+def test_ai_usage_events_accept_only_enums_and_fixed_ids() -> None:
+    event = EditorEventPayload.model_validate({
+        "event": "ai_edit_finished", "surface": "table", "source": "start", "kind": "ai",
+        "suggestionId": "template-budget-execution", "outcome": "succeeded", "durationMs": 31_000,
+    })
+    assert (event.surface, event.source, event.kind, event.suggestion_id, event.outcome) == (
+        "table", "start", "ai", "template-budget-execution", "succeeded")
+    for bad in (
+        {"suggestionId": "按「收入」从高到低排序"},  # 建议原文含真实列名，不能上报
+        {"source": "chat"},
+        {"outcome": "partial"},
+        {"instruction": "改成横向条形图"},
+    ):
+        with pytest.raises(ValidationError):
+            EditorEventPayload.model_validate({"event": "ai_suggestion_used", "surface": "chart", **bad})
+
+
 def test_editor_event_payload_rejects_content_and_unknown_events() -> None:
     event = EditorEventPayload.model_validate(
         {
