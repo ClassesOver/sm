@@ -2713,7 +2713,8 @@ async def test_section_generation_plans_then_renders_each_block_serially(
     )
 
     assert stages == ["plan", "block-1", "block-2"]
-    assert [item.reasoning_effort for item in decisions] == [effort, None, None]
+    # 正文不继承规划的显式 effort，按 select_reporting_thinking 的默认档 high 执行。
+    assert [item.reasoning_effort for item in decisions] == [effort, "high", "high"]
     assert [
         (item.operation, item.enabled, item.thinking_budget, item.attempt) for item in decisions
     ] == [

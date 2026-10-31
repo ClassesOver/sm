@@ -3007,7 +3007,8 @@ def test_default_output_reserve_is_clamped_to_verified_model_output_limit(
     messages = [Message(role="user", content="{}")]
 
     assert _analysis_summary_input_token_budget(agent, run_context) == 128 * 1024 * 3 // 4
-    assert _section_block_input_token_budget(agent, run_context) == 128 * 1024
+    # 章节阶段请求的输出上限固定为 32K，预检按同一预留：256K 窗口 - 32K。
+    assert _section_block_input_token_budget(agent, run_context) == 256 * 1024 - 32 * 1024
     assert code_model._phase_request_model(messages).max_output_tokens == 128 * 1024
     hard_caps = _capture_projection_hard_caps(monkeypatch)
     code_model._project(messages, (), {})
