@@ -12,6 +12,18 @@ describe('showEditorOnboarding', () => {
     expect(showEditorOnboarding(root, 'report-1')).toBeNull()
   })
 
+  it('mentions AI editing as its own step only when AI editing is enabled', () => {
+    const root = document.querySelector<HTMLElement>('#app')!
+    showEditorOnboarding(root, 'report-ai', { ai: true })
+    const steps = [...root.querySelectorAll('.editor-onboarding-steps li')].map(item => item.textContent)
+    expect(steps).toHaveLength(4)
+    expect(steps[2]).toContain('AI 改图')
+    expect(root.querySelector('h2')!.textContent).toBe('四步完成报告')
+    root.querySelector<HTMLButtonElement>('[data-onboarding="dismiss"]')!.click()
+    showEditorOnboarding(root, 'report-plain')
+    expect(root.querySelectorAll('.editor-onboarding-steps li')).toHaveLength(3)
+  })
+
   it('dismisses the current onboarding with Escape without hiding future guidance', () => {
     const root = document.querySelector<HTMLElement>('#app')!
     showEditorOnboarding(root, 'report-1')

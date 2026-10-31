@@ -33,8 +33,12 @@ describe('graph and table AI entry points', () => {
     image.setAttribute('contenteditable', 'false')
     hover('img')
     expect(button().textContent).toBe('AI 改图')
+    const outline = document.querySelector<HTMLElement>('.asset-ai-outline')!
+    expect(outline.hidden).toBe(false)
+    expect(editor().contains(outline)).toBe(false)
     button().click()
     expect(onChartEdit).toHaveBeenCalledWith(image)
+    expect(outline.hidden).toBe(true)
   })
 
   it('honors feature flags and does not offer edits for unregistered tables', () => {

@@ -240,6 +240,47 @@ function mount(src = '/b/asset/reports/revision-1/original.png') {
 }
 
 describe('模板选择与完整预览', () => {
+  it('首屏推荐：推荐模板一键出预览，AI 建议只填入要求不发送，并按数据概况调整建议与预设提示', async () => {
+    const api = client({
+      chartAiAvailability: vi.fn(async () => ({ available: true, standardAvailable: true, expectedSha256: 'a'.repeat(64),
+        dataProfile: { inputCount: 1, rowCount: 4, categoryCount: 4, textFieldCount: 1, numericFieldCount: 2,
+          unitCount: 2, hasPeriod: false, hasNegative: true, magnitudeRatio: 3 } })),
+      chartTemplates: vi.fn(async () => ({ templates: [
+        { templateId: 'trend', name: '趋势折线', available: false, reason: '没有期间' },
+        { templateId: 'ranked', name: '排序条形图', available: true, recommended: true, recommendationReason: '类别较多' },
+      ] })),
+      startChartTemplateEdit: vi.fn(async () => ({ editId: 'cedit-new12345' })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 1 })
+    try {
+      controller.open(mount())
+      await vi.waitFor(() => expect(document.querySelector('.ask-ai-start-item[data-kind="oneclick"]')).not.toBeNull())
+      const start = document.querySelector<HTMLElement>('.ask-ai-start')!
+      const aiItems = [...start.querySelectorAll<HTMLButtonElement>('.ask-ai-start-item[data-kind="ai"]')]
+      expect(aiItems[0]!.textContent).toContain('左右坐标轴')
+      // 只有 4 个类别：不推荐“前 5 组”。
+      expect([...document.querySelectorAll('.chart-ai-quick button')].map(item => item.textContent).join()).not.toContain('前 5 组')
+      // 含负值：构成图提示可能不适合，但不禁用；单位不同：双轴不提示。
+      const pie = document.querySelector<HTMLButtonElement>('[data-preset="pie"]')!
+      expect(pie.disabled).toBe(false)
+      expect(pie.dataset.caution).toBe('true')
+      expect(pie.textContent).toContain('含负值')
+      expect(document.querySelector<HTMLButtonElement>('[data-preset="dual"]')!.dataset.caution).toBeUndefined()
+
+      aiItems[0]!.click()
+      expect(document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value).toContain('左右坐标轴')
+      expect(api.startChartAiEdit).not.toHaveBeenCalled()
+      document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = ''
+      document.querySelector('#chart-ai-instruction')!.dispatchEvent(new Event('input'))
+
+      const featured = start.querySelector<HTMLButtonElement>('.ask-ai-start-item[data-kind="oneclick"]')!
+      expect(featured.textContent).toContain('排序条形图')
+      featured.click()
+      await vi.waitFor(() => expect(api.startChartTemplateEdit).toHaveBeenCalledWith('chart_001', expect.objectContaining({ templateId: 'ranked' })))
+      expect(api.startChartAiEdit).not.toHaveBeenCalled()
+    } finally { controller.dispose() }
+  })
+
   it('将标准预设、模板和快捷指令集中到模态弹窗，点快捷指令后写入要求并关闭', async () => {
     const api = client({
       chartTemplates: vi.fn(async () => ({ templates: [
@@ -257,7 +298,7 @@ describe('模板选择与完整预览', () => {
       expect(dialog.hidden).toBe(false)
       expect(dialog.getAttribute('role')).toBe('dialog')
       expect(dialog.getAttribute('aria-modal')).toBe('true')
-      expect(dialog.querySelector('#chart-ai-standard-preset')).not.toBeNull()
+      expect(dialog.querySelector('[data-preset="pie"]')).not.toBeNull()
       expect(dialog.querySelector('.chart-ai-template')).not.toBeNull()
       expect(dialog.querySelector('.chart-ai-quick button')).not.toBeNull()
 
@@ -323,10 +364,7 @@ describe('模板选择与完整预览', () => {
       expect(checkbox.checked).toBe(false)
       expect(document.querySelector('#chart-ai-standard-reset-help')!.textContent).toContain('作图数据不变')
       checkbox.checked = reset
-      const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
-      select.value = 'pie'
-      select.dispatchEvent(new Event('change'))
-      ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+      ;(document.querySelector('[data-preset="pie"]') as HTMLButtonElement).click()
       await vi.waitFor(() => expect(api.startChartStandardEdit).toHaveBeenCalledTimes(1))
       const payload = vi.mocked(api.startChartStandardEdit).mock.calls[0]![1]
       expect(payload).toMatchObject({ standard: { standardForm: 'pie' }, previousEditId: 'cedit-old12345',
@@ -349,10 +387,7 @@ describe('模板选择与完整预览', () => {
       document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '保留蓝色并显示数值'
       document.querySelector('#chart-ai-instruction')!.dispatchEvent(new Event('input'))
       if (applyPreset) {
-        const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
-        select.value = 'donut'
-        select.dispatchEvent(new Event('change'))
-        ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+        ;(document.querySelector('[data-preset="donut"]') as HTMLButtonElement).click()
       }
       ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
       await vi.waitFor(() => expect(api.startChartAiEdit).toHaveBeenCalledTimes(1))
@@ -385,10 +420,7 @@ describe('模板选择与完整预览', () => {
       controller.open(mount())
       await vi.waitFor(() => expect(document.querySelector('#chart-ai-standard-reset')).not.toBeNull())
       document.querySelector<HTMLInputElement>('#chart-ai-standard-reset')!.checked = true
-      const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
-      select.value = 'pie'
-      select.dispatchEvent(new Event('change'))
-      ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+      ;(document.querySelector('[data-preset="pie"]') as HTMLButtonElement).click()
       expect(document.querySelector('#chart-ai-standard-help')!.textContent).toContain('底图身份不可读取')
       expect(api.startChartStandardEdit).not.toHaveBeenCalled()
       expect(api.startChartAiEdit).not.toHaveBeenCalled()
@@ -416,10 +448,7 @@ describe('模板选择与完整预览', () => {
         await vi.waitFor(() => expect(document.querySelector('.chart-ai-template')).not.toBeNull())
         ;(document.querySelector('.chart-ai-template') as HTMLButtonElement).click()
       } else if (route === 'standard') {
-        const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
-        select.value = 'pie'
-        select.dispatchEvent(new Event('change'))
-        ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+        ;(document.querySelector('[data-preset="pie"]') as HTMLButtonElement).click()
       } else {
         document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!.value = '调整颜色'
         document.querySelector("#chart-ai-instruction")?.dispatchEvent(new Event("input"))
@@ -560,11 +589,8 @@ describe('模板选择与完整预览', () => {
     })
     const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 60000 })
     controller.open(mount())
-    await vi.waitFor(() => expect(document.querySelector('#chart-ai-standard-preset')).not.toBeNull())
-    const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
-    select.value = 'donut'
-    select.dispatchEvent(new Event('change'))
-    ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(document.querySelector('[data-preset="donut"]')).not.toBeNull())
+    ;(document.querySelector('[data-preset="donut"]') as HTMLButtonElement).click()
     await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
     expect(api.startChartStandardEdit).toHaveBeenCalledWith('chart_001', expect.objectContaining({
       standard: { standardForm: 'donut' }, expectedSha256: 'a'.repeat(64), baseImagePath: 'reports/revision-1/original.png',
@@ -581,14 +607,9 @@ describe('模板选择与完整预览', () => {
     await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
     const text = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
     text.value = '收入用万元，蓝绿色'
-    const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
-    expect(select.options.length).toBe(STANDARD_CHART_PRESETS.length + 1)
-    select.value = 'dual'
-    select.dispatchEvent(new Event('change'))
-    ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
-    select.value = 'dual-stack'
-    select.dispatchEvent(new Event('change'))
-    ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+    expect(document.querySelectorAll('[data-preset]')).toHaveLength(STANDARD_CHART_PRESETS.length)
+    ;(document.querySelector('[data-preset="dual"]') as HTMLButtonElement).click()
+    ;(document.querySelector('[data-preset="dual-stack"]') as HTMLButtonElement).click()
     expect(text.value).toContain('收入用万元，蓝绿色')
     expect(text.value).toContain('正负分开累计')
     expect(text.value).not.toContain('根据已登记系列改成双坐标轴')
@@ -606,10 +627,7 @@ describe('模板选择与完整预览', () => {
     await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
     const text = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!
     text.value = '字'.repeat(2000)
-    const select = document.querySelector<HTMLSelectElement>('#chart-ai-standard-preset')!
-    select.value = 'boxplot'
-    select.dispatchEvent(new Event('change'))
-    ;(document.querySelector('[data-action="apply-standard"]') as HTMLButtonElement).click()
+    ;(document.querySelector('[data-preset="boxplot"]') as HTMLButtonElement).click()
     expect(text.value).toBe('字'.repeat(2000))
     expect(document.querySelector('#chart-ai-standard-help')!.textContent).toContain('不能超过2000字')
     controller.dispose()

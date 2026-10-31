@@ -3,6 +3,7 @@ import { TABLE_PROTOCOL_EDIT_META } from './protocol-plugin'
 import { buttonClasses } from './button'
 import { askAIPanel } from './ask-ai-panel'
 import { createAITemplateCard } from './ai-template-card'
+import { createStartSection, createSuggestionItem, tableProfile, tableSuggestions } from './ai-suggestions'
 import type { EditorTemplateInfo, ReportEditorClient, TableAIEditState } from './api'
 import { markdownSha256 } from './source-validation'
 import { formatElapsed } from './chart-ai-edit'
@@ -255,25 +256,42 @@ export function createTableAIEdit(options: {
         body().append(retryButton)
       }
     }
+    const suggestions = tableSuggestions(tableProfile(baseBody))
     const area = document.createElement('textarea')
     area.id = `table-ai-input${modal.idSuffix}`; area.maxLength = 2000; area.rows = 3
-    area.placeholder = '例如：按同比增幅从高到低排列并标注低于100%的项目'
+    area.placeholder = `例如：${suggestions[0] ?? '按同比增幅从高到低排列并标注低于100%的项目'}`
     area.value = instructionDraft
+    const fill = (command: string) => {
+      const merged = area.value.trim() ? `${area.value.trim()}；${command}` : command
+      area.value = merged.slice(0, 2000)
+      area.dispatchEvent(new Event('input'))
+      area.focus()
+    }
+    // 全部模板（一键）折叠在首屏推荐下方；推荐区已给出最匹配的一项。
     const templateDetails = document.createElement('details'); templateDetails.className = 'chart-ai-standard'
-    const summary = document.createElement('summary'); summary.textContent = '模板与快捷调整'
+    const summary = document.createElement('summary'); summary.textContent = '全部模板（一键，立即出预览）'
     const templateRoot = document.createElement('div'); templateRoot.className = 'table-ai-templates'; templateDetails.append(summary, templateRoot)
     const skeleton = document.createElement('div'); skeleton.className = 'ai-template-skeleton'; skeleton.setAttribute('aria-hidden', 'true')
     skeleton.append(document.createElement('span'), document.createElement('span')); templateRoot.append(skeleton)
-    const label = document.createElement('label'); label.htmlFor = area.id; label.textContent = retainReview ? '继续调整新表' : '改表要求'
+    const start = createStartSection({ label: '查看全部模板', action: 'show-table-templates', onClick: () => {
+      templateDetails.open = true
+      templateDetails.scrollIntoView?.({ block: 'nearest' })
+      templateRoot.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus()
+    } })
+    const startTemplate = document.createElement('div'); startTemplate.className = 'ask-ai-start-slot'
+    start.list.append(startTemplate)
+    for (const command of suggestions.slice(0, 3)) start.list.append(createSuggestionItem({ kind: 'ai', title: command, onClick: () => fill(command) }))
+    const label = document.createElement('label'); label.htmlFor = area.id; label.textContent = retainReview ? '继续调整新表' : '描述你的修改'
     const form = document.createElement('div'); form.className = 'ask-ai-input-form'
+    if (!retainReview) body().append(start.section)
     body().append(templateDetails)
     form.append(label, area)
     const actions = document.createElement('div'); actions.className = 'chart-ai-actions'
-    const submit = button('生成改表', 'primary', () => { const instruction = area.value.trim(); if (instruction) void runEdit(tableId, targetTableId, instruction, baseBody, previousEditId) })
+    const submit = button('让 AI 修改', 'primary', () => { const instruction = area.value.trim(); if (instruction) void runEdit(tableId, targetTableId, instruction, baseBody, previousEditId) })
     retryButton?.addEventListener('click', () => { if (!submit.disabled) submit.click() })
     const count = document.createElement('span'); count.className = 'chart-ai-hint'
     actions.append(submit, count); form.append(actions)
-    const hint = document.createElement('p'); hint.className = 'chart-ai-hint'; hint.textContent = 'Ctrl / ⌘ + Enter 发送 · 生成后可逐格查看来源'
+    const hint = document.createElement('p'); hint.className = 'chart-ai-hint'; hint.textContent = 'Ctrl / ⌘ + Enter 发送 · 只使用已登记数据，生成后可逐格查看来源'
     form.append(hint)
     modal.mountComposer(form)
     const syncInput = () => {
@@ -294,10 +312,11 @@ export function createTableAIEdit(options: {
       skeleton.remove()
       if (disposed || owner !== generation || !area.isConnected) return
       const ordered = [...templates.templates].sort((a, b) => Number(b.recommended ?? false) - Number(a.recommended ?? false) || Number(b.available) - Number(a.available))
-      ordered.forEach(item => {
-        const node = createAITemplateCard(item, 'table', () => void runEdit(tableId, targetTableId, `套用模板：${item.name}`, baseBody, previousEditId, item.templateId))
-        templateRoot.append(node)
-      })
+      const applyTemplate = (item: EditorTemplateInfo) => void runEdit(tableId, targetTableId, `套用模板：${item.name}`, baseBody, previousEditId, item.templateId)
+      ordered.forEach(item => templateRoot.append(createAITemplateCard(item, 'table', () => applyTemplate(item))))
+      const featured = ordered.find(item => item.available)
+      if (featured) startTemplate.replaceWith(createSuggestionItem({ kind: 'oneclick', title: featured.name,
+        detail: featured.recommended ? (featured.recommendationReason || '与当前数据最匹配') : '预制模板', onClick: () => applyTemplate(featured) }))
       if (!templates.templates.length) {
         if (templateLoadFailed) {
           const loadNote = document.createElement('p'); loadNote.className = 'chart-ai-hint'; loadNote.textContent = '模板加载失败，可直接输入要求生成。'

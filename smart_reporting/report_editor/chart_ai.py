@@ -81,6 +81,7 @@ from .chart_templates import (
 from .service import ReportEditorContext, ReportEditorService
 from .standard_charts import (
     StandardChartEditParameters,
+    chart_data_profile,
     inherit_standard,
     standard_edit_plan,
     standard_plot_summary,
@@ -426,7 +427,21 @@ class ChartAIEditService:
         result["standardChartCapabilities"] = standard_chart_capabilities()
         if _resolved is not None:
             result.update(baseImagePath=_resolved[1].path, expectedSha256=_resolved[1].sha256)
+            if (profile := await self._data_profile(_resolved)) is not None:
+                result["dataProfile"] = profile
         return result
+
+    async def _data_profile(self, resolved: tuple[ReportEditorContext, Any, Any, Any]) -> dict[str, Any] | None:
+        """推荐操作用的数据概况；读取或核验失败只省略概况，不改变可用性判定。"""
+
+        context, _chart, trace, index = resolved
+        try:
+            workspace = self.editor.workspace.workspace(context.scope["threadId"])
+            plot_files, _entries = await self._materialize_inputs(context, trace, workspace, index)
+        except Exception as error:
+            logger.info("report_editor_chart_data_profile_unavailable error={}", type(error).__name__)
+            return None
+        return chart_data_profile(plot_files)
 
     def _model_unavailable_reason(self) -> str | None:
         if self.planner is None:

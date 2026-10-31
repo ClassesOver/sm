@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 from copy import deepcopy
 from typing import Any, Literal, cast
 
@@ -130,6 +131,56 @@ def standard_plot_summary(plot_files):
         budget -= size
         result.append(summary)
     return result
+
+
+_PERIOD_LABEL = re.compile(r"^\d{4}(?:[-/年]\d{1,2}(?:月)?|[ -]?Q[1-4]|年)")
+
+
+def chart_data_profile(plot_files):
+    """供编辑器推荐操作的粗粒度数据概况；只描述已核验字节，不作为作图或核验依据。
+
+    以第一份作图输入为主表：首个文本列视为类别，数值列视为度量。任何结构异常返回 None，
+    前端据此退回通用推荐。
+    """
+    if not plot_files:
+        return None
+    try:
+        document = json.loads(plot_files[0].content)
+        columns, rows = document.get("columns"), document.get("rows")
+        metadata = document.get("columnMeta") or {}
+        if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
+            return None
+        rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
+        text_columns, numeric_columns = [], []
+        for index, column in enumerate(columns):
+            values = [row[index] for row in rows if row[index] is not None]
+            if values and all(isinstance(value, str) for value in values):
+                text_columns.append(index)
+            elif values and all(_finite_number(value) for value in values):
+                numeric_columns.append(index)
+        categories = (list(dict.fromkeys(row[text_columns[0]] for row in rows if row[text_columns[0]] is not None))
+                      if text_columns else [])
+        numbers = [row[index] for row in rows for index in numeric_columns if row[index] is not None]
+        nonzero = [abs(value) for value in numbers if value]
+        units = {meta.get("unit") for column in (columns[index] for index in numeric_columns)
+                 if isinstance(meta := metadata.get(column), dict) and isinstance(meta.get("unit"), str)}
+        has_period = any(isinstance(metadata.get(columns[index]), dict) and metadata[columns[index]].get("periods")
+                         for index in numeric_columns) or bool(
+            categories and all(_PERIOD_LABEL.match(str(value)) for value in categories))
+        return {
+            "inputCount": len(plot_files),
+            "rowCount": len(rows),
+            "categoryCount": len(categories),
+            "textFieldCount": len(text_columns),
+            "numericFieldCount": len(numeric_columns),
+            "unitCount": len(units),
+            "hasPeriod": has_period,
+            "hasNegative": any(value < 0 for value in numbers),
+            # 非零绝对值最大/最小之比；用于提示断轴或对数，不代表业务口径。
+            "magnitudeRatio": round(max(nonzero) / min(nonzero), 2) if nonzero else None,
+        }
+    except (ValueError, TypeError, AttributeError, IndexError, KeyError):
+        return None
 
 
 def _finite_number(value):

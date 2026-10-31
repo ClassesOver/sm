@@ -5811,4 +5811,53 @@ button.ai-review-summary-item { padding-block: 3px; }
 .asset-ai-edit-button:hover { background: var(--crepe-color-selected); }
 .asset-ai-edit-button:focus-visible { outline: 3px solid var(--color-focus-soft); outline-offset: 2px; }
 
+.asset-ai-edit-button { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+/* 指向可 AI 编辑的图/表时的描边提示：独立浮层，不拦截指针。 */
+.asset-ai-outline { position: fixed; z-index: calc(var(--z-menu) - 1); border: 2px solid var(--color-select-border); border-radius: var(--radius-md); pointer-events: none; animation: motion-fade-in var(--motion-fast) ease backwards; }
+.asset-ai-outline[hidden] { display: none; }
+
+/* Ask AI 首屏推荐：一键（直接出预览）与 AI（先填入要求）两类，用徽标区分。 */
+.ask-ai-start { display: grid; gap: 10px; margin: 14px 0 4px; padding: 14px; border: 1px solid var(--color-border-soft); border-radius: var(--radius-lg); background: var(--color-surface); }
+.ask-ai-start > h3 { margin: 0; color: var(--color-ink); font-size: var(--font-size-md); }
+.ask-ai-start-hint { margin: 0; color: var(--color-ink-2); font-size: var(--font-size-sm); line-height: 1.5; }
+.ask-ai-start-list { display: grid; gap: 8px; }
+.ask-ai-start-slot:empty { display: none; }
+.ask-ai-start-item { display: flex; gap: 10px; align-items: flex-start; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--color-border-soft); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-ink); font: inherit; font-size: var(--font-size-sm); text-align: left; cursor: pointer; transition: border-color var(--motion-fast) var(--motion-ease-out), background var(--motion-fast) var(--motion-ease-out); }
+.ask-ai-start-item:hover:not(:disabled) { border-color: var(--color-select-border); background: var(--color-primary-soft); }
+.ask-ai-start-item:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.ask-ai-start-item:disabled { opacity: .55; cursor: default; }
+.ask-ai-start-item[data-kind="oneclick"] { border-color: var(--color-select-border); background: var(--color-primary-soft); }
+.ask-ai-start-badge { flex-shrink: 0; min-width: 34px; padding: 2px 6px; border-radius: 999px; background: var(--color-primary-soft); color: var(--color-primary); font-size: 12px; font-weight: 700; line-height: 1.5; text-align: center; }
+.ask-ai-start-item[data-kind="oneclick"] .ask-ai-start-badge { background: var(--color-primary); color: var(--color-surface); }
+.ask-ai-start-text { display: grid; gap: 2px; min-width: 0; }
+.ask-ai-start-text > strong { font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.ask-ai-start-detail { color: var(--color-ink-2); font-size: 12px; line-height: 1.45; }
+.ask-ai-start-more { justify-self: start; padding: 4px 0; border: 0; background: none; color: var(--color-primary); font: inherit; font-size: var(--font-size-sm); font-weight: 600; cursor: pointer; }
+.ask-ai-start-more:hover { text-decoration: underline; }
+.ask-ai-start-more:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
+/* 弹窗：上下两段——一键调整、让 AI 按场景修改；预设为卡片而非下拉框。 */
+.chart-ai-actions-oneclick, .chart-ai-actions-ai { grid-column: 1 / -1; display: grid; gap: 10px; }
+.chart-ai-actions-ai { padding-top: 14px; border-top: 1px solid var(--color-border-soft); }
+.chart-ai-actions-section > .chart-ai-hint { margin: -4px 0 0; line-height: 1.5; }
+.chart-ai-actions-modal .chart-ai-templates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.chart-ai-preset-group { display: grid; gap: 8px; }
+.chart-ai-preset-group > h4 { margin: 4px 0 0; color: var(--color-ink-2); font-size: var(--font-size-sm); font-weight: 600; }
+.chart-ai-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.chart-ai-preset { display: grid; gap: 3px; align-content: start; min-width: 0; min-height: 60px; padding: 9px 10px; border: 1px solid var(--color-border-soft); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-ink); font: inherit; font-size: var(--font-size-sm); text-align: left; cursor: pointer; transition: border-color var(--motion-fast) var(--motion-ease-out), background var(--motion-fast) var(--motion-ease-out); }
+.chart-ai-preset > strong { font-weight: 600; }
+.chart-ai-preset-detail { color: var(--color-ink-2); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.chart-ai-preset:hover:not(:disabled) { border-color: var(--color-select-border); background: var(--color-primary-soft); }
+.chart-ai-preset:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.chart-ai-preset:disabled { opacity: .55; cursor: default; }
+.chart-ai-preset[data-caution="true"] { border-style: dashed; }
+.chart-ai-preset[data-caution="true"] .chart-ai-preset-detail { color: var(--color-warning); }
+.chart-ai-advanced { color: var(--color-ink-2); font-size: var(--font-size-sm); }
+.chart-ai-advanced > summary { cursor: pointer; font-weight: 600; }
+.chart-ai-advanced > label, .chart-ai-advanced > p { margin: 8px 0 0; }
+@media (max-width: 640px) {
+  .chart-ai-presets, .chart-ai-actions-modal .chart-ai-templates { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ask-ai-start { padding: 12px; }
+}
+
 @media print { .asset-ai-actions, .ask-ai-panel, .ask-ai-launcher, .ask-ai-notifications { display: none !important; } }
