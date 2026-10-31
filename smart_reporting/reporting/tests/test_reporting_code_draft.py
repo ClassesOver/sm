@@ -124,15 +124,11 @@ async def test_repeated_draft_patch_failures_discard_draft(binding, runtime):  #
 
 
 def test_declared_output_write_example_uses_signed_paths():
-    declared = ("charts/a.png", "charts/b.png", "charts/b.plotly.json")
+    declared = ("charts/a.png", "charts/b.png")
 
     matplotlib_example = _declared_output_write_example("charts/a.png", declared)
-    plotly_example = _declared_output_write_example("charts/b.plotly.json", declared)
 
     assert "fig.savefig('charts/a.png'" in matplotlib_example
-    assert plotly_example == (
-        "fig.write_image('charts/b.png')\nfig.write_json('charts/b.plotly.json')"
-    )
 
 
 def test_candidate_instructions_do_not_route_materialized_charts_to_raw_facts():
@@ -239,26 +235,6 @@ async def test_discarded_draft_receipt_points_to_write_script(binding, runtime):
     assert result["details"]["nextTools"] == ["write_script"]
 
 
-def test_plotly_io_writers_take_path_from_second_argument():
-    import ast
-
-    from smart_reporting.reporting.code_agent.toolkit import (
-        _declared_output_write_paths,
-        _referenced_literal_paths,
-    )
-
-    tree = ast.parse(
-        "import plotly.io as pio\n"
-        'pio.write_image(fig, "charts/a.png")\n'
-        'pio.write_json(fig, "charts/a.plotly.json")\n'
-        'fig.write_image("charts/b.png")\n'
-    )
-    declared = frozenset({"charts/a.png", "charts/a.plotly.json", "charts/b.png"})
-
-    assert _declared_output_write_paths(tree, declared) == declared
-    assert _referenced_literal_paths(tree) == declared
-
-
 def test_referenced_literal_paths_accepts_first_argument_path_calls():
     import ast
 
@@ -283,20 +259,6 @@ async def test_formal_script_edit_failures_do_not_discard_draft(binding, runtime
     assert result["ok"] is False
     assert "draftDiscarded" not in result
     assert toolkit.rejected_draft_sha256 is not None
-
-
-def test_plotly_offline_plot_filename_is_recognized_as_write():
-    import ast
-
-    from smart_reporting.reporting.code_agent.toolkit import (
-        _declared_output_write_paths,
-        _referenced_literal_paths,
-    )
-
-    tree = ast.parse('import plotly\nplotly.offline.plot(fig, filename="charts/b.html")\n')
-
-    assert _declared_output_write_paths(tree, frozenset({"charts/b.html"})) == {"charts/b.html"}
-    assert _referenced_literal_paths(tree) == {"charts/b.html"}
 
 
 def test_deterministic_setup_failures_are_not_final_attempt_degradable():
@@ -352,35 +314,6 @@ async def test_run_script_precreates_declared_output_subdirectories(workspace): 
     result = await toolkit.run_script()
 
     assert result["ok"] is True
-
-
-@pytest.mark.anyio
-async def test_view_image_skips_plotly_interactive_spec(workspace):  # noqa: F811
-    from smart_reporting.reporting.code_agent.context import (
-        ReportingCodingTaskBinding,
-        ReportingCodingTaskContext,
-    )
-
-    context = ReportingCodingTaskContext(
-        task_id="task-1",
-        task_kind="visualization",
-        code_mode_session_id="code-task-1",
-        workspace_key=workspace.identity.workspace_key,
-        workspace_root=workspace.identity.root,
-        script_path="charts/chart.py",
-        authorized_read_paths=(),
-        authorized_write_paths=("charts/chart.py", "charts/a.png", "charts/a.plotly.json"),
-        declared_output_paths=("charts/a.png", "charts/a.plotly.json"),
-        max_source_bytes=128 * 1024,
-    )
-    toolkit = ReportingCodeModeToolkit(
-        ReportingCodingTaskBinding(context, workspace), object(), ReportingLspProcessManager()
-    )
-
-    # 交互规格不得送入图片检查：否则返回 report_chart_source_invalid 并诱导修复脚本。
-    result = await toolkit.view_image(paths=["charts/a.plotly.json"])
-
-    assert result["code"] == "report_code_visual_path_not_image"
 
 
 @pytest.mark.anyio

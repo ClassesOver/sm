@@ -2816,7 +2816,6 @@ class ReportEditorService:
                 sha256=record.image.sha256,
                 chart_id=page_chart_id,
                 dataset_ids=record.chart.dataset_ids,
-                renderer="matplotlib",
             )
             if record.image.path not in known_paths:
                 new_files.append(

@@ -37,7 +37,7 @@ async def test_missing_period_placeholder_is_not_an_edited_value(
         fact_refs=(SimpleNamespace(),) if has_reference else (),
     )
     index = SimpleNamespace(tables=(SimpleNamespace(
-        table_id="table-monthly", row_keys=(cell.row_key,), cells=(cell,), origin_markdown=None,
+        table_id="table-monthly", row_keys=(cell.row_key,), cells=(cell,), origin_markdown=None, row_label_column=True,
     ),))
     context = SimpleNamespace(scope={"threadId": "thread"}, markdown_path="report.md")
     tables, summary = await service._evaluate_tables(
