@@ -435,7 +435,6 @@ FAMILY_DISPATCH = '''    if form in {"pie", "donut", "radar", "funnel", "sankey"
 
 
 FAMILY_SCRIPT = '''def finish_family_layout(fig, ax, policy, title):
-    import textwrap
     style = policy["style"]
     fig.set_facecolor(style["background"])
     ax.set_facecolor(style["background"])
@@ -449,7 +448,7 @@ FAMILY_SCRIPT = '''def finish_family_layout(fig, ax, policy, title):
     if legend is not None:
         for text in legend.get_texts():
             text.set_fontsize(style["legend_font_size"])
-            text.set_text(textwrap.fill(text.get_text(), policy["label_wrap"]))
+            text.set_text(standard_wrap(text.get_text(), policy["label_wrap"]))
         if policy["legend_position"] == "outside":
             legend.set_bbox_to_anchor((1.01, 1))
             legend.set_loc("upper left")
@@ -487,7 +486,6 @@ def family_point_color(policy, field, label, index):
 
 def render_family_chart(payload, policy, form, title, output_path):
     import math
-    import textwrap
     import matplotlib.pyplot as plt
     from matplotlib.patches import Wedge, Rectangle, PathPatch
     from matplotlib.path import Path
@@ -528,7 +526,7 @@ def render_family_chart(payload, policy, form, title, output_path):
             ax.fill([*angles,angles[0]],[*values,values[0]],color=color,alpha=.08)
             for angle,radius,value,unit in zip(angles,values,raw,data["units"]):
                 ax.text(angle,radius,format_standard_number(value,precision)+unit,color=color,ha="center",va="bottom")
-        ax.set_xticks(angles,[textwrap.fill(f"{field}（{unit}）",policy["label_wrap"]) for field,unit in zip(data["fields"],data["units"])])
+        ax.set_xticks(angles,[standard_wrap(f"{field}（{unit}）",policy["label_wrap"]) for field,unit in zip(data["fields"],data["units"])])
         ax.set_ylim(0,1 if data["endpoints"] else max(1,max(v for row in data["coordinates"] for v in row))*1.1)
         ax.grid(False)
         if style["grid"] in {"x","both"}:
@@ -549,7 +547,7 @@ def render_family_chart(payload, policy, form, title, output_path):
             if data["ratio_base"]!="none":
                 text+=" · 阶段值比 "+("未定义（无前阶段）" if base is None else "未定义（分母为零）" if base==0 else f"{value/base*100:.2f}%")
             ax.text(maximum*.55 if maximum else .1,index,text,va="center",ha="left",color="#334155")
-        ax.set_yticks(range(len(labels)),[textwrap.fill(label,policy["label_wrap"]) for label in labels])
+        ax.set_yticks(range(len(labels)),[standard_wrap(label,policy["label_wrap"]) for label in labels])
         ax.set_ylim(len(labels)-.5,-.5)
         ax.set_xlim(-maximum*.65 if maximum else -1,maximum*1.5 if maximum else 1)
         ax.set_xticks([])
@@ -572,7 +570,7 @@ def render_family_chart(payload, policy, form, title, output_path):
         if not data["positive"]:
             ax.text(.02,.96,"无正流量：全部冻结边为零",transform=ax.transAxes,ha="left",va="top",fontsize=12)
             lines=[data["node_labels"][s]+" → "+data["node_labels"][t]+"：0"+data["unit"] for s,t,_ in edges]
-            ax.text(.02,.85,textwrap.fill("；".join(lines),max(30,int(policy["width"]*6))),transform=ax.transAxes,ha="left",va="top")
+            ax.text(.02,.85,standard_wrap("；".join(lines),max(30,int(policy["width"]*6))),transform=ax.transAxes,ha="left",va="top")
         else:
             source_slots={node:positions[node][1] for node in nodes}
             target_slots=source_slots.copy()
@@ -623,7 +621,7 @@ def render_family_chart(payload, policy, form, title, output_path):
             for index,node in enumerate(nodes):
                 x,y=positions[node]
                 height=heights[node]
-                label=textwrap.fill(data["node_labels"][node],policy["label_wrap"])
+                label=standard_wrap(data["node_labels"][node],policy["label_wrap"])
                 if height>0:
                     rectangle=Rectangle((x,y),.25,height,facecolor=family_point_color(policy,policy["series_names"][0],node,index),edgecolor="white",linewidth=.5)
                     rectangle.set_gid("node:"+node)
@@ -632,7 +630,7 @@ def render_family_chart(payload, policy, form, title, output_path):
                 else:
                     ax.text(x,y,label+"（零流量）",ha="left",va="center")
             if zero:
-                ax.text(.01,.01,textwrap.fill("零边："+"；".join(zero),max(30,int(policy["width"]*6))),transform=ax.transAxes,ha="left",va="bottom")
+                ax.text(.01,.01,standard_wrap("零边："+"；".join(zero),max(30,int(policy["width"]*6))),transform=ax.transAxes,ha="left",va="bottom")
             ax.autoscale_view()
             ax.margins(x=.08,y=.1)
         ax.axis("off")

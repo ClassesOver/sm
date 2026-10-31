@@ -1373,11 +1373,16 @@ class RuntimeAnalysisMixin:
                                             len(plan.charts), sum(item['route'] == 'standard' for item in routes),
                                             sum(item['route'] == 'coding' for item in routes))
                             except Exception as error:
-                                logger.warning('report_standard_visualization_fallback error={}', type(error).__name__)
                                 standard_diagnostic = (
                                     error.details.get('standardDiagnostic')
                                     if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
                                     else None
+                                )
+                                logger.warning(
+                                    'report_standard_visualization_fallback error={} code={} parameter={}',
+                                    type(error).__name__,
+                                    standard_diagnostic.get('code') if isinstance(standard_diagnostic, Mapping) else '-',
+                                    standard_diagnostic.get('parameter') if isinstance(standard_diagnostic, Mapping) else '-',
                                 )
                                 diagnostic = (standard_diagnostic if isinstance(standard_diagnostic, Mapping)
                                               else _visualization_failure_diagnostic(plan, error, script_path))

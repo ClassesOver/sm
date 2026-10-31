@@ -899,7 +899,6 @@ _LAYOUT += _CANVAS_SCRIPT + '''def place_standard_legends(fig, policy):
             legend.set_loc(best[1])
 
 def finish_standard_layout(fig, policy):
-    import textwrap
     from matplotlib.text import Annotation
     apply_standard_style(fig, policy)
     finish_standard_presentation(fig, policy)
@@ -919,7 +918,7 @@ def finish_standard_layout(fig, policy):
             is_category_axis = ((axis is ax.xaxis and policy.get("categorical_x", not policy["horizontal"])) or
                                 (axis is ax.yaxis and policy.get("categorical_y", policy["horizontal"])))
             if is_category_axis and any(len(text) > policy["label_wrap"] for text in texts):
-                setter(ticks, [textwrap.fill(text, width=policy["label_wrap"], break_long_words=True) for text in texts])
+                setter(ticks, [standard_wrap(text, policy["label_wrap"]) for text in texts])
             for tick in axis.get_ticklabels():
                 tick.set_fontsize(policy["tick_font_size"])
         legend = ax.get_legend()
