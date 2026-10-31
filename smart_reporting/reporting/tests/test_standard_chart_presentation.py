@@ -334,3 +334,25 @@ def test_manual_canvas_cannot_silently_clip_external_legend(render):
     plan.charts[0].standard_canvas = StandardChartCanvas(layout='manual', legendPosition='outside')
     with pytest.raises(ValueError, match='图例超出画布'):
         render(plan, inputs)
+
+
+@pytest.mark.parametrize('text,width,expected', [
+    ('神经外科一病区', 14, ['神经外科一病区']),
+    ('心血管内科（含CCU）住院收入', 14, ['心血管内科（含', 'CCU）住院收入']),
+    ('2025年1月门诊收入合计（万元）', 14, ['2025年1月门诊', '收入合计（万元）']),
+    ('骨科关节与运动医学中心', 6, ['骨科关节与运', '动医学中心']),
+    ('2025年1月门诊收入合计（万元）', 8, ['2025年', '1月门诊收入', '合计（万元）']),
+    ('甲：缺失\n乙：范围缺失未补零', 6, ['甲：缺失', '乙：范围缺', '失未补零']),
+])
+def test_standard_wrap_balances_lines_and_respects_cjk_punctuation(text, width, expected):
+    from smart_reporting.reporting.workflow.runtime.standard_chart_presentation import (
+        PRESENTATION_SCRIPT,
+    )
+
+    namespace = {}
+    exec(PRESENTATION_SCRIPT, namespace)
+    lines = namespace['standard_wrap'](text, width).split('\n')
+    assert lines == expected
+    # 只换行不改字：去掉换行后与原文逐字一致。
+    assert ''.join(lines) == text.replace('\n', '')
+    assert not any(line[-1] in '（([【《' for line in lines[:-1])

@@ -182,7 +182,38 @@ def prepare_standard_presentation(policy, document, original, label, names, labe
     return result
 
 
-PRESENTATION_SCRIPT = '''def format_standard_number(value, precision=2, show_sign=False):
+PRESENTATION_SCRIPT = '''def standard_wrap(text, width):
+    """按字符数均分换行：保留原有换行，不拆开连续字母数字及数字单位，行尾不留开括号、行首不放闭合标点。"""
+    import math
+    import re
+    width = max(1, int(width))
+    opening, closing = "（([【《“‘", "）)]】》”’，。、；：！？,.;:!?%"
+    wrapped = []
+    for paragraph in str(text).split("\\n"):
+        tokens = []
+        # 数字连同紧随的一个中文单位字（年、月、元等）不拆开。
+        for token in re.findall(r"\\d[\\d.,%]*[^\\x00-\\x7f（(【《“‘，。、；：！？]?|[A-Za-z0-9][A-Za-z0-9.,%:/_+\\-]*|\\s+|.",
+                                paragraph):
+            tokens.extend(token[i:i + width] for i in range(0, len(token), width))
+        if len(paragraph) <= width:
+            wrapped.append(paragraph)
+            continue
+        target = math.ceil(len(paragraph) / math.ceil(len(paragraph) / width))
+        lines = [""]
+        for token in tokens:
+            if lines[-1] and len(lines[-1]) + len(token.rstrip()) > target:
+                lines.append("")
+            lines[-1] += token
+        lines = [line.strip() for line in lines if line.strip()]
+        for index in range(len(lines) - 1):
+            while len(lines[index]) > 1 and lines[index][-1] in opening:
+                lines[index], lines[index + 1] = lines[index][:-1], lines[index][-1] + lines[index + 1]
+            while len(lines[index + 1]) > 1 and lines[index + 1][0] in closing:
+                lines[index], lines[index + 1] = lines[index] + lines[index + 1][0], lines[index + 1][1:]
+        wrapped.extend(lines)
+    return "\\n".join(wrapped)
+
+def format_standard_number(value, precision=2, show_sign=False):
     scientific = value != 0 and (abs(value) < .5 * 10 ** -precision or abs(value) >= 1e12)
     return format(value, ("+" if show_sign else "") + (f".{max(2, precision)}e" if scientific else f",.{precision}f"))
 
@@ -234,7 +265,6 @@ def standard_annotation(ax, text, xy, canvas, number, color=None, highlight=Fals
     return annotation
 
 def finish_standard_presentation(fig, canvas):
-    import textwrap
     presentation = canvas["presentation"]
     width, height = fig.get_size_inches()
     title_size = canvas["style"]["title_font_size"]
@@ -244,7 +274,7 @@ def finish_standard_presentation(fig, canvas):
         fig.axes[0].set_title("")
         fig.suptitle(heading)
     if fig._suptitle is not None:
-        heading = textwrap.fill(fig._suptitle.get_text(), max(12, int(width * 72 * .87 / title_size)))
+        heading = standard_wrap(fig._suptitle.get_text(), max(12, int(width * 72 * .87 / title_size)))
         fig._suptitle.set_text(heading)
         fig._suptitle.set_position((.065, .982))
         fig._suptitle.set_ha("left")
@@ -253,13 +283,13 @@ def finish_standard_presentation(fig, canvas):
         fig._suptitle.set_color("#1e293b")
         cursor -= len(heading.splitlines()) * title_size / 72 / height * 1.35 + .025
     if presentation["subtitle"]:
-        subtitle = textwrap.fill(presentation["subtitle"], max(16, int(width * 72 * .87 / 10)))
+        subtitle = standard_wrap(presentation["subtitle"], max(16, int(width * 72 * .87 / 10)))
         fig.text(.065, cursor, subtitle,
                  ha="left", va="top", fontsize=10, color="#64748b")
         cursor -= len(subtitle.splitlines()) * 10 / 72 / height * 1.5 + .025
     footer_height = .02
     if presentation["source_note"]:
-        source = textwrap.fill(presentation["source_note"], max(20, int(width * 72 * .87 / 8)))
+        source = standard_wrap(presentation["source_note"], max(20, int(width * 72 * .87 / 8)))
         fig.text(.065, .022, source,
                  ha="left", va="bottom", fontsize=8, color="#64748b")
         footer_height = .055 + len(source.splitlines()) * 8 / 72 / height * 1.4
