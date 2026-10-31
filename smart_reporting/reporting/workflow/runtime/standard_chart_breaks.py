@@ -10,7 +10,7 @@ def prepare_standard_break(chart, config, document, display):
     spec = getattr(chart, "standard_break", None)
     if spec is None:
         return
-    form, axes, policy = config[4], config[11], config[14]
+    form, axes, policy = config.form, config.axes_policy, config.policy
     if (
         form not in {"line", "bar", "barh", "stacked-bar", "stacked-area", "stacked-total"}
         or axes["mode"] != "single"
@@ -89,7 +89,7 @@ def prepare_standard_break(chart, config, document, display):
     if below or above:
         note += f"；整体范围外低于{below}、高于{above}项，仅裁切显示"
     columns, rows = document["columns"], document["rows"]
-    fields, category = config[6], config[7]
+    fields, category = config.value_columns, config.category_column
     for name in policy["series_names"]:
         if category:
             known = sum(

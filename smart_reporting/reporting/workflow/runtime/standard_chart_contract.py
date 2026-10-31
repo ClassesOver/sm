@@ -1,6 +1,6 @@
 """规划器与标准编译器共享的机器契约；业务描述不参与类型推断。"""
 
-from typing import Literal, get_args
+from typing import Literal, NamedTuple, get_args
 
 StandardChartForm = Literal[
     'line', 'bar', 'barh', 'stacked-bar', 'stacked-area', 'stacked-total',
@@ -45,3 +45,23 @@ def standard_chart_capabilities():
                        'encodingFields': ['xField', 'yField', 'valueField']},
         },
     }
+
+
+class StandardChartConfig(NamedTuple):
+    """编译期逐图配置；写入脚本时转为普通元组，字段顺序即脚本解包顺序。"""
+
+    input_path: str
+    digest: str
+    output_path: str
+    title: str
+    form: str
+    label_column: str | None
+    value_columns: list
+    category_column: str | None
+    unit: str | None
+    is_percent: bool | None
+    annotations: list
+    axes_policy: dict
+    metadata: list
+    total_field: str | None
+    policy: dict

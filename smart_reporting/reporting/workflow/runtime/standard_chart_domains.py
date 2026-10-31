@@ -18,7 +18,7 @@ def _values(document, index, factor, indexes=None):
 
 
 def _legacy_profiles(config, document, display):
-    if config[14].get("dual_stack"):
+    if config.policy.get("dual_stack"):
         return dual_stack_profiles(config, document)
     _, _, _, _, form, label, fields, category, _, _, _, axes, metadata, total, policy = config
     rows, columns = document["rows"], document["columns"]
@@ -98,7 +98,7 @@ def prepare_standard_domains(chart, config, document, display, *, profiles_overr
     domains = getattr(chart, "standard_domains", None)
     if domains is None:
         return
-    form, axes, policy = config[4], config[11], config[14]
+    form, axes, policy = config.form, config.axes_policy, config.policy
     mode = axes["mode"]
     if (
         form == "heatmap"
@@ -213,7 +213,7 @@ def prepare_standard_domains(chart, config, document, display, *, profiles_overr
         zoom_labels = set(policy["labels"][first : last + 1])
         local = {
             **document,
-            "rows": [row for row in rows if row[columns.index(config[5])] in zoom_labels],
+            "rows": [row for row in rows if row[columns.index(config.label_column)] in zoom_labels],
         }
         local_profiles = _legacy_profiles(config, local, display)
         bindings.append(

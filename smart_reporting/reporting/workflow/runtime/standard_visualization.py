@@ -20,7 +20,7 @@ from .phase_models import (
 from .standard_chart_alignment import align_chart_sources
 from .standard_chart_box_summary import prepare_box_summary, summary_statistics_script
 from .standard_chart_breaks import BREAK_DISPATCH, BREAK_SCRIPT, prepare_standard_break
-from .standard_chart_contract import resolve_standard_form
+from .standard_chart_contract import StandardChartConfig, resolve_standard_form
 from .standard_chart_domains import DOMAIN_SCRIPT, prepare_standard_domains
 from .standard_chart_dual_stack import DUAL_STACK_DISPATCH, DUAL_STACK_SCRIPT, prepare_dual_stack
 from .standard_chart_encoding import (
@@ -74,6 +74,16 @@ class _Unsupported(ValueError):
 
 def _reject(code, parameter, message, suggestion, *, details=None) -> NoReturn:
     raise _Unsupported(code, parameter, message, suggestion, details=details)
+
+
+def _patch_once(source: str, anchor: str, replacement: str) -> str:
+    """模板拼接锚点必须唯一命中；锚点漂移时转Coding并告警，不静默丢失绘制能力。"""
+    if source.count(anchor) != 1:
+        logger.error('report_standard_visualization_template_anchor_drift anchor={!r} count={}',
+                     anchor[:60], source.count(anchor))
+        _reject('standard_template_anchor_drift', 'standardTemplate', '标准模板拼接锚点未唯一命中。',
+                '属于模板实现缺陷；本图交由Coding生成，并修复模板锚点。')
+    return source.replace(anchor, replacement)
 
 
 def standard_visualization_preflight(
@@ -178,7 +188,7 @@ def _encoded_configuration(chart, document, original_document, form, label, sour
         policy = prepare_encoded_chart(chart, document, original_document, form, label, canvas, style, presentation, axes)
     except StandardChartEncodingError as error:
         _reject(error.code, error.parameter, str(error), '检查显式编码、登记单位、标签及缺失策略，不能填零或改变冻结值。')
-    return (source.path, source.sha256, chart.source_path, chart.title, form, label,
+    return StandardChartConfig(source.path, source.sha256, chart.source_path, chart.title, form, label,
             [], None, None, None, [], axes.model_dump(), [], None, policy)
 
 
@@ -187,7 +197,7 @@ def _statistical_configuration(chart, document, original, form, label, source, c
         policy = prepare_statistical_chart(chart, document, original, form, label, canvas, style, presentation, axes, selected)
     except StandardChartEncodingError as error:
         _reject(error.code, error.parameter, str(error), '保留贡献链或组内原始样本，检查登记单位、绝对值对账及缺失策略。')
-    return (source.path, source.sha256, chart.source_path, chart.title, form, label,
+    return StandardChartConfig(source.path, source.sha256, chart.source_path, chart.title, form, label,
             [], None, None, None, [], axes.model_dump(), [], None, policy)
 
 
@@ -197,7 +207,7 @@ def _standard_visualization_script(
 ) -> str | None:
     if inputs.fallback_chart_ids or not plan.charts:
         _reject('standard_input_unavailable', 'chartInputs', '图表缺少可用的物化输入或计划为空。', '为对应图补齐数据绑定，或只将该图交由Coding。')
-    configs: list[tuple[Any, ...]] = []
+    configs: list[StandardChartConfig] = []
     summary_profiles: dict[str, Any] = {}
     aligned = {}
     auxiliary = {}
@@ -233,7 +243,7 @@ def _standard_visualization_script(
         scope = (source.path, chart.source_path)
         document = json.loads(source.content)
         if not isinstance(document, dict):
-            return None
+            _reject('standard_input_not_object', 'chartInputs', '冻结输入不是表格对象。', '重新物化该图chart-input，不手工改写来源。')
         original_document = document
         selected = tuple(getattr(chart, 'standard_value_fields', ()))
         summary_spec = getattr(chart, 'standard_box_summary', None)
@@ -243,7 +253,7 @@ def _standard_visualization_script(
                     chart, document, entries, inputs.files, canvas, style, presentation, axes, selected)
             except StandardChartEncodingError as error:
                 _reject(error.code, error.parameter, str(error), '绑定冻结分位数/须和可选样本量/异常点来源，不补造原始样本。')
-            configs.append((source.path, source.sha256, chart.source_path, chart.title, form,
+            configs.append(StandardChartConfig(source.path, source.sha256, chart.source_path, chart.title, form,
                             summary_spec.group_field, [], None, None, None, [], axes.model_dump(), [], None, policy))
             continue
         if form == 'summary-bars':
@@ -251,14 +261,14 @@ def _standard_visualization_script(
             original_rows = document.get('rows', [])
             original_meta = document.get('columnMeta', {})
             if not isinstance(original_meta, dict):
-                return None
+                _reject('standard_metadata_invalid', 'columnMeta', '列元数据结构无效。', '从对应冻结事实重新物化元数据，不从标题猜测单位。')
             if (len(original_rows) != 1 or len(selected) < 2
                     or len(set(selected)) != len(selected) or not set(selected).issubset(original_columns)):
-                return None
+                _reject('standard_summary_bars_selection_invalid', 'standardValueFields', '单行总览需要恰好一行数据，并显式选择至少两个不重复的现有数值列。', '用standardValueFields选择同一行内的度量列；多行数据改用bar/barh。')
             selected_meta = [original_meta.get(column, {}) for column in selected]
             if (any(not valid_standard_metadata(meta) or not meta.get('unit') for meta in selected_meta)
                     or any(meta != selected_meta[0] for meta in selected_meta)):
-                return None
+                _reject('standard_summary_bars_units_incompatible', 'standardValueFields/columnMeta', '单行总览所选列的单位或百分比尺度缺失或不一致。', '只选择登记单位相同的度量列；不同量纲拆图或改用双轴。')
             document = {'columns': ['label', 'value'],
                         'rows': [[column, original_rows[0][original_columns.index(column)]] for column in selected],
                         'columnMeta': {'value': selected_meta[0]}}
@@ -309,7 +319,7 @@ def _standard_visualization_script(
                 canvas, style, presentation, axes, family_documents)
             if warnings is not None:
                 warnings.extend({'chartId': chart.chart_id, **item} for item in family_warnings)
-            configs.append((source.path, source.sha256, chart.source_path, chart.title, form,
+            configs.append(StandardChartConfig(source.path, source.sha256, chart.source_path, chart.title, form,
                             None, [], None, None, None, [], axes.model_dump(), [], None, policy))
             continue
         columns, rows = document['columns'], document['rows']
@@ -318,7 +328,7 @@ def _standard_visualization_script(
                 or len(set(columns)) != len(columns)
                 or not 1 <= len(rows) <= 480
                 or any(not isinstance(row, list) or len(row) != len(columns) for row in rows)):
-            return None
+            _reject('standard_table_shape_invalid', 'chartInputs', '转换后的表格列名、行宽或行数（1—480）不满足标准模板要求。', '检查视图转换输出的列与行；超量数据先显式汇总或选窗口。')
         explicit_label = getattr(chart, 'standard_label_field', None)
         encoding = getattr(chart, 'standard_encoding', None)
         distribution = getattr(chart, 'standard_distribution', None)
@@ -349,21 +359,21 @@ def _standard_visualization_script(
         if selected_labels:
             if (len(set(selected_labels)) != len(selected_labels)
                     or not set(selected_labels).issubset(row[label_index] for row in rows)):
-                return None
+                _reject('standard_labels_selection_invalid', 'standardLabels', '显示窗口标签重复或不存在于冻结数据。', '逐字使用冻结标签，不补齐缺失期间。')
             rows = [row for row in rows if row[label_index] in selected_labels]
             document = {**document, 'rows': rows}
             dependencies = aligned.get(scope, (None, [(source.path, source.sha256)]))[1]
             aligned[scope] = (document, dependencies)
         ordered = order_standard_rows(document, label, presentation.order)
         if ordered is None:
-            return None
+            _reject('standard_order_invalid', 'standardPresentation.order', '排序或截取参数无法绑定到冻结数据。', '排序字段须为已选数值列；limit不得丢失必要分组。')
         if ordered['rows'] != rows:
             document, rows = ordered, ordered['rows']
             dependencies = aligned.get(scope, (None, [(source.path, source.sha256)]))[1]
             aligned[scope] = (document, dependencies)
         labels = [row[label_index] for row in rows]
         if any(not isinstance(value, str) or not value for value in labels):
-            return None
+            _reject('standard_labels_invalid', 'standardLabelField', '标签列含空值或非文本值。', '选择全部为非空文本的冻结标签列，或先用month等转换规范化。')
         if form in {'waterfall', 'boxplot'}:
             configs.append(_statistical_configuration(chart, document, original_document, form, label,
                             source, canvas, style, presentation, axes, selected))
@@ -400,7 +410,7 @@ def _standard_visualization_script(
             _reject('standard_series_empty', 'standardValueFields', '选定系列全部缺失。', '提供有依据的数据或移除空系列，不补零。')
         metadata = document.get('columnMeta') or {}
         if not isinstance(metadata, dict):
-            return None
+            _reject('standard_metadata_invalid', 'columnMeta', '列元数据结构无效。', '从对应冻结事实重新物化元数据，不从标题猜测单位。')
         metas = [metadata.get(column, {}) for column in values]
         if any(not valid_standard_metadata(meta) for meta in metas):
             _reject('standard_metadata_invalid', 'columnMeta', '度量单位或百分比尺度元数据类型无效。', '从对应冻结事实重新物化元数据，不从标题猜测单位。')
@@ -409,11 +419,11 @@ def _standard_visualization_script(
         mixed = any(item.geometry != 'auto' for item in style.series)
         advanced = axes.mode != 'single' or axes.scale != 'linear' or mixed
         if mixed and form not in {'line', 'bar'} and not dual_stack:
-            return None
+            _reject('standard_series_geometry_unsupported', 'standardStyle.series.geometry', '逐系列柱/线混合仅支持line、bar或堆叠双轴。', '改用line/bar，或移除geometry设置。')
         if axes.panel_limit is not None and (axes.mode != 'panels' or form != 'barh'):
-            return None
+            _reject('standard_panel_limit_invalid', 'standardAxes.panelLimit', 'panelLimit仅适用于横向条形分面。', '与mode=panels和barh同时使用，或移除panelLimit。')
         if axes.right_display_unit and axes.mode != 'dual':
-            return None
+            _reject('standard_right_display_unit_invalid', 'standardAxes.rightDisplayUnit', '右轴显示单位仅适用于双轴。', '设置mode=dual，或移除rightDisplayUnit。')
         axis_units = []
         axis_factors = []
         for field, meta in zip(values, metas, strict=True):
@@ -436,15 +446,15 @@ def _standard_visualization_script(
                 displays[scope] = (float(scale), display_unit)
         if not advanced and axes.left_display_unit:
             if display_unit:
-                return None
+                _reject('standard_display_unit_conflict', 'standardDisplayUnit/standardAxes.leftDisplayUnit', '单轴图同时声明了两种显示单位。', '仅保留standardDisplayUnit或leftDisplayUnit之一。')
             if len(set(axis_factors)) != 1 or len(set(axis_units)) != 1:
-                return None
+                _reject('standard_unit_conversion_invalid', 'standardAxes.leftDisplayUnit', '所选系列无法统一换算到左轴显示单位。', '仅选择同量纲度量；单位未知时保留原值。')
             displays[scope] = (axis_factors[0], axes.left_display_unit)
         auxiliary_fields = tuple(getattr(chart, 'standard_label_fields', ()))
         if auxiliary_fields:
             if (advanced and not dual_stack or len(auxiliary_fields) != len(set(auxiliary_fields))
                     or not set(auxiliary_fields).issubset(columns)):
-                return None
+                _reject('standard_label_fields_invalid', 'standardLabelFields', '辅助标注列重复、不存在，或与高级轴组合。', '最多3个不重复的同表数值列；高级轴（堆叠双轴除外）暂不支持辅助列。')
             for field in auxiliary_fields:
                 meta = metadata.get(field, {})
                 if not valid_standard_metadata(meta) or not meta.get('unit') or any(
@@ -452,23 +462,23 @@ def _standard_visualization_script(
                     or isinstance(row[columns.index(field)], bool)
                     or not math.isfinite(row[columns.index(field)]) for row in rows
                 ):
-                    return None
+                    _reject('standard_label_fields_invalid', 'standardLabelFields', '辅助标注列缺少登记单位或含非有限数值。', '选择单位明确且数值完整的冻结列，不补造。')
             auxiliary[scope] = auxiliary_fields
         right = tuple(axes.right_fields)
         if (axes.mode != 'dual' and right) or (axes.mode != 'zoom' and (axes.zoom_start or axes.zoom_end)):
-            return None
+            _reject('standard_axes_mode_conflict', 'standardAxes', 'rightFields仅用于dual，zoomStart/zoomEnd仅用于zoom。', '设置匹配的mode，或移除不适用的轴参数。')
         if advanced:
             if axes.zero_baseline and axes.scale == 'log':
-                return None
+                _reject('standard_axes_mode_conflict', 'standardAxes.zeroBaseline/scale', '对数轴不能强制零基线。', '对数轴移除zeroBaseline，或改用线性轴。')
             if (category or form not in {'line', 'bar', 'barh'} and not dual_stack
                     or form == 'barh' and axes.mode != 'panels'
                     or any(not meta.get('unit') for meta in metas)):
-                return None
+                _reject('standard_advanced_axes_unsupported', 'standardAxes', '高级轴仅支持单位明确的单来源宽表line/bar（barh仅分面）。', '长表先pivot为宽表；补齐登记单位；其他组合交由Coding。')
             if axes.mode == 'dual' and (
                 not right or len(right) != len(set(right))
                 or not set(right) < set(values)
             ):
-                return None
+                _reject('standard_dual_axis_fields_invalid', 'standardAxes.rightFields', '双轴右侧字段为空、重复，或未给左轴留下系列。', 'rightFields选择已选度量的非空真子集。')
             groups = ([list(range(len(values)))] if axes.mode in {'single', 'zoom'} else
                       [[index for index, value in enumerate(values) if value not in right],
                        [values.index(value) for value in right]] if axes.mode == 'dual' else
@@ -486,7 +496,7 @@ def _standard_visualization_script(
                 axes.zoom_start not in labels or axes.zoom_end not in labels
                 or labels.index(axes.zoom_start) > labels.index(axes.zoom_end)
             ):
-                return None
+                _reject('standard_zoom_range_invalid', 'standardAxes.zoomStart/zoomEnd', '局部放大区间不存在于冻结标签或顺序倒置。', '逐字引用冻结标签，起点不晚于终点。')
         # 同轴系列必须有明确且完全一致的单位、比例显示尺度；不推断换算。
         if not advanced and len(values) > 1 and (
             any(not meta.get('unit') for meta in metas)
@@ -504,10 +514,10 @@ def _standard_visualization_script(
             categories = list(dict.fromkeys(row[category_index] for row in rows))
             if (any(not value for value in categories) or len(categories) > 8
                     or len(set(keys)) != len(keys)):
-                return None
+                _reject('standard_long_table_categories_invalid', 'standardView', '长表分类为空、超过8类，或期间×分类重复。', '显式group汇总或筛选分类，不静默去重。')
             # 长表缺失组合只允许折线断点；构成图和柱图不补零。
             if form != 'line' and len(keys) != len(set(labels)) * len(categories):
-                return None
+                _reject('standard_long_table_incomplete', 'standardView', '长表缺少期间×分类组合，仅折线允许断点。', '改用line，或补齐有依据的数据；不补零。')
         elif len(set(labels)) != len(labels):
             _reject('standard_labels_duplicate', 'standardLabelField/standardView', '标签重复且没有可用的长表分类。', '显式用group汇总或pivot透视；不要任意丢弃重复行。')
         if len(set(labels)) > 60:
@@ -525,17 +535,17 @@ def _standard_visualization_script(
                     [math.fsum(row[columns.index(column)] for column in values if column != total_field) for row in rows]
                 )
             except OverflowError:
-                return None
+                _reject('standard_stack_total_invalid', 'standardValueFields', '堆叠合计溢出。', '检查数值量级与单位，必要时显式换算显示单位。')
             if any(not math.isfinite(value) for value in totals_to_check):
-                return None
+                _reject('standard_stack_total_invalid', 'standardValueFields', '堆叠合计不是有限值。', '检查数值量级与单位，必要时显式换算显示单位。')
         if total_field is not None and not dual_stack:
             if form != 'stacked-total' or category or total_field not in values or len(values) < 2:
-                return None
+                _reject('standard_total_field_invalid', 'standardTotalField', '独立总额仅用于宽表stacked-total，且须为已选列并至少有一个分项。', '将总额列加入standardValueFields并选择stacked-total。')
             if any(not math.isclose(
                 math.fsum(row[columns.index(column)] for column in values if column != total_field),
                 row[columns.index(total_field)], rel_tol=1e-12, abs_tol=1e-9,
             ) for row in rows):
-                return None
+                _reject('standard_total_reconciliation_failed', 'standardTotalField', '独立总额与分项之和不闭合。', '检查分项是否完整；不闭合时移除standardTotalField改用服务端求和。')
         annotation_names = categories if category else values
         annotation_labels = list(dict.fromkeys(labels))
         annotations: list[tuple[str, int | None, int | None, int | None]] = []
@@ -544,39 +554,39 @@ def _standard_visualization_script(
             kind = specification.kind
             if kind == 'range':
                 if axes.mode == 'panels' and form == 'barh':
-                    return None
+                    _reject('standard_annotation_binding_invalid', 'standardAnnotations', '横向分面不支持区间高亮。', '移除range标注或改用其他轴模式。')
                 if (specification.series is not None or specification.label not in annotation_labels
                         or specification.end_label not in annotation_labels):
-                    return None
+                    _reject('standard_annotation_binding_invalid', 'standardAnnotations', '区间标注不能指定series，且起止标签须存在于冻结标签。', '逐字引用冻结标签。')
                 first = annotation_labels.index(specification.label)
                 last = annotation_labels.index(specification.end_label)
                 if first > last:
-                    return None
+                    _reject('standard_annotation_binding_invalid', 'standardAnnotations', '区间标注起点晚于终点。', '按标签顺序声明label与endLabel。')
                 annotations.append((kind, None, first, last))
                 continue
             name = specification.series
             if name is None and len(annotation_names) == 1:
                 name = annotation_names[0]
             if name not in annotation_names or specification.end_label is not None:
-                return None
+                _reject('standard_annotation_binding_invalid', 'standardAnnotations', '标注系列不存在，或非区间标注声明了endLabel。', 'series引用已选度量或长表分类；仅range使用endLabel。')
             if kind in {'point', 'reference'}:
                 if specification.label not in annotation_labels:
-                    return None
+                    _reject('standard_annotation_binding_invalid', 'standardAnnotations', '重点/参考标注的标签不存在于冻结标签。', '逐字引用冻结标签。')
                 first = annotation_labels.index(specification.label)
                 if not category and rows[first][columns.index(name)] is None:
-                    return None
+                    _reject('standard_annotation_binding_invalid', 'standardAnnotations', '重点/参考标注所在点为缺失值。', '选择有冻结数值的点，不补零。')
                 if axes.mode == 'panels' and form == 'barh' and axes.panel_limit is not None:
                     visible = sorted((i for i in range(len(rows)) if rows[i][columns.index(name)] is not None),
                                      key=lambda i: rows[i][columns.index(name)],
                                      reverse=axes.panel_descending)[:axes.panel_limit]
                     if first not in visible:
-                        return None
+                        _reject('standard_annotation_binding_invalid', 'standardAnnotations', '重点/参考标注不在分面TopN可见范围内。', '调整panelLimit或改选可见标签。')
                 if category and (specification.label, name) not in keys:
-                    return None
+                    _reject('standard_annotation_binding_invalid', 'standardAnnotations', '重点/参考标注的期间×分类组合不存在。', '选择存在的长表组合。')
             elif kind in {'values', 'peak', 'trough'} and specification.label is None:
                 first = None
             else:
-                return None
+                _reject('standard_annotation_binding_invalid', 'standardAnnotations', '该标注类型与label组合不受支持。', 'values/peak/trough不带label；point/reference需要label；range需要label和endLabel。')
             annotations.append((kind, annotation_names.index(name), first, None))
         annotation_count = (min(len(annotation_labels), axes.panel_limit)
                             if axes.mode == 'panels' and form == 'barh' and axes.panel_limit else len(annotation_labels))
@@ -584,11 +594,11 @@ def _standard_visualization_script(
                for item in annotations) > 60:
             _reject('standard_annotation_capacity_exceeded', 'standardAnnotations', '可见标注超过60项预算。', '保留重点/峰谷标注，或显式选择TopN、窗口、分图。')
         if any(item.series not in annotation_names for item in style.series):
-            return None
+            _reject('standard_style_series_unknown', 'standardStyle.series', '样式引用了不存在的系列。', 'series名称须与已选度量或长表分类一致。')
         if any(item.series not in annotation_names or item.label not in annotation_labels for item in style.points):
-            return None
+            _reject('standard_style_points_invalid', 'standardStyle.points', '点样式引用的系列或标签不存在。', '逐字引用已选系列与冻结标签。')
         if category and any((item.label, item.series) not in keys for item in style.points):
-            return None
+            _reject('standard_style_points_invalid', 'standardStyle.points', '点样式的期间×分类组合不存在。', '选择存在的长表组合。')
         prepared = prepare_standard_presentation(presentation, document, original_document,
                                                  label, annotation_names, annotation_labels, category)
         if prepared is None:
@@ -616,7 +626,7 @@ def _standard_visualization_script(
                 prepared['source_note'] = '\n'.join([*([prepared['source_note']] if prepared['source_note'] else []), *notes])
         except StandardChartEncodingError as error:
             _reject(error.code, error.parameter, str(error), '仅绑定同单位、同期间的冻结上下界；不自动估计范围。')
-        config = (source.path, source.sha256, chart.source_path, chart.title,
+        config = StandardChartConfig(source.path, source.sha256, chart.source_path, chart.title,
                         form, label, values, category, metas[0].get('unit'),
                         metas[0].get('isPercent'), annotations,
                         axes.model_dump(), metas, total_field, canvas_policy)
@@ -628,8 +638,8 @@ def _standard_visualization_script(
     for chart, config in zip(plan.charts, configs, strict=True):
         if getattr(chart, 'standard_domains', None) is None and getattr(chart, 'standard_break', None) is None:
             continue
-        path = config[0]
-        scope = (path, config[2])
+        path = config.input_path
+        scope = (path, config.output_path)
         document = (aligned[scope][0] if scope in aligned else
                     json.loads(next(source.content for source in inputs.files if source.path == path)))
         try:
@@ -638,44 +648,44 @@ def _standard_visualization_script(
                                      profiles_override=summary_profiles.get(chart.chart_id))
         except StandardChartEncodingError as error:
             _reject(error.code, error.parameter, str(error), '范围与刻度使用显示单位；保留所有数据或明确声明并说明显示裁切。')
-    has_statistics = any(config[4] in {'waterfall', 'boxplot'} for config in configs)
-    has_families = any(config[4] in FAMILY_FORMS for config in configs)
-    if has_families and all(config[4] in FAMILY_FORMS for config in configs):
+    has_statistics = any(config.form in {'waterfall', 'boxplot'} for config in configs)
+    has_families = any(config.form in FAMILY_FORMS for config in configs)
+    if has_families and all(config.form in FAMILY_FORMS for config in configs):
         # 纯图族只拼接实际消费的原有helper；读取/SHA循环复用_BODY原文，身份策略不变。
-        return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned) + '\n'
+        return ('CONFIGS = ' + repr([tuple(config) for config in configs]) + '\nALIGNED = ' + repr(aligned) + '\n'
                 + PRESENTATION_SCRIPT + _CANVAS_SCRIPT + FAMILY_SCRIPT + _FAMILY_BODY)
     statistics_script = summary_statistics_script(STATISTICS_SCRIPT) if summary_profiles else STATISTICS_SCRIPT
-    has_domains = any('domains' in config[14] for config in configs)
-    has_breaks = any('broken_axis' in config[14] for config in configs)
-    has_dual_stacks = any('dual_stack' in config[14] for config in configs)
-    has_horizontal_breaks = any('broken_axis' in config[14] and config[4] == 'barh' for config in configs)
+    has_domains = any('domains' in config.policy for config in configs)
+    has_breaks = any('broken_axis' in config.policy for config in configs)
+    has_dual_stacks = any('dual_stack' in config.policy for config in configs)
+    has_horizontal_breaks = any('broken_axis' in config.policy and config.form == 'barh' for config in configs)
     break_script = BREAK_SCRIPT
     break_dispatch = BREAK_DISPATCH
     if has_horizontal_breaks:
-        break_script = break_script.replace('    spec=policy["broken_axis"]\n',
-            '    if policy["horizontal"]:\n        return layout_horizontal_standard_break(fig,policy)\n    spec=policy["broken_axis"]\n', 1)
+        break_script = _patch_once(break_script, '    spec=policy["broken_axis"]\n',
+            '    if policy["horizontal"]:\n        return layout_horizontal_standard_break(fig,policy)\n    spec=policy["broken_axis"]\n')
         break_script += HORIZONTAL_BREAK_SCRIPT
-        break_dispatch = break_dispatch.replace('        render_broken_chart(',
+        break_dispatch = _patch_once(break_dispatch, '        render_broken_chart(',
             '        (render_horizontal_broken_chart if form == "barh" else render_broken_chart)(')
     layout = _LAYOUT
     if has_domains or has_breaks:
-        layout = layout.replace('if isinstance(text, Annotation)]', 'if isinstance(text, Annotation) and text.get_visible()]')
+        layout = _patch_once(layout, 'if isinstance(text, Annotation)]', 'if isinstance(text, Annotation) and text.get_visible()]')
     if has_domains:
-        layout = layout.replace('    finish_standard_presentation(fig, policy)',
+        layout = _patch_once(layout, '    finish_standard_presentation(fig, policy)',
                                 '    apply_standard_domains(fig, policy)\n    finish_standard_presentation(fig, policy)')
     if has_breaks:
-        layout = layout.replace('    if policy["layout"] == "tight":',
+        layout = _patch_once(layout, '    if policy["layout"] == "tight":',
                                 '    if policy.get("broken_axis"):\n        layout_standard_break(fig, policy)\n    elif policy["layout"] == "tight":')
-    body = _BODY.replace('__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else '')
+    body = _patch_once(_BODY, '__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else '')
     if has_families:
-        body = body.replace('    columns = payload["columns"]\n', '    columns = payload["columns"]\n' + FAMILY_DISPATCH)
+        body = _patch_once(body, '    columns = payload["columns"]\n', '    columns = payload["columns"]\n' + FAMILY_DISPATCH)
     if has_dual_stacks:
         boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
-        body = body.replace(boundary, DUAL_STACK_DISPATCH + boundary)
+        body = _patch_once(body, boundary, DUAL_STACK_DISPATCH + boundary)
     if has_breaks:
         boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
-        body = body.replace(boundary, break_dispatch + boundary)
-    return ('CONFIGS = ' + repr(configs) + '\nALIGNED = ' + repr(aligned)
+        body = _patch_once(body, boundary, break_dispatch + boundary)
+    return ('CONFIGS = ' + repr([tuple(config) for config in configs]) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
             + '\n' + PRESENTATION_SCRIPT + layout + ENCODING_SCRIPT + _ADVANCED
             + (FAMILY_SCRIPT if has_families else '')
