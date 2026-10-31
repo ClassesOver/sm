@@ -2342,6 +2342,35 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
 
     _report_completion_template: str | None = None
 
+    def get_function_calls_to_run(self, assistant_message, messages, functions=None):
+        from .workflow.controller import REPORT_REQUEST_PROMPT_STATE_KEY
+
+        calls = super().get_function_calls_to_run(assistant_message, messages, functions)
+        for call in calls:
+            if call.function.name != "report_workflow_start":
+                continue
+            context = call.function._run_context
+            prompt = next((item.content for item in reversed(messages)
+                           if item.role == "user" and isinstance(item.content, str) and item.content.strip()), None)
+            if context is not None and prompt is not None:
+                if context.session_state is None:
+                    context.session_state = {}
+                context.session_state[REPORT_REQUEST_PROMPT_STATE_KEY] = {"runId": context.run_id, "prompt": prompt}
+            # Agno 在暂停前由调用参数预填；pre_hook 在用户确认后才执行。
+            if call.arguments is None:
+                call.arguments = {}
+            for name, value in {"period_start": None, "period_end": None, "metrics": [],
+                                "report_length": "简要版", "analysis_dimensions": []}.items():
+                call.arguments.setdefault(name, value)
+            # 将用户已有的业务维度保留为可选项，避免原生多选框丢弃自定义维度。
+            for field in call.function.user_input_schema or []:
+                if field.name == "analysis_dimensions":
+                    choices = field.schema["items"]["enum"]
+                    field.schema["items"]["enum"] = list(dict.fromkeys([
+                        *choices, *call.arguments["analysis_dimensions"],
+                    ]))
+        return calls
+
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         return _forced_review_response(
             messages, completion_template=self._report_completion_template
@@ -2960,9 +2989,11 @@ def create_report_agent(
             "checkpoint": None,
             "instructions": [
                 "普通聊天问题直接回答，不调用报表工具；只有用户明确要求生成、分析或导出报表时，才调用"
-                "无参数的 report_workflow_start。该工具会读取受信服务端 Envelope，或把当前"
+                "report_workflow_start，按对话上下文自动预填期间、中文指标、篇幅和分析维度，"
+                "最新要求优先，未明确的日期留空；未指定篇幅用简要版。由原生表单收集确认，"
+                "不要求用户重复输入。该工具会读取受信服务端 Envelope，或把当前"
                 "最后一条用户消息按 CLI 相同规则解析为自然语言或 ReportRequestEnvelope JSON，再交给 "
-                "Workflow 首步。不得自行解析期间、改写目标、取数、执行 Reporting "
+                "Workflow 首步。不得改写用户原文、取数、执行 Reporting "
                 "或生成报告。Workflow 返回 request 阶段 paused 时，向用户"
                 "展示 clarificationQuestion，并由 report_workflow_review 的 AgentOS 用户输入收集补充原文，"
                 "使 Workflow 首步按官方 HumanReview retry 继续归一化。",

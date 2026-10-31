@@ -67,7 +67,7 @@ dependencies = [
     "tiktoken>=0.9,<1.0",
     "tokenizers>=0.21,<1.0",
     "uvicorn[standard]>=0.30",
-    "dingyi-agno==0.5.4",
+    "dingyi-agno==0.5.5",
     "python-lsp-server>=1.15.0",
     "ruff>=0.12,<1.0",
 ]

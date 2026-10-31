@@ -5,8 +5,8 @@ import hashlib
 import hmac
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
-from typing import Any, Literal, Protocol
+from datetime import UTC, date, datetime
+from typing import Annotated, Any, Literal, Protocol, get_type_hints
 
 from agno.exceptions import RunCancelledException
 from agno.run import RunContext
@@ -14,14 +14,16 @@ from agno.run.base import RunStatus
 from agno.run.cancel import araise_if_cancelled
 from agno.tools import Toolkit, tool
 from agno.workflow import OnReject
+from dingyi_agno import prepare_user_input_tools
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...async_utils import complete_cleanup
 from ..contract import (
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
     ReportingWorkflowInput,
     ReportRequestEnvelope,
+    ReportRequestOptions,
     parse_reporting_workflow_input,
 )
 from ..models import (
@@ -38,6 +40,7 @@ from .scope import (
 from .state import ReportingStateError
 
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
+REPORT_REQUEST_PROMPT_STATE_KEY = "report_request_prompt"
 REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY = "Reporting MCP 请求指纹"
 REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY = "Reporting MCP 已占用 thread"
 REPORT_PROCESS_LIFECYCLE_DEPENDENCY = "Reporting Process Lifecycle"
@@ -2161,8 +2164,8 @@ class ReportWorkflowToolkit(Toolkit):
                 self.report_workflow_reject,
             ],
             instructions=(
-                "启动新报表只调用无参数的 report_workflow_start；该工具读取当前最后一条"
-                "用户消息并交给 Workflow 首步归一化。"
+                "启动新报表调用 report_workflow_start，按对话上下文预填期间、指标、篇幅和维度；"
+                "未知期间留空，不要求用户重复输入已知信息，确认后交给 Workflow 首步归一化。"
                 "任一工具返回普通审核 paused 时，准确展示 review 后必须立即调用 "
                 "report_workflow_approve，由 AgentOS 原生确认收集批准或拒绝；request "
                 "阶段使用 report_workflow_review 收集补充输入。"
@@ -2171,17 +2174,37 @@ class ReportWorkflowToolkit(Toolkit):
             ),
             add_instructions=True,
         )
+        # Agno Toolkit 绑定方法时未保留 Annotated 元数据，先恢复再交给 SDK。
+        start = self.async_functions["report_workflow_start"]
+        start.entrypoint.__annotations__ = get_type_hints(
+            type(self).report_workflow_start.entrypoint, include_extras=True
+        )
+        adapted = prepare_user_input_tools(list(self.async_functions.values()))
+        self.async_functions = dict(zip(self.async_functions, adapted))
         review = self.async_functions["report_workflow_review"]
         for field in review.user_input_schema or []:
             field.value = "" if field.name == "feedback" else None
 
+    @tool(requires_user_input=True)
     async def report_workflow_start(
         self,
+        period_start: Annotated[date | None, Field(title="开始日期")] = None,
+        period_end: Annotated[date | None, Field(title="结束日期")] = None,
+        metrics: Annotated[list[Literal["收入", "预算", "成本", "工作量", "费用管控", "资金"]], Field(title="报告指标")] = [],
+        report_length: Annotated[Literal["简要版", "详细版"], Field(title="报告篇幅")] = "简要版",
+        analysis_dimensions: Annotated[list[str], Field(title="分析维度", json_schema_extra={"items": {"type": "string", "enum": ["院区", "科室", "类型", "病种", "项目"]}})] = [],
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """将当前用户原文交给报表 Workflow 首步。"""
+        """确认报告设置并生成报告。按上下文预填全部选项，年月展开到月初和月末。"""
         prompt = self._current_user_prompt(run_context)
         workflow_input = parse_reporting_workflow_input(prompt)
+        codes = {"收入": "income", "预算": "budget", "成本": "full_cost", "工作量": "workload", "费用管控": "cost_control", "资金": "funds"}
+        options = ReportRequestOptions(
+            period={"start": period_start, "end": period_end} if period_start and period_end else None,
+            domains=tuple(codes[item] for item in metrics), report_length=report_length,
+            analysis_dimensions=tuple(analysis_dimensions),
+        )
+        workflow_input = workflow_input.model_copy(update={"request_options": options})
         return await self._workflow_result(self.controller.start(workflow_input, run_context))
 
     @staticmethod
@@ -2202,6 +2225,9 @@ class ReportWorkflowToolkit(Toolkit):
             if isinstance(content, str) and content.strip():
                 return content
             break
+        saved = (run_context.session_state or {}).get(REPORT_REQUEST_PROMPT_STATE_KEY) if run_context else None
+        if isinstance(saved, dict) and saved.get("runId") == run_context.run_id and saved.get("prompt"):
+            return saved["prompt"]
         raise ReportingError("report_request_invalid", "当前消息缺少自然语言报表需求。")
 
     @tool(
