@@ -7,7 +7,11 @@ from collections import deque
 
 from ...units import unit_conversion_scale
 from .standard_chart_encoding import fail, scaled_column
-from .standard_chart_presentation import order_standard_rows, prepare_standard_presentation, valid_standard_metadata
+from .standard_chart_presentation import (
+    order_standard_rows,
+    prepare_standard_presentation,
+    valid_standard_metadata,
+)
 
 FAMILY_FORMS = frozenset({'pie', 'donut', 'radar', 'funnel', 'sankey'})
 

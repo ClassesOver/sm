@@ -50,7 +50,6 @@ def evaluate_chart_quality(
     if not index.chart_traces:
         return {}
     files = {file.resource_id: file for file in index.files}
-    by_path = {file.path: file for file in index.files}
     presentations = None
     results = {}
     verified_bytes: dict[str, bytes] = {}

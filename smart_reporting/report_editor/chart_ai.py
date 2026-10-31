@@ -37,7 +37,6 @@ from ..reporting.delivery.artifacts_v1 import ChartArtifact, ReportArtifactManif
 from ..reporting.hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ..reporting.host_workspace import HostReportingWorkspace, ReportingWorkspaceRegistry
 from ..reporting.models import ReportingError
-from ..reporting.workflow.runtime.standard_chart_families import validate_family_parameters
 from ..reporting.structured_output import (
     ReportingStructuredOutputExecutor,
     StructuredOutputCallBudget,
@@ -51,6 +50,7 @@ from ..reporting.workflow.runtime.chart_inputs import (
 )
 from ..reporting.workflow.runtime.phase_models import ChartDataBinding
 from ..reporting.workflow.runtime.standard_chart_contract import standard_chart_capabilities
+from ..reporting.workflow.runtime.standard_chart_families import validate_family_parameters
 from ..reporting.workflow.runtime.standard_chart_routing import run_standard_chart_routes
 from ._edit_jobs import prune_finished_jobs, prune_hourly_window
 from .capabilities import EditorCapabilities

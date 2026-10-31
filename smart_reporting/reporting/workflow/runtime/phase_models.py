@@ -6,7 +6,6 @@ import json
 import os
 import re
 from collections.abc import Mapping
-from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
 from loguru import logger
