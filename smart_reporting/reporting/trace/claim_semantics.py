@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -82,10 +84,42 @@ def _section_narrative(markdown: str) -> str:
     return '\n\n'.join(pieces)
 
 
+_CLAIM_CONTEXT_CACHE: ContextVar[dict[tuple[str, str, bool, bool], str | None] | None] = ContextVar(
+    'claim_context_cache', default=None,
+)
+
+
+@contextmanager
+def claim_context_cache_scope() -> Iterator[None]:
+    """一次章节语义复核内复用 claim_context 结果；正文为不可变字符串，结果按参数记忆。"""
+    if _CLAIM_CONTEXT_CACHE.get() is not None:
+        yield
+        return
+    token = _CLAIM_CONTEXT_CACHE.set({})
+    try:
+        yield
+    finally:
+        _CLAIM_CONTEXT_CACHE.reset(token)
+
+
 def claim_context(
     markdown: str, claim_id: str, *, include_previous: bool = False, include_section: bool = False,
 ) -> str | None:
     """章节或前段仅是候选背景，是否承接口径仍由语义解释判断。"""
+    cache = _CLAIM_CONTEXT_CACHE.get()
+    if cache is None:
+        return _claim_context(markdown, claim_id, include_previous=include_previous,
+                              include_section=include_section)
+    key = (markdown, claim_id, include_previous, include_section)
+    if key not in cache:
+        cache[key] = _claim_context(markdown, claim_id, include_previous=include_previous,
+                                    include_section=include_section)
+    return cache[key]
+
+
+def _claim_context(
+    markdown: str, claim_id: str, *, include_previous: bool, include_section: bool,
+) -> str | None:
     from ..delivery.report_runtime.markdown import normalize_cjk_punctuation, normalize_cjk_wording
     from .markdown_body import trace_body
 
