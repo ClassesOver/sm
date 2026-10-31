@@ -74,7 +74,8 @@ def test_comparison_metadata_does_not_invent_measure_unit_or_change_ratio_scale(
     )
     finding = payload['findings'][0]
     expected = {'changeRate': {'unit': '%', 'isPercent': False},
-                'contribution': {'unit': '%', 'isPercent': False}}
+                'contribution': {'unit': '%', 'isPercent': False},
+                'rank': {'unit': '名'}}
     if unit is not None:
         expected.update({column: {'unit': unit} for column in ('current', 'baseline', 'change')})
     for column in ('current', 'baseline', 'change', 'changeRate', 'contribution'):

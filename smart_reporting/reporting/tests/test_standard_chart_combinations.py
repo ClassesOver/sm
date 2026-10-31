@@ -112,12 +112,8 @@ def test_zoom_keeps_complete_edge_bars_and_point_color_bound_to_selected_window(
     ],
 )
 async def test_layout_retry_is_bounded_and_only_changes_automatic_canvas(
-    tmp_path, monkeypatch, size_mode, error_code, attempts
+    tmp_path, size_mode, error_code, attempts
 ):
-    from smart_reporting.reporting.workflow.runtime import standard_chart_routing
-
-    # 本用例只验证重试次数与画布；标准证明的生成由 standard_chart_proof 用例覆盖。
-    monkeypatch.setattr(standard_chart_routing, "create_standard_render_proofs", lambda *_args: ())
     plan, inputs, context = setup(tmp_path, ["line"])
     chart = plan.charts[0]
     chart.standard_canvas = StandardChartCanvas(sizeMode=size_mode)
@@ -129,15 +125,17 @@ async def test_layout_retry_is_bounded_and_only_changes_automatic_canvas(
         widths.append(config[0][-1]["width"])
         if len(widths) == 1:
             raise ReportingError("execution_failed", "failure", details={"stderr": error_code})
-        return SimpleNamespace(receipt="current-reviewed-receipt")
+        return receipt
 
+    receipt = SimpleNamespace()
     runner = SimpleNamespace(run_standard_visualization=standard)
     if attempts == 1:
         with pytest.raises(ReportingError):
             await _run_standard_with_layout_retry(runner, context, object(), plan, inputs, {})
     else:
         result = await _run_standard_with_layout_retry(runner, context, object(), plan, inputs, {})
-        assert result.receipt == "current-reviewed-receipt"
+        assert result is receipt and result.standard_render_proofs == ()
+        assert [item["status"] for item in result.execution_attempts] == ["failed", "succeeded"]
         assert widths[1] > widths[0]
     assert len(widths) == attempts
 

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from smart_reporting.reporting.trace.chart_quality import ChartQualityCheck
+from smart_reporting.reporting.trace.chart_quality import ChartQualityCheck, evaluate_chart_quality
 from smart_reporting.reporting.trace.contracts_v1 import ChartSeriesV1, FactRefV1
 from smart_reporting.reporting.trace.semantic_alignment import (
     SemanticOperandIdentity,
@@ -60,7 +60,7 @@ def test_equal_incomplete_operands_do_not_become_verified():
 
 
 async def bound_chart(tmp_path, *, monthly=False):
-    _, _, _, index, markdown, sources, mapping = await chart_case(tmp_path)
+    _, _, _, index, markdown, sources, _ = await chart_case(tmp_path)
     chart = index.chart_traces[0]
     fact_file = index.fact_files[0].file_resource_id
     plot_id = chart.plot_data_file_resource_ids[0]
@@ -108,13 +108,11 @@ async def bound_chart(tmp_path, *, monthly=False):
     return index, markdown, sources
 
 
-def verified_arrays(index):
-    """图表数组核对现由标准渲染证明完成（见 chart_quality 用例）；这里以其通过为前提，
-    只验证语义对齐不能由数组相等推出指标归属。"""
-    return {
-        chart.chart_id: ChartQualityCheck(status="verified", reason="registered_arrays_match")
-        for chart in index.chart_traces
-    }
+def _verified_arrays(index, markdown, sources, chart_id):
+    """静态图自身如实为unknown；语义对齐只消费已核验的图表检查结果。"""
+    honest = evaluate_chart_quality(index, markdown, sources)[chart_id]
+    assert (honest.status, honest.reason) == ("unknown", "static_image_not_evaluated")
+    return {chart_id: ChartQualityCheck(status="verified", reason="standard_render_matches_frozen_inputs")}
 
 
 @pytest.mark.anyio
@@ -158,7 +156,7 @@ async def test_chart_arrays_do_not_prove_declared_metric_ownership(tmp_path, fau
             }
         )
     index = index.model_copy(update={"chart_traces": (chart,)})
-    arrays = verified_arrays(index)
+    arrays = _verified_arrays(index, markdown, sources, chart.chart_id)
     if fault == "missing":
         sources.pop(index.fact_files[0].file_resource_id)
     results = evaluate_semantic_alignment(index, sources, chart_checks=arrays)
@@ -190,7 +188,7 @@ async def test_equal_month_values_cannot_hide_wrong_registered_categories(tmp_pa
         }
     )
     index = index.model_copy(update={"chart_traces": (chart,)})
-    arrays = verified_arrays(index)
+    arrays = _verified_arrays(index, markdown, sources, chart.chart_id)
     result = evaluate_semantic_alignment(index, sources, chart_checks=arrays)[chart.chart_id]
     assert result.status == ("unknown" if wrong_period else "verified")
     if wrong_period:

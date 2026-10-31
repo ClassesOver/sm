@@ -164,6 +164,9 @@ async def test_bad_review_plan_does_not_erase_independent_chart_checks(tmp_path)
     _, _, _, index, markdown, sources, _ = await chart_case(tmp_path)
     questions = request_questions("核验图表数据")
     bad = AnswerReviewPlan(questionSetSha256="f" * 64)
+    independent = evaluate_quality_bundle(
+        index, markdown, sources, authorization_scope_hash="c" * 64,
+    ).chart_checks
     current = evaluate_quality_bundle(
         index,
         markdown,
@@ -172,14 +175,8 @@ async def test_bad_review_plan_does_not_erase_independent_chart_checks(tmp_path)
         questions=questions,
         answer_review_plan=bad,
     )
-    independent = evaluate_quality_bundle(
-        index, markdown, sources, authorization_scope_hash="c" * 64, questions=questions,
-    )
-    chart_id = index.chart_traces[0].chart_id
     assert current.answer_review is None
-    # 无效复核计划只丢弃答复复核，图表检查与独立评估结果一致（静态图无标准证明时为 unknown）。
-    assert current.chart_checks == independent.chart_checks
-    assert current.chart_checks[chart_id].reason == "static_image_not_evaluated"
+    assert independent and current.chart_checks == independent
 
 
 async def register_quality(editor, context, index, quality):

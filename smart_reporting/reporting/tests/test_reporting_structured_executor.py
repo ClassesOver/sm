@@ -374,7 +374,7 @@ def test_reporting_agno_parser_recovers_later_complete_plan_object(
     assert not any("Validation failed on merged data" in warning for warning in warnings)
 
 
-def test_visualization_generator_instructions_are_static_only() -> None:
+def test_visualization_generator_only_plans_static_charts() -> None:
     agent = create_reporting_generator_agent(
         model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
         output_schema=VisualizationPlanDraft,
@@ -382,9 +382,11 @@ def test_visualization_generator_instructions_are_static_only() -> None:
     )
     instructions = "\n".join(agent.instructions)
 
-    # Plotly 交互图已退役：规划指令只描述 Matplotlib 静态图，不再引导选择渲染器或交互规格。
+    # Plotly已退役：规划只产出Matplotlib静态图，不再讲解renderer或交互产物。
     assert "plotly" not in instructions.lower()
-    assert "interactivePath" not in instructions
+    for retired in ("visualizationMode", "renderer", "interactivePath"):
+        assert retired not in instructions
+    assert "Matplotlib" in instructions
     assert "sourcePath" in instructions
     assert "visualForm" in instructions
     assert "dataBindings" in instructions

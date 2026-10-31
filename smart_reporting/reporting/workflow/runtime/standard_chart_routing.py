@@ -332,9 +332,10 @@ for path, digest in COMPONENTS:
     sources.append((path, raw))
 for path in OUTPUT_PATHS:
     Path(path).unlink(missing_ok=True)
+# rc_context在每个组件后恢复进入前的项目主题（matplotlibrc及启动引导），
+# 使组件与其单独执行、视觉验收时的状态一致；不能rcdefaults回到库内置默认。
 for path, raw in sources:
     with plt.rc_context():
-        plt.rcdefaults()
         exec(compile(raw, path, "exec"), {"__name__": "__main__", "__file__": path})
     plt.close("all")
 for path in OUTPUT_PATHS:

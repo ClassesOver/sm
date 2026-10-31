@@ -681,7 +681,6 @@ def test_style_schema_rejects_invalid_parameters(options):
         StandardChartStyle.model_validate(options)
 
 
-# 渲染器只剩 Matplotlib（Plotly 已退役），不再有按 renderer 排除的分支。
 @pytest.mark.parametrize('fault', ['complex', 'identity', 'fallback'])
 def test_unsupported_or_unverified_inputs_do_not_select_standard_route(fault):
     plan, inputs = fixture()
@@ -703,7 +702,7 @@ async def test_standard_execution_keeps_all_existing_gates(monkeypatch, failed_s
     receipt = SimpleNamespace(source_file='signed-script')
     review = {'code': 'visual_review_failed', 'details': {'issues': ['label_overlap']}}
     binding = SimpleNamespace(execution_receipt=receipt, visual_inspection_receipts={},
-                              visual_repair_diagnostic=review, deterministic_image_checks=())
+                              deterministic_image_checks=(), visual_repair_diagnostic=review)
 
     @asynccontextmanager
     async def bind(*args):
@@ -728,6 +727,6 @@ async def test_standard_execution_keeps_all_existing_gates(monkeypatch, failed_s
     else:
         result = await runner.run_standard_visualization(context, object(), 'source', {})
         assert result.execution_receipt is receipt
-        # 提交后与清理后交接各核对一次当前回执。
-        assert toolkit.require_current_receipt.await_args_list == [((receipt,),), ((receipt,),)]
+        # 绑定内复核一次，清理后交接前再复核一次，均针对同一回执。
+        assert [call.args for call in toolkit.require_current_receipt.await_args_list] == [(receipt,), (receipt,)]
     runner.code_mode_runtime.shutdown.assert_awaited_once_with('session')
