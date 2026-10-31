@@ -433,7 +433,8 @@ APPENDIX_TABLES_TITLE = '<p class="report-appendix-title"><strong>附表</strong
 
 def relocate_server_tables(markdown: str) -> str:
     # 新报告已在源 Markdown 分章归档；导出保留分组，仅替换附表分页标记。
-    body, separator, appendix = markdown.partition("\n\n**附表：数据明细**\n\n")
+    parts = re.split(r"\n\n\*\*附表：(?:汇总数据|数据明细)\*\*\n\n", markdown, maxsplit=1)
+    body, separator, appendix = (parts[0], True, parts[1]) if len(parts) == 2 else (markdown, False, "")
     if separator and not _SERVER_TABLE_BLOCK.search(body):
         return "\n\n".join((body, APPENDIX_TABLES_SENTINEL, appendix))
     tables = [match[0].strip() for match in _SERVER_TABLE_BLOCK.finditer(markdown)]

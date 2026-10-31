@@ -1131,7 +1131,7 @@ class ReportWorkflowController:
             else "foreground",
         )
         try:
-            output = await self._await_chat_workflow(workflow.arun(
+            output = await self._await_chat_workflow(lambda: workflow.arun(
                 payload,
                 run_id=workflow_run_id,
                 session_id=workflow_session_id,
@@ -1162,12 +1162,17 @@ class ReportWorkflowController:
         return self._result(control, output)
 
     async def _await_chat_workflow(
-        self, operation: Awaitable[Any], run_context: RunContext | None
+        self, operation: Callable[[], Awaitable[Any]], run_context: RunContext | None
     ) -> Any:
         """把当前聊天的 Agno 取消标记传给正在等待的前台 Workflow。"""
         if self._workflow_entrypoint(run_context) == "mcp" or not run_context or not run_context.run_id:
-            return await operation
-        task = asyncio.ensure_future(operation)
+            return await operation()
+
+        async def execute() -> Any:
+            # 追踪包装器可能在调用时创建 token，须与协程执行、清理处于同一 task。
+            return await operation()
+
+        task = asyncio.create_task(execute())
         try:
             while True:
                 await araise_if_cancelled(run_context.run_id)
@@ -1364,7 +1369,7 @@ class ReportWorkflowController:
                 session_id=scope["thread_id"], status="running", summary=None,
             )
             try:
-                output = await self._await_chat_workflow(workflow.acontinue_run(
+                output = await self._await_chat_workflow(lambda: workflow.acontinue_run(
                     run_response=output,
                     step_requirements=list(getattr(output, "step_requirements", None) or []),
                     dependencies=self._workflow_dependencies(

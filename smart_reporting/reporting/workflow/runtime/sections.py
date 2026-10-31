@@ -4722,7 +4722,7 @@ class RuntimeSectionsMixin:
                     analysis_id,
                     error,
                 )
-        # 补证表与确定性月度表是不同证据层；只发布身份与分析范围都可核验的原表。
+        # 自动附表仅展示小型完整汇总；大表保留在补证文件与计算记录中供查询。
         from ...trace.table_builder import build_supplemental_tables
         from ...trace.table_sources import _object
 
@@ -4758,6 +4758,7 @@ class RuntimeSectionsMixin:
                         document, file_resource_id=derive_resource_id(identity.path),
                         dataset_ids=evidence.dataset_ids,
                         dataset_contexts=self._state(run_context).get("report_analysis_data_context", ()),
+                        summary_only=True,
                     ):
                         tables.append(ReportServerTable(sectionCode=section_code, markdown=markdown))
                         traces.append(trace)

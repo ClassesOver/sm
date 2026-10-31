@@ -25,8 +25,9 @@ def evidence_bytes():
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
 @pytest.mark.parametrize('drift', [False, True])
 @pytest.mark.parametrize('envelope', ["explicit", "legacy", "foreign"])
-async def test_publishes_all_frozen_supplemental_rows_and_rejects_identity_drift(drift, envelope):
+async def test_publishes_small_frozen_summary_and_rejects_identity_drift(drift, envelope):
     document = json.loads(evidence_bytes())
+    document['findings'][0]['rows'] = document['findings'][0]['rows'][:5]
     if envelope == "legacy":
         document.pop("analysisId")
         document.pop("datasetIds")
@@ -43,9 +44,9 @@ async def test_publishes_all_frozen_supplemental_rows_and_rejects_identity_drift
         assert tables == traces == ()
         return
     assert len(tables) == len(traces) == 1
-    assert len(traces[0].row_keys) == 57
-    assert len(traces[0].cells) == 57 * 4
-    assert '科室57' in tables[0].markdown
+    assert len(traces[0].row_keys) == 5
+    assert len(traces[0].cells) == 5 * 4
+    assert '科室5' in tables[0].markdown
     assert all(cell.source_cell is not None for cell in traces[0].cells)
     assert traces[0].origin_markdown == tables[0].markdown
 
