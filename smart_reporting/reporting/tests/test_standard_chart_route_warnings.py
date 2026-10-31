@@ -15,10 +15,15 @@ async def test_group_routes_keep_warning_ownership_and_measured_compile_time(tmp
     warning0 = {"chartId": "0", "code": "first_only", "message": "只属于第一图"}
     warning1 = {"chartId": "1", "code": "second_only", "message": "只属于第二图"}
     global_warning = {"code": "shared", "message": "全局提示"}
-    clock = iter((1.0, 1.025))
-    monkeypatch.setattr(routing, "perf_counter", lambda: next(clock), raising=False)
-    monkeypatch.setattr(routing, "standard_visualization_preflight", lambda *args: SimpleNamespace(
-        source="pass", diagnostic=None, warnings=(warning0, warning1, global_warning)))
+    # 时钟只在预检内推进 25ms：编译耗时只量预检本身，与路由里其他计时调用的次数无关。
+    clock = [1.0]
+    monkeypatch.setattr(routing, "perf_counter", lambda: clock[0], raising=False)
+
+    def preflight(*_args):
+        clock[0] += 0.025
+        return SimpleNamespace(source="pass", diagnostic=None, warnings=(warning0, warning1, global_warning))
+
+    monkeypatch.setattr(routing, "standard_visualization_preflight", preflight)
 
     class Runner:
         async def run_standard_visualization(self, *args, **kwargs):

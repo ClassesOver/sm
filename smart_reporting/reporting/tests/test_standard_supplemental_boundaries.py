@@ -138,15 +138,27 @@ async def test_old_report_without_layout_flag_or_origin_keeps_label_offset():
     from smart_reporting.reporting.trace.contracts_v1 import TableTraceV1
     from smart_reporting.reporting.trace.table_builder import render_table_markdown
     from smart_reporting.reporting.trace.table_quality import evaluate_table_quality
-    from smart_reporting.reporting.trace.table_sources import resolve_source_cell
+    from smart_reporting.reporting.trace.table_sources import (
+        resolve_source_cell,
+        source_cell_display,
+        source_cell_view,
+    )
 
     raw, source, resource, trace, _ = built_source()
     document = json.loads(raw)
-    rows = document["findings"][0]["rows"]
+    # 按发布时的单元格显示格式生成正文（如占比 1.10 保留两位小数），旧报告只缺布局字段。
+    shown = {
+        (cell.row_key, cell.column_key): source_cell_display(
+            source_cell_view(cell.source_cell, document), cell.column_key,
+            display_format=trace.source_cell_display,
+        )
+        for cell in trace.cells
+    }
     markdown = render_table_markdown(
         trace.table_id,
         trace.column_keys,
-        [[f"第{i + 1}行", *[str(value) for value in row]] for i, row in enumerate(rows)],
+        [[f"第{i + 1}行", *[shown[(row_key, key)] for key in trace.column_keys]]
+         for i, row_key in enumerate(trace.row_keys)],
     )
     payload = trace.model_dump(mode="json", by_alias=True)
     payload.pop("rowLabelColumn")

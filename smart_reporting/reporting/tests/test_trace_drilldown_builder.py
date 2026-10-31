@@ -625,7 +625,8 @@ async def test_publication_uses_confirmed_snapshot_semantics_not_static_profile(
     profile = bind_reporting_profile_sources(
         resolve_reporting_profile(registry, "ruijin"), {"rj": "rj"}
     )
-    assert profile.measure_semantics == ()
+    # 部署画像已配置静态 measure 语义；本用例显式去掉它们，证明发布只采用确认快照的语义。
+    profile = profile.model_copy(update={"measure_semantics": ()})
     metric = next(item for item in profile.metrics if item.code == "actual_medical_income")
     assert metric.field_ref is not None
     table_ref, value_field = metric.field_ref.rsplit(".", 1)

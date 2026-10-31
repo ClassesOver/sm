@@ -703,7 +703,7 @@ async def test_standard_execution_keeps_all_existing_gates(monkeypatch, failed_s
     receipt = SimpleNamespace(source_file='signed-script')
     review = {'code': 'visual_review_failed', 'details': {'issues': ['label_overlap']}}
     binding = SimpleNamespace(execution_receipt=receipt, visual_inspection_receipts={},
-                              visual_repair_diagnostic=review)
+                              visual_repair_diagnostic=review, deterministic_image_checks=())
 
     @asynccontextmanager
     async def bind(*args):
@@ -728,5 +728,6 @@ async def test_standard_execution_keeps_all_existing_gates(monkeypatch, failed_s
     else:
         result = await runner.run_standard_visualization(context, object(), 'source', {})
         assert result.execution_receipt is receipt
-        toolkit.require_current_receipt.assert_awaited_once_with(receipt)
+        # 提交后与清理后交接各核对一次当前回执。
+        assert toolkit.require_current_receipt.await_args_list == [((receipt,),), ((receipt,),)]
     runner.code_mode_runtime.shutdown.assert_awaited_once_with('session')
