@@ -20,6 +20,10 @@ from .chart_subjects import chart_fingerprints, chart_presentations
 from .contracts_v1 import RevisionTraceIndexV1, canonical_json_bytes
 
 QUALITY_IMAGE_BYTE_BUDGET = 16 * 1024 * 1024
+# 标准静态图由服务端模板按冻结输入生成的两种核验依据：当前模板重编译一致、签发时服务端签名。
+STANDARD_RENDER_VERIFIED_REASONS = frozenset({
+    "standard_render_matches_frozen_inputs", "standard_render_signed_at_issue",
+})
 
 
 class ChartQualityCheck(StrictModel):
@@ -162,7 +166,7 @@ def evaluate_chart_quality(
                 ) != len(rows):
                     raise ValueError(reason)
                 inputs.append(plot)
-            from ..workflow.runtime.standard_chart_proof import recompile_standard_render_proof
+            from ..workflow.runtime.standard_chart_proof import verify_standard_render_source
 
             proof = chart.standard_render_proof
             reason = "standard_render_identity_mismatch"
@@ -185,12 +189,13 @@ def evaluate_chart_quality(
                     or sum(item.get("chartId") == chart.chart_id for item in plan_charts) != 1):
                 raise ValueError(reason)
             reason = "standard_render_source_unproven"
-            compiled = recompile_standard_render_proof(proof, compiled_inputs)
-            if compiled is None or compiled != read(script.resource_id):
+            basis = verify_standard_render_source(proof, compiled_inputs, read(script.resource_id))
+            if basis is None:
                 raise ValueError(reason)
-            results[chart.chart_id] = ChartQualityCheck(
-                status="verified", reason="standard_render_matches_frozen_inputs"
-            )
+            # 模板演进后重编译不再逐字节一致时，依签发时服务端签名核验同一组输入与脚本。
+            results[chart.chart_id] = ChartQualityCheck(status="verified", reason=(
+                "standard_render_matches_frozen_inputs" if basis == "recompiled"
+                else "standard_render_signed_at_issue"))
         except Exception as error:
             if isinstance(error, ValueError) and str(error) == "chart_source_unavailable":
                 reason = "chart_source_unavailable"

@@ -188,8 +188,11 @@ def test_proof_recompile_rejects_modified_inputs_or_plan(fault):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("template", ["current", "evolved"])
 @pytest.mark.parametrize("fault", [None, "image", "script", "plan", "input"])
-async def test_static_quality_requires_proof_and_current_frozen_source_projection(tmp_path, monkeypatch, fault):
+async def test_static_quality_requires_proof_and_current_frozen_source_projection(
+    tmp_path, monkeypatch, fault, template,
+):
     import json
     from unittest.mock import AsyncMock
 
@@ -220,7 +223,18 @@ async def test_static_quality_requires_proof_and_current_frozen_source_projectio
     result.script_file = FileIdentity(path="charts.py", size=len(source), sha256=hashlib.sha256(source).hexdigest())
     result.execution_receipt = ExecutionReceipt(runId="static-run", sourceFile=result.script_file,
         outputFiles=(FileIdentity(path=image.path, size=image.size, sha256=image.sha256),))
+    from smart_reporting.reporting.workflow.runtime import standard_chart_proof as proof_module
+
+    # monkeypatch记录未配置的原值，测试结束自动恢复，签名密钥不泄漏到其他用例。
+    monkeypatch.setattr(proof_module, "_proof_signing_key", None)
+    if template == "evolved":
+        # 签发时签名；之后模板演进，重编译不再逐字节一致，只能依签名核验。
+        proof_module.configure_render_proof_signing("k" * 32)
     record = create_standard_render_proofs(result, plan, inputs)[0]
+    if template == "evolved":
+        compile_current = proof_module.standard_visualization_preflight
+        monkeypatch.setattr(proof_module, "standard_visualization_preflight", lambda *args: SimpleNamespace(
+            source=compile_current(*args).source + "\n# template evolved\n", diagnostic=None))
     proof = record["proof"]
     script_id = derive_resource_id("charts.py")
     sources[script_id] = source
@@ -241,7 +255,10 @@ async def test_static_quality_requires_proof_and_current_frozen_source_projectio
     check = evaluate_chart_quality(index, markdown, sources)[chart.chart_id]
     assert check.status == ("verified" if fault is None else "unknown")
     if fault is None:
-        assert check.reason == "standard_render_matches_frozen_inputs"
+        assert check.reason == ("standard_render_matches_frozen_inputs" if template == "current"
+                                else "standard_render_signed_at_issue")
+        if template == "evolved":
+            return
         monkeypatch.setattr(editor.trace, 'require_index', AsyncMock(return_value=index))
         monkeypatch.setattr(editor.trace, 'load_manifest', AsyncMock(return_value=SimpleNamespace(charts=[])))
         for file in index.files:
@@ -256,8 +273,9 @@ async def test_static_quality_requires_proof_and_current_frozen_source_projectio
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("reason", ["standard_render_matches_frozen_inputs", "standard_render_signed_at_issue"])
 @pytest.mark.parametrize("fault", [None, "metric", "binding", "scope", "unit"])
-async def test_static_semantics_uses_exact_source_identity_and_not_equal_values(tmp_path, fault):
+async def test_static_semantics_uses_exact_source_identity_and_not_equal_values(tmp_path, fault, reason):
     import json
 
     from smart_reporting.reporting.tests.test_semantic_alignment import bound_chart
@@ -320,7 +338,7 @@ async def test_static_semantics_uses_exact_source_identity_and_not_equal_values(
     chart = chart.model_copy(update={"standard_render_proof": proof})
     index = index.model_copy(update={"chart_traces": (chart,)})
     check = evaluate_semantic_alignment(index, sources, chart_checks={chart.chart_id: ChartQualityCheck(
-        status="verified", reason="standard_render_matches_frozen_inputs",
+        status="verified", reason=reason,
     )})[chart.chart_id]
     assert check.status == ("verified" if fault is None else "unknown"), check.reasons
     if fault is None:

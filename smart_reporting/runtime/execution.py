@@ -12,6 +12,7 @@ from ..reporting.code_agent.lsp_process import ReportingLspProcessManager
 from ..reporting.code_mode import create_reporting_code_mode_runtime
 from ..reporting.host_workspace import ReportingWorkspaceRegistry
 from ..reporting.knowledge import ReportingKnowledgeIndex
+from ..reporting.workflow.runtime.standard_chart_proof import configure_render_proof_signing
 from ..task_execution import DEFAULT_TERMINAL_TIMEOUT
 from .database import AgentDatabase, create_agent_database
 from .observability import configure_tracing, flush_tracing
@@ -60,6 +61,8 @@ def create_execution_context(
         current_settings.reporting_host_workspace_root,
         secret=current_settings.workspace_hmac_secret,
     )
+    # 标准渲染证明签名复用工作区密钥（按用途派生子密钥），使模板演进后旧证明仍可核验。
+    configure_render_proof_signing(current_settings.workspace_hmac_secret)
     reporting_code_mode_runtime = create_reporting_code_mode_runtime(
         reporting_workspace_registry.root,
         analysis_concurrency=current_settings.report_analysis_concurrency,

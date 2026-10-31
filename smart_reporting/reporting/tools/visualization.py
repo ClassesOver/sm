@@ -324,7 +324,7 @@ class RuntimeVisualizationMixin:
                 verified_plot_data.append({"chartId": chart_id, "files": verified})
             # 仅宿主回调提供标准执行证明；失败只丢弃证明，不影响已有图片提交。
             from ..trace.contracts_v1 import StandardChartRenderProofV1
-            from ..workflow.runtime.standard_chart_proof import recompile_standard_render_proof
+            from ..workflow.runtime.standard_chart_proof import verify_standard_render_source
 
             for record in standard_render_proofs:
                 try:
@@ -342,8 +342,9 @@ class RuntimeVisualizationMixin:
                             raise ValueError("render_input_scope_mismatch")
                         raw, _ = await self.runtime.workspace.afile_bytes(scope.thread_id, item["path"])
                         contents[item["sha256"]] = raw
-                    source = recompile_standard_render_proof(proof, contents)
-                    if source is None or hashlib.sha256(source).hexdigest() != script.sha256:
+                    script_raw, _ = await self.runtime.workspace.afile_bytes(scope.thread_id, script.path)
+                    if (hashlib.sha256(script_raw).hexdigest() != script.sha256
+                            or verify_standard_render_source(proof, contents, script_raw) is None):
                         raise ValueError("render_source_unproven")
                     if {item["sha256"] for item in entry["files"]} != {
                         item["sha256"] for item in proof.inputs if item["chartId"] == chart_id
