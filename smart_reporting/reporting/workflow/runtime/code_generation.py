@@ -43,6 +43,7 @@ from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
 from ...vision import ReportVisionReviewer
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
+from .visualization_field_rules import standard_field_rules
 
 MAX_DIAGNOSTIC_MESSAGE_LENGTH = 512
 MAX_DIAGNOSTIC_OUTPUT_LENGTH = 2000
@@ -478,6 +479,10 @@ class ReportingCodeGenerationRunner:
                 ),
                 "diagnostic": self._short_diagnostic(diagnostic) if diagnostic else None,
             }
+            # standard* 字段规则只随实际使用这些字段的计划下发，不常驻编码 Agent 指令。
+            field_rules = standard_field_rules(task_facts)
+            if field_rules:
+                payload["facts"]["standardFieldRules"] = field_rules
             started_at = perf_counter()
             metric_outputs: list[Any] = []
             metric_request_count = 0
