@@ -526,7 +526,10 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "没有匹配候选时仍可填写明确的 standardComputation；复杂需求照常交给脚本。",
     "只有不属于标准补证的同一 datasetId、同一维度粒度多个指标才合并为一个 codingRequirement（一个 outputName，fields 同时列出维度列与全部指标列），"
     "不要按指标逐条拆分；可参考 datasets[].columnProfile 的列角色（dimension/measure/period）与基数选择字段。",
-    "标准补证支持group_summary、group_period_series、cross_group_summary、period_comparison、group_ratio和group_period_comparison，不按业务主题限制。"
+    "标准补证支持group_summary、group_period_series、cross_group_summary、period_comparison、group_ratio、group_period_comparison和group_concentration，不按业务主题限制。"
+    "group_concentration对完整单维分组计算集中度，输出期间字段及cr5/hhi/top5_amount/total_amount/group_count/missing_amount；"
+    "cr5为前五名占比（0—1比例，显示时转百分比），hhi为0—1占比平方和，未乘10000；不得从TopN子集计算。"
+    "分组净额为负时hhi为空、cr5保留原始净额口径并告警；归属缺失、无效数据、缺期、总额非正或父总额不闭合时两项为空，不能解释为零。"
     "period_comparison默认累计窗口比较；groupByPeriod=true按冻结比较角色逐期做日历配对，可跨已授权数据集，"
     "本期与基期窗口仍须互不重叠；连续逐期环比使用group_period_comparison。"
     "输出期间、分组、current/baseline/change/changeRate/contribution/rank；contribution分母为整个请求窗口的总增减额，"
