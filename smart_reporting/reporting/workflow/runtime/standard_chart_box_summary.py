@@ -358,33 +358,6 @@ def prepare_box_summary(
     return policy, dict(values=dict(values=all_values, unit=display))
 
 
-RAW_BOX_STATS = """        stats = []
-        ticks = []
-        for group,display in zip(labels,standard_label_names(labels,policy)):
-            samples = [value for label,value in zip(raw_labels,values) if label == group and value is not None]
-            item = boxplot_stats(samples,whis=spec["whisker_iqr"])[0]
-            item["label"] = group
-            stats.append(item)
-            ticks.append((overrides.get(group,{}).get("label") or display)+f" (n={len(samples)})")
-"""
-
-
-def summary_statistics_script(source):
-    if source.count(RAW_BOX_STATS) != 1:
-        raise ValueError("summary box template boundary changed")
-    dispatch = """        if "summary_fields" in spec:
-            stats,ticks=prepared_summary
-        else:
-""" + "".join("    " + line for line in RAW_BOX_STATS.splitlines(keepends=True))
-    canvas_boundary = '    fig, ax = plt.subplots(**create_standard_canvas(policy, policy["labels"], "barh" if horizontal else form))\n'
-    if source.count(canvas_boundary) != 1:
-        raise ValueError("summary canvas template boundary changed")
-    before_canvas = '    prepared_summary = read_summary_box_stats(payload,policy,{item["series"]:item for item in policy["style"]["series"]}) if "summary_fields" in spec else None\n'
-    return SUMMARY_SCRIPT + source.replace(RAW_BOX_STATS, dispatch).replace(
-        canvas_boundary, before_canvas + canvas_boundary
-    )
-
-
 SUMMARY_SCRIPT = """def read_summary_box_stats(payload,policy,overrides):
     import hashlib
     import json

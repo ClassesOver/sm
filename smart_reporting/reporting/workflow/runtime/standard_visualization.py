@@ -18,7 +18,7 @@ from .phase_models import (
     VisualizationPlanDraft,
 )
 from .standard_chart_alignment import align_chart_sources
-from .standard_chart_box_summary import prepare_box_summary, summary_statistics_script
+from .standard_chart_box_summary import SUMMARY_SCRIPT, prepare_box_summary
 from .standard_chart_breaks import BREAK_DISPATCH, BREAK_SCRIPT, prepare_standard_break
 from .standard_chart_contract import StandardChartConfig, resolve_standard_form
 from .standard_chart_domains import DOMAIN_SCRIPT, prepare_standard_domains
@@ -75,15 +75,6 @@ class _Unsupported(ValueError):
 def _reject(code, parameter, message, suggestion, *, details=None) -> NoReturn:
     raise _Unsupported(code, parameter, message, suggestion, details=details)
 
-
-def _patch_once(source: str, anchor: str, replacement: str) -> str:
-    """模板拼接锚点必须唯一命中；锚点漂移时转Coding并告警，不静默丢失绘制能力。"""
-    if source.count(anchor) != 1:
-        logger.error('report_standard_visualization_template_anchor_drift anchor={!r} count={}',
-                     anchor[:60], source.count(anchor))
-        _reject('standard_template_anchor_drift', 'standardTemplate', '标准模板拼接锚点未唯一命中。',
-                '属于模板实现缺陷；本图交由Coding生成，并修复模板锚点。')
-    return source.replace(anchor, replacement)
 
 
 def standard_visualization_preflight(
@@ -654,46 +645,22 @@ def _standard_visualization_script(
         # 纯图族只拼接实际消费的原有helper；读取/SHA循环复用_BODY原文，身份策略不变。
         return ('CONFIGS = ' + repr([tuple(config) for config in configs]) + '\nALIGNED = ' + repr(aligned) + '\n'
                 + PRESENTATION_SCRIPT + _CANVAS_SCRIPT + FAMILY_SCRIPT + _FAMILY_BODY)
-    statistics_script = summary_statistics_script(STATISTICS_SCRIPT) if summary_profiles else STATISTICS_SCRIPT
     has_domains = any('domains' in config.policy for config in configs)
     has_breaks = any('broken_axis' in config.policy for config in configs)
     has_dual_stacks = any('dual_stack' in config.policy for config in configs)
     has_horizontal_breaks = any('broken_axis' in config.policy and config.form == 'barh' for config in configs)
-    break_script = BREAK_SCRIPT
-    break_dispatch = BREAK_DISPATCH
-    if has_horizontal_breaks:
-        break_script = _patch_once(break_script, '    spec=policy["broken_axis"]\n',
-            '    if policy["horizontal"]:\n        return layout_horizontal_standard_break(fig,policy)\n    spec=policy["broken_axis"]\n')
-        break_script += HORIZONTAL_BREAK_SCRIPT
-        break_dispatch = _patch_once(break_dispatch, '        render_broken_chart(',
-            '        (render_horizontal_broken_chart if form == "barh" else render_broken_chart)(')
-    layout = _LAYOUT
-    if has_domains or has_breaks:
-        layout = _patch_once(layout, 'if isinstance(text, Annotation)]', 'if isinstance(text, Annotation) and text.get_visible()]')
-    if has_domains:
-        layout = _patch_once(layout, '    finish_standard_presentation(fig, policy)',
-                                '    apply_standard_domains(fig, policy)\n    finish_standard_presentation(fig, policy)')
-    if has_breaks:
-        layout = _patch_once(layout, '    if policy["layout"] == "tight":',
-                                '    if policy.get("broken_axis"):\n        layout_standard_break(fig, policy)\n    elif policy["layout"] == "tight":')
-    body = _patch_once(_BODY, '__STATISTICAL_DISPATCH__', STATISTICS_DISPATCH if has_statistics else '')
-    if has_families:
-        body = _patch_once(body, '    columns = payload["columns"]\n', '    columns = payload["columns"]\n' + FAMILY_DISPATCH)
-    if has_dual_stacks:
-        boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
-        body = _patch_once(body, boundary, DUAL_STACK_DISPATCH + boundary)
-    if has_breaks:
-        boundary = '    canvas["band_data"] = standard_band_data(payload, canvas)\n'
-        body = _patch_once(body, boundary, break_dispatch + boundary)
+    # 模板分支固定写在源码中，运行时按图形/参数选择；这里只按需附加会被调用的辅助函数段。
     return ('CONFIGS = ' + repr([tuple(config) for config in configs]) + '\nALIGNED = ' + repr(aligned)
             + '\nAUXILIARY = ' + repr(auxiliary) + '\nDISPLAYS = ' + repr(displays)
-            + '\n' + PRESENTATION_SCRIPT + layout + ENCODING_SCRIPT + _ADVANCED
+            + '\n' + PRESENTATION_SCRIPT + _LAYOUT + ENCODING_SCRIPT + _ADVANCED
             + (FAMILY_SCRIPT if has_families else '')
-            + (statistics_script if has_statistics else '')
+            + (SUMMARY_SCRIPT if summary_profiles else '')
+            + (STATISTICS_SCRIPT if has_statistics else '')
             + (DUAL_STACK_SCRIPT if has_dual_stacks else '')
-            + (break_script if has_breaks else '')
+            + (BREAK_SCRIPT if has_breaks else '')
+            + (HORIZONTAL_BREAK_SCRIPT if has_horizontal_breaks else '')
             + (DOMAIN_SCRIPT if has_domains else '')
-            + body)
+            + _BODY)
 
 
 _LAYOUT = '''def standard_series_name(artist, policy):
@@ -901,6 +868,8 @@ _LAYOUT += _CANVAS_SCRIPT + '''def place_standard_legends(fig, policy):
 def finish_standard_layout(fig, policy):
     from matplotlib.text import Annotation
     apply_standard_style(fig, policy)
+    if policy.get("domains"):
+        apply_standard_domains(fig, policy)
     finish_standard_presentation(fig, policy)
     for ax in fig.axes:
         if getattr(ax, "_standard_colorbar", False):
@@ -926,7 +895,9 @@ def finish_standard_layout(fig, policy):
                                   policy["legend_position"] == "auto" and len(legend.get_texts()) > 3):
             legend.set_bbox_to_anchor((1.01, 1))
             legend.set_loc("upper left")
-    if policy["layout"] == "tight":
+    if policy.get("broken_axis"):
+        layout_standard_break(fig, policy)
+    elif policy["layout"] == "tight":
         reserved = policy["presentation"]
         top, bottom = reserved["header_bottom"], reserved["footer_top"]
         fig.tight_layout(pad=max(.7, policy["padding"]), rect=(.02, bottom, .98, top))
@@ -948,7 +919,7 @@ def finish_standard_layout(fig, policy):
                 bounds = legend.get_window_extent(renderer)
                 if bounds.x0 < 0 or bounds.y0 < 0 or bounds.x1 > fig.bbox.width or bounds.y1 > fig.bbox.height:
                     raise ValueError("standard_chart_layout_unresolved: 图例超出画布，请增加右侧留白或使用自适应布局")
-    annotations = [text for ax in fig.axes for text in ax.texts if isinstance(text, Annotation)]
+    annotations = [text for ax in fig.axes for text in ax.texts if isinstance(text, Annotation) and text.get_visible()]
     obstacles = [ax.get_legend().get_window_extent(renderer).expanded(1.02, 1.05)
                  for ax in fig.axes if ax.get_legend() is not None]
     obstacles.extend(ax.title.get_window_extent(renderer) for ax in fig.axes if ax.title.get_text())
@@ -1172,10 +1143,10 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
             if hashlib.sha256(dependency_raw).hexdigest() != dependency_digest:
                 raise ValueError("aligned chart input identity changed")
     columns = payload["columns"]
-    if form in {"scatter", "bubble", "heatmap"}:
+''' + FAMILY_DISPATCH + '''    if form in {"scatter", "bubble", "heatmap"}:
         render_encoded_chart(payload, canvas, form, title, output_path)
         continue
-__STATISTICAL_DISPATCH__    canvas["band_data"] = standard_band_data(payload, canvas)
+''' + STATISTICS_DISPATCH + DUAL_STACK_DISPATCH + BREAK_DISPATCH + '''    canvas["band_data"] = standard_band_data(payload, canvas)
     label_index = columns.index(label_column)
     labels = list(dict.fromkeys(row[label_index] for row in payload["rows"]))
     if category_column:
