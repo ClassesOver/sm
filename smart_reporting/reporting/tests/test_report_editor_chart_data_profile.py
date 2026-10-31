@@ -54,6 +54,8 @@ async def test_availability_carries_profile_and_omits_it_when_plot_data_is_tampe
     assert availability["dataProfile"]["inputCount"] == 1
     assert availability["dataProfile"]["numericFieldCount"] >= 1
 
+    # 概况按登记身份缓存；这里清空缓存以覆盖重新读取时核验失败的路径。
+    service._profiles.clear()
     thread_id = fixture.context.scope["threadId"]
     plot_path = "reports/revision-1/chart-001.chart-input.json"
     raw = await fixture.editor.workspace.aread_text(thread_id, plot_path)
@@ -61,3 +63,31 @@ async def test_availability_carries_profile_and_omits_it_when_plot_data_is_tampe
     tampered = await service.availability(fixture.context, session, "chart_001")
     assert "dataProfile" not in tampered
     assert tampered["available"] == availability["available"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_profile_is_cached_by_registered_identity_but_failures_are_retried(tmp_path: Path, monkeypatch):
+    fixture = await _make_editor_with_chart(tmp_path)
+    service = _service(fixture, FakeRunner(fixture.chart_bytes))
+    session = SimpleNamespace(capabilities=None)
+    reads = []
+    original = service._materialize_inputs
+
+    async def counted(*args, **kwargs):
+        reads.append(1)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_materialize_inputs", counted)
+    first = await service.availability(fixture.context, session, "chart_001")
+    second = await service.availability(fixture.context, session, "chart_001")
+    assert first["dataProfile"] == second["dataProfile"] and len(reads) == 1
+
+    service._profiles.clear()
+    thread_id = fixture.context.scope["threadId"]
+    plot_path = "reports/revision-1/chart-001.chart-input.json"
+    raw = await fixture.editor.workspace.aread_text(thread_id, plot_path)
+    await fixture.editor.workspace.awrite_text(thread_id, plot_path, raw + " ", overwrite=True)
+    assert "dataProfile" not in await service.availability(fixture.context, session, "chart_001")
+    assert "dataProfile" not in await service.availability(fixture.context, session, "chart_001")
+    assert len(reads) == 3 and not service._profiles

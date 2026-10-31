@@ -51,6 +51,20 @@ describe('graph and table AI entry points', () => {
     hover('td'); expect(toolbar().hidden).toBe(true)
   })
 
+  it('places the table entry above the table so it never covers header cells; images keep it inside', () => {
+    controller = createAssetAIActions(editor(), { onTableEdit: vi.fn(), onChartEdit: vi.fn() })
+    const rect = (top: number) => ({ top, bottom: top + 200, left: 100, right: 700, width: 600, height: 200, x: 100, y: top, toJSON: () => ({}) })
+    editor().querySelector('table')!.getBoundingClientRect = () => rect(300) as DOMRect
+    editor().querySelector('img')!.getBoundingClientRect = () => rect(300) as DOMRect
+    hover('td')
+    expect(parseFloat(toolbar().style.top)).toBeLessThan(300)
+    editor().querySelector('table')!.getBoundingClientRect = () => rect(20) as DOMRect
+    hover('td')
+    expect(parseFloat(toolbar().style.top)).toBeGreaterThanOrEqual(20)
+    hover('img')
+    expect(parseFloat(toolbar().style.top)).toBe(308)
+  })
+
   it('supports keyboard selection and Escape dismissal', () => {
     controller = createAssetAIActions(editor(), { onTableEdit: vi.fn() })
     const range = document.createRange()

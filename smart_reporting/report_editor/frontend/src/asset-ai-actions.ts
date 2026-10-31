@@ -33,9 +33,13 @@ export function createAssetAIActions(editor: HTMLElement, options: AssetAIAction
     if (!target || !editor.contains(target)) return hide()
     const rect = target.getBoundingClientRect()
     if (rect.bottom < 0 || rect.top > window.innerHeight) return hide()
-    // 放在图/表内部右上角，不遮挡上一行正文；视口过窄时贴边。
+    // 图片放在内部右上角（通常是留白）；表格右上角是表头内容，放在表格外右上方，
+    // 上方空间不足时才退回内部。都靠右，不遮挡上一行正文的开头；视口过窄时贴边。
     const width = toolbar.offsetWidth || 112
-    toolbar.style.top = `${Math.max(8, Math.min(rect.top + 8, window.innerHeight - 48))}px`
+    const height = toolbar.offsetHeight || 42
+    const above = rect.top - height - 6
+    const top = target instanceof HTMLTableElement && above >= 8 ? above : rect.top + 8
+    toolbar.style.top = `${Math.max(8, Math.min(top, window.innerHeight - 48))}px`
     toolbar.style.left = `${Math.max(8, Math.min(rect.right - width - 8, window.innerWidth - width - 8))}px`
     Object.assign(outline.style, { top: `${rect.top}px`, left: `${rect.left}px`, width: `${rect.width}px`, height: `${rect.height}px` })
   }
