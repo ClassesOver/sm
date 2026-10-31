@@ -1,59 +1,22 @@
-import type { ChartDataProfile } from './api'
+import type { ChartRecommendations } from './api'
 
 /**
- * Ask AI 推荐：只用服务端数据概况或正文表格本身做“是否值得推荐”的提示，
- * 不替代服务端校验；概况缺失时退回按图形推荐的通用建议。
+ * Ask AI 推荐：改图推荐由服务端按已核验作图数据给出，这里只负责合并与展示；
+ * 改表推荐依赖用户正在编辑的正文表格，仍在前端按表格内容生成。
  */
 
 export type SuggestionKind = 'oneclick' | 'ai'
 
-const TOP_FIVE = /前\s*5\s*(组|项)/
-
-/** 按图形给出的基础建议叠加数据概况：先放数据相关的建议，再去掉明显不适用的。 */
-export function chartSuggestionsFromProfile(base: string[], profile?: ChartDataProfile | null): string[] {
-  if (!profile) return base
-  const extra: string[] = []
-  if (profile.categoryCount > 12) extra.push('将全部类别分页展示，保持统一颜色和值域')
-  if (profile.unitCount >= 2) extra.push('不同单位的系列分别使用左右坐标轴并标明单位')
-  if (profile.magnitudeRatio !== null && profile.magnitudeRatio >= 50 && !profile.hasNegative) {
-    extra.push('数值差距很大，使用断轴让较小的值也能看清')
-  }
-  if (profile.hasPeriod) extra.push('标注最高和最低的期间')
-  const kept = base.filter(command => !(TOP_FIVE.test(command) && profile.categoryCount <= 5))
-  return [...new Set([...extra, ...kept])].slice(0, Math.max(base.length, 6))
-}
-
-/** 预设可能不适合当前数据的原因；仅作提示，仍允许尝试，最终以服务端核验为准。 */
-export function presetCaution(presetId: string, profile?: ChartDataProfile | null): string | null {
-  if (!profile) return null
-  const numeric = profile.numericFieldCount
-  switch (presetId) {
-    case 'pie':
-    case 'donut':
-      return profile.hasNegative ? '数据含负值，不适合构成图' : null
-    case 'radar':
-      return numeric < 3 || numeric > 8 ? `需要 3–8 个数值字段，当前 ${numeric} 个` : null
-    case 'scatter':
-      return numeric < 2 ? `需要两个数值字段，当前 ${numeric} 个` : null
-    case 'bubble':
-      return numeric < 3 ? `需要三个数值字段，当前 ${numeric} 个` : null
-    case 'heatmap':
-      return profile.textFieldCount < 2 ? '需要两个分类字段' : null
-    case 'bands':
-      return numeric < 3 ? '需要中心值与上下界三个数值字段' : null
-    case 'funnel':
-      return profile.categoryCount < 3 ? '阶段少于 3 个' : null
-    case 'dual':
-    case 'dual-stack':
-      return profile.unitCount < 2 ? '各系列单位一致，通常不需要双轴' : null
-    case 'vertical-break':
-    case 'horizontal-break':
-      return profile.magnitudeRatio !== null && profile.magnitudeRatio < 10 ? '数值差距不大，通常不需要断轴' : null
-    case 'pagination':
-      return profile.categoryCount <= 20 ? `只有 ${profile.categoryCount} 个类别，通常无需分页` : null
-    default:
-      return null
-  }
+/**
+ * 合并服务端推荐与按图形的通用建议：服务端建议在前，被服务端标为不适用的通用建议去掉。
+ * 服务端未返回推荐（旧服务或概况不可用）时只展示通用建议，前端不另行推断数据。
+ */
+export function mergeChartSuggestions(base: string[], recommendations?: ChartRecommendations | null): { id: string; text: string }[] {
+  const suppressed = new Set(recommendations?.suppress ?? [])
+  const merged = [...(recommendations?.suggestions ?? []),
+    ...base.map(text => ({ id: suggestionId(text), text })).filter(item => !suppressed.has(item.id))]
+  const seen = new Set<string>()
+  return merged.filter(item => !seen.has(item.text) && Boolean(seen.add(item.text))).slice(0, Math.max(base.length, 6))
 }
 
 export const PRESET_GROUPS: readonly { title: string; ids: readonly string[] }[] = [

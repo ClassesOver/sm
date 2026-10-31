@@ -5,10 +5,10 @@ import { createElement, CircleAlert } from 'lucide'
 import { buttonClasses } from './button'
 import { askAIPanel, type AskAISession } from './ask-ai-panel'
 import { createAITemplateCard } from './ai-template-card'
-import { type AIOrigin, CHART_REFINEMENTS, chartSuggestionsFromProfile, createAITracker, createRefinementRow, createStartSection, createSuggestionItem, presetCaution, PRESET_GROUPS, suggestionId } from './ai-suggestions'
+import { type AIOrigin, CHART_REFINEMENTS, createAITracker, createRefinementRow, createStartSection, createSuggestionItem, mergeChartSuggestions, PRESET_GROUPS, suggestionId } from './ai-suggestions'
 import { createModal } from './modal'
 import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
-import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ChartDataProfile, type ChartStandardEditRequest, type ReportEditorClient, type TraceChartInfo } from './api'
+import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ChartRecommendations, type ChartStandardEditRequest, type ReportEditorClient, type TraceChartInfo } from './api'
 
 /** 设计稿：docs/superpowers/specs/2026-10-25-report-editor-ai-chart-edit-design.md §3/§10。 */
 
@@ -459,7 +459,7 @@ interface EditTarget {
   standardAvailable?: boolean
   standardReason?: string
   standardForms?: string[]
-  dataProfile?: ChartDataProfile
+  recommendations?: ChartRecommendations | null
   previousEditId?: string
   /** 正文中的原图组；继续预览未接受的结果时保持不变。 */
   bodyEditId?: string
@@ -575,7 +575,7 @@ export function createChartAIEdit(options: {
         standardAvailable: availability.standardAvailable,
         standardReason: availability.standardReason,
         standardForms: availability.standardChartCapabilities?.forms,
-        dataProfile: availability.dataProfile,
+        recommendations: availability.recommendations,
         bodyImageSrc: locateImage(view, img)?.node.attrs.src as string | undefined,
         ...(record ? { previousEditId: record.editId, bodyEditId: record.editId, bodyPages: record.pages } : {}),
       }
@@ -595,7 +595,10 @@ export function createChartAIEdit(options: {
     actionModal?.close()
     const body = document.createElement('div')
     const fieldId = (name: string) => `${name}${ensureModal().idSuffix}`
-    const suggestions = chartSuggestionsFromProfile(quickCommandsForForm(current.visualForm), current.dataProfile)
+    const suggestionItems = mergeChartSuggestions(quickCommandsForForm(current.visualForm), current.recommendations)
+    const suggestions = suggestionItems.map(item => item.text)
+    // 埋点优先使用服务端给出的固定标识。
+    const idOf = (command: string) => suggestionItems.find(item => item.text === command)?.id ?? suggestionId(command)
     body.innerHTML = `
       <div class="chart-ai-current">
         <img alt="当前图表" src="${assetUrl(basePath, current.imagePath)}">
@@ -751,7 +754,7 @@ export function createChartAIEdit(options: {
       const standard = 'standard' in preset
       const unsupported = standard && current.standardForms && !current.standardForms.includes(preset.standard.standardForm)
       const unavailable = standard && current.standardAvailable === false
-      const caution = presetCaution(preset.id, current.dataProfile)
+      const caution = current.recommendations?.cautions[preset.id] ?? null
       card.disabled = Boolean(unsupported || unavailable)
       if (caution && !card.disabled) card.dataset.caution = 'true'
       const name = document.createElement('strong'); name.textContent = preset.name
@@ -764,7 +767,7 @@ export function createChartAIEdit(options: {
     }
     const byId = new Map<string, typeof STANDARD_CHART_PRESETS[number]>(STANDARD_CHART_PRESETS.map(preset => [preset.id, preset]))
     // 一键换图形：带 standard 的确定性预设；适合当前数据的排在前面。
-    const rank = (id: string) => (presetCaution(id, current.dataProfile) ? 1 : 0)
+    const rank = (id: string) => (current.recommendations?.cautions[id] ? 1 : 0)
     for (const preset of [...STANDARD_CHART_PRESETS].filter(item => 'standard' in item).sort((a, b) => rank(a.id) - rank(b.id))) {
       standardCards.append(presetCard(preset))
     }
@@ -789,7 +792,7 @@ export function createChartAIEdit(options: {
       chip.type = 'button'
       chip.className = 'chart-ai-chip'
       chip.textContent = command
-      chip.addEventListener('click', () => fillInstruction(command, '', { source: 'dialog', kind: 'ai', suggestionId: suggestionId(command) }))
+      chip.addEventListener('click', () => fillInstruction(command, '', { source: 'dialog', kind: 'ai', suggestionId: idOf(command) }))
       quick.append(chip)
     }
     quickBox.append(quickTitle, quick)
@@ -814,7 +817,7 @@ export function createChartAIEdit(options: {
     start.list.append(startTemplate)
     for (const command of suggestions.slice(0, 3)) {
       start.list.append(createSuggestionItem({ kind: 'ai', title: command, disabled: current.aiAvailable === false,
-        onClick: () => fillInstruction(command, '', { source: 'start', kind: 'ai', suggestionId: suggestionId(command) }) }))
+        onClick: () => fillInstruction(command, '', { source: 'start', kind: 'ai', suggestionId: idOf(command) }) }))
     }
     const runTemplateFromCard = (item: { templateId: string; name: string }, source: 'start' | 'dialog') => {
       if (textarea.value.trim()) {
@@ -875,7 +878,7 @@ export function createChartAIEdit(options: {
     const form = body.querySelector<HTMLElement>('.ask-ai-input-form')!
     form.before(start.section)
     if (retainReview) textarea.before(createRefinementRow(CHART_REFINEMENTS, command => {
-      fillInstruction(command, '', { source: 'refine', kind: 'ai', suggestionId: suggestionId(command) })
+      fillInstruction(command, '', { source: 'refine', kind: 'ai', suggestionId: idOf(command) })
     }))
     if (!retainReview) output.replaceChildren(...body.childNodes)
     ensureModal().mountComposer(form)

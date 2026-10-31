@@ -1,39 +1,21 @@
 import { describe, expect, it, vi } from 'vitest'
-import { chartSuggestionsFromProfile, createAITracker, createRefinementRow, createStartSection, presetCaution, TABLE_REFINEMENTS, suggestionId, tableProfile, tableSuggestions } from './ai-suggestions'
+import { createAITracker, createRefinementRow, createStartSection, mergeChartSuggestions, TABLE_REFINEMENTS, suggestionId, tableProfile, tableSuggestions } from './ai-suggestions'
 
-const profile = (overrides = {}) => ({ inputCount: 1, rowCount: 10, categoryCount: 10, textFieldCount: 1,
-  numericFieldCount: 1, unitCount: 1, hasPeriod: false, hasNegative: false, magnitudeRatio: 2, ...overrides })
 const base = ['在图上显示数值标签', '只保留金额最大的前 5 组，其余合并为“其他”并标注为子集', '把标题改得更简洁']
 
-describe('按数据概况推荐', () => {
-  it('概况缺失时保持按图形的原建议', () => {
-    expect(chartSuggestionsFromProfile(base, undefined)).toEqual(base)
+describe('合并服务端推荐', () => {
+  it('服务端未返回推荐时只展示按图形的通用建议', () => {
+    expect(mergeChartSuggestions(base, undefined).map(item => item.text)).toEqual(base)
+    expect(mergeChartSuggestions(base, null).map(item => item.id)).toEqual(['value-labels', 'top5', 'title'])
   })
 
-  it('类别少时不推荐 TopN，类别多、单位多、量级悬殊、有期间时优先给出对应建议', () => {
-    expect(chartSuggestionsFromProfile(base, profile({ categoryCount: 4 }))).not.toContain(base[1])
-    const rich = chartSuggestionsFromProfile(base, profile({ categoryCount: 40, unitCount: 2, magnitudeRatio: 500, hasPeriod: true }))
-    expect(rich.slice(0, 4)).toEqual([
-      '将全部类别分页展示，保持统一颜色和值域', '不同单位的系列分别使用左右坐标轴并标明单位',
-      '数值差距很大，使用断轴让较小的值也能看清', '标注最高和最低的期间'])
-    expect(rich.length).toBeLessThanOrEqual(6)
-  })
-
-  it.each([
-    ['pie', { hasNegative: true }, '含负值'],
-    ['radar', { numericFieldCount: 2 }, '3–8'],
-    ['bubble', { numericFieldCount: 2 }, '三个数值字段'],
-    ['dual', { unitCount: 1 }, '单位一致'],
-    ['vertical-break', { magnitudeRatio: 3 }, '差距不大'],
-    ['pagination', { categoryCount: 8 }, '无需分页'],
-  ])('%s 在不合适的数据上给出提示', (id, overrides, text) => {
-    expect(presetCaution(id, profile(overrides))).toContain(text)
-  })
-
-  it('适合或未知时不提示', () => {
-    expect(presetCaution('pie', profile())).toBeNull()
-    expect(presetCaution('dual', profile({ unitCount: 2 }))).toBeNull()
-    expect(presetCaution('pie', undefined)).toBeNull()
+  it('服务端建议排在前面并保留其标识，被标为不适用的通用建议隐藏，重复文案只出现一次', () => {
+    const merged = mergeChartSuggestions(base, {
+      suggestions: [{ id: 'dual-axis', text: '不同单位的系列分别使用左右坐标轴并标明单位' }, { id: 'labels', text: base[0]! }],
+      suppress: ['top5'], cautions: {},
+    })
+    expect(merged.map(item => item.id)).toEqual(['dual-axis', 'labels', 'title'])
+    expect(merged.length).toBeLessThanOrEqual(6)
   })
 })
 

@@ -136,36 +136,45 @@ def standard_plot_summary(plot_files):
 _PERIOD_LABEL = re.compile(r"^\d{4}(?:[-/年]\d{1,2}(?:月)?|[ -]?Q[1-4]|年)")
 
 
+def _table_profile(content):
+    document = json.loads(content)
+    columns, rows = document.get("columns"), document.get("rows")
+    metadata = document.get("columnMeta") or {}
+    if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
+        raise ValueError("chart input is not a table")
+    rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
+    text_columns, numeric_columns = [], []
+    for index, _column in enumerate(columns):
+        values = [row[index] for row in rows if row[index] is not None]
+        if values and all(isinstance(value, str) for value in values):
+            text_columns.append(index)
+        elif values and all(_finite_number(value) for value in values):
+            numeric_columns.append(index)
+    numbers = [row[index] for row in rows for index in numeric_columns if row[index] is not None]
+    units = {meta.get("unit") for column in (columns[index] for index in numeric_columns)
+             if isinstance(meta := metadata.get(column), dict) and isinstance(meta.get("unit"), str)}
+    periods = any(isinstance(metadata.get(columns[index]), dict) and metadata[columns[index]].get("periods")
+                  for index in numeric_columns)
+    categories = (list(dict.fromkeys(row[text_columns[0]] for row in rows if row[text_columns[0]] is not None))
+                  if text_columns else [])
+    return rows, text_columns, numeric_columns, numbers, units, periods, categories
+
+
 def chart_data_profile(plot_files):
     """供编辑器推荐操作的粗粒度数据概况；只描述已核验字节，不作为作图或核验依据。
 
-    以第一份作图输入为主表：首个文本列视为类别，数值列视为度量。任何结构异常返回 None，
-    前端据此退回通用推荐。
+    类别、字段数以第一份作图输入（主表）为准；单位、负值与数值跨度汇总全部输入，
+    多来源组合图也能识别量纲差异。任何结构异常返回 None，界面退回通用推荐。
     """
     if not plot_files:
         return None
     try:
-        document = json.loads(plot_files[0].content)
-        columns, rows = document.get("columns"), document.get("rows")
-        metadata = document.get("columnMeta") or {}
-        if not isinstance(columns, list) or not isinstance(rows, list) or not isinstance(metadata, dict):
-            return None
-        rows = [row for row in rows if isinstance(row, list) and len(row) == len(columns)]
-        text_columns, numeric_columns = [], []
-        for index, column in enumerate(columns):
-            values = [row[index] for row in rows if row[index] is not None]
-            if values and all(isinstance(value, str) for value in values):
-                text_columns.append(index)
-            elif values and all(_finite_number(value) for value in values):
-                numeric_columns.append(index)
-        categories = (list(dict.fromkeys(row[text_columns[0]] for row in rows if row[text_columns[0]] is not None))
-                      if text_columns else [])
-        numbers = [row[index] for row in rows for index in numeric_columns if row[index] is not None]
+        tables = [_table_profile(item.content) for item in plot_files]
+        rows, text_columns, numeric_columns, _numbers, _units, _periods, categories = tables[0]
+        numbers = [value for table in tables for value in table[3]]
+        units = set().union(*(table[4] for table in tables))
         nonzero = [abs(value) for value in numbers if value]
-        units = {meta.get("unit") for column in (columns[index] for index in numeric_columns)
-                 if isinstance(meta := metadata.get(column), dict) and isinstance(meta.get("unit"), str)}
-        has_period = any(isinstance(metadata.get(columns[index]), dict) and metadata[columns[index]].get("periods")
-                         for index in numeric_columns) or bool(
+        has_period = any(table[5] for table in tables) or bool(
             categories and all(_PERIOD_LABEL.match(str(value)) for value in categories))
         return {
             "inputCount": len(plot_files),
@@ -181,6 +190,53 @@ def chart_data_profile(plot_files):
         }
     except (ValueError, TypeError, AttributeError, IndexError, KeyError):
         return None
+
+
+def chart_recommendations(profile):
+    """按数据概况给出改图推荐；编辑器唯一的推荐来源，前端只负责展示。
+
+    suggestions：数据相关的 AI 建议（id 为固定标识，用于埋点）；
+    suppress：当前数据下不应展示的通用建议标识；
+    cautions：预设可能不适合当前数据的原因，仅作提示，最终以执行时校验为准。
+    """
+    if profile is None:
+        return None
+    categories, numeric = profile["categoryCount"], profile["numericFieldCount"]
+    ratio, negative = profile["magnitudeRatio"], profile["hasNegative"]
+    suggestions = []
+    if categories > 12:
+        suggestions.append({"id": "paginate", "text": "将全部类别分页展示，保持统一颜色和值域"})
+    if profile["unitCount"] >= 2:
+        suggestions.append({"id": "dual-axis", "text": "不同单位的系列分别使用左右坐标轴并标明单位"})
+    if ratio is not None and ratio >= 50 and not negative:
+        suggestions.append({"id": "break", "text": "数值差距很大，使用断轴让较小的值也能看清"})
+    if profile["hasPeriod"]:
+        suggestions.append({"id": "mark-extremes", "text": "标注最高和最低的期间"})
+    cautions = {}
+    if negative:
+        cautions["pie"] = cautions["donut"] = "数据含负值，不适合构成图"
+    if not 3 <= numeric <= 8:
+        cautions["radar"] = f"需要 3–8 个数值字段，当前 {numeric} 个"
+    if numeric < 2:
+        cautions["scatter"] = f"需要两个数值字段，当前 {numeric} 个"
+    if numeric < 3:
+        cautions["bubble"] = f"需要三个数值字段，当前 {numeric} 个"
+        cautions["bands"] = "需要中心值与上下界三个数值字段"
+    if profile["textFieldCount"] < 2:
+        cautions["heatmap"] = "需要两个分类字段"
+    if categories < 3:
+        cautions["funnel"] = "阶段少于 3 个"
+    if profile["unitCount"] < 2:
+        cautions["dual"] = cautions["dual-stack"] = "各系列单位一致，通常不需要双轴"
+    if ratio is not None and ratio < 10:
+        cautions["vertical-break"] = cautions["horizontal-break"] = "数值差距不大，通常不需要断轴"
+    if categories <= 20:
+        cautions["pagination"] = f"只有 {categories} 个类别，通常无需分页"
+    return {
+        "suggestions": suggestions,
+        "suppress": ["top5"] if categories <= 5 else [],
+        "cautions": cautions,
+    }
 
 
 def _finite_number(value):
