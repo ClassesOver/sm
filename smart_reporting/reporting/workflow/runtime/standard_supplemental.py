@@ -52,7 +52,7 @@ class StandardSupplementalRequest(BaseModel):
     measure_field: str = Field(min_length=1, alias="measureField")
     denominator_field: str | None = Field(default=None, min_length=1, alias="denominatorField")
     measure_unit: str | None = Field(default=None, min_length=1, alias="measureUnit")
-    dimension_field: str = Field(min_length=1, alias="dimensionField")
+    dimension_field: str | None = Field(default=None, min_length=1, alias="dimensionField")
     secondary_dimension_field: str | None = Field(
         default=None, min_length=1, alias="secondaryDimensionField",
     )
@@ -100,6 +100,11 @@ class StandardSupplementalRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_baseline_for_comparison(self) -> StandardSupplementalRequest:
+        if self.dimension_field is None and not (
+            self.operation == "period_comparison" and self.group_by_period
+            and self.secondary_dimension_field is None
+        ):
+            raise ValueError("只有无交叉维度的逐期 period_comparison 可以不提供 dimensionField")
         if self.change_rate_denominator != "signed" and not (
             self.operation in {"period_comparison", "group_period_comparison"}
             or self.operation == "group_period_series" and self.include_period_change
@@ -194,7 +199,7 @@ class StandardSupplementalSpec(BaseModel):
     operation: StandardSupplementalOperation
     measure_field: str = Field(min_length=1, alias="measureField")
     denominator_field: str | None = Field(default=None, min_length=1, alias="denominatorField")
-    dimension_field: str = Field(min_length=1, alias="dimensionField")
+    dimension_field: str | None = Field(default=None, min_length=1, alias="dimensionField")
     secondary_dimension_field: str | None = Field(
         default=None, min_length=1, alias="secondaryDimensionField",
     )
@@ -229,6 +234,11 @@ class StandardSupplementalSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_periods_and_parent_refs(self) -> StandardSupplementalSpec:
+        if self.dimension_field is None and not (
+            self.operation == "period_comparison" and self.group_by_period
+            and self.secondary_dimension_field is None
+        ):
+            raise ValueError("只有无交叉维度的逐期 period_comparison 可以不提供 dimensionField")
         if self.change_rate_denominator != "signed" and not (
             self.operation in {"period_comparison", "group_period_comparison"}
             or self.operation == "group_period_series" and self.include_period_change
@@ -293,7 +303,7 @@ class StandardSupplementalSpec(BaseModel):
 
 
 def _standard_source_fields(spec: StandardSupplementalSpec | StandardSupplementalRequest) -> tuple[str, ...]:
-    dimensions: tuple[str, ...] = (spec.dimension_field,)
+    dimensions: tuple[str, ...] = (spec.dimension_field,) if spec.dimension_field is not None else ()
     if spec.secondary_dimension_field is not None:
         dimensions += (spec.secondary_dimension_field,)
     if spec.operation in {"group_period_series", "group_period_comparison"} or spec.group_by_period:
@@ -436,7 +446,7 @@ def run_standard_supplemental(
         required_fields = {
             request.measure_field, request.dimension_field, request.period_field,
             *(set(request.scope) - set(bound_fields)),
-        }
+        } - {None}
         if request.secondary_dimension_field is not None:
             required_fields.add(request.secondary_dimension_field)
         if request.denominator_field is not None:
@@ -836,7 +846,7 @@ def _read_rows(
     # 同一 select 中按角色投影，不在原 frame 上覆盖可能同名的合法源字段。
     expressions = [
         pl.col(request.period_field).alias("__period"),
-        pl.col(request.dimension_field).alias("__dimension"),
+        (pl.col(request.dimension_field) if request.dimension_field is not None else pl.lit("")).alias("__dimension"),
         pl.col(request.measure_field).cast(pl.Float64, strict=False).alias("__value"),
     ]
     if request.secondary_dimension_field is not None:
@@ -1234,6 +1244,8 @@ def _period_comparison_rows(
         ))
         if not period_rows:
             warnings.append(f"期间 {period} 与 {prior} 没有可比较的有效分组")
+            if request.dimension_field is None:
+                result.append([period, "", None, None, None, None, None])
     current_total = math.fsum(current_totals)
     baseline_total = math.fsum(baseline_totals)
     total_change = current_total - baseline_total
@@ -1254,7 +1266,10 @@ def _period_comparison_rows(
         warnings.append("全窗总变化为零，contribution 保留为空")
     if any(not check["passed"] for check in checks):
         warnings.append("逐期期间比较与冻结总额或可比较分组不闭合，保留结果并产生软告警")
-    return [[*row, rank] for rank, row in enumerate(result, start=1)], checks
+    return [
+        [*(row if request.dimension_field is not None else [row[0], *row[2:]]), rank]
+        for rank, row in enumerate(result, start=1)
+    ], checks
 
 
 def _reconciliation(name: str, left: float, right: float) -> dict[str, Any]:
@@ -1478,13 +1493,15 @@ def standard_computation_catalog(
             ]
             source: dict[str, Any] | None = None
             comparison_bindings: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
-            if _include_grouping_sources and dimensions and standard_input_matches_fact(parent, dataset):
+            if (_include_grouping_sources and (dimensions or parent.period_aggregation == "sum")
+                    and standard_input_matches_fact(parent, dataset)):
                 source = {
                     "datasetId": dataset_id, "parentFactId": parent.fact_id,
                     "measureField": parent.field, "periodField": parent.period_field,
                     "currentPeriods": list(periods), "dimensionFields": dimensions,
                     "periodAggregation": parent.period_aggregation,
-                    "supportedOperations": list(STANDARD_SUPPLEMENTAL_OPERATIONS)
+                    "supportedOperations": (list(STANDARD_SUPPLEMENTAL_OPERATIONS) if dimensions
+                                            else ["period_comparison"])
                     if parent.period_aggregation == "sum" else ["group_summary", "cross_group_summary"],
                     "projectedScopeFields": sorted(set(parent_scope) & columns),
                     "comparisonBindings": [],
@@ -1497,7 +1514,7 @@ def standard_computation_catalog(
                           for label in periods}
             prior_periods = tuple(label for label in all_periods
                                   if metric_period_key(label, getattr(parent, "period_granularity", None)) in prior_keys)
-            for dimension in dimensions:
+            for dimension in (*dimensions, None):
                 role = profile.get(dimension, {}).get("role") if isinstance(profile, dict) else None
                 if role in {"measure", "period", "empty"}:
                     continue
@@ -1512,9 +1529,9 @@ def standard_computation_catalog(
                         currentPeriods=periods, parentFactId=parent.fact_id,
                         includePeriodChange=operation == "group_period_series",
                     )
-                    for operation in operations
+                    for operation in operations if dimension is not None
                 ]
-                if parent.period_aggregation == "sum" and prior_keys & all_keys:
+                if dimension is not None and parent.period_aggregation == "sum" and prior_keys & all_keys:
                     specs.append(StandardSupplementalSpec(
                         operation="group_period_comparison", measureField=parent.field,
                         dimensionField=dimension, periodField=parent.period_field,
@@ -1541,12 +1558,12 @@ def standard_computation_catalog(
                     ):
                         continue
                     baseline_columns = set(baseline_dataset.get("columns") or ())
-                    if (not {parent.field, parent.period_field, dimension}.issubset(baseline_columns)
+                    if (not ({parent.field, parent.period_field, dimension} - {None}).issubset(baseline_columns)
                             or not (set(parent_scope) - baseline_columns).issubset(
                                 query_bound_scope_fields(baseline_dataset, parent_scope))):
                         continue
                     for prior in comparison_period_windows(parent, baseline, periods):
-                        for by_period in (False, True):
+                        for by_period in ((False, True) if dimension is not None else (True,)):
                             specs.append(StandardSupplementalSpec(
                                 operation="period_comparison", measureField=parent.field,
                                 dimensionField=dimension, periodField=parent.period_field,
@@ -1567,11 +1584,12 @@ def standard_computation_catalog(
                                 comparison_bindings[binding_key] = binding
                                 if source is not None:
                                     source["comparisonBindings"].append(binding)
-                            comparison_bindings[binding_key]["dimensionFields"].append(dimension)
+                            if dimension is not None:
+                                comparison_bindings[binding_key]["dimensionFields"].append(dimension)
                 for spec in specs:
                     add_candidate(
                         dataset_id=dataset_id,
-                        fields=required | {dimension},
+                        fields=required | ({dimension} if dimension is not None else set()),
                         label=getattr(parent, "display_name", None) or parent.field,
                         spec=spec,
                     )
@@ -1737,14 +1755,14 @@ def standard_computation_catalog(
 
     def coverage_key(candidate: Mapping[str, Any]) -> tuple[int, int, int]:
         spec = candidate["standardComputation"]
-        dimensions = [spec["dimensionField"]]
+        dimensions = [spec["dimensionField"]] if spec.get("dimensionField") is not None else []
         if spec.get("secondaryDimensionField"):
             dimensions.append(spec["secondaryDimensionField"])
         return (
             measure_uses.get((candidate["datasetId"], spec["measureField"]), 0),
             variant_uses.get((candidate["datasetId"], spec["operation"],
                               spec["measureField"], spec.get("groupByPeriod", False)), 0),
-            max(dimension_uses.get((candidate["datasetId"], field), 0) for field in dimensions),
+            max((dimension_uses.get((candidate["datasetId"], field), 0) for field in dimensions), default=0),
         )
 
     while len(candidates) < STANDARD_CANDIDATE_LIMIT:
@@ -1762,7 +1780,7 @@ def standard_computation_catalog(
             candidates.append(candidate)
             used_bytes += size
             spec = candidate["standardComputation"]
-            for field in (spec["dimensionField"], spec.get("secondaryDimensionField")):
+            for field in (spec.get("dimensionField"), spec.get("secondaryDimensionField")):
                 if field is not None:
                     key = (candidate["datasetId"], field)
                     dimension_uses[key] = dimension_uses.get(key, 0) + 1

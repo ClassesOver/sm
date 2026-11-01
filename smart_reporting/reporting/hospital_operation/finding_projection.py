@@ -349,6 +349,21 @@ def project_analysis_findings(
             }
             neutral_label = next(iter(registered_labels)) if len(registered_labels) == 1 else "补充"
             neutral_title = neutral_label[:180] + "证据待核对"
+            # 未核验只适用于本条补证；同指标的冻结总量/比较事实仍可用，
+            # 不得让读者把“补证分项未核验”读成“该指标全部结论不可用”。
+            item_codes = {str(code) for code in item.get("metricCodes") or () if isinstance(code, str)}
+            frozen_metric_codes = {
+                str(code)
+                for metric in payload.get("metrics", ())
+                if isinstance(metric, Mapping)
+                for code in (metric.get("metricCodes") or ())
+                if isinstance(code, str) and isinstance(metric.get("total"), (int, float))
+            }
+            frozen_conflict = (
+                "同指标的全院合计与同比已由冻结事实登记并可引用；本条限制仅针对该补证分项，"
+                "不否定已登记的总量或比较结论。"
+                if item_codes & frozen_metric_codes else None
+            )
             findings.append(FindingCard(
                 findingId=_stable_id(analysis_id, f"{supplemental_file_path}:{pointer}", snapshot_hash),
                 analysisIds=(analysis_id,), kind=cast(FindingKind, kind), title=neutral_title[:200],
@@ -363,6 +378,7 @@ def project_analysis_findings(
                 limitations=((("直接分解未证明同期间、同范围、同单位及完整分组身份；不能据此归因或安排整改。",)
                               if attribution_unproven else ("补证仅完成文件登记，数值与业务表述尚未得到确定性验证。",))
                              + scope_limitations
+                             + ((frozen_conflict,) if frozen_conflict else ())
                              + tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning))[:100],
             ))
     if not findings:

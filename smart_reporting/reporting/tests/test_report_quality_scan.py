@@ -134,6 +134,19 @@ def test_binding_scan_skips_server_tables_like_the_publication_chain():
     assert with_table["binding"]["verdicts"].get("missing", 0) == 0
 
 
+def test_quality_scan_keeps_unknown_prose_numbers_while_excluding_frozen_table_and_caption():
+    markdown = (
+        '未知项目金额987654321元。\n\n'
+        '123456789元附表\n\n[[table:t]]\n| 项目 | 金额 |\n| --- | --- |\n'
+        '| 附表项目 | 7654321元 |\n\n[[/table:t]]\n\n'
+        '另一未知项目金额876543210元。'
+    )
+    result = scan_report_quality(markdown, _table_contents())
+    assert result['binding']['checked'] == 2
+    assert result['binding']['verdicts']['missing'] == 2
+    assert result['numbers']['unregistered'] == 2
+
+
 @pytest.mark.parametrize("unit", ["%", "百分点", "个百分点", "元/人次"])
 @pytest.mark.parametrize("factor", ["1e4", "1e-4", "1e8", "1e-8"])
 def test_missing_classification_does_not_infer_scale_for_unrelated_units(unit, factor):

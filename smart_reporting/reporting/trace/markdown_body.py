@@ -16,6 +16,14 @@ from markdown_it.rules_inline.backticks import backtick
 MAX_TRACE_BODY_CACHE_BYTES = 4 * 1024 * 1024
 MAX_TRACE_BODY_CACHE_ENTRIES = 16
 
+# 来源复核共用的服务端表格协议块（含独立表名），不参与导出布局或搬移。
+# 表名前须为空行且不能是正文末句、标题或列表项，避免误删正文口径。
+SERVER_TABLE_BLOCK = re.compile(
+    r"(?:(?:\A|(?<=\n\n))(?![\[|#!>])(?![-*+][ \t]|\d{1,3}[.)][ \t])(?![^\n]*\[\[)"
+    r"[^\n]*[^\n。！？；.!?]\n\n)?^\[\[table:(?P<id>[^\]\r\n]+)\]\]\n.*?^\[\[/table:(?P=id)\]\][ \t]*(?:\n|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
 
 @dataclass
 class _TraceBodyCache:

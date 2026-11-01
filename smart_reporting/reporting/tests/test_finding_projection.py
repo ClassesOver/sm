@@ -83,6 +83,23 @@ def test_file_registration_does_not_verify_arbitrary_supplemental_values():
     assert result[0].evidence_level == "evidence_missing"
 
 
+def test_supplemental_gap_does_not_hide_registered_total_for_same_metric():
+    result = project_analysis_findings(
+        "analysis_001",
+        facts(metrics=[{
+            "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
+            "periodRoles": ["current"], "metricCodes": ["income"],
+            "field": "income", "fieldRef": "income", "aggregation": "sum",
+            "formula": "sum(income)", "total": 100, "unit": "元",
+            "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+        }]),
+        {"analysisId": "analysis_001", "findings": [{"metricCodes": ["income"], "kind": "comparison"}]},
+        snapshot_hash="b" * 64, citation_ids=("citation_001",),
+        supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
+    )
+    assert any("全院合计与同比已由冻结事实登记" in item for item in result[0].limitations)
+
+
 def test_many_rejected_supplements_and_full_warning_budget_remain_soft_gaps():
     for findings, scope in [
         ([{"metricCodes": ["deleted"]}] * 500, {"allowedMetricCodes": []}),

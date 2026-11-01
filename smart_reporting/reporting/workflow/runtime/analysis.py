@@ -3924,7 +3924,7 @@ class RuntimeAnalysisMixin:
                         computation_spec.period_field, *(set(parent_scope) & baseline_columns),
                         *((computation_spec.secondary_dimension_field,)
                           if computation_spec.secondary_dimension_field is not None else ()),
-                    }))
+                    } - {None}))
                     if not set(baseline_fields).issubset(baseline_columns):
                         raise ReportingError("report_analysis_standard_dataset_invalid", "标准补证对照字段未授权。")
                 request = StandardSupplementalRequest(

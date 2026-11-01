@@ -99,7 +99,7 @@ def setup(tmp_path, forms):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-@pytest.mark.parametrize("failure", [None, "review", "tamper", "final_review"])
+@pytest.mark.parametrize("failure", [None, "review", "tamper", "final_review", "final_review_source_path"])
 async def test_mixed_routes_keep_good_charts_standard_and_sign_final_execution(
     tmp_path, monkeypatch, failure
 ):
@@ -136,7 +136,7 @@ async def test_mixed_routes_keep_good_charts_standard_and_sign_final_execution(
     async def standard(ctx, workspace, source, facts):
         calls.append(("standard", ctx.declared_output_paths))
         if (
-            failure == "final_review"
+            failure in {"final_review", "final_review_source_path"}
             and ctx.script_path == "charts.py"
             and sum(
                 call[0] == "standard" and call[1] == context.declared_output_paths for call in calls
@@ -149,7 +149,11 @@ async def test_mixed_routes_keep_good_charts_standard_and_sign_final_execution(
                 details={
                     "standardDiagnostic": {
                         "code": "specific_review",
-                        "details": {"path": "chart-0.png", "issueSummary": "overlap"},
+                        "details": {
+                            ("sourcePath" if failure == "final_review_source_path" else "path"):
+                                "chart-0.png",
+                            "issueSummary": "overlap",
+                        },
                     }
                 },
             )

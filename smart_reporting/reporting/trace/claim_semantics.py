@@ -121,7 +121,7 @@ def _claim_context(
     markdown: str, claim_id: str, *, include_previous: bool, include_section: bool,
 ) -> str | None:
     from ..delivery.report_runtime.markdown import normalize_cjk_punctuation, normalize_cjk_wording
-    from .markdown_body import trace_body
+    from .markdown_body import SERVER_TABLE_BLOCK, trace_body
 
     markdown = trace_body(markdown)
     marker = f'[[claim:{claim_id}]]'
@@ -147,9 +147,7 @@ def _claim_context(
             paragraph = previous + '\n\n' + paragraph
     paragraph = paragraph.replace(marker, '【当前数值引用】')
     if include_section:
-        from ..delivery.report_runtime.markdown import _SERVER_TABLE_BLOCK
-
-        paragraph = _SERVER_TABLE_BLOCK.sub(
+        paragraph = SERVER_TABLE_BLOCK.sub(
             lambda match: match[0] if '【当前数值引用】' in match[0] else '', paragraph,
         )
     paragraph = re.sub(r'\[\[[^\]\r\n]+\]\]', '', paragraph)

@@ -855,7 +855,8 @@ class TableAIEditService:
             "analysisId": analysis_id,
             "newTableId": new_table_id,
             "markdown": rendered.markdown,
-            "baseCaption": _table_caption(getattr(trace, "origin_markdown", None)),
+            # 原始追溯通常仅冻结协议表块，不包含标记前的表题；以刚核验的当前草稿为准。
+            "baseCaption": _table_caption(current_markdown, current_table_id),
             "review": _review_payload(old_body or "", rendered.markdown, rendered.trace),
             "warnings": warnings,
             "skipped": [{"request": item.request, "reason": item.reason} for item in skipped],
@@ -1237,13 +1238,17 @@ def _table_body(markdown: str) -> str:
     return match.group(2) if match else ""
 
 
-def _table_caption(markdown: str | None) -> str | None:
-    """Return the server-rendered caption immediately preceding a table marker."""
+def _table_caption(markdown: str | None, table_id: str) -> str | None:
+    """Return the caption immediately preceding the exact current table marker."""
 
     if not markdown:
         return None
-    match = re.search(r"(?:^|\n)([^\n]+)\n\n\[\[table:[^\]\r\n]+\]\]", markdown)
-    return match.group(1).strip() if match else None
+    match = re.search(
+        rf"(?:^|\n\n)([^\n]+)\n\n\[\[table:{re.escape(table_id)}\]\](?:\n|$)",
+        markdown,
+    )
+    caption = match.group(1).strip() if match else None
+    return caption if caption and not caption.startswith(("[[", "|")) else None
 
 
 def _table_body_for_id(markdown: str, table_id: str) -> str | None:

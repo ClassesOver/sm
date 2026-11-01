@@ -2871,9 +2871,18 @@ def normalize_signed_wording(markdown: str) -> str:
     """
 
     def replace(match: re.Match[str]) -> str:
-        if describes_rate_level(match.string[: match.start()]) and not re.match(
-            r"\s*个百分点", match.string[match.end() :]
-        ):
+        prefix = match.string[: match.start()]
+        suffix = match.string[match.end() :]
+        # “成本增幅高于收入增幅-1.16个百分点”中的负号来自两个增幅的
+        # 差值计算，不表示“收入降幅”；保留两侧的指标名称，只去掉差值负号。
+        rate_difference = (
+            match["verb"] in {"增幅", "降幅", "增长率", "变化率"}
+            and re.search(r"(?:高于|低于|多于|少于|超过|不足)[^。；，,\n]{0,24}$", prefix)
+            and re.match(r"\s*个百分点", suffix)
+        )
+        if rate_difference:
+            return f"{match['verb']}{match['filler'] or ''}{match['space']}{match['value']}"
+        if describes_rate_level(prefix) and not re.match(r"\s*个百分点", suffix):
             return match[0]
         verb = match["verb"]
         falling = RISING_TO_FALLING.get(verb, verb)

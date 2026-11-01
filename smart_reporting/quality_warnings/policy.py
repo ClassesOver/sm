@@ -31,6 +31,7 @@ _QUALITY_WARNING_CODES: Final[frozenset[str]] = frozenset(
         "chart_low_effective_dpi",
         "chart_extreme_aspect_ratio",
         "chart_visual_review_not_run",
+        "chart_caption_numeric_review",
         "report_chart_low_resolution",
         "report_chart_low_effective_dpi",
         "report_chart_extreme_aspect_ratio",

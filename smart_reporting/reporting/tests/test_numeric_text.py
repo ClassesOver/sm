@@ -762,6 +762,10 @@ def test_extrema_correction_only_rewrites_the_analysis_that_produced_the_warning
             "9月实际支出较预算支出低13.47亿元，1月低2.00亿元。",
         ),
         ("月度最低-5.20%，降低-3.00%，提高-1.00%。", "月度最低-5.20%，降低3.00%，降低1.00%。"),
+        (
+            "成本增幅高于收入增幅-1.16个百分点。",
+            "成本增幅高于收入增幅1.16个百分点。",
+        ),
     ],
 )
 def test_signed_direction_wording_is_normalized_from_frozen_sign(text, expected):

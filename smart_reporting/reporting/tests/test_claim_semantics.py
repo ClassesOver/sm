@@ -788,6 +788,32 @@ def test_section_context_never_returns_context_without_current_marker():
     assert claim_context('![100元[[claim:c]]](figure.png)', 'c', include_section=True) is None
 
 
+@pytest.mark.parametrize('inside_table', [False, True])
+def test_section_context_excludes_unrelated_server_table_but_keeps_current_reference(inside_table):
+    from smart_reporting.reporting.trace.claim_semantics import claim_context
+
+    current = '100元[[claim:c]]' if inside_table else '100元'
+    markdown = (
+        '本节统计乙院开单收入。\n\n'
+        '其他院区金额汇总\n\n[[table:other]]\n| 院区 | 金额 |\n| --- | --- |\n'
+        '| 丙院 | 999元 |\n\n[[/table:other]]\n\n'
+        '本院金额汇总\n\n[[table:current]]\n| 院区 | 金额 |\n| --- | --- |\n'
+        f'| 乙院 | {current} |\n\n[[/table:current]]\n\n'
+        + ('本期结果如表所示。' if inside_table else '本期收入100元[[claim:c]]。')
+    )
+    context = claim_context(markdown, 'c', include_section=True)
+    assert context is not None
+    assert '本节统计乙院开单收入' in context
+    assert '100元【当前数值引用】' in context
+    assert '其他院区金额汇总' not in context
+    assert '丙院' not in context and '999元' not in context
+    if inside_table:
+        assert '本院金额汇总' in context
+        assert '| 乙院 | 100元【当前数值引用】 |' in context
+    else:
+        assert '本院金额汇总' not in context
+
+
 def test_quantity_fingerprint_keeps_denominator_role_but_not_revision_resource_location():
     from smart_reporting.reporting.trace.claim_semantics import quantity_binding_fingerprint
     reference = {'value':50,'unit':'%','formula':'10 / 20 * 100', 'denominatorFact':{

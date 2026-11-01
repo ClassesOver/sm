@@ -6,6 +6,7 @@ import { createAITemplateCard } from './ai-template-card'
 import { type AIOrigin, TABLE_REFINEMENTS, createAITracker, createRefinementRow, createStartSection, createSuggestionItem, suggestionId, tableProfile, tableSuggestions } from './ai-suggestions'
 import type { EditorTemplateInfo, ReportEditorClient, TableAIEditState } from './api'
 import { markdownSha256 } from './source-validation'
+import { evidenceLocationTransaction } from './evidence-location'
 import { formatElapsed } from './chart-ai-edit'
 import { createElement, CircleAlert } from 'lucide'
 
@@ -436,7 +437,8 @@ export function createTableAIEdit(options: {
         th.append(badge)
       }
       tr.append(th)
-      for (const cell of row.cells) {
+      // 协议首格是行标签，已在上方的行标题中展示。
+      for (const cell of row.cells.slice(1)) {
         const td = document.createElement('td')
         td.className = `table-ai-cell-${cell.status}`
         const control = document.createElement('button')
@@ -522,6 +524,7 @@ export function createTableAIEdit(options: {
         locate: () => {
           const current = locateBlock()
           if (!current || !adoptedContent?.eq(options.view.state.doc.slice(current.from, current.to).content)) return false
+          options.view.dispatch(evidenceLocationTransaction(options.view.state, current.tablePos))
           const element = options.view.nodeDOM(current.tablePos)
           if (!(element instanceof HTMLElement) || !element.isConnected) return false
           element.scrollIntoView?.({ block: 'center', behavior: 'auto' })
@@ -530,7 +533,8 @@ export function createTableAIEdit(options: {
         continueEditing: () => {
           if (!newTableId) return
           openedTableId = newTableId
-          void input(tableId, newTableId, tableBodyMarkdown(result.markdown!, newTableId), result.editId)
+          const adoptedBody = options.currentBody?.(newTableId) ?? tableBodyMarkdown(result.markdown!, newTableId)
+          void input(newTableId, newTableId, adoptedBody, result.editId)
         },
       })
     }))

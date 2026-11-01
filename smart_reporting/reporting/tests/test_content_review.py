@@ -1643,3 +1643,12 @@ def test_review_flags_statistical_processing_terms_from_the_appendix():
     warnings = [w for w in review_content(text, [content]) if "技术实现术语" in w]
     assert len(warnings) == 4 and any("行级" in w and "明细记录层面" in w for w in warnings)
     assert not [w for w in review_content("门诊人次与出院人次同步变动。", [content]) if "技术实现术语" in w]
+
+
+def test_review_flags_unsupported_operating_status_and_non_additive_volume_claims():
+    content = json.dumps({"analysisId": "analysis_001", "metrics": [_metric()]})
+    warnings = review_content(
+        "转化院区未设门诊；全院业务总量的走向主要由门诊端决定。", [content]
+    )
+    assert any("未设门诊" in warning and "直接证据" in warning for warning in warnings)
+    assert any("业务总量" in warning and "折算" in warning for warning in warnings)

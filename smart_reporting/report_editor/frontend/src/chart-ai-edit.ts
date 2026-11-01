@@ -8,6 +8,7 @@ import { createAITemplateCard } from './ai-template-card'
 import { type AIOrigin, CHART_REFINEMENTS, createAITracker, createRefinementRow, createStartSection, createSuggestionItem, mergeChartSuggestions, PRESET_GROUPS, suggestionId } from './ai-suggestions'
 import { createModal } from './modal'
 import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
+import { evidenceLocationTransaction } from './evidence-location'
 import { ReportEditorApiError, type ChartAIEditPage, type ChartAIEditSuccess, type ChartRecommendations, type ChartStandardEditRequest, type ReportEditorClient, type TraceChartInfo } from './api'
 
 /** 设计稿：docs/superpowers/specs/2026-10-25-report-editor-ai-chart-edit-design.md §3/§10。 */
@@ -1011,7 +1012,8 @@ export function createChartAIEdit(options: {
     }
   }
 
-  function renderReviewPhase(current: EditTarget, result: ChartAIEditSuccess) {
+  function renderReviewPhase(current: EditTarget, response: ChartAIEditSuccess) {
+    const result = { ...response, skipped: response.skipped ?? [] }
     const pages = chartResultPages(result)
     if (!pages) {
       renderInputPhase(current, '分页结果不完整，未替换正文。请重新生成或联系管理员。', true)
@@ -1301,6 +1303,7 @@ export function createChartAIEdit(options: {
           if (!span(currentGroup, view.state.doc).eq(span(originalGroup, adopted))) return false
           const matches = [...view.dom.querySelectorAll<HTMLImageElement>('img')].filter(image => imageMatchesPage(image.getAttribute('src') ?? '', pages[0]!, basePath))
           if (matches.length !== 1 || locateImage(view, matches[0]!)?.from !== currentGroup[0]!.pos) return false
+          view.dispatch(evidenceLocationTransaction(view.state, currentGroup[0]!.pos))
           adoptedImage = matches[0]!
           adoptedImage.scrollIntoView?.({ block: 'center', behavior: 'auto' })
           return true

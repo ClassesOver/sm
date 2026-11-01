@@ -29,6 +29,7 @@ from typing import Any
 
 from ..units import unit_scales
 from .content_review import review_content
+from .markdown_body import SERVER_TABLE_BLOCK
 from .numeric_text import (
     derived_number_values,
     frozen_number_catalog,
@@ -138,9 +139,7 @@ def scan_report_quality(
 
     # 无依据数值：按发布链路同一规则核对；missing 结论数与替换出的“待核实”同口径。
     # 服务端附表（[[table:…]] 块）由冻结事实生成、不经过正文核对，计入会把表格单元格算成无依据数值。
-    from ..delivery.report_runtime.markdown import _SERVER_TABLE_BLOCK
-
-    checked_markdown = _SERVER_TABLE_BLOCK.sub("", markdown)
+    checked_markdown = SERVER_TABLE_BLOCK.sub("", markdown)
     replace_unregistered_numbers(checked_markdown, contents, on_verdict=on_verdict)
     unregistered = verdicts.get("missing", 0)
     checked = sum(verdicts.values())

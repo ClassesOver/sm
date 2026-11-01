@@ -2960,6 +2960,17 @@ async def _generate_whole_section_content(
     flagged_ids: set[str] = set()
     for review_attempt in range(2):
         try:
+            if review_attempt:
+                # 纠错原文和保留段落也占输入预算，不能沿用首轮证据视图。
+                correction_base = {key: value for key, value in payload.items() if key != "evidence"}
+                payload["evidence"] = _project_section_evidence_files(
+                    agent,
+                    tuple({item.identity.path: item for item in evidence.files}.values()),
+                    fact_summaries=fact_summaries,
+                    relevance_values=tuple(correction_base.values()),
+                    base_payload=correction_base,
+                    run_context=run_context,
+                )
             request_tokens = _section_request_tokens(agent, payload, run_context)
             input_budget = _section_block_input_token_budget(agent, run_context)
             loguru_logger.info(
