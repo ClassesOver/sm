@@ -83,21 +83,51 @@ def test_file_registration_does_not_verify_arbitrary_supplemental_values():
     assert result[0].evidence_level == "evidence_missing"
 
 
-def test_supplemental_gap_does_not_hide_registered_total_for_same_metric():
+def _income_metric(scope=None):
+    return {
+        "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
+        "periodRoles": ["current"], "metricCodes": ["income"],
+        "field": "income", "fieldRef": "income", "aggregation": "sum",
+        "formula": "sum(income)", "total": 100, "unit": "元", "scope": scope or {},
+        "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
+    }
+
+
+def _income_yoy():
+    return {
+        "comparisonType": "yoy", "field": "income", "fieldRef": "income",
+        "currentDatasetId": "dataset-abc123", "baselineDatasetId": "dataset-base",
+        "currentDatasetSha256": "a" * 64, "baselineDatasetSha256": "d" * 64,
+        "currentTotal": 100, "baselineTotal": 80, "change": 20, "changeRate": 0.25,
+        "formula": "current-baseline", "unit": "元",
+    }
+
+
+def _supplemental_limitations(bundle, item):
     result = project_analysis_findings(
-        "analysis_001",
-        facts(metrics=[{
-            "datasetId": "dataset-abc123", "datasetSha256": "a" * 64,
-            "periodRoles": ["current"], "metricCodes": ["income"],
-            "field": "income", "fieldRef": "income", "aggregation": "sum",
-            "formula": "sum(income)", "total": 100, "unit": "元",
-            "missingCount": 0, "zeroCount": 0, "negativeCount": 0,
-        }]),
-        {"analysisId": "analysis_001", "findings": [{"metricCodes": ["income"], "kind": "comparison"}]},
+        "analysis_001", bundle, {"analysisId": "analysis_001", "findings": [item]},
         snapshot_hash="b" * 64, citation_ids=("citation_001",),
         supplemental_file_path="evidence.json", supplemental_file_sha256="c" * 64,
     )
-    assert any("全院合计与同比已由冻结事实登记" in item for item in result[0].limitations)
+    return [card for card in result if card.source_refs[0].path == "evidence.json"][0].limitations
+
+
+def test_supplemental_gap_lists_only_registered_fact_kinds_for_same_metric_and_scope():
+    item = {"metricCodes": ["income"], "kind": "comparison"}
+    only_total = _supplemental_limitations(facts(metrics=[_income_metric()]), item)
+    assert any("同指标同范围的合计已由冻结事实登记" in text for text in only_total)
+    assert not any("同比" in text or "全院" in text for text in only_total)
+
+    with_yoy = _supplemental_limitations(
+        facts(metrics=[_income_metric()], comparisons=[_income_yoy()]), item,
+    )
+    assert any("合计、同比已由冻结事实登记" in text for text in with_yoy)
+
+
+def test_supplemental_gap_does_not_borrow_facts_from_another_scope():
+    scoped = facts(metrics=[_income_metric({"科室": "内科"})])
+    limitations = _supplemental_limitations(scoped, {"metricCodes": ["income"], "kind": "comparison"})
+    assert not any("冻结事实登记" in text for text in limitations)
 
 
 def test_many_rejected_supplements_and_full_warning_budget_remain_soft_gaps():

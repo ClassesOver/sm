@@ -1686,6 +1686,9 @@ def test_section_block_stage_instructions_keep_heading_metadata_out_of_markdown(
     # 数据口径只在改变结论读法时紧跟结论写一句，不再逐章设口径限制段落。
     assert "数据口径" in instructions and "与本章结论无关的数据质量情况不写" in instructions
     assert "发现—证据—管理动作" in instructions
+    # 业务设置状态与不可加总工作量由写作/纠错模型按语义遵守，不依赖固定措辞正则。
+    assert "不能推断机构或院区未开设某项业务" in instructions
+    assert "不可加总的工作量" in instructions and "未登记统一折算基础" in instructions
 
 
 @pytest.mark.anyio

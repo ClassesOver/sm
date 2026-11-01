@@ -524,9 +524,15 @@ export function createTableAIEdit(options: {
         locate: () => {
           const current = locateBlock()
           if (!current || !adoptedContent?.eq(options.view.state.doc.slice(current.from, current.to).content)) return false
+          const tableElement = () => {
+            const element = options.view.nodeDOM(current.tablePos)
+            return element instanceof HTMLElement && element.isConnected ? element : null
+          }
+          // 先确认表格可定位，再移动选区和高亮；定位失败不得改动用户选区。
+          if (!tableElement()) return false
           options.view.dispatch(evidenceLocationTransaction(options.view.state, current.tablePos))
-          const element = options.view.nodeDOM(current.tablePos)
-          if (!(element instanceof HTMLElement) || !element.isConnected) return false
+          const element = tableElement()
+          if (!element) return false
           element.scrollIntoView?.({ block: 'center', behavior: 'auto' })
           return true
         },

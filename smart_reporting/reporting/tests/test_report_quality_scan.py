@@ -141,10 +141,35 @@ def test_quality_scan_keeps_unknown_prose_numbers_while_excluding_frozen_table_a
         '| 附表项目 | 7654321元 |\n\n[[/table:t]]\n\n'
         '另一未知项目金额876543210元。'
     )
-    result = scan_report_quality(markdown, _table_contents())
+    origin = '123456789元附表\n\n[[table:t]]\n| 项目 | 金额 |\n| --- | --- |\n| 附表项目 | 7654321元 |\n\n[[/table:t]]'
+    trace_index = {"tables": [{"tableId": "t", "originMarkdown": origin}]}
+    result = scan_report_quality(markdown, _table_contents(), trace_index=trace_index)
     assert result['binding']['checked'] == 2
     assert result['binding']['verdicts']['missing'] == 2
     assert result['numbers']['unregistered'] == 2
+
+
+@pytest.mark.parametrize("lead_in", [
+    "2025年收入合计987654321元，各科室明细如下：",
+    "收入合计987654321元（不含药品）",
+    "收入合计987654321元",
+])
+def test_quality_scan_checks_numbers_in_unregistered_lead_in_before_server_table(lead_in):
+    # 表格前的正文引导句没有登记为服务端表名，其中数字不能随表格一起逃过核对。
+    markdown = (
+        f'{lead_in}\n\n[[table:t]]\n| 项目 | 金额 |\n| --- | --- |\n'
+        '| 附表项目 | 7654321元 |\n\n[[/table:t]]\n'
+    )
+    result = scan_report_quality(markdown, _table_contents())
+    assert result['binding']['verdicts'].get('missing', 0) == 1
+
+
+def test_quality_scan_drops_digit_free_caption_without_trace_index():
+    markdown = (
+        '各科室收入明细\n\n[[table:t]]\n| 项目 | 金额 |\n| --- | --- |\n'
+        '| 附表项目 | 7654321元 |\n\n[[/table:t]]\n'
+    )
+    assert scan_report_quality(markdown, _table_contents())['binding']['checked'] == 0
 
 
 @pytest.mark.parametrize("unit", ["%", "百分点", "个百分点", "元/人次"])

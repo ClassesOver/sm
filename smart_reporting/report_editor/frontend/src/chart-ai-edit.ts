@@ -1301,10 +1301,17 @@ export function createChartAIEdit(options: {
             || currentGroup.some((item, index) => !imageMatchesPage(String(item.node.attrs.src), pages[index]!, basePath) || !item.node.eq(originalGroup[index]!.node))) return false
           const span = (items: typeof currentGroup, doc: ProseMirrorNode) => doc.slice(items[0]!.pos, items.at(-1)!.pos + items.at(-1)!.node.nodeSize).content
           if (!span(currentGroup, view.state.doc).eq(span(originalGroup, adopted))) return false
-          const matches = [...view.dom.querySelectorAll<HTMLImageElement>('img')].filter(image => imageMatchesPage(image.getAttribute('src') ?? '', pages[0]!, basePath))
-          if (matches.length !== 1 || locateImage(view, matches[0]!)?.from !== currentGroup[0]!.pos) return false
-          view.dispatch(evidenceLocationTransaction(view.state, currentGroup[0]!.pos))
-          adoptedImage = matches[0]!
+          const position = currentGroup[0]!.pos
+          const findImage = () => {
+            const matches = [...view.dom.querySelectorAll<HTMLImageElement>('img')].filter(image => imageMatchesPage(image.getAttribute('src') ?? '', pages[0]!, basePath))
+            return matches.length === 1 && matches[0]!.isConnected && locateImage(view, matches[0]!)?.from === position ? matches[0]! : null
+          }
+          if (!findImage()) return false
+          view.dispatch(evidenceLocationTransaction(view.state, position))
+          // 选区与高亮装饰可能让图片节点视图重建：派发后重新取图，不持有脱离文档的旧元素。
+          const image = findImage()
+          if (!image) return false
+          adoptedImage = image
           adoptedImage.scrollIntoView?.({ block: 'center', behavior: 'auto' })
           return true
         },

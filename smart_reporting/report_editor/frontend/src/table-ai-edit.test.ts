@@ -102,6 +102,36 @@ describe('createTableAIEdit review', () => {
     }
     controller.dispose(); view.destroy()
   })
+  it('改表回执定位不到已连接的表格元素时不移动用户选区', async () => {
+    document.body.innerHTML = ''
+    const markdown = '[[table:tbl-new]]\n| 项目 |\n| --- |\n| 新值 |\n\n[[/table:tbl-new]]'
+    const client = {
+      tableEditRecordByTableId: vi.fn(async () => { throw new Error('no record') }),
+      tableTemplates: vi.fn(async () => ({ templates: [] })),
+      startTableAiEdit: vi.fn(async () => ({ editId: 'tedit-next', status: 'queued' })),
+      tableAiEditStatus: vi.fn(async () => ({ editId: 'tedit-next', status: 'succeeded', markdown, warnings: [], skipped: [], review: { columns: [], rows: [] } })),
+      cancelTableAiEdit: vi.fn(async () => undefined),
+    } as unknown as ReportEditorClient
+    const host = document.createElement('div'); document.body.append(host)
+    const view = new EditorView(host, { state: EditorState.create({ schema, doc: schema.node('doc', null, [paragraph('[[table:tbl-old]]'), table('旧值'), paragraph('[[/table:tbl-old]]')]), plugins: [history(), createEvidenceLocationPlugin()] }) })
+    const controller = createTableAIEdit({ view, client, pollIntervalMs: 1,
+      currentBody: () => view.state.doc.textContent.includes('[[table:tbl-new]]') ? '| 项目 |\n| --- |\n| 新值 |' : '| 项目 |\n| --- |\n| 旧值 |',
+    })
+    controller.open('tbl-old', '| 项目 |\n| --- |\n| 旧值 |')
+    await vi.waitFor(() => expect(document.querySelector('#table-ai-input')).not.toBeNull())
+    const input = document.querySelector<HTMLTextAreaElement>('#table-ai-input')!
+    input.value = '改表'; input.dispatchEvent(new Event('input'))
+    document.querySelector<HTMLButtonElement>('.ask-ai-composers .ui-button--primary')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.table-ai-review')).not.toBeNull())
+    document.querySelector<HTMLButtonElement>('.ask-ai-review-dock:not([hidden]) .ui-button--primary')!.click()
+    const receipt = document.querySelector<HTMLElement>('.ask-ai-receipt')!
+    const selection = view.state.selection
+    vi.spyOn(view, 'nodeDOM').mockReturnValue(document.createElement('table'))
+    receipt.querySelector<HTMLButtonElement>('[data-action="locate-body"]')!.click()
+    expect(view.state.selection.eq(selection)).toBe(true)
+    expect(view.dom.querySelectorAll('.report-located-subject')).toHaveLength(0)
+    controller.dispose(); view.destroy()
+  })
   it('打开不可用的表格时先展示原因卡，不挂载输入区', async () => {
     document.body.innerHTML = ''
     const client = {

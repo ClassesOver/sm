@@ -143,10 +143,7 @@ _INFERENCE = re.compile(
     r"(?:负值|零值|偏低|低点|异常)[^。\n]{0,60}(?:可能(?:源于|反映|存在)|系.{0,25}所致|属正常业务特征)"
     r"|(?:尚未启动(?:采购|合同)|字段未填充有效数值|尚无.{0,12}(?:数据|记录)入账|无实际支出记录|疑似未入账)"
     r"|\d{1,2}月因自然天数[^。\n]{0,25}"
-    r"|未设(?:门诊|住院|病区|科室)"
 )
-
-_NON_ADDITIVE_VOLUME_CLAIM = re.compile(r"业务总量[^。\n]{0,30}主要由(?:门诊|住院|出院|床日)")
 
 
 @dataclass(frozen=True)
@@ -622,18 +619,7 @@ def review_content_result(markdown: str, contents: Iterable[str], *, field_defin
         assertion = _CLAUSE_BREAK_WITH_MARKS.split(prefix + match[0])[-1]
         if re.search(r"(?:不能|不可|不足以|不应|无法|不代表|不得|不要|未能|并非|尚不能).{0,30}", assertion):
             continue
-        if match[0].startswith("未设"):
-            warnings.append(
-                f"业务设置状态需直接证据：{match[0]}。数据零值或未匹配记录不能证明机构未设置，"
-                "请改写为“当前数据未提供/未匹配”或补充机构设置依据。"
-            )
-        else:
-            warnings.append(f"业务原因或数据状态需直接证据：{match[0]}。数值为零不能证明流程未启动、字段未填充或未入账。")
-    for match in _NON_ADDITIVE_VOLUME_CLAIM.finditer(text):
-        warnings.append(
-            f"不可加总的工作量结论需复核：{match[0]}。门诊、住院和床日未登记统一折算基础，"
-            "只能并列说明指标方向，不能据此判断全院业务总量由某一端主导。"
-        )
+        warnings.append(f"业务原因或数据状态需直接证据：{match[0]}。数值为零不能证明流程未启动、字段未填充或未入账。")
     for match in _HISTORICAL_CLAIM.finditer(text):
         clause = _CLAUSE_BREAK_WITH_MARKS.split(text[:match.start()])[-1] + match[0]
         if re.search(r"不能|无法|不足以|并非|不代表|尚不能", clause):

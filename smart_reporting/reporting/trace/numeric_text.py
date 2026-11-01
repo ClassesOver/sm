@@ -2864,24 +2864,39 @@ def registered_decline_magnitude(
     )
 
 
+# 比较词随差值符号翻转；“超过/不足”翻转后改用中性的“低于/高于”，避免“不足……负值”双重否定。
+_COMPARATIVE_FLIP = {
+    "高于": "低于", "低于": "高于", "多于": "少于", "少于": "多于", "超过": "低于", "不足": "高于",
+}
+_RATE_DIFFERENCE_COMPARISON = re.compile(
+    rf"(?P<cmp>{'|'.join(_COMPARATIVE_FLIP)})(?P<mid>[^。；，,\n]{{0,24}}?)"
+    r"(?P<verb>增幅|降幅|增长率|变化率)(?P<filler>了|约|为|达)?(?P<space>\s*)-\s*"
+    r"(?P<value>\d[\d,]*(?:\.\d+)?)(?=\s*个百分点)"
+)
+
+
 def normalize_signed_wording(markdown: str) -> str:
     """按冻结值的符号改写方向词：负值不能跟“增长”，也不能与“下降”构成双重否定。
 
     冻结值决定方向，改写只调整措辞与负号，不改动数值本身。
     """
 
+    # “成本增幅高于收入增幅-1.16个百分点”中的负号来自两个增幅的差值，不表示“收入降幅”。
+    # 差值为负说明比较方向与比较词相反：去掉负号时必须同时翻转比较词，指标名称保持不变。
+    def replace_rate_difference(match: re.Match[str]) -> str:
+        logger.warning(
+            "report_signed_wording_normalized verb={} value={}", match["cmp"], match["value"]
+        )
+        return (
+            f"{_COMPARATIVE_FLIP[match['cmp']]}{match['mid']}{match['verb']}"
+            f"{match['filler'] or ''}{match['space']}{match['value']}"
+        )
+
+    markdown = _RATE_DIFFERENCE_COMPARISON.sub(replace_rate_difference, markdown)
+
     def replace(match: re.Match[str]) -> str:
         prefix = match.string[: match.start()]
         suffix = match.string[match.end() :]
-        # “成本增幅高于收入增幅-1.16个百分点”中的负号来自两个增幅的
-        # 差值计算，不表示“收入降幅”；保留两侧的指标名称，只去掉差值负号。
-        rate_difference = (
-            match["verb"] in {"增幅", "降幅", "增长率", "变化率"}
-            and re.search(r"(?:高于|低于|多于|少于|超过|不足)[^。；，,\n]{0,24}$", prefix)
-            and re.match(r"\s*个百分点", suffix)
-        )
-        if rate_difference:
-            return f"{match['verb']}{match['filler'] or ''}{match['space']}{match['value']}"
         if describes_rate_level(prefix) and not re.match(r"\s*个百分点", suffix):
             return match[0]
         verb = match["verb"]

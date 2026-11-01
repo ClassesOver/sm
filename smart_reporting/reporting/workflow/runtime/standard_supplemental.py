@@ -41,6 +41,15 @@ STANDARD_GROUPING_SOURCE_BYTES = 12_000
 STANDARD_RECONCILIATION_LIMIT = 100
 
 
+def _require_dimension_unless_ungrouped_comparison(spec: Any) -> None:
+    """目录 Spec 与执行 Request 共用：仅无交叉维度的逐期 period_comparison 可省略 dimensionField。"""
+    if spec.dimension_field is None and not (
+        spec.operation == "period_comparison" and spec.group_by_period
+        and spec.secondary_dimension_field is None
+    ):
+        raise ValueError("只有无交叉维度的逐期 period_comparison 可以不提供 dimensionField")
+
+
 class StandardSupplementalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -100,11 +109,7 @@ class StandardSupplementalRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_baseline_for_comparison(self) -> StandardSupplementalRequest:
-        if self.dimension_field is None and not (
-            self.operation == "period_comparison" and self.group_by_period
-            and self.secondary_dimension_field is None
-        ):
-            raise ValueError("只有无交叉维度的逐期 period_comparison 可以不提供 dimensionField")
+        _require_dimension_unless_ungrouped_comparison(self)
         if self.change_rate_denominator != "signed" and not (
             self.operation in {"period_comparison", "group_period_comparison"}
             or self.operation == "group_period_series" and self.include_period_change
@@ -234,11 +239,7 @@ class StandardSupplementalSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_periods_and_parent_refs(self) -> StandardSupplementalSpec:
-        if self.dimension_field is None and not (
-            self.operation == "period_comparison" and self.group_by_period
-            and self.secondary_dimension_field is None
-        ):
-            raise ValueError("只有无交叉维度的逐期 period_comparison 可以不提供 dimensionField")
+        _require_dimension_unless_ungrouped_comparison(self)
         if self.change_rate_denominator != "signed" and not (
             self.operation in {"period_comparison", "group_period_comparison"}
             or self.operation == "group_period_series" and self.include_period_change
@@ -1593,6 +1594,9 @@ def standard_computation_catalog(
                         label=getattr(parent, "display_name", None) or parent.field,
                         spec=spec,
                     )
+            # 无分组来源只服务逐期比较；没有可绑定的基期时不发布，避免目录承诺不可执行的计算。
+            if source is not None and not dimensions and not source["comparisonBindings"]:
+                grouping_sources.remove(source)
             # 有界轮转维度配对，避免字典序前8列永久挤掉其他主题的业务维度。
             pairs: set[tuple[str, str]] = set()
             for offset in range(1, len(dimensions)):

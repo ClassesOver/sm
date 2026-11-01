@@ -196,3 +196,16 @@ def test_ungrouped_same_csv_comparison_preserves_period_alias_and_source_scope(p
     assert finding['scope'] == {'company': 'selected'}
     assert result['warnings'] == []
     assert all(check['passed'] for check in result['reconciliations'])
+
+
+def test_ungrouped_source_without_baseline_binding_is_not_published():
+    # 无分组来源只能做逐期比较；没有可绑定的基期时，目录不得承诺 period_comparison。
+    state = _state()
+    for dataset in state.instruction['datasets']:
+        dataset['columns'].remove('department')
+    state.facts.metrics = state.facts.metrics[:1]
+    catalog = standard_computation_catalog(
+        state.facts, state.instruction['datasets'], state.instruction['currentAnalysis']['periods'],
+    )
+    assert not [item for item in catalog['groupingSources']['items']
+                if item['datasetId'] == state.facts.metrics[0].dataset_id]
