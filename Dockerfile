@@ -61,12 +61,9 @@ RUN sed -i "s|https://files.pythonhosted.org|${PYPI_FILES_MIRROR}|g" uv.lock
 RUN UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
     uv sync --frozen --no-dev --no-install-project
 
-# Kaleido 1.x 的 PNG 导出需要 Chrome；使用 Debian 包管理器安装的 Chromium，
-# 避免构建阶段从外部地址下载专用副本。
-
 RUN for tool in pandoc soffice pdftoppm pdfinfo dot rsvg-convert qpdf; do command -v "$tool" || exit 1; done \
     && /app/.venv/bin/python -c "import docx, matplotlib, pypandoc, pypdf, scipy, seaborn, statsmodels, sympy, tabulate, adjustText, altair, bokeh, plotnine, pygal, graphviz, PIL, xlsxwriter, odf, pptx, reportlab, pdfplumber, pymupdf, pikepdf, cairosvg, bs4, jinja2, pyarrow, duckdb; from weasyprint import HTML" \
-    && /app/.venv/bin/python -c "import plotly.graph_objects as go; go.Figure(go.Scatter(x=[1], y=[1])).write_image('/tmp/kaleido-smoke.png')"
+    && /app/.venv/bin/python -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; figure = plt.figure(); figure.add_subplot(111).plot([1], [1]); figure.savefig('/tmp/matplotlib-smoke.png'); plt.close(figure)"
 
 COPY smart_reporting ./smart_reporting
 COPY docker/matplotlibrc /etc/reporting/matplotlibrc
