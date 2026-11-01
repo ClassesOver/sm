@@ -240,7 +240,8 @@ def test_monthly_yoy_catalog_routes_a_complete_batch_without_inventing_a_script_
     )
     candidate = next(item for item in catalog['candidates']
                      if item['standardComputation']['operation'] == 'period_comparison'
-                     and item['standardComputation'].get('groupByPeriod'))
+                     and item['standardComputation'].get('groupByPeriod')
+                     and item['standardComputation'].get('dimensionField') == 'department')
     assert candidate['outputColumns'] == [
         'period', 'department', 'current', 'baseline', 'change', 'changeRate', 'contribution', 'rank',
     ]

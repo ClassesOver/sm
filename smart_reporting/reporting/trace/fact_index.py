@@ -137,6 +137,9 @@ def metric_fact_identity(fact: Any) -> str:
     breakdown_field = getattr(fact, "breakdown_field", None)
     if breakdown_field is not None:
         identity += f"|breakdownField={breakdown_field}"
+    parent_fact_id = getattr(fact, "parent_fact_id", None)
+    if parent_fact_id is not None:
+        identity += f"|parentFactId={parent_fact_id}"
     period_aggregation = getattr(fact, "period_aggregation", None)
     series_missing_count = getattr(fact, "series_missing_count", None)
     if series_missing_count is not None:
@@ -271,8 +274,9 @@ def assign_fact_ids(bundle: DeterministicAnalysisBundle) -> DeterministicAnalysi
                    and metric.period_start == fact.period_start and metric.period_end == fact.period_end
                    and metric.period_aggregation == fact.period_aggregation]
         if len(parents) == 1:
-            breakdowns.append(fact.model_copy(update={
-                "fact_id": _unique(metric_fact_identity(fact)), "parent_fact_id": parents[0],
+            frozen = fact.model_copy(update={"parent_fact_id": parents[0]})
+            breakdowns.append(frozen.model_copy(update={
+                "fact_id": _unique(metric_fact_identity(frozen)),
             }))
     comparisons = []
     for fact in bundle.comparisons:

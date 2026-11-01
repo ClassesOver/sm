@@ -1643,3 +1643,4 @@ def test_review_flags_statistical_processing_terms_from_the_appendix():
     warnings = [w for w in review_content(text, [content]) if "技术实现术语" in w]
     assert len(warnings) == 4 and any("行级" in w and "明细记录层面" in w for w in warnings)
     assert not [w for w in review_content("门诊人次与出院人次同步变动。", [content]) if "技术实现术语" in w]
+

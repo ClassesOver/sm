@@ -14,6 +14,7 @@ from smart_reporting.report_editor.table_ai import (
     TableEditPeriodRow,
     _fact_catalog,
     _table_body_for_id,
+    _table_caption,
     _validate_and_render,
 )
 from smart_reporting.reporting.models import ReportingError
@@ -96,6 +97,15 @@ def test_current_table_body_lookup_is_exact_across_multiple_blocks() -> None:
     assert _table_body_for_id(markdown, "missing") is None
 
 
+@pytest.mark.parametrize("prefix", [
+    "[[/table:previous]]\n\n",
+    "需要保留的正文第一行\n需要保留的正文第二行\n\n",
+    "",
+])
+def test_table_without_caption_does_not_claim_previous_content(prefix: str) -> None:
+    assert _table_caption(prefix + "[[table:target]]\n| A |", "target") is None
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_table_edit_compares_expected_body_with_current_server_draft() -> None:
@@ -141,3 +151,54 @@ async def test_table_edit_compares_expected_body_with_current_server_draft() -> 
 
 async def _async_result(value: object) -> object:
     return value
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_table_edit_returns_current_target_caption_without_caption_in_trace(monkeypatch):
+    bundle = _bundle()
+    fact = bundle.metrics[0]
+    period = fact.period_values[0].period
+    rendered = _validate_and_render(
+        bundle,
+        TableEditMetricsSpec(
+            columns=(TableEditMetricsColumn(factId=fact.fact_id),),
+            rows=(TableEditPeriodRow(key=f"period:{period}", label=period, period=period),),
+        ),
+        table_id="table-current",
+        fact_file_resource_id="trf-11111111111111111111",
+    )
+    body = _table_body_for_id(rendered.markdown, "table-current")
+    context = SimpleNamespace(
+        scope={"threadId": "thread-1", "userId": "user-1"}, markdown_path="draft/report.md",
+    )
+    # 旧报告冻结的 origin_markdown 只有协议表块，没有标题；当前草稿另含其他表。
+    trace = rendered.trace.model_copy(update={"origin_markdown": f"[[table:table-current]]\n{body}\n\n[[/table:table-current]]"})
+
+    class Editor:
+        workspace = SimpleNamespace()
+
+        @asynccontextmanager
+        async def _draft_lock(self, _context):
+            yield
+
+        async def _read_revision_markdown(self, _context):
+            markdown = (
+                "其他表题\n\n[[table:other]]\n| A |\n| --- |\n| 1 |\n\n[[/table:other]]\n\n"
+                f"当前收入表题\n\n[[table:table-current]]\n{body}\n\n[[/table:table-current]]"
+            )
+            return "draft/report.md", markdown, "0" * 64
+
+    async def append_record(*_args):
+        return None
+
+    monkeypatch.setattr("smart_reporting.report_editor.table_ai.append_table_edit_record", append_record)
+    service = TableAIEditService(editor=Editor(), planner=None)
+    service._jobs["tedit-1234567890abcdef"] = SimpleNamespace(stage="queued")
+    result = await service._run_edit(
+        SimpleNamespace(context=context, bundle=bundle, trace=trace, analysis_id=bundle.analysis_id),
+        "table-current", "tedit-1234567890abcdef",
+        instruction="", template_id="composition", base_body=body, previous_edit_id=None,
+        current_table_id="table-current", expected_body_sha256=hashlib.sha256(body.encode()).hexdigest(),
+    )
+    assert result["baseCaption"] == "当前收入表题"

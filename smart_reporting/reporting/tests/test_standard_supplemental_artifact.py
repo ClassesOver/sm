@@ -168,7 +168,7 @@ async def test_concurrent_identical_artifact_is_reused_and_not_claimed_as_create
 @pytest.mark.anyio
 @pytest.mark.parametrize('mode', ['single', 'proof_thread', 'batch_checks', 'query_scope', 'ratio', 'ratio_period', 'batch', 'batch_failure', 'disabled',
                                   'series', 'previous_baseline', 'absolute_baseline', 'mean_baseline', 'median_baseline', 'cross_period',
-                                  'comparison', 'comparison_period', 'comparison_cross', 'comparison_drift', 'comparison_current_hash',
+                                  'comparison', 'comparison_period', 'comparison_ungrouped', 'comparison_cross', 'comparison_drift', 'comparison_current_hash',
                                   'comparison_baseline_hash', 'comparison_current_missing_hash',
                                   'comparison_baseline_missing_hash', 'comparison_same_total_drift',
                                   'comparison_query_scope', 'comparison_baseline_or',
@@ -339,7 +339,8 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             selected = spec.model_copy(update={
                 'operation': 'period_comparison', 'baseline_dataset_id': 'dataset_prior',
                 'baseline_parent_fact_id': prior.fact_id, 'baseline_periods': ('2024-01', '2024-02'),
-                'group_by_period': mode == 'comparison_period',
+                'group_by_period': mode in {'comparison_period', 'comparison_ungrouped'},
+                **({'dimension_field': None} if mode == 'comparison_ungrouped' else {}),
                 **({'secondary_dimension_field': 'category'} if mode == 'comparison_cross' else {}),
             })
         elif mode in {'ratio', 'ratio_period'}:
@@ -377,7 +378,9 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
         return SimpleNamespace(output=result)
 
     monkeypatch.setattr(analysis_module.AnalysisItemWorkflow, 'run', run)
-    comparison_failure = mode.startswith('comparison') and mode not in {'comparison', 'comparison_period', 'comparison_cross', 'comparison_query_scope'}
+    comparison_failure = mode.startswith('comparison') and mode not in {
+        'comparison', 'comparison_period', 'comparison_ungrouped', 'comparison_cross', 'comparison_query_scope',
+    }
     if mode == 'batch_failure' or comparison_failure:
         error_type, message = ((ValueError, 'injected second') if mode == 'batch_failure'
                                else (ReportingError, '固定范围' if mode in {
@@ -482,12 +485,22 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                 for row in rows] == [('B', 'Y', 10, 1, 1), ('A', 'X', 5, 1, 1)]
         assert all(check['passed'] for check in result['evidence'].reconciliations)
         assert result['computationRecord']['parameters']['secondaryDimensionField'] == 'category'
-    if mode in {'comparison', 'comparison_period', 'comparison_query_scope'}:
+    if mode == 'comparison_ungrouped':
+        finding = result['evidence'].findings[0]
+        assert finding['columns'] == ['period', 'current', 'baseline', 'change', 'changeRate', 'contribution', 'rank']
+        assert finding['rows'] == [
+            ['2025-02', 20, 10, 10, 1, 2 / 3, 1],
+            ['2025-01', 10, 5, 5, 1, 1 / 3, 2],
+        ]
+        assert finding['rowKeyColumns'] == ['period']
+        assert all(check['passed'] for check in result['evidence'].reconciliations)
+        assert result['computationRecord']['parameters']['dimensionField'] is None
+    if mode in {'comparison', 'comparison_period', 'comparison_ungrouped', 'comparison_query_scope'}:
         record = result['computationRecord']
         assert record['inputDatasetIds'] == ['dataset_001', 'dataset_prior']
         assert len(record['parameters']['inputFiles']) == 2
         assert record['parameters']['baselineDatasetId'] == 'dataset_prior'
-        if mode != 'comparison_period':
+        if mode not in {'comparison_period', 'comparison_ungrouped'}:
             assert result['evidence'].findings[0]['rows'] == [
                 ['B', 20.0, 10.0, 10.0, 1.0, 2 / 3, 1], ['A', 10.0, 5.0, 5.0, 1.0, 1 / 3, 2],
             ]

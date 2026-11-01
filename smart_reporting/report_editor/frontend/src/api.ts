@@ -335,7 +335,7 @@ export interface ChartAIEditSuccess {
   level: string[]
   changes: ChartAIEditChanges
   warnings: string[]
-  skipped: { request: string; reason: string }[]
+  skipped?: { request: string; reason: string }[]
   visualInspection: { format?: string; width?: number; height?: number; reviewed: boolean }
   planningRoute?: 'direct' | 'ai'
   renderingRoute?: 'standard' | 'mixed' | 'coding'

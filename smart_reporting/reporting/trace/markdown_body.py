@@ -3,18 +3,75 @@
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from sys import getsizeof
 from threading import RLock
+from typing import Any
 
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline.backticks import backtick
 
 MAX_TRACE_BODY_CACHE_BYTES = 4 * 1024 * 1024
 MAX_TRACE_BODY_CACHE_ENTRIES = 16
+
+# 来源复核共用的服务端表格协议块及其“候选表名”行，不参与导出布局或搬移。
+# 候选表名只是结构位置（自成一段、紧邻表格、非标题/列表/句末）；它可能是正文引导句，
+# 是否作为表名剔除由 strip_server_tables 按登记身份判定，不能直接用本正则整段删除。
+SERVER_TABLE_BLOCK = re.compile(
+    r"(?:(?:\A|(?<=\n\n))(?![\[|#!>])(?![-*+][ \t]|\d{1,3}[.)][ \t])(?![^\n]*\[\[)"
+    r"(?P<caption>[^\n]*[^\n。！？；.!?])\n\n)?^\[\[table:(?P<id>[^\]\r\n]+)\]\]\n.*?"
+    r"^\[\[/table:(?P=id)\]\][ \t]*(?:\n|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_TABLE_OPEN_AFTER_CAPTION = re.compile(r"\n\n\[\[table:(?P<id>[^\]\r\n]+)\]\]\n")
+
+
+def registered_table_captions(tables: Iterable[Mapping[str, Any]] | None) -> dict[str, str]:
+    """从表格追溯冻结的 originMarkdown 读取服务端表名：tableId → 表名。
+
+    表名身份来自服务端渲染时的协议块，而非表名措辞或标点。
+    """
+    captions: dict[str, str] = {}
+    for table in tables or ():
+        if not isinstance(table, Mapping):
+            continue
+        origin, table_id = table.get("originMarkdown"), table.get("tableId")
+        if not isinstance(origin, str) or not isinstance(table_id, str):
+            continue
+        opening = _TABLE_OPEN_AFTER_CAPTION.search(origin)
+        if opening is not None and opening["id"] == table_id and "\n" not in origin[: opening.start()]:
+            captions[table_id] = origin[: opening.start()].strip()
+    return captions
+
+
+def strip_server_tables(
+    markdown: str,
+    *,
+    registered_captions: Mapping[str, str] | None = None,
+    keep: Callable[[re.Match[str]], bool] | None = None,
+) -> str:
+    """剔除服务端表格协议块；候选表名只在能确认不是正文时随表剔除。
+
+    - 与该表登记的服务端表名逐字一致：随表剔除；
+    - 没有登记身份（旧报告、无追溯索引）：仅当候选行不含数字时剔除，含数字的引导句
+      保留在正文中继续核对，避免“收入合计12.3亿元，明细如下：”中的数字逃过校验；
+    - keep 返回 True 的协议块整体保留（如语义复核中包含当前数值引用的表）。
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        if keep is not None and keep(match):
+            return match[0]
+        caption = match["caption"]
+        if caption is None:
+            return ""
+        registered = (registered_captions or {}).get(match["id"])
+        is_caption = caption.strip() == registered if registered is not None else not re.search(r"\d", caption)
+        return "" if is_caption else caption + "\n\n"
+
+    return SERVER_TABLE_BLOCK.sub(replace, markdown)
 
 
 @dataclass

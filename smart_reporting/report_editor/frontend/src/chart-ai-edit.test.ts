@@ -5,6 +5,7 @@ import { EditorView } from '@milkdown/kit/prose/view'
 import { history, undo } from '@milkdown/kit/prose/history'
 
 import type { ReportEditorClient, TraceChartInfo } from './api'
+import { createEvidenceLocationPlugin } from './evidence-location'
 import {
   applyChartReplacement,
   assetUrl,
@@ -199,7 +200,7 @@ describe('createChartAIEdit', () => {
     })
     const host = document.createElement('div'); document.body.append(host)
     const view = new EditorView(host, { state: EditorState.create({
-      doc: replacementSchema.node('doc', null, replacementSchema.node('image-block', { src: 'chart-001.png' })), plugins: [history()],
+      doc: replacementSchema.node('doc', null, replacementSchema.node('image-block', { src: 'chart-001.png' })), plugins: [history(), createEvidenceLocationPlugin()],
     }) })
     const controller = createChartAIEdit({ view, client, basePath: '/b', pollIntervalMs: 1 })
     controller.open(view.dom.querySelector('img')!)
@@ -221,7 +222,10 @@ describe('createChartAIEdit', () => {
       expect(view.state.doc.firstChild?.attrs.src).toBe('chart-001.png')
       expect(document.querySelector('#chart-ai-instruction')).toBeNull()
     } else {
-      view.updateState(view.state.reconfigure({ plugins: [history()] }))
+      receipt.querySelector<HTMLButtonElement>('[data-action="locate-body"]')!.click()
+      const located = view.dom.querySelectorAll('.report-located-subject')
+      expect(located).toHaveLength(1)
+      expect(located[0]!.getAttribute('src')).toContain('cedit-prev1234')
       receipt.querySelector<HTMLButtonElement>('[data-action="continue-editing"]')!.click()
       await vi.waitFor(() => expect(document.querySelector('#chart-ai-instruction')).not.toBeNull())
       const next = document.querySelector<HTMLTextAreaElement>('#chart-ai-instruction')!

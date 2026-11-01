@@ -1558,6 +1558,11 @@ def _section_stage_agent(
                 "紧跟该结论用一句话说明影响和处理（如“三级科室归属缺失较多，科室排名仅作参考”），不复述记录条数、最小值、字段名等明细，"
                 "不写“待核实”“待复核”“待确认”，不单设口径限制段落或小节；与本章结论无关的数据质量情况不写。本章目标就是说明数据质量时，按影响逐项列出，每项只写一次。"
                 "其他模型写的未入账或数据不完整不能证明数据状态；不得把缺失或不可比数据写成确定的经营归因。证据不足时不写原因，也不得自行添加可能原因。"
+                "零值、空值或未匹配记录只说明当前数据未提供，不能推断机构或院区未开设某项业务（如门诊、住院、病区），无论如何措辞都不得作此断言，除非输入给出机构设置依据。"
+            ),
+            (
+                "不可加总的工作量：门诊人次、出院人次、床日等计量单位不同的指标，输入未登记统一折算基础时，"
+                "只能分别说明各自规模和方向，不得合并为“全院业务总量”或以任何表述判断全院业务量由某一端主导、驱动或贡献为主。"
             ),
             (
                 "相关性高不证明两套口径等价或可互换；预算为零须逐项核对预算列；超支与差额贡献使用差额列，不能使用实际金额列。结构化绑定的图表会展示，正文不得声称它未引用或已剔除。强结论门槛：‘全院性’‘主要原因’‘核心驱动’等判断必须同时给出覆盖范围、贡献额、"
@@ -2960,6 +2965,17 @@ async def _generate_whole_section_content(
     flagged_ids: set[str] = set()
     for review_attempt in range(2):
         try:
+            if review_attempt:
+                # 纠错原文和保留段落也占输入预算，不能沿用首轮证据视图。
+                correction_base = {key: value for key, value in payload.items() if key != "evidence"}
+                payload["evidence"] = _project_section_evidence_files(
+                    agent,
+                    tuple({item.identity.path: item for item in evidence.files}.values()),
+                    fact_summaries=fact_summaries,
+                    relevance_values=tuple(correction_base.values()),
+                    base_payload=correction_base,
+                    run_context=run_context,
+                )
             request_tokens = _section_request_tokens(agent, payload, run_context)
             input_budget = _section_block_input_token_budget(agent, run_context)
             loguru_logger.info(

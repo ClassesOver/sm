@@ -46,6 +46,53 @@ def _tuple_values(value: Any, fallback: tuple[str, ...] = ()) -> tuple[str, ...]
     return fallback
 
 
+def _finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _scope_key(scope: Any) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((str(key), str(value)) for key, value in (scope or {}).items())) if isinstance(scope, Mapping) else ()
+
+
+def _frozen_fact_index(
+    payload: Mapping[str, Any],
+) -> dict[tuple[str, tuple[tuple[str, str], ...]], set[str]]:
+    """(指标编码, 范围) → 已登记的事实类型（合计/同比/环比）；补证循环外只构建一次。
+
+    比较事实没有指标编码，按 fieldRef + 范围关联到同口径的合计事实。
+    """
+    index: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = {}
+    codes_by_field: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = {}
+    for metric in payload.get("metrics") or ():
+        if not isinstance(metric, Mapping) or not _finite_number(metric.get("total")):
+            continue
+        scope = _scope_key(metric.get("scope"))
+        codes = {code for code in metric.get("metricCodes") or () if isinstance(code, str)}
+        for code in codes:
+            index.setdefault((code, scope), set()).add("合计")
+        if isinstance(metric.get("fieldRef"), str):
+            codes_by_field.setdefault((metric["fieldRef"], scope), set()).update(codes)
+    labels = {"yoy": "同比", "mom": "环比"}
+    for comparison in payload.get("comparisons") or ():
+        if (not isinstance(comparison, Mapping) or comparison.get("comparisonType") not in labels
+                or not _finite_number(comparison.get("change"))):
+            continue
+        scope = _scope_key(comparison.get("scope"))
+        for code in codes_by_field.get((str(comparison.get("fieldRef")), scope), ()):
+            index[(code, scope)].add(labels[comparison["comparisonType"]])
+    return index
+
+
+def _registered_fact_kinds(
+    index: Mapping[tuple[str, tuple[tuple[str, str], ...]], set[str]],
+    codes: set[str],
+    scope: Mapping[str, Any],
+) -> tuple[str, ...]:
+    key = _scope_key(scope)
+    kinds = set().union(*(index.get((code, key), set()) for code in codes)) if codes else set()
+    return tuple(kind for kind in ("合计", "同比", "环比") if kind in kinds)
+
+
 def _direct_decomposition_source(
     item: Mapping[str, Any], reconciliation: Mapping[str, Any] | None,
     payload: Mapping[str, Any], partition_cache: dict[str, bool],
@@ -272,6 +319,7 @@ def project_analysis_findings(
     if supplemental_evidence is not None:
         if not supplemental_file_path or not supplemental_file_sha256:
             raise ValueError("补证发现必须绑定冻结文件身份")
+        frozen_facts = _frozen_fact_index(payload)
         if supplemental_evidence.get("analysisId") != analysis_id:
             raise ValueError("补证文件的分析身份不一致")
         for index, item in enumerate(supplemental_evidence.get("findings") or ()):
@@ -349,6 +397,16 @@ def project_analysis_findings(
             }
             neutral_label = next(iter(registered_labels)) if len(registered_labels) == 1 else "补充"
             neutral_title = neutral_label[:180] + "证据待核对"
+            # 未核验只适用于本条补证；同指标、同范围的冻结总量/比较事实仍可用，
+            # 不得让读者把“补证分项未核验”读成“该指标全部结论不可用”。
+            # 只列出实际登记的事实类型，不能声称不存在的同比、环比或全院口径。
+            item_codes = {str(code) for code in item.get("metricCodes") or () if isinstance(code, str)}
+            registered_kinds = _registered_fact_kinds(frozen_facts, item_codes, scope) if scope_valid else ()
+            frozen_conflict = (
+                f"同指标同范围的{'、'.join(registered_kinds)}已由冻结事实登记并可引用；"
+                "本条限制仅针对该补证分项，不否定这些已登记结论。"
+                if registered_kinds else None
+            )
             findings.append(FindingCard(
                 findingId=_stable_id(analysis_id, f"{supplemental_file_path}:{pointer}", snapshot_hash),
                 analysisIds=(analysis_id,), kind=cast(FindingKind, kind), title=neutral_title[:200],
@@ -363,6 +421,7 @@ def project_analysis_findings(
                 limitations=((("直接分解未证明同期间、同范围、同单位及完整分组身份；不能据此归因或安排整改。",)
                               if attribution_unproven else ("补证仅完成文件登记，数值与业务表述尚未得到确定性验证。",))
                              + scope_limitations
+                             + ((frozen_conflict,) if frozen_conflict else ())
                              + tuple(str(warning) for warning in supplemental_evidence.get("warnings", ()) if warning))[:100],
             ))
     if not findings:

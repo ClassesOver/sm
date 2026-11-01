@@ -286,7 +286,7 @@ async def _run_standard_chart_routes(
             if not isinstance(diagnostic, dict):
                 raise
             review_details = diagnostic.get("details", {})
-            failed_path = review_details.get("path") if isinstance(review_details, dict) else None
+            failed_path = (review_details.get("sourcePath") or review_details.get("path")) if isinstance(review_details, dict) else None
             failed = [i for i, chart in enumerate(plan.charts) if chart.source_path == failed_path]
             if attempt or len(failed) != 1:
                 raise

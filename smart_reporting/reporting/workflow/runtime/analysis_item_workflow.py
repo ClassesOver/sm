@@ -324,7 +324,7 @@ class AnalysisCodingRequirement(_StrictModel):
     def validate_standard_computation_fields(self) -> AnalysisCodingRequirement:
         spec = self.standard_computation
         if spec is not None:
-            required = {spec.measure_field, spec.dimension_field, spec.period_field}
+            required = {spec.measure_field, spec.dimension_field, spec.period_field} - {None}
             if spec.secondary_dimension_field is not None:
                 required.add(spec.secondary_dimension_field)
             if spec.denominator_field is not None:
@@ -1961,14 +1961,14 @@ class AnalysisItemWorkflow:
                               if item.dataset_id == requirement.dataset_id and item.field in requirement.fields}
         allowed_measures = {
             spec.measure_field, spec.dimension_field, spec.period_field, *parent_scope,
-        }
+        } - {None}
         if spec.secondary_dimension_field is not None:
             allowed_measures.add(spec.secondary_dimension_field)
         if spec.denominator_field is not None:
             allowed_measures.add(spec.denominator_field)
         if requested_measures - allowed_measures:
             return unavailable("multiple_measures_require_separate_requests")
-        required_fields = {spec.measure_field, spec.dimension_field, spec.period_field}
+        required_fields = {spec.measure_field, spec.dimension_field, spec.period_field} - {None}
         if spec.secondary_dimension_field is not None:
             required_fields.add(spec.secondary_dimension_field)
         if spec.denominator_field is not None:

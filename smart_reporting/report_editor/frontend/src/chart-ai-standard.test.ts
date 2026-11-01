@@ -240,6 +240,32 @@ function mount(src = '/b/asset/reports/revision-1/original.png') {
 }
 
 describe('模板选择与完整预览', () => {
+  it('模板响应未包含skipped时仍能审阅生成图片而非退回请求失败', async () => {
+    const api = client({
+      chartTemplates: vi.fn(async () => ({ templates: [
+        { templateId: 'yoy-comparison', name: '同比对比柱状图', available: true },
+      ] })),
+      startChartTemplateEdit: vi.fn(async () => ({ editId: 'cedit-new12345' })),
+      chartAiEditStatus: vi.fn(async () => ({
+        status: 'succeeded', editId: 'cedit-new12345', chartId: 'chart_001',
+        templateId: 'yoy-comparison', imagePath: 'reports/revision-1/chart-edits/cedit-new12345/chart.png',
+        imageSrc: 'chart-edits/cedit-new12345/chart.png', level: ['L2'],
+        changes: { templateId: 'yoy-comparison', plotDataUnchanged: false },
+        warnings: [], visualInspection: { format: 'PNG', width: 1365, height: 765, reviewed: false },
+      })),
+    })
+    const controller = createChartAIEdit({ view: viewFor(), client: api, basePath: '/b', pollIntervalMs: 1 })
+    try {
+      controller.open(mount())
+      await vi.waitFor(() => expect(document.querySelector('.chart-ai-template')).not.toBeNull())
+      document.querySelector<HTMLButtonElement>('.chart-ai-template')!.click()
+      await vi.waitFor(() => expect(document.querySelector('.ask-ai-review-dock:not([hidden]) [data-action="accept"]')).not.toBeNull())
+      expect(document.querySelector('.chart-ai-pages img')?.getAttribute('src')).toContain('cedit-new12345')
+      expect(document.querySelector('.chart-ai-change--data')?.textContent).toContain('作图数据有变化')
+      expect(document.querySelector('.ask-ai-panel')?.textContent).not.toContain('改图请求失败')
+    } finally { controller.dispose() }
+  })
+
   it('埋点：从首屏 AI 推荐发起到采用，完整上报来源、结果与采用，且不含要求原文', async () => {
     const reportEvent = vi.fn(async (_payload: Record<string, unknown>) => undefined)
     const api = client({ reportEvent,

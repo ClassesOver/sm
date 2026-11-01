@@ -219,7 +219,7 @@ def test_cross_dataset_comparison_uses_authorized_calendar_window(fault, by_peri
     if fault is not None:
         assert comparisons == []
         return
-    candidate, = comparisons
+    candidate, = [item for item in comparisons if item['standardComputation'].get('dimensionField') == 'department']
     spec = candidate['standardComputation']
     assert spec['baselineDatasetId'] == prior.dataset_id
     assert spec['baselinePeriods'] == [f'2025-{m:02d}' for m in range(1, 12)]

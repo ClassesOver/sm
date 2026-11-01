@@ -5,6 +5,7 @@ import { EditorView } from '@milkdown/kit/prose/view'
 import { history, undo } from '@milkdown/kit/prose/history'
 import { createTableAIEdit, replaceTableProtocolBlock, tableBodyMarkdown } from './table-ai-edit'
 import type { ReportEditorClient } from './api'
+import { createEvidenceLocationPlugin } from './evidence-location'
 
 const schema = new Schema({ nodes: {
   doc: { content: 'block+' },
@@ -54,7 +55,7 @@ describe('createTableAIEdit review', () => {
     controller.dispose()
   })
 
-  it.each([false, true])('采用后的改表回执只定位仍存在的新版本（撤销=%s）', async reverted => {
+  it.each([[false, false], [true, false], [false, true]])('采用后的改表回执只定位仍存在的新版本（撤销=%s，序列化差异=%s）', async (reverted, serialized) => {
     document.body.innerHTML = ''
     const markdown = '[[table:tbl-new]]\n| 项目 |\n| --- |\n| 新值 |\n\n[[/table:tbl-new]]'
     const client = {
@@ -65,8 +66,11 @@ describe('createTableAIEdit review', () => {
       cancelTableAiEdit: vi.fn(async () => undefined),
     } as unknown as ReportEditorClient
     const host = document.createElement('div'); document.body.append(host)
-    const view = new EditorView(host, { state: EditorState.create({ schema, doc: schema.node('doc', null, [paragraph('[[table:tbl-old]]'), table('旧值'), paragraph('[[/table:tbl-old]]')]), plugins: [history()] }) })
-    const controller = createTableAIEdit({ view, client, pollIntervalMs: 1 })
+    const view = new EditorView(host, { state: EditorState.create({ schema, doc: schema.node('doc', null, [paragraph('[[table:tbl-old]]'), table('旧值'), paragraph('[[/table:tbl-old]]')]), plugins: [history(), createEvidenceLocationPlugin()] }) })
+    const adoptedBody = serialized ? '| 项目  |\n| --- |\n| 新值  |' : '| 项目 |\n| --- |\n| 新值 |'
+    const controller = createTableAIEdit({ view, client, pollIntervalMs: 1,
+      currentBody: () => view.state.doc.textContent.includes('[[table:tbl-new]]') ? adoptedBody : '| 项目 |\n| --- |\n| 旧值 |',
+    })
     controller.open('tbl-old', '| 项目 |\n| --- |\n| 旧值 |')
     await vi.waitFor(() => expect(document.querySelector('#table-ai-input')).not.toBeNull())
     const input = document.querySelector<HTMLTextAreaElement>('#table-ai-input')!
@@ -84,13 +88,48 @@ describe('createTableAIEdit review', () => {
       expect(receipt.textContent).toContain('已变化或无法唯一定位')
       expect(view.state.doc.textContent).toContain('旧值')
     } else {
+      receipt.querySelector<HTMLButtonElement>('[data-action="locate-body"]')!.click()
+      const located = view.dom.querySelectorAll('.report-located-subject')
+      expect(located).toHaveLength(1)
+      expect(located[0]!.tagName).toBe('TABLE')
+      expect(located[0]!.textContent).toContain('新值')
       receipt.querySelector<HTMLButtonElement>('[data-action="continue-editing"]')!.click()
       await vi.waitFor(() => expect(document.querySelector('#table-ai-input')).not.toBeNull())
       const next = document.querySelector<HTMLTextAreaElement>('#table-ai-input')!
       next.value = '再次调整'; next.dispatchEvent(new Event('input'))
       document.querySelector<HTMLButtonElement>('.ask-ai-composers .ui-button--primary')!.click()
-      await vi.waitFor(() => expect(client.startTableAiEdit).toHaveBeenLastCalledWith('tbl-old', expect.objectContaining({ previousEditId: 'tedit-next', baseBody: '| 项目 |\n| --- |\n| 新值 |' })))
+      await vi.waitFor(() => expect(client.startTableAiEdit).toHaveBeenLastCalledWith('tbl-new', expect.objectContaining({ previousEditId: 'tedit-next', baseBody: adoptedBody })))
     }
+    controller.dispose(); view.destroy()
+  })
+  it('改表回执定位不到已连接的表格元素时不移动用户选区', async () => {
+    document.body.innerHTML = ''
+    const markdown = '[[table:tbl-new]]\n| 项目 |\n| --- |\n| 新值 |\n\n[[/table:tbl-new]]'
+    const client = {
+      tableEditRecordByTableId: vi.fn(async () => { throw new Error('no record') }),
+      tableTemplates: vi.fn(async () => ({ templates: [] })),
+      startTableAiEdit: vi.fn(async () => ({ editId: 'tedit-next', status: 'queued' })),
+      tableAiEditStatus: vi.fn(async () => ({ editId: 'tedit-next', status: 'succeeded', markdown, warnings: [], skipped: [], review: { columns: [], rows: [] } })),
+      cancelTableAiEdit: vi.fn(async () => undefined),
+    } as unknown as ReportEditorClient
+    const host = document.createElement('div'); document.body.append(host)
+    const view = new EditorView(host, { state: EditorState.create({ schema, doc: schema.node('doc', null, [paragraph('[[table:tbl-old]]'), table('旧值'), paragraph('[[/table:tbl-old]]')]), plugins: [history(), createEvidenceLocationPlugin()] }) })
+    const controller = createTableAIEdit({ view, client, pollIntervalMs: 1,
+      currentBody: () => view.state.doc.textContent.includes('[[table:tbl-new]]') ? '| 项目 |\n| --- |\n| 新值 |' : '| 项目 |\n| --- |\n| 旧值 |',
+    })
+    controller.open('tbl-old', '| 项目 |\n| --- |\n| 旧值 |')
+    await vi.waitFor(() => expect(document.querySelector('#table-ai-input')).not.toBeNull())
+    const input = document.querySelector<HTMLTextAreaElement>('#table-ai-input')!
+    input.value = '改表'; input.dispatchEvent(new Event('input'))
+    document.querySelector<HTMLButtonElement>('.ask-ai-composers .ui-button--primary')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.table-ai-review')).not.toBeNull())
+    document.querySelector<HTMLButtonElement>('.ask-ai-review-dock:not([hidden]) .ui-button--primary')!.click()
+    const receipt = document.querySelector<HTMLElement>('.ask-ai-receipt')!
+    const selection = view.state.selection
+    vi.spyOn(view, 'nodeDOM').mockReturnValue(document.createElement('table'))
+    receipt.querySelector<HTMLButtonElement>('[data-action="locate-body"]')!.click()
+    expect(view.state.selection.eq(selection)).toBe(true)
+    expect(view.dom.querySelectorAll('.report-located-subject')).toHaveLength(0)
     controller.dispose(); view.destroy()
   })
   it('打开不可用的表格时先展示原因卡，不挂载输入区', async () => {
@@ -239,14 +278,22 @@ describe('createTableAIEdit review', () => {
         editId: 'tedit-00000001',
         tableId: 'tbl-1',
         status: 'succeeded',
-        markdown: '[[table:tbl-1-e0000001]]\n| | 收入（万元） |\n| --- | ---: |\n| 2025年9月 | 3,600 |\n\n[[/table:tbl-1-e0000001]]',
+        markdown: '[[table:tbl-1-e0000001]]\n| 项目 | 收入（万元） | 成本（万元） |\n| --- | ---: | ---: |\n| 2025年9月 | 3,600 | 3,100 |\n| 2025年10月 | 4,000 | 3,400 |\n\n[[/table:tbl-1-e0000001]]',
         review: {
-          columns: ['收入（万元）'],
+          columns: ['收入（万元）', '成本（万元）'],
           rows: [{
             label: '2025年9月',
             cells: [
               { text: '2025年9月', status: 'unchanged', column: '' },
               { text: '3,600', status: 'added', column: '收入（万元）', source: { analysisId: 'analysis_001', factIds: ['fact-aaaaaaaaaaaaaaaa'], selector: 'periodValues.0' } },
+              { text: '3,100', status: 'unchanged', column: '成本（万元）', source: { analysisId: 'analysis_005', factIds: ['fact-bbbbbbbbbbbbbbbb'], selector: 'periodValues.0' } },
+            ],
+          }, {
+            label: '2025年10月',
+            cells: [
+              { text: '2025年10月', status: 'unchanged', column: '' },
+              { text: '4,000', status: 'unchanged', column: '收入（万元）', source: { analysisId: 'analysis_001', factIds: ['fact-cccccccccccccccc'], selector: 'periodValues.1' } },
+              { text: '3,400', status: 'unchanged', column: '成本（万元）', source: { analysisId: 'analysis_005', factIds: ['fact-dddddddddddddddd'], selector: 'periodValues.1' } },
             ],
           }],
           flagged: [],
@@ -276,6 +323,17 @@ describe('createTableAIEdit review', () => {
     await vi.waitFor(() => {
       expect(document.querySelector('.table-ai-review')).not.toBeNull()
     })
+    const preview = document.querySelector<HTMLTableElement>('.table-ai-review')!
+    expect(preview.tHead!.rows[0]!.cells.length).toBe(3)
+    expect([...preview.tBodies[0]!.rows[0]!.cells].map(cell => cell.textContent)).toEqual(['2025年9月', '3,600', '3,100'])
+    expect([...preview.tBodies[0]!.rows[1]!.cells].map(cell => cell.textContent)).toEqual(['2025年10月', '4,000', '3,400'])
+    const controls = preview.querySelectorAll<HTMLButtonElement>('.table-ai-cell')
+    controls[0]!.focus()
+    controls[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(document.activeElement).toBe(controls[2])
+    expect(document.querySelector('.table-ai-source-detail')!.textContent).toContain('2025年10月 / 收入（万元）')
+    controls[2]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    expect(document.activeElement).toBe(controls[0])
     const cell = document.querySelector<HTMLButtonElement>('.table-ai-cell-added .table-ai-cell, td.table-ai-cell-added .table-ai-cell')
     const unavailable = document.querySelector<HTMLButtonElement>('.table-ai-template:disabled')!
     expect(unavailable.querySelector('.ask-ai-template-reason')?.textContent).toContain('缺少维度分组')

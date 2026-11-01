@@ -135,4 +135,18 @@ def test_candidate_content_ids_and_order_match_preoptimization_snapshot():
                 'contribution', 'rank', 'baselineTotal', 'totalChange',
             ],
         },
+        # 分组集中度（CR5/HHI）为新增候选，追加在末尾，不改变既有候选的顺序与 ID。
+        {
+            'candidateId': 'std-1196f0f798821c3e', 'datasetId': 'data',
+            'fields': ['amount', 'group', 'period'], 'label': '金额',
+            'standardComputation': {
+                'operation': 'group_concentration', 'measureField': 'amount',
+                'dimensionField': 'group', 'periodField': 'period',
+                'currentPeriods': ['2026-01', '2026-02'], 'baselinePeriods': [],
+                'parentFactId': 'fact-0000000000000001',
+            },
+            'outputColumns': [
+                'period', 'cr5', 'hhi', 'top5_amount', 'total_amount', 'group_count', 'missing_amount',
+            ],
+        },
     ]

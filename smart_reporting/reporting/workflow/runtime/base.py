@@ -520,6 +520,8 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "来源periodAggregation不是sum时仅允许单个登记期间的group_summary或cross_group_summary，"
     "不得把多月预算或跨年项目快照相加，也不得为提高命中率缩小原始请求期间。"
     "period_comparison仅使用该来源comparisonBindings中的父事实、期间和共同维度。"
+    "全院等无业务分组的逐期比较使用period_comparison、dimensionField=null、groupByPeriod=true，"
+    "同样绑定comparisonBindings中的基期；fields只需度量、期间和projectedScopeFields，不得虚构分组字段。"
     "两维汇总使用cross_group_summary并填写secondaryDimensionField，不因候选未列出就退回脚本；"
     "两维跨期驱动拆解使用period_comparison并填写secondaryDimensionField，两维均须属于同一comparisonBinding的dimensionFields。"
     "索引truncated=true仅表示展示不全，不表示其他计算不支持；索引不承诺任意筛选、TopN或业务异常规则。"

@@ -73,7 +73,7 @@ def test_colliding_source_names_keep_labels_and_derived_values_in_standard_path(
     candidate = next(item for item in candidates
                      if item['standardComputation']['operation'] == operation
                      and item['standardComputation']['measureField'] == 'income'
-                     and (item['standardComputation']['dimensionField'] == dimension
+                     and (item['standardComputation'].get('dimensionField') == dimension
                           or operation == 'cross_group_summary')
                      and (operation != 'cross_group_summary'
                           or item['standardComputation'].get('groupByPeriod')))
