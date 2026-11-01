@@ -32,7 +32,7 @@ from .standard_supplemental_input import BatchAnalysisInputCache
 
 StandardSupplementalOperation = Literal[
     "group_summary", "group_period_series", "cross_group_summary",
-    "period_comparison", "group_ratio", "group_period_comparison",
+    "period_comparison", "group_ratio", "group_period_comparison", "group_concentration",
 ]
 STANDARD_SUPPLEMENTAL_OPERATIONS: tuple[StandardSupplementalOperation, ...] = get_args(StandardSupplementalOperation)
 STANDARD_CANDIDATE_LIMIT = 40
@@ -304,6 +304,8 @@ class StandardSupplementalSpec(BaseModel):
 
 
 def _standard_source_fields(spec: StandardSupplementalSpec | StandardSupplementalRequest) -> tuple[str, ...]:
+    if spec.operation == "group_concentration":
+        return (spec.period_field,)
     dimensions: tuple[str, ...] = (spec.dimension_field,) if spec.dimension_field is not None else ()
     if spec.secondary_dimension_field is not None:
         dimensions += (spec.secondary_dimension_field,)
@@ -315,7 +317,9 @@ def _standard_source_fields(spec: StandardSupplementalSpec | StandardSupplementa
 def standard_output_columns(spec: StandardSupplementalSpec | StandardSupplementalRequest) -> tuple[str, ...]:
     """目录、契约与执行共用列定义；源字段碰撞时别名，不改派生列语义。"""
     derived: tuple[str, ...]
-    if spec.operation == "group_summary":
+    if spec.operation == "group_concentration":
+        derived = ("cr5", "hhi", "top5_amount", "total_amount", "group_count", "missing_amount")
+    elif spec.operation == "group_summary":
         derived = ("value", "rank", "share")
     elif spec.operation == "group_period_series":
         derived = ("value", "rank", "share", *(
@@ -498,7 +502,43 @@ def run_standard_supplemental(
         baseline_rows = paired(baseline_rows) if baseline_rows is not None else None
     column_meta: dict[str, dict[str, Any]]
     amount_columns: tuple[str, ...]
-    if request.operation == "group_summary":
+    if request.operation == "group_concentration":
+        # 始终读取授权期间的全量分组，不以 TopN 截断结果充当总体。
+        current_rows = [row for row in rows if row["period"] in request.current_periods]
+        grouped, total = _group_totals(current_rows)
+        ordered = sorted(
+            ((name, value) for name, value in grouped.items() if name is not None and name.strip()),
+            key=lambda item: (-item[1], item[0]),
+        )
+        missing_amount = math.fsum(value for name, value in grouped.items() if name is None or not name.strip())
+        reconciliations = [_reconciliation(request.output_name + "_total", total, request.parent_total)]
+        invalid = bool(warnings)
+        if invalid:
+            warnings.append("存在无效数据或未归属记录，集中度保留为空")
+        if len(ordered) != len(grouped):
+            invalid = True
+            warnings.append("存在缺失分组归属，金额保留在总额中，CR5、HHI 保留为空")
+        if {row["period"] for row in current_rows} != set(request.current_periods):
+            invalid = True
+            warnings.append("请求期间数据不完整，不将缺失期间当作零，CR5、HHI 保留为空")
+        if not reconciliations[0]["passed"]:
+            invalid = True
+            warnings.append("集中度总体与冻结父指标总额对账不闭合，CR5、HHI 保留为空")
+        if total <= 0:
+            invalid = True
+            warnings.append("集中度总额非正，CR5、HHI 保留为空")
+        top5_amount = math.fsum(value for _, value in ordered[:5])
+        cr5 = top5_amount / total if not invalid else None
+        negative = any(value < 0 for _, value in ordered)
+        if negative:
+            warnings.append("存在负净额分组，CR5 按原始净额计算；经典 HHI 不适用，保留为空")
+        hhi = math.fsum((value / total) ** 2 for _, value in ordered) if not invalid and not negative else None
+        finding_rows = [[
+            "、".join(request.current_periods), cr5, hhi, top5_amount, total, len(ordered), missing_amount,
+        ]]
+        column_meta = {"cr5": {"unit": "%", "isPercent": False}, "hhi": {"unit": "0—1"}}
+        amount_columns = ("top5_amount", "total_amount", "missing_amount")
+    elif request.operation == "group_summary":
         current_periods = set(request.current_periods)
         current_rows = [row for row in rows if row["period"] in current_periods]
         if not current_rows:
@@ -717,6 +757,9 @@ def run_standard_supplemental(
     }
     if request.metric_codes:
         finding["metricCodes"] = list(request.metric_codes)
+    if request.operation == "group_concentration":
+        finding["top5Units"] = [name for name, _ in ordered[:5]]
+        finding["formula"] = "CR5=前五名分组净额合计/全量总额；HHI=Σ(各分组净额/全量总额)^2（未乘10000）"
     if has_row_period:
         finding["rowPeriodColumn"] = columns[0]
     if request.operation == "group_period_comparison":
@@ -1519,8 +1562,8 @@ def standard_computation_catalog(
                 role = profile.get(dimension, {}).get("role") if isinstance(profile, dict) else None
                 if role in {"measure", "period", "empty"}:
                     continue
-                operations: tuple[Literal["group_summary", "group_period_series"], ...] = (
-                    ("group_summary", "group_period_series") if parent.period_aggregation == "sum"
+                operations: tuple[StandardSupplementalOperation, ...] = (
+                    ("group_summary", "group_period_series", "group_concentration") if parent.period_aggregation == "sum"
                     else ("group_summary",)
                 )
                 specs = [

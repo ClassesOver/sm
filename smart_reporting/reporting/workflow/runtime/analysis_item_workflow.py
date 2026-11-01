@@ -1708,6 +1708,8 @@ class AnalysisItemWorkflow:
                 # 只登记结构化角色已知的列名别名；未知统计列不能借纠错删除。
                 has_period = spec.operation in {"group_period_series", "group_period_comparison"} or spec.group_by_period
                 aliases = {"group": columns[1 if has_period else 0]}
+                if spec.operation == "group_concentration":
+                    aliases = {"period": columns[0]}
                 if has_period:
                     aliases["period"] = columns[0]
                 if "current" in columns or "value" in columns:

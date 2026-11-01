@@ -56,7 +56,8 @@ def test_catalog_preserves_existing_candidate_order_identity_and_payload():
     catalog = _catalog(state)
     assert catalog['candidates'] == before
     # 改造前基础 fixture 的已登记身份与顺序；不能只比较新 API 与其 wrapper。
-    assert [item['candidateId'] for item in catalog['candidates']] == [
+    assert [item['candidateId'] for item in catalog['candidates']
+            if item['standardComputation']['operation'] != 'group_concentration'] == [
         'std-d3f5f8023e450c8c', 'std-ef2ab640d5ad9a99',
     ]
     assert catalog['groupingSources'] == {
