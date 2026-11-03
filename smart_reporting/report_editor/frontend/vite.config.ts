@@ -1,11 +1,12 @@
 import { fileURLToPath } from 'node:url'
+import { slidesReact } from './vite.slides-react'
 
 import { defineConfig } from 'vitest/config'
 import { precomputedCjkModule } from './scripts/precomputed-cjk'
 
 export default defineConfig({
   base: '/reports/v1/editor/assets/',
-  plugins: [{
+  plugins: [slidesReact(), {
     name: 'workbook-precomputed-cjk-charsets',
     enforce: 'pre',
     // cjk-regex's public API computes three fixed sets. Precompute them during
@@ -28,6 +29,7 @@ export default defineConfig({
   },
   resolve: {
     alias: [
+      { find: '@genoffice/pptx-render', replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/pptx-render/src/browser.ts', import.meta.url)) },
       {
         find: '@milkdown/crepe/feature/ai',
         replacement: fileURLToPath(
@@ -59,7 +61,10 @@ export default defineConfig({
           }
           if (id.includes('/node_modules/hyphen/')) return `workbook-hyphen-${id.split('/').at(-1)?.replace(/\.[^.]+$/, '')}`
           if (id.includes('/workbook_engine/')) return 'workbook-engine'
-          if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'workbook-react'
+          // PPTX 画布与工作簿编辑器共享同一份 React 运行时。
+          if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'react'
+          if (id.includes('/node_modules/react-konva/')) return 'slides-bindings'
+          if (id.includes('/node_modules/konva/')) return 'slides-konva'
           if (id.includes('/node_modules/opentype.js/')) return 'workbook-opentype'
           if (id.includes('/node_modules/franc-min/')) return 'workbook-language'
           if (id.includes('/node_modules/rxjs/')) return 'workbook-observable'

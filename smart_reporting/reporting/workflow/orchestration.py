@@ -10,7 +10,7 @@ from typing import Any
 
 from agno.db.base import BaseDb
 from agno.metrics import RunMetrics
-from agno.workflow import HumanReview, OnError, OnReject
+from agno.workflow import HumanReview, OnError, OnReject, Router, Steps
 from agno.workflow.step import Step
 from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
@@ -444,6 +444,11 @@ def create_reporting_workflow(
     generate_narrative_outline: StepExecutor | None = None,
     run_analysis_evidence: StepExecutor | None = None,
     run_report_draft: StepExecutor | None = None,
+    generate_slide_outline: StepExecutor | None = None,
+    assemble_slides: StepExecutor | None = None,
+    validate_slides: StepExecutor | None = None,
+    select_delivery_steps: StepExecutor | None = None,
+    restore_delivery_format: StepExecutor | None = None,
 ) -> Workflow:
     """创建可注册到现有 AgentOS 的报表 Workflow，不建立第二条传输链路。"""
 
@@ -642,6 +647,72 @@ def create_reporting_workflow(
         ],
         telemetry=False,
     )
+    if select_delivery_steps is not None:
+        if any(executor is None for executor in (
+            run_analysis_evidence, generate_narrative_outline, run_report_draft,
+            generate_slide_outline, assemble_slides, validate_slides,
+        )):
+            raise ValueError("PPT 编排必须配置冻结证据、提纲、汇编与验收执行器")
+        evidence_index = next(
+            index for index, step in enumerate(workflow.steps)
+            if step.step_id == "run-analysis-evidence"
+        )
+        document = Steps(name="document", steps=workflow.steps[evidence_index + 1:-3])
+        slides = Steps(name="pptx", steps=[
+            Step(
+                step_id="generate-slide-outline", name="根据冻结证据生成幻灯片提纲",
+                executor=_timed_step_executor(generate_slide_outline, step_id="generate-slide-outline"),
+                max_retries=1, human_review=HumanReview(on_error=OnError.fail),
+            ),
+        ])
+
+        async def delivery_executor(step_input, run_context, *, document_executor, slides_executor):
+            if restore_delivery_format is not None:
+                await restore_delivery_format(step_input, run_context)
+            selected = await select_delivery_steps(step_input, run_context, [document, slides])
+            executor = slides_executor if selected[0].name == "pptx" else document_executor
+            return await executor(step_input, run_context)
+
+        async def assemble_delivery(step_input, run_context):
+            return await delivery_executor(
+                step_input, run_context, document_executor=assemble_report, slides_executor=assemble_slides,
+            )
+
+        async def validate_delivery(step_input, run_context):
+            return await delivery_executor(
+                step_input, run_context, document_executor=validate_report, slides_executor=validate_slides,
+            )
+
+        async def verify_delivery_plan(step_input):
+            # Agno 组合节点把异常保存在 StepOutput，顶层只对 Step 应用失败策略。
+            routed = step_input.get_step_output("按冻结交付格式编排")
+            if routed is not None and not routed.success:
+                failed = routed
+                while failed.steps:
+                    failed = next((item for item in failed.steps if not item.success), failed.steps[-1])
+                raise RuntimeError(f"交付格式编排失败：{failed.error or failed.content}")
+            return StepOutput(content={"status": "completed"})
+
+        # Agno 3.1.2 的 Router/Steps 不向外传播内部 Step 的 OnError.pause。
+        # 保留末端顶层步骤及既有恢复身份，恢复只重新读取耐久格式并执行当前步骤。
+        for index, executor in ((-3, assemble_delivery), (-2, validate_delivery)):
+            original = workflow.steps[index]
+            # Step 在构造时冻结 active_executor；不能只修改 executor 属性。
+            workflow.steps[index] = Step(
+                step_id=original.step_id, name=original.name,
+                executor=_timed_step_executor(executor, step_id=original.step_id),
+                max_retries=original.max_retries, human_review=original.human_review,
+            )
+        workflow.steps = [
+            *workflow.steps[:evidence_index + 1],
+            Router(name="按冻结交付格式编排", choices=[document, slides], selector=select_delivery_steps),
+            Step(
+                step_id="verify-delivery-plan", name="核验交付提纲编排结果",
+                executor=verify_delivery_plan, max_retries=0,
+                human_review=HumanReview(on_error=OnError.fail),
+            ),
+            *workflow.steps[-3:],
+        ]
     return workflow
 
 

@@ -3096,6 +3096,10 @@ class RuntimeAnalysisMixin:
         narrative_outline_hash = (
             current.narrative_outline_hash or incoming.narrative_outline_hash
         )
+        if (current.slide_outline_file is not None and incoming.slide_outline_file is not None
+                and current.slide_outline_file != incoming.slide_outline_file):
+            raise ReportingError("report_checkpoint_conflict", "冻结幻灯片提纲身份不一致。")
+        slide_outline_file = current.slide_outline_file or incoming.slide_outline_file
         merged_files = RuntimeAnalysisMixin._merge_checkpoint_files(current.files, *incoming.files)
         merged_files_by_path = {item.path: item for item in merged_files}
         if any(
@@ -3105,6 +3109,7 @@ class RuntimeAnalysisMixin:
                 *deterministic_fact_files.values(),
                 *((finding_graph_file,) if finding_graph_file is not None else ()),
                 *((narrative_outline_file,) if narrative_outline_file is not None else ()),
+                *((slide_outline_file,) if slide_outline_file is not None else ()),
             )
         ):
             raise ReportingError(
@@ -3197,6 +3202,7 @@ class RuntimeAnalysisMixin:
             finding_graph_hash=finding_graph_hash,
             narrative_outline_file=narrative_outline_file,
             narrative_outline_hash=narrative_outline_hash,
+            slide_outline_file=slide_outline_file,
             visualization_section_errors=section_errors,
             files=merged_files,
             trace=tuple((*anonymous_trace, *trace_by_task.values())),

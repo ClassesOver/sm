@@ -19,6 +19,7 @@ from typing import Any
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from ..contract import REPORT_DELIVERY_FORMATS
 from ..delivery.draft_v1 import ReportChartRegistration
 from ..trace.contracts_v1 import StandardChartRenderProofV1
 from .checkpoint import ChartVisualInspectionReceipt, FileIdentity
@@ -725,6 +726,13 @@ def apply(
             raise ReportingStateError(
                 "report_answer_review_invalid", "回答审核契约或输入身份无效。"
             ) from error
+    elif name == "freeze_delivery_format":
+        delivery_format = arguments.get("deliveryFormat")
+        if delivery_format not in REPORT_DELIVERY_FORMATS:
+            raise ReportingStateError("report_delivery_format_invalid", "交付格式无效。")
+        frozen = payload.setdefault("deliveryFormat", delivery_format)
+        if frozen != delivery_format:
+            raise ReportingStateError("report_context_restart_required", "交付格式已冻结，必须重新发起。")
     elif name == "set_analysis_plan":
         analysis_ids = _tuple_unique(arguments.get("analysisIds"))
         if not analysis_ids:

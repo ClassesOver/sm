@@ -50,7 +50,8 @@ REPORT_ARTIFACT_CHUNK_BYTES = 1024 * 1024
 REPORT_ARTIFACT_CLEANUP_GRACE = timedelta(days=1)
 REPORT_ARTIFACT_CLEANUP_BATCH = 100
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
-_EDITOR_ACCESS_PATH = re.compile(r"/reports/v1/(?:editor/open|workbooks/(?:open|download))/[^?\s]+(?:\?[^\s]*)?")
+_EDITOR_ACCESS_PATH = re.compile(r"/reports/v1/editor/open/[^?\s]+(?:\?[^\s]*)?")
+_OFFICE_ACCESS_PATH = re.compile(r"(/reports/v1/(?:slides|workbooks)/(?:open|download))/[^?\s]+(?:\?[^\s]*)?")
 _PUBLICATION_LOCK_KEY = "report-download-publication-v2"
 _ARTIFACT_CHUNK_INSERT_BATCH = 8
 _metadata = MetaData()
@@ -1167,7 +1168,8 @@ def _grant_hash(value: str) -> str:
 
 def _redact_download_path(value: str) -> str:
     redacted = _DOWNLOAD_ACCESS_PATH.sub("/reports/v1/download/<redacted>", value)
-    return _EDITOR_ACCESS_PATH.sub("/reports/v1/editor/open/<redacted>", redacted)
+    redacted = _EDITOR_ACCESS_PATH.sub("/reports/v1/editor/open/<redacted>", redacted)
+    return _OFFICE_ACCESS_PATH.sub(r"\1/<redacted>", redacted)
 
 
 def _utc_datetime(value: datetime) -> datetime:

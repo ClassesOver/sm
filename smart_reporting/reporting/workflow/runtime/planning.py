@@ -196,6 +196,7 @@ class RuntimePlanningMixin:
                     "filename": item.get("filename"),
                     "content": item.get("content", "")[:20_000],
                     "layout": item.get("layout", {}),
+                    "visualLayout": item.get("visualLayout"),
                 }
                 for item in reference_materials
             ]
@@ -204,13 +205,20 @@ class RuntimePlanningMixin:
             prompt_payload["supplement"] = feedback
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
-        if request.delivery_format is None and normalized.delivery_format_ambiguous:
+        # 恢复时沿用已冻结的交付格式，不重新解释原始需求。
+        frozen = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
+        frozen_format = (
+            frozen.get("deliveryFormat")
+            if isinstance(frozen, dict) and request.delivery_format is None
+            else None
+        )
+        if request.delivery_format is None and frozen_format is None and normalized.delivery_format_ambiguous:
             return StepOutput(content={"clarificationQuestion": normalized.clarification_question
                 or "请选择本次交付形式：PDF/Word、演示文稿或 Excel 工作簿。"})
-        delivery_format = request.delivery_format or normalized.delivery_format or infer_delivery_format(request.prompt)
-        frozen = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
-        if isinstance(frozen, dict) and request.delivery_format is None:
-            delivery_format = frozen.get("deliveryFormat", delivery_format)
+        delivery_format = (
+            request.delivery_format or frozen_format or normalized.delivery_format
+            or infer_delivery_format(request.prompt)
+        )
         self._record_request_context(state, request.prompt, feedback, delivery_format)
         period = normalized.period or _single_explicit_period(request.prompt, feedback)
         missing: list[str] = []
@@ -800,6 +808,9 @@ class RuntimePlanningMixin:
         """签发共享工作流的演示文稿/工作簿；编辑和验收故障不丢失可读产物。"""
         label = delivery_format.upper()
         editor_kind = "slides" if delivery_format == "pptx" else "workbooks"
+        gate = content.get("publicationGate")
+        if not isinstance(gate, dict):
+            gate = {"formalReleaseAllowed": False, "issues": []}
         issues: list[dict[str, Any]] = []
         path = content.get(f"{delivery_format}Path")
         size = content.get(f"{delivery_format}Size")
@@ -835,15 +846,19 @@ class RuntimePlanningMixin:
                     scope=download_scope, report_id=content["reportId"],
                     revision=content["revision"], artifacts=selected,
                 )
-                if not saved:
+                if not any(item.artifact == delivery_format for item in saved):
+                    saved = ()
                     issues.append({"code": f"report_{delivery_format}_persistence_failed",
                         "message": f"{label} 未完成持久化，使用已核验的工作区文件继续签发下载。"})
             except Exception as error:
+                saved = ()
                 issues.append({"code": f"report_{delivery_format}_persistence_failed",
                     "message": f"{label} 持久化失败，使用已核验的工作区文件继续签发下载。",
                     "details": {"errorType": type(error).__name__}})
-        editor_raw = None
-        editor_expires_at = None
+        editor_context: ReportEditorContext | None = None
+        editor_context_persisted = False
+        editor_raw: str | None = None
+        editor_expires_at: datetime | None = None
         if selected and self.editor_grants is not None and scope_matches:
             try:
                 editor_context = ReportEditorContext(
@@ -851,6 +866,7 @@ class RuntimePlanningMixin:
                     jobId=content["jobId"], workflowRunId=workflow_run_id,
                     markdownPath=content["markdownPath"], job=content["editorJob"],
                     scope=scope.as_state(), deliveryFormat=delivery_format,
+                    artifactManifest=content.get("artifactManifest"),
                     **{f"{delivery_format}Path": path, f"{delivery_format}Size": size,
                        f"{delivery_format}Sha256": digest},
                 )
@@ -864,6 +880,7 @@ class RuntimePlanningMixin:
                         commandId=f"editor-context:{content['revision']}:{editor_context.digest()}"),
                     expected_version=durable.state_version,
                 )
+                editor_context_persisted = True
                 editor_raw, editor_expires_at = await self.editor_grants.issue(
                     editor_context, capabilities={f"{delivery_format}_editor": True},
                 )
@@ -874,26 +891,56 @@ class RuntimePlanningMixin:
         elif selected:
             issues.append({"code": f"report_{'slides' if delivery_format == 'pptx' else 'workbook'}_editor_{'scope_mismatch' if not scope_matches else 'unavailable'}",
                 "message": f"{label} 编辑授权不可用，已核验文件继续签发下载。"})
-        result: dict[str, Any] = {"reportId": content["reportId"], "revision": content["revision"]}
+        raw = None
+        grant = None
         if selected:
             # 持久化失败时保留工作区绑定，HTTP 下载按 grant 身份读取并复核原文件。
-            if saved:
-                self._release_workspace(thread_id)
-            raw, grant = await self.download_grants.issue(
-                scope=download_scope, report_id=content["reportId"], revision=content["revision"],
-                **{f"{delivery_format}_path": path, f"{delivery_format}_size": size,
-                   f"{delivery_format}_sha256": digest},
-            )
+            try:
+                raw, grant = await self.download_grants.issue(
+                    scope=download_scope, report_id=content["reportId"], revision=content["revision"],
+                    **{f"{delivery_format}_path": path, f"{delivery_format}_size": size,
+                       f"{delivery_format}_sha256": digest},
+                )
+            except Exception as error:  # noqa: BLE001 - use the verified editor download fallback
+                issues.append({"code": f"report_{delivery_format}_download_grant_failed",
+                    "message": f"{label} 下载授权签发失败，将尝试使用编辑会话下载。",
+                    "details": {"errorType": type(error).__name__}})
+            else:
+                if saved:
+                    self._release_workspace(thread_id)
+        fallback_raw: str | None = None
+        fallback_expires_at: datetime | None = None
+        if (grant is None or raw is None) and editor_context_persisted and editor_context is not None and self.editor_grants is not None and scope_matches:
+            try:
+                fallback_raw, fallback_expires_at = await self.editor_grants.issue(
+                    editor_context, capabilities={f"{delivery_format}_download": True},
+                )
+            except Exception as error:  # noqa: BLE001 - retain the validation issue without blocking publication
+                issues.append({"code": f"report_{delivery_format}_download_grant_failed",
+                    "message": f"{label} 下载授权签发失败，已核验文件暂不可通过 HTTP 下载。",
+                    "details": {"errorType": type(error).__name__}})
+        if grant is None or raw is None:
+            result: dict[str, Any] = {
+                "reportId": content["reportId"], "revision": content["revision"],
+                "sourceWarnings": list(content.get("sourceWarnings", ())),
+                "codingReceipts": list(content.get("codingReceipts", ())),
+            }
+            if fallback_raw is not None and selected:
+                result[delivery_format] = {
+                    "downloadUrl": f"{base_url.rstrip('/')}/reports/v1/{editor_kind}/download/{fallback_raw}",
+                    "path": path, "size": size, "sha256": digest,
+                    "expiresAt": fallback_expires_at.isoformat() if fallback_expires_at else None,
+                }
+        else:
             result = publication_result(
                 report_id=content["reportId"], revision=content["revision"],
                 raw_grant=raw, grant=grant, base_url=base_url,
                 editor_raw_grant=None, editor_expires_at=editor_expires_at,
                 source_warnings=content.get("sourceWarnings"), task_receipts=content.get("codingReceipts"),
             )
-            if editor_raw is not None and editor_expires_at is not None:
-                result["editor"] = {"openUrl": f"{base_url.rstrip('/')}/reports/v1/{editor_kind}/open/{editor_raw}",
-                    "expiresAt": editor_expires_at.isoformat()}
-        gate = content.get("publicationGate") or {"formalReleaseAllowed": False, "issues": []}
+        if editor_raw is not None and editor_expires_at is not None:
+            result["editor"] = {"openUrl": f"{base_url.rstrip('/')}/reports/v1/{editor_kind}/open/{editor_raw}",
+                "expiresAt": editor_expires_at.isoformat()}
         if issues:
             gate = {**gate, "formalReleaseAllowed": False, "issues": [*gate.get("issues", []), *issues]}
         result.update({"deliveryFormat": delivery_format,
@@ -1460,6 +1507,7 @@ class RuntimePlanningMixin:
                     "filename": item.get("filename"),
                     "content": item.get("content", "")[:20_000],
                     "layout": item.get("layout", {}),
+                    "visualLayout": item.get("visualLayout"),
                 }
                 for item in state.get("report_reference_materials", [])
             ],

@@ -65,6 +65,10 @@ _WORKBOOK_REQUEST_PATTERN = re.compile(
 )
 
 
+# 冻结交付格式的唯一取值集合；xlsx 复用 document 编排分支，仅在渲染/发布阶段分流。
+REPORT_DELIVERY_FORMATS: frozenset[str] = frozenset(("document", "pptx", "xlsx"))
+
+
 def infer_delivery_format(prompt: str) -> Literal["document", "pptx", "xlsx"]:
     """旧调用的确定性回退；自然语言主路径使用语义规范化结果。"""
     formats = set()

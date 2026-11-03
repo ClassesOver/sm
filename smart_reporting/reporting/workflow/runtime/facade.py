@@ -10,9 +10,11 @@ from .datasets import RuntimeDatasetsMixin
 from .planning import RuntimePlanningMixin
 from .publication import RuntimePublicationMixin
 from .sections import RuntimeSectionsMixin
+from .slides import RuntimeSlidesMixin
 
 
 class ReportWorkflowRuntime(
+    RuntimeSlidesMixin,
     RuntimePlanningMixin,
     RuntimeDatasetsMixin,
     RuntimeAnalysisMixin,

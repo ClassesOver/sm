@@ -19,6 +19,12 @@ _MAX_PROMPT_CHARS = 1_000
 _MAX_IMAGE_BYTES = 12 * 1024 * 1024
 _MAX_IMAGE_CANDIDATES = 8
 _CANDIDATE_TTL = timedelta(minutes=20)
+_DASHSCOPE_IMAGE_HOSTS = {"dashscope.aliyuncs.com", "token-plan.cn-beijing.maas.aliyuncs.com"}
+_PUBLIC_PROVIDER_CODES = {
+    "InvalidParameter", "InvalidApiKey", "AccessDenied", "ModelNotFound",
+    "Throttling", "Throttling.RateQuota", "Throttling.AllocationQuota",
+    "Arrearage", "DataInspectionFailed", "InternalError", "ServiceUnavailable",
+}
 
 
 @dataclass
@@ -69,13 +75,17 @@ class ReportSlidesImageService:
         try:
             content, media_type, extension = await self._generate_image(normalized)
         except Exception as error:  # noqa: BLE001 - image failures leave the PPTX untouched
+            reason = _image_failure_reason(error)
             logger.warning(
-                "report_slides_image_failed report_id={} revision={} error_type={}",
+                "report_slides_image_failed report_id={} revision={} error_type={} reason={}",
                 context.report_id,
                 context.revision,
                 type(error).__name__,
+                reason,
             )
-            raise ReportingError("report_slides_image_failed", "AI 配图生成失败，当前幻灯片未改变。") from None
+            raise ReportingError(
+                "report_slides_image_failed", f"AI 配图生成失败：{reason}，当前幻灯片未改变。"
+            ) from None
 
         self._prune_candidates()
         candidate_id = uuid4().hex
@@ -176,16 +186,36 @@ class ReportSlidesImageService:
         own_client = self.client is None
         client = self.client or httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=False)
         try:
-            endpoint = f"{self.base_url}/images/generations"
+            base = urlsplit(self.base_url)
+            native = base.hostname in _DASHSCOPE_IMAGE_HOSTS
+            endpoint = (
+                base._replace(path="/api/v1/services/aigc/multimodal-generation/generation", query="", fragment="").geturl()
+                if native else f"{self.base_url}/images/generations"
+            )
+            payload = (
+                {
+                    "model": self.model,
+                    "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
+                    "parameters": {"size": "1024*1024", "n": 1},
+                }
+                if native else
+                {"model": self.model, "prompt": prompt, "n": 1, "size": "1024*1024", "response_format": "url"}
+            )
             response = await client.post(
                 endpoint,
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"model": self.model, "prompt": prompt, "n": 1, "size": "1024*1024", "response_format": "url"},
+                json=payload,
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()
-            data = response.json().get("data")
-            image_url = data[0].get("url") if isinstance(data, list) and data and isinstance(data[0], dict) else None
+            body = response.json()
+            if native:
+                choices = body.get("output", {}).get("choices", [])
+                content = choices[0].get("message", {}).get("content", []) if choices else []
+                image_url = next((item["image"] for item in content if isinstance(item, dict) and "image" in item), None)
+            else:
+                data = body.get("data")
+                image_url = data[0].get("url") if isinstance(data, list) and data and isinstance(data[0], dict) else None
             parsed = urlsplit(image_url) if isinstance(image_url, str) else None
             if (
                 parsed is None
@@ -215,6 +245,24 @@ class ReportSlidesImageService:
         for candidate_id, candidate in tuple(self._candidates.items()):
             if candidate.created_at < cutoff:
                 self._candidates.pop(candidate_id, None)
+
+
+def _image_failure_reason(error: Exception) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
+        reason = f"图片服务返回 HTTP {error.response.status_code}"
+        try:
+            body = error.response.json()
+        except (ValueError, httpx.ResponseNotRead):
+            body = {}
+        code = body.get("code") if isinstance(body, dict) else None
+        if isinstance(code, str) and code in _PUBLIC_PROVIDER_CODES:
+            reason += f"（{code}）"
+        return reason
+    if isinstance(error, httpx.TimeoutException):
+        return "图片服务请求超时"
+    if isinstance(error, httpx.RequestError):
+        return "图片服务连接失败"
+    return "图片服务未返回可用的图片"
 
 
 def _image_type(content: bytes, declared_type: str) -> tuple[str, str]:

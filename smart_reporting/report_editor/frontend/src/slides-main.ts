@@ -1,10 +1,15 @@
 import { createElement, ArrowDown, ArrowUp, Download, Save, Sparkles, Undo2, X } from 'lucide'
 import './slides.css'
+import type { RenderSlide } from '@genoffice/pptx-render'
+import type { SlidesCanvasState } from './slides-canvas'
+import { createSlidesChartTools } from './slides-chart-tools'
 
 type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; geometry?: { x: number; y: number; width: number; height: number } }
 type SlideTransition = 'none' | 'morph' | 'fade' | 'push' | 'wipe' | 'split' | 'circle' | 'cover' | 'pull' | 'dissolve' | 'zoom' | 'random'
-type DeckSlide = { slideIndex: number; transition?: SlideTransition; animations?: { elementId: string; effect: string; trigger: string }[]; elements: DeckElement[] }
-type Deck = { revision: number; sha256: string; size: { cx: number; cy: number }; slides: DeckSlide[] }
+type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
+type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
+type DeckSlide = { slideIndex: number; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; animations?: Animation[]; elements: DeckElement[] }
+type Deck = { revision: number; sha256: string; size: { cx: number; cy: number }; layouts?: DeckLayout[]; masterParts?: { partPath: string; kind: 'master' | 'layout'; name: string }[]; slides: DeckSlide[] }
 type Edit = {
   slideIndex: number
   elementId: string
@@ -16,7 +21,9 @@ type AIProposal = { summary: string; edits: Edit[]; order: number[]; theme?: Bus
 type AIStatus = { editId: string; status: string; proposal?: AIProposal; error?: { message: string } }
 type GeneratedImage = { candidateId: string; mediaType: string; previewDataUrl: string }
 type ImageEdit = { candidateId: string; slideIndex: number; geometry: { x: number; y: number; width: number; height: number } }
-type AnimationEdit = { slideIndex: number; elementId: string; effect: 'fade'; trigger: 'onClick' }
+type AnimationEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath'
+type AnimationTrigger = 'onClick' | 'withPrev' | 'afterPrev'
+type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: string }
 
 export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
   save?: HTMLButtonElement
@@ -63,8 +70,8 @@ root.innerHTML = `${embedded ? '' : `
   <section class="slides-image-tools" aria-label="AI 配图"><form class="image-form"><label for="image-prompt">AI 配图</label><textarea id="image-prompt" rows="1" maxlength="1000" placeholder="描述一张用于汇报的配图"></textarea><label class="image-target-label" for="image-target">目标页</label><select id="image-target"></select><button class="image-generate" type="submit">生成预览</button></form><div class="image-output"><span class="image-status" role="status">尚未生成配图</span><div class="image-candidate" hidden><img class="image-preview" alt="AI 配图预览"><button class="image-add" type="button">加入待保存配图</button></div><ul class="image-pending"></ul></div></section>
   <div class="slides-workspace">
     <aside class="slides-sidebar" aria-label="幻灯片列表"><div class="sidebar-heading">页面 <span class="slide-count"></span></div><ol class="slide-list"></ol></aside>
-    <section class="slides-stage" aria-label="幻灯片预览"><iframe class="preview-frame" title="幻灯片预览"></iframe></section>
-    <aside class="slides-inspector" aria-label="对象编辑"><div class="inspector-heading">对象</div><label class="field-label" for="object-select">可编辑对象</label><select id="object-select"></select><label class="field-label" for="object-text">文字</label><textarea id="object-text" rows="7" spellcheck="false"></textarea><div class="geometry-heading">位置与大小</div><div class="geometry-grid"><label>X <input name="x" type="number" min="0" step="1"></label><label>Y <input name="y" type="number" min="0" step="1"></label><label>宽 <input name="width" type="number" min="1" step="1"></label><label>高 <input name="height" type="number" min="1" step="1"></label></div><label class="field-label" for="theme-select">商务主题</label><select id="theme-select"><option value="">保持当前主题</option><option value="executive">执行汇报</option><option value="clinical">临床医疗</option><option value="modern">现代商务</option></select><label class="field-label" for="transition-select">页面转场</label><select id="transition-select"><option value="none">无</option><option value="fade">淡化</option><option value="push">推进</option><option value="wipe">擦除</option><option value="split">分割</option><option value="circle">圆形</option><option value="cover">覆盖</option><option value="pull">拉伸</option><option value="dissolve">溶解</option><option value="zoom">缩放</option><option value="morph">变形</option><option value="random">随机</option></select><button class="animation-add" type="button">为此对象添加点击淡入</button><p class="animation-state"></p><p class="object-note">未编辑对象会保留在原始 PPTX 中。</p></aside>
+    <section class="slides-stage" aria-label="幻灯片预览"><div class="slides-canvas" role="group" aria-label="可编辑幻灯片画布" hidden></div><p class="canvas-status" role="status">画布载入中</p><iframe class="preview-frame" title="幻灯片预览"></iframe></section>
+    <aside class="slides-inspector" aria-label="对象编辑"><div class="inspector-heading">对象</div><div class="slide-lineage"><span class="lineage-label">母版</span><span class="slide-master"></span><span class="lineage-label">版式</span><select id="layout-select" aria-label="当前页版式"></select></div><label class="field-label" for="object-select">可编辑对象</label><select id="object-select"></select><label class="field-label" for="object-text">文字</label><textarea id="object-text" rows="7" spellcheck="false"></textarea><div class="geometry-heading">位置与大小</div><div class="geometry-grid"><label>X <input name="x" type="number" min="0" step="1"></label><label>Y <input name="y" type="number" min="0" step="1"></label><label>宽 <input name="width" type="number" min="1" step="1"></label><label>高 <input name="height" type="number" min="1" step="1"></label></div><label class="field-label" for="theme-select">商务主题</label><select id="theme-select"><option value="">保持当前主题</option><option value="executive">执行汇报</option><option value="clinical">临床医疗</option><option value="modern">现代商务</option></select><label class="field-label" for="transition-select">页面转场</label><select id="transition-select"><option value="none">无</option><option value="fade">淡化</option><option value="push">推进</option><option value="wipe">擦除</option><option value="split">分割</option><option value="circle">圆形</option><option value="cover">覆盖</option><option value="pull">拉伸</option><option value="dissolve">溶解</option><option value="zoom">缩放</option><option value="morph">变形</option><option value="random">随机</option></select><div class="animation-controls"><label class="field-label" for="animation-effect">动画效果</label><select id="animation-effect"><option value="fade">淡化</option><option value="appear">出现</option><option value="flyIn">飞入</option><option value="wipe">擦除</option><option value="wipeDown">向下擦除</option><option value="splitIn">分割进入</option><option value="bounce">弹跳</option><option value="flipIn">翻转进入</option><option value="zoom">缩放进入</option><option value="pulse">脉冲</option><option value="spin">旋转</option><option value="grow">放大</option><option value="teeter">摇摆</option><option value="disappear">消失</option><option value="fadeOut">淡出</option><option value="flyOut">飞出</option><option value="wipeOut">擦除退出</option><option value="shrink">缩小退出</option><option value="zoomOut">缩小退出</option><option value="motionPath">路径</option></select><label class="field-label" for="animation-trigger">触发方式</label><select id="animation-trigger"><option value="onClick">点击时</option><option value="withPrev">与上一动画同时</option><option value="afterPrev">上一动画后</option></select><div class="animation-timing"><label>持续 <input id="animation-duration" type="number" min="1" max="120000" step="50" value="500"> ms</label><label>延迟 <input id="animation-delay" type="number" min="0" max="120000" step="50" value="0"> ms</label></div><button class="animation-add" type="button">添加对象动画</button></div><p class="animation-state"></p><p class="object-note">未编辑对象会保留在原始 PPTX 中。</p></aside>
   </div>
   <footer class="slides-statusbar"><span class="status-dot"></span><span class="status-message">读取 PPTX…</span><span class="status-spacer"></span><span>编辑器</span></footer>
 `
@@ -98,6 +105,12 @@ const themeSelect = root.querySelector<HTMLSelectElement>('#theme-select')!
 const transitionSelect = root.querySelector<HTMLSelectElement>('#transition-select')!
 const animationAdd = root.querySelector<HTMLButtonElement>('.animation-add')!
 const animationState = root.querySelector<HTMLElement>('.animation-state')!
+const animationEffect = root.querySelector<HTMLSelectElement>('#animation-effect')!
+const animationTrigger = root.querySelector<HTMLSelectElement>('#animation-trigger')!
+const animationDuration = root.querySelector<HTMLInputElement>('#animation-duration')!
+const animationDelay = root.querySelector<HTMLInputElement>('#animation-delay')!
+const layoutSelect = root.querySelector<HTMLSelectElement>('#layout-select')!
+const slideMaster = root.querySelector<HTMLElement>('.slide-master')!
 const imageForm = root.querySelector<HTMLFormElement>('.image-form')!
 const imagePrompt = root.querySelector<HTMLTextAreaElement>('#image-prompt')!
 const imageTarget = root.querySelector<HTMLSelectElement>('#image-target')!
@@ -112,6 +125,7 @@ const edits = new Map<string, Edit>()
 const imageEdits: ImageEdit[] = []
 const animationEdits: AnimationEdit[] = []
 const transitionEdits = new Map<number, SlideTransition>()
+const layoutEdits = new Map<number, string>()
 let undoSnapshot: { order: number[]; edits: Edit[]; theme?: BusinessTheme } | undefined
 let activeAIEditId = ''
 let pendingAIEditId = ''
@@ -122,6 +136,71 @@ let deck: Deck
 let selectedSlide = 0
 let selectedElement = ''
 let dirty = false
+let savedRevision = false
+let saving = false
+let mutationPending = 0
+const locked = () => saving || savedRevision
+const lockFields = new Map<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement | HTMLSelectElement, boolean>()
+function setEditingLocked(value: boolean) {
+  root.inert = value
+  for (const field of root.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement | HTMLSelectElement>('input, button, textarea, select')) {
+    if (value) { if (!lockFields.has(field)) lockFields.set(field, field.disabled); field.disabled = true }
+    else { field.disabled = lockFields.get(field) ?? field.disabled }
+  }
+  if (!value) lockFields.clear()
+  renderCanvas()
+}
+for (const kind of ['click', 'input', 'change', 'submit']) root.addEventListener(kind, event => {
+  if (locked() && !(savedRevision && event.target instanceof Element && event.target.closest('a'))) { event.preventDefault(); event.stopImmediatePropagation() }
+}, true)
+
+let renderTree: { slides: (RenderSlide & { slideIndex: number })[] } | undefined
+let canvas: { update: (state: SlidesCanvasState) => void } | undefined
+let previewSequence = 0
+let previewTimer: ReturnType<typeof setTimeout> | undefined
+function refreshCanvasPreview() {
+  if (!canvas || locked()) return
+  const sequence = ++previewSequence
+  clearTimeout(previewTimer)
+  canvasStatus.textContent = '正在更新文字与版式预览…'
+  previewTimer = setTimeout(() => {
+    void request<{ slides: (RenderSlide & { slideIndex: number })[] }>('render-tree', {
+      method: 'POST', body: JSON.stringify({ expectedSha256: deck.sha256, edits: [...edits.values()] }),
+    }).then(tree => {
+      if (sequence !== previewSequence || locked()) return
+      renderTree = tree
+      renderCanvas()
+      canvasStatus.textContent = '点击对象选择，拖动调整位置，拖动角点缩放'
+    }).catch(() => {
+      if (sequence === previewSequence) canvasStatus.textContent = '文字修改已保留；即时预览暂不可用，保存并打开新修订后更新。'
+    })
+  }, 450)
+}
+
+const canvasHost = root.querySelector<HTMLElement>('.slides-canvas')!
+const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
+
+function renderCanvas() {
+  const slide = renderTree?.slides.find(item => item.slideIndex === selectedSlide)
+  if (!canvas || !slide || !deck) return
+  canvas.update({
+    slide, selectedId: selectedElement,
+    editableIds: new Set(locked() ? [] : deck.slides[selectedSlide]!.elements.filter(item => item.editable).map(item => item.id)),
+    edits: [...edits.values()].filter(item => item.slideIndex === selectedSlide),
+    onSelect: id => { selectedElement = id; renderInspector() },
+    onGeometry: (id, geometry) => {
+      if (locked()) return
+      const key = editKey(selectedSlide, id)
+      edits.set(key, { ...edits.get(key), slideIndex: selectedSlide, elementId: id, geometry })
+      selectedElement = id
+      undoSnapshot = undefined
+      undoButton.disabled = true
+      renderInspector()
+      refreshCanvasPreview()
+      markDirty()
+    },
+  })
+}
 
 const flatText = (slide: DeckSlide) => slide.elements.find(item => item.text.trim())?.text.split('\n')[0] || `第 ${slide.slideIndex + 1} 页`
 const editKey = (slideIndex: number, elementId: string) => `${slideIndex}:${elementId}`
@@ -129,6 +208,8 @@ const currentElement = () => deck.slides[selectedSlide]?.elements.find(item => i
 const currentGeometryInputs = () => [...root.querySelectorAll<HTMLInputElement>('.geometry-grid input')]
 
 function markDirty() {
+  if (locked()) return
+  renderCanvas()
   dirty = true
   stateLabel.textContent = '有未保存修改'
   statusMessage.textContent = '修改尚未保存'
@@ -173,7 +254,8 @@ function renderSlides() {
     list.append(row)
   }
   root.querySelector('.slide-count')!.textContent = String(order.length)
-  preview.src = `${basePath}/api/preview.pdf#page=${selectedSlide + 1}&toolbar=0&navpanes=0`
+  renderCanvas()
+  if (!canvas) preview.src = `${basePath}/api/preview.pdf#page=${selectedSlide + 1}&toolbar=0&navpanes=0`
 }
 
 function move(position: number, direction: -1 | 1) {
@@ -189,7 +271,8 @@ function move(position: number, direction: -1 | 1) {
 }
 
 function renderInspector() {
-  const elements = deck.slides[selectedSlide]!.elements.filter(item => item.editable && item.text.trim())
+  renderCanvas()
+  const elements = deck.slides[selectedSlide]!.elements.filter(item => item.editable)
   select.replaceChildren(...elements.map(item => {
     const option = document.createElement('option')
     option.value = item.id
@@ -199,17 +282,34 @@ function renderInspector() {
   if (!elements.some(item => item.id === selectedElement)) selectedElement = elements[0]?.id ?? ''
   select.value = selectedElement
   const element = currentElement()
-  textArea.disabled = !element
+  textArea.disabled = savedRevision || !element || !['text', 'shape'].includes(element.type)
   textArea.value = element ? edits.get(editKey(selectedSlide, element.id))?.text ?? element.text : ''
-  const box = element && (element as DeckElement & { geometry?: { x: number; y: number; width: number; height: number } }).geometry
+  const box = element && (edits.get(editKey(selectedSlide, element.id))?.geometry ?? element.geometry)
   const geometry = box ?? { x: 0, y: 0, width: 0, height: 0 }
   for (const input of currentGeometryInputs()) input.value = String(geometry[input.name as keyof typeof geometry] ?? 0)
   themeSelect.value = selectedTheme ?? ''
   transitionSelect.value = transitionEdits.get(selectedSlide) ?? deck.slides[selectedSlide]!.transition ?? 'none'
-  const hasFade = [...(deck.slides[selectedSlide]!.animations ?? []), ...animationEdits]
-    .some(item => item.elementId === selectedElement && item.effect === 'fade')
-  animationAdd.disabled = !element || hasFade
-  animationState.textContent = hasFade ? '此对象已有点击淡入效果。' : ''
+  const slide = deck.slides[selectedSlide]!
+  const layouts = deck.layouts ?? []
+  layoutSelect.replaceChildren(...layouts.map(layout => {
+    const option = document.createElement('option')
+    option.value = layout.path
+    option.textContent = `${layout.name || layout.path} · ${layout.layoutType}`
+    return option
+  }))
+  layoutSelect.value = layoutEdits.get(selectedSlide) ?? slide.layoutPath ?? ''
+  layoutSelect.disabled = layouts.length === 0
+  const masterPath = slide.masterPath ?? ''
+  const master = (deck.masterParts ?? []).find(item => item.partPath === masterPath)
+  slideMaster.textContent = master?.name || masterPath || '未读取'
+  const existingAnimation = animationEdits.findLast(item => item.slideIndex === selectedSlide && item.elementId === selectedElement)
+    ?? slide.animations?.find(item => item.elementId === selectedElement)
+  animationEffect.value = existingAnimation?.effect ?? 'fade'
+  animationTrigger.value = existingAnimation?.trigger ?? 'onClick'
+  animationDuration.value = String(existingAnimation?.durationMs ?? 500)
+  animationDelay.value = String(existingAnimation?.delayMs ?? 0)
+  animationAdd.disabled = !element
+  animationState.textContent = existingAnimation ? `已有 ${existingAnimation.effect} 动画，可继续添加。` : ''
   root.querySelector('.inspector-heading')!.textContent = `对象 · 第 ${order.indexOf(selectedSlide) + 1} 页`
 }
 
@@ -219,6 +319,7 @@ textArea.addEventListener('input', () => {
   if (!element) return
   const edit = edits.get(editKey(selectedSlide, element.id)) ?? { slideIndex: selectedSlide, elementId: element.id }
   edit.text = textArea.value
+  refreshCanvasPreview()
   edits.set(editKey(selectedSlide, element.id), edit)
   undoSnapshot = undefined
   undoButton.disabled = true
@@ -228,6 +329,7 @@ for (const input of currentGeometryInputs()) input.addEventListener('change', ()
   const element = currentElement()
   if (!element) return
   const edit = edits.get(editKey(selectedSlide, element.id)) ?? { slideIndex: selectedSlide, elementId: element.id }
+  refreshCanvasPreview()
   edit.geometry = Object.fromEntries(currentGeometryInputs().map(field => [field.name, Number(field.value)])) as Edit['geometry']
   edits.set(editKey(selectedSlide, element.id), edit)
   undoSnapshot = undefined
@@ -236,6 +338,7 @@ for (const input of currentGeometryInputs()) input.addEventListener('change', ()
 })
 themeSelect.addEventListener('change', () => {
   selectedTheme = themeSelect.value ? themeSelect.value as BusinessTheme : undefined
+  canvasStatus.textContent = '主题修改将在保存并打开新修订后更新画布。'
   undoSnapshot = undefined
   undoButton.disabled = true
   markDirty()
@@ -244,9 +347,22 @@ transitionSelect.addEventListener('change', () => {
   transitionEdits.set(selectedSlide, transitionSelect.value as SlideTransition)
   markDirty()
 })
+layoutSelect.addEventListener('change', () => {
+  if (!layoutSelect.value) return
+  layoutEdits.set(selectedSlide, layoutSelect.value)
+  canvasStatus.textContent = '版式修改将在保存并打开新修订后更新画布。'
+  markDirty()
+})
 animationAdd.addEventListener('click', () => {
   if (!currentElement()) return
-  animationEdits.push({ slideIndex: selectedSlide, elementId: selectedElement, effect: 'fade', trigger: 'onClick' })
+  animationEdits.push({
+    slideIndex: selectedSlide,
+    elementId: selectedElement,
+    effect: animationEffect.value as AnimationEffect,
+    trigger: animationTrigger.value as AnimationTrigger,
+    durationMs: Math.max(1, Number(animationDuration.value) || 500),
+    delayMs: Math.max(0, Number(animationDelay.value) || 0),
+  })
   renderInspector()
   markDirty()
 })
@@ -292,10 +408,12 @@ imageAdd.addEventListener('click', () => {
   markDirty()
 })
 
+const chartTools = createSlidesChartTools(root.querySelector<HTMLElement>('.slides-inspector')!, request, markDirty)
+
 const saveButton = root.querySelector<HTMLButtonElement>('.save-button') ?? sharedShell?.save!
 if (!saveButton) throw new Error('slides save action is missing')
 if (root.querySelector('.save-icon')) saveButton.querySelector('.save-icon')!.append(createElement(Save, { width: 16, height: 16, 'aria-hidden': 'true' }))
-undoButton.append(createElement(Undo2, { width: 17, height: 17, 'aria-hidden': 'true' }))
+undoButton.replaceChildren(createElement(Undo2, { width: 17, height: 17, 'aria-hidden': 'true' }))
 aiCancel.append(createElement(X, { width: 16, height: 16, 'aria-hidden': 'true' }))
 undoButton.addEventListener('click', () => {
   if (!undoSnapshot) return
@@ -308,6 +426,7 @@ undoButton.addEventListener('click', () => {
   dirty = true
   renderSlides()
   renderInspector()
+  refreshCanvasPreview()
   markDirty()
 })
 
@@ -386,10 +505,12 @@ aiCancel.addEventListener('click', async () => {
 })
 
 aiAccept.addEventListener('click', async () => {
-  if (!pendingAIProposal || !pendingAIEditId) return
+  if (locked() || !pendingAIProposal || !pendingAIEditId) return
+  ++mutationPending
   aiAccept.disabled = true
   try {
     await request(`ai/${encodeURIComponent(pendingAIEditId)}/accept`, { method: 'POST' })
+    if (locked()) return
     undoSnapshot = { order: [...order], edits: [...edits.values()].map(edit => ({ ...edit })), ...(selectedTheme ? { theme: selectedTheme } : {}) }
     for (const edit of pendingAIProposal.edits) {
       const key = editKey(edit.slideIndex, edit.elementId)
@@ -403,28 +524,39 @@ aiAccept.addEventListener('click', async () => {
     aiPreview.hidden = true
     aiResult.textContent = '候选已采纳，可撤销或保存为新修订。'
     dirty = true
+    refreshCanvasPreview()
     renderSlides()
     renderInspector()
     markDirty()
   } catch (error) {
     aiAccept.disabled = false
     aiResult.textContent = error instanceof Error ? error.message : '采纳失败'
-  }
+  } finally { --mutationPending }
 })
 
 saveButton.addEventListener('click', async () => {
-  if ((!dirty && imageEdits.length === 0) || saveButton.disabled) return
+  if (locked() || mutationPending || (!dirty && imageEdits.length === 0) || saveButton.disabled) return
+  saving = true
+  ++previewSequence
+  clearTimeout(previewTimer)
+  setEditingLocked(true)
   saveButton.disabled = true
   stateLabel.textContent = '正在保存'
   try {
     const result = await request<{ revision: number; pptx?: { downloadUrl?: string }; editor?: { openUrl: string }; validation: { issues: { message: string }[] } }>('save', {
       method: 'POST',
-      body: JSON.stringify({ expectedSha256: deck.sha256, edits: [...edits.values()], order, ...(selectedTheme ? { theme: selectedTheme } : {}), ...(imageEdits.length ? { imageEdits } : {}), transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: animationEdits }),
+    body: JSON.stringify({ expectedSha256: deck.sha256, chartEdits: chartTools.pendingEdits(), edits: [...edits.values()], order, ...(selectedTheme ? { theme: selectedTheme } : {}), ...(imageEdits.length ? { imageEdits } : {}), transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: animationEdits, slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })) }),
     })
     dirty = false
+    savedRevision = true
+    ++previewSequence
+    clearTimeout(previewTimer)
+    chartTools.saved()
+    renderCanvas()
     imageEdits.splice(0, imageEdits.length)
     animationEdits.splice(0, animationEdits.length)
     transitionEdits.clear()
+    layoutEdits.clear()
     renderPendingImages()
     revisionLabel.textContent = `修订 ${result.revision}`
     stateLabel.textContent = result.validation.issues.length ? '已保存，存在告警' : '已保存'
@@ -435,6 +567,7 @@ saveButton.addEventListener('click', async () => {
       downloadLink.textContent = '下载 PPTX'
       downloadLink.prepend(createElement(Download, { width: 16, height: 16, 'aria-hidden': 'true' }))
     }
+    statusMessage.append(' · 打开新修订后继续编辑')
     if (result.editor?.openUrl) {
       const reopen = document.createElement('a')
       reopen.href = result.editor.openUrl
@@ -446,7 +579,10 @@ saveButton.addEventListener('click', async () => {
     stateLabel.textContent = '保存失败'
     statusMessage.textContent = error instanceof Error ? error.message : '保存失败'
   } finally {
-    saveButton.disabled = false
+    saving = false
+    root.inert = false
+    if (!savedRevision) setEditingLocked(false)
+    saveButton.disabled = savedRevision
   }
 })
 
@@ -463,6 +599,16 @@ async function start() {
     revisionLabel.textContent = `修订 ${deck.revision}`
     renderSlides()
     renderInspector()
+    void request<{ slides: (RenderSlide & { slideIndex: number })[] }>('render-tree').then(async tree => {
+      if (!Array.isArray(tree.slides) || !tree.slides.every(slide => Array.isArray(slide.nodes))) throw new Error('画布数据无效')
+      const { mountSlidesCanvas } = await import('./slides-canvas')
+      renderTree = tree
+      canvasHost.hidden = false
+      preview.hidden = true
+      canvas = mountSlidesCanvas(canvasHost)
+      canvasStatus.textContent = '点击对象选择，拖动调整位置，拖动角点缩放'
+      renderCanvas()
+    }).catch(() => { canvasStatus.textContent = '画布暂不可用，显示 PDF 兼容预览；可继续使用对象面板编辑。' })
     stateLabel.textContent = '可编辑'
     statusMessage.textContent = `${deck.slides.length} 页 · 已核验 PPTX 身份`
   } catch (error) {

@@ -18,6 +18,12 @@ from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from .service import ReportEditorContext, ReportEditorGrantService, ReportEditorSession
 
+_SLIDE_ANIMATION_EFFECTS = {
+    "appear", "fade", "flyIn", "wipe", "wipeDown", "splitIn", "bounce", "flipIn", "zoom",
+    "pulse", "spin", "grow", "teeter", "disappear", "fadeOut", "flyOut", "wipeOut", "shrink",
+    "zoomOut", "motionPath", "mediaPlay", "mediaPause", "mediaStop",
+}
+_SLIDE_ANIMATION_TRIGGERS = {"onClick", "withPrev", "afterPrev"}
 
 class ReportSlidesEditorService:
     """读取并验证 PPTX 编辑授权所绑定的发布修订。"""
@@ -30,6 +36,7 @@ class ReportSlidesEditorService:
         workspace: Any,
         editor_grants: ReportEditorGrantService | None = None,
         artifact_persistence: Any = None,
+        download_grants: Any = None,
         public_base_url: str = "",
     ) -> None:
         self.state_repository = state_repository
@@ -37,6 +44,7 @@ class ReportSlidesEditorService:
         self.workspace = workspace
         self.editor_grants = editor_grants
         self.artifact_persistence = artifact_persistence
+        self.download_grants = download_grants
         self.public_base_url = public_base_url.rstrip("/")
 
     async def context_for_session(self, session: ReportEditorSession) -> ReportEditorContext:
@@ -98,6 +106,20 @@ class ReportSlidesEditorService:
             "sha256": context.pptx_sha256,
         }
 
+    async def render_tree_for_session(
+        self, session: ReportEditorSession, preview: Any = None
+    ) -> dict[str, Any]:
+        from .slides_render import render_pptx_tree, validate_preview_edits
+
+        context = await self.context_for_session(session)
+        pptx = await self._read_verified_pptx(context)
+        if preview is not None:
+            edits = validate_preview_edits(preview, context.pptx_sha256)
+            revised = await asyncio.to_thread(self._run_engine, pptx, "edit", edits=edits)
+            pptx = revised["bytes"]
+        tree = await asyncio.to_thread(render_pptx_tree, pptx)
+        return {**tree, "revision": context.revision, "sha256": context.pptx_sha256}
+
     async def preview_pdf(self, session: ReportEditorSession) -> bytes:
         context = await self.context_for_session(session)
         pptx = await self._read_verified_pptx(context)
@@ -109,6 +131,7 @@ class ReportSlidesEditorService:
         payload: Any,
         *,
         images: list[dict[str, Any]] | None = None,
+        chart_replacements: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         context = await self.context_for_session(session)
         if not isinstance(payload, dict) or payload.get("expectedSha256") != context.pptx_sha256:
@@ -122,10 +145,13 @@ class ReportSlidesEditorService:
             raise ReportingError("report_slides_edit_invalid", "幻灯片主题无效。")
         transitions = payload.get("transitions", [])
         animations = payload.get("animations", [])
+        slide_layouts = payload.get("slideLayouts", [])
         if not isinstance(transitions, list) or len(transitions) > 500:
             raise ReportingError("report_slides_edit_invalid", "幻灯片转场内容无效。")
         if not isinstance(animations, list) or len(animations) > 500:
             raise ReportingError("report_slides_edit_invalid", "对象动画内容无效。")
+        if not isinstance(slide_layouts, list) or len(slide_layouts) > 500:
+            raise ReportingError("report_slides_edit_invalid", "幻灯片版式内容无效。")
         transition_kinds = {"none", "morph", "fade", "push", "wipe", "split", "circle", "cover", "pull", "dissolve", "zoom", "random"}
         if any(
             not isinstance(item, dict)
@@ -139,16 +165,45 @@ class ReportSlidesEditorService:
             raise ReportingError("report_slides_edit_invalid", "幻灯片转场内容无效。")
         if any(
             not isinstance(item, dict)
-            or set(item) != {"slideIndex", "elementId", "effect", "trigger"}
+            or not {"slideIndex", "elementId", "effect", "trigger"}.issubset(item)
+            or not set(item).issubset({"slideIndex", "elementId", "effect", "trigger", "durationMs", "delayMs"})
             or not isinstance(item["slideIndex"], int)
             or isinstance(item["slideIndex"], bool)
             or item["slideIndex"] < 0
             or not isinstance(item["elementId"], str)
-            or item["effect"] != "fade"
-            or item["trigger"] not in {"onClick", "withPrev", "afterPrev"}
+            or item["effect"] not in _SLIDE_ANIMATION_EFFECTS
+            or item["trigger"] not in _SLIDE_ANIMATION_TRIGGERS
+            or (
+                "durationMs" in item
+                and (
+                    not isinstance(item["durationMs"], (int, float))
+                    or isinstance(item["durationMs"], bool)
+                    or not 0 <= item["durationMs"] <= 3_600_000
+                )
+            )
+            or (
+                "delayMs" in item
+                and (
+                    not isinstance(item["delayMs"], (int, float))
+                    or isinstance(item["delayMs"], bool)
+                    or not 0 <= item["delayMs"] <= 3_600_000
+                )
+            )
             for item in animations
         ):
             raise ReportingError("report_slides_edit_invalid", "对象动画内容无效。")
+        if any(
+            not isinstance(item, dict)
+            or set(item) != {"slideIndex", "layoutPath"}
+            or not isinstance(item["slideIndex"], int)
+            or isinstance(item["slideIndex"], bool)
+            or item["slideIndex"] < 0
+            or not isinstance(item["layoutPath"], str)
+            or not item["layoutPath"].startswith("ppt/slideLayouts/")
+            or not item["layoutPath"].endswith(".xml")
+            for item in slide_layouts
+        ):
+            raise ReportingError("report_slides_edit_invalid", "幻灯片版式内容无效。")
         if not isinstance(edits, list) or len(edits) > 500:
             raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
         if any(
@@ -188,8 +243,13 @@ class ReportSlidesEditorService:
             images=images,
             transitions=transitions,
             animations=animations,
+            slide_layouts=slide_layouts,
         )
         revised = engine_result["bytes"]
+        if chart_replacements:
+            from .slides_chart_ai import replace_pptx_pictures
+
+            revised = await asyncio.to_thread(replace_pptx_pictures, revised, chart_replacements)
         next_revision = context.revision + 1
         source_path = PurePosixPath(context.pptx_path or "report.pptx")
         revision_path = (source_path.parent / f"{source_path.stem}-r{next_revision}.pptx").as_posix()
@@ -207,13 +267,40 @@ class ReportSlidesEditorService:
         next_job["pptxPath"] = revision_path
         next_job["pptxSize"] = len(revised)
         next_job["pptxSha256"] = digest
-        validation_issues = [
+        validation_issues = []
+        if chart_replacements:
+            previous_bindings = next_job.get("pptxChartEdits", [])
+            invalid_bindings = not isinstance(previous_bindings, list)
+            bindings = {}
+            for item in previous_bindings if isinstance(previous_bindings, list) else []:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("slidePath"), str)
+                    or not isinstance(item.get("shapeId"), int)
+                    or isinstance(item["shapeId"], bool)
+                ):
+                    invalid_bindings = True
+                    continue
+                bindings[(item["slidePath"], item["shapeId"])] = item
+            for item in chart_replacements:
+                bindings[(item["slidePath"], item["shapeId"])] = {
+                    "slidePath": item["slidePath"],
+                    "shapeId": item["shapeId"],
+                    **item["binding"],
+                }
+            next_job["pptxChartEdits"] = list(bindings.values())
+            if invalid_bindings:
+                validation_issues.append({
+                    "code": "report_slides_chart_bindings_invalid",
+                    "message": "旧图表追溯记录损坏，已丢弃对应记录；PPTX 仍已保存。",
+                })
+        validation_issues.extend(
             {
                 "code": "pptx_layout_audit",
                 "message": f"第 {item['page']} 页：{item['message']}",
             }
             for item in engine_result.get("issues", [])
-        ]
+        )
         try:
             await asyncio.to_thread(self._render_pdf, revised)
         except Exception:  # noqa: BLE001 - rendered file identity still gets published
@@ -239,20 +326,29 @@ class ReportSlidesEditorService:
             pptxSize=len(revised),
             pptxSha256=digest,
         )
-        durable = await self.state_repository.get(context.workflow_run_id)
-        if durable is None:
-            raise ReportingError("report_editor_context_missing", "报告编辑上下文不存在。")
-        await self.state_repository.apply(
-            context.workflow_run_id,
-            ReportingCommand(
-                name="set_report_editor_context",
-                payload={"context": next_context.model_dump(mode="json", by_alias=True)},
-                commandId=f"editor-context:{next_revision}:{next_context.digest()}",
-            ),
-            expected_version=durable.state_version,
-        )
-
         issues: list[dict[str, str]] = list(validation_issues)
+        context_persisted = False
+        try:
+            durable = await self.state_repository.get(context.workflow_run_id)
+            if durable is None:
+                raise ReportingError("report_editor_context_missing", "报告编辑上下文不存在。")
+            await self.state_repository.apply(
+                context.workflow_run_id,
+                ReportingCommand(
+                    name="set_report_editor_context",
+                    payload={"context": next_context.model_dump(mode="json", by_alias=True)},
+                    commandId=f"editor-context:{next_revision}:{next_context.digest()}",
+                ),
+                expected_version=durable.state_version,
+            )
+            context_persisted = True
+        except Exception:  # noqa: BLE001 - 已核验的新文件继续独立签发下载
+            issues.append({
+                "code": "report_slides_context_persistence_failed",
+                "message": "PPTX 已保存，但新修订编辑上下文未能登记。",
+            })
+
+        stored = ()
         if self.artifact_persistence is not None:
             try:
                 stored = await self.artifact_persistence.persist_available(
@@ -273,7 +369,7 @@ class ReportSlidesEditorService:
 
         download_url = ""
         editor_url = ""
-        if self.editor_grants is not None:
+        if self.editor_grants is not None and context_persisted:
             try:
                 raw_download, _expires = await self.editor_grants.issue(
                     next_context, capabilities={"pptx_download": True}
@@ -293,6 +389,22 @@ class ReportSlidesEditorService:
                 issues.append({
                     "code": "report_slides_editor_grant_failed",
                     "message": "PPTX 已保存，但新修订编辑入口未能签发。",
+                })
+        if not download_url and stored and self.download_grants is not None:
+            try:
+                raw_download, _grant = await self.download_grants.issue(
+                    scope=self._download_scope(context),
+                    report_id=context.report_id,
+                    revision=next_revision,
+                    pptx_path=revision_path,
+                    pptx_size=len(revised),
+                    pptx_sha256=digest,
+                )
+                download_url = f"{self.public_base_url}/reports/v1/download/{raw_download}/pptx"
+            except Exception:  # noqa: BLE001 - 保留文件身份与具体交付告警
+                issues.append({
+                    "code": "report_pptx_artifact_download_grant_failed",
+                    "message": "PPTX 已保存，但备用产物下载授权未能签发。",
                 })
         return {
             "reportId": context.report_id,
@@ -343,6 +455,7 @@ class ReportSlidesEditorService:
         images: list[dict[str, Any]] | None = None,
         transitions: list[dict[str, Any]] | None = None,
         animations: list[dict[str, Any]] | None = None,
+        slide_layouts: list[dict[str, Any]] | None = None,
     ) -> Any:
         engine = Path(os.environ.get(
             "AGENT_REPORTING_SLIDES_ENGINE_DIR",
@@ -376,6 +489,8 @@ class ReportSlidesEditorService:
                     request["transitions"] = transitions
                 if animations:
                     request["animations"] = animations
+                if slide_layouts:
+                    request["slideLayouts"] = slide_layouts
             request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
             process = subprocess.run(
                 ["node_modules/.bin/tsx", "bridge/edit-pptx.ts", str(request_path)],
@@ -413,4 +528,3 @@ class ReportSlidesEditorService:
             if process.returncode or not target.is_file():
                 raise ReportingError("report_slides_preview_failed", "幻灯片预览暂不可用。")
             return target.read_bytes()
-

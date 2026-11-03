@@ -792,6 +792,7 @@ class ReportingCheckpoint(StrictModel):
     narrative_outline_hash: str | None = Field(
         default=None, alias="narrativeOutlineHash", pattern=SHA256_PATTERN
     )
+    slide_outline_file: FileIdentity | None = Field(default=None, alias="slideOutlineFile")
     completed_sections: tuple[CompletedSection, ...] = Field(default=(), alias="completedSections")
     pending_sections: tuple[str, ...] = Field(default=(), alias="pendingSections")
     warnings: tuple[dict[str, Any], ...] = Field(default=(), max_length=500)

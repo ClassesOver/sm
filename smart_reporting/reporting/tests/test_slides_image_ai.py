@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -62,7 +63,7 @@ async def test_image_generation_returns_reviewable_scoped_candidate():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     service = ReportSlidesImageService(
-        FakeSlides(), api_key="test-key", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        FakeSlides(), api_key="test-key", base_url="https://images.example.test/v1",
         model="qwen-image-plus", client=client,
     )
     result = await service.generate_candidate(_session(), "医疗服务大厅的抽象插画")
@@ -81,13 +82,87 @@ async def test_image_generation_returns_reviewable_scoped_candidate():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("image_base_url", [
+    "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+])
+async def test_dashscope_image_generation_uses_native_multimodal_protocol(image_base_url):
+    calls = []
+    png = bytes.fromhex("89504e470d0a1a0a") + b"image"
+
+    async def handler(request):
+        calls.append(request)
+        if request.method == "POST":
+            return httpx.Response(200, json={"output": {"choices": [{"message": {"content": [
+                {"image": "https://images.aliyuncs.com/accepted.png"},
+            ]}}]}})
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=png)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = ReportSlidesImageService(
+            FakeSlides(), api_key="test-key", base_url=image_base_url,
+            model="qwen-image-plus", client=client,
+        )
+        result = await service.generate_candidate(_session(), "医疗服务插画")
+    assert calls[0].url.host == httpx.URL(image_base_url).host
+    assert calls[0].url.path == "/api/v1/services/aigc/multimodal-generation/generation"
+    assert json.loads(calls[0].content) == {
+        "model": "qwen-image-plus",
+        "input": {"messages": [{"role": "user", "content": [{"text": "医疗服务插画"}]}]},
+        "parameters": {"size": "1024*1024", "n": 1},
+    }
+    assert result["previewDataUrl"].startswith("data:image/png;base64,")
+    assert "authorization" not in calls[1].headers
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("provider_code", ["InvalidParameter", "private-secret-value"])
+async def test_image_provider_rejection_returns_specific_reason_without_sensitive_response(provider_code):
+    async def handler(request):
+        return httpx.Response(400, json={
+            "code": provider_code, "message": "private prompt and token details",
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = ReportSlidesImageService(
+            FakeSlides(), api_key="test-key", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            model="qwen-image-plus", client=client,
+        )
+        with pytest.raises(ReportingError) as raised:
+            await service.generate_candidate(_session(), "插画")
+    assert raised.value.code == "report_slides_image_failed"
+    assert "400" in raised.value.message
+    if provider_code == "InvalidParameter":
+        assert "InvalidParameter" in raised.value.message
+    assert "private" not in raised.value.message and "test-key" not in raised.value.message
+    assert service._candidates == {}
+
+
+@pytest.mark.anyio
+async def test_image_provider_timeout_preserves_page_and_reports_timeout():
+    async def handler(request):
+        raise httpx.ReadTimeout("private request details", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = ReportSlidesImageService(
+            FakeSlides(), api_key="test-key", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            model="qwen-image-plus", client=client,
+        )
+        with pytest.raises(ReportingError) as raised:
+            await service.generate_candidate(_session(), "插画")
+    assert "超时" in raised.value.message
+    assert "private" not in raised.value.message
+    assert service._candidates == {}
+
+
+@pytest.mark.anyio
 async def test_image_generation_rejects_provider_urls_outside_dashscope_storage():
     async def handler(request: httpx.Request):
         return httpx.Response(200, json={"data": [{"url": "http://127.0.0.1/private"}]})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     service = ReportSlidesImageService(
-        FakeSlides(), api_key="test-key", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        FakeSlides(), api_key="test-key", base_url="https://images.example.test/v1",
         model="qwen-image-plus", client=client,
     )
 
@@ -105,7 +180,7 @@ async def test_image_candidates_are_bound_to_report_revision_and_geometry():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     service = ReportSlidesImageService(
-        FakeSlides(), api_key="test-key", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        FakeSlides(), api_key="test-key", base_url="https://images.example.test/v1",
         model="qwen-image-plus", client=client,
     )
     result = await service.generate_candidate(_session(), "插画")

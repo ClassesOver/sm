@@ -5434,6 +5434,7 @@ def _outline_runtime(monkeypatch, planner):
         domains=None,
         report_goal="分析2025年运营",
         period=ReportPeriod(start=date(2025, 1, 1), end=date(2025, 12, 31)),
+        delivery_format="document",
     )
     return state, SimpleNamespace(
         _state=lambda _context: state,

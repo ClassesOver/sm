@@ -21,16 +21,7 @@ WORKDIR /build/smart_reporting/reporting/workbook_engine
 COPY smart_reporting/reporting/workbook_engine ./
 RUN npm ci --registry="${NPM_REGISTRY}"
 
-WORKDIR /build/smart_reporting/report_editor/frontend
-
-COPY smart_reporting/report_editor/frontend/package.json \
-    smart_reporting/report_editor/frontend/package-lock.json ./
-RUN npm ci --registry="${NPM_REGISTRY}"
-
-COPY smart_reporting/report_editor/frontend ./
-RUN npm run build && npm run build:slides
-
-WORKDIR /build/slides-engine
+WORKDIR /build/smart_reporting/reporting/slides_engine
 COPY smart_reporting/reporting/slides_engine/package.json \
     smart_reporting/reporting/slides_engine/package-lock.json \
     smart_reporting/reporting/slides_engine/tsconfig.base.json ./
@@ -42,6 +33,14 @@ COPY smart_reporting/reporting/slides_engine/bridge ./bridge
 RUN npm ci --registry="${NPM_REGISTRY}" \
     && npm run test --workspace @genoffice/pipelines \
     && npm run typecheck --workspace @genoffice/pipelines
+
+# 前端按源码相对路径复用冻结的 GenOffice 类型和浏览器渲染模块。
+WORKDIR /build/smart_reporting/report_editor/frontend
+COPY smart_reporting/report_editor/frontend/package.json \
+    smart_reporting/report_editor/frontend/package-lock.json ./
+RUN npm ci --registry="${NPM_REGISTRY}"
+COPY smart_reporting/report_editor/frontend ./
+RUN npm run build && npm run build:slides
 
 FROM base AS env-init
 
@@ -58,7 +57,7 @@ ARG PYPI_FILES_MIRROR=https://mirrors.aliyun.com/pypi
 
 COPY --from=uv-source /uv /uvx /bin/
 COPY --from=report-editor-frontend /usr/local /usr/local
-COPY --from=report-editor-frontend /build/slides-engine /opt/reporting-slides-engine
+COPY --from=report-editor-frontend /build/smart_reporting/reporting/slides_engine /opt/reporting-slides-engine
 COPY --from=report-editor-frontend /build/smart_reporting/reporting/workbook_engine /opt/reporting-workbook-engine
 
 WORKDIR /app
