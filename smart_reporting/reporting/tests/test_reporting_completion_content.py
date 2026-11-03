@@ -35,6 +35,46 @@ def test_completed_report_content_presents_delivery_actions_compactly() -> None:
     )
 
 
+def test_completed_report_content_supports_pptx_only_delivery() -> None:
+    content = _completed_report_content(_completed_payload(
+        pdf=None,
+        word=None,
+        editor=None,
+        pptx={"downloadUrl": "https://reports.example/report.pptx"},
+    ))
+
+    assert content == (
+        "## 报表已生成\n\n"
+        "### 年度运营分析报告\n\n"
+        "报告已完成发布。\n\n"
+        "[下载 PPTX](https://reports.example/report.pptx)"
+    )
+
+
+def test_completed_report_content_reports_pptx_validation_failure_with_download() -> None:
+    content = _completed_report_content(_completed_payload(
+        pdf=None,
+        word=None,
+        editor=None,
+        pptx={"downloadUrl": "https://reports.example/report.pptx"},
+        publicationGate={
+            "formalReleaseAllowed": False,
+            "issues": [{
+                "code": "artifact_not_validated",
+                "message": "PPTX 版式验收未通过。",
+                "details": {"validationIssues": [{
+                    "code": "pptx_text_overflow",
+                    "message": "第 2 页标题超出画布。",
+                }]},
+            }],
+        },
+    ))
+
+    assert "[下载 PPTX](https://reports.example/report.pptx)" in content
+    assert "验收或发布检查未通过，下载链接已签发。" in content
+    assert "第 2 页标题超出画布。" in content
+
+
 def test_completed_report_content_omits_invalid_delivery_urls() -> None:
     content = _completed_report_content(
         _completed_payload(

@@ -10,6 +10,10 @@ from .service import (
     ReportEditorService,
     ReportEditorSession,
 )
+from .slides import ReportSlidesEditorService
+from .slides_ai import ReportSlidesAIService, create_report_slides_ai_service
+from .slides_api import create_report_slides_editor_router
+from .slides_image_ai import ReportSlidesImageService
 from .table_ai import (
     TableAIEditRequest,
     TableAIEditService,
@@ -26,6 +30,9 @@ __all__ = [
     "ReportEditorDocument",
     "ReportEditorGrantService",
     "ReportEditorService",
+    "ReportSlidesEditorService",
+    "ReportSlidesAIService",
+    "ReportSlidesImageService",
     "ReportEditorSession",
     "SqlAlchemyReportEditorRepository",
     "TableAIEditRequest",
@@ -35,4 +42,6 @@ __all__ = [
     "create_report_editor_chart_ai_service",
     "create_report_editor_table_ai_service",
     "create_report_editor_router",
+    "create_report_slides_editor_router",
+    "create_report_slides_ai_service",
 ]

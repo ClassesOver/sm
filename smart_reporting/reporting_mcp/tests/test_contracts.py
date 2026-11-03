@@ -33,6 +33,17 @@ def test_start_contract_accepts_url_attachments() -> None:
     assert str(value.attachments[0].url).startswith("https://")
 
 
+def test_start_contract_preserves_requested_delivery_format() -> None:
+    value = ReportingReportRequest.model_validate(
+        {
+            "reportGoal": "分析收入",
+            "deliveryFormat": "pptx",
+            "period": {"start": "2026-01-01", "end": "2026-01-31"},
+        }
+    )
+    assert value.delivery_format == "pptx"
+
+
 def test_start_contract_rejects_client_identity_fields() -> None:
     with pytest.raises(ValidationError):
         ReportingStartInput.model_validate(

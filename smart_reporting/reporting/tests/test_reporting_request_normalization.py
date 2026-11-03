@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from smart_reporting.reporting.contract import ReportRequestEnvelope
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
 from smart_reporting.reporting.workflow.runtime.models import NormalizedReportPrompt
@@ -58,6 +59,59 @@ async def test_normalization_prefers_model_period_and_only_falls_back_when_missi
         for window in envelope.period_windows().windows
     }
     assert windows == {"current": expected, "yoy": expected_yoy}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("prompt", "delivery_format"),
+    [
+        ("把2025年收入分析做成演示文稿", "pptx"),
+        ("请用幻灯片汇报2025年收入趋势", "pptx"),
+        ("生成2025年医院收入报告", "document"),
+        ("生成2025年报告，不需要PPT，重点分析收入", "document"),
+    ],
+)
+async def test_normalization_freezes_delivery_format_from_request_semantics(
+    prompt: str, delivery_format: str
+) -> None:
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(
+        return_value=NormalizedReportPrompt(reportType="topic", domains=("income",))
+    )
+    context = SimpleNamespace(session_state={})
+
+    output = await runtime.normalize_report_request(
+        SimpleNamespace(input=prompt, additional_data=None), context
+    )
+
+    assert output.content["deliveryFormat"] == delivery_format
+    assert context.session_state["report_request_context"]["deliveryFormat"] == delivery_format
+
+
+@pytest.mark.anyio
+async def test_structured_delivery_format_is_frozen_across_resume() -> None:
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    context = SimpleNamespace(session_state={})
+    first = '{"version":"1","reportGoal":"分析2025年收入",' \
+        '"reportType":"topic","deliveryFormat":"pptx",' \
+        '"domains":["income"],"period":{"start":"2025-01-01",' \
+        '"end":"2025-12-31"}}'
+
+    output = await runtime.normalize_report_request(
+        SimpleNamespace(input=first, additional_data=None), context
+    )
+
+    assert output.content["deliveryFormat"] == "pptx"
+    assert context.session_state["report_request_context"]["deliveryFormat"] == "pptx"
+    with pytest.raises(ReportingError, match="交付格式已冻结"):
+        await runtime.normalize_report_request(
+            SimpleNamespace(
+                input=first.replace('"deliveryFormat":"pptx"', '"deliveryFormat":"document"'),
+                additional_data=None,
+            ),
+            context,
+        )
 
 
 @pytest.mark.anyio
@@ -118,6 +172,7 @@ async def test_normalize_multi_domain_topic_without_requesting_clarification() -
         "version": "1",
         "reportGoal": "分析2025年医院收入趋势及成本效率",
         "reportType": "topic",
+        "deliveryFormat": "document",
         "domains": ["income", "full_cost"],
         "period": {"start": "2025-01-01", "end": "2025-12-31"},
         "comparisonRoles": ["yoy"],

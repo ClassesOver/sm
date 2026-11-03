@@ -436,11 +436,23 @@ class ReportEditorContext(BaseModel):
     source: str = Field(default="published", pattern=r"^(published|manual)$")
     created_at: datetime | None = Field(default=None, alias="createdAt")
     note: str = Field(default="", max_length=200)
+    delivery_format: Literal["document", "pptx"] = Field(
+        default="document", alias="deliveryFormat"
+    )
+    pptx_path: str | None = Field(default=None, alias="pptxPath", max_length=1024)
+    pptx_size: int | None = Field(default=None, alias="pptxSize", gt=0)
+    pptx_sha256: str | None = Field(default=None, alias="pptxSha256", pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def validate_job_identity(self) -> ReportEditorContext:
         if self.job.get("jobId") != self.job_id:
             raise ValueError("报告编辑 job 身份不一致")
+        pptx_identity = (self.pptx_path, self.pptx_size, self.pptx_sha256)
+        if self.delivery_format == "pptx":
+            if any(item is None for item in pptx_identity):
+                raise ValueError("PPTX 编辑上下文必须绑定完整文件身份")
+        elif any(item is not None for item in pptx_identity):
+            raise ValueError("文档编辑上下文不能携带 PPTX 文件身份")
         return self
 
     def digest(self) -> str:

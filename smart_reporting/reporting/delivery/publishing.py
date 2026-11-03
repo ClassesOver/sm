@@ -72,6 +72,9 @@ report_download_grants_v2 = Table(
     Column("word_path", Text, nullable=False),
     Column("word_size", BigInteger, nullable=False),
     Column("word_sha256", String(64), nullable=False),
+    Column("pptx_path", Text, nullable=False, server_default=""),
+    Column("pptx_size", BigInteger, nullable=False, server_default="0"),
+    Column("pptx_sha256", String(64), nullable=False, server_default=""),
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("revoked_at", DateTime(timezone=True), nullable=True),
     Index(
@@ -156,11 +159,14 @@ class ReportDownloadGrant:
     word_sha256: str
     expires_at: datetime
     revoked_at: datetime | None = None
+    pptx_path: str = ""
+    pptx_size: int = 0
+    pptx_sha256: str = ""
 
 
 @dataclass(frozen=True)
 class ReportArtifactSpec:
-    artifact: Literal["pdf", "word"]
+    artifact: Literal["pdf", "word", "pptx"]
     path: str
     size: int
     sha256: str
@@ -172,7 +178,7 @@ class StoredReportArtifact:
     scope: ReportDownloadScope
     report_id: str
     revision: int
-    artifact: Literal["pdf", "word"]
+    artifact: Literal["pdf", "word", "pptx"]
     path: str
     size: int
     sha256: str
@@ -210,7 +216,7 @@ class ReportArtifactRepository(Protocol):
         scope: ReportDownloadScope,
         report_id: str,
         revision: int,
-        artifact: Literal["pdf", "word"],
+        artifact: Literal["pdf", "word", "pptx"],
     ) -> StoredReportArtifact | None: ...
 
     async def touch(self, artifact_key: str, *, now: datetime) -> None: ...
@@ -235,6 +241,9 @@ def _grant_values(grant: ReportDownloadGrant) -> dict[str, object]:
         "word_path": grant.word_path,
         "word_size": grant.word_size,
         "word_sha256": grant.word_sha256,
+        "pptx_path": grant.pptx_path,
+        "pptx_size": grant.pptx_size,
+        "pptx_sha256": grant.pptx_sha256,
         "expires_at": grant.expires_at,
         "revoked_at": grant.revoked_at,
     }
@@ -286,6 +295,12 @@ def _active_artifact_grant(*, now: datetime) -> Any:
             report_download_grants_v2.c.word_size == artifact.size,
             report_download_grants_v2.c.word_sha256 == artifact.sha256,
         ),
+        and_(
+            artifact.artifact == "pptx",
+            report_download_grants_v2.c.pptx_path == artifact.path,
+            report_download_grants_v2.c.pptx_size == artifact.size,
+            report_download_grants_v2.c.pptx_sha256 == artifact.sha256,
+        ),
     ))
     return (
         select(report_download_grants_v2.c.grant_hash)
@@ -319,6 +334,18 @@ class SqlAlchemyDownloadGrantRepository:
                     "ON report_artifact_files_v1 (created_at)"
                 )
             )
+            await connection.execute(text(
+                "ALTER TABLE report_download_grants_v2 ADD COLUMN IF NOT EXISTS "
+                "pptx_path TEXT NOT NULL DEFAULT ''"
+            ))
+            await connection.execute(text(
+                "ALTER TABLE report_download_grants_v2 ADD COLUMN IF NOT EXISTS "
+                "pptx_size BIGINT NOT NULL DEFAULT 0"
+            ))
+            await connection.execute(text(
+                "ALTER TABLE report_download_grants_v2 ADD COLUMN IF NOT EXISTS "
+                "pptx_sha256 VARCHAR(64) NOT NULL DEFAULT ''"
+            ))
         await self.cleanup_expired(now=datetime.now(UTC))
 
     async def replace(self, grant: ReportDownloadGrant, *, now: datetime) -> None:
@@ -429,6 +456,9 @@ class SqlAlchemyDownloadGrantRepository:
                 if row["revoked_at"] is not None
                 else None
             ),
+            pptx_path=cast(str, row["pptx_path"]),
+            pptx_size=cast(int, row["pptx_size"]),
+            pptx_sha256=cast(str, row["pptx_sha256"]),
         )
 
     async def revoke_report(
@@ -530,7 +560,7 @@ class SqlAlchemyReportArtifactRepository:
         if row is None:
             return None
         artifact = cast(str, row["artifact"])
-        if artifact not in {"pdf", "word"}:
+        if artifact not in {"pdf", "word", "pptx"}:
             raise ReportingError("report_artifact_invalid", "持久化报告产物无效。")
         return StoredReportArtifact(
             artifact_key=cast(str, row["artifact_key"]),
@@ -544,7 +574,7 @@ class SqlAlchemyReportArtifactRepository:
             ),
             report_id=cast(str, row["report_id"]),
             revision=cast(int, row["revision"]),
-            artifact=cast(Literal["pdf", "word"], artifact),
+            artifact=cast(Literal["pdf", "word", "pptx"], artifact),
             path=cast(str, row["path"]),
             size=cast(int, row["size"]),
             sha256=cast(str, row["sha256"]),
@@ -557,7 +587,7 @@ class SqlAlchemyReportArtifactRepository:
         scope: ReportDownloadScope,
         report_id: str,
         revision: int,
-        artifact: Literal["pdf", "word"],
+        artifact: Literal["pdf", "word", "pptx"],
     ) -> StoredReportArtifact | None:
         statement = (
             select(report_artifact_files_v1.c.artifact_key)
@@ -618,11 +648,18 @@ class ReportDownloadGrantService:
         word_path: str | None = None,
         word_size: int | None = None,
         word_sha256: str | None = None,
+        pptx_path: str | None = None,
+        pptx_size: int | None = None,
+        pptx_sha256: str | None = None,
         now: datetime | None = None,
     ) -> tuple[str, ReportDownloadGrant]:
         # Existing non-null v2 storage uses an empty triple for an absent format.
         # It is never an artifact identity and never receives a download URL.
-        formats = ((pdf_path, pdf_size, pdf_sha256), (word_path, word_size, word_sha256))
+        formats = (
+            (pdf_path, pdf_size, pdf_sha256),
+            (word_path, word_size, word_sha256),
+            (pptx_path, pptx_size, pptx_sha256),
+        )
         if not any(path for path, _, _ in formats):
             raise ReportingError("report_artifact_invalid", "至少需要一种已核验报告格式。")
         for path, size, digest in formats:
@@ -644,6 +681,9 @@ class ReportDownloadGrantService:
             word_path=word_path or "",
             word_size=word_size or 0,
             word_sha256=word_sha256 or "",
+            pptx_path=pptx_path or "",
+            pptx_size=pptx_size or 0,
+            pptx_sha256=pptx_sha256 or "",
         )
         await self.repository.replace(grant, now=current)
         try:
@@ -685,7 +725,7 @@ class ReportArtifactPersistenceService:
         revision: int,
         artifacts: tuple[ReportArtifactSpec, ...],
     ) -> None:
-        if not artifacts or len(artifacts) > 2 or len({item.artifact for item in artifacts}) != len(artifacts) or any(item.artifact not in {"pdf", "word"} for item in artifacts):
+        if not artifacts or len(artifacts) > 3 or len({item.artifact for item in artifacts}) != len(artifacts) or any(item.artifact not in {"pdf", "word", "pptx"} for item in artifacts):
             raise ReportingError("report_artifact_invalid", "至少持久化一种非重复的报告格式。")
         for spec in artifacts:
             if (
@@ -724,7 +764,7 @@ class ReportArtifactPersistenceService:
         artifacts: tuple[ReportArtifactSpec, ...],
     ) -> tuple[ReportArtifactSpec, ...]:
         """Persist independent formats; return only identities actually stored."""
-        if not artifacts or len(artifacts) > 2 or len({item.artifact for item in artifacts}) != len(artifacts):
+        if not artifacts or len(artifacts) > 3 or len({item.artifact for item in artifacts}) != len(artifacts):
             raise ReportingError("report_artifact_invalid", "报告格式清单无效。")
         saved: list[ReportArtifactSpec] = []
         failures: list[Exception] = []
@@ -783,7 +823,7 @@ class ReportDownloadHttpService:
         self,
         raw_grant: str,
         *,
-        artifact: Literal["pdf", "word"] = "pdf",
+        artifact: Literal["pdf", "word", "pptx"] = "pdf",
     ) -> tuple[ReportDownloadGrant, AsyncIterator[bytes]]:
         grant = await self.grants.lookup(raw_grant)
         path, size, sha256 = _grant_artifact(grant, artifact)
@@ -888,12 +928,33 @@ def create_report_download_router(
             },
         )
 
+    @router.get("/reports/v1/download/{opaque_grant}/pptx", name="download_report_pptx")
+    async def download_report_pptx(opaque_grant: str) -> StreamingResponse:
+        try:
+            grant, content = await service.stream(opaque_grant, artifact="pptx")
+        except ReportingError as error:
+            raise HTTPException(
+                status_code=_download_error_status(error.code),
+                detail={"code": error.code, "message": error.message},
+            ) from None
+        return StreamingResponse(
+            content,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={
+                "Content-Disposition": _content_disposition(grant.pptx_path, artifact="pptx"),
+                "Content-Length": str(grant.pptx_size),
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     return router
 
 
-def _content_disposition(path: str, *, artifact: Literal["pdf", "word"]) -> str:
+def _content_disposition(path: str, *, artifact: Literal["pdf", "word", "pptx"]) -> str:
     filename = Path(path).name
-    suffix = {"pdf": ".pdf", "word": ".docx"}[artifact]
+    suffix = {"pdf": ".pdf", "word": ".docx", "pptx": ".pptx"}[artifact]
     if Path(filename).suffix.lower() != suffix:
         filename = f"report{suffix}"
     ascii_name = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
@@ -932,6 +993,13 @@ def publication_result(
             "size": grant.word_size,
             "sha256": grant.word_sha256,
         }} if grant.word_path else {}),
+        **({"pptx": {
+            "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}/pptx",
+            "path": grant.pptx_path,
+            "expiresAt": grant.expires_at.isoformat(),
+            "size": grant.pptx_size,
+            "sha256": grant.pptx_sha256,
+        }} if grant.pptx_path else {}),
         **({"editor": {
             "openUrl": f"{base_url}/reports/v1/editor/open/{editor_raw_grant}",
             "expiresAt": editor_expires_at.isoformat(),
@@ -949,12 +1017,16 @@ def cli_result(
     word_path: str | None = None,
     word_size: int | None = None,
     word_sha256: str | None = None,
+    pptx_path: str | None = None,
+    pptx_size: int | None = None,
+    pptx_sha256: str | None = None,
     source_warnings: list[dict[str, object]] | None = None,
     task_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         **({"path": path, "size": size, "sha256": sha256} if path else {}),
         **({"word": {"path": word_path, "size": word_size, "sha256": word_sha256}} if word_path else {}),
+        **({"pptx": {"path": pptx_path, "size": pptx_size, "sha256": pptx_sha256}} if pptx_path else {}),
         "sourceWarnings": list(source_warnings or ()),
         "codingReceipts": list(task_receipts or ()),
     }
@@ -1064,10 +1136,13 @@ def _validate_stored_artifact(
 
 def _grant_artifact(
     grant: ReportDownloadGrant,
-    artifact: Literal["pdf", "word"],
+    artifact: Literal["pdf", "word", "pptx"],
 ) -> tuple[str, int, str]:
-    identity = ((grant.pdf_path, grant.pdf_size, grant.pdf_sha256) if artifact == "pdf"
-                else (grant.word_path, grant.word_size, grant.word_sha256))
+    identity = {
+        "pdf": (grant.pdf_path, grant.pdf_size, grant.pdf_sha256),
+        "word": (grant.word_path, grant.word_size, grant.word_sha256),
+        "pptx": (grant.pptx_path, grant.pptx_size, grant.pptx_sha256),
+    }[artifact]
     if not identity[0] or identity[1] <= 0 or not identity[2]:
         raise ReportingError("report_artifact_unavailable", "本修订未生成此格式。")
     return identity

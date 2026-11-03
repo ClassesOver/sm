@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -27,6 +28,7 @@ from smart_reporting.reporting.delivery.artifacts_v1 import (
 )
 from smart_reporting.reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
+    ReportArtifactSpec,
     ReportDownloadGrantService,
     ReportDownloadHttpService,
     create_report_download_router,
@@ -45,6 +47,7 @@ from smart_reporting.reporting.trace.contracts_v1 import (
 )
 from smart_reporting.reporting.trace.index_builder import build_csv_trace_index, encode_trace_index
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
+from smart_reporting.reporting.workflow.runtime import planning as planning_module
 from smart_reporting.reporting.workflow.runtime import publication as publication_module
 from smart_reporting.reporting.workflow.scope import (
     REPORT_WORKFLOW_SCOPE_DEPENDENCY,
@@ -731,6 +734,100 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
             response = await client.get(result[artifact]["downloadUrl"])
             assert response.status_code == 200
             assert response.content == files[f"reports/report.{suffix}"]
+
+
+@pytest.mark.anyio
+async def test_http_pptx_publication_keeps_link_when_layout_audit_fails(monkeypatch):
+    pptx = b"pptx bytes"
+    digest = hashlib.sha256(pptx).hexdigest()
+    expires = datetime.now(UTC)
+    captured = {}
+
+    class Workspace:
+        async def ahash_file(self, thread_id, path):
+            return {"path": path, "size": len(pptx), "sha256": digest}
+
+    class Persistence:
+        async def persist_available(self, **values):
+            captured["artifacts"] = values["artifacts"]
+            return values["artifacts"]
+
+    class Grants:
+        async def issue(self, **values):
+            captured["grant"] = values
+            return "pptx-token", SimpleNamespace(
+                pptx_path=values["pptx_path"],
+                pptx_size=values["pptx_size"],
+                pptx_sha256=values["pptx_sha256"],
+                pdf_path="",
+                word_path="",
+                expires_at=expires,
+            )
+
+    class EditorGrants:
+        async def issue(self, context, *, capabilities):
+            captured["editor_context"] = context
+            captured["editor_capabilities"] = capabilities
+            return "slides-token", expires
+
+    class StateRepository:
+        async def get(self, _run_id):
+            return SimpleNamespace(payload={}, state_version=3)
+
+        async def apply(self, _run_id, command, *, expected_version):
+            captured["editor_command"] = command
+            captured["editor_expected_version"] = expected_version
+
+    monkeypatch.setattr(
+        planning_module,
+        "resolve_reporting_workflow_scope",
+        lambda **_kwargs: SimpleNamespace(
+            database="db",
+            company_id="company",
+            caller_thread_id="caller",
+            as_state=lambda: {"database": "db", "companyId": "company"},
+        ),
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = Workspace()
+    runtime.artifact_persistence = Persistence()
+    runtime.download_grants = Grants()
+    runtime.editor_grants = EditorGrants()
+    runtime.state_repository = StateRepository()
+    runtime._release_workspace = lambda _thread_id: None
+    output = await runtime._issue_http_pptx_publication(
+        thread_id="workspace",
+        caller_thread_id="caller",
+        user_id="user",
+        workflow_session_id="session",
+        workflow_run_id="run",
+        dependencies=None,
+        base_url="https://reports.test",
+        content={
+            "reportId": "report-pptx",
+            "revision": 1,
+            "jobId": "job-pptx",
+            "editorJob": {"jobId": "job-pptx"},
+            "markdownPath": "reports/report.md",
+            "pptxPath": "reports/board.pptx",
+            "pptxSize": len(pptx),
+            "pptxSha256": digest,
+            "validation": {"ok": False, "issues": [{"code": "pptx_layout_audit"}]},
+            "validationIssues": [{"code": "pptx_layout_audit", "message": "版式溢出"}],
+            "publicationGate": {"formalReleaseAllowed": False, "issues": [{"code": "quality_audit_failed"}]},
+        },
+    )
+
+    assert captured["artifacts"] == (
+        ReportArtifactSpec(artifact="pptx", path="reports/board.pptx", size=len(pptx), sha256=digest),
+    )
+    assert output["pptx"]["downloadUrl"] == "https://reports.test/reports/v1/download/pptx-token/pptx"
+    assert output["editor"]["openUrl"] == "https://reports.test/reports/v1/slides/open/slides-token"
+    assert captured["editor_capabilities"] == {"pptx_editor": True}
+    assert captured["editor_context"].pptx_path == "reports/board.pptx"
+    assert output["validation"]["ok"] is False
+    assert output["validationIssues"][0]["code"] == "pptx_layout_audit"
+    assert output["publicationGate"]["formalReleaseAllowed"] is False
 
 
 @pytest.mark.anyio

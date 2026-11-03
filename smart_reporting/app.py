@@ -1,4 +1,5 @@
 from os import getenv
+from pathlib import Path
 
 from agno.os.config import MCPConfig
 from fastapi import APIRouter, FastAPI, Request
@@ -29,11 +30,15 @@ from .quality_warnings.service import QualityWarningService
 from .report_editor import (
     ReportEditorGrantService,
     ReportEditorService,
+    ReportSlidesEditorService,
+    ReportSlidesImageService,
     SqlAlchemyReportEditorRepository,
     create_report_editor_ai_service,
     create_report_editor_chart_ai_service,
     create_report_editor_router,
     create_report_editor_table_ai_service,
+    create_report_slides_ai_service,
+    create_report_slides_editor_router,
 )
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
@@ -244,7 +249,7 @@ report_editor = ReportEditorService(
     workspace_registry=reporting_workspace_registry,
     workspace=report_runtime.workspace_service,
     report_tools=report_runtime.report_tools,
-    artifact_persistence=report_runtime.artifact_persistence,
+    artifact_persistence=report_artifact_persistence,
     download_grants=report_download_grants,
     editor_grants=report_editor_grants,
     public_base_url=settings.report_public_base_url,
@@ -253,6 +258,23 @@ report_editor = ReportEditorService(
     lineage_download_enabled=settings.report_lineage_download_enabled,
     lineage_drilldown_enabled=settings.report_lineage_drilldown_enabled,
     lineage_export_sources_enabled=settings.report_lineage_export_sources_enabled,
+)
+report_slides_editor = ReportSlidesEditorService(
+    state_repository=report_runtime.state_repository,
+    workspace_registry=reporting_workspace_registry,
+    workspace=report_runtime.workspace_service,
+    editor_grants=report_editor_grants,
+    artifact_persistence=report_artifact_persistence,
+    public_base_url=settings.report_public_base_url,
+)
+report_slides_ai = create_report_slides_ai_service(
+    reporting_agent_template.model, report_slides_editor
+)
+report_slides_image_ai = ReportSlidesImageService(
+    report_slides_editor,
+    api_key=settings.openai_api_key,
+    base_url=settings.openai_base_url,
+    model=settings.report_slides_image_model,
 )
 report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
 # 编辑器 AI 改图（AGENT_REPORT_EDITOR_CHART_AI_ENABLED，默认开启）：与可视化章节复用
@@ -327,6 +349,23 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             ),
             allowed_origin=settings.report_public_base_url,
             static_dir=settings.report_editor_static_dir,
+        )
+    )
+    static_root = Path(
+        settings.report_editor_static_dir
+        or Path(__file__).with_name("report_editor") / "static"
+    )
+    application.include_router(
+        create_report_slides_editor_router(
+            report_editor_grants,
+            slides=report_slides_editor,
+            slides_ai=report_slides_ai,
+            slides_images=report_slides_image_ai,
+            static_dir=static_root / "slides",
+            cookie_secure=bool(
+                settings.report_public_base_url
+                and settings.report_public_base_url.startswith("https://")
+            ),
         )
     )
     application.include_router(create_quality_warning_router())

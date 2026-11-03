@@ -105,4 +105,19 @@ describe('createEditorShell', () => {
     ])
     expect(root.querySelector('[data-action="save"]')?.classList.contains('is-primary')).toBe(true)
   })
+
+  it('loads PPTX output actions in the shared shell and omits document exports', () => {
+    const root = document.querySelector<HTMLElement>('#app')!
+    const shell = createEditorShell(root, 'full', 'pptx')
+
+    expect(root.classList.contains('editor-format-pptx')).toBe(true)
+    expect(shell.exportPptx.isConnected).toBe(true)
+    expect(shell.exportPdf.hidden).toBe(true)
+    expect(shell.exportWord.hidden).toBe(true)
+    expect(shell.search.hidden).toBe(true)
+    expect(shell.history.hidden).toBe(true)
+    expect(shell.sources.hidden).toBe(true)
+    expect(shell.outlineToggle.hidden).toBe(true)
+    expect(shell.more.hidden).toBe(true)
+  })
 })
