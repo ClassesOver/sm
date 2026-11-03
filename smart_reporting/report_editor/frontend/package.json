@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",
+    "build:slides": "tsc --noEmit && vite build --config vite.slides.config.ts",
     "check:budget": "node scripts/check-build-budget.mjs",
     "test:budget": "node scripts/check-build-budget.contract.mjs",
     "dev": "vite --host 0.0.0.0",

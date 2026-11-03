@@ -1,0 +1,13 @@
+{
+  "name": "@smart-reporting/slides-engine",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build:pptx": "tsx bridge/build-pptx.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
