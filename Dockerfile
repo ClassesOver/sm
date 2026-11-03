@@ -23,7 +23,20 @@ COPY smart_reporting/report_editor/frontend/package.json \
 RUN npm ci --registry="${NPM_REGISTRY}"
 
 COPY smart_reporting/report_editor/frontend ./
-RUN npm run build
+RUN npm run build && npm run build:slides
+
+WORKDIR /build/slides-engine
+COPY smart_reporting/reporting/slides_engine/package.json \
+    smart_reporting/reporting/slides_engine/package-lock.json \
+    smart_reporting/reporting/slides_engine/tsconfig.base.json ./
+COPY smart_reporting/reporting/slides_engine/LICENSE \
+    smart_reporting/reporting/slides_engine/NOTICE \
+    smart_reporting/reporting/slides_engine/SOURCE.md ./
+COPY smart_reporting/reporting/slides_engine/packages ./packages
+COPY smart_reporting/reporting/slides_engine/bridge ./bridge
+RUN npm ci --registry="${NPM_REGISTRY}" \
+    && npm run test --workspace @genoffice/pipelines \
+    && npm run typecheck --workspace @genoffice/pipelines
 
 FROM base AS env-init
 
@@ -39,6 +52,8 @@ ARG UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/
 ARG PYPI_FILES_MIRROR=https://mirrors.aliyun.com/pypi
 
 COPY --from=uv-source /uv /uvx /bin/
+COPY --from=report-editor-frontend /usr/local /usr/local
+COPY --from=report-editor-frontend /build/slides-engine /opt/reporting-slides-engine
 
 WORKDIR /app
 
@@ -72,6 +87,7 @@ COPY docker/matplotlibrc /etc/reporting/matplotlibrc
 COPY --from=report-editor-frontend /build/static /opt/report-editor-static
 
 ENV AGENT_OS_HOST=0.0.0.0 \
+    AGENT_REPORTING_SLIDES_ENGINE_DIR=/opt/reporting-slides-engine \
     AGENT_REPORT_EDITOR_STATIC_DIR=/opt/report-editor-static \
     MPLCONFIGDIR=/tmp/reporting-matplotlib \
     MPLBACKEND=Agg \

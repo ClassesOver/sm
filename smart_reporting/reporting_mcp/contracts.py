@@ -30,6 +30,9 @@ class ReportingReportRequest(StrictModel):
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    delivery_format: Literal["document", "pptx"] = Field(
+        default="document", alias="deliveryFormat"
+    )
     domains: tuple[DomainCode, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)

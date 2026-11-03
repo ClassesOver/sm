@@ -372,6 +372,7 @@ button {
   transform: scale(0.96);
 }
 .report-actions button[hidden] { display: none; }
+.report-actions a[hidden] { display: none; }
 
 .report-actions button svg {
   width: 16px;

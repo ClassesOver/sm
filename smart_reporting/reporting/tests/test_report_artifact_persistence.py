@@ -430,6 +430,50 @@ async def test_download_grant_defaults_to_thirty_days() -> None:
 
 
 @pytest.mark.anyio
+async def test_pptx_download_is_scoped_to_verified_grant_and_streams_pptx_media_type() -> None:
+    content = b"verified pptx bytes"
+    digest = hashlib.sha256(content).hexdigest()
+    scope = _scope()
+    grants = ReportDownloadGrantService(InMemoryDownloadGrantRepository())
+    raw, grant = await grants.issue(
+        scope=scope,
+        report_id="report-pptx",
+        revision=1,
+        pptx_path="reports/board.pptx",
+        pptx_size=len(content),
+        pptx_sha256=digest,
+    )
+    spec = ReportArtifactSpec(
+        artifact="pptx", path="reports/board.pptx", size=len(content), sha256=digest,
+    )
+    artifacts = InMemoryReportArtifactRepository()
+    await artifacts.put(
+        StoredReportArtifact(
+            artifact_key=_artifact_key(scope, "report-pptx", 1, spec),
+            scope=scope,
+            report_id="report-pptx",
+            revision=1,
+            artifact="pptx",
+            path=spec.path,
+            size=spec.size,
+            sha256=spec.sha256,
+            created_at=datetime.now(UTC),
+        ),
+        _chunks(content),
+    )
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/reports/v1/download/{raw}/pptx")
+
+    assert response.status_code == 200
+    assert response.content == content
+    assert "presentationml.presentation" in response.headers["content-type"]
+    assert response.headers["content-length"] == str(len(content))
+    assert grant.pptx_sha256 == digest
+
+
+@pytest.mark.anyio
 async def test_download_grant_replaces_same_revision_and_rejects_stale_revision() -> None:
     repository = InMemoryDownloadGrantRepository()
     grants = ReportDownloadGrantService(repository)

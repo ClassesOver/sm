@@ -426,6 +426,7 @@ def create_reporting_workflow(
     db: BaseDb | Any,
     lifecycle: ReportingWorkflowLifecycle,
     normalize_report_request: StepExecutor,
+    prepare_reference_materials: StepExecutor | None = None,
     confirm_source: StepExecutor,
     prepare_data_profile: StepExecutor,
     propose_measure_semantics: StepExecutor,
@@ -461,6 +462,15 @@ def create_reporting_workflow(
         # Trace 中，不能混入面向用户的 14 个业务步骤列表。
         stream_executor_events=False,
         steps=[
+            *([Step(
+                step_id="prepare-reference-materials",
+                name="解析报告参考附件",
+                executor=_timed_step_executor(
+                    prepare_reference_materials, step_id="prepare-reference-materials"
+                ),
+                max_retries=0,
+                human_review=HumanReview(on_error=OnError.fail),
+            )] if prepare_reference_materials is not None else []),
             Step(
                 step_id="normalize-report-request",
                 name="规范化报表请求",
