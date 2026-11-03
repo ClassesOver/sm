@@ -926,6 +926,8 @@ async def test_editor_lists_persisted_report_revision_history(tmp_path: Path) ->
     paged = await service.history_page(second, limit=1, offset=0)
     assert paged == {"items": [metadata[0]], "total": 2, "hasMore": True}
     detail = await service.read_history_revision(second, 1)
+    design = detail.pop("design")
+    assert design["options"]["cover"] is True
     assert detail == {
         "revision": 1,
         "markdown": "# 第一版\n",
@@ -1478,7 +1480,10 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             assert output_path == "reports/revision-2/report.pdf"
             assert artifact_manifest is None
             assert run_context.session_state["report_workflow_scope"] == scope.as_state()
-            assert run_context.session_state[REPORT_JOBS_STATE_KEY][job_id] == job
+            frozen = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]
+            assert {key: value for key, value in frozen.items() if key not in {"_reportDesign", "_editorExportSettings"}} == job
+            assert frozen["_reportDesign"]["cover"]["title"]["text"] == "设计后的封面"
+            assert frozen["_editorExportSettings"]["cover"] is True
             await workspace.awrite_bytes(scope.workspace_key, output_path, b"new-pdf")
             word_path = str(Path(output_path).with_suffix(".docx"))
             await workspace.awrite_bytes(scope.workspace_key, word_path, b"new-word")
@@ -1554,6 +1559,12 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
         public_base_url="https://reports.example.com",
     )
 
+    from smart_reporting.reporting.delivery.report_design import ReportDesign
+    initial_design = await service.design.read(context)
+    configured_design = ReportDesign.model_validate(initial_design["design"])
+    configured_design.cover.title.text = "设计后的封面"
+    await service.design.save(context, configured_design, initial_design["designSha256"])
+
     if editor_grant_fails:
         result = await service.export_revision(
             context, expected_sha256=draft_sha, note="运营数据复核后发布",
@@ -1602,6 +1613,7 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     )
     next_context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
     assert next_context.markdown_path == "reports/revision-2/report.md"
+    assert next_context.job["_reportDesign"]["cover"]["title"]["text"] == "设计后的封面"
     # 渲染快照已删除，新 revision 登记的是其权威 Markdown。
     assert rendered_paths and not await workspace.apath_exists(
         scope.workspace_key, rendered_paths[0]

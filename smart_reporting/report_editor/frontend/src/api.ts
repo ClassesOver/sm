@@ -1,3 +1,5 @@
+import type { DesignDocument, DesignPreview, DesignTemplate, ReportDesign } from './design-types'
+
 /** 与 PDF/Word、静态图共用的服务端主题令牌。 */
 export interface ReportVisualTheme {
   ink: string
@@ -17,6 +19,10 @@ export interface ReportDocument {
   chartAiEnabled?: boolean
   tableAiEnabled?: boolean
   templatesEnabled?: boolean
+  design?: ReportDesign
+  designSha256?: string
+  documentContext?: DesignDocument['documentContext']
+  designEditable?: boolean
   lineageFeatures?: {
     panel: boolean
     download: boolean
@@ -547,10 +553,10 @@ export class ReportEditorClient {
     return this.request<ReportHistoryItem & { markdown: string }>(`/api/history/${revision}`)
   }
 
-  async restoreHistory(revision: number, expectedSha256: string, markdown?: string): Promise<ReportDocument> {
+  async restoreHistory(revision: number, expectedSha256: string, markdown?: string, expectedDesignSha256?: string): Promise<ReportDocument> {
     const document = await this.request<ReportDocument>(`/api/history/${revision}/restore`, {
       method: 'POST',
-      body: JSON.stringify({ expectedSha256, ...(markdown === undefined ? {} : { markdown }) }),
+      body: JSON.stringify({ expectedSha256, ...(markdown === undefined ? {} : { markdown }), ...(expectedDesignSha256 ? { expectedDesignSha256 } : {}) }),
     })
     this.csrfToken = document.csrfToken ?? this.csrfToken
     return document
@@ -560,12 +566,13 @@ export class ReportEditorClient {
     expectedSha256: string,
     settings: Record<string, boolean> = {},
     note = '',
+    expectedDesignSha256?: string,
   ): Promise<ExportResult> {
     // 渲染与验收可能持续数分钟：服务端立即返回后台任务标识，这里轮询到终态，
     // 避免同步请求被网关读超时切断。
     const started = await this.request<ExportJobState>('/api/export', {
       method: 'POST',
-      body: JSON.stringify({ expectedSha256, settings, ...(note ? { note } : {}) }),
+      body: JSON.stringify({ expectedSha256, settings, ...(note ? { note } : {}), ...(expectedDesignSha256 ? { expectedDesignSha256 } : {}) }),
     })
     const statusPath = `/api/export/${encodeURIComponent(started.exportId)}`
     let transientFailures = 0
@@ -592,6 +599,30 @@ export class ReportEditorClient {
       }
     }
   }
+
+  design(): Promise<DesignDocument> { return this.request('/api/design') }
+
+  saveDesign(design: ReportDesign, expectedDesignSha256: string): Promise<DesignDocument> {
+    return this.request('/api/design', { method: 'PUT', body: JSON.stringify({ design, expectedDesignSha256 }) })
+  }
+
+  designTemplates(): Promise<{ items: DesignTemplate[] }> { return this.request('/api/design-templates') }
+
+  saveDesignTemplate(templateId: string, name: string, design: ReportDesign): Promise<DesignTemplate> {
+    return this.request(`/api/design-templates/${encodeURIComponent(templateId)}`, { method: 'PUT', body: JSON.stringify({ name, design }) })
+  }
+
+  deleteDesignTemplate(templateId: string): Promise<{ deleted: boolean }> {
+    return this.request(`/api/design-templates/${encodeURIComponent(templateId)}`, { method: 'DELETE' })
+  }
+
+  startDesignPreview(expectedSha256: string, expectedDesignSha256: string): Promise<DesignPreview> {
+    return this.request('/api/design-preview', { method: 'POST', body: JSON.stringify({ expectedSha256, expectedDesignSha256 }) })
+  }
+
+  designPreview(previewId: string): Promise<DesignPreview> { return this.request(`/api/design-preview/${encodeURIComponent(previewId)}`) }
+
+  designPreviewUrl(previewId: string): string { return `${this.basePath}/api/design-preview/${encodeURIComponent(previewId)}/pdf` }
 
   async validateSources(markdown: string, draftSha256: string, signal?: AbortSignal): Promise<TraceValidation> {
     return this.request<TraceValidation>('/api/sources/validate', {

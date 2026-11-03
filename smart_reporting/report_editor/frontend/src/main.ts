@@ -80,6 +80,7 @@ import { createReportEditor } from './editor-features'
 import { createSharePanel } from './share'
 import { createSourceValidationController, markdownSha256, nextSourceIssue, sourceCoverageSummary } from './source-validation'
 import { linkedSubjectFromSearch } from './linked-subject'
+import type { DesignDocument } from './design-types'
 
 const root = document.querySelector<HTMLElement>('#app')
 if (!root) throw new Error('report editor root is missing')
@@ -143,7 +144,9 @@ const unblockUI = () => {
 }
 const exportSettingsPanel = createExportSettingsPanel(root)
 let pendingExportSettings: ExportSettings | null = null
-shell.exportSettings.addEventListener('click', () => exportSettingsPanel.open())
+let designPanel: ReturnType<typeof import('./design-panel').createDesignPanel> | null = null
+let designState: DesignDocument | null = null
+shell.exportSettings.addEventListener('click', () => designPanel ? designPanel.open() : exportSettingsPanel.open())
 exportSettingsPanel.dialog.querySelector('[data-export-settings="confirm"]')?.addEventListener('click', () => {
   pendingExportSettings = exportSettingsPanel.read()
   exportSettingsPanel.close()
@@ -485,6 +488,15 @@ function errorStatusLabel(error: unknown): string {
 
 try {
   const documentState = await client.load()
+  if (documentState.design && documentState.designSha256 && documentState.documentContext) {
+    designState = { design: documentState.design, designSha256: documentState.designSha256, documentContext: documentState.documentContext }
+    if (documentState.designEditable === false) shell.exportSettings.hidden = true
+    else {
+      shell.exportSettings.setAttribute('aria-label', '报告设计')
+      shell.exportSettings.title = '报告设计'
+      shell.exportSettings.querySelector('span')!.textContent = '报告设计'
+    }
+  }
   lineagePanelEnabled = documentState.lineageFeatures?.panel ?? true
   applyLineageFeatureVisibility(shell, documentState.lineageFeatures)
   evidenceBrowser.setDownloadEnabled(documentState.lineageFeatures?.download ?? true)
@@ -495,7 +507,7 @@ try {
     updateAskAISourceStatus('unavailable')
     sourceStatusLabel.hidden = true
   }
-  const saveInBackground = () => runInBackground(saveNow())
+  const saveInBackground = () => runInBackground(saveNow().then(() => designPanel?.flush()))
   void telemetry.record({
     event: 'document_loaded',
     durationMs: Math.round(performance.now() - loadStartedAt),
@@ -564,6 +576,16 @@ try {
   let savedEditorDoc = evidenceView.state.doc
   getEditorMarkdown = () => evidenceView.state.doc.eq(savedEditorDoc)
     ? lastSavedMarkdown : restoreProtocolMarkers(crepe.getMarkdown())
+  if (designState) {
+    const { createDesignPanel, applyDesignTypography } = await import('./design-panel')
+    applyDesignTypography(shell.editor, designState.design)
+    if (documentState.designEditable !== false) designPanel = createDesignPanel({
+      root, editor: shell.editor, basePath, initial: designState, client,
+      saveMarkdown: async () => { await saveNow(); return sha256 },
+      getMarkdown: () => getEditorMarkdown(),
+      sourcesEnabled: documentState.lineageFeatures?.exportSources ?? true,
+    })
+  }
   const bodySources = loadBodyCatalog().catch(() => null)
   void bodySources.then(sources => {
     if (sources) updateProtocolSourceLabels(evidenceView, sources)
@@ -672,6 +694,7 @@ try {
       // Milkdown 序列化会把协议标记转义为 \[\[...]]；变更检测、本地草稿和保存必须
       // 统一使用还原后的 Markdown，否则服务端导出找不到章节标识。
       const markdown = getEditorMarkdown()
+      designPanel?.markMarkdownChanged()
       if (metricsLabel) metricsLabel.textContent = documentMetrics(markdown)
       if (outlineFrame !== undefined) window.cancelAnimationFrame(outlineFrame)
       outlineFrame = window.requestAnimationFrame(() => {
@@ -739,11 +762,17 @@ try {
       blockUI('正在恢复历史版本及来源')
       try {
         await saveNow()
+        await designPanel?.flush()
         sourceValidation.cancel()
         const restored = await client.restoreHistory(
           (historyRevision ?? sourceRevision)!, sha256,
           historyRevision === undefined ? markdown : undefined,
+          designPanel?.read().designSha256 ?? designState?.designSha256,
         )
+        if (restored.design && restored.designSha256 && restored.documentContext) {
+          designState = { design: restored.design, designSha256: restored.designSha256, documentContext: restored.documentContext }
+          designPanel?.reset(designState)
+        }
         sha256 = restored.sha256
         lastSavedMarkdown = restored.markdown
         currentMarkdown = restored.markdown
@@ -890,6 +919,7 @@ try {
         if (error instanceof ReportEditorApiError && error.status === 409) {
           try {
             const remote = await client.load()
+            void designPanel?.refresh().catch(() => undefined)
             pendingConflict = {
               remoteSha: remote.sha256,
               base: lastSavedMarkdown,
@@ -931,6 +961,10 @@ try {
     status('载入远端版本', 'busy')
     try {
       const latest = await client.load()
+      if (latest.design && latest.designSha256 && latest.documentContext) {
+        designState = { design: latest.design, designSha256: latest.designSha256, documentContext: latest.documentContext }
+        designPanel?.reset(designState)
+      }
       pendingConflict = null
       // 远端版本可能包含当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
       crepe.editor.action(replaceAll(latest.markdown, true))
@@ -956,13 +990,20 @@ try {
         const proceed = await new Promise<boolean>((resolve) => showPreflightPanel(root!, warnings, resolve))
         if (!proceed) return
       }
+      blockUI('正在保存报告与设计…')
       await saveNow()
+      await designPanel?.flush()
       status(`正在生成 ${formatLabel}`, 'busy')
       blockUI(`正在生成 ${formatLabel}，渲染与验收可能需要几分钟，期间请勿关闭页面…`)
       // 未在本次会话确认过设置时，以面板当前状态为准（含上次保存的偏好与来源功能开关），
       // 不使用另一份写死的默认值，避免面板显示与实际导出不一致。
-      const { note = '', ...settings } = pendingExportSettings ?? exportSettingsPanel.read()
-      const result = await client.export(sha256, settings, note)
+      const currentDesign = designPanel?.read()
+      const { note = '', ...settings } = currentDesign
+        ? { ...currentDesign.design.options, note: currentDesign.note }
+        : designState ? { ...designState.design.options, note: '' }
+        : pendingExportSettings ?? exportSettingsPanel.read()
+      const expectedDesignSha256 = currentDesign?.designSha256 ?? designState?.designSha256
+      const result = await client.export(sha256, settings, note, expectedDesignSha256)
       unblockUI()
       void telemetry.record({
         event: 'export_succeeded',
@@ -998,7 +1039,7 @@ try {
     isBlocked: () => shell.exportPdf.disabled,
   })
   window.addEventListener('beforeunload', (event) => {
-    if (saveState?.shouldWarnBeforeUnload || editReviewMode(evidenceView.state) !== 'idle') event.preventDefault()
+    if (saveState?.shouldWarnBeforeUnload || designPanel?.dirty || editReviewMode(evidenceView.state) !== 'idle') event.preventDefault()
   })
 } catch (error) {
   status(errorLabel(error), 'error', () => window.location.reload())

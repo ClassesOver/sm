@@ -8,7 +8,6 @@ import io
 from pathlib import Path
 from uuid import UUID
 
-import pypdf
 import pytest
 from docx import Document
 from PIL import Image, ImageDraw, ImageFont
@@ -53,7 +52,7 @@ async def test_editor_real_dual_export_preserves_edited_and_restored_snapshot(tm
     index = await editor.trace.load_index(context)
     assert index is not None
     records = [[f"记录{number:02d}", "3,600"] for number in range(1, 49)]
-    table = render_table_markdown("tbl-1", ("income_total",), records)
+    table = render_table_markdown("tbl-1", ("income_total",), records, row_label_header="")
     original = (
         '# 收入快照追溯报告\n\n'
         '## 1. Report\n\n[[section:section_002]]\n[[analysis:analysis_001]]\n\n'
@@ -129,6 +128,26 @@ async def test_editor_real_dual_export_preserves_edited_and_restored_snapshot(tm
     editor.download_grants = ReportDownloadGrantService(InMemoryDownloadGrantRepository())
     editor.editor_grants = grants
     editor.public_base_url = "https://reports.example.com"
+    # 成品预览使用真实独立渲染包，不提交修订；设计修改必须实际进入 PDF。
+    from io import BytesIO
+
+    import pypdf
+
+    from smart_reporting.reporting.delivery.report_design import ReportDesign
+
+    design_record = await editor.design.read(context)
+    preview_design = ReportDesign.model_validate(design_record["design"])
+    preview_design.cover.title.text = "可配置封面实测"
+    preview_design.watermark.enabled = False
+    design_record = await editor.design.save(context, preview_design, design_record["designSha256"])
+    initial_document = await editor.read_document(context)
+    preview = await editor.design_preview.start(context, initial_document.sha256, design_record["designSha256"])
+    await editor.design_preview.jobs[preview["previewId"]].task
+    preview_pdf = await editor.design_preview.pdf(context, preview["previewId"])
+    assert "可配置封面实测" in "".join(pypdf.PdfReader(BytesIO(preview_pdf)).pages[0].extract_text().split())
+    assert set(repository.durable.payload["reportEditorContexts"]) == {"1"}
+    await editor.design_preview.aclose()
+
     edited = original.replace("收入 3600 万元", "收入 3800 万元").replace("冻结收入快照*", "编辑后收入快照*")
     before = await editor.read_document(context)
     await editor.save_draft(context, markdown=edited, expected_sha256=before.sha256)

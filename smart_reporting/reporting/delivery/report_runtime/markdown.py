@@ -1008,13 +1008,17 @@ def _semantic_documents(
     include_toc: bool = True,
     citation_presentations: list[dict[str, Any]] | None = None,
     trace_sources: dict[str, Any] | None = None,
+    design: Any = None,
 ) -> tuple[str, str]:
+    from .design import cover_html, design_css, presentation_context
+    from .report_design import ReportDesign
+
+    design = design or ReportDesign()
+    display = presentation_context(design, context)
     theme = REPORT_VISUAL_THEME
     body = _prepare_figure_layout(body)
-    title = html.escape(context["title"])
-    period = html.escape(context["periodLabel"])
+    title = html.escape(display["title"])
     organization = html.escape(context["organizationName"])
-    generated_label = html.escape(context["generatedByLabel"])
     generated_date = html.escape(context["generatedDate"])
     toc = "".join(
         f'<p class="toc-entry toc-level-{item["level"]}"><a href="#{item["anchor"]}">'
@@ -1024,14 +1028,7 @@ def _semantic_documents(
         "</a></p>"
         for item in context["headingNumbers"]
     )
-    cover = (
-        f'<section class="report-cover"><h1>{_balanced_cover_title(context["title"])}</h1>'
-        f'<p class="report-period">分析期间：{period}</p>'
-        f'<p class="report-organization">{organization}</p>'
-        f'<p class="report-generated">{generated_label}</p></section>'
-        if include_cover
-        else ""
-    )
+    cover = cover_html(design, context) if include_cover else ""
     toc_section = f'<section class="report-toc"><h1>目录</h1>{toc}</section>' if include_toc else ""
     # 无封面导出时报告标题随正文起始，避免成品中完全缺失标题。
     body_title = "" if include_cover else f'<h1 class="report-title">{title}</h1>'
@@ -1152,14 +1149,11 @@ def _semantic_documents(
     )
     pdf_document = (
         f"<html lang='zh-CN'><head><meta charset='utf-8'><title>{title}</title>"
-        f"<style>{pdf_css}</style></head>"
+        f"<style>{pdf_css}{design_css(design)}</style></head>"
         f"<body>{shared}</body></html>"
     )
-    word_cover = (
-        f"<h1>{title}</h1><p>分析期间：{period}</p><p>{organization}</p><p>{generated_label}</p>"
-        if include_cover
-        else ""
-    )
+    # 封面文字由 Word 后处理放入原生锚定文本框，HTML 只保留锚定段落。
+    word_cover = "<p>__REPORT_DESIGN_COVER__</p>" if include_cover else ""
     # 版式标记始终存在，由 Word 后处理按导出设置决定是否形成封面/目录分节。
     word_toc = (
         f"{'<h1>目录</h1>' if include_toc else ''}<p>{_WORD_MARKERS['toc_field_start']}</p>"

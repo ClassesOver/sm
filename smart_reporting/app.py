@@ -37,6 +37,7 @@ from .report_editor import (
     create_report_editor_table_ai_service,
     create_report_slides_editor_router,
 )
+from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
 from .reporting.code_agent.lsp_process import ReportingLspProcessManager
@@ -241,8 +242,10 @@ reporting_agent_template, report_runtime = create_report_runtime(
     artifact_persistence=report_artifact_persistence,
     quality_warning_service=quality_warning_service,
 )
+report_design_templates = SqlAlchemyDesignTemplateRepository(agent_database.async_engine)
 report_editor = ReportEditorService(
     state_repository=report_runtime.state_repository,
+    design_templates=report_design_templates,
     workspace_registry=reporting_workspace_registry,
     workspace=report_runtime.workspace_service,
     report_tools=report_runtime.report_tools,
@@ -358,6 +361,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)
     application.router.add_event_handler("startup", report_editor_repository.create_schema)
+    application.router.add_event_handler("startup", report_design_templates.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
     application.router.add_event_handler("shutdown", report_editor.aclose)
     if report_editor_chart_ai is not None:

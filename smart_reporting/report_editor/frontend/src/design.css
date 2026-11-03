@@ -1,0 +1,70 @@
+.report-design-panel { padding: 8px; }
+.report-design-card { width: min(1180px, 100%); max-width: none; max-height: calc(100dvh - 16px); height: min(94vh, 980px); display: flex; flex-direction: column; padding: 24px; overflow: hidden; gap: 14px; }
+.design-header { display: flex; align-items: center; justify-content: space-between; padding-right: 36px; gap: 20px; }
+.design-header h2 { margin: 0 0 4px; font-size: 21px; }
+.design-header p, .design-preview-hint, .design-help { color: #64748b; font-size: 12px; line-height: 1.6; margin: 0; }
+.design-save-status { font-size: 12px; white-space: nowrap; color: #35745a; }
+.design-save-status[data-state="error"], [data-design-preview-status][data-state="stale"] { color: #a4531d; }
+.design-save-status[data-state="dirty"] { color: #a4531d; }
+.design-tabs { display: flex; gap: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px; }
+.report-design-panel button { font: inherit; cursor: pointer; }
+.design-tabs button, .design-controls > button, .design-footer button, .design-canvas-toolbar button, .design-conflict button, .design-recovery button { border: 1px solid #d8e1e8; border-radius: 6px; background: #fff; padding: 7px 10px; color: #334155; font-size: 12px; }
+.report-design-panel button:disabled { opacity: .45; cursor: default; }
+.design-tabs button.is-active { background: #e8f2f4; color: #174a66; border-color: #b5d0dc; font-weight: 600; }
+.design-workspace { display: grid; grid-template-columns: minmax(260px, 330px) minmax(0, 1fr); min-height: 0; flex: 1; gap: 24px; }
+.design-controls { overflow: auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 10px 12px; padding-right: 12px; }
+.design-controls h3 { grid-column: 1 / -1; margin: 12px 0 0; color: #334155; font-size: 14px; }
+.design-field { display: flex; flex-direction: column; gap: 5px; color: #475569; font-size: 12px; min-width: 0; }
+.design-field:has(textarea), .design-field:has([name="box.text"]), .design-field:has([name="cover.role"]), .design-field:has([name="templateId"]), .design-field:has([name="templateName"]), .design-field:has([name="watermark.text"]), .design-help { grid-column: 1 / -1; }
+.design-field input, .design-field select, .design-field textarea, .design-note input { border: 1px solid #cbd5e1; border-radius: 5px; padding: 7px; min-width: 0; width: 100%; background: #fff; color: #172033; font: inherit; box-sizing: border-box; }
+.design-field input[type="color"] { padding: 3px; height: 34px; }
+.design-checkbox { flex-direction: row; align-items: center; justify-content: space-between; }
+.design-checkbox input { width: 16px; height: 16px; accent-color: #174a66; }
+.design-preview-area { background: #eef2f6; padding: 16px; border-radius: 8px; overflow: auto; min-width: 0; }
+.design-canvas-toolbar { max-width: 420px; margin: 0 auto 10px; display: flex; gap: 8px; align-items: center; color: #64748b; font-size: 11px; }
+.design-canvas-toolbar > span { flex: 1; }
+.design-cover-page { position: relative; isolation: isolate; width: min(100%, 420px); aspect-ratio: 210 / 297; margin: auto; overflow: hidden; box-shadow: 0 3px 12px #17203320; }
+.design-cover-block { position: absolute; border: 1px dashed transparent; box-sizing: border-box; cursor: move; touch-action: none; overflow: hidden; outline-offset: 2px; z-index: 1; }
+.design-cover-block:hover { border-color: #94a3b8; }
+.design-cover-block.is-selected { border-color: #2582a3; background: #2582a306; }
+.design-cover-text { display: block; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 !important; text-indent: 0 !important; }
+.design-resize-handle { display: none; position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; background: #2582a3; cursor: nwse-resize; }
+.is-selected .design-resize-handle { display: block; }
+.design-preview-hint { max-width: 420px; margin: 12px auto 0; }
+.design-type-sample { position: relative; isolation: isolate; overflow: hidden; background: white; padding: 28px; max-width: 510px; margin: auto; box-shadow: 0 3px 12px #17203320; }
+.design-type-sample table { width: 100%; border-collapse: collapse; }
+.design-type-sample th, .design-type-sample td { border: 1px solid #d8e1e8; padding: 6px; }
+.design-type-sample figcaption { margin-top: 15px; }
+.design-cover-watermark, .design-body-watermark { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; z-index: 5; }
+.design-cover-watermark.is-tiled, .design-body-watermark.is-tiled { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); }
+.design-cover-watermark span, .design-body-watermark span { white-space: nowrap; }
+.design-footer { border-top: 1px solid #e2e8f0; padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.design-footer-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
+.design-footer [data-design-action="preview"] { background: #174a66; color: #fff; border-color: #174a66; }
+.design-footer a { color: #176c91; }
+.design-note { display: flex; align-items: center; gap: 10px; color: #64748b; font-size: 12px; }
+.design-note input { flex: 1; }
+.design-alert, .design-conflict, .design-recovery { padding: 9px 12px; border: 1px solid #efcf9b; border-radius: 6px; background: #fffbef; color: #855c1e; font-size: 12px; }
+.design-conflict p { margin: 0 0 8px; }
+.design-conflict button, .design-recovery button { margin-left: 6px; }
+.report-design-panel [hidden] { display: none !important; }
+@media (max-width: 740px) {
+  .report-design-card { width: 100%; height: calc(100dvh - 16px); padding: 16px 12px; gap: 10px; }
+  .design-header { display: block; }
+  .design-header p { display: none; }
+  .design-workspace { display: block; overflow: auto; }
+  .design-controls { overflow: visible; padding: 0 0 18px; }
+  .design-preview-area { overflow: visible; padding: 12px; }
+  .design-tabs button { flex: 1; padding: 7px 4px; }
+}
+
+/* 样式仅绑定当前编辑器正文，不影响菜单、弹窗和全站主题。 */
+#report-editor.has-report-design .ProseMirror { font-family: var(--design-body-font); font-size: var(--design-body-size); color: var(--design-body-color); font-weight: var(--design-body-bold); line-height: var(--design-body-line-height); }
+#report-editor.has-report-design .ProseMirror :is(p, li, blockquote) { font-family: var(--design-body-font); font-size: var(--design-body-size); color: var(--design-body-color); font-weight: var(--design-body-bold); line-height: var(--design-body-line-height); }
+#report-editor.has-report-design .ProseMirror p { margin-top: var(--design-body-space-before); margin-bottom: var(--design-body-space-after); text-indent: var(--design-body-indent); }
+#report-editor.has-report-design .ProseMirror h1 { font-family: var(--design-h1-font); font-size: var(--design-h1-size); color: var(--design-h1-color); font-weight: var(--design-h1-bold); line-height: var(--design-h1-line-height); margin-top: var(--design-h1-space-before); margin-bottom: var(--design-h1-space-after); text-indent: var(--design-h1-indent); }
+#report-editor.has-report-design .ProseMirror h2 { font-family: var(--design-h2-font); font-size: var(--design-h2-size); color: var(--design-h2-color); font-weight: var(--design-h2-bold); line-height: var(--design-h2-line-height); margin-top: var(--design-h2-space-before); margin-bottom: var(--design-h2-space-after); text-indent: var(--design-h2-indent); }
+#report-editor.has-report-design .ProseMirror h3 { font-family: var(--design-h3-font); font-size: var(--design-h3-size); color: var(--design-h3-color); font-weight: var(--design-h3-bold); line-height: var(--design-h3-line-height); margin-top: var(--design-h3-space-before); margin-bottom: var(--design-h3-space-after); text-indent: var(--design-h3-indent); }
+#report-editor.has-report-design .ProseMirror table { font-family: var(--design-table-font); font-size: var(--design-table-size); color: var(--design-table-color); font-weight: var(--design-table-bold); line-height: var(--design-table-line-height); margin-top: var(--design-table-space-before); margin-bottom: var(--design-table-space-after); }
+#report-editor.has-report-design .ProseMirror table :is(p, td, th) { font-family: inherit; font-size: inherit; color: inherit; line-height: inherit; font-weight: inherit; text-indent: var(--design-table-indent); }
+#report-editor.has-report-design .ProseMirror :is(figcaption, .report-chart-caption) { font-family: var(--design-caption-font); font-size: var(--design-caption-size); color: var(--design-caption-color); font-weight: var(--design-caption-bold); line-height: var(--design-caption-line-height); margin-top: var(--design-caption-space-before); margin-bottom: var(--design-caption-space-after); text-indent: var(--design-caption-indent); }

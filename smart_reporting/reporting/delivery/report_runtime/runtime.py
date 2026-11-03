@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from .design import cover_layout_issues, presentation_context, visible_cover_text, watermark_text
 from .docx import _render_docx, _validate_docx_rendering, _validate_docx_structure
 from .markdown import (
     APPENDIX_TABLES_SENTINEL,
@@ -43,6 +44,7 @@ from .pdf import (
     _pdf_section_pages,
     _toc_page_numbers,
 )
+from .report_design import ReportDesign, resolve_design
 from .validation import (
     IMAGE_SUFFIXES,
     MAX_DOCX_BYTES,
@@ -261,9 +263,9 @@ class ReportRuntime:
             except UnicodeDecodeError as error:
                 raise ReportFailure("Markdown 文件必须使用 UTF-8 编码") from error
 
-            export_settings = state.get("_editorExportSettings")
+            design = resolve_design(state)
             # 导出的 PDF/Word 默认不带来源编号与附录；只有导出设置显式开启时才展示。
-            include_sources = isinstance(export_settings, dict) and export_settings.get("sources") is True
+            include_sources = design.options.sources
             context = _document_context(state.get("_documentContext"))
             from .overview import load_overview
             from .projection import build_render_projection
@@ -278,16 +280,10 @@ class ReportRuntime:
             )
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(pdf_markdown)
-            include_cover = not isinstance(export_settings, dict) or export_settings.get(
-                "cover", True
-            )
-            include_toc = not isinstance(export_settings, dict) or export_settings.get("toc", True)
-            include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
-                "headerFooter", True
-            )
-            include_page_numbers = not isinstance(export_settings, dict) or export_settings.get(
-                "pageNumbers", True
-            )
+            include_cover = design.options.cover
+            include_toc = design.options.toc
+            include_header_footer = design.options.header_footer
+            include_page_numbers = design.options.page_numbers
             layout = _page_layout(
                 page_layout,
                 include_header_footer=include_header_footer,
@@ -344,6 +340,7 @@ class ReportRuntime:
                 include_toc=include_toc,
                 citation_presentations=(citation_presentations if include_sources else []),
                 trace_sources=(trace_source_render if include_sources else None),
+                design=design,
             )
             render_issues: list[dict[str, str]] = []
             if projection.overview_check is not None and projection.overview_check["status"] != "verified":
@@ -394,6 +391,7 @@ class ReportRuntime:
                         include_toc=include_toc,
                         citation_presentations=(citation_presentations if include_sources else []),
                         trace_sources=(trace_source_render if include_sources else None),
+                        design=design,
                     )
                     final_document = HTML(
                         string=pdf_document,
@@ -407,6 +405,7 @@ class ReportRuntime:
                         # 目录页码使用固定宽度，正常不会改变分页；若字体或渲染器升级导致
                         # 锚点漂移，则不能发布目录与正文不一致的产物。
                         raise ReportFailure("PDF 目录页码在最终渲染时发生漂移")
+                render_issues.extend(cover_layout_issues(final_document.pages, design))
                 final_document.write_pdf(str(temporary), pdf_variant="pdf/ua-1")
                 if temporary.stat().st_size > MAX_PDF_BYTES:
                     raise ReportFailure("PDF 文件不能超过 200 MiB")
@@ -420,6 +419,7 @@ class ReportRuntime:
                     context=context,
                     layout=layout,
                     include_cover=include_cover,
+                    design=design,
                 )
                 pdf_size = temporary.stat().st_size
                 if pdf_size > MAX_PDF_BYTES:
@@ -441,6 +441,7 @@ class ReportRuntime:
                     layout=layout,
                     include_cover=include_cover,
                     include_toc=include_toc,
+                    design=design,
                 )
                 docx_size = temporary_docx.stat().st_size
                 if docx_size > MAX_DOCX_BYTES:
@@ -527,8 +528,9 @@ class ReportRuntime:
                     "pageNumbers": include_page_numbers,
                     "sources": include_sources,
                 },
-                "reportTitle": title,
+                "reportTitle": presentation_context(design, context)["title"],
                 "documentContext": context,
+                "reportDesign": design.compact(),
                 "visualTheme": deepcopy(REPORT_VISUAL_THEME),
                 "wordStructure": word_structure,
                 "citationPresentations": citation_presentations,
@@ -656,6 +658,8 @@ class ReportRuntime:
                 )
                 title = str(render.get("reportTitle") or "智能运营报表")
                 context = _document_context(render.get("documentContext"))
+                design = ReportDesign.model_validate(render.get("reportDesign") or {})
+                mark_text = watermark_text(design, context)
                 section_pages = _pdf_section_pages(reader, context["sections"])
                 _pdf_heading_pages(reader, context["headingNumbers"])
                 body_start_page = min(section_pages.values())
@@ -705,11 +709,11 @@ class ReportRuntime:
                             pages=pages_value,
                         )
                     numbered = index >= first_numbered_page
-                    watermark_present = numbered and context["watermarkText"] in page_text
+                    watermark_present = bool(design.watermark.enabled and mark_text and mark_text in page_text and (numbered or design.watermark.cover))
                     substantive_text = "".join(page_text.split())
                     if numbered:
                         decorations = [
-                            context["watermarkText"],
+                            mark_text if design.watermark.enabled else "",
                             *(
                                 _formatted_page_text(
                                     value,
@@ -724,14 +728,14 @@ class ReportRuntime:
                         ]
                         # 页眉、页脚和水印即使存在，也不能把无正文页面伪装成非空白页。
                         for decoration in decorations:
-                            substantive_text = substantive_text.replace(
-                                "".join(decoration.split()), "", 1
-                            )
+                            if decoration:
+                                substantive_text = substantive_text.replace("".join(decoration.split()), "")
                     text_char_count = len(substantive_text)
                     if numbered and not layout_present:
                         missing_page_layout.append(index)
                     blank = (
                         text_char_count == 0 and image_count == 0 and (numbered or ratio < 0.0005)
+                        and not (role == "cover" and not visible_cover_text(design, context))
                     )
                     if blank:
                         blank_pages.append(index)
@@ -755,23 +759,9 @@ class ReportRuntime:
                 cover_text = extracted_pages[0]
                 toc_text = "\n".join(extracted_pages[first_numbered_page - 1 : body_start_page - 1])
                 final_text = extracted_pages[-1]
-                cover_values = (
-                    context["title"],
-                    context["periodLabel"],
-                    context["organizationName"],
-                    context["generatedByLabel"],
-                )
+                cover_values = visible_cover_text(design, context)
                 cover_compact = "".join(cover_text.split())
-                watermark_compact = "".join(context["watermarkText"].split())
-                expected_cover_occurrences = sum(
-                    "".join(value.split()).count(watermark_compact) for value in cover_values
-                )
-                # generatedByLabel 与默认水印文字相同，不能用简单的“不包含水印文字”判断封面。
-                # 这里只允许封面固定事实本身贡献的出现次数，额外重复即视为水印泄漏。
-                cover_ok = (
-                    all("".join(value.split()) in cover_compact for value in cover_values)
-                    and cover_compact.count(watermark_compact) == expected_cover_occurrences
-                )
+                cover_ok = all("".join(value.split()) in cover_compact for value in cover_values)
                 # 无封面导出时标题随正文首页出现；目录关闭时不存在目录页与目录链接。
                 title_ok = (
                     cover_ok
@@ -787,7 +777,7 @@ class ReportRuntime:
                 watermark_pages = [
                     item["page"]
                     for item in pages
-                    if item["page"] >= first_numbered_page and item["watermarkPresent"]
+                    if item["watermarkPresent"]
                 ]
                 word_structure = _validate_docx_structure(
                     word,
@@ -801,6 +791,7 @@ class ReportRuntime:
                     context=context,
                     layout=layout,
                     include_cover=include_cover,
+                    design=design,
                 )
             markdown_image_count = int(render.get("imageCount") or 0)
             missing_images = max(0, markdown_image_count - rendered_image_count)
@@ -891,6 +882,11 @@ class ReportRuntime:
             except Exception:
                 projection_check = {"status": "unknown", "reason": "projection_source_unavailable"}
             validation["projectionCheck"] = projection_check
+            layout_issues = [issue for issue in render.get("renderIssues", ()) if issue.get("code") in {"report_cover_text_overflow", "report_cover_overlap"}]
+            if layout_issues:
+                validation["ok"] = False
+                validation["status"] = "validation_failed"
+                validation["issues"].extend(layout_issues)
             if any(issue.get("code") == "management_overview_projection_unknown" for issue in render.get("renderIssues", ())):
                 validation["ok"] = False
                 validation["status"] = "validation_failed"

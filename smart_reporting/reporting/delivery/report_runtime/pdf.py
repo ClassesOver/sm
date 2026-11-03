@@ -748,7 +748,13 @@ def _apply_pdf_page_decorations(
     context: dict[str, Any],
     layout: dict[str, str],
     include_cover: bool = True,
+    design: Any = None,
 ) -> None:
+    from .design import presentation_context, watermark_html, watermark_text
+    from .report_design import ReportDesign
+
+    design = design or ReportDesign()
+    context = presentation_context(design, context)
     try:
         import pypdf
         from weasyprint import HTML
@@ -765,13 +771,14 @@ def _apply_pdf_page_decorations(
         page_count = len(reader.pages)
         first_numbered_page = 2 if include_cover else 1
         decoration_pages: list[str] = []
-        for page_number in range(first_numbered_page, page_count + 1):
+        for page_number in range(1, page_count + 1):
+            numbered = page_number >= first_numbered_page
             page_value, pages_value = _page_number_context(
                 page_number,
                 body_start_page=body_start_page,
                 physical_page_count=page_count,
                 first_numbered_page=first_numbered_page,
-            )
+            ) if numbered else (1, 1)
             values = {
                 key: html.escape(
                     _formatted_page_text(
@@ -784,12 +791,17 @@ def _apply_pdf_page_decorations(
                 )
                 for key, template in layout.items()
             }
+            header = (
+                '<header><span class="left">' + values["headerLeft"] + '</span><span class="right">' + values["headerRight"] + '</span></header>'
+                if numbered and (values["headerLeft"] or values["headerRight"]) else ""
+            )
+            footer = (
+                '<footer><span class="left">' + values["footerLeft"] + '</span><span class="right">' + values["footerRight"] + '</span></footer>'
+                if numbered and (values["footerLeft"] or values["footerRight"]) else ""
+            )
+            watermark = watermark_html(design, context) if numbered or design.watermark.cover else ""
             decoration_pages.append(
-                '<section class="decoration-page"><header><span class="left">'
-                f'{values["headerLeft"]}</span><span class="right">{values["headerRight"]}</span></header>'
-                f'<div class="watermark">{html.escape(context["watermarkText"])}</div>'
-                '<footer><span class="left">'
-                f'{values["footerLeft"]}</span><span class="right">{values["footerRight"]}</span></footer></section>'
+                f'<section class="decoration-page">{header}{watermark}{footer}</section>'
             )
         document = (
             "<meta charset='utf-8'><style>"
@@ -814,17 +826,17 @@ def _apply_pdf_page_decorations(
         )
         HTML(string=document).write_pdf(str(overlay), pdf_variant="pdf/ua-1")
         overlay_pages = pypdf.PdfReader(str(overlay)).pages
-        if len(overlay_pages) != page_count - first_numbered_page + 1:
+        if len(overlay_pages) != page_count:
             raise ReportFailure("PDF 页面装饰页数不一致")
         writer = pypdf.PdfWriter(clone_from=str(path))
         # pypdf 默认将合并产物写成 1.3，即使源文档是 PDF/UA-1（1.7）；保留
         # PDF/UA 所需的版本声明，避免页面装饰步骤让结构化标签变成不一致的协议。
         writer.pdf_header = "%PDF-1.7"
         # WeasyPrint 的命名页沿用绝对页计数。服务端按章节锚点一次生成全部装饰页，
-        # 目录使用罗马数字，正文从 1 重启；封面明确不合并任何页面元素。
-        for page, overlay_page in zip(
-            writer.pages[first_numbered_page - 1 :], overlay_pages, strict=True
-        ):
+        # 目录使用罗马数字，正文从 1 重启；封面只在明确启用水印时合并。
+        for index, (page, overlay_page) in enumerate(zip(writer.pages, overlay_pages, strict=True)):
+            if include_cover and index == 0 and not (design.watermark.enabled and design.watermark.cover and watermark_text(design, context).strip()):
+                continue
             page.merge_page(overlay_page, over=True)
         with decorated.open("wb") as stream:
             writer.write(stream)
