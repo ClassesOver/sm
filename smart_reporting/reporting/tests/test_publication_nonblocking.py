@@ -158,8 +158,8 @@ def test_agents_nonblocking_contract_registry_points_at_existing_tests():
 # 这类 raise 必须位于 try 体内且有 except Exception（或裸 except）兜底，把原因转为
 # validation.issues / publicationGate.issues 后继续。新增此类 raise 未兜底即失败。
 _SIGNING_CHAIN = {
-    "smart_reporting/reporting/workflow/runtime/publication.py": ("_render_and_validate", "publish_report", "_write_trace_index"),
-    "smart_reporting/reporting/workflow/runtime/planning.py": ("issue_http_publication",),
+    "smart_reporting/reporting/workflow/runtime/publication.py": ("_render_and_validate", "_render_pptx", "publish_report", "_write_trace_index"),
+    "smart_reporting/reporting/workflow/runtime/planning.py": ("issue_http_publication", "_issue_http_pptx_publication"),
     "smart_reporting/reporting/workspace.py": ("_render_report_pair",),
     "smart_reporting/report_editor/service.py": (
         "_export_revision",
@@ -168,6 +168,7 @@ _SIGNING_CHAIN = {
         "_issue_delivery_grants",
         "_record_delivery",
     ),
+    "smart_reporting/report_editor/slides.py": ("export_for_session", "_register_export"),
 }
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 # 门禁内部可以 raise，但其在签发链路上的每个调用点都必须被 except Exception 兜底。
@@ -324,6 +325,63 @@ async def test_publication_gate_keeps_collected_issues_when_audit_write_fails(mo
     # 审计失败只追加一条问题，之前收集的门禁问题不被替换。
     assert codes[-1] == "report_quality_audit_failed"
     assert len(codes) > 1
+
+
+@pytest.mark.anyio
+async def test_pptx_publication_gate_checks_pptx_identity_without_document_exports():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from agno.run import RunContext
+
+    from smart_reporting.reporting.workflow.runtime import publication
+
+    state: dict = {}
+    hash_file = AsyncMock(
+        side_effect=lambda _thread, path: {
+            "missing": False,
+            "size": {"reports/report.md": 1, "reports/report.pptx": 2}.get(path),
+            "sha256": {"reports/report.md": "a" * 64, "reports/report.pptx": "b" * 64}.get(path),
+        }
+    )
+    runtime = SimpleNamespace(
+        _state=lambda _context: state,
+        _workflow_result=lambda _state: {},
+        _scope=lambda _context: {
+            "threadId": "thread", "externalRunId": "external", "database": "db", "companyId": "c",
+        },
+        workspace_service=SimpleNamespace(ahash_file=hash_file),
+        quality_warning_service=None,
+    )
+    result = {
+        "status": "validation_failed",
+        "deliveryFormat": "pptx",
+        "revision": 1,
+        "markdownPath": "reports/report.md",
+        "markdownSize": 1,
+        "markdownSha256": "a" * 64,
+        "pptxPath": "reports/report.pptx",
+        "pptxSize": 2,
+        "pptxSha256": "b" * 64,
+        "validationIssues": [{"code": "pptx_text_overflow"}],
+    }
+
+    gate = await publication.RuntimePublicationMixin._dataset_publication_gate(
+        runtime,
+        RunContext(run_id="run", session_id="thread", session_state=state),
+        result,
+    )
+
+    paths = [call.args[1] for call in hash_file.await_args_list]
+    assert "reports/report.md" in paths
+    assert "reports/report.pptx" in paths
+    assert "reports/report.pdf" not in paths
+    assert "reports/report.docx" not in paths
+    assert any(
+        item["code"] == "artifact_not_validated"
+        and item["details"]["validationIssues"] == result["validationIssues"]
+        for item in gate["issues"]
+    )
 
 
 @pytest.mark.anyio

@@ -30,6 +30,9 @@ class ReportingReportRequest(StrictModel):
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    delivery_format: Literal["document", "pptx"] = Field(
+        default="document", alias="deliveryFormat"
+    )
     domains: tuple[DomainCode, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
@@ -75,12 +78,13 @@ class ReportingPublishedReport(StrictModel):
     revision: int = Field(ge=0)
     pdf: ReportingArtifactLink | None = None
     word: ReportingArtifactLink | None = None
+    pptx: ReportingArtifactLink | None = None
     editor: ReportingEditorLink | None = None
     publication_gate: dict[str, Any] | None = Field(default=None, alias="publicationGate")
 
     @model_validator(mode="after")
     def require_downloadable_artifact(self) -> ReportingPublishedReport:
-        if self.pdf is None and self.word is None:
+        if self.pdf is None and self.word is None and self.pptx is None:
             raise ValueError("已发布报告必须至少包含一个可下载格式。")
         return self
 

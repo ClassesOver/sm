@@ -60,6 +60,7 @@ from ...contract import (
     ReportPromptInput,
     ReportRequestEnvelope,
     SourceSchemaSnapshot,
+    infer_delivery_format,
     parse_ddl,
     parse_reporting_workflow_input,
 )
@@ -748,6 +749,7 @@ class _ReportWorkflowRuntimeBase:
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
         editor_grants: Any | None = None,
+        slides_editor_static_dir: str | None = None,
         artifact_persistence: ReportArtifactPersistenceService | None = None,
         quality_warning_service: QualityWarningService | None = None,
         answer_review_plan_provider: AnswerReviewPlanProvider | None = None,
@@ -794,6 +796,7 @@ class _ReportWorkflowRuntimeBase:
         self.metadata_client = metadata_client
         self.download_grants = download_grants
         self.editor_grants = editor_grants
+        self.slides_editor_static_dir = slides_editor_static_dir
         self.artifact_persistence = artifact_persistence
         self.quality_warning_service = quality_warning_service
         self.answer_review_plan_provider = answer_review_plan_provider
@@ -1779,6 +1782,13 @@ class _ReportWorkflowRuntimeBase:
             "wordPath": content.get("wordPath"),
             "wordSize": content.get("wordSize"),
             "wordSha256": content.get("wordSha256"),
+            "pptxPath": content.get("pptxPath"),
+            "pptxSize": content.get("pptxSize"),
+            "pptxSha256": content.get("pptxSha256"),
+            "deliveryFormat": content.get("deliveryFormat", "document"),
+            "validation": content.get("validation"),
+            "validationIssues": content.get("validationIssues", []),
+            "publicationGate": content.get("publicationGate"),
             "sourceWarnings": content.get("sourceWarnings", []),
             "codingReceipts": content.get("codingReceipts", []),
         }
@@ -1794,14 +1804,18 @@ class _ReportWorkflowRuntimeBase:
         ):
             raise ReportingError("report_publication_invalid", "报表发布产物无效。")
         available = 0
-        for label in ("pdf", "word"):
+        for label in ("pdf", "word", "pptx"):
             path, size, digest = (values[f"{label}{suffix}"] for suffix in ("Path", "Size", "Sha256"))
             if path is None and size is None and digest is None:
                 continue
             if not isinstance(path, str) or not path or isinstance(size, bool) or not isinstance(size, int) or size <= 0 or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
                 raise ReportingError("report_publication_invalid", "报表发布产物身份不完整。")
             available += 1
-        if not available:
+        if not available and not (
+            values["deliveryFormat"] == "pptx"
+            and isinstance(values["validation"], dict)
+            and values["validation"].get("ok") is False
+        ):
             raise ReportingError("report_publication_invalid", "没有可发布的报告格式。")
         try:
             if content.get("artifactManifest") is not None:
@@ -1835,7 +1849,7 @@ class _ReportWorkflowRuntimeBase:
         expected: dict[str, Any],
         current: dict[str, Any],
         *,
-        artifact: Literal["pdf", "word"],
+        artifact: Literal["pdf", "word", "pptx"],
     ) -> None:
         prefix = artifact
         if (
@@ -1844,7 +1858,7 @@ class _ReportWorkflowRuntimeBase:
         ):
             raise ReportingError(
                 "report_artifact_changed",
-                "PDF 或 Word 在验收或审核后发生变化，必须重新验收。",
+                "报告文件在验收或审核后发生变化，必须重新验收。",
             )
 
     def _tool_context(self, run_context: RunContext) -> RunContext:

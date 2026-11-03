@@ -276,6 +276,8 @@ async def test_agentos_run_middleware_preserves_multipart_for_downstream(
         ("/reports/v1/editor/report-1/1/api/document", "PUT", 12 * 1024 * 1024),
         ("/reports/v1/editor/report-1/1/api/export", "POST", 12 * 1024 * 1024),
         ("/reports/v1/editor/report-1/1/api/ai/rewrite", "post", 12 * 1024 * 1024),
+        ("/reports/v1/slides/report-1/1/draft", "PUT", 12 * 1024 * 1024),
+        ("/reports/v1/slides/report-1/1/export", "POST", 12 * 1024 * 1024),
         ("/reports/v1/editor/report-1/1/api/document", "GET", None),
         ("/reports/v1/download/grant", "GET", None),
     ],

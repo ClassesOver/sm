@@ -29,11 +29,13 @@ from .quality_warnings.service import QualityWarningService
 from .report_editor import (
     ReportEditorGrantService,
     ReportEditorService,
+    ReportSlidesEditorService,
     SqlAlchemyReportEditorRepository,
     create_report_editor_ai_service,
     create_report_editor_chart_ai_service,
     create_report_editor_router,
     create_report_editor_table_ai_service,
+    create_report_slides_editor_router,
 )
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
@@ -254,6 +256,14 @@ report_editor = ReportEditorService(
     lineage_drilldown_enabled=settings.report_lineage_drilldown_enabled,
     lineage_export_sources_enabled=settings.report_lineage_export_sources_enabled,
 )
+report_slides_editor = ReportSlidesEditorService(
+    state_repository=report_runtime.state_repository,
+    workspace_registry=reporting_workspace_registry,
+    workspace=report_runtime.workspace_service,
+    artifact_persistence=report_runtime.artifact_persistence,
+    download_grants=report_download_grants,
+    draft_lock=report_editor._draft_lock,
+)
 report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
 # 编辑器 AI 改图（AGENT_REPORT_EDITOR_CHART_AI_ENABLED，默认开启）：与可视化章节复用
 # 同一 code agent 工厂、CodeMode runtime、LSP、视觉审查与任务注册表；未配置
@@ -327,6 +337,18 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             ),
             allowed_origin=settings.report_public_base_url,
             static_dir=settings.report_editor_static_dir,
+        )
+    )
+    application.include_router(
+        create_report_slides_editor_router(
+            report_editor_grants,
+            slides=report_slides_editor,
+            static_dir=report_runtime.slides_editor_static_dir,
+            allowed_origin=settings.report_public_base_url,
+            cookie_secure=bool(
+                settings.report_public_base_url
+                and settings.report_public_base_url.startswith("https://")
+            ),
         )
     )
     application.include_router(create_quality_warning_router())

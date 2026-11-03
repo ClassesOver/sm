@@ -1,8 +1,10 @@
+import json
 from types import SimpleNamespace
 
 import pytest
+from agno.models.message import Message
 
-from smart_reporting.reporting.agent import _completed_report_content
+from smart_reporting.reporting.agent import _completed_report_content, _forced_review_response
 from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting_mcp.contracts import ReportingOperationResult
 
@@ -33,6 +35,70 @@ def test_completed_report_content_presents_delivery_actions_compactly() -> None:
         "[下载 PDF](https://reports.example/report.pdf) · "
         "[下载 Word](https://reports.example/report.docx)"
     )
+
+
+def test_completed_report_content_supports_pptx_only_delivery() -> None:
+    content = _completed_report_content(_completed_payload(
+        pdf=None,
+        word=None,
+        editor=None,
+        pptx={"downloadUrl": "https://reports.example/report.pptx"},
+    ))
+
+    assert content == (
+        "## 报表已生成\n\n"
+        "### 年度运营分析报告\n\n"
+        "报告已完成发布。\n\n"
+        "[下载 PPTX](https://reports.example/report.pptx)"
+    )
+
+
+@pytest.mark.parametrize("with_editor", [False, True])
+def test_controller_to_agent_completion_preserves_pptx_download(with_editor) -> None:
+    report = {
+        "reportId": "report-1", "reportTitle": "年度运营分析报告", "revision": 1,
+        "pptx": {"downloadUrl": "https://reports.example/report.pptx"},
+        "publicationGate": {
+            "formalReleaseAllowed": False,
+            "issues": [{"code": "pptx_layout_audit", "message": "第 2 页需复核。"}],
+        },
+    }
+    if with_editor:
+        report["editor"] = {"openUrl": "https://reports.example/slides/open/token"}
+    projected = ReportWorkflowController._result(
+        SimpleNamespace(status="completed", review=None), SimpleNamespace(content=report),
+    )
+    response = _forced_review_response([Message(
+        role="tool", tool_name="report_workflow_approve", content=json.dumps(projected),
+    )])
+    assert response is not None
+    assert "[下载 PPTX](https://reports.example/report.pptx)" in response.content
+    assert "报告发布未完成" not in response.content
+    assert "第 2 页需复核。" in response.content
+
+
+def test_completed_report_content_reports_pptx_validation_failure_with_download() -> None:
+    content = _completed_report_content(_completed_payload(
+        pdf=None,
+        word=None,
+        editor=None,
+        pptx={"downloadUrl": "https://reports.example/report.pptx"},
+        publicationGate={
+            "formalReleaseAllowed": False,
+            "issues": [{
+                "code": "artifact_not_validated",
+                "message": "PPTX 版式验收未通过。",
+                "details": {"validationIssues": [{
+                    "code": "pptx_text_overflow",
+                    "message": "第 2 页标题超出画布。",
+                }]},
+            }],
+        },
+    ))
+
+    assert "[下载 PPTX](https://reports.example/report.pptx)" in content
+    assert "验收或发布检查未通过，下载链接已签发。" in content
+    assert "第 2 页标题超出画布。" in content
 
 
 def test_completed_report_content_omits_invalid_delivery_urls() -> None:

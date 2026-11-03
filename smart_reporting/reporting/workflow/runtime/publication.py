@@ -2,7 +2,10 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import quote, urlencode
 
 from loguru import logger
@@ -13,6 +16,7 @@ from ....quality_warnings import (
     TenantScope,
     WarningAdapter,
 )
+from ...delivery.pptx import build_editable_pptx
 from ...hospital_operation.findings import FindingGraph
 from ...hospital_operation.narrative_outline import (
     NarrativeOutline,
@@ -334,6 +338,8 @@ class RuntimePublicationMixin:
         state = self._state(run_context)
         result = self._workflow_result(state)
         outline = _frozen_outline(state)
+        if state.get("report_request_context", {}).get("deliveryFormat") == "pptx":
+            return await self._render_pptx(run_context, result, outline)
         pdf_path = _report_pdf_path(
             str(run_context.run_id),
             int(result.get("revision", 0)) + 1,
@@ -623,6 +629,128 @@ class RuntimePublicationMixin:
                 )
             )
             raise
+
+    async def _render_pptx(self, run_context: RunContext, result: dict[str, Any], outline: Any) -> dict[str, Any]:
+        state = self._state(run_context)
+        revision = int(result.get("revision", 0)) + 1
+        title = outline.title
+        period = self._envelope(run_context).period
+        pptx_path = str(PurePosixPath(_report_pdf_path(
+            str(run_context.run_id), revision, title, period,
+        )).with_suffix(".pptx"))
+        validation: dict[str, Any] = {"ok": False, "issues": []}
+        try:
+            durable = await self.state_repository.get(
+                str(run_context.run_id or self._scope(run_context)["externalRunId"])
+            )
+            checkpoint = ReportingCheckpoint.model_validate(
+                durable.payload.get("workflowCheckpoint") if durable is not None else None
+            )
+            manifest = checkpoint.evidence_manifest
+            if manifest is None:
+                raise ValueError("frozen analysis evidence unavailable")
+            analysis_items = {
+                item.code: item
+                for item in (AnalysisItem.model_validate(raw) for raw in state[REPORT_ANALYSIS_PLAN_STATE_KEY])
+            }
+            chart_files = {item.chart_id: item for item in ReportArtifactManifest.model_validate(
+                state[REPORT_ARTIFACTS_STATE_KEY]["draft"]
+            ).charts}
+            pages: list[dict[str, object]] = []
+            chart_assets: dict[str, bytes] = {}
+            for evidence in manifest.evidence:
+                item = analysis_items.get(evidence.analysis_id)
+                bullets = [part.strip(" •-\t") for part in re.split(r"\n+|(?<=[。！？])", evidence.summary) if part.strip()]
+                bullets = bullets[:5] or [item.management_question if item else evidence.analysis_id]
+                chart_path = None
+                for chart_id in evidence.chart_ids:
+                    chart = chart_files.get(chart_id)
+                    if chart is None or chart.media_type not in {"image/png", "image/jpeg"}:
+                        continue
+                    try:
+                        data = await self.workspace_service.read_limited_regular_file(
+                            self._scope(run_context)["threadId"], chart.path, max_bytes=chart.size,
+                        )
+                        if len(data) != chart.size or hashlib.sha256(data).hexdigest() != chart.sha256:
+                            raise ValueError("chart identity mismatch")
+                    except Exception as error:
+                        validation["issues"].append({
+                            "code": "pptx_chart_unavailable",
+                            "message": "冻结图表无法读取，页面仍保留文字证据。",
+                            "details": {"chartId": chart_id, "errorType": type(error).__name__},
+                        })
+                        continue
+                    chart_path = f"chart-{len(chart_assets)}{'.jpg' if chart.media_type == 'image/jpeg' else '.png'}"
+                    chart_assets[chart_path] = data
+                    break
+                pages.append({
+                    "title": (item.analysis_name or item.management_question) if item else evidence.analysis_id,
+                    "bullets": bullets,
+                    "evidenceIds": [evidence.analysis_id, *evidence.citation_ids],
+                    **({"chartPath": chart_path} if chart_path else {}),
+                })
+            if not pages:
+                raise ValueError("no frozen analysis evidence")
+            theme = state.get("report_request_context", {}).get("pptxTheme", "executive")
+
+            def build():
+                # 临时目录由工作线程持有；取消协程不会删除仍被构建器使用的文件。
+                with TemporaryDirectory(prefix="report-pptx-assets-") as temporary:
+                    root = Path(temporary)
+                    for name, data in chart_assets.items():
+                        (root / name).write_bytes(data)
+                    slides = tuple({
+                        **page,
+                        **({"chartPath": str(root / page["chartPath"])} if page.get("chartPath") else {}),
+                    } for page in pages)
+                    output = root / "report.pptx"
+                    built = build_editable_pptx(
+                        output_path=output, title=title, period=str(period), theme=theme, slides=slides,
+                    )
+                    return built, output.read_bytes()
+
+            built, content = await asyncio.to_thread(build)
+            if built.issues:
+                validation["issues"].extend(
+                    {"code": "pptx_layout_audit", "message": str(item.get("message", "版式需要复核。")), "details": {"page": item.get("page")}}
+                    for item in built.issues
+                )
+            await self.workspace_service.awrite_bytes(
+                self._scope(run_context)["threadId"], pptx_path, content,
+            )
+            actual = await self.workspace_service.ahash_file(self._scope(run_context)["threadId"], pptx_path)
+            if actual.get("missing") or actual.get("sha256") != built.sha256 or actual.get("size") != built.size:
+                raise ValueError("generated pptx identity mismatch")
+            validation.update({"ok": not validation["issues"], "slideCount": built.slide_count})
+            result.update({
+                "status": "validated" if validation["ok"] else "validation_failed",
+                "deliveryFormat": "pptx",
+                "pptxPath": pptx_path,
+                "pptxSize": int(actual["size"]),
+                "pptxSha256": str(actual["sha256"]),
+                "validation": validation,
+                "validationIssues": list(validation["issues"]),
+            })
+            await self._apply_durable_command(
+                run_context,
+                ReportingCommand(
+                    name="record_artifact",
+                    commandId=f"rendered-pptx:{revision}:{actual['sha256']}",
+                    payload={"artifact": actual},
+                ),
+            )
+        except Exception as error:
+            logger.warning("report_pptx_generation_failed error_type={}", type(error).__name__)
+            validation["issues"].append({"code": "pptx_generation_failed", "message": "PPTX 生成或验收失败。"})
+            try:
+                actual = await self.workspace_service.ahash_file(self._scope(run_context)["threadId"], pptx_path)
+                if not actual.get("missing") and actual.get("sha256") and actual.get("size"):
+                    result.update({"pptxPath": pptx_path, "pptxSize": int(actual["size"]), "pptxSha256": str(actual["sha256"])})
+            except Exception:
+                pass
+            result.update({"status": "validation_failed", "deliveryFormat": "pptx", "validation": {**validation, "ok": False}, "validationIssues": list(validation["issues"])})
+        self._state(run_context)[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
+        return result
 
     async def _source_links_by_dataset(
         self,
@@ -952,13 +1080,22 @@ class RuntimePublicationMixin:
             audit_complete = False
             issue("analysis_checkpoint_invalid", "发布门禁无法核验冻结分析产物。")
 
+        delivery_format = result.get(
+            "deliveryFormat", self._state(run_context).get("report_request_context", {}).get("deliveryFormat", "document")
+        )
         if result.get("status") != "validated":
+            artifact_label = "PPTX" if delivery_format == "pptx" else "PDF 或 DOCX"
             issue(
                 "artifact_not_validated",
-                "Markdown、PDF 或 DOCX 尚未完成验收。",
+                f"Markdown、{artifact_label} 尚未完成验收。",
                 validationIssues=result.get("validationIssues", [])[:20],
             )
-        for key in ("markdownPath", "pdfPath", "wordPath"):
+        artifact_paths = (
+            ("markdownPath", "pptxPath")
+            if delivery_format == "pptx"
+            else ("markdownPath", "pdfPath", "wordPath")
+        )
+        for key in artifact_paths:
             path = result.get(key)
             if not isinstance(path, str) or not path:
                 issue("artifact_identity_invalid", "验收回执缺少产物路径。", field=key)
@@ -1127,6 +1264,7 @@ class RuntimePublicationMixin:
                 "editorJob": editor_job,
                 "reportId": str(run_context.run_id),
                 "reportTitle": _frozen_outline(state).title,
+                "deliveryFormat": state.get("report_request_context", {}).get("deliveryFormat", "document"),
                 "revision": int(result.get("revision", 0)) + 1,
                 "markdownPath": result["markdownPath"],
                 **(
@@ -1138,9 +1276,9 @@ class RuntimePublicationMixin:
                     }
                     if manifest_identity is not None else {}
                 ),
-                **{key: result[key] for label in ("pdf", "word") for suffix in ("Path", "Size", "Sha256")
+                **{key: result[key] for label in ("pdf", "word", "pptx") for suffix in ("Path", "Size", "Sha256")
                    if (key := f"{label}{suffix}") in result},
-                "validation": result["validation"],
+                "validation": result.get("validation", {"ok": False, "issues": []}),
                 "validationIssues": result.get("validationIssues", []),
                 "sourceWarnings": result.get("sourceWarnings", []),
                 "codingReceipts": result.get("codingReceipts", []),

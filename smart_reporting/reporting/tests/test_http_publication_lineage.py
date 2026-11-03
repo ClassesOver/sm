@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.models.message import Message
 from agno.run import RunContext
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -19,6 +21,7 @@ from smart_reporting.report_editor import (
     ReportEditorService,
     create_report_editor_router,
 )
+from smart_reporting.reporting.agent import _forced_review_response
 from smart_reporting.reporting.data_sources import DatasetHandle
 from smart_reporting.reporting.delivery.artifacts_v1 import (
     ArtifactFile,
@@ -27,6 +30,7 @@ from smart_reporting.reporting.delivery.artifacts_v1 import (
 )
 from smart_reporting.reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
+    ReportArtifactSpec,
     ReportDownloadGrantService,
     ReportDownloadHttpService,
     create_report_download_router,
@@ -35,7 +39,7 @@ from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
     ReportingWorkspaceRouter,
 )
-from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.models import ReportingError, reporting_failure
 from smart_reporting.reporting.trace.contracts_v1 import (
     FactRefV1,
     RevisionTraceIndexV1,
@@ -44,12 +48,15 @@ from smart_reporting.reporting.trace.contracts_v1 import (
     derive_resource_id,
 )
 from smart_reporting.reporting.trace.index_builder import build_csv_trace_index, encode_trace_index
+from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
+from smart_reporting.reporting.workflow.runtime import planning as planning_module
 from smart_reporting.reporting.workflow.runtime import publication as publication_module
 from smart_reporting.reporting.workflow.scope import (
     REPORT_WORKFLOW_SCOPE_DEPENDENCY,
     resolve_reporting_workflow_scope,
 )
+from smart_reporting.reporting_mcp.contracts import ReportingOperationResult
 
 from .delivery_fakes import InMemoryDownloadGrantRepository, InMemoryReportArtifactRepository
 from .lineage_fixtures.manifest import register_trace_manifest
@@ -731,6 +738,207 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
             response = await client.get(result[artifact]["downloadUrl"])
             assert response.status_code == 200
             assert response.content == files[f"reports/report.{suffix}"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("editor_page", [
+    "ready", "missing", "stat_error", "grant_error",
+    "no_artifact", "identity_missing", "persistence_error",
+])
+async def test_http_pptx_publication_keeps_link_when_layout_audit_fails(monkeypatch, tmp_path, editor_page):
+    pptx = b"pptx bytes"
+    digest = hashlib.sha256(pptx).hexdigest()
+    expires = datetime.now(UTC)
+    captured = {}
+
+    class Workspace:
+        async def ahash_file(self, thread_id, path):
+            if editor_page == "identity_missing":
+                return {"missing": True}
+            return {"path": path, "size": len(pptx), "sha256": digest}
+
+    class Persistence:
+        async def persist_available(self, **values):
+            if editor_page == "persistence_error":
+                raise OSError("持久化服务不可用")
+            captured["artifacts"] = values["artifacts"]
+            return values["artifacts"]
+
+    class Grants:
+        async def issue(self, **values):
+            captured["grant"] = values
+            return "pptx-token", SimpleNamespace(
+                pptx_path=values["pptx_path"],
+                pptx_size=values["pptx_size"],
+                pptx_sha256=values["pptx_sha256"],
+                pdf_path="",
+                word_path="",
+                expires_at=expires,
+            )
+
+    class EditorGrants:
+        async def issue(self, context, *, capabilities):
+            if editor_page == "grant_error":
+                raise RuntimeError("编辑授权暂不可用")
+            captured["editor_context"] = context
+            captured["editor_capabilities"] = capabilities
+            return "slides-token", expires
+
+    class StateRepository:
+        async def get(self, _run_id):
+            return SimpleNamespace(payload={}, state_version=3)
+
+        async def apply(self, _run_id, command, *, expected_version):
+            captured["editor_command"] = command
+            captured["editor_expected_version"] = expected_version
+
+    monkeypatch.setattr(
+        planning_module,
+        "resolve_reporting_workflow_scope",
+        lambda **_kwargs: SimpleNamespace(
+            database="db",
+            company_id="company",
+            caller_thread_id="caller",
+            as_state=lambda: {"database": "db", "companyId": "company"},
+        ),
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = Workspace()
+    runtime.artifact_persistence = Persistence()
+    runtime.download_grants = Grants()
+    runtime.editor_grants = EditorGrants()
+    runtime.slides_editor_static_dir = tmp_path / "slides"
+    runtime.slides_editor_static_dir.mkdir()
+    index = runtime.slides_editor_static_dir / "index.html"
+    if editor_page != "missing":
+        index.write_text("<main>slides</main>", encoding="utf-8")
+    if editor_page == "stat_error":
+        original_is_file = Path.is_file
+        def unavailable(path):
+            if path == index:
+                raise OSError("编辑页面无法读取")
+            return original_is_file(path)
+        monkeypatch.setattr(Path, "is_file", unavailable)
+    runtime.state_repository = StateRepository()
+    runtime._release_workspace = lambda _thread_id: None
+    content = {
+        "reportId": "report-pptx",
+        "revision": 1,
+        "jobId": "job-pptx",
+        "editorJob": {"jobId": "job-pptx"},
+        "markdownPath": "reports/report.md",
+        "pptxPath": "reports/board.pptx",
+        "pptxSize": len(pptx),
+        "pptxSha256": digest,
+        "validation": {"ok": False, "issues": [{"code": "pptx_layout_audit"}]},
+        "validationIssues": [{"code": "pptx_layout_audit", "message": "版式溢出"}],
+        "publicationGate": {"formalReleaseAllowed": False, "issues": [{"code": "quality_audit_failed"}]},
+    }
+    if editor_page == "no_artifact":
+        for key in ("pptxPath", "pptxSize", "pptxSha256"):
+            content.pop(key)
+        content["validationIssues"] = [{"code": "pptx_generation_failed", "message": "构建器未生成文件"}]
+    publication = runtime._issue_http_pptx_publication(
+        thread_id="workspace",
+        caller_thread_id="caller",
+        user_id="user",
+        workflow_session_id="session",
+        workflow_run_id="run",
+        dependencies=None,
+        base_url="https://reports.test",
+        content=content,
+    )
+    failure_reason = {
+        "no_artifact": "构建器未生成文件",
+        "identity_missing": "PPTX 身份无法核验",
+        "persistence_error": "PPTX 持久化失败",
+    }.get(editor_page)
+    if failure_reason is not None:
+        with pytest.raises(ReportingError, match=failure_reason) as caught:
+            await publication
+        assert "grant" not in captured
+        projected = ReportWorkflowController._result(
+            SimpleNamespace(status="failed", review=None, error=reporting_failure(caught.value)),
+            None,
+        )
+        operation = ReportingOperationResult.model_validate({"operationId": "run", **projected})
+        assert operation.status == "failed"
+        assert operation.report is None
+        assert operation.error.code == "report_pptx_unavailable"
+        with pytest.raises(ReportingError, match=failure_reason):
+            _forced_review_response([Message(
+                role="tool", tool_name="report_workflow_approve", content=json.dumps(projected),
+            )])
+        return
+    output = await publication
+
+    assert captured["artifacts"] == (
+        ReportArtifactSpec(artifact="pptx", path="reports/board.pptx", size=len(pptx), sha256=digest),
+    )
+    assert output["pptx"]["downloadUrl"] == "https://reports.test/reports/v1/download/pptx-token/pptx"
+    if editor_page == "ready":
+        assert output["editor"]["openUrl"] == "https://reports.test/reports/v1/slides/open/slides-token"
+        assert captured["editor_capabilities"] == {"pptx_editor": True}
+        assert captured["editor_context"].pptx_path == "reports/board.pptx"
+        assert captured["editor_context"].job["validation"] == content["validation"]
+        assert captured["editor_context"].job["publicationGate"] == content["publicationGate"]
+    else:
+        assert "editor" not in output
+        assert any(item["code"] == "report_slides_editor_unavailable" for item in output["publicationIssues"])
+    assert output["validation"]["ok"] is False
+    assert output["validationIssues"][0]["code"] == "pptx_layout_audit"
+    assert output["publicationGate"]["formalReleaseAllowed"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["validation_engine", "validation_record", "registration"])
+async def test_http_slides_editor_export_keeps_download_on_auxiliary_faults(tmp_path, monkeypatch, fault):
+    from smart_reporting.report_editor import slides as slides_module
+    from smart_reporting.report_editor.slides_api import create_report_slides_editor_router
+
+    from .test_slides_editor_service import _editable_service, _fake_engine
+
+    setup = await _editable_service(tmp_path, monkeypatch)
+    _fake_engine(monkeypatch)
+    artifacts = InMemoryReportArtifactRepository()
+    setup.service.artifact_persistence = ReportArtifactPersistenceService(artifacts, setup.workspace)
+    grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret="s" * 32)
+    raw, _ = await grants.issue(setup.context, capabilities={"pptx_editor": True})
+    if fault == "validation_engine":
+        def unavailable(*_args):
+            raise OSError("验收服务不可用")
+        monkeypatch.setattr(slides_module, "edit_pptx", unavailable)
+        expected_code = "report_slides_validation_failed"
+    elif fault == "validation_record":
+        await setup.service.save_draft_for_session(
+            setup.session, expected_sha256=setup.context.pptx_sha256, operations=[{"text": "-draft"}],
+        )
+        await setup.workspace.adelete_file(
+            "workspace", setup.service._draft_path(setup.context) + ".validation.json",
+        )
+        expected_code = "report_slides_validation_unavailable"
+    else:
+        setup.repository.fail_registration = True
+        expected_code = "report_slides_registration_failed"
+    app = FastAPI()
+    app.include_router(create_report_slides_editor_router(
+        grants, slides=setup.service, static_dir=tmp_path, cookie_secure=False,
+    ))
+    app.include_router(create_report_download_router(ReportDownloadHttpService(setup.grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        opened = await client.get(f"/reports/v1/slides/open/{raw}")
+        path = opened.headers["location"]
+        document = (await client.get(f"{path}/document")).json()
+        exported = await client.post(f"{path}/export", json={"expectedSha256": document["sha256"]},
+                                     headers={"origin": "http://reports.test", "x-csrf-token": document["csrfToken"]})
+        assert exported.status_code == 200
+        result = exported.json()
+        assert result["validation"]["ok"] is False
+        assert expected_code in {item["code"] for item in result["validation"]["issues"]}
+        downloaded = await client.get(result["pptx"]["downloadUrl"])
+        assert downloaded.status_code == 200
+        assert hashlib.sha256(downloaded.content).hexdigest() == result["pptx"]["sha256"]
+        assert downloaded.content == (b"original-pptx-draft" if fault == "validation_record" else setup.original)
 
 
 @pytest.mark.anyio

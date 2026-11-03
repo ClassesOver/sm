@@ -48,6 +48,25 @@ _CONNECTION_KEYS = frozenset(
         "username",
     }
 )
+_PRESENTATION_REQUEST_PATTERN = re.compile(
+    r"(?:(?<![A-Za-z0-9])pptx?(?![A-Za-z0-9])|power\s*point|slides?|slide\s+deck|presentation\s+deck|"
+    r"幻灯片|演示文稿|演示稿|做成演示|汇报用演示)",
+    re.IGNORECASE,
+)
+_PRESENTATION_NEGATION_PATTERN = re.compile(
+    r"(?:不(?:要|用|需要|做|生成|想要)|无需|不用|不要再|no\s+(?:need\s+for\s+)?|without\s+)",
+    re.IGNORECASE,
+)
+
+
+def infer_delivery_format(prompt: str) -> Literal["document", "pptx"]:
+    """Resolve explicit presentation requests while keeping ordinary reports as documents."""
+    for match in _PRESENTATION_REQUEST_PATTERN.finditer(prompt):
+        prefix = prompt[max(0, match.start() - 12):match.start()]
+        if _PRESENTATION_NEGATION_PATTERN.search(prefix):
+            continue
+        return "pptx"
+    return "document"
 
 
 class StrictModel(BaseModel):
@@ -125,6 +144,9 @@ class ReportRequestEnvelope(StrictModel):
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    delivery_format: Literal["document", "pptx"] = Field(
+        default="document", alias="deliveryFormat"
+    )
     section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod
@@ -254,6 +276,9 @@ class ReportingWorkflowInput(StrictModel):
         default=None, alias="reportGoal", min_length=1, max_length=20_000
     )
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    delivery_format: Literal["document", "pptx"] | None = Field(
+        default=None, alias="deliveryFormat"
+    )
     section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod | None = None
@@ -274,6 +299,7 @@ class ReportingWorkflowInput(StrictModel):
                 for value in (
                     self.report_goal,
                     self.report_type,
+                    self.delivery_format,
                     self.section_count,
                     self.domains,
                     self.period,

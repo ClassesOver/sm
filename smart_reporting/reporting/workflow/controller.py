@@ -2140,6 +2140,7 @@ class ReportWorkflowController:
                     "revision",
                     "pdf",
                     "word",
+                    "pptx",
                     "editor",
                     "publicationGate",
                 }

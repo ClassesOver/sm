@@ -72,7 +72,7 @@ def agentos_run_request_limit(path: str, method: str) -> int | None:
 def report_editor_write_request_limit(path: str, method: str) -> int | None:
     """编辑器写接口先解析 JSON 再核验会话，必须在读取请求体前限定大小。"""
 
-    if method.upper() in {"PUT", "POST"} and path.startswith("/reports/v1/editor/"):
+    if method.upper() in {"PUT", "POST"} and path.startswith(("/reports/v1/editor/", "/reports/v1/slides/")):
         return MAX_REPORT_EDITOR_WRITE_REQUEST_BYTES
     return None
 

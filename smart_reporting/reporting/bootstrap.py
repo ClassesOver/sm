@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agno.agent import Agent
@@ -231,6 +232,10 @@ def create_report_runtime(
         ),
         download_grants=download_grants,
         editor_grants=editor_grants,
+        slides_editor_static_dir=str(Path(
+            settings.report_editor_static_dir
+            or Path(__file__).resolve().parents[1] / "report_editor" / "static"
+        ) / "slides"),
         artifact_persistence=artifact_persistence,
         quality_warning_service=quality_warning_service,
         answer_review_plan_provider=answer_review_plan_provider,
