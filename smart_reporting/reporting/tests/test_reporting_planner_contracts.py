@@ -2003,7 +2003,7 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
         })
     runtime._state = lambda _run_context: state
     runtime._envelope = lambda _run_context: SimpleNamespace(
-        domains=(requested_domain,), report_goal="分析医院经营主题"
+        domains=(requested_domain,), report_goal="分析医院经营主题", delivery_format="document"
     )
     from smart_reporting.reporting.profile.models import EffectiveMetric
 
@@ -2109,7 +2109,7 @@ async def _run_failing_analysis_item(monkeypatch, error: ReportingError, *, trac
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime._scope = lambda _context: {"externalRunId": "run-1", "threadId": "t", "userId": "u"}
     runtime._state = lambda _context: {}
-    runtime._envelope = lambda _context: SimpleNamespace(report_goal="目标")
+    runtime._envelope = lambda _context: SimpleNamespace(report_goal="目标", delivery_format="document")
     runtime._analysis_thinking_effort = lambda: "off"
     runtime._read_identity_model = AsyncMock(
         return_value=SimpleNamespace(analysis_id="analysis_001")
@@ -3252,7 +3252,7 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
     runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
     runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
     runtime._envelope = lambda _context: SimpleNamespace(
-        report_goal="分析收入", visualization_mode="auto"
+        report_goal="分析收入", visualization_mode="auto", delivery_format="xlsx"
     )
     # 空图计划不需要真实工作区或租户身份恢复。
     runtime._run_workspace = lambda _context: SimpleNamespace()
@@ -3311,6 +3311,7 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
     )
 
     async def run_workflow(workflow, payload, run_context):
+        assert payload["deliveryFormat"] == "xlsx"
         plan = await workflow.generate_plan(payload, run_context)
         if record_family_warning:
             warning = ({"code": "standard_funnel_nonmonotonic", "chartId": "chart_001",
@@ -3403,7 +3404,7 @@ async def test_visualization_section_task_stops_fatal_infra_failure_after_single
     runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
     runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
     runtime._envelope = lambda _context: SimpleNamespace(
-        report_goal="分析收入", visualization_mode="auto"
+        report_goal="分析收入", visualization_mode="auto", delivery_format="document"
     )
     runtime._visualization_section_fact_projection = AsyncMock(
         return_value={"analysisId": "analysis_001"}
@@ -3561,7 +3562,7 @@ def _final_attempt_runtime(monkeypatch, failing_workflow, extra_context=None):
     runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
     runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
     runtime._envelope = lambda _context: SimpleNamespace(
-        report_goal="分析收入", visualization_mode="auto"
+        report_goal="分析收入", visualization_mode="auto", delivery_format="document"
     )
     runtime._visualization_section_fact_projection = AsyncMock(
         return_value={"analysisId": "analysis_001"}
@@ -4296,9 +4297,11 @@ def test_analysis_grain_correction_allows_related_join_columns() -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("missing_purpose", [False, True])
+@pytest.mark.parametrize("delivery_format", ["document", "xlsx"])
 async def test_generate_analysis_plan_retries_with_structural_validation_feedback(
     monkeypatch: pytest.MonkeyPatch,
     missing_purpose: bool,
+    delivery_format: str,
 ) -> None:
     valid = analysis_bundle(
         table="rj.dwd_hdc_income_summary_view",
@@ -4327,6 +4330,7 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
     async def fake_run_planner(_agent, payload, _run_context, **_kwargs):
         nonlocal planner_calls
         planner_calls += 1
+        assert payload["deliveryFormat"] == delivery_format
         if planner_calls == 1:
             if missing_purpose:
                 original = valid.model_dump(mode="json", by_alias=True)
@@ -4348,6 +4352,7 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
             "period": {"start": "2025-01-01", "end": "2025-12-31"},
             "domains": ["income"],
             "sourceIds": ["rj"],
+            **({"deliveryFormat": delivery_format} if delivery_format != "document" else {}),
         }
     )
     understanding = data_understanding()

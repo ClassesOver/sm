@@ -121,3 +121,16 @@ describe('createEditorShell', () => {
     expect(shell.more.hidden).toBe(true)
   })
 })
+
+describe('workbook shell', () => {
+  it('shares the shell and exposes workbook download and save', () => {
+    document.body.innerHTML = '<main id="app"></main>'
+    const root = document.querySelector<HTMLElement>('#app')!
+    const shell = createEditorShell(root, 'full', 'xlsx')
+    expect(root.classList.contains('editor-format-xlsx')).toBe(true)
+    expect(shell.save.isConnected).toBe(true)
+    expect(shell.exportXlsx.getAttribute('aria-label')).toBe('下载 XLSX')
+    expect(shell.exportPdf.hidden).toBe(true)
+    expect(shell.exportWord.hidden).toBe(true)
+  })
+})

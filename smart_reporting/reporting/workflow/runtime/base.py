@@ -855,6 +855,7 @@ class _ReportWorkflowRuntimeBase:
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
                 "只根据用户完整目标及补充说明的业务语义，同时决策 reportType、domains 和分析期间；不得按关键词机械匹配",
+                "根据完整交付意图填写 deliveryFormat：document(PDF/Word，未指定时默认)、pptx(演示文稿)、xlsx(Excel工作簿)。提及输入文件格式不代表交付格式；否定请求不得选用。一次仅一种形式，无法唯一确定时 deliveryFormatAmbiguous=true 并通过 clarificationQuestion 确认。",
                 "用户明确限定一级章节数量时，将数量写入 sectionCount；章内小节不计入，未限定数量则返回null，不自行设默认数量。",
                 "reportType 表示分析的组织意图，与 domains 数量相互独立；不得根据领域多少反推报告类型",
                 "topic 表示围绕一个聚焦的管理问题、变化机制或专项主题深入分析，即使问题横跨多个领域也仍可返回多个相关 domains",
@@ -1785,6 +1786,9 @@ class _ReportWorkflowRuntimeBase:
             "pptxPath": content.get("pptxPath"),
             "pptxSize": content.get("pptxSize"),
             "pptxSha256": content.get("pptxSha256"),
+            "xlsxPath": content.get("xlsxPath"),
+            "xlsxSize": content.get("xlsxSize"),
+            "xlsxSha256": content.get("xlsxSha256"),
             "deliveryFormat": content.get("deliveryFormat", "document"),
             "validation": content.get("validation"),
             "validationIssues": content.get("validationIssues", []),
@@ -1804,7 +1808,7 @@ class _ReportWorkflowRuntimeBase:
         ):
             raise ReportingError("report_publication_invalid", "报表发布产物无效。")
         available = 0
-        for label in ("pdf", "word", "pptx"):
+        for label in ("pdf", "word", "pptx", "xlsx"):
             path, size, digest = (values[f"{label}{suffix}"] for suffix in ("Path", "Size", "Sha256"))
             if path is None and size is None and digest is None:
                 continue
@@ -1812,7 +1816,7 @@ class _ReportWorkflowRuntimeBase:
                 raise ReportingError("report_publication_invalid", "报表发布产物身份不完整。")
             available += 1
         if not available and not (
-            values["deliveryFormat"] == "pptx"
+            values["deliveryFormat"] in {"pptx", "xlsx"}
             and isinstance(values["validation"], dict)
             and values["validation"].get("ok") is False
         ):
@@ -1849,7 +1853,7 @@ class _ReportWorkflowRuntimeBase:
         expected: dict[str, Any],
         current: dict[str, Any],
         *,
-        artifact: Literal["pdf", "word", "pptx"],
+        artifact: Literal["pdf", "word", "pptx", "xlsx"],
     ) -> None:
         prefix = artifact
         if (

@@ -2811,6 +2811,11 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "分析与绘图库及中文图表字体由宿主配置；直接使用任务允许的库，不先枚举包、打印版本或测试字体。",
 )
 
+_WORKBOOK_CODE_COMMON_INSTRUCTIONS = (
+    "工作簿成稿使用 smart_reporting.reporting.delivery.xlsx.build_workbook，传入任务冻结的结构化工作表数据和来源映射；不得从 Markdown 显示文本反推数值。",
+    "XLSX 保留原始数据类型、单位、期间和缺失值；通过 write_script、run_script、submit_script 提交当前工作簿文件身份，不要求图片视觉审查。",
+)
+
 _INTERACTIVE_CODE_INSTRUCTIONS = (
     *_CODE_COMMON_INSTRUCTIONS,
     *_ANALYSIS_CODE_COMMON_INSTRUCTIONS,
@@ -2831,8 +2836,8 @@ def create_reporting_code_agent_factory(
 
     if not isinstance(model, OpenAIChat):
         raise TypeError("Reporting code agent requires OpenAIChat")
-    if task_kind not in {None, "analysis", "visualization"}:
-        raise ValueError("task_kind must be analysis or visualization")
+    if task_kind not in {None, "analysis", "visualization", "workbook"}:
+        raise ValueError("task_kind must be analysis, visualization or workbook")
     extra_instructions = (
         (instructions,)
         if isinstance(instructions, str)
@@ -2849,7 +2854,9 @@ def create_reporting_code_agent_factory(
             else (
                 *_CODE_COMMON_INSTRUCTIONS,
                 *(
-                    _ANALYSIS_CODE_COMMON_INSTRUCTIONS
+                    _WORKBOOK_CODE_COMMON_INSTRUCTIONS
+                    if task_kind == "workbook"
+                    else _ANALYSIS_CODE_COMMON_INSTRUCTIONS
                     if task_kind == "analysis"
                     else _VISUALIZATION_CODE_COMMON_INSTRUCTIONS
                 ),

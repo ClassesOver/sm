@@ -285,6 +285,31 @@ class ReportingCodeGenerationRunner:
         self.failure_artifact_recorder = failure_artifact_recorder
         self.compact_continuation = compact_continuation
 
+    async def run_workbook(
+        self, task_context: ReportingCodingTaskContext, workspace: HostReportingWorkspace,
+        source: str,
+    ) -> CodeGenerationResult:
+        """冻结数值的可信汇编仍经过 Coding 任务绑定、执行和提交回执。"""
+        if task_context.task_kind != "workbook":
+            raise ReportingError("report_workbook_task_kind_invalid", "工作簿汇编必须使用 workbook 任务。")
+        async with self.registry.bind(task_context, workspace) as binding:
+            toolkit = ReportingCodeModeToolkit(binding, self.code_mode_runtime, lsp_manager=self.lsp_manager)
+            try:
+                for operation in (lambda: toolkit.write_script(source), toolkit.run_script, toolkit.submit_script):
+                    result = await operation()
+                    if result.get("ok") is not True:
+                        raise ReportingError("report_workbook_execution_failed", "工作簿汇编未完成执行或提交。", details=result)
+                receipt = binding.execution_receipt
+                if receipt is None or toolkit.submitted_receipt != receipt:
+                    raise ReportingError("report_workbook_receipt_missing", "工作簿汇编缺少有效提交回执。")
+                await toolkit.require_current_receipt(receipt)
+                return CodeGenerationResult(script_file=receipt.source_file, execution_receipt=receipt)
+            finally:
+                try:
+                    await complete_cleanup(self.code_mode_runtime.shutdown(task_context.code_mode_session_id))
+                except Exception as error:
+                    logger.warning("report_workbook_runtime_cleanup_failed error_type={}", type(error).__name__)
+
     async def run_standard_visualization(
         self, task_context: ReportingCodingTaskContext, workspace: HostReportingWorkspace,
         source: str, task_facts: Mapping[str, Any],

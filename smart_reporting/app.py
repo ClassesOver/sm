@@ -32,6 +32,7 @@ from .report_editor import (
     ReportEditorService,
     ReportSlidesEditorService,
     ReportSlidesImageService,
+    ReportWorkbookEditorService,
     SqlAlchemyReportEditorRepository,
     create_report_editor_ai_service,
     create_report_editor_chart_ai_service,
@@ -39,6 +40,8 @@ from .report_editor import (
     create_report_editor_table_ai_service,
     create_report_slides_ai_service,
     create_report_slides_editor_router,
+    create_report_workbook_ai_service,
+    create_report_workbook_editor_router,
 )
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
@@ -113,6 +116,7 @@ report_artifact_persistence = ReportArtifactPersistenceService(
 report_downloads = ReportDownloadHttpService(
     report_download_grants,
     report_artifact_repository,
+    workspace_service=ReportingWorkspaceRouter(reporting_workspace_registry),
 )
 router = APIRouter()
 
@@ -267,6 +271,18 @@ report_slides_editor = ReportSlidesEditorService(
     artifact_persistence=report_artifact_persistence,
     public_base_url=settings.report_public_base_url,
 )
+report_workbook_editor = ReportWorkbookEditorService(
+    state_repository=report_runtime.state_repository,
+    workspace_registry=reporting_workspace_registry,
+    workspace=report_runtime.workspace_service,
+    editor_grants=report_editor_grants,
+    artifact_persistence=report_artifact_persistence,
+    download_grants=report_download_grants,
+    public_base_url=settings.report_public_base_url,
+)
+report_workbook_ai = create_report_workbook_ai_service(
+    reporting_agent_template.model, report_workbook_editor
+)
 report_slides_ai = create_report_slides_ai_service(
     reporting_agent_template.model, report_slides_editor
 )
@@ -362,6 +378,18 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             slides_ai=report_slides_ai,
             slides_images=report_slides_image_ai,
             static_dir=static_root / "slides",
+            cookie_secure=bool(
+                settings.report_public_base_url
+                and settings.report_public_base_url.startswith("https://")
+            ),
+        )
+    )
+    application.include_router(
+        create_report_workbook_editor_router(
+            report_editor_grants,
+            workbooks=report_workbook_editor,
+            workbook_ai=report_workbook_ai,
+            static_dir=static_root,
             cookie_secure=bool(
                 settings.report_public_base_url
                 and settings.report_public_base_url.startswith("https://")

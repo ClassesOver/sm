@@ -45,3 +45,9 @@ __all__ = [
     "create_report_slides_editor_router",
     "create_report_slides_ai_service",
 ]
+
+from .workbook import ReportWorkbookEditorService
+from .workbook_ai import ReportWorkbookAIService, create_report_workbook_ai_service
+from .workbook_api import create_report_workbook_editor_router
+
+__all__ += ["ReportWorkbookEditorService", "ReportWorkbookAIService", "create_report_workbook_ai_service", "create_report_workbook_editor_router"]

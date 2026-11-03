@@ -18,3 +18,15 @@ assert.equal(failures.length, 3)
 assert.match(failures[0], /index-example\.js/)
 assert.match(failures[1], /milkdown-example\.js/)
 assert.match(failures[2], /history\.js/)
+
+// Heavy grid packages are lazy workbook chunks with package-specific limits.
+assert.deepEqual(checkBuildBudget([
+  { file: 'assets/workbook-sheets-ui-hash1234.js', size: 900 * 1024 },
+  { file: 'assets/workbook-dictionary-hu-hash1234.js', size: 770 * 1024 },
+]), [])
+assert.equal(checkBuildBudget([
+  { file: 'assets/workbook-sheets-ui-hash1234.js', size: 911 * 1024 },
+  { file: 'assets/workbook-arbitrary-hash1234.js', size: 251 * 1024 },
+]).length, 2)
+
+assert.deepEqual(checkBuildBudget([{file:"assets/lazy-index-hash1234.js",size:240*1024}]),[])

@@ -1,7 +1,18 @@
 export {}
 
 const isSlidesPath = window.location.pathname.includes('/reports/v1/slides/')
-if (!isSlidesPath) {
+const isWorkbookPath = window.location.pathname.includes('/reports/v1/workbooks/')
+if (isWorkbookPath) {
+  await import('./style.css')
+  const { createEditorShell } = await import('./shell')
+  const { toolbarMode } = await import('./viewport')
+  const { createWorkbookEditorView } = await import('./workbook-main')
+  const root = document.querySelector<HTMLElement>('#app')!
+  const shell = createEditorShell(root, toolbarMode(window.innerWidth), 'xlsx')
+  const { createIcons, Download, Save, Keyboard } = await import('lucide')
+  createIcons({ icons: { Download, Save, Keyboard } })
+  await createWorkbookEditorView(shell)
+} else if (!isSlidesPath) {
   await import('./main')
 } else {
   const { createIcons, Download, FileDown, FileText, Keyboard, MoreHorizontal, PanelLeft, Save, Settings2, X } = await import('lucide')

@@ -625,7 +625,7 @@ def create_reporting_workflow(
             ),
             Step(
                 step_id="validate-report",
-                name="PDF/Word 双格式验收",
+                name="交付产物验收",
                 executor=_timed_step_executor(validate_report, step_id="validate-report"),
                 max_retries=2,
                 # 取数、分析和章节已经在前一步完成并持久化。末端渲染或验收失败时由

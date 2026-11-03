@@ -16,7 +16,12 @@ FROM ${NODE_IMAGE} AS report-editor-frontend
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
-WORKDIR /build/frontend
+# 保持与源码相同的相对层级，让浏览器和 Node 桥接使用同一固定版本引擎。
+WORKDIR /build/smart_reporting/reporting/workbook_engine
+COPY smart_reporting/reporting/workbook_engine ./
+RUN npm ci --registry="${NPM_REGISTRY}"
+
+WORKDIR /build/smart_reporting/report_editor/frontend
 
 COPY smart_reporting/report_editor/frontend/package.json \
     smart_reporting/report_editor/frontend/package-lock.json ./
@@ -54,6 +59,7 @@ ARG PYPI_FILES_MIRROR=https://mirrors.aliyun.com/pypi
 COPY --from=uv-source /uv /uvx /bin/
 COPY --from=report-editor-frontend /usr/local /usr/local
 COPY --from=report-editor-frontend /build/slides-engine /opt/reporting-slides-engine
+COPY --from=report-editor-frontend /build/smart_reporting/reporting/workbook_engine /opt/reporting-workbook-engine
 
 WORKDIR /app
 
@@ -84,10 +90,11 @@ COPY smart_reporting ./smart_reporting
 COPY docker/matplotlibrc /etc/reporting/matplotlibrc
 # 前端产物放在源码目录之外：Compose 以只读 bind mount 覆盖 /app/smart_reporting，
 # 若放在源码树内会被宿主空目录遮蔽；命名卷又只在首次创建时播种，升级镜像后仍是旧前端。
-COPY --from=report-editor-frontend /build/static /opt/report-editor-static
+COPY --from=report-editor-frontend /build/smart_reporting/report_editor/static /opt/report-editor-static
 
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_REPORTING_SLIDES_ENGINE_DIR=/opt/reporting-slides-engine \
+    AGENT_REPORTING_WORKBOOK_ENGINE_DIR=/opt/reporting-workbook-engine \
     AGENT_REPORT_EDITOR_STATIC_DIR=/opt/report-editor-static \
     MPLCONFIGDIR=/tmp/reporting-matplotlib \
     MPLBACKEND=Agg \

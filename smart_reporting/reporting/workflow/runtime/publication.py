@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -79,6 +80,7 @@ from .base import (
     re,
     validate_rendered_artifacts,
 )
+from .workbook import build_workbook_sheets, validate_workbook_snapshot, workbook_dataset_rows
 
 
 def _narrative_reuse_snapshot_hash(graph, finding_graph_hash: str | None) -> str | None:
@@ -337,6 +339,8 @@ class RuntimePublicationMixin:
         state = self._state(run_context)
         result = self._workflow_result(state)
         outline = _frozen_outline(state)
+        if state.get("report_request_context", {}).get("deliveryFormat") == "xlsx":
+            return await self._render_xlsx(run_context, result, outline)
         if state.get("report_request_context", {}).get("deliveryFormat") == "pptx":
             return await self._render_pptx(run_context, result, outline)
         pdf_path = _report_pdf_path(
@@ -741,6 +745,140 @@ class RuntimePublicationMixin:
         self._state(run_context)[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
         return result
 
+    async def _draft_workbook(self, run_context: RunContext, *, spec_path: str, output_path: str) -> Any:
+        from ...code_agent.context import ReportingCodingTaskContext
+        from .code_generation import ReportingCodeGenerationRunner
+
+        if self.code_mode_runtime is None:
+            raise ReportingError("report_code_mode_runtime_missing", "工作簿汇编 CodeMode runtime 未配置。")
+        workspace = self._run_workspace(run_context)
+        task_id = f"workbook:{run_context.run_id}:{hashlib.sha256(output_path.encode()).hexdigest()[:20]}"
+        script_path = str(PurePosixPath(output_path).with_suffix(".workbook.py"))
+        task = ReportingCodingTaskContext(
+            task_id=task_id, task_kind="workbook", code_mode_session_id=task_id,
+            workspace_key=workspace.identity.workspace_key, workspace_root=workspace.identity.root,
+            script_path=script_path, authorized_read_paths=(spec_path,),
+            authorized_write_paths=(script_path, output_path), declared_output_paths=(output_path,),
+            max_source_bytes=32 * 1024,
+        )
+        source = (
+            "import json, sys\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[4])!r})\n"
+            "from smart_reporting.reporting.delivery.xlsx import build_workbook\n"
+            f"spec = json.loads(Path({spec_path!r}).read_text(encoding='utf-8'))\n"
+            f"build_workbook(output_path=Path({output_path!r}), title=spec['title'], "
+            "period=spec['period'], sheets=tuple(spec['sheets']), source_mapping=spec['sourceMapping'])\n"
+        )
+        runner = ReportingCodeGenerationRunner(
+            self._analysis_script_agent_factory, self.code_mode_runtime,
+            lsp_manager=getattr(self, "lsp_manager", None), registry=self.coding_task_registry,
+        )
+        return await runner.run_workbook(task, workspace, source)
+
+    async def _render_xlsx(self, run_context: RunContext, result: dict[str, Any], outline: Any) -> dict[str, Any]:
+        """只从冻结事实与实际使用的 CSV 汇编；所有后续故障保留已生成文件。"""
+        from ...delivery.xlsx import inspect_workbook
+
+        state = self._state(run_context)
+        thread_id = self._scope(run_context)["threadId"]
+        revision = int(result.get("revision", 0)) + 1
+        period = self._envelope(run_context).period
+        period_label = f"{period.start.isoformat()} 至 {period.end.isoformat()}"
+        path = str(PurePosixPath(_report_pdf_path(str(run_context.run_id), revision, outline.title, period)).with_suffix(".xlsx"))
+        receipt_path = str(PurePosixPath(path).with_suffix(".xlsx.receipt.json"))
+        validation: dict[str, Any] = {"ok": False, "issues": []}
+        try:
+            durable = await self.state_repository.get(str(run_context.run_id or self._scope(run_context)["externalRunId"]))
+            checkpoint = ReportingCheckpoint.model_validate(durable.payload.get("workflowCheckpoint") if durable is not None else None)
+            # 与 PDF/Word 一样复用当前 revision 检查点；读取回执前验证其登记身份。
+            frozen_receipt = next((item for item in checkpoint.files if item.path == receipt_path), None)
+            if frozen_receipt is not None:
+                raw = await self._read_identity_bytes(thread_id, frozen_receipt, max_bytes=4 * 1024 * 1024)
+                saved = json.loads(raw)
+                actual = await self.workspace_service.ahash_file(thread_id, path)
+                if actual.get("size") == saved["artifact"]["size"] and actual.get("sha256") == saved["artifact"]["sha256"]:
+                    result.update({"deliveryFormat": "xlsx", "xlsxPath": path, "xlsxSize": actual["size"], "xlsxSha256": actual["sha256"],
+                        "validation": saved["validation"], "validationIssues": saved["validation"].get("issues", []),
+                        "workbookSources": saved.get("workbookSources", []),
+                        "status": "validated" if saved["validation"].get("ok") else "validation_failed"})
+                    state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
+                    return result
+            manifest = checkpoint.evidence_manifest
+            if manifest is None:
+                raise ValueError("frozen analysis evidence unavailable")
+            handles = {item.dataset_id: item for item in (DatasetHandle.from_state(raw) for raw in result.get("datasets", ()))}
+            used_ids = tuple(dict.fromkeys(key for evidence in manifest.evidence for key in evidence.dataset_ids))
+            requirements = {item.requirement_id: item for item in (QueryRequirement.model_validate(raw) for raw in state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, ()))}
+            datasets: dict[str, dict[str, Any]] = {}
+            for dataset_id in used_ids:
+                handle = handles[dataset_id]
+                content = await self.workspace_service.read_limited_regular_file(thread_id, handle.path, max_bytes=handle.size)
+                if len(content) != handle.size or hashlib.sha256(content).hexdigest() != handle.sha256:
+                    raise ValueError("frozen dataset identity changed")
+                requirement = requirements.get(handle.requirement_id)
+                measures = {column for table in requirement.tables for column in table.measure_columns} if requirement else set()
+                schema = next((item.get("schema", {}) for item in state.get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
+                    if item.get("datasetId") == dataset_id and item.get("sha256") == handle.sha256), {})
+                columns, rows, type_issues = workbook_dataset_rows(content, dataset_id=dataset_id, measures=measures, schema=schema)
+                validation["issues"].extend(type_issues)
+                if len(rows) != handle.row_count:
+                    raise ValueError("frozen dataset row count changed")
+                datasets[dataset_id] = {"columns": columns, "rows": rows, "path": handle.path, "size": handle.size,
+                    "sha256": handle.sha256, "periodRoles": list(handle.period_roles), "requirementId": handle.requirement_id}
+            documents: dict[str, dict[str, Any]] = {}
+            for evidence in manifest.evidence:
+                identities = [checkpoint.deterministic_fact_files[evidence.analysis_id]] if evidence.analysis_id in checkpoint.deterministic_fact_files else list(evidence.evidence_files)
+                for identity in identities:
+                    if not identity.path.lower().endswith(".json"):
+                        continue
+                    raw = await self._read_identity_bytes(thread_id, identity, max_bytes=identity.size)
+                    document = read_fact_document(raw)
+                    if document.get("analysisId") == evidence.analysis_id:
+                        documents[evidence.analysis_id] = dict(document)
+                        break
+                if evidence.analysis_id not in documents:
+                    validation["issues"].append({"code": "xlsx_fact_values_unavailable", "message": "部分分析未登记结构化数值，工作簿保留结论与明细，不从正文反推指标。", "analysisId": evidence.analysis_id})
+            sheets, sources = build_workbook_sheets(manifest=manifest, outline=outline,
+                fact_documents=documents, datasets=datasets, period=period_label)
+            workbook_sources = [{**item, "datasets": {key: sources["datasets"][key] for key in item["datasetIds"] if key in sources["datasets"]}} for item in sources["cells"]]
+            spec = json.dumps({"title": outline.title, "period": period_label, "sheets": sheets, "sourceMapping": sources}, ensure_ascii=False, allow_nan=False).encode()
+            spec_path = str(PurePosixPath(path).parent / f"workbook-spec-{hashlib.sha256(spec).hexdigest()}.json")
+            spec_identity = await self._write_immutable_artifact(thread_id, spec_path, spec)
+            generated = await self._draft_workbook(run_context, spec_path=spec_path, output_path=path)
+            actual = await self.workspace_service.ahash_file(thread_id, path)
+            output = next(item for item in generated.execution_receipt.output_files if item.path == path)
+            if actual.get("missing") or actual.get("sha256") != output.sha256 or actual.get("size") != output.size:
+                raise ValueError("generated workbook identity mismatch")
+            content = await self.workspace_service.read_limited_regular_file(thread_id, path, max_bytes=output.size)
+            inspected = await asyncio.to_thread(inspect_workbook, content)
+            validation["issues"].extend(validate_workbook_snapshot(inspected, sheets, sources, content))
+            actual_sheets = inspected.get("sheets", inspected.get("worksheets", []))
+            if len(actual_sheets) != len(sheets):
+                validation["issues"].append({"code": "xlsx_sheet_count_invalid", "message": "工作表数量与冻结工作簿计划不一致。"})
+            validation.update({"ok": not validation["issues"], "sheetCount": len(actual_sheets)})
+            result.update({"status": "validated" if validation["ok"] else "validation_failed", "deliveryFormat": "xlsx",
+                "xlsxPath": path, "xlsxSize": actual["size"], "xlsxSha256": actual["sha256"],
+                "validation": validation, "validationIssues": list(validation["issues"]), "workbookSources": workbook_sources})
+            receipt_data = json.dumps({"artifact": actual, "spec": spec_identity.model_dump(mode="json", by_alias=True),
+                "executionReceipt": generated.execution_receipt.model_dump(mode="json", by_alias=True), "validation": validation, "workbookSources": workbook_sources}, ensure_ascii=False).encode()
+            receipt_identity = await self._write_immutable_artifact(thread_id, receipt_path, receipt_data)
+            await self._apply_durable_command(run_context, ReportingCommand(name="record_artifact",
+                commandId=f"rendered-xlsx:{revision}:{actual['sha256']}", payload={"artifact": actual}))
+            files = self._merge_checkpoint_files(checkpoint.files, spec_identity, receipt_identity, generated.script_file, output)
+            await self._persist_reporting_checkpoint(run_context, checkpoint.model_copy(update={"files": files}))
+        except Exception as error:
+            logger.warning("report_xlsx_generation_failed error_type={}", type(error).__name__)
+            validation["issues"].append({"code": "xlsx_generation_failed", "message": "工作簿汇编、验收或检查点登记未完成，实际已生成文件仍可下载。", "details": {"errorType": type(error).__name__}})
+            try:
+                actual = await self.workspace_service.ahash_file(thread_id, path)
+                if not actual.get("missing") and actual.get("size") and actual.get("sha256"):
+                    result.update({"xlsxPath": path, "xlsxSize": actual["size"], "xlsxSha256": actual["sha256"]})
+            except Exception:
+                pass
+            result.update({"status": "validation_failed", "deliveryFormat": "xlsx", "validation": {**validation, "ok": False}, "validationIssues": list(validation["issues"])})
+        state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
+        return result
+
     async def _source_links_by_dataset(
         self,
         manifest: ReportArtifactManifest,
@@ -1073,15 +1211,15 @@ class RuntimePublicationMixin:
             "deliveryFormat", self._state(run_context).get("report_request_context", {}).get("deliveryFormat", "document")
         )
         if result.get("status") != "validated":
-            artifact_label = "PPTX" if delivery_format == "pptx" else "PDF 或 DOCX"
+            artifact_label = delivery_format.upper() if delivery_format in {"pptx", "xlsx"} else "PDF 或 DOCX"
             issue(
                 "artifact_not_validated",
                 f"Markdown、{artifact_label} 尚未完成验收。",
                 validationIssues=result.get("validationIssues", [])[:20],
             )
         artifact_paths = (
-            ("markdownPath", "pptxPath")
-            if delivery_format == "pptx"
+            ("markdownPath", f"{delivery_format}Path")
+            if delivery_format in {"pptx", "xlsx"}
             else ("markdownPath", "pdfPath", "wordPath")
         )
         for key in artifact_paths:
@@ -1243,6 +1381,8 @@ class RuntimePublicationMixin:
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
+        if result.get("deliveryFormat") == "xlsx":
+            editor_job = {**editor_job, "workbookSources": result.get("workbookSources", [])}
         return StepOutput(
             content={
                 "status": result.get("status", "validated"),
@@ -1265,7 +1405,7 @@ class RuntimePublicationMixin:
                     }
                     if manifest_identity is not None else {}
                 ),
-                **{key: result[key] for label in ("pdf", "word", "pptx") for suffix in ("Path", "Size", "Sha256")
+                **{key: result[key] for label in ("pdf", "word", "pptx", "xlsx") for suffix in ("Path", "Size", "Sha256")
                    if (key := f"{label}{suffix}") in result},
                 "validation": result.get("validation", {"ok": False, "issues": []}),
                 "validationIssues": result.get("validationIssues", []),

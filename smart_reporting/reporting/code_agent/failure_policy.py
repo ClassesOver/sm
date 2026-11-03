@@ -13,7 +13,7 @@ from ..model_policy import ThinkingFailureKind
 from ..models import ReportingError
 
 Recovery = Literal["fatal", "retry", "retry_then_degrade"]
-TaskKind = Literal["analysis", "visualization"]
+TaskKind = Literal["analysis", "visualization", "workbook"]
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,7 @@ def final_attempt_degradable(error: BaseException) -> bool:
 def recovery_for(error: Exception, task: TaskKind) -> Recovery:
     if not isinstance(error, ReportingError):
         return "retry"
-    policy = getattr(POLICIES.get(error.code, FailurePolicy()), task)
+    policy = getattr(POLICIES.get(error.code, FailurePolicy()), "analysis" if task == "workbook" else task)
     # Task cancellation and artifact identity failures can never be downgraded.
     if policy == "fatal":
         return policy
