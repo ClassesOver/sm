@@ -37,6 +37,7 @@ def _context() -> ReportEditorContext:
 class SlidesService:
     def __init__(self):
         self.saved_images = []
+        self.saved_chart_replacements = []
 
     async def context_for_session(self, session):
         if not session.capabilities or session.capabilities.get("pptx_editor") is not True:
@@ -51,10 +52,11 @@ class SlidesService:
         assert session.capabilities.get("pptx_editor") is True
         return b"%PDF-test"
 
-    async def save_revision(self, session, payload, *, images=None):
+    async def save_revision(self, session, payload, *, images=None, chart_replacements=None):
         assert session.capabilities.get("pptx_editor") is True
         assert payload["expectedSha256"] == "a" * 64
         self.saved_images = images or []
+        self.saved_chart_replacements = chart_replacements or []
         return {"revision": session.revision + 1, "pptx": {"downloadUrl": "/download"}}
 
     async def download_for_session(self, session):
@@ -288,3 +290,94 @@ async def test_slides_image_candidates_require_csrf_and_are_added_only_on_revisi
     assert saved.status_code == 200
     assert slides.saved_images[0]["bytes"] == b"png"
     assert images.discarded == ["image-1"]
+
+
+@pytest.mark.anyio
+async def test_slides_chart_candidates_require_csrf_and_are_applied_only_on_save(tmp_path):
+    grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='s' * 32)
+    raw, _expires = await grants.issue(_context(), capabilities={'pptx_editor': True})
+    slides = SlidesService()
+    target = {'slideIndex': 0, 'elementId': 'picture-1', 'chartId': 'chart_001'}
+
+    class Charts:
+        discarded = []
+
+        async def list_charts(self, session):
+            assert session.capabilities == {'pptx_editor': True}
+            return {'charts': [{**target, 'available': True}]}
+
+        async def start_edit(self, session, slide_index, element_id, instruction):
+            assert (slide_index, element_id, instruction) == (0, 'picture-1', '调整颜色')
+            return {'candidateId': 'chart-edit-1', 'status': 'running'}
+
+        async def edit_status(self, session, candidate_id, *, wait_ms):
+            assert candidate_id == 'chart-edit-1' and wait_ms == 5
+            return {'status': 'succeeded', 'previewDataUrl': 'data:image/png;base64,cG5n'}
+
+        async def resolve_for_session(self, session, edits):
+            assert edits == [{'candidateId': 'chart-edit-1'}]
+            return [{**target, 'candidateId': 'chart-edit-1', 'bytes': b'chart-png'}]
+
+        async def discard_candidates(self, session, candidates):
+            self.discarded.extend(candidates)
+
+    charts = Charts()
+    app = FastAPI()
+    app.include_router(create_report_slides_editor_router(
+        grants, slides=slides, slides_charts=charts, static_dir=tmp_path, cookie_secure=False,
+    ))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        opened = await client.get(f'/reports/v1/slides/open/{raw}', follow_redirects=False)
+        path = opened.headers['location']
+        listing = await client.get(f'{path}/api/charts')
+        assert listing.json()['charts'][0]['chartId'] == 'chart_001'
+        payload = {'slideIndex': 0, 'elementId': 'picture-1', 'instruction': '调整颜色'}
+        rejected = await client.post(f'{path}/api/charts/start', json=payload)
+        assert rejected.status_code == 403
+        csrf = grants.csrf_token(client.cookies.get('report_slides_session') or '')
+        headers = {'X-CSRF-Token': csrf}
+        started = await client.post(f'{path}/api/charts/start', json=payload, headers=headers)
+        assert started.json()['candidateId'] == 'chart-edit-1'
+        status = await client.get(f'{path}/api/charts/chart-edit-1?wait_ms=5')
+        assert status.json()['previewDataUrl'].startswith('data:image/png;')
+        invalid_wait = await client.get(f'{path}/api/charts/chart-edit-1?wait_ms=1501')
+        assert invalid_wait.status_code == 422
+        assert not slides.saved_chart_replacements
+        save = {'expectedSha256': 'a' * 64, 'chartEdits': [{'candidateId': 'chart-edit-1'}]}
+        rejected = await client.post(f'{path}/api/save', json=save)
+        assert rejected.status_code == 403
+        saved = await client.post(f'{path}/api/save', json=save, headers=headers)
+        assert saved.status_code == 200
+        foreign = await client.get('/reports/v1/slides/foreign/4/api/charts')
+        assert foreign.status_code == 404
+    assert slides.saved_chart_replacements[0]['bytes'] == b'chart-png'
+    assert charts.discarded == ['chart-edit-1']
+
+
+@pytest.mark.anyio
+async def test_slides_render_preview_requires_csrf_and_scoped_session(tmp_path: Path):
+    class RenderSlidesService(SlidesService):
+        async def render_tree_for_session(self, session, preview=None):
+            await self.context_for_session(session)
+            return {"revision": session.revision, "preview": preview, "slides": []}
+
+    grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret="s" * 32)
+    raw, _expires = await grants.issue(_context(), capabilities={"pptx_editor": True})
+    app = FastAPI()
+    app.include_router(create_report_slides_editor_router(
+        grants, slides=RenderSlidesService(), static_dir=tmp_path, cookie_secure=False,
+    ))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        opened = await client.get(f"/reports/v1/slides/open/{raw}", follow_redirects=False)
+        path = opened.headers["location"]
+        tree = await client.get(f"{path}/api/render-tree")
+        denied = await client.post(f"{path}/api/render-tree", json={"edits": []})
+        csrf = grants.csrf_token(client.cookies.get("report_slides_session") or "")
+        preview = await client.post(f"{path}/api/render-tree", json={"edits": []}, headers={"X-CSRF-Token": csrf})
+        outside = await client.get("/reports/v1/slides/other-report/4/api/render-tree")
+    assert tree.status_code == 200
+    assert tree.json()["revision"] == 4
+    assert denied.status_code == 403
+    assert preview.status_code == 200
+    assert preview.json()["preview"] == {"edits": []}
+    assert outside.status_code in {403, 404}

@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { addPicture, applyThemeToArchive, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setSlideAnimations, setSlideLayout, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
 type TextEdit = {
@@ -96,10 +97,11 @@ if (request.action === 'inspect') {
     const element = opened.deck.slides[edit.slideIndex]!.elements.find((candidate) => candidate.id === edit.elementId)
     if (!element || (element.type !== 'text' && element.type !== 'shape')) throw new Error('element_not_editable')
     if (edit.text !== undefined) {
-      if (!element.text?.paragraphs.length || !element.text.paragraphs[0]!.runs.length) throw new Error('element_text_missing')
-      const runs = element.text.paragraphs[0]!.runs
-      runs[0]!.text = edit.text
-      for (const run of runs.slice(1)) run.text = ''
+      if (!element.text?.paragraphs.length) throw new Error('element_text_missing')
+      element.text.paragraphs = applyEditParagraphs(
+        element.text.paragraphs,
+        edit.text.split(/\r?\n/).map((text) => ({ runs: [{ text }] })),
+      )
       element.dirty = true
     }
     if (edit.geometry) {
@@ -151,14 +153,18 @@ if (request.action === 'inspect') {
       throw new Error('animation_target_invalid')
     }
     const existing = getSlideAnimations(slide)
-    if (existing.some((item) => item.spid === spid && item.effect === animation.effect)) continue
-    setSlideAnimations(slide, [...existing, {
+    const index = existing.findIndex((item) => item.spid === spid && item.effect === animation.effect)
+    const updated: SlideAnimation = {
+      ...(index >= 0 ? existing[index] : {}),
       spid,
       effect: animation.effect,
       trigger: animation.trigger,
       durationMs,
       delayMs,
-    }])
+    }
+    if (index >= 0) existing[index] = updated
+    else existing.push(updated)
+    setSlideAnimations(slide, existing)
   }
   for (const selection of request.slideLayouts ?? []) {
     if (!Number.isInteger(selection.slideIndex) || selection.slideIndex < 0 || selection.slideIndex >= opened.deck.slides.length) {
@@ -189,10 +195,16 @@ if (request.action === 'inspect') {
   }
   if (!request.output) throw new Error('output_path_required')
   const bytes = await savePptx(opened)
-  const audit = await auditDeck(bytes)
   await writeFile(request.output, bytes)
+  let issues: { page: number; message: string }[]
+  try {
+    const audit = await auditDeck(bytes)
+    issues = audit.flatMap((page) => page.issues.map((message) => ({ page: page.slide + 1, message })))
+  } catch (error) {
+    issues = [{ page: 0, message: `PPTX layout audit failed: ${error instanceof Error ? error.message : String(error)}` }]
+  }
   process.stdout.write(JSON.stringify({
     slideCount: opened.deck.slides.length,
-    issues: audit.flatMap((page) => page.issues.map((message) => ({ page: page.slide + 1, message }))),
+    issues,
   }))
 }

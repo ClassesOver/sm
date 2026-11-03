@@ -208,3 +208,19 @@ node smoke/evidence-complex-graph-fixture.mjs
 快照固定行序号回放：构建并启动 fixture 服务后，执行 `node smoke/evidence-snapshot-row-number-fixture.mjs`（可用 `REPORT_EDITOR_URL` 指定地址）。覆盖 61 列受控列窗口、分页、筛选原序号与 1280/390px 横向滚动固定列；截图为 `output/report-editor-snapshot-row-number-{1280,390}.png`。此回放使用模拟快照接口，不替代真实后端完整性/权限验证。
 
 事实可读性回放：构建并启动 fixture 服务后，执行 `node smoke/evidence-facts-readability-fixture.mjs`。覆盖 1280/390px 的指标名称、本期/同比基期、登记数值、筛选、比较口径和具名输入事实；截图为 `output/report-editor-facts-{overview,comparison,metric}-{1280,390}.png`。接口使用 fixture。2026-10-06 另对用户指定 revision 2 的真实后端做只读验证：6 个事实均使用登记快照匹配的冻结字段说明，两个视口验证列表及比较值，无脚本错误；未保存或导出正式报告。
+
+## PPTX 真实后端检查
+
+在 frontend 目录运行 `node smoke/slides-editor-smoke.mjs`。脚本使用真实授权、HTTP API、GenOffice 桥接和持久化，不拦截 API。可以传入 `REPORT_EDITOR_URL`，或通过 `REPORT_SLIDES_CONTEXT_FILE` 指定含 `editorUrl` 的 JSON 文件；授权地址和回执只放本地受限文件，不提交到 Git。
+
+```bash
+REPORT_SLIDES_CONTEXT_FILE=/absolute/path/to/context.json REPORT_EDITOR_EVIDENCE_DIR=/absolute/path/to/evidence node smoke/slides-editor-smoke.mjs
+```
+
+默认检查 1440/768/390px 画布、CSP、脚本异常、CSRF 拒绝和跨修订权限，不生成候选或保存。仅对可废弃报告设置 `REPORT_EDITOR_ALLOW_MUTATION=1`：编辑文字、主题、转场与动画，保存新修订，下载核对 SHA-256/大小，再重新打开核对内容。应从最新修订打开；已有后继修订的旧地址不能重复用来创建同名文件。
+
+- `REPORT_EDITOR_TEST_AI=1` 调用真实文字模型，检查候选预览、采纳及撤销。
+- `REPORT_EDITOR_TEST_IMAGE=1` 调用真实配图模型，检查候选；同时允许写入时加入图片、保存并检查重开后的图片对象数量。生成失败检查原文件身份不变，记录原因和截图，脚本仍失败，不把失败保留误计为生成通过。
+- AI 检查会使用当前配置模型与额度；不开启开关时不调用模型。输出包含截图、`browser-result.json`，写入模式另存 PPTX 和 mode 0600 的授权回执。
+
+这属于编辑器验收，不等于真实数据源的 AgentOS 报告生成，也不等于 Microsoft PowerPoint 桌面验收。容器或新环境首次使用模型前，应按部署配置预热 tiktoken 编码缓存；本地观察到首次下载会阻塞请求，缓存完成后恢复正常。

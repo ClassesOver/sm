@@ -631,7 +631,7 @@ class RuntimePublicationMixin:
 
     async def _render_pptx(self, run_context: RunContext, result: dict[str, Any], outline: Any) -> dict[str, Any]:
         state = self._state(run_context)
-        revision = int(result.get("revision", 0)) + 1
+        revision = max(1, int(result.get("revision", 0)))
         title = outline.title
         period = self._envelope(run_context).period
         pptx_path = str(PurePosixPath(_report_pdf_path(
@@ -648,23 +648,32 @@ class RuntimePublicationMixin:
             manifest = checkpoint.evidence_manifest
             if manifest is None:
                 raise ValueError("frozen analysis evidence unavailable")
-            analysis_items = {
-                item.code: item
-                for item in (AnalysisItem.model_validate(raw) for raw in state[REPORT_ANALYSIS_PLAN_STATE_KEY])
-            }
-            chart_files = {item.chart_id: item for item in ReportArtifactManifest.model_validate(
-                state[REPORT_ARTIFACTS_STATE_KEY]["draft"]
-            ).charts}
+            from .slides import SlideOutline, build_slide_outline
+
+            if checkpoint.slide_outline_file is not None:
+                slide_outline = await self._read_identity_model(
+                    self._scope(run_context)["threadId"], checkpoint.slide_outline_file, SlideOutline,
+                )
+                if slide_outline.snapshot_hash != checkpoint.finding_graph_hash:
+                    raise ValueError("slide outline snapshot mismatch")
+                graph = await self._read_identity_model(
+                    self._scope(run_context)["threadId"], checkpoint.finding_graph_file, FindingGraph,
+                )
+                if slide_outline != build_slide_outline(graph, manifest, title=title):
+                    raise ValueError("slide outline evidence mismatch")
+            else:
+                graph = await self._read_identity_model(
+                    self._scope(run_context)["threadId"], checkpoint.finding_graph_file, FindingGraph,
+                )
+                slide_outline = build_slide_outline(graph, manifest, title=title)
+            chart_files = {item.chart_id: item.source_file for item in manifest.charts}
             pages: list[dict[str, object]] = []
             with TemporaryDirectory(prefix="report-pptx-assets-") as temporary:
-                for evidence in manifest.evidence:
-                    item = analysis_items.get(evidence.analysis_id)
-                    bullets = [part.strip(" •-\t") for part in re.split(r"\n+|(?<=[。！？])", evidence.summary) if part.strip()]
-                    bullets = bullets[:5] or [item.management_question if item else evidence.analysis_id]
+                for slide in slide_outline.slides:
                     chart_path = None
-                    for chart_id in evidence.chart_ids:
+                    for chart_id in slide.chart_ids:
                         chart = chart_files.get(chart_id)
-                        if chart is None or chart.media_type not in {"image/png", "image/jpeg"}:
+                        if chart is None or PurePosixPath(chart.path).suffix.lower() not in {".png", ".jpg", ".jpeg"}:
                             continue
                         try:
                             data = await self.workspace_service.read_limited_regular_file(
@@ -679,14 +688,14 @@ class RuntimePublicationMixin:
                                 "details": {"chartId": chart_id, "errorType": type(error).__name__},
                             })
                             continue
-                        asset = Path(temporary) / f"{chart_id}{'.jpg' if chart.media_type == 'image/jpeg' else '.png'}"
+                        asset = Path(temporary) / f"{chart_id}{PurePosixPath(chart.path).suffix.lower()}"
                         asset.write_bytes(data)
                         chart_path = str(asset)
                         break
                     pages.append({
-                        "title": (item.analysis_name or item.management_question) if item else evidence.analysis_id,
-                        "bullets": bullets,
-                        "evidenceIds": [evidence.analysis_id, *evidence.citation_ids],
+                        "title": slide.title,
+                        "bullets": list(slide.bullets),
+                        "evidenceIds": [*slide.finding_ids, *slide.evidence_ids],
                         **({"chartPath": chart_path} if chart_path else {}),
                     })
                 if not pages:
@@ -1146,9 +1155,12 @@ class RuntimePublicationMixin:
     async def publish_report(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
         feedback = self._feedback(step_input)
         if feedback:
-            # 反馈重跑继续走唯一的 Agno ReportingAnalysisAndDraftWorkflow 入口，
-            # 避免发布路径维护第二套手写章节循环。
-            await self.run_reporting_analysis(step_input, run_context)
+            # 反馈恢复沿用已冻结的交付分支，不让 PPT 进入文档成稿。
+            if self._state(run_context).get("report_request_context", {}).get("deliveryFormat") == "pptx":
+                await self.generate_slide_outline(step_input, run_context)
+                await self.assemble_slides(step_input, run_context)
+            else:
+                await self.run_reporting_analysis(step_input, run_context)
             await self._render_and_validate(run_context)
         result = self._workflow_result(self._state(run_context))
         state = self._state(run_context)
@@ -1254,7 +1266,11 @@ class RuntimePublicationMixin:
                 "reportId": str(run_context.run_id),
                 "reportTitle": _frozen_outline(state).title,
                 "deliveryFormat": state.get("report_request_context", {}).get("deliveryFormat", "document"),
-                "revision": int(result.get("revision", 0)) + 1,
+                "revision": (
+                    int(result.get("revision", 1))
+                    if state.get("report_request_context", {}).get("deliveryFormat") == "pptx"
+                    else int(result.get("revision", 0)) + 1
+                ),
                 "markdownPath": result["markdownPath"],
                 **(
                     {

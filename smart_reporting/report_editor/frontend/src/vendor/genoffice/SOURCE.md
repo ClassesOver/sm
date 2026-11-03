@@ -1,0 +1,1 @@
+GenOffice https://github.com/mainfunc/genoffice at c9c7a5da42cb6707e829f1968f320db69a7763c5. Static NodeBody, ChartBody and Konva adapter plus their local dependencies are unmodified upstream source under Apache-2.0.
