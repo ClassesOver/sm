@@ -7,8 +7,29 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "types": ["node", "vite/client", "vitest/globals"]
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node",
+      "vite/client",
+      "vitest/globals"
+    ],
+    "jsx": "react",
+    "esModuleInterop": true,
+    "paths": {
+      "@genoffice/pptx-render": [
+        "../../reporting/slides_engine/packages/pptx-render/src/index.ts"
+      ],
+      "@genoffice/pptx-engine/*": [
+        "../../reporting/slides_engine/packages/pptx-engine/src/*.ts"
+      ]
+    }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": [
+    "src",
+    "vite.config.ts"
+  ]
 }

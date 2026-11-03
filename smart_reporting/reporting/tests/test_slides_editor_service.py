@@ -164,7 +164,10 @@ async def test_slides_save_rejects_invalid_animation_parameters(animation):
 
 
 @pytest.mark.anyio
-async def test_slides_save_commits_revision_and_keeps_download_when_persistence_fails(monkeypatch):
+@pytest.mark.parametrize(
+    'fault', ['persistence', 'context', 'download_grant', 'editor_grant', 'preview'],
+)
+async def test_slides_save_commits_revision_and_keeps_download_when_persistence_fails(monkeypatch, fault):
     from smart_reporting.report_editor import slides
 
     monkeypatch.setattr(
@@ -201,15 +204,30 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         return state
 
     async def apply(_run, command, *, expected_version):
+        if fault == 'context':
+            raise OSError('context unavailable')
         applied.append((command, expected_version))
 
     class EditorGrants:
         async def issue(self, saved_context, *, capabilities):
+            if fault == 'download_grant' and capabilities.get('pptx_download'):
+                raise OSError('editor download grant unavailable')
+            if fault == 'editor_grant' and capabilities.get('pptx_editor'):
+                raise OSError('editor grant unavailable')
             return ("download-token" if "pptx_download" in capabilities else "editor-token", datetime.now(UTC))
 
     class FailingPersistence:
         async def persist_available(self, **_kwargs):
-            raise RuntimeError("persistence unavailable")
+            if fault == 'persistence':
+                raise RuntimeError("persistence unavailable")
+            return _kwargs['artifacts']
+
+    class DownloadGrants:
+        async def issue(self, **kwargs):
+            assert kwargs['pptx_path'] == 'reports/report-r2.pptx'
+            assert kwargs['pptx_size'] == len(b'verified-revision')
+            assert kwargs['pptx_sha256'] == hashlib.sha256(b'verified-revision').hexdigest()
+            return 'artifact-download-token', SimpleNamespace(expires_at=datetime.now(UTC))
 
     service = ReportSlidesEditorService(
         state_repository=SimpleNamespace(get=get_state, apply=apply),
@@ -220,18 +238,39 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         public_base_url="https://reports.test",
     )
     monkeypatch.setattr(slides.ReportSlidesEditorService, "_run_engine", staticmethod(lambda *_args, **_kwargs: {"bytes": b"verified-revision", "issues": []}))
-    monkeypatch.setattr(slides.ReportSlidesEditorService, "_render_pdf", staticmethod(lambda _bytes: b"%PDF-test"))
+    service.download_grants = DownloadGrants()
+
+    def render_pdf(_bytes):
+        if fault == 'preview':
+            raise OSError('preview unavailable')
+        return b'%PDF-test'
+
+    monkeypatch.setattr(slides.ReportSlidesEditorService, "_render_pdf", staticmethod(render_pdf))
 
     result = await service.save_revision(
         _session(context), {"expectedSha256": context.pptx_sha256, "edits": [], "order": [0]}
     )
 
     assert result["revision"] == 2
-    assert result["pptx"]["downloadUrl"].endswith("/reports/v1/slides/download/download-token")
-    assert result["editor"]["openUrl"].endswith("/reports/v1/slides/open/editor-token")
+    if fault in {'context', 'download_grant'}:
+        assert result['pptx']['downloadUrl'].endswith('/reports/v1/download/artifact-download-token/pptx')
+    else:
+        assert result["pptx"]["downloadUrl"].endswith("/reports/v1/slides/download/download-token")
+    if fault in {'context', 'editor_grant'}:
+        assert 'editor' not in result
+    else:
+        assert result["editor"]["openUrl"].endswith("/reports/v1/slides/open/editor-token")
     assert result["validation"]["ok"] is False
-    assert result["validation"]["issues"][0]["code"] == "report_pptx_persistence_failed"
-    assert len(applied) == 1
-    assert applied[0][1] == 8
-    saved_context = applied[0][0].payload["context"]
-    assert saved_context["pptxPath"] == "reports/report-r2.pptx"
+    issue_code = {
+        'persistence': 'report_pptx_persistence_failed',
+        'context': 'report_slides_context_persistence_failed',
+        'download_grant': 'report_pptx_download_grant_failed',
+        'editor_grant': 'report_slides_editor_grant_failed',
+        'preview': 'pptx_preview_render_failed',
+    }[fault]
+    assert any(issue['code'] == issue_code for issue in result['validation']['issues'])
+    if fault != 'context':
+        assert len(applied) == 1
+        assert applied[0][1] == 8
+        saved_context = applied[0][0].payload["context"]
+        assert saved_context["pptxPath"] == "reports/report-r2.pptx"

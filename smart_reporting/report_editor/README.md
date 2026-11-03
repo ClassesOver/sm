@@ -1,6 +1,15 @@
 # Report Editor
 
-`report_editor` 是报告 Page 的 Markdown 编辑层。Markdown 是唯一权威内容；编辑器不会生成 HTML 报告产物，PDF/Word 由现有 reporting renderer 从保存后的 revision 生成。
+`report_editor` 为 document 和 PPTX 复用同一主界面，按产物类型加载编辑区域和工具栏。document 以 Markdown 为唯一权威内容，PDF/Word 由现有 reporting renderer 从保存后的 revision 生成；PPTX 基于已核验身份的原始文件编辑并保存为新修订。
+
+PPTX 在同一 shell 内按需加载 React/Konva 画布，支持对象选择、拖动、角点缩放、文字临时预览、页面排序、商务主题、母版/版式读取与版式切换，以及动画效果、触发方式、持续时间和延迟调整。画布复用固定版本 GenOffice 的静态渲染模块及 Apache-2.0 声明，PDF 作为画布加载失败时的兼容预览。
+
+Ask AI 候选经预览、采纳后进入待保存修改，可撤销；已登记数据图表复用 Matplotlib 改图服务，按图片内容身份与冻结 manifest/trace 唯一匹配，生成的 PNG/JPEG 经采纳后替换原图片对象。AI 配图独立生成并确认加入，不作为数据图表来源。保存请求期间锁定编辑；保存成功后通过“打开新修订”继续编辑，避免旧文件身份覆盖。未修改对象在文件往返中保留，验收和追溯告警不阻止已核验身份的产物签发。
+
+报告工作流在复用需求澄清、取数和冻结分析证据后，按持久化的 `deliveryFormat` 路由到文档步骤或 PPT 步骤。PPT 从发现图谱规划页面，复用静态图表任务及 manifest/trace 归档，不经过文档章节成稿；默认仍是 document，恢复和重试沿用首次冻结的格式。
+历史暂停的文档任务在末端恢复时迁移已存格式，缺少格式字段时沿用 document。幻灯片图表优先采用冻结分析的明确归属；同数据集、同指标的多个分析无法消歧时保留文字证据，不猜测配图。发布清单重新编号后，图表改图仍通过图片身份关联原始 trace 编号。
+
+生成与编辑桥接均先写出 PPTX，再执行版式审查；审查异常作为 `validation.issues` 返回，保留可核验文件的下载。图表页采用左右双栏，过量正文保留并返回版式告警。AI 配图沿用 DashScope 凭据，模型通过 `AGENT_REPORT_SLIDES_IMAGE_MODEL` 独立配置（默认 `qwen-image-plus`）。DashScope 与 Token Plan 使用同源原生多模态生成接口，自定义其他服务仍使用 OpenAI images 兼容接口；提供方拒绝或超时时返回可公开的状态与原因，保留原页面，不自动换模型。当前账户可用模型须以实际配置和模型清单为准。
 
 ## 能力
 
@@ -27,6 +36,7 @@ cd smart_reporting/report_editor/frontend
 npm ci
 npm test -- --run
 npm run build
+npm run build:slides
 npm run check:budget
 ```
 
@@ -40,4 +50,7 @@ npm run check:budget
 
 - 不支持任意 JavaScript 或编辑器内图片上传。
 - 图片仅允许读取当前 job 登记且 SHA-256 未变化的 PNG/JPEG，以及同一修订版改图登记（`draft/.chart-edits.json`）中身份一致的改图图片。
+- PPTX 未登记、身份匹配不唯一或追溯已失效的图片保持只读；原生复杂对象及未适配母版对象只显示并保留，不承诺任意对象可编辑。图表候选需先在候选面板核对，采纳后保存才替换画布中的图片。
+- 商务主题和版式切换保存后在新修订中更新；浏览器字体与桌面 PowerPoint 字体环境可能不同。
+- PPTX 浏览器回放与引擎回读不等于 Microsoft PowerPoint 桌面验收；真实模型报告端到端及桌面兼容性仍需按部署环境执行。
 - 真实浏览器多尺寸截图、辅助技术验收和 PDF/Word 视觉验收需要在可用浏览器/渲染环境中执行。

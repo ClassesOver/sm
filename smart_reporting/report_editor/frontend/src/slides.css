@@ -105,3 +105,43 @@ button, a { -webkit-tap-highlight-color: transparent; }
 @media (max-width: 700px) { .slides-ai { grid-template-columns: 1fr; gap: 8px; padding: 9px 10px; } .ai-form { grid-template-columns: auto minmax(0, 1fr) auto; } .ai-form label { grid-column: 1 / -1; } .ai-form .ai-cancel { grid-column: 3; } .ai-result { min-height: 16px; } .ai-preview { grid-column: auto; } .slides-image-tools { grid-template-columns: 1fr; gap: 6px; padding: 8px 10px; } .image-form { grid-template-columns: auto minmax(0, 1fr) auto; } .image-form > label:first-child { grid-column: 1 / -1; } .image-target-label { display: none; } .image-form select { grid-column: 1; } .image-form button { grid-column: 3; } }
 @media (max-width: 900px) { .slides-workspace { grid-template-columns: 190px minmax(0, 1fr); grid-template-rows: minmax(400px, 1fr) auto; } .slides-inspector { grid-column: 1 / -1; border-top: 1px solid #d7dfdd; border-left: 0; } .slides-stage { min-height: 460px; } .slides-inspector { display: grid; grid-template-columns: 180px minmax(0, 1fr) 130px; align-items: start; gap: 8px; padding: 0 14px 14px; } .inspector-heading { grid-column: 1 / -1; margin: 0 -14px; } .field-label { margin: 12px 0 6px; } .slides-inspector select, .slides-inspector textarea { width: 100%; margin: 0; } .geometry-heading { margin: 12px 0 6px; } .geometry-grid { margin: 0; } .object-note { display: none; } }
 @media (max-width: 600px) { #slides-app { grid-template-rows: 52px auto minmax(0, 1fr) 28px; } .slides-topbar { gap: 10px; padding: 0 10px; } .slides-brand { font-size: 12px; } .slides-brand svg { display: none; } .slides-topbar-meta { gap: 7px; font-size: 10px; } .save-state { padding-left: 7px; } .download-link, .save-button { min-height: 32px; padding: 0 8px; font-size: 11px; } .download-link { font-size: 0; gap: 0; } .download-link svg { width: 17px; height: 17px; } .save-button span:not(.save-icon) { display: none; } .slides-workspace { grid-template-columns: 1fr; grid-template-rows: 152px minmax(380px, 55vh) auto; } .slides-sidebar { border-right: 0; border-bottom: 1px solid #d7dfdd; } .sidebar-heading { height: 36px; } .slide-list { display: flex; gap: 6px; overflow-x: auto; padding: 6px; } .slide-row { flex: 0 0 214px; } .slides-stage { min-height: 380px; padding: 8px; } .preview-frame { min-height: 360px; } .slides-inspector { grid-column: auto; display: block; padding: 0 0 14px; border-top: 1px solid #d7dfdd; } .inspector-heading { margin: 0; } .field-label { margin: 12px 14px 6px; } .slides-inspector select, .slides-inspector textarea { width: calc(100% - 28px); margin: 0 14px; } .geometry-heading { margin: 16px 14px 8px; } .geometry-grid { margin: 0 14px; } }
+.slides-stage { grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
+.slides-canvas { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: center; touch-action: none; }
+.slides-canvas[hidden], .preview-frame[hidden] { display: none; }
+.slides-canvas .konvajs-content { background: white; box-shadow: 0 3px 12px #22312e18; }
+.canvas-status { width: 100%; margin: 10px 0 0; color: #526b64; font-size: 11px; line-height: 1.5; text-align: center; }
+@media (max-width: 600px) {
+  .slides-workspace { height: auto !important; }
+  .slides-stage { min-height: 240px; }
+  .slides-topbar, .slides-ai, .slides-image-tools, .slides-workspace { min-width: 0; }
+  .slides-canvas { max-width: 100%; }
+  .slides-inspector .slide-lineage select { width: 100%; margin: 0; }
+}
+
+/* 共享 shell 有同名正文图片浮层；PPTX 配图预览保持在工具区内。 */
+.editor-format-pptx .slides-image-tools .image-preview { position: static; inset: auto; z-index: auto; width: 64px; height: 44px; max-width: 64px; max-height: 44px; object-fit: contain; }
+.slides-image-tools .image-candidate[hidden], .slides-ai .ai-cancel[hidden], .slides-ai .ai-preview[hidden] { display: none; }
+.slides-ai .ai-form .undo-button { width: 32px; height: 32px; background: #fff; color: #55635f; border-color: #d2dbd9; }
+@media (min-width: 901px) {
+  .editor-format-pptx { height: 100vh; min-height: 0; display: flex; flex-direction: column; }
+  .editor-format-pptx .report-workspace { flex: 1; min-height: 0; padding: 0; }
+  .editor-format-pptx .editor-surface { height: 100%; min-height: 0; }
+  .editor-format-pptx #report-editor { display: flex; flex-direction: column; }
+  .editor-format-pptx .slides-workspace { flex: 1; min-height: 0; height: auto; overflow: hidden; }
+  .editor-format-pptx .slides-stage { min-height: 0; }
+  .editor-format-pptx .slides-inspector { overflow-y: auto; }
+}
+
+.editor-format-pptx .app-bar { border-bottom: 1px solid #d7dfdd; }
+@media (max-width: 600px) {
+  .editor-format-pptx .app-bar { position: static; flex-wrap: wrap; padding: 8px 10px; gap: 8px; }
+  .editor-format-pptx .report-identity { flex: 1; }
+  .editor-format-pptx .report-actions { position: static; inset: auto; width: 100%; padding: 6px 0 0; justify-content: flex-start; box-shadow: none; background: transparent; }
+  .editor-format-pptx .report-actions .toolbar-shortcuts { display: none; }
+  .editor-format-pptx .slides-stage { min-height: 280px; }
+  .editor-format-pptx .slides-workspace { grid-template-rows: 136px minmax(280px, auto) auto; }
+  .slides-image-tools .image-form { grid-template-columns: minmax(0, 1fr) auto; }
+  .slides-image-tools .image-form textarea { grid-column: 1 / -1; }
+  .slides-image-tools .image-form select { grid-column: 1; }
+  .slides-image-tools .image-form button { grid-column: 2; }
+}

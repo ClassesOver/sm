@@ -193,7 +193,8 @@ class RuntimePlanningMixin:
             state,
             request.prompt,
             feedback,
-            infer_delivery_format(request.prompt),
+            state.get(REPORT_REQUEST_CONTEXT_STATE_KEY, {}).get("deliveryFormat")
+            or infer_delivery_format(request.prompt),
         )
         delivery_format = state[REPORT_REQUEST_CONTEXT_STATE_KEY]["deliveryFormat"]
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
@@ -790,7 +791,10 @@ class RuntimePlanningMixin:
         base_url: str,
     ) -> dict[str, Any]:
         """PPTX download and edit grants are independent, format-scoped deliveries."""
-        issues = list(content.get("publicationGate", {}).get("issues", []))
+        gate = content.get("publicationGate")
+        if not isinstance(gate, dict):
+            gate = {"formalReleaseAllowed": False, "issues": []}
+        issues = list(gate.get("issues", []))
         path = content.get("pptxPath")
         size = content.get("pptxSize")
         digest = content.get("pptxSha256")
@@ -865,6 +869,7 @@ class RuntimePlanningMixin:
                     job=content["editorJob"],
                     scope=scope.as_state(),
                     deliveryFormat="pptx",
+                    artifactManifest=content.get("artifactManifest"),
                     pptxPath=content["pptxPath"],
                     pptxSize=content["pptxSize"],
                     pptxSha256=content["pptxSha256"],
@@ -974,12 +979,11 @@ class RuntimePlanningMixin:
                 source_warnings=content.get("sourceWarnings"),
                 task_receipts=content.get("codingReceipts"),
             )
-            if editor_raw is not None and editor_expires_at is not None:
-                result["editor"] = {
-                    "openUrl": f"{base_url.rstrip('/')}/reports/v1/slides/open/{editor_raw}",
-                    "expiresAt": editor_expires_at.isoformat(),
-                }
-        gate = content.get("publicationGate", {"formalReleaseAllowed": False, "issues": []})
+        if editor_raw is not None and editor_expires_at is not None:
+            result["editor"] = {
+                "openUrl": f"{base_url.rstrip('/')}/reports/v1/slides/open/{editor_raw}",
+                "expiresAt": editor_expires_at.isoformat(),
+            }
         if issues:
             gate = {
                 **gate,

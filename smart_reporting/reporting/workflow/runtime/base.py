@@ -1284,7 +1284,7 @@ class _ReportWorkflowRuntimeBase:
         return create_reporting_workflow(
             db=self.db,
             lifecycle=self,
-            normalize_report_request=self.normalize_report_request,
+            normalize_report_request=self.normalize_delivery_request,
             prepare_reference_materials=prepare_reference_step,
             confirm_source=self.confirm_source,
             prepare_data_profile=self.prepare_data_profile,
@@ -1302,6 +1302,11 @@ class _ReportWorkflowRuntimeBase:
             generate_narrative_outline=self.generate_narrative_outline,
             assemble_report=self.assemble_report,
             validate_report=self.validate_report,
+            generate_slide_outline=self.generate_slide_outline,
+            assemble_slides=self.assemble_slides,
+            validate_slides=self.validate_slides,
+            select_delivery_steps=self.select_delivery_steps,
+            restore_delivery_format=self.restore_delivery_format,
             finalize_publication=finalize_publication,
         )
 
