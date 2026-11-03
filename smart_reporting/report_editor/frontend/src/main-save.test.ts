@@ -24,6 +24,7 @@ function setup() {
     window: { clearTimeout: vi.fn(), setTimeout }, saveTimer: 0,
     editReviewMode: () => 'idle', evidenceView: { state: { doc: {} } },
     pendingConflict: null, savePromise: null,
+    designPanel: null as { refresh(): Promise<void> } | null,
     currentMarkdown: 'B', lastSavedMarkdown: 'A', sha256: 'hash-A',
     status: vi.fn(), saveState: null, draftController: null,
     conflictPanel: { show: vi.fn() }, showConflictStatus: vi.fn(), recoverFromConflict: vi.fn(),
@@ -43,6 +44,15 @@ function setup() {
 }
 
 describe('saveNow before export', () => {
+  it('still offers the remote Markdown conflict when refreshing design is temporarily unavailable', async () => {
+    const { context, requests, save } = setup()
+    context.designPanel = { refresh: vi.fn(async () => { throw new TypeError('offline') }) }
+    const conflict = new ReportEditorApiError(409, 'report_editor_conflict')
+    const failed = expect(save()).rejects.toBe(conflict)
+    requests[0]!.reject(conflict)
+    await failed
+    expect(context.conflictPanel.show).toHaveBeenCalledWith('A', 'B', 'remote')
+  })
   it('offers the latest edits for merging after a save conflict and remote reload', async () => {
     const { context, requests, save } = setup()
     let resolveRemote!: (value: { markdown: string; sha256: string }) => void

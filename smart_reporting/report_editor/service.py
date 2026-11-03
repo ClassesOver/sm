@@ -43,6 +43,7 @@ from ..reporting.delivery.publishing import (
     ReportDownloadScope,
     publication_result,
 )
+from ..reporting.delivery.report_design import resolve_design
 from ..reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from ..reporting.models import ReportingError
 from ..reporting.trace.chart_subjects import freeze_chart_presentations
@@ -53,11 +54,6 @@ from ..reporting.trace.contracts_v1 import (
     TableTraceV1,
     TraceFileRefV1,
     derive_resource_id,
-)
-from ..reporting.workflow.management_overview import (
-    ManagementOverview,
-    management_overview_projection,
-    unavailable_management_overview_projection,
 )
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
@@ -73,11 +69,12 @@ from .chart_edits import (
     load_chart_edit_records,
     load_table_edit_records,
 )
+from .design import ReportEditorDesignService
+from .design_preview import ReportDesignPreviewService
+from .render_preparation import prepare_editor_render
 from .trace_retention import source_lifecycle, source_lifecycle_lock
 from .trace_revisions import (
-    rebuild_edited_manifest,
     snapshot_revision_lineage,
-    verify_revision_lineage_files,
 )
 from .trace_sources import ReportEditorTraceService, check_mismatched
 
@@ -664,6 +661,7 @@ class ReportEditorService:
         download_grants: Any | None = None,
         editor_grants: ReportEditorGrantService | None = None,
         public_base_url: str | None = None,
+        design_templates: Any | None = None,
         export_timeout_seconds: float = 1200.0,
         trace_cursor_secret: bytes | None = None,
         lineage_panel_enabled: bool = True,
@@ -672,6 +670,9 @@ class ReportEditorService:
         lineage_export_sources_enabled: bool = True,
     ) -> None:
         self.state_repository = state_repository
+        self.design = ReportEditorDesignService(self)
+        self.design_templates = design_templates
+        self.design_preview = ReportDesignPreviewService(self)
         self.workspace_registry = workspace_registry
         self.workspace = workspace
         self.report_tools = report_tools
@@ -849,6 +850,14 @@ class ReportEditorService:
                             protected.add(source_key)
                     except (KeyError, ValueError, TypeError) as error:
                         raise ReportingError("snapshot_integrity_failed", "草稿来源登记无效，停止清理。") from error
+                try:
+                    for identity in await self.design.references(candidate):
+                        source_key = str(identity["revision"])
+                        if contexts[source_key].digest() != identity["contextSha256"]:
+                            raise ValueError("设计恢复来源身份不一致")
+                        protected.add(source_key)
+                except (KeyError, ValueError, TypeError) as error:
+                    raise ReportingError("snapshot_integrity_failed", "设计恢复来源登记无效，停止清理。") from error
                 # 清单已在同一把锁内读取并核验，这里只读取索引，不重复读清单。
                 index = await self.trace.index_for_manifest(candidate, manifests[key])
                 if index is None:
@@ -976,6 +985,9 @@ class ReportEditorService:
     async def _draft_source(
         self, context: ReportEditorContext, sha256: str
     ) -> ReportEditorContext:
+        designed_source = await self.design.source(context, sha256)
+        if designed_source is not None:
+            return designed_source
         path = _draft_origin_path(context.markdown_path)
         thread_id = context.scope["threadId"]
         if not await self.workspace.apath_exists(thread_id, path):
@@ -1014,9 +1026,8 @@ class ReportEditorService:
     ) -> ReportEditorContext:
         context = await self._restore(expected)
         async with self._draft_lock(context):
-            if await self.workspace.apath_exists(
-                context.scope["threadId"], _draft_origin_path(context.markdown_path)
-            ):
+            if (await self.workspace.apath_exists(context.scope["threadId"], _draft_origin_path(context.markdown_path))
+                or await self.workspace.apath_exists(context.scope["threadId"], self.design.path(context))):
                 _, _, sha256 = await self._read_revision_markdown(context)
                 context = await self._draft_source(context, sha256)
             if not allow_retired:
@@ -1044,6 +1055,7 @@ class ReportEditorService:
     async def restore_history(
         self, expected: ReportEditorContext, revision: int, *, expected_sha256: str,
         markdown: str | None = None,
+        expected_design_sha256: str | None = None,
     ) -> ReportEditorDocument:
         context = await self._restore(expected)
         source = next(
@@ -1059,9 +1071,21 @@ class ReportEditorService:
         # Verify the registered index before publishing provenance, when available.
         await self.trace.load_index(source)
         async with self._draft_lock(context):
-            return await self._save_draft(
-                context, markdown=markdown, expected_sha256=expected_sha256, source=source
-            )
+            _, _, current_sha = await self._read_revision_markdown(context)
+            if not secrets.compare_digest(current_sha, expected_sha256):
+                raise ReportingError("report_editor_conflict", "报告草稿保存冲突，请重新载入。")
+            self.design.check(await self.design._read(context, current_sha), expected_design_sha256)
+            target_sha = hashlib.sha256(markdown.encode()).hexdigest()
+            await self.design.prepare_restore(context, current_sha, target_sha, resolve_design(source.job), source)
+            if target_sha == current_sha:
+                path, _, _ = await self._read_revision_markdown(context)
+                document = ReportEditorDocument(path, markdown, target_sha, source.revision)
+            else:
+                document = await self._save_draft(
+                    context, markdown=markdown, expected_sha256=expected_sha256, source=source
+                )
+            await self.design.settle(context, document.sha256)
+            return document
 
     async def list_history(
         self,
@@ -1134,6 +1158,7 @@ class ReportEditorService:
                     expired = True
                 return {
                     "revision": candidate.revision,
+                    "design": resolve_design(candidate.job).model_dump(mode="json", by_alias=True),
                     "markdown": markdown,
                     "sha256": sha256,
                     "sources": _history_sources_for_session(
@@ -1610,6 +1635,8 @@ class ReportEditorService:
     ) -> ReportEditorDocument:
         context = await self._restore(expected)
         async with self._draft_lock(context):
+            _, _, current_sha = await self._read_revision_markdown(context)
+            await self.design.settle(context, current_sha)
             return await self._save_draft(
                 context, markdown=markdown, expected_sha256=expected_sha256
             )
@@ -1685,6 +1712,7 @@ class ReportEditorService:
         expected: ReportEditorContext,
         *,
         expected_sha256: str,
+        expected_design_sha256: str | None = None,
         session_capabilities: Mapping[str, Any] | None = None,
         settings: dict[str, bool] | None = None,
         note: str = "",
@@ -1706,6 +1734,7 @@ class ReportEditorService:
                 self._export_revision(
                     expected,
                     expected_sha256=expected_sha256,
+                    expected_design_sha256=expected_design_sha256,
                     session_capabilities=session_capabilities,
                     settings=settings,
                     note=note,
@@ -1751,6 +1780,7 @@ class ReportEditorService:
         expected: ReportEditorContext,
         *,
         expected_sha256: str,
+        expected_design_sha256: str | None = None,
         session_capabilities: Mapping[str, Any] | None = None,
         settings: dict[str, bool] | None = None,
         note: str = "",
@@ -1779,6 +1809,7 @@ class ReportEditorService:
             self.export_revision(
                 expected,
                 expected_sha256=expected_sha256,
+                expected_design_sha256=expected_design_sha256,
                 session_capabilities=copy.deepcopy(session_capabilities),
                 settings=settings,
                 note=note,
@@ -1853,7 +1884,7 @@ class ReportEditorService:
         running = [job.task for job in self._export_jobs.values() if not job.task.done()]
         for task in running:
             task.cancel()
-        await asyncio.gather(*running, self.trace.aclose(), return_exceptions=True)
+        await asyncio.gather(*running, self.trace.aclose(), self.design_preview.aclose(), return_exceptions=True)
 
     @staticmethod
     def _log_export_failure(
@@ -1885,6 +1916,7 @@ class ReportEditorService:
         expected: ReportEditorContext,
         *,
         expected_sha256: str,
+        expected_design_sha256: str | None = None,
         session_capabilities: Mapping[str, Any] | None = None,
         settings: dict[str, bool] | None = None,
         note: str = "",
@@ -1894,6 +1926,8 @@ class ReportEditorService:
             path, markdown, sha256 = await self._read_revision_markdown(context)
             source_context = await self._draft_source(context, sha256)
             document = ReportEditorDocument(path, markdown, sha256, source_context.revision)
+            report_design = await self.design._read(context, sha256)
+            self.design.check(report_design, expected_design_sha256)
         await self._ensure_sources_retained(source_context)
         if not secrets.compare_digest(document.sha256, expected_sha256):
             raise ReportingError("report_editor_conflict", "报告草稿已变化，请重新载入。")
@@ -1930,15 +1964,17 @@ class ReportEditorService:
             session_state=session_state,
         )
         export_settings = {
-            key: bool(settings[key])
+            **report_design.options.model_dump(by_alias=True),
+            **{key: bool(settings[key])
             for key in ("cover", "toc", "headerFooter", "pageNumbers", "sources")
-            if settings and key in settings
+            if settings and key in settings},
         }
         if not self._lineage_features["exportSources"]:
             export_settings["sources"] = False
         delivery_request = {
             "version": 1,
             "documentSha256": document.sha256,
+            "designSha256": report_design.digest(),
             "settings": export_settings,
             "note": note,
         }
@@ -1997,6 +2033,7 @@ class ReportEditorService:
                 )
         # 新身份越过全部已登记版本；重定基后应用本次设置，并清除历史设置。
         next_revision = max(context.revision, latest_revision) + 1
+        session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_reportDesign"] = report_design.compact()
         if export_settings:
             session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = export_settings
         else:
@@ -2021,164 +2058,13 @@ class ReportEditorService:
         snapshot_path = str(PurePosixPath(source_context.markdown_path).with_name(f".export-{uuid4().hex}.md"))
         await self.workspace.awrite_text(scope.workspace_key, snapshot_path, document.markdown)
         try:
-            artifact_manifest = None
-            trace_index = None
-            render_manifest = None
-            rebuilt = None
-            # AGENTS：追溯数据不可用只拒绝使用该数据，不能阻止导出已核验身份的 PDF/Word；
-            # 原因写入 validation.issues 并照常签发。
-            lineage_issues: list[dict[str, str]] = []
-            target_job = session_state[REPORT_JOBS_STATE_KEY][context.job_id]
-            original_presentations = copy.deepcopy(target_job.get("_citationPresentations"))
-            # 报告没有实际评估过的经营总览（旧报告或未启用回答审核）时沿用各章核心结论；
-            # 评估过时才用总览投影，缺证据的问题显示缺项说明。
-            overview_projection: dict[str, Any] | None = None
-            try:
-                artifact_manifest, trace_index = await self.trace.load_manifest_and_index(
-                    source_context
-                )
-                if artifact_manifest is not None:
-                    await verify_revision_lineage_files(
-                        self.workspace,
-                        scope.workspace_key,
-                        manifest=artifact_manifest,
-                        index=trace_index,
-                    )
-                    # AGENTS：改图登记读取或身份校验失败只降级对应追溯数据，不阻断
-                    # 渲染与签发；原因写入 issues。正文引用了改图但登记不可用时，
-                    # rebuild 会按未登记图表拒绝，整体追溯随之降级（同样非阻断）。
-                    try:
-                        edited_charts, edited_index = await self._chart_edit_lineage(
-                            source_context,
-                            markdown=document.markdown,
-                            markdown_path=snapshot_path,
-                            manifest=artifact_manifest,
-                            index=trace_index,
-                        )
-                    except Exception as error:  # noqa: BLE001 - 改图追溯降级，导出继续
-                        edited_charts, edited_index = {}, None
-                        reason = (
-                            error.message if isinstance(error, ReportingError) else type(error).__name__
-                        )
-                        lineage_issues.append({
-                            "code": "report_editor_chart_edit_lineage_unavailable",
-                            "message": f"AI 改图追溯不可用（{reason}），新版本按未改图登记追溯。"[:500],
-                        })
-                        logger.opt(exception=error).warning(
-                            "report_editor_chart_edit_lineage_dropped report_id={} base_revision={}",
-                            context.report_id,
-                            context.revision,
-                        )
-                    try:
-                        edited_tables, table_index = await self._table_edit_lineage(
-                            source_context,
-                            markdown=document.markdown,
-                            manifest=artifact_manifest,
-                            index=edited_index or trace_index,
-                        )
-                    except Exception as error:  # noqa: BLE001 - 改表追溯降级，导出继续
-                        edited_tables, table_index = {}, None
-                        reason = error.message if isinstance(error, ReportingError) else type(error).__name__
-                        lineage_issues.append({
-                            "code": "report_editor_table_edit_lineage_unavailable",
-                            "message": f"AI 改表追溯不可用（{reason}），新版本按原表追溯。"[:500],
-                        })
-                        logger.opt(exception=error).warning(
-                            "report_editor_table_edit_lineage_dropped report_id={} base_revision={}",
-                            context.report_id, context.revision,
-                        )
-                    if edited_tables:
-                        table_index = table_index or trace_index
-
-                    rebuilt = await rebuild_edited_manifest(
-                        self.workspace,
-                        scope.workspace_key,
-                        manifest=artifact_manifest,
-                        index=edited_index or table_index or trace_index,
-                        markdown_path=snapshot_path,
-                        markdown=document.markdown,
-                        target_revision=next_revision,
-                        edited_charts=edited_charts,
-                    )
-                    render_manifest = rebuilt.model_dump(mode="json", by_alias=True)
-                    if edited_index is not None:
-                        # 增强索引携带改图文件与图表追溯；validate、来源附录、
-                        # path_map 与 snapshot 全部使用同一份索引。
-                        trace_index = edited_index
-                    if table_index is not None:
-                        trace_index = table_index
-                if trace_index is not None:
-                    validation = await self.trace.validate(
-                        source_context,
-                        document.markdown,
-                        document.sha256,
-                        analysis_context_file=await self._registered_analysis_context_file(
-                            source_context
-                        ),
-                    )
-                    if isinstance(target_job.get("_citationPresentations"), list):
-                        target_job["_citationPresentations"] = _export_citation_presentations(
-                            target_job["_citationPresentations"],
-                            validation,
-                            trace_index,
-                            public_base_url=public_base_url,
-                            report_id=context.report_id,
-                            revision=next_revision,
-                            citations=artifact_manifest.citations if artifact_manifest is not None else (),
-                        )
-                    raw_overview = validation.get("quality", {}).get("managementOverview")
-                    # 未启用回答审核时质量记录里的总览恒为 unavailable（无审核记录）；只有实际
-                    # 评估过的总览才替换各章核心结论。
-                    if isinstance(raw_overview, dict) and raw_overview.get("status") == "evaluated":
-                        # 总览只是展示载荷：单独降级，不能连带丢弃已核验的追溯与引用展示。
-                        try:
-                            overview_projection = management_overview_projection(
-                                ManagementOverview.model_validate(raw_overview),
-                                document.sha256, target_job.get("_citationPresentations"),
-                            )
-                        except Exception as error:  # noqa: BLE001 - 总览降级，导出继续
-                            overview_projection = unavailable_management_overview_projection(document.sha256)
-                            lineage_issues.append({
-                                "code": "report_editor_management_overview_unavailable",
-                                "message": "经营总览未能核验，已显示缺项说明；数据来源追溯照常保留。",
-                            })
-                            logger.opt(exception=error).warning(
-                                "report_editor_management_overview_unavailable report_id={} revision={}",
-                                context.report_id, next_revision,
-                            )
-                    # B8：数据来源附录与引用展示同一次快照联合渲染，编号由渲染器
-                    # 按正文首次出现顺序分配；无追溯索引的旧报告保持无附录导出。
-                    target_job.pop("_traceSourcePresentations", None)
-                    if export_settings.get("sources") is True:
-                        try:
-                            target_job["_traceSourcePresentations"] = _build_export_trace_sources(
-                                trace_index, validation, public_base_url=public_base_url,
-                                report_id=context.report_id, revision=next_revision,
-                            )
-                        except Exception as error:
-                            # 附录是展示载荷；失败不能丢弃已核验的追溯索引。
-                            lineage_issues.append({
-                                "code": "report_editor_source_appendix_unavailable",
-                                "message": "来源附录未能生成，在线数据来源仍保留。"
-                                           + (error.message if isinstance(error, ReportingError) else "附录构建异常。"),
-                            })
-                            logger.opt(exception=error).warning(
-                                "report_editor_source_appendix_unavailable report_id={} revision={}",
-                                context.report_id, next_revision,
-                            )
-            except Exception as error:  # noqa: BLE001 - 追溯降级，导出继续
-                lineage_issues.append(_lineage_unavailable_issue(error, rendered=False))
-                artifact_manifest = trace_index = render_manifest = rebuilt = None
-                if isinstance(original_presentations, list):
-                    target_job["_citationPresentations"] = original_presentations
-                target_job.pop("_traceSourcePresentations", None)
-                if overview_projection is not None:
-                    overview_projection = unavailable_management_overview_projection(document.sha256)
-                logger.opt(exception=error).warning(
-                    "report_editor_export_lineage_dropped report_id={} base_revision={} stage=prepare",
-                    context.report_id,
-                    context.revision,
-                )
+            (artifact_manifest, trace_index, render_manifest, rebuilt,
+             lineage_issues, overview_projection) = await prepare_editor_render(
+                self, context=context, source_context=source_context, document=document,
+                snapshot_path=snapshot_path, scope=scope, session_state=session_state,
+                next_revision=next_revision, export_settings=export_settings,
+                public_base_url=public_base_url,
+            )
             try:
                 rendered = await report_tools._render_report_pair(
                     context.job_id,

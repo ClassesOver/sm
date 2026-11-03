@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import os
 import re
 import shutil
@@ -20,8 +19,17 @@ from xml.etree import ElementTree
 
 from loguru import logger
 
+from .design import (
+    add_word_cover,
+    add_word_watermark,
+    apply_word_style,
+    presentation_context,
+    visible_cover_text,
+    watermark_text,
+)
 from .markdown import _WORD_MARKERS, REPORT_VISUAL_THEME, format_heading_label
 from .pdf import MAX_PDF_PAGES, _formatted_page_text, _page_number_context
+from .report_design import ReportDesign
 from .validation import MAX_DOCX_BYTES, ReportFailure
 
 DOCX_RENDER_TIMEOUT_SECONDS = 540
@@ -117,6 +125,7 @@ def _render_docx(
     layout: dict[str, str],
     include_cover: bool = True,
     include_toc: bool = True,
+    design: ReportDesign | None = None,
 ) -> dict[str, Any]:
     pandoc = shutil.which("pandoc")
     conversion_root: Path | None = None
@@ -183,12 +192,17 @@ def _render_docx(
         )
         stderr = (process.stderr or b"").decode(errors="replace").strip()
         raise ReportFailure(f"Word 渲染失败：{stderr[-500:]}")
+    from lxml import html as lxml_html
+
+    caption_texts = {"".join(node.itertext()) for node in lxml_html.fromstring(html_document).xpath('//*[@class="report-figure-caption"]')}
     _postprocess_docx(
         output,
         context=context,
         layout=layout,
         include_cover=include_cover,
         include_toc=include_toc,
+        design=design,
+        caption_texts=caption_texts,
     )
     if include_toc:
         _cache_toc_page_numbers(output, context=context, include_cover=include_cover)
@@ -342,17 +356,22 @@ def _postprocess_docx(
     layout: dict[str, str],
     include_cover: bool = True,
     include_toc: bool = True,
+    design: ReportDesign | None = None,
+    caption_texts: set[str] | None = None,
 ) -> None:
     try:
         from docx import Document
         from docx.enum.style import WD_STYLE_TYPE
         from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
-        from docx.oxml import OxmlElement, parse_xml
+        from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
         from docx.shared import Mm, Pt, RGBColor
     except ImportError as error:
         raise ReportFailure("Word 后处理依赖 python-docx 不可用") from error
 
+    design = design or ReportDesign()
+    raw_context = context
+    context = presentation_context(design, context)
     document = Document(str(path))
     theme_colors = {
         name: RGBColor.from_string(str(value).removeprefix("#"))
@@ -488,6 +507,15 @@ def _postprocess_docx(
             style.paragraph_format.space_before = Pt(space_before)
             style.paragraph_format.space_after = Pt(space_before / 2)
             style.paragraph_format.keep_with_next = True
+    for names, value in (
+        (("Normal", "Body Text", "First Paragraph", "Compact"), design.typography.body),
+        (("Heading 1",), design.typography.h1), (("Heading 2",), design.typography.h2),
+        (("Heading 3",), design.typography.h3), (("Caption", "Image Caption"), design.typography.caption),
+    ):
+        for name in names:
+            if name not in document.styles:
+                document.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            apply_word_style(document.styles[name], value)
     if "Report Signature" not in document.styles:
         signature_style = document.styles.add_style("Report Signature", WD_STYLE_TYPE.PARAGRAPH)
         signature_style.font.name = "Noto Sans CJK SC"
@@ -495,7 +523,7 @@ def _postprocess_docx(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
     # 落款与正文同字号（此前继承文档默认字号，明显大于正文）。
-    document.styles["Report Signature"].font.size = Pt(10.5)
+    apply_word_style(document.styles["Report Signature"], design.typography.body)
     # 来源附录的条目（pandoc 定义列表）与 PDF 一致：条目名主题色加粗，各字段缩进、行距紧凑；
     # 此前字段不缩进且段后留白不一，首个字段紧贴条目名。
     if "Definition Term" in document.styles:
@@ -520,6 +548,8 @@ def _postprocess_docx(
         source_style._element.get_or_add_rPr().get_or_add_rFonts().set(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
+
+    apply_word_style(document.styles["Report Source Appendix"], design.typography.h1)
 
     if "Block Text" in document.styles:
         # 引用块（注、说明）与 PDF 一致：左侧主题色竖线与浅色底纹，不再只是缩进文字。
@@ -570,15 +600,23 @@ def _postprocess_docx(
     toc_start_index = marker_index("toc_field_start")
     toc_end_index = marker_index("toc_field_end")
     body_start_index = marker_index("body_start")
+    for paragraph in paragraphs[body_start_index + 1:]:
+        if paragraph.text.strip() == "核心结论" and any(run.bold for run in paragraph.runs):
+            paragraph.style = document.styles["Heading 1"]
+            for run in paragraph.runs:
+                apply_word_style(run, design.typography.h1)
+        if paragraph.text in (caption_texts or set()):
+            paragraph.style = document.styles["Caption"]
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in paragraph.runs:
+                apply_word_style(run, design.typography.caption)
     if include_cover:
         for paragraph in paragraphs[:cover_end_index]:
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        title_paragraph = next(
-            (item for item in paragraphs[:cover_end_index] if item.text == context["title"]), None
-        )
-        if title_paragraph is None:
-            raise ReportFailure("Word 封面缺少报告标题")
-        title_paragraph.style = document.styles["Title"]
+            clear_paragraph(paragraph)
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+        anchor = paragraphs[0] if cover_end_index else document.add_paragraph()
+        add_word_cover(anchor, design, raw_context)
     else:
         # 无封面导出时标题随正文起始，仅按标题文本套用 Title 样式（若存在）。
         title_paragraph = next(
@@ -720,26 +758,13 @@ def _postprocess_docx(
                 qn("w:eastAsia"), "Noto Sans CJK SC"
             )
 
-    def add_watermark(header: Any, text: str, shape_id: int) -> None:
-        escaped = html.escape(text, quote=True)
-        paragraph = header.add_paragraph()
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        watermark = parse_xml(
-            '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
-            'xmlns:v="urn:schemas-microsoft-com:vml"><w:pict>'
-            f'<v:shape id="PowerPlusWaterMarkObject{shape_id}" '
-            'type="#_x0000_t136" '
-            'style="position:absolute;width:430pt;height:90pt;rotation:315;z-index:-251654144;'
-            'mso-position-horizontal:center;mso-position-vertical:center" '
-            f'fillcolor="{REPORT_VISUAL_THEME["muted"]}" stroked="f">'
-            '<v:fill opacity="0.045"/>'
-            '<v:textpath style="font-family:Noto Sans CJK SC;font-size:26pt" '
-            f'string="{escaped}"/></v:shape></w:pict></w:r>'
-        )
-        paragraph._p.append(watermark)
-
     for index, section in enumerate(sections):
         if include_cover and index == 0:
+            section.header.is_linked_to_previous = False
+            section.footer.is_linked_to_previous = False
+            clear_story(section.header)
+            clear_story(section.footer)
+            add_word_watermark(section.header, design, raw_context, section=index, cover=True)
             continue
         # SECTIONPAGES 在 LibreOffice 不会可靠刷新；分节页码从 1 起，
         # 因此该节末尾书签的页码就是总页数，且仍可随 Word 重新排版更新。
@@ -768,11 +793,17 @@ def _postprocess_docx(
             layout["footerRight"],
             end_bookmark=end_bookmark,
         )
-        add_watermark(section.header, context["watermarkText"], index)
+        add_word_watermark(section.header, design, raw_context, section=index, cover=False)
 
     for table in document.tables:
         if "Table Grid" in document.styles:
             table.style = "Table Grid"
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    apply_word_style(paragraph, design.typography.table)
+                    for run in paragraph.runs:
+                        apply_word_style(run, design.typography.table)
         table_properties = table._tbl.tblPr
         # 与 PDF 一致铺满正文宽度：pandoc 产出 auto 宽度与等宽列，表格只占约八成版心。
         for existing in table_properties.findall(qn("w:tblW")):
@@ -809,7 +840,7 @@ def _postprocess_docx(
                 cell._tc.get_or_add_tcPr().append(shading)
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
-                        run.font.color.rgb = theme_colors["primary"]
+                        run.font.color.rgb = RGBColor.from_string(design.typography.table.color[1:])
             _keep_table_together_at_edges(table)
     available_width = _usable_width(sections[-1])
     maximum_height = Mm(180)
@@ -936,7 +967,11 @@ def _validate_docx_rendering(
     context: dict[str, Any],
     layout: dict[str, str],
     include_cover: bool = True,
+    design: ReportDesign | None = None,
 ) -> dict[str, Any]:
+    design = design or ReportDesign()
+    raw_context = context
+    context = presentation_context(design, context)
     try:
         import pypdf
         from PIL import Image
@@ -1047,7 +1082,7 @@ def _validate_docx_rendering(
                 first_numbered_page=first_numbered_page,
             )
             decorations = [
-                context["watermarkText"],
+                watermark_text(design, raw_context) if design.watermark.enabled else "",
                 *(
                     _formatted_page_text(
                         value,
@@ -1063,15 +1098,16 @@ def _validate_docx_rendering(
             # Writer 转换后的页眉、页脚和 VML 水印也会进入 PDF 文本层；只含这些
             # 服务端装饰的页面仍是空白正文页，不能借装饰绕过发布门禁。
             for decoration in decorations:
-                substantive_text = substantive_text.replace("".join(decoration.split()), "", 1)
-        if not substantive_text and current_image_count == 0:
+                if decoration:
+                    substantive_text = substantive_text.replace("".join(decoration.split()), "")
+        intentional_empty_cover = include_cover and index == 1 and not visible_cover_text(design, raw_context)
+        if not substantive_text and current_image_count == 0 and not intentional_empty_cover:
             blank_pages.append(index)
     extracted_text = "\n".join(extracted_pages)
     compact_extracted_text = "".join(extracted_text.split())
     # 分析期间与生成标识只出现在封面；无封面导出不再要求它们。
-    cover_only_text = (context["periodLabel"], context["generatedByLabel"]) if include_cover else ()
+    cover_only_text = visible_cover_text(design, raw_context) if include_cover else (context["title"],)
     required_text = (
-        context["title"],
         *cover_only_text,
         context["organizationName"],
         context["generatedDate"],

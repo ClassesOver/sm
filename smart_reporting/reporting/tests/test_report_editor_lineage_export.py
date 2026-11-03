@@ -530,7 +530,7 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
 
         monkeypatch.setattr(service_module, "snapshot_revision_lineage", broken_snapshot)
     elif fault == "overview":
-        from smart_reporting.report_editor import service as service_module
+        from smart_reporting.report_editor import render_preparation as service_module
 
         validate = editor.trace.validate
 

@@ -399,6 +399,8 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
             "report_runtime/__init__.py",
             "report_runtime/cli.py",
             "report_runtime/docx.py",
+            "report_runtime/design.py",
+            "report_runtime/report_design.py",
             "report_runtime/markdown.py",
             "report_runtime/overview.py",
             "report_runtime/pdf.py",
@@ -746,7 +748,7 @@ def test_postprocess_docx_heading_styles_follow_pdf_hierarchy(tmp_path: Path) ->
 
     styles = docx.Document(path).styles
     sizes = [styles[name].font.size for name in ("Heading 1", "Heading 2", "Heading 3", "Normal")]
-    assert sizes == [Pt(16), Pt(12.5), Pt(11), Pt(10.5)]
+    assert sizes == [Pt(16), Pt(13), Pt(11.5), Pt(11)]
     for name in ("Heading 1", "Heading 2", "Heading 3"):
         assert styles[name].font.bold is True
         assert styles[name].paragraph_format.space_before >= Pt(8)
@@ -799,7 +801,7 @@ def test_postprocess_docx_source_appendix_entries_and_signature_match_pdf(tmp_pa
 
     processed = docx.Document(path)
     styles = processed.styles
-    assert styles["Report Signature"].font.size == Pt(10.5)
+    assert styles["Report Signature"].font.size == Pt(11)
     signature = [item for item in processed.paragraphs if item.style.name == "Report Signature"]
     assert [item.text for item in signature] == ["测试机构", "2026-08-17"]
     assert abs(signature[0].paragraph_format.space_before - Mm(12)) < Mm(0.1)
@@ -987,7 +989,11 @@ def test_postprocess_docx_follows_cover_and_toc_export_settings(
     assert not any(marker in paragraph_texts for marker in _WORD_MARKERS.values())
     # 无封面时首个分节即带页眉页脚；有封面时封面分节不带页面元素。
     first_header = processed.sections[0].header
-    assert first_header.is_linked_to_previous is include_cover
+    if include_cover:
+        assert not any(paragraph.text for paragraph in first_header.paragraphs)
+        assert "PowerPlusWaterMarkObject" not in first_header._element.xml
+    else:
+        assert first_header.is_linked_to_previous is False
     with zipfile.ZipFile(path) as package:
         document_xml = package.read("word/document.xml").decode()
     assert ('TOC \\o "1-3"' in document_xml) is include_toc
