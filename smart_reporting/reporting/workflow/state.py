@@ -19,6 +19,7 @@ from typing import Any
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from ..contract import REPORT_DELIVERY_FORMATS
 from ..delivery.draft_v1 import ReportChartRegistration
 from ..trace.contracts_v1 import StandardChartRenderProofV1
 from .checkpoint import ChartVisualInspectionReceipt, FileIdentity
@@ -727,7 +728,7 @@ def apply(
             ) from error
     elif name == "freeze_delivery_format":
         delivery_format = arguments.get("deliveryFormat")
-        if delivery_format not in {"document", "pptx"}:
+        if delivery_format not in REPORT_DELIVERY_FORMATS:
             raise ReportingStateError("report_delivery_format_invalid", "交付格式无效。")
         frozen = payload.setdefault("deliveryFormat", delivery_format)
         if frozen != delivery_format:

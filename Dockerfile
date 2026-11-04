@@ -16,6 +16,11 @@ FROM ${NODE_IMAGE} AS report-editor-frontend
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
+# 保持与源码相同的相对层级，让浏览器和 Node 桥接使用同一固定版本引擎。
+WORKDIR /build/smart_reporting/reporting/workbook_engine
+COPY smart_reporting/reporting/workbook_engine ./
+RUN npm ci --registry="${NPM_REGISTRY}"
+
 WORKDIR /build/smart_reporting/reporting/slides_engine
 COPY smart_reporting/reporting/slides_engine/package.json \
     smart_reporting/reporting/slides_engine/package-lock.json \
@@ -53,6 +58,7 @@ ARG PYPI_FILES_MIRROR=https://mirrors.aliyun.com/pypi
 COPY --from=uv-source /uv /uvx /bin/
 COPY --from=report-editor-frontend /usr/local /usr/local
 COPY --from=report-editor-frontend /build/smart_reporting/reporting/slides_engine /opt/reporting-slides-engine
+COPY --from=report-editor-frontend /build/smart_reporting/reporting/workbook_engine /opt/reporting-workbook-engine
 
 WORKDIR /app
 
@@ -87,6 +93,7 @@ COPY --from=report-editor-frontend /build/smart_reporting/report_editor/static /
 
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_REPORTING_SLIDES_ENGINE_DIR=/opt/reporting-slides-engine \
+    AGENT_REPORTING_WORKBOOK_ENGINE_DIR=/opt/reporting-workbook-engine \
     AGENT_REPORT_EDITOR_STATIC_DIR=/opt/report-editor-static \
     MPLCONFIGDIR=/tmp/reporting-matplotlib \
     MPLBACKEND=Agg \

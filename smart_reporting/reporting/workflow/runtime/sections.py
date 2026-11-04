@@ -2605,6 +2605,7 @@ async def _generate_section_in_blocks(
             "phase": "section",
             "generationStage": "block",
             "reportGoal": instruction_payload.get("reportGoal", ""),
+            "deliveryFormat": instruction_payload.get("deliveryFormat", "document"),
             "sectionGoal": instruction_payload.get("sectionGoal", {}),
             "blockPlan": block_plan.model_dump(mode="json", by_alias=True),
             "claims": [item.model_dump(mode="json", by_alias=True) for item in block_claims],
@@ -2854,6 +2855,7 @@ async def _generate_whole_section_content(
         "frozenNumbers": prompt_number_catalog(frozen_number_catalog(number_contents)),
         "fieldDefinitions": instruction_payload.get("fieldDefinitions", {}),
         "reportGoal": instruction_payload.get("reportGoal", ""),
+        "deliveryFormat": instruction_payload.get("deliveryFormat", "document"),
         "sectionGoal": instruction_payload.get("sectionGoal", {}),
         "sectionPlan": plan.model_dump(mode="json", by_alias=True),
         "facts": [item.model_dump(mode="json", by_alias=True) for item in work_item.evidence],
@@ -4161,12 +4163,16 @@ class RuntimeSectionsMixin:
                 f"{phase_root}/{work_item.section_code}-attempt-{attempt + 1}.rework.json"
             )
             try:
-                report_goal = self._envelope(run_context).report_goal
+                envelope = self._envelope(run_context)
+                report_goal = envelope.report_goal
+                delivery_format = envelope.delivery_format
             except ReportingError:
                 report_goal = ""
+                delivery_format = "document"
             instruction_payload = {
                 "phase": "section",
                 "reportGoal": report_goal,
+                "deliveryFormat": delivery_format,
                 "sectionGoal": {
                     "sectionCode": work_item.section_code,
                     "title": work_item.title,

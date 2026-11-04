@@ -11,7 +11,7 @@ from agno.run import RunContext
 from agno.workflow.types import StepInput, StepOutput
 from pydantic import Field
 
-from ...contract import StrictModel
+from ...contract import REPORT_DELIVERY_FORMATS, StrictModel
 from ...delivery.artifacts_v1 import ArtifactFile
 from ...delivery.draft_v1 import HeadingNumber
 from ...hospital_operation.findings import FindingGraph
@@ -101,7 +101,7 @@ class RuntimeSlidesMixin:
         durable = await self.state_repository.get(str(run_context.run_id))
         frozen = durable.payload.get("deliveryFormat") if durable is not None else None
         if frozen is not None:
-            if frozen not in {"document", "pptx"}:
+            if frozen not in REPORT_DELIVERY_FORMATS:
                 raise ReportingError("report_delivery_format_invalid", "冻结交付格式无效。")
             if REPORT_REQUEST_CONTEXT_STATE_KEY not in state:
                 workflow_input = (
@@ -126,10 +126,12 @@ class RuntimeSlidesMixin:
     async def select_delivery_steps(self, step_input: StepInput, run_context: RunContext, step_choices: list[Any]):
         durable = await self.state_repository.get(str(run_context.run_id))
         delivery_format = durable.payload.get("deliveryFormat") if durable is not None else None
-        if delivery_format not in {"document", "pptx"}:
+        if delivery_format not in REPORT_DELIVERY_FORMATS:
             raise ReportingError("report_delivery_format_invalid", "交付格式尚未冻结。")
         self._state(run_context).setdefault(REPORT_REQUEST_CONTEXT_STATE_KEY, {})["deliveryFormat"] = delivery_format
-        return [next(step for step in step_choices if step.name == delivery_format)]
+        # XLSX 沿用文档编排（章节成稿后在渲染阶段生成工作簿），仅 PPTX 走幻灯片分支。
+        branch = "pptx" if delivery_format == "pptx" else "document"
+        return [next(step for step in step_choices if step.name == branch)]
 
     async def restore_delivery_format(self, _step_input: StepInput, run_context: RunContext) -> None:
         """仅供末端恢复迁移旧运行；读取已存格式，缺字段的历史报告沿用 document。"""
@@ -140,7 +142,7 @@ class RuntimeSlidesMixin:
         request = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY, {})
         envelope = state.get(REPORT_WORKFLOW_INPUT_STATE_KEY, {})
         delivery_format = request.get("deliveryFormat") or envelope.get("deliveryFormat") or "document"
-        if delivery_format not in {"document", "pptx"}:
+        if delivery_format not in REPORT_DELIVERY_FORMATS:
             raise ReportingError("report_delivery_format_invalid", "历史交付格式无效。")
         await self._apply_durable_command(run_context, ReportingCommand(
             name="freeze_delivery_format", commandId=f"delivery-format:{delivery_format}",

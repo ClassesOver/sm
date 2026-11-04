@@ -1,0 +1,27 @@
+{
+  "name": "@sheets-web/xlsx-engine",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "description": "xlsx read/patch engine (OOXML domain logic + surgical gateway), vendored from genoffice xlsx-gateway; browser-safe: Uint8Array I/O, no node: imports",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "jszip": "3.10.2",
+    "numfmt": "3.2.6",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

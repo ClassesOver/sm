@@ -1046,9 +1046,11 @@ class RuntimeAnalysisMixin:
                 envelope = self._envelope(run_context)
                 report_goal = envelope.report_goal
                 visualization_mode = envelope.visualization_mode
+                delivery_format = envelope.delivery_format
             except ReportingError:
                 report_goal = ""
                 visualization_mode = "static"
+                delivery_format = "document"
             requested_chart_limit = _requested_chart_limit(report_goal, len(section.analysis_ids))
             if context.get("max_charts") is not None:
                 requested_chart_limit = min(requested_chart_limit, context["max_charts"]) if requested_chart_limit is not None else context["max_charts"]
@@ -1056,6 +1058,7 @@ class RuntimeAnalysisMixin:
                 "phase": "analysis",
                 "taskKind": "visualization_section",
                 "reportGoal": report_goal,
+                "deliveryFormat": delivery_format,
                 "visualizationMode": visualization_mode,
                 "requestedChartLimit": requested_chart_limit,
                 "sectionCode": section_code,
@@ -4389,6 +4392,7 @@ class RuntimeAnalysisMixin:
                 "phase": "analysis",
                 "taskKind": "analysis_item",
                 "reportGoal": self._envelope(run_context).report_goal,
+                "deliveryFormat": self._envelope(run_context).delivery_format,
                 "sectionGoal": dict(section_goal),
                 "currentAnalysisId": analysis_id,
                 "currentAnalysis": analysis_plan,

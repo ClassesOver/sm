@@ -74,6 +74,32 @@ async def test_frozen_pptx_routes_to_slides_without_document_authoring(anyio_bac
     assert context.session_state["report_request_context"]["deliveryFormat"] == "pptx"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_frozen_xlsx_reuses_document_authoring_branch(anyio_backend):
+    """工作簿沿用文档成稿编排，在渲染阶段生成 XLSX，不进入幻灯片分支。"""
+    state = ReportingRunState.initial(
+        report_run_id="run-1", external_run_id="external-1", thread_id="thread-1",
+        owner_user_id="user-1", now=datetime(2026, 11, 3, tzinfo=UTC),
+    )
+    frozen = ReportingStateReducer.apply(state, ReportingCommand(
+        name="freeze_delivery_format", commandId="format:xlsx", payload={"deliveryFormat": "xlsx"},
+    )).state
+    assert frozen.payload["deliveryFormat"] == "xlsx"
+
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=frozen))
+    workflow = _factory(
+        generate_slide_outline=AsyncMock(), assemble_slides=AsyncMock(), validate_slides=AsyncMock(),
+        select_delivery_steps=runtime.select_delivery_steps,
+    )
+    router = next(step for step in workflow.steps if isinstance(step, Router))
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+    routed = await router.selector(StepInput(input="report"), context, router.choices)
+    assert routed[0].name == "document"
+    assert context.session_state["report_request_context"]["deliveryFormat"] == "xlsx"
+
+
 def test_delivery_format_is_a_durable_immutable_decision():
     state = ReportingRunState.initial(
         report_run_id="run-1", external_run_id="external-1", thread_id="thread-1",

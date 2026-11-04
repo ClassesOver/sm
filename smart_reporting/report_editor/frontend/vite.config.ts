@@ -2,10 +2,21 @@ import { fileURLToPath } from 'node:url'
 import { slidesReact } from './vite.slides-react'
 
 import { defineConfig } from 'vitest/config'
+import { precomputedCjkModule } from './scripts/precomputed-cjk'
 
 export default defineConfig({
   base: '/reports/v1/editor/assets/',
-  plugins: [slidesReact()],
+  plugins: [slidesReact(), {
+    name: 'workbook-precomputed-cjk-charsets',
+    enforce: 'pre',
+    // cjk-regex's public API computes three fixed sets. Precompute them during
+    // the build so the browser need not load every Unicode category table.
+    resolveId(id) { return id === 'cjk-regex' ? '\0workbook-cjk-charsets' : undefined },
+    load(id) {
+      if (id !== '\0workbook-cjk-charsets') return undefined
+      return precomputedCjkModule()
+    },
+  }],
   esbuild: {
     jsxFactory: 'h',
     jsxFragment: 'Fragment',
@@ -39,12 +50,29 @@ export default defineConfig({
     outDir: '../static',
     rollupOptions: {
       output: {
-        manualChunks: {
-          milkdown: ['@milkdown/crepe', '@milkdown/kit'],
-          icons: ['lucide'],
-          diff: ['diff'],
-          'slides-react': ['react', 'react-dom/client'], 'slides-bindings': ['react-konva'],
-          'slides-konva': ['konva'],
+        onlyExplicitManualChunks: true,
+        chunkFileNames: 'assets/lazy-[name]-[hash].js',
+        manualChunks(id) {
+          const univer = id.match(/node_modules\/@univerjs\/([^/]+)/)?.[1]
+          if (univer) {
+            if (id.endsWith('/index.js')) return `workbook-${univer}`
+            if (univer === 'engine-render') return `workbook-dictionary-${id.split('/').at(-1)!.split('-').slice(0, -1).join('-')}`
+            return `workbook-${univer}`
+          }
+          if (id.includes('/node_modules/hyphen/')) return `workbook-hyphen-${id.split('/').at(-1)?.replace(/\.[^.]+$/, '')}`
+          if (id.includes('/workbook_engine/')) return 'workbook-engine'
+          // PPTX 画布与工作簿编辑器共享同一份 React 运行时。
+          if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'react'
+          if (id.includes('/node_modules/react-konva/')) return 'slides-bindings'
+          if (id.includes('/node_modules/konva/')) return 'slides-konva'
+          if (id.includes('/node_modules/opentype.js/')) return 'workbook-opentype'
+          if (id.includes('/node_modules/franc-min/')) return 'workbook-language'
+          if (id.includes('/node_modules/rxjs/')) return 'workbook-observable'
+          if (/node_modules\/(zod|jszip|numfmt)\//.test(id)) return 'workbook-format'
+          if (id.includes('/node_modules/@milkdown/')) return 'milkdown'
+          if (id.includes('/node_modules/lucide/')) return 'icons'
+          if (id.includes('/node_modules/diff/')) return 'diff'
+          if (/node_modules\/prosemirror-[^/]+\//.test(id)) return 'milkdown-prosemirror'
         },
       },
     },

@@ -937,6 +937,7 @@ async def test_http_pptx_publication_keeps_link_when_layout_audit_fails(monkeypa
                 pptx_path=values["pptx_path"],
                 pptx_size=values["pptx_size"],
                 pptx_sha256=values["pptx_sha256"],
+                xlsx_path="",
                 pdf_path="",
                 word_path="",
                 expires_at=expires,
@@ -1567,3 +1568,110 @@ async def test_editor_delivery_retry_never_blocks_links_on_faults(
         assert "word" in retried and retried["validation"] == {"ok": True, "issues": []}
         assert "reportEditorDeliveries" not in harness.repository.durable.payload
     assert "4" not in harness.repository.durable.payload["reportEditorContexts"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("delivery_format", ["pptx", "xlsx"])
+@pytest.mark.parametrize("fault", ["persistence", "empty_persistence", "context_build", "context_read", "context_write", "editor_grant"])
+async def test_office_publication_faults_retain_verified_downloads(
+    tmp_path, monkeypatch, delivery_format, fault,
+):
+    runtime, arguments, scope, _, artifacts, _, _, _ = await _publication_fixture(tmp_path)
+    content = b"PK office-report"
+    path = f"reports/report.{delivery_format}"
+    await runtime.workspace_service.awrite_bytes(scope.workspace_key, path, content)
+    output = arguments["output"]
+    output["deliveryFormat"] = delivery_format
+    output.update({
+        f"{delivery_format}Path": path,
+        f"{delivery_format}Size": len(content),
+        f"{delivery_format}Sha256": hashlib.sha256(content).hexdigest(),
+        "validation": {"ok": False, "issues": [{"code": "source_needs_review"}]},
+        "validationIssues": [{"code": "source_needs_review"}],
+    })
+    if fault == "persistence":
+        monkeypatch.setattr(runtime.artifact_persistence, "persist_available", AsyncMock(side_effect=OSError("storage unavailable")))
+    elif fault == "empty_persistence":
+        monkeypatch.setattr(runtime.artifact_persistence, "persist_available", AsyncMock(return_value=()))
+    elif fault == "context_build":
+        monkeypatch.setattr(planning_module, "ReportEditorContext", lambda **_: (_ for _ in ()).throw(ValueError("context unavailable")))
+    elif fault == "context_read":
+        monkeypatch.setattr(runtime.state_repository, "get", AsyncMock(side_effect=OSError("state unavailable")))
+    elif fault == "context_write":
+        monkeypatch.setattr(runtime.state_repository, "apply", AsyncMock(side_effect=OSError("state unavailable")))
+    else:
+        monkeypatch.setattr(runtime.editor_grants, "issue", AsyncMock(side_effect=OSError("grant unavailable")))
+
+    result = await runtime.issue_http_publication(**arguments)
+
+    assert result[delivery_format]["downloadUrl"]
+    assert result["validation"]["ok"] is False
+    assert result["publicationGate"]["formalReleaseAllowed"] is False
+    assert result["publicationIssues"]
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(
+        runtime.download_grants, artifacts, workspace_service=runtime.workspace_service,
+    )))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        response = await client.get(result[delivery_format]["downloadUrl"])
+    assert response.status_code == 200
+    assert response.content == content
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["source_mapping", "source_marking", "inspection", "revision_lookup", "persistence", "context_write", "editor_grant"])
+async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, monkeypatch, fault):
+    from smart_reporting.report_editor import workbook as workbook_module
+    from smart_reporting.reporting.tests.test_workbook_editor import _bytes
+
+    runtime, _, scope, durable, artifacts, _, _, _ = await _publication_fixture(tmp_path)
+    source = _bytes(12)
+    source_path = "reports/editable.xlsx"
+    await runtime.workspace_service.awrite_bytes(scope.workspace_key, source_path, source)
+    context = ReportEditorContext(
+        reportId="report-1", revision=2, jobId="job-1", workflowRunId="workflow-run",
+        markdownPath="reports/report.md", job={"jobId": "job-1", "validation": {"ok": False}},
+        scope=scope.as_state(), deliveryFormat="xlsx", xlsxPath=source_path,
+        xlsxSize=len(source), xlsxSha256=hashlib.sha256(source).hexdigest(),
+    )
+    editor = workbook_module.ReportWorkbookEditorService(
+        state_repository=runtime.state_repository, workspace_registry=runtime.workspace_registry,
+        workspace=runtime.workspace_service, editor_grants=runtime.editor_grants,
+        artifact_persistence=runtime.artifact_persistence, download_grants=runtime.download_grants,
+        public_base_url="http://reports.test",
+    )
+    editor.context_for_session = AsyncMock(return_value=context)
+    def failed():
+        return AsyncMock(side_effect=OSError("injected workbook delivery failure"))
+    if fault == "source_mapping":
+        monkeypatch.setattr(editor, "_source_mapping", lambda *_: (_ for _ in ()).throw(ValueError("mapping unavailable")))
+    elif fault == "source_marking":
+        monkeypatch.setattr(editor, "_source_mapping", lambda *_: {"sources": {"cells": []}})
+        monkeypatch.setattr(editor, "_mark_sources_unverified", lambda *_: (_ for _ in ()).throw(ValueError("mapping write unavailable")))
+    elif fault == "inspection":
+        monkeypatch.setattr(workbook_module, "inspect_workbook", lambda *_: (_ for _ in ()).throw(ValueError("inspection unavailable")))
+    elif fault == "revision_lookup":
+        monkeypatch.setattr(runtime.state_repository, "get", failed())
+    elif fault == "persistence":
+        monkeypatch.setattr(runtime.artifact_persistence, "persist_available", failed())
+    elif fault == "context_write":
+        monkeypatch.setattr(runtime.state_repository, "apply", failed())
+    else:
+        monkeypatch.setattr(runtime.editor_grants, "issue", failed())
+
+    result = await editor.save_revision(None, {"expectedSha256": context.xlsx_sha256,
+        "operations": [{"kind": "applyCellEdits", "edits": [{"sheetName": "汇总", "row": 0,
+            "column": 0, "writeValue": True, "cell": {"value": 99}}]}]})
+
+    assert result["xlsx"]["downloadUrl"]
+    assert result["validation"]["ok"] is False
+    assert result["validation"]["issues"]
+    assert (await runtime.workspace_service.afile_bytes(scope.workspace_key, source_path))[0] == source
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(
+        runtime.download_grants, artifacts, workspace_service=runtime.workspace_service,
+    )))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        response = await client.get(result["xlsx"]["downloadUrl"])
+    assert response.status_code == 200
+    assert hashlib.sha256(response.content).hexdigest() == result["xlsx"]["sha256"]

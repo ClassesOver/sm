@@ -408,7 +408,11 @@ async def test_sql_editor_schema_adds_nullable_capabilities_column() -> None:
 def test_editor_context_digest_keeps_legacy_default_metadata_compatible() -> None:
     context = _context()
     legacy_payload = context.model_dump(mode="json", by_alias=True)
-    for field in ("source", "createdAt", "note", "artifactManifest"):
+    # 旧上下文没有这些字段；默认值不得改变既有摘要。
+    for field in (
+        "source", "createdAt", "note", "artifactManifest", "deliveryFormat",
+        "pptxPath", "pptxSize", "pptxSha256", "xlsxPath", "xlsxSize", "xlsxSha256",
+    ):
         legacy_payload.pop(field)
     legacy_digest = hashlib.sha256(
         json.dumps(
