@@ -467,7 +467,8 @@ class ReportSlidesEditorService:
                     "code": "report_slides_editor_grant_failed",
                     "message": "PPTX 已保存，但新修订编辑入口未能签发。",
                 })
-        if not download_url and stored and self.download_grants is not None:
+        # 持久化失败时仍签发：下载服务会从工作区读取并复核原文件身份，与工作簿和首次发布一致。
+        if not download_url and self.download_grants is not None:
             try:
                 raw_download, _grant = await self.download_grants.issue(
                     scope=self._download_scope(context),

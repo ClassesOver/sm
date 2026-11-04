@@ -167,7 +167,8 @@ async def test_slides_save_rejects_invalid_animation_parameters(animation):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    'fault', ['persistence', 'context', 'download_grant', 'editor_grant', 'preview', 'stale_revision'],
+    'fault', ['persistence', 'context', 'download_grant', 'editor_grant', 'preview', 'stale_revision',
+              'persistence_and_context'],
 )
 async def test_slides_save_commits_revision_and_keeps_download_when_persistence_fails(monkeypatch, fault):
     from smart_reporting.report_editor import slides
@@ -217,7 +218,7 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         return state
 
     async def apply(_run, command, *, expected_version):
-        if fault == 'context':
+        if fault in {'context', 'persistence_and_context'}:
             raise OSError('context unavailable')
         applied.append((command, expected_version))
 
@@ -231,7 +232,7 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
 
     class FailingPersistence:
         async def persist_available(self, **_kwargs):
-            if fault == 'persistence':
+            if fault in {'persistence', 'persistence_and_context'}:
                 raise RuntimeError("persistence unavailable")
             return _kwargs['artifacts']
 
@@ -270,11 +271,12 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         assert files["reports/report-r2.pptx"] == b"existing-revision-2"
         assert result["validation"]["ok"] is True
         return
-    if fault in {'context', 'download_grant'}:
+    # 编辑会话下载不可用时，即使持久化失败也要用产物授权签发已核验文件的下载。
+    if fault in {'context', 'download_grant', 'persistence_and_context'}:
         assert result['pptx']['downloadUrl'].endswith('/reports/v1/download/artifact-download-token/pptx')
     else:
         assert result["pptx"]["downloadUrl"].endswith("/reports/v1/slides/download/download-token")
-    if fault in {'context', 'editor_grant'}:
+    if fault in {'context', 'editor_grant', 'persistence_and_context'}:
         assert 'editor' not in result
     else:
         assert result["editor"]["openUrl"].endswith("/reports/v1/slides/open/editor-token")
@@ -285,9 +287,12 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         'download_grant': 'report_pptx_download_grant_failed',
         'editor_grant': 'report_slides_editor_grant_failed',
         'preview': 'pptx_preview_render_failed',
+        'persistence_and_context': 'report_slides_context_persistence_failed',
     }[fault]
     assert any(issue['code'] == issue_code for issue in result['validation']['issues'])
-    if fault != 'context':
+    if fault == 'persistence_and_context':
+        assert any(issue['code'] == 'report_pptx_persistence_failed' for issue in result['validation']['issues'])
+    if fault not in {'context', 'persistence_and_context'}:
         assert len(applied) == 1
         assert applied[0][1] == 8
         saved_context = applied[0][0].payload["context"]
@@ -387,7 +392,10 @@ async def test_preview_and_save_reject_the_same_invalid_edits(edit):
 
 
 def test_preview_accepts_maximum_text_that_save_also_accepts():
-    from smart_reporting.report_editor.slides_render import validate_preview_edits, validate_slide_edits
+    from smart_reporting.report_editor.slides_render import (
+        validate_preview_edits,
+        validate_slide_edits,
+    )
 
     edit = {"slideIndex": 0, "elementId": "s1", "text": "x" * 20_000}
     assert validate_preview_edits({"expectedSha256": "a" * 64, "edits": [edit]}, "a" * 64) == [edit]
