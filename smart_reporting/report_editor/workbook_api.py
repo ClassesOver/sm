@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -12,13 +13,16 @@ from ..reporting.models import ReportingError
 from ._api_helpers import read_editor_json, reporting_http_error, require_editor_csrf
 from .service import ReportEditorGrantService
 
+if TYPE_CHECKING:
+    from .workbook import ReportWorkbookEditorService
+
 WORKBOOK_SESSION_COOKIE = "report_workbook_session"
 WORKBOOK_CSRF_COOKIE = "report_workbook_csrf"
 _XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def create_report_workbook_editor_router(
-    grants: ReportEditorGrantService, *, workbooks: object, workbook_ai: object | None = None,
+    grants: ReportEditorGrantService, *, workbooks: ReportWorkbookEditorService, workbook_ai: object | None = None,
     static_dir: str | Path, cookie_secure: bool = True,
 ) -> APIRouter:
     router = APIRouter()
@@ -27,12 +31,13 @@ def create_report_workbook_editor_router(
     def fail(error: ReportingError) -> HTTPException:
         return reporting_http_error(error, status_code=403 if "permission_denied" in error.code else 409)
 
-    async def require_session(request: Request, report_id: str, revision: int):
+    async def require_session(request: Request, report_id: str, revision: int, *, verify_context: bool = True):
         try:
             session = await grants.lookup_session(request.cookies.get(WORKBOOK_SESSION_COOKIE, ""))
             if session.report_id != report_id or session.revision != revision:
                 raise ReportingError("report_workbook_scope_mismatch", "工作簿编辑会话作用域不一致。")
-            await workbooks.context_for_session(session)
+            if verify_context:
+                await workbooks.context_for_session(session)
             return session
         except ReportingError as error:
             raise fail(error) from None
@@ -90,11 +95,10 @@ def create_report_workbook_editor_router(
 
     @router.get("/reports/v1/workbooks/{report_id}/{revision}/api/file", include_in_schema=False)
     async def workbook_file(report_id: str, revision: int, request: Request):
-        session = await require_session(request, report_id, revision)
+        session = await require_session(request, report_id, revision, verify_context=False)
         try:
-            context = await workbooks.context_for_session(session)
-            content = await workbooks._read_verified(context)
-            return Response(content, media_type=_XLSX_TYPE, headers={"Cache-Control": "no-store", "X-Workbook-Sha256": context.xlsx_sha256})
+            context, content = await workbooks.file_for_session(session)
+            return Response(content, media_type=_XLSX_TYPE, headers={"Cache-Control": "no-store", "X-Workbook-Sha256": context.xlsx_sha256 or ""})
         except ReportingError as error:
             raise fail(error) from None
 

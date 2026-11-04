@@ -24,7 +24,7 @@ from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from ._file_identity import read_verified_file
-from .revisions import next_manual_revision, revision_file_path
+from .revisions import apply_editor_command, next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorGrantService, ReportEditorSession
 from .slides_render import render_pptx_tree, validate_preview_edits, validate_slide_edits
 
@@ -208,7 +208,7 @@ class ReportSlidesEditorService:
         context = await self.context_for_session(session)
         pptx = await self._read_verified_pptx(context)
         if preview is not None:
-            edits = validate_preview_edits(preview, context.pptx_sha256)
+            edits = validate_preview_edits(preview, context.pptx_sha256 or "")
             revised = await run_office_engine(self._run_engine, pptx, "edit", edits=edits)
             pptx = revised["bytes"]
         tree = await run_office_engine(render_pptx_tree, pptx)
@@ -253,6 +253,7 @@ class ReportSlidesEditorService:
             or not isinstance(item["slideIndex"], int)
             or isinstance(item["slideIndex"], bool)
             or item["slideIndex"] < 0
+            or not isinstance(item["kind"], str)
             or item["kind"] not in transition_kinds
             for item in transitions
         ):
@@ -265,7 +266,9 @@ class ReportSlidesEditorService:
             or isinstance(item["slideIndex"], bool)
             or item["slideIndex"] < 0
             or not isinstance(item["elementId"], str)
+            or not isinstance(item["effect"], str)
             or item["effect"] not in _SLIDE_ANIMATION_EFFECTS
+            or not isinstance(item["trigger"], str)
             or item["trigger"] not in _SLIDE_ANIMATION_TRIGGERS
             or (
                 "durationMs" in item
@@ -346,6 +349,10 @@ class ReportSlidesEditorService:
         next_job["pptxSize"] = len(revised)
         next_job["pptxSha256"] = digest
         validation_issues = list(revision_issues)
+        validation_issues.append({
+            "code": "pptx_semantic_verification_pending",
+            "message": "新修订尚未重新进行业务语义验收，不继承旧版本验收结论。",
+        })
         if chart_replacements:
             previous_bindings = next_job.get("pptxChartEdits", [])
             invalid_bindings = not isinstance(previous_bindings, list)
@@ -407,17 +414,13 @@ class ReportSlidesEditorService:
         issues: list[dict[str, str]] = list(validation_issues)
         context_persisted = False
         try:
-            durable = await self.state_repository.get(context.workflow_run_id)
-            if durable is None:
-                raise ReportingError("report_editor_context_missing", "报告编辑上下文不存在。")
-            await self.state_repository.apply(
-                context.workflow_run_id,
+            await apply_editor_command(
+                self.state_repository, context.workflow_run_id,
                 ReportingCommand(
                     name="set_report_editor_context",
                     payload={"context": next_context.model_dump(mode="json", by_alias=True)},
                     commandId=f"editor-context:{next_revision}:{next_context.digest()}",
                 ),
-                expected_version=durable.state_version,
             )
             context_persisted = True
         except Exception:  # noqa: BLE001 - 已核验的新文件继续独立签发下载
