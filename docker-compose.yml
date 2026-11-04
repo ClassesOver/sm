@@ -25,6 +25,8 @@ services:
     environment:
       AGENT_OS_WORKERS: "1"
       AGENT_REPORTING_MCP_ALLOWED_HOSTS: ${AGENT_REPORTING_MCP_ALLOWED_HOSTS:-}
+      # PPTX/XLSX 引擎与 LibreOffice 子进程的并发上限；留空按 CPU 数的一半（1–4）。
+      AGENT_REPORTING_OFFICE_ENGINE_CONCURRENCY: ${AGENT_REPORTING_OFFICE_ENGINE_CONCURRENCY:-}
       AGNO_TELEMETRY: "false"
       YDATA_PROFILING_NO_ANALYTICS: "true"
       AGENT_LOG_FILE: /var/log/agentos/agentos.log

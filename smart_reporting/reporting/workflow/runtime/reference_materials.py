@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import io
-import shutil
-import subprocess
-import tempfile
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
 from agno.workflow.types import StepInput, StepOutput
 from loguru import logger
+
+from ...delivery.office_engine import libreoffice_to_pdf, run_office_engine
 
 REPORT_REFERENCE_MATERIALS_STATE_KEY = "report_reference_materials"
 REPORT_REFERENCE_ISSUES_STATE_KEY = "report_reference_issues"
@@ -226,39 +226,13 @@ def _render_visual_pages(filename: str, raw: bytes) -> list[bytes]:
     suffix = Path(filename).suffix.lower()
     pdf_bytes = raw
     if suffix != ".pdf":
-        converter = shutil.which("libreoffice") or shutil.which("soffice")
-        if converter is None:
-            raise RuntimeError("未安装 Office 页面渲染器")
-        with tempfile.TemporaryDirectory(prefix="report-reference-") as temporary:
-            root = Path(temporary)
-            source = root / f"reference{suffix}"
-            source.write_bytes(raw)
-            profile = root / ".libreoffice-profile"
-            profile.mkdir()
-            result = subprocess.run(
-                [
-                    converter,
-                    "--headless",
-                    f"-env:UserInstallation=file://{profile}",
-                    "--convert-to",
-                    "pdf",
-                    "--outdir",
-                    str(root),
-                    str(source),
-                ],
-                capture_output=True,
-                timeout=45,
-                check=False,
-            )
-            rendered = root / "reference.pdf"
-            if result.returncode != 0 or not rendered.is_file():
-                raise RuntimeError("Office 页面转换失败")
-            pdf_bytes = rendered.read_bytes()
+        pdf_bytes = libreoffice_to_pdf(raw, suffix=suffix, timeout=45)
     import fitz
 
     pages: list[bytes] = []
     with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-        for page in list(document)[:_MAX_VISUAL_PAGES]:
+        for index in range(min(document.page_count, _MAX_VISUAL_PAGES)):
+            page = document[index]
             pixmap = page.get_pixmap(matrix=fitz.Matrix(1.25, 1.25), alpha=False)
             pages.append(pixmap.tobytes("png"))
     return pages
@@ -288,10 +262,12 @@ async def prepare_reference_materials(
             total_bytes += size
             if size > _MAX_REFERENCE_FILE_BYTES or total_bytes > _MAX_REFERENCE_TOTAL_BYTES:
                 raise ValueError("参考附件超过大小限制（单个 50 MiB、总计 200 MiB）")
-            reference = _parse(file)
+            # 解析与页面渲染都是同步 CPU/子进程操作，不能占用事件循环。
+            reference = await asyncio.to_thread(_parse, file)
             if visual_analyzer is not None:
                 try:
-                    visual_pages = _render_visual_pages(filename, _raw_file(file))
+                    raw = await asyncio.to_thread(_raw_file, file)
+                    visual_pages = await run_office_engine(_render_visual_pages, filename, raw)
                     reference["visualLayout"] = await visual_analyzer(reference, visual_pages)
                 except Exception as error:  # noqa: BLE001 - visual layout is supplemental
                     logger.warning(

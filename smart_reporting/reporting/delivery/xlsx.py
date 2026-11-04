@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .office_engine import last_json_line, run_bridge
 
 
 @dataclass(frozen=True)
@@ -30,21 +30,15 @@ _OPERATION_KINDS = frozenset({
 
 
 def _invoke(payload: dict[str, Any]) -> dict[str, Any]:
-    engine = Path(os.environ.get(
-        'AGENT_REPORTING_WORKBOOK_ENGINE_DIR', Path(__file__).parents[1] / 'workbook_engine'
-    ))
     with tempfile.TemporaryDirectory(prefix='report-workbook-') as temporary:
         request = Path(temporary) / 'request.json'
         request.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding='utf-8')
-        completed = subprocess.run(
-            ['npm', 'run', '--silent', 'workbook', '--', str(request)],
-            cwd=engine, capture_output=True, text=True, timeout=120, check=False,
-        )
+        completed = run_bridge('workbook', 'cli', request)
     if completed.returncode:
         raise ValueError(f'workbook_engine_failed: {completed.stderr[-2000:]}')
     try:
-        receipt = json.loads(completed.stdout.strip().splitlines()[-1])
-    except (IndexError, json.JSONDecodeError) as error:
+        receipt = last_json_line(completed.stdout)
+    except ValueError as error:
         raise ValueError('workbook_engine_receipt_invalid') from error
     if not isinstance(receipt, dict):
         raise ValueError('workbook_engine_receipt_invalid')

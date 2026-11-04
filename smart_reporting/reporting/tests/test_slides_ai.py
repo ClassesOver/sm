@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
 
 from smart_reporting.report_editor.service import ReportEditorContext, ReportEditorSession
-from smart_reporting.report_editor.slides_ai import ReportSlidesAIService
+from smart_reporting.report_editor.slides_ai import ReportSlidesAIService, SlidesAIProposal
 
 
 def _context() -> ReportEditorContext:
@@ -55,13 +54,15 @@ class FakeSlides:
 
 
 class FakeAgent:
+    """模拟结构化输出规划器：原始模型文本经 SlidesAIProposal 校验后返回。"""
+
     def __init__(self, output: str):
         self.output = output
         self.prompts = []
 
-    async def arun(self, prompt, **_kwargs):
+    async def __call__(self, prompt, **_kwargs):
         self.prompts.append(prompt)
-        return SimpleNamespace(content=self.output)
+        return SlidesAIProposal.model_validate_json(self.output)
 
 
 @pytest.mark.anyio
@@ -73,7 +74,7 @@ async def test_slides_ai_runs_background_task_and_returns_validated_preview():
         "theme": "modern",
     }
     agent = FakeAgent(json.dumps(proposal, ensure_ascii=False))
-    service = ReportSlidesAIService(FakeSlides(), agent=agent)
+    service = ReportSlidesAIService(FakeSlides(), planner=agent)
 
     started = await service.start_edit(_session(_context()), "突出收入结论并把结论页放到前面")
     result = await service.wait_edit_status(_session(_context()), started["editId"])
@@ -91,7 +92,7 @@ async def test_slides_ai_discards_operations_that_target_uneditable_objects():
         "edits": [{"slideIndex": 0, "elementId": "chart", "text": "伪造图中文字"}],
         "order": [0, 1],
     }))
-    service = ReportSlidesAIService(FakeSlides(), agent=agent)
+    service = ReportSlidesAIService(FakeSlides(), planner=agent)
 
     started = await service.start_edit(_session(_context()), "改图上的文字")
     result = await service.wait_edit_status(_session(_context()), started["editId"])
@@ -107,12 +108,12 @@ async def test_slides_ai_cancel_stops_an_unfinished_task():
     release = asyncio.Event()
 
     class WaitingAgent:
-        async def arun(self, _prompt, **_kwargs):
+        async def __call__(self, _prompt, **_kwargs):
             entered.set()
             await release.wait()
-            return SimpleNamespace(content='{"summary":"x","edits":[],"order":[0,1]}')
+            return SlidesAIProposal.model_validate_json('{"summary":"x","edits":[],"order":[0,1]}')
 
-    service = ReportSlidesAIService(FakeSlides(), agent=WaitingAgent())
+    service = ReportSlidesAIService(FakeSlides(), planner=WaitingAgent())
     session = _session(_context())
     started = await service.start_edit(session, "调整布局")
     await entered.wait()

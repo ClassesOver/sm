@@ -8,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
+from ..reporting.delivery.publishing import content_disposition
 from ..reporting.models import ReportingError
 from .service import ReportEditorGrantService
 
@@ -54,6 +55,15 @@ def create_report_slides_editor_router(
             request.cookies.get(SLIDES_CSRF_COOKIE, ""), expected_csrf
         ):
             raise HTTPException(status_code=403, detail={"code": "report_slides_csrf_invalid"})
+
+    async def read_json(request: Request) -> object:
+        try:
+            return await request.json()
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "report_slides_payload_invalid", "message": "请求内容不是有效的 JSON。"},
+            ) from None
 
     def require_ai_service():
         if slides_ai is None:
@@ -125,13 +135,13 @@ def create_report_slides_editor_router(
                 status_code=status,
                 detail={"code": error.code, "message": error.message},
             ) from None
-        filename = Path(context.pptx_path or "report.pptx").name
         return Response(
             content,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={
                 "Cache-Control": "no-store",
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                # 报告标题通常含中文；响应头只能是 latin-1，需 ASCII 回退名 + RFC 5987 原名。
+                "Content-Disposition": content_disposition(context.pptx_path or "report.pptx", artifact="pptx"),
                 "X-Content-Type-Options": "nosniff",
             },
         )
@@ -184,7 +194,7 @@ def create_report_slides_editor_router(
         session, _context = await require_context(request, report_id, revision)
         require_csrf(request)
         try:
-            return await slides.render_tree_for_session(session, await request.json())
+            return await slides.render_tree_for_session(session, await read_json(request))
         except ReportingError as error:
             raise HTTPException(status_code=409, detail={"code": error.code, "message": error.message}) from None
 
@@ -206,7 +216,7 @@ def create_report_slides_editor_router(
         _session, _context = await require_context(request, report_id, revision)
         require_csrf(request)
         try:
-            payload = await request.json()
+            payload = await read_json(request)
             if not isinstance(payload, dict):
                 raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
             image_edits = payload.pop("imageEdits", [])
@@ -257,7 +267,7 @@ def create_report_slides_editor_router(
         session, _context = await require_context(request, report_id, revision)
         require_csrf(request)
         try:
-            payload = await request.json()
+            payload = await read_json(request)
             if not isinstance(payload, dict):
                 raise ReportingError('report_slides_chart_edit_invalid', '图表编辑请求无效。')
             return await require_chart_service().start_edit(
@@ -292,7 +302,7 @@ def create_report_slides_editor_router(
         require_csrf(request)
         service = require_ai_service()
         try:
-            payload = await request.json()
+            payload = await read_json(request)
             instruction = payload.get("instruction") if isinstance(payload, dict) else None
             return await service.start_edit(session, instruction)
         except ReportingError as error:
@@ -339,7 +349,7 @@ def create_report_slides_editor_router(
         require_csrf(request)
         service = require_image_service()
         try:
-            payload = await request.json()
+            payload = await read_json(request)
             prompt = payload.get("prompt") if isinstance(payload, dict) else None
             return await service.generate_candidate(session, prompt)
         except ReportingError as error:

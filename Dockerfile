@@ -19,7 +19,8 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 # 保持与源码相同的相对层级，让浏览器和 Node 桥接使用同一固定版本引擎。
 WORKDIR /build/smart_reporting/reporting/workbook_engine
 COPY smart_reporting/reporting/workbook_engine ./
-RUN npm ci --registry="${NPM_REGISTRY}"
+# 桥接脚本预先打包，运行时不再逐次转译 TypeScript。
+RUN npm ci --registry="${NPM_REGISTRY}" && npm run bundle:bridges
 
 WORKDIR /build/smart_reporting/reporting/slides_engine
 COPY smart_reporting/reporting/slides_engine/package.json \
@@ -32,7 +33,8 @@ COPY smart_reporting/reporting/slides_engine/packages ./packages
 COPY smart_reporting/reporting/slides_engine/bridge ./bridge
 RUN npm ci --registry="${NPM_REGISTRY}" \
     && npm run test --workspace @genoffice/pipelines \
-    && npm run typecheck --workspace @genoffice/pipelines
+    && npm run typecheck --workspace @genoffice/pipelines \
+    && npm run bundle:bridges
 
 # 前端按源码相对路径复用冻结的 GenOffice 类型和浏览器渲染模块。
 WORKDIR /build/smart_reporting/report_editor/frontend

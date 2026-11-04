@@ -6,13 +6,10 @@ ChartAIEditService 执行，其冻结事实、L1/L2、Matplotlib 和侧车登记
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
-import os
 import secrets
-import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -21,6 +18,7 @@ from typing import Any
 
 from loguru import logger
 
+from ..reporting.delivery.office_engine import run_bridge, run_office_engine
 from ..reporting.models import ReportingError
 from .chart_ai import ChartAIEditRequest, _chart_artifact_for_trace
 from .chart_edits import ChartEditRecord, load_chart_edit_records
@@ -28,12 +26,6 @@ from .service import ReportEditorContext, ReportEditorSession
 
 
 def _run_picture_bridge(content: bytes, replacements: list[dict[str, Any]] | None = None) -> Any:
-    engine = Path(
-        os.environ.get(
-            "AGENT_REPORTING_SLIDES_ENGINE_DIR",
-            Path(__file__).parents[1] / "reporting" / "slides_engine",
-        )
-    )
     with tempfile.TemporaryDirectory(prefix="report-slides-chart-") as directory:
         root = Path(directory)
         source, output, request_path = (
@@ -70,14 +62,7 @@ def _run_picture_bridge(content: bytes, replacements: list[dict[str, Any]] | Non
                 ],
             )
         request_path.write_text(json.dumps(request), encoding="utf-8")
-        result = subprocess.run(
-            ["node_modules/.bin/tsx", "bridge/replace-picture.ts", str(request_path)],
-            cwd=engine,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        result = run_bridge("slides", "replace-picture", request_path)
         if result.returncode:
             raise ReportingError(
                 "report_slides_chart_bridge_failed", "图表图片替换失败，原 PPTX 保持不变。"
@@ -164,7 +149,7 @@ class ReportSlidesChartAIService:
     ) -> tuple[ReportEditorContext, ReportEditorContext, list[dict[str, Any]]]:
         context = await self.slides.context_for_session(session)
         content = await self.slides._read_verified_pptx(context)
-        pictures = await asyncio.to_thread(inspect_pptx_pictures, content)
+        pictures = await run_office_engine(inspect_pptx_pictures, content)
         try:
             source = await self._frozen_source(context)
             source, charts = await self._registered_charts(source)

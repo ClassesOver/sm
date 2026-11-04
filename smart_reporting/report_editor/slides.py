@@ -1,24 +1,31 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
-import os
 import re
 import secrets
 import subprocess
 import tempfile
 from copy import deepcopy
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
+from ..reporting.delivery.office_engine import (
+    OfficeConversionError,
+    last_json_line,
+    libreoffice_to_pdf,
+    run_bridge,
+    run_office_engine,
+)
 from ..reporting.delivery.publishing import ReportArtifactSpec, ReportDownloadScope
 from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
+from .revisions import next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorGrantService, ReportEditorSession
+from .slides_render import render_pptx_tree, validate_preview_edits, validate_slide_edits
 
 _SLIDE_ANIMATION_EFFECTS = {
     "appear", "fade", "flyIn", "wipe", "wipeDown", "splitIn", "bounce", "flipIn", "zoom",
@@ -186,7 +193,7 @@ class ReportSlidesEditorService:
     async def deck_for_session(self, session: ReportEditorSession) -> dict[str, Any]:
         context = await self.context_for_session(session)
         pptx = await self._read_verified_pptx(context)
-        deck = await asyncio.to_thread(self._run_engine, pptx, "inspect")
+        deck = await run_office_engine(self._run_engine, pptx, "inspect")
         return {
             **deck,
             "reportId": context.report_id,
@@ -197,21 +204,19 @@ class ReportSlidesEditorService:
     async def render_tree_for_session(
         self, session: ReportEditorSession, preview: Any = None
     ) -> dict[str, Any]:
-        from .slides_render import render_pptx_tree, validate_preview_edits
-
         context = await self.context_for_session(session)
         pptx = await self._read_verified_pptx(context)
         if preview is not None:
             edits = validate_preview_edits(preview, context.pptx_sha256)
-            revised = await asyncio.to_thread(self._run_engine, pptx, "edit", edits=edits)
+            revised = await run_office_engine(self._run_engine, pptx, "edit", edits=edits)
             pptx = revised["bytes"]
-        tree = await asyncio.to_thread(render_pptx_tree, pptx)
+        tree = await run_office_engine(render_pptx_tree, pptx)
         return {**tree, "revision": context.revision, "sha256": context.pptx_sha256}
 
     async def preview_pdf(self, session: ReportEditorSession) -> bytes:
         context = await self.context_for_session(session)
         pptx = await self._read_verified_pptx(context)
-        return await asyncio.to_thread(self._render_pdf, pptx)
+        return await run_office_engine(self._render_pdf, pptx)
 
     async def save_revision(
         self,
@@ -292,28 +297,7 @@ class ReportSlidesEditorService:
             for item in slide_layouts
         ):
             raise ReportingError("report_slides_edit_invalid", "幻灯片版式内容无效。")
-        if not isinstance(edits, list) or len(edits) > 500:
-            raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
-        if any(
-            not isinstance(item, dict)
-            or not isinstance(item.get("slideIndex"), int)
-            or isinstance(item.get("slideIndex"), bool)
-            or not isinstance(item.get("elementId"), str)
-            or not (
-                isinstance(item.get("text"), str)
-                and len(item["text"]) <= 20_000
-                or isinstance(item.get("geometry"), dict)
-                and all(
-                    isinstance(item["geometry"].get(key), (int, float))
-                    and not isinstance(item["geometry"].get(key), bool)
-                    and (0 < item["geometry"][key] <= 100_000 if key in {"width", "height"}
-                         else 0 <= item["geometry"][key] <= 100_000)
-                    for key in ("x", "y", "width", "height")
-                )
-            )
-            for item in edits
-        ):
-            raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
+        validate_slide_edits(edits)
         if order is not None and (
             not isinstance(order, list)
             or any(not isinstance(item, int) or isinstance(item, bool) for item in order)
@@ -323,7 +307,7 @@ class ReportSlidesEditorService:
         backgrounds, text_boxes, deletions = _validate_structure_edits(payload)
 
         source = await self._read_verified_pptx(context)
-        engine_result = await asyncio.to_thread(
+        engine_result = await run_office_engine(
             self._run_engine,
             source,
             "edit",
@@ -342,10 +326,10 @@ class ReportSlidesEditorService:
         if chart_replacements:
             from .slides_chart_ai import replace_pptx_pictures
 
-            revised = await asyncio.to_thread(replace_pptx_pictures, revised, chart_replacements)
-        next_revision = context.revision + 1
-        source_path = PurePosixPath(context.pptx_path or "report.pptx")
-        revision_path = (source_path.parent / f"{source_path.stem}-r{next_revision}.pptx").as_posix()
+            revised = await run_office_engine(replace_pptx_pictures, revised, chart_replacements)
+        # 从旧修订或多个标签页保存时，不能复用“当前修订 + 1”的固定文件名。
+        next_revision, revision_issues = await next_manual_revision(self.state_repository, context)
+        revision_path = revision_file_path(context.pptx_path or "report.pptx", next_revision, suffix=".pptx")
         thread_id = context.scope["threadId"]
         await self.workspace.awrite_bytes(thread_id, revision_path, revised, overwrite=False)
         identity = await self.workspace.ahash_file(thread_id, revision_path)
@@ -360,7 +344,7 @@ class ReportSlidesEditorService:
         next_job["pptxPath"] = revision_path
         next_job["pptxSize"] = len(revised)
         next_job["pptxSha256"] = digest
-        validation_issues = []
+        validation_issues = list(revision_issues)
         if chart_replacements:
             previous_bindings = next_job.get("pptxChartEdits", [])
             invalid_bindings = not isinstance(previous_bindings, list)
@@ -395,7 +379,7 @@ class ReportSlidesEditorService:
             for item in engine_result.get("issues", [])
         )
         try:
-            await asyncio.to_thread(self._render_pdf, revised)
+            await run_office_engine(self._render_pdf, revised)
         except Exception:  # noqa: BLE001 - rendered file identity still gets published
             validation_issues.append({
                 "code": "pptx_preview_render_failed",
@@ -483,7 +467,8 @@ class ReportSlidesEditorService:
                     "code": "report_slides_editor_grant_failed",
                     "message": "PPTX 已保存，但新修订编辑入口未能签发。",
                 })
-        if not download_url and stored and self.download_grants is not None:
+        # 持久化失败时仍签发：下载服务会从工作区读取并复核原文件身份，与工作簿和首次发布一致。
+        if not download_url and self.download_grants is not None:
             try:
                 raw_download, _grant = await self.download_grants.issue(
                     scope=self._download_scope(context),
@@ -553,10 +538,6 @@ class ReportSlidesEditorService:
         text_boxes: list[dict[str, Any]] | None = None,
         deletions: list[dict[str, Any]] | None = None,
     ) -> Any:
-        engine = Path(os.environ.get(
-            "AGENT_REPORTING_SLIDES_ENGINE_DIR",
-            Path(__file__).parents[1] / "reporting" / "slides_engine",
-        ))
         with tempfile.TemporaryDirectory(prefix="report-slides-edit-") as directory:
             root = Path(directory)
             source_path = root / "source.pptx"
@@ -594,21 +575,14 @@ class ReportSlidesEditorService:
                 if deletions:
                     request["deletions"] = deletions
             request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
-            process = subprocess.run(
-                ["node_modules/.bin/tsx", "bridge/edit-pptx.ts", str(request_path)],
-                cwd=engine,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            process = run_bridge("slides", "edit-pptx", request_path)
             if process.returncode:
                 raise ReportingError(
                     "report_slides_engine_failed", process.stderr[-2000:] or "PPTX 编辑失败。"
                 )
             try:
-                receipt = json.loads(process.stdout.strip().splitlines()[-1])
-            except (IndexError, json.JSONDecodeError) as error:
+                receipt = last_json_line(process.stdout)
+            except ValueError as error:
                 raise ReportingError("report_slides_engine_receipt_invalid", "PPTX 引擎回执无效。") from error
             if action == "edit":
                 return {"bytes": output_path.read_bytes(), "issues": receipt.get("issues", [])}
@@ -616,17 +590,7 @@ class ReportSlidesEditorService:
 
     @staticmethod
     def _render_pdf(content: bytes) -> bytes:
-        with tempfile.TemporaryDirectory(prefix="report-slides-preview-") as directory:
-            root = Path(directory)
-            source = root / "preview.pptx"
-            source.write_bytes(content)
-            process = subprocess.run(
-                ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(root), str(source)],
-                check=False,
-                capture_output=True,
-                timeout=90,
-            )
-            target = root / "preview.pdf"
-            if process.returncode or not target.is_file():
-                raise ReportingError("report_slides_preview_failed", "幻灯片预览暂不可用。")
-            return target.read_bytes()
+        try:
+            return libreoffice_to_pdf(content, suffix=".pptx", timeout=90)
+        except (OfficeConversionError, subprocess.TimeoutExpired) as error:
+            raise ReportingError("report_slides_preview_failed", "幻灯片预览暂不可用。") from error

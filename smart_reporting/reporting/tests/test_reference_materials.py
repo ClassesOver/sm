@@ -240,3 +240,37 @@ def test_office_reference_renders_page_images_for_vision(tmp_path, extension: st
 
     assert len(pages) == 1
     assert pages[0].startswith(b"\x89PNG\r\n\x1a\n")
+
+
+@pytest.mark.anyio
+async def test_reference_parsing_and_page_rendering_run_off_the_event_loop(monkeypatch) -> None:
+    """解析大附件和 LibreOffice 页面渲染不得阻塞事件循环。"""
+    import threading
+
+    from smart_reporting.reporting.workflow.runtime import reference_materials as references
+
+    loop_thread = threading.get_ident()
+    threads: dict[str, int] = {}
+
+    def parse(file):
+        threads["parse"] = threading.get_ident()
+        return {"filename": file.filename, "content": "正文", "layout": {}}
+
+    def render(_filename, _raw):
+        threads["render"] = threading.current_thread().name
+        return [b"page"]
+
+    async def analyze(_reference, pages):
+        return {"pages": len(pages)}
+
+    monkeypatch.setattr(references, "_parse", parse)
+    monkeypatch.setattr(references, "_render_visual_pages", render)
+    output = await prepare_reference_materials(
+        SimpleNamespace(files=[SimpleNamespace(filename="reference.docx", content=b"docx")]),
+        SimpleNamespace(session_state={}),
+        visual_analyzer=analyze,
+    )
+
+    assert threads["parse"] != loop_thread
+    assert threads["render"].startswith("office-engine")
+    assert output.content["references"][0]["visualLayout"] == {"pages": 1}

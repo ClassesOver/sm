@@ -19,6 +19,8 @@ def _parse_reporting_response_model(content: str, output_schema: type[Any]) -> A
     editor_plan = (module, getattr(output_schema, "__qualname__", "")) in {
         ("smart_reporting.report_editor.chart_ai", "ChartEditPlan"),
         ("smart_reporting.report_editor.table_ai", "TableEditPlan"),
+        ("smart_reporting.report_editor.slides_ai", "SlidesAIProposal"),
+        ("smart_reporting.report_editor.workbook_ai", "WorkbookAIProposal"),
     }
     if not module.startswith("smart_reporting.reporting.") and not editor_plan:
         return _ORIGINAL_PARSE_RESPONSE_MODEL_STR(content, output_schema)

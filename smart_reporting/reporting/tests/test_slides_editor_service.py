@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 from smart_reporting.report_editor.service import ReportEditorContext, ReportEditorSession
 from smart_reporting.report_editor.slides import ReportSlidesEditorService
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.workspace import WorkspacePathConflict
 
 
 def _context() -> ReportEditorContext:
@@ -165,7 +167,8 @@ async def test_slides_save_rejects_invalid_animation_parameters(animation):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    'fault', ['persistence', 'context', 'download_grant', 'editor_grant', 'preview'],
+    'fault', ['persistence', 'context', 'download_grant', 'editor_grant', 'preview', 'stale_revision',
+              'persistence_and_context'],
 )
 async def test_slides_save_commits_revision_and_keeps_download_when_persistence_fails(monkeypatch, fault):
     from smart_reporting.report_editor import slides
@@ -182,6 +185,15 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         "pptx_sha256": hashlib.sha256(source_bytes).hexdigest(),
     })
     files = {context.pptx_path: source_bytes}
+    contexts = {"1": context.model_dump(mode="json", by_alias=True)}
+    if fault == 'stale_revision':
+        # 修订 2 已存在（例如从首个编辑入口重新打开后再次保存）；新修订必须是 3 且不覆盖 r2。
+        files["reports/report-r2.pptx"] = b"existing-revision-2"
+        contexts["2"] = context.model_copy(update={"revision": 2, "pptx_path": "reports/report-r2.pptx"}).model_dump(
+            mode="json", by_alias=True,
+        )
+    expected_revision = 3 if fault == 'stale_revision' else 2
+    revision_path = re.compile(rf"reports/report-r{expected_revision}-[0-9a-f]{{12}}\.pptx")
 
     class Workspace:
         async def ahash_file(self, _thread, path):
@@ -191,11 +203,13 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         async def afile_bytes(self, _thread, path):
             return files[path], "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
-        async def awrite_bytes(self, _thread, path, content, **_kwargs):
+        async def awrite_bytes(self, _thread, path, content, *, overwrite=False, **_kwargs):
+            if path in files and not overwrite:
+                raise WorkspacePathConflict("目标文件已经存在，请重新读取后再覆盖。")
             files[path] = content
 
     state = SimpleNamespace(
-        payload={"reportEditorContexts": {"1": context.model_dump(mode="json", by_alias=True)}},
+        payload={"reportEditorContexts": contexts},
         state_version=8,
     )
     applied = []
@@ -204,7 +218,7 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         return state
 
     async def apply(_run, command, *, expected_version):
-        if fault == 'context':
+        if fault in {'context', 'persistence_and_context'}:
             raise OSError('context unavailable')
         applied.append((command, expected_version))
 
@@ -218,13 +232,13 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
 
     class FailingPersistence:
         async def persist_available(self, **_kwargs):
-            if fault == 'persistence':
+            if fault in {'persistence', 'persistence_and_context'}:
                 raise RuntimeError("persistence unavailable")
             return _kwargs['artifacts']
 
     class DownloadGrants:
         async def issue(self, **kwargs):
-            assert kwargs['pptx_path'] == 'reports/report-r2.pptx'
+            assert revision_path.fullmatch(kwargs['pptx_path'])
             assert kwargs['pptx_size'] == len(b'verified-revision')
             assert kwargs['pptx_sha256'] == hashlib.sha256(b'verified-revision').hexdigest()
             return 'artifact-download-token', SimpleNamespace(expires_at=datetime.now(UTC))
@@ -251,12 +265,18 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         _session(context), {"expectedSha256": context.pptx_sha256, "edits": [], "order": [0]}
     )
 
-    assert result["revision"] == 2
-    if fault in {'context', 'download_grant'}:
+    assert result["revision"] == expected_revision
+    assert revision_path.fullmatch(result["pptx"]["path"])
+    if fault == 'stale_revision':
+        assert files["reports/report-r2.pptx"] == b"existing-revision-2"
+        assert result["validation"]["ok"] is True
+        return
+    # 编辑会话下载不可用时，即使持久化失败也要用产物授权签发已核验文件的下载。
+    if fault in {'context', 'download_grant', 'persistence_and_context'}:
         assert result['pptx']['downloadUrl'].endswith('/reports/v1/download/artifact-download-token/pptx')
     else:
         assert result["pptx"]["downloadUrl"].endswith("/reports/v1/slides/download/download-token")
-    if fault in {'context', 'editor_grant'}:
+    if fault in {'context', 'editor_grant', 'persistence_and_context'}:
         assert 'editor' not in result
     else:
         assert result["editor"]["openUrl"].endswith("/reports/v1/slides/open/editor-token")
@@ -267,13 +287,16 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         'download_grant': 'report_pptx_download_grant_failed',
         'editor_grant': 'report_slides_editor_grant_failed',
         'preview': 'pptx_preview_render_failed',
+        'persistence_and_context': 'report_slides_context_persistence_failed',
     }[fault]
     assert any(issue['code'] == issue_code for issue in result['validation']['issues'])
-    if fault != 'context':
+    if fault == 'persistence_and_context':
+        assert any(issue['code'] == 'report_pptx_persistence_failed' for issue in result['validation']['issues'])
+    if fault not in {'context', 'persistence_and_context'}:
         assert len(applied) == 1
         assert applied[0][1] == 8
         saved_context = applied[0][0].payload["context"]
-        assert saved_context["pptxPath"] == "reports/report-r2.pptx"
+        assert revision_path.fullmatch(saved_context["pptxPath"])
 
 
 def _validating_service(context: ReportEditorContext) -> ReportSlidesEditorService:
@@ -342,3 +365,38 @@ async def test_slides_save_passes_structure_edits_to_engine(monkeypatch):
     assert captured["backgrounds"] == payload["backgrounds"]
     assert captured["text_boxes"] == payload["textBoxes"]
     assert captured["deletions"] == payload["deletions"]
+
+
+_INVALID_EDITS = [
+    {"slideIndex": 0, "elementId": "s1", "text": "x" * 20_001},
+    {"slideIndex": 0, "elementId": "s1"},
+    {"slideIndex": -1, "elementId": "s1", "text": "x"},
+    {"slideIndex": 0, "elementId": "s1", "text": "x", "script": "y"},
+    {"slideIndex": 0, "elementId": "s1", "geometry": {"x": 0, "y": 0, "width": 10, "height": 10, "z": 1}},
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("edit", _INVALID_EDITS)
+async def test_preview_and_save_reject_the_same_invalid_edits(edit):
+    """即时预览与保存共用校验：预览接受、保存拒绝会让用户看到成功预览却无法保存。"""
+    from smart_reporting.report_editor.slides_render import validate_preview_edits
+
+    context = _context()
+    with pytest.raises(ReportingError, match="幻灯片"):
+        validate_preview_edits({"expectedSha256": context.pptx_sha256, "edits": [edit]}, context.pptx_sha256)
+    with pytest.raises(ReportingError, match="幻灯片"):
+        await _validating_service(context).save_revision(
+            _session(context), {"expectedSha256": context.pptx_sha256, "edits": [edit]},
+        )
+
+
+def test_preview_accepts_maximum_text_that_save_also_accepts():
+    from smart_reporting.report_editor.slides_render import (
+        validate_preview_edits,
+        validate_slide_edits,
+    )
+
+    edit = {"slideIndex": 0, "elementId": "s1", "text": "x" * 20_000}
+    assert validate_preview_edits({"expectedSha256": "a" * 64, "edits": [edit]}, "a" * 64) == [edit]
+    assert validate_slide_edits([edit]) == [edit]

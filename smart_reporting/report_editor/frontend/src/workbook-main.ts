@@ -9,7 +9,7 @@ import { loadWorkbookData, readBack } from './workbook-vendor/grid/sync'
 import { buildWorkbookData } from './workbook-vendor/core/univer-data'
 import { diffToEdits } from './workbook-vendor/core/session-core'
 import { geometryChanges } from './workbook-vendor/core/data-tools'
-import { WorkbookDraft, type WorkbookOperation, type WorkbookProposal } from './workbook-draft'
+import { WorkbookDraft, workbookSaveOutcome, type WorkbookOperation, type WorkbookProposal, type WorkbookSaveResult } from './workbook-draft'
 import type { EditorShell } from './shell'
 import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot } from './workbook-grid-operations'
 import { withWorkbookLocked } from './workbook-grid-guards'
@@ -51,6 +51,8 @@ export async function createWorkbookEditorView(shell: EditorShell) {
   let aiId = ''
   let candidateOperations = ''
   let dirty = false
+  // 新修订已登记后不再从当前底稿保存，避免重复生成修订。
+  let saved = false
   let loading = true
   let structural: NonNullable<ReturnType<typeof structuralMutation>>[] = []
   let acceptedSnapshot = ''
@@ -179,7 +181,7 @@ export async function createWorkbookEditorView(shell: EditorShell) {
         feedback.textContent = '候选已进入草稿，尚未保存。'
       })
     } catch (error) { feedback.textContent = (error as Error).message }
-    finally { accept.disabled = false; shell.save.disabled = false }
+    finally { accept.disabled = false; shell.save.disabled = saved }
   })
   undo.addEventListener('click', async () => {
     if (JSON.stringify(await currentOperations()) !== acceptedSnapshot) {
@@ -193,18 +195,21 @@ export async function createWorkbookEditorView(shell: EditorShell) {
     feedback.textContent = '已撤销 AI 采纳，恢复采纳前草稿。'
   })
   shell.save.addEventListener('click', async () => {
+    if (saved) return
     shell.save.disabled = true
     shell.editor.inert = true
     shell.statusLabel.textContent = '正在保存'
     try {
-      const result = await request<{ revision: number; revisionRegistered: boolean; xlsx: { downloadUrl?: string }; editor?: { openUrl: string }; validation: { ok: boolean; issues: { message: string }[] } }>('save', { expectedSha256, operations: await currentOperations() })
-      dirty = !result.editor?.openUrl
-      shell.statusLabel.textContent = result.revisionRegistered ? `已保存修订 ${result.revision}` : '文件已保存，草稿已保留'
+      const result = await request<WorkbookSaveResult & { xlsx: { downloadUrl?: string }; validation: { ok: boolean; issues: { message: string }[] } }>('save', { expectedSha256, operations: await currentOperations() })
+      const outcome = workbookSaveOutcome(result)
+      dirty = outcome.kind === 'retry'
+      saved = outcome.kind !== 'retry'
+      shell.statusLabel.textContent = outcome.status
       if (result.xlsx.downloadUrl) { shell.exportXlsx.href = result.xlsx.downloadUrl; shell.exportXlsx.hidden = false }
       feedback.textContent = result.validation.issues.map(issue => issue.message).join('；') || '新修订已保存。'
-      if (result.editor?.openUrl) location.assign(result.editor.openUrl)
+      if (outcome.kind === 'reopen') location.assign(outcome.url)
     } catch (error) { shell.statusLabel.textContent = '保存失败，草稿已保留'; feedback.textContent = (error as Error).message }
-    finally { shell.save.disabled = false; shell.editor.inert = false }
+    finally { shell.save.disabled = saved; shell.editor.inert = saved }
   })
   window.addEventListener('beforeunload', event => {
     if (dirty) { event.preventDefault(); event.returnValue = '' }
