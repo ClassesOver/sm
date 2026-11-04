@@ -117,7 +117,10 @@ async def test_workbook_save_rejects_stale_file_identity_before_writing():
 
 @pytest.mark.anyio
 async def test_workbook_ai_uses_unsaved_snapshot_and_rejects_stale_acceptance():
-    from smart_reporting.report_editor.workbook_ai import ReportWorkbookAIService
+    from smart_reporting.report_editor.workbook_ai import (
+        ReportWorkbookAIService,
+        WorkbookAIProposal,
+    )
     context = _context(_bytes())
     prompts = []
     class Workbooks:
@@ -129,11 +132,11 @@ async def test_workbook_ai_uses_unsaved_snapshot_and_rejects_stale_acceptance():
         async def preview_operations(self, _session, operations, proposed):
             assert proposed[0]['kind'] == 'applyCellEdits'
             return {'snapshotSha256': 'd' * 64}
-    class Agent:
-        async def arun(self, prompt, **_kwargs):
+    class Planner:
+        async def __call__(self, prompt, **_kwargs):
             prompts.append(prompt)
-            return SimpleNamespace(content=json.dumps({'summary': '更新值', 'operations': [{'kind': 'applyCellEdits', 'edits': [{'sheetName': '汇总', 'row': 0, 'column': 0, 'writeValue': True, 'cell': {'value': 100}}]}]}))
-    service = ReportWorkbookAIService(Workbooks(), agent=Agent())
+            return WorkbookAIProposal.model_validate({'summary': '更新值', 'operations': [{'kind': 'applyCellEdits', 'arguments': {'edits': [{'sheetName': '汇总', 'row': 0, 'column': 0, 'writeValue': True, 'cell': {'value': 100}}]}}]})
+    service = ReportWorkbookAIService(Workbooks(), planner=Planner())
     session = _session(context)
     start = await service.start_edit(session, '更新值', [{'kind': 'applyCellEdits', 'edits': []}])
     result = await service.wait_edit_status(session, start['editId'], wait_ms=1000)
@@ -144,22 +147,27 @@ async def test_workbook_ai_uses_unsaved_snapshot_and_rejects_stale_acceptance():
         await service.mark_accepted(session, start['editId'], snapshot_sha256='e' * 64)
     accepted = await service.mark_accepted(session, start['editId'], snapshot_sha256='c' * 64)
     assert accepted['accepted'] is True
-    assert accepted['proposal']['operations'][0]['kind'] == 'applyCellEdits'
+    # 结构化输出 {kind, arguments} 还原为引擎原生操作。
+    assert accepted['proposal']['operations'] == [{'kind': 'applyCellEdits', 'edits': [
+        {'sheetName': '汇总', 'row': 0, 'column': 0, 'writeValue': True, 'cell': {'value': 100}}]}]
 
 
 @pytest.mark.anyio
 async def test_workbook_ai_failure_retains_manual_snapshot():
-    from smart_reporting.report_editor.workbook_ai import ReportWorkbookAIService
+    from smart_reporting.report_editor.workbook_ai import (
+        ReportWorkbookAIService,
+        WorkbookAIProposal,
+    )
     context = _context(_bytes())
     class Workbooks:
         async def context_for_session(self, _session):
             return context
         async def snapshot_for_session(self, _session, _operations):
             return {'snapshotSha256': 'c' * 64, 'workbook': {'sheets': []}}
-    class Agent:
-        async def arun(self, *_args, **_kwargs):
-            return SimpleNamespace(content='not-json')
-    service = ReportWorkbookAIService(Workbooks(), agent=Agent())
+    class Planner:
+        async def __call__(self, *_args, **_kwargs):
+            return WorkbookAIProposal.model_validate_json('not-json')
+    service = ReportWorkbookAIService(Workbooks(), planner=Planner())
     started = await service.start_edit(_session(context), '修改', [])
     result = await service.wait_edit_status(_session(context), started['editId'], wait_ms=1000)
     assert result['status'] == 'failed'
