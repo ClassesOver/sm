@@ -1,6 +1,7 @@
 import { createElement, ArrowDown, ArrowUp, Download, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
+import { requestJson } from './api-request'
 import type { SlidesCanvasState } from './slides-canvas'
 import { createSlidesChartTools } from './slides-chart-tools'
 
@@ -33,23 +34,8 @@ export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
 const root = host
 const basePath = location.pathname.replace(/\/$/, '')
 const embedded = Boolean(sharedShell)
-const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
-  const csrfToken = document.cookie.split('; ').find(value => value.startsWith('report_slides_csrf='))?.split('=', 2)[1] ?? ''
-  const response = await fetch(`${basePath}/api/${path}`, {
-    credentials: 'same-origin',
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.method === 'POST' ? { 'X-CSRF-Token': decodeURIComponent(csrfToken) } : {}),
-      ...init?.headers,
-    },
-  })
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}))
-    throw new Error(body.detail?.message ?? `请求失败 (${response.status})`)
-  }
-  return response.json() as Promise<T>
-}
+const request = <T>(path: string, init?: RequestInit): Promise<T> =>
+  requestJson(`${basePath}/api/${path}`, init, 'report_slides_csrf')
 
 const buttonIcon = (icon: typeof Save, label: string) => {
   const button = document.createElement('button')

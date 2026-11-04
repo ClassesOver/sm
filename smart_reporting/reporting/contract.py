@@ -21,6 +21,7 @@ from sqlglot import exp, parse
 from .cumulative_policy import CumulativeSnapshotPolicy as CumulativeSnapshotPolicy
 from .hospital_operation.domains import DOMAIN_CODES
 from .models import ReportingError
+from .type_normalization import normalize_data_type
 
 REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
 
@@ -573,7 +574,7 @@ def schema_hash(tables: tuple[ModelTable, ...] | list[ModelTable]) -> str:
             "columns": [
                 {
                     "name": column.name.lower(),
-                    "dataType": _normalize_type(column.data_type),
+                    "dataType": normalize_data_type(column.data_type),
                     "nullable": column.nullable,
                 }
                 for column in sorted(table.columns, key=lambda item: item.name.lower())
@@ -586,10 +587,6 @@ def schema_hash(tables: tuple[ModelTable, ...] | list[ModelTable]) -> str:
     ]
     encoded = json.dumps(structure, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
-
-
-def _normalize_type(value: str) -> str:
-    return re.sub(r"\s+", "", value).upper()
 
 
 def parse_ddl(ddl: str, *, source_id: str, default_database: str) -> tuple[ModelTable, ...]:

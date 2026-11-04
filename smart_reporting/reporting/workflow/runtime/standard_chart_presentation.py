@@ -5,6 +5,7 @@ import math
 from datetime import date
 
 from ...units import unit_conversion_scale
+from .standard_chart_numeric import is_finite_number
 
 
 def valid_standard_metadata(meta):
@@ -30,7 +31,7 @@ def order_standard_rows(document, label, policy):
         if len({(meta['unit'], meta.get('isPercent')) for meta in metas}) != 1:
             return None
         indexes = [columns.index(field) for field in policy.fields]
-        if any(not _finite(row[index]) and not (policy.exclude_missing and row[index] is None)
+        if any(not is_finite_number(row[index]) and not (policy.exclude_missing and row[index] is None)
                for row in rows for index in indexes):
             return None
         if policy.exclude_missing:
@@ -43,7 +44,7 @@ def order_standard_rows(document, label, policy):
         index = columns.index(policy.field)
         if policy.exclude_missing:
             rows = [row for row in rows if row[index] is not None]
-        if any(not _finite(row[index]) for row in rows):
+        if any(not is_finite_number(row[index]) for row in rows):
             return None
         rows = sorted(rows, key=lambda row: row[index], reverse=policy.descending)
         labels = [row[position] for row in rows]
@@ -66,10 +67,6 @@ def order_standard_rows(document, label, policy):
     return {**document, 'rows': rows} if rows else None
 
 
-def _finite(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-
 def format_standard_number(value, precision=2, show_sign=False):
     # Never turn a nonzero frozen value into a displayed zero.
     scientific = value != 0 and (abs(value) < .5 * 10 ** -precision or abs(value) >= 1e12)
@@ -89,7 +86,7 @@ def frozen_label(spec, document, row):
             return None
         value = row[columns.index(spec.field)]
         unit = meta.get('unit')
-        if not unit or not _finite(value):
+        if not unit or not is_finite_number(value):
             return None
         if unit == '%' and meta.get('isPercent') is False:
             value *= 100
@@ -102,7 +99,7 @@ def frozen_label(spec, document, row):
         left, right = metadata.get(spec.numerator, {}), metadata.get(spec.denominator, {})
         if not valid_standard_metadata(left) or not valid_standard_metadata(right):
             return None
-        if (not _finite(numerator) or not _finite(denominator) or denominator <= 0
+        if (not is_finite_number(numerator) or not is_finite_number(denominator) or denominator <= 0
                 or not left.get('unit') or left.get('unit') != right.get('unit')
                 or left.get('isPercent') != right.get('isPercent')):
             return None
@@ -114,7 +111,7 @@ def frozen_label(spec, document, row):
             return None
         value *= float(scale)
         unit = spec.display_unit
-    if not _finite(value):
+    if not is_finite_number(value):
         return None
     number = format_standard_number(value, spec.decimals, spec.show_sign)
     return f'{caption} {number}{unit}' if caption else f'{number}{unit}'
@@ -150,7 +147,7 @@ def prepare_standard_presentation(policy, document, original, label, names, labe
                     or unit_conversion_scale(meta['unit'], '人次') is not None or meta['unit'] == '床日'):
                 return None
             values = [row[columns.index(spec.field)] for row in rows]
-            if any(not _finite(value) for value in values):
+            if any(not is_finite_number(value) for value in values):
                 return None
             total = math.fsum(values)
             summary_document = {'columns': [spec.field], 'columnMeta': {spec.field: meta}}

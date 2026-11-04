@@ -125,10 +125,6 @@ class ReportSlidesAIService:
             job.task = asyncio.create_task(self._run_job(job, prompt, editable, deck))
         return {"editId": edit_id, "status": "running"}
 
-    async def edit_status(self, session: ReportEditorSession, edit_id: str) -> dict[str, Any]:
-        job = await self._authorized_job(session, edit_id)
-        return self._serialize(job)
-
     async def wait_edit_status(
         self, session: ReportEditorSession, edit_id: str, *, wait_ms: int = 20_000
     ) -> dict[str, Any]:

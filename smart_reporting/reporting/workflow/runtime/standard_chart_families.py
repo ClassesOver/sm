@@ -7,6 +7,7 @@ from collections import deque
 
 from ...units import unit_conversion_scale
 from .standard_chart_encoding import fail, scaled_column
+from .standard_chart_numeric import is_finite_number
 from .standard_chart_presentation import (
     order_standard_rows,
     prepare_standard_presentation,
@@ -14,10 +15,6 @@ from .standard_chart_presentation import (
 )
 
 FAMILY_FORMS = frozenset({'pie', 'donut', 'radar', 'funnel', 'sankey'})
-
-
-def _finite(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _registered_dimensions(container, key):
@@ -61,7 +58,7 @@ def family_scalar_refs(chart, documents=()):
             selected = (encoding.value_field,)
         if not selected:
             columns, rows = _table(documents[0])
-            selected = [field for field in columns if all(_finite(row[columns.index(field)]) for row in rows)]
+            selected = [field for field in columns if all(is_finite_number(row[columns.index(field)]) for row in rows)]
         sources = [(0, field) for field in selected]
     for index, field in sources:
         if index >= len(documents):
@@ -131,7 +128,7 @@ def resolve_scalar(ref, documents):
         fail('standard_scalar_ambiguous', 'standardScalarRef', '冻结标量选择必须恰好命中一行，不按同值去重或取首行。')
     value = rows[0][columns.index(ref.field)]
     meta = (document.get('columnMeta') or {}).get(ref.field, {})
-    if not _finite(value) or not valid_standard_metadata(meta) or not meta.get('unit'):
+    if not is_finite_number(value) or not valid_standard_metadata(meta) or not meta.get('unit'):
         fail('standard_scalar_invalid', 'standardScalarRef', '标量必须为有限非布尔数值且有登记单位。')
     return value, meta
 
@@ -143,7 +140,7 @@ def _convert(value, meta, unit):
     result = value * float(factor)
     if meta['unit'] == '%' and meta.get('isPercent') is False:
         result *= 100
-    if not _finite(result) or value != 0 and result == 0:
+    if not is_finite_number(result) or value != 0 and result == 0:
         fail('standard_family_scale_unrepresentable', 'columnMeta.unit', '单位换算溢出或非零下溢，不能改变原值。')
     return result
 
@@ -277,7 +274,7 @@ def _measure_fields(chart, document, label):
     columns, rows = _table(document)
     selected = list(getattr(chart, 'standard_value_fields', ()))
     if not selected:
-        selected = [field for field in columns if field != label and all(_finite(row[columns.index(field)]) for row in rows)]
+        selected = [field for field in columns if field != label and all(is_finite_number(row[columns.index(field)]) for row in rows)]
     if not selected or len(set(selected)) != len(selected) or not set(selected).issubset(columns):
         fail('standard_family_fields_invalid', 'standardValueFields', '度量选择必须唯一且引用现有冻结字段。')
     return selected
@@ -309,7 +306,7 @@ def prepare_family_chart(chart, document, original, form, canvas, style, present
         for field in fields:
             raw = rows[0][columns.index(field)]
             current = meta.get(field, {})
-            if not _finite(raw) or not valid_standard_metadata(current) or not current.get('unit'):
+            if not is_finite_number(raw) or not valid_standard_metadata(current) or not current.get('unit'):
                 fail('standard_funnel_values_invalid', 'standardValueFields', '宽表阶段须为有单位的有限原值。')
             values.append([field, _convert(raw, current, first.get('unit'))])
         # _convert 已输出百分数坐标，投影元数据必须同步，避免下游重复乘100。
@@ -355,7 +352,7 @@ def prepare_family_chart(chart, document, original, form, canvas, style, present
                     warnings.append(_warning('standard_composition_coverage_unproven', '独立冻结分母与分项的完整业务覆盖关系尚未证明。'))
                 notes.append('占独立冻结分母；业务覆盖关系以登记依据为准')
             visible_sum = math.fsum(values)
-            if not _finite(denominator) or denominator <= 0 or visible_sum > denominator and not math.isclose(visible_sum, denominator, rel_tol=1e-12):
+            if not is_finite_number(denominator) or denominator <= 0 or visible_sum > denominator and not math.isclose(visible_sum, denominator, rel_tol=1e-12):
                 fail('standard_composition_denominator_invalid', 'standardComposition.denominator', '分母必须为正且不小于可见类别合计，不能重新归一化。')
             family.update(denominator=denominator)
             angle = 90.0
